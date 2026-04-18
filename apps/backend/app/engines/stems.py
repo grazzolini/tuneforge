@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import time
@@ -11,6 +12,7 @@ from pathlib import Path
 from fastapi import status
 
 from app.errors import AppError, JobCancelledError
+from app.utils.torch_runtime import with_mps_fallback_env
 
 
 def _require_demucs_dependency() -> None:
@@ -60,7 +62,13 @@ def separate_two_stems(
     stderr = ""
     try:
         try:
-            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=with_mps_fallback_env(os.environ),
+            )
             if register_process:
                 register_process(process)
 
@@ -125,4 +133,3 @@ def separate_two_stems(
     finally:
         if process and process.poll() is None:
             process.kill()
-

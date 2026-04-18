@@ -41,4 +41,5 @@ Notes:
 - `pnpm dev` starts the backend and desktop flow together.
 - The backend dependency sync now installs Demucs and Torch, so the first `uv sync` is heavier than before.
 - The first real stem generation may download the selected Demucs model weights into the local cache before processing starts.
-- Stem behavior can be tuned with `TUNEFORGE_STEM_MODEL` and `TUNEFORGE_STEM_DEVICE`. Defaults are `htdemucs_ft` and `cpu`.
+- Stem behavior can be tuned with `TUNEFORGE_STEM_MODEL` and `TUNEFORGE_STEM_DEVICE`. Defaults are `htdemucs_ft` and `auto`.
+- `auto` prefers `cuda`, then `mps`, then `cpu`. The Demucs worker also enables PyTorch MPS CPU fallback for unsupported ops.

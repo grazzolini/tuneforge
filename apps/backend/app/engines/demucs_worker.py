@@ -10,6 +10,8 @@ from demucs.apply import apply_model
 from demucs.audio import AudioFile
 from demucs.pretrained import get_model
 
+from app.utils.torch_runtime import choose_torch_device
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Separate vocals and accompaniment using Demucs.")
@@ -26,6 +28,7 @@ def main() -> None:
     source_path = Path(args.source)
     vocal_path = Path(args.vocals)
     instrumental_path = Path(args.instrumental)
+    resolved_device = choose_torch_device(args.device, torch_module=torch)
 
     model = get_model(args.model)
     samplerate = int(model.samplerate)
@@ -34,7 +37,7 @@ def main() -> None:
     if mix.dim() == 2:
         mix = mix.unsqueeze(0)
 
-    device = torch.device(args.device)
+    device = torch.device(resolved_device)
     estimates = apply_model(model, mix, device=device, progress=False)
     estimates = estimates[0].cpu()
 
@@ -55,7 +58,8 @@ def main() -> None:
             {
                 "engine": "demucs",
                 "model": args.model,
-                "device": args.device,
+                "requested_device": args.device,
+                "device": resolved_device,
             }
         )
     )

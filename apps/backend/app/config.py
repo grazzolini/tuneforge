@@ -63,7 +63,7 @@ def get_settings() -> Settings:
         supported_export_formats=("wav", "mp3", "flac"),
         preview_format="wav",
         stem_model=os.environ.get("TUNEFORGE_STEM_MODEL", "htdemucs_ft"),
-        stem_device=os.environ.get("TUNEFORGE_STEM_DEVICE", "cpu"),
+        stem_device=os.environ.get("TUNEFORGE_STEM_DEVICE", "auto"),
         max_workers=1,
         backend_root=backend_root,
     )

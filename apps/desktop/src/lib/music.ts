@@ -29,33 +29,26 @@ const ENHARMONIC_ALIASES: Record<string, number> = {
   Cb: 11,
 };
 
-const DISPLAY_PITCH_CLASSES = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"] as const;
+const DISPLAY_PITCH_CLASSES = [
+  "C",
+  "C#/Db",
+  "D",
+  "D#/Eb",
+  "E",
+  "F",
+  "F#/Gb",
+  "G",
+  "G#/Ab",
+  "A",
+  "A#/Bb",
+  "B",
+] as const;
+
+const CHROMATIC_PITCH_CLASSES = Array.from({ length: 12 }, (_, pitchClass) => pitchClass);
 
 const KEY_ORDER: MusicalKey[] = [
-  { pitchClass: 0, mode: "major" },
-  { pitchClass: 7, mode: "major" },
-  { pitchClass: 2, mode: "major" },
-  { pitchClass: 9, mode: "major" },
-  { pitchClass: 4, mode: "major" },
-  { pitchClass: 11, mode: "major" },
-  { pitchClass: 6, mode: "major" },
-  { pitchClass: 1, mode: "major" },
-  { pitchClass: 8, mode: "major" },
-  { pitchClass: 3, mode: "major" },
-  { pitchClass: 10, mode: "major" },
-  { pitchClass: 5, mode: "major" },
-  { pitchClass: 9, mode: "minor" },
-  { pitchClass: 4, mode: "minor" },
-  { pitchClass: 11, mode: "minor" },
-  { pitchClass: 6, mode: "minor" },
-  { pitchClass: 1, mode: "minor" },
-  { pitchClass: 8, mode: "minor" },
-  { pitchClass: 3, mode: "minor" },
-  { pitchClass: 10, mode: "minor" },
-  { pitchClass: 5, mode: "minor" },
-  { pitchClass: 0, mode: "minor" },
-  { pitchClass: 7, mode: "minor" },
-  { pitchClass: 2, mode: "minor" },
+  ...CHROMATIC_PITCH_CLASSES.map((pitchClass) => ({ pitchClass, mode: "major" as const })),
+  ...CHROMATIC_PITCH_CLASSES.map((pitchClass) => ({ pitchClass, mode: "minor" as const })),
 ];
 
 export const DEFAULT_KEY: MusicalKey = { pitchClass: 0, mode: "major" };

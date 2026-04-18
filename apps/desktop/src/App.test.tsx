@@ -383,6 +383,22 @@ describe("App flows", () => {
     expect(within(mixStatusSummary).getByText("Using source settings")).toBeInTheDocument();
     expect(within(mixStatusSummary).getByText("Selected mix differs from current source controls.")).toBeInTheDocument();
 
+    const targetKey = screen.getByLabelText("Target Key") as HTMLSelectElement;
+    expect(Array.from(targetKey.options).map((option) => option.text)).toEqual([
+      "C",
+      "C#/Db",
+      "D",
+      "D#/Eb",
+      "E",
+      "F",
+      "F#/Gb",
+      "G",
+      "G#/Ab",
+      "A",
+      "A#/Bb",
+      "B",
+    ]);
+
     await user.click(within(savedMixList).getByRole("button", { name: /Source Track/i }));
     expect(within(selectedMixSummary).getByText("Source Track")).toBeInTheDocument();
     expect(within(selectedMixSummary).getByText("Original source file")).toBeInTheDocument();

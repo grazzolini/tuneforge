@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { save } from "@tauri-apps/plugin-dialog";
 import { api, type ArtifactSchema, type JobSchema } from "../../lib/api";
 import {
@@ -37,9 +37,9 @@ function useActiveJobPolling(projectId: string, jobs: JobSchema[] | undefined) {
 }
 
 function artifactLabel(artifact: ArtifactSchema) {
-  if (artifact.type === "source_audio") return "Source";
-  if (artifact.type === "preview_mix") return "Preview";
-  if (artifact.type === "export_mix") return "Export";
+  if (artifact.type === "source_audio") return "Source Track";
+  if (artifact.type === "preview_mix") return "Practice Mix";
+  if (artifact.type === "export_mix") return "Export File";
   if (artifact.type === "vocal_stem") return "Vocals";
   if (artifact.type === "instrumental_stem") return "Instrumental";
   if (artifact.type === "analysis_json") return "Analysis JSON";
@@ -56,6 +56,15 @@ function preferredArtifactSelection(artifacts: ArtifactSchema[]) {
 
 function formatSemitoneShift(semitones: number) {
   return `Shift ${semitones > 0 ? "+" : ""}${semitones} semitone${Math.abs(semitones) === 1 ? "" : "s"}`;
+}
+
+function formatArtifactTimestamp(createdAt: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(createdAt));
 }
 
 function artifactSummary(artifact: ArtifactSchema) {
@@ -94,8 +103,71 @@ function artifactSummary(artifact: ArtifactSchema) {
   return pieces.join(" · ");
 }
 
+function buildRequestedRetune(
+  retuneMode: "off" | "reference" | "cents",
+  referenceHz: string,
+  centsOffset: string,
+) {
+  if (retuneMode === "reference") {
+    const parsed = Number(referenceHz);
+    return Number.isFinite(parsed) ? { target_reference_hz: parsed } : null;
+  }
+  if (retuneMode === "cents") {
+    const parsed = Number(centsOffset);
+    return Number.isFinite(parsed) ? { target_cents_offset: parsed } : null;
+  }
+  return null;
+}
+
+function matchesPreviewSettings(
+  artifact: ArtifactSchema | null,
+  requestedRetune: { target_reference_hz: number } | { target_cents_offset: number } | null,
+  transposeSemitones: number,
+) {
+  if (!artifact || artifact.type !== "preview_mix") {
+    return false;
+  }
+
+  const metadata = artifact.metadata ?? {};
+  const retune = typeof metadata.retune === "object" && metadata.retune !== null ? metadata.retune : {};
+  const transpose =
+    typeof metadata.transpose === "object" && metadata.transpose !== null ? metadata.transpose : {};
+
+  const requestedReferenceHz =
+    requestedRetune && "target_reference_hz" in requestedRetune ? requestedRetune.target_reference_hz : null;
+  const requestedCents =
+    requestedRetune && "target_cents_offset" in requestedRetune ? requestedRetune.target_cents_offset : null;
+  const artifactReferenceHz =
+    "target_reference_hz" in retune && typeof retune.target_reference_hz === "number" ? retune.target_reference_hz : null;
+  const artifactCents =
+    "target_cents_offset" in retune && typeof retune.target_cents_offset === "number" ? retune.target_cents_offset : null;
+  const artifactSemitones =
+    "semitones" in transpose && typeof transpose.semitones === "number" ? transpose.semitones : 0;
+
+  return (
+    artifactSemitones === transposeSemitones &&
+    artifactReferenceHz === requestedReferenceHz &&
+    artifactCents === requestedCents
+  );
+}
+
+function formatRetuneSummary(
+  retuneMode: "off" | "reference" | "cents",
+  referenceHz: string,
+  centsOffset: string,
+) {
+  if (retuneMode === "off") {
+    return "No fine retune applied";
+  }
+  if (retuneMode === "reference") {
+    return `Retuned to ${referenceHz} Hz`;
+  }
+  return `Retuned ${Number(centsOffset) > 0 ? "+" : ""}${centsOffset} cents`;
+}
+
 export function ProjectView() {
   const { projectId = "" } = useParams();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [retuneMode, setRetuneMode] = useState<"off" | "reference" | "cents">("off");
   const [referenceHz, setReferenceHz] = useState("440");
@@ -172,20 +244,6 @@ export function ProjectView() {
     },
   });
 
-  const stemMutation = useMutation({
-    mutationFn: async () => {
-      setFollowLatestPreview(false);
-      return api.createStems(projectId, {
-        mode: "two_stem",
-        output_format: "wav",
-        force: false,
-      });
-    },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
-    },
-  });
-
   const exportMutation = useMutation({
     mutationFn: async () => {
       const exportArtifact =
@@ -217,7 +275,7 @@ export function ProjectView() {
     mutationFn: () => api.deleteProject(projectId),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
-      window.location.hash = "#/";
+      navigate("/");
     },
   });
 
@@ -226,20 +284,21 @@ export function ProjectView() {
     [jobsQuery.data, projectId],
   );
   const analyzeJob = projectJobs.find((job) => job.type === "analyze");
-  const stemJob = projectJobs.find((job) => job.type === "stems");
-  const visibleArtifacts = useMemo(() => {
+  const displayArtifacts = useMemo(() => {
     const artifacts = artifactsQuery.data ?? [];
     const source = artifacts.find((artifact) => artifact.type === "source_audio");
-    const preview = artifacts.find((artifact) => artifact.type === "preview_mix");
-    const vocalStem = artifacts.find((artifact) => artifact.type === "vocal_stem");
-    const instrumentalStem = artifacts.find((artifact) => artifact.type === "instrumental_stem");
+    const previews = artifacts.filter((artifact) => artifact.type === "preview_mix");
     const analysisJson = artifacts.find((artifact) => artifact.type === "analysis_json");
     const exports = artifacts.filter((artifact) => artifact.type === "export_mix");
-    return [preview, vocalStem, instrumentalStem, ...exports, analysisJson, source].filter(Boolean) as ArtifactSchema[];
+    return [...previews, ...exports, analysisJson, source].filter(Boolean) as ArtifactSchema[];
   }, [artifactsQuery.data]);
+  const mixArtifacts = useMemo(
+    () => displayArtifacts.filter((artifact) => artifact.type === "preview_mix" || artifact.type === "source_audio"),
+    [displayArtifacts],
+  );
   const playableArtifacts = useMemo(
-    () => visibleArtifacts.filter((artifact) => isPlayableArtifact(artifact)),
-    [visibleArtifacts],
+    () => mixArtifacts.filter((artifact) => isPlayableArtifact(artifact)),
+    [mixArtifacts],
   );
   const selectedArtifact = playableArtifacts.find((artifact) => artifact.id === selectedArtifactId) ?? null;
   const detectedKey = parseKey(analysisQuery.data?.estimated_key);
@@ -247,15 +306,44 @@ export function ProjectView() {
   const targetKey = targetDirty ? targetKeyState ?? sourceKey : sourceKey;
   const transposeSemitones = semitoneDelta(sourceKey, targetKey);
   const targetKeyOptions = MUSICAL_KEYS.filter((key) => key.mode === sourceKey.mode);
+  const requestedRetune = buildRequestedRetune(retuneMode, referenceHz, centsOffset);
   const hasTransformChange = retuneMode !== "off" || transposeSemitones !== 0;
   const isAnalysisRunning = Boolean(analyzeJob && ["pending", "running"].includes(analyzeJob.status));
-  const isStemRunning = Boolean(stemJob && ["pending", "running"].includes(stemJob.status));
   const currentKeyValue = manualSourceKey
     ? serializeKey(manualSourceKey)
     : detectedKey
       ? "auto"
       : serializeKey(sourceKey);
   const selectedArtifactSummary = selectedArtifact ? artifactSummary(selectedArtifact) : "";
+  const latestPreviewArtifact = displayArtifacts.find((artifact) => artifact.type === "preview_mix") ?? null;
+  const previewMatchesCurrentSettings = matchesPreviewSettings(latestPreviewArtifact, requestedRetune, transposeSemitones);
+  const selectedArtifactMatchesCurrentSettings =
+    (selectedArtifact?.type === "source_audio" && !hasTransformChange) ||
+    matchesPreviewSettings(selectedArtifact, requestedRetune, transposeSemitones);
+  const visibleJobs = useMemo(() => projectJobs.filter((job) => job.type !== "stems"), [projectJobs]);
+  const recentJobs = visibleJobs.slice(0, 3);
+  const selectedMixTitle = selectedArtifact ? artifactLabel(selectedArtifact) : "None selected";
+  const selectedMixSummary = selectedArtifact
+    ? selectedArtifactSummary || (selectedArtifact.type === "source_audio" ? "Original source file" : "Saved practice mix")
+    : "Choose a saved mix to play.";
+  const controlSummary = hasTransformChange ? formatKey(targetKey) : "Original key";
+  const tuningSummary = formatRetuneSummary(retuneMode, referenceHz, centsOffset);
+  const mixStatus = !hasTransformChange
+    ? latestPreviewArtifact
+      ? "Using source settings"
+      : "Source only"
+    : !latestPreviewArtifact
+      ? "No preview yet"
+      : previewMatchesCurrentSettings
+        ? "Up to date"
+        : "Needs update";
+  const mixStatusCopy = selectedArtifact
+    ? selectedArtifactMatchesCurrentSettings
+      ? "Selected mix matches current controls."
+      : !hasTransformChange
+        ? "Selected mix differs from current source controls."
+        : "Controls differ from selected mix. Create new mix if you want to save them."
+    : "Select a mix to compare it with current controls.";
 
   useEffect(() => {
     if (!projectQuery.data || analysisQuery.isLoading || analysisQuery.data || analyzeMutation.isPending) {
@@ -346,7 +434,7 @@ export function ProjectView() {
             </div>
           )}
           <p className="screen__subtitle">
-            Build a practice mix by setting tuning and target key, then export the current preview.
+            Build and keep saved practice mixes inside the app. Export is still available, but it is no longer the main path.
           </p>
         </div>
 
@@ -356,13 +444,7 @@ export function ProjectView() {
             onClick={() => previewMutation.mutate()}
             disabled={previewMutation.isPending || !hasTransformChange}
           >
-            {previewMutation.isPending ? "Queueing…" : "Update Preview"}
-          </button>
-          <button className="button" onClick={() => stemMutation.mutate()} disabled={stemMutation.isPending || isStemRunning}>
-            {stemMutation.isPending || isStemRunning ? "Generating…" : "Generate Stems"}
-          </button>
-          <button className="button" onClick={() => exportMutation.mutate()} disabled={exportMutation.isPending}>
-            {exportMutation.isPending ? "Queueing…" : "Export"}
+            {previewMutation.isPending ? "Queueing…" : "Create Mix"}
           </button>
           <button className="button button--ghost" onClick={() => deleteMutation.mutate()} disabled={deleteMutation.isPending}>
             Delete Project
@@ -584,76 +666,140 @@ export function ProjectView() {
 
         <div className="stack">
           <div className="panel">
-            <h2>Playback</h2>
+            <h2>Saved Mixes</h2>
             {selectedArtifact ? (
               <>
-                <div className="artifact-selector">
+                <div className="playback-focus">
+                  <div>
+                    <p className="metric-label">Now Playing</p>
+                    <h3>{artifactLabel(selectedArtifact)}</h3>
+                  </div>
+                  <div className="playback-focus__meta">
+                    <span>{selectedArtifact.format.toUpperCase()}</span>
+                    <span>{formatArtifactTimestamp(selectedArtifact.created_at)}</span>
+                  </div>
+                </div>
+                {selectedArtifactSummary ? <p className="artifact-meta">{selectedArtifactSummary}</p> : null}
+                <div className="artifact-selector artifact-selector--stacked" role="group" aria-label="Saved mix list">
                   {playableArtifacts.map((artifact) => (
                     <button
                       key={artifact.id}
-                      className={`chip${selectedArtifactId === artifact.id ? " chip--active" : ""}`}
+                      className={`artifact-pill${selectedArtifactId === artifact.id ? " artifact-pill--active" : ""}`}
                       onClick={() => {
                         setSelectedArtifactId(artifact.id);
-                        setFollowLatestPreview(artifact.type === "preview_mix");
+                        setFollowLatestPreview(false);
                       }}
                       type="button"
                     >
-                      {artifactLabel(artifact)}
+                      <span className="artifact-pill__title">{artifactLabel(artifact)}</span>
+                      <span className="artifact-pill__meta">
+                        {artifactSummary(artifact) || formatArtifactTimestamp(artifact.created_at)}
+                      </span>
                     </button>
                   ))}
                 </div>
                 <audio controls src={api.streamArtifactUrl(selectedArtifact.id)} className="player" />
-                <p className="artifact-meta">
-                  {artifactLabel(selectedArtifact)} · {selectedArtifact.format.toUpperCase()}
-                </p>
-                {selectedArtifactSummary ? <p className="artifact-meta">{selectedArtifactSummary}</p> : null}
               </>
             ) : (
-              <p>No preview yet. Set a tuning or target key, then update the preview.</p>
+              <p>No practice mix yet. Set a tuning or target key, then create one.</p>
             )}
-            {isStemRunning ? <p className="setting-copy">Generating vocal and instrumental stems…</p> : null}
+            <div className="panel-note">
+              <strong>Stem playback is hidden for now.</strong>
+              <span>The placeholder separator is not good enough. The next pass will bring in a real local model and a stem-aware player together.</span>
+            </div>
           </div>
 
           <div className="panel">
-            <h2>Artifacts</h2>
-            <ul className="artifact-list">
-              {visibleArtifacts.length ? (
-                visibleArtifacts.map((artifact) => (
-                  <li key={artifact.id}>
-                    <span>{artifactLabel(artifact)}</span>
-                    <small>{artifact.format.toUpperCase()}</small>
-                    {artifactSummary(artifact) ? <small>{artifactSummary(artifact)}</small> : null}
-                  </li>
-                ))
-              ) : (
-                <li>No artifacts yet.</li>
-              )}
-            </ul>
-          </div>
+            <h2>Current Mix</h2>
+            <div className="session-block">
+              <div role="group" aria-label="Selected mix summary">
+                <p className="metric-label">Selected Mix</p>
+                <strong>{selectedMixTitle}</strong>
+                <p className="artifact-meta">{selectedMixSummary}</p>
+              </div>
+              <div role="group" aria-label="Current control summary">
+                <p className="metric-label">Current Controls</p>
+                <strong>{controlSummary}</strong>
+                <p className="artifact-meta">{tuningSummary}</p>
+              </div>
+              <div role="group" aria-label="Mix status summary">
+                <p className="metric-label">Mix Status</p>
+                <strong>{mixStatus}</strong>
+                <p className="artifact-meta">{mixStatusCopy}</p>
+              </div>
+              <div role="group" aria-label="Recent processing summary">
+                <p className="metric-label">Recent Processing</p>
+                {recentJobs.length ? (
+                  <ul className="session-jobs">
+                    {recentJobs.map((job) => (
+                      <li key={job.id}>
+                        <span>{job.type}</span>
+                        <small>{job.status}</small>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="artifact-meta">No processing jobs yet.</p>
+                )}
+              </div>
+            </div>
 
-          <div className="panel">
-            <h2>Jobs</h2>
-            <ul className="job-list">
-              {projectJobs.length ? (
-                projectJobs.map((job) => (
-                  <li key={job.id}>
-                    <div>
-                      <strong>{job.type}</strong>
-                      <span>{job.status}</span>
-                    </div>
-                    <progress max={100} value={job.progress} />
-                    {["pending", "running"].includes(job.status) ? (
-                      <button className="button button--ghost button--small" onClick={() => api.cancelJob(job.id)} type="button">
-                        Cancel
-                      </button>
-                    ) : null}
-                    {job.error_message ? <small className="inline-error">{job.error_message}</small> : null}
-                  </li>
-                ))
-              ) : (
-                <li>No jobs yet.</li>
-              )}
-            </ul>
+            <details className="details-block">
+              <summary>Export or inspect stored files</summary>
+              <div className="details-stack">
+                <div className="subpanel subpanel--compact">
+                  <div className="subpanel__header">
+                    <h3>Export</h3>
+                    <p className="subpanel__copy">Use this only when you need a file outside the app.</p>
+                  </div>
+                  <button className="button" onClick={() => exportMutation.mutate()} disabled={exportMutation.isPending}>
+                    {exportMutation.isPending ? "Queueing…" : "Export Selected Mix"}
+                  </button>
+                </div>
+              </div>
+            </details>
+
+            <details className="details-block">
+              <summary>Show raw artifacts and processing history</summary>
+              <div className="details-stack">
+                <ul className="artifact-list">
+                  {displayArtifacts.length ? (
+                    displayArtifacts.map((artifact) => (
+                      <li key={artifact.id}>
+                        <span>{artifactLabel(artifact)}</span>
+                        <small>{artifact.format.toUpperCase()}</small>
+                        <small>{formatArtifactTimestamp(artifact.created_at)}</small>
+                        {artifactSummary(artifact) ? <small>{artifactSummary(artifact)}</small> : null}
+                      </li>
+                    ))
+                  ) : (
+                    <li>No artifacts yet.</li>
+                  )}
+                </ul>
+
+                <ul className="job-list">
+                  {visibleJobs.length ? (
+                    visibleJobs.map((job) => (
+                      <li key={job.id}>
+                        <div>
+                          <strong>{job.type}</strong>
+                          <span>{job.status}</span>
+                        </div>
+                        <progress max={100} value={job.progress} />
+                        {["pending", "running"].includes(job.status) ? (
+                          <button className="button button--ghost button--small" onClick={() => api.cancelJob(job.id)} type="button">
+                            Cancel
+                          </button>
+                        ) : null}
+                        {job.error_message ? <small className="inline-error">{job.error_message}</small> : null}
+                      </li>
+                    ))
+                  ) : (
+                    <li>No jobs yet.</li>
+                  )}
+                </ul>
+              </div>
+            </details>
           </div>
         </div>
       </div>

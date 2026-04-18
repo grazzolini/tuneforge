@@ -1,15 +1,294 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { vi } from "vitest";
 import App from "./App";
 
-const { mockCreatePreview } = vi.hoisted(() => ({
-  mockCreatePreview: vi.fn().mockResolvedValue({ job: { id: "job_preview" } }),
-}));
-const { mockCreateStems } = vi.hoisted(() => ({
-  mockCreateStems: vi.fn().mockResolvedValue({ job: { id: "job_stems" } }),
+const {
+  resetMockApiState,
+  mockOpen,
+  mockSave,
+  mockListProjects,
+  mockImportProject,
+  mockGetProject,
+  mockGetAnalysis,
+  mockListArtifacts,
+  mockListJobs,
+  mockCreatePreview,
+  mockAnalyzeProject,
+  mockUpdateProject,
+  mockCreateExport,
+  mockDeleteProject,
+  mockCancelJob,
+  mockGetHealth,
+} = vi.hoisted(() => {
+  const createdAt = "2026-04-18T13:16:00.000Z";
+  let state: {
+    projects: Array<Record<string, unknown>>;
+    analysisByProject: Record<string, Record<string, unknown> | null>;
+    artifactsByProject: Record<string, Array<Record<string, unknown>>>;
+    jobs: Array<Record<string, unknown>>;
+    nextProjectId: number;
+    nextArtifactId: number;
+    nextJobId: number;
+  };
+
+  function clone<T>(value: T): T {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function titleize(value: string) {
+    return value
+      .replace(/\.[^/.]+$/, "")
+      .split(/[-_ ]+/)
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ");
+  }
+
+  function makeProject(
+    id: string,
+    displayName: string,
+    sourcePath: string,
+    importedPath = `/tmp/app/${displayName.toLowerCase().replace(/\s+/g, "-")}.wav`,
+  ) {
+    return {
+      id,
+      display_name: displayName,
+      source_path: sourcePath,
+      imported_path: importedPath,
+      duration_seconds: 182,
+      sample_rate: 44100,
+      channels: 2,
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+  }
+
+  function resetMockApiState() {
+    const demoProject = makeProject("proj_123", "Demo Song", "/tmp/demo.wav");
+    state = {
+      projects: [demoProject],
+      analysisByProject: {
+        proj_123: {
+          project_id: "proj_123",
+          estimated_key: "G major",
+          key_confidence: 0.82,
+          estimated_reference_hz: 431.9,
+          tuning_offset_cents: -32,
+          tempo_bpm: null,
+          analysis_version: "v1",
+          created_at: createdAt,
+        },
+      },
+      artifactsByProject: {
+        proj_123: [
+          {
+            id: "art_preview",
+            project_id: "proj_123",
+            type: "preview_mix",
+            format: "wav",
+            path: "/tmp/demo-preview.wav",
+            metadata: {
+              retune: {},
+              transpose: { semitones: 2 },
+              total_cents: 200,
+            },
+            created_at: createdAt,
+          },
+          {
+            id: "art_source",
+            project_id: "proj_123",
+            type: "source_audio",
+            format: "wav",
+            path: "/tmp/demo.wav",
+            metadata: {},
+            created_at: createdAt,
+          },
+        ],
+      },
+      jobs: [
+        {
+          id: "job_1",
+          project_id: "proj_123",
+          type: "preview",
+          status: "completed",
+          progress: 100,
+          error_message: null,
+          created_at: createdAt,
+          updated_at: createdAt,
+        },
+        {
+          id: "job_2",
+          project_id: "proj_123",
+          type: "analyze",
+          status: "completed",
+          progress: 100,
+          error_message: null,
+          created_at: createdAt,
+          updated_at: createdAt,
+        },
+      ],
+      nextProjectId: 200,
+      nextArtifactId: 200,
+      nextJobId: 200,
+    };
+  }
+
+  resetMockApiState();
+
+  function getProjectOrThrow(projectId: string) {
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error(`Unknown project ${projectId}`);
+    }
+    return project;
+  }
+
+  const mockOpen = vi.fn(async (): Promise<string | string[] | null> => null);
+  const mockSave = vi.fn(async (): Promise<string | null> => null);
+  const mockGetHealth = vi.fn(async () => ({
+    status: "ok",
+    api_base_url: "http://127.0.0.1:8765/api/v1",
+    data_root: "/tmp/tuneforge",
+    default_export_format: "wav",
+    preview_format: "wav",
+  }));
+  const mockListProjects = vi.fn(async () => ({ projects: clone(state.projects) }));
+  const mockImportProject = vi.fn(async ({ source_path }: { source_path: string }) => {
+    const id = `proj_${state.nextProjectId++}`;
+    const baseName = source_path.split("/").pop() ?? "Imported Track";
+    const displayName = titleize(baseName);
+    const project = makeProject(id, displayName, source_path);
+    state.projects.unshift(project);
+    state.analysisByProject[id] = {
+      project_id: id,
+      estimated_key: "D major",
+      key_confidence: 0.74,
+      estimated_reference_hz: 440,
+      tuning_offset_cents: 0,
+      tempo_bpm: null,
+      analysis_version: "v1",
+      created_at: createdAt,
+    };
+    state.artifactsByProject[id] = [
+      {
+        id: `art_${state.nextArtifactId++}`,
+        project_id: id,
+        type: "source_audio",
+        format: "wav",
+        path: source_path,
+        metadata: {},
+        created_at: createdAt,
+      },
+    ];
+    return { project: clone(project) };
+  });
+  const mockGetProject = vi.fn(async (projectId: string) => ({ project: clone(getProjectOrThrow(projectId)) }));
+  const mockGetAnalysis = vi.fn(async (projectId: string) => ({ analysis: clone(state.analysisByProject[projectId] ?? null) }));
+  const mockListArtifacts = vi.fn(async (projectId: string) => ({ artifacts: clone(state.artifactsByProject[projectId] ?? []) }));
+  const mockListJobs = vi.fn(async () => ({ jobs: clone(state.jobs) }));
+  const mockCreatePreview = vi.fn(async (projectId: string, body: Record<string, unknown>) => {
+    const artifact = {
+      id: `art_${state.nextArtifactId++}`,
+      project_id: projectId,
+      type: "preview_mix",
+      format: "wav",
+      path: `/tmp/${projectId}-mix-${state.nextArtifactId}.wav`,
+      metadata: {
+        retune: body.retune ?? {},
+        transpose: body.transpose ?? {},
+      },
+      created_at: createdAt,
+    };
+    state.artifactsByProject[projectId] = [artifact, ...(state.artifactsByProject[projectId] ?? [])];
+    const job = {
+      id: `job_${state.nextJobId++}`,
+      project_id: projectId,
+      type: "preview",
+      status: "completed",
+      progress: 100,
+      error_message: null,
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    state.jobs.unshift(job);
+    return { job: clone(job) };
+  });
+  const mockAnalyzeProject = vi.fn(async (projectId: string) => {
+    const job = {
+      id: `job_${state.nextJobId++}`,
+      project_id: projectId,
+      type: "analyze",
+      status: "completed",
+      progress: 100,
+      error_message: null,
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    state.jobs.unshift(job);
+    return { job: clone(job) };
+  });
+  const mockUpdateProject = vi.fn(async (projectId: string, body: { display_name: string }) => {
+    const project = getProjectOrThrow(projectId);
+    project.display_name = body.display_name;
+    project.updated_at = createdAt;
+    return { project: clone(project) };
+  });
+  const mockCreateExport = vi.fn(async (projectId: string, body: Record<string, unknown>) => {
+    const job = {
+      id: `job_${state.nextJobId++}`,
+      project_id: projectId,
+      type: "export",
+      status: "completed",
+      progress: 100,
+      error_message: null,
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    state.jobs.unshift(job);
+    return { job: clone(job), request: clone(body) };
+  });
+  const mockDeleteProject = vi.fn(async (projectId: string) => {
+    state.projects = state.projects.filter((project) => project.id !== projectId);
+    delete state.analysisByProject[projectId];
+    delete state.artifactsByProject[projectId];
+    state.jobs = state.jobs.filter((job) => job.project_id !== projectId);
+    return { deleted: true };
+  });
+  const mockCancelJob = vi.fn(async (jobId: string) => {
+    const job = state.jobs.find((item) => item.id === jobId);
+    if (job) {
+      job.status = "cancelled";
+      job.updated_at = createdAt;
+    }
+    return { job: clone(job ?? { id: jobId, status: "cancelled" }) };
+  });
+
+  return {
+    resetMockApiState,
+    mockOpen,
+    mockSave,
+    mockListProjects,
+    mockImportProject,
+    mockGetProject,
+    mockGetAnalysis,
+    mockListArtifacts,
+    mockListJobs,
+    mockCreatePreview,
+    mockAnalyzeProject,
+    mockUpdateProject,
+    mockCreateExport,
+    mockDeleteProject,
+    mockCancelJob,
+    mockGetHealth,
+  };
+});
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: mockOpen,
+  save: mockSave,
 }));
 
 vi.mock("./lib/api", async (importOriginal) => {
@@ -18,99 +297,19 @@ vi.mock("./lib/api", async (importOriginal) => {
     ...actual,
     api: {
       ...actual.api,
-      getHealth: vi.fn().mockResolvedValue({
-        status: "ok",
-        api_base_url: "http://127.0.0.1:8765/api/v1",
-        data_root: "/tmp/tuneforge",
-        default_export_format: "wav",
-        preview_format: "wav",
-      }),
-      listProjects: vi.fn().mockResolvedValue({
-        projects: [
-          {
-            id: "proj_123",
-            display_name: "Demo Song",
-            source_path: "/tmp/demo.wav",
-            imported_path: "/tmp/app/demo.wav",
-            duration_seconds: 182,
-            sample_rate: 44100,
-            channels: 2,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          },
-        ],
-      }),
-      getProject: vi.fn().mockResolvedValue({
-        project: {
-          id: "proj_123",
-          display_name: "Demo Song",
-          source_path: "/tmp/demo.wav",
-          imported_path: "/tmp/app/demo.wav",
-          duration_seconds: 182,
-          sample_rate: 44100,
-          channels: 2,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        },
-      }),
-      getAnalysis: vi.fn().mockResolvedValue({
-        analysis: {
-          project_id: "proj_123",
-          estimated_key: "G major",
-          key_confidence: 0.82,
-          estimated_reference_hz: 431.9,
-          tuning_offset_cents: -32,
-          tempo_bpm: null,
-          analysis_version: "v1",
-          created_at: new Date().toISOString(),
-        },
-      }),
-      listArtifacts: vi.fn().mockResolvedValue({
-        artifacts: [
-          {
-            id: "art_source",
-            project_id: "proj_123",
-            type: "source_audio",
-            format: "wav",
-            path: "/tmp/demo.wav",
-            metadata: {},
-            created_at: new Date().toISOString(),
-          },
-        ],
-      }),
-      listJobs: vi.fn().mockResolvedValue({
-        jobs: [
-          {
-            id: "job_1",
-            project_id: "proj_123",
-            type: "preview",
-            status: "running",
-            progress: 60,
-            error_message: null,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          },
-        ],
-      }),
+      getHealth: mockGetHealth,
+      listProjects: mockListProjects,
+      importProject: mockImportProject,
+      getProject: mockGetProject,
+      getAnalysis: mockGetAnalysis,
+      listArtifacts: mockListArtifacts,
+      listJobs: mockListJobs,
       createPreview: mockCreatePreview,
-      createStems: mockCreateStems,
-      analyzeProject: vi.fn().mockResolvedValue({ job: { id: "job_analyze" } }),
-      updateProject: vi.fn().mockResolvedValue({
-        project: {
-          id: "proj_123",
-          display_name: "Renamed Demo",
-          source_path: "/tmp/demo.wav",
-          imported_path: "/tmp/app/demo.wav",
-          duration_seconds: 182,
-          sample_rate: 44100,
-          channels: 2,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        },
-      }),
-      createExport: vi.fn().mockResolvedValue({ job: { id: "job_export" } }),
-      deleteProject: vi.fn().mockResolvedValue({ deleted: true }),
-      cancelJob: vi.fn().mockResolvedValue({ job: { id: "job_1", status: "cancelled" } }),
+      analyzeProject: mockAnalyzeProject,
+      updateProject: mockUpdateProject,
+      createExport: mockCreateExport,
+      deleteProject: mockDeleteProject,
+      cancelJob: mockCancelJob,
     },
   };
 });
@@ -130,81 +329,144 @@ function renderApp(initialEntries: string[]) {
   );
 }
 
-describe("App", () => {
+describe("App flows", () => {
   beforeEach(() => {
+    resetMockApiState();
     window.localStorage.clear();
     delete document.documentElement.dataset.theme;
     document.documentElement.style.colorScheme = "";
+    mockOpen.mockReset();
+    mockSave.mockReset();
+    mockListProjects.mockClear();
+    mockImportProject.mockClear();
+    mockGetProject.mockClear();
+    mockGetAnalysis.mockClear();
+    mockListArtifacts.mockClear();
+    mockListJobs.mockClear();
     mockCreatePreview.mockClear();
-    mockCreateStems.mockClear();
+    mockAnalyzeProject.mockClear();
+    mockUpdateProject.mockClear();
+    mockCreateExport.mockClear();
+    mockDeleteProject.mockClear();
+    mockCancelJob.mockClear();
+    mockGetHealth.mockClear();
   });
 
-  it("renders the library view", async () => {
+  it("imports track from library and opens project", async () => {
+    const user = userEvent.setup();
+    mockOpen.mockResolvedValue("/tmp/new-song.mp4");
+
     renderApp(["/"]);
+
     expect(await screen.findByText("Practice Projects")).toBeInTheDocument();
-    expect(await screen.findByText("Demo Song")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Import Track" }));
+
+    expect(mockImportProject).toHaveBeenCalledWith({
+      source_path: "/tmp/new-song.mp4",
+      copy_into_project: true,
+    });
+    expect(await screen.findByRole("heading", { name: "New Song" })).toBeInTheDocument();
   });
 
-  it("renders the project detail state", async () => {
+  it("keeps selected mix in sync with summary and creates new mix from controls", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);
 
-    expect(await screen.findByText("Transform Controls")).toBeInTheDocument();
-    expect(await screen.findByText("Detected Tuning")).toBeInTheDocument();
-    expect(await screen.findByText("running")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    expect(await screen.findByText("Saved Mixes")).toBeInTheDocument();
+    const selectedMixSummary = screen.getByRole("group", { name: "Selected mix summary" });
+    const mixStatusSummary = screen.getByRole("group", { name: "Mix status summary" });
+    const savedMixList = await screen.findByRole("group", { name: "Saved mix list" });
 
-    const currentKey = await screen.findByLabelText("Current Key");
-    const targetKey = await screen.findByLabelText("Target Key");
-    const updatePreviewButton = screen.getByRole("button", { name: "Update Preview" });
-    expect(currentKey).toHaveValue("auto");
-    expect(targetKey).toHaveValue("7:major");
-    expect(screen.getByText("Shift 0 semitones")).toBeInTheDocument();
-    expect(updatePreviewButton).toBeDisabled();
+    expect(within(selectedMixSummary).getByText("Practice Mix")).toBeInTheDocument();
+    expect(within(selectedMixSummary).getByText("Shift +2 semitones")).toBeInTheDocument();
+    expect(within(mixStatusSummary).getByText("Using source settings")).toBeInTheDocument();
+    expect(within(mixStatusSummary).getByText("Selected mix differs from current source controls.")).toBeInTheDocument();
 
-    await user.click(screen.getByLabelText("Raise target key"));
+    await user.click(within(savedMixList).getByRole("button", { name: /Source Track/i }));
+    expect(within(selectedMixSummary).getByText("Source Track")).toBeInTheDocument();
+    expect(within(selectedMixSummary).getByText("Original source file")).toBeInTheDocument();
+    expect(within(mixStatusSummary).getByText("Selected mix matches current controls.")).toBeInTheDocument();
 
-    expect(targetKey).toHaveValue("8:major");
-    expect(screen.getByText("Shift +1 semitone")).toBeInTheDocument();
-    expect(updatePreviewButton).toBeEnabled();
+    await user.click(within(savedMixList).getByRole("button", { name: /Practice Mix/i }));
+    expect(within(selectedMixSummary).getByText("Practice Mix")).toBeInTheDocument();
+    expect(within(selectedMixSummary).getByText("Shift +2 semitones")).toBeInTheDocument();
 
+    const currentKey = screen.getByLabelText("Current Key");
+    const createMixButton = screen.getByRole("button", { name: "Create Mix" });
     await user.click(screen.getByText("Correct source key if detection is wrong"));
     await user.selectOptions(currentKey, "9:major");
-
-    expect(targetKey).toHaveValue("8:major");
-    expect(screen.getByText("Shift -1 semitone")).toBeInTheDocument();
-    expect(updatePreviewButton).toBeEnabled();
-
-    await user.click(updatePreviewButton);
+    await user.click(screen.getByLabelText("Raise target key"));
+    await user.click(createMixButton);
 
     expect(mockCreatePreview).toHaveBeenCalledWith(
       "proj_123",
       expect.objectContaining({
         output_format: "wav",
-        transpose: { semitones: -1 },
+        transpose: { semitones: 1 },
       }),
     );
+  });
 
-    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
-    expect(mockCreateStems).toHaveBeenCalledWith(
+  it("renames project from project screen", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Rename" }));
+    const nameInput = screen.getByLabelText("Project name");
+    await user.clear(nameInput);
+    await user.type(nameInput, "Practice Set");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(mockUpdateProject).toHaveBeenCalledWith("proj_123", { display_name: "Practice Set" });
+    expect(await screen.findByRole("heading", { name: "Practice Set" })).toBeInTheDocument();
+  });
+
+  it("exports selected mix and uses selected artifact id", async () => {
+    const user = userEvent.setup();
+    mockSave.mockResolvedValue("/tmp/exports/demo-source.flac");
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    expect(await screen.findByText("Saved Mixes")).toBeInTheDocument();
+    const savedMixList = await screen.findByRole("group", { name: "Saved mix list" });
+    await user.click(within(savedMixList).getByRole("button", { name: /Source Track/i }));
+    await user.click(screen.getByText("Export or inspect stored files"));
+    await user.click(screen.getByRole("button", { name: "Export Selected Mix" }));
+
+    expect(mockSave).toHaveBeenCalled();
+    expect(mockCreateExport).toHaveBeenCalledWith(
       "proj_123",
       expect.objectContaining({
-        mode: "two_stem",
-        output_format: "wav",
+        artifact_ids: ["art_source"],
+        output_format: "flac",
+        destination_path: "/tmp/exports",
       }),
     );
   });
 
-  it("renders the settings view", async () => {
-    renderApp(["/settings"]);
-    expect(await screen.findByText("Backend and Storage")).toBeInTheDocument();
-    expect(await screen.findByText("/tmp/tuneforge")).toBeInTheDocument();
+  it("deletes project and returns to library", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Delete Project" }));
+
+    expect(mockDeleteProject).toHaveBeenCalledWith("proj_123");
+    expect(await screen.findByText("Practice Projects")).toBeInTheDocument();
+    expect(await screen.findByText("No projects yet")).toBeInTheDocument();
   });
 
-  it("defaults to dark theme and persists theme changes", async () => {
+  it("renders settings and persists theme changes", async () => {
     const user = userEvent.setup();
     renderApp(["/settings"]);
 
-    const themeSelect = await screen.findByLabelText("Theme");
+    expect(await screen.findByText("Backend and Storage")).toBeInTheDocument();
+    expect(await screen.findByText("/tmp/tuneforge")).toBeInTheDocument();
+
+    const themeSelect = screen.getByLabelText("Theme");
     expect(themeSelect).toHaveValue("dark");
     expect(document.documentElement).toHaveAttribute("data-theme", "dark");
     expect(window.localStorage.getItem("tuneforge.theme-preference")).toBe("dark");

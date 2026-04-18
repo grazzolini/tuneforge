@@ -516,6 +516,10 @@ a {
   margin-bottom: 1rem;
 }
 
+.artifact-selector--stacked {
+  flex-direction: column;
+}
+
 .chip {
   border: 1px solid var(--chip-border);
   background: var(--chip-bg);
@@ -530,8 +534,109 @@ a {
   border-color: var(--chip-active-border);
 }
 
+.artifact-pill {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  width: 100%;
+  border: 1px solid var(--chip-border);
+  background: var(--chip-bg);
+  color: var(--button-text);
+  border-radius: 18px;
+  padding: 0.85rem 1rem;
+  cursor: pointer;
+  text-align: left;
+}
+
+.artifact-pill:hover {
+  border-color: var(--button-hover-border);
+}
+
+.artifact-pill--active {
+  background: var(--chip-active-bg);
+  border-color: var(--chip-active-border);
+}
+
+.artifact-pill__title {
+  font-weight: 700;
+}
+
+.artifact-pill__meta {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.playback-focus {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.playback-focus h3 {
+  margin: 0.15rem 0 0;
+}
+
+.playback-focus__meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.2rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
 .player {
   width: 100%;
+}
+
+.panel-note {
+  margin-top: 1rem;
+  border-top: 1px solid var(--divider);
+  padding-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  color: var(--muted);
+}
+
+.panel-note strong {
+  color: var(--text);
+}
+
+.session-block {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.session-block strong {
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+.session-jobs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.session-jobs li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.details-stack {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
 }
 
 .artifact-list,
@@ -589,7 +694,23 @@ a {
     grid-template-columns: 1fr;
   }
 
+  .screen__header,
+  .playback-focus,
+  .session-block,
   .details-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .screen__header,
+  .playback-focus {
+    flex-direction: column;
+  }
+
+  .playback-focus__meta {
+    align-items: flex-start;
+  }
+
+  .details-stack {
     grid-template-columns: 1fr;
   }
 }

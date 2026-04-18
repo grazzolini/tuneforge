@@ -12,7 +12,6 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.errors import AppError, JobCancelledError
 from app.models import Job
 from app.services.analysis import analyze_project
-from app.services.artifacts import prune_project_artifacts
 from app.services.projects import get_project
 from app.services.stems import generate_stems
 from app.services.transformations import (
@@ -228,12 +227,6 @@ class InProcessJobRunner:
             output_format=payload.get("output_format", "wav"),
         )
         if cached:
-            prune_project_artifacts(
-                session,
-                project_id=project.id,
-                artifact_type="preview_mix",
-                keep_artifact_id=cached.id,
-            )
             context.set_progress(100)
             return [cached.id]
         artifact = execute_transform_plan(
@@ -244,12 +237,6 @@ class InProcessJobRunner:
             should_cancel=context.should_cancel,
             register_process=context.register_process,
             unregister_process=context.unregister_process,
-        )
-        prune_project_artifacts(
-            session,
-            project_id=project.id,
-            artifact_type="preview_mix",
-            keep_artifact_id=artifact.id,
         )
         return [artifact.id]
 

@@ -47,10 +47,14 @@ def test_preview_generation_cache_and_export(client, sample_audio_file: Path):
         },
     ).json()["job"]
     assert wait_for_job(client, transposed_preview_job["id"])["status"] == "completed"
-    replaced_artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
-    preview_artifacts = [artifact for artifact in replaced_artifacts if artifact["type"] == "preview_mix"]
-    assert len(preview_artifacts) == 1
-    current_preview_artifact = preview_artifacts[0]
+    saved_artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
+    preview_artifacts = [artifact for artifact in saved_artifacts if artifact["type"] == "preview_mix"]
+    assert len(preview_artifacts) == 2
+    current_preview_artifact = next(
+        artifact
+        for artifact in preview_artifacts
+        if artifact.get("metadata", {}).get("transpose", {}).get("semitones") == 2
+    )
 
     export_job = client.post(
         f"/api/v1/projects/{project['id']}/export",

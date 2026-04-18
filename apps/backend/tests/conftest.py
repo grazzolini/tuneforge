@@ -46,6 +46,19 @@ def sample_audio_file(tmp_path: Path) -> Path:
     return output_path
 
 
+@pytest.fixture()
+def sample_stereo_audio_file(tmp_path: Path) -> Path:
+    sample_rate = 44100
+    duration = 2.0
+    timeline = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
+    center = 0.35 * np.sin(2 * np.pi * 440.0 * timeline)
+    side = 0.2 * np.sin(2 * np.pi * 659.25 * timeline)
+    stereo_signal = np.column_stack([center + side, center - side])
+    output_path = tmp_path / "fixture_stereo.wav"
+    sf.write(output_path, stereo_signal, sample_rate)
+    return output_path
+
+
 def _transcode_fixture(source_path: Path, destination_path: Path, codec: str) -> Path:
     command = [
         "ffmpeg",

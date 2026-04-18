@@ -24,6 +24,7 @@ from app.schemas import (
     ProjectsResponse,
     ProjectUpdateRequest,
     RetuneRequest,
+    StemRequest,
     TransposeRequest,
 )
 from app.services.projects import (
@@ -155,6 +156,26 @@ def project_preview(
         project_id=project_id,
         job_type="preview",
         payload=payload.model_dump(exclude_none=True),
+    )
+    session.commit()
+    session.refresh(job)
+    runner.enqueue(job.id)
+    return JobResponse(job=JobSchema.model_validate(job))
+
+
+@router.post("/{project_id}/stems", response_model=JobResponse)
+def project_stems(
+    project_id: str,
+    payload: StemRequest,
+    session: Session = Depends(get_db),
+    runner=Depends(get_job_runner),
+) -> JobResponse:
+    get_project(session, project_id)
+    job = runner.create_job(
+        session,
+        project_id=project_id,
+        job_type="stems",
+        payload=payload.model_dump(),
     )
     session.commit()
     session.refresh(job)

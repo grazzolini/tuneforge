@@ -14,6 +14,7 @@ from app.models import Job
 from app.services.analysis import analyze_project
 from app.services.artifacts import prune_project_artifacts
 from app.services.projects import get_project
+from app.services.stems import generate_stems
 from app.services.transformations import (
     build_preview_plan,
     build_single_transform_plan,
@@ -64,6 +65,7 @@ class InProcessJobRunner:
             "preview": self._handle_preview,
             "retune": self._handle_single_transform,
             "transpose": self._handle_single_transform,
+            "stems": self._handle_stems,
             "export": self._handle_export,
         }
         self._active_processes: dict[str, Popen[str]] = {}
@@ -278,3 +280,16 @@ class InProcessJobRunner:
         )
         context.set_progress(90)
         return [artifact.id]
+
+    def _handle_stems(self, context: JobExecutionContext, session: Session, job: Job) -> list[str]:
+        project = get_project(session, job.project_id or "")
+        payload = job.payload_json
+        artifacts = generate_stems(
+            session,
+            project=project,
+            output_format=payload.get("output_format", "wav"),
+            force=bool(payload.get("force", False)),
+            on_progress=context.set_progress,
+            should_cancel=context.should_cancel,
+        )
+        return [artifact.id for artifact in artifacts]

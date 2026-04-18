@@ -21,6 +21,10 @@ def project_previews_dir(project_id: str) -> Path:
     return project_root(project_id) / "previews"
 
 
+def project_stems_dir(project_id: str) -> Path:
+    return project_root(project_id) / "stems"
+
+
 def project_exports_dir(project_id: str) -> Path:
     return project_root(project_id) / "exports"
 
@@ -31,7 +35,7 @@ def ensure_project_dirs(project_id: str) -> None:
         project_source_dir(project_id),
         project_analysis_dir(project_id),
         project_previews_dir(project_id),
+        project_stems_dir(project_id),
         project_exports_dir(project_id),
     ):
         path.mkdir(parents=True, exist_ok=True)
-

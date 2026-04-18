@@ -177,6 +177,20 @@ class PreviewRequest(BaseModel):
         return self
 
 
+class StemRequest(BaseModel):
+    mode: str = "two_stem"
+    output_format: str = "wav"
+    force: bool = False
+
+    @model_validator(mode="after")
+    def validate_stem_request(self) -> StemRequest:
+        if self.mode != "two_stem":
+            raise ValueError("Only two_stem mode is supported in v1.")
+        if self.output_format != "wav":
+            raise ValueError("Stem output must be wav in v1.")
+        return self
+
+
 class ExportRequest(BaseModel):
     artifact_ids: list[str]
     mixdown_mode: str = "copy"

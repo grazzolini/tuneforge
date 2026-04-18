@@ -28,6 +28,7 @@ export type PreviewRequest = components["schemas"]["PreviewRequest"];
 export type RetuneRequest = components["schemas"]["RetuneRequest"];
 export type ExportRequest = components["schemas"]["ExportRequest"];
 export type ProjectUpdateRequest = components["schemas"]["ProjectUpdateRequest"];
+export type StemRequest = components["schemas"]["StemRequest"];
 
 const client = createClient<paths>({ baseUrl: API_BASE_URL });
 
@@ -87,6 +88,8 @@ export const api = {
     unwrap(client.GET("/api/v1/projects/{project_id}/analysis", { params: { path: { project_id: projectId } } })),
   createPreview: (projectId: string, body: PreviewRequest) =>
     unwrap(client.POST("/api/v1/projects/{project_id}/preview", { params: { path: { project_id: projectId } }, body })),
+  createStems: (projectId: string, body: StemRequest) =>
+    unwrap(client.POST("/api/v1/projects/{project_id}/stems", { params: { path: { project_id: projectId } }, body })),
   createRetune: (projectId: string, body: RetuneRequest) =>
     unwrap(client.POST("/api/v1/projects/{project_id}/retune", { params: { path: { project_id: projectId } }, body })),
   createTranspose: (projectId: string, body: components["schemas"]["TransposeRequest"]) =>

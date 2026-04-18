@@ -40,12 +40,14 @@ function artifactLabel(artifact: ArtifactSchema) {
   if (artifact.type === "source_audio") return "Source";
   if (artifact.type === "preview_mix") return "Preview";
   if (artifact.type === "export_mix") return "Export";
+  if (artifact.type === "vocal_stem") return "Vocals";
+  if (artifact.type === "instrumental_stem") return "Instrumental";
   if (artifact.type === "analysis_json") return "Analysis JSON";
   return artifact.type;
 }
 
 function isPlayableArtifact(artifact: ArtifactSchema) {
-  return ["source_audio", "preview_mix", "export_mix"].includes(artifact.type);
+  return ["source_audio", "preview_mix", "export_mix", "vocal_stem", "instrumental_stem"].includes(artifact.type);
 }
 
 function preferredArtifactSelection(artifacts: ArtifactSchema[]) {
@@ -59,6 +61,11 @@ function formatSemitoneShift(semitones: number) {
 function artifactSummary(artifact: ArtifactSchema) {
   if (artifact.type === "source_audio") {
     return "Original source file";
+  }
+  if (artifact.type === "vocal_stem" || artifact.type === "instrumental_stem") {
+    const engine = typeof artifact.metadata?.engine === "string" ? artifact.metadata.engine : null;
+    const mode = typeof artifact.metadata?.mode === "string" ? artifact.metadata.mode : null;
+    return [artifact.type === "vocal_stem" ? "Vocal stem" : "Instrumental stem", mode, engine].filter(Boolean).join(" · ");
   }
 
   const metadata = artifact.metadata ?? {};
@@ -165,21 +172,37 @@ export function ProjectView() {
     },
   });
 
+  const stemMutation = useMutation({
+    mutationFn: async () => {
+      setFollowLatestPreview(false);
+      return api.createStems(projectId, {
+        mode: "two_stem",
+        output_format: "wav",
+        force: false,
+      });
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    },
+  });
+
   const exportMutation = useMutation({
     mutationFn: async () => {
-      const preview = artifactsQuery.data?.find((artifact) => artifact.type === "preview_mix") ?? null;
-      const sourceArtifact = preview ?? artifactsQuery.data?.find((artifact) => artifact.type === "source_audio");
-      if (!sourceArtifact) {
+      const exportArtifact =
+        selectedArtifact ??
+        artifactsQuery.data?.find((artifact) => artifact.type === "preview_mix") ??
+        artifactsQuery.data?.find((artifact) => artifact.type === "source_audio");
+      if (!exportArtifact) {
         throw new Error("Nothing available to export yet.");
       }
-      const suggestedFormat = sourceArtifact.type === "preview_mix" ? "wav" : sourceArtifact.format;
+      const suggestedFormat = exportArtifact.format;
       const exportTarget = await save({
-        defaultPath: `${projectQuery.data?.display_name ?? "tuneforge-export"}.${suggestedFormat}`,
+        defaultPath: `${projectQuery.data?.display_name ?? artifactLabel(exportArtifact)}.${suggestedFormat}`,
       });
       const destinationPath = exportTarget ? exportTarget.slice(0, exportTarget.lastIndexOf("/")) : undefined;
       const extension = exportTarget?.split(".").pop()?.toLowerCase();
       return api.createExport(projectId, {
-        artifact_ids: [sourceArtifact.id],
+        artifact_ids: [exportArtifact.id],
         mixdown_mode: "copy",
         output_format: extension === "mp3" || extension === "flac" ? extension : "wav",
         destination_path: destinationPath,
@@ -203,13 +226,16 @@ export function ProjectView() {
     [jobsQuery.data, projectId],
   );
   const analyzeJob = projectJobs.find((job) => job.type === "analyze");
+  const stemJob = projectJobs.find((job) => job.type === "stems");
   const visibleArtifacts = useMemo(() => {
     const artifacts = artifactsQuery.data ?? [];
     const source = artifacts.find((artifact) => artifact.type === "source_audio");
     const preview = artifacts.find((artifact) => artifact.type === "preview_mix");
+    const vocalStem = artifacts.find((artifact) => artifact.type === "vocal_stem");
+    const instrumentalStem = artifacts.find((artifact) => artifact.type === "instrumental_stem");
     const analysisJson = artifacts.find((artifact) => artifact.type === "analysis_json");
     const exports = artifacts.filter((artifact) => artifact.type === "export_mix");
-    return [preview, ...exports, analysisJson, source].filter(Boolean) as ArtifactSchema[];
+    return [preview, vocalStem, instrumentalStem, ...exports, analysisJson, source].filter(Boolean) as ArtifactSchema[];
   }, [artifactsQuery.data]);
   const playableArtifacts = useMemo(
     () => visibleArtifacts.filter((artifact) => isPlayableArtifact(artifact)),
@@ -223,6 +249,7 @@ export function ProjectView() {
   const targetKeyOptions = MUSICAL_KEYS.filter((key) => key.mode === sourceKey.mode);
   const hasTransformChange = retuneMode !== "off" || transposeSemitones !== 0;
   const isAnalysisRunning = Boolean(analyzeJob && ["pending", "running"].includes(analyzeJob.status));
+  const isStemRunning = Boolean(stemJob && ["pending", "running"].includes(stemJob.status));
   const currentKeyValue = manualSourceKey
     ? serializeKey(manualSourceKey)
     : detectedKey
@@ -330,6 +357,9 @@ export function ProjectView() {
             disabled={previewMutation.isPending || !hasTransformChange}
           >
             {previewMutation.isPending ? "Queueing…" : "Update Preview"}
+          </button>
+          <button className="button" onClick={() => stemMutation.mutate()} disabled={stemMutation.isPending || isStemRunning}>
+            {stemMutation.isPending || isStemRunning ? "Generating…" : "Generate Stems"}
           </button>
           <button className="button" onClick={() => exportMutation.mutate()} disabled={exportMutation.isPending}>
             {exportMutation.isPending ? "Queueing…" : "Export"}
@@ -581,6 +611,7 @@ export function ProjectView() {
             ) : (
               <p>No preview yet. Set a tuning or target key, then update the preview.</p>
             )}
+            {isStemRunning ? <p className="setting-copy">Generating vocal and instrumental stems…</p> : null}
           </div>
 
           <div className="panel">

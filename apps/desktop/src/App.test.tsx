@@ -8,6 +8,9 @@ import App from "./App";
 const { mockCreatePreview } = vi.hoisted(() => ({
   mockCreatePreview: vi.fn().mockResolvedValue({ job: { id: "job_preview" } }),
 }));
+const { mockCreateStems } = vi.hoisted(() => ({
+  mockCreateStems: vi.fn().mockResolvedValue({ job: { id: "job_stems" } }),
+}));
 
 vi.mock("./lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./lib/api")>();
@@ -90,6 +93,7 @@ vi.mock("./lib/api", async (importOriginal) => {
         ],
       }),
       createPreview: mockCreatePreview,
+      createStems: mockCreateStems,
       analyzeProject: vi.fn().mockResolvedValue({ job: { id: "job_analyze" } }),
       updateProject: vi.fn().mockResolvedValue({
         project: {
@@ -132,6 +136,7 @@ describe("App", () => {
     delete document.documentElement.dataset.theme;
     document.documentElement.style.colorScheme = "";
     mockCreatePreview.mockClear();
+    mockCreateStems.mockClear();
   });
 
   it("renders the library view", async () => {
@@ -176,6 +181,15 @@ describe("App", () => {
       expect.objectContaining({
         output_format: "wav",
         transpose: { semitones: -1 },
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    expect(mockCreateStems).toHaveBeenCalledWith(
+      "proj_123",
+      expect.objectContaining({
+        mode: "two_stem",
+        output_format: "wav",
       }),
     );
   });

@@ -159,6 +159,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/stems": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Project Stems */
+        post: operations["project_stems_api_v1_projects__project_id__stems_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/artifacts": {
         parameters: {
             query?: never;
@@ -500,6 +517,24 @@ export interface components {
              * @default wav
              */
             output_format: string;
+        };
+        /** StemRequest */
+        StemRequest: {
+            /**
+             * Mode
+             * @default two_stem
+             */
+            mode: string;
+            /**
+             * Output Format
+             * @default wav
+             */
+            output_format: string;
+            /**
+             * Force
+             * @default false
+             */
+            force: boolean;
         };
         /** TransposeRequest */
         TransposeRequest: {
@@ -856,6 +891,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["PreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    project_stems_api_v1_projects__project_id__stems_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StemRequest"];
             };
         };
         responses: {

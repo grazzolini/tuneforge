@@ -217,18 +217,25 @@ const {
     state.jobs.unshift(job);
     return { job: clone(job) };
   });
-  const mockCreateStems = vi.fn(async (projectId: string) => {
+  const mockCreateStems = vi.fn(async (projectId: string, body: { source_artifact_id?: string; force?: boolean }) => {
+    const sourceArtifactId = body.source_artifact_id ?? "art_source";
+    state.artifactsByProject[projectId] = (state.artifactsByProject[projectId] ?? []).filter((artifact) => {
+      if (artifact.type !== "vocal_stem" && artifact.type !== "instrumental_stem") return true;
+      const metadata = (artifact.metadata ?? {}) as { source_artifact_id?: string };
+      return metadata.source_artifact_id !== sourceArtifactId;
+    });
     const vocalArtifact = {
       id: `art_${state.nextArtifactId++}`,
       project_id: projectId,
       type: "vocal_stem",
       format: "wav",
-      path: `/tmp/${projectId}-vocals.wav`,
+      path: `/tmp/${projectId}-${sourceArtifactId}-vocals.wav`,
       metadata: {
         mode: "two_stem",
         engine: "demucs",
         model: "htdemucs_ft",
         device: "cpu",
+        source_artifact_id: sourceArtifactId,
       },
       created_at: createdAt,
     };
@@ -237,12 +244,13 @@ const {
       project_id: projectId,
       type: "instrumental_stem",
       format: "wav",
-      path: `/tmp/${projectId}-instrumental.wav`,
+      path: `/tmp/${projectId}-${sourceArtifactId}-instrumental.wav`,
       metadata: {
         mode: "two_stem",
         engine: "demucs",
         model: "htdemucs_ft",
         device: "cpu",
+        source_artifact_id: sourceArtifactId,
       },
       created_at: createdAt,
     };
@@ -488,6 +496,7 @@ describe("App flows", () => {
         mode: "two_stem",
         output_format: "wav",
         force: false,
+        source_artifact_id: "art_preview",
       }),
     );
 
@@ -499,6 +508,40 @@ describe("App flows", () => {
     expect(within(selectedSummary).getByText("Vocals")).toBeInTheDocument();
     expect(within(selectedSummary).getByText(/Vocal stem/)).toBeInTheDocument();
     expect(within(statusSummary).getByText("Stem tracks are independent from mix controls.")).toBeInTheDocument();
+  });
+
+  it("keeps stem lists scoped to selected audio", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+
+    const stemList = await screen.findByRole("group", { name: "Stem track list" });
+    expect(within(stemList).getAllByRole("button")).toHaveLength(2);
+
+    const savedMixList = await screen.findByRole("group", { name: "Saved mix list" });
+    await user.click(within(savedMixList).getByRole("button", { name: /Source Track/i }));
+
+    expect(screen.getByText("No stems yet for selected audio.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generate Stems" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    expect(mockCreateStems).toHaveBeenLastCalledWith(
+      "proj_123",
+      expect.objectContaining({
+        mode: "two_stem",
+        output_format: "wav",
+        force: false,
+        source_artifact_id: "art_source",
+      }),
+    );
+
+    const sourceStemList = await screen.findByRole("group", { name: "Stem track list" });
+    expect(within(sourceStemList).getAllByRole("button")).toHaveLength(2);
+
+    await user.click(within(savedMixList).getByRole("button", { name: /Practice Mix/i }));
+    expect(screen.getByRole("button", { name: "Refresh Stems" })).toBeInTheDocument();
   });
 
   it("renames project from project screen", async () => {

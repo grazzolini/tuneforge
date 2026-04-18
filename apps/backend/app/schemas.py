@@ -181,6 +181,7 @@ class StemRequest(BaseModel):
     mode: str = "two_stem"
     output_format: str = "wav"
     force: bool = False
+    source_artifact_id: str | None = None
 
     @model_validator(mode="after")
     def validate_stem_request(self) -> StemRequest:

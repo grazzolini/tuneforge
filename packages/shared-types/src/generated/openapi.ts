@@ -535,6 +535,8 @@ export interface components {
              * @default false
              */
             force: boolean;
+            /** Source Artifact Id */
+            source_artifact_id?: string | null;
         };
         /** TransposeRequest */
         TransposeRequest: {

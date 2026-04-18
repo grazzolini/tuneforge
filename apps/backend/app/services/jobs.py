@@ -274,6 +274,7 @@ class InProcessJobRunner:
         artifacts = generate_stems(
             session,
             project=project,
+            source_artifact_id=payload.get("source_artifact_id"),
             output_format=payload.get("output_format", "wav"),
             force=bool(payload.get("force", False)),
             on_progress=context.set_progress,

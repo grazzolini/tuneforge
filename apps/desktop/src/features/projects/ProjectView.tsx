@@ -103,6 +103,18 @@ function artifactSummary(artifact: ArtifactSchema) {
   return pieces.join(" · ");
 }
 
+function sourceArtifactIdForStems(artifact: ArtifactSchema | null) {
+  if (!artifact) return null;
+  if (artifact.type === "vocal_stem" || artifact.type === "instrumental_stem") {
+    const sourceArtifactId = artifact.metadata?.source_artifact_id;
+    return typeof sourceArtifactId === "string" ? sourceArtifactId : null;
+  }
+  if (artifact.type === "source_audio" || artifact.type === "preview_mix") {
+    return artifact.id;
+  }
+  return null;
+}
+
 function buildRequestedRetune(
   retuneMode: "off" | "reference" | "cents",
   referenceHz: string,
@@ -249,11 +261,16 @@ export function ProjectView() {
 
   const stemMutation = useMutation({
     mutationFn: async () => {
+      const sourceArtifactId = sourceArtifactIdForStems(selectedArtifact);
+      if (!sourceArtifactId) {
+        throw new Error("Select source audio or practice mix first.");
+      }
       setFollowLatestPreview(false);
       return api.createStems(projectId, {
         mode: "two_stem",
         output_format: "wav",
-        force: false,
+        force: hasVisibleStems,
+        source_artifact_id: sourceArtifactId,
       });
     },
     onSuccess: async () => {
@@ -327,6 +344,15 @@ export function ProjectView() {
     [mixArtifacts, stemArtifacts],
   );
   const selectedArtifact = selectableArtifacts.find((artifact) => artifact.id === selectedArtifactId) ?? null;
+  const selectedStemSourceArtifactId = sourceArtifactIdForStems(selectedArtifact);
+  const visibleStemArtifacts = useMemo(
+    () =>
+      stemArtifacts.filter((artifact) => {
+        const sourceArtifactId = artifact.metadata?.source_artifact_id;
+        return typeof sourceArtifactId === "string" && sourceArtifactId === selectedStemSourceArtifactId;
+      }),
+    [selectedStemSourceArtifactId, stemArtifacts],
+  );
   const detectedKey = parseKey(analysisQuery.data?.estimated_key);
   const sourceKey = manualSourceKey ?? detectedKey ?? DEFAULT_KEY;
   const targetKey = targetDirty ? targetKeyState ?? sourceKey : sourceKey;
@@ -345,6 +371,8 @@ export function ProjectView() {
   const latestPreviewArtifact = displayArtifacts.find((artifact) => artifact.type === "preview_mix") ?? null;
   const previewMatchesCurrentSettings = matchesPreviewSettings(latestPreviewArtifact, requestedRetune, transposeSemitones);
   const isStemSelected = selectedArtifact ? ["vocal_stem", "instrumental_stem"].includes(selectedArtifact.type) : false;
+  const canGenerateStems = Boolean(selectedStemSourceArtifactId);
+  const hasVisibleStems = visibleStemArtifacts.length > 0;
   const selectedArtifactMatchesCurrentSettings =
     (selectedArtifact?.type === "source_audio" && !hasTransformChange) ||
     matchesPreviewSettings(selectedArtifact, requestedRetune, transposeSemitones);
@@ -734,13 +762,17 @@ export function ProjectView() {
                     <p className="subpanel__copy">Generate vocal and instrumental tracks for focused practice.</p>
                   </div>
                   <div className="button-row">
-                    <button className="button" onClick={() => stemMutation.mutate()} disabled={stemMutation.isPending || isStemRunning}>
-                      {stemMutation.isPending || isStemRunning ? "Generating…" : stemArtifacts.length ? "Refresh Stems" : "Generate Stems"}
+                    <button
+                      className="button"
+                      onClick={() => stemMutation.mutate()}
+                      disabled={stemMutation.isPending || isStemRunning || !canGenerateStems}
+                    >
+                      {stemMutation.isPending || isStemRunning ? "Generating…" : hasVisibleStems ? "Refresh Stems" : "Generate Stems"}
                     </button>
                   </div>
-                  {stemArtifacts.length ? (
+                  {visibleStemArtifacts.length ? (
                     <div className="artifact-selector artifact-selector--stacked" role="group" aria-label="Stem track list">
-                      {stemArtifacts.map((artifact) => (
+                      {visibleStemArtifacts.map((artifact) => (
                         <button
                           key={artifact.id}
                           className={`artifact-pill${selectedArtifactId === artifact.id ? " artifact-pill--active" : ""}`}
@@ -758,7 +790,9 @@ export function ProjectView() {
                       ))}
                     </div>
                   ) : (
-                    <p className="artifact-meta">No stems yet.</p>
+                    <p className="artifact-meta">
+                      {canGenerateStems ? "No stems yet for selected audio." : "Select source audio or practice mix first."}
+                    </p>
                   )}
                 </div>
                 <audio controls src={api.streamArtifactUrl(selectedArtifact.id)} className="player" />
@@ -766,10 +800,6 @@ export function ProjectView() {
             ) : (
               <p>No practice mix yet. Set a tuning or target key, then create one.</p>
             )}
-            <div className="panel-note">
-              <strong>Stem generation now uses a local separator backend.</strong>
-              <span>If stems fail immediately, the Demucs runtime is probably missing from the backend environment.</span>
-            </div>
           </div>
 
           <div className="panel">

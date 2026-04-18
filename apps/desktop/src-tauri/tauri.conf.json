@@ -1,0 +1,26 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Tuneforge",
+  "version": "0.1.0",
+  "identifier": "com.tuneforge.app",
+  "build": {
+    "beforeDevCommand": "pnpm --filter @tuneforge/desktop dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Tuneforge",
+        "width": 1400,
+        "height": 960,
+        "resizable": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.png"]
+  }
+}

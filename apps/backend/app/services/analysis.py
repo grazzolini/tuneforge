@@ -1,0 +1,65 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from sqlalchemy.orm import Session
+
+from app.engines.analysis import analyze_track
+from app.models import AnalysisResult, Project
+from app.services.artifacts import register_artifact
+from app.services.paths import project_analysis_dir
+
+
+def analyze_project(session: Session, project: Project) -> AnalysisResult:
+    results = analyze_track(Path(project.imported_path))
+    analysis = session.get(AnalysisResult, project.id)
+    if analysis is None:
+        analysis = AnalysisResult(project_id=project.id)
+        session.add(analysis)
+
+    analysis.estimated_key = results["estimated_key"]  # type: ignore[assignment]
+    analysis.key_confidence = results["key_confidence"]  # type: ignore[assignment]
+    analysis.estimated_reference_hz = results["estimated_reference_hz"]  # type: ignore[assignment]
+    analysis.tuning_offset_cents = results["tuning_offset_cents"]  # type: ignore[assignment]
+    analysis.tempo_bpm = results["tempo_bpm"]  # type: ignore[assignment]
+    analysis.analysis_version = "v1"
+    session.flush()
+
+    analysis_path = project_analysis_dir(project.id) / "analysis.json"
+    analysis_path.write_text(
+        json.dumps(
+            {
+                "project_id": project.id,
+                "estimated_key": analysis.estimated_key,
+                "key_confidence": analysis.key_confidence,
+                "estimated_reference_hz": analysis.estimated_reference_hz,
+                "tuning_offset_cents": analysis.tuning_offset_cents,
+                "tempo_bpm": analysis.tempo_bpm,
+                "analysis_version": analysis.analysis_version,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    existing_artifact = None
+    for artifact in project.artifacts:
+        if artifact.type == "analysis_json":
+            existing_artifact = artifact
+            break
+    if existing_artifact is None:
+        register_artifact(
+            session,
+            project_id=project.id,
+            artifact_type="analysis_json",
+            artifact_format="json",
+            path=analysis_path,
+            metadata={"analysis_version": analysis.analysis_version},
+        )
+    else:
+        existing_artifact.path = str(analysis_path.resolve())
+        existing_artifact.metadata_json = {"analysis_version": analysis.analysis_version}
+
+    return analysis
+

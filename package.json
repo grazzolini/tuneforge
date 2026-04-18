@@ -1,0 +1,18 @@
+{
+  "name": "tuneforge",
+  "private": true,
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "contracts:generate": "pnpm --filter @tuneforge/shared-types generate",
+    "dev": "concurrently -n backend,desktop -c blue,green \"pnpm dev:backend\" \"pnpm dev:desktop\"",
+    "dev:backend": "cd apps/backend && uv run --python 3.11 uvicorn app.main:app --reload --host 127.0.0.1 --port 8765",
+    "dev:desktop": "pnpm --filter @tuneforge/desktop tauri dev",
+    "lint": "pnpm --filter @tuneforge/desktop lint && cd apps/backend && uv run --python 3.11 ruff check . && uv run --python 3.11 mypy app",
+    "test": "pnpm --filter @tuneforge/desktop test --run && cd apps/backend && uv run --python 3.11 pytest",
+    "typecheck": "pnpm --filter @tuneforge/desktop typecheck"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
+

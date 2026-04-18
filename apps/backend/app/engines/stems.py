@@ -1,21 +1,25 @@
 from __future__ import annotations
 
+import importlib.util
+import json
+import subprocess
+import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 
-import numpy as np
-import soundfile as sf
+from fastapi import status
 
 from app.errors import AppError, JobCancelledError
 
 
-def _ensure_stereo(signal: np.ndarray) -> np.ndarray:
-    if signal.ndim == 1:
-        return np.column_stack([signal, signal])
-    if signal.shape[1] == 1:
-        channel = signal[:, 0]
-        return np.column_stack([channel, channel])
-    return signal[:, :2]
+def _require_demucs_dependency() -> None:
+    if importlib.util.find_spec("demucs") is None:
+        raise AppError(
+            "DEPENDENCY_MISSING",
+            "Demucs is required for stem separation. Install the backend stem dependencies first.",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
 def separate_two_stems(
@@ -23,51 +27,102 @@ def separate_two_stems(
     vocal_path: Path,
     instrumental_path: Path,
     *,
+    model: str = "htdemucs_ft",
+    device: str = "cpu",
     on_progress: Callable[[int], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    register_process: Callable[[subprocess.Popen[str]], None] | None = None,
+    unregister_process: Callable[[], None] | None = None,
 ) -> dict[str, object]:
+    _require_demucs_dependency()
+
+    command = [
+        sys.executable,
+        "-m",
+        "app.engines.demucs_worker",
+        "--source",
+        str(source_path),
+        "--vocals",
+        str(vocal_path),
+        "--instrumental",
+        str(instrumental_path),
+        "--model",
+        model,
+        "--device",
+        device,
+    ]
+
+    if on_progress:
+        on_progress(10)
+
+    process: subprocess.Popen[str] | None = None
+    stdout = ""
+    stderr = ""
     try:
-        signal, sample_rate = sf.read(source_path, always_2d=False)
-    except Exception as exc:  # pragma: no cover - soundfile forwards format-specific errors
-        raise AppError("PROCESSING_FAILED", "Could not decode audio for stem separation.") from exc
+        try:
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if register_process:
+                register_process(process)
 
-    if should_cancel and should_cancel():
-        raise JobCancelledError()
+            progress = 15
+            started_at = time.monotonic()
+            while process.poll() is None:
+                if should_cancel and should_cancel():
+                    process.terminate()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=2)
+                    raise JobCancelledError()
 
-    stereo_signal = _ensure_stereo(np.asarray(signal, dtype=np.float32))
-    vocal_path.parent.mkdir(parents=True, exist_ok=True)
-    instrumental_path.parent.mkdir(parents=True, exist_ok=True)
+                elapsed = time.monotonic() - started_at
+                next_progress = min(88, 15 + int(elapsed * 4))
+                if on_progress and next_progress > progress:
+                    progress = next_progress
+                    on_progress(progress)
+                time.sleep(0.25)
 
-    if stereo_signal.shape[1] < 2:
-        vocals = np.column_stack([stereo_signal[:, 0], stereo_signal[:, 0]])
-        instrumental = np.zeros_like(vocals)
-        strategy = "mono-fallback"
-    else:
-        left = stereo_signal[:, 0]
-        right = stereo_signal[:, 1]
-        mid = 0.5 * (left + right)
-        side = 0.5 * (left - right)
-        vocals = np.column_stack([mid, mid])
-        instrumental = np.column_stack([side, -side])
-        strategy = "mid-side-v1"
+            stdout, stderr = process.communicate()
+        finally:
+            if unregister_process:
+                unregister_process()
 
-    if on_progress:
-        on_progress(45)
-    if should_cancel and should_cancel():
-        raise JobCancelledError()
+        if process.returncode != 0:
+            raise AppError(
+                "PROCESSING_FAILED",
+                "Demucs failed to separate the track.",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                details={"stdout": (stdout or "").strip(), "stderr": (stderr or "").strip()},
+            )
 
-    sf.write(vocal_path, vocals, sample_rate)
-    if on_progress:
-        on_progress(70)
-    if should_cancel and should_cancel():
-        raise JobCancelledError()
+        if not vocal_path.exists() or not instrumental_path.exists():
+            raise AppError(
+                "PROCESSING_FAILED",
+                "Demucs completed without producing the expected stem files.",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                details={"stdout": (stdout or "").strip(), "stderr": (stderr or "").strip()},
+            )
 
-    sf.write(instrumental_path, instrumental, sample_rate)
-    if on_progress:
-        on_progress(90)
+        if on_progress:
+            on_progress(98)
 
-    return {
-        "sample_rate": int(sample_rate),
-        "channels": int(vocals.shape[1]),
-        "engine": strategy,
-    }
+        metadata_line = next(
+            (line for line in reversed((stdout or "").splitlines()) if line.strip()),
+            None,
+        )
+        if metadata_line:
+            try:
+                return json.loads(metadata_line)
+            except json.JSONDecodeError:
+                pass
+
+        return {
+            "engine": "demucs",
+            "model": model,
+            "device": device,
+        }
+    finally:
+        if process and process.poll() is None:
+            process.kill()
+

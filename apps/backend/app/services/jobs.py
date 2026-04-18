@@ -278,5 +278,7 @@ class InProcessJobRunner:
             force=bool(payload.get("force", False)),
             on_progress=context.set_progress,
             should_cancel=context.should_cancel,
+            register_process=context.register_process,
+            unregister_process=context.unregister_process,
         )
         return [artifact.id for artifact in artifacts]

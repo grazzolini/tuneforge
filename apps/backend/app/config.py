@@ -31,6 +31,8 @@ class Settings:
     supported_import_formats: tuple[str, ...]
     supported_export_formats: tuple[str, ...]
     preview_format: str
+    stem_model: str
+    stem_device: str
     max_workers: int
     backend_root: Path
 
@@ -60,6 +62,8 @@ def get_settings() -> Settings:
         supported_import_formats=("mp3", "wav", "flac", "m4a", "aac", "ogg", "mp4", "webm"),
         supported_export_formats=("wav", "mp3", "flac"),
         preview_format="wav",
+        stem_model=os.environ.get("TUNEFORGE_STEM_MODEL", "htdemucs_ft"),
+        stem_device=os.environ.get("TUNEFORGE_STEM_DEVICE", "cpu"),
         max_workers=1,
         backend_root=backend_root,
     )

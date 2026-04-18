@@ -3,10 +3,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from subprocess import Popen
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.engines.stems import separate_two_stems
 from app.errors import AppError
 from app.models import Artifact, Project
@@ -51,6 +53,8 @@ def generate_stems(
     force: bool,
     on_progress: Callable[[int], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    register_process: Callable[[Popen[str]], None] | None = None,
+    unregister_process: Callable[[], None] | None = None,
 ) -> list[Artifact]:
     if output_format != "wav":
         raise AppError("INVALID_REQUEST", "Stem output must be wav in v1.")
@@ -67,8 +71,12 @@ def generate_stems(
         Path(project.imported_path),
         plan.vocal_path,
         plan.instrumental_path,
+        model=get_settings().stem_model,
+        device=get_settings().stem_device,
         on_progress=on_progress,
         should_cancel=should_cancel,
+        register_process=register_process,
+        unregister_process=unregister_process,
     )
 
     vocal_artifact = register_artifact(

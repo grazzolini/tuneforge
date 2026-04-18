@@ -240,7 +240,27 @@ export function ProjectView() {
       });
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
+        queryClient.invalidateQueries({ queryKey: ["artifacts", projectId] }),
+      ]);
+    },
+  });
+
+  const stemMutation = useMutation({
+    mutationFn: async () => {
+      setFollowLatestPreview(false);
+      return api.createStems(projectId, {
+        mode: "two_stem",
+        output_format: "wav",
+        force: false,
+      });
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
+        queryClient.invalidateQueries({ queryKey: ["artifacts", projectId] }),
+      ]);
     },
   });
 
@@ -284,23 +304,29 @@ export function ProjectView() {
     [jobsQuery.data, projectId],
   );
   const analyzeJob = projectJobs.find((job) => job.type === "analyze");
+  const stemJob = projectJobs.find((job) => job.type === "stems");
   const displayArtifacts = useMemo(() => {
     const artifacts = artifactsQuery.data ?? [];
     const source = artifacts.find((artifact) => artifact.type === "source_audio");
     const previews = artifacts.filter((artifact) => artifact.type === "preview_mix");
+    const stems = artifacts.filter((artifact) => artifact.type === "vocal_stem" || artifact.type === "instrumental_stem");
     const analysisJson = artifacts.find((artifact) => artifact.type === "analysis_json");
     const exports = artifacts.filter((artifact) => artifact.type === "export_mix");
-    return [...previews, ...exports, analysisJson, source].filter(Boolean) as ArtifactSchema[];
+    return [...previews, ...stems, ...exports, analysisJson, source].filter(Boolean) as ArtifactSchema[];
   }, [artifactsQuery.data]);
   const mixArtifacts = useMemo(
     () => displayArtifacts.filter((artifact) => artifact.type === "preview_mix" || artifact.type === "source_audio"),
     [displayArtifacts],
   );
-  const playableArtifacts = useMemo(
-    () => mixArtifacts.filter((artifact) => isPlayableArtifact(artifact)),
-    [mixArtifacts],
+  const stemArtifacts = useMemo(
+    () => displayArtifacts.filter((artifact) => artifact.type === "vocal_stem" || artifact.type === "instrumental_stem"),
+    [displayArtifacts],
   );
-  const selectedArtifact = playableArtifacts.find((artifact) => artifact.id === selectedArtifactId) ?? null;
+  const selectableArtifacts = useMemo(
+    () => [...mixArtifacts, ...stemArtifacts].filter((artifact) => isPlayableArtifact(artifact)),
+    [mixArtifacts, stemArtifacts],
+  );
+  const selectedArtifact = selectableArtifacts.find((artifact) => artifact.id === selectedArtifactId) ?? null;
   const detectedKey = parseKey(analysisQuery.data?.estimated_key);
   const sourceKey = manualSourceKey ?? detectedKey ?? DEFAULT_KEY;
   const targetKey = targetDirty ? targetKeyState ?? sourceKey : sourceKey;
@@ -309,6 +335,7 @@ export function ProjectView() {
   const requestedRetune = buildRequestedRetune(retuneMode, referenceHz, centsOffset);
   const hasTransformChange = retuneMode !== "off" || transposeSemitones !== 0;
   const isAnalysisRunning = Boolean(analyzeJob && ["pending", "running"].includes(analyzeJob.status));
+  const isStemRunning = Boolean(stemJob && ["pending", "running"].includes(stemJob.status));
   const currentKeyValue = manualSourceKey
     ? serializeKey(manualSourceKey)
     : detectedKey
@@ -317,6 +344,7 @@ export function ProjectView() {
   const selectedArtifactSummary = selectedArtifact ? artifactSummary(selectedArtifact) : "";
   const latestPreviewArtifact = displayArtifacts.find((artifact) => artifact.type === "preview_mix") ?? null;
   const previewMatchesCurrentSettings = matchesPreviewSettings(latestPreviewArtifact, requestedRetune, transposeSemitones);
+  const isStemSelected = selectedArtifact ? ["vocal_stem", "instrumental_stem"].includes(selectedArtifact.type) : false;
   const selectedArtifactMatchesCurrentSettings =
     (selectedArtifact?.type === "source_audio" && !hasTransformChange) ||
     matchesPreviewSettings(selectedArtifact, requestedRetune, transposeSemitones);
@@ -337,7 +365,9 @@ export function ProjectView() {
       : previewMatchesCurrentSettings
         ? "Up to date"
         : "Needs update";
-  const mixStatusCopy = selectedArtifact
+  const mixStatusCopy = isStemSelected
+    ? "Stem tracks are independent from mix controls."
+    : selectedArtifact
     ? selectedArtifactMatchesCurrentSettings
       ? "Selected mix matches current controls."
       : !hasTransformChange
@@ -369,24 +399,24 @@ export function ProjectView() {
   }, [isRenaming, projectQuery.data?.display_name]);
 
   useEffect(() => {
-    if (!playableArtifacts.length) {
+    if (!selectableArtifacts.length) {
       setSelectedArtifactId(null);
       return;
     }
 
-    const currentArtifact = playableArtifacts.find((artifact) => artifact.id === selectedArtifactId) ?? null;
+    const currentArtifact = selectableArtifacts.find((artifact) => artifact.id === selectedArtifactId) ?? null;
     if (!currentArtifact) {
-      setSelectedArtifactId(preferredArtifactSelection(playableArtifacts)?.id ?? null);
+      setSelectedArtifactId(preferredArtifactSelection(selectableArtifacts)?.id ?? null);
       return;
     }
 
     if (followLatestPreview) {
-      const latestPreview = playableArtifacts.find((artifact) => artifact.type === "preview_mix");
+      const latestPreview = selectableArtifacts.find((artifact) => artifact.type === "preview_mix");
       if (latestPreview && latestPreview.id !== currentArtifact.id) {
         setSelectedArtifactId(latestPreview.id);
       }
     }
-  }, [followLatestPreview, playableArtifacts, selectedArtifactId]);
+  }, [followLatestPreview, selectableArtifacts, selectedArtifactId]);
 
   return (
     <section className="screen">
@@ -681,7 +711,7 @@ export function ProjectView() {
                 </div>
                 {selectedArtifactSummary ? <p className="artifact-meta">{selectedArtifactSummary}</p> : null}
                 <div className="artifact-selector artifact-selector--stacked" role="group" aria-label="Saved mix list">
-                  {playableArtifacts.map((artifact) => (
+                  {mixArtifacts.map((artifact) => (
                     <button
                       key={artifact.id}
                       className={`artifact-pill${selectedArtifactId === artifact.id ? " artifact-pill--active" : ""}`}
@@ -698,32 +728,65 @@ export function ProjectView() {
                     </button>
                   ))}
                 </div>
+                <div className="subpanel subpanel--compact">
+                  <div className="subpanel__header">
+                    <h3>Stem Tracks</h3>
+                    <p className="subpanel__copy">Generate vocal and instrumental tracks for focused practice.</p>
+                  </div>
+                  <div className="button-row">
+                    <button className="button" onClick={() => stemMutation.mutate()} disabled={stemMutation.isPending || isStemRunning}>
+                      {stemMutation.isPending || isStemRunning ? "Generating…" : stemArtifacts.length ? "Refresh Stems" : "Generate Stems"}
+                    </button>
+                  </div>
+                  {stemArtifacts.length ? (
+                    <div className="artifact-selector artifact-selector--stacked" role="group" aria-label="Stem track list">
+                      {stemArtifacts.map((artifact) => (
+                        <button
+                          key={artifact.id}
+                          className={`artifact-pill${selectedArtifactId === artifact.id ? " artifact-pill--active" : ""}`}
+                          onClick={() => {
+                            setSelectedArtifactId(artifact.id);
+                            setFollowLatestPreview(false);
+                          }}
+                          type="button"
+                        >
+                          <span className="artifact-pill__title">{artifactLabel(artifact)}</span>
+                          <span className="artifact-pill__meta">
+                            {artifactSummary(artifact) || formatArtifactTimestamp(artifact.created_at)}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="artifact-meta">No stems yet.</p>
+                  )}
+                </div>
                 <audio controls src={api.streamArtifactUrl(selectedArtifact.id)} className="player" />
               </>
             ) : (
               <p>No practice mix yet. Set a tuning or target key, then create one.</p>
             )}
             <div className="panel-note">
-              <strong>Stem playback is hidden for now.</strong>
-              <span>The placeholder separator is not good enough. The next pass will bring in a real local model and a stem-aware player together.</span>
+              <strong>Stem generation now uses a local separator backend.</strong>
+              <span>If stems fail immediately, the Demucs runtime is probably missing from the backend environment.</span>
             </div>
           </div>
 
           <div className="panel">
-            <h2>Current Mix</h2>
+            <h2>Current Selection</h2>
             <div className="session-block">
               <div role="group" aria-label="Selected mix summary">
-                <p className="metric-label">Selected Mix</p>
+                <p className="metric-label">Selected Audio</p>
                 <strong>{selectedMixTitle}</strong>
                 <p className="artifact-meta">{selectedMixSummary}</p>
               </div>
               <div role="group" aria-label="Current control summary">
-                <p className="metric-label">Current Controls</p>
+                <p className="metric-label">Current Mix Controls</p>
                 <strong>{controlSummary}</strong>
                 <p className="artifact-meta">{tuningSummary}</p>
               </div>
               <div role="group" aria-label="Mix status summary">
-                <p className="metric-label">Mix Status</p>
+                <p className="metric-label">Selection Status</p>
                 <strong>{mixStatus}</strong>
                 <p className="artifact-meta">{mixStatusCopy}</p>
               </div>
@@ -753,7 +816,7 @@ export function ProjectView() {
                     <p className="subpanel__copy">Use this only when you need a file outside the app.</p>
                   </div>
                   <button className="button" onClick={() => exportMutation.mutate()} disabled={exportMutation.isPending}>
-                    {exportMutation.isPending ? "Queueing…" : "Export Selected Mix"}
+                    {exportMutation.isPending ? "Queueing…" : "Export Selected Audio"}
                   </button>
                 </div>
               </div>

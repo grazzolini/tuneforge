@@ -16,6 +16,7 @@ const {
   mockListArtifacts,
   mockListJobs,
   mockCreatePreview,
+  mockCreateStems,
   mockAnalyzeProject,
   mockUpdateProject,
   mockCreateExport,
@@ -216,6 +217,53 @@ const {
     state.jobs.unshift(job);
     return { job: clone(job) };
   });
+  const mockCreateStems = vi.fn(async (projectId: string) => {
+    const vocalArtifact = {
+      id: `art_${state.nextArtifactId++}`,
+      project_id: projectId,
+      type: "vocal_stem",
+      format: "wav",
+      path: `/tmp/${projectId}-vocals.wav`,
+      metadata: {
+        mode: "two_stem",
+        engine: "demucs",
+        model: "htdemucs_ft",
+        device: "cpu",
+      },
+      created_at: createdAt,
+    };
+    const instrumentalArtifact = {
+      id: `art_${state.nextArtifactId++}`,
+      project_id: projectId,
+      type: "instrumental_stem",
+      format: "wav",
+      path: `/tmp/${projectId}-instrumental.wav`,
+      metadata: {
+        mode: "two_stem",
+        engine: "demucs",
+        model: "htdemucs_ft",
+        device: "cpu",
+      },
+      created_at: createdAt,
+    };
+    state.artifactsByProject[projectId] = [
+      vocalArtifact,
+      instrumentalArtifact,
+      ...(state.artifactsByProject[projectId] ?? []),
+    ];
+    const job = {
+      id: `job_${state.nextJobId++}`,
+      project_id: projectId,
+      type: "stems",
+      status: "completed",
+      progress: 100,
+      error_message: null,
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    state.jobs.unshift(job);
+    return { job: clone(job) };
+  });
   const mockAnalyzeProject = vi.fn(async (projectId: string) => {
     const job = {
       id: `job_${state.nextJobId++}`,
@@ -277,6 +325,7 @@ const {
     mockListArtifacts,
     mockListJobs,
     mockCreatePreview,
+    mockCreateStems,
     mockAnalyzeProject,
     mockUpdateProject,
     mockCreateExport,
@@ -305,6 +354,7 @@ vi.mock("./lib/api", async (importOriginal) => {
       listArtifacts: mockListArtifacts,
       listJobs: mockListJobs,
       createPreview: mockCreatePreview,
+      createStems: mockCreateStems,
       analyzeProject: mockAnalyzeProject,
       updateProject: mockUpdateProject,
       createExport: mockCreateExport,
@@ -344,6 +394,7 @@ describe("App flows", () => {
     mockListArtifacts.mockClear();
     mockListJobs.mockClear();
     mockCreatePreview.mockClear();
+    mockCreateStems.mockClear();
     mockAnalyzeProject.mockClear();
     mockUpdateProject.mockClear();
     mockCreateExport.mockClear();
@@ -424,6 +475,32 @@ describe("App flows", () => {
     );
   });
 
+  it("generates stems and lets the app select them", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+
+    expect(mockCreateStems).toHaveBeenCalledWith(
+      "proj_123",
+      expect.objectContaining({
+        mode: "two_stem",
+        output_format: "wav",
+        force: false,
+      }),
+    );
+
+    const stemList = await screen.findByRole("group", { name: "Stem track list" });
+    await user.click(within(stemList).getByRole("button", { name: /Vocals/i }));
+
+    const selectedSummary = screen.getByRole("group", { name: "Selected mix summary" });
+    const statusSummary = screen.getByRole("group", { name: "Mix status summary" });
+    expect(within(selectedSummary).getByText("Vocals")).toBeInTheDocument();
+    expect(within(selectedSummary).getByText(/Vocal stem/)).toBeInTheDocument();
+    expect(within(statusSummary).getByText("Stem tracks are independent from mix controls.")).toBeInTheDocument();
+  });
+
   it("renames project from project screen", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);
@@ -450,7 +527,7 @@ describe("App flows", () => {
     const savedMixList = await screen.findByRole("group", { name: "Saved mix list" });
     await user.click(within(savedMixList).getByRole("button", { name: /Source Track/i }));
     await user.click(screen.getByText("Export or inspect stored files"));
-    await user.click(screen.getByRole("button", { name: "Export Selected Mix" }));
+    await user.click(screen.getByRole("button", { name: "Export Selected Audio" }));
 
     expect(mockSave).toHaveBeenCalled();
     expect(mockCreateExport).toHaveBeenCalledWith(

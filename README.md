@@ -4,6 +4,7 @@ Tuneforge is a local-first desktop music practice tool built with Tauri, React, 
 
 Supported import formats currently include `mp3`, `wav`, `flac`, `m4a`, `aac`, `ogg`, `mp4`, and `webm`.
 For `mp4` and `webm`, Tuneforge extracts a local WAV working file during import so analysis and transforms run against audio directly.
+Stem separation now uses a local Demucs backend for `vocals` and `instrumental` output.
 
 ## Workspace
 
@@ -38,3 +39,6 @@ Notes:
 
 - `pnpm dev:desktop` runs the Tauri shell and starts the Vite frontend dev server. Run `pnpm dev:backend` separately if you are not using `pnpm dev`.
 - `pnpm dev` starts the backend and desktop flow together.
+- The backend dependency sync now installs Demucs and Torch, so the first `uv sync` is heavier than before.
+- The first real stem generation may download the selected Demucs model weights into the local cache before processing starts.
+- Stem behavior can be tuned with `TUNEFORGE_STEM_MODEL` and `TUNEFORGE_STEM_DEVICE`. Defaults are `htdemucs_ft` and `cpu`.

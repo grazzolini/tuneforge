@@ -592,7 +592,6 @@ describe("App flows", () => {
     expect(await screen.findByText("Saved Mixes")).toBeInTheDocument();
     const savedMixList = await screen.findByRole("group", { name: "Saved mix list" });
     await user.click(within(savedMixList).getByRole("button", { name: /Source Track/i }));
-    await user.click(screen.getByText("Export and file details"));
     await user.click(screen.getByRole("button", { name: "Export Selected Audio" }));
 
     expect(mockSave).toHaveBeenCalled();
@@ -604,6 +603,25 @@ describe("App flows", () => {
         destination_path: "/tmp/exports",
       }),
     );
+  });
+
+  it("toggles inspector visibility without affecting playback selection", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    expect(screen.getByText("Mix Builder")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Hide Inspector" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Hide Inspector" }));
+
+    expect(screen.queryByText("Mix Builder")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show Inspector" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Selected mix summary" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
+
+    expect(screen.getByText("Mix Builder")).toBeInTheDocument();
   });
 
   it("requires confirmation before deleting a project", async () => {

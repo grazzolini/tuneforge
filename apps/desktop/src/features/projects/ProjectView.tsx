@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { confirm, save } from "@tauri-apps/plugin-dialog";
@@ -65,6 +65,22 @@ function formatArtifactTimestamp(createdAt: string) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(createdAt));
+}
+
+function formatPlaybackClock(totalSeconds: number) {
+  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
+    return "0:00";
+  }
+  const seconds = Math.floor(totalSeconds);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, "0")}:${remainder.toString().padStart(2, "0")}`;
+  }
+
+  return `${minutes}:${remainder.toString().padStart(2, "0")}`;
 }
 
 function artifactSummary(artifact: ArtifactSchema) {
@@ -181,6 +197,7 @@ export function ProjectView() {
   const { projectId = "" } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const [retuneMode, setRetuneMode] = useState<"off" | "reference" | "cents">("off");
   const [referenceHz, setReferenceHz] = useState("440");
   const [centsOffset, setCentsOffset] = useState("0");
@@ -191,6 +208,9 @@ export function ProjectView() {
   const [followLatestPreview, setFollowLatestPreview] = useState(true);
   const [isRenaming, setIsRenaming] = useState(false);
   const [draftName, setDraftName] = useState("");
+  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [playbackTimeSeconds, setPlaybackTimeSeconds] = useState(0);
+  const [playbackDurationSeconds, setPlaybackDurationSeconds] = useState(0);
 
   const projectQuery = useQuery({
     queryKey: ["project", projectId],
@@ -416,6 +436,10 @@ export function ProjectView() {
         : "Controls differ from selected mix. Create new mix if you want to save them."
     : "Select a mix to compare it with current controls.";
   const canDeleteSelectedMix = selectedArtifact?.type === "preview_mix";
+  const selectedArtifactTimestamp = selectedArtifact ? formatArtifactTimestamp(selectedArtifact.created_at) : "";
+  const playbackClockSummary = `${formatPlaybackClock(playbackTimeSeconds)} / ${formatPlaybackClock(
+    playbackDurationSeconds || projectQuery.data?.duration_seconds || 0,
+  )}`;
 
   async function handleDeleteProject() {
     const approved = await confirm("Delete this project and all of its mixes, stems, and exports?", {
@@ -489,6 +513,14 @@ export function ProjectView() {
     }
   }, [followLatestPreview, selectableArtifacts, selectedArtifactId]);
 
+  useEffect(() => {
+    setPlaybackTimeSeconds(0);
+    setPlaybackDurationSeconds(0);
+    if (audioRef.current) {
+      audioRef.current.currentTime = 0;
+    }
+  }, [selectedArtifact?.id]);
+
   return (
     <section className="screen">
       <div className="screen__header">
@@ -547,242 +579,64 @@ export function ProjectView() {
           >
             {previewMutation.isPending ? "Queueing…" : "Create Mix"}
           </button>
-          <button className="button button--ghost" onClick={handleDeleteProject} disabled={deleteMutation.isPending}>
-            Delete Project
+          <button className="button button--ghost" type="button" onClick={() => setInspectorOpen((current) => !current)}>
+            {inspectorOpen ? "Hide Inspector" : "Show Inspector"}
           </button>
         </div>
       </div>
 
-      <div className="layout-grid">
+      <div className={`project-workbench${inspectorOpen ? "" : " project-workbench--wide"}`}>
         <div className="stack">
           <div className="panel">
-            <h2>Track Metadata</h2>
-            <dl className="meta-grid">
+            <div className="panel-heading">
               <div>
-                <dt>Duration</dt>
-                <dd>{projectQuery.data?.duration_seconds?.toFixed(2) ?? "Unknown"} s</dd>
-              </div>
-              <div>
-                <dt>Sample Rate</dt>
-                <dd>{projectQuery.data?.sample_rate ?? "Unknown"} Hz</dd>
-              </div>
-              <div>
-                <dt>Channels</dt>
-                <dd>{projectQuery.data?.channels ?? "Unknown"}</dd>
-              </div>
-            </dl>
-
-            <details className="details-block">
-              <summary>Show file details</summary>
-              <dl className="details-grid">
-                <div>
-                  <dt>Imported Path</dt>
-                  <dd className="path">{projectQuery.data?.imported_path ?? "Unknown"}</dd>
-                </div>
-                <div>
-                  <dt>Original Source</dt>
-                  <dd className="path">{projectQuery.data?.source_path ?? "Unknown"}</dd>
-                </div>
-              </dl>
-            </details>
-          </div>
-
-          <div className="panel">
-            <h2>Analysis</h2>
-            {isAnalysisRunning ? <p className="setting-copy">Analyzing source track…</p> : null}
-            <div className="analysis-grid">
-              <div>
-                <span className="metric-label">Detected Tuning</span>
-                <strong>{analysisQuery.data?.estimated_reference_hz?.toFixed(2) ?? "Pending"} Hz</strong>
-              </div>
-              <div>
-                <span className="metric-label">Offset from A440</span>
-                <strong>{analysisQuery.data?.tuning_offset_cents?.toFixed(2) ?? "—"} cents</strong>
-              </div>
-              <div>
-                <span className="metric-label">Estimated Key</span>
-                <strong>{detectedKey ? formatKey(detectedKey) : isAnalysisRunning ? "Analyzing…" : "Unknown"}</strong>
-              </div>
-              <div>
-                <span className="metric-label">Confidence</span>
-                <strong>{analysisQuery.data?.key_confidence?.toFixed(2) ?? "—"}</strong>
-              </div>
-            </div>
-          </div>
-
-          <div className="panel">
-            <h2>Transform Controls</h2>
-            <div className="section-stack">
-              <div className="subpanel">
-                <div className="subpanel__header">
-                  <h3>Tuning</h3>
-                  <p className="subpanel__copy">Optional fine-tuning independent from key changes.</p>
-                </div>
-                <div className="controls">
-                  <label>
-                    Retune
-                    <select
-                      aria-label="Retune"
-                      value={retuneMode}
-                      onChange={(event) => setRetuneMode(event.target.value as "off" | "reference" | "cents")}
-                    >
-                      <option value="off">Off</option>
-                      <option value="reference">Target Reference Hz</option>
-                      <option value="cents">Direct Cents Offset</option>
-                    </select>
-                  </label>
-
-                  {retuneMode === "reference" ? (
-                    <label>
-                      Target Reference Hz
-                      <input
-                        aria-label="Target Reference Hz"
-                        value={referenceHz}
-                        onChange={(event) => setReferenceHz(event.target.value)}
-                        type="number"
-                        step="0.1"
-                      />
-                    </label>
-                  ) : null}
-
-                  {retuneMode === "cents" ? (
-                    <label>
-                      Cents Offset
-                      <input
-                        aria-label="Cents Offset"
-                        value={centsOffset}
-                        onChange={(event) => setCentsOffset(event.target.value)}
-                        type="number"
-                        step="0.1"
-                      />
-                    </label>
-                  ) : null}
-                </div>
-              </div>
-
-              <div className="subpanel">
-                <div className="subpanel__header">
-                  <h3>Key Change</h3>
-                  <p className="subpanel__copy">Shift the song by musical key instead of raw semitones.</p>
-                </div>
-
-                <div className="key-shift key-shift--compact">
-                  <div className="key-shift__header">
-                    <div>
-                      <span className="metric-label">Source Key</span>
-                      <strong>{formatKey(sourceKey)}</strong>
-                      <small className="artifact-meta">
-                        {manualSourceKey
-                          ? "Using manual source key"
-                          : detectedKey
-                            ? "Detected automatically"
-                            : "Set manually if the analysis is wrong"}
-                      </small>
-                    </div>
-                    <div>
-                      <span className="metric-label">Target Key</span>
-                      <strong>{formatKey(targetKey)}</strong>
-                    </div>
-                    <span className="key-shift__meta">{formatSemitoneShift(transposeSemitones)}</span>
-                  </div>
-
-                  <div className="key-stepper">
-                    <button
-                      className="button"
-                      aria-label="Lower target key"
-                      onClick={() => {
-                        setTargetDirty(true);
-                        setTargetKeyState((current) => transposeKey(current ?? sourceKey, -1));
-                      }}
-                      type="button"
-                    >
-                      -
-                    </button>
-                    <label className="key-stepper__value">
-                      <span className="key-stepper__label">Target Key</span>
-                      <select
-                        aria-label="Target Key"
-                        value={serializeKey(targetKey)}
-                        onChange={(event) => {
-                          setTargetDirty(true);
-                          setTargetKeyState(deserializeKey(event.target.value));
-                        }}
-                      >
-                        {targetKeyOptions.map((key) => (
-                          <option key={key.value} value={key.value}>
-                            {key.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <button
-                      className="button"
-                      aria-label="Raise target key"
-                      onClick={() => {
-                        setTargetDirty(true);
-                        setTargetKeyState((current) => transposeKey(current ?? sourceKey, 1));
-                      }}
-                      type="button"
-                    >
-                      +
-                    </button>
-                  </div>
-
-                  <details className="details-block details-block--inset">
-                    <summary>Correct source key if detection is wrong</summary>
-                    <div className="controls controls--tight">
-                      <label>
-                        Source Key
-                        <select
-                          aria-label="Current Key"
-                          value={currentKeyValue}
-                          onChange={(event) =>
-                            setManualSourceKey(event.target.value === "auto" ? null : deserializeKey(event.target.value))
-                          }
-                        >
-                          {detectedKey ? <option value="auto">Use detected key ({formatKey(detectedKey)})</option> : null}
-                          {MUSICAL_KEYS.map((key) => (
-                            <option key={key.value} value={key.value}>
-                              {key.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-                    <p className="setting-copy">
-                      This does not change the audio by itself. It only changes how the target key is calculated.
-                    </p>
-                  </details>
-                </div>
+                <h2>Playables</h2>
+                <p className="subpanel__copy">Keep source, mixes, and stems ready to jump between while you practice.</p>
               </div>
             </div>
 
-            {previewMutation.isError ? (
-              <p className="inline-error">
-                {previewMutation.error instanceof Error ? previewMutation.error.message : "Could not create preview."}
-              </p>
-            ) : null}
-          </div>
-        </div>
+            <div className="library-section">
+              <div className="library-section__header">
+                <h3>Saved Mixes</h3>
+                {selectedArtifact ? <span className="artifact-meta">{selectedArtifact.format.toUpperCase()}</span> : null}
+              </div>
+              <div className="artifact-selector artifact-selector--stacked" role="group" aria-label="Saved mix list">
+                {mixArtifacts.map((artifact) => (
+                  <button
+                    key={artifact.id}
+                    className={`artifact-pill${selectedArtifactId === artifact.id ? " artifact-pill--active" : ""}`}
+                    onClick={() => {
+                      setSelectedArtifactId(artifact.id);
+                      setFollowLatestPreview(false);
+                    }}
+                    type="button"
+                  >
+                    <span className="artifact-pill__title">{artifactLabel(artifact)}</span>
+                    <span className="artifact-pill__meta">
+                      {artifactSummary(artifact) || formatArtifactTimestamp(artifact.created_at)}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
 
-        <div className="stack">
-          <div className="panel">
-            <h2>Saved Mixes</h2>
-            {selectedArtifact ? (
-              <>
-                <div className="playback-focus">
-                  <div>
-                    <p className="metric-label">Now Playing</p>
-                    <h3>{artifactLabel(selectedArtifact)}</h3>
-                  </div>
-                  <div className="playback-focus__meta">
-                    <span>{selectedArtifact.format.toUpperCase()}</span>
-                    <span>{formatArtifactTimestamp(selectedArtifact.created_at)}</span>
-                  </div>
-                </div>
-                {selectedArtifactSummary ? <p className="artifact-meta">{selectedArtifactSummary}</p> : null}
-                <div className="artifact-selector artifact-selector--stacked" role="group" aria-label="Saved mix list">
-                  {mixArtifacts.map((artifact) => (
+            <div className="subpanel subpanel--compact">
+              <div className="subpanel__header">
+                <h3>Stem Tracks</h3>
+                <p className="subpanel__copy">Stem playback stays scoped to whichever source or mix is selected.</p>
+              </div>
+              <div className="button-row">
+                <button
+                  className="button"
+                  onClick={() => stemMutation.mutate()}
+                  disabled={stemMutation.isPending || isStemRunning || !canGenerateStems}
+                >
+                  {stemMutation.isPending || isStemRunning ? "Generating…" : hasVisibleStems ? "Refresh Stems" : "Generate Stems"}
+                </button>
+              </div>
+              {visibleStemArtifacts.length ? (
+                <div className="artifact-selector artifact-selector--stacked" role="group" aria-label="Stem track list">
+                  {visibleStemArtifacts.map((artifact) => (
                     <button
                       key={artifact.id}
                       className={`artifact-pill${selectedArtifactId === artifact.id ? " artifact-pill--active" : ""}`}
@@ -799,58 +653,113 @@ export function ProjectView() {
                     </button>
                   ))}
                 </div>
-                {canDeleteSelectedMix ? (
-                  <div className="button-row">
-                    <button
-                      className="button button--ghost button--small"
-                      onClick={handleDeleteMix}
-                      disabled={deleteMixMutation.isPending}
-                      type="button"
-                    >
-                      {deleteMixMutation.isPending ? "Deleting…" : "Delete Practice Mix"}
-                    </button>
+              ) : (
+                <p className="artifact-meta">
+                  {canGenerateStems ? "No stems yet for selected audio." : "Select source audio or practice mix first."}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="stack">
+          <div className="panel playback-stage">
+            {selectedArtifact ? (
+              <>
+                <div className="playback-stage__header">
+                  <div>
+                    <p className="metric-label">Now Playing</p>
+                    <h2>{selectedMixTitle}</h2>
+                    <p className="artifact-meta">{selectedMixSummary}</p>
                   </div>
-                ) : null}
-                <div className="subpanel subpanel--compact">
-                  <div className="subpanel__header">
-                    <h3>Stem Tracks</h3>
-                    <p className="subpanel__copy">Generate vocal and instrumental tracks for focused practice.</p>
+                  <div className="playback-focus__meta">
+                    <span>{selectedArtifact.format.toUpperCase()}</span>
+                    <span>{selectedArtifactTimestamp}</span>
                   </div>
-                  <div className="button-row">
-                    <button
-                      className="button"
-                      onClick={() => stemMutation.mutate()}
-                      disabled={stemMutation.isPending || isStemRunning || !canGenerateStems}
-                    >
-                      {stemMutation.isPending || isStemRunning ? "Generating…" : hasVisibleStems ? "Refresh Stems" : "Generate Stems"}
-                    </button>
-                  </div>
-                  {visibleStemArtifacts.length ? (
-                    <div className="artifact-selector artifact-selector--stacked" role="group" aria-label="Stem track list">
-                      {visibleStemArtifacts.map((artifact) => (
-                        <button
-                          key={artifact.id}
-                          className={`artifact-pill${selectedArtifactId === artifact.id ? " artifact-pill--active" : ""}`}
-                          onClick={() => {
-                            setSelectedArtifactId(artifact.id);
-                            setFollowLatestPreview(false);
-                          }}
-                          type="button"
-                        >
-                          <span className="artifact-pill__title">{artifactLabel(artifact)}</span>
-                          <span className="artifact-pill__meta">
-                            {artifactSummary(artifact) || formatArtifactTimestamp(artifact.created_at)}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="artifact-meta">
-                      {canGenerateStems ? "No stems yet for selected audio." : "Select source audio or practice mix first."}
-                    </p>
-                  )}
                 </div>
-                <audio controls src={api.streamArtifactUrl(selectedArtifact.id)} className="player" />
+
+                <div className="session-block playback-stage__summary">
+                  <div role="group" aria-label="Selected mix summary">
+                    <p className="metric-label">Selected Audio</p>
+                    <strong>{selectedMixTitle}</strong>
+                    <p className="artifact-meta">{selectedMixSummary}</p>
+                  </div>
+                  <div role="group" aria-label="Current control summary">
+                    <p className="metric-label">Current Mix Controls</p>
+                    <strong>{controlSummary}</strong>
+                    <p className="artifact-meta">{tuningSummary}</p>
+                  </div>
+                  <div role="group" aria-label="Mix status summary">
+                    <p className="metric-label">Selection Status</p>
+                    <strong>{mixStatus}</strong>
+                    <p className="artifact-meta">{mixStatusCopy}</p>
+                  </div>
+                </div>
+
+                <div className="playback-stage__lane">
+                  <div className="playback-stage__lane-header">
+                    <div>
+                      <p className="metric-label">Chord Lane</p>
+                      <h3>Real-time display lands here next</h3>
+                    </div>
+                    <span className="artifact-meta">Playback sync ready for detected timeline</span>
+                  </div>
+
+                  <div className="chord-preview-grid">
+                    <div className="chord-card">
+                      <span className="metric-label">Current Chord</span>
+                      <strong>—</strong>
+                    </div>
+                    <div className="chord-card">
+                      <span className="metric-label">Next Chord</span>
+                      <strong>—</strong>
+                    </div>
+                  </div>
+
+                  <div className="chord-lane-placeholder">
+                    <div className="chord-lane-placeholder__bar">
+                      <span className="chord-lane-placeholder__segment">Verse</span>
+                      <span className="chord-lane-placeholder__segment">Pre</span>
+                      <span className="chord-lane-placeholder__segment">Chorus</span>
+                      <span className="chord-lane-placeholder__segment">Bridge</span>
+                    </div>
+                    <p className="artifact-meta">
+                      Chord detection will add a clickable timeline here. Playback will highlight the active segment in real time.
+                    </p>
+                  </div>
+                </div>
+
+                <audio
+                  controls
+                  ref={audioRef}
+                  src={api.streamArtifactUrl(selectedArtifact.id)}
+                  className="player"
+                  onTimeUpdate={(event) => setPlaybackTimeSeconds(event.currentTarget.currentTime)}
+                  onLoadedMetadata={(event) => setPlaybackDurationSeconds(event.currentTarget.duration)}
+                  onDurationChange={(event) => setPlaybackDurationSeconds(event.currentTarget.duration)}
+                />
+
+                <div className="playback-stage__footer">
+                  <div>
+                    <span className="metric-label">Playback Position</span>
+                    <strong>{playbackClockSummary}</strong>
+                  </div>
+                  <div role="group" aria-label="Recent processing summary">
+                    <span className="metric-label">Recent Processing</span>
+                    {recentJobs.length ? (
+                      <ul className="session-jobs">
+                        {recentJobs.map((job) => (
+                          <li key={job.id}>
+                            <span>{job.type}</span>
+                            <small>{job.status}</small>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="artifact-meta">No processing jobs yet.</p>
+                    )}
+                  </div>
+                </div>
               </>
             ) : (
               <p>No practice mix yet. Set a tuning or target key, then create one.</p>
@@ -858,56 +767,14 @@ export function ProjectView() {
           </div>
 
           <div className="panel">
-            <h2>Current Selection</h2>
-            <div className="session-block">
-              <div role="group" aria-label="Selected mix summary">
-                <p className="metric-label">Selected Audio</p>
-                <strong>{selectedMixTitle}</strong>
-                <p className="artifact-meta">{selectedMixSummary}</p>
-              </div>
-              <div role="group" aria-label="Current control summary">
-                <p className="metric-label">Current Mix Controls</p>
-                <strong>{controlSummary}</strong>
-                <p className="artifact-meta">{tuningSummary}</p>
-              </div>
-              <div role="group" aria-label="Mix status summary">
-                <p className="metric-label">Selection Status</p>
-                <strong>{mixStatus}</strong>
-                <p className="artifact-meta">{mixStatusCopy}</p>
-              </div>
-              <div role="group" aria-label="Recent processing summary">
-                <p className="metric-label">Recent Processing</p>
-                {recentJobs.length ? (
-                  <ul className="session-jobs">
-                    {recentJobs.map((job) => (
-                      <li key={job.id}>
-                        <span>{job.type}</span>
-                        <small>{job.status}</small>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="artifact-meta">No processing jobs yet.</p>
-                )}
+            <div className="panel-heading">
+              <div>
+                <h2>Jobs and History</h2>
+                <p className="subpanel__copy">Processing stays out of the way until you need to inspect it.</p>
               </div>
             </div>
 
-            <details className="details-block">
-              <summary>Export and file details</summary>
-              <div className="details-stack">
-                <div className="subpanel subpanel--compact">
-                  <div className="subpanel__header">
-                    <h3>Export</h3>
-                    <p className="subpanel__copy">Use this only when you need a file outside the app.</p>
-                  </div>
-                  <button className="button" onClick={() => exportMutation.mutate()} disabled={exportMutation.isPending}>
-                    {exportMutation.isPending ? "Queueing…" : "Export Selected Audio"}
-                  </button>
-                </div>
-              </div>
-            </details>
-
-            <details className="details-block">
+            <details className="details-block details-block--flush">
               <summary>Show raw artifacts and processing history</summary>
               <div className="details-stack">
                 <ul className="artifact-list">
@@ -950,6 +817,256 @@ export function ProjectView() {
             </details>
           </div>
         </div>
+
+        {inspectorOpen ? (
+          <div className="stack">
+            <div className="panel inspector-panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>Inspector</h2>
+                  <p className="subpanel__copy">Mix controls and project details stay nearby without taking over the practice surface.</p>
+                </div>
+              </div>
+
+              <div className="section-stack">
+                <div className="subpanel">
+                  <div className="subpanel__header">
+                    <h3>Mix Builder</h3>
+                    <p className="subpanel__copy">Build alternate practice mixes from tuning and key controls.</p>
+                  </div>
+                  <div className="controls">
+                    <label>
+                      Retune
+                      <select
+                        aria-label="Retune"
+                        value={retuneMode}
+                        onChange={(event) => setRetuneMode(event.target.value as "off" | "reference" | "cents")}
+                      >
+                        <option value="off">Off</option>
+                        <option value="reference">Target Reference Hz</option>
+                        <option value="cents">Direct Cents Offset</option>
+                      </select>
+                    </label>
+
+                    {retuneMode === "reference" ? (
+                      <label>
+                        Target Reference Hz
+                        <input
+                          aria-label="Target Reference Hz"
+                          value={referenceHz}
+                          onChange={(event) => setReferenceHz(event.target.value)}
+                          type="number"
+                          step="0.1"
+                        />
+                      </label>
+                    ) : null}
+
+                    {retuneMode === "cents" ? (
+                      <label>
+                        Cents Offset
+                        <input
+                          aria-label="Cents Offset"
+                          value={centsOffset}
+                          onChange={(event) => setCentsOffset(event.target.value)}
+                          type="number"
+                          step="0.1"
+                        />
+                      </label>
+                    ) : null}
+                  </div>
+
+                  <div className="key-shift key-shift--compact">
+                    <div className="key-shift__header">
+                      <div>
+                        <span className="metric-label">Source Key</span>
+                        <strong>{formatKey(sourceKey)}</strong>
+                        <small className="artifact-meta">
+                          {manualSourceKey
+                            ? "Using manual source key"
+                            : detectedKey
+                              ? "Detected automatically"
+                              : "Set manually if the analysis is wrong"}
+                        </small>
+                      </div>
+                      <div>
+                        <span className="metric-label">Target Key</span>
+                        <strong>{formatKey(targetKey)}</strong>
+                      </div>
+                      <span className="key-shift__meta">{formatSemitoneShift(transposeSemitones)}</span>
+                    </div>
+
+                    <div className="key-stepper">
+                      <button
+                        className="button"
+                        aria-label="Lower target key"
+                        onClick={() => {
+                          setTargetDirty(true);
+                          setTargetKeyState((current) => transposeKey(current ?? sourceKey, -1));
+                        }}
+                        type="button"
+                      >
+                        -
+                      </button>
+                      <label className="key-stepper__value">
+                        <span className="key-stepper__label">Target Key</span>
+                        <select
+                          aria-label="Target Key"
+                          value={serializeKey(targetKey)}
+                          onChange={(event) => {
+                            setTargetDirty(true);
+                            setTargetKeyState(deserializeKey(event.target.value));
+                          }}
+                        >
+                          {targetKeyOptions.map((key) => (
+                            <option key={key.value} value={key.value}>
+                              {key.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        className="button"
+                        aria-label="Raise target key"
+                        onClick={() => {
+                          setTargetDirty(true);
+                          setTargetKeyState((current) => transposeKey(current ?? sourceKey, 1));
+                        }}
+                        type="button"
+                      >
+                        +
+                      </button>
+                    </div>
+
+                    <details className="details-block details-block--inset">
+                      <summary>Correct source key if detection is wrong</summary>
+                      <div className="controls controls--tight">
+                        <label>
+                          Source Key
+                          <select
+                            aria-label="Current Key"
+                            value={currentKeyValue}
+                            onChange={(event) =>
+                              setManualSourceKey(event.target.value === "auto" ? null : deserializeKey(event.target.value))
+                            }
+                          >
+                            {detectedKey ? <option value="auto">Use detected key ({formatKey(detectedKey)})</option> : null}
+                            {MUSICAL_KEYS.map((key) => (
+                              <option key={key.value} value={key.value}>
+                                {key.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                      <p className="setting-copy">
+                        This does not change the audio by itself. It only changes how the target key is calculated.
+                      </p>
+                    </details>
+                  </div>
+
+                  {previewMutation.isError ? (
+                    <p className="inline-error">
+                      {previewMutation.error instanceof Error ? previewMutation.error.message : "Could not create preview."}
+                    </p>
+                  ) : null}
+                </div>
+
+                <div className="subpanel">
+                  <div className="subpanel__header">
+                    <h3>Analysis</h3>
+                    <p className="subpanel__copy">Reference data for tuning and key decisions.</p>
+                  </div>
+                  {isAnalysisRunning ? <p className="setting-copy">Analyzing source track…</p> : null}
+                  <div className="analysis-grid">
+                    <div>
+                      <span className="metric-label">Detected Tuning</span>
+                      <strong>{analysisQuery.data?.estimated_reference_hz?.toFixed(2) ?? "Pending"} Hz</strong>
+                    </div>
+                    <div>
+                      <span className="metric-label">Offset from A440</span>
+                      <strong>{analysisQuery.data?.tuning_offset_cents?.toFixed(2) ?? "—"} cents</strong>
+                    </div>
+                    <div>
+                      <span className="metric-label">Estimated Key</span>
+                      <strong>{detectedKey ? formatKey(detectedKey) : isAnalysisRunning ? "Analyzing…" : "Unknown"}</strong>
+                    </div>
+                    <div>
+                      <span className="metric-label">Confidence</span>
+                      <strong>{analysisQuery.data?.key_confidence?.toFixed(2) ?? "—"}</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="subpanel">
+                  <div className="subpanel__header">
+                    <h3>Project Details</h3>
+                    <p className="subpanel__copy">Useful context when you need it, not center stage all the time.</p>
+                  </div>
+                  <dl className="meta-grid">
+                    <div>
+                      <dt>Duration</dt>
+                      <dd>{projectQuery.data?.duration_seconds?.toFixed(2) ?? "Unknown"} s</dd>
+                    </div>
+                    <div>
+                      <dt>Sample Rate</dt>
+                      <dd>{projectQuery.data?.sample_rate ?? "Unknown"} Hz</dd>
+                    </div>
+                    <div>
+                      <dt>Channels</dt>
+                      <dd>{projectQuery.data?.channels ?? "Unknown"}</dd>
+                    </div>
+                  </dl>
+
+                  <details className="details-block">
+                    <summary>Show file details</summary>
+                    <dl className="details-grid">
+                      <div>
+                        <dt>Imported Path</dt>
+                        <dd className="path">{projectQuery.data?.imported_path ?? "Unknown"}</dd>
+                      </div>
+                      <div>
+                        <dt>Original Source</dt>
+                        <dd className="path">{projectQuery.data?.source_path ?? "Unknown"}</dd>
+                      </div>
+                    </dl>
+                  </details>
+                </div>
+
+                <div className="subpanel subpanel--compact">
+                  <div className="subpanel__header">
+                    <h3>Export</h3>
+                    <p className="subpanel__copy">Use this only when you need a file outside the app.</p>
+                  </div>
+                  <button className="button" onClick={() => exportMutation.mutate()} disabled={exportMutation.isPending}>
+                    {exportMutation.isPending ? "Queueing…" : "Export Selected Audio"}
+                  </button>
+                </div>
+
+                <div className="subpanel subpanel--compact subpanel--danger">
+                  <div className="subpanel__header">
+                    <h3>Danger Zone</h3>
+                    <p className="subpanel__copy">Destructive actions stay separate from everyday practice actions.</p>
+                  </div>
+                  <div className="button-row">
+                    {canDeleteSelectedMix ? (
+                      <button
+                        className="button button--ghost button--small"
+                        onClick={handleDeleteMix}
+                        disabled={deleteMixMutation.isPending}
+                        type="button"
+                      >
+                        {deleteMixMutation.isPending ? "Deleting…" : "Delete Practice Mix"}
+                      </button>
+                    ) : null}
+                    <button className="button button--ghost button--small" onClick={handleDeleteProject} disabled={deleteMutation.isPending}>
+                      Delete Project
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
     </section>
   );

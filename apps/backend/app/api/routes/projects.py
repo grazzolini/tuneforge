@@ -27,6 +27,7 @@ from app.schemas import (
     StemRequest,
     TransposeRequest,
 )
+from app.services.artifacts import delete_project_artifact
 from app.services.projects import (
     delete_project,
     get_project,
@@ -189,6 +190,14 @@ def project_artifacts(project_id: str, session: Session = Depends(get_db)) -> Ar
     stmt = select(Artifact).where(Artifact.project_id == project_id).order_by(Artifact.created_at.desc())
     artifacts = [ArtifactSchema.model_validate(artifact) for artifact in session.scalars(stmt)]
     return ArtifactsResponse(artifacts=artifacts)
+
+
+@router.delete("/{project_id}/artifacts/{artifact_id}", response_model=DeleteResponse)
+def project_artifact_delete(project_id: str, artifact_id: str, session: Session = Depends(get_db)) -> DeleteResponse:
+    get_project(session, project_id)
+    delete_project_artifact(session, project_id=project_id, artifact_id=artifact_id)
+    session.commit()
+    return DeleteResponse(deleted=True)
 
 
 @router.post("/{project_id}/export", response_model=JobResponse)

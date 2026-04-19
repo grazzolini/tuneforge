@@ -27,7 +27,6 @@ Commands:
 - `pnpm install`
 - `cd apps/backend && uv sync --python 3.11 --all-groups`
 - `pnpm contracts:generate`
-- `pnpm bundle:prepare`
 - `pnpm dev:backend`
 - `pnpm dev:desktop`
 - `pnpm dev`
@@ -41,8 +40,8 @@ Notes:
 
 - `pnpm dev:desktop` runs the Tauri shell and starts the Vite frontend dev server. Run `pnpm dev:backend` separately if you are not using `pnpm dev`.
 - `pnpm dev` starts the backend and desktop flow together.
-- `pnpm bundle:prepare` stages the backend source, Python runtime, site-packages, and local `ffmpeg` / `ffprobe` binaries into `apps/desktop/src-tauri/resources` for packaging.
-- `pnpm package:mac` builds the macOS app bundle and DMG with the backend bundled inside the app.
+- `pnpm bundle:prepare` is available if you want to inspect the staged packaging resources manually. It stages the backend source, Python runtime, site-packages, and local `ffmpeg` / `ffprobe` binaries into `apps/desktop/src-tauri/resources`.
+- `pnpm package:mac` builds the macOS app bundle and DMG with the backend bundled inside the app. Tauri runs the bundle prep step automatically during this build.
 - The backend dependency sync now installs Demucs and Torch, so the first `uv sync` is heavier than before.
 - The first real stem generation may download the selected Demucs model weights into the local cache before processing starts.
 - Stem behavior can be tuned with `TUNEFORGE_STEM_MODEL` and `TUNEFORGE_STEM_DEVICE`. Defaults are `htdemucs_ft` and `auto`.
@@ -61,6 +60,35 @@ The packaged macOS app is self-contained:
 - Tauri starts the bundled backend automatically
 - the frontend asks the Tauri shell for the resolved backend base URL at runtime
 - backend source, Python runtime, dependencies, `ffmpeg`, and `ffprobe` are bundled inside the app resources
+
+### Build And Run The Bundled macOS App
+
+1. Install workspace dependencies:
+   - `pnpm install`
+   - `cd apps/backend && uv sync --python 3.11 --all-groups`
+   - `cd ../..`
+2. Generate the shared API types:
+   - `pnpm contracts:generate`
+3. Build the packaged app:
+   - `pnpm package:mac`
+
+Build outputs:
+
+- App bundle: `apps/desktop/src-tauri/target/release/bundle/macos/Tuneforge.app`
+- DMG: `apps/desktop/src-tauri/target/release/bundle/dmg/Tuneforge_<version>_<arch>.dmg`
+
+Run options:
+
+- Launch the app bundle directly:
+  - `open apps/desktop/src-tauri/target/release/bundle/macos/Tuneforge.app`
+- Or open the DMG, drag `Tuneforge.app` into `/Applications`, then launch it from there:
+  - `open apps/desktop/src-tauri/target/release/bundle/dmg`
+
+Notes:
+
+- You do not need to start `pnpm dev:backend` or `pnpm dev:desktop` for the packaged app.
+- On first launch, macOS may warn because this is a local unsigned build. If that happens, right-click the app, choose `Open`, and confirm once.
+- The packaged app starts its own bundled backend on localhost automatically.
 
 ## CI
 

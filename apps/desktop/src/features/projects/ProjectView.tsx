@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { save } from "@tauri-apps/plugin-dialog";
+import { confirm, save } from "@tauri-apps/plugin-dialog";
 import { api, type ArtifactSchema, type JobSchema } from "../../lib/api";
 import {
   DEFAULT_KEY,
@@ -315,6 +315,19 @@ export function ProjectView() {
       navigate("/");
     },
   });
+  const deleteMixMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedArtifact || selectedArtifact.type !== "preview_mix") {
+        throw new Error("Select a saved practice mix first.");
+      }
+      return api.deleteArtifact(projectId, selectedArtifact.id);
+    },
+    onSuccess: async () => {
+      setSelectedArtifactId(null);
+      setFollowLatestPreview(false);
+      await queryClient.invalidateQueries({ queryKey: ["artifacts", projectId] });
+    },
+  });
 
   const projectJobs = useMemo(
     () => jobsQuery.data?.filter((job) => job.project_id === projectId) ?? [],
@@ -402,6 +415,36 @@ export function ProjectView() {
         ? "Selected mix differs from current source controls."
         : "Controls differ from selected mix. Create new mix if you want to save them."
     : "Select a mix to compare it with current controls.";
+  const canDeleteSelectedMix = selectedArtifact?.type === "preview_mix";
+
+  async function handleDeleteProject() {
+    const approved = await confirm("Delete this project and all of its mixes, stems, and exports?", {
+      title: "Delete project",
+      kind: "warning",
+      okLabel: "Delete",
+      cancelLabel: "Cancel",
+    });
+    if (!approved) {
+      return;
+    }
+    deleteMutation.mutate();
+  }
+
+  async function handleDeleteMix() {
+    if (!selectedArtifact || selectedArtifact.type !== "preview_mix") {
+      return;
+    }
+    const approved = await confirm("Delete this practice mix and its stem tracks?", {
+      title: "Delete practice mix",
+      kind: "warning",
+      okLabel: "Delete",
+      cancelLabel: "Cancel",
+    });
+    if (!approved) {
+      return;
+    }
+    deleteMixMutation.mutate();
+  }
 
   useEffect(() => {
     if (!projectQuery.data || analysisQuery.isLoading || analysisQuery.data || analyzeMutation.isPending) {
@@ -504,7 +547,7 @@ export function ProjectView() {
           >
             {previewMutation.isPending ? "Queueing…" : "Create Mix"}
           </button>
-          <button className="button button--ghost" onClick={() => deleteMutation.mutate()} disabled={deleteMutation.isPending}>
+          <button className="button button--ghost" onClick={handleDeleteProject} disabled={deleteMutation.isPending}>
             Delete Project
           </button>
         </div>
@@ -756,6 +799,18 @@ export function ProjectView() {
                     </button>
                   ))}
                 </div>
+                {canDeleteSelectedMix ? (
+                  <div className="button-row">
+                    <button
+                      className="button button--ghost button--small"
+                      onClick={handleDeleteMix}
+                      disabled={deleteMixMutation.isPending}
+                      type="button"
+                    >
+                      {deleteMixMutation.isPending ? "Deleting…" : "Delete Practice Mix"}
+                    </button>
+                  </div>
+                ) : null}
                 <div className="subpanel subpanel--compact">
                   <div className="subpanel__header">
                     <h3>Stem Tracks</h3>

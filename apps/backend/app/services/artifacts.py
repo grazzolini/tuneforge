@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.errors import AppError
 from app.models import Artifact
 from app.utils.ids import new_id
 
@@ -59,3 +60,39 @@ def prune_project_artifacts(
         session.delete(artifact)
         if artifact_path.exists():
             artifact_path.unlink(missing_ok=True)
+
+
+def _cleanup_artifact_path(path: Path) -> None:
+    if path.exists():
+        path.unlink(missing_ok=True)
+    try:
+        path.parent.rmdir()
+    except OSError:
+        pass
+
+
+def delete_project_artifact(session: Session, *, project_id: str, artifact_id: str) -> None:
+    artifact = session.get(Artifact, artifact_id)
+    if artifact is None or artifact.project_id != project_id:
+        raise AppError("ARTIFACT_NOT_FOUND", "Artifact does not belong to this project.", status_code=404)
+    if artifact.type == "source_audio":
+        raise AppError("INVALID_REQUEST", "Source audio cannot be deleted from a project.")
+    if artifact.type != "preview_mix":
+        raise AppError("INVALID_REQUEST", "Only saved practice mixes can be deleted.")
+
+    stmt = select(Artifact).where(
+        Artifact.project_id == project_id,
+        Artifact.type.in_(("vocal_stem", "instrumental_stem")),
+    )
+    related_stems = [
+        stem
+        for stem in session.scalars(stmt)
+        if stem.metadata_json.get("source_artifact_id") == artifact.id
+    ]
+
+    for stem in related_stems:
+        _cleanup_artifact_path(Path(stem.path))
+        session.delete(stem)
+
+    _cleanup_artifact_path(Path(artifact.path))
+    session.delete(artifact)

@@ -3,6 +3,5 @@
   "identifier": "default",
   "description": "Default desktop capabilities for Tuneforge.",
   "windows": ["main"],
-  "permissions": ["dialog:allow-open", "dialog:allow-save"]
+  "permissions": ["dialog:allow-open", "dialog:allow-save", "dialog:allow-message"]
 }
-

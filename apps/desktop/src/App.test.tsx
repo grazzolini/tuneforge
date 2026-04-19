@@ -9,6 +9,7 @@ const {
   resetMockApiState,
   mockOpen,
   mockSave,
+  mockConfirm,
   mockListProjects,
   mockImportProject,
   mockGetProject,
@@ -20,6 +21,7 @@ const {
   mockAnalyzeProject,
   mockUpdateProject,
   mockCreateExport,
+  mockDeleteArtifact,
   mockDeleteProject,
   mockCancelJob,
   mockGetHealth,
@@ -149,6 +151,7 @@ const {
 
   const mockOpen = vi.fn(async (): Promise<string | string[] | null> => null);
   const mockSave = vi.fn(async (): Promise<string | null> => null);
+  const mockConfirm = vi.fn(async (): Promise<boolean> => true);
   const mockGetHealth = vi.fn(async () => ({
     status: "ok",
     api_base_url: "http://127.0.0.1:8765/api/v1",
@@ -306,6 +309,19 @@ const {
     state.jobs.unshift(job);
     return { job: clone(job), request: clone(body) };
   });
+  const mockDeleteArtifact = vi.fn(async (projectId: string, artifactId: string) => {
+    state.artifactsByProject[projectId] = (state.artifactsByProject[projectId] ?? []).filter((artifact) => {
+      if (artifact.id === artifactId) {
+        return false;
+      }
+      const metadata = (artifact.metadata ?? {}) as { source_artifact_id?: string };
+      if ((artifact.type === "vocal_stem" || artifact.type === "instrumental_stem") && metadata.source_artifact_id === artifactId) {
+        return false;
+      }
+      return true;
+    });
+    return { deleted: true };
+  });
   const mockDeleteProject = vi.fn(async (projectId: string) => {
     state.projects = state.projects.filter((project) => project.id !== projectId);
     delete state.analysisByProject[projectId];
@@ -326,6 +342,7 @@ const {
     resetMockApiState,
     mockOpen,
     mockSave,
+    mockConfirm,
     mockListProjects,
     mockImportProject,
     mockGetProject,
@@ -337,6 +354,7 @@ const {
     mockAnalyzeProject,
     mockUpdateProject,
     mockCreateExport,
+    mockDeleteArtifact,
     mockDeleteProject,
     mockCancelJob,
     mockGetHealth,
@@ -346,6 +364,7 @@ const {
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: mockOpen,
   save: mockSave,
+  confirm: mockConfirm,
 }));
 
 vi.mock("./lib/api", async (importOriginal) => {
@@ -366,6 +385,7 @@ vi.mock("./lib/api", async (importOriginal) => {
       analyzeProject: mockAnalyzeProject,
       updateProject: mockUpdateProject,
       createExport: mockCreateExport,
+      deleteArtifact: mockDeleteArtifact,
       deleteProject: mockDeleteProject,
       cancelJob: mockCancelJob,
     },
@@ -395,6 +415,8 @@ describe("App flows", () => {
     document.documentElement.style.colorScheme = "";
     mockOpen.mockReset();
     mockSave.mockReset();
+    mockConfirm.mockReset();
+    mockConfirm.mockResolvedValue(true);
     mockListProjects.mockClear();
     mockImportProject.mockClear();
     mockGetProject.mockClear();
@@ -406,6 +428,7 @@ describe("App flows", () => {
     mockAnalyzeProject.mockClear();
     mockUpdateProject.mockClear();
     mockCreateExport.mockClear();
+    mockDeleteArtifact.mockClear();
     mockDeleteProject.mockClear();
     mockCancelJob.mockClear();
     mockGetHealth.mockClear();
@@ -583,7 +606,25 @@ describe("App flows", () => {
     );
   });
 
-  it("deletes project and returns to library", async () => {
+  it("requires confirmation before deleting a project", async () => {
+    const user = userEvent.setup();
+    mockConfirm.mockResolvedValue(false);
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Delete Project" }));
+
+    expect(mockConfirm).toHaveBeenCalledWith("Delete this project and all of its mixes, stems, and exports?", {
+      title: "Delete project",
+      kind: "warning",
+      okLabel: "Delete",
+      cancelLabel: "Cancel",
+    });
+    expect(mockDeleteProject).not.toHaveBeenCalled();
+    expect(screen.getByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+  });
+
+  it("deletes project after confirmation and returns to library", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);
 
@@ -593,6 +634,43 @@ describe("App flows", () => {
     expect(mockDeleteProject).toHaveBeenCalledWith("proj_123");
     expect(await screen.findByText("Practice Projects")).toBeInTheDocument();
     expect(await screen.findByText("No projects yet")).toBeInTheDocument();
+  });
+
+  it("deletes a practice mix with confirmation and removes its stems", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+
+    const savedMixList = await screen.findByRole("group", { name: "Saved mix list" });
+    expect(within(savedMixList).getByRole("button", { name: /Practice Mix/i })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Delete Practice Mix" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Delete Practice Mix" }));
+
+    expect(mockConfirm).toHaveBeenCalledWith("Delete this practice mix and its stem tracks?", {
+      title: "Delete practice mix",
+      kind: "warning",
+      okLabel: "Delete",
+      cancelLabel: "Cancel",
+    });
+    expect(mockDeleteArtifact).toHaveBeenCalledWith("proj_123", "art_preview");
+    const selectedSummary = screen.getByRole("group", { name: "Selected mix summary" });
+    expect(await within(selectedSummary).findByText("Source Track")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete Practice Mix" })).not.toBeInTheDocument();
+    expect(screen.getByText("No stems yet for selected audio.")).toBeInTheDocument();
+  });
+
+  it("does not offer mix deletion for the source track", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const savedMixList = await screen.findByRole("group", { name: "Saved mix list" });
+    await user.click(within(savedMixList).getByRole("button", { name: /Source Track/i }));
+
+    expect(screen.queryByRole("button", { name: "Delete Practice Mix" })).not.toBeInTheDocument();
   });
 
   it("renders settings and persists theme changes", async () => {

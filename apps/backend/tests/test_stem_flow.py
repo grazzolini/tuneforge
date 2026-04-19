@@ -135,3 +135,109 @@ def test_stem_generation_reports_missing_dependency(client, sample_stereo_audio_
     final_job = wait_for_job(client, stem_job["id"])
     assert final_job["status"] == "failed"
     assert final_job["error_message"] == "Demucs is required for stem separation."
+
+
+def test_deleting_practice_mix_removes_its_stems_only(client, sample_stereo_audio_file: Path, monkeypatch):
+    def fake_separate_two_stems(
+        source_path: Path,
+        vocal_path: Path,
+        instrumental_path: Path,
+        *,
+        model: str,
+        device: str,
+        on_progress=None,
+        should_cancel=None,
+        register_process=None,
+        unregister_process=None,
+    ):
+        signal, sample_rate = sf.read(source_path, always_2d=True)
+        vocal_path.parent.mkdir(parents=True, exist_ok=True)
+        instrumental_path.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(vocal_path, signal * 0.7, sample_rate)
+        sf.write(instrumental_path, signal * 0.3, sample_rate)
+        return {"engine": "demucs", "model": model, "device": device}
+
+    monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
+
+    project = client.post(
+        "/api/v1/projects/import",
+        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
+    ).json()["project"]
+
+    preview_job = client.post(
+        f"/api/v1/projects/{project['id']}/preview",
+        json={"transpose": {"semitones": 1}, "output_format": "wav"},
+    ).json()["job"]
+    assert wait_for_job(client, preview_job["id"])["status"] == "completed"
+
+    artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
+    source_artifact = next(artifact for artifact in artifacts if artifact["type"] == "source_audio")
+    preview_artifact = next(artifact for artifact in artifacts if artifact["type"] == "preview_mix")
+
+    source_stem_job = client.post(
+        f"/api/v1/projects/{project['id']}/stems",
+        json={"mode": "two_stem", "output_format": "wav", "force": False, "source_artifact_id": source_artifact["id"]},
+    ).json()["job"]
+    assert wait_for_job(client, source_stem_job["id"])["status"] == "completed"
+
+    preview_stem_job = client.post(
+        f"/api/v1/projects/{project['id']}/stems",
+        json={"mode": "two_stem", "output_format": "wav", "force": False, "source_artifact_id": preview_artifact["id"]},
+    ).json()["job"]
+    assert wait_for_job(client, preview_stem_job["id"])["status"] == "completed"
+
+    artifacts_with_stems = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
+    preview_vocal = next(
+        artifact
+        for artifact in artifacts_with_stems
+        if artifact["type"] == "vocal_stem" and artifact["metadata"]["source_artifact_id"] == preview_artifact["id"]
+    )
+    preview_instrumental = next(
+        artifact
+        for artifact in artifacts_with_stems
+        if artifact["type"] == "instrumental_stem"
+        and artifact["metadata"]["source_artifact_id"] == preview_artifact["id"]
+    )
+    source_vocal = next(
+        artifact
+        for artifact in artifacts_with_stems
+        if artifact["type"] == "vocal_stem" and artifact["metadata"]["source_artifact_id"] == source_artifact["id"]
+    )
+
+    assert Path(preview_artifact["path"]).exists()
+    assert Path(preview_vocal["path"]).exists()
+    assert Path(preview_instrumental["path"]).exists()
+    assert Path(source_vocal["path"]).exists()
+
+    response = client.delete(f"/api/v1/projects/{project['id']}/artifacts/{preview_artifact['id']}")
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted": True}
+    assert not Path(preview_artifact["path"]).exists()
+    assert not Path(preview_vocal["path"]).exists()
+    assert not Path(preview_instrumental["path"]).exists()
+    assert Path(source_vocal["path"]).exists()
+
+    remaining_artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
+    remaining_ids = {artifact["id"] for artifact in remaining_artifacts}
+    assert preview_artifact["id"] not in remaining_ids
+    assert preview_vocal["id"] not in remaining_ids
+    assert preview_instrumental["id"] not in remaining_ids
+    assert source_artifact["id"] in remaining_ids
+    assert source_vocal["id"] in remaining_ids
+
+
+def test_source_audio_cannot_be_deleted_from_project(client, sample_audio_file: Path):
+    project = client.post(
+        "/api/v1/projects/import",
+        json={"source_path": str(sample_audio_file), "copy_into_project": True},
+    ).json()["project"]
+
+    artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
+    source_artifact = next(artifact for artifact in artifacts if artifact["type"] == "source_audio")
+
+    response = client.delete(f"/api/v1/projects/{project['id']}/artifacts/{source_artifact['id']}")
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_REQUEST"
+    assert response.json()["error"]["message"] == "Source audio cannot be deleted from a project."

@@ -130,6 +130,12 @@ export const api = {
     unwrap(client.POST("/api/v1/projects/{project_id}/transpose", { params: { path: { project_id: projectId } }, body })),
   listArtifacts: (projectId: string) =>
     unwrap(client.GET("/api/v1/projects/{project_id}/artifacts", { params: { path: { project_id: projectId } } })),
+  deleteArtifact: (projectId: string, artifactId: string) =>
+    unwrap(
+      client.DELETE("/api/v1/projects/{project_id}/artifacts/{artifact_id}", {
+        params: { path: { project_id: projectId, artifact_id: artifactId } },
+      }),
+    ),
   createExport: (projectId: string, body: ExportRequest) =>
     unwrap(client.POST("/api/v1/projects/{project_id}/export", { params: { path: { project_id: projectId } }, body })),
   listJobs: () => unwrap(client.GET("/api/v1/jobs")),

@@ -22,6 +22,9 @@ apps/backend/.pytest_cache/
 apps/backend/.mypy_cache/
 apps/backend/.ruff_cache/
 apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/resources/*
+!apps/desktop/src-tauri/resources/.gitkeep
+!apps/desktop/src-tauri/resources/placeholder.txt
 apps/desktop/src-tauri/gen/
 packages/shared-types/openapi.json
 data/

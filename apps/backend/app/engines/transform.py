@@ -5,6 +5,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
+from app.config import get_settings
 from app.errors import AppError, JobCancelledError
 
 
@@ -46,7 +47,7 @@ def run_ffmpeg_transform(
     destination_path.parent.mkdir(parents=True, exist_ok=True)
     filter_graph = build_pitch_filter(sample_rate, total_cents)
     command = [
-        "ffmpeg",
+        get_settings().ffmpeg_path,
         "-y",
         "-i",
         str(source_path),

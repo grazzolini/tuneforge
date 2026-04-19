@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import status
 
+from app.config import get_settings
 from app.errors import AppError
 
 
@@ -19,7 +20,7 @@ def extract_audio_metadata(source_path: Path) -> dict[str, Any]:
         )
 
     command = [
-        "ffprobe",
+        get_settings().ffprobe_path,
         "-v",
         "error",
         "-select_streams",
@@ -62,7 +63,7 @@ def extract_audio_metadata(source_path: Path) -> dict[str, Any]:
 def normalize_media_to_wav(source_path: Path, destination_path: Path) -> None:
     destination_path.parent.mkdir(parents=True, exist_ok=True)
     command = [
-        "ffmpeg",
+        get_settings().ffmpeg_path,
         "-y",
         "-i",
         str(source_path),

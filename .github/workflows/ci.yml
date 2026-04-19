@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Sync backend dependencies
+        working-directory: apps/backend
+        run: uv sync --locked --all-groups
+
+      - name: Lint backend
+        working-directory: apps/backend
+        run: uv run --python 3.11 ruff check .
+
+      - name: Type-check backend
+        working-directory: apps/backend
+        run: uv run --python 3.11 mypy app
+
+      - name: Test backend
+        working-directory: apps/backend
+        run: uv run --python 3.11 pytest
+
+  desktop:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Sync backend dependencies for OpenAPI generation
+        working-directory: apps/backend
+        run: uv sync --locked --all-groups
+
+      - name: Generate shared contracts
+        run: pnpm contracts:generate
+
+      - name: Verify generated contracts are committed
+        run: git diff --exit-code -- packages/shared-types/src/generated/openapi.ts
+
+      - name: Lint desktop
+        run: pnpm --filter @tuneforge/desktop lint
+
+      - name: Type-check desktop
+        run: pnpm --filter @tuneforge/desktop typecheck
+
+      - name: Test desktop
+        run: pnpm --filter @tuneforge/desktop test --run

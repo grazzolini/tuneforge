@@ -69,7 +69,7 @@ export function LibraryView() {
           <p className="eyebrow">Library</p>
           <h1>Practice Projects</h1>
           <p className="screen__subtitle">
-            Import a local song, analyze its tuning, build a preview, and export a practice-ready mix.
+            Import a local song, save alternate mixes, and keep practice versions ready to play.
           </p>
         </div>
         <button

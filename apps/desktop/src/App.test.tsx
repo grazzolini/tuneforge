@@ -569,7 +569,7 @@ describe("App flows", () => {
     expect(await screen.findByText("Saved Mixes")).toBeInTheDocument();
     const savedMixList = await screen.findByRole("group", { name: "Saved mix list" });
     await user.click(within(savedMixList).getByRole("button", { name: /Source Track/i }));
-    await user.click(screen.getByText("Export or inspect stored files"));
+    await user.click(screen.getByText("Export and file details"));
     await user.click(screen.getByRole("button", { name: "Export Selected Audio" }));
 
     expect(mockSave).toHaveBeenCalled();

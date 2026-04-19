@@ -492,7 +492,7 @@ export function ProjectView() {
             </div>
           )}
           <p className="screen__subtitle">
-            Build and keep saved practice mixes inside the app. Export is still available, but it is no longer the main path.
+            Keep alternate practice mixes ready to play, compare, and revisit inside the project.
           </p>
         </div>
 
@@ -838,7 +838,7 @@ export function ProjectView() {
             </div>
 
             <details className="details-block">
-              <summary>Export or inspect stored files</summary>
+              <summary>Export and file details</summary>
               <div className="details-stack">
                 <div className="subpanel subpanel--compact">
                   <div className="subpanel__header">

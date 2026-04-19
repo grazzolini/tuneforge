@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from typing import Any
 
 
-def with_mps_fallback_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
+def with_mps_fallback_env(base_env: Mapping[str, str] | None = None) -> dict[str, str]:
     env = dict(base_env or os.environ)
     env.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     return env
@@ -18,7 +19,9 @@ def choose_torch_device(requested: str = "auto", *, torch_module: Any) -> str:
 
     backends = getattr(torch_module, "backends", None)
     mps_backend = getattr(backends, "mps", None) if backends is not None else None
-    has_mps = bool(mps_backend) and bool(mps_backend.is_available())
+    has_mps = False
+    if mps_backend is not None and hasattr(mps_backend, "is_available"):
+        has_mps = bool(mps_backend.is_available())
     has_cuda = bool(torch_module.cuda.is_available())
 
     if requested == "auto":

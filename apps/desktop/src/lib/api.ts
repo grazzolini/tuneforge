@@ -1,7 +1,10 @@
 import createClient from "openapi-fetch";
+import { invoke } from "@tauri-apps/api/core";
 import type { components, paths } from "@tuneforge/shared-types";
 
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8765";
+const DEFAULT_API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8765";
+let apiBaseUrl = DEFAULT_API_BASE_URL;
+let runtimeInitPromise: Promise<string> | null = null;
 
 type ErrorResponse = {
   error: {
@@ -30,7 +33,7 @@ export type ExportRequest = components["schemas"]["ExportRequest"];
 export type ProjectUpdateRequest = components["schemas"]["ProjectUpdateRequest"];
 export type StemRequest = components["schemas"]["StemRequest"];
 
-const client = createClient<paths>({ baseUrl: API_BASE_URL });
+let client = createClient<paths>({ baseUrl: apiBaseUrl });
 
 export class ApiError extends Error {
   code: string;
@@ -65,6 +68,37 @@ async function unwrap<T>(promise: Promise<{ data?: T; error?: unknown }>): Promi
     throw new Error("The backend returned an empty response.");
   }
   return data;
+}
+
+function isTauriRuntime() {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+export async function initializeApi() {
+  if (!runtimeInitPromise) {
+    runtimeInitPromise = (async () => {
+      if (!isTauriRuntime()) {
+        return apiBaseUrl;
+      }
+
+      try {
+        const resolved = await invoke<string>("backend_base_url");
+        apiBaseUrl = resolved;
+        client = createClient<paths>({ baseUrl: apiBaseUrl });
+      } catch {
+        apiBaseUrl = DEFAULT_API_BASE_URL;
+        client = createClient<paths>({ baseUrl: apiBaseUrl });
+      }
+
+      return apiBaseUrl;
+    })();
+  }
+
+  return runtimeInitPromise;
+}
+
+export function getApiBaseUrl() {
+  return apiBaseUrl;
 }
 
 export const api = {
@@ -102,5 +136,5 @@ export const api = {
   getJob: (jobId: string) => unwrap(client.GET("/api/v1/jobs/{job_id}", { params: { path: { job_id: jobId } } })),
   cancelJob: (jobId: string) =>
     unwrap(client.POST("/api/v1/jobs/{job_id}/cancel", { params: { path: { job_id: jobId } } })),
-  streamArtifactUrl: (artifactId: string) => `${API_BASE_URL}/api/v1/artifacts/${artifactId}/stream`,
+  streamArtifactUrl: (artifactId: string) => `${getApiBaseUrl()}/api/v1/artifacts/${artifactId}/stream`,
 };

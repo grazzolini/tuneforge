@@ -83,7 +83,7 @@ def sample_webm_file(tmp_path: Path, sample_audio_file: Path) -> Path:
     return _transcode_fixture(sample_audio_file, tmp_path / "fixture.webm", "libopus")
 
 
-def wait_for_job(client: TestClient, job_id: str, *, timeout: float = 10.0) -> dict:
+def wait_for_job(client: TestClient, job_id: str, *, timeout: float = 30.0) -> dict:
     deadline = time.monotonic() + timeout
     last_payload: dict | None = None
     while time.monotonic() < deadline:

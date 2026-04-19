@@ -59,6 +59,35 @@ def sample_stereo_audio_file(tmp_path: Path) -> Path:
     return output_path
 
 
+@pytest.fixture()
+def sample_chord_audio_file(tmp_path: Path) -> Path:
+    sample_rate = 44100
+    segment_duration = 1.6
+    fade_in = int(sample_rate * 0.03)
+    fade_out = int(sample_rate * 0.08)
+    chord_progression = [
+        [261.63, 329.63, 392.0],
+        [196.0, 246.94, 293.66],
+        [220.0, 261.63, 329.63],
+        [174.61, 220.0, 261.63],
+    ]
+    segments: list[np.ndarray] = []
+    for frequencies in chord_progression:
+        timeline = np.linspace(0, segment_duration, int(sample_rate * segment_duration), endpoint=False)
+        envelope = np.ones_like(timeline)
+        envelope[:fade_in] = np.linspace(0.0, 1.0, fade_in, endpoint=False)
+        envelope[-fade_out:] = np.linspace(1.0, 0.0, fade_out, endpoint=False)
+        signal = np.zeros_like(timeline)
+        for frequency in frequencies:
+            signal += 0.22 * np.sin(2 * np.pi * frequency * timeline)
+            signal += 0.07 * np.sin(2 * np.pi * frequency * 2.0 * timeline)
+        segments.append((signal * envelope).astype(np.float32))
+
+    output_path = tmp_path / "fixture_chords.wav"
+    sf.write(output_path, np.concatenate(segments), sample_rate)
+    return output_path
+
+
 def _transcode_fixture(source_path: Path, destination_path: Path, codec: str) -> Path:
     command = [
         "ffmpeg",

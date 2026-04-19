@@ -92,6 +92,36 @@ class AnalysisResponse(BaseModel):
     analysis: AnalysisSchema | None
 
 
+class ChordRequest(BaseModel):
+    backend: str = "default"
+    force: bool = False
+
+    @model_validator(mode="after")
+    def validate_backend(self) -> ChordRequest:
+        if self.backend != "default":
+            raise ValueError("Only the default chord backend is supported in v1.")
+        return self
+
+
+class ChordSegmentSchema(BaseModel):
+    start_seconds: float
+    end_seconds: float
+    label: str
+    confidence: float | None = None
+    pitch_class: int | None = None
+    quality: str | None = None
+
+
+class ChordResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    project_id: str
+    timeline: list[ChordSegmentSchema] = Field(default_factory=list, validation_alias="timeline_json")
+    backend: str | None = None
+    source_artifact_id: str | None = None
+    created_at: datetime | None = None
+
+
 class JobSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

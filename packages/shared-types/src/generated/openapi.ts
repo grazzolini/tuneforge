@@ -108,6 +108,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/chords": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Project Chords Detail */
+        get: operations["project_chords_detail_api_v1_projects__project_id__chords_get"];
+        put?: never;
+        /** Project Chords */
+        post: operations["project_chords_api_v1_projects__project_id__chords_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/retune": {
         parameters: {
             query?: never;
@@ -364,6 +382,47 @@ export interface components {
         ArtifactsResponse: {
             /** Artifacts */
             artifacts: components["schemas"]["ArtifactSchema"][];
+        };
+        /** ChordRequest */
+        ChordRequest: {
+            /**
+             * Backend
+             * @default default
+             */
+            backend: string;
+            /**
+             * Force
+             * @default false
+             */
+            force: boolean;
+        };
+        /** ChordResponse */
+        ChordResponse: {
+            /** Project Id */
+            project_id: string;
+            /** Timeline */
+            timeline?: components["schemas"]["ChordSegmentSchema"][];
+            /** Backend */
+            backend?: string | null;
+            /** Source Artifact Id */
+            source_artifact_id?: string | null;
+            /** Created At */
+            created_at?: string | null;
+        };
+        /** ChordSegmentSchema */
+        ChordSegmentSchema: {
+            /** Start Seconds */
+            start_seconds: number;
+            /** End Seconds */
+            end_seconds: number;
+            /** Label */
+            label: string;
+            /** Confidence */
+            confidence?: number | null;
+            /** Pitch Class */
+            pitch_class?: number | null;
+            /** Quality */
+            quality?: string | null;
         };
         /** DeleteResponse */
         DeleteResponse: {
@@ -815,6 +874,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AnalysisResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    project_chords_detail_api_v1_projects__project_id__chords_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChordResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    project_chords_api_v1_projects__project_id__chords_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChordRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobResponse"];
                 };
             };
             /** @description Validation Error */

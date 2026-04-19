@@ -6,13 +6,15 @@ from sqlalchemy.orm import Session
 
 from app.dependencies import get_db, get_job_runner
 from app.errors import AppError
-from app.models import AnalysisResult, Artifact
+from app.models import AnalysisResult, Artifact, ChordTimeline
 from app.schemas import (
     AnalysisRequest,
     AnalysisResponse,
     AnalysisSchema,
     ArtifactSchema,
     ArtifactsResponse,
+    ChordRequest,
+    ChordResponse,
     DeleteResponse,
     ExportRequest,
     JobResponse,
@@ -102,6 +104,35 @@ def project_analysis(project_id: str, session: Session = Depends(get_db)) -> Ana
     get_project(session, project_id)
     analysis = session.get(AnalysisResult, project_id)
     return AnalysisResponse(analysis=AnalysisSchema.model_validate(analysis) if analysis else None)
+
+
+@router.post("/{project_id}/chords", response_model=JobResponse)
+def project_chords(
+    project_id: str,
+    payload: ChordRequest,
+    session: Session = Depends(get_db),
+    runner=Depends(get_job_runner),
+) -> JobResponse:
+    get_project(session, project_id)
+    job = runner.create_job(
+        session,
+        project_id=project_id,
+        job_type="chords",
+        payload=payload.model_dump(),
+    )
+    session.commit()
+    session.refresh(job)
+    runner.enqueue(job.id)
+    return JobResponse(job=JobSchema.model_validate(job))
+
+
+@router.get("/{project_id}/chords", response_model=ChordResponse)
+def project_chords_detail(project_id: str, session: Session = Depends(get_db)) -> ChordResponse:
+    get_project(session, project_id)
+    chords = session.get(ChordTimeline, project_id)
+    if chords is None:
+        return ChordResponse(project_id=project_id, timeline=[], backend=None, source_artifact_id=None, created_at=None)
+    return ChordResponse.model_validate(chords)
 
 
 @router.post("/{project_id}/retune", response_model=JobResponse)

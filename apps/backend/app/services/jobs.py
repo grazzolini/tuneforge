@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.errors import AppError, JobCancelledError
 from app.models import Job
 from app.services.analysis import analyze_project
+from app.services.chords import detect_project_chords
 from app.services.projects import get_project
 from app.services.stems import generate_stems
 from app.services.transformations import (
@@ -61,6 +62,7 @@ class InProcessJobRunner:
         self._thread = threading.Thread(target=self._worker, name="tuneforge-job-runner", daemon=True)
         self._handlers: dict[str, JobHandler] = {
             "analyze": self._handle_analyze,
+            "chords": self._handle_chords,
             "preview": self._handle_preview,
             "retune": self._handle_single_transform,
             "transpose": self._handle_single_transform,
@@ -239,6 +241,13 @@ class InProcessJobRunner:
             unregister_process=context.unregister_process,
         )
         return [artifact.id]
+
+    def _handle_chords(self, context: JobExecutionContext, session: Session, job: Job) -> list[str]:
+        project = get_project(session, job.project_id or "")
+        context.set_progress(20)
+        detect_project_chords(session, project, force=bool(job.payload_json.get("force", False)))
+        context.set_progress(90)
+        return []
 
     def _handle_single_transform(self, context: JobExecutionContext, session: Session, job: Job) -> list[str]:
         project = get_project(session, job.project_id or "")

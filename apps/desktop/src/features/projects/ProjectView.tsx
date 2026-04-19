@@ -2,15 +2,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { confirm, save } from "@tauri-apps/plugin-dialog";
-import { api, type ArtifactSchema, type JobSchema } from "../../lib/api";
+import { api, type ArtifactSchema, type ChordSegmentSchema, type JobSchema } from "../../lib/api";
 import {
   DEFAULT_KEY,
   MUSICAL_KEYS,
   deserializeKey,
+  formatChordLabel,
   formatKey,
   parseKey,
   semitoneDelta,
   serializeKey,
+  transposePitchClass,
   transposeKey,
   type MusicalKey,
 } from "../../lib/music";
@@ -26,6 +28,7 @@ function useActiveJobPolling(projectId: string, jobs: JobSchema[] | undefined) {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["jobs"] }),
         queryClient.invalidateQueries({ queryKey: ["analysis", projectId] }),
+        queryClient.invalidateQueries({ queryKey: ["chords", projectId] }),
         queryClient.invalidateQueries({ queryKey: ["artifacts", projectId] }),
         queryClient.invalidateQueries({ queryKey: ["project", projectId] }),
         queryClient.invalidateQueries({ queryKey: ["projects"] }),
@@ -131,6 +134,43 @@ function sourceArtifactIdForStems(artifact: ArtifactSchema | null) {
   return null;
 }
 
+function artifactById(artifacts: ArtifactSchema[], artifactId: string | null | undefined) {
+  if (!artifactId) return null;
+  return artifacts.find((artifact) => artifact.id === artifactId) ?? null;
+}
+
+function artifactTransposeSemitones(artifact: ArtifactSchema | null, artifacts: ArtifactSchema[], depth = 0): number {
+  if (!artifact || depth > 4) return 0;
+  if (artifact.type === "preview_mix" || artifact.type === "export_mix") {
+    const semitones = artifact.metadata?.transpose?.semitones;
+    return typeof semitones === "number" ? semitones : 0;
+  }
+  if (artifact.type === "vocal_stem" || artifact.type === "instrumental_stem") {
+    const sourceArtifactId = artifact.metadata?.source_artifact_id;
+    return artifactTransposeSemitones(artifactById(artifacts, typeof sourceArtifactId === "string" ? sourceArtifactId : null), artifacts, depth + 1);
+  }
+  return 0;
+}
+
+function transposeChordSegment(segment: ChordSegmentSchema, semitones: number): ChordSegmentSchema {
+  if (!semitones || typeof segment.pitch_class !== "number" || (segment.quality !== "major" && segment.quality !== "minor")) {
+    return segment;
+  }
+  const pitchClass = transposePitchClass(segment.pitch_class, semitones);
+  return {
+    ...segment,
+    pitch_class: pitchClass,
+    label: formatChordLabel(pitchClass, segment.quality),
+  };
+}
+
+function findActiveChordIndex(timeline: ChordSegmentSchema[], playbackTimeSeconds: number) {
+  return timeline.findIndex((segment, index) => {
+    const isLast = index === timeline.length - 1;
+    return playbackTimeSeconds >= segment.start_seconds && (playbackTimeSeconds < segment.end_seconds || isLast);
+  });
+}
+
 function buildRequestedRetune(
   retuneMode: "off" | "reference" | "cents",
   referenceHz: string,
@@ -198,6 +238,7 @@ export function ProjectView() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const chordSegmentRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const [retuneMode, setRetuneMode] = useState<"off" | "reference" | "cents">("off");
   const [referenceHz, setReferenceHz] = useState("440");
   const [centsOffset, setCentsOffset] = useState("0");
@@ -220,6 +261,11 @@ export function ProjectView() {
   const analysisQuery = useQuery({
     queryKey: ["analysis", projectId],
     queryFn: async () => (await api.getAnalysis(projectId)).analysis,
+    enabled: Boolean(projectId),
+  });
+  const chordsQuery = useQuery({
+    queryKey: ["chords", projectId],
+    queryFn: async () => api.getChords(projectId),
     enabled: Boolean(projectId),
   });
   const artifactsQuery = useQuery({
@@ -248,6 +294,16 @@ export function ProjectView() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["project", projectId] }),
         queryClient.invalidateQueries({ queryKey: ["projects"] }),
+      ]);
+    },
+  });
+
+  const chordMutation = useMutation({
+    mutationFn: async () => api.createChords(projectId, { backend: "default", force: false }),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
+        queryClient.invalidateQueries({ queryKey: ["chords", projectId] }),
       ]);
     },
   });
@@ -354,6 +410,7 @@ export function ProjectView() {
     [jobsQuery.data, projectId],
   );
   const analyzeJob = projectJobs.find((job) => job.type === "analyze");
+  const chordJob = projectJobs.find((job) => job.type === "chords");
   const stemJob = projectJobs.find((job) => job.type === "stems");
   const displayArtifacts = useMemo(() => {
     const artifacts = artifactsQuery.data ?? [];
@@ -394,6 +451,7 @@ export function ProjectView() {
   const requestedRetune = buildRequestedRetune(retuneMode, referenceHz, centsOffset);
   const hasTransformChange = retuneMode !== "off" || transposeSemitones !== 0;
   const isAnalysisRunning = Boolean(analyzeJob && ["pending", "running"].includes(analyzeJob.status));
+  const isChordRunning = Boolean(chordJob && ["pending", "running"].includes(chordJob.status));
   const isStemRunning = Boolean(stemJob && ["pending", "running"].includes(stemJob.status));
   const currentKeyValue = manualSourceKey
     ? serializeKey(manualSourceKey)
@@ -440,6 +498,24 @@ export function ProjectView() {
   const playbackClockSummary = `${formatPlaybackClock(playbackTimeSeconds)} / ${formatPlaybackClock(
     playbackDurationSeconds || projectQuery.data?.duration_seconds || 0,
   )}`;
+  const chordTransposeSemitones = artifactTransposeSemitones(selectedArtifact, selectableArtifacts);
+  const displayedChords = useMemo(
+    () => (chordsQuery.data?.timeline ?? []).map((segment) => transposeChordSegment(segment, chordTransposeSemitones)),
+    [chordTransposeSemitones, chordsQuery.data?.timeline],
+  );
+  const activeChordIndex = findActiveChordIndex(displayedChords, playbackTimeSeconds);
+  const currentChord = activeChordIndex >= 0 ? displayedChords[activeChordIndex] : displayedChords[0] ?? null;
+  const nextChord =
+    activeChordIndex >= 0
+      ? displayedChords[activeChordIndex + 1] ?? null
+      : displayedChords.length > 1
+        ? displayedChords[1]
+        : null;
+  const hasChordTimeline = displayedChords.length > 0;
+  const chordContextCopy =
+    chordTransposeSemitones === 0
+      ? "Chord names match the source arrangement."
+      : `Chord names follow the selected mix (${formatSemitoneShift(chordTransposeSemitones).toLowerCase()}).`;
 
   async function handleDeleteProject() {
     const approved = await confirm("Delete this project and all of its mixes, stems, and exports?", {
@@ -520,6 +596,22 @@ export function ProjectView() {
       audioRef.current.currentTime = 0;
     }
   }, [selectedArtifact?.id]);
+
+  useEffect(() => {
+    if (activeChordIndex < 0) {
+      return;
+    }
+    const activeSegment = displayedChords[activeChordIndex];
+    if (!activeSegment) {
+      return;
+    }
+    const activeElement = chordSegmentRefs.current[`${activeSegment.start_seconds}-${activeSegment.label}-${activeChordIndex}`];
+    activeElement?.scrollIntoView({
+      behavior: "smooth",
+      block: "nearest",
+      inline: "center",
+    });
+  }, [activeChordIndex, displayedChords]);
 
   return (
     <section className="screen">
@@ -700,33 +792,79 @@ export function ProjectView() {
                   <div className="playback-stage__lane-header">
                     <div>
                       <p className="metric-label">Chord Lane</p>
-                      <h3>Real-time display lands here next</h3>
+                      <h3>Follow harmony while the mix plays</h3>
                     </div>
-                    <span className="artifact-meta">Playback sync ready for detected timeline</span>
+                    <div className="button-row">
+                      <button
+                        className="button button--small"
+                        type="button"
+                        onClick={() => chordMutation.mutate()}
+                        disabled={chordMutation.isPending || isChordRunning}
+                      >
+                        {chordMutation.isPending || isChordRunning
+                          ? "Generating…"
+                          : hasChordTimeline
+                            ? "Refresh Chords"
+                            : "Generate Chords"}
+                      </button>
+                    </div>
                   </div>
 
                   <div className="chord-preview-grid">
-                    <div className="chord-card">
+                    <div className="chord-card" role="group" aria-label="Current chord card">
                       <span className="metric-label">Current Chord</span>
-                      <strong>—</strong>
+                      <strong>{currentChord?.label ?? "—"}</strong>
                     </div>
-                    <div className="chord-card">
+                    <div className="chord-card" role="group" aria-label="Next chord card">
                       <span className="metric-label">Next Chord</span>
-                      <strong>—</strong>
+                      <strong>{nextChord?.label ?? "—"}</strong>
                     </div>
                   </div>
 
-                  <div className="chord-lane-placeholder">
-                    <div className="chord-lane-placeholder__bar">
-                      <span className="chord-lane-placeholder__segment">Verse</span>
-                      <span className="chord-lane-placeholder__segment">Pre</span>
-                      <span className="chord-lane-placeholder__segment">Chorus</span>
-                      <span className="chord-lane-placeholder__segment">Bridge</span>
-                    </div>
-                    <p className="artifact-meta">
-                      Chord detection will add a clickable timeline here. Playback will highlight the active segment in real time.
-                    </p>
+                  <div className="chord-context">
+                    <span className="artifact-meta">{chordContextCopy}</span>
                   </div>
+
+                  {hasChordTimeline ? (
+                    <div className="chord-timeline" role="group" aria-label="Chord timeline">
+                      {displayedChords.map((segment, index) => {
+                        const durationWeight = Math.max(0.9, segment.end_seconds - segment.start_seconds);
+                        const isActive = index === activeChordIndex;
+                        return (
+                          <button
+                            key={`${segment.start_seconds}-${segment.label}-${index}`}
+                            className={`chord-segment${isActive ? " chord-segment--active" : ""}`}
+                            type="button"
+                            style={{ flexGrow: durationWeight }}
+                            aria-pressed={isActive}
+                            ref={(element) => {
+                              chordSegmentRefs.current[`${segment.start_seconds}-${segment.label}-${index}`] = element;
+                            }}
+                            onClick={() => {
+                              if (audioRef.current) {
+                                audioRef.current.currentTime = segment.start_seconds;
+                                setPlaybackTimeSeconds(segment.start_seconds);
+                              }
+                            }}
+                          >
+                            <span>{segment.label}</span>
+                            <small>{formatPlaybackClock(segment.start_seconds)}</small>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="chord-lane-empty">
+                      <p className="artifact-meta">Generate a chord timeline to jump around the song while you practice.</p>
+                    </div>
+                  )}
+
+                  {chordsQuery.data?.created_at ? (
+                    <p className="artifact-meta">Last chord pass: {formatArtifactTimestamp(chordsQuery.data.created_at)}</p>
+                  ) : null}
+                  {chordJob?.error_message ? (
+                    <p className="inline-error">{chordJob.error_message}</p>
+                  ) : null}
                 </div>
 
                 <audio

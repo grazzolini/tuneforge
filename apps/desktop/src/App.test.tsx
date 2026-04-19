@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -14,8 +14,10 @@ const {
   mockImportProject,
   mockGetProject,
   mockGetAnalysis,
+  mockGetChords,
   mockListArtifacts,
   mockListJobs,
+  mockCreateChords,
   mockCreatePreview,
   mockCreateStems,
   mockAnalyzeProject,
@@ -25,11 +27,13 @@ const {
   mockDeleteProject,
   mockCancelJob,
   mockGetHealth,
+  setChordTimeline,
 } = vi.hoisted(() => {
   const createdAt = "2026-04-18T13:16:00.000Z";
   let state: {
     projects: Array<Record<string, unknown>>;
     analysisByProject: Record<string, Record<string, unknown> | null>;
+    chordsByProject: Record<string, Record<string, unknown>>;
     artifactsByProject: Record<string, Array<Record<string, unknown>>>;
     jobs: Array<Record<string, unknown>>;
     nextProjectId: number;
@@ -69,6 +73,29 @@ const {
     };
   }
 
+  function makeChordTimeline(projectId: string) {
+    return {
+      project_id: projectId,
+      backend: "default",
+      source_artifact_id: "art_source",
+      created_at: createdAt,
+      timeline: [
+        { start_seconds: 0, end_seconds: 16, label: "G", confidence: 0.81, pitch_class: 7, quality: "major" },
+        { start_seconds: 16, end_seconds: 32, label: "D", confidence: 0.79, pitch_class: 2, quality: "major" },
+        { start_seconds: 32, end_seconds: 48, label: "Em", confidence: 0.74, pitch_class: 4, quality: "minor" },
+        { start_seconds: 48, end_seconds: 64, label: "C", confidence: 0.76, pitch_class: 0, quality: "major" },
+      ],
+    };
+  }
+
+  function setChordTimeline(projectId: string, timeline: Record<string, unknown> | null) {
+    if (timeline === null) {
+      delete state.chordsByProject[projectId];
+      return;
+    }
+    state.chordsByProject[projectId] = clone(timeline);
+  }
+
   function resetMockApiState() {
     const demoProject = makeProject("proj_123", "Demo Song", "/tmp/demo.wav");
     state = {
@@ -84,6 +111,9 @@ const {
           analysis_version: "v1",
           created_at: createdAt,
         },
+      },
+      chordsByProject: {
+        proj_123: makeChordTimeline("proj_123"),
       },
       artifactsByProject: {
         proj_123: [
@@ -191,8 +221,34 @@ const {
   });
   const mockGetProject = vi.fn(async (projectId: string) => ({ project: clone(getProjectOrThrow(projectId)) }));
   const mockGetAnalysis = vi.fn(async (projectId: string) => ({ analysis: clone(state.analysisByProject[projectId] ?? null) }));
+  const mockGetChords = vi.fn(async (projectId: string) =>
+    clone(
+      state.chordsByProject[projectId] ?? {
+        project_id: projectId,
+        backend: null,
+        source_artifact_id: null,
+        created_at: null,
+        timeline: [],
+      },
+    ),
+  );
   const mockListArtifacts = vi.fn(async (projectId: string) => ({ artifacts: clone(state.artifactsByProject[projectId] ?? []) }));
   const mockListJobs = vi.fn(async () => ({ jobs: clone(state.jobs) }));
+  const mockCreateChords = vi.fn(async (projectId: string) => {
+    state.chordsByProject[projectId] = makeChordTimeline(projectId);
+    const job = {
+      id: `job_${state.nextJobId++}`,
+      project_id: projectId,
+      type: "chords",
+      status: "completed",
+      progress: 100,
+      error_message: null,
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    state.jobs.unshift(job);
+    return { job: clone(job) };
+  });
   const mockCreatePreview = vi.fn(async (projectId: string, body: Record<string, unknown>) => {
     const artifact = {
       id: `art_${state.nextArtifactId++}`,
@@ -347,8 +403,10 @@ const {
     mockImportProject,
     mockGetProject,
     mockGetAnalysis,
+    mockGetChords,
     mockListArtifacts,
     mockListJobs,
+    mockCreateChords,
     mockCreatePreview,
     mockCreateStems,
     mockAnalyzeProject,
@@ -358,6 +416,7 @@ const {
     mockDeleteProject,
     mockCancelJob,
     mockGetHealth,
+    setChordTimeline,
   };
 });
 
@@ -378,8 +437,10 @@ vi.mock("./lib/api", async (importOriginal) => {
       importProject: mockImportProject,
       getProject: mockGetProject,
       getAnalysis: mockGetAnalysis,
+      getChords: mockGetChords,
       listArtifacts: mockListArtifacts,
       listJobs: mockListJobs,
+      createChords: mockCreateChords,
       createPreview: mockCreatePreview,
       createStems: mockCreateStems,
       analyzeProject: mockAnalyzeProject,
@@ -421,8 +482,10 @@ describe("App flows", () => {
     mockImportProject.mockClear();
     mockGetProject.mockClear();
     mockGetAnalysis.mockClear();
+    mockGetChords.mockClear();
     mockListArtifacts.mockClear();
     mockListJobs.mockClear();
+    mockCreateChords.mockClear();
     mockCreatePreview.mockClear();
     mockCreateStems.mockClear();
     mockAnalyzeProject.mockClear();
@@ -504,6 +567,58 @@ describe("App flows", () => {
         transpose: { semitones: 1 },
       }),
     );
+  });
+
+  it("transposes chord display for the selected mix and source track", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    expect(await screen.findByRole("group", { name: "Chord timeline" })).toBeInTheDocument();
+    const currentChordCard = screen.getByRole("group", { name: "Current chord card" });
+    const nextChordCard = screen.getByRole("group", { name: "Next chord card" });
+    expect(within(currentChordCard).getByText("A")).toBeInTheDocument();
+    expect(within(nextChordCard).getByText("E")).toBeInTheDocument();
+
+    const savedMixList = await screen.findByRole("group", { name: "Saved mix list" });
+    await user.click(within(savedMixList).getByRole("button", { name: /Source Track/i }));
+
+    expect(within(currentChordCard).getByText("G")).toBeInTheDocument();
+    expect(within(nextChordCard).getByText("D")).toBeInTheDocument();
+  });
+
+  it("recenters the chord lane when a later chord becomes active", async () => {
+    const user = userEvent.setup();
+    const scrollIntoViewMock = vi.mocked(window.HTMLElement.prototype.scrollIntoView);
+    scrollIntoViewMock.mockClear();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const chordTimeline = screen.getByRole("group", { name: "Chord timeline" });
+    const chordButtons = within(chordTimeline).getAllByRole("button");
+    await user.click(chordButtons[chordButtons.length - 1]);
+
+    await waitFor(() => {
+      const currentChordCard = screen.getByRole("group", { name: "Current chord card" });
+      const nextChordCard = screen.getByRole("group", { name: "Next chord card" });
+      expect(within(currentChordCard).getByText("D")).toBeInTheDocument();
+      expect(within(nextChordCard).getByText("—")).toBeInTheDocument();
+    });
+    expect(scrollIntoViewMock).toHaveBeenCalled();
+  });
+
+  it("queues chord detection when the project has no saved chord timeline", async () => {
+    const user = userEvent.setup();
+    setChordTimeline("proj_123", null);
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    expect(screen.getByText("Generate a chord timeline to jump around the song while you practice.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Generate Chords" }));
+
+    expect(mockCreateChords).toHaveBeenCalledWith("proj_123", { backend: "default", force: false });
   });
 
   it("generates stems and lets the app select them", async () => {

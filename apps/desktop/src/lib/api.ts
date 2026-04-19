@@ -25,6 +25,8 @@ type ValidationErrorResponse = {
 export type HealthResponse = components["schemas"]["HealthResponse"];
 export type ProjectSchema = components["schemas"]["ProjectSchema"];
 export type AnalysisSchema = components["schemas"]["AnalysisSchema"];
+export type ChordResponse = components["schemas"]["ChordResponse"];
+export type ChordSegmentSchema = components["schemas"]["ChordSegmentSchema"];
 export type ArtifactSchema = components["schemas"]["ArtifactSchema"];
 export type JobSchema = components["schemas"]["JobSchema"];
 export type PreviewRequest = components["schemas"]["PreviewRequest"];
@@ -32,6 +34,7 @@ export type RetuneRequest = components["schemas"]["RetuneRequest"];
 export type ExportRequest = components["schemas"]["ExportRequest"];
 export type ProjectUpdateRequest = components["schemas"]["ProjectUpdateRequest"];
 export type StemRequest = components["schemas"]["StemRequest"];
+export type ChordRequest = components["schemas"]["ChordRequest"];
 
 let client = createClient<paths>({ baseUrl: apiBaseUrl });
 
@@ -120,6 +123,10 @@ export const api = {
     ),
   getAnalysis: (projectId: string) =>
     unwrap(client.GET("/api/v1/projects/{project_id}/analysis", { params: { path: { project_id: projectId } } })),
+  createChords: (projectId: string, body: ChordRequest) =>
+    unwrap(client.POST("/api/v1/projects/{project_id}/chords", { params: { path: { project_id: projectId } }, body })),
+  getChords: (projectId: string) =>
+    unwrap(client.GET("/api/v1/projects/{project_id}/chords", { params: { path: { project_id: projectId } } })),
   createPreview: (projectId: string, body: PreviewRequest) =>
     unwrap(client.POST("/api/v1/projects/{project_id}/preview", { params: { path: { project_id: projectId } }, body })),
   createStems: (projectId: string, body: StemRequest) =>

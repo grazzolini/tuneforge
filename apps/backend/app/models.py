@@ -31,6 +31,9 @@ class Project(Base):
     analysis: Mapped[AnalysisResult | None] = relationship(
         back_populates="project", uselist=False, cascade="all, delete-orphan"
     )
+    chords: Mapped[ChordTimeline | None] = relationship(
+        back_populates="project", uselist=False, cascade="all, delete-orphan"
+    )
     artifacts: Mapped[list[Artifact]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
@@ -52,6 +55,20 @@ class AnalysisResult(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     project: Mapped[Project] = relationship(back_populates="analysis")
+
+
+class ChordTimeline(Base):
+    __tablename__ = "chord_timelines"
+
+    project_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True
+    )
+    backend: Mapped[str] = mapped_column(String(64), default="default")
+    source_artifact_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    timeline_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON(), default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    project: Mapped[Project] = relationship(back_populates="chords")
 
 
 class Artifact(Base):
@@ -97,4 +114,3 @@ class Setting(Base):
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     value_json: Mapped[dict[str, Any]] = mapped_column(JSON(), default=dict)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
-

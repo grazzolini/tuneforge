@@ -1,4 +1,5 @@
 export type KeyMode = "major" | "minor";
+export type ChordQuality = "major" | "minor";
 
 export type MusicalKey = {
   pitchClass: number;
@@ -110,11 +111,24 @@ export function deserializeKey(value: string): MusicalKey {
 }
 
 export function formatKey(key: MusicalKey, format: "short" | "long" = "short"): string {
-  const noteName = DISPLAY_PITCH_CLASSES[key.pitchClass] ?? DISPLAY_PITCH_CLASSES[0];
+  const noteName = formatPitchClass(key.pitchClass);
   if (format === "long") {
     return `${noteName} ${key.mode}`;
   }
   return key.mode === "minor" ? `${noteName}m` : noteName;
+}
+
+export function formatPitchClass(pitchClass: number): string {
+  return DISPLAY_PITCH_CLASSES[((pitchClass % 12) + 12) % 12] ?? DISPLAY_PITCH_CLASSES[0];
+}
+
+export function formatChordLabel(pitchClass: number, quality: ChordQuality): string {
+  const noteName = formatPitchClass(pitchClass);
+  return quality === "minor" ? `${noteName}m` : noteName;
+}
+
+export function transposePitchClass(pitchClass: number, semitones: number): number {
+  return ((pitchClass + semitones) % 12 + 12) % 12;
 }
 
 export function transposeKey(key: MusicalKey, semitones: number): MusicalKey {

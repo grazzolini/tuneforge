@@ -7,7 +7,7 @@ from sqlalchemy import engine_from_config, pool
 from alembic import context
 from app.config import get_settings
 from app.db import Base
-from app.models import AnalysisResult, Artifact, Job, Project, Setting  # noqa: F401
+from app.models import AnalysisResult, Artifact, ChordTimeline, Job, Project, Setting  # noqa: F401
 
 config = context.config
 
@@ -56,4 +56,3 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
-

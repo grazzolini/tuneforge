@@ -142,7 +142,10 @@ function artifactById(artifacts: ArtifactSchema[], artifactId: string | null | u
 function artifactTransposeSemitones(artifact: ArtifactSchema | null, artifacts: ArtifactSchema[], depth = 0): number {
   if (!artifact || depth > 4) return 0;
   if (artifact.type === "preview_mix" || artifact.type === "export_mix") {
-    const semitones = artifact.metadata?.transpose?.semitones;
+    const metadata = artifact.metadata ?? {};
+    const transpose =
+      typeof metadata.transpose === "object" && metadata.transpose !== null ? metadata.transpose : {};
+    const semitones = "semitones" in transpose ? transpose.semitones : null;
     return typeof semitones === "number" ? semitones : 0;
   }
   if (artifact.type === "vocal_stem" || artifact.type === "instrumental_stem") {

@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { confirm, save } from "@tauri-apps/plugin-dialog";
 import { api, type ArtifactSchema, type ChordSegmentSchema, type JobSchema } from "../../lib/api";
 import { usePreferences } from "../../lib/preferences";
-import { usePlayback } from "./playback";
+import { usePlayback } from "./playback-context";
 import {
   clearProjectPlaybackState,
   readProjectPlaybackState,

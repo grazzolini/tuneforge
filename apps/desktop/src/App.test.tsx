@@ -562,6 +562,7 @@ describe("Desktop app flows", () => {
   beforeEach(() => {
     resetMockApiState();
     window.localStorage.clear();
+    window.sessionStorage.clear();
     delete document.documentElement.dataset.theme;
     document.documentElement.removeAttribute("style");
     mockOpen.mockReset();
@@ -917,6 +918,49 @@ describe("Desktop app flows", () => {
     markAudioReady(newestPreviewAudio);
     expect(screen.getByRole("heading", { name: "Practice Mix" })).toBeInTheDocument();
     await waitFor(() => expect(newestPreviewAudio.currentTime).toBeCloseTo(61.437, 3));
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+  });
+
+  it("restores active playback after app reload", async () => {
+    const user = userEvent.setup();
+    const firstRender = renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    sourceAudio.currentTime = 73.125;
+    fireEvent.timeUpdate(sourceAudio);
+
+    await waitFor(() =>
+      expect(
+        JSON.parse(window.sessionStorage.getItem("tuneforge.playback-session") ?? "null"),
+      ).toMatchObject({
+        session: {
+          projectId: "proj_123",
+          selectedPlaybackArtifactId: "art_source",
+        },
+        playbackTimeSeconds: 73.125,
+        isPlaying: true,
+      }),
+    );
+
+    const playCallsBeforeReload = vi.mocked(window.HTMLMediaElement.prototype.play).mock.calls.length;
+    firstRender.unmount();
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const reloadedAudio = findAudioByArtifactId("art_source");
+    markAudioReady(reloadedAudio);
+
+    await waitFor(() => expect(reloadedAudio.currentTime).toBeCloseTo(73.125, 3));
+    await waitFor(() =>
+      expect(vi.mocked(window.HTMLMediaElement.prototype.play).mock.calls.length).toBeGreaterThan(
+        playCallsBeforeReload,
+      ),
+    );
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
   });
 

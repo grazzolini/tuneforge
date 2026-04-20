@@ -29,6 +29,20 @@ cd ../..
 pnpm contracts:generate
 ```
 
+For Linux `x86_64` machines with older NVIDIA GPUs that are unsupported by the default PyTorch build, you can opt into the backend's local legacy CUDA override instead:
+
+```sh
+pnpm sync:backend:legacy-nvidia
+```
+
+This is a local developer override for `apps/backend/.venv`; it does not change the committed lockfile or the default CI setup. Reset back to the locked default backend environment with:
+
+```sh
+pnpm sync:backend:default
+```
+
+Both helper commands rebuild `apps/backend/.venv` from scratch so switching between the default and legacy CUDA stacks stays deterministic while still reusing the shared `uv` cache.
+
 ## Development Loop
 
 Two terminals:

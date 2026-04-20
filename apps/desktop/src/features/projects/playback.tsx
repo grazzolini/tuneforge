@@ -82,6 +82,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   const primaryAudioRef = useRef<HTMLAudioElement | null>(null);
   const stemAudioRefs = useRef<Record<string, HTMLAudioElement | null>>({});
   const stemAudioContextRef = useRef<AudioContext | null>(null);
+  const stemClockBlockedRef = useRef(false);
   const stemBufferCacheRef = useRef(new Map<string, Promise<AudioBuffer>>());
   const stemPlaybackRef = useRef<StemPlaybackState | null>(null);
   const pendingTransitionRef = useRef<PendingTransition | null>(
@@ -194,7 +195,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       .filter(Boolean) as HTMLAudioElement[];
   }
 
-  function getAudioContextConstructor() {
+  const getAudioContextConstructor = useCallback(() => {
     if (typeof window === "undefined") {
       return null;
     }
@@ -205,11 +206,15 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         .webkitAudioContext ??
       null
     );
-  }
+  }, []);
 
-  function canUseStemClock() {
-    return typeof fetch === "function" && Boolean(getAudioContextConstructor());
-  }
+  const canUseStemClock = useCallback(
+    () =>
+      !stemClockBlockedRef.current &&
+      typeof fetch === "function" &&
+      Boolean(getAudioContextConstructor()),
+    [getAudioContextConstructor],
+  );
 
   function syncStemElementTimes(artifactIds: string[], nextTime: number) {
     artifactIds.forEach((artifactId) => {
@@ -228,7 +233,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     });
   }
 
-  function getStemAudioContext() {
+  const getStemAudioContext = useCallback(() => {
     if (stemAudioContextRef.current) {
       return stemAudioContextRef.current;
     }
@@ -241,7 +246,32 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     const context = new AudioContextConstructor();
     stemAudioContextRef.current = context;
     return context;
-  }
+  }, [getAudioContextConstructor]);
+
+  const activateStemPlayback = useCallback(async () => {
+    if (!canUseStemClock()) {
+      return;
+    }
+
+    const context = getStemAudioContext();
+    if (!context || context.state === "running") {
+      return;
+    }
+
+    // WebKit on Linux is stricter about user-gesture timing for AudioContext resume.
+    try {
+      await context.resume();
+    } catch {
+      stemClockBlockedRef.current = true;
+      return;
+    }
+
+    const contextState = (context as AudioContext).state;
+    if (contextState !== "running") {
+      stemClockBlockedRef.current = true;
+      return;
+    }
+  }, [canUseStemClock, getStemAudioContext]);
 
   async function loadStemBuffer(artifactId: string) {
     const cachedBuffer = stemBufferCacheRef.current.get(artifactId);
@@ -451,7 +481,20 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       return false;
     }
 
-    await targetPlaybackState.context.resume();
+    try {
+      await targetPlaybackState.context.resume();
+    } catch {
+      stemClockBlockedRef.current = true;
+      disposeStemPlaybackState();
+      setIsPlaying(false);
+      return false;
+    }
+    if (targetPlaybackState.context.state !== "running") {
+      stemClockBlockedRef.current = true;
+      disposeStemPlaybackState();
+      setIsPlaying(false);
+      return false;
+    }
     stopStemSources(targetPlaybackState, false);
 
     const nextTime = clampTime(timeSeconds, targetPlaybackState.durationSeconds);
@@ -716,7 +759,26 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           return;
         }
 
-        await startStemPlayback(latestSession, nextTime);
+        const started = await startStemPlayback(latestSession, nextTime);
+        if (started) {
+          return;
+        }
+
+        const fallbackElements = getActiveMediaElements(latestSession);
+        if (!fallbackElements.length) {
+          return;
+        }
+
+        fallbackElements.forEach((element) => {
+          if (Math.abs(element.currentTime - nextTime) > SEEK_TOLERANCE_SECONDS) {
+            element.currentTime = nextTime;
+          }
+        });
+
+        const results = await Promise.allSettled(
+          fallbackElements.map((element) => Promise.resolve(element.play())),
+        );
+        setIsPlaying(results.some((result) => result.status === "fulfilled"));
       })();
       return;
     }
@@ -852,8 +914,10 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
     if (targetSession.isStemPlayback && canUseStemClock()) {
       const masterTime = readMasterTime(targetSession);
-      await startStemPlayback(targetSession, masterTime);
-      return;
+      const started = await startStemPlayback(targetSession, masterTime);
+      if (started) {
+        return;
+      }
     }
 
     const activeElements = getActiveMediaElements(targetSession);
@@ -1144,6 +1208,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       playbackTimeSeconds,
       playbackDurationSeconds,
       isPlaying,
+      activateStemPlayback,
       registerProjectSession,
       togglePlayback,
       playPlayback,
@@ -1155,6 +1220,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     }),
     [
       dismissSession,
+      activateStemPlayback,
       isPlaying,
       pausePlayback,
       playbackDurationSeconds,

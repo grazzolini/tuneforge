@@ -130,6 +130,7 @@ class JobSchema(BaseModel):
     type: str
     status: str
     progress: int
+    source_artifact_id: str | None = None
     error_message: str | None
     created_at: datetime
     updated_at: datetime

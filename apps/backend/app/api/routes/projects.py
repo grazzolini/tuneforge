@@ -37,6 +37,7 @@ from app.services.projects import (
     list_projects,
     rename_project,
 )
+from app.services.stems import resolve_stem_source_artifact
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -205,12 +206,19 @@ def project_stems(
     session: Session = Depends(get_db),
     runner=Depends(get_job_runner),
 ) -> JobResponse:
-    get_project(session, project_id)
+    project = get_project(session, project_id)
+    source_artifact = resolve_stem_source_artifact(
+        session,
+        project=project,
+        source_artifact_id=payload.source_artifact_id,
+    )
+    job_payload = payload.model_dump()
+    job_payload["source_artifact_id"] = source_artifact.id
     job = runner.create_job(
         session,
         project_id=project_id,
         job_type="stems",
-        payload=payload.model_dump(),
+        payload=job_payload,
     )
     session.commit()
     session.refresh(job)

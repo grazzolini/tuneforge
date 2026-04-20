@@ -359,6 +359,7 @@ const {
       type: "stems",
       status: "completed",
       progress: 100,
+      source_artifact_id: sourceArtifactId,
       error_message: null,
       created_at: createdAt,
       updated_at: createdAt,
@@ -1174,6 +1175,84 @@ describe("Desktop app flows", () => {
     expect(soloVocals).toHaveAttribute("aria-pressed", "true");
     expect(muteInstrumental).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText("1 / 2")).toBeInTheDocument();
+  });
+
+  it("shows failed stem jobs inline and in processing history", async () => {
+    const user = userEvent.setup();
+    mockListJobs.mockResolvedValue({
+      jobs: [
+        {
+          id: "job_stem_failed",
+          project_id: "proj_123",
+          type: "stems",
+          status: "failed",
+          progress: 15,
+          source_artifact_id: "art_source",
+          error_message: "Demucs failed to separate the track.",
+          created_at: "2026-04-18T13:16:00.000Z",
+          updated_at: "2026-04-18T13:16:00.000Z",
+        },
+      ],
+    });
+
+    renderApp(["/projects/proj_123"]);
+
+    const stemError = await screen.findByRole("group", { name: "Stem error" });
+    expect(within(stemError).getByText("Demucs failed to separate the track.")).toBeInTheDocument();
+
+    await user.click(screen.getByText("Show raw artifacts and processing history"));
+    const jobHistory = screen.getByText("Show raw artifacts and processing history").closest("details");
+    expect(jobHistory).not.toBeNull();
+
+    expect(within(jobHistory as HTMLElement).getByText("stems")).toBeInTheDocument();
+    expect(within(jobHistory as HTMLElement).getByText("failed")).toBeInTheDocument();
+    expect(
+      within(jobHistory as HTMLElement).getByText("Demucs failed to separate the track."),
+    ).toBeInTheDocument();
+  });
+
+  it("scopes stem errors to selected audio and lets user dismiss them", async () => {
+    const user = userEvent.setup();
+    mockListJobs.mockResolvedValue({
+      jobs: [
+        {
+          id: "job_stem_preview_failed",
+          project_id: "proj_123",
+          type: "stems",
+          status: "failed",
+          progress: 15,
+          source_artifact_id: "art_preview",
+          error_message: "Preview stems failed.",
+          created_at: "2026-04-18T13:16:00.000Z",
+          updated_at: "2026-04-18T13:16:00.000Z",
+        },
+      ],
+    });
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Stem error" })).not.toBeInTheDocument();
+
+    const savedMixList = screen.getByRole("group", { name: "Saved mix list" });
+    await user.click(within(savedMixList).getByRole("button", { name: /Practice Mix/i }));
+
+    const stemError = await screen.findByRole("group", { name: "Stem error" });
+    expect(within(stemError).getByText("Preview stems failed.")).toBeInTheDocument();
+    await user.click(within(stemError).getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByRole("group", { name: "Stem error" })).not.toBeInTheDocument();
+
+    await user.click(screen.getAllByRole("link", { name: "Library" })[0]);
+    const demoProjectCard = screen.getByRole("heading", { name: "Demo Song", level: 2 }).closest(
+      "article",
+    );
+    expect(demoProjectCard).not.toBeNull();
+    await user.click(
+      within(demoProjectCard as HTMLElement).getByRole("link", { name: /Open project/i }),
+    );
+
+    expect(await screen.findByRole("heading", { name: "Practice Mix" })).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Stem error" })).not.toBeInTheDocument();
   });
 
   it("exports selected audio", async () => {

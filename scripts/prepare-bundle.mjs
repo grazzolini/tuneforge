@@ -56,7 +56,9 @@ function shouldIncludeBundledSitePackage(sourcePath) {
   }
 
   const segments = relativePath.split(path.sep);
-  if (segments.some((segment) => ["__pycache__", "tests", "test", "testing"].includes(segment))) {
+  // Keep runtime package submodules intact. Torch imports from torch/testing at runtime,
+  // so filtering generic names like "test" or "testing" breaks packaged builds.
+  if (segments.includes("__pycache__")) {
     return false;
   }
 

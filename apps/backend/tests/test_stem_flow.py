@@ -56,6 +56,8 @@ def test_stem_generation_creates_vocal_and_instrumental_artifacts(client, sample
     assert vocal_artifact["metadata"]["mode"] == "two_stem"
     assert instrumental_artifact["metadata"]["engine"] == "demucs"
     assert vocal_artifact["metadata"]["model"] == "htdemucs_ft"
+    assert stem_job["source_artifact_id"] == source_artifact["id"]
+    assert final_job["source_artifact_id"] == source_artifact["id"]
     assert vocal_artifact["metadata"]["source_artifact_id"] == source_artifact["id"]
     assert instrumental_artifact["metadata"]["source_artifact_id"] == source_artifact["id"]
     assert Path(vocal_artifact["path"]).exists()
@@ -96,7 +98,10 @@ def test_stem_generation_creates_vocal_and_instrumental_artifacts(client, sample
             "source_artifact_id": preview_artifact["id"],
         },
     ).json()["job"]
-    assert wait_for_job(client, preview_stem_job["id"])["status"] == "completed"
+    preview_final_job = wait_for_job(client, preview_stem_job["id"])
+    assert preview_final_job["status"] == "completed"
+    assert preview_stem_job["source_artifact_id"] == preview_artifact["id"]
+    assert preview_final_job["source_artifact_id"] == preview_artifact["id"]
 
     all_artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
     preview_vocals = [

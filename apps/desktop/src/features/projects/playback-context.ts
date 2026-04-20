@@ -18,6 +18,7 @@ export type PlaybackContextValue = {
   playbackTimeSeconds: number;
   playbackDurationSeconds: number;
   isPlaying: boolean;
+  activateStemPlayback: () => Promise<void>;
   registerProjectSession: (session: ProjectPlaybackSession) => void;
   togglePlayback: () => Promise<void>;
   playPlayback: () => Promise<void>;

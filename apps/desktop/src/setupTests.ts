@@ -1,6 +1,29 @@
 import "@testing-library/jest-dom/vitest";
 import { vi } from "vitest";
 
+type MockAudioBufferSourceNode = AudioBufferSourceNode & {
+  start: ReturnType<typeof vi.fn>;
+  stop: ReturnType<typeof vi.fn>;
+  connect: ReturnType<typeof vi.fn>;
+  disconnect: ReturnType<typeof vi.fn>;
+};
+
+type MockGainNode = GainNode & {
+  connect: ReturnType<typeof vi.fn>;
+  disconnect: ReturnType<typeof vi.fn>;
+};
+
+type MockAudioContextInstance = AudioContext & {
+  advanceTime: (seconds: number) => void;
+  createdSources: MockAudioBufferSourceNode[];
+  createBufferSource: ReturnType<typeof vi.fn>;
+  createGain: ReturnType<typeof vi.fn>;
+  decodeAudioData: ReturnType<typeof vi.fn>;
+  resume: ReturnType<typeof vi.fn>;
+  suspend: ReturnType<typeof vi.fn>;
+  close: ReturnType<typeof vi.fn>;
+};
+
 function createStorageMock(): Storage {
   let storage = new Map<string, string>();
 
@@ -63,4 +86,134 @@ Object.defineProperty(window.HTMLMediaElement.prototype, "play", {
 Object.defineProperty(window.HTMLMediaElement.prototype, "pause", {
   writable: true,
   value: vi.fn(),
+});
+
+const mockAudioContexts: MockAudioContextInstance[] = [];
+const RAF_STEP_SECONDS = 1 / 60;
+let nextAnimationFrameId = 1;
+let mockAnimationTimeMs = 0;
+const pendingAnimationFrames = new Map<number, ReturnType<typeof setTimeout>>();
+
+function advanceMockAudioTime(seconds: number) {
+  mockAudioContexts.forEach((audioContext) => {
+    audioContext.advanceTime(seconds);
+  });
+}
+
+Object.defineProperty(window, "requestAnimationFrame", {
+  writable: true,
+  value: vi.fn((callback: FrameRequestCallback) => {
+    const frameId = nextAnimationFrameId++;
+    const timer = setTimeout(() => {
+      pendingAnimationFrames.delete(frameId);
+      mockAnimationTimeMs += RAF_STEP_SECONDS * 1000;
+      advanceMockAudioTime(RAF_STEP_SECONDS);
+      callback(mockAnimationTimeMs);
+    }, 0);
+    pendingAnimationFrames.set(frameId, timer);
+    return frameId;
+  }),
+});
+
+Object.defineProperty(window, "cancelAnimationFrame", {
+  writable: true,
+  value: vi.fn((frameId: number) => {
+    const timer = pendingAnimationFrames.get(frameId);
+    if (!timer) {
+      return;
+    }
+    clearTimeout(timer);
+    pendingAnimationFrames.delete(frameId);
+  }),
+});
+
+class MockAudioContext {
+  destination = {} as AudioDestinationNode;
+  state: AudioContextState = "running";
+  createdSources: MockAudioBufferSourceNode[] = [];
+  private currentTimeSeconds = 0;
+
+  constructor() {
+    mockAudioContexts.push(this as unknown as MockAudioContextInstance);
+  }
+
+  get currentTime() {
+    return this.currentTimeSeconds;
+  }
+
+  advanceTime = (seconds: number) => {
+    if (this.state !== "running") {
+      return;
+    }
+    this.currentTimeSeconds += seconds;
+  };
+
+  resume = vi.fn(async () => {
+    if (this.state === "closed") {
+      return;
+    }
+    this.state = "running";
+  });
+
+  suspend = vi.fn(async () => {
+    this.state = "suspended";
+  });
+
+  close = vi.fn(async () => {
+    this.state = "closed";
+  });
+
+  decodeAudioData = vi.fn(async (audioData: ArrayBuffer) => {
+    const view = new DataView(audioData);
+    const duration = audioData.byteLength >= 8 ? view.getFloat64(0, true) || 182 : 182;
+    return { duration } as AudioBuffer;
+  });
+
+  createBufferSource = vi.fn(() => {
+    const source = {
+      buffer: null,
+      onended: null,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      start: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as MockAudioBufferSourceNode;
+    this.createdSources.push(source);
+    return source;
+  });
+
+  createGain = vi.fn(() => ({
+    gain: { value: 1 },
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+  }) as unknown as MockGainNode);
+}
+
+const mockFetch = vi.fn(async () => {
+  const bytes = new ArrayBuffer(8);
+  new DataView(bytes).setFloat64(0, 182, true);
+  return {
+    ok: true,
+    arrayBuffer: vi.fn(async () => bytes),
+  } as unknown as Response;
+});
+
+Object.defineProperty(globalThis, "fetch", {
+  writable: true,
+  value: mockFetch,
+});
+
+Object.defineProperty(window, "AudioContext", {
+  writable: true,
+  value: MockAudioContext,
+});
+
+Object.defineProperty(window, "webkitAudioContext", {
+  writable: true,
+  value: MockAudioContext,
+});
+
+Object.defineProperty(globalThis, "__mockAudioContexts", {
+  writable: true,
+  value: mockAudioContexts,
 });

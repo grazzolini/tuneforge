@@ -548,14 +548,44 @@ function findAudioByArtifactId(artifactId: string) {
   return element as HTMLAudioElement;
 }
 
-function markAudioReady(element: HTMLAudioElement, duration = 182) {
+function setAudioPlaybackState(
+  element: HTMLAudioElement,
+  { duration = 182, readyState = HTMLMediaElement.HAVE_FUTURE_DATA }: {
+    duration?: number;
+    readyState?: number;
+  } = {},
+) {
   Object.defineProperty(element, "duration", {
     configurable: true,
     value: duration,
   });
+  Object.defineProperty(element, "readyState", {
+    configurable: true,
+    value: readyState,
+  });
+}
+
+function markAudioReady(element: HTMLAudioElement, duration = 182) {
+  setAudioPlaybackState(element, { duration });
   fireEvent.loadedMetadata(element);
   fireEvent.canPlay(element);
   fireEvent.seeked(element);
+}
+
+function getMockAudioContexts() {
+  return (
+    globalThis as typeof globalThis & {
+      __mockAudioContexts: Array<{
+        createdSources: Array<{
+          start: ReturnType<typeof vi.fn>;
+        }>;
+      }>;
+    }
+  ).__mockAudioContexts;
+}
+
+function getMockFetch() {
+  return globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
 }
 
 describe("Desktop app flows", () => {
@@ -587,6 +617,8 @@ describe("Desktop app flows", () => {
     mockGetHealth.mockClear();
     vi.mocked(window.HTMLMediaElement.prototype.play).mockClear();
     vi.mocked(window.HTMLMediaElement.prototype.pause).mockClear();
+    getMockFetch().mockClear();
+    getMockAudioContexts().length = 0;
     installMatchMediaMock(false);
   });
 
@@ -862,10 +894,25 @@ describe("Desktop app flows", () => {
     fireEvent.timeUpdate(sourceAudio);
 
     const savedMixList = screen.getByRole("group", { name: "Saved mix list" });
+    const playCallsBeforeMixSwitch = vi.mocked(window.HTMLMediaElement.prototype.play).mock.calls.length;
     await user.click(within(savedMixList).getByRole("button", { name: /Practice Mix/i }));
 
+    expect(vi.mocked(window.HTMLMediaElement.prototype.play).mock.calls.length).toBe(
+      playCallsBeforeMixSwitch,
+    );
+
     const previewAudio = findAudioByArtifactId("art_preview");
-    markAudioReady(previewAudio);
+    previewAudio.currentTime = 0;
+    setAudioPlaybackState(previewAudio);
+    fireEvent.loadedMetadata(previewAudio);
+    fireEvent.canPlay(previewAudio);
+
+    expect(vi.mocked(window.HTMLMediaElement.prototype.play).mock.calls.length).toBe(
+      playCallsBeforeMixSwitch,
+    );
+
+    previewAudio.currentTime = 47.253;
+    fireEvent.seeked(previewAudio);
 
     await waitFor(() => expect(previewAudio.currentTime).toBeCloseTo(47.253, 3));
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
@@ -914,8 +961,25 @@ describe("Desktop app flows", () => {
         document.querySelector('audio[src*="/artifacts/art_200/stream"]'),
       ).toBeTruthy(),
     );
+    const playCallsBeforeNewMixSeek = vi.mocked(window.HTMLMediaElement.prototype.play).mock.calls.length;
+
     const newestPreviewAudio = findAudioByArtifactId("art_200");
-    markAudioReady(newestPreviewAudio);
+    expect(vi.mocked(window.HTMLMediaElement.prototype.play).mock.calls.length).toBe(
+      playCallsBeforeNewMixSeek,
+    );
+
+    newestPreviewAudio.currentTime = 0;
+    setAudioPlaybackState(newestPreviewAudio);
+    fireEvent.loadedMetadata(newestPreviewAudio);
+    fireEvent.canPlay(newestPreviewAudio);
+
+    expect(vi.mocked(window.HTMLMediaElement.prototype.play).mock.calls.length).toBe(
+      playCallsBeforeNewMixSeek,
+    );
+
+    newestPreviewAudio.currentTime = 61.437;
+    fireEvent.seeked(newestPreviewAudio);
+
     expect(screen.getByRole("heading", { name: "Practice Mix" })).toBeInTheDocument();
     await waitFor(() => expect(newestPreviewAudio.currentTime).toBeCloseTo(61.437, 3));
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
@@ -964,7 +1028,97 @@ describe("Desktop app flows", () => {
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
   });
 
-  it("resumes playback when stem tracks become ready out of order", async () => {
+  it("starts both stems from the same playback offset when switching playback modes", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    sourceAudio.currentTime = 32.481;
+    fireEvent.timeUpdate(sourceAudio);
+
+    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    await user.click(screen.getByRole("button", { name: "Switch to Stems" }));
+
+    const vocalAudio = findAudioByArtifactId("art_200");
+    const instrumentalAudio = findAudioByArtifactId("art_201");
+
+    await waitFor(() => expect(getMockAudioContexts()).toHaveLength(1));
+    await waitFor(() =>
+      expect(getMockAudioContexts()[0]?.createdSources.length).toBe(2),
+    );
+
+    const startCalls = getMockAudioContexts()[0].createdSources.map(
+      (source) => source.start.mock.calls[0],
+    );
+    expect(startCalls).toHaveLength(2);
+    startCalls.forEach((startCall) => {
+      expect(startCall?.[0]).toBe(0);
+      expect(startCall?.[1]).toBeCloseTo(32.481, 3);
+    });
+    await waitFor(() => expect(vocalAudio.currentTime).toBeCloseTo(32.481, 3));
+    await waitFor(() => expect(instrumentalAudio.currentTime).toBeCloseTo(32.481, 3));
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+  });
+
+  it("preserves playback time when returning to full mix during a pending stem handoff", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    sourceAudio.currentTime = 41.662;
+    fireEvent.timeUpdate(sourceAudio);
+
+    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    await user.click(screen.getByRole("button", { name: "Switch to Stems" }));
+
+    expect(await screen.findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Return to Full Mix" }));
+
+    expect(await screen.findByRole("heading", { name: "Source Track" })).toBeInTheDocument();
+    const transitionPlaybackPosition = Number(
+      (screen.getByLabelText("Playback position") as HTMLInputElement).value,
+    );
+    const resumedSourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(resumedSourceAudio);
+
+    await waitFor(() =>
+      expect(resumedSourceAudio.currentTime).toBeCloseTo(transitionPlaybackPosition, 3),
+    );
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+  });
+
+  it("preloads visible stem tracks while full mix remains selected", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    const vocalAudio = findAudioByArtifactId("art_200");
+    const instrumentalAudio = findAudioByArtifactId("art_201");
+    await waitFor(() =>
+      expect(getMockFetch().mock.calls.length).toBeGreaterThanOrEqual(2),
+    );
+    expect(getMockFetch().mock.calls.map(([url]) => String(url))).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("/artifacts/art_200/stream"),
+        expect.stringContaining("/artifacts/art_201/stream"),
+      ]),
+    );
+    expect(vocalAudio).toHaveAttribute("preload", "metadata");
+    expect(instrumentalAudio).toHaveAttribute("preload", "metadata");
+    expect(screen.getByText("Full playback")).toBeInTheDocument();
+  });
+
+  it("reuses the shared stem clock when returning to stems after pausing", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);
 
@@ -978,32 +1132,27 @@ describe("Desktop app flows", () => {
 
     await user.click(screen.getByRole("button", { name: "Generate Stems" }));
     const stemList = await screen.findByRole("group", { name: "Stem track list" });
-    const playCallsBeforeStemSwitch = vi.mocked(window.HTMLMediaElement.prototype.play).mock.calls.length;
     await user.click(within(stemList).getByRole("button", { name: /Vocals/i }));
 
     await waitFor(() =>
-      expect(
-        document.querySelector('audio[src*="/artifacts/art_200/stream"]'),
-      ).toBeTruthy(),
+      expect(getMockAudioContexts()[0]?.createdSources.length).toBe(2),
     );
 
-    const vocalAudio = findAudioByArtifactId("art_200");
-    const instrumentalAudio = findAudioByArtifactId("art_201");
-    markAudioReady(vocalAudio);
-
-    expect(vi.mocked(window.HTMLMediaElement.prototype.play).mock.calls.length).toBe(
-      playCallsBeforeStemSwitch,
+    const initialStemStarts = getMockAudioContexts()[0].createdSources.length;
+    await user.click(screen.getByRole("button", { name: "Pause playback" }));
+    const pausedStemPosition = Number(
+      (screen.getByLabelText("Playback position") as HTMLInputElement).value,
     );
-
-    markAudioReady(instrumentalAudio);
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
 
     await waitFor(() =>
-      expect(vi.mocked(window.HTMLMediaElement.prototype.play).mock.calls.length).toBeGreaterThan(
-        playCallsBeforeStemSwitch,
-      ),
+      expect(getMockAudioContexts()[0].createdSources.length).toBeGreaterThan(initialStemStarts),
     );
-    await waitFor(() => expect(vocalAudio.currentTime).toBeCloseTo(18.789, 3));
-    await waitFor(() => expect(instrumentalAudio.currentTime).toBeCloseTo(18.789, 3));
+    getMockAudioContexts()[0].createdSources
+      .slice(initialStemStarts)
+      .forEach((source) => {
+        expect(source.start.mock.calls[0]?.[1]).toBeCloseTo(pausedStemPosition, 1);
+      });
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
   });
 

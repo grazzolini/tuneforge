@@ -23,9 +23,26 @@ type PendingTransition = {
   signature: string;
   shouldPlay: boolean;
   targetTime: number;
+  awaitingLoadKeys: string[];
+  awaitingSeekKeys: string[];
+  forceSeekKeys: string[];
 };
 
 const SEEK_TOLERANCE_SECONDS = 0.001;
+const PRIMARY_MEDIA_KEY = "__primary__";
+
+type StemPlaybackState = {
+  signature: string;
+  context: AudioContext;
+  durationSeconds: number;
+  startedAtContextTime: number;
+  offsetSeconds: number;
+  isPlaying: boolean;
+  buffers: Record<string, AudioBuffer>;
+  sources: Record<string, AudioBufferSourceNode>;
+  gains: Record<string, GainNode>;
+  clockFrameId: number | null;
+};
 
 function playbackSignature(session: ProjectPlaybackSession | null) {
   if (!session) {
@@ -64,13 +81,19 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   const restoredPlaybackState = useRef(readPersistedPlaybackState()).current;
   const primaryAudioRef = useRef<HTMLAudioElement | null>(null);
   const stemAudioRefs = useRef<Record<string, HTMLAudioElement | null>>({});
+  const stemAudioContextRef = useRef<AudioContext | null>(null);
+  const stemBufferCacheRef = useRef(new Map<string, Promise<AudioBuffer>>());
+  const stemPlaybackRef = useRef<StemPlaybackState | null>(null);
   const pendingTransitionRef = useRef<PendingTransition | null>(
     restoredPlaybackState
-      ? {
+        ? {
           id: 1,
           signature: playbackSignature(restoredPlaybackState.session),
           shouldPlay: restoredPlaybackState.isPlaying,
           targetTime: restoredPlaybackState.playbackTimeSeconds,
+          awaitingLoadKeys: [],
+          awaitingSeekKeys: [],
+          forceSeekKeys: [],
         }
       : null,
   );
@@ -142,7 +165,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       writePersistedPlaybackState({
         session: activeSession,
         playbackTimeSeconds:
-          activeElements[0]?.currentTime ?? playbackTimeSecondsRef.current,
+          readMasterTime(activeSession) ??
+          activeElements[0]?.currentTime ??
+          playbackTimeSecondsRef.current,
         isPlaying: isPlayingRef.current,
       });
     }
@@ -167,6 +192,313 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     return artifactIds
       .map((artifactId) => stemAudioRefs.current[artifactId])
       .filter(Boolean) as HTMLAudioElement[];
+  }
+
+  function getAudioContextConstructor() {
+    if (typeof window === "undefined") {
+      return null;
+    }
+
+    return (
+      window.AudioContext ??
+      (window as Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext ??
+      null
+    );
+  }
+
+  function canUseStemClock() {
+    return typeof fetch === "function" && Boolean(getAudioContextConstructor());
+  }
+
+  function syncStemElementTimes(artifactIds: string[], nextTime: number) {
+    artifactIds.forEach((artifactId) => {
+      const element = stemAudioRefs.current[artifactId];
+      if (!element) {
+        return;
+      }
+
+      try {
+        if (Math.abs(element.currentTime - nextTime) > SEEK_TOLERANCE_SECONDS) {
+          element.currentTime = nextTime;
+        }
+      } catch {
+        return;
+      }
+    });
+  }
+
+  function getStemAudioContext() {
+    if (stemAudioContextRef.current) {
+      return stemAudioContextRef.current;
+    }
+
+    const AudioContextConstructor = getAudioContextConstructor();
+    if (!AudioContextConstructor) {
+      return null;
+    }
+
+    const context = new AudioContextConstructor();
+    stemAudioContextRef.current = context;
+    return context;
+  }
+
+  async function loadStemBuffer(artifactId: string) {
+    const cachedBuffer = stemBufferCacheRef.current.get(artifactId);
+    if (cachedBuffer) {
+      return cachedBuffer;
+    }
+
+    const context = getStemAudioContext();
+    if (!context) {
+      throw new Error("Stem playback requires AudioContext support.");
+    }
+
+    const bufferPromise = fetch(api.streamArtifactUrl(artifactId))
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`Failed to load stem artifact ${artifactId}.`);
+        }
+        return response.arrayBuffer();
+      })
+      .then((audioData) => context.decodeAudioData(audioData.slice(0)))
+      .catch((error) => {
+        stemBufferCacheRef.current.delete(artifactId);
+        throw error;
+      });
+
+    stemBufferCacheRef.current.set(artifactId, bufferPromise);
+    return bufferPromise;
+  }
+
+  async function getStemBuffers(artifactIds: string[]) {
+    const loadedBuffers = await Promise.all(
+      artifactIds.map(async (artifactId) => [artifactId, await loadStemBuffer(artifactId)] as const),
+    );
+    return Object.fromEntries(loadedBuffers);
+  }
+
+  function getStemPlaybackTime(targetPlaybackState = stemPlaybackRef.current) {
+    if (!targetPlaybackState) {
+      return playbackTimeSecondsRef.current;
+    }
+
+    const elapsedSeconds = targetPlaybackState.isPlaying
+      ? Math.max(0, targetPlaybackState.context.currentTime - targetPlaybackState.startedAtContextTime)
+      : 0;
+    return clampTime(
+      targetPlaybackState.offsetSeconds + elapsedSeconds,
+      targetPlaybackState.durationSeconds,
+    );
+  }
+
+  function clearStemClock(targetPlaybackState = stemPlaybackRef.current) {
+    if (
+      typeof window === "undefined" ||
+      !targetPlaybackState ||
+      targetPlaybackState.clockFrameId === null
+    ) {
+      return;
+    }
+
+    window.cancelAnimationFrame(targetPlaybackState.clockFrameId);
+    targetPlaybackState.clockFrameId = null;
+  }
+
+  function finalizeStemPlaybackEnded(targetPlaybackState: StemPlaybackState) {
+    clearStemClock(targetPlaybackState);
+    targetPlaybackState.isPlaying = false;
+    targetPlaybackState.offsetSeconds = targetPlaybackState.durationSeconds;
+    targetPlaybackState.startedAtContextTime = targetPlaybackState.context.currentTime;
+    targetPlaybackState.sources = {};
+    syncStemElementTimes(Object.keys(targetPlaybackState.gains), targetPlaybackState.durationSeconds);
+
+    if (stemPlaybackRef.current !== targetPlaybackState) {
+      return;
+    }
+
+    setPlaybackTimeSeconds(targetPlaybackState.durationSeconds);
+    setIsPlaying(false);
+  }
+
+  function scheduleStemClock(targetPlaybackState = stemPlaybackRef.current) {
+    if (typeof window === "undefined" || !targetPlaybackState) {
+      return;
+    }
+
+    clearStemClock(targetPlaybackState);
+    const tick = () => {
+      const currentPlaybackState = stemPlaybackRef.current;
+      if (
+        !currentPlaybackState ||
+        currentPlaybackState !== targetPlaybackState ||
+        !currentPlaybackState.isPlaying
+      ) {
+        if (currentPlaybackState === targetPlaybackState) {
+          currentPlaybackState.clockFrameId = null;
+        }
+        return;
+      }
+
+      const nextTime = getStemPlaybackTime(currentPlaybackState);
+      setPlaybackTimeSeconds(nextTime);
+      if (nextTime >= currentPlaybackState.durationSeconds) {
+        finalizeStemPlaybackEnded(currentPlaybackState);
+        return;
+      }
+
+      currentPlaybackState.clockFrameId = window.requestAnimationFrame(tick);
+    };
+
+    targetPlaybackState.clockFrameId = window.requestAnimationFrame(tick);
+  }
+
+  function stopStemSources(
+    targetPlaybackState = stemPlaybackRef.current,
+    preserveOffset = true,
+  ) {
+    if (!targetPlaybackState) {
+      return playbackTimeSecondsRef.current;
+    }
+
+    const nextTime = preserveOffset
+      ? getStemPlaybackTime(targetPlaybackState)
+      : targetPlaybackState.offsetSeconds;
+    clearStemClock(targetPlaybackState);
+    Object.values(targetPlaybackState.sources).forEach((source) => {
+      source.onended = null;
+      try {
+        source.stop();
+      } catch {
+        return;
+      } finally {
+        source.disconnect();
+      }
+    });
+    targetPlaybackState.sources = {};
+    targetPlaybackState.isPlaying = false;
+    targetPlaybackState.offsetSeconds = clampTime(nextTime, targetPlaybackState.durationSeconds);
+    targetPlaybackState.startedAtContextTime = targetPlaybackState.context.currentTime;
+    syncStemElementTimes(Object.keys(targetPlaybackState.gains), targetPlaybackState.offsetSeconds);
+    return targetPlaybackState.offsetSeconds;
+  }
+
+  function disposeStemPlaybackState() {
+    const targetPlaybackState = stemPlaybackRef.current;
+    if (!targetPlaybackState) {
+      return;
+    }
+
+    stopStemSources(targetPlaybackState, true);
+    Object.values(targetPlaybackState.gains).forEach((gainNode) => gainNode.disconnect());
+    stemPlaybackRef.current = null;
+  }
+
+  async function prepareStemPlaybackState(targetSession: ProjectPlaybackSession) {
+    const signature = playbackSignature(targetSession);
+    const existingPlaybackState = stemPlaybackRef.current;
+    if (existingPlaybackState?.signature === signature) {
+      return existingPlaybackState;
+    }
+
+    disposeStemPlaybackState();
+
+    const context = getStemAudioContext();
+    if (!context) {
+      return null;
+    }
+
+    const buffers = await getStemBuffers(targetSession.visibleStemArtifactIds);
+    const durationSeconds = Math.max(
+      targetSession.durationHintSeconds || 0,
+      ...Object.values(buffers).map((buffer) => buffer.duration || 0),
+    );
+    const gains = Object.fromEntries(
+      targetSession.visibleStemArtifactIds.map((artifactId) => {
+        const gainNode = context.createGain();
+        gainNode.connect(context.destination);
+        return [artifactId, gainNode] as const;
+      }),
+    );
+    const nextPlaybackState: StemPlaybackState = {
+      signature,
+      context,
+      durationSeconds,
+      startedAtContextTime: context.currentTime,
+      offsetSeconds: clampTime(playbackTimeSecondsRef.current, durationSeconds),
+      isPlaying: false,
+      buffers,
+      sources: {},
+      gains,
+      clockFrameId: null,
+    };
+    stemPlaybackRef.current = nextPlaybackState;
+    syncStemElementTimes(targetSession.visibleStemArtifactIds, nextPlaybackState.offsetSeconds);
+    return nextPlaybackState;
+  }
+
+  async function startStemPlayback(targetSession: ProjectPlaybackSession, timeSeconds: number) {
+    if (!canUseStemClock()) {
+      return false;
+    }
+
+    const targetPlaybackState = await prepareStemPlaybackState(targetSession);
+    if (!targetPlaybackState) {
+      return false;
+    }
+
+    if (stemPlaybackRef.current !== targetPlaybackState) {
+      return false;
+    }
+
+    await targetPlaybackState.context.resume();
+    stopStemSources(targetPlaybackState, false);
+
+    const nextTime = clampTime(timeSeconds, targetPlaybackState.durationSeconds);
+    if (nextTime >= targetPlaybackState.durationSeconds) {
+      targetPlaybackState.offsetSeconds = targetPlaybackState.durationSeconds;
+      syncStemElementTimes(targetSession.visibleStemArtifactIds, targetPlaybackState.durationSeconds);
+      setPlaybackTimeSeconds(targetPlaybackState.durationSeconds);
+      setPlaybackDurationSeconds(targetPlaybackState.durationSeconds);
+      setIsPlaying(false);
+      return false;
+    }
+
+    const nextSources = Object.fromEntries(
+      targetSession.visibleStemArtifactIds.map((artifactId) => {
+        const sourceNode = targetPlaybackState.context.createBufferSource();
+        sourceNode.buffer = targetPlaybackState.buffers[artifactId] ?? null;
+        sourceNode.connect(targetPlaybackState.gains[artifactId]);
+        sourceNode.onended = () => {
+          const currentPlaybackState = stemPlaybackRef.current;
+          if (!currentPlaybackState || currentPlaybackState !== targetPlaybackState) {
+            return;
+          }
+
+          delete currentPlaybackState.sources[artifactId];
+          if (Object.keys(currentPlaybackState.sources).length > 0) {
+            return;
+          }
+          finalizeStemPlaybackEnded(currentPlaybackState);
+        };
+        return [artifactId, sourceNode] as const;
+      }),
+    );
+
+    targetPlaybackState.sources = nextSources;
+    targetPlaybackState.offsetSeconds = nextTime;
+    targetPlaybackState.startedAtContextTime = targetPlaybackState.context.currentTime;
+    targetPlaybackState.isPlaying = true;
+    syncStemElementTimes(targetSession.visibleStemArtifactIds, nextTime);
+    applyStemVolumes(targetSession);
+
+    Object.values(nextSources).forEach((sourceNode) => sourceNode.start(0, nextTime));
+
+    setPlaybackTimeSeconds(nextTime);
+    setPlaybackDurationSeconds(targetPlaybackState.durationSeconds);
+    setIsPlaying(true);
+    scheduleStemClock(targetPlaybackState);
+    return true;
   }
 
   function getRenderedMediaElements(targetSession = sessionRef.current) {
@@ -194,6 +526,22 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       : [];
   }
 
+  function getActiveMediaKeys(targetSession = sessionRef.current) {
+    if (!targetSession) {
+      return [] as string[];
+    }
+
+    if (targetSession.isStemPlayback) {
+      return targetSession.visibleStemArtifactIds.filter((artifactId) =>
+        Boolean(stemAudioRefs.current[artifactId]),
+      );
+    }
+
+    return primaryAudioRef.current && targetSession.selectedPlaybackArtifactId
+      ? [PRIMARY_MEDIA_KEY]
+      : [];
+  }
+
   function applyStemVolumes(targetSession = sessionRef.current) {
     if (!targetSession) {
       return;
@@ -205,23 +553,73 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     const hasSolo = soloedStemIds.length > 0;
     targetSession.visibleStemArtifactIds.forEach((artifactId) => {
       const element = stemAudioRefs.current[artifactId];
-      if (!element) {
-        return;
-      }
-
       const state = targetSession.stemControls[artifactId] ?? {
         muted: false,
         solo: false,
       };
-      element.volume = hasSolo ? (state.solo ? 1 : 0) : state.muted ? 0 : 1;
+      const volume = hasSolo ? (state.solo ? 1 : 0) : state.muted ? 0 : 1;
+
+      if (element) {
+        element.volume = volume;
+      }
+
+      const targetPlaybackState = stemPlaybackRef.current;
+      if (
+        targetPlaybackState &&
+        targetPlaybackState.signature === playbackSignature(targetSession)
+      ) {
+        const gainNode = targetPlaybackState.gains[artifactId];
+        if (gainNode) {
+          gainNode.gain.value = volume;
+        }
+      }
     });
   }
 
   function readMasterTime(targetSession = sessionRef.current) {
+    const pendingTransition = pendingTransitionRef.current;
+    if (
+      pendingTransition &&
+      playbackSignature(targetSession) === pendingTransition.signature
+    ) {
+      return pendingTransition.targetTime;
+    }
+
+    if (targetSession?.isStemPlayback) {
+      const targetPlaybackState = stemPlaybackRef.current;
+      if (
+        targetPlaybackState &&
+        targetPlaybackState.signature === playbackSignature(targetSession)
+      ) {
+        return getStemPlaybackTime(targetPlaybackState);
+      }
+    }
+
     return getActiveMediaElements(targetSession)[0]?.currentTime ?? playbackTimeSecondsRef.current;
   }
 
   function updateDurationFromActiveMedia(targetSession = sessionRef.current) {
+    if (targetSession?.isStemPlayback) {
+      const targetPlaybackState = stemPlaybackRef.current;
+      if (
+        targetPlaybackState &&
+        targetPlaybackState.signature === playbackSignature(targetSession)
+      ) {
+        setPlaybackDurationSeconds(targetPlaybackState.durationSeconds);
+        return;
+      }
+
+      const renderedStemDuration = getStemElements(targetSession.visibleStemArtifactIds).reduce(
+        (maxDuration, element) =>
+          Number.isFinite(element.duration) ? Math.max(maxDuration, element.duration) : maxDuration,
+        0,
+      );
+      if (renderedStemDuration > 0) {
+        setPlaybackDurationSeconds(renderedStemDuration);
+        return;
+      }
+    }
+
     const duration = getActiveMediaElements(targetSession)[0]?.duration;
     if (Number.isFinite(duration) && duration >= 0) {
       setPlaybackDurationSeconds(duration);
@@ -234,6 +632,33 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     pendingTransitionRef.current = null;
   }
 
+  function markPendingSeekComplete(mediaKey: string, element: HTMLAudioElement) {
+    const pendingTransition = pendingTransitionRef.current;
+    if (!pendingTransition) {
+      return;
+    }
+    const expectedTime = clampTime(
+      pendingTransition.targetTime,
+      element.duration ?? playbackDurationSecondsRef.current,
+    );
+    if (Math.abs(element.currentTime - expectedTime) > SEEK_TOLERANCE_SECONDS) {
+      return;
+    }
+    pendingTransition.awaitingSeekKeys = pendingTransition.awaitingSeekKeys.filter(
+      (key) => key !== mediaKey,
+    );
+  }
+
+  function markPendingLoadComplete(mediaKey: string) {
+    const pendingTransition = pendingTransitionRef.current;
+    if (!pendingTransition) {
+      return;
+    }
+    pendingTransition.awaitingLoadKeys = pendingTransition.awaitingLoadKeys.filter(
+      (key) => key !== mediaKey,
+    );
+  }
+
   function tryCompletePendingTransition() {
     const pendingTransition = pendingTransitionRef.current;
     const targetSession = sessionRef.current;
@@ -241,16 +666,81 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    if (targetSession.isStemPlayback && canUseStemClock()) {
+      void (async () => {
+        const activePendingTransition = pendingTransitionRef.current;
+        const activeSession = sessionRef.current;
+        if (
+          !activePendingTransition ||
+          !activeSession ||
+          activePendingTransition.id !== pendingTransition.id ||
+          playbackSignature(activeSession) !== pendingTransition.signature
+        ) {
+          return;
+        }
+
+        const targetPlaybackState = await prepareStemPlaybackState(activeSession);
+        if (!targetPlaybackState) {
+          return;
+        }
+
+        const latestPendingTransition = pendingTransitionRef.current;
+        const latestSession = sessionRef.current;
+        if (
+          !latestPendingTransition ||
+          !latestSession ||
+          latestPendingTransition.id !== pendingTransition.id ||
+          playbackSignature(latestSession) !== pendingTransition.signature
+        ) {
+          return;
+        }
+
+        const nextTime = clampTime(
+          latestPendingTransition.targetTime,
+          targetPlaybackState.durationSeconds,
+        );
+        latestPendingTransition.awaitingLoadKeys = [];
+        latestPendingTransition.awaitingSeekKeys = [];
+        latestPendingTransition.forceSeekKeys = [];
+        targetPlaybackState.offsetSeconds = nextTime;
+        syncStemElementTimes(latestSession.visibleStemArtifactIds, nextTime);
+        applyStemVolumes(latestSession);
+        setPlaybackTimeSeconds(nextTime);
+        setPlaybackDurationSeconds(targetPlaybackState.durationSeconds);
+
+        clearPendingTransition();
+
+        if (!latestPendingTransition.shouldPlay) {
+          stopStemSources(targetPlaybackState, false);
+          setIsPlaying(false);
+          return;
+        }
+
+        await startStemPlayback(latestSession, nextTime);
+      })();
+      return;
+    }
+
     const targetElements = getActiveMediaElements(targetSession);
+    const targetKeys = getActiveMediaKeys(targetSession);
     if (!targetElements.length) {
       return;
     }
 
-    const ready = targetElements.every(
-      (element) =>
-        element.readyState >= HTMLMediaElement.HAVE_METADATA ||
-        (Number.isFinite(element.duration) && element.duration > 0),
-    );
+    const minimumReadyState =
+      pendingTransition.shouldPlay && targetSession.isStemPlayback
+        ? HTMLMediaElement.HAVE_FUTURE_DATA
+        : HTMLMediaElement.HAVE_METADATA;
+    const ready = targetElements.every((element) => {
+      if (element.readyState >= minimumReadyState) {
+        return true;
+      }
+      return (
+        !pendingTransition.shouldPlay &&
+        Number.isFinite(element.duration) &&
+        element.duration > 0
+      );
+    });
     if (!ready) {
       return;
     }
@@ -259,22 +749,53 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       pendingTransition.targetTime,
       targetElements[0]?.duration ?? playbackDurationSecondsRef.current,
     );
-    let awaitingSeekCompletion = false;
-    targetElements.forEach((element) => {
-      if (Math.abs(element.currentTime - nextTime) > SEEK_TOLERANCE_SECONDS) {
-        element.currentTime = nextTime;
-        awaitingSeekCompletion = true;
+    const activeKeySet = new Set(targetKeys);
+    const awaitingLoadKeys = pendingTransition.awaitingLoadKeys.filter((key) =>
+      activeKeySet.has(key),
+    );
+    pendingTransition.awaitingLoadKeys = awaitingLoadKeys;
+    if (awaitingLoadKeys.length > 0) {
+      return;
+    }
+    const awaitingSeekKeys = pendingTransition.awaitingSeekKeys.filter((key) =>
+      activeKeySet.has(key),
+    );
+    const forceSeekKeys = pendingTransition.forceSeekKeys.filter((key) =>
+      activeKeySet.has(key),
+    );
+    targetElements.forEach((element, index) => {
+      const mediaKey = targetKeys[index];
+      if (!mediaKey) {
         return;
       }
-      if (element.seeking) {
-        awaitingSeekCompletion = true;
+      const shouldForceSeek = forceSeekKeys.includes(mediaKey);
+      if (shouldForceSeek) {
+        element.currentTime = nextTime;
+        if (!awaitingSeekKeys.includes(mediaKey)) {
+          awaitingSeekKeys.push(mediaKey);
+        }
+        return;
+      }
+      if (Math.abs(element.currentTime - nextTime) > SEEK_TOLERANCE_SECONDS) {
+        element.currentTime = nextTime;
+        if (!awaitingSeekKeys.includes(mediaKey)) {
+          awaitingSeekKeys.push(mediaKey);
+        }
+        return;
+      }
+      if (element.seeking && !awaitingSeekKeys.includes(mediaKey)) {
+        awaitingSeekKeys.push(mediaKey);
       }
     });
+    pendingTransition.awaitingSeekKeys = awaitingSeekKeys;
+    pendingTransition.forceSeekKeys = forceSeekKeys.filter(
+      (mediaKey) => !awaitingSeekKeys.includes(mediaKey),
+    );
     applyStemVolumes(targetSession);
     setPlaybackTimeSeconds(nextTime);
     updateDurationFromActiveMedia(targetSession);
 
-    if (awaitingSeekCompletion) {
+    if (awaitingSeekKeys.length > 0) {
       return;
     }
 
@@ -307,6 +828,16 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       pendingTransition.shouldPlay = false;
     }
 
+    if (sessionRef.current?.isStemPlayback && canUseStemClock()) {
+      const targetPlaybackState = stemPlaybackRef.current;
+      if (targetPlaybackState) {
+        const nextTime = stopStemSources(targetPlaybackState, true);
+        setPlaybackTimeSeconds(nextTime);
+      }
+      setIsPlaying(false);
+      return;
+    }
+
     getActiveMediaElements().forEach((element) => element.pause());
     setIsPlaying(false);
   }, []);
@@ -318,6 +849,12 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     }
 
     tryCompletePendingTransition();
+
+    if (targetSession.isStemPlayback && canUseStemClock()) {
+      const masterTime = readMasterTime(targetSession);
+      await startStemPlayback(targetSession, masterTime);
+      return;
+    }
 
     const activeElements = getActiveMediaElements(targetSession);
     if (!activeElements.length) {
@@ -353,6 +890,20 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       pendingTransition.targetTime = nextTime;
     }
 
+    if (sessionRef.current?.isStemPlayback && canUseStemClock()) {
+      syncStemElementTimes(sessionRef.current.visibleStemArtifactIds, nextTime);
+      const targetPlaybackState = stemPlaybackRef.current;
+      if (targetPlaybackState) {
+        targetPlaybackState.offsetSeconds = clampTime(nextTime, targetPlaybackState.durationSeconds);
+        targetPlaybackState.startedAtContextTime = targetPlaybackState.context.currentTime;
+        if (targetPlaybackState.isPlaying) {
+          void startStemPlayback(sessionRef.current, nextTime);
+        }
+      }
+      setPlaybackTimeSeconds(nextTime);
+      return;
+    }
+
     getActiveMediaElements().forEach((element) => {
       element.currentTime = nextTime;
     });
@@ -368,6 +919,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
   const stopPlayback = useCallback(() => {
     clearPendingTransition();
+    if (stemPlaybackRef.current) {
+      stopStemSources(stemPlaybackRef.current, false);
+      stemPlaybackRef.current.offsetSeconds = 0;
+      syncStemElementTimes(Object.keys(stemPlaybackRef.current.gains), 0);
+    }
     getRenderedMediaElements().forEach((element) => {
       element.pause();
       element.currentTime = 0;
@@ -391,6 +947,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
     if (previousSession && previousSession.projectId !== nextSession.projectId) {
       clearPendingTransition();
+      disposeStemPlaybackState();
       getRenderedMediaElements(previousSession).forEach((element) => {
         element.pause();
         element.currentTime = 0;
@@ -399,16 +956,35 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       setPlaybackDurationSeconds(nextSession.durationHintSeconds || 0);
       setIsPlaying(false);
     } else if (previousSession && previousSignature !== nextSignature) {
-      const nextTime = readMasterTime(previousSession);
+      const nextTime = previousSession.isStemPlayback
+        ? readMasterTime(previousSession)
+        : Math.max(
+            playbackTimeSecondsRef.current,
+            primaryAudioRef.current?.currentTime ?? 0,
+          );
       const shouldPlay = isPlayingRef.current;
+      const primarySwap =
+        !previousSession.isStemPlayback && !nextSession.isStemPlayback;
+      const awaitingLoadKeys = primarySwap ? [PRIMARY_MEDIA_KEY] : [];
+      const awaitingSeekKeys =
+        primarySwap
+          ? [PRIMARY_MEDIA_KEY]
+          : [];
+      const forceSeekKeys = primarySwap ? [PRIMARY_MEDIA_KEY] : [];
       if (shouldPlay) {
         getActiveMediaElements(previousSession).forEach((element) => element.pause());
+      }
+      if (previousSession.isStemPlayback) {
+        disposeStemPlaybackState();
       }
       pendingTransitionRef.current = {
         id: ++transitionCounterRef.current,
         signature: nextSignature,
         shouldPlay,
         targetTime: nextTime,
+        awaitingLoadKeys,
+        awaitingSeekKeys,
+        forceSeekKeys,
       };
       setPlaybackTimeSeconds(nextTime);
     } else if (!previousSession) {
@@ -426,6 +1002,28 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     tryCompletePendingTransition();
     updateDurationFromActiveMedia(session);
   }, [session]);
+
+  useEffect(() => {
+    if (!session?.visibleStemArtifactIds.length || !canUseStemClock()) {
+      return;
+    }
+
+    void Promise.allSettled(
+      session.visibleStemArtifactIds.map((artifactId) => loadStemBuffer(artifactId)),
+    );
+  }, [session]);
+
+  useEffect(
+    () => () => {
+      disposeStemPlaybackState();
+      const audioContext = stemAudioContextRef.current;
+      stemAudioContextRef.current = null;
+      if (audioContext) {
+        void audioContext.close().catch(() => undefined);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (typeof navigator === "undefined" || !("mediaSession" in navigator)) {
@@ -575,6 +1173,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     <PlaybackContext.Provider value={value}>
       {children}
       <audio
+        key={
+          session && !session.isStemPlayback
+            ? session.selectedPlaybackArtifactId ?? "__none__"
+            : "__none__"
+        }
         ref={primaryAudioRef}
         src={
           session && !session.isStemPlayback && session.selectedPlaybackArtifactId
@@ -590,6 +1193,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           setPlaybackTimeSeconds(event.currentTarget.currentTime);
         }}
         onLoadedMetadata={() => {
+          markPendingLoadComplete(PRIMARY_MEDIA_KEY);
           updateDurationFromActiveMedia();
           tryCompletePendingTransition();
         }}
@@ -598,7 +1202,10 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           tryCompletePendingTransition();
         }}
         onCanPlay={tryCompletePendingTransition}
-        onSeeked={tryCompletePendingTransition}
+        onSeeked={(event) => {
+          markPendingSeekComplete(PRIMARY_MEDIA_KEY, event.currentTarget);
+          tryCompletePendingTransition();
+        }}
         onEnded={() => {
           if (!sessionRef.current || sessionRef.current.isStemPlayback) {
             return;
@@ -626,16 +1233,21 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             if (sessionRef.current?.visibleStemArtifactIds[0] === artifactId) {
               updateDurationFromActiveMedia();
             }
+            syncStemElementTimes([artifactId], readMasterTime());
             tryCompletePendingTransition();
           }}
           onDurationChange={() => {
             if (sessionRef.current?.visibleStemArtifactIds[0] === artifactId) {
               updateDurationFromActiveMedia();
             }
+            syncStemElementTimes([artifactId], readMasterTime());
             tryCompletePendingTransition();
           }}
           onCanPlay={tryCompletePendingTransition}
-          onSeeked={tryCompletePendingTransition}
+          onSeeked={(event) => {
+            markPendingSeekComplete(artifactId, event.currentTarget);
+            tryCompletePendingTransition();
+          }}
           onEnded={() => {
             if (!sessionRef.current || !sessionRef.current.isStemPlayback) {
               return;

@@ -23,6 +23,36 @@ FastAPI backend for Tuneforge. It owns persistence, artifact management, audio a
 uv sync --python 3.11 --all-groups
 ```
 
+### Linux legacy NVIDIA profile
+
+If you are on Linux `x86_64` and the default PyTorch build does not support your NVIDIA GPU architecture (for example, Pascal cards like the GTX 1050 Ti), start from the standard sync above and then locally override `torch` / `torchaudio` with the older CUDA 12.6 wheels:
+
+```sh
+uv pip install \
+  --python .venv/bin/python \
+  --torch-backend cu126 \
+  --reinstall-package torch \
+  --reinstall-package torchaudio \
+  "torch==2.6.0" \
+  "torchaudio==2.6.0"
+```
+
+From the workspace root, the helper command is:
+
+```sh
+pnpm sync:backend:legacy-nvidia
+```
+
+This profile is an opt-in local override for Linux `x86_64`. The committed lockfile and the default macOS / Linux setup stay unchanged. When the override is active, use the repository commands (`pnpm dev:backend`, `pnpm test`, `pnpm lint`) so the backend keeps using the overridden `.venv` instead of asking `uv` to resync it.
+
+Both backend sync helpers recreate `.venv` from scratch before installing packages. That avoids stale mixed CUDA stacks after switching between the default and legacy NVIDIA profiles, while still letting `uv` reuse its shared cache for faster reinstalls.
+
+To switch back to the default backend dependency set, rerun:
+
+```sh
+pnpm sync:backend:default
+```
+
 ## Run (development)
 
 From the workspace root:

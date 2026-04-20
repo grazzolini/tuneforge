@@ -52,6 +52,22 @@ pnpm contracts:generate
 
 The first `uv sync` is heavy because it installs Demucs and Torch. The first stem-separation run will additionally download the Demucs model weights into the local Torch cache.
 
+### Linux legacy NVIDIA profile
+
+If you are on Linux `x86_64` with an older NVIDIA GPU that the default PyTorch build rejects at runtime, use the backend's opt-in legacy NVIDIA sync:
+
+```sh
+pnpm sync:backend:legacy-nvidia
+```
+
+That command first performs the normal backend sync, then locally overrides `torch` / `torchaudio` inside `apps/backend/.venv` with the official CUDA 12.6 wheels. The local backend commands (`pnpm dev:backend`, backend test/lint steps inside `pnpm test` / `pnpm lint`) will keep using that override until you reset the backend env:
+
+```sh
+pnpm sync:backend:default
+```
+
+Both backend sync helpers recreate `apps/backend/.venv` from scratch to avoid stale mixed CUDA stacks when switching profiles. `uv` still reuses its shared cache, so after the first install, switching is usually much faster than a cold download. It is intended for cards like the GTX 1050 Ti. macOS, CI, and the default Linux setup remain unchanged.
+
 ## Development
 
 Two terminals:

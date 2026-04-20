@@ -1,8 +1,5 @@
-/* eslint-disable react-refresh/only-export-components */
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -10,7 +7,16 @@ import {
   type ReactNode,
 } from "react";
 import { api } from "../../lib/api";
-import type { StemControlState } from "./projectPlaybackState";
+import {
+  PlaybackContext,
+  type PlaybackContextValue,
+  type ProjectPlaybackSession,
+} from "./playback-context";
+import {
+  clearPersistedPlaybackState,
+  readPersistedPlaybackState,
+  writePersistedPlaybackState,
+} from "./playbackPersistence";
 
 type PendingTransition = {
   id: number;
@@ -19,34 +25,6 @@ type PendingTransition = {
   targetTime: number;
 };
 
-export type ProjectPlaybackSession = {
-  projectId: string;
-  projectName: string;
-  stageTitle: string;
-  stageSummary: string;
-  selectedPlaybackArtifactId: string | null;
-  isStemPlayback: boolean;
-  visibleStemArtifactIds: string[];
-  stemControls: Record<string, StemControlState>;
-  durationHintSeconds: number;
-};
-
-type PlaybackContextValue = {
-  session: ProjectPlaybackSession | null;
-  playbackTimeSeconds: number;
-  playbackDurationSeconds: number;
-  isPlaying: boolean;
-  registerProjectSession: (session: ProjectPlaybackSession) => void;
-  togglePlayback: () => Promise<void>;
-  playPlayback: () => Promise<void>;
-  pausePlayback: () => void;
-  stopPlayback: () => void;
-  dismissSession: () => void;
-  seekBy: (secondsDelta: number) => void;
-  seekTo: (timeSeconds: number) => void;
-};
-
-const PlaybackContext = createContext<PlaybackContextValue | null>(null);
 const SEEK_TOLERANCE_SECONDS = 0.001;
 
 function playbackSignature(session: ProjectPlaybackSession | null) {
@@ -83,18 +61,36 @@ function clampTime(value: number, duration: number) {
 }
 
 export function PlaybackProvider({ children }: { children: ReactNode }) {
+  const restoredPlaybackState = useRef(readPersistedPlaybackState()).current;
   const primaryAudioRef = useRef<HTMLAudioElement | null>(null);
   const stemAudioRefs = useRef<Record<string, HTMLAudioElement | null>>({});
-  const pendingTransitionRef = useRef<PendingTransition | null>(null);
-  const transitionCounterRef = useRef(0);
-  const sessionRef = useRef<ProjectPlaybackSession | null>(null);
-  const playbackTimeSecondsRef = useRef(0);
-  const playbackDurationSecondsRef = useRef(0);
-  const isPlayingRef = useRef(false);
-  const [session, setSession] = useState<ProjectPlaybackSession | null>(null);
-  const [playbackTimeSeconds, setPlaybackTimeSeconds] = useState(0);
-  const [playbackDurationSeconds, setPlaybackDurationSeconds] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
+  const pendingTransitionRef = useRef<PendingTransition | null>(
+    restoredPlaybackState
+      ? {
+          id: 1,
+          signature: playbackSignature(restoredPlaybackState.session),
+          shouldPlay: restoredPlaybackState.isPlaying,
+          targetTime: restoredPlaybackState.playbackTimeSeconds,
+        }
+      : null,
+  );
+  const transitionCounterRef = useRef(restoredPlaybackState ? 1 : 0);
+  const sessionRef = useRef<ProjectPlaybackSession | null>(restoredPlaybackState?.session ?? null);
+  const playbackTimeSecondsRef = useRef(restoredPlaybackState?.playbackTimeSeconds ?? 0);
+  const playbackDurationSecondsRef = useRef(
+    restoredPlaybackState?.session.durationHintSeconds ?? 0,
+  );
+  const isPlayingRef = useRef(restoredPlaybackState?.isPlaying ?? false);
+  const [session, setSession] = useState<ProjectPlaybackSession | null>(
+    restoredPlaybackState?.session ?? null,
+  );
+  const [playbackTimeSeconds, setPlaybackTimeSeconds] = useState(
+    restoredPlaybackState?.playbackTimeSeconds ?? 0,
+  );
+  const [playbackDurationSeconds, setPlaybackDurationSeconds] = useState(
+    restoredPlaybackState?.session.durationHintSeconds ?? 0,
+  );
+  const [isPlaying, setIsPlaying] = useState(restoredPlaybackState?.isPlaying ?? false);
 
   useEffect(() => {
     sessionRef.current = session;
@@ -111,6 +107,53 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     isPlayingRef.current = isPlaying;
   }, [isPlaying]);
+
+  useEffect(() => {
+    if (!session) {
+      clearPersistedPlaybackState();
+      return;
+    }
+
+    writePersistedPlaybackState({
+      session,
+      playbackTimeSeconds,
+      isPlaying,
+    });
+  }, [isPlaying, playbackTimeSeconds, session]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    function persistCurrentPlaybackState() {
+      const activeSession = sessionRef.current;
+      if (!activeSession) {
+        clearPersistedPlaybackState();
+        return;
+      }
+
+      const activeElements = activeSession.isStemPlayback
+        ? getStemElements(activeSession.visibleStemArtifactIds)
+        : primaryAudioRef.current && activeSession.selectedPlaybackArtifactId
+          ? [primaryAudioRef.current]
+          : [];
+
+      writePersistedPlaybackState({
+        session: activeSession,
+        playbackTimeSeconds:
+          activeElements[0]?.currentTime ?? playbackTimeSecondsRef.current,
+        isPlaying: isPlayingRef.current,
+      });
+    }
+
+    window.addEventListener("pagehide", persistCurrentPlaybackState);
+    window.addEventListener("beforeunload", persistCurrentPlaybackState);
+    return () => {
+      window.removeEventListener("pagehide", persistCurrentPlaybackState);
+      window.removeEventListener("beforeunload", persistCurrentPlaybackState);
+    };
+  }, []);
 
   function setStemAudioRef(artifactId: string, element: HTMLAudioElement | null) {
     if (element) {
@@ -606,12 +649,4 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       ))}
     </PlaybackContext.Provider>
   );
-}
-
-export function usePlayback() {
-  const context = useContext(PlaybackContext);
-  if (!context) {
-    throw new Error("usePlayback must be used within a PlaybackProvider.");
-  }
-  return context;
 }

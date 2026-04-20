@@ -31,6 +31,11 @@ Object.defineProperty(window, "localStorage", {
   value: createStorageMock(),
 });
 
+Object.defineProperty(window, "sessionStorage", {
+  writable: true,
+  value: createStorageMock(),
+});
+
 Object.defineProperty(window, "matchMedia", {
   writable: true,
   value: vi.fn().mockImplementation((query: string) => ({

@@ -1,5 +1,12 @@
 /* eslint-disable react-refresh/only-export-components */
-import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useLayoutEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 
 export type InformationDensity = "minimal" | "balanced" | "detailed";
 export type LayoutDensity = "compact" | "comfortable";
@@ -13,23 +20,39 @@ export type UiPreferences = {
   metadataRevealMode: MetadataRevealMode;
 };
 
+export type AppearancePreferences = Pick<UiPreferences, "informationDensity" | "layoutDensity">;
+export type VisibilityPreferences = Pick<
+  UiPreferences,
+  "helperTextVisible" | "defaultInspectorOpen" | "metadataRevealMode"
+>;
+
 type PreferencesContextValue = UiPreferences & {
   setInformationDensity: (value: InformationDensity) => void;
   setLayoutDensity: (value: LayoutDensity) => void;
   setHelperTextVisible: (value: boolean) => void;
   setDefaultInspectorOpen: (value: boolean) => void;
   setMetadataRevealMode: (value: MetadataRevealMode) => void;
+  resetAppearancePreferences: () => void;
+  resetVisibilityPreferences: () => void;
   resetPreferences: () => void;
 };
 
 const STORAGE_KEY = "tuneforge.ui-preferences";
 
-const DEFAULT_PREFERENCES: UiPreferences = {
-  informationDensity: "balanced",
-  layoutDensity: "comfortable",
-  helperTextVisible: true,
-  defaultInspectorOpen: true,
+export const DEFAULT_APPEARANCE_PREFERENCES: AppearancePreferences = {
+  informationDensity: "minimal",
+  layoutDensity: "compact",
+};
+
+export const DEFAULT_VISIBILITY_PREFERENCES: VisibilityPreferences = {
+  helperTextVisible: false,
+  defaultInspectorOpen: false,
   metadataRevealMode: "expand",
+};
+
+export const DEFAULT_PREFERENCES: UiPreferences = {
+  ...DEFAULT_APPEARANCE_PREFERENCES,
+  ...DEFAULT_VISIBILITY_PREFERENCES,
 };
 
 const PreferencesContext = createContext<PreferencesContextValue | null>(null);
@@ -97,46 +120,42 @@ function persistPreferences(preferences: UiPreferences) {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(preferences));
 }
 
+function mergePreferences(current: UiPreferences, partial: Partial<UiPreferences>) {
+  const next = { ...current, ...partial };
+  persistPreferences(next);
+  return next;
+}
+
 export function PreferencesProvider({ children }: { children: ReactNode }) {
   const [preferences, setPreferences] = useState<UiPreferences>(readStoredPreferences);
+
+  useLayoutEffect(() => {
+    persistPreferences(preferences);
+  }, [preferences]);
 
   const value = useMemo<PreferencesContextValue>(
     () => ({
       ...preferences,
       setInformationDensity: (informationDensity) => {
-        setPreferences((current) => {
-          const next = { ...current, informationDensity };
-          persistPreferences(next);
-          return next;
-        });
+        setPreferences((current) => mergePreferences(current, { informationDensity }));
       },
       setLayoutDensity: (layoutDensity) => {
-        setPreferences((current) => {
-          const next = { ...current, layoutDensity };
-          persistPreferences(next);
-          return next;
-        });
+        setPreferences((current) => mergePreferences(current, { layoutDensity }));
       },
       setHelperTextVisible: (helperTextVisible) => {
-        setPreferences((current) => {
-          const next = { ...current, helperTextVisible };
-          persistPreferences(next);
-          return next;
-        });
+        setPreferences((current) => mergePreferences(current, { helperTextVisible }));
       },
       setDefaultInspectorOpen: (defaultInspectorOpen) => {
-        setPreferences((current) => {
-          const next = { ...current, defaultInspectorOpen };
-          persistPreferences(next);
-          return next;
-        });
+        setPreferences((current) => mergePreferences(current, { defaultInspectorOpen }));
       },
       setMetadataRevealMode: (metadataRevealMode) => {
-        setPreferences((current) => {
-          const next = { ...current, metadataRevealMode };
-          persistPreferences(next);
-          return next;
-        });
+        setPreferences((current) => mergePreferences(current, { metadataRevealMode }));
+      },
+      resetAppearancePreferences: () => {
+        setPreferences((current) => mergePreferences(current, DEFAULT_APPEARANCE_PREFERENCES));
+      },
+      resetVisibilityPreferences: () => {
+        setPreferences((current) => mergePreferences(current, DEFAULT_VISIBILITY_PREFERENCES));
       },
       resetPreferences: () => {
         persistPreferences(DEFAULT_PREFERENCES);

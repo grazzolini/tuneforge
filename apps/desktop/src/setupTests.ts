@@ -49,3 +49,13 @@ Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
   writable: true,
   value: vi.fn(),
 });
+
+Object.defineProperty(window.HTMLMediaElement.prototype, "play", {
+  writable: true,
+  value: vi.fn().mockResolvedValue(undefined),
+});
+
+Object.defineProperty(window.HTMLMediaElement.prototype, "pause", {
+  writable: true,
+  value: vi.fn(),
+});

@@ -706,7 +706,10 @@ export interface operations {
     };
     projects_api_v1_projects_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Filter projects by display name or path. */
+                search?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -720,6 +723,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProjectsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 
 from fastapi import status
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -29,8 +29,20 @@ def _validate_import_path(source_path: Path) -> None:
         )
 
 
-def list_projects(session: Session) -> list[Project]:
-    stmt = select(Project).order_by(Project.updated_at.desc())
+def list_projects(session: Session, *, search: str | None = None) -> list[Project]:
+    stmt = select(Project)
+    normalized_search = (search or "").strip().lower()
+    if normalized_search:
+        like_term = f"%{normalized_search}%"
+        stmt = stmt.where(
+            or_(
+                func.lower(Project.display_name).like(like_term),
+                func.lower(Project.source_path).like(like_term),
+                func.lower(Project.imported_path).like(like_term),
+            )
+        )
+
+    stmt = stmt.order_by(Project.updated_at.desc())
     return list(session.scalars(stmt))
 
 

@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
@@ -9,7 +8,6 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { gzipSync } from "node:zlib";
 
 const __filename = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(__filename);
@@ -21,7 +19,6 @@ const stagedBackendRoot = path.join(resourcesRoot, "backend");
 const stagedBackendSourceRoot = path.join(stagedBackendRoot, "src");
 const stagedPythonRoot = path.join(stagedBackendRoot, "python");
 const stagedSitePackagesRoot = path.join(stagedBackendRoot, "site-packages");
-const stagedBinRoot = path.join(stagedBackendRoot, "bin");
 
 function requirePath(targetPath, description) {
   if (!existsSync(targetPath)) {
@@ -52,13 +49,6 @@ function parsePythonHome(venvConfigPath) {
   return homeLine.replace("home = ", "").trim();
 }
 
-function findExecutable(binaryName) {
-  return execFileSync("which", [binaryName], {
-    cwd: workspaceRoot,
-    encoding: "utf8",
-  }).trim();
-}
-
 function shouldIncludeBundledSitePackage(sourcePath) {
   const relativePath = path.relative(sitePackagesRootForFilter, sourcePath);
   if (!relativePath || relativePath === "") {
@@ -86,13 +76,9 @@ function main() {
   const pythonInstallRoot = path.resolve(pythonHomeBin, "..");
   requirePath(pythonInstallRoot, "Bundled Python runtime source");
 
-  const ffmpegBinary = findExecutable("ffmpeg");
-  const ffprobeBinary = findExecutable("ffprobe");
-
   rmSync(resourcesRoot, { recursive: true, force: true });
   mkdirSync(resourcesRoot, { recursive: true });
   mkdirSync(stagedBackendSourceRoot, { recursive: true });
-  mkdirSync(stagedBinRoot, { recursive: true });
 
   copyInto(path.join(backendRoot, "app"), path.join(stagedBackendSourceRoot, "app"));
   copyInto(path.join(backendRoot, "alembic"), path.join(stagedBackendSourceRoot, "alembic"));
@@ -100,8 +86,6 @@ function main() {
   copyInto(path.join(backendRoot, "pyproject.toml"), path.join(stagedBackendSourceRoot, "pyproject.toml"));
   copyInto(pythonInstallRoot, stagedPythonRoot, { dereference: true });
   copyInto(sitePackagesRoot, stagedSitePackagesRoot, { filter: shouldIncludeBundledSitePackage });
-  writeFileSync(path.join(stagedBinRoot, "ffmpeg.gz"), gzipSync(readFileSync(ffmpegBinary)));
-  writeFileSync(path.join(stagedBinRoot, "ffprobe.gz"), gzipSync(readFileSync(ffprobeBinary)));
 
   writeFileSync(
     path.join(stagedBackendRoot, "manifest.json"),
@@ -111,8 +95,6 @@ function main() {
         python_root: path.relative(resourcesRoot, stagedPythonRoot),
         site_packages: path.relative(resourcesRoot, stagedSitePackagesRoot),
         backend_source: path.relative(resourcesRoot, stagedBackendSourceRoot),
-        ffmpeg: path.relative(resourcesRoot, path.join(stagedBinRoot, "ffmpeg.gz")),
-        ffprobe: path.relative(resourcesRoot, path.join(stagedBinRoot, "ffprobe.gz")),
       },
       null,
       2,

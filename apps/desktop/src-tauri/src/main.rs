@@ -2,10 +2,8 @@
 
 use std::{
     env,
-    fs::{self, File},
     io::{Read, Write},
     net::{TcpListener, TcpStream},
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::Mutex,
@@ -13,7 +11,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use flate2::read::GzDecoder;
 use tauri::{AppHandle, Manager, State};
 
 struct BackendRuntime {
@@ -99,30 +96,11 @@ fn build_python_path(backend_root: &Path) -> Result<String, Box<dyn std::error::
     Ok(joined.to_string_lossy().into_owned())
 }
 
-fn stage_media_binary(
-    app: &AppHandle,
-    bundled_path: &Path,
-    filename: &str,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let cache_root = app.path().app_cache_dir()?.join("backend-bin");
-    fs::create_dir_all(&cache_root)?;
-    let staged_path = cache_root.join(filename);
-    let mut decoder = GzDecoder::new(File::open(bundled_path)?);
-    let mut output = File::create(&staged_path)?;
-    std::io::copy(&mut decoder, &mut output)?;
-    let mut permissions = fs::metadata(&staged_path)?.permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&staged_path, permissions)?;
-    Ok(staged_path)
-}
-
 fn spawn_packaged_backend(app: &AppHandle) -> Result<BackendRuntime, Box<dyn std::error::Error>> {
     let resources_root = app.path().resource_dir()?;
     let bundled_backend_root = resources_root.join("resources").join("backend");
     let bundled_python_root = bundled_backend_root.join("python");
     let backend_source_root = bundled_backend_root.join("src");
-    let ffmpeg_path = stage_media_binary(app, &bundled_backend_root.join("bin").join("ffmpeg.gz"), "ffmpeg")?;
-    let ffprobe_path = stage_media_binary(app, &bundled_backend_root.join("bin").join("ffprobe.gz"), "ffprobe")?;
     let python = python_executable(&bundled_python_root);
 
     if !python.exists() {
@@ -147,8 +125,6 @@ fn spawn_packaged_backend(app: &AppHandle) -> Result<BackendRuntime, Box<dyn std
         .env("PYTORCH_ENABLE_MPS_FALLBACK", "1")
         .env("TUNEFORGE_HOST", "127.0.0.1")
         .env("TUNEFORGE_PORT", port.to_string())
-        .env("TUNEFORGE_FFMPEG_PATH", ffmpeg_path)
-        .env("TUNEFORGE_FFPROBE_PATH", ffprobe_path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

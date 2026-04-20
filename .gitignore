@@ -28,3 +28,14 @@ apps/desktop/src-tauri/resources/*
 apps/desktop/src-tauri/gen/
 packages/shared-types/openapi.json
 data/
+
+# Secrets / credentials (defensive)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt

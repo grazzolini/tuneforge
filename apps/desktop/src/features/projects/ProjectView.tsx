@@ -63,6 +63,10 @@ function isPlayableArtifact(artifact: ArtifactSchema) {
   return ["source_audio", "preview_mix", "vocal_stem", "instrumental_stem"].includes(artifact.type);
 }
 
+function isStemArtifact(artifact: ArtifactSchema | null | undefined) {
+  return artifact?.type === "vocal_stem" || artifact?.type === "instrumental_stem";
+}
+
 function preferredArtifactSelection(artifacts: ArtifactSchema[]) {
   return (
     artifacts.find((artifact) => artifact.type === "source_audio") ??
@@ -318,6 +322,7 @@ export function ProjectView() {
   const pendingPreviewSelection = useRef<{ previousLatestPreviewArtifactId: string | null } | null>(
     null,
   );
+  const persistedStemSourceArtifactId = useRef<string | null>(null);
   const [retuneMode, setRetuneMode] = useState<"off" | "reference" | "cents">("off");
   const [referenceHz, setReferenceHz] = useState("440");
   const [centsOffset, setCentsOffset] = useState("0");
@@ -561,15 +566,12 @@ export function ProjectView() {
     [selectedPrimaryArtifact?.id, stemArtifacts],
   );
   const focusedStemArtifact =
-    selectedArtifact &&
-    (selectedArtifact.type === "vocal_stem" || selectedArtifact.type === "instrumental_stem")
-      ? selectedArtifact
-      : visibleStemArtifacts[0] ?? null;
-  const isStemSelected = Boolean(
-    selectedArtifact &&
-      (selectedArtifact.type === "vocal_stem" || selectedArtifact.type === "instrumental_stem"),
-  );
+    isStemArtifact(selectedArtifact) ? selectedArtifact : visibleStemArtifacts[0] ?? null;
+  const isStemSelected = isStemArtifact(selectedArtifact);
   const isStemPlayback = isStemSelected && visibleStemArtifacts.length > 0;
+  const selectedStemSourceArtifactId = isStemPlayback
+    ? sourceArtifactIdForStems(selectedArtifact) ?? selectedPrimaryArtifact?.id ?? selectedPrimaryArtifactId
+    : null;
   const selectedPlaybackArtifact = isStemPlayback
     ? focusedStemArtifact
     : selectedArtifact ?? selectedPrimaryArtifact;
@@ -775,6 +777,7 @@ export function ProjectView() {
   useEffect(() => {
     const storedPlaybackState = readProjectPlaybackState(projectId);
     pendingPreviewSelection.current = null;
+    persistedStemSourceArtifactId.current = storedPlaybackState.selectedStemSourceArtifactId;
     setSelectedArtifactId(storedPlaybackState.selectedArtifactId);
     setSelectedPrimaryArtifactId(storedPlaybackState.selectedPrimaryArtifactId);
     setStemControls(storedPlaybackState.stemControls);
@@ -807,8 +810,14 @@ export function ProjectView() {
     const nextSelectedArtifact =
       selectableArtifacts.find((artifact) => artifact.id === selectedArtifactId) ?? null;
     const derivedPrimaryId = sourceArtifactIdForStems(nextSelectedArtifact);
+    const preferredStemSourceArtifactId =
+      derivedPrimaryId ??
+      (nextSelectedArtifact || !selectedArtifactId ? null : persistedStemSourceArtifactId.current);
     const nextPrimaryArtifactId =
-      primaryArtifacts.some((artifact) => artifact.id === selectedPrimaryArtifactId)
+      preferredStemSourceArtifactId &&
+      primaryArtifacts.some((artifact) => artifact.id === preferredStemSourceArtifactId)
+        ? preferredStemSourceArtifactId
+        : primaryArtifacts.some((artifact) => artifact.id === selectedPrimaryArtifactId)
         ? selectedPrimaryArtifactId
         : derivedPrimaryId && primaryArtifacts.some((artifact) => artifact.id === derivedPrimaryId)
           ? derivedPrimaryId
@@ -848,9 +857,11 @@ export function ProjectView() {
       return;
     }
 
+    persistedStemSourceArtifactId.current = selectedStemSourceArtifactId;
     writeProjectPlaybackState(projectId, {
       selectedArtifactId,
       selectedPrimaryArtifactId,
+      selectedStemSourceArtifactId,
       stemControls,
     });
   }, [
@@ -858,6 +869,7 @@ export function ProjectView() {
     projectId,
     selectedArtifactId,
     selectedPrimaryArtifactId,
+    selectedStemSourceArtifactId,
     stemControls,
   ]);
 
@@ -1206,7 +1218,7 @@ export function ProjectView() {
                     max={playbackDurationSeconds || projectQuery.data?.duration_seconds || 0}
                     min={0}
                     onChange={(event) => seekTo(Number(event.target.value))}
-                    step={0.1}
+                    step={0.001}
                     type="range"
                     value={Math.min(
                       playbackTimeSeconds,

@@ -555,6 +555,7 @@ function markAudioReady(element: HTMLAudioElement, duration = 182) {
   });
   fireEvent.loadedMetadata(element);
   fireEvent.canPlay(element);
+  fireEvent.seeked(element);
 }
 
 describe("Desktop app flows", () => {
@@ -746,6 +747,102 @@ describe("Desktop app flows", () => {
     expect(screen.getAllByText("Stem monitor").length).toBeGreaterThan(0);
   });
 
+  it("restores mix-owned stems after reopening the project", async () => {
+    const user = userEvent.setup();
+    setProjects([
+      {
+        id: "proj_123",
+        display_name: "Demo Song",
+        source_path: "/tmp/demo.wav",
+        imported_path: "/tmp/projects/demo.wav",
+        duration_seconds: 182,
+        sample_rate: 44100,
+        channels: 2,
+        created_at: "2026-04-18T13:16:00.000Z",
+        updated_at: "2026-04-18T13:16:00.000Z",
+      },
+      {
+        id: "proj_456",
+        display_name: "Bass Drill",
+        source_path: "/tmp/bass-drill.wav",
+        imported_path: "/tmp/projects/bass-drill.wav",
+        duration_seconds: 120,
+        sample_rate: 48000,
+        channels: 2,
+        created_at: "2026-04-18T13:16:00.000Z",
+        updated_at: "2026-04-18T13:16:00.000Z",
+      },
+    ]);
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+
+    const savedMixList = screen.getByRole("group", { name: "Saved mix list" });
+    await user.click(within(savedMixList).getByRole("button", { name: /Practice Mix/i }));
+    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+
+    expect(mockCreateStems).toHaveBeenLastCalledWith(
+      "proj_123",
+      expect.objectContaining({
+        mode: "two_stem",
+        output_format: "wav",
+        force: false,
+        source_artifact_id: "art_preview",
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Switch to Stems" }));
+
+    expect(await screen.findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("group", { name: "Current source summary" })).getByText(
+        "Practice Mix",
+      ),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        JSON.parse(window.localStorage.getItem("tuneforge.project-playback-state") ?? "{}"),
+      ).toMatchObject({
+        proj_123: {
+          selectedArtifactId: "art_202",
+          selectedPrimaryArtifactId: "art_preview",
+          selectedStemSourceArtifactId: "art_preview",
+        },
+      }),
+    );
+
+    await user.click(screen.getAllByRole("link", { name: "Library" })[0]);
+    const secondProjectCard = screen.getByText("Bass Drill").closest("article");
+    expect(secondProjectCard).not.toBeNull();
+    await user.click(
+      within(secondProjectCard as HTMLElement).getByRole("link", { name: /Open project/i }),
+    );
+
+    expect(await screen.findByRole("heading", { name: "Bass Drill" })).toBeInTheDocument();
+
+    await user.click(screen.getAllByRole("link", { name: "Library" })[0]);
+    const demoProjectCard = screen.getByText("Demo Song").closest("article");
+    expect(demoProjectCard).not.toBeNull();
+    await user.click(
+      within(demoProjectCard as HTMLElement).getByRole("link", { name: /Open project/i }),
+    );
+
+    expect(await screen.findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
+    expect(screen.getAllByText("Stem monitor").length).toBeGreaterThan(0);
+    expect(
+      within(screen.getByRole("group", { name: "Current source summary" })).getByText(
+        "Practice Mix",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("group", { name: "Current source summary" })).queryByText(
+        "Source Track",
+      ),
+    ).not.toBeInTheDocument();
+  });
+
   it("toggles playback with spacebar and preserves time when switching mixes", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);
@@ -760,7 +857,7 @@ describe("Desktop app flows", () => {
       expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument(),
     );
 
-    sourceAudio.currentTime = 47.25;
+    sourceAudio.currentTime = 47.253;
     fireEvent.timeUpdate(sourceAudio);
 
     const savedMixList = screen.getByRole("group", { name: "Saved mix list" });
@@ -769,8 +866,9 @@ describe("Desktop app flows", () => {
     const previewAudio = findAudioByArtifactId("art_preview");
     markAudioReady(previewAudio);
 
-    await waitFor(() => expect(previewAudio.currentTime).toBeCloseTo(47.25, 2));
+    await waitFor(() => expect(previewAudio.currentTime).toBeCloseTo(47.253, 3));
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Playback position")).toHaveAttribute("step", "0.001");
   });
 
   it("keeps playback position when a newly created mix becomes active", async () => {
@@ -788,7 +886,7 @@ describe("Desktop app flows", () => {
     markAudioReady(sourceAudio);
     await user.click(screen.getByRole("button", { name: "Play playback" }));
 
-    sourceAudio.currentTime = 61.4;
+    sourceAudio.currentTime = 61.437;
     fireEvent.timeUpdate(sourceAudio);
 
     await user.click(screen.getByLabelText("Raise target key"));
@@ -811,11 +909,57 @@ describe("Desktop app flows", () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByRole("heading", { name: "Practice Mix" })).toBeInTheDocument(),
+      expect(
+        document.querySelector('audio[src*="/artifacts/art_200/stream"]'),
+      ).toBeTruthy(),
     );
     const newestPreviewAudio = findAudioByArtifactId("art_200");
     markAudioReady(newestPreviewAudio);
-    await waitFor(() => expect(newestPreviewAudio.currentTime).toBeCloseTo(61.4, 2));
+    expect(screen.getByRole("heading", { name: "Practice Mix" })).toBeInTheDocument();
+    await waitFor(() => expect(newestPreviewAudio.currentTime).toBeCloseTo(61.437, 3));
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+  });
+
+  it("resumes playback when stem tracks become ready out of order", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    sourceAudio.currentTime = 18.789;
+    fireEvent.timeUpdate(sourceAudio);
+
+    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    const stemList = await screen.findByRole("group", { name: "Stem track list" });
+    const playCallsBeforeStemSwitch = vi.mocked(window.HTMLMediaElement.prototype.play).mock.calls.length;
+    await user.click(within(stemList).getByRole("button", { name: /Vocals/i }));
+
+    await waitFor(() =>
+      expect(
+        document.querySelector('audio[src*="/artifacts/art_200/stream"]'),
+      ).toBeTruthy(),
+    );
+
+    const vocalAudio = findAudioByArtifactId("art_200");
+    const instrumentalAudio = findAudioByArtifactId("art_201");
+    markAudioReady(vocalAudio);
+
+    expect(vi.mocked(window.HTMLMediaElement.prototype.play).mock.calls.length).toBe(
+      playCallsBeforeStemSwitch,
+    );
+
+    markAudioReady(instrumentalAudio);
+
+    await waitFor(() =>
+      expect(vi.mocked(window.HTMLMediaElement.prototype.play).mock.calls.length).toBeGreaterThan(
+        playCallsBeforeStemSwitch,
+      ),
+    );
+    await waitFor(() => expect(vocalAudio.currentTime).toBeCloseTo(18.789, 3));
+    await waitFor(() => expect(instrumentalAudio.currentTime).toBeCloseTo(18.789, 3));
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
   });
 

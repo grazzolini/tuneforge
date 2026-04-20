@@ -506,7 +506,7 @@ describe("Desktop app flows", () => {
     resetMockApiState();
     window.localStorage.clear();
     delete document.documentElement.dataset.theme;
-    document.documentElement.style.colorScheme = "";
+    document.documentElement.removeAttribute("style");
     mockOpen.mockReset();
     mockSave.mockReset();
     mockConfirm.mockReset();
@@ -734,6 +734,8 @@ describe("Desktop app flows", () => {
 
     expect(document.documentElement).toHaveAttribute("data-theme", "light");
     expect(window.localStorage.getItem("tuneforge.theme-preference")).toBe("light");
+    expect(document.documentElement.style.getPropertyValue("--color-bg-app")).toBe("#F4F7FB");
+    expect(document.documentElement.style.getPropertyValue("--component-playback-active")).toBe("#D9861A");
     expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}")).toMatchObject({
       informationDensity: "detailed",
       layoutDensity: "compact",
@@ -760,6 +762,17 @@ describe("Desktop app flows", () => {
     await waitFor(() =>
       expect(document.documentElement).toHaveAttribute("data-theme", "dark"),
     );
+    expect(document.documentElement.style.getPropertyValue("--color-bg-app")).toBe("#070B13");
     expect(window.localStorage.getItem("tuneforge.theme-preference")).toBe("system");
+  });
+
+  it("renders the theme preview with dark and light samples", async () => {
+    renderApp(["/settings/theme-preview"]);
+
+    expect(await screen.findByRole("heading", { name: "Metal / Heat System" })).toBeInTheDocument();
+    expect(screen.getByText("Cold base. Warm action.")).toBeInTheDocument();
+    expect(screen.getByText("Paper, metal, and control.")).toBeInTheDocument();
+    expect(screen.getAllByText("Playback Active")).toHaveLength(2);
+    expect(screen.getByRole("link", { name: "Back to Settings" })).toHaveAttribute("href", "/settings");
   });
 });

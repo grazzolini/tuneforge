@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -53,8 +53,11 @@ def create_project(payload: ProjectImportRequest, session: Session = Depends(get
 
 
 @router.get("", response_model=ProjectsResponse)
-def projects(session: Session = Depends(get_db)) -> ProjectsResponse:
-    projects_payload = [ProjectSchema.model_validate(project) for project in list_projects(session)]
+def projects(
+    search: str | None = Query(default=None, description="Filter projects by display name or path."),
+    session: Session = Depends(get_db),
+) -> ProjectsResponse:
+    projects_payload = [ProjectSchema.model_validate(project) for project in list_projects(session, search=search)]
     return ProjectsResponse(projects=projects_payload)
 
 

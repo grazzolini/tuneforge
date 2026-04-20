@@ -106,7 +106,12 @@ export function getApiBaseUrl() {
 
 export const api = {
   getHealth: () => unwrap(client.GET("/api/v1/health")),
-  listProjects: () => unwrap(client.GET("/api/v1/projects")),
+  listProjects: (search?: string) =>
+    unwrap(
+      client.GET("/api/v1/projects", {
+        params: search ? ({ query: { search } } as never) : undefined,
+      }),
+    ),
   importProject: (body: components["schemas"]["ProjectImportRequest"]) =>
     unwrap(client.POST("/api/v1/projects/import", { body })),
   getProject: (projectId: string) => unwrap(client.GET("/api/v1/projects/{project_id}", { params: { path: { project_id: projectId } } })),

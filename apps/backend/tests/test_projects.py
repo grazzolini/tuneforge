@@ -44,6 +44,35 @@ def test_project_can_be_renamed(client, sample_audio_file: Path):
     assert response.json()["project"]["display_name"] == "Practice Version"
 
 
+def test_project_list_can_filter_by_search_term(client, sample_audio_file: Path, tmp_path: Path):
+    second_source = tmp_path / "bass-riff.wav"
+    second_source.write_bytes(sample_audio_file.read_bytes())
+
+    client.post(
+        "/api/v1/projects/import",
+        json={
+            "source_path": str(sample_audio_file),
+            "copy_into_project": True,
+            "display_name": "Choir Warmup",
+        },
+    )
+    client.post(
+        "/api/v1/projects/import",
+        json={
+            "source_path": str(second_source),
+            "copy_into_project": True,
+            "display_name": "Bass Drill",
+        },
+    )
+
+    response = client.get("/api/v1/projects", params={"search": "choir"})
+
+    assert response.status_code == 200
+    projects = response.json()["projects"]
+    assert len(projects) == 1
+    assert projects[0]["display_name"] == "Choir Warmup"
+
+
 def test_retune_request_rejects_invalid_payload(client, sample_audio_file: Path):
     project = client.post(
         "/api/v1/projects/import",

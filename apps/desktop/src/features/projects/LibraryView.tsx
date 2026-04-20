@@ -1,10 +1,12 @@
+import { startTransition, useDeferredValue, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Link, useNavigate } from "react-router-dom";
 import { api, type ProjectSchema } from "../../lib/api";
+import { usePreferences } from "../../lib/preferences";
 
 function formatDuration(durationSeconds: number | null | undefined) {
-  if (!durationSeconds) return "Unknown";
+  if (!durationSeconds) return "Unknown length";
   const minutes = Math.floor(durationSeconds / 60);
   const seconds = Math.round(durationSeconds % 60)
     .toString()
@@ -12,26 +14,86 @@ function formatDuration(durationSeconds: number | null | undefined) {
   return `${minutes}:${seconds}`;
 }
 
+function formatUpdatedAt(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+  }).format(new Date(value));
+}
+
+function fileNameFromPath(path: string) {
+  return path.split(/[/\\]/).pop() ?? path;
+}
+
 function ProjectCard({ project }: { project: ProjectSchema }) {
+  const { informationDensity, metadataRevealMode } = usePreferences();
+  const sourceFileName = fileNameFromPath(project.source_path);
+
   return (
-    <Link className="project-card" to={`/projects/${project.id}`}>
-      <div className="project-card__header">
-        <h3>{project.display_name}</h3>
-        <span>{formatDuration(project.duration_seconds)}</span>
+    <article className="project-card">
+      <div className="project-card__meta-row">
+        <span className="pill">Updated {formatUpdatedAt(project.updated_at)}</span>
+        <span className="pill">{formatDuration(project.duration_seconds)}</span>
       </div>
-      <p>{project.sample_rate ? `${project.sample_rate} Hz` : "Sample rate unknown"}</p>
-      <p>{project.channels ? `${project.channels} channels` : "Channels unknown"}</p>
-      <small>{project.source_path}</small>
-    </Link>
+
+      <Link className="project-card__link" to={`/projects/${project.id}`}>
+        <div className="project-card__title-block">
+          <h2>{project.display_name}</h2>
+          <p className="project-card__summary">{sourceFileName}</p>
+        </div>
+        <span className="project-card__open">Open project</span>
+      </Link>
+
+      <div className="project-card__stats" role="list" aria-label={`${project.display_name} summary`}>
+        <span className="stat-chip" role="listitem">
+          {project.source_path.split(".").pop()?.toUpperCase() ?? "Audio"}
+        </span>
+        {informationDensity !== "minimal" ? (
+          <span className="stat-chip" role="listitem">
+            {project.channels ? `${project.channels} ch` : "Channels n/a"}
+          </span>
+        ) : null}
+        {informationDensity === "detailed" ? (
+          <span className="stat-chip" role="listitem">
+            {project.sample_rate ? `${project.sample_rate} Hz` : "Sample rate n/a"}
+          </span>
+        ) : null}
+      </div>
+
+      {metadataRevealMode === "expand" ? (
+        <details className="card-details">
+          <summary>Show file details</summary>
+          <dl className="details-grid details-grid--single-column">
+            <div>
+              <dt>Original Source</dt>
+              <dd className="path">{project.source_path}</dd>
+            </div>
+            <div>
+              <dt>Imported Audio</dt>
+              <dd className="path">{project.imported_path}</dd>
+            </div>
+          </dl>
+        </details>
+      ) : (
+        <p className="artifact-meta" title={project.source_path}>
+          Hover for source path
+        </p>
+      )}
+    </article>
   );
 }
 
 export function LibraryView() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { helperTextVisible, informationDensity } = usePreferences();
+  const [searchDraft, setSearchDraft] = useState("");
+  const deferredSearch = useDeferredValue(searchDraft.trim());
+  const showSubtitle = helperTextVisible && informationDensity !== "minimal";
+
   const projectsQuery = useQuery({
-    queryKey: ["projects"],
-    queryFn: async () => (await api.listProjects()).projects,
+    queryKey: ["projects", deferredSearch],
+    queryFn: async () => (await api.listProjects(deferredSearch || undefined)).projects,
   });
 
   const importMutation = useMutation({
@@ -62,26 +124,64 @@ export function LibraryView() {
     },
   });
 
+  const resultCount = projectsQuery.data?.length ?? 0;
+
   return (
     <section className="screen">
-      <div className="screen__header">
-        <div>
+      <div className="screen__header screen__header--library">
+        <div className="screen__title-block">
           <p className="eyebrow">Library</p>
           <h1>Practice Projects</h1>
-          <p className="screen__subtitle">
-            Import a local song, save alternate mixes, and keep practice versions ready to play.
-          </p>
+          {showSubtitle ? (
+            <p className="screen__subtitle">
+              Keep songs, saved mixes, and stem-ready practice sessions close to playback.
+            </p>
+          ) : null}
         </div>
         <button
           className="button button--primary"
           onClick={() => importMutation.mutate()}
           disabled={importMutation.isPending}
         >
-          {importMutation.isPending ? "Importing…" : "Import Track"}
+          {importMutation.isPending ? "Importing..." : "Import Track"}
         </button>
       </div>
 
-      {projectsQuery.isLoading ? <div className="panel">Loading projects…</div> : null}
+      <div className="panel library-toolbar">
+        <label className="search-field">
+          <span className="search-field__label">Search library</span>
+          <input
+            aria-label="Search projects"
+            className="search-field__input"
+            placeholder="Search by name or file path"
+            type="search"
+            value={searchDraft}
+            onChange={(event) => {
+              const nextValue = event.target.value;
+              startTransition(() => {
+                setSearchDraft(nextValue);
+              });
+            }}
+          />
+        </label>
+        <div className="library-toolbar__summary" aria-live="polite">
+          {deferredSearch ? (
+            resultCount ? (
+              <span>
+                {resultCount} match{resultCount === 1 ? "" : "es"} for "{deferredSearch}"
+              </span>
+            ) : (
+              <span>No matches for "{deferredSearch}"</span>
+            )
+          ) : (
+            <span>
+              {resultCount} project{resultCount === 1 ? "" : "s"} ready
+            </span>
+          )}
+        </div>
+      </div>
+
+      {projectsQuery.isLoading ? <div className="panel">Loading projects...</div> : null}
       {projectsQuery.isError ? (
         <div className="panel panel--error">Could not load projects.</div>
       ) : null}
@@ -91,8 +191,12 @@ export function LibraryView() {
           projectsQuery.data.map((project) => <ProjectCard key={project.id} project={project} />)
         ) : (
           <div className="panel panel--empty">
-            <h2>No projects yet</h2>
-            <p>Use the import action to create the first project.</p>
+            <h2>{deferredSearch ? "No matching projects" : "No projects yet"}</h2>
+            <p>
+              {deferredSearch
+                ? "Try a different name or clear the search."
+                : "Import a track to create the first playback-ready project."}
+            </p>
           </div>
         )}
       </div>

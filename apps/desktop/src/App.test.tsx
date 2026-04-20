@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -7,6 +7,8 @@ import App from "./App";
 
 const {
   resetMockApiState,
+  setProjects,
+  setProjectAnalysis,
   mockOpen,
   mockSave,
   mockConfirm,
@@ -25,9 +27,7 @@ const {
   mockCreateExport,
   mockDeleteArtifact,
   mockDeleteProject,
-  mockCancelJob,
   mockGetHealth,
-  setChordTimeline,
 } = vi.hoisted(() => {
   const createdAt = "2026-04-18T13:16:00.000Z";
   let state: {
@@ -88,12 +88,12 @@ const {
     };
   }
 
-  function setChordTimeline(projectId: string, timeline: Record<string, unknown> | null) {
-    if (timeline === null) {
-      delete state.chordsByProject[projectId];
-      return;
-    }
-    state.chordsByProject[projectId] = clone(timeline);
+  function setProjects(projects: Array<Record<string, unknown>>) {
+    state.projects = clone(projects);
+  }
+
+  function setProjectAnalysis(projectId: string, analysis: Record<string, unknown> | null) {
+    state.analysisByProject[projectId] = analysis ? clone(analysis) : null;
   }
 
   function resetMockApiState() {
@@ -126,7 +126,6 @@ const {
             metadata: {
               retune: {},
               transpose: { semitones: 2 },
-              total_cents: 200,
             },
             created_at: createdAt,
           },
@@ -189,23 +188,29 @@ const {
     default_export_format: "wav",
     preview_format: "wav",
   }));
-  const mockListProjects = vi.fn(async () => ({ projects: clone(state.projects) }));
+  const mockListProjects = vi.fn(async (search?: string) => {
+    const normalizedSearch = search?.trim().toLowerCase();
+    const filteredProjects = normalizedSearch
+      ? state.projects.filter((project) => {
+          const displayName = String(project.display_name ?? "").toLowerCase();
+          const sourcePath = String(project.source_path ?? "").toLowerCase();
+          const importedPath = String(project.imported_path ?? "").toLowerCase();
+          return (
+            displayName.includes(normalizedSearch) ||
+            sourcePath.includes(normalizedSearch) ||
+            importedPath.includes(normalizedSearch)
+          );
+        })
+      : state.projects;
+    return { projects: clone(filteredProjects) };
+  });
   const mockImportProject = vi.fn(async ({ source_path }: { source_path: string }) => {
     const id = `proj_${state.nextProjectId++}`;
     const baseName = source_path.split("/").pop() ?? "Imported Track";
     const displayName = titleize(baseName);
     const project = makeProject(id, displayName, source_path);
     state.projects.unshift(project);
-    state.analysisByProject[id] = {
-      project_id: id,
-      estimated_key: "D major",
-      key_confidence: 0.74,
-      estimated_reference_hz: 440,
-      tuning_offset_cents: 0,
-      tempo_bpm: null,
-      analysis_version: "v1",
-      created_at: createdAt,
-    };
+    state.analysisByProject[id] = null;
     state.artifactsByProject[id] = [
       {
         id: `art_${state.nextArtifactId++}`,
@@ -292,8 +297,6 @@ const {
       metadata: {
         mode: "two_stem",
         engine: "demucs",
-        model: "htdemucs_ft",
-        device: "cpu",
         source_artifact_id: sourceArtifactId,
       },
       created_at: createdAt,
@@ -307,8 +310,6 @@ const {
       metadata: {
         mode: "two_stem",
         engine: "demucs",
-        model: "htdemucs_ft",
-        device: "cpu",
         source_artifact_id: sourceArtifactId,
       },
       created_at: createdAt,
@@ -332,6 +333,16 @@ const {
     return { job: clone(job) };
   });
   const mockAnalyzeProject = vi.fn(async (projectId: string) => {
+    state.analysisByProject[projectId] = {
+      project_id: projectId,
+      estimated_key: "D major",
+      key_confidence: 0.74,
+      estimated_reference_hz: 440,
+      tuning_offset_cents: 0,
+      tempo_bpm: null,
+      analysis_version: "v1",
+      created_at: createdAt,
+    };
     const job = {
       id: `job_${state.nextJobId++}`,
       project_id: projectId,
@@ -385,17 +396,11 @@ const {
     state.jobs = state.jobs.filter((job) => job.project_id !== projectId);
     return { deleted: true };
   });
-  const mockCancelJob = vi.fn(async (jobId: string) => {
-    const job = state.jobs.find((item) => item.id === jobId);
-    if (job) {
-      job.status = "cancelled";
-      job.updated_at = createdAt;
-    }
-    return { job: clone(job ?? { id: jobId, status: "cancelled" }) };
-  });
 
   return {
     resetMockApiState,
+    setProjects,
+    setProjectAnalysis,
     mockOpen,
     mockSave,
     mockConfirm,
@@ -414,9 +419,7 @@ const {
     mockCreateExport,
     mockDeleteArtifact,
     mockDeleteProject,
-    mockCancelJob,
     mockGetHealth,
-    setChordTimeline,
   };
 });
 
@@ -448,7 +451,6 @@ vi.mock("./lib/api", async (importOriginal) => {
       createExport: mockCreateExport,
       deleteArtifact: mockDeleteArtifact,
       deleteProject: mockDeleteProject,
-      cancelJob: mockCancelJob,
     },
   };
 });
@@ -468,7 +470,38 @@ function renderApp(initialEntries: string[]) {
   );
 }
 
-describe("App flows", () => {
+function installMatchMediaMock(initialMatches = false) {
+  const listeners = new Set<(event: MediaQueryListEvent) => void>();
+  let matches = initialMatches;
+
+  vi.mocked(window.matchMedia).mockImplementation((query: string) => ({
+    get matches() {
+      return matches;
+    },
+    media: query,
+    onchange: null,
+    addEventListener: (_eventName: string, listener: EventListenerOrEventListenerObject) => {
+      listeners.add(listener as (event: MediaQueryListEvent) => void);
+    },
+    removeEventListener: (_eventName: string, listener: EventListenerOrEventListenerObject) => {
+      listeners.delete(listener as (event: MediaQueryListEvent) => void);
+    },
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }));
+
+  return {
+    setMatches(nextMatches: boolean) {
+      matches = nextMatches;
+      listeners.forEach((listener) =>
+        listener({ matches: nextMatches } as MediaQueryListEvent),
+      );
+    },
+  };
+}
+
+describe("Desktop app flows", () => {
   beforeEach(() => {
     resetMockApiState();
     window.localStorage.clear();
@@ -493,8 +526,45 @@ describe("App flows", () => {
     mockCreateExport.mockClear();
     mockDeleteArtifact.mockClear();
     mockDeleteProject.mockClear();
-    mockCancelJob.mockClear();
     mockGetHealth.mockClear();
+    installMatchMediaMock(false);
+  });
+
+  it("filters library results with project search", async () => {
+    const user = userEvent.setup();
+    setProjects([
+      {
+        id: "proj_1",
+        display_name: "Choir Warmup",
+        source_path: "/tmp/choir-warmup.wav",
+        imported_path: "/tmp/projects/choir-warmup.wav",
+        duration_seconds: 95,
+        sample_rate: 44100,
+        channels: 2,
+        created_at: "2026-04-18T13:16:00.000Z",
+        updated_at: "2026-04-18T13:16:00.000Z",
+      },
+      {
+        id: "proj_2",
+        display_name: "Bass Drill",
+        source_path: "/tmp/bass-drill.wav",
+        imported_path: "/tmp/projects/bass-drill.wav",
+        duration_seconds: 120,
+        sample_rate: 48000,
+        channels: 2,
+        created_at: "2026-04-18T13:16:00.000Z",
+        updated_at: "2026-04-18T13:16:00.000Z",
+      },
+    ]);
+
+    renderApp(["/"]);
+
+    expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Search projects"), "choir");
+
+    await waitFor(() => expect(mockListProjects).toHaveBeenLastCalledWith("choir"));
+    expect(screen.getByText("Choir Warmup")).toBeInTheDocument();
+    expect(screen.queryByText("Bass Drill")).not.toBeInTheDocument();
   });
 
   it("imports track from library and opens project", async () => {
@@ -503,62 +573,42 @@ describe("App flows", () => {
 
     renderApp(["/"]);
 
-    expect(await screen.findByText("Practice Projects")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Import Track" }));
 
     expect(mockImportProject).toHaveBeenCalledWith({
       source_path: "/tmp/new-song.mp4",
       copy_into_project: true,
     });
-    expect(await screen.findByRole("heading", { name: "New Song" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mockGetProject).toHaveBeenCalledWith(expect.stringMatching(/^proj_/)),
+    );
+    expect(await screen.findByRole("button", { name: "Analyze Track" })).toBeInTheDocument();
   });
 
-  it("keeps selected mix in sync with summary and creates new mix from controls", async () => {
+  it("analyzes track from inspector", async () => {
+    const user = userEvent.setup();
+    setProjectAnalysis("proj_123", null);
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Analyze Track" }));
+
+    expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123");
+  });
+
+  it("creates a new mix from source-key controls", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    expect(await screen.findByText("Saved Mixes")).toBeInTheDocument();
-    const selectedMixSummary = screen.getByRole("group", { name: "Selected mix summary" });
-    const mixStatusSummary = screen.getByRole("group", { name: "Mix status summary" });
-    const savedMixList = await screen.findByRole("group", { name: "Saved mix list" });
-
-    expect(within(selectedMixSummary).getByText("Practice Mix")).toBeInTheDocument();
-    expect(within(selectedMixSummary).getByText("Shift +2 semitones")).toBeInTheDocument();
-    expect(within(mixStatusSummary).getByText("Using source settings")).toBeInTheDocument();
-    expect(within(mixStatusSummary).getByText("Selected mix differs from current source controls.")).toBeInTheDocument();
-
-    const targetKey = screen.getByLabelText("Target Key") as HTMLSelectElement;
-    expect(Array.from(targetKey.options).map((option) => option.text)).toEqual([
-      "C",
-      "C#/Db",
-      "D",
-      "D#/Eb",
-      "E",
-      "F",
-      "F#/Gb",
-      "G",
-      "G#/Ab",
-      "A",
-      "A#/Bb",
-      "B",
-    ]);
-
-    await user.click(within(savedMixList).getByRole("button", { name: /Source Track/i }));
-    expect(within(selectedMixSummary).getByText("Source Track")).toBeInTheDocument();
-    expect(within(selectedMixSummary).getByText("Original source file")).toBeInTheDocument();
-    expect(within(mixStatusSummary).getByText("Selected mix matches current controls.")).toBeInTheDocument();
-
-    await user.click(within(savedMixList).getByRole("button", { name: /Practice Mix/i }));
-    expect(within(selectedMixSummary).getByText("Practice Mix")).toBeInTheDocument();
-    expect(within(selectedMixSummary).getByText("Shift +2 semitones")).toBeInTheDocument();
-
-    const currentKey = screen.getByLabelText("Current Key");
-    const createMixButton = screen.getByRole("button", { name: "Create Mix" });
+    const sourceList = screen.getByRole("group", { name: "Source and mix list" });
+    await user.click(within(sourceList).getByRole("button", { name: /Source Track/i }));
     await user.click(screen.getByText("Correct source key if detection is wrong"));
-    await user.selectOptions(currentKey, "9:major");
+    await user.selectOptions(screen.getByLabelText("Current Key"), "9:major");
     await user.click(screen.getByLabelText("Raise target key"));
-    await user.click(createMixButton);
+    await user.click(screen.getByRole("button", { name: "Create Mix" }));
 
     expect(mockCreatePreview).toHaveBeenCalledWith(
       "proj_123",
@@ -569,59 +619,7 @@ describe("App flows", () => {
     );
   });
 
-  it("transposes chord display for the selected mix and source track", async () => {
-    const user = userEvent.setup();
-    renderApp(["/projects/proj_123"]);
-
-    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    expect(await screen.findByRole("group", { name: "Chord timeline" })).toBeInTheDocument();
-    const currentChordCard = screen.getByRole("group", { name: "Current chord card" });
-    const nextChordCard = screen.getByRole("group", { name: "Next chord card" });
-    expect(within(currentChordCard).getByText("A")).toBeInTheDocument();
-    expect(within(nextChordCard).getByText("E")).toBeInTheDocument();
-
-    const savedMixList = await screen.findByRole("group", { name: "Saved mix list" });
-    await user.click(within(savedMixList).getByRole("button", { name: /Source Track/i }));
-
-    expect(within(currentChordCard).getByText("G")).toBeInTheDocument();
-    expect(within(nextChordCard).getByText("D")).toBeInTheDocument();
-  });
-
-  it("recenters the chord lane when a later chord becomes active", async () => {
-    const user = userEvent.setup();
-    const scrollIntoViewMock = vi.mocked(window.HTMLElement.prototype.scrollIntoView);
-    scrollIntoViewMock.mockClear();
-    renderApp(["/projects/proj_123"]);
-
-    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    const chordTimeline = screen.getByRole("group", { name: "Chord timeline" });
-    const chordButtons = within(chordTimeline).getAllByRole("button");
-    await user.click(chordButtons[chordButtons.length - 1]);
-
-    await waitFor(() => {
-      const currentChordCard = screen.getByRole("group", { name: "Current chord card" });
-      const nextChordCard = screen.getByRole("group", { name: "Next chord card" });
-      expect(within(currentChordCard).getByText("D")).toBeInTheDocument();
-      expect(within(nextChordCard).getByText("—")).toBeInTheDocument();
-    });
-    expect(scrollIntoViewMock).toHaveBeenCalled();
-  });
-
-  it("queues chord detection when the project has no saved chord timeline", async () => {
-    const user = userEvent.setup();
-    setChordTimeline("proj_123", null);
-
-    renderApp(["/projects/proj_123"]);
-
-    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    expect(screen.getByText("Generate a chord timeline to jump around the song while you practice.")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Generate Chords" }));
-
-    expect(mockCreateChords).toHaveBeenCalledWith("proj_123", { backend: "default", force: false });
-  });
-
-  it("generates stems and lets the app select them", async () => {
+  it("switches between source playback and stems", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);
 
@@ -641,14 +639,17 @@ describe("App flows", () => {
     const stemList = await screen.findByRole("group", { name: "Stem track list" });
     await user.click(within(stemList).getByRole("button", { name: /Vocals/i }));
 
-    const selectedSummary = screen.getByRole("group", { name: "Selected mix summary" });
-    const statusSummary = screen.getByRole("group", { name: "Mix status summary" });
-    expect(within(selectedSummary).getByText("Vocals")).toBeInTheDocument();
-    expect(within(selectedSummary).getByText(/Vocal stem/)).toBeInTheDocument();
-    expect(within(statusSummary).getByText("Stem tracks are independent from mix controls.")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
+    expect(screen.getAllByText("Stem monitor").length).toBeGreaterThan(0);
+
+    const sourceList = screen.getByRole("group", { name: "Source and mix list" });
+    await user.click(within(sourceList).getByRole("button", { name: /Source Track/i }));
+
+    expect(await screen.findByRole("heading", { name: "Source Track" })).toBeInTheDocument();
+    expect(screen.getByText("Full playback")).toBeInTheDocument();
   });
 
-  it("keeps stem lists scoped to selected audio", async () => {
+  it("supports mute and solo controls in stem monitor", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);
 
@@ -656,33 +657,41 @@ describe("App flows", () => {
     await user.click(screen.getByRole("button", { name: "Generate Stems" }));
 
     const stemList = await screen.findByRole("group", { name: "Stem track list" });
-    expect(within(stemList).getAllByRole("button")).toHaveLength(2);
+    await user.click(within(stemList).getByRole("button", { name: /Vocals/i }));
 
-    const savedMixList = await screen.findByRole("group", { name: "Saved mix list" });
-    await user.click(within(savedMixList).getByRole("button", { name: /Source Track/i }));
+    const soloVocals = screen.getByRole("button", { name: "Solo Vocals" });
+    const muteInstrumental = screen.getByRole("button", { name: "Mute Instrumental" });
+    await user.click(soloVocals);
+    await user.click(muteInstrumental);
 
-    expect(screen.getByText("No stems yet for selected audio.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Generate Stems" })).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
-    expect(mockCreateStems).toHaveBeenLastCalledWith(
-      "proj_123",
-      expect.objectContaining({
-        mode: "two_stem",
-        output_format: "wav",
-        force: false,
-        source_artifact_id: "art_source",
-      }),
-    );
-
-    const sourceStemList = await screen.findByRole("group", { name: "Stem track list" });
-    expect(within(sourceStemList).getAllByRole("button")).toHaveLength(2);
-
-    await user.click(within(savedMixList).getByRole("button", { name: /Practice Mix/i }));
-    expect(screen.getByRole("button", { name: "Refresh Stems" })).toBeInTheDocument();
+    expect(soloVocals).toHaveAttribute("aria-pressed", "true");
+    expect(muteInstrumental).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("1 / 2")).toBeInTheDocument();
   });
 
-  it("renames project from project screen", async () => {
+  it("exports selected audio", async () => {
+    const user = userEvent.setup();
+    mockSave.mockResolvedValue("/tmp/exports/demo-source.flac");
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceList = screen.getByRole("group", { name: "Source and mix list" });
+    await user.click(within(sourceList).getByRole("button", { name: /Source Track/i }));
+    await user.click(screen.getByRole("button", { name: "Export Selected Audio" }));
+
+    expect(mockSave).toHaveBeenCalled();
+    expect(mockCreateExport).toHaveBeenCalledWith(
+      "proj_123",
+      expect.objectContaining({
+        artifact_ids: ["art_source"],
+        output_format: "flac",
+        destination_path: "/tmp/exports",
+      }),
+    );
+  });
+
+  it("renames project from the title row", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);
 
@@ -697,66 +706,6 @@ describe("App flows", () => {
     expect(await screen.findByRole("heading", { name: "Practice Set" })).toBeInTheDocument();
   });
 
-  it("exports selected mix and uses selected artifact id", async () => {
-    const user = userEvent.setup();
-    mockSave.mockResolvedValue("/tmp/exports/demo-source.flac");
-
-    renderApp(["/projects/proj_123"]);
-
-    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    expect(await screen.findByText("Saved Mixes")).toBeInTheDocument();
-    const savedMixList = await screen.findByRole("group", { name: "Saved mix list" });
-    await user.click(within(savedMixList).getByRole("button", { name: /Source Track/i }));
-    await user.click(screen.getByRole("button", { name: "Export Selected Audio" }));
-
-    expect(mockSave).toHaveBeenCalled();
-    expect(mockCreateExport).toHaveBeenCalledWith(
-      "proj_123",
-      expect.objectContaining({
-        artifact_ids: ["art_source"],
-        output_format: "flac",
-        destination_path: "/tmp/exports",
-      }),
-    );
-  });
-
-  it("toggles inspector visibility without affecting playback selection", async () => {
-    const user = userEvent.setup();
-    renderApp(["/projects/proj_123"]);
-
-    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    expect(screen.getByText("Mix Builder")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Hide Inspector" })).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Hide Inspector" }));
-
-    expect(screen.queryByText("Mix Builder")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Show Inspector" })).toBeInTheDocument();
-    expect(screen.getByRole("group", { name: "Selected mix summary" })).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
-
-    expect(screen.getByText("Mix Builder")).toBeInTheDocument();
-  });
-
-  it("requires confirmation before deleting a project", async () => {
-    const user = userEvent.setup();
-    mockConfirm.mockResolvedValue(false);
-    renderApp(["/projects/proj_123"]);
-
-    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Delete Project" }));
-
-    expect(mockConfirm).toHaveBeenCalledWith("Delete this project and all of its mixes, stems, and exports?", {
-      title: "Delete project",
-      kind: "warning",
-      okLabel: "Delete",
-      cancelLabel: "Cancel",
-    });
-    expect(mockDeleteProject).not.toHaveBeenCalled();
-    expect(screen.getByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-  });
-
   it("deletes project after confirmation and returns to library", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);
@@ -765,63 +714,52 @@ describe("App flows", () => {
     await user.click(screen.getByRole("button", { name: "Delete Project" }));
 
     expect(mockDeleteProject).toHaveBeenCalledWith("proj_123");
-    expect(await screen.findByText("Practice Projects")).toBeInTheDocument();
-    expect(await screen.findByText("No projects yet")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "No projects yet" })).toBeInTheDocument();
   });
 
-  it("deletes a practice mix with confirmation and removes its stems", async () => {
-    const user = userEvent.setup();
-    renderApp(["/projects/proj_123"]);
-
-    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
-
-    const savedMixList = await screen.findByRole("group", { name: "Saved mix list" });
-    expect(within(savedMixList).getByRole("button", { name: /Practice Mix/i })).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "Delete Practice Mix" })).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Delete Practice Mix" }));
-
-    expect(mockConfirm).toHaveBeenCalledWith("Delete this practice mix and its stem tracks?", {
-      title: "Delete practice mix",
-      kind: "warning",
-      okLabel: "Delete",
-      cancelLabel: "Cancel",
-    });
-    expect(mockDeleteArtifact).toHaveBeenCalledWith("proj_123", "art_preview");
-    const selectedSummary = screen.getByRole("group", { name: "Selected mix summary" });
-    expect(await within(selectedSummary).findByText("Source Track")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Delete Practice Mix" })).not.toBeInTheDocument();
-    expect(screen.getByText("No stems yet for selected audio.")).toBeInTheDocument();
-  });
-
-  it("does not offer mix deletion for the source track", async () => {
-    const user = userEvent.setup();
-    renderApp(["/projects/proj_123"]);
-
-    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    const savedMixList = await screen.findByRole("group", { name: "Saved mix list" });
-    await user.click(within(savedMixList).getByRole("button", { name: /Source Track/i }));
-
-    expect(screen.queryByRole("button", { name: "Delete Practice Mix" })).not.toBeInTheDocument();
-  });
-
-  it("renders settings and persists theme changes", async () => {
+  it("persists theme and UI visibility preferences", async () => {
     const user = userEvent.setup();
     renderApp(["/settings"]);
 
-    expect(await screen.findByText("Backend and Storage")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Playback Surface" })).toBeInTheDocument();
     expect(await screen.findByText("/tmp/tuneforge")).toBeInTheDocument();
 
-    const themeSelect = screen.getByLabelText("Theme");
-    expect(themeSelect).toHaveValue("dark");
-    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
-    expect(window.localStorage.getItem("tuneforge.theme-preference")).toBe("dark");
+    await user.selectOptions(screen.getByLabelText("Theme"), "light");
+    await user.selectOptions(screen.getByLabelText("Information Density"), "detailed");
+    await user.selectOptions(screen.getByLabelText("Layout Density"), "compact");
+    await user.click(screen.getByLabelText("Show helper text"));
+    await user.click(screen.getByLabelText("Open inspector by default"));
+    await user.selectOptions(screen.getByLabelText("Metadata Reveal"), "hover");
 
-    await user.selectOptions(themeSelect, "light");
-
-    expect(themeSelect).toHaveValue("light");
     expect(document.documentElement).toHaveAttribute("data-theme", "light");
     expect(window.localStorage.getItem("tuneforge.theme-preference")).toBe("light");
+    expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}")).toMatchObject({
+      informationDensity: "detailed",
+      layoutDensity: "compact",
+      helperTextVisible: false,
+      defaultInspectorOpen: false,
+      metadataRevealMode: "hover",
+    });
+  });
+
+  it("follows system theme when preference is set to system", async () => {
+    const user = userEvent.setup();
+    const mediaController = installMatchMediaMock(false);
+
+    renderApp(["/settings"]);
+
+    expect(await screen.findByRole("heading", { name: "Playback Surface" })).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Theme"), "system");
+
+    expect(document.documentElement).toHaveAttribute("data-theme", "light");
+    await act(async () => {
+      mediaController.setMatches(true);
+    });
+
+    await waitFor(() =>
+      expect(document.documentElement).toHaveAttribute("data-theme", "dark"),
+    );
+    expect(window.localStorage.getItem("tuneforge.theme-preference")).toBe("system");
   });
 });

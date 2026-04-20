@@ -6,6 +6,7 @@ export type StemControlState = {
 export type StoredProjectPlaybackState = {
   selectedArtifactId: string | null;
   selectedPrimaryArtifactId: string | null;
+  selectedStemSourceArtifactId: string | null;
   stemControls: Record<string, StemControlState>;
 };
 
@@ -14,6 +15,7 @@ const STORAGE_KEY = "tuneforge.project-playback-state";
 const DEFAULT_STORED_PROJECT_PLAYBACK_STATE: StoredProjectPlaybackState = {
   selectedArtifactId: null,
   selectedPrimaryArtifactId: null,
+  selectedStemSourceArtifactId: null,
   stemControls: {},
 };
 
@@ -52,6 +54,10 @@ function normalizeStoredProjectPlaybackState(value: unknown): StoredProjectPlayb
     selectedPrimaryArtifactId:
       typeof candidate.selectedPrimaryArtifactId === "string"
         ? candidate.selectedPrimaryArtifactId
+        : null,
+    selectedStemSourceArtifactId:
+      typeof candidate.selectedStemSourceArtifactId === "string"
+        ? candidate.selectedStemSourceArtifactId
         : null,
     stemControls,
   };

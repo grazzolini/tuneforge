@@ -47,6 +47,7 @@ type PlaybackContextValue = {
 };
 
 const PlaybackContext = createContext<PlaybackContextValue | null>(null);
+const SEEK_TOLERANCE_SECONDS = 0.001;
 
 function playbackSignature(session: ProjectPlaybackSession | null) {
   if (!session) {
@@ -215,14 +216,24 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       pendingTransition.targetTime,
       targetElements[0]?.duration ?? playbackDurationSecondsRef.current,
     );
+    let awaitingSeekCompletion = false;
     targetElements.forEach((element) => {
-      if (Math.abs(element.currentTime - nextTime) > 0.01) {
+      if (Math.abs(element.currentTime - nextTime) > SEEK_TOLERANCE_SECONDS) {
         element.currentTime = nextTime;
+        awaitingSeekCompletion = true;
+        return;
+      }
+      if (element.seeking) {
+        awaitingSeekCompletion = true;
       }
     });
     applyStemVolumes(targetSession);
     setPlaybackTimeSeconds(nextTime);
     updateDurationFromActiveMedia(targetSession);
+
+    if (awaitingSeekCompletion) {
+      return;
+    }
 
     const transitionId = pendingTransition.id;
     const transitionSignature = pendingTransition.signature;
@@ -272,7 +283,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
     const masterTime = readMasterTime(targetSession);
     activeElements.forEach((element) => {
-      if (Math.abs(element.currentTime - masterTime) > 0.01) {
+      if (Math.abs(element.currentTime - masterTime) > SEEK_TOLERANCE_SECONDS) {
         element.currentTime = masterTime;
       }
     });
@@ -544,6 +555,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           tryCompletePendingTransition();
         }}
         onCanPlay={tryCompletePendingTransition}
+        onSeeked={tryCompletePendingTransition}
         onEnded={() => {
           if (!sessionRef.current || sessionRef.current.isStemPlayback) {
             return;
@@ -551,7 +563,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           setIsPlaying(false);
         }}
       />
-      {session?.visibleStemArtifactIds.map((artifactId, index) => (
+      {session?.visibleStemArtifactIds.map((artifactId) => (
         <audio
           key={artifactId}
           ref={(element) => setStemAudioRef(artifactId, element)}
@@ -568,24 +580,19 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             setPlaybackTimeSeconds(event.currentTarget.currentTime);
           }}
           onLoadedMetadata={() => {
-            if (sessionRef.current?.visibleStemArtifactIds[0] !== artifactId) {
-              return;
+            if (sessionRef.current?.visibleStemArtifactIds[0] === artifactId) {
+              updateDurationFromActiveMedia();
             }
-            updateDurationFromActiveMedia();
             tryCompletePendingTransition();
           }}
           onDurationChange={() => {
-            if (sessionRef.current?.visibleStemArtifactIds[0] !== artifactId) {
-              return;
+            if (sessionRef.current?.visibleStemArtifactIds[0] === artifactId) {
+              updateDurationFromActiveMedia();
             }
-            updateDurationFromActiveMedia();
             tryCompletePendingTransition();
           }}
-          onCanPlay={() => {
-            if (index === 0) {
-              tryCompletePendingTransition();
-            }
-          }}
+          onCanPlay={tryCompletePendingTransition}
+          onSeeked={tryCompletePendingTransition}
           onEnded={() => {
             if (!sessionRef.current || !sessionRef.current.isStemPlayback) {
               return;

@@ -11,6 +11,7 @@ import { getThemeCssVariables, type ThemeMode } from "./themeTokens";
 
 export type ThemePreference = "dark" | "light" | "system";
 export type EffectiveTheme = ThemeMode;
+export const DEFAULT_THEME_PREFERENCE: ThemePreference = "system";
 
 type ThemeContextValue = {
   effectiveTheme: EffectiveTheme;
@@ -22,15 +23,15 @@ const STORAGE_KEY = "tuneforge.theme-preference";
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 function normalizeThemePreference(value: string | null): ThemePreference {
-  if (value === "light" || value === "system") {
+  if (value === "dark" || value === "light" || value === "system") {
     return value;
   }
-  return "dark";
+  return DEFAULT_THEME_PREFERENCE;
 }
 
 function readThemePreference(): ThemePreference {
   if (typeof window === "undefined") {
-    return "dark";
+    return DEFAULT_THEME_PREFERENCE;
   }
   return normalizeThemePreference(window.localStorage.getItem(STORAGE_KEY));
 }

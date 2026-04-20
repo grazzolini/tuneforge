@@ -7,7 +7,11 @@ import {
   type LayoutDensity,
   type MetadataRevealMode,
 } from "../../lib/preferences";
-import { useTheme, type ThemePreference } from "../../lib/theme";
+import {
+  DEFAULT_THEME_PREFERENCE,
+  useTheme,
+  type ThemePreference,
+} from "../../lib/theme";
 
 function themePreferenceLabel(themePreference: ThemePreference) {
   if (themePreference === "system") {
@@ -43,12 +47,28 @@ export function SettingsView() {
     setHelperTextVisible,
     setDefaultInspectorOpen,
     setMetadataRevealMode,
+    resetAppearancePreferences,
+    resetVisibilityPreferences,
     resetPreferences,
   } = usePreferences();
   const healthQuery = useQuery({
     queryKey: ["health"],
     queryFn: api.getHealth,
   });
+
+  function handleResetAppearance() {
+    setThemePreference(DEFAULT_THEME_PREFERENCE);
+    resetAppearancePreferences();
+  }
+
+  function handleResetVisibility() {
+    resetVisibilityPreferences();
+  }
+
+  function handleResetAllSettings() {
+    setThemePreference(DEFAULT_THEME_PREFERENCE);
+    resetPreferences();
+  }
 
   return (
     <section className="screen">
@@ -128,6 +148,19 @@ export function SettingsView() {
               <dd>{layoutDensityLabel(layoutDensity)}</dd>
             </div>
           </dl>
+
+          <div className="button-row">
+            <Link className="button button--ghost button--small" to="/settings/theme-preview">
+              Open Theme Preview
+            </Link>
+            <button
+              className="button button--ghost button--small"
+              type="button"
+              onClick={handleResetAppearance}
+            >
+              Reset Appearance
+            </button>
+          </div>
         </div>
 
         <div className="panel">
@@ -141,12 +174,12 @@ export function SettingsView() {
           <div className="controls">
             <label className="checkbox">
               <input
-                aria-label="Show helper text"
+                aria-label="Show helper text by default"
                 checked={helperTextVisible}
                 onChange={(event) => setHelperTextVisible(event.target.checked)}
                 type="checkbox"
               />
-              Show helper text
+              Show helper text by default
             </label>
 
             <label className="checkbox">
@@ -175,11 +208,11 @@ export function SettingsView() {
           <dl className="meta-grid">
             <div>
               <dt>Helper Text</dt>
-              <dd>{helperTextVisible ? "Visible" : "Hidden"}</dd>
+              <dd>{helperTextVisible ? "Enabled" : "Disabled"}</dd>
             </div>
             <div>
               <dt>Inspector Default</dt>
-              <dd>{defaultInspectorOpen ? "Open" : "Collapsed"}</dd>
+              <dd>{defaultInspectorOpen ? "Open" : "Closed"}</dd>
             </div>
             <div>
               <dt>Metadata Reveal</dt>
@@ -188,12 +221,13 @@ export function SettingsView() {
           </dl>
 
           <div className="button-row">
-            <button className="button button--ghost button--small" type="button" onClick={resetPreferences}>
-              Reset UI Defaults
+            <button
+              className="button button--ghost button--small"
+              type="button"
+              onClick={handleResetVisibility}
+            >
+              Reset Visibility
             </button>
-            <Link className="button button--ghost button--small" to="/settings/theme-preview">
-              Open Theme Preview
-            </Link>
           </div>
         </div>
 
@@ -226,6 +260,16 @@ export function SettingsView() {
             Projects, previews, exported files, and the local database stay under this root.
           </p>
         </div>
+      </div>
+
+      <div className="button-row">
+        <button
+          className="button button--ghost button--small"
+          type="button"
+          onClick={handleResetAllSettings}
+        >
+          Reset All Settings
+        </button>
       </div>
     </section>
   );

@@ -583,7 +583,8 @@ describe("Desktop app flows", () => {
     await waitFor(() =>
       expect(mockGetProject).toHaveBeenCalledWith(expect.stringMatching(/^proj_/)),
     );
-    expect(await screen.findByRole("button", { name: "Analyze Track" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "New Song" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show Inspector" })).toBeInTheDocument();
   });
 
   it("analyzes track from inspector", async () => {
@@ -593,6 +594,7 @@ describe("Desktop app flows", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
     await user.click(screen.getByRole("button", { name: "Analyze Track" }));
 
     expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123");
@@ -603,6 +605,7 @@ describe("Desktop app flows", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
     const sourceList = screen.getByRole("group", { name: "Source and mix list" });
     await user.click(within(sourceList).getByRole("button", { name: /Source Track/i }));
     await user.click(screen.getByText("Correct source key if detection is wrong"));
@@ -676,6 +679,7 @@ describe("Desktop app flows", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
     const sourceList = screen.getByRole("group", { name: "Source and mix list" });
     await user.click(within(sourceList).getByRole("button", { name: /Source Track/i }));
     await user.click(screen.getByRole("button", { name: "Export Selected Audio" }));
@@ -711,11 +715,31 @@ describe("Desktop app flows", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
     await user.click(screen.getByRole("button", { name: "Delete Project" }));
 
     expect(mockDeleteProject).toHaveBeenCalledWith("proj_123");
     expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "No projects yet" })).toBeInTheDocument();
+  });
+
+  it("uses new default appearance and visibility settings", async () => {
+    renderApp(["/settings"]);
+
+    expect(await screen.findByRole("heading", { name: "Playback Surface" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Theme")).toHaveValue("system");
+    expect(screen.getByLabelText("Information Density")).toHaveValue("minimal");
+    expect(screen.getByLabelText("Layout Density")).toHaveValue("compact");
+    expect(screen.getByLabelText("Show helper text by default")).not.toBeChecked();
+    expect(screen.getByLabelText("Open inspector by default")).not.toBeChecked();
+    expect(window.localStorage.getItem("tuneforge.theme-preference")).toBe("system");
+    expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}")).toMatchObject({
+      informationDensity: "minimal",
+      layoutDensity: "compact",
+      helperTextVisible: false,
+      defaultInspectorOpen: false,
+      metadataRevealMode: "expand",
+    });
   });
 
   it("persists theme and UI visibility preferences", async () => {
@@ -727,8 +751,8 @@ describe("Desktop app flows", () => {
 
     await user.selectOptions(screen.getByLabelText("Theme"), "light");
     await user.selectOptions(screen.getByLabelText("Information Density"), "detailed");
-    await user.selectOptions(screen.getByLabelText("Layout Density"), "compact");
-    await user.click(screen.getByLabelText("Show helper text"));
+    await user.selectOptions(screen.getByLabelText("Layout Density"), "comfortable");
+    await user.click(screen.getByLabelText("Show helper text by default"));
     await user.click(screen.getByLabelText("Open inspector by default"));
     await user.selectOptions(screen.getByLabelText("Metadata Reveal"), "hover");
 
@@ -738,11 +762,49 @@ describe("Desktop app flows", () => {
     expect(document.documentElement.style.getPropertyValue("--component-playback-active")).toBe("#D9861A");
     expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}")).toMatchObject({
       informationDensity: "detailed",
-      layoutDensity: "compact",
-      helperTextVisible: false,
-      defaultInspectorOpen: false,
+      layoutDensity: "comfortable",
+      helperTextVisible: true,
+      defaultInspectorOpen: true,
       metadataRevealMode: "hover",
     });
+  });
+
+  it("resets appearance, visibility, and all settings independently", async () => {
+    const user = userEvent.setup();
+    renderApp(["/settings"]);
+
+    expect(await screen.findByRole("heading", { name: "Playback Surface" })).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("Theme"), "light");
+    await user.selectOptions(screen.getByLabelText("Information Density"), "detailed");
+    await user.selectOptions(screen.getByLabelText("Layout Density"), "comfortable");
+    await user.click(screen.getByLabelText("Show helper text by default"));
+    await user.click(screen.getByLabelText("Open inspector by default"));
+    await user.selectOptions(screen.getByLabelText("Metadata Reveal"), "hover");
+
+    await user.click(screen.getByRole("button", { name: "Reset Appearance" }));
+    expect(screen.getByLabelText("Theme")).toHaveValue("system");
+    expect(screen.getByLabelText("Information Density")).toHaveValue("minimal");
+    expect(screen.getByLabelText("Layout Density")).toHaveValue("compact");
+    expect(screen.getByLabelText("Show helper text by default")).toBeChecked();
+    expect(screen.getByLabelText("Open inspector by default")).toBeChecked();
+    expect(screen.getByLabelText("Metadata Reveal")).toHaveValue("hover");
+
+    await user.click(screen.getByRole("button", { name: "Reset Visibility" }));
+    expect(screen.getByLabelText("Show helper text by default")).not.toBeChecked();
+    expect(screen.getByLabelText("Open inspector by default")).not.toBeChecked();
+    expect(screen.getByLabelText("Metadata Reveal")).toHaveValue("expand");
+
+    await user.selectOptions(screen.getByLabelText("Theme"), "dark");
+    await user.click(screen.getByLabelText("Show helper text by default"));
+    await user.click(screen.getByRole("button", { name: "Reset All Settings" }));
+
+    expect(screen.getByLabelText("Theme")).toHaveValue("system");
+    expect(screen.getByLabelText("Information Density")).toHaveValue("minimal");
+    expect(screen.getByLabelText("Layout Density")).toHaveValue("compact");
+    expect(screen.getByLabelText("Show helper text by default")).not.toBeChecked();
+    expect(screen.getByLabelText("Open inspector by default")).not.toBeChecked();
+    expect(screen.getByLabelText("Metadata Reveal")).toHaveValue("expand");
   });
 
   it("follows system theme when preference is set to system", async () => {

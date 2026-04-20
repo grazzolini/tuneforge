@@ -22,7 +22,7 @@
     "react-router-dom": "^7.5.0"
   },
   "devDependencies": {
-    "@eslint/js": "^9.25.0",
+    "@eslint/js": "^10.0.1",
     "@tauri-apps/cli": "^2.4.1",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.3.0",

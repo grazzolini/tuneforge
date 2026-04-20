@@ -2025,9 +2025,9 @@ describe("Desktop app flows", () => {
 
     expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /^Dark\b/i }));
-    await user.click(screen.getByRole("button", { name: /^Detailed\b/i }));
-    await user.click(screen.getByRole("button", { name: /^Prefer sharps\b/i }));
+    await user.click(screen.getByRole("button", { name: /^Dark/i }));
+    await user.click(screen.getByRole("button", { name: /^Detailed/i }));
+    await user.click(screen.getByRole("button", { name: /^Prefer sharps/i }));
     await user.click(screen.getByRole("button", { name: /Open inspector by default/i }));
     await user.click(screen.getByRole("button", { name: /Collapse sources rail by default/i }));
     await user.click(screen.getByRole("link", { name: "Open Theme Studio" }));

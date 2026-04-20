@@ -1,0 +1,90 @@
+name: Bug report
+description: Report a defect in Tuneforge.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill in as much detail as you can.
+        Do **not** report security issues here — see [SECURITY.md](../SECURITY.md).
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: A clear, concise description of what is wrong.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps. Include any commands run and UI actions taken.
+      placeholder: |
+        1. Import file X
+        2. Run analysis
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include any error messages or stack traces, in code blocks.
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and version
+      placeholder: "macOS 14.5 (arm64) / Ubuntu 24.04 / ..."
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Tuneforge commit or version
+      description: Output of `git rev-parse --short HEAD` or the release version.
+    validations:
+      required: true
+
+  - type: input
+    id: ffmpeg
+    attributes:
+      label: ffmpeg version
+      description: Output of `ffmpeg -version | head -1`.
+
+  - type: input
+    id: source-format
+    attributes:
+      label: Source audio format (if relevant)
+      placeholder: "mp3 / wav / m4a / mp4 / ..."
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Backend or Tauri console output if available.
+      render: shell
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I have searched existing issues and this is not a duplicate
+          required: true
+        - label: I am not sharing copyrighted audio in this report
+          required: true

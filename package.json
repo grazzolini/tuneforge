@@ -11,9 +11,14 @@
     "lint": "pnpm --filter @tuneforge/desktop lint && cd apps/backend && uv run --python 3.11 ruff check . && uv run --python 3.11 mypy app",
     "package:mac": "pnpm --filter @tuneforge/desktop tauri build --bundles app && node scripts/package-dmg.mjs",
     "test": "pnpm --filter @tuneforge/desktop test --run && cd apps/backend && uv run --python 3.11 pytest",
-    "typecheck": "pnpm --filter @tuneforge/desktop typecheck"
+    "typecheck": "pnpm --filter @tuneforge/desktop typecheck",
+    "commitlint": "commitlint --edit",
+    "prepare": "husky"
   },
   "devDependencies": {
-    "concurrently": "^9.2.1"
+    "@commitlint/cli": "^19.6.1",
+    "@commitlint/config-conventional": "^19.6.0",
+    "concurrently": "^9.2.1",
+    "husky": "^9.1.7"
   }
 }

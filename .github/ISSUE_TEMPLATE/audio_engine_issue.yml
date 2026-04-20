@@ -1,0 +1,119 @@
+name: Audio engine issue
+description: Report incorrect or surprising output from analysis, chords, stems, transpose, retune, or export.
+title: "[engine] "
+labels: ["bug", "audio-engine"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template when an audio operation runs but produces wrong results
+        (e.g. wrong key detected, chord misidentified, distorted stems, off-pitch transpose).
+
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Engine
+      options:
+        - analysis (key / tempo)
+        - chords
+        - stems (Demucs)
+        - transpose
+        - retune
+        - export / preview
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected output
+      description: What the engine should have produced and how you know.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual output
+      description: What the engine produced. Include numeric values when relevant.
+    validations:
+      required: true
+
+  - type: input
+    id: sample-rate
+    attributes:
+      label: Source sample rate
+      placeholder: "44100 / 48000 / ..."
+
+  - type: input
+    id: channels
+    attributes:
+      label: Source channels
+      placeholder: "mono / stereo"
+
+  - type: input
+    id: duration
+    attributes:
+      label: Source duration
+      placeholder: "e.g. 3:42"
+
+  - type: input
+    id: source-format
+    attributes:
+      label: Source container/codec
+      placeholder: "mp3 / wav / flac / m4a / mp4 / webm"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: device
+    attributes:
+      label: Compute device used
+      options:
+        - auto
+        - cpu
+        - mps (Apple)
+        - cuda (NVIDIA)
+    validations:
+      required: true
+
+  - type: input
+    id: stem-model
+    attributes:
+      label: Stem model (if engine = stems)
+      placeholder: "htdemucs_ft / htdemucs / ..."
+
+  - type: textarea
+    id: parameters
+    attributes:
+      label: Operation parameters
+      description: e.g. transpose semitones, retune target Hz, analysis flags.
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 14.5 (arm64)"
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Tuneforge commit
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Backend logs
+      render: shell
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I am not sharing copyrighted audio in this report
+          required: true

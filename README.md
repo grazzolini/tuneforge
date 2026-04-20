@@ -1,98 +1,123 @@
 # Tuneforge
 
-Tuneforge is a local-first desktop music practice tool built with Tauri, React, FastAPI, SQLite, and FFmpeg.
+Tuneforge is a local-first, open-source desktop app for musicians who want to learn, rehearse, and play along with songs. Drop in any track and Tuneforge will split it into vocals and backing instruments, work out the key, tempo, and chord progression, and let you shift the pitch, retune to a reference frequency, and export a custom version to practice with.
 
-Supported import formats currently include `mp3`, `wav`, `flac`, `m4a`, `aac`, `ogg`, `mp4`, and `webm`.
-For `mp4` and `webm`, Tuneforge extracts a local WAV working file during import so analysis and transforms run against audio directly.
-Stem separation now uses a local Demucs backend for `vocals` and `instrumental` output.
+Think "AI-assisted song toolkit for the player at home" — but **fully local, single-user, and with no cloud component**. Every track stays on your machine, no account, no upload, no network round-trip after the initial model download.
+
+## Status
+
+Pre-1.0. The desktop dev flow (`pnpm dev`) is the supported way to run the app today. Packaged macOS builds are work in progress and currently broken; do not rely on `pnpm package:mac`.
+
+## Features
+
+- Import `mp3`, `wav`, `flac`, `m4a`, `aac`, `ogg`, `mp4`, and `webm`. `mp4` / `webm` are transcoded to a local WAV working file at import time.
+- Key, tempo, and chord-timeline analysis.
+- Pitch transpose (semitones) and retune (target reference Hz).
+- Stem separation via a local Demucs backend (`htdemucs_ft` by default).
+- Preview rendering (cached) and export to `wav`, `mp3`, or `flac`.
+- Per-project playback session with persistence across navigation.
+
+## Threat Model and Scope
+
+Tuneforge is **local-only by design**:
+
+- The backend binds to `127.0.0.1` only.
+- There is **no authentication, no authorization, and no per-user model**.
+- Treat the loopback bind as the only trust boundary. Do not expose the port to a network, do not put it behind a reverse proxy, and do not run it on a shared multi-user host without isolation.
+
+Security reports follow the process in [SECURITY.md](./SECURITY.md). "There is no auth" is not a vulnerability — it is the design.
 
 ## Workspace
 
-- `apps/backend`: FastAPI API, SQLite persistence, job runner, audio analysis/transforms, pytest suite
-- `apps/desktop`: Tauri desktop shell and React frontend
-- `packages/shared-types`: generated TypeScript contract from the backend OpenAPI schema
+- `apps/backend` — FastAPI API, SQLite persistence, job runner, audio analysis/transforms, pytest suite. See [apps/backend/README.md](apps/backend/README.md).
+- `apps/desktop` — Tauri desktop shell and React frontend.
+- `packages/shared-types` — TypeScript contract generated from the backend OpenAPI schema.
+
+## Prerequisites
+
+- `pnpm` (version pinned in [package.json](./package.json))
+- [`uv`](https://docs.astral.sh/uv/)
+- Python 3.11
+- `ffmpeg` and `ffprobe` available on `PATH` (install via `brew install ffmpeg`, `apt install ffmpeg`, etc.)
+- Rust toolchain for Tauri
+
+## Setup
+
+```sh
+pnpm install
+cd apps/backend && uv sync --python 3.11 --all-groups
+cd ../..
+pnpm contracts:generate
+```
+
+The first `uv sync` is heavy because it installs Demucs and Torch. The first stem-separation run will additionally download the Demucs model weights into the local Torch cache.
 
 ## Development
 
-Prerequisites:
+Two terminals:
 
-- `pnpm`
-- `uv`
-- `Python 3.11`
-- `FFmpeg` and `ffprobe`
-- Rust toolchain for Tauri
+```sh
+pnpm dev:backend
+pnpm dev:desktop
+```
 
-Commands:
+Or both at once:
 
-- `pnpm install`
-- `cd apps/backend && uv sync --python 3.11 --all-groups`
-- `pnpm contracts:generate`
-- `pnpm dev:backend`
-- `pnpm dev:desktop`
-- `pnpm dev`
-- `pnpm lint`
-- `pnpm test`
-- `pnpm package:mac`
+```sh
+pnpm dev
+```
 
 The backend serves the local API on `http://127.0.0.1:8765/api/v1`.
 
-Notes:
+## Configuration
 
-- `pnpm dev:desktop` runs the Tauri shell and starts the Vite frontend dev server. Run `pnpm dev:backend` separately if you are not using `pnpm dev`.
-- `pnpm dev` starts the backend and desktop flow together.
-- `pnpm bundle:prepare` is available if you want to inspect the staged packaging resources manually. It stages the backend source, Python runtime, site-packages, and local `ffmpeg` / `ffprobe` binaries into `apps/desktop/src-tauri/resources`.
-- `pnpm package:mac` builds the macOS app bundle and DMG with the backend bundled inside the app. Tauri runs the bundle prep step automatically during this build.
-- The backend dependency sync now installs Demucs and Torch, so the first `uv sync` is heavier than before.
-- The first real stem generation may download the selected Demucs model weights into the local cache before processing starts.
-- Stem behavior can be tuned with `TUNEFORGE_STEM_MODEL` and `TUNEFORGE_STEM_DEVICE`. Defaults are `htdemucs_ft` and `auto`.
-- `auto` prefers `cuda`, then `mps`, then `cpu`. The Demucs worker also enables PyTorch MPS CPU fallback for unsupported ops.
-- Packaged builds inject bundled `ffmpeg` and `ffprobe` through `TUNEFORGE_FFMPEG_PATH` and `TUNEFORGE_FFPROBE_PATH`, so the shipped app does not depend on your shell `PATH`.
+Backend behavior is environment-driven. Full table is in [apps/backend/README.md](apps/backend/README.md#configuration). The most relevant variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `TUNEFORGE_HOST` | `127.0.0.1` | Bind address. Do not change to a public address. |
+| `TUNEFORGE_PORT` | `8765` | Bind port. |
+| `TUNEFORGE_DATA_DIR` | OS-specific | Override the data directory. |
+| `TUNEFORGE_FFMPEG_PATH` / `TUNEFORGE_FFPROBE_PATH` | `ffmpeg` / `ffprobe` | Override binary lookup. |
+| `TUNEFORGE_STEM_MODEL` | `htdemucs_ft` | Demucs model. |
+| `TUNEFORGE_STEM_DEVICE` | `auto` | `auto` / `cpu` / `mps` / `cuda`. |
+
+Default data directory:
+
+- macOS: `~/Library/Application Support/Tuneforge`
+- Linux: `~/.local/share/tuneforge`
+
+## Quality Gates
+
+```sh
+pnpm lint
+pnpm typecheck
+pnpm test
+```
+
+If you change backend routes or schemas, regenerate the shared contracts and commit the result:
+
+```sh
+pnpm contracts:generate
+```
+
+CI fails if `packages/shared-types/src/generated/openapi.ts` drifts from the backend OpenAPI output.
 
 ## Packaging
 
-The development flow stays split on purpose:
-
-- `pnpm dev:backend`
-- `pnpm dev:desktop`
-
-The packaged macOS app is self-contained:
-
-- Tauri starts the bundled backend automatically
-- the frontend asks the Tauri shell for the resolved backend base URL at runtime
-- backend source, Python runtime, dependencies, `ffmpeg`, and `ffprobe` are bundled inside the app resources
-
-### Build And Run The Bundled macOS App
-
-1. Install workspace dependencies:
-   - `pnpm install`
-   - `cd apps/backend && uv sync --python 3.11 --all-groups`
-   - `cd ../..`
-2. Generate the shared API types:
-   - `pnpm contracts:generate`
-3. Build the packaged app:
-   - `pnpm package:mac`
-
-Build outputs:
-
-- App bundle: `apps/desktop/src-tauri/target/release/bundle/macos/Tuneforge.app`
-- DMG: `apps/desktop/src-tauri/target/release/bundle/dmg/Tuneforge_<version>_<arch>.dmg`
-
-Run options:
-
-- Launch the app bundle directly:
-  - `open apps/desktop/src-tauri/target/release/bundle/macos/Tuneforge.app`
-- Or open the DMG, drag `Tuneforge.app` into `/Applications`, then launch it from there:
-  - `open apps/desktop/src-tauri/target/release/bundle/dmg`
-
-Notes:
-
-- You do not need to start `pnpm dev:backend` or `pnpm dev:desktop` for the packaged app.
-- On first launch, macOS may warn because this is a local unsigned build. If that happens, right-click the app, choose `Open`, and confirm once.
-- The packaged app starts its own bundled backend on localhost automatically.
+`pnpm package:mac` and `pnpm bundle:prepare` exist but the packaged macOS build is **work in progress** and not currently functional. Use the development flow (`pnpm dev`) for now. Packaged builds will require `ffmpeg`/`ffprobe` to be installed on the host system; Tuneforge does not bundle them (see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)).
 
 ## CI
 
-GitHub Actions runs two jobs:
+GitHub Actions runs two jobs on every push and pull request:
 
 - `backend`: `uv sync`, `ruff`, `mypy`, `pytest`
-- `desktop`: `pnpm install`, `pnpm contracts:generate`, generated contract drift check, desktop `lint`, `typecheck`, `test`
+- `desktop`: `pnpm install`, `pnpm contracts:generate`, generated-contract drift check, desktop `lint`, `typecheck`, `test`
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md). Feature scope is opinionated; please open a feature-request issue before writing significant new code.
+
+## License
+
+[MIT](./LICENSE). Third-party components and their licenses are listed in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).

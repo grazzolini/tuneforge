@@ -7,9 +7,10 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { getThemeCssVariables, type ThemeMode } from "./themeTokens";
 
 export type ThemePreference = "dark" | "light" | "system";
-export type EffectiveTheme = "dark" | "light";
+export type EffectiveTheme = ThemeMode;
 
 type ThemeContextValue = {
   effectiveTheme: EffectiveTheme;
@@ -45,8 +46,13 @@ function applyTheme(theme: EffectiveTheme) {
   if (typeof document === "undefined") {
     return;
   }
-  document.documentElement.dataset.theme = theme;
-  document.documentElement.style.colorScheme = theme;
+  const root = document.documentElement;
+  root.dataset.theme = theme;
+  root.style.colorScheme = theme;
+
+  for (const [property, value] of Object.entries(getThemeCssVariables(theme))) {
+    root.style.setProperty(property, value);
+  }
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {

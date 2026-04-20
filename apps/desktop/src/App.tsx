@@ -2,6 +2,7 @@ import { NavLink, Route, Routes } from "react-router-dom";
 import { LibraryView } from "./features/projects/LibraryView";
 import { ProjectView } from "./features/projects/ProjectView";
 import { SettingsView } from "./features/settings/SettingsView";
+import { ThemePreviewView } from "./features/settings/ThemePreviewView";
 import { PreferencesProvider, usePreferences } from "./lib/preferences";
 import { ThemeProvider } from "./lib/theme";
 
@@ -27,6 +28,7 @@ function AppChrome() {
           <Route path="/" element={<LibraryView />} />
           <Route path="/projects/:projectId" element={<ProjectView />} />
           <Route path="/settings" element={<SettingsView />} />
+          <Route path="/settings/theme-preview" element={<ThemePreviewView />} />
         </Routes>
       </main>
     </div>

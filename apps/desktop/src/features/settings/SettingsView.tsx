@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { api } from "../../lib/api";
 import {
   usePreferences,
@@ -190,6 +191,9 @@ export function SettingsView() {
             <button className="button button--ghost button--small" type="button" onClick={resetPreferences}>
               Reset UI Defaults
             </button>
+            <Link className="button button--ghost button--small" to="/settings/theme-preview">
+              Open Theme Preview
+            </Link>
           </div>
         </div>
 

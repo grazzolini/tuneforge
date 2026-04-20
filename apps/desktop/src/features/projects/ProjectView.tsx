@@ -303,6 +303,7 @@ export function ProjectView() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const {
+    activateStemPlayback,
     dismissSession,
     isPlaying,
     playbackDurationSeconds,
@@ -336,6 +337,7 @@ export function ProjectView() {
   const [draftName, setDraftName] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(defaultInspectorOpen);
   const [stemControls, setStemControls] = useState<Record<string, StemControlState>>({});
+  const [dismissedStemJobIds, setDismissedStemJobIds] = useState<string[]>([]);
   const showSupportingCopy = helperTextVisible && informationDensity !== "minimal";
 
   const projectQuery = useQuery({
@@ -504,7 +506,10 @@ export function ProjectView() {
   );
   const analyzeJob = projectJobs.find((job) => job.type === "analyze");
   const chordJob = projectJobs.find((job) => job.type === "chords");
-  const stemJob = projectJobs.find((job) => job.type === "stems");
+  const stemJobs = useMemo(
+    () => projectJobs.filter((job) => job.type === "stems"),
+    [projectJobs],
+  );
 
   const displayArtifacts = useMemo(() => {
     const artifacts = artifactsQuery.data ?? [];
@@ -565,6 +570,24 @@ export function ProjectView() {
       }),
     [selectedPrimaryArtifact?.id, stemArtifacts],
   );
+  const stemJob = useMemo(() => {
+    const selectedPrimaryId = selectedPrimaryArtifact?.id;
+    if (!selectedPrimaryId) {
+      return null;
+    }
+
+    const selectedSourceJob =
+      stemJobs.find((job) => job.source_artifact_id === selectedPrimaryId) ?? null;
+    if (selectedSourceJob) {
+      return selectedSourceJob;
+    }
+
+    if (selectedPrimaryArtifact?.type === "source_audio") {
+      return stemJobs.find((job) => job.source_artifact_id == null) ?? null;
+    }
+
+    return null;
+  }, [selectedPrimaryArtifact, stemJobs]);
   const focusedStemArtifact =
     isStemArtifact(selectedArtifact) ? selectedArtifact : visibleStemArtifacts[0] ?? null;
   const isStemSelected = isStemArtifact(selectedArtifact);
@@ -607,11 +630,12 @@ export function ProjectView() {
       ? "auto"
       : serializeKey(sourceKey);
   const hasVisibleStems = visibleStemArtifacts.length > 0;
-  const visibleJobs = useMemo(
-    () => projectJobs.filter((job) => job.type !== "stems"),
-    [projectJobs],
-  );
-  const recentJobs = visibleJobs.slice(0, 3);
+  const stemErrorMessage =
+    stemJob?.error_message && !dismissedStemJobIds.includes(stemJob.id)
+      ? stemJob.error_message
+      : null;
+  const visibleJobs = projectJobs;
+  const recentJobs = projectJobs.slice(0, 3);
   const controlSummary = hasTransformChange ? formatKey(targetKey) : "Original key";
   const tuningSummary = formatRetuneSummary(retuneMode, referenceHz, centsOffset);
   const mixStatus = isStemPlayback
@@ -686,7 +710,8 @@ export function ProjectView() {
     setSelectedArtifactId(artifact.id);
   }
 
-  function handleSelectStemArtifact(artifact: ArtifactSchema) {
+  async function handleSelectStemArtifact(artifact: ArtifactSchema) {
+    await activateStemPlayback();
     const sourceArtifactId = sourceArtifactIdForStems(artifact);
     if (sourceArtifactId) {
       setSelectedPrimaryArtifactId(sourceArtifactId);
@@ -781,6 +806,7 @@ export function ProjectView() {
     setSelectedArtifactId(storedPlaybackState.selectedArtifactId);
     setSelectedPrimaryArtifactId(storedPlaybackState.selectedPrimaryArtifactId);
     setStemControls(storedPlaybackState.stemControls);
+    setDismissedStemJobIds(storedPlaybackState.dismissedStemJobIds);
     setHydratedProjectId(projectId);
   }, [projectId]);
 
@@ -853,6 +879,18 @@ export function ProjectView() {
   }, [visibleStemArtifacts]);
 
   useEffect(() => {
+    if (hydratedProjectId !== projectId || !jobsQuery.data) {
+      return;
+    }
+
+    const activeStemJobIds = new Set(stemJobs.map((job) => job.id));
+    setDismissedStemJobIds((current) => {
+      const next = current.filter((jobId) => activeStemJobIds.has(jobId));
+      return next.length === current.length ? current : next;
+    });
+  }, [hydratedProjectId, jobsQuery.data, projectId, stemJobs]);
+
+  useEffect(() => {
     if (hydratedProjectId !== projectId) {
       return;
     }
@@ -863,8 +901,10 @@ export function ProjectView() {
       selectedPrimaryArtifactId,
       selectedStemSourceArtifactId,
       stemControls,
+      dismissedStemJobIds,
     });
   }, [
+    dismissedStemJobIds,
     hydratedProjectId,
     projectId,
     selectedArtifactId,
@@ -1148,6 +1188,22 @@ export function ProjectView() {
                     : "Select source audio or a saved mix first."}
                 </p>
               )}
+              {stemErrorMessage && stemJob ? (
+                <div className="button-row" role="group" aria-label="Stem error">
+                  <span className="inline-error">{stemErrorMessage}</span>
+                  <button
+                    className="button button--ghost button--small"
+                    onClick={() =>
+                      setDismissedStemJobIds((current) =>
+                        current.includes(stemJob.id) ? current : [...current, stemJob.id],
+                      )
+                    }
+                    type="button"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              ) : null}
             </div>
           </div>
         </aside>

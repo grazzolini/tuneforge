@@ -484,6 +484,8 @@ export interface components {
             status: string;
             /** Progress */
             progress: number;
+            /** Source Artifact Id */
+            source_artifact_id?: string | null;
             /** Error Message */
             error_message: string | null;
             /**

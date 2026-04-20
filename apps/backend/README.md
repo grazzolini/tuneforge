@@ -51,7 +51,7 @@ All configuration is environment-driven (see [`app/config.py`](./app/config.py))
 | `TUNEFORGE_FFMPEG_PATH` | `ffmpeg` | Override the `ffmpeg` binary location. |
 | `TUNEFORGE_FFPROBE_PATH` | `ffprobe` | Override the `ffprobe` binary location. |
 | `TUNEFORGE_STEM_MODEL` | `htdemucs_ft` | Demucs model used for stem separation. |
-| `TUNEFORGE_STEM_DEVICE` | `auto` | One of `auto`, `cpu`, `mps`, `cuda`. `auto` prefers CUDA, then MPS, then CPU. |
+| `TUNEFORGE_STEM_DEVICE` | `auto` | One of `auto`, `cpu`, `mps`, `cuda`. `auto` prefers compatible CUDA, then MPS, then CPU. |
 
 Default data directory:
 

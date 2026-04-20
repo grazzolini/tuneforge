@@ -8,6 +8,7 @@ export type StoredProjectPlaybackState = {
   selectedPrimaryArtifactId: string | null;
   selectedStemSourceArtifactId: string | null;
   stemControls: Record<string, StemControlState>;
+  dismissedStemJobIds: string[];
 };
 
 const STORAGE_KEY = "tuneforge.project-playback-state";
@@ -17,6 +18,7 @@ const DEFAULT_STORED_PROJECT_PLAYBACK_STATE: StoredProjectPlaybackState = {
   selectedPrimaryArtifactId: null,
   selectedStemSourceArtifactId: null,
   stemControls: {},
+  dismissedStemJobIds: [],
 };
 
 function normalizeStemControlState(value: unknown): StemControlState {
@@ -47,6 +49,9 @@ function normalizeStoredProjectPlaybackState(value: unknown): StoredProjectPlayb
       normalizeStemControlState(controlState),
     ]),
   );
+  const dismissedStemJobIds = Array.isArray(candidate.dismissedStemJobIds)
+    ? candidate.dismissedStemJobIds.filter((jobId): jobId is string => typeof jobId === "string")
+    : [];
 
   return {
     selectedArtifactId:
@@ -60,6 +65,7 @@ function normalizeStoredProjectPlaybackState(value: unknown): StoredProjectPlayb
         ? candidate.selectedStemSourceArtifactId
         : null,
     stemControls,
+    dismissedStemJobIds,
   };
 }
 

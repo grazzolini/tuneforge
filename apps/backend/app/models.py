@@ -107,6 +107,11 @@ class Job(Base):
 
     project: Mapped[Project | None] = relationship(back_populates="jobs")
 
+    @property
+    def source_artifact_id(self) -> str | None:
+        value = self.payload_json.get("source_artifact_id")
+        return value if isinstance(value, str) else None
+
 
 class Setting(Base):
     __tablename__ = "settings"

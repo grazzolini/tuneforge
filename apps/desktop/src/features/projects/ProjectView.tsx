@@ -4,6 +4,13 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { confirm, save } from "@tauri-apps/plugin-dialog";
 import { api, type ArtifactSchema, type ChordSegmentSchema, type JobSchema } from "../../lib/api";
 import { usePreferences } from "../../lib/preferences";
+import { usePlayback } from "./playback";
+import {
+  clearProjectPlaybackState,
+  readProjectPlaybackState,
+  writeProjectPlaybackState,
+  type StemControlState,
+} from "./projectPlaybackState";
 import {
   DEFAULT_KEY,
   MUSICAL_KEYS,
@@ -17,11 +24,6 @@ import {
   transposeKey,
   type MusicalKey,
 } from "../../lib/music";
-
-type StemControlState = {
-  muted: boolean;
-  solo: boolean;
-};
 
 function useActiveJobPolling(projectId: string, jobs: JobSchema[] | undefined) {
   const queryClient = useQueryClient();
@@ -62,7 +64,12 @@ function isPlayableArtifact(artifact: ArtifactSchema) {
 }
 
 function preferredArtifactSelection(artifacts: ArtifactSchema[]) {
-  return artifacts.find((artifact) => artifact.type === "preview_mix") ?? artifacts[0] ?? null;
+  return (
+    artifacts.find((artifact) => artifact.type === "source_audio") ??
+    artifacts.find((artifact) => artifact.type === "preview_mix") ??
+    artifacts[0] ??
+    null
+  );
 }
 
 function fileNameFromPath(path: string) {
@@ -292,14 +299,25 @@ export function ProjectView() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const {
+    dismissSession,
+    isPlaying,
+    playbackDurationSeconds,
+    playbackTimeSeconds,
+    registerProjectSession,
+    seekBy,
+    seekTo,
+    togglePlayback,
+  } = usePlayback();
+  const {
     defaultInspectorOpen,
     helperTextVisible,
     informationDensity,
     metadataRevealMode,
   } = usePreferences();
-  const primaryAudioRef = useRef<HTMLAudioElement | null>(null);
-  const stemAudioRefs = useRef<Record<string, HTMLAudioElement | null>>({});
   const chordSegmentRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const pendingPreviewSelection = useRef<{ previousLatestPreviewArtifactId: string | null } | null>(
+    null,
+  );
   const [retuneMode, setRetuneMode] = useState<"off" | "reference" | "cents">("off");
   const [referenceHz, setReferenceHz] = useState("440");
   const [centsOffset, setCentsOffset] = useState("0");
@@ -308,13 +326,10 @@ export function ProjectView() {
   const [targetDirty, setTargetDirty] = useState(false);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [selectedPrimaryArtifactId, setSelectedPrimaryArtifactId] = useState<string | null>(null);
-  const [followLatestPreview, setFollowLatestPreview] = useState(true);
+  const [hydratedProjectId, setHydratedProjectId] = useState<string | null>(null);
   const [isRenaming, setIsRenaming] = useState(false);
   const [draftName, setDraftName] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(defaultInspectorOpen);
-  const [playbackTimeSeconds, setPlaybackTimeSeconds] = useState(0);
-  const [playbackDurationSeconds, setPlaybackDurationSeconds] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
   const [stemControls, setStemControls] = useState<Record<string, StemControlState>>({});
   const showSupportingCopy = helperTextVisible && informationDensity !== "minimal";
 
@@ -379,7 +394,9 @@ export function ProjectView() {
         throw new Error("Choose a tuning or key change first.");
       }
 
-      setFollowLatestPreview(true);
+      pendingPreviewSelection.current = {
+        previousLatestPreviewArtifactId: latestPreviewArtifact?.id ?? null,
+      };
 
       return api.createPreview(projectId, {
         output_format: "wav",
@@ -398,6 +415,9 @@ export function ProjectView() {
         queryClient.invalidateQueries({ queryKey: ["artifacts", projectId] }),
       ]);
     },
+    onError: () => {
+      pendingPreviewSelection.current = null;
+    },
   });
 
   const stemMutation = useMutation({
@@ -405,7 +425,6 @@ export function ProjectView() {
       if (!selectedPrimaryArtifactId) {
         throw new Error("Select source audio or practice mix first.");
       }
-      setFollowLatestPreview(false);
       return api.createStems(projectId, {
         mode: "two_stem",
         output_format: "wav",
@@ -454,6 +473,8 @@ export function ProjectView() {
   const deleteMutation = useMutation({
     mutationFn: () => api.deleteProject(projectId),
     onSuccess: async () => {
+      dismissSession();
+      clearProjectPlaybackState(projectId);
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
       navigate("/");
     },
@@ -468,7 +489,6 @@ export function ProjectView() {
     },
     onSuccess: async () => {
       setSelectedArtifactId(null);
-      setFollowLatestPreview(false);
       await queryClient.invalidateQueries({ queryKey: ["artifacts", projectId] });
     },
   });
@@ -662,7 +682,6 @@ export function ProjectView() {
   function handleSelectPrimaryArtifact(artifact: ArtifactSchema) {
     setSelectedPrimaryArtifactId(artifact.id);
     setSelectedArtifactId(artifact.id);
-    setFollowLatestPreview(false);
   }
 
   function handleSelectStemArtifact(artifact: ArtifactSchema) {
@@ -671,62 +690,10 @@ export function ProjectView() {
       setSelectedPrimaryArtifactId(sourceArtifactId);
     }
     setSelectedArtifactId(artifact.id);
-    setFollowLatestPreview(false);
-  }
-
-  function setStemAudioRef(artifactId: string, element: HTMLAudioElement | null) {
-    if (element) {
-      stemAudioRefs.current[artifactId] = element;
-    } else {
-      delete stemAudioRefs.current[artifactId];
-    }
-  }
-
-  function getActiveMediaElements() {
-    if (isStemPlayback) {
-      return visibleStemArtifacts
-        .map((artifact) => stemAudioRefs.current[artifact.id])
-        .filter(Boolean) as HTMLAudioElement[];
-    }
-    return primaryAudioRef.current ? [primaryAudioRef.current] : [];
-  }
-
-  function syncPlaybackPosition(nextTime: number) {
-    getActiveMediaElements().forEach((element) => {
-      element.currentTime = nextTime;
-    });
-    setPlaybackTimeSeconds(nextTime);
-  }
-
-  async function togglePlayback() {
-    const activeElements = getActiveMediaElements();
-    if (!activeElements.length) return;
-
-    if (isPlaying) {
-      activeElements.forEach((element) => element.pause());
-      setIsPlaying(false);
-      return;
-    }
-
-    const masterTime = activeElements[0].currentTime;
-    activeElements.forEach((element) => {
-      if (Math.abs(element.currentTime - masterTime) > 0.05) {
-        element.currentTime = masterTime;
-      }
-    });
-
-    await Promise.all(
-      activeElements.map((element) =>
-        Promise.resolve(element.play()).catch(() => undefined),
-      ),
-    );
-    setIsPlaying(true);
   }
 
   function handleSeek(secondsDelta: number) {
-    const duration = playbackDurationSeconds || projectQuery.data?.duration_seconds || 0;
-    const nextTime = Math.max(0, Math.min(duration, playbackTimeSeconds + secondsDelta));
-    syncPlaybackPosition(nextTime);
+    seekBy(secondsDelta);
   }
 
   function toggleStemControl(
@@ -806,35 +773,61 @@ export function ProjectView() {
   }, [defaultInspectorOpen]);
 
   useEffect(() => {
+    const storedPlaybackState = readProjectPlaybackState(projectId);
+    pendingPreviewSelection.current = null;
+    setSelectedArtifactId(storedPlaybackState.selectedArtifactId);
+    setSelectedPrimaryArtifactId(storedPlaybackState.selectedPrimaryArtifactId);
+    setStemControls(storedPlaybackState.stemControls);
+    setHydratedProjectId(projectId);
+  }, [projectId]);
+
+  useEffect(() => {
+    if (hydratedProjectId !== projectId) {
+      return;
+    }
+
     if (!defaultPrimaryArtifact) {
       setSelectedPrimaryArtifactId(null);
       setSelectedArtifactId(null);
       return;
     }
 
-    if (
-      !selectedPrimaryArtifactId ||
-      !primaryArtifacts.some((artifact) => artifact.id === selectedPrimaryArtifactId)
-    ) {
-      setSelectedPrimaryArtifactId(defaultPrimaryArtifact.id);
-    }
+    const shouldSelectNewPreview =
+      pendingPreviewSelection.current &&
+      latestPreviewArtifact &&
+      latestPreviewArtifact.id !== pendingPreviewSelection.current.previousLatestPreviewArtifactId;
 
-    if (
-      !selectedArtifactId ||
-      !selectableArtifacts.some((artifact) => artifact.id === selectedArtifactId)
-    ) {
-      setSelectedArtifactId(defaultPrimaryArtifact.id);
-    }
-
-    if (followLatestPreview && latestPreviewArtifact) {
+    if (shouldSelectNewPreview) {
       setSelectedPrimaryArtifactId(latestPreviewArtifact.id);
       setSelectedArtifactId(latestPreviewArtifact.id);
+      pendingPreviewSelection.current = null;
+      return;
+    }
+
+    const nextSelectedArtifact =
+      selectableArtifacts.find((artifact) => artifact.id === selectedArtifactId) ?? null;
+    const derivedPrimaryId = sourceArtifactIdForStems(nextSelectedArtifact);
+    const nextPrimaryArtifactId =
+      primaryArtifacts.some((artifact) => artifact.id === selectedPrimaryArtifactId)
+        ? selectedPrimaryArtifactId
+        : derivedPrimaryId && primaryArtifacts.some((artifact) => artifact.id === derivedPrimaryId)
+          ? derivedPrimaryId
+          : defaultPrimaryArtifact.id;
+    const nextSelectedArtifactId = nextSelectedArtifact?.id ?? nextPrimaryArtifactId;
+
+    if (selectedPrimaryArtifactId !== nextPrimaryArtifactId) {
+      setSelectedPrimaryArtifactId(nextPrimaryArtifactId);
+    }
+
+    if (selectedArtifactId !== nextSelectedArtifactId) {
+      setSelectedArtifactId(nextSelectedArtifactId);
     }
   }, [
     defaultPrimaryArtifact,
-    followLatestPreview,
+    hydratedProjectId,
     latestPreviewArtifact,
     primaryArtifacts,
+    projectId,
     selectableArtifacts,
     selectedArtifactId,
     selectedPrimaryArtifactId,
@@ -851,30 +844,22 @@ export function ProjectView() {
   }, [visibleStemArtifacts]);
 
   useEffect(() => {
-    const hasSolo = soloedStemIds.length > 0;
-    visibleStemArtifacts.forEach((artifact) => {
-      const element = stemAudioRefs.current[artifact.id];
-      if (!element) return;
-      const state = stemControls[artifact.id] ?? { muted: false, solo: false };
-      element.volume = hasSolo ? (state.solo ? 1 : 0) : state.muted ? 0 : 1;
-    });
-  }, [soloedStemIds, stemControls, visibleStemArtifacts]);
-
-  useEffect(() => {
-    primaryAudioRef.current?.pause();
-    Object.values(stemAudioRefs.current).forEach((element) => element?.pause());
-    setIsPlaying(false);
-    setPlaybackTimeSeconds(0);
-    setPlaybackDurationSeconds(0);
-    if (primaryAudioRef.current) {
-      primaryAudioRef.current.currentTime = 0;
+    if (hydratedProjectId !== projectId) {
+      return;
     }
-    Object.values(stemAudioRefs.current).forEach((element) => {
-      if (element) {
-        element.currentTime = 0;
-      }
+
+    writeProjectPlaybackState(projectId, {
+      selectedArtifactId,
+      selectedPrimaryArtifactId,
+      stemControls,
     });
-  }, [selectedArtifact?.id, selectedPrimaryArtifact?.id]);
+  }, [
+    hydratedProjectId,
+    projectId,
+    selectedArtifactId,
+    selectedPrimaryArtifactId,
+    stemControls,
+  ]);
 
   useEffect(() => {
     if (activeChordIndex < 0) {
@@ -913,6 +898,36 @@ export function ProjectView() {
   const stageSummary = isStemPlayback
     ? `${activeStemCount} of ${visibleStemArtifacts.length} stems audible`
     : selectedArtifactSummary || currentSourceSummary;
+
+  useEffect(() => {
+    if (hydratedProjectId !== projectId || !projectId || !selectedPlaybackArtifact) {
+      return;
+    }
+
+    registerProjectSession({
+      projectId,
+      projectName: projectQuery.data?.display_name ?? "Project",
+      stageTitle,
+      stageSummary,
+      selectedPlaybackArtifactId: selectedPlaybackArtifact.id,
+      isStemPlayback,
+      visibleStemArtifactIds: visibleStemArtifacts.map((artifact) => artifact.id),
+      stemControls,
+      durationHintSeconds: projectQuery.data?.duration_seconds ?? 0,
+    });
+  }, [
+    hydratedProjectId,
+    isStemPlayback,
+    projectId,
+    projectQuery.data?.display_name,
+    projectQuery.data?.duration_seconds,
+    registerProjectSession,
+    selectedPlaybackArtifact,
+    stageSummary,
+    stageTitle,
+    stemControls,
+    visibleStemArtifacts,
+  ]);
 
   return (
     <section className="screen">
@@ -1190,7 +1205,7 @@ export function ProjectView() {
                     aria-label="Playback position"
                     max={playbackDurationSeconds || projectQuery.data?.duration_seconds || 0}
                     min={0}
-                    onChange={(event) => syncPlaybackPosition(Number(event.target.value))}
+                    onChange={(event) => seekTo(Number(event.target.value))}
                     step={0.1}
                     type="range"
                     value={Math.min(
@@ -1267,7 +1282,7 @@ export function ProjectView() {
                             `${segment.start_seconds}-${segment.label}-${index}`
                           ] = element;
                         }}
-                        onClick={() => syncPlaybackPosition(segment.start_seconds)}
+                        onClick={() => seekTo(segment.start_seconds)}
                       >
                         <span>{segment.label}</span>
                         <small>{formatPlaybackClock(segment.start_seconds)}</small>
@@ -1381,50 +1396,6 @@ export function ProjectView() {
                 </div>
               </div>
             ) : null}
-
-            <audio
-              ref={primaryAudioRef}
-              src={
-                !isStemPlayback && selectedPlaybackArtifact
-                  ? api.streamArtifactUrl(selectedPlaybackArtifact.id)
-                  : undefined
-              }
-              preload="metadata"
-              className="player player--hidden"
-              onTimeUpdate={(event) => setPlaybackTimeSeconds(event.currentTarget.currentTime)}
-              onLoadedMetadata={(event) =>
-                setPlaybackDurationSeconds(event.currentTarget.duration)
-              }
-              onDurationChange={(event) =>
-                setPlaybackDurationSeconds(event.currentTarget.duration)
-              }
-              onEnded={() => setIsPlaying(false)}
-            />
-            {visibleStemArtifacts.map((artifact, index) => (
-              <audio
-                key={artifact.id}
-                ref={(element) => setStemAudioRef(artifact.id, element)}
-                src={api.streamArtifactUrl(artifact.id)}
-                preload="metadata"
-                className="player player--hidden"
-                onTimeUpdate={
-                  index === 0
-                    ? (event) => setPlaybackTimeSeconds(event.currentTarget.currentTime)
-                    : undefined
-                }
-                onLoadedMetadata={
-                  index === 0
-                    ? (event) => setPlaybackDurationSeconds(event.currentTarget.duration)
-                    : undefined
-                }
-                onDurationChange={
-                  index === 0
-                    ? (event) => setPlaybackDurationSeconds(event.currentTarget.duration)
-                    : undefined
-                }
-                onEnded={index === 0 ? () => setIsPlaying(false) : undefined}
-              />
-            ))}
 
             <div className="playback-stage__footer">
               <div>

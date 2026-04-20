@@ -125,6 +125,28 @@ a {
   gap: 0.25rem;
 }
 
+.background-playback {
+  display: grid;
+  gap: 0.8rem;
+  padding: 0.9rem;
+  border: 1px solid color-mix(in srgb, var(--playback-accent) 32%, transparent);
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--playback-accent) 18%, transparent), transparent 42%),
+    color-mix(in srgb, var(--panel-strong) 84%, transparent);
+}
+
+.background-playback strong {
+  display: block;
+  margin-top: 0.22rem;
+}
+
+.background-playback__controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
 .brand__eyebrow,
 .eyebrow {
   text-transform: uppercase;
@@ -1282,6 +1304,7 @@ a {
     flex-direction: row;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
   }
 
   .nav {

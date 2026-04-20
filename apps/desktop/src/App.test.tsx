@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -9,6 +9,8 @@ const {
   resetMockApiState,
   setProjects,
   setProjectAnalysis,
+  setDeferredPreviewCompletion,
+  flushPendingPreview,
   mockOpen,
   mockSave,
   mockConfirm,
@@ -35,10 +37,12 @@ const {
     analysisByProject: Record<string, Record<string, unknown> | null>;
     chordsByProject: Record<string, Record<string, unknown>>;
     artifactsByProject: Record<string, Array<Record<string, unknown>>>;
+    pendingPreviewArtifactsByProject: Record<string, Array<Record<string, unknown>>>;
     jobs: Array<Record<string, unknown>>;
     nextProjectId: number;
     nextArtifactId: number;
     nextJobId: number;
+    deferPreviewCompletion: boolean;
   };
 
   function clone<T>(value: T): T {
@@ -96,6 +100,27 @@ const {
     state.analysisByProject[projectId] = analysis ? clone(analysis) : null;
   }
 
+  function setDeferredPreviewCompletion(value: boolean) {
+    state.deferPreviewCompletion = value;
+  }
+
+  function flushPendingPreview(projectId: string) {
+    const pendingArtifacts = state.pendingPreviewArtifactsByProject[projectId] ?? [];
+    if (!pendingArtifacts.length) {
+      return;
+    }
+    state.artifactsByProject[projectId] = [
+      ...pendingArtifacts,
+      ...(state.artifactsByProject[projectId] ?? []),
+    ];
+    state.pendingPreviewArtifactsByProject[projectId] = [];
+    state.jobs = state.jobs.map((job) =>
+      job.project_id === projectId && job.type === "preview" && job.status !== "completed"
+        ? { ...job, status: "completed", progress: 100, updated_at: createdAt }
+        : job,
+    );
+  }
+
   function resetMockApiState() {
     const demoProject = makeProject("proj_123", "Demo Song", "/tmp/demo.wav");
     state = {
@@ -140,6 +165,7 @@ const {
           },
         ],
       },
+      pendingPreviewArtifactsByProject: {},
       jobs: [
         {
           id: "job_1",
@@ -165,6 +191,7 @@ const {
       nextProjectId: 200,
       nextArtifactId: 200,
       nextJobId: 200,
+      deferPreviewCompletion: false,
     };
   }
 
@@ -267,17 +294,24 @@ const {
       },
       created_at: createdAt,
     };
-    state.artifactsByProject[projectId] = [artifact, ...(state.artifactsByProject[projectId] ?? [])];
     const job = {
       id: `job_${state.nextJobId++}`,
       project_id: projectId,
       type: "preview",
-      status: "completed",
-      progress: 100,
+      status: state.deferPreviewCompletion ? "running" : "completed",
+      progress: state.deferPreviewCompletion ? 25 : 100,
       error_message: null,
       created_at: createdAt,
       updated_at: createdAt,
     };
+    if (state.deferPreviewCompletion) {
+      state.pendingPreviewArtifactsByProject[projectId] = [
+        artifact,
+        ...(state.pendingPreviewArtifactsByProject[projectId] ?? []),
+      ];
+    } else {
+      state.artifactsByProject[projectId] = [artifact, ...(state.artifactsByProject[projectId] ?? [])];
+    }
     state.jobs.unshift(job);
     return { job: clone(job) };
   });
@@ -401,6 +435,8 @@ const {
     resetMockApiState,
     setProjects,
     setProjectAnalysis,
+    setDeferredPreviewCompletion,
+    flushPendingPreview,
     mockOpen,
     mockSave,
     mockConfirm,
@@ -461,13 +497,14 @@ function renderApp(initialEntries: string[]) {
       queries: { retry: false },
     },
   });
-  return render(
+  const result = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={initialEntries}>
         <App />
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...result, queryClient };
 }
 
 function installMatchMediaMock(initialMatches = false) {
@@ -501,6 +538,25 @@ function installMatchMediaMock(initialMatches = false) {
   };
 }
 
+function findAudioByArtifactId(artifactId: string) {
+  const element = Array.from(document.querySelectorAll("audio")).find((candidate) =>
+    candidate.getAttribute("src")?.includes(`/artifacts/${artifactId}/stream`),
+  );
+  if (!element) {
+    throw new Error(`Audio element not found for artifact ${artifactId}`);
+  }
+  return element as HTMLAudioElement;
+}
+
+function markAudioReady(element: HTMLAudioElement, duration = 182) {
+  Object.defineProperty(element, "duration", {
+    configurable: true,
+    value: duration,
+  });
+  fireEvent.loadedMetadata(element);
+  fireEvent.canPlay(element);
+}
+
 describe("Desktop app flows", () => {
   beforeEach(() => {
     resetMockApiState();
@@ -527,6 +583,8 @@ describe("Desktop app flows", () => {
     mockDeleteArtifact.mockClear();
     mockDeleteProject.mockClear();
     mockGetHealth.mockClear();
+    vi.mocked(window.HTMLMediaElement.prototype.play).mockClear();
+    vi.mocked(window.HTMLMediaElement.prototype.pause).mockClear();
     installMatchMediaMock(false);
   });
 
@@ -635,7 +693,7 @@ describe("Desktop app flows", () => {
         mode: "two_stem",
         output_format: "wav",
         force: false,
-        source_artifact_id: "art_preview",
+        source_artifact_id: "art_source",
       }),
     );
 
@@ -650,6 +708,115 @@ describe("Desktop app flows", () => {
 
     expect(await screen.findByRole("heading", { name: "Source Track" })).toBeInTheDocument();
     expect(screen.getByText("Full playback")).toBeInTheDocument();
+  });
+
+  it("persists selected stem playback state across project reopen", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+
+    const stemList = await screen.findByRole("group", { name: "Stem track list" });
+    await user.click(within(stemList).getByRole("button", { name: /Vocals/i }));
+
+    expect(await screen.findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        JSON.parse(window.localStorage.getItem("tuneforge.project-playback-state") ?? "{}"),
+      ).toMatchObject({
+        proj_123: {
+          selectedArtifactId: "art_200",
+          selectedPrimaryArtifactId: "art_source",
+        },
+      }),
+    );
+
+    await user.click(screen.getAllByRole("link", { name: "Library" })[0]);
+    expect(await screen.findByText("Background Playback")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+
+    const demoProjectCard = screen.getByText("Demo Song").closest("article");
+    expect(demoProjectCard).not.toBeNull();
+    await user.click(
+      within(demoProjectCard as HTMLElement).getByRole("link", { name: /Open project/i }),
+    );
+
+    expect(await screen.findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
+    expect(screen.getAllByText("Stem monitor").length).toBeGreaterThan(0);
+  });
+
+  it("toggles playback with spacebar and preserves time when switching mixes", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+
+    fireEvent.keyDown(window, { code: "Space", key: " " });
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument(),
+    );
+
+    sourceAudio.currentTime = 47.25;
+    fireEvent.timeUpdate(sourceAudio);
+
+    const savedMixList = screen.getByRole("group", { name: "Saved mix list" });
+    await user.click(within(savedMixList).getByRole("button", { name: /Practice Mix/i }));
+
+    const previewAudio = findAudioByArtifactId("art_preview");
+    markAudioReady(previewAudio);
+
+    await waitFor(() => expect(previewAudio.currentTime).toBeCloseTo(47.25, 2));
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+  });
+
+  it("keeps playback position when a newly created mix becomes active", async () => {
+    const user = userEvent.setup();
+    setDeferredPreviewCompletion(true);
+    const { queryClient } = renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
+
+    const sourceList = screen.getByRole("group", { name: "Source and mix list" });
+    await user.click(within(sourceList).getByRole("button", { name: /Source Track/i }));
+
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    sourceAudio.currentTime = 61.4;
+    fireEvent.timeUpdate(sourceAudio);
+
+    await user.click(screen.getByLabelText("Raise target key"));
+    await user.click(screen.getByRole("button", { name: "Create Mix" }));
+
+    expect(mockCreatePreview).toHaveBeenCalledWith(
+      "proj_123",
+      expect.objectContaining({
+        output_format: "wav",
+        transpose: { semitones: 1 },
+      }),
+    );
+
+    await act(async () => {
+      flushPendingPreview("proj_123");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
+        queryClient.invalidateQueries({ queryKey: ["artifacts", "proj_123"] }),
+      ]);
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "Practice Mix" })).toBeInTheDocument(),
+    );
+    const newestPreviewAudio = findAudioByArtifactId("art_200");
+    markAudioReady(newestPreviewAudio);
+    await waitFor(() => expect(newestPreviewAudio.currentTime).toBeCloseTo(61.4, 2));
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
   });
 
   it("supports mute and solo controls in stem monitor", async () => {
@@ -805,6 +972,79 @@ describe("Desktop app flows", () => {
     expect(screen.getByLabelText("Show helper text by default")).not.toBeChecked();
     expect(screen.getByLabelText("Open inspector by default")).not.toBeChecked();
     expect(screen.getByLabelText("Metadata Reveal")).toHaveValue("expand");
+  });
+
+  it("keeps background playback available on settings and clears it when stopped", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await user.click(screen.getByRole("link", { name: "Settings" }));
+
+    expect(await screen.findByRole("heading", { name: "Playback Surface" })).toBeInTheDocument();
+    expect(screen.getByText("Background Playback")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Reset Appearance" }));
+    expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Pause" }));
+    expect(screen.getByText("Background Playback")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    expect(screen.queryByText("Background Playback")).not.toBeInTheDocument();
+  });
+
+  it("stops background playback when opening a different project from the library", async () => {
+    const user = userEvent.setup();
+    setProjects([
+      {
+        id: "proj_123",
+        display_name: "Demo Song",
+        source_path: "/tmp/demo.wav",
+        imported_path: "/tmp/projects/demo.wav",
+        duration_seconds: 182,
+        sample_rate: 44100,
+        channels: 2,
+        created_at: "2026-04-18T13:16:00.000Z",
+        updated_at: "2026-04-18T13:16:00.000Z",
+      },
+      {
+        id: "proj_456",
+        display_name: "Bass Drill",
+        source_path: "/tmp/bass-drill.wav",
+        imported_path: "/tmp/projects/bass-drill.wav",
+        duration_seconds: 120,
+        sample_rate: 48000,
+        channels: 2,
+        created_at: "2026-04-18T13:16:00.000Z",
+        updated_at: "2026-04-18T13:16:00.000Z",
+      },
+    ]);
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    await user.click(screen.getAllByRole("link", { name: "Library" })[0]);
+    expect(await screen.findByText("Background Playback")).toBeInTheDocument();
+
+    const secondProjectCard = screen.getByText("Bass Drill").closest("article");
+    expect(secondProjectCard).not.toBeNull();
+    await user.click(
+      within(secondProjectCard as HTMLElement).getByRole("link", { name: /Open project/i }),
+    );
+
+    expect(await screen.findByRole("heading", { name: "Bass Drill" })).toBeInTheDocument();
+    expect(screen.queryByText("Background Playback")).not.toBeInTheDocument();
   });
 
   it("follows system theme when preference is set to system", async () => {

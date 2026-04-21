@@ -16,12 +16,10 @@ import {
   DEFAULT_KEY,
   type EnharmonicDisplayMode,
   MUSICAL_KEYS,
-  deserializeKey,
   formatChordLabel,
   formatKey,
   parseKey,
   parseStoredKey,
-  semitoneDelta,
   serializeKey,
   transposePitchClass,
   transposeKey,
@@ -86,6 +84,28 @@ function fileNameFromPath(path: string) {
 function formatSemitoneShift(semitones: number) {
   return `Shift ${semitones > 0 ? "+" : ""}${semitones} semitone${Math.abs(semitones) === 1 ? "" : "s"}`;
 }
+
+const MIN_TARGET_TRANSPOSE = -12;
+const MAX_TARGET_TRANSPOSE = 12;
+
+function clampTargetTranspose(semitones: number) {
+  return Math.min(MAX_TARGET_TRANSPOSE, Math.max(MIN_TARGET_TRANSPOSE, semitones));
+}
+
+function formatTargetSelectionSummary(semitones: number) {
+  if (semitones === 0) {
+    return "Original";
+  }
+  if (Math.abs(semitones) === 12) {
+    return semitones > 0 ? "1 octave higher" : "1 octave lower";
+  }
+  return semitones > 0 ? "Higher pitch" : "Lower pitch";
+}
+
+type TargetShiftOption = {
+  semitones: number;
+  label: string;
+};
 
 function formatArtifactTimestamp(createdAt: string) {
   return formatLocalDateTime(createdAt, {
@@ -444,8 +464,9 @@ export function ProjectView() {
   const pendingPreviewSelection = useRef<{ previousLatestPreviewArtifactId: string | null } | null>(
     null,
   );
-  const previousSourceKeyRef = useRef<MusicalKey | null>(null);
   const persistedStemSourceArtifactId = useRef<string | null>(null);
+  const targetSelectorRef = useRef<HTMLDivElement | null>(null);
+  const targetOptionRefs = useRef<Record<number, HTMLButtonElement | null>>({});
   const [retuneMode, setRetuneMode] = useState<"off" | "reference" | "cents">("off");
   const [referenceHz, setReferenceHz] = useState("440");
   const [centsOffset, setCentsOffset] = useState("0");
@@ -453,8 +474,8 @@ export function ProjectView() {
     backward: 0,
     forward: 0,
   });
-  const [targetKeyState, setTargetKeyState] = useState<MusicalKey | null>(null);
-  const [targetDirty, setTargetDirty] = useState(false);
+  const [targetTransposeSemitones, setTargetTransposeSemitones] = useState(0);
+  const [targetSelectorOpen, setTargetSelectorOpen] = useState(false);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [selectedPrimaryArtifactId, setSelectedPrimaryArtifactId] = useState<string | null>(null);
   const [hydratedProjectId, setHydratedProjectId] = useState<string | null>(null);
@@ -775,9 +796,8 @@ export function ProjectView() {
   const sourceKeyOverride = parseStoredKey(projectQuery.data?.source_key_override);
   const sourceKeyBasis = sourceKeyOverride ?? detectedKey ?? null;
   const sourceKey = sourceKeyBasis ?? DEFAULT_KEY;
-  const targetKey = targetDirty ? targetKeyState ?? sourceKey : sourceKey;
-  const transposeSemitones = semitoneDelta(sourceKey, targetKey);
-  const targetKeyOptions = MUSICAL_KEYS.filter((key) => key.mode === sourceKey.mode);
+  const transposeSemitones = clampTargetTranspose(targetTransposeSemitones);
+  const targetKey = transposeKey(sourceKey, transposeSemitones);
   const requestedRetune = buildRequestedRetune(retuneMode, referenceHz, centsOffset);
   const hasTransformChange = retuneMode !== "off" || transposeSemitones !== 0;
   const previewMatchesCurrentSettings = matchesPreviewSettings(
@@ -863,7 +883,44 @@ export function ProjectView() {
       : `Chord labels follow the selected playback (${formatSemitoneShift(
           chordTransposeSemitones,
         ).toLowerCase()}).`;
-  const capoSummary = transposeSemitones > 0 ? `${transposeSemitones}` : "Off";
+  const sourceKeyStatus = sourceKeyOverride ? "Corrected" : detectedKey ? "Detected" : "Default";
+  const targetShiftSummary =
+    transposeSemitones === 0 ? "Original key" : formatSemitoneShift(transposeSemitones);
+  const targetSelectionSummary = formatTargetSelectionSummary(transposeSemitones);
+  const lowerTargetPreview =
+    transposeSemitones > MIN_TARGET_TRANSPOSE
+      ? formatKey(transposeKey(sourceKey, transposeSemitones - 1), "short", {
+          mode: enharmonicDisplayMode,
+        })
+      : null;
+  const higherTargetPreview =
+    transposeSemitones < MAX_TARGET_TRANSPOSE
+      ? formatKey(transposeKey(sourceKey, transposeSemitones + 1), "short", {
+          mode: enharmonicDisplayMode,
+        })
+      : null;
+  const targetShiftOptions = useMemo<TargetShiftOption[]>(
+    () =>
+      Array.from(
+        { length: MAX_TARGET_TRANSPOSE - MIN_TARGET_TRANSPOSE + 1 },
+        (_, index) => MIN_TARGET_TRANSPOSE + index,
+      ).map((semitones) => {
+        const key = transposeKey(sourceKey, semitones);
+        return {
+          semitones,
+          label: formatKey(key, "short", { mode: enharmonicDisplayMode }),
+        };
+      }),
+    [enharmonicDisplayMode, sourceKey],
+  );
+  const lowerTargetShiftOptions = useMemo(
+    () => targetShiftOptions.filter((option) => option.semitones < 0).sort((a, b) => b.semitones - a.semitones),
+    [targetShiftOptions],
+  );
+  const higherTargetShiftOptions = useMemo(
+    () => targetShiftOptions.filter((option) => option.semitones > 0).sort((a, b) => b.semitones - a.semitones),
+    [targetShiftOptions],
+  );
 
   const soloedStemIds = visibleStemArtifacts
     .filter((artifact) => stemControls[artifact.id]?.solo)
@@ -998,15 +1055,39 @@ export function ProjectView() {
   }, [isRenaming, projectQuery.data?.display_name]);
 
   useEffect(() => {
-    const previousSourceKey = previousSourceKeyRef.current;
-    if (previousSourceKey && targetDirty) {
-      const delta = semitoneDelta(previousSourceKey, sourceKey);
-      if (delta !== 0) {
-        setTargetKeyState((current) => (current ? transposeKey(current, delta) : current));
+    if (!targetSelectorOpen) {
+      return;
+    }
+
+    const activeOption = targetOptionRefs.current[transposeSemitones];
+    activeOption?.scrollIntoView?.({ block: "center" });
+  }, [targetSelectorOpen, transposeSemitones]);
+
+  useEffect(() => {
+    if (!targetSelectorOpen) {
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      if (!targetSelectorRef.current?.contains(event.target as Node)) {
+        setTargetSelectorOpen(false);
       }
     }
-    previousSourceKeyRef.current = sourceKey;
-  }, [sourceKey, targetDirty]);
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setTargetSelectorOpen(false);
+      }
+    }
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [targetSelectorOpen]);
 
   useEffect(() => {
     setInspectorOpen(defaultInspectorOpen);
@@ -1813,120 +1894,252 @@ export function ProjectView() {
                   <div className="subpanel__header">
                     <h3>Mix Builder</h3>
                   </div>
-                  <div className="controls">
-                    <label>
-                      Retune
-                      <select
-                        aria-label="Retune"
-                        value={retuneMode}
-                        onChange={(event) =>
-                          setRetuneMode(event.target.value as "off" | "reference" | "cents")
-                        }
-                      >
-                        <option value="off">Off</option>
-                        <option value="reference">Target Reference Hz</option>
-                        <option value="cents">Direct Cents Offset</option>
-                      </select>
-                    </label>
-
-                    {retuneMode === "reference" ? (
-                      <label>
-                        Target Reference Hz
-                        <input
-                          aria-label="Target Reference Hz"
-                          value={referenceHz}
-                          onChange={(event) => setReferenceHz(event.target.value)}
-                          type="number"
-                          step="0.1"
-                        />
-                      </label>
-                    ) : null}
-
-                    {retuneMode === "cents" ? (
-                      <label>
-                        Cents Offset
-                        <input
-                          aria-label="Cents Offset"
-                          value={centsOffset}
-                          onChange={(event) => setCentsOffset(event.target.value)}
-                          type="number"
-                          step="0.1"
-                        />
-                      </label>
-                    ) : null}
-                  </div>
-
-                  <div className="key-shift key-shift--compact">
-                    <div className="key-shift__header">
-                      <div>
-                        <span className="metric-label">Source Key</span>
-                        <strong>{formatKey(sourceKey, "short", { mode: enharmonicDisplayMode })}</strong>
-                        <small className="artifact-meta">
-                          {sourceKeyOverride
-                            ? "Corrected"
-                            : detectedKey
-                              ? "Detected"
-                              : "Default"}
-                        </small>
+                  <div className="mix-builder">
+                    <div className="mix-builder__retune">
+                      <div className="mix-builder__section-head">
+                        <span className="metric-label">Retune</span>
+                        <span className="artifact-meta">
+                          {retuneMode === "off" ? "No pitch retune" : tuningSummary}
+                        </span>
                       </div>
-                      <div>
-                        <span className="metric-label">Target Key</span>
-                        <strong>{formatKey(targetKey, "short", { mode: enharmonicDisplayMode })}</strong>
+                      <div className="mix-builder__mode-toggle" role="group" aria-label="Retune">
+                        {[
+                          { value: "off", label: "Off" },
+                          { value: "reference", label: "Reference Hz" },
+                          { value: "cents", label: "Cents Offset" },
+                        ].map((modeOption) => (
+                          <button
+                            key={modeOption.value}
+                            className="button button--small mix-builder__mode-button"
+                            aria-pressed={retuneMode === modeOption.value}
+                            onClick={() =>
+                              setRetuneMode(modeOption.value as "off" | "reference" | "cents")
+                            }
+                            type="button"
+                          >
+                            {modeOption.label}
+                          </button>
+                        ))}
                       </div>
-                      <div>
-                        <span className="metric-label">Capo</span>
-                        <strong>{capoSummary}</strong>
-                        <small className="artifact-meta">Practice cue</small>
-                      </div>
-                      <span className="key-shift__meta">{formatSemitoneShift(transposeSemitones)}</span>
+
+                      {retuneMode === "reference" ? (
+                        <label className="mix-builder__retune-field">
+                          <span>Target Reference Hz</span>
+                          <input
+                            aria-label="Target Reference Hz"
+                            value={referenceHz}
+                            onChange={(event) => setReferenceHz(event.target.value)}
+                            type="number"
+                            step="0.1"
+                          />
+                        </label>
+                      ) : null}
+
+                      {retuneMode === "cents" ? (
+                        <label className="mix-builder__retune-field">
+                          <span>Cents Offset</span>
+                          <input
+                            aria-label="Cents Offset"
+                            value={centsOffset}
+                            onChange={(event) => setCentsOffset(event.target.value)}
+                            type="number"
+                            step="0.1"
+                          />
+                        </label>
+                      ) : null}
                     </div>
 
-                    <div className="key-stepper">
-                      <button
-                        className="button"
-                        aria-label="Lower target key"
-                        onClick={() => {
-                          setTargetDirty(true);
-                          setTargetKeyState((current) =>
-                            transposeKey(current ?? sourceKey, -1),
-                          );
-                        }}
-                        type="button"
-                      >
-                        -
-                      </button>
-                      <label className="key-stepper__value">
-                        <span className="key-stepper__label">Target Key</span>
-                        <select
-                          aria-label="Target Key"
-                          value={serializeKey(targetKey)}
-                          onChange={(event) => {
-                            setTargetDirty(true);
-                            setTargetKeyState(deserializeKey(event.target.value));
+                    <div className="key-shift key-shift--compact">
+                      <div className="mix-builder__section-head">
+                        <span className="metric-label">Key Center</span>
+                        <span className="artifact-meta">{targetShiftSummary}</span>
+                      </div>
+                      <div className="key-shift__header">
+                        <div className="key-shift__card">
+                          <div>
+                            <span className="metric-label">Source Key</span>
+                            <strong>{formatKey(sourceKey, "short", { mode: enharmonicDisplayMode })}</strong>
+                          </div>
+                          <div className="key-shift__chips">
+                            <span className="key-shift__chip">{sourceKeyStatus}</span>
+                          </div>
+                        </div>
+                        <div className="key-shift__card key-shift__card--target">
+                          <div>
+                            <span className="metric-label">Target Key</span>
+                            <strong>{formatKey(targetKey, "short", { mode: enharmonicDisplayMode })}</strong>
+                          </div>
+                          <div className="key-shift__chips">
+                            <span className="key-shift__chip key-shift__chip--active">
+                              {targetShiftSummary}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="key-stepper__heading">
+                        <span className="metric-label">Target Selection</span>
+                        {showSupportingCopy ? (
+                          <span className="artifact-meta">
+                            Step through all shifts from 1 octave down to 1 octave up.
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="key-stepper">
+                        <button
+                          className="button"
+                          aria-label="Lower target key"
+                          disabled={transposeSemitones <= MIN_TARGET_TRANSPOSE}
+                          onClick={() => {
+                            setTargetSelectorOpen(false);
+                            setTargetTransposeSemitones((current) => clampTargetTranspose(current - 1));
                           }}
+                          type="button"
                         >
-                          {targetKeyOptions.map((key) => (
-                            <option key={key.value} value={key.value}>
-                              {formatKey(key, "short", { mode: enharmonicDisplayMode })}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <button
-                        className="button"
-                        aria-label="Raise target key"
-                        onClick={() => {
-                          setTargetDirty(true);
-                          setTargetKeyState((current) =>
-                            transposeKey(current ?? sourceKey, 1),
-                          );
-                        }}
-                        type="button"
-                      >
-                        +
-                      </button>
-                    </div>
+                          -
+                        </button>
+                        <div className="key-stepper__value">
+                          <div className="target-selector" ref={targetSelectorRef}>
+                            <button
+                              className="target-selector__trigger"
+                              aria-label="Target Key"
+                              aria-expanded={targetSelectorOpen}
+                              aria-haspopup="listbox"
+                              onClick={() => setTargetSelectorOpen((current) => !current)}
+                              type="button"
+                            >
+                              <span
+                                className={`target-selector__preview target-selector__preview--lower${
+                                  !lowerTargetPreview ? " target-selector__preview--disabled" : ""
+                                }`}
+                              >
+                                <span>{lowerTargetPreview ?? ""}</span>
+                              </span>
+                              <span className="target-selector__current">
+                                <span className="target-selector__current-key">
+                                  {formatKey(targetKey, "short", { mode: enharmonicDisplayMode })}
+                                </span>
+                                <span className="target-selector__current-meta">
+                                  {targetSelectionSummary}
+                                </span>
+                              </span>
+                              <span
+                                className={`target-selector__preview target-selector__preview--higher${
+                                  !higherTargetPreview ? " target-selector__preview--disabled" : ""
+                                }`}
+                              >
+                                <span>{higherTargetPreview ?? ""}</span>
+                              </span>
+                              <span className="target-selector__chevron" aria-hidden="true">
+                                ⌄
+                              </span>
+                            </button>
 
+                            {targetSelectorOpen ? (
+                              <div
+                                className="target-selector__menu"
+                                role="listbox"
+                                aria-label="Target key options"
+                              >
+                                <div className="target-selector__group-label">Higher pitch</div>
+                                {higherTargetShiftOptions.map((option) => (
+                                  <button
+                                    key={option.semitones}
+                                    ref={(node) => {
+                                      targetOptionRefs.current[option.semitones] = node;
+                                    }}
+                                    className={`target-selector__option${
+                                      option.semitones === transposeSemitones
+                                        ? " target-selector__option--selected"
+                                        : ""
+                                    }`}
+                                    role="option"
+                                    aria-selected={option.semitones === transposeSemitones}
+                                    onClick={() => {
+                                      setTargetTransposeSemitones(option.semitones);
+                                      setTargetSelectorOpen(false);
+                                    }}
+                                    type="button"
+                                  >
+                                    <span className="target-selector__option-direction" aria-hidden="true">
+                                      ↑
+                                    </span>
+                                    <span className="target-selector__option-content">
+                                      <span className="target-selector__option-label">{option.label}</span>
+                                    </span>
+                                  </button>
+                                ))}
+                                <div className="target-selector__group-label">Original</div>
+                                <button
+                                  ref={(node) => {
+                                    targetOptionRefs.current[0] = node;
+                                  }}
+                                  className={`target-selector__option${
+                                    transposeSemitones === 0 ? " target-selector__option--selected" : ""
+                                  }`}
+                                  role="option"
+                                  aria-selected={transposeSemitones === 0}
+                                  onClick={() => {
+                                    setTargetTransposeSemitones(0);
+                                    setTargetSelectorOpen(false);
+                                  }}
+                                  type="button"
+                                >
+                                  <span className="target-selector__option-direction" aria-hidden="true">
+                                    •
+                                  </span>
+                                  <span className="target-selector__option-content">
+                                    <span className="target-selector__option-label">
+                                      {formatKey(sourceKey, "short", { mode: enharmonicDisplayMode })}
+                                    </span>
+                                  </span>
+                                </button>
+                                <div className="target-selector__group-label">Lower pitch</div>
+                                {lowerTargetShiftOptions.map((option) => (
+                                  <button
+                                    key={option.semitones}
+                                    ref={(node) => {
+                                      targetOptionRefs.current[option.semitones] = node;
+                                    }}
+                                    className={`target-selector__option${
+                                      option.semitones === transposeSemitones
+                                        ? " target-selector__option--selected"
+                                        : ""
+                                    }`}
+                                    role="option"
+                                    aria-selected={option.semitones === transposeSemitones}
+                                    onClick={() => {
+                                      setTargetTransposeSemitones(option.semitones);
+                                      setTargetSelectorOpen(false);
+                                    }}
+                                    type="button"
+                                  >
+                                    <span className="target-selector__option-direction" aria-hidden="true">
+                                      ↓
+                                    </span>
+                                    <span className="target-selector__option-content">
+                                      <span className="target-selector__option-label">{option.label}</span>
+                                    </span>
+                                  </button>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+                        <button
+                          className="button"
+                          aria-label="Raise target key"
+                          disabled={transposeSemitones >= MAX_TARGET_TRANSPOSE}
+                          onClick={() => {
+                            setTargetSelectorOpen(false);
+                            setTargetTransposeSemitones((current) => clampTargetTranspose(current + 1));
+                          }}
+                          type="button"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
                   </div>
 
                   {previewMutation.isError ? (

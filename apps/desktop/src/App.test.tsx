@@ -808,8 +808,10 @@ describe("Desktop app flows", () => {
     expect(
       within(screen.getByText("Source Key", { selector: "span" }).closest("div") as HTMLElement).getByText("Ebm"),
     ).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "Bb" })).toBeInTheDocument();
-    expect(screen.queryByRole("option", { name: "D#/Ebm" })).not.toBeInTheDocument();
+    await user.click(screen.getByLabelText("Target Key"));
+    const targetKeyList = screen.getByRole("listbox", { name: "Target key options" });
+    expect(within(targetKeyList).getAllByText("Bbm").length).toBeGreaterThan(0);
+    expect(within(targetKeyList).queryByText("D#/Ebm")).not.toBeInTheDocument();
   });
 
   it("applies enharmonic display overrides from settings", async () => {
@@ -854,9 +856,10 @@ describe("Desktop app flows", () => {
       within(sourceKeyCard).getByText("D#m"),
     ).toBeInTheDocument();
     expect(within(sourceKeyCard).queryByText("Ebm")).not.toBeInTheDocument();
-    const targetKeySelect = screen.getByLabelText("Target Key") as HTMLSelectElement;
-    expect(Array.from(targetKeySelect.options).some((option) => option.text === "D#m")).toBe(true);
-    expect(Array.from(targetKeySelect.options).some((option) => option.text === "Ebm")).toBe(false);
+    await user.click(screen.getByLabelText("Target Key"));
+    const targetKeyList = screen.getByRole("listbox", { name: "Target key options" });
+    expect(within(targetKeyList).getAllByText("D#m").length).toBeGreaterThan(0);
+    expect(within(targetKeyList).queryByText("Ebm")).not.toBeInTheDocument();
   });
 
   it("preserves the relative target shift when the detected source key is corrected", async () => {
@@ -904,6 +907,35 @@ describe("Desktop app flows", () => {
       expect.objectContaining({
         output_format: "wav",
         transpose: { semitones: 1 },
+      }),
+    );
+  });
+
+  it("caps target key stepping at one octave in either direction", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
+
+    const raiseTargetKeyButton = screen.getByLabelText("Raise target key");
+    for (let index = 0; index < 16; index += 1) {
+      await user.click(raiseTargetKeyButton);
+    }
+
+    expect(raiseTargetKeyButton).toBeDisabled();
+    const targetKeyCard = screen
+      .getAllByText("Target Key", { selector: "span" })[0]
+      ?.closest(".key-shift__card") as HTMLElement;
+    expect(within(targetKeyCard).getByText("Shift +12 semitones")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Create Mix" }));
+
+    expect(mockCreatePreview).toHaveBeenCalledWith(
+      "proj_123",
+      expect.objectContaining({
+        output_format: "wav",
+        transpose: { semitones: 12 },
       }),
     );
   });

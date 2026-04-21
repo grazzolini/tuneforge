@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { confirm, save } from "@tauri-apps/plugin-dialog";
-import { api, type ArtifactSchema, type ChordSegmentSchema, type JobSchema } from "../../lib/api";
+import { api, type ArtifactSchema, type ChordSegmentSchema, type JobSchema, type ProjectSchema } from "../../lib/api";
 import { formatLocalDateTime } from "../../lib/datetime";
 import { usePreferences } from "../../lib/preferences";
 import { usePlayback } from "./playback-context";
@@ -14,11 +14,13 @@ import {
 } from "./projectPlaybackState";
 import {
   DEFAULT_KEY,
+  type EnharmonicDisplayMode,
   MUSICAL_KEYS,
   deserializeKey,
   formatChordLabel,
   formatKey,
   parseKey,
+  parseStoredKey,
   semitoneDelta,
   serializeKey,
   transposePitchClass,
@@ -307,9 +309,12 @@ function artifactTransposeSemitones(
   return 0;
 }
 
-function transposeChordSegment(segment: ChordSegmentSchema, semitones: number): ChordSegmentSchema {
+function transposeChordSegment(
+  segment: ChordSegmentSchema,
+  semitones: number,
+  options: { activeKey: MusicalKey | null; mode: EnharmonicDisplayMode },
+): ChordSegmentSchema {
   if (
-    !semitones ||
     typeof segment.pitch_class !== "number" ||
     (segment.quality !== "major" && segment.quality !== "minor")
   ) {
@@ -319,7 +324,7 @@ function transposeChordSegment(segment: ChordSegmentSchema, semitones: number): 
   return {
     ...segment,
     pitch_class: pitchClass,
-    label: formatChordLabel(pitchClass, segment.quality),
+    label: formatChordLabel(pitchClass, segment.quality, options),
   };
 }
 
@@ -430,6 +435,7 @@ export function ProjectView() {
   const {
     defaultInspectorOpen,
     defaultSourcesRailCollapsed,
+    enharmonicDisplayMode,
     helperTextVisible,
     informationDensity,
     metadataRevealMode,
@@ -438,11 +444,11 @@ export function ProjectView() {
   const pendingPreviewSelection = useRef<{ previousLatestPreviewArtifactId: string | null } | null>(
     null,
   );
+  const previousSourceKeyRef = useRef<MusicalKey | null>(null);
   const persistedStemSourceArtifactId = useRef<string | null>(null);
   const [retuneMode, setRetuneMode] = useState<"off" | "reference" | "cents">("off");
   const [referenceHz, setReferenceHz] = useState("440");
   const [centsOffset, setCentsOffset] = useState("0");
-  const [manualSourceKey, setManualSourceKey] = useState<MusicalKey | null>(null);
   const [seekAnimationRevision, setSeekAnimationRevision] = useState<Record<SeekDirection, number>>({
     backward: 0,
     forward: 0,
@@ -505,8 +511,51 @@ export function ProjectView() {
     },
   });
 
+  const sourceKeyOverrideMutation = useMutation({
+    mutationFn: async (sourceKeyOverride: string | null) =>
+      api.updateProject(projectId, { source_key_override: sourceKeyOverride }),
+    onMutate: async (sourceKeyOverride) => {
+      await Promise.all([
+        queryClient.cancelQueries({ queryKey: ["project", projectId] }),
+        queryClient.cancelQueries({ queryKey: ["projects"] }),
+      ]);
+
+      const previousProject = queryClient.getQueryData<ProjectSchema>(["project", projectId]);
+      const previousProjects = queryClient.getQueryData<ProjectSchema[]>(["projects"]);
+
+      queryClient.setQueryData<ProjectSchema>(["project", projectId], (current) =>
+        current ? { ...current, source_key_override: sourceKeyOverride } : current,
+      );
+      queryClient.setQueryData<ProjectSchema[]>(["projects"], (current) =>
+        current?.map((project) =>
+          project.id === projectId ? { ...project, source_key_override: sourceKeyOverride } : project,
+        ) ?? current,
+      );
+
+      return { previousProject, previousProjects };
+    },
+    onError: (_error, _sourceKeyOverride, context) => {
+      if (context?.previousProject) {
+        queryClient.setQueryData(["project", projectId], context.previousProject);
+      }
+      if (context?.previousProjects) {
+        queryClient.setQueryData(["projects"], context.previousProjects);
+      }
+    },
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["project", projectId] }),
+        queryClient.invalidateQueries({ queryKey: ["projects"] }),
+      ]);
+    },
+  });
+
   const chordMutation = useMutation({
-    mutationFn: async () => api.createChords(projectId, { backend: "default", force: false }),
+    mutationFn: async () =>
+      api.createChords(projectId, {
+        backend: "default",
+        force: (chordsQuery.data?.timeline?.length ?? 0) > 0,
+      }),
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["jobs"] }),
@@ -723,7 +772,9 @@ export function ProjectView() {
     : "";
 
   const detectedKey = parseKey(analysisQuery.data?.estimated_key);
-  const sourceKey = manualSourceKey ?? detectedKey ?? DEFAULT_KEY;
+  const sourceKeyOverride = parseStoredKey(projectQuery.data?.source_key_override);
+  const sourceKeyBasis = sourceKeyOverride ?? detectedKey ?? null;
+  const sourceKey = sourceKeyBasis ?? DEFAULT_KEY;
   const targetKey = targetDirty ? targetKeyState ?? sourceKey : sourceKey;
   const transposeSemitones = semitoneDelta(sourceKey, targetKey);
   const targetKeyOptions = MUSICAL_KEYS.filter((key) => key.mode === sourceKey.mode);
@@ -744,8 +795,8 @@ export function ProjectView() {
     chordJob && ["pending", "running"].includes(chordJob.status),
   );
   const isStemRunning = Boolean(stemJob && ["pending", "running"].includes(stemJob.status));
-  const currentKeyValue = manualSourceKey
-    ? serializeKey(manualSourceKey)
+  const currentKeyValue = sourceKeyOverride
+    ? serializeKey(sourceKeyOverride)
     : detectedKey
       ? "auto"
       : serializeKey(sourceKey);
@@ -755,7 +806,7 @@ export function ProjectView() {
       ? stemJob.error_message
       : null;
   const visibleJobs = projectJobs;
-  const controlSummary = hasTransformChange ? formatKey(targetKey) : "Original key";
+  const controlSummary = hasTransformChange ? formatKey(targetKey, "short", { mode: enharmonicDisplayMode }) : "Original key";
   const tuningSummary = formatRetuneSummary(retuneMode, referenceHz, centsOffset);
   const mixStatus = isStemPlayback
     ? "Stem monitor"
@@ -783,12 +834,18 @@ export function ProjectView() {
     selectedPlaybackArtifact,
     selectableArtifacts,
   );
+  const activeEnharmonicKeyContext = sourceKeyBasis
+    ? transposeKey(sourceKeyBasis, chordTransposeSemitones)
+    : null;
   const displayedChords = useMemo(
     () =>
       (chordsQuery.data?.timeline ?? []).map((segment) =>
-        transposeChordSegment(segment, chordTransposeSemitones),
+        transposeChordSegment(segment, chordTransposeSemitones, {
+          activeKey: activeEnharmonicKeyContext,
+          mode: enharmonicDisplayMode,
+        }),
       ),
-    [chordTransposeSemitones, chordsQuery.data?.timeline],
+    [activeEnharmonicKeyContext, chordTransposeSemitones, chordsQuery.data?.timeline, enharmonicDisplayMode],
   );
   const activeChordIndex = findActiveChordIndex(displayedChords, playbackTimeSeconds);
   const currentChord =
@@ -939,6 +996,17 @@ export function ProjectView() {
       setDraftName(projectQuery.data?.display_name ?? "");
     }
   }, [isRenaming, projectQuery.data?.display_name]);
+
+  useEffect(() => {
+    const previousSourceKey = previousSourceKeyRef.current;
+    if (previousSourceKey && targetDirty) {
+      const delta = semitoneDelta(previousSourceKey, sourceKey);
+      if (delta !== 0) {
+        setTargetKeyState((current) => (current ? transposeKey(current, delta) : current));
+      }
+    }
+    previousSourceKeyRef.current = sourceKey;
+  }, [sourceKey, targetDirty]);
 
   useEffect(() => {
     setInspectorOpen(defaultInspectorOpen);
@@ -1576,11 +1644,6 @@ export function ProjectView() {
                 </div>
               )}
 
-              {chordsQuery.data?.created_at ? (
-                <p className="artifact-meta">
-                  Last chord pass: {formatArtifactTimestamp(chordsQuery.data.created_at)}
-                </p>
-              ) : null}
               {chordJob?.error_message ? (
                 <p className="inline-error">{chordJob.error_message}</p>
               ) : null}
@@ -1797,18 +1860,18 @@ export function ProjectView() {
                     <div className="key-shift__header">
                       <div>
                         <span className="metric-label">Source Key</span>
-                        <strong>{formatKey(sourceKey)}</strong>
+                        <strong>{formatKey(sourceKey, "short", { mode: enharmonicDisplayMode })}</strong>
                         <small className="artifact-meta">
-                          {manualSourceKey
-                            ? "Manual"
+                          {sourceKeyOverride
+                            ? "Corrected"
                             : detectedKey
                               ? "Detected"
-                              : "Set manually"}
+                              : "Default"}
                         </small>
                       </div>
                       <div>
                         <span className="metric-label">Target Key</span>
-                        <strong>{formatKey(targetKey)}</strong>
+                        <strong>{formatKey(targetKey, "short", { mode: enharmonicDisplayMode })}</strong>
                       </div>
                       <div>
                         <span className="metric-label">Capo</span>
@@ -1844,7 +1907,7 @@ export function ProjectView() {
                         >
                           {targetKeyOptions.map((key) => (
                             <option key={key.value} value={key.value}>
-                              {key.label}
+                              {formatKey(key, "short", { mode: enharmonicDisplayMode })}
                             </option>
                           ))}
                         </select>
@@ -1864,36 +1927,6 @@ export function ProjectView() {
                       </button>
                     </div>
 
-                    <details className="details-block details-block--inset">
-                      <summary>Correct source key if detection is wrong</summary>
-                      <div className="controls controls--tight">
-                        <label>
-                          Source Key
-                          <select
-                            aria-label="Current Key"
-                            value={currentKeyValue}
-                            onChange={(event) =>
-                              setManualSourceKey(
-                                event.target.value === "auto"
-                                  ? null
-                                  : deserializeKey(event.target.value),
-                              )
-                            }
-                          >
-                            {detectedKey ? (
-                              <option value="auto">
-                                Use detected key ({formatKey(detectedKey)})
-                              </option>
-                            ) : null}
-                            {MUSICAL_KEYS.map((key) => (
-                              <option key={key.value} value={key.value}>
-                                {key.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      </div>
-                    </details>
                   </div>
 
                   {previewMutation.isError ? (
@@ -1924,33 +1957,81 @@ export function ProjectView() {
                     </button>
                   </div>
                   <div className="analysis-grid">
-                    <div>
+                    <div className="analysis-stat">
                       <span className="metric-label">Detected Tuning</span>
                       <strong>
-                        {analysisQuery.data?.estimated_reference_hz?.toFixed(2) ?? "Pending"} Hz
+                        <span className="analysis-stat__value">
+                          {analysisQuery.data?.estimated_reference_hz?.toFixed(2) ?? "Pending"}
+                        </span>
+                        <span className="analysis-stat__unit">Hz</span>
                       </strong>
                     </div>
-                    <div>
+                    <div className="analysis-stat">
                       <span className="metric-label">Offset</span>
                       <strong>
-                        {analysisQuery.data?.tuning_offset_cents?.toFixed(2) ?? "-"} cents
+                        <span className="analysis-stat__value">
+                          {analysisQuery.data?.tuning_offset_cents?.toFixed(2) ?? "-"}
+                        </span>
+                        <span className="analysis-stat__unit">cents</span>
                       </strong>
                     </div>
-                    <div>
+                    <div className="analysis-stat">
                       <span className="metric-label">Estimated Key</span>
                       <strong>
-                        {detectedKey
-                          ? formatKey(detectedKey)
-                          : isAnalysisRunning
-                            ? "Analyzing..."
-                            : "Unknown"}
+                        <span className="analysis-stat__value">
+                          {detectedKey
+                            ? formatKey(detectedKey, "short", { mode: enharmonicDisplayMode })
+                            : isAnalysisRunning
+                              ? "Analyzing..."
+                              : "Unknown"}
+                        </span>
                       </strong>
                     </div>
-                    <div>
+                    <div className="analysis-stat">
                       <span className="metric-label">Confidence</span>
-                      <strong>{analysisQuery.data?.key_confidence?.toFixed(2) ?? "-"}</strong>
+                      <strong>
+                        <span className="analysis-stat__value">
+                          {analysisQuery.data?.key_confidence?.toFixed(2) ?? "-"}
+                        </span>
+                      </strong>
                     </div>
                   </div>
+                  <details className="details-block details-block--inset">
+                    <summary>Correct source key for this project</summary>
+                    <p className="artifact-meta">
+                      {sourceKeyOverride
+                        ? `Using ${formatKey(sourceKeyOverride, "short", { mode: enharmonicDisplayMode })} everywhere keys are derived in this project. Analysis data stays unchanged.`
+                        : "Use this to change the detected key, if you think analysis got it wrong. It updates the project key, and practice mixes."}
+                    </p>
+                    <div className="controls controls--tight">
+                      <label>
+                        Project Source Key
+                        <select
+                          aria-label="Project Source Key"
+                          value={currentKeyValue}
+                          onChange={(event) =>
+                            sourceKeyOverrideMutation.mutate(
+                              event.target.value === "auto" ? null : event.target.value,
+                            )
+                          }
+                          disabled={sourceKeyOverrideMutation.isPending}
+                        >
+                          {detectedKey ? (
+                            <option value="auto">
+                              Use analysis result ({formatKey(detectedKey, "short", { mode: enharmonicDisplayMode })})
+                            </option>
+                          ) : (
+                            <option value={serializeKey(sourceKey)}>No override</option>
+                          )}
+                          {MUSICAL_KEYS.map((key) => (
+                            <option key={key.value} value={key.value}>
+                              {formatKey(key, "short", { mode: enharmonicDisplayMode })}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                  </details>
                 </div>
 
                 <div className="subpanel subpanel--compact">
@@ -1977,21 +2058,31 @@ export function ProjectView() {
                     <h3>Project Details</h3>
                   </div>
                   <dl className="meta-grid">
-                    <div>
+                    <div className="meta-stat">
                       <dt>Duration</dt>
-                      <dd>{projectQuery.data?.duration_seconds?.toFixed(2) ?? "Unknown"} s</dd>
+                      <dd>
+                        <span className="meta-stat__value">
+                          {projectQuery.data?.duration_seconds?.toFixed(2) ?? "Unknown"}
+                        </span>
+                        <span className="meta-stat__unit">s</span>
+                      </dd>
                     </div>
-                    <div>
+                    <div className="meta-stat">
                       <dt>Sample Rate</dt>
-                      <dd>{projectQuery.data?.sample_rate ?? "Unknown"} Hz</dd>
+                      <dd>
+                        <span className="meta-stat__value">
+                          {projectQuery.data?.sample_rate ?? "Unknown"}
+                        </span>
+                        <span className="meta-stat__unit">Hz</span>
+                      </dd>
                     </div>
-                    <div>
+                    <div className="meta-stat">
                       <dt>Channels</dt>
-                      <dd>{projectQuery.data?.channels ?? "Unknown"}</dd>
-                    </div>
-                    <div>
-                      <dt>Selected Source</dt>
-                      <dd>{selectedPrimaryArtifact ? fileNameFromPath(selectedPrimaryArtifact.path) : "-"}</dd>
+                      <dd>
+                        <span className="meta-stat__value">
+                          {projectQuery.data?.channels ?? "Unknown"}
+                        </span>
+                      </dd>
                     </div>
                   </dl>
 

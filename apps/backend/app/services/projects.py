@@ -122,8 +122,14 @@ def delete_project(session: Session, project_id: str) -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
-def rename_project(session: Session, project_id: str, *, display_name: str) -> Project:
+def update_project(session: Session, project_id: str, *, updates: dict[str, str | None]) -> Project:
     project = get_project(session, project_id)
-    project.display_name = display_name.strip()
+    if "display_name" in updates:
+        display_name = updates["display_name"]
+        if display_name is not None:
+            project.display_name = display_name.strip()
+    if "source_key_override" in updates:
+        source_key_override = updates["source_key_override"]
+        project.source_key_override = source_key_override.strip() if isinstance(source_key_override, str) else None
     session.flush()
     return project

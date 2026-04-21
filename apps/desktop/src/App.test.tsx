@@ -9,6 +9,7 @@ const {
   resetMockApiState,
   setProjects,
   setProjectAnalysis,
+  setProjectChords,
   setDeferredPreviewCompletion,
   flushPendingPreview,
   mockOpen,
@@ -67,6 +68,7 @@ const {
     return {
       id,
       display_name: displayName,
+      source_key_override: null,
       source_path: sourcePath,
       imported_path: importedPath,
       duration_seconds: 182,
@@ -98,6 +100,10 @@ const {
 
   function setProjectAnalysis(projectId: string, analysis: Record<string, unknown> | null) {
     state.analysisByProject[projectId] = analysis ? clone(analysis) : null;
+  }
+
+  function setProjectChords(projectId: string, chords: Record<string, unknown>) {
+    state.chordsByProject[projectId] = clone(chords);
   }
 
   function setDeferredPreviewCompletion(value: boolean) {
@@ -266,7 +272,8 @@ const {
   );
   const mockListArtifacts = vi.fn(async (projectId: string) => ({ artifacts: clone(state.artifactsByProject[projectId] ?? []) }));
   const mockListJobs = vi.fn(async () => ({ jobs: clone(state.jobs) }));
-  const mockCreateChords = vi.fn(async (projectId: string) => {
+  const mockCreateChords = vi.fn(async (projectId: string, body?: Record<string, unknown>) => {
+    void body;
     state.chordsByProject[projectId] = makeChordTimeline(projectId);
     const job = {
       id: `job_${state.nextJobId++}`,
@@ -391,9 +398,14 @@ const {
     state.jobs.unshift(job);
     return { job: clone(job) };
   });
-  const mockUpdateProject = vi.fn(async (projectId: string, body: { display_name: string }) => {
+  const mockUpdateProject = vi.fn(async (projectId: string, body: { display_name?: string; source_key_override?: string | null }) => {
     const project = getProjectOrThrow(projectId);
-    project.display_name = body.display_name;
+    if (body.display_name !== undefined) {
+      project.display_name = body.display_name;
+    }
+    if ("source_key_override" in body) {
+      project.source_key_override = body.source_key_override ?? null;
+    }
     project.updated_at = createdAt;
     return { project: clone(project) };
   });
@@ -436,6 +448,7 @@ const {
     resetMockApiState,
     setProjects,
     setProjectAnalysis,
+    setProjectChords,
     setDeferredPreviewCompletion,
     flushPendingPreview,
     mockOpen,
@@ -747,7 +760,133 @@ describe("Desktop app flows", () => {
     expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123");
   });
 
-  it("creates a new mix from source-key controls", async () => {
+  it("refreshes existing chords with force enabled", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Refresh Chords" }));
+
+    expect(mockCreateChords).toHaveBeenCalledWith("proj_123", {
+      backend: "default",
+      force: true,
+    });
+  });
+
+  it("renders single-label enharmonic spellings by default", async () => {
+    const user = userEvent.setup();
+    setProjectAnalysis("proj_123", {
+      project_id: "proj_123",
+      estimated_key: "Eb minor",
+      key_confidence: 0.82,
+      estimated_reference_hz: 431.9,
+      tuning_offset_cents: -32,
+      tempo_bpm: null,
+      analysis_version: "v1",
+      created_at: "2026-04-18T13:16:00.000Z",
+    });
+    setProjectChords("proj_123", {
+      project_id: "proj_123",
+      backend: "default",
+      source_artifact_id: "art_source",
+      created_at: "2026-04-18T13:16:00.000Z",
+      timeline: [
+        { start_seconds: 0, end_seconds: 16, label: "legacy", confidence: 0.81, pitch_class: 3, quality: "minor" },
+        { start_seconds: 16, end_seconds: 32, label: "legacy", confidence: 0.79, pitch_class: 10, quality: "major" },
+      ],
+    });
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "Current chord card" })).getByText("Ebm")).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "Next chord card" })).getByText("Bb")).toBeInTheDocument();
+    expect(screen.queryByText("D#/Ebm")).not.toBeInTheDocument();
+    expect(screen.queryByText("A#/Bb")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
+    expect(
+      within(screen.getByText("Source Key", { selector: "span" }).closest("div") as HTMLElement).getByText("Ebm"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Bb" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "D#/Ebm" })).not.toBeInTheDocument();
+  });
+
+  it("applies enharmonic display overrides from settings", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({
+        defaultSourcesRailCollapsed: false,
+        enharmonicDisplayMode: "sharps",
+      }),
+    );
+    setProjectAnalysis("proj_123", {
+      project_id: "proj_123",
+      estimated_key: "Eb minor",
+      key_confidence: 0.82,
+      estimated_reference_hz: 431.9,
+      tuning_offset_cents: -32,
+      tempo_bpm: null,
+      analysis_version: "v1",
+      created_at: "2026-04-18T13:16:00.000Z",
+    });
+    setProjectChords("proj_123", {
+      project_id: "proj_123",
+      backend: "default",
+      source_artifact_id: "art_source",
+      created_at: "2026-04-18T13:16:00.000Z",
+      timeline: [
+        { start_seconds: 0, end_seconds: 16, label: "legacy", confidence: 0.81, pitch_class: 3, quality: "minor" },
+        { start_seconds: 16, end_seconds: 32, label: "legacy", confidence: 0.79, pitch_class: 10, quality: "major" },
+      ],
+    });
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "Current chord card" })).getByText("D#m")).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "Next chord card" })).getByText("A#")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
+
+    const sourceKeyCard = screen.getByText("Source Key", { selector: "span" }).closest("div") as HTMLElement;
+    expect(
+      within(sourceKeyCard).getByText("D#m"),
+    ).toBeInTheDocument();
+    expect(within(sourceKeyCard).queryByText("Ebm")).not.toBeInTheDocument();
+    const targetKeySelect = screen.getByLabelText("Target Key") as HTMLSelectElement;
+    expect(Array.from(targetKeySelect.options).some((option) => option.text === "D#m")).toBe(true);
+    expect(Array.from(targetKeySelect.options).some((option) => option.text === "Ebm")).toBe(false);
+  });
+
+  it("preserves the relative target shift when the detected source key is corrected", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({
+        defaultSourcesRailCollapsed: false,
+        enharmonicDisplayMode: "sharps",
+      }),
+    );
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
+    await user.click(screen.getByLabelText("Raise target key"));
+
+    const targetKeyCard = screen.getAllByText("Target Key", { selector: "span" })[0]?.closest("div") as HTMLElement;
+    expect(within(targetKeyCard).getByText("G#")).toBeInTheDocument();
+
+    await user.click(screen.getByText("Correct source key for this project"));
+    await user.selectOptions(screen.getByLabelText("Project Source Key"), "8:major");
+
+    const sourceKeyCard = screen.getByText("Source Key", { selector: "span" }).closest("div") as HTMLElement;
+    expect(mockUpdateProject).toHaveBeenCalledWith("proj_123", { source_key_override: "8:major" });
+    expect(within(sourceKeyCard).getByText("G#")).toBeInTheDocument();
+    expect(within(targetKeyCard).getByText("A")).toBeInTheDocument();
+  });
+
+  it("creates a new mix from the project source key override and target controls", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);
 
@@ -755,8 +894,8 @@ describe("Desktop app flows", () => {
     await user.click(screen.getByRole("button", { name: "Show Inspector" }));
     const sourceList = screen.getByRole("group", { name: "Source and mix list" });
     await user.click(within(sourceList).getByRole("button", { name: /Source Track/i }));
-    await user.click(screen.getByText("Correct source key if detection is wrong"));
-    await user.selectOptions(screen.getByLabelText("Current Key"), "9:major");
+    await user.click(screen.getByText("Correct source key for this project"));
+    await user.selectOptions(screen.getByLabelText("Project Source Key"), "9:major");
     await user.click(screen.getByLabelText("Raise target key"));
     await user.click(screen.getByRole("button", { name: "Create Mix" }));
 
@@ -1392,21 +1531,23 @@ describe("Desktop app flows", () => {
     expect(screen.getByLabelText("Theme")).toHaveValue("system");
     expect(screen.getByLabelText("Information Density")).toHaveValue("minimal");
     expect(screen.getByLabelText("Layout Density")).toHaveValue("compact");
+    expect(screen.getByLabelText("Enharmonic Display")).toHaveValue("auto");
     expect(screen.getByLabelText("Show helper text by default")).not.toBeChecked();
     expect(screen.getByLabelText("Open inspector by default")).not.toBeChecked();
-    expect(screen.getByLabelText("Collapse sources rail by default")).toBeChecked();
+    expect(screen.getByLabelText("Collapse sources rail by default")).not.toBeChecked();
     expect(window.localStorage.getItem("tuneforge.theme-preference")).toBe("system");
     expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}")).toMatchObject({
       informationDensity: "minimal",
       layoutDensity: "compact",
+      enharmonicDisplayMode: "auto",
       helperTextVisible: false,
       defaultInspectorOpen: false,
-      defaultSourcesRailCollapsed: true,
+      defaultSourcesRailCollapsed: false,
       metadataRevealMode: "expand",
     });
   });
 
-  it("starts with the sources rail collapsed by default and expands on demand", async () => {
+  it("honors the collapsed sources rail preference and expands on demand", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem(
       "tuneforge.ui-preferences",
@@ -1482,6 +1623,7 @@ describe("Desktop app flows", () => {
     await user.selectOptions(screen.getByLabelText("Theme"), "light");
     await user.selectOptions(screen.getByLabelText("Information Density"), "detailed");
     await user.selectOptions(screen.getByLabelText("Layout Density"), "comfortable");
+    await user.selectOptions(screen.getByLabelText("Enharmonic Display"), "sharps");
     await user.click(screen.getByLabelText("Show helper text by default"));
     await user.click(screen.getByLabelText("Open inspector by default"));
     await user.click(screen.getByLabelText("Collapse sources rail by default"));
@@ -1494,9 +1636,10 @@ describe("Desktop app flows", () => {
     expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}")).toMatchObject({
       informationDensity: "detailed",
       layoutDensity: "comfortable",
+      enharmonicDisplayMode: "sharps",
       helperTextVisible: true,
       defaultInspectorOpen: true,
-      defaultSourcesRailCollapsed: false,
+      defaultSourcesRailCollapsed: true,
       metadataRevealMode: "hover",
     });
   });
@@ -1510,6 +1653,7 @@ describe("Desktop app flows", () => {
     await user.selectOptions(screen.getByLabelText("Theme"), "light");
     await user.selectOptions(screen.getByLabelText("Information Density"), "detailed");
     await user.selectOptions(screen.getByLabelText("Layout Density"), "comfortable");
+    await user.selectOptions(screen.getByLabelText("Enharmonic Display"), "sharps");
     await user.click(screen.getByLabelText("Show helper text by default"));
     await user.click(screen.getByLabelText("Open inspector by default"));
     await user.click(screen.getByLabelText("Collapse sources rail by default"));
@@ -1519,27 +1663,30 @@ describe("Desktop app flows", () => {
     expect(screen.getByLabelText("Theme")).toHaveValue("system");
     expect(screen.getByLabelText("Information Density")).toHaveValue("minimal");
     expect(screen.getByLabelText("Layout Density")).toHaveValue("compact");
+    expect(screen.getByLabelText("Enharmonic Display")).toHaveValue("auto");
     expect(screen.getByLabelText("Show helper text by default")).toBeChecked();
     expect(screen.getByLabelText("Open inspector by default")).toBeChecked();
-    expect(screen.getByLabelText("Collapse sources rail by default")).not.toBeChecked();
+    expect(screen.getByLabelText("Collapse sources rail by default")).toBeChecked();
     expect(screen.getByLabelText("Metadata Reveal")).toHaveValue("hover");
 
     await user.click(screen.getByRole("button", { name: "Reset Visibility" }));
     expect(screen.getByLabelText("Show helper text by default")).not.toBeChecked();
     expect(screen.getByLabelText("Open inspector by default")).not.toBeChecked();
-    expect(screen.getByLabelText("Collapse sources rail by default")).toBeChecked();
+    expect(screen.getByLabelText("Collapse sources rail by default")).not.toBeChecked();
     expect(screen.getByLabelText("Metadata Reveal")).toHaveValue("expand");
 
     await user.selectOptions(screen.getByLabelText("Theme"), "dark");
+    await user.selectOptions(screen.getByLabelText("Enharmonic Display"), "dual");
     await user.click(screen.getByLabelText("Show helper text by default"));
     await user.click(screen.getByRole("button", { name: "Reset All Settings" }));
 
     expect(screen.getByLabelText("Theme")).toHaveValue("system");
     expect(screen.getByLabelText("Information Density")).toHaveValue("minimal");
     expect(screen.getByLabelText("Layout Density")).toHaveValue("compact");
+    expect(screen.getByLabelText("Enharmonic Display")).toHaveValue("auto");
     expect(screen.getByLabelText("Show helper text by default")).not.toBeChecked();
     expect(screen.getByLabelText("Open inspector by default")).not.toBeChecked();
-    expect(screen.getByLabelText("Collapse sources rail by default")).toBeChecked();
+    expect(screen.getByLabelText("Collapse sources rail by default")).not.toBeChecked();
     expect(screen.getByLabelText("Metadata Reveal")).toHaveValue("expand");
   });
 

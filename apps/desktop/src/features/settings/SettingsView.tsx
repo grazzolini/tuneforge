@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { api } from "../../lib/api";
 import {
   usePreferences,
+  type EnharmonicDisplayMode,
   type InformationDensity,
   type LayoutDensity,
   type MetadataRevealMode,
@@ -30,6 +31,14 @@ function layoutDensityLabel(value: LayoutDensity) {
   return value === "compact" ? "Compact" : "Comfortable";
 }
 
+function enharmonicDisplayLabel(value: EnharmonicDisplayMode) {
+  if (value === "sharps") return "Prefer sharps";
+  if (value === "flats") return "Prefer flats";
+  if (value === "neutral") return "Neutral mixed fallback";
+  if (value === "dual") return "Dual labels";
+  return "Auto by key";
+}
+
 function metadataRevealLabel(value: MetadataRevealMode) {
   return value === "hover" ? "Hover" : "Expand";
 }
@@ -39,12 +48,14 @@ export function SettingsView() {
   const {
     informationDensity,
     layoutDensity,
+    enharmonicDisplayMode,
     helperTextVisible,
     defaultInspectorOpen,
     defaultSourcesRailCollapsed,
     metadataRevealMode,
     setInformationDensity,
     setLayoutDensity,
+    setEnharmonicDisplayMode,
     setHelperTextVisible,
     setDefaultInspectorOpen,
     setDefaultSourcesRailCollapsed,
@@ -130,6 +141,21 @@ export function SettingsView() {
                 <option value="compact">Compact</option>
               </select>
             </label>
+
+            <label>
+              Enharmonic Display
+              <select
+                aria-label="Enharmonic Display"
+                value={enharmonicDisplayMode}
+                onChange={(event) => setEnharmonicDisplayMode(event.target.value as EnharmonicDisplayMode)}
+              >
+                <option value="auto">Auto by key</option>
+                <option value="sharps">Prefer sharps</option>
+                <option value="flats">Prefer flats</option>
+                <option value="neutral">Neutral mixed fallback</option>
+                <option value="dual">Dual labels</option>
+              </select>
+            </label>
           </div>
 
           <dl className="meta-grid">
@@ -148,6 +174,10 @@ export function SettingsView() {
             <div>
               <dt>Layout Density</dt>
               <dd>{layoutDensityLabel(layoutDensity)}</dd>
+            </div>
+            <div>
+              <dt>Enharmonic Display</dt>
+              <dd>{enharmonicDisplayLabel(enharmonicDisplayMode)}</dd>
             </div>
           </dl>
 

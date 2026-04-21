@@ -31,6 +31,7 @@ class ProjectSchema(BaseModel):
 
     id: str
     display_name: str
+    source_key_override: str | None
     source_path: str
     imported_path: str
     duration_seconds: float | None
@@ -47,15 +48,44 @@ class ProjectImportRequest(BaseModel):
 
 
 class ProjectUpdateRequest(BaseModel):
-    display_name: str
+    display_name: str | None = None
+    source_key_override: str | None = None
 
     @field_validator("display_name")
     @classmethod
-    def validate_display_name(cls, value: str) -> str:
+    def validate_display_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         normalized = value.strip()
         if not normalized:
             raise ValueError("Project name cannot be empty.")
         return normalized
+
+    @field_validator("source_key_override")
+    @classmethod
+    def validate_source_key_override(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        parts = normalized.split(":")
+        if len(parts) != 2:
+            raise ValueError("Source key override must use serialized key format.")
+        pitch_class_raw, mode_raw = parts
+        try:
+            pitch_class = int(pitch_class_raw)
+        except ValueError as exc:
+            raise ValueError("Source key override pitch class must be an integer.") from exc
+        if pitch_class < 0 or pitch_class > 11:
+            raise ValueError("Source key override pitch class must be between 0 and 11.")
+        if mode_raw not in {"major", "minor"}:
+            raise ValueError("Source key override mode must be major or minor.")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_update_request(self) -> ProjectUpdateRequest:
+        if not self.model_fields_set:
+            raise ValueError("At least one project field must be updated.")
+        return self
 
 
 class ProjectResponse(BaseModel):

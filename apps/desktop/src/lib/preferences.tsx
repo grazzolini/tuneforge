@@ -7,21 +7,27 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import type { EnharmonicDisplayMode } from "./music";
 
 export type InformationDensity = "minimal" | "balanced" | "detailed";
 export type LayoutDensity = "compact" | "comfortable";
 export type MetadataRevealMode = "hover" | "expand";
+export type { EnharmonicDisplayMode };
 
 export type UiPreferences = {
   informationDensity: InformationDensity;
   layoutDensity: LayoutDensity;
+  enharmonicDisplayMode: EnharmonicDisplayMode;
   helperTextVisible: boolean;
   defaultInspectorOpen: boolean;
   defaultSourcesRailCollapsed: boolean;
   metadataRevealMode: MetadataRevealMode;
 };
 
-export type AppearancePreferences = Pick<UiPreferences, "informationDensity" | "layoutDensity">;
+export type AppearancePreferences = Pick<
+  UiPreferences,
+  "informationDensity" | "layoutDensity" | "enharmonicDisplayMode"
+>;
 export type VisibilityPreferences = Pick<
   UiPreferences,
   "helperTextVisible" | "defaultInspectorOpen" | "defaultSourcesRailCollapsed" | "metadataRevealMode"
@@ -30,6 +36,7 @@ export type VisibilityPreferences = Pick<
 type PreferencesContextValue = UiPreferences & {
   setInformationDensity: (value: InformationDensity) => void;
   setLayoutDensity: (value: LayoutDensity) => void;
+  setEnharmonicDisplayMode: (value: EnharmonicDisplayMode) => void;
   setHelperTextVisible: (value: boolean) => void;
   setDefaultInspectorOpen: (value: boolean) => void;
   setDefaultSourcesRailCollapsed: (value: boolean) => void;
@@ -44,12 +51,13 @@ const STORAGE_KEY = "tuneforge.ui-preferences";
 export const DEFAULT_APPEARANCE_PREFERENCES: AppearancePreferences = {
   informationDensity: "minimal",
   layoutDensity: "compact",
+  enharmonicDisplayMode: "auto",
 };
 
 export const DEFAULT_VISIBILITY_PREFERENCES: VisibilityPreferences = {
   helperTextVisible: false,
   defaultInspectorOpen: false,
-  defaultSourcesRailCollapsed: true,
+  defaultSourcesRailCollapsed: false,
   metadataRevealMode: "expand",
 };
 
@@ -66,6 +74,10 @@ function isInformationDensity(value: unknown): value is InformationDensity {
 
 function isLayoutDensity(value: unknown): value is LayoutDensity {
   return value === "compact" || value === "comfortable";
+}
+
+function isEnharmonicDisplayMode(value: unknown): value is EnharmonicDisplayMode {
+  return value === "auto" || value === "sharps" || value === "flats" || value === "neutral" || value === "dual";
 }
 
 function isMetadataRevealMode(value: unknown): value is MetadataRevealMode {
@@ -85,6 +97,9 @@ function normalizePreferences(value: unknown): UiPreferences {
     layoutDensity: isLayoutDensity(candidate.layoutDensity)
       ? candidate.layoutDensity
       : DEFAULT_PREFERENCES.layoutDensity,
+    enharmonicDisplayMode: isEnharmonicDisplayMode(candidate.enharmonicDisplayMode)
+      ? candidate.enharmonicDisplayMode
+      : DEFAULT_PREFERENCES.enharmonicDisplayMode,
     helperTextVisible:
       typeof candidate.helperTextVisible === "boolean"
         ? candidate.helperTextVisible
@@ -148,6 +163,9 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       },
       setLayoutDensity: (layoutDensity) => {
         setPreferences((current) => mergePreferences(current, { layoutDensity }));
+      },
+      setEnharmonicDisplayMode: (enharmonicDisplayMode) => {
+        setPreferences((current) => mergePreferences(current, { enharmonicDisplayMode }));
       },
       setHelperTextVisible: (helperTextVisible) => {
         setPreferences((current) => mergePreferences(current, { helperTextVisible }));

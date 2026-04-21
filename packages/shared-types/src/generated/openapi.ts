@@ -548,6 +548,8 @@ export interface components {
             id: string;
             /** Display Name */
             display_name: string;
+            /** Source Key Override */
+            source_key_override: string | null;
             /** Source Path */
             source_path: string;
             /** Imported Path */
@@ -572,7 +574,9 @@ export interface components {
         /** ProjectUpdateRequest */
         ProjectUpdateRequest: {
             /** Display Name */
-            display_name: string;
+            display_name?: string | null;
+            /** Source Key Override */
+            source_key_override?: string | null;
         };
         /** ProjectsResponse */
         ProjectsResponse: {

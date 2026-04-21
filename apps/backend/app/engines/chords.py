@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict, cast
@@ -47,6 +48,15 @@ def _load_signal(source_path: Path) -> tuple[np.ndarray, int]:
 def _format_chord_label(pitch_class: int, quality: str) -> str:
     note_name = str(DISPLAY_NOTE_NAMES[pitch_class % 12])
     return f"{note_name}m" if quality == "minor" else note_name
+
+
+def _safe_fft_size(signal_size: int, preferred_n_fft: int) -> int:
+    if signal_size <= 0:
+        return preferred_n_fft
+    if signal_size >= preferred_n_fft:
+        return preferred_n_fft
+    exponent = int(np.floor(np.log2(max(signal_size, 32))))
+    return max(32, 2**exponent)
 
 
 def _build_templates() -> tuple[ChordTemplate, ...]:
@@ -119,9 +129,26 @@ def detect_chord_timeline(source_path: Path) -> list[ChordSegment]:
     if signal.size == 0:
         return []
 
-    hop_length = 2048
+    preferred_hop_length = 2048
     total_duration = float(signal.size / sample_rate)
-    chroma = librosa.feature.chroma_cqt(y=signal, sr=sample_rate, hop_length=hop_length)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"n_fft=.*too large for input signal of length=.*",
+            category=UserWarning,
+        )
+        if signal.size < 4096:
+            n_fft = _safe_fft_size(signal.size, 2048)
+            hop_length = max(32, min(preferred_hop_length, n_fft // 4))
+            chroma = librosa.feature.chroma_stft(
+                y=signal,
+                sr=sample_rate,
+                n_fft=n_fft,
+                hop_length=hop_length,
+            )
+        else:
+            hop_length = preferred_hop_length
+            chroma = librosa.feature.chroma_cqt(y=signal, sr=sample_rate, hop_length=hop_length)
     if chroma.size == 0:
         return []
     chroma = _smooth_chroma(chroma)

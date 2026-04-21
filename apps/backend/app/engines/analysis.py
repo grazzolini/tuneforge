@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import librosa
@@ -40,6 +41,15 @@ def _estimate_tuning(signal: np.ndarray, sample_rate: int) -> tuple[float | None
     return estimated_reference_hz, tuning_offset_cents
 
 
+def _safe_fft_size(signal_size: int, preferred_n_fft: int) -> int:
+    if signal_size <= 0:
+        return preferred_n_fft
+    if signal_size >= preferred_n_fft:
+        return preferred_n_fft
+    exponent = int(np.floor(np.log2(max(signal_size, 32))))
+    return max(32, 2**exponent)
+
+
 def analyze_track(source_path: Path) -> dict[str, float | str | None]:
     signal, sample_rate = _load_signal(source_path)
     if signal.size == 0:
@@ -53,7 +63,20 @@ def analyze_track(source_path: Path) -> dict[str, float | str | None]:
 
     estimated_reference_hz, tuning_offset_cents = _estimate_tuning(signal, sample_rate)
 
-    chroma = librosa.feature.chroma_stft(y=signal, sr=sample_rate, n_fft=4096, hop_length=1024)
+    n_fft = _safe_fft_size(signal.size, 4096)
+    hop_length = max(32, min(1024, n_fft // 4))
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"n_fft=.*too large for input signal of length=.*",
+            category=UserWarning,
+        )
+        chroma = librosa.feature.chroma_stft(
+            y=signal,
+            sr=sample_rate,
+            n_fft=n_fft,
+            hop_length=hop_length,
+        )
     chroma_mean = chroma.mean(axis=1)
     chroma_norm = chroma_mean / np.linalg.norm(chroma_mean, ord=2)
     major_scores = np.array([np.corrcoef(chroma_norm, np.roll(MAJOR_PROFILE, idx))[0, 1] for idx in range(12)])

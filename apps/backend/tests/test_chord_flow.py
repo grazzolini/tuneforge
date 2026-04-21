@@ -11,14 +11,21 @@ def test_chord_job_persists_timeline(client, sample_chord_audio_file: Path):
         json={"source_path": str(sample_chord_audio_file), "copy_into_project": True},
     ).json()["project"]
 
+    initial_jobs = client.get("/api/v1/jobs").json()["jobs"]
+    initial_chord_job = next(
+        job for job in initial_jobs if job["project_id"] == project["id"] and job["type"] == "chords"
+    )
+    assert wait_for_job(client, initial_chord_job["id"])["status"] == "completed"
+
     initial = client.get(f"/api/v1/projects/{project['id']}/chords").json()
     assert initial["project_id"] == project["id"]
-    assert initial["timeline"] == []
-    assert initial["backend"] is None
+    assert initial["backend"] == "default"
+    assert len(initial["timeline"]) >= 3
+    initial_created_at = initial["created_at"]
 
     job = client.post(
         f"/api/v1/projects/{project['id']}/chords",
-        json={"backend": "default", "force": False},
+        json={"backend": "default", "force": True},
     ).json()["job"]
     final_job = wait_for_job(client, job["id"])
     assert final_job["status"] == "completed"
@@ -30,6 +37,7 @@ def test_chord_job_persists_timeline(client, sample_chord_audio_file: Path):
     assert all(segment["end_seconds"] > segment["start_seconds"] for segment in chords["timeline"])
     assert all(segment["pitch_class"] is not None for segment in chords["timeline"])
     assert all(segment["quality"] in {"major", "minor"} for segment in chords["timeline"])
+    assert chords["created_at"] != initial_created_at
 
     labels = [segment["label"] for segment in chords["timeline"]]
     assert labels[0] == "C"

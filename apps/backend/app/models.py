@@ -18,6 +18,7 @@ class Project(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     display_name: Mapped[str] = mapped_column(String(255))
+    source_key_override: Mapped[str | None] = mapped_column(String(32), nullable=True)
     source_path: Mapped[str] = mapped_column(String(2048))
     imported_path: Mapped[str] = mapped_column(String(2048))
     duration_seconds: Mapped[float | None] = mapped_column(Float(), nullable=True)

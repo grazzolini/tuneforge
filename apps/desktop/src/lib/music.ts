@@ -1,9 +1,22 @@
 export type KeyMode = "major" | "minor";
 export type ChordQuality = "major" | "minor";
+export type EnharmonicDisplayMode = "auto" | "sharps" | "flats" | "neutral" | "dual";
 
 export type MusicalKey = {
   pitchClass: number;
   mode: KeyMode;
+};
+
+export type PitchFormatOptions = {
+  activeKey?: MusicalKey | null;
+  mode?: EnharmonicDisplayMode;
+};
+
+type AccidentalFamily = "sharp" | "flat" | "neutral";
+
+export type EnharmonicContext = {
+  mode: EnharmonicDisplayMode;
+  family: AccidentalFamily;
 };
 
 const ENHARMONIC_ALIASES: Record<string, number> = {
@@ -30,7 +43,10 @@ const ENHARMONIC_ALIASES: Record<string, number> = {
   Cb: 11,
 };
 
-const DISPLAY_PITCH_CLASSES = [
+const SHARP_PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"] as const;
+const FLAT_PITCH_CLASSES = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"] as const;
+const NEUTRAL_PITCH_CLASSES = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"] as const;
+const DUAL_PITCH_CLASSES = [
   "C",
   "C#/Db",
   "D",
@@ -44,6 +60,11 @@ const DISPLAY_PITCH_CLASSES = [
   "A#/Bb",
   "B",
 ] as const;
+
+const AUTO_KEY_FAMILIES: Record<KeyMode, readonly AccidentalFamily[]> = {
+  major: ["neutral", "flat", "sharp", "flat", "sharp", "flat", "sharp", "sharp", "flat", "sharp", "flat", "sharp"],
+  minor: ["flat", "sharp", "flat", "flat", "sharp", "flat", "sharp", "flat", "sharp", "neutral", "flat", "sharp"],
+};
 
 const CHROMATIC_PITCH_CLASSES = Array.from({ length: 12 }, (_, pitchClass) => pitchClass);
 
@@ -94,6 +115,16 @@ export function parseKey(value: string | null | undefined): MusicalKey | null {
   };
 }
 
+export function parseStoredKey(value: string | null | undefined): MusicalKey | null {
+  if (!value) {
+    return null;
+  }
+  if (value.includes(":")) {
+    return deserializeKey(value);
+  }
+  return parseKey(value);
+}
+
 export function serializeKey(key: MusicalKey): string {
   return `${key.pitchClass}:${key.mode}`;
 }
@@ -110,21 +141,129 @@ export function deserializeKey(value: string): MusicalKey {
   };
 }
 
-export function formatKey(key: MusicalKey, format: "short" | "long" = "short"): string {
-  const noteName = formatPitchClass(key.pitchClass);
+export function getEnharmonicContext(
+  activeKey: MusicalKey | null | undefined,
+  mode: EnharmonicDisplayMode = "auto",
+): EnharmonicContext {
+  if (mode === "sharps") {
+    return { mode, family: "sharp" };
+  }
+  if (mode === "flats") {
+    return { mode, family: "flat" };
+  }
+  if (mode === "neutral" || mode === "dual") {
+    return { mode, family: "neutral" };
+  }
+  if (!activeKey) {
+    return { mode, family: "neutral" };
+  }
+  return {
+    mode,
+    family: AUTO_KEY_FAMILIES[activeKey.mode][normalizePitchClass(activeKey.pitchClass)] ?? "neutral",
+  };
+}
+
+export function formatKey(
+  key: MusicalKey,
+  format: "short" | "long" = "short",
+  options: PitchFormatOptions = {},
+): string {
+  const noteName =
+    options.mode === "dual"
+      ? formatDualPitchClass(key.pitchClass, format === "short" && key.mode === "minor" ? "m" : "")
+      : formatPitchClass(key.pitchClass, {
+          activeKey: options.activeKey ?? key,
+          mode: options.mode,
+        });
   if (format === "long") {
+    if (options.mode === "dual") {
+      const [sharpRoot, flatRoot] = noteName.split("/");
+      if (!flatRoot) {
+        return `${noteName} ${key.mode}`;
+      }
+      return `${sharpRoot} ${key.mode} / ${flatRoot} ${key.mode}`;
+    }
     return `${noteName} ${key.mode}`;
+  }
+  if (options.mode === "dual") {
+    return noteName;
   }
   return key.mode === "minor" ? `${noteName}m` : noteName;
 }
 
-export function formatPitchClass(pitchClass: number): string {
-  return DISPLAY_PITCH_CLASSES[((pitchClass % 12) + 12) % 12] ?? DISPLAY_PITCH_CLASSES[0];
+export function formatPitchClass(pitchClass: number, options: PitchFormatOptions = {}): string {
+  const normalizedPitchClass = normalizePitchClass(pitchClass);
+  const context = getEnharmonicContext(options.activeKey, options.mode);
+  if (context.mode === "dual") {
+    return DUAL_PITCH_CLASSES[normalizedPitchClass] ?? DUAL_PITCH_CLASSES[0];
+  }
+  if (context.family === "sharp") {
+    return SHARP_PITCH_CLASSES[normalizedPitchClass] ?? SHARP_PITCH_CLASSES[0];
+  }
+  if (context.family === "flat") {
+    return FLAT_PITCH_CLASSES[normalizedPitchClass] ?? FLAT_PITCH_CLASSES[0];
+  }
+  return NEUTRAL_PITCH_CLASSES[normalizedPitchClass] ?? NEUTRAL_PITCH_CLASSES[0];
 }
 
-export function formatChordLabel(pitchClass: number, quality: ChordQuality): string {
-  const noteName = formatPitchClass(pitchClass);
+export function formatAlternatePitchClass(pitchClass: number, options: PitchFormatOptions = {}): string | null {
+  const normalizedPitchClass = normalizePitchClass(pitchClass);
+  const sharpLabel = SHARP_PITCH_CLASSES[normalizedPitchClass];
+  const flatLabel = FLAT_PITCH_CLASSES[normalizedPitchClass];
+  if (sharpLabel === flatLabel || options.mode === "dual") {
+    return null;
+  }
+  const primaryLabel = formatPitchClass(normalizedPitchClass, options);
+  return primaryLabel === sharpLabel ? flatLabel : sharpLabel;
+}
+
+export function formatChordRoot(pitchClass: number, options: PitchFormatOptions = {}): string {
+  return formatPitchClass(pitchClass, options);
+}
+
+export function formatChordLabel(
+  pitchClass: number,
+  quality: ChordQuality,
+  options: PitchFormatOptions = {},
+): string {
+  const noteName =
+    options.mode === "dual"
+      ? formatDualPitchClass(pitchClass, quality === "minor" ? "m" : "")
+      : formatChordRoot(pitchClass, options);
+  if (options.mode === "dual") {
+    return noteName;
+  }
   return quality === "minor" ? `${noteName}m` : noteName;
+}
+
+export function formatAlternateKey(
+  key: MusicalKey,
+  format: "short" | "long" = "short",
+  options: PitchFormatOptions = {},
+): string | null {
+  const alternateRoot = formatAlternatePitchClass(key.pitchClass, {
+    activeKey: options.activeKey ?? key,
+    mode: options.mode,
+  });
+  if (!alternateRoot) {
+    return null;
+  }
+  if (format === "long") {
+    return `${alternateRoot} ${key.mode}`;
+  }
+  return key.mode === "minor" ? `${alternateRoot}m` : alternateRoot;
+}
+
+export function formatAlternateChordLabel(
+  pitchClass: number,
+  quality: ChordQuality,
+  options: PitchFormatOptions = {},
+): string | null {
+  const alternateRoot = formatAlternatePitchClass(pitchClass, options);
+  if (!alternateRoot) {
+    return null;
+  }
+  return quality === "minor" ? `${alternateRoot}m` : alternateRoot;
 }
 
 export function transposePitchClass(pitchClass: number, semitones: number): number {
@@ -147,4 +286,18 @@ export function semitoneDelta(source: MusicalKey, target: MusicalKey): number {
 function normalizeNoteName(noteName: string): string {
   const [letter, accidental = ""] = noteName.trim();
   return `${letter.toUpperCase()}${accidental}`;
+}
+
+function normalizePitchClass(pitchClass: number): number {
+  return ((pitchClass % 12) + 12) % 12;
+}
+
+function formatDualPitchClass(pitchClass: number, suffix = ""): string {
+  const normalizedPitchClass = normalizePitchClass(pitchClass);
+  const sharpLabel = SHARP_PITCH_CLASSES[normalizedPitchClass] ?? SHARP_PITCH_CLASSES[0];
+  const flatLabel = FLAT_PITCH_CLASSES[normalizedPitchClass] ?? FLAT_PITCH_CLASSES[0];
+  if (sharpLabel === flatLabel) {
+    return `${sharpLabel}${suffix}`;
+  }
+  return `${sharpLabel}${suffix}/${flatLabel}${suffix}`;
 }

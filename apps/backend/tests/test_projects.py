@@ -17,6 +17,7 @@ def test_import_project_persists_metadata_and_source_artifact(client, sample_aud
     assert response.status_code == 200
     project = response.json()["project"]
     assert project["display_name"] == "fixture"
+    assert project["source_key_override"] is None
     assert project["sample_rate"] == 44100
     assert project["channels"] == 1
 
@@ -27,6 +28,29 @@ def test_import_project_persists_metadata_and_source_artifact(client, sample_aud
 
     artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
     assert any(artifact["type"] == "source_audio" for artifact in artifacts)
+
+
+def test_import_project_enqueues_analysis_and_chords(client, sample_chord_audio_file: Path):
+    response = client.post(
+        "/api/v1/projects/import",
+        json={"source_path": str(sample_chord_audio_file), "copy_into_project": True},
+    )
+
+    assert response.status_code == 200
+    project = response.json()["project"]
+
+    jobs = client.get("/api/v1/jobs").json()["jobs"]
+    analyze_job = next(job for job in jobs if job["project_id"] == project["id"] and job["type"] == "analyze")
+    chord_job = next(job for job in jobs if job["project_id"] == project["id"] and job["type"] == "chords")
+
+    assert wait_for_job(client, analyze_job["id"])["status"] == "completed"
+    assert wait_for_job(client, chord_job["id"])["status"] == "completed"
+
+    analysis = client.get(f"/api/v1/projects/{project['id']}/analysis").json()["analysis"]
+    chords = client.get(f"/api/v1/projects/{project['id']}/chords").json()
+
+    assert analysis is not None
+    assert len(chords["timeline"]) >= 3
 
 
 def test_project_can_be_renamed(client, sample_audio_file: Path):
@@ -42,6 +66,29 @@ def test_project_can_be_renamed(client, sample_audio_file: Path):
 
     assert response.status_code == 200
     assert response.json()["project"]["display_name"] == "Practice Version"
+
+
+def test_project_source_key_override_can_be_updated_and_cleared(client, sample_audio_file: Path):
+    project = client.post(
+        "/api/v1/projects/import",
+        json={"source_path": str(sample_audio_file), "copy_into_project": True},
+    ).json()["project"]
+
+    update_response = client.patch(
+        f"/api/v1/projects/{project['id']}",
+        json={"source_key_override": "8:major"},
+    )
+
+    assert update_response.status_code == 200
+    assert update_response.json()["project"]["source_key_override"] == "8:major"
+
+    cleared_response = client.patch(
+        f"/api/v1/projects/{project['id']}",
+        json={"source_key_override": None},
+    )
+
+    assert cleared_response.status_code == 200
+    assert cleared_response.json()["project"]["source_key_override"] is None
 
 
 def test_project_list_can_filter_by_search_term(client, sample_audio_file: Path, tmp_path: Path):

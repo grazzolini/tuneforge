@@ -35,7 +35,7 @@ from app.services.projects import (
     get_project,
     import_project,
     list_projects,
-    rename_project,
+    update_project,
 )
 from app.services.stems import resolve_stem_source_artifact
 
@@ -43,13 +43,33 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 
 
 @router.post("/import", response_model=ProjectResponse)
-def create_project(payload: ProjectImportRequest, session: Session = Depends(get_db)) -> ProjectResponse:
+def create_project(
+    payload: ProjectImportRequest,
+    session: Session = Depends(get_db),
+    runner=Depends(get_job_runner),
+) -> ProjectResponse:
     project = import_project(
         session,
         source_path=payload.source_path,
         copy_into_project=payload.copy_into_project,
         display_name=payload.display_name,
     )
+    analyze_job = runner.create_job(
+        session,
+        project_id=project.id,
+        job_type="analyze",
+        payload=AnalysisRequest(include_tempo=False, force=False).model_dump(),
+    )
+    chords_job = runner.create_job(
+        session,
+        project_id=project.id,
+        job_type="chords",
+        payload=ChordRequest(backend="default", force=False).model_dump(),
+    )
+    session.commit()
+    session.refresh(project)
+    runner.enqueue(analyze_job.id)
+    runner.enqueue(chords_job.id)
     return ProjectResponse(project=ProjectSchema.model_validate(project))
 
 
@@ -73,7 +93,11 @@ def project_update(
     payload: ProjectUpdateRequest,
     session: Session = Depends(get_db),
 ) -> ProjectResponse:
-    project = rename_project(session, project_id, display_name=payload.display_name)
+    project = update_project(
+        session,
+        project_id,
+        updates=payload.model_dump(exclude_unset=True),
+    )
     return ProjectResponse(project=ProjectSchema.model_validate(project))
 
 

@@ -19,6 +19,17 @@ export type EnharmonicContext = {
   family: AccidentalFamily;
 };
 
+export type MusicalLabelPart = {
+  root: string;
+  suffix: string;
+};
+
+export type FormattedMusicalLabel = {
+  ariaLabel: string;
+  primary: MusicalLabelPart;
+  secondary: MusicalLabelPart | null;
+};
+
 const ENHARMONIC_ALIASES: Record<string, number> = {
   C: 0,
   "B#": 0,
@@ -191,6 +202,25 @@ export function formatKey(
   return key.mode === "minor" ? `${noteName}m` : noteName;
 }
 
+export function formatKeyDisplay(
+  key: MusicalKey,
+  options: PitchFormatOptions = {},
+): FormattedMusicalLabel {
+  const { primaryLabel, secondaryLabel } =
+    options.mode === "dual"
+      ? formatDualKeyLabels(key)
+      : {
+          primaryLabel: formatKey(key, "short", options),
+          secondaryLabel: null,
+        };
+
+  return {
+    ariaLabel: secondaryLabel ? `${primaryLabel} / ${secondaryLabel}` : primaryLabel,
+    primary: splitMusicalLabel(primaryLabel),
+    secondary: secondaryLabel ? splitMusicalLabel(secondaryLabel) : null,
+  };
+}
+
 export function formatPitchClass(pitchClass: number, options: PitchFormatOptions = {}): string {
   const normalizedPitchClass = normalizePitchClass(pitchClass);
   const context = getEnharmonicContext(options.activeKey, options.mode);
@@ -236,6 +266,26 @@ export function formatChordLabel(
   return quality === "minor" ? `${noteName}m` : noteName;
 }
 
+export function formatChordDisplay(
+  pitchClass: number,
+  quality: ChordQuality,
+  options: PitchFormatOptions = {},
+): FormattedMusicalLabel {
+  const { primaryLabel, secondaryLabel } =
+    options.mode === "dual"
+      ? formatDualChordLabels(pitchClass, quality)
+      : {
+          primaryLabel: formatChordLabel(pitchClass, quality, options),
+          secondaryLabel: null,
+        };
+
+  return {
+    ariaLabel: secondaryLabel ? `${primaryLabel} / ${secondaryLabel}` : primaryLabel,
+    primary: splitMusicalLabel(primaryLabel),
+    secondary: secondaryLabel ? splitMusicalLabel(secondaryLabel) : null,
+  };
+}
+
 export function formatAlternateKey(
   key: MusicalKey,
   format: "short" | "long" = "short",
@@ -266,6 +316,14 @@ export function formatAlternateChordLabel(
   return quality === "minor" ? `${alternateRoot}m` : alternateRoot;
 }
 
+export function formatRawMusicalLabel(label: string): FormattedMusicalLabel {
+  return {
+    ariaLabel: label,
+    primary: splitMusicalLabel(label),
+    secondary: null,
+  };
+}
+
 export function transposePitchClass(pitchClass: number, semitones: number): number {
   return ((pitchClass + semitones) % 12 + 12) % 12;
 }
@@ -288,8 +346,50 @@ function normalizeNoteName(noteName: string): string {
   return `${letter.toUpperCase()}${accidental}`;
 }
 
+function splitMusicalLabel(label: string): MusicalLabelPart {
+  const match = label.match(/^([A-G](?:#|b)?)(.*)$/);
+  if (!match) {
+    return { root: label, suffix: "" };
+  }
+  return {
+    root: match[1],
+    suffix: match[2] ?? "",
+  };
+}
+
 function normalizePitchClass(pitchClass: number): number {
   return ((pitchClass % 12) + 12) % 12;
+}
+
+function formatDualKeyLabels(key: MusicalKey): { primaryLabel: string; secondaryLabel: string | null } {
+  const { primaryRoot, secondaryRoot } = getDualPitchClassParts(key.pitchClass);
+  const suffix = key.mode === "minor" ? "m" : "";
+  return {
+    primaryLabel: `${primaryRoot}${suffix}`,
+    secondaryLabel: secondaryRoot ? `${secondaryRoot}${suffix}` : null,
+  };
+}
+
+function formatDualChordLabels(
+  pitchClass: number,
+  quality: ChordQuality,
+): { primaryLabel: string; secondaryLabel: string | null } {
+  const { primaryRoot, secondaryRoot } = getDualPitchClassParts(pitchClass);
+  const suffix = quality === "minor" ? "m" : "";
+  return {
+    primaryLabel: `${primaryRoot}${suffix}`,
+    secondaryLabel: secondaryRoot ? `${secondaryRoot}${suffix}` : null,
+  };
+}
+
+function getDualPitchClassParts(pitchClass: number): { primaryRoot: string; secondaryRoot: string | null } {
+  const normalizedPitchClass = normalizePitchClass(pitchClass);
+  const dualLabel = DUAL_PITCH_CLASSES[normalizedPitchClass] ?? DUAL_PITCH_CLASSES[0];
+  const [primaryRoot, secondaryRoot] = dualLabel.split("/");
+  return {
+    primaryRoot,
+    secondaryRoot: secondaryRoot ?? null,
+  };
 }
 
 function formatDualPitchClass(pitchClass: number, suffix = ""): string {

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatChordDisplay,
   formatChordLabel,
   formatKey,
+  formatKeyDisplay,
   formatPitchClass,
   getEnharmonicContext,
   type MusicalKey,
@@ -40,5 +42,18 @@ describe("enharmonic formatting", () => {
     expect(formatKey({ pitchClass: 1, mode: "major" }, "short", { mode: "flats" })).toBe("Db");
     expect(formatPitchClass(8, { mode: "neutral" })).toBe("Ab");
     expect(formatChordLabel(10, "major", { mode: "dual" })).toBe("A#/Bb");
+  });
+
+  it("renders dual labels in fixed note order with minor suffixes preserved", () => {
+    expect(formatKeyDisplay({ pitchClass: 3, mode: "minor" }, { mode: "dual" })).toEqual({
+      ariaLabel: "D#m / Ebm",
+      primary: { root: "D#", suffix: "m" },
+      secondary: { root: "Eb", suffix: "m" },
+    });
+    expect(formatChordDisplay(3, "minor", { mode: "dual" })).toEqual({
+      ariaLabel: "D#m / Ebm",
+      primary: { root: "D#", suffix: "m" },
+      secondary: { root: "Eb", suffix: "m" },
+    });
   });
 });

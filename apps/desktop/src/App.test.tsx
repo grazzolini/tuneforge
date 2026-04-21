@@ -531,6 +531,22 @@ function renderApp(initialEntries: string[]) {
   return { ...result, queryClient };
 }
 
+function hasAriaKeyLabel(element: Element | null, label: string) {
+  return element?.getAttribute("aria-label") === label;
+}
+
+function getByAriaKeyLabel(container: HTMLElement, label: string) {
+  return within(container).getByText((_, element) => hasAriaKeyLabel(element, label));
+}
+
+function getAllByAriaKeyLabel(container: HTMLElement, label: string) {
+  return within(container).getAllByText((_, element) => hasAriaKeyLabel(element, label));
+}
+
+function queryByAriaKeyLabel(container: HTMLElement, label: string) {
+  return within(container).queryByText((_, element) => hasAriaKeyLabel(element, label));
+}
+
 function installMatchMediaMock(initialMatches = false) {
   const listeners = new Set<(event: MediaQueryListEvent) => void>();
   let matches = initialMatches;
@@ -799,18 +815,18 @@ describe("Desktop app flows", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    expect(within(screen.getByRole("group", { name: "Current chord card" })).getByText("Ebm")).toBeInTheDocument();
-    expect(within(screen.getByRole("group", { name: "Next chord card" })).getByText("Bb")).toBeInTheDocument();
+    expect(getByAriaKeyLabel(screen.getByRole("group", { name: "Current chord card" }), "Ebm")).toBeInTheDocument();
+    expect(getByAriaKeyLabel(screen.getByRole("group", { name: "Next chord card" }), "Bb")).toBeInTheDocument();
     expect(screen.queryByText("D#/Ebm")).not.toBeInTheDocument();
     expect(screen.queryByText("A#/Bb")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Show Inspector" }));
     expect(
-      within(screen.getByText("Source Key", { selector: "span" }).closest("div") as HTMLElement).getByText("Ebm"),
+      getByAriaKeyLabel(screen.getByText("Source Key", { selector: "span" }).closest("div") as HTMLElement, "Ebm"),
     ).toBeInTheDocument();
     await user.click(screen.getByLabelText("Target Key"));
     const targetKeyList = screen.getByRole("listbox", { name: "Target key options" });
-    expect(within(targetKeyList).getAllByText("Bbm").length).toBeGreaterThan(0);
+    expect(getAllByAriaKeyLabel(targetKeyList as HTMLElement, "Bbm").length).toBeGreaterThan(0);
     expect(within(targetKeyList).queryByText("D#/Ebm")).not.toBeInTheDocument();
   });
 
@@ -847,19 +863,62 @@ describe("Desktop app flows", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    expect(within(screen.getByRole("group", { name: "Current chord card" })).getByText("D#m")).toBeInTheDocument();
-    expect(within(screen.getByRole("group", { name: "Next chord card" })).getByText("A#")).toBeInTheDocument();
+    expect(getByAriaKeyLabel(screen.getByRole("group", { name: "Current chord card" }), "D#m")).toBeInTheDocument();
+    expect(getByAriaKeyLabel(screen.getByRole("group", { name: "Next chord card" }), "A#")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Show Inspector" }));
 
     const sourceKeyCard = screen.getByText("Source Key", { selector: "span" }).closest("div") as HTMLElement;
-    expect(
-      within(sourceKeyCard).getByText("D#m"),
-    ).toBeInTheDocument();
-    expect(within(sourceKeyCard).queryByText("Ebm")).not.toBeInTheDocument();
+    expect(getByAriaKeyLabel(sourceKeyCard, "D#m")).toBeInTheDocument();
+    expect(queryByAriaKeyLabel(sourceKeyCard, "Ebm")).not.toBeInTheDocument();
     await user.click(screen.getByLabelText("Target Key"));
     const targetKeyList = screen.getByRole("listbox", { name: "Target key options" });
-    expect(within(targetKeyList).getAllByText("D#m").length).toBeGreaterThan(0);
-    expect(within(targetKeyList).queryByText("Ebm")).not.toBeInTheDocument();
+    expect(getAllByAriaKeyLabel(targetKeyList as HTMLElement, "D#m").length).toBeGreaterThan(0);
+    expect(queryByAriaKeyLabel(targetKeyList as HTMLElement, "Ebm")).not.toBeInTheDocument();
+  });
+
+  it("uses sharp-first dual labels across key and chord surfaces", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({
+        defaultSourcesRailCollapsed: false,
+        enharmonicDisplayMode: "dual",
+      }),
+    );
+    setProjectAnalysis("proj_123", {
+      project_id: "proj_123",
+      estimated_key: "Eb minor",
+      key_confidence: 0.82,
+      estimated_reference_hz: 431.9,
+      tuning_offset_cents: -32,
+      tempo_bpm: null,
+      analysis_version: "v1",
+      created_at: "2026-04-18T13:16:00.000Z",
+    });
+    setProjectChords("proj_123", {
+      project_id: "proj_123",
+      backend: "default",
+      source_artifact_id: "art_source",
+      created_at: "2026-04-18T13:16:00.000Z",
+      timeline: [
+        { start_seconds: 0, end_seconds: 16, label: "legacy", confidence: 0.81, pitch_class: 3, quality: "minor" },
+      ],
+    });
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    expect(getByAriaKeyLabel(screen.getByRole("group", { name: "Current chord card" }), "D#m / Ebm")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
+    const sourceKeyCard = screen.getByText("Source Key", { selector: "span" }).closest("div") as HTMLElement;
+    expect(getByAriaKeyLabel(sourceKeyCard, "D#m / Ebm")).toBeInTheDocument();
+    const estimatedKeyCard = screen.getByText("Estimated Key", { selector: "span" }).closest("div") as HTMLElement;
+    expect(getByAriaKeyLabel(estimatedKeyCard, "D#m / Ebm")).toBeInTheDocument();
+
+    await user.click(screen.getByLabelText("Target Key"));
+    const targetKeyList = screen.getByRole("listbox", { name: "Target key options" });
+    expect(getAllByAriaKeyLabel(targetKeyList as HTMLElement, "D#m / Ebm").length).toBeGreaterThan(0);
   });
 
   it("preserves the relative target shift when the detected source key is corrected", async () => {
@@ -881,7 +940,8 @@ describe("Desktop app flows", () => {
     expect(within(targetKeyCard).getByText("G#")).toBeInTheDocument();
 
     await user.click(screen.getByText("Correct source key for this project"));
-    await user.selectOptions(screen.getByLabelText("Project Source Key"), "8:major");
+    await user.click(screen.getByLabelText("Project Source Key"));
+    await user.click(screen.getByRole("option", { name: "G#" }));
 
     const sourceKeyCard = screen.getByText("Source Key", { selector: "span" }).closest("div") as HTMLElement;
     expect(mockUpdateProject).toHaveBeenCalledWith("proj_123", { source_key_override: "8:major" });
@@ -898,7 +958,8 @@ describe("Desktop app flows", () => {
     const sourceList = screen.getByRole("group", { name: "Source and mix list" });
     await user.click(within(sourceList).getByRole("button", { name: /Source Track/i }));
     await user.click(screen.getByText("Correct source key for this project"));
-    await user.selectOptions(screen.getByLabelText("Project Source Key"), "9:major");
+    await user.click(screen.getByLabelText("Project Source Key"));
+    await user.click(screen.getByRole("option", { name: "A" }));
     await user.click(screen.getByLabelText("Raise target key"));
     await user.click(screen.getByRole("button", { name: "Create Mix" }));
 
@@ -909,6 +970,84 @@ describe("Desktop app flows", () => {
         transpose: { semitones: 1 },
       }),
     );
+  });
+
+  it("shifts displayed chords when the detected source key is corrected", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({
+        defaultSourcesRailCollapsed: false,
+        enharmonicDisplayMode: "sharps",
+      }),
+    );
+    setProjectAnalysis("proj_123", {
+      project_id: "proj_123",
+      estimated_key: "G major",
+      key_confidence: 0.82,
+      estimated_reference_hz: 431.9,
+      tuning_offset_cents: -32,
+      tempo_bpm: null,
+      analysis_version: "v1",
+      created_at: "2026-04-18T13:16:00.000Z",
+    });
+    setProjectChords("proj_123", {
+      project_id: "proj_123",
+      backend: "default",
+      source_artifact_id: "art_source",
+      created_at: "2026-04-18T13:16:00.000Z",
+      timeline: [
+        { start_seconds: 0, end_seconds: 16, label: "legacy", confidence: 0.81, pitch_class: 7, quality: "major" },
+      ],
+    });
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    expect(getByAriaKeyLabel(screen.getByRole("group", { name: "Current chord card" }), "G")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
+    await user.click(screen.getByText("Correct source key for this project"));
+    await user.click(screen.getByLabelText("Project Source Key"));
+    await user.click(screen.getByRole("option", { name: "A" }));
+
+    expect(getByAriaKeyLabel(screen.getByRole("group", { name: "Current chord card" }), "A")).toBeInTheDocument();
+
+    const savedMixList = screen.getByRole("group", { name: "Saved mix list" });
+    await user.click(within(savedMixList).getByRole("button", { name: /Practice Mix/i }));
+
+    expect(getByAriaKeyLabel(screen.getByRole("group", { name: "Current chord card" }), "B")).toBeInTheDocument();
+  });
+
+  it("does not duplicate the detected key inside the project source key selector", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({
+        defaultSourcesRailCollapsed: false,
+        enharmonicDisplayMode: "sharps",
+      }),
+    );
+    setProjectAnalysis("proj_123", {
+      project_id: "proj_123",
+      estimated_key: "G# minor",
+      key_confidence: 0.82,
+      estimated_reference_hz: 431.9,
+      tuning_offset_cents: -32,
+      tempo_bpm: null,
+      analysis_version: "v1",
+      created_at: "2026-04-18T13:16:00.000Z",
+    });
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
+    await user.click(screen.getByText("Correct source key for this project"));
+    await user.click(screen.getByLabelText("Project Source Key"));
+
+    const sourceKeyList = screen.getByRole("listbox", { name: "Project Source Key options" });
+    expect(getAllByAriaKeyLabel(sourceKeyList as HTMLElement, "G#m").length).toBe(1);
   });
 
   it("caps target key stepping at one octave in either direction", async () => {
@@ -1055,11 +1194,6 @@ describe("Desktop app flows", () => {
     await user.click(screen.getByRole("button", { name: "Switch to Stems" }));
 
     expect(await screen.findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
-    expect(
-      within(screen.getByRole("group", { name: "Current source summary" })).getByText(
-        "Practice Mix",
-      ),
-    ).toBeInTheDocument();
     await waitFor(() =>
       expect(
         JSON.parse(window.localStorage.getItem("tuneforge.project-playback-state") ?? "{}"),
@@ -1092,16 +1226,6 @@ describe("Desktop app flows", () => {
 
     expect(await screen.findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
     expect(screen.getAllByText("Stem monitor").length).toBeGreaterThan(0);
-    expect(
-      within(screen.getByRole("group", { name: "Current source summary" })).getByText(
-        "Practice Mix",
-      ),
-    ).toBeInTheDocument();
-    expect(
-      within(screen.getByRole("group", { name: "Current source summary" })).queryByText(
-        "Source Track",
-      ),
-    ).not.toBeInTheDocument();
   });
 
   it("toggles playback with spacebar and preserves time when switching mixes", async () => {

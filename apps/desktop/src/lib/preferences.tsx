@@ -17,13 +17,14 @@ export type UiPreferences = {
   layoutDensity: LayoutDensity;
   helperTextVisible: boolean;
   defaultInspectorOpen: boolean;
+  defaultSourcesRailCollapsed: boolean;
   metadataRevealMode: MetadataRevealMode;
 };
 
 export type AppearancePreferences = Pick<UiPreferences, "informationDensity" | "layoutDensity">;
 export type VisibilityPreferences = Pick<
   UiPreferences,
-  "helperTextVisible" | "defaultInspectorOpen" | "metadataRevealMode"
+  "helperTextVisible" | "defaultInspectorOpen" | "defaultSourcesRailCollapsed" | "metadataRevealMode"
 >;
 
 type PreferencesContextValue = UiPreferences & {
@@ -31,6 +32,7 @@ type PreferencesContextValue = UiPreferences & {
   setLayoutDensity: (value: LayoutDensity) => void;
   setHelperTextVisible: (value: boolean) => void;
   setDefaultInspectorOpen: (value: boolean) => void;
+  setDefaultSourcesRailCollapsed: (value: boolean) => void;
   setMetadataRevealMode: (value: MetadataRevealMode) => void;
   resetAppearancePreferences: () => void;
   resetVisibilityPreferences: () => void;
@@ -47,6 +49,7 @@ export const DEFAULT_APPEARANCE_PREFERENCES: AppearancePreferences = {
 export const DEFAULT_VISIBILITY_PREFERENCES: VisibilityPreferences = {
   helperTextVisible: false,
   defaultInspectorOpen: false,
+  defaultSourcesRailCollapsed: true,
   metadataRevealMode: "expand",
 };
 
@@ -90,6 +93,10 @@ function normalizePreferences(value: unknown): UiPreferences {
       typeof candidate.defaultInspectorOpen === "boolean"
         ? candidate.defaultInspectorOpen
         : DEFAULT_PREFERENCES.defaultInspectorOpen,
+    defaultSourcesRailCollapsed:
+      typeof candidate.defaultSourcesRailCollapsed === "boolean"
+        ? candidate.defaultSourcesRailCollapsed
+        : DEFAULT_PREFERENCES.defaultSourcesRailCollapsed,
     metadataRevealMode: isMetadataRevealMode(candidate.metadataRevealMode)
       ? candidate.metadataRevealMode
       : DEFAULT_PREFERENCES.metadataRevealMode,
@@ -147,6 +154,9 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       },
       setDefaultInspectorOpen: (defaultInspectorOpen) => {
         setPreferences((current) => mergePreferences(current, { defaultInspectorOpen }));
+      },
+      setDefaultSourcesRailCollapsed: (defaultSourcesRailCollapsed) => {
+        setPreferences((current) => mergePreferences(current, { defaultSourcesRailCollapsed }));
       },
       setMetadataRevealMode: (metadataRevealMode) => {
         setPreferences((current) => mergePreferences(current, { metadataRevealMode }));

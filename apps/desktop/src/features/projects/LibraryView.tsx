@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Link, useNavigate } from "react-router-dom";
 import { api, type ProjectSchema } from "../../lib/api";
+import { formatLocalDateTime, normalizeApiDateTime } from "../../lib/datetime";
 import { usePreferences } from "../../lib/preferences";
 
 function formatDuration(durationSeconds: number | null | undefined) {
@@ -15,50 +16,61 @@ function formatDuration(durationSeconds: number | null | undefined) {
 }
 
 function formatUpdatedAt(value: string) {
-  return new Intl.DateTimeFormat(undefined, {
+  return formatLocalDateTime(value, {
     month: "short",
     day: "numeric",
-  }).format(new Date(value));
-}
-
-function fileNameFromPath(path: string) {
-  return path.split(/[/\\]/).pop() ?? path;
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function ProjectCard({ project }: { project: ProjectSchema }) {
   const { informationDensity, metadataRevealMode } = usePreferences();
-  const sourceFileName = fileNameFromPath(project.source_path);
+  const updatedAtLabel = formatUpdatedAt(project.updated_at);
+  const normalizedUpdatedAt = normalizeApiDateTime(project.updated_at);
 
   return (
     <article className="project-card">
-      <div className="project-card__meta-row">
-        <span className="pill">Updated {formatUpdatedAt(project.updated_at)}</span>
-        <span className="pill">{formatDuration(project.duration_seconds)}</span>
-      </div>
+      <Link
+        aria-label={`Open ${project.display_name} project`}
+        className="project-card__link"
+        to={`/projects/${project.id}`}
+      >
+        <div className="project-card__meta-row">
+          <span className="pill">
+            <time dateTime={normalizedUpdatedAt}>{updatedAtLabel}</time>
+          </span>
+        </div>
 
-      <Link className="project-card__link" to={`/projects/${project.id}`}>
         <div className="project-card__title-block">
           <h2>{project.display_name}</h2>
-          <p className="project-card__summary">{sourceFileName}</p>
         </div>
-        <span className="project-card__open">Open project</span>
-      </Link>
 
-      <div className="project-card__stats" role="list" aria-label={`${project.display_name} summary`}>
-        <span className="stat-chip" role="listitem">
-          {project.source_path.split(".").pop()?.toUpperCase() ?? "Audio"}
-        </span>
-        {informationDensity !== "minimal" ? (
+        <div className="project-card__stats" role="list" aria-label={`${project.display_name} summary`}>
           <span className="stat-chip" role="listitem">
-            {project.channels ? `${project.channels} ch` : "Channels n/a"}
+            {project.source_path.split(".").pop()?.toUpperCase() ?? "Audio"}
           </span>
-        ) : null}
-        {informationDensity === "detailed" ? (
           <span className="stat-chip" role="listitem">
-            {project.sample_rate ? `${project.sample_rate} Hz` : "Sample rate n/a"}
+            {formatDuration(project.duration_seconds)}
           </span>
+          {informationDensity !== "minimal" ? (
+            <span className="stat-chip" role="listitem">
+              {project.channels ? `${project.channels} ch` : "Channels n/a"}
+            </span>
+          ) : null}
+          {informationDensity === "detailed" ? (
+            <span className="stat-chip" role="listitem">
+              {project.sample_rate ? `${project.sample_rate} Hz` : "Sample rate n/a"}
+            </span>
+          ) : null}
+        </div>
+
+        {metadataRevealMode !== "expand" ? (
+          <p className="artifact-meta" title={project.source_path}>
+            Hover for source path
+          </p>
         ) : null}
-      </div>
+      </Link>
 
       {metadataRevealMode === "expand" ? (
         <details className="card-details">
@@ -74,11 +86,7 @@ function ProjectCard({ project }: { project: ProjectSchema }) {
             </div>
           </dl>
         </details>
-      ) : (
-        <p className="artifact-meta" title={project.source_path}>
-          Hover for source path
-        </p>
-      )}
+      ) : null}
     </article>
   );
 }

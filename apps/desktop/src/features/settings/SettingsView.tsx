@@ -41,11 +41,13 @@ export function SettingsView() {
     layoutDensity,
     helperTextVisible,
     defaultInspectorOpen,
+    defaultSourcesRailCollapsed,
     metadataRevealMode,
     setInformationDensity,
     setLayoutDensity,
     setHelperTextVisible,
     setDefaultInspectorOpen,
+    setDefaultSourcesRailCollapsed,
     setMetadataRevealMode,
     resetAppearancePreferences,
     resetVisibilityPreferences,
@@ -192,6 +194,16 @@ export function SettingsView() {
               Open inspector by default
             </label>
 
+            <label className="checkbox">
+              <input
+                aria-label="Collapse sources rail by default"
+                checked={defaultSourcesRailCollapsed}
+                onChange={(event) => setDefaultSourcesRailCollapsed(event.target.checked)}
+                type="checkbox"
+              />
+              Collapse sources rail by default
+            </label>
+
             <label>
               Metadata Reveal
               <select
@@ -213,6 +225,10 @@ export function SettingsView() {
             <div>
               <dt>Inspector Default</dt>
               <dd>{defaultInspectorOpen ? "Open" : "Closed"}</dd>
+            </div>
+            <div>
+              <dt>Sources Rail Default</dt>
+              <dd>{defaultSourcesRailCollapsed ? "Collapsed" : "Expanded"}</dd>
             </div>
             <div>
               <dt>Metadata Reveal</dt>

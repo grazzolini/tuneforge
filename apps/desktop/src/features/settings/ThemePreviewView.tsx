@@ -184,7 +184,7 @@ function ThemeCanvas({ mode }: { mode: ThemeMode }) {
                 <div className="theme-preview__card-stack">
                   <article className="theme-preview__card">
                     <div className="theme-preview__card-meta">
-                      <span className="pill">Updated Apr 20</span>
+                      <span className="pill">Apr 20, 10:16</span>
                       <span className="pill">4:12</span>
                     </div>
                     <strong>Reference mix</strong>

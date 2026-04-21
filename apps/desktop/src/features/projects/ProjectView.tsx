@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { confirm, save } from "@tauri-apps/plugin-dialog";
 import { api, type ArtifactSchema, type ChordSegmentSchema, type JobSchema } from "../../lib/api";
+import { formatLocalDateTime } from "../../lib/datetime";
 import { usePreferences } from "../../lib/preferences";
 import { usePlayback } from "./playback-context";
 import {
@@ -85,12 +86,12 @@ function formatSemitoneShift(semitones: number) {
 }
 
 function formatArtifactTimestamp(createdAt: string) {
-  return new Intl.DateTimeFormat(undefined, {
+  return formatLocalDateTime(createdAt, {
     month: "short",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
-  }).format(new Date(createdAt));
+  });
 }
 
 function formatPlaybackClock(totalSeconds: number) {
@@ -107,6 +108,118 @@ function formatPlaybackClock(totalSeconds: number) {
   }
 
   return `${minutes}:${remainder.toString().padStart(2, "0")}`;
+}
+
+type SeekDirection = "backward" | "forward";
+
+function MetallicGlyphDefs({ gradientId }: { gradientId: string }) {
+  return (
+    <defs>
+      <linearGradient id={gradientId} x1="8%" y1="8%" x2="92%" y2="92%">
+        <stop offset="0%" stopColor="#FFFBEB" />
+        <stop offset="20%" stopColor="#F8FAFC" />
+        <stop offset="48%" stopColor="#CBD5E1" />
+        <stop offset="76%" stopColor="#64748B" />
+        <stop offset="100%" stopColor="#F8FAFC" />
+      </linearGradient>
+    </defs>
+  );
+}
+
+function PlayPauseGlyph({ isPlaying }: { isPlaying: boolean }) {
+  const gradientId = useId();
+  const fill = `url(#${gradientId})`;
+
+  return (
+    <svg
+      aria-hidden="true"
+      className="transport__icon transport__icon--playpause"
+      focusable="false"
+      viewBox="0 0 40 40"
+    >
+      <MetallicGlyphDefs gradientId={gradientId} />
+      {isPlaying ? (
+        <>
+          <rect
+            fill={fill}
+            height="19"
+            rx="2.6"
+            stroke="rgba(255, 255, 255, 0.5)"
+            strokeWidth="1"
+            width="6.5"
+            x="10.75"
+            y="10.5"
+          />
+          <rect
+            fill={fill}
+            height="19"
+            rx="2.6"
+            stroke="rgba(255, 255, 255, 0.5)"
+            strokeWidth="1"
+            width="6.5"
+            x="22.75"
+            y="10.5"
+          />
+        </>
+      ) : (
+        <path
+          d="M13 9.75L29.5 20L13 30.25Z"
+          fill={fill}
+          stroke="rgba(255, 255, 255, 0.55)"
+          strokeLinejoin="round"
+          strokeWidth="1"
+        />
+      )}
+    </svg>
+  );
+}
+
+function StopGlyph() {
+  const gradientId = useId();
+  const fill = `url(#${gradientId})`;
+
+  return (
+    <svg
+      aria-hidden="true"
+      className="transport__icon transport__icon--stop"
+      focusable="false"
+      viewBox="0 0 40 40"
+    >
+      <MetallicGlyphDefs gradientId={gradientId} />
+      <rect
+        className="transport__stop-block"
+        fill={fill}
+        height="19"
+        rx="4.5"
+        stroke="rgba(255, 255, 255, 0.5)"
+        strokeWidth="1"
+        width="19"
+        x="10.5"
+        y="10.5"
+      />
+    </svg>
+  );
+}
+
+function SeekGlyph({ animate = false, direction }: { animate?: boolean; direction: SeekDirection }) {
+  const animationClass = animate ? ` transport__seek-glyph--animate-${direction}` : "";
+  const triangleClass = `transport__seek-triangle transport__seek-triangle--${direction}`;
+
+  return (
+    <span
+      aria-hidden="true"
+      className={`transport__icon transport__icon--seek transport__seek-glyph${animationClass}`}
+    >
+      <span className="transport__seek-slot">
+        <span className={triangleClass} />
+        <span className={`${triangleClass} transport__seek-triangle--overlay`} />
+      </span>
+      <span className="transport__seek-slot">
+        <span className={triangleClass} />
+        <span className={`${triangleClass} transport__seek-triangle--overlay`} />
+      </span>
+    </span>
+  );
 }
 
 function artifactSummary(artifact: ArtifactSchema) {
@@ -311,10 +424,12 @@ export function ProjectView() {
     registerProjectSession,
     seekBy,
     seekTo,
+    stopPlayback,
     togglePlayback,
   } = usePlayback();
   const {
     defaultInspectorOpen,
+    defaultSourcesRailCollapsed,
     helperTextVisible,
     informationDensity,
     metadataRevealMode,
@@ -328,6 +443,10 @@ export function ProjectView() {
   const [referenceHz, setReferenceHz] = useState("440");
   const [centsOffset, setCentsOffset] = useState("0");
   const [manualSourceKey, setManualSourceKey] = useState<MusicalKey | null>(null);
+  const [seekAnimationRevision, setSeekAnimationRevision] = useState<Record<SeekDirection, number>>({
+    backward: 0,
+    forward: 0,
+  });
   const [targetKeyState, setTargetKeyState] = useState<MusicalKey | null>(null);
   const [targetDirty, setTargetDirty] = useState(false);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
@@ -336,6 +455,7 @@ export function ProjectView() {
   const [isRenaming, setIsRenaming] = useState(false);
   const [draftName, setDraftName] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(defaultInspectorOpen);
+  const [sourcesRailCollapsed, setSourcesRailCollapsed] = useState(defaultSourcesRailCollapsed);
   const [stemControls, setStemControls] = useState<Record<string, StemControlState>>({});
   const [dismissedStemJobIds, setDismissedStemJobIds] = useState<string[]>([]);
   const showSupportingCopy = helperTextVisible && informationDensity !== "minimal";
@@ -635,7 +755,6 @@ export function ProjectView() {
       ? stemJob.error_message
       : null;
   const visibleJobs = projectJobs;
-  const recentJobs = projectJobs.slice(0, 3);
   const controlSummary = hasTransformChange ? formatKey(targetKey) : "Original key";
   const tuningSummary = formatRetuneSummary(retuneMode, referenceHz, centsOffset);
   const mixStatus = isStemPlayback
@@ -660,11 +779,6 @@ export function ProjectView() {
   const selectedArtifactTimestamp = selectedPlaybackArtifact
     ? formatArtifactTimestamp(selectedPlaybackArtifact.created_at)
     : "";
-  const playbackClockSummary = `${formatPlaybackClock(
-    playbackTimeSeconds,
-  )} / ${formatPlaybackClock(
-    playbackDurationSeconds || projectQuery.data?.duration_seconds || 0,
-  )}`;
   const chordTransposeSemitones = artifactTransposeSemitones(
     selectedPlaybackArtifact,
     selectableArtifacts,
@@ -720,7 +834,38 @@ export function ProjectView() {
   }
 
   function handleSeek(secondsDelta: number) {
+    const direction: SeekDirection = secondsDelta < 0 ? "backward" : "forward";
+    setSeekAnimationRevision((current) => ({
+      ...current,
+      [direction]: current[direction] + 1,
+    }));
     seekBy(secondsDelta);
+  }
+
+  async function handleStemAction() {
+    if (!selectedPrimaryArtifactId) {
+      return;
+    }
+
+    if (hasVisibleStems) {
+      const stemTargetLabel = selectedPrimaryArtifact
+        ? artifactLabel(selectedPrimaryArtifact)
+        : "selected audio";
+      const approved = await confirm(
+        `Rebuild stems for ${stemTargetLabel}? Existing stems will be replaced. Demucs selects GPU automatically when available, otherwise it falls back to CPU and may take longer.`,
+        {
+          title: "Rebuild stems",
+          kind: "warning",
+          okLabel: "Rebuild",
+          cancelLabel: "Cancel",
+        },
+      );
+      if (!approved) {
+        return;
+      }
+    }
+
+    stemMutation.mutate();
   }
 
   function toggleStemControl(
@@ -798,6 +943,10 @@ export function ProjectView() {
   useEffect(() => {
     setInspectorOpen(defaultInspectorOpen);
   }, [defaultInspectorOpen]);
+
+  useEffect(() => {
+    setSourcesRailCollapsed(defaultSourcesRailCollapsed);
+  }, [defaultSourcesRailCollapsed]);
 
   useEffect(() => {
     const storedPlaybackState = readProjectPlaybackState(projectId);
@@ -950,6 +1099,11 @@ export function ProjectView() {
   const stageSummary = isStemPlayback
     ? `${activeStemCount} of ${visibleStemArtifacts.length} stems audible`
     : selectedArtifactSummary || currentSourceSummary;
+  const sourcesRailSummary = [
+    { label: "Src", value: sourceArtifact ? "1" : "0" },
+    { label: "Mix", value: `${previewArtifacts.length}` },
+    { label: "Stem", value: `${stemArtifacts.length}` },
+  ];
 
   useEffect(() => {
     if (hydratedProjectId !== projectId || !projectId || !selectedPlaybackArtifact) {
@@ -1055,156 +1209,193 @@ export function ProjectView() {
         </div>
       </div>
 
-      <div className={`project-workbench${inspectorOpen ? "" : " project-workbench--wide"}`}>
-        <aside className="stack">
-          <div className="panel rail-panel">
-            <div className="rail-section">
-              <div className="rail-section__header">
-                <div>
+      <div
+        className={`project-workbench${inspectorOpen ? "" : " project-workbench--wide"}${
+          sourcesRailCollapsed ? " project-workbench--sources-collapsed" : ""
+        }`}
+      >
+        <aside className={`stack sources-rail${sourcesRailCollapsed ? " sources-rail--collapsed" : ""}`}>
+          <div className={`panel rail-panel${sourcesRailCollapsed ? " rail-panel--collapsed" : ""}`}>
+            <div className="rail-panel__top">
+              {sourcesRailCollapsed ? <span className="rail-panel__collapsed-spacer" aria-hidden="true" /> : (
+                <div className="rail-panel__identity">
                   <h2>Sources</h2>
                   {showSupportingCopy ? (
-                    <p className="subpanel__copy">Jump between the raw track and saved mixes.</p>
+                    <p className="subpanel__copy">Jump between the raw track, saved mixes, and stems.</p>
                   ) : null}
                 </div>
-              </div>
-              <div
-                className="artifact-selector artifact-selector--stacked"
-                role="group"
-                aria-label="Source and mix list"
+              )}
+              <button
+                aria-label={sourcesRailCollapsed ? "Expand sources rail" : "Collapse sources rail"}
+                className={`button button--ghost button--small rail-panel__toggle${
+                  sourcesRailCollapsed ? " rail-panel__toggle--collapsed" : ""
+                }`}
+                onClick={() => setSourcesRailCollapsed((current) => !current)}
+                type="button"
               >
-                {sourceArtifact ? (
-                  <button
-                    className={`artifact-pill${
-                      selectedArtifactId === sourceArtifact.id ? " artifact-pill--active" : ""
-                    }`}
-                    onClick={() => handleSelectPrimaryArtifact(sourceArtifact)}
-                    type="button"
-                  >
-                    <span className="artifact-pill__title">Source Track</span>
-                    <span className="artifact-pill__meta">
-                      {artifactSummary(sourceArtifact)}
-                    </span>
-                    {informationDensity === "detailed" ? (
-                      <span className="artifact-pill__meta">
-                        {fileNameFromPath(sourceArtifact.path)}
-                      </span>
-                    ) : null}
-                  </button>
-                ) : (
-                  <p className="artifact-meta">No source track available.</p>
-                )}
-              </div>
+                <span aria-hidden="true" className="rail-panel__toggle-icon">
+                  <span />
+                  <span />
+                  <span />
+                </span>
+                {sourcesRailCollapsed ? null : <span>Hide</span>}
+              </button>
             </div>
 
-            <div className="rail-section">
-              <div className="rail-section__header">
-                <div>
-                  <h3>Saved Mixes</h3>
-                  {showSupportingCopy ? (
-                    <p className="subpanel__copy">Practice variants stay one click away.</p>
-                  ) : null}
-                </div>
+            {sourcesRailCollapsed ? (
+              <div className="rail-panel__collapsed">
+                {sourcesRailSummary.map((item) => (
+                  <div key={item.label} className="rail-summary-chip">
+                    <span>{item.label}</span>
+                    <strong>{item.value}</strong>
+                  </div>
+                ))}
               </div>
-              {previewArtifacts.length ? (
-                <div
-                  className="artifact-selector artifact-selector--stacked"
-                  role="group"
-                  aria-label="Saved mix list"
-                >
-                  {previewArtifacts.map((artifact) => (
-                    <button
-                      key={artifact.id}
-                      className={`artifact-pill${
-                        selectedArtifactId === artifact.id ? " artifact-pill--active" : ""
-                      }`}
-                      onClick={() => handleSelectPrimaryArtifact(artifact)}
-                      type="button"
-                    >
-                      <span className="artifact-pill__title">{artifactLabel(artifact)}</span>
-                      <span className="artifact-pill__meta">
-                        {artifactSummary(artifact) || formatArtifactTimestamp(artifact.created_at)}
-                      </span>
-                      {informationDensity === "detailed" ? (
+            ) : (
+              <>
+                <div className="rail-section">
+                  <div
+                    className="artifact-selector artifact-selector--stacked"
+                    role="group"
+                    aria-label="Source and mix list"
+                  >
+                    {sourceArtifact ? (
+                      <button
+                        className={`artifact-pill${
+                          selectedArtifactId === sourceArtifact.id ? " artifact-pill--active" : ""
+                        }`}
+                        onClick={() => handleSelectPrimaryArtifact(sourceArtifact)}
+                        type="button"
+                      >
+                        <span className="artifact-pill__title">Source Track</span>
                         <span className="artifact-pill__meta">
-                          {formatArtifactTimestamp(artifact.created_at)}
+                          {artifactSummary(sourceArtifact)}
                         </span>
-                      ) : null}
-                    </button>
-                  ))}
+                        {informationDensity === "detailed" ? (
+                          <span className="artifact-pill__meta">
+                            {fileNameFromPath(sourceArtifact.path)}
+                          </span>
+                        ) : null}
+                      </button>
+                    ) : (
+                      <p className="artifact-meta">No source track available.</p>
+                    )}
+                  </div>
                 </div>
-              ) : (
-                <p className="artifact-meta">No saved mixes yet. Build one from inspector controls.</p>
-              )}
-            </div>
 
-            <div className="rail-section">
-              <div className="rail-section__header">
-                <div>
-                  <h3>Stems</h3>
-                  {showSupportingCopy ? (
-                    <p className="subpanel__copy">Stem playback stays scoped to the selected source or mix.</p>
-                  ) : null}
+                <div className="rail-section">
+                  <div className="rail-section__header">
+                    <div>
+                      <h3>Saved Mixes</h3>
+                      {showSupportingCopy ? (
+                        <p className="subpanel__copy">Practice variants stay one click away.</p>
+                      ) : null}
+                    </div>
+                  </div>
+                  {previewArtifacts.length ? (
+                    <div
+                      className="artifact-selector artifact-selector--stacked"
+                      role="group"
+                      aria-label="Saved mix list"
+                    >
+                      {previewArtifacts.map((artifact) => (
+                        <button
+                          key={artifact.id}
+                          className={`artifact-pill${
+                            selectedArtifactId === artifact.id ? " artifact-pill--active" : ""
+                          }`}
+                          onClick={() => handleSelectPrimaryArtifact(artifact)}
+                          type="button"
+                        >
+                          <span className="artifact-pill__title">{artifactLabel(artifact)}</span>
+                          <span className="artifact-pill__meta">
+                            {artifactSummary(artifact) || formatArtifactTimestamp(artifact.created_at)}
+                          </span>
+                          {informationDensity === "detailed" ? (
+                            <span className="artifact-pill__meta">
+                              {formatArtifactTimestamp(artifact.created_at)}
+                            </span>
+                          ) : null}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="artifact-meta">No saved mixes yet. Build one from inspector controls.</p>
+                  )}
                 </div>
-                <button
-                  className="button button--small"
-                  onClick={() => stemMutation.mutate()}
-                  disabled={stemMutation.isPending || isStemRunning || !selectedPrimaryArtifactId}
-                  type="button"
-                >
-                  {stemMutation.isPending || isStemRunning
-                    ? "Generating..."
-                    : hasVisibleStems
-                      ? "Refresh Stems"
-                      : "Generate Stems"}
-                </button>
-              </div>
-              {visibleStemArtifacts.length ? (
-                <div
-                  className="artifact-selector artifact-selector--stacked"
-                  role="group"
-                  aria-label="Stem track list"
-                >
-                  {visibleStemArtifacts.map((artifact) => (
+
+                <div className="rail-section">
+                  <div className="rail-section__header">
+                    <div>
+                      <h3>Stems</h3>
+                      {showSupportingCopy ? (
+                        <p className="subpanel__copy">Stem playback stays scoped to the selected source or mix.</p>
+                      ) : null}
+                    </div>
                     <button
-                      key={artifact.id}
-                      className={`artifact-pill${
-                        selectedArtifactId === artifact.id ? " artifact-pill--active" : ""
-                      }`}
-                      onClick={() => handleSelectStemArtifact(artifact)}
+                      className="button button--small"
+                      onClick={() => void handleStemAction()}
+                      disabled={stemMutation.isPending || isStemRunning || !selectedPrimaryArtifactId}
                       type="button"
                     >
-                      <span className="artifact-pill__title">{artifactLabel(artifact)}</span>
-                      <span className="artifact-pill__meta">{stemOutputLabel(artifact.id)}</span>
-                      {informationDensity !== "minimal" ? (
-                        <span className="artifact-pill__meta">{artifactSummary(artifact)}</span>
-                      ) : null}
+                      {stemMutation.isPending || isStemRunning
+                        ? hasVisibleStems
+                          ? "Rebuilding..."
+                          : "Generating..."
+                        : hasVisibleStems
+                          ? "Rebuild Stems"
+                          : "Generate Stems"}
                     </button>
-                  ))}
+                  </div>
+                  {visibleStemArtifacts.length ? (
+                    <div
+                      className="artifact-selector artifact-selector--stacked"
+                      role="group"
+                      aria-label="Stem track list"
+                    >
+                      {visibleStemArtifacts.map((artifact) => (
+                        <button
+                          key={artifact.id}
+                          className={`artifact-pill${
+                            selectedArtifactId === artifact.id ? " artifact-pill--active" : ""
+                          }`}
+                          onClick={() => handleSelectStemArtifact(artifact)}
+                          type="button"
+                        >
+                          <span className="artifact-pill__title">{artifactLabel(artifact)}</span>
+                          <span className="artifact-pill__meta">{stemOutputLabel(artifact.id)}</span>
+                          {informationDensity !== "minimal" ? (
+                            <span className="artifact-pill__meta">{artifactSummary(artifact)}</span>
+                          ) : null}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="artifact-meta">
+                      {selectedPrimaryArtifactId
+                        ? "No stems yet for selected audio."
+                        : "Select source audio or a saved mix first."}
+                    </p>
+                  )}
+                  {stemErrorMessage && stemJob ? (
+                    <div className="button-row" role="group" aria-label="Stem error">
+                      <span className="inline-error">{stemErrorMessage}</span>
+                      <button
+                        className="button button--ghost button--small"
+                        onClick={() =>
+                          setDismissedStemJobIds((current) =>
+                            current.includes(stemJob.id) ? current : [...current, stemJob.id],
+                          )
+                        }
+                        type="button"
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
-              ) : (
-                <p className="artifact-meta">
-                  {selectedPrimaryArtifactId
-                    ? "No stems yet for selected audio."
-                    : "Select source audio or a saved mix first."}
-                </p>
-              )}
-              {stemErrorMessage && stemJob ? (
-                <div className="button-row" role="group" aria-label="Stem error">
-                  <span className="inline-error">{stemErrorMessage}</span>
-                  <button
-                    className="button button--ghost button--small"
-                    onClick={() =>
-                      setDismissedStemJobIds((current) =>
-                        current.includes(stemJob.id) ? current : [...current, stemJob.id],
-                      )
-                    }
-                    type="button"
-                  >
-                    Dismiss
-                  </button>
-                </div>
-              ) : null}
-            </div>
+              </>
+            )}
           </div>
         </aside>
 
@@ -1244,26 +1435,45 @@ export function ProjectView() {
               <div className="transport">
                 <div className="transport__controls">
                   <button
-                    className="button button--small"
+                    aria-label="Seek back 10 seconds"
+                    className="button transport__button transport__button--seek"
                     onClick={() => handleSeek(-10)}
                     type="button"
                   >
-                    -10s
+                    <SeekGlyph
+                      key={`backward-${seekAnimationRevision.backward}`}
+                      animate={seekAnimationRevision.backward > 0}
+                      direction="backward"
+                    />
                   </button>
                   <button
-                    className="button button--primary transport__play"
                     aria-label={isPlaying ? "Pause playback" : "Play playback"}
+                    aria-pressed={isPlaying}
+                    className="button transport__button transport__button--play"
                     onClick={() => void togglePlayback()}
                     type="button"
                   >
-                    {isPlaying ? "Pause" : "Play"}
+                    <PlayPauseGlyph isPlaying={isPlaying} />
                   </button>
                   <button
-                    className="button button--small"
+                    aria-label="Stop playback"
+                    className="button transport__button transport__button--stop"
+                    onClick={stopPlayback}
+                    type="button"
+                  >
+                    <StopGlyph />
+                  </button>
+                  <button
+                    aria-label="Seek forward 10 seconds"
+                    className="button transport__button transport__button--seek"
                     onClick={() => handleSeek(10)}
                     type="button"
                   >
-                    +10s
+                    <SeekGlyph
+                      key={`forward-${seekAnimationRevision.forward}`}
+                      animate={seekAnimationRevision.forward > 0}
+                      direction="forward"
+                    />
                   </button>
                 </div>
 
@@ -1464,28 +1674,6 @@ export function ProjectView() {
                 </div>
               </div>
             ) : null}
-
-            <div className="playback-stage__footer">
-              <div>
-                <span className="metric-label">Playback</span>
-                <strong>{playbackClockSummary}</strong>
-              </div>
-              <div role="group" aria-label="Recent processing summary">
-                <span className="metric-label">Recent Processing</span>
-                {recentJobs.length ? (
-                  <ul className="session-jobs">
-                    {recentJobs.map((job) => (
-                      <li key={job.id}>
-                        <span>{job.type}</span>
-                        <small>{job.status}</small>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="artifact-meta">No processing jobs yet.</p>
-                )}
-              </div>
-            </div>
           </div>
 
           <div className="panel">

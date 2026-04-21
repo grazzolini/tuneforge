@@ -493,6 +493,16 @@ vi.mock("./lib/api", async (importOriginal) => {
 });
 
 function renderApp(initialEntries: string[]) {
+  if (
+    initialEntries.some((entry) => entry.startsWith("/projects/")) &&
+    !window.localStorage.getItem("tuneforge.ui-preferences")
+  ) {
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultSourcesRailCollapsed: false }),
+    );
+  }
+
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -660,6 +670,50 @@ describe("Desktop app flows", () => {
     expect(screen.queryByText("Bass Drill")).not.toBeInTheDocument();
   });
 
+  it("renders project cards with local timestamps and without filename subtitles", async () => {
+    const updatedAt = "2026-04-21T02:59:00.000000";
+
+    setProjects([
+      {
+        id: "proj_1",
+        display_name: "Birds",
+        source_path: "/tmp/Birds [Sa-dxgZt4rY].webm",
+        imported_path: "/tmp/projects/birds.webm",
+        duration_seconds: 219,
+        sample_rate: 44100,
+        channels: 2,
+        created_at: updatedAt,
+        updated_at: updatedAt,
+      },
+    ]);
+
+    renderApp(["/"]);
+
+    const localizedUpdatedAt = new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(Date.UTC(2026, 3, 21, 2, 59, 0, 0)));
+
+    const projectCard = (await screen.findByRole("heading", { name: "Birds", level: 2 })).closest(
+      "article",
+    );
+    expect(projectCard).not.toBeNull();
+    const timestamp = within(projectCard as HTMLElement).getByText(localizedUpdatedAt);
+    expect(timestamp).toBeInTheDocument();
+    expect(within(projectCard as HTMLElement).queryByText(/Updated/i)).not.toBeInTheDocument();
+    expect(within(projectCard as HTMLElement).queryByText("Open project")).not.toBeInTheDocument();
+
+    const timeElement = timestamp.closest("time");
+    expect(timeElement).toHaveAttribute("dateTime", "2026-04-21T02:59:00.000Z");
+
+    const openLink = within(projectCard as HTMLElement).getByRole("link", {
+      name: "Open Birds project",
+    });
+    expect(within(openLink).queryByText(/\[Sa-dxgZt4rY\]\.webm/i)).not.toBeInTheDocument();
+  });
+
   it("imports track from library and opens project", async () => {
     const user = userEvent.setup();
     mockOpen.mockResolvedValue("/tmp/new-song.mp4");
@@ -769,12 +823,12 @@ describe("Desktop app flows", () => {
 
     await user.click(screen.getAllByRole("link", { name: "Library" })[0]);
     expect(await screen.findByText("Background Playback")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Stop" }));
+    await user.click(screen.getByRole("button", { name: "Stop background playback" }));
 
     const demoProjectCard = screen.getByText("Demo Song").closest("article");
     expect(demoProjectCard).not.toBeNull();
     await user.click(
-      within(demoProjectCard as HTMLElement).getByRole("link", { name: /Open project/i }),
+      within(demoProjectCard as HTMLElement).getByRole("link", { name: "Open Demo Song project" }),
     );
 
     expect(await screen.findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
@@ -851,7 +905,9 @@ describe("Desktop app flows", () => {
     const secondProjectCard = screen.getByText("Bass Drill").closest("article");
     expect(secondProjectCard).not.toBeNull();
     await user.click(
-      within(secondProjectCard as HTMLElement).getByRole("link", { name: /Open project/i }),
+      within(secondProjectCard as HTMLElement).getByRole("link", {
+        name: "Open Bass Drill project",
+      }),
     );
 
     expect(await screen.findByRole("heading", { name: "Bass Drill" })).toBeInTheDocument();
@@ -860,7 +916,7 @@ describe("Desktop app flows", () => {
     const demoProjectCard = screen.getByText("Demo Song").closest("article");
     expect(demoProjectCard).not.toBeNull();
     await user.click(
-      within(demoProjectCard as HTMLElement).getByRole("link", { name: /Open project/i }),
+      within(demoProjectCard as HTMLElement).getByRole("link", { name: "Open Demo Song project" }),
     );
 
     expect(await screen.findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
@@ -918,6 +974,29 @@ describe("Desktop app flows", () => {
     await waitFor(() => expect(previewAudio.currentTime).toBeCloseTo(47.253, 3));
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
     expect(screen.getByLabelText("Playback position")).toHaveAttribute("step", "0.001");
+  });
+
+  it("stops playback and rewinds transport to start", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    sourceAudio.currentTime = 32.417;
+    fireEvent.timeUpdate(sourceAudio);
+
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Playback position")).toHaveValue("32.417");
+
+    await user.click(screen.getByRole("button", { name: "Stop playback" }));
+
+    expect(sourceAudio.currentTime).toBe(0);
+    expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Playback position")).toHaveValue("0");
   });
 
   it("keeps playback position when a newly created mix becomes active", async () => {
@@ -1248,7 +1327,7 @@ describe("Desktop app flows", () => {
     );
     expect(demoProjectCard).not.toBeNull();
     await user.click(
-      within(demoProjectCard as HTMLElement).getByRole("link", { name: /Open project/i }),
+      within(demoProjectCard as HTMLElement).getByRole("link", { name: "Open Demo Song project" }),
     );
 
     expect(await screen.findByRole("heading", { name: "Practice Mix" })).toBeInTheDocument();
@@ -1315,14 +1394,82 @@ describe("Desktop app flows", () => {
     expect(screen.getByLabelText("Layout Density")).toHaveValue("compact");
     expect(screen.getByLabelText("Show helper text by default")).not.toBeChecked();
     expect(screen.getByLabelText("Open inspector by default")).not.toBeChecked();
+    expect(screen.getByLabelText("Collapse sources rail by default")).toBeChecked();
     expect(window.localStorage.getItem("tuneforge.theme-preference")).toBe("system");
     expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}")).toMatchObject({
       informationDensity: "minimal",
       layoutDensity: "compact",
       helperTextVisible: false,
       defaultInspectorOpen: false,
+      defaultSourcesRailCollapsed: true,
       metadataRevealMode: "expand",
     });
+  });
+
+  it("starts with the sources rail collapsed by default and expands on demand", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultSourcesRailCollapsed: true }),
+    );
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Expand sources rail" })).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Source and mix list" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Expand sources rail" }));
+
+    expect(screen.getByRole("button", { name: "Collapse sources rail" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Source and mix list" })).toBeInTheDocument();
+  });
+
+  it("counts total stems across source audio and saved mixes in the collapsed sources rail", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+
+    const savedMixList = screen.getByRole("group", { name: "Saved mix list" });
+    await user.click(within(savedMixList).getByRole("button", { name: /Practice Mix/i }));
+    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+
+    await user.click(screen.getByRole("button", { name: "Collapse sources rail" }));
+
+    const stemSummaryChip = screen.getByText("Stem").closest(".rail-summary-chip");
+    expect(stemSummaryChip).not.toBeNull();
+    expect(within(stemSummaryChip as HTMLElement).getByText("4")).toBeInTheDocument();
+  });
+
+  it("asks for confirmation before rebuilding existing stems", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    expect(mockCreateStems).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "Rebuild Stems" }));
+
+    expect(mockConfirm).toHaveBeenCalledWith(
+      expect.stringContaining("Demucs selects GPU automatically when available"),
+      expect.objectContaining({
+        title: "Rebuild stems",
+        kind: "warning",
+        okLabel: "Rebuild",
+      }),
+    );
+    expect(mockCreateStems).toHaveBeenCalledTimes(2);
+    expect(mockCreateStems).toHaveBeenLastCalledWith(
+      "proj_123",
+      expect.objectContaining({
+        force: true,
+        source_artifact_id: "art_source",
+      }),
+    );
   });
 
   it("persists theme and UI visibility preferences", async () => {
@@ -1337,6 +1484,7 @@ describe("Desktop app flows", () => {
     await user.selectOptions(screen.getByLabelText("Layout Density"), "comfortable");
     await user.click(screen.getByLabelText("Show helper text by default"));
     await user.click(screen.getByLabelText("Open inspector by default"));
+    await user.click(screen.getByLabelText("Collapse sources rail by default"));
     await user.selectOptions(screen.getByLabelText("Metadata Reveal"), "hover");
 
     expect(document.documentElement).toHaveAttribute("data-theme", "light");
@@ -1348,6 +1496,7 @@ describe("Desktop app flows", () => {
       layoutDensity: "comfortable",
       helperTextVisible: true,
       defaultInspectorOpen: true,
+      defaultSourcesRailCollapsed: false,
       metadataRevealMode: "hover",
     });
   });
@@ -1363,6 +1512,7 @@ describe("Desktop app flows", () => {
     await user.selectOptions(screen.getByLabelText("Layout Density"), "comfortable");
     await user.click(screen.getByLabelText("Show helper text by default"));
     await user.click(screen.getByLabelText("Open inspector by default"));
+    await user.click(screen.getByLabelText("Collapse sources rail by default"));
     await user.selectOptions(screen.getByLabelText("Metadata Reveal"), "hover");
 
     await user.click(screen.getByRole("button", { name: "Reset Appearance" }));
@@ -1371,11 +1521,13 @@ describe("Desktop app flows", () => {
     expect(screen.getByLabelText("Layout Density")).toHaveValue("compact");
     expect(screen.getByLabelText("Show helper text by default")).toBeChecked();
     expect(screen.getByLabelText("Open inspector by default")).toBeChecked();
+    expect(screen.getByLabelText("Collapse sources rail by default")).not.toBeChecked();
     expect(screen.getByLabelText("Metadata Reveal")).toHaveValue("hover");
 
     await user.click(screen.getByRole("button", { name: "Reset Visibility" }));
     expect(screen.getByLabelText("Show helper text by default")).not.toBeChecked();
     expect(screen.getByLabelText("Open inspector by default")).not.toBeChecked();
+    expect(screen.getByLabelText("Collapse sources rail by default")).toBeChecked();
     expect(screen.getByLabelText("Metadata Reveal")).toHaveValue("expand");
 
     await user.selectOptions(screen.getByLabelText("Theme"), "dark");
@@ -1387,6 +1539,7 @@ describe("Desktop app flows", () => {
     expect(screen.getByLabelText("Layout Density")).toHaveValue("compact");
     expect(screen.getByLabelText("Show helper text by default")).not.toBeChecked();
     expect(screen.getByLabelText("Open inspector by default")).not.toBeChecked();
+    expect(screen.getByLabelText("Collapse sources rail by default")).toBeChecked();
     expect(screen.getByLabelText("Metadata Reveal")).toHaveValue("expand");
   });
 
@@ -1403,16 +1556,37 @@ describe("Desktop app flows", () => {
 
     expect(await screen.findByRole("heading", { name: "Playback Surface" })).toBeInTheDocument();
     expect(screen.getByText("Background Playback")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pause background playback" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Reset Appearance" }));
-    expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pause background playback" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Pause" }));
+    await user.click(screen.getByRole("button", { name: "Pause background playback" }));
     expect(screen.getByText("Background Playback")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Play background playback" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Stop" }));
+    await user.click(screen.getByRole("button", { name: "Stop background playback" }));
+    expect(screen.queryByText("Background Playback")).not.toBeInTheDocument();
+  });
+
+  it("reopens the active project from background playback without stopping playback", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await user.click(screen.getByRole("link", { name: "Settings" }));
+
+    expect(await screen.findByRole("heading", { name: "Playback Surface" })).toBeInTheDocument();
+    expect(screen.getByText("Background Playback")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("link", { name: "Open Demo Song project" }));
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
     expect(screen.queryByText("Background Playback")).not.toBeInTheDocument();
   });
 
@@ -1456,7 +1630,9 @@ describe("Desktop app flows", () => {
     const secondProjectCard = screen.getByText("Bass Drill").closest("article");
     expect(secondProjectCard).not.toBeNull();
     await user.click(
-      within(secondProjectCard as HTMLElement).getByRole("link", { name: /Open project/i }),
+      within(secondProjectCard as HTMLElement).getByRole("link", {
+        name: "Open Bass Drill project",
+      }),
     );
 
     expect(await screen.findByRole("heading", { name: "Bass Drill" })).toBeInTheDocument();

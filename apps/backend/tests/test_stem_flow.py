@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import soundfile as sf
+from sqlalchemy.exc import IntegrityError
 
+from app.db import SessionLocal
 from app.errors import AppError
+from app.services.artifacts import register_artifact
 
 from .conftest import wait_for_job
 
@@ -32,7 +36,7 @@ def test_stem_generation_creates_vocal_and_instrumental_artifacts(client, sample
         sf.write(instrumental_path, signal * 0.3, sample_rate)
         if on_progress:
             on_progress(98)
-        return {"engine": "demucs", "model": model, "device": device}
+        return {"engine": "demucs", "model": model, "requested_device": device, "device": "cpu"}
 
     monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
 
@@ -47,6 +51,8 @@ def test_stem_generation_creates_vocal_and_instrumental_artifacts(client, sample
     ).json()["job"]
     final_job = wait_for_job(client, stem_job["id"])
     assert final_job["status"] == "completed"
+    assert final_job["runtime_device"] == "cpu"
+    assert final_job["duration_seconds"] is not None
 
     artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
     source_artifact = next(artifact for artifact in artifacts if artifact["type"] == "source_audio")
@@ -79,6 +85,26 @@ def test_stem_generation_creates_vocal_and_instrumental_artifacts(client, sample
     assert len([artifact for artifact in cached_artifacts if artifact["type"] == "vocal_stem"]) == 1
     assert len([artifact for artifact in cached_artifacts if artifact["type"] == "instrumental_stem"]) == 1
     assert seen_sources == [source_artifact["path"]]
+
+    original_vocal_id = vocal_artifact["id"]
+    original_instrumental_id = instrumental_artifact["id"]
+
+    rebuild_job = client.post(
+        f"/api/v1/projects/{project['id']}/stems",
+        json={"mode": "two_stem", "output_format": "wav", "force": True},
+    ).json()["job"]
+    rebuilt_job = wait_for_job(client, rebuild_job["id"])
+    assert rebuilt_job["status"] == "completed"
+    assert rebuilt_job["runtime_device"] == "cpu"
+
+    rebuilt_artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
+    rebuilt_vocals = [artifact for artifact in rebuilt_artifacts if artifact["type"] == "vocal_stem"]
+    rebuilt_instrumentals = [artifact for artifact in rebuilt_artifacts if artifact["type"] == "instrumental_stem"]
+    assert len(rebuilt_vocals) == 1
+    assert len(rebuilt_instrumentals) == 1
+    assert rebuilt_vocals[0]["id"] == original_vocal_id
+    assert rebuilt_instrumentals[0]["id"] == original_instrumental_id
+    assert seen_sources == [source_artifact["path"], source_artifact["path"]]
 
     preview_job = client.post(
         f"/api/v1/projects/{project['id']}/preview",
@@ -119,7 +145,40 @@ def test_stem_generation_creates_vocal_and_instrumental_artifacts(client, sample
     assert len(preview_instrumental) == 1
     assert len([artifact for artifact in all_artifacts if artifact["type"] == "vocal_stem"]) == 2
     assert len([artifact for artifact in all_artifacts if artifact["type"] == "instrumental_stem"]) == 2
-    assert seen_sources == [source_artifact["path"], preview_artifact["path"]]
+    assert seen_sources == [source_artifact["path"], source_artifact["path"], preview_artifact["path"]]
+
+
+def test_stem_artifact_unique_constraint_rejects_duplicates(client, sample_stereo_audio_file: Path):
+    project = client.post(
+        "/api/v1/projects/import",
+        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
+    ).json()["project"]
+
+    artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
+    source_artifact = next(artifact for artifact in artifacts if artifact["type"] == "source_audio")
+
+    with SessionLocal() as session:
+        register_artifact(
+            session,
+            project_id=project["id"],
+            artifact_type="vocal_stem",
+            artifact_format="wav",
+            path=Path(source_artifact["path"]).with_name("first_vocals.wav"),
+            metadata={"mode": "two_stem", "source_artifact_id": source_artifact["id"]},
+        )
+        session.commit()
+
+        with pytest.raises(IntegrityError):
+            register_artifact(
+                session,
+                project_id=project["id"],
+                artifact_type="vocal_stem",
+                artifact_format="wav",
+                path=Path(source_artifact["path"]).with_name("duplicate_vocals.wav"),
+                metadata={"mode": "two_stem", "source_artifact_id": source_artifact["id"]},
+            )
+            session.commit()
+        session.rollback()
 
 
 def test_stem_generation_reports_missing_dependency(client, sample_stereo_audio_file: Path, monkeypatch):
@@ -160,7 +219,7 @@ def test_deleting_practice_mix_removes_its_stems_only(client, sample_stereo_audi
         instrumental_path.parent.mkdir(parents=True, exist_ok=True)
         sf.write(vocal_path, signal * 0.7, sample_rate)
         sf.write(instrumental_path, signal * 0.3, sample_rate)
-        return {"engine": "demucs", "model": model, "device": device}
+        return {"engine": "demucs", "model": model, "requested_device": device, "device": "cpu"}
 
     monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
 

@@ -357,6 +357,8 @@ export interface components {
         AnalysisSchema: {
             /** Project Id */
             project_id: string;
+            /** Source Artifact Id */
+            source_artifact_id?: string | null;
             /** Estimated Key */
             estimated_key: string | null;
             /** Key Confidence */
@@ -507,6 +509,14 @@ export interface components {
             source_artifact_id?: string | null;
             /** Error Message */
             error_message: string | null;
+            /** Runtime Device */
+            runtime_device?: string | null;
+            /** Started At */
+            started_at?: string | null;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Duration Seconds */
+            duration_seconds?: number | null;
             /**
              * Created At
              * Format: date-time
@@ -546,6 +556,14 @@ export interface components {
             source_artifact_id?: string | null;
             /** Source Kind */
             source_kind?: string | null;
+            /** Requested Device */
+            requested_device?: string | null;
+            /** Device */
+            device?: string | null;
+            /** Model Name */
+            model_name?: string | null;
+            /** Language */
+            language?: string | null;
             /** Source Segments */
             source_segments?: components["schemas"]["LyricsSegmentSchema"][];
             /** Segments */

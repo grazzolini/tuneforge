@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from subprocess import Popen
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -62,26 +63,82 @@ def build_stem_plan(source_artifact: Artifact, *, output_format: str) -> StemPla
     )
 
 
+def _stem_artifacts_for_source(
+    session: Session,
+    *,
+    project_id: str,
+    source_artifact_id: str,
+) -> list[Artifact]:
+    stmt = select(Artifact).where(
+        Artifact.project_id == project_id,
+        Artifact.type.in_(("vocal_stem", "instrumental_stem")),
+    ).order_by(Artifact.created_at.desc(), Artifact.id.desc())
+    return [
+        artifact
+        for artifact in session.scalars(stmt)
+        if artifact.metadata_json.get("source_artifact_id") == source_artifact_id
+    ]
+
+
 def existing_stem_artifacts(
     session: Session,
     *,
     project_id: str,
     source_artifact_id: str,
 ) -> tuple[Artifact | None, Artifact | None]:
-    stmt = select(Artifact).where(
-        Artifact.project_id == project_id,
-        Artifact.type.in_(("vocal_stem", "instrumental_stem")),
+    artifacts = _stem_artifacts_for_source(
+        session,
+        project_id=project_id,
+        source_artifact_id=source_artifact_id,
     )
-    artifacts = [
-        artifact
-        for artifact in session.scalars(stmt)
-        if artifact.metadata_json.get("source_artifact_id") == source_artifact_id
-    ]
     vocal = next((artifact for artifact in artifacts if artifact.type == "vocal_stem"), None)
     instrumental = next((artifact for artifact in artifacts if artifact.type == "instrumental_stem"), None)
     if vocal and instrumental and Path(vocal.path).exists() and Path(instrumental.path).exists():
         return vocal, instrumental
     return None, None
+
+
+def _upsert_stem_artifact(
+    session: Session,
+    *,
+    existing_artifact: Artifact | None,
+    project_id: str,
+    artifact_type: str,
+    artifact_format: str,
+    path: Path,
+    metadata: dict[str, Any],
+) -> Artifact:
+    if existing_artifact is None:
+        return register_artifact(
+            session,
+            project_id=project_id,
+            artifact_type=artifact_type,
+            artifact_format=artifact_format,
+            path=path,
+            metadata=metadata,
+        )
+
+    existing_artifact.format = artifact_format
+    existing_artifact.path = str(path.resolve())
+    existing_artifact.metadata_json = metadata
+    session.flush()
+    return existing_artifact
+
+
+def _prune_extra_stem_artifacts(
+    session: Session,
+    *,
+    project_id: str,
+    source_artifact_id: str,
+    keep_ids: set[str],
+) -> None:
+    for artifact in _stem_artifacts_for_source(
+        session,
+        project_id=project_id,
+        source_artifact_id=source_artifact_id,
+    ):
+        if artifact.id not in keep_ids:
+            session.delete(artifact)
 
 
 def generate_stems(
@@ -129,31 +186,43 @@ def generate_stems(
         unregister_process=unregister_process,
     )
 
-    vocal_artifact = register_artifact(
+    artifacts = _stem_artifacts_for_source(
         session,
+        project_id=project.id,
+        source_artifact_id=source_artifact.id,
+    )
+    existing_vocal = next((artifact for artifact in artifacts if artifact.type == "vocal_stem"), None)
+    existing_instrumental = next((artifact for artifact in artifacts if artifact.type == "instrumental_stem"), None)
+    stem_metadata = {
+        "mode": "two_stem",
+        "source_artifact_id": source_artifact.id,
+        "source_artifact_type": source_artifact.type,
+        **metadata,
+    }
+
+    vocal_artifact = _upsert_stem_artifact(
+        session,
+        existing_artifact=existing_vocal,
         project_id=project.id,
         artifact_type="vocal_stem",
         artifact_format=plan.output_format,
         path=plan.vocal_path,
-        metadata={
-            "mode": "two_stem",
-            "source_artifact_id": source_artifact.id,
-            "source_artifact_type": source_artifact.type,
-            **metadata,
-        },
+        metadata=stem_metadata,
     )
-    instrumental_artifact = register_artifact(
+    instrumental_artifact = _upsert_stem_artifact(
         session,
+        existing_artifact=existing_instrumental,
         project_id=project.id,
         artifact_type="instrumental_stem",
         artifact_format=plan.output_format,
         path=plan.instrumental_path,
-        metadata={
-            "mode": "two_stem",
-            "source_artifact_id": source_artifact.id,
-            "source_artifact_type": source_artifact.type,
-            **metadata,
-        },
+        metadata=stem_metadata,
+    )
+    _prune_extra_stem_artifacts(
+        session,
+        project_id=project.id,
+        source_artifact_id=source_artifact.id,
+        keep_ids={vocal_artifact.id, instrumental_artifact.id},
     )
 
     return [vocal_artifact, instrumental_artifact]

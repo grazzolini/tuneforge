@@ -109,6 +109,7 @@ class AnalysisSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     project_id: str
+    source_artifact_id: str | None = None
     estimated_key: str | None
     key_confidence: float | None
     estimated_reference_hz: float | None
@@ -185,6 +186,10 @@ class LyricsResponse(BaseModel):
     backend: str | None = None
     source_artifact_id: str | None = None
     source_kind: str | None = None
+    requested_device: str | None = None
+    device: str | None = None
+    model_name: str | None = None
+    language: str | None = None
     source_segments: list[LyricsSegmentSchema] = Field(
         default_factory=list, validation_alias="source_segments_json"
     )
@@ -204,6 +209,10 @@ class JobSchema(BaseModel):
     progress: int
     source_artifact_id: str | None = None
     error_message: str | None
+    runtime_device: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    duration_seconds: float | None = None
     created_at: datetime
     updated_at: datetime
 

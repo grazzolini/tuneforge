@@ -3,6 +3,8 @@ from __future__ import annotations
 import queue
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from subprocess import Popen
 from typing import Any
 
@@ -10,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.errors import AppError, JobCancelledError
-from app.models import Job
+from app.models import Job, utcnow
 from app.services.analysis import analyze_project
 from app.services.chords import detect_project_chords
 from app.services.lyrics import generate_project_lyrics
@@ -24,7 +26,20 @@ from app.services.transformations import (
 )
 from app.utils.ids import new_id
 
-JobHandler = Callable[["JobExecutionContext", Session, Job], list[str]]
+
+@dataclass(frozen=True)
+class JobExecutionResult:
+    artifact_ids: list[str]
+    runtime_device: str | None = None
+
+
+JobHandler = Callable[["JobExecutionContext", Session, Job], JobExecutionResult]
+
+
+def _as_utc_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 class JobExecutionContext:
@@ -112,6 +127,7 @@ class InProcessJobRunner:
             for job in running_jobs:
                 job.status = "failed"
                 job.error_message = "Job interrupted during previous shutdown."
+                self._mark_job_finished(job)
             session.commit()
 
     def recover_pending_jobs(self) -> None:
@@ -128,6 +144,7 @@ class InProcessJobRunner:
             if job.status == "pending":
                 job.status = "cancelled"
                 job.progress = 0
+                job.completed_at = utcnow()
             session.commit()
             with self._lock:
                 process = self._active_processes.get(job_id)
@@ -144,6 +161,7 @@ class InProcessJobRunner:
         progress: int | None = None,
         error_message: str | None = None,
         result_artifact_ids: list[str] | None = None,
+        runtime_device: str | None = None,
     ) -> None:
         with self.session_factory() as session:
             job = session.get(Job, job_id)
@@ -157,6 +175,10 @@ class InProcessJobRunner:
                 job.error_message = error_message
             if result_artifact_ids is not None:
                 job.result_artifact_ids_json = result_artifact_ids
+            if runtime_device is not None:
+                job.runtime_device = runtime_device
+            if status in {"completed", "failed", "cancelled"}:
+                self._mark_job_finished(job)
             session.commit()
 
     def is_cancel_requested(self, job_id: str) -> bool:
@@ -179,6 +201,15 @@ class InProcessJobRunner:
                 return
             self._execute_job(job_id)
 
+    def _mark_job_finished(self, job: Job) -> None:
+        completed_at = utcnow()
+        job.completed_at = completed_at
+        if job.started_at is None:
+            job.duration_seconds = None
+            return
+        started_at = _as_utc_datetime(job.started_at)
+        job.duration_seconds = max(0.0, (_as_utc_datetime(completed_at) - started_at).total_seconds())
+
     def _execute_job(self, job_id: str) -> None:
         with self.session_factory() as session:
             job = session.get(Job, job_id)
@@ -187,6 +218,10 @@ class InProcessJobRunner:
             job.status = "running"
             job.progress = 5
             job.error_message = None
+            job.runtime_device = None
+            job.started_at = utcnow()
+            job.completed_at = None
+            job.duration_seconds = None
             session.commit()
 
         try:
@@ -198,10 +233,12 @@ class InProcessJobRunner:
                 handler = self._handlers.get(job.type)
                 if handler is None:
                     raise AppError("PROCESSING_FAILED", f"Unsupported job type: {job.type}")
-                artifact_ids = handler(context, session, job)
+                result = handler(context, session, job)
                 job.status = "completed"
                 job.progress = 100
-                job.result_artifact_ids_json = artifact_ids
+                job.result_artifact_ids_json = result.artifact_ids
+                job.runtime_device = result.runtime_device
+                self._mark_job_finished(job)
                 session.commit()
         except JobCancelledError:
             self.update_job(job_id, status="cancelled", error_message=None)
@@ -210,17 +247,15 @@ class InProcessJobRunner:
         except Exception as exc:  # pragma: no cover - defensive fallback
             self.update_job(job_id, status="failed", error_message=str(exc))
 
-    def _handle_analyze(self, context: JobExecutionContext, session: Session, job: Job) -> list[str]:
+    def _handle_analyze(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")
         context.set_progress(20)
         analyze_project(session, project)
         context.set_progress(90)
         artifact_ids = [artifact.id for artifact in project.artifacts if artifact.type == "analysis_json"]
-        if not artifact_ids:
-            artifact_ids = []
-        return artifact_ids
+        return JobExecutionResult(artifact_ids=artifact_ids)
 
-    def _handle_preview(self, context: JobExecutionContext, session: Session, job: Job) -> list[str]:
+    def _handle_preview(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")
         payload = job.payload_json
         plan, cached = build_preview_plan(
@@ -232,7 +267,7 @@ class InProcessJobRunner:
         )
         if cached:
             context.set_progress(100)
-            return [cached.id]
+            return JobExecutionResult(artifact_ids=[cached.id])
         artifact = execute_transform_plan(
             session,
             project=project,
@@ -242,23 +277,23 @@ class InProcessJobRunner:
             register_process=context.register_process,
             unregister_process=context.unregister_process,
         )
-        return [artifact.id]
+        return JobExecutionResult(artifact_ids=[artifact.id])
 
-    def _handle_chords(self, context: JobExecutionContext, session: Session, job: Job) -> list[str]:
+    def _handle_chords(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")
         context.set_progress(20)
         detect_project_chords(session, project, force=bool(job.payload_json.get("force", False)))
         context.set_progress(90)
-        return []
+        return JobExecutionResult(artifact_ids=[])
 
-    def _handle_lyrics(self, context: JobExecutionContext, session: Session, job: Job) -> list[str]:
+    def _handle_lyrics(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")
         context.set_progress(15)
-        generate_project_lyrics(session, project=project, force=bool(job.payload_json.get("force", False)))
+        lyrics = generate_project_lyrics(session, project=project, force=bool(job.payload_json.get("force", False)))
         context.set_progress(90)
-        return []
+        return JobExecutionResult(artifact_ids=[], runtime_device=lyrics.device)
 
-    def _handle_single_transform(self, context: JobExecutionContext, session: Session, job: Job) -> list[str]:
+    def _handle_single_transform(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")
         plan = build_single_transform_plan(session, project=project, transform_type=job.type, payload=job.payload_json)
         artifact = execute_transform_plan(
@@ -270,9 +305,9 @@ class InProcessJobRunner:
             register_process=context.register_process,
             unregister_process=context.unregister_process,
         )
-        return [artifact.id]
+        return JobExecutionResult(artifact_ids=[artifact.id])
 
-    def _handle_export(self, context: JobExecutionContext, session: Session, job: Job) -> list[str]:
+    def _handle_export(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")
         payload = job.payload_json
         context.set_progress(25)
@@ -284,9 +319,9 @@ class InProcessJobRunner:
             destination_path=payload.get("destination_path"),
         )
         context.set_progress(90)
-        return [artifact.id]
+        return JobExecutionResult(artifact_ids=[artifact.id])
 
-    def _handle_stems(self, context: JobExecutionContext, session: Session, job: Job) -> list[str]:
+    def _handle_stems(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")
         payload = job.payload_json
         artifacts = generate_stems(
@@ -300,4 +335,15 @@ class InProcessJobRunner:
             register_process=context.register_process,
             unregister_process=context.unregister_process,
         )
-        return [artifact.id for artifact in artifacts]
+        runtime_device = next(
+            (
+                artifact.metadata_json.get("device")
+                for artifact in artifacts
+                if isinstance(artifact.metadata_json.get("device"), str)
+            ),
+            None,
+        )
+        return JobExecutionResult(
+            artifact_ids=[artifact.id for artifact in artifacts],
+            runtime_device=runtime_device,
+        )

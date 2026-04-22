@@ -1035,7 +1035,7 @@ describe("Desktop app flows", () => {
     await user.click(screen.getByRole("button", { name: "Refresh Lyrics" }));
 
     expect(mockConfirm).toHaveBeenCalledWith(
-      "Refresh lyrics? This replaces the current transcript and discards your edits.",
+      "Refresh lyrics? This replaces the current transcript, discards your edits, and may take longer when Whisper falls back to CPU.",
       expect.objectContaining({
         title: "Refresh lyrics",
         kind: "warning",
@@ -1818,6 +1818,8 @@ describe("Desktop app flows", () => {
           progress: 15,
           source_artifact_id: "art_source",
           error_message: "Demucs failed to separate the track.",
+          runtime_device: "cpu",
+          duration_seconds: 3.4,
           created_at: "2026-04-18T13:16:00.000Z",
           updated_at: "2026-04-18T13:16:00.000Z",
         },
@@ -1834,7 +1836,7 @@ describe("Desktop app flows", () => {
     expect(jobHistory).not.toBeNull();
 
     expect(within(jobHistory as HTMLElement).getByText("stems")).toBeInTheDocument();
-    expect(within(jobHistory as HTMLElement).getByText("failed")).toBeInTheDocument();
+    expect(within(jobHistory as HTMLElement).getByText(/failed \/ CPU \/ 3.4 s/i)).toBeInTheDocument();
     expect(
       within(jobHistory as HTMLElement).getByText("Demucs failed to separate the track."),
     ).toBeInTheDocument();
@@ -2017,6 +2019,22 @@ describe("Desktop app flows", () => {
         source_artifact_id: "art_source",
       }),
     );
+  });
+
+  it("keeps raw artifact summaries compact at minimal information density", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    await user.click(screen.getByText("Show raw artifacts and processing history"));
+
+    const jobHistory = screen.getByText("Show raw artifacts and processing history").closest("details");
+    expect(jobHistory).not.toBeNull();
+    expect(within(jobHistory as HTMLElement).queryByText(/Vocal stem \/ two_stem \/ demucs/i)).not.toBeInTheDocument();
+    expect(
+      within(jobHistory as HTMLElement).queryByText(/Instrumental stem \/ two_stem \/ demucs/i),
+    ).not.toBeInTheDocument();
   });
 
   it("persists theme and UI visibility preferences", async () => {

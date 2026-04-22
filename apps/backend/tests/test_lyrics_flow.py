@@ -68,11 +68,18 @@ def test_lyrics_job_persists_transcript_and_update_preserves_timings(
     ).json()["project"]
 
     job = client.post(f"/api/v1/projects/{project['id']}/lyrics", json={"force": False}).json()["job"]
-    assert wait_for_job(client, job["id"])["status"] == "completed"
+    final_job = wait_for_job(client, job["id"])
+    assert final_job["status"] == "completed"
+    assert final_job["runtime_device"] == "cpu"
+    assert final_job["duration_seconds"] is not None
 
     created = client.get(f"/api/v1/projects/{project['id']}/lyrics").json()
     assert created["backend"] == "openai-whisper"
     assert created["source_artifact_id"] == _first_source_artifact_id(client, project["id"])
+    assert created["requested_device"] == "cpu"
+    assert created["device"] == "cpu"
+    assert created["model_name"] == "turbo"
+    assert created["language"] == "en"
     assert created["segments"][0]["text"] == "First line"
     assert created["segments"][0]["words"][0]["text"] == "First"
 
@@ -162,3 +169,4 @@ def test_lyrics_job_failure_surfaces_error_message(client, monkeypatch, sample_a
     final_job = wait_for_job(client, job["id"])
     assert final_job["status"] == "failed"
     assert final_job["error_message"] == "Lyrics model download failed."
+    assert final_job["duration_seconds"] is not None

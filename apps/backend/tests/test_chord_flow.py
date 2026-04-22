@@ -29,6 +29,8 @@ def test_chord_job_persists_timeline(client, sample_chord_audio_file: Path):
     ).json()["job"]
     final_job = wait_for_job(client, job["id"])
     assert final_job["status"] == "completed"
+    assert final_job["runtime_device"] is None
+    assert final_job["duration_seconds"] is not None
 
     chords = client.get(f"/api/v1/projects/{project['id']}/chords").json()
     assert chords["project_id"] == project["id"]

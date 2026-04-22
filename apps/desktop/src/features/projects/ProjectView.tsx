@@ -400,9 +400,7 @@ export function ProjectView() {
     defaultInspectorOpen,
     defaultSourcesRailCollapsed,
     enharmonicDisplayMode,
-    helperTextVisible,
     informationDensity,
-    metadataRevealMode,
   } = usePreferences();
   const chordSegmentRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const pendingPreviewSelection = useRef<{ previousLatestPreviewArtifactId: string | null } | null>(
@@ -432,7 +430,7 @@ export function ProjectView() {
   const [sourcesRailCollapsed, setSourcesRailCollapsed] = useState(defaultSourcesRailCollapsed);
   const [stemControls, setStemControls] = useState<Record<string, StemControlState>>({});
   const [dismissedStemJobIds, setDismissedStemJobIds] = useState<string[]>([]);
-  const showSupportingCopy = helperTextVisible && informationDensity !== "minimal";
+  const showSupportingCopy = informationDensity !== "minimal";
 
   const projectQuery = useQuery({
     queryKey: ["project", projectId],
@@ -2386,25 +2384,19 @@ export function ProjectView() {
                     </div>
                   </dl>
 
-                  {metadataRevealMode === "expand" ? (
-                    <details className="details-block">
-                      <summary>Show file details</summary>
-                      <dl className="details-grid details-grid--single-column">
-                        <div>
-                          <dt>Imported Path</dt>
-                          <dd className="path">{projectQuery.data?.imported_path ?? "Unknown"}</dd>
-                        </div>
-                        <div>
-                          <dt>Original Source</dt>
-                          <dd className="path">{projectQuery.data?.source_path ?? "Unknown"}</dd>
-                        </div>
-                      </dl>
-                    </details>
-                  ) : (
-                    <p className="artifact-meta" title={projectQuery.data?.source_path ?? ""}>
-                      Hover for file path
-                    </p>
-                  )}
+                  <details className="details-block">
+                    <summary>Show file details</summary>
+                    <dl className="details-grid details-grid--single-column">
+                      <div>
+                        <dt>Imported Path</dt>
+                        <dd className="path">{projectQuery.data?.imported_path ?? "Unknown"}</dd>
+                      </div>
+                      <div>
+                        <dt>Original Source</dt>
+                        <dd className="path">{projectQuery.data?.source_path ?? "Unknown"}</dd>
+                      </div>
+                    </dl>
+                  </details>
                 </div>
 
                 <div className="subpanel subpanel--compact subpanel--danger">

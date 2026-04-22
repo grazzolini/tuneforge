@@ -5,8 +5,8 @@ import { ProjectView } from "./features/projects/ProjectView";
 import { usePlayback } from "./features/projects/playback-context";
 import { PlaybackProvider } from "./features/projects/playback";
 import { SettingsView } from "./features/settings/SettingsView";
-import { ThemePreviewView } from "./features/settings/ThemePreviewView";
-import { PreferencesProvider, usePreferences } from "./lib/preferences";
+import { ThemeStudioView } from "./features/settings/ThemeStudioView";
+import { PreferencesProvider } from "./lib/preferences";
 import { ThemeProvider } from "./lib/theme";
 
 function MiniMetallicGlyphDefs({ gradientId }: { gradientId: string }) {
@@ -141,7 +141,6 @@ function BackgroundPlaybackCard() {
 }
 
 function AppChrome() {
-  const { informationDensity, layoutDensity } = usePreferences();
   const location = useLocation();
   const { dismissSession, session } = usePlayback();
   const routeProjectId =
@@ -156,7 +155,7 @@ function AppChrome() {
   }, [dismissSession, routeProjectId, session]);
 
   return (
-    <div className="app-shell" data-information-density={informationDensity} data-layout-density={layoutDensity}>
+    <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
           <span className="brand__eyebrow">Tuneforge</span>
@@ -175,7 +174,8 @@ function AppChrome() {
           <Route path="/" element={<LibraryView />} />
           <Route path="/projects/:projectId" element={<ProjectView />} />
           <Route path="/settings" element={<SettingsView />} />
-          <Route path="/settings/theme-preview" element={<ThemePreviewView />} />
+          <Route path="/settings/theme-studio" element={<ThemeStudioView />} />
+          <Route path="/settings/theme-preview" element={<ThemeStudioView />} />
         </Routes>
       </main>
     </div>

@@ -10,38 +10,30 @@ import {
 import type { EnharmonicDisplayMode } from "./music";
 
 export type InformationDensity = "minimal" | "balanced" | "detailed";
-export type LayoutDensity = "compact" | "comfortable";
-export type MetadataRevealMode = "hover" | "expand";
 export type { EnharmonicDisplayMode };
 
 export type UiPreferences = {
   informationDensity: InformationDensity;
-  layoutDensity: LayoutDensity;
   enharmonicDisplayMode: EnharmonicDisplayMode;
-  helperTextVisible: boolean;
   defaultInspectorOpen: boolean;
   defaultSourcesRailCollapsed: boolean;
-  metadataRevealMode: MetadataRevealMode;
 };
 
-export type AppearancePreferences = Pick<
-  UiPreferences,
-  "informationDensity" | "layoutDensity" | "enharmonicDisplayMode"
->;
+export type AppearancePreferences = Pick<UiPreferences, "informationDensity">;
+export type NotationPreferences = Pick<UiPreferences, "enharmonicDisplayMode">;
 export type VisibilityPreferences = Pick<
   UiPreferences,
-  "helperTextVisible" | "defaultInspectorOpen" | "defaultSourcesRailCollapsed" | "metadataRevealMode"
+  "defaultInspectorOpen" | "defaultSourcesRailCollapsed"
 >;
 
 type PreferencesContextValue = UiPreferences & {
   setInformationDensity: (value: InformationDensity) => void;
-  setLayoutDensity: (value: LayoutDensity) => void;
   setEnharmonicDisplayMode: (value: EnharmonicDisplayMode) => void;
-  setHelperTextVisible: (value: boolean) => void;
   setDefaultInspectorOpen: (value: boolean) => void;
   setDefaultSourcesRailCollapsed: (value: boolean) => void;
-  setMetadataRevealMode: (value: MetadataRevealMode) => void;
+  replacePreferences: (value: UiPreferences) => void;
   resetAppearancePreferences: () => void;
+  resetNotationPreferences: () => void;
   resetVisibilityPreferences: () => void;
   resetPreferences: () => void;
 };
@@ -50,19 +42,20 @@ const STORAGE_KEY = "tuneforge.ui-preferences";
 
 export const DEFAULT_APPEARANCE_PREFERENCES: AppearancePreferences = {
   informationDensity: "minimal",
-  layoutDensity: "compact",
+};
+
+export const DEFAULT_NOTATION_PREFERENCES: NotationPreferences = {
   enharmonicDisplayMode: "auto",
 };
 
 export const DEFAULT_VISIBILITY_PREFERENCES: VisibilityPreferences = {
-  helperTextVisible: false,
   defaultInspectorOpen: false,
   defaultSourcesRailCollapsed: false,
-  metadataRevealMode: "expand",
 };
 
 export const DEFAULT_PREFERENCES: UiPreferences = {
   ...DEFAULT_APPEARANCE_PREFERENCES,
+  ...DEFAULT_NOTATION_PREFERENCES,
   ...DEFAULT_VISIBILITY_PREFERENCES,
 };
 
@@ -72,19 +65,11 @@ function isInformationDensity(value: unknown): value is InformationDensity {
   return value === "minimal" || value === "balanced" || value === "detailed";
 }
 
-function isLayoutDensity(value: unknown): value is LayoutDensity {
-  return value === "compact" || value === "comfortable";
-}
-
 function isEnharmonicDisplayMode(value: unknown): value is EnharmonicDisplayMode {
   return value === "auto" || value === "sharps" || value === "flats" || value === "neutral" || value === "dual";
 }
 
-function isMetadataRevealMode(value: unknown): value is MetadataRevealMode {
-  return value === "hover" || value === "expand";
-}
-
-function normalizePreferences(value: unknown): UiPreferences {
+export function normalizePreferences(value: unknown): UiPreferences {
   if (!value || typeof value !== "object") {
     return DEFAULT_PREFERENCES;
   }
@@ -94,16 +79,9 @@ function normalizePreferences(value: unknown): UiPreferences {
     informationDensity: isInformationDensity(candidate.informationDensity)
       ? candidate.informationDensity
       : DEFAULT_PREFERENCES.informationDensity,
-    layoutDensity: isLayoutDensity(candidate.layoutDensity)
-      ? candidate.layoutDensity
-      : DEFAULT_PREFERENCES.layoutDensity,
     enharmonicDisplayMode: isEnharmonicDisplayMode(candidate.enharmonicDisplayMode)
       ? candidate.enharmonicDisplayMode
       : DEFAULT_PREFERENCES.enharmonicDisplayMode,
-    helperTextVisible:
-      typeof candidate.helperTextVisible === "boolean"
-        ? candidate.helperTextVisible
-        : DEFAULT_PREFERENCES.helperTextVisible,
     defaultInspectorOpen:
       typeof candidate.defaultInspectorOpen === "boolean"
         ? candidate.defaultInspectorOpen
@@ -112,9 +90,6 @@ function normalizePreferences(value: unknown): UiPreferences {
       typeof candidate.defaultSourcesRailCollapsed === "boolean"
         ? candidate.defaultSourcesRailCollapsed
         : DEFAULT_PREFERENCES.defaultSourcesRailCollapsed,
-    metadataRevealMode: isMetadataRevealMode(candidate.metadataRevealMode)
-      ? candidate.metadataRevealMode
-      : DEFAULT_PREFERENCES.metadataRevealMode,
   };
 }
 
@@ -161,14 +136,8 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       setInformationDensity: (informationDensity) => {
         setPreferences((current) => mergePreferences(current, { informationDensity }));
       },
-      setLayoutDensity: (layoutDensity) => {
-        setPreferences((current) => mergePreferences(current, { layoutDensity }));
-      },
       setEnharmonicDisplayMode: (enharmonicDisplayMode) => {
         setPreferences((current) => mergePreferences(current, { enharmonicDisplayMode }));
-      },
-      setHelperTextVisible: (helperTextVisible) => {
-        setPreferences((current) => mergePreferences(current, { helperTextVisible }));
       },
       setDefaultInspectorOpen: (defaultInspectorOpen) => {
         setPreferences((current) => mergePreferences(current, { defaultInspectorOpen }));
@@ -176,11 +145,16 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       setDefaultSourcesRailCollapsed: (defaultSourcesRailCollapsed) => {
         setPreferences((current) => mergePreferences(current, { defaultSourcesRailCollapsed }));
       },
-      setMetadataRevealMode: (metadataRevealMode) => {
-        setPreferences((current) => mergePreferences(current, { metadataRevealMode }));
+      replacePreferences: (value) => {
+        const normalized = normalizePreferences(value);
+        persistPreferences(normalized);
+        setPreferences(normalized);
       },
       resetAppearancePreferences: () => {
         setPreferences((current) => mergePreferences(current, DEFAULT_APPEARANCE_PREFERENCES));
+      },
+      resetNotationPreferences: () => {
+        setPreferences((current) => mergePreferences(current, DEFAULT_NOTATION_PREFERENCES));
       },
       resetVisibilityPreferences: () => {
         setPreferences((current) => mergePreferences(current, DEFAULT_VISIBILITY_PREFERENCES));

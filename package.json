@@ -12,7 +12,7 @@
     "package:mac": "pnpm --filter @tuneforge/desktop tauri build --bundles app && node scripts/package-dmg.mjs",
     "sync:backend:default": "bash scripts/sync-backend-default.sh",
     "sync:backend:legacy-nvidia": "bash scripts/sync-backend-legacy-nvidia.sh",
-    "test": "pnpm --filter @tuneforge/desktop test --run && bash scripts/run-backend-module.sh pytest",
+    "test": "bash scripts/run-tests.sh",
     "typecheck": "pnpm --filter @tuneforge/desktop typecheck",
     "commitlint": "commitlint --edit",
     "prepare": "husky"

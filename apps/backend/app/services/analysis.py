@@ -6,7 +6,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from app.engines.analysis import analyze_track
-from app.models import AnalysisResult, Project
+from app.models import AnalysisResult, Artifact, Project
 from app.services.artifacts import register_artifact
 from app.services.paths import project_analysis_dir
 
@@ -14,10 +14,12 @@ from app.services.paths import project_analysis_dir
 def analyze_project(session: Session, project: Project) -> AnalysisResult:
     results = analyze_track(Path(project.imported_path))
     analysis = session.get(AnalysisResult, project.id)
+    source_artifact = next((artifact for artifact in project.artifacts if artifact.type == "source_audio"), None)
     if analysis is None:
         analysis = AnalysisResult(project_id=project.id)
         session.add(analysis)
 
+    analysis.source_artifact_id = source_artifact.id if isinstance(source_artifact, Artifact) else None
     analysis.estimated_key = results["estimated_key"]  # type: ignore[assignment]
     analysis.key_confidence = results["key_confidence"]  # type: ignore[assignment]
     analysis.estimated_reference_hz = results["estimated_reference_hz"]  # type: ignore[assignment]
@@ -31,6 +33,7 @@ def analyze_project(session: Session, project: Project) -> AnalysisResult:
         json.dumps(
             {
                 "project_id": project.id,
+                "source_artifact_id": analysis.source_artifact_id,
                 "estimated_key": analysis.estimated_key,
                 "key_confidence": analysis.key_confidence,
                 "estimated_reference_hz": analysis.estimated_reference_hz,
@@ -55,11 +58,16 @@ def analyze_project(session: Session, project: Project) -> AnalysisResult:
             artifact_type="analysis_json",
             artifact_format="json",
             path=analysis_path,
-            metadata={"analysis_version": analysis.analysis_version},
+            metadata={
+                "analysis_version": analysis.analysis_version,
+                "source_artifact_id": analysis.source_artifact_id,
+            },
         )
     else:
         existing_artifact.path = str(analysis_path.resolve())
-        existing_artifact.metadata_json = {"analysis_version": analysis.analysis_version}
+        existing_artifact.metadata_json = {
+            "analysis_version": analysis.analysis_version,
+            "source_artifact_id": analysis.source_artifact_id,
+        }
 
     return analysis
-

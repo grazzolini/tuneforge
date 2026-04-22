@@ -64,6 +64,18 @@ def _load_runtime() -> tuple[Any, Any]:
     return torch, whisper
 
 
+CUDA_MODEL_FALLBACKS: dict[str, tuple[str, ...]] = {
+    "turbo": ("small", "base"),
+    "large-v3-turbo": ("small", "base"),
+    "large": ("small", "base"),
+    "large-v3": ("small", "base"),
+    "large-v2": ("small", "base"),
+    "large-v1": ("small", "base"),
+    "medium": ("small", "base"),
+    "small": ("base",),
+}
+
+
 def resolve_whisper_device_candidates(requested: str, *, torch_module: Any) -> list[str]:
     normalized = requested.strip().lower()
     if normalized == "auto":
@@ -119,9 +131,29 @@ def _normalize_segments(raw_segments: list[dict[str, Any]]) -> list[dict[str, An
     return segments
 
 
+def resolve_whisper_model_candidates(model_name: str, *, device: str) -> list[str]:
+    if device != "cuda":
+        return [model_name]
+    fallbacks = CUDA_MODEL_FALLBACKS.get(model_name, ())
+    return [model_name, *fallbacks]
+
+
+def _is_cuda_memory_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return "out of memory" in message or "cuda error: out of memory" in message
+
+
+def _clear_cuda_cache(torch_module: Any) -> None:
+    cuda = getattr(torch_module, "cuda", None)
+    empty_cache = getattr(cuda, "empty_cache", None)
+    if callable(empty_cache):
+        empty_cache()
+
+
 def _transcribe_with_device(
     source_path: Path,
     *,
+    requested_device: str,
     model_name: str,
     device: str,
     download_root: Path,
@@ -139,7 +171,7 @@ def _transcribe_with_device(
     segments = _normalize_segments(result.get("segments", []))
     return LyricsTranscription(
         backend="openai-whisper",
-        requested_device=device,
+        requested_device=requested_device,
         device=device,
         model=model_name,
         language=result.get("language"),
@@ -159,20 +191,32 @@ def transcribe_project_lyrics(
     errors: list[dict[str, str]] = []
 
     for device in candidates:
-        try:
-            return _transcribe_with_device(
-                source_path,
-                model_name=model_name,
-                device=device,
-                download_root=download_root,
-                whisper_module=whisper_module,
-            )
-        except AppError:
-            raise
-        except Exception as exc:  # pragma: no cover - defensive fallback around whisper runtime
-            errors.append({"device": device, "message": str(exc)})
-            if device == "cpu":
+        model_candidates = resolve_whisper_model_candidates(model_name, device=device)
+        for index, candidate_model in enumerate(model_candidates):
+            try:
+                return _transcribe_with_device(
+                    source_path,
+                    requested_device=requested_device,
+                    model_name=candidate_model,
+                    device=device,
+                    download_root=download_root,
+                    whisper_module=whisper_module,
+                )
+            except AppError:
+                raise
+            except Exception as exc:  # pragma: no cover - defensive fallback around whisper runtime
+                errors.append({"device": device, "model": candidate_model, "message": str(exc)})
+                should_retry_smaller_cuda_model = (
+                    device == "cuda"
+                    and index < len(model_candidates) - 1
+                    and _is_cuda_memory_error(exc)
+                )
+                if should_retry_smaller_cuda_model:
+                    _clear_cuda_cache(torch_module)
+                    continue
                 break
+        if device == "cpu":
+            break
 
     raise AppError(
         "PROCESSING_FAILED",

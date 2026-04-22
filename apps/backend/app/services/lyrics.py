@@ -25,21 +25,22 @@ def _write_lyrics_snapshot(
     *,
     project_id: str,
     lyrics: LyricsTranscript,
-    metadata: dict[str, Any] | None = None,
 ) -> None:
     payload: dict[str, Any] = {
         "project_id": project_id,
         "backend": lyrics.backend,
         "source_artifact_id": lyrics.source_artifact_id,
         "source_kind": lyrics.source_kind,
+        "requested_device": lyrics.requested_device,
+        "device": lyrics.device,
+        "model_name": lyrics.model_name,
+        "language": lyrics.language,
         "source_segments": lyrics.source_segments_json,
         "segments": lyrics.segments_json,
         "has_user_edits": lyrics.has_user_edits,
         "created_at": lyrics.created_at.isoformat(),
         "updated_at": lyrics.updated_at.isoformat(),
     }
-    if metadata:
-        payload["metadata"] = metadata
 
     lyrics_path = project_analysis_dir(project_id) / "lyrics.json"
     lyrics_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -65,22 +66,17 @@ def generate_project_lyrics(session: Session, *, project: Project, force: bool =
     existing.backend = transcription.backend
     existing.source_artifact_id = source_artifact.id if source_artifact else None
     existing.source_kind = "ai"
+    existing.requested_device = transcription.requested_device
+    existing.device = transcription.device
+    existing.model_name = transcription.model
+    existing.language = transcription.language
     existing.source_segments_json = cast(list[dict[str, Any]], deepcopy(transcription.segments))
     existing.segments_json = cast(list[dict[str, Any]], deepcopy(transcription.segments))
     existing.has_user_edits = False
     session.flush()
     session.refresh(existing)
 
-    _write_lyrics_snapshot(
-        project_id=project.id,
-        lyrics=existing,
-        metadata={
-            "device": transcription.device,
-            "model": transcription.model,
-            "requested_device": get_settings().lyrics_device,
-            "language": transcription.language,
-        },
-    )
+    _write_lyrics_snapshot(project_id=project.id, lyrics=existing)
     return existing
 
 

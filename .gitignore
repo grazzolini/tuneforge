@@ -28,6 +28,7 @@ apps/desktop/src-tauri/resources/*
 apps/desktop/src-tauri/gen/
 packages/shared-types/openapi.json
 data/
+.codex
 
 # Secrets / credentials (defensive)
 .env

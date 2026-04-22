@@ -7,6 +7,7 @@ from app.engines.lyrics import (
     LyricsTranscription,
     patch_whisper_timing_for_mps,
     resolve_whisper_device_candidates,
+    resolve_whisper_model_candidates,
     transcribe_project_lyrics,
 )
 
@@ -42,6 +43,11 @@ def test_resolve_whisper_device_candidates_requested_unavailable_gpu_falls_back_
         torch_module=make_fake_torch(has_mps=False, has_cuda=False),
     )
     assert candidates == ["cpu"]
+
+
+def test_resolve_whisper_model_candidates_prefers_smaller_cuda_fallbacks_for_turbo():
+    assert resolve_whisper_model_candidates("turbo", device="cuda") == ["turbo", "small", "base"]
+    assert resolve_whisper_model_candidates("turbo", device="cpu") == ["turbo"]
 
 
 def test_patch_whisper_timing_for_mps_uses_float32_cpu_dtw():
@@ -124,6 +130,7 @@ def test_transcribe_project_lyrics_falls_back_to_cpu(monkeypatch):
     def fake_transcribe_with_device(
         source_path: Path,
         *,
+        requested_device: str,
         model_name: str,
         device: str,
         download_root: Path,
@@ -134,7 +141,7 @@ def test_transcribe_project_lyrics_falls_back_to_cpu(monkeypatch):
             raise RuntimeError("MPS kernel failed")
         return LyricsTranscription(
             backend="openai-whisper",
-            requested_device=device,
+            requested_device=requested_device,
             device=device,
             model=model_name,
             language="en",
@@ -159,3 +166,53 @@ def test_transcribe_project_lyrics_falls_back_to_cpu(monkeypatch):
     assert attempted_devices == ["mps", "cpu"]
     assert result.device == "cpu"
     assert result.segments[0]["text"] == "Hello world"
+
+
+def test_transcribe_project_lyrics_retries_smaller_model_on_cuda_oom(monkeypatch):
+    attempts: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        "app.engines.lyrics._load_runtime",
+        lambda: (make_fake_torch(has_mps=False, has_cuda=True), object()),
+    )
+
+    def fake_transcribe_with_device(
+        source_path: Path,
+        *,
+        requested_device: str,
+        model_name: str,
+        device: str,
+        download_root: Path,
+        whisper_module: object,
+    ) -> LyricsTranscription:
+        attempts.append((device, model_name))
+        if model_name == "turbo":
+            raise RuntimeError("CUDA out of memory")
+        return LyricsTranscription(
+            backend="openai-whisper",
+            requested_device=requested_device,
+            device=device,
+            model=model_name,
+            language="pt",
+            segments=[
+                {
+                    "start_seconds": 0.0,
+                    "end_seconds": 1.0,
+                    "text": "Ola",
+                }
+            ],
+        )
+
+    monkeypatch.setattr("app.engines.lyrics._transcribe_with_device", fake_transcribe_with_device)
+
+    result = transcribe_project_lyrics(
+        Path("/tmp/fake.wav"),
+        model_name="turbo",
+        requested_device="auto",
+        download_root=Path("/tmp/lyrics-cache"),
+    )
+
+    assert attempts == [("cuda", "turbo"), ("cuda", "small")]
+    assert result.device == "cuda"
+    assert result.model == "small"
+    assert result.requested_device == "auto"

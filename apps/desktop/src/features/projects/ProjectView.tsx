@@ -133,6 +133,30 @@ function formatArtifactTimestamp(createdAt: string) {
   });
 }
 
+function formatJobDuration(durationSeconds: number | null | undefined) {
+  if (typeof durationSeconds !== "number" || !Number.isFinite(durationSeconds) || durationSeconds < 0) {
+    return null;
+  }
+  if (durationSeconds < 1) {
+    return `${Math.max(1, Math.round(durationSeconds * 1000))} ms`;
+  }
+  if (durationSeconds < 60) {
+    return `${durationSeconds < 10 ? durationSeconds.toFixed(1) : Math.round(durationSeconds)} s`;
+  }
+
+  return formatPlaybackClock(durationSeconds);
+}
+
+function formatJobStatusSummary(job: JobSchema) {
+  return [
+    job.status,
+    typeof job.runtime_device === "string" ? job.runtime_device.toUpperCase() : null,
+    formatJobDuration(job.duration_seconds),
+  ]
+    .filter(Boolean)
+    .join(" / ");
+}
+
 function formatPlaybackClock(totalSeconds: number) {
   if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
     return "0:00";
@@ -268,10 +292,15 @@ function artifactSummary(artifact: ArtifactSchema) {
   if (artifact.type === "vocal_stem" || artifact.type === "instrumental_stem") {
     const engine = typeof artifact.metadata?.engine === "string" ? artifact.metadata.engine : null;
     const mode = typeof artifact.metadata?.mode === "string" ? artifact.metadata.mode : null;
+    const model = typeof artifact.metadata?.model === "string" ? artifact.metadata.model : null;
+    const device =
+      typeof artifact.metadata?.device === "string" ? artifact.metadata.device.toUpperCase() : null;
     return [
       artifact.type === "vocal_stem" ? "Vocal stem" : "Instrumental stem",
       mode,
       engine,
+      model,
+      device,
     ]
       .filter(Boolean)
       .join(" / ");
@@ -986,8 +1015,8 @@ export function ProjectView() {
     if (hasExistingLyrics) {
       const approved = await confirm(
         lyricsQuery.data?.has_user_edits
-          ? "Refresh lyrics? This replaces the current transcript and discards your edits."
-          : "Refresh lyrics? This replaces the current transcript with a new pass.",
+          ? "Refresh lyrics? This replaces the current transcript, discards your edits, and may take longer when Whisper falls back to CPU."
+          : "Refresh lyrics? This replaces the current transcript with a new pass and may take longer when Whisper falls back to CPU.",
         {
           title: "Refresh lyrics",
           kind: "warning",
@@ -2097,7 +2126,7 @@ export function ProjectView() {
                         <span>{artifactLabel(artifact)}</span>
                         <small>{artifact.format.toUpperCase()}</small>
                         <small>{formatArtifactTimestamp(artifact.created_at)}</small>
-                        {artifactSummary(artifact) ? (
+                        {informationDensity === "detailed" && artifactSummary(artifact) ? (
                           <small>{artifactSummary(artifact)}</small>
                         ) : null}
                       </li>
@@ -2113,9 +2142,10 @@ export function ProjectView() {
                       <li key={job.id}>
                         <div>
                           <strong>{job.type}</strong>
-                          <span>{job.status}</span>
+                          <span>{formatJobStatusSummary(job)}</span>
                         </div>
                         <progress max={100} value={job.progress} />
+                        <small>{formatArtifactTimestamp(job.completed_at ?? job.updated_at)}</small>
                         {job.error_message ? (
                           <small className="inline-error">{job.error_message}</small>
                         ) : null}

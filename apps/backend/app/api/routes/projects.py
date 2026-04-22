@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.dependencies import get_db, get_job_runner
 from app.errors import AppError
-from app.models import AnalysisResult, Artifact, ChordTimeline
+from app.models import AnalysisResult, Artifact, ChordTimeline, LyricsTranscript
 from app.schemas import (
     AnalysisRequest,
     AnalysisResponse,
@@ -19,6 +19,9 @@ from app.schemas import (
     ExportRequest,
     JobResponse,
     JobSchema,
+    LyricsGenerateRequest,
+    LyricsResponse,
+    LyricsUpdateRequest,
     PreviewRequest,
     ProjectImportRequest,
     ProjectResponse,
@@ -30,6 +33,7 @@ from app.schemas import (
     TransposeRequest,
 )
 from app.services.artifacts import delete_project_artifact
+from app.services.lyrics import update_project_lyrics
 from app.services.projects import (
     delete_project,
     get_project,
@@ -161,6 +165,56 @@ def project_chords_detail(project_id: str, session: Session = Depends(get_db)) -
     if chords is None:
         return ChordResponse(project_id=project_id, timeline=[], backend=None, source_artifact_id=None, created_at=None)
     return ChordResponse.model_validate(chords)
+
+
+@router.post("/{project_id}/lyrics", response_model=JobResponse)
+def project_lyrics(
+    project_id: str,
+    payload: LyricsGenerateRequest,
+    session: Session = Depends(get_db),
+    runner=Depends(get_job_runner),
+) -> JobResponse:
+    get_project(session, project_id)
+    job = runner.create_job(
+        session,
+        project_id=project_id,
+        job_type="lyrics",
+        payload=payload.model_dump(),
+    )
+    session.commit()
+    session.refresh(job)
+    runner.enqueue(job.id)
+    return JobResponse(job=JobSchema.model_validate(job))
+
+
+@router.get("/{project_id}/lyrics", response_model=LyricsResponse)
+def project_lyrics_detail(project_id: str, session: Session = Depends(get_db)) -> LyricsResponse:
+    get_project(session, project_id)
+    lyrics = session.get(LyricsTranscript, project_id)
+    if lyrics is None:
+        return LyricsResponse(
+            project_id=project_id,
+            backend=None,
+            source_artifact_id=None,
+            source_kind=None,
+            source_segments=[],
+            segments=[],
+            has_user_edits=False,
+            created_at=None,
+            updated_at=None,
+        )
+    return LyricsResponse.model_validate(lyrics)
+
+
+@router.put("/{project_id}/lyrics", response_model=LyricsResponse)
+def project_lyrics_update(
+    project_id: str,
+    payload: LyricsUpdateRequest,
+    session: Session = Depends(get_db),
+) -> LyricsResponse:
+    project = get_project(session, project_id)
+    lyrics = update_project_lyrics(session, project=project, edits=payload.segments)
+    return LyricsResponse.model_validate(lyrics)
 
 
 @router.post("/{project_id}/retune", response_model=JobResponse)

@@ -10,6 +10,7 @@ dependencies = [
   "fastapi>=0.115.12,<1.0.0",
   "librosa>=0.10.2.post1,<1.0.0",
   "numpy>=1.26.4,<3.0.0",
+  "openai-whisper>=20250625,<20260000",
   "pydantic>=2.11.3,<3.0.0",
   "soundfile>=0.13.1,<1.0.0",
   "sqlalchemy>=2.0.40,<3.0.0",

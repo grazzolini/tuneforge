@@ -82,11 +82,16 @@ All configuration is environment-driven (see [`app/config.py`](./app/config.py))
 | `TUNEFORGE_FFPROBE_PATH` | `ffprobe` | Override the `ffprobe` binary location. |
 | `TUNEFORGE_STEM_MODEL` | `htdemucs_ft` | Demucs model used for stem separation. |
 | `TUNEFORGE_STEM_DEVICE` | `auto` | One of `auto`, `cpu`, `mps`, `cuda`. `auto` prefers compatible CUDA, then MPS, then CPU. |
+| `TUNEFORGE_LYRICS_MODEL` | `turbo` | Whisper model used for lyrics generation. |
+| `TUNEFORGE_LYRICS_DEVICE` | `auto` | One of `auto`, `cpu`, `mps`, `cuda`. `auto` prefers compatible CUDA, then MPS, then CPU. |
+| `TUNEFORGE_LYRICS_CACHE_DIR` | `<data>/cache/lyrics` | Override where Whisper model weights are cached. |
 
 Default data directory:
 
 - macOS: `~/Library/Application Support/Tuneforge`
 - Linux: `~/.local/share/tuneforge`
+
+Lyrics models follow the same first-use download pattern as Demucs. The selected Whisper weights are downloaded on demand into the lyrics cache directory, then reused offline on later runs.
 
 ## Migrations
 

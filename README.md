@@ -1,6 +1,6 @@
 # Tuneforge
 
-Tuneforge is a local-first, open-source desktop app for musicians who want to learn, rehearse, and play along with songs. Drop in any track and Tuneforge will split it into vocals and backing instruments, work out the key, tempo, and chord progression, and let you shift the pitch, retune to a reference frequency, and export a custom version to practice with.
+Tuneforge is a local-first, open-source desktop app for musicians who want to learn, rehearse, and play along with songs. Drop in any track and Tuneforge will split it into vocals and backing instruments, work out the key, tempo, chord progression, and lyrics, and let you shift the pitch, retune to a reference frequency, follow the transcript during playback, and export a custom version to practice with.
 
 Think "AI-assisted song toolkit for the player at home" — but **fully local, single-user, and with no cloud component**. Every track stays on your machine, no account, no upload, no network round-trip after the initial model download.
 
@@ -12,6 +12,8 @@ Pre-1.0. The desktop dev flow (`pnpm dev`) is the supported way to run the app t
 
 - Import `mp3`, `wav`, `flac`, `m4a`, `aac`, `ogg`, `mp4`, and `webm`. `mp4` / `webm` are transcoded to a local WAV working file at import time.
 - Key, tempo, and chord-timeline analysis.
+- Local lyrics transcription with segment and word timestamps when available.
+- In-app lyrics editing with transcript refresh and playback follow.
 - Pitch transpose (semitones) and retune (target reference Hz).
 - Stem separation via a local Demucs backend (`htdemucs_ft` by default).
 - Preview rendering (cached) and export to `wav`, `mp3`, or `flac`.
@@ -97,6 +99,8 @@ Backend behavior is environment-driven. Full table is in [apps/backend/README.md
 | `TUNEFORGE_FFMPEG_PATH` / `TUNEFORGE_FFPROBE_PATH` | `ffmpeg` / `ffprobe` | Override binary lookup. |
 | `TUNEFORGE_STEM_MODEL` | `htdemucs_ft` | Demucs model. |
 | `TUNEFORGE_STEM_DEVICE` | `auto` | `auto` / `cpu` / `mps` / `cuda`. |
+| `TUNEFORGE_LYRICS_MODEL` | `turbo` | Whisper model for lyrics transcription. |
+| `TUNEFORGE_LYRICS_DEVICE` | `auto` | `auto` / `cpu` / `mps` / `cuda`. |
 
 Default data directory:
 

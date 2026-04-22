@@ -52,7 +52,26 @@ export type ThemeTokens = {
     buttonSecondaryBg: string;
     inputBg: string;
     focusRing: string;
+    sourceSelectorSecondaryText: string;
+    selectorCurrentSecondaryText: string;
+    selectorBadgeText: string;
+    selectorSelectedOptionText: string;
+    selectorSelectedDirectionText: string;
+    selectorCurrentMetaText: string;
+    selectorOpenKeyText: string;
+    selectorOpenMetaText: string;
   };
+};
+
+export type ThemeVariableDefinition = {
+  description?: string;
+  label: string;
+  variable: ThemeVariableName;
+};
+
+export type ThemeVariableSection = {
+  items: ThemeVariableDefinition[];
+  title: string;
 };
 
 export const themeTokens: Record<ThemeMode, ThemeTokens> = {
@@ -108,6 +127,14 @@ export const themeTokens: Record<ThemeMode, ThemeTokens> = {
       buttonSecondaryBg: "#13203A",
       inputBg: "#0C1424",
       focusRing: "#5D83C4",
+      sourceSelectorSecondaryText: "#BBAE97",
+      selectorCurrentSecondaryText: "#BDAE93",
+      selectorBadgeText: "#FCFDFE",
+      selectorSelectedOptionText: "#FDFDFE",
+      selectorSelectedDirectionText: "#F0BC65",
+      selectorCurrentMetaText: "#EFC47D",
+      selectorOpenKeyText: "#FDFDFE",
+      selectorOpenMetaText: "#C8AB79",
     },
   },
   light: {
@@ -162,6 +189,14 @@ export const themeTokens: Record<ThemeMode, ThemeTokens> = {
       buttonSecondaryBg: "#F8FAFD",
       inputBg: "#FFFFFF",
       focusRing: "#44679D",
+      sourceSelectorSecondaryText: "#9A6522",
+      selectorCurrentSecondaryText: "#9A6522",
+      selectorBadgeText: "#37537F",
+      selectorSelectedOptionText: "#142033",
+      selectorSelectedDirectionText: "#AA6E20",
+      selectorCurrentMetaText: "#A26921",
+      selectorOpenKeyText: "#142033",
+      selectorOpenMetaText: "#A26921",
     },
   },
 };
@@ -206,14 +241,136 @@ function buildThemeCssVariables(tokens: ThemeTokens) {
     "--component-button-secondary-bg": tokens.component.buttonSecondaryBg,
     "--component-input-bg": tokens.component.inputBg,
     "--component-focus-ring": tokens.component.focusRing,
+    "--component-source-selector-secondary-text": tokens.component.sourceSelectorSecondaryText,
+    "--component-selector-current-secondary-text": tokens.component.selectorCurrentSecondaryText,
+    "--component-selector-badge-text": tokens.component.selectorBadgeText,
+    "--component-selector-selected-option-text": tokens.component.selectorSelectedOptionText,
+    "--component-selector-selected-direction-text": tokens.component.selectorSelectedDirectionText,
+    "--component-selector-current-meta-text": tokens.component.selectorCurrentMetaText,
+    "--component-selector-open-key-text": tokens.component.selectorOpenKeyText,
+    "--component-selector-open-meta-text": tokens.component.selectorOpenMetaText,
   } satisfies Record<string, string>;
 }
 
-export const themeCssVariables: Record<ThemeMode, Record<string, string>> = {
-  dark: buildThemeCssVariables(themeTokens.dark),
-  light: buildThemeCssVariables(themeTokens.light),
+const darkThemeCssVariables = buildThemeCssVariables(themeTokens.dark);
+const lightThemeCssVariables = buildThemeCssVariables(themeTokens.light);
+
+export type ThemeVariableName = keyof typeof darkThemeCssVariables;
+export type ThemeModeOverrides = Partial<Record<ThemeVariableName, string>>;
+export type ThemeOverrides = Partial<Record<ThemeMode, ThemeModeOverrides>>;
+
+export const themeCssVariables: Record<ThemeMode, Record<ThemeVariableName, string>> = {
+  dark: darkThemeCssVariables,
+  light: lightThemeCssVariables,
 };
+
+const themeVariableNames = Object.keys(darkThemeCssVariables) as ThemeVariableName[];
+const themeVariableNameSet = new Set<string>(themeVariableNames);
+
+export const themeVariableSections: ThemeVariableSection[] = [
+  {
+    title: "Background",
+    items: [
+      { label: "App background", variable: "--color-bg-app" },
+      { label: "Canvas background", variable: "--color-bg-canvas" },
+      { label: "Panel background", variable: "--color-bg-panel" },
+      { label: "Elevated background", variable: "--color-bg-elevated" },
+      { label: "Inset background", variable: "--color-bg-inset" },
+    ],
+  },
+  {
+    title: "Text",
+    items: [
+      { label: "Primary text", variable: "--color-text-primary" },
+      { label: "Secondary text", variable: "--color-text-secondary" },
+      { label: "Muted text", variable: "--color-text-muted" },
+      { label: "Inverse text", variable: "--color-text-inverse" },
+    ],
+  },
+  {
+    title: "Border",
+    items: [
+      { label: "Subtle border", variable: "--color-border-subtle" },
+      { label: "Default border", variable: "--color-border-default" },
+      { label: "Strong border", variable: "--color-border-strong" },
+    ],
+  },
+  {
+    title: "Accent",
+    items: [
+      { label: "Cool accent", variable: "--color-accent-cool" },
+      { label: "Cool accent hover", variable: "--color-accent-cool-hover" },
+      { label: "Cool accent soft", variable: "--color-accent-cool-soft" },
+      { label: "Warm accent", variable: "--color-accent-warm" },
+      { label: "Warm accent strong", variable: "--color-accent-warm-strong" },
+      { label: "Warm accent deep", variable: "--color-accent-warm-deep" },
+      { label: "Warm accent soft", variable: "--color-accent-warm-soft" },
+    ],
+  },
+  {
+    title: "Interaction",
+    items: [
+      { label: "Hover surface", variable: "--color-interaction-hover" },
+      { label: "Focus ring", variable: "--color-interaction-focus-ring" },
+    ],
+  },
+  {
+    title: "State",
+    items: [
+      { label: "Success", variable: "--color-state-success" },
+      { label: "Warning", variable: "--color-state-warning" },
+      { label: "Danger", variable: "--color-state-danger" },
+      { label: "Info", variable: "--color-state-info" },
+    ],
+  },
+  {
+    title: "Components",
+    items: [
+      { label: "Sidebar background", variable: "--component-sidebar-bg" },
+      { label: "Card background", variable: "--component-card-bg" },
+      { label: "Card selected", variable: "--component-card-selected-bg" },
+      { label: "Inspector background", variable: "--component-inspector-bg" },
+      { label: "Playback active", variable: "--component-playback-active" },
+      { label: "Playback track", variable: "--component-playback-track" },
+      { label: "Chord active", variable: "--component-chord-active" },
+      { label: "Stem muted", variable: "--component-stem-muted" },
+      { label: "Stem solo", variable: "--component-stem-solo" },
+      { label: "Primary button", variable: "--component-button-primary-bg" },
+      { label: "Secondary button", variable: "--component-button-secondary-bg" },
+      { label: "Input background", variable: "--component-input-bg" },
+      { label: "Component focus ring", variable: "--component-focus-ring" },
+    ],
+  },
+  {
+    title: "Selectors",
+    items: [
+      { label: "Source selector secondary", variable: "--component-source-selector-secondary-text" },
+      { label: "Selector current secondary", variable: "--component-selector-current-secondary-text" },
+      { label: "Selector badge text", variable: "--component-selector-badge-text" },
+      { label: "Selected option text", variable: "--component-selector-selected-option-text" },
+      { label: "Selected direction", variable: "--component-selector-selected-direction-text" },
+      { label: "Current meta text", variable: "--component-selector-current-meta-text" },
+      { label: "Open key text", variable: "--component-selector-open-key-text" },
+      { label: "Open meta text", variable: "--component-selector-open-meta-text" },
+    ],
+  },
+];
 
 export function getThemeCssVariables(theme: ThemeMode) {
   return themeCssVariables[theme];
+}
+
+export function getThemeVariableValue(theme: ThemeMode, variable: ThemeVariableName) {
+  return themeCssVariables[theme][variable];
+}
+
+export function isThemeVariableName(value: string): value is ThemeVariableName {
+  return themeVariableNameSet.has(value);
+}
+
+export function resolveThemeCssVariables(theme: ThemeMode, overrides?: ThemeModeOverrides) {
+  return {
+    ...themeCssVariables[theme],
+    ...(overrides ?? {}),
+  };
 }

@@ -15,6 +15,7 @@ const {
   mockOpen,
   mockSave,
   mockConfirm,
+  mockInvoke,
   mockListProjects,
   mockImportProject,
   mockGetProject,
@@ -40,6 +41,7 @@ const {
     artifactsByProject: Record<string, Array<Record<string, unknown>>>;
     pendingPreviewArtifactsByProject: Record<string, Array<Record<string, unknown>>>;
     jobs: Array<Record<string, unknown>>;
+    snapshotFiles: Record<string, string>;
     nextProjectId: number;
     nextArtifactId: number;
     nextJobId: number;
@@ -194,6 +196,7 @@ const {
           updated_at: createdAt,
         },
       ],
+      snapshotFiles: {},
       nextProjectId: 200,
       nextArtifactId: 200,
       nextJobId: 200,
@@ -214,6 +217,28 @@ const {
   const mockOpen = vi.fn(async (): Promise<string | string[] | null> => null);
   const mockSave = vi.fn(async (): Promise<string | null> => null);
   const mockConfirm = vi.fn(async (): Promise<boolean> => true);
+  const mockInvoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+    if (command === "backend_base_url") {
+      return "http://127.0.0.1:8765";
+    }
+
+    if (command === "write_settings_snapshot_file") {
+      const path = String(args?.path ?? "");
+      state.snapshotFiles[path] = String(args?.contents ?? "");
+      return null;
+    }
+
+    if (command === "read_settings_snapshot_file") {
+      const path = String(args?.path ?? "");
+      const contents = state.snapshotFiles[path];
+      if (contents === undefined) {
+        throw new Error(`Missing snapshot file: ${path}`);
+      }
+      return contents;
+    }
+
+    throw new Error(`Unexpected invoke command: ${command}`);
+  });
   const mockGetHealth = vi.fn(async () => ({
     status: "ok",
     api_base_url: "http://127.0.0.1:8765/api/v1",
@@ -454,6 +479,7 @@ const {
     mockOpen,
     mockSave,
     mockConfirm,
+    mockInvoke,
     mockListProjects,
     mockImportProject,
     mockGetProject,
@@ -477,6 +503,10 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: mockOpen,
   save: mockSave,
   confirm: mockConfirm,
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: mockInvoke,
 }));
 
 vi.mock("./lib/api", async (importOriginal) => {
@@ -638,6 +668,7 @@ describe("Desktop app flows", () => {
     mockOpen.mockReset();
     mockSave.mockReset();
     mockConfirm.mockReset();
+    mockInvoke.mockClear();
     mockConfirm.mockResolvedValue(true);
     mockListProjects.mockClear();
     mockImportProject.mockClear();
@@ -1683,23 +1714,18 @@ describe("Desktop app flows", () => {
   it("uses new default appearance and visibility settings", async () => {
     renderApp(["/settings"]);
 
-    expect(await screen.findByRole("heading", { name: "Playback Surface" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Theme")).toHaveValue("system");
-    expect(screen.getByLabelText("Information Density")).toHaveValue("minimal");
-    expect(screen.getByLabelText("Layout Density")).toHaveValue("compact");
-    expect(screen.getByLabelText("Enharmonic Display")).toHaveValue("auto");
-    expect(screen.getByLabelText("Show helper text by default")).not.toBeChecked();
-    expect(screen.getByLabelText("Open inspector by default")).not.toBeChecked();
-    expect(screen.getByLabelText("Collapse sources rail by default")).not.toBeChecked();
+    expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Follow system/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Minimal/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Auto by key/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Open inspector by default/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /^Collapse sources rail by default/ })).toHaveAttribute("aria-pressed", "false");
     expect(window.localStorage.getItem("tuneforge.theme-preference")).toBe("system");
     expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}")).toMatchObject({
       informationDensity: "minimal",
-      layoutDensity: "compact",
       enharmonicDisplayMode: "auto",
-      helperTextVisible: false,
       defaultInspectorOpen: false,
       defaultSourcesRailCollapsed: false,
-      metadataRevealMode: "expand",
     });
   });
 
@@ -1773,17 +1799,15 @@ describe("Desktop app flows", () => {
     const user = userEvent.setup();
     renderApp(["/settings"]);
 
-    expect(await screen.findByRole("heading", { name: "Playback Surface" })).toBeInTheDocument();
-    expect(await screen.findByText("/tmp/tuneforge")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
 
-    await user.selectOptions(screen.getByLabelText("Theme"), "light");
-    await user.selectOptions(screen.getByLabelText("Information Density"), "detailed");
-    await user.selectOptions(screen.getByLabelText("Layout Density"), "comfortable");
-    await user.selectOptions(screen.getByLabelText("Enharmonic Display"), "sharps");
-    await user.click(screen.getByLabelText("Show helper text by default"));
-    await user.click(screen.getByLabelText("Open inspector by default"));
-    await user.click(screen.getByLabelText("Collapse sources rail by default"));
-    await user.selectOptions(screen.getByLabelText("Metadata Reveal"), "hover");
+    await user.click(screen.getByRole("button", { name: /^Light/ }));
+    await user.click(screen.getByRole("button", { name: /^Detailed/ }));
+    await user.click(screen.getByRole("button", { name: /^Prefer sharps/ }));
+    await user.click(screen.getByRole("button", { name: /^Open inspector by default/ }));
+    await user.click(screen.getByRole("button", { name: /^Collapse sources rail by default/ }));
+    await user.click(screen.getByText("Show diagnostics"));
+    expect(await screen.findByText("/tmp/tuneforge")).toBeInTheDocument();
 
     expect(document.documentElement).toHaveAttribute("data-theme", "light");
     expect(window.localStorage.getItem("tuneforge.theme-preference")).toBe("light");
@@ -1791,12 +1815,9 @@ describe("Desktop app flows", () => {
     expect(document.documentElement.style.getPropertyValue("--component-playback-active")).toBe("#D9861A");
     expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}")).toMatchObject({
       informationDensity: "detailed",
-      layoutDensity: "comfortable",
       enharmonicDisplayMode: "sharps",
-      helperTextVisible: true,
       defaultInspectorOpen: true,
       defaultSourcesRailCollapsed: true,
-      metadataRevealMode: "hover",
     });
   });
 
@@ -1804,46 +1825,38 @@ describe("Desktop app flows", () => {
     const user = userEvent.setup();
     renderApp(["/settings"]);
 
-    expect(await screen.findByRole("heading", { name: "Playback Surface" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
 
-    await user.selectOptions(screen.getByLabelText("Theme"), "light");
-    await user.selectOptions(screen.getByLabelText("Information Density"), "detailed");
-    await user.selectOptions(screen.getByLabelText("Layout Density"), "comfortable");
-    await user.selectOptions(screen.getByLabelText("Enharmonic Display"), "sharps");
-    await user.click(screen.getByLabelText("Show helper text by default"));
-    await user.click(screen.getByLabelText("Open inspector by default"));
-    await user.click(screen.getByLabelText("Collapse sources rail by default"));
-    await user.selectOptions(screen.getByLabelText("Metadata Reveal"), "hover");
+    await user.click(screen.getByRole("button", { name: /^Light/ }));
+    await user.click(screen.getByRole("button", { name: /^Detailed/ }));
+    await user.click(screen.getByRole("button", { name: /^Prefer sharps/ }));
+    await user.click(screen.getByRole("button", { name: /^Open inspector by default/ }));
+    await user.click(screen.getByRole("button", { name: /^Collapse sources rail by default/ }));
 
     await user.click(screen.getByRole("button", { name: "Reset Appearance" }));
-    expect(screen.getByLabelText("Theme")).toHaveValue("system");
-    expect(screen.getByLabelText("Information Density")).toHaveValue("minimal");
-    expect(screen.getByLabelText("Layout Density")).toHaveValue("compact");
-    expect(screen.getByLabelText("Enharmonic Display")).toHaveValue("auto");
-    expect(screen.getByLabelText("Show helper text by default")).toBeChecked();
-    expect(screen.getByLabelText("Open inspector by default")).toBeChecked();
-    expect(screen.getByLabelText("Collapse sources rail by default")).toBeChecked();
-    expect(screen.getByLabelText("Metadata Reveal")).toHaveValue("hover");
+    expect(screen.getByRole("button", { name: /^Follow system/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Minimal/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Prefer sharps/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Open inspector by default/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Collapse sources rail by default/ })).toHaveAttribute("aria-pressed", "true");
 
-    await user.click(screen.getByRole("button", { name: "Reset Visibility" }));
-    expect(screen.getByLabelText("Show helper text by default")).not.toBeChecked();
-    expect(screen.getByLabelText("Open inspector by default")).not.toBeChecked();
-    expect(screen.getByLabelText("Collapse sources rail by default")).not.toBeChecked();
-    expect(screen.getByLabelText("Metadata Reveal")).toHaveValue("expand");
+    await user.click(screen.getByRole("button", { name: "Reset Notation" }));
+    expect(screen.getByRole("button", { name: /^Auto by key/ })).toHaveAttribute("aria-pressed", "true");
 
-    await user.selectOptions(screen.getByLabelText("Theme"), "dark");
-    await user.selectOptions(screen.getByLabelText("Enharmonic Display"), "dual");
-    await user.click(screen.getByLabelText("Show helper text by default"));
+    await user.click(screen.getByRole("button", { name: "Reset Playback Defaults" }));
+    expect(screen.getByRole("button", { name: /^Open inspector by default/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /^Collapse sources rail by default/ })).toHaveAttribute("aria-pressed", "false");
+
+    await user.click(screen.getByRole("button", { name: /^Dark/ }));
+    await user.click(screen.getByRole("button", { name: /^Dual labels/ }));
+    await user.click(screen.getByRole("button", { name: /^Open inspector by default/ }));
     await user.click(screen.getByRole("button", { name: "Reset All Settings" }));
 
-    expect(screen.getByLabelText("Theme")).toHaveValue("system");
-    expect(screen.getByLabelText("Information Density")).toHaveValue("minimal");
-    expect(screen.getByLabelText("Layout Density")).toHaveValue("compact");
-    expect(screen.getByLabelText("Enharmonic Display")).toHaveValue("auto");
-    expect(screen.getByLabelText("Show helper text by default")).not.toBeChecked();
-    expect(screen.getByLabelText("Open inspector by default")).not.toBeChecked();
-    expect(screen.getByLabelText("Collapse sources rail by default")).not.toBeChecked();
-    expect(screen.getByLabelText("Metadata Reveal")).toHaveValue("expand");
+    expect(screen.getByRole("button", { name: /^Follow system/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Minimal/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Auto by key/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Open inspector by default/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /^Collapse sources rail by default/ })).toHaveAttribute("aria-pressed", "false");
   });
 
   it("keeps background playback available on settings and clears it when stopped", async () => {
@@ -1857,7 +1870,7 @@ describe("Desktop app flows", () => {
     await user.click(screen.getByRole("button", { name: "Play playback" }));
     await user.click(screen.getByRole("link", { name: "Settings" }));
 
-    expect(await screen.findByRole("heading", { name: "Playback Surface" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
     expect(screen.getByText("Background Playback")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Pause background playback" })).toBeInTheDocument();
 
@@ -1883,7 +1896,7 @@ describe("Desktop app flows", () => {
     await user.click(screen.getByRole("button", { name: "Play playback" }));
     await user.click(screen.getByRole("link", { name: "Settings" }));
 
-    expect(await screen.findByRole("heading", { name: "Playback Surface" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
     expect(screen.getByText("Background Playback")).toBeInTheDocument();
 
     await user.click(screen.getByRole("link", { name: "Open Demo Song project" }));
@@ -1948,8 +1961,8 @@ describe("Desktop app flows", () => {
 
     renderApp(["/settings"]);
 
-    expect(await screen.findByRole("heading", { name: "Playback Surface" })).toBeInTheDocument();
-    await user.selectOptions(screen.getByLabelText("Theme"), "system");
+    expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^Follow system/ }));
 
     expect(document.documentElement).toHaveAttribute("data-theme", "light");
     await act(async () => {
@@ -1963,13 +1976,98 @@ describe("Desktop app flows", () => {
     expect(window.localStorage.getItem("tuneforge.theme-preference")).toBe("system");
   });
 
-  it("renders the theme preview with dark and light samples", async () => {
+  it("opens theme studio and persists local theme overrides", async () => {
+    const user = userEvent.setup();
+    renderApp(["/settings"]);
+
+    expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
+    await user.click(screen.getByRole("link", { name: "Open Theme Studio" }));
+
+    expect(await screen.findByRole("heading", { name: "Metal / Heat Studio" })).toBeInTheDocument();
+    const appBackgroundInput = screen.getByLabelText("App background hex");
+    fireEvent.change(appBackgroundInput, { target: { value: "#123456" } });
+    fireEvent.blur(appBackgroundInput);
+
+    expect(document.documentElement.style.getPropertyValue("--color-bg-app")).toBe("#123456");
+    expect(JSON.parse(window.localStorage.getItem("tuneforge.theme-overrides.v1") ?? "{}")).toMatchObject({
+      light: {
+        "--color-bg-app": "#123456",
+      },
+    });
+
+    await user.click(screen.getByRole("button", { name: "Reset Light Theme" }));
+
+    expect(window.localStorage.getItem("tuneforge.theme-overrides.v1")).toBeNull();
+    expect(document.documentElement.style.getPropertyValue("--color-bg-app")).toBe("#F4F7FB");
+  });
+
+  it("keeps legacy theme preview route pointed at theme studio", async () => {
     renderApp(["/settings/theme-preview"]);
 
-    expect(await screen.findByRole("heading", { name: "Metal / Heat System" })).toBeInTheDocument();
-    expect(screen.getByText("Cold base. Warm action.")).toBeInTheDocument();
-    expect(screen.getByText("Paper, metal, and control.")).toBeInTheDocument();
-    expect(screen.getAllByText("Playback Active")).toHaveLength(2);
+    expect(await screen.findByRole("heading", { name: "Metal / Heat Studio" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Back to Settings" })).toHaveAttribute("href", "/settings");
   });
+
+  it("shows selector samples inside theme studio preview", async () => {
+    renderApp(["/settings/theme-studio"]);
+
+    expect(await screen.findByRole("heading", { name: "Metal / Heat Studio" })).toBeInTheDocument();
+    expect(screen.getByRole("listbox", { name: /source selector sample/i })).toBeInTheDocument();
+    expect(screen.getByRole("listbox", { name: /target selector sample/i })).toBeInTheDocument();
+  });
+
+  it("exports and imports a full settings snapshot", async () => {
+    const user = userEvent.setup();
+    mockSave.mockResolvedValue("/tmp/tuneforge-settings.json");
+    mockOpen.mockResolvedValue("/tmp/tuneforge-settings.json");
+
+    renderApp(["/settings"]);
+
+    expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^Dark\b/i }));
+    await user.click(screen.getByRole("button", { name: /^Detailed\b/i }));
+    await user.click(screen.getByRole("button", { name: /^Prefer sharps\b/i }));
+    await user.click(screen.getByRole("button", { name: /Open inspector by default/i }));
+    await user.click(screen.getByRole("button", { name: /Collapse sources rail by default/i }));
+    await user.click(screen.getByRole("link", { name: "Open Theme Studio" }));
+
+    expect(await screen.findByRole("heading", { name: "Metal / Heat Studio" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("App background hex"), { target: { value: "#123456" } });
+    fireEvent.blur(screen.getByLabelText("App background hex"));
+
+    await user.click(screen.getByRole("link", { name: "Back to Settings" }));
+    expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Export Settings" }));
+
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "write_settings_snapshot_file",
+        expect.objectContaining({ path: "/tmp/tuneforge-settings.json" }),
+      ),
+    );
+    expect(screen.getByText("Settings exported.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Reset All Settings" }));
+
+    await waitFor(() =>
+      expect(document.documentElement).toHaveAttribute("data-theme", "light"),
+    );
+    expect(document.documentElement.style.getPropertyValue("--color-bg-app")).toBe("#F4F7FB");
+    expect(window.localStorage.getItem("tuneforge.theme-overrides.v1")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Import Settings" }));
+
+    await waitFor(() =>
+      expect(document.documentElement).toHaveAttribute("data-theme", "dark"),
+    );
+    expect(screen.getByText("Settings imported.")).toBeInTheDocument();
+    expect(screen.getAllByText("Detailed").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Prefer sharps")).toHaveLength(2);
+    expect(screen.getByText("Open on load")).toBeInTheDocument();
+    expect(screen.getByText("Collapsed")).toBeInTheDocument();
+    expect(document.documentElement.style.getPropertyValue("--color-bg-app")).toBe("#123456");
+  });
+
 });

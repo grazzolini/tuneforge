@@ -2,6 +2,7 @@
 
 use std::{
     env,
+    fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
@@ -40,6 +41,16 @@ impl BackendRuntime {
 #[tauri::command]
 fn backend_base_url(runtime: State<'_, BackendRuntime>) -> String {
     runtime.base_url.clone()
+}
+
+#[tauri::command]
+fn read_settings_snapshot_file(path: String) -> Result<String, String> {
+    fs::read_to_string(&path).map_err(|error| format!("Could not read settings file: {error}"))
+}
+
+#[tauri::command]
+fn write_settings_snapshot_file(path: String, contents: String) -> Result<(), String> {
+    fs::write(&path, contents).map_err(|error| format!("Could not write settings file: {error}"))
 }
 
 fn allocate_port() -> Result<u16, Box<dyn std::error::Error>> {
@@ -153,7 +164,11 @@ fn main() {
             app.manage(runtime);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![backend_base_url])
+        .invoke_handler(tauri::generate_handler![
+            backend_base_url,
+            read_settings_snapshot_file,
+            write_settings_snapshot_file
+        ])
         .build(tauri::generate_context!())
         .expect("error while building tuneforge");
 

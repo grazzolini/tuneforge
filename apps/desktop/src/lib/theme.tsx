@@ -7,7 +7,14 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { getThemeCssVariables, type ThemeMode } from "./themeTokens";
+import {
+  getThemeVariableValue,
+  isThemeVariableName,
+  resolveThemeCssVariables,
+  type ThemeMode,
+  type ThemeOverrides,
+  type ThemeVariableName,
+} from "./themeTokens";
 
 export type ThemePreference = "dark" | "light" | "system";
 export type EffectiveTheme = ThemeMode;
@@ -15,14 +22,21 @@ export const DEFAULT_THEME_PREFERENCE: ThemePreference = "system";
 
 type ThemeContextValue = {
   effectiveTheme: EffectiveTheme;
+  clearThemeOverride: (theme: ThemeMode, variable: ThemeVariableName) => void;
+  getThemeVariables: (theme: ThemeMode) => Record<ThemeVariableName, string>;
+  replaceThemeState: (state: { themeOverrides: ThemeOverrides; themePreference: ThemePreference }) => void;
+  resetThemeOverrides: (theme?: ThemeMode) => void;
   themePreference: ThemePreference;
+  themeOverrides: ThemeOverrides;
+  setThemeOverride: (theme: ThemeMode, variable: ThemeVariableName, value: string) => void;
   setThemePreference: (theme: ThemePreference) => void;
 };
 
-const STORAGE_KEY = "tuneforge.theme-preference";
+const THEME_PREFERENCE_STORAGE_KEY = "tuneforge.theme-preference";
+const THEME_OVERRIDES_STORAGE_KEY = "tuneforge.theme-overrides.v1";
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
-function normalizeThemePreference(value: string | null): ThemePreference {
+export function normalizeThemePreference(value: string | null): ThemePreference {
   if (value === "dark" || value === "light" || value === "system") {
     return value;
   }
@@ -33,7 +47,54 @@ function readThemePreference(): ThemePreference {
   if (typeof window === "undefined") {
     return DEFAULT_THEME_PREFERENCE;
   }
-  return normalizeThemePreference(window.localStorage.getItem(STORAGE_KEY));
+  return normalizeThemePreference(window.localStorage.getItem(THEME_PREFERENCE_STORAGE_KEY));
+}
+
+export function normalizeThemeOverrides(value: unknown): ThemeOverrides {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const normalized: ThemeOverrides = {};
+
+  for (const mode of ["dark", "light"] satisfies ThemeMode[]) {
+    const modeValue = candidate[mode];
+    if (!modeValue || typeof modeValue !== "object") {
+      continue;
+    }
+
+    const modeOverrides: Partial<Record<ThemeVariableName, string>> = {};
+    for (const [variable, variableValue] of Object.entries(modeValue)) {
+      if (!isThemeVariableName(variable) || typeof variableValue !== "string") {
+        continue;
+      }
+      modeOverrides[variable] = variableValue;
+    }
+
+    if (Object.keys(modeOverrides).length) {
+      normalized[mode] = modeOverrides;
+    }
+  }
+
+  return normalized;
+}
+
+function readThemeOverrides(): ThemeOverrides {
+  if (typeof window === "undefined") {
+    return {};
+  }
+
+  const storedValue = window.localStorage.getItem(THEME_OVERRIDES_STORAGE_KEY);
+  if (!storedValue) {
+    return {};
+  }
+
+  try {
+    return normalizeThemeOverrides(JSON.parse(storedValue));
+  } catch {
+    return {};
+  }
 }
 
 function readSystemTheme(): EffectiveTheme {
@@ -43,7 +104,7 @@ function readSystemTheme(): EffectiveTheme {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
-function applyTheme(theme: EffectiveTheme) {
+function applyTheme(theme: EffectiveTheme, themeOverrides: ThemeOverrides) {
   if (typeof document === "undefined") {
     return;
   }
@@ -51,13 +112,14 @@ function applyTheme(theme: EffectiveTheme) {
   root.dataset.theme = theme;
   root.style.colorScheme = theme;
 
-  for (const [property, value] of Object.entries(getThemeCssVariables(theme))) {
+  for (const [property, value] of Object.entries(resolveThemeCssVariables(theme, themeOverrides[theme]))) {
     root.style.setProperty(property, value);
   }
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [themePreference, setThemePreference] = useState<ThemePreference>(readThemePreference);
+  const [themeOverrides, setThemeOverrides] = useState<ThemeOverrides>(readThemeOverrides);
   const [systemTheme, setSystemTheme] = useState<EffectiveTheme>(readSystemTheme);
   const effectiveTheme = themePreference === "system" ? systemTheme : themePreference;
 
@@ -88,16 +150,80 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   useLayoutEffect(() => {
     if (typeof window !== "undefined") {
-      window.localStorage.setItem(STORAGE_KEY, themePreference);
+      window.localStorage.setItem(THEME_PREFERENCE_STORAGE_KEY, themePreference);
+      if (Object.keys(themeOverrides.dark ?? {}).length || Object.keys(themeOverrides.light ?? {}).length) {
+        window.localStorage.setItem(THEME_OVERRIDES_STORAGE_KEY, JSON.stringify(themeOverrides));
+      } else {
+        window.localStorage.removeItem(THEME_OVERRIDES_STORAGE_KEY);
+      }
     }
-    applyTheme(effectiveTheme);
-  }, [effectiveTheme, themePreference]);
+    applyTheme(effectiveTheme, themeOverrides);
+  }, [effectiveTheme, themeOverrides, themePreference]);
 
   return (
     <ThemeContext.Provider
       value={{
         effectiveTheme,
+        clearThemeOverride: (theme, variable) => {
+          setThemeOverrides((current) => {
+            const currentModeOverrides = current[theme];
+            if (!currentModeOverrides?.[variable]) {
+              return current;
+            }
+
+            const nextModeOverrides = { ...currentModeOverrides };
+            delete nextModeOverrides[variable];
+
+            const next = { ...current };
+            if (Object.keys(nextModeOverrides).length) {
+              next[theme] = nextModeOverrides;
+            } else {
+              delete next[theme];
+            }
+            return next;
+          });
+        },
+        getThemeVariables: (theme) => resolveThemeCssVariables(theme, themeOverrides[theme]),
+        replaceThemeState: ({ themeOverrides: nextThemeOverrides, themePreference: nextThemePreference }) => {
+          setThemePreference(normalizeThemePreference(nextThemePreference));
+          setThemeOverrides(normalizeThemeOverrides(nextThemeOverrides));
+        },
+        resetThemeOverrides: (theme) => {
+          setThemeOverrides((current) => {
+            if (!theme) {
+              return {};
+            }
+            if (!current[theme]) {
+              return current;
+            }
+            const next = { ...current };
+            delete next[theme];
+            return next;
+          });
+        },
         themePreference,
+        themeOverrides,
+        setThemeOverride: (theme, variable, value) => {
+          const normalizedValue = value.trim().toUpperCase();
+          setThemeOverrides((current) => {
+            const defaultValue = getThemeVariableValue(theme, variable).toUpperCase();
+            const nextModeOverrides = { ...(current[theme] ?? {}) };
+
+            if (!normalizedValue || normalizedValue === defaultValue) {
+              delete nextModeOverrides[variable];
+            } else {
+              nextModeOverrides[variable] = normalizedValue;
+            }
+
+            const next = { ...current };
+            if (Object.keys(nextModeOverrides).length) {
+              next[theme] = nextModeOverrides;
+            } else {
+              delete next[theme];
+            }
+            return next;
+          });
+        },
         setThemePreference,
       }}
     >

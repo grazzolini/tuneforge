@@ -25,7 +25,7 @@ function formatUpdatedAt(value: string) {
 }
 
 function ProjectCard({ project }: { project: ProjectSchema }) {
-  const { informationDensity, metadataRevealMode } = usePreferences();
+  const { informationDensity } = usePreferences();
   const updatedAtLabel = formatUpdatedAt(project.updated_at);
   const normalizedUpdatedAt = normalizeApiDateTime(project.updated_at);
 
@@ -65,28 +65,21 @@ function ProjectCard({ project }: { project: ProjectSchema }) {
           ) : null}
         </div>
 
-        {metadataRevealMode !== "expand" ? (
-          <p className="artifact-meta" title={project.source_path}>
-            Hover for source path
-          </p>
-        ) : null}
       </Link>
 
-      {metadataRevealMode === "expand" ? (
-        <details className="card-details">
-          <summary>Show file details</summary>
-          <dl className="details-grid details-grid--single-column">
-            <div>
-              <dt>Original Source</dt>
-              <dd className="path">{project.source_path}</dd>
-            </div>
-            <div>
-              <dt>Imported Audio</dt>
-              <dd className="path">{project.imported_path}</dd>
-            </div>
-          </dl>
-        </details>
-      ) : null}
+      <details className="card-details">
+        <summary>Show file details</summary>
+        <dl className="details-grid details-grid--single-column">
+          <div>
+            <dt>Original Source</dt>
+            <dd className="path">{project.source_path}</dd>
+          </div>
+          <div>
+            <dt>Imported Audio</dt>
+            <dd className="path">{project.imported_path}</dd>
+          </div>
+        </dl>
+      </details>
     </article>
   );
 }
@@ -94,10 +87,10 @@ function ProjectCard({ project }: { project: ProjectSchema }) {
 export function LibraryView() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { helperTextVisible, informationDensity } = usePreferences();
+  const { informationDensity } = usePreferences();
   const [searchDraft, setSearchDraft] = useState("");
   const deferredSearch = useDeferredValue(searchDraft.trim());
-  const showSubtitle = helperTextVisible && informationDensity !== "minimal";
+  const showSubtitle = informationDensity !== "minimal";
 
   const projectsQuery = useQuery({
     queryKey: ["projects", deferredSearch],

@@ -10,6 +10,7 @@ const {
   setProjects,
   setProjectAnalysis,
   setProjectChords,
+  setProjectLyrics,
   setDeferredPreviewCompletion,
   flushPendingPreview,
   mockOpen,
@@ -21,12 +22,15 @@ const {
   mockGetProject,
   mockGetAnalysis,
   mockGetChords,
+  mockGetLyrics,
   mockListArtifacts,
   mockListJobs,
   mockCreateChords,
+  mockCreateLyrics,
   mockCreatePreview,
   mockCreateStems,
   mockAnalyzeProject,
+  mockUpdateLyrics,
   mockUpdateProject,
   mockCreateExport,
   mockDeleteArtifact,
@@ -38,6 +42,7 @@ const {
     projects: Array<Record<string, unknown>>;
     analysisByProject: Record<string, Record<string, unknown> | null>;
     chordsByProject: Record<string, Record<string, unknown>>;
+    lyricsByProject: Record<string, Record<string, unknown>>;
     artifactsByProject: Record<string, Array<Record<string, unknown>>>;
     pendingPreviewArtifactsByProject: Record<string, Array<Record<string, unknown>>>;
     jobs: Array<Record<string, unknown>>;
@@ -96,6 +101,47 @@ const {
     };
   }
 
+  function makeLyricsTranscript(projectId: string) {
+    const segments = [
+      {
+        start_seconds: 0,
+        end_seconds: 8,
+        text: "Hello from the first line",
+        words: [
+          { text: "Hello", start_seconds: 0, end_seconds: 1, confidence: 0.92 },
+          { text: "from", start_seconds: 1, end_seconds: 2, confidence: 0.88 },
+          { text: "the", start_seconds: 2, end_seconds: 3, confidence: 0.9 },
+          { text: "first", start_seconds: 3, end_seconds: 4.5, confidence: 0.91 },
+          { text: "line", start_seconds: 4.5, end_seconds: 6, confidence: 0.9 },
+        ],
+      },
+      {
+        start_seconds: 8,
+        end_seconds: 16,
+        text: "Second lyric line stays steady",
+        words: [
+          { text: "Second", start_seconds: 8, end_seconds: 9.4, confidence: 0.87 },
+          { text: "lyric", start_seconds: 9.4, end_seconds: 10.8, confidence: 0.85 },
+          { text: "line", start_seconds: 10.8, end_seconds: 12, confidence: 0.9 },
+          { text: "stays", start_seconds: 12, end_seconds: 13.4, confidence: 0.84 },
+          { text: "steady", start_seconds: 13.4, end_seconds: 15.2, confidence: 0.86 },
+        ],
+      },
+    ];
+
+    return {
+      project_id: projectId,
+      backend: "openai-whisper",
+      source_artifact_id: "art_source",
+      source_kind: "ai",
+      source_segments: clone(segments),
+      segments: clone(segments),
+      has_user_edits: false,
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+  }
+
   function setProjects(projects: Array<Record<string, unknown>>) {
     state.projects = clone(projects);
   }
@@ -106,6 +152,10 @@ const {
 
   function setProjectChords(projectId: string, chords: Record<string, unknown>) {
     state.chordsByProject[projectId] = clone(chords);
+  }
+
+  function setProjectLyrics(projectId: string, lyrics: Record<string, unknown>) {
+    state.lyricsByProject[projectId] = clone(lyrics);
   }
 
   function setDeferredPreviewCompletion(value: boolean) {
@@ -147,6 +197,9 @@ const {
       },
       chordsByProject: {
         proj_123: makeChordTimeline("proj_123"),
+      },
+      lyricsByProject: {
+        proj_123: makeLyricsTranscript("proj_123"),
       },
       artifactsByProject: {
         proj_123: [
@@ -295,6 +348,21 @@ const {
       },
     ),
   );
+  const mockGetLyrics = vi.fn(async (projectId: string) =>
+    clone(
+      state.lyricsByProject[projectId] ?? {
+        project_id: projectId,
+        backend: null,
+        source_artifact_id: null,
+        source_kind: null,
+        source_segments: [],
+        segments: [],
+        has_user_edits: false,
+        created_at: null,
+        updated_at: null,
+      },
+    ),
+  );
   const mockListArtifacts = vi.fn(async (projectId: string) => ({ artifacts: clone(state.artifactsByProject[projectId] ?? []) }));
   const mockListJobs = vi.fn(async () => ({ jobs: clone(state.jobs) }));
   const mockCreateChords = vi.fn(async (projectId: string, body?: Record<string, unknown>) => {
@@ -304,6 +372,22 @@ const {
       id: `job_${state.nextJobId++}`,
       project_id: projectId,
       type: "chords",
+      status: "completed",
+      progress: 100,
+      error_message: null,
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    state.jobs.unshift(job);
+    return { job: clone(job) };
+  });
+  const mockCreateLyrics = vi.fn(async (projectId: string, body?: { force?: boolean }) => {
+    void body;
+    state.lyricsByProject[projectId] = makeLyricsTranscript(projectId);
+    const job = {
+      id: `job_${state.nextJobId++}`,
+      project_id: projectId,
+      type: "lyrics",
       status: "completed",
       progress: 100,
       error_message: null,
@@ -434,6 +518,47 @@ const {
     project.updated_at = createdAt;
     return { project: clone(project) };
   });
+  const mockUpdateLyrics = vi.fn(async (projectId: string, body: { segments: Array<{ text: string }> }) => {
+    const current = clone(
+      state.lyricsByProject[projectId] ?? {
+        project_id: projectId,
+        backend: "openai-whisper",
+        source_artifact_id: "art_source",
+        source_kind: "ai",
+        source_segments: [],
+        segments: [],
+        has_user_edits: false,
+        created_at: createdAt,
+        updated_at: createdAt,
+      },
+    ) as {
+      source_segments: Array<Record<string, unknown>>;
+      segments: Array<Record<string, unknown>>;
+      has_user_edits: boolean;
+      updated_at: string;
+    };
+
+    current.segments = current.segments.map((segment, index) => {
+      const nextText = body.segments[index]?.text ?? String(segment.text ?? "");
+      const sourceSegment = current.source_segments[index] ?? null;
+      const nextSegment: Record<string, unknown> & { text: string; words?: unknown } = {
+        ...segment,
+        text: nextText,
+      };
+      if (sourceSegment && nextText === sourceSegment.text) {
+        return clone(sourceSegment);
+      }
+      if (nextText !== segment.text) {
+        delete nextSegment.words;
+      }
+      return nextSegment;
+    });
+    current.has_user_edits =
+      JSON.stringify(current.segments) !== JSON.stringify(current.source_segments);
+    current.updated_at = createdAt;
+    state.lyricsByProject[projectId] = current;
+    return clone(current);
+  });
   const mockCreateExport = vi.fn(async (projectId: string, body: Record<string, unknown>) => {
     const job = {
       id: `job_${state.nextJobId++}`,
@@ -474,6 +599,7 @@ const {
     setProjects,
     setProjectAnalysis,
     setProjectChords,
+    setProjectLyrics,
     setDeferredPreviewCompletion,
     flushPendingPreview,
     mockOpen,
@@ -485,12 +611,15 @@ const {
     mockGetProject,
     mockGetAnalysis,
     mockGetChords,
+    mockGetLyrics,
     mockListArtifacts,
     mockListJobs,
     mockCreateChords,
+    mockCreateLyrics,
     mockCreatePreview,
     mockCreateStems,
     mockAnalyzeProject,
+    mockUpdateLyrics,
     mockUpdateProject,
     mockCreateExport,
     mockDeleteArtifact,
@@ -521,12 +650,15 @@ vi.mock("./lib/api", async (importOriginal) => {
       getProject: mockGetProject,
       getAnalysis: mockGetAnalysis,
       getChords: mockGetChords,
+      getLyrics: mockGetLyrics,
       listArtifacts: mockListArtifacts,
       listJobs: mockListJobs,
       createChords: mockCreateChords,
+      createLyrics: mockCreateLyrics,
       createPreview: mockCreatePreview,
       createStems: mockCreateStems,
       analyzeProject: mockAnalyzeProject,
+      updateLyrics: mockUpdateLyrics,
       updateProject: mockUpdateProject,
       createExport: mockCreateExport,
       deleteArtifact: mockDeleteArtifact,
@@ -675,12 +807,15 @@ describe("Desktop app flows", () => {
     mockGetProject.mockClear();
     mockGetAnalysis.mockClear();
     mockGetChords.mockClear();
+    mockGetLyrics.mockClear();
     mockListArtifacts.mockClear();
     mockListJobs.mockClear();
     mockCreateChords.mockClear();
+    mockCreateLyrics.mockClear();
     mockCreatePreview.mockClear();
     mockCreateStems.mockClear();
     mockAnalyzeProject.mockClear();
+    mockUpdateLyrics.mockClear();
     mockUpdateProject.mockClear();
     mockCreateExport.mockClear();
     mockDeleteArtifact.mockClear();
@@ -818,6 +953,95 @@ describe("Desktop app flows", () => {
       backend: "default",
       force: true,
     });
+  });
+
+  it("generates lyrics when transcript is empty", async () => {
+    const user = userEvent.setup();
+    setProjectLyrics("proj_123", {
+      project_id: "proj_123",
+      backend: null,
+      source_artifact_id: null,
+      source_kind: null,
+      source_segments: [],
+      segments: [],
+      has_user_edits: false,
+      created_at: null,
+      updated_at: null,
+    });
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Generate Lyrics" }));
+
+    expect(mockCreateLyrics).toHaveBeenCalledWith("proj_123", { force: false });
+  });
+
+  it("renders active lyrics and saves in-app edits", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const lyricsTranscript = screen.getByRole("group", { name: "Lyrics transcript" });
+    const activeLyric = within(lyricsTranscript).getByRole("button", { name: /0:00/i });
+    expect(activeLyric.className).toContain("lyrics-segment--active");
+
+    await user.click(screen.getByRole("button", { name: "Edit Lyrics" }));
+    const firstTextarea = screen.getByLabelText("Lyric segment 1");
+    await user.clear(firstTextarea);
+    await user.type(firstTextarea, "Edited lyric line");
+    await user.click(screen.getByRole("button", { name: "Save Lyrics" }));
+
+    expect(mockUpdateLyrics).toHaveBeenCalledWith("proj_123", {
+      segments: [
+        { text: "Edited lyric line" },
+        { text: "Second lyric line stays steady" },
+      ],
+    });
+    expect(await screen.findByText("Edited lyric line")).toBeInTheDocument();
+  });
+
+  it("refreshes edited lyrics with confirmation", async () => {
+    const user = userEvent.setup();
+    setProjectLyrics("proj_123", {
+      project_id: "proj_123",
+      backend: "openai-whisper",
+      source_artifact_id: "art_source",
+      source_kind: "ai",
+      source_segments: [
+        {
+          start_seconds: 0,
+          end_seconds: 8,
+          text: "Original lyric line",
+          words: [],
+        },
+      ],
+      segments: [
+        {
+          start_seconds: 0,
+          end_seconds: 8,
+          text: "Edited lyric line",
+          words: [],
+        },
+      ],
+      has_user_edits: true,
+      created_at: "2026-04-18T13:16:00.000Z",
+      updated_at: "2026-04-18T13:16:00.000Z",
+    });
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Refresh Lyrics" }));
+
+    expect(mockConfirm).toHaveBeenCalledWith(
+      "Refresh lyrics? This replaces the current transcript and discards your edits.",
+      expect.objectContaining({
+        title: "Refresh lyrics",
+        kind: "warning",
+      }),
+    );
+    expect(mockCreateLyrics).toHaveBeenCalledWith("proj_123", { force: true });
   });
 
   it("renders single-label enharmonic spellings by default", async () => {

@@ -126,6 +126,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/lyrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Project Lyrics Detail */
+        get: operations["project_lyrics_detail_api_v1_projects__project_id__lyrics_get"];
+        /** Project Lyrics Update */
+        put: operations["project_lyrics_update_api_v1_projects__project_id__lyrics_put"];
+        /** Project Lyrics */
+        post: operations["project_lyrics_api_v1_projects__project_id__lyrics_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/retune": {
         parameters: {
             query?: never;
@@ -503,6 +522,70 @@ export interface components {
         JobsResponse: {
             /** Jobs */
             jobs: components["schemas"]["JobSchema"][];
+        };
+        /** LyricsEditSegmentSchema */
+        LyricsEditSegmentSchema: {
+            /** Text */
+            text: string;
+        };
+        /** LyricsGenerateRequest */
+        LyricsGenerateRequest: {
+            /**
+             * Force
+             * @default false
+             */
+            force: boolean;
+        };
+        /** LyricsResponse */
+        LyricsResponse: {
+            /** Project Id */
+            project_id: string;
+            /** Backend */
+            backend?: string | null;
+            /** Source Artifact Id */
+            source_artifact_id?: string | null;
+            /** Source Kind */
+            source_kind?: string | null;
+            /** Source Segments */
+            source_segments?: components["schemas"]["LyricsSegmentSchema"][];
+            /** Segments */
+            segments?: components["schemas"]["LyricsSegmentSchema"][];
+            /**
+             * Has User Edits
+             * @default false
+             */
+            has_user_edits: boolean;
+            /** Created At */
+            created_at?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /** LyricsSegmentSchema */
+        LyricsSegmentSchema: {
+            /** Start Seconds */
+            start_seconds?: number | null;
+            /** End Seconds */
+            end_seconds?: number | null;
+            /** Text */
+            text: string;
+            /** Words */
+            words?: components["schemas"]["LyricsWordSchema"][];
+        };
+        /** LyricsUpdateRequest */
+        LyricsUpdateRequest: {
+            /** Segments */
+            segments?: components["schemas"]["LyricsEditSegmentSchema"][];
+        };
+        /** LyricsWordSchema */
+        LyricsWordSchema: {
+            /** Text */
+            text: string;
+            /** Start Seconds */
+            start_seconds?: number | null;
+            /** End Seconds */
+            end_seconds?: number | null;
+            /** Confidence */
+            confidence?: number | null;
         };
         /** PreviewRequest */
         PreviewRequest: {
@@ -948,6 +1031,107 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ChordRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    project_lyrics_detail_api_v1_projects__project_id__lyrics_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LyricsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    project_lyrics_update_api_v1_projects__project_id__lyrics_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LyricsUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LyricsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    project_lyrics_api_v1_projects__project_id__lyrics_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LyricsGenerateRequest"];
             };
         };
         responses: {

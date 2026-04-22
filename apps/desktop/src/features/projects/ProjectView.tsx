@@ -2,7 +2,15 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { confirm, save } from "@tauri-apps/plugin-dialog";
-import { api, type ArtifactSchema, type ChordSegmentSchema, type JobSchema, type ProjectSchema } from "../../lib/api";
+import {
+  api,
+  type ArtifactSchema,
+  type ChordSegmentSchema,
+  type JobSchema,
+  type LyricsSegmentSchema,
+  type LyricsWordSchema,
+  type ProjectSchema,
+} from "../../lib/api";
 import { MusicalChordLabel, MusicalKeyLabel } from "../../components/MusicalLabel";
 import { formatLocalDateTime } from "../../lib/datetime";
 import { usePreferences } from "../../lib/preferences";
@@ -42,6 +50,7 @@ function useActiveJobPolling(projectId: string, jobs: JobSchema[] | undefined) {
         queryClient.invalidateQueries({ queryKey: ["jobs"] }),
         queryClient.invalidateQueries({ queryKey: ["analysis", projectId] }),
         queryClient.invalidateQueries({ queryKey: ["chords", projectId] }),
+        queryClient.invalidateQueries({ queryKey: ["lyrics", projectId] }),
         queryClient.invalidateQueries({ queryKey: ["artifacts", projectId] }),
         queryClient.invalidateQueries({ queryKey: ["project", projectId] }),
         queryClient.invalidateQueries({ queryKey: ["projects"] }),
@@ -366,6 +375,38 @@ function findActiveChordIndex(timeline: ChordSegmentSchema[], playbackTimeSecond
   });
 }
 
+function hasTimedLyrics(
+  segment: LyricsSegmentSchema,
+): segment is LyricsSegmentSchema & { start_seconds: number; end_seconds: number } {
+  return typeof segment.start_seconds === "number" && typeof segment.end_seconds === "number";
+}
+
+function findActiveLyricsIndex(timeline: LyricsSegmentSchema[], playbackTimeSeconds: number) {
+  return timeline.findIndex((segment, index) => {
+    if (!hasTimedLyrics(segment)) {
+      return false;
+    }
+    const isLast = index === timeline.length - 1;
+    return (
+      playbackTimeSeconds >= segment.start_seconds &&
+      (playbackTimeSeconds < segment.end_seconds || isLast)
+    );
+  });
+}
+
+function findActiveLyricsWordIndex(words: LyricsWordSchema[], playbackTimeSeconds: number) {
+  return words.findIndex((word, index) => {
+    if (typeof word.start_seconds !== "number" || typeof word.end_seconds !== "number") {
+      return false;
+    }
+    const isLast = index === words.length - 1;
+    return (
+      playbackTimeSeconds >= word.start_seconds &&
+      (playbackTimeSeconds < word.end_seconds || isLast)
+    );
+  });
+}
+
 function formatRetuneSummary(
   retuneMode: "off" | "reference" | "cents",
   referenceHz: string,
@@ -403,6 +444,7 @@ export function ProjectView() {
     informationDensity,
   } = usePreferences();
   const chordSegmentRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const lyricsSegmentRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const pendingPreviewSelection = useRef<{ previousLatestPreviewArtifactId: string | null } | null>(
     null,
   );
@@ -430,6 +472,8 @@ export function ProjectView() {
   const [sourcesRailCollapsed, setSourcesRailCollapsed] = useState(defaultSourcesRailCollapsed);
   const [stemControls, setStemControls] = useState<Record<string, StemControlState>>({});
   const [dismissedStemJobIds, setDismissedStemJobIds] = useState<string[]>([]);
+  const [isEditingLyrics, setIsEditingLyrics] = useState(false);
+  const [lyricsDraft, setLyricsDraft] = useState<string[]>([]);
   const showSupportingCopy = informationDensity !== "minimal";
 
   const projectQuery = useQuery({
@@ -445,6 +489,11 @@ export function ProjectView() {
   const chordsQuery = useQuery({
     queryKey: ["chords", projectId],
     queryFn: async () => api.getChords(projectId),
+    enabled: Boolean(projectId),
+  });
+  const lyricsQuery = useQuery({
+    queryKey: ["lyrics", projectId],
+    queryFn: async () => api.getLyrics(projectId),
     enabled: Boolean(projectId),
   });
   const artifactsQuery = useQuery({
@@ -527,6 +576,28 @@ export function ProjectView() {
         queryClient.invalidateQueries({ queryKey: ["jobs"] }),
         queryClient.invalidateQueries({ queryKey: ["chords", projectId] }),
       ]);
+    },
+  });
+
+  const lyricsMutation = useMutation({
+    mutationFn: async (force: boolean) => api.createLyrics(projectId, { force }),
+    onSuccess: async () => {
+      setIsEditingLyrics(false);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
+        queryClient.invalidateQueries({ queryKey: ["lyrics", projectId] }),
+      ]);
+    },
+  });
+
+  const lyricsSaveMutation = useMutation({
+    mutationFn: async () =>
+      api.updateLyrics(projectId, {
+        segments: lyricsDraft.map((text) => ({ text })),
+      }),
+    onSuccess: async () => {
+      setIsEditingLyrics(false);
+      await queryClient.invalidateQueries({ queryKey: ["lyrics", projectId] });
     },
   });
 
@@ -641,6 +712,7 @@ export function ProjectView() {
   );
   const analyzeJob = projectJobs.find((job) => job.type === "analyze");
   const chordJob = projectJobs.find((job) => job.type === "chords");
+  const lyricsJob = projectJobs.find((job) => job.type === "lyrics");
   const stemJobs = useMemo(
     () => projectJobs.filter((job) => job.type === "stems"),
     [projectJobs],
@@ -750,6 +822,9 @@ export function ProjectView() {
   const isChordRunning = Boolean(
     chordJob && ["pending", "running"].includes(chordJob.status),
   );
+  const isLyricsRunning = Boolean(
+    lyricsJob && ["pending", "running"].includes(lyricsJob.status),
+  );
   const isStemRunning = Boolean(stemJob && ["pending", "running"].includes(stemJob.status));
   const currentKeyValue = sourceKeyOverride ? serializeKey(sourceKeyOverride) : "auto";
   const hasVisibleStems = visibleStemArtifacts.length > 0;
@@ -793,6 +868,19 @@ export function ProjectView() {
         ? displayedChords[1]
         : null;
   const hasChordTimeline = displayedChords.length > 0;
+  const displayedLyrics = useMemo(
+    () => lyricsQuery.data?.segments ?? [],
+    [lyricsQuery.data?.segments],
+  );
+  const hasLyricsTranscript = displayedLyrics.length > 0;
+  const hasTimedLyricsTranscript = displayedLyrics.some((segment) => hasTimedLyrics(segment));
+  const activeLyricsIndex = findActiveLyricsIndex(displayedLyrics, playbackTimeSeconds);
+  const activeLyricsSegment =
+    activeLyricsIndex >= 0 ? displayedLyrics[activeLyricsIndex] : null;
+  const activeLyricsWordIndex =
+    activeLyricsSegment?.words?.length
+      ? findActiveLyricsWordIndex(activeLyricsSegment.words, playbackTimeSeconds)
+      : -1;
   const chordContextCopy =
     correctedSourceChordSemitones === 0 && chordTransposeSemitones === 0
       ? "Chord labels follow the original arrangement."
@@ -893,6 +981,28 @@ export function ProjectView() {
     seekBy(secondsDelta);
   }
 
+  async function handleLyricsAction() {
+    const hasExistingLyrics = (lyricsQuery.data?.segments?.length ?? 0) > 0;
+    if (hasExistingLyrics) {
+      const approved = await confirm(
+        lyricsQuery.data?.has_user_edits
+          ? "Refresh lyrics? This replaces the current transcript and discards your edits."
+          : "Refresh lyrics? This replaces the current transcript with a new pass.",
+        {
+          title: "Refresh lyrics",
+          kind: "warning",
+          okLabel: "Refresh",
+          cancelLabel: "Cancel",
+        },
+      );
+      if (!approved) {
+        return;
+      }
+    }
+
+    lyricsMutation.mutate(hasExistingLyrics);
+  }
+
   async function handleStemAction() {
     if (!selectedPrimaryArtifactId) {
       return;
@@ -990,6 +1100,12 @@ export function ProjectView() {
       setDraftName(projectQuery.data?.display_name ?? "");
     }
   }, [isRenaming, projectQuery.data?.display_name]);
+
+  useEffect(() => {
+    if (!isEditingLyrics) {
+      setLyricsDraft(displayedLyrics.map((segment) => segment.text));
+    }
+  }, [displayedLyrics, isEditingLyrics]);
 
   useEffect(() => {
     if (!targetSelectorOpen) {
@@ -1181,6 +1297,24 @@ export function ProjectView() {
       inline: "center",
     });
   }, [activeChordIndex, displayedChords]);
+
+  useEffect(() => {
+    if (isEditingLyrics || activeLyricsIndex < 0) {
+      return;
+    }
+    const activeSegment = displayedLyrics[activeLyricsIndex];
+    if (!activeSegment) {
+      return;
+    }
+    const activeElement =
+      lyricsSegmentRefs.current[
+        `${activeSegment.start_seconds}-${activeSegment.end_seconds}-${activeLyricsIndex}`
+      ];
+    activeElement?.scrollIntoView({
+      behavior: "smooth",
+      block: "nearest",
+    });
+  }, [activeLyricsIndex, displayedLyrics, isEditingLyrics]);
 
   const currentSourceSummary = selectedPrimaryArtifact
     ? artifactSummary(selectedPrimaryArtifact) ||
@@ -1693,6 +1827,161 @@ export function ProjectView() {
 
               {chordJob?.error_message ? (
                 <p className="inline-error">{chordJob.error_message}</p>
+              ) : null}
+            </div>
+
+            <div className="playback-stage__lane">
+              <div className="playback-stage__lane-header">
+                <div>
+                  <p className="metric-label">Lyrics Follow</p>
+                  <h3>Current lyrics</h3>
+                </div>
+                <div className="button-row">
+                  {hasLyricsTranscript && !isEditingLyrics ? (
+                    <button
+                      className="button button--ghost button--small"
+                      type="button"
+                      onClick={() => setIsEditingLyrics(true)}
+                      disabled={lyricsMutation.isPending || isLyricsRunning}
+                    >
+                      Edit Lyrics
+                    </button>
+                  ) : null}
+                  <button
+                    className="button button--small"
+                    type="button"
+                    onClick={() => void handleLyricsAction()}
+                    disabled={lyricsMutation.isPending || isLyricsRunning}
+                  >
+                    {lyricsMutation.isPending || isLyricsRunning
+                      ? "Generating..."
+                      : hasLyricsTranscript
+                        ? "Refresh Lyrics"
+                        : "Generate Lyrics"}
+                  </button>
+                </div>
+              </div>
+
+              {isEditingLyrics ? (
+                <div className="lyrics-editor">
+                  {displayedLyrics.map((segment, index) => (
+                    <label className="lyrics-editor__row" key={`${segment.start_seconds}-${index}`}>
+                      <span className="lyrics-editor__time">
+                        {hasTimedLyrics(segment) ? formatPlaybackClock(segment.start_seconds ?? 0) : "Static"}
+                      </span>
+                      <textarea
+                        aria-label={`Lyric segment ${index + 1}`}
+                        className="lyrics-editor__input"
+                        value={lyricsDraft[index] ?? ""}
+                        onChange={(event) =>
+                          setLyricsDraft((current) =>
+                            current.map((value, valueIndex) =>
+                              valueIndex === index ? event.target.value : value,
+                            ),
+                          )
+                        }
+                      />
+                    </label>
+                  ))}
+                  <div className="button-row">
+                    <button
+                      className="button button--primary button--small"
+                      type="button"
+                      onClick={() => lyricsSaveMutation.mutate()}
+                      disabled={lyricsSaveMutation.isPending}
+                    >
+                      {lyricsSaveMutation.isPending ? "Saving..." : "Save Lyrics"}
+                    </button>
+                    <button
+                      className="button button--ghost button--small"
+                      type="button"
+                      onClick={() => {
+                        setIsEditingLyrics(false);
+                        setLyricsDraft(displayedLyrics.map((currentSegment) => currentSegment.text));
+                      }}
+                      disabled={lyricsSaveMutation.isPending}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : hasLyricsTranscript ? (
+                <div className="lyrics-panel" role="group" aria-label="Lyrics transcript">
+                  {displayedLyrics.map((segment, index) => {
+                    const isActive = index === activeLyricsIndex;
+                    const segmentKey = `${segment.start_seconds}-${segment.end_seconds}-${index}`;
+                    const canSeek = hasTimedLyrics(segment);
+                    const content =
+                      isActive && (segment.words?.length ?? 0) > 0 ? (
+                        <span className="lyrics-segment__words">
+                          {(segment.words ?? []).map((word, wordIndex) => (
+                            <span
+                              key={`${segmentKey}-${wordIndex}-${word.start_seconds}`}
+                              className={`lyrics-word${
+                                wordIndex === activeLyricsWordIndex ? " lyrics-word--active" : ""
+                              }`}
+                            >
+                              {word.text}
+                            </span>
+                          ))}
+                        </span>
+                      ) : (
+                        <span className="lyrics-segment__text">{segment.text}</span>
+                      );
+
+                    if (canSeek) {
+                      return (
+                        <button
+                          key={segmentKey}
+                          className={`lyrics-segment${isActive ? " lyrics-segment--active" : ""}`}
+                          type="button"
+                          ref={(element) => {
+                            lyricsSegmentRefs.current[segmentKey] = element;
+                          }}
+                          onClick={() => seekTo(segment.start_seconds ?? 0)}
+                        >
+                          <small>{formatPlaybackClock(segment.start_seconds ?? 0)}</small>
+                          {content}
+                        </button>
+                      );
+                    }
+
+                    return (
+                      <div
+                        key={segmentKey}
+                        className={`lyrics-segment lyrics-segment--static${
+                          isActive ? " lyrics-segment--active" : ""
+                        }`}
+                      >
+                        <small>Static</small>
+                        {content}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="chord-lane-empty">
+                  <p className="artifact-meta">
+                    Generate a lyrics pass to keep transcription and playback together while you practice.
+                  </p>
+                </div>
+              )}
+
+              {!isEditingLyrics && hasLyricsTranscript && !hasTimedLyricsTranscript ? (
+                <div className="chord-context">
+                  <span className="artifact-meta">This transcript has no timing data, so follow mode stays static.</span>
+                </div>
+              ) : null}
+
+              {lyricsSaveMutation.error ? (
+                <p className="inline-error">
+                  {lyricsSaveMutation.error instanceof Error
+                    ? lyricsSaveMutation.error.message
+                    : "Lyrics could not be saved."}
+                </p>
+              ) : null}
+              {lyricsJob?.error_message ? (
+                <p className="inline-error">{lyricsJob.error_message}</p>
               ) : null}
             </div>
 

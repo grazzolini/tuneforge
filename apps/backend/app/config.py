@@ -35,6 +35,9 @@ class Settings:
     ffprobe_path: str
     stem_model: str
     stem_device: str
+    lyrics_model: str
+    lyrics_device: str
+    lyrics_cache_dir: Path
     max_workers: int
     backend_root: Path
 
@@ -51,13 +54,14 @@ class Settings:
 def get_settings() -> Settings:
     backend_root = Path(__file__).resolve().parents[1]
     data_root = _default_data_root()
+    cache_root = data_root / "cache"
     return Settings(
         app_name="Tuneforge",
         api_prefix="/api/v1",
         data_root=data_root,
         database_path=data_root / "app.sqlite",
         projects_root=data_root / "projects",
-        cache_root=data_root / "cache",
+        cache_root=cache_root,
         backend_host=os.environ.get("TUNEFORGE_HOST", "127.0.0.1"),
         backend_port=int(os.environ.get("TUNEFORGE_PORT", "8765")),
         default_export_format="wav",
@@ -68,6 +72,9 @@ def get_settings() -> Settings:
         ffprobe_path=os.environ.get("TUNEFORGE_FFPROBE_PATH", "ffprobe"),
         stem_model=os.environ.get("TUNEFORGE_STEM_MODEL", "htdemucs_ft"),
         stem_device=os.environ.get("TUNEFORGE_STEM_DEVICE", "auto"),
+        lyrics_model=os.environ.get("TUNEFORGE_LYRICS_MODEL", "turbo"),
+        lyrics_device=os.environ.get("TUNEFORGE_LYRICS_DEVICE", "auto"),
+        lyrics_cache_dir=Path(os.environ.get("TUNEFORGE_LYRICS_CACHE_DIR", str(cache_root / "lyrics"))),
         max_workers=1,
         backend_root=backend_root,
     )
@@ -78,3 +85,4 @@ def ensure_data_dirs(settings: Settings | None = None) -> None:
     current.data_root.mkdir(parents=True, exist_ok=True)
     current.projects_root.mkdir(parents=True, exist_ok=True)
     current.cache_root.mkdir(parents=True, exist_ok=True)
+    current.lyrics_cache_dir.mkdir(parents=True, exist_ok=True)

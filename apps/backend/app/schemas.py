@@ -152,6 +152,48 @@ class ChordResponse(BaseModel):
     created_at: datetime | None = None
 
 
+class LyricsGenerateRequest(BaseModel):
+    force: bool = False
+
+
+class LyricsWordSchema(BaseModel):
+    text: str
+    start_seconds: float | None = None
+    end_seconds: float | None = None
+    confidence: float | None = None
+
+
+class LyricsSegmentSchema(BaseModel):
+    start_seconds: float | None = None
+    end_seconds: float | None = None
+    text: str
+    words: list[LyricsWordSchema] = Field(default_factory=list)
+
+
+class LyricsEditSegmentSchema(BaseModel):
+    text: str
+
+
+class LyricsUpdateRequest(BaseModel):
+    segments: list[LyricsEditSegmentSchema] = Field(default_factory=list)
+
+
+class LyricsResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    project_id: str
+    backend: str | None = None
+    source_artifact_id: str | None = None
+    source_kind: str | None = None
+    source_segments: list[LyricsSegmentSchema] = Field(
+        default_factory=list, validation_alias="source_segments_json"
+    )
+    segments: list[LyricsSegmentSchema] = Field(default_factory=list, validation_alias="segments_json")
+    has_user_edits: bool = False
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
 class JobSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

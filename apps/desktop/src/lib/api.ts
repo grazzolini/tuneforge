@@ -27,6 +27,9 @@ export type ProjectSchema = components["schemas"]["ProjectSchema"];
 export type AnalysisSchema = components["schemas"]["AnalysisSchema"];
 export type ChordResponse = components["schemas"]["ChordResponse"];
 export type ChordSegmentSchema = components["schemas"]["ChordSegmentSchema"];
+export type LyricsResponse = components["schemas"]["LyricsResponse"];
+export type LyricsSegmentSchema = components["schemas"]["LyricsSegmentSchema"];
+export type LyricsWordSchema = components["schemas"]["LyricsWordSchema"];
 export type ArtifactSchema = components["schemas"]["ArtifactSchema"];
 export type JobSchema = components["schemas"]["JobSchema"];
 export type PreviewRequest = components["schemas"]["PreviewRequest"];
@@ -35,6 +38,8 @@ export type ExportRequest = components["schemas"]["ExportRequest"];
 export type ProjectUpdateRequest = components["schemas"]["ProjectUpdateRequest"];
 export type StemRequest = components["schemas"]["StemRequest"];
 export type ChordRequest = components["schemas"]["ChordRequest"];
+export type LyricsGenerateRequest = components["schemas"]["LyricsGenerateRequest"];
+export type LyricsUpdateRequest = components["schemas"]["LyricsUpdateRequest"];
 
 let client = createClient<paths>({ baseUrl: apiBaseUrl });
 
@@ -132,6 +137,12 @@ export const api = {
     unwrap(client.POST("/api/v1/projects/{project_id}/chords", { params: { path: { project_id: projectId } }, body })),
   getChords: (projectId: string) =>
     unwrap(client.GET("/api/v1/projects/{project_id}/chords", { params: { path: { project_id: projectId } } })),
+  createLyrics: (projectId: string, body: LyricsGenerateRequest) =>
+    unwrap(client.POST("/api/v1/projects/{project_id}/lyrics", { params: { path: { project_id: projectId } }, body })),
+  getLyrics: (projectId: string) =>
+    unwrap(client.GET("/api/v1/projects/{project_id}/lyrics", { params: { path: { project_id: projectId } } })),
+  updateLyrics: (projectId: string, body: LyricsUpdateRequest) =>
+    unwrap(client.PUT("/api/v1/projects/{project_id}/lyrics", { params: { path: { project_id: projectId } }, body })),
   createPreview: (projectId: string, body: PreviewRequest) =>
     unwrap(client.POST("/api/v1/projects/{project_id}/preview", { params: { path: { project_id: projectId } }, body })),
   createStems: (projectId: string, body: StemRequest) =>

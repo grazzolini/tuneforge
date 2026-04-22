@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { confirm, save } from "@tauri-apps/plugin-dialog";
 import { api, type ArtifactSchema, type ChordSegmentSchema, type JobSchema, type ProjectSchema } from "../../lib/api";
+import { MusicalChordLabel, MusicalKeyLabel } from "../../components/MusicalLabel";
 import { formatLocalDateTime } from "../../lib/datetime";
 import { usePreferences } from "../../lib/preferences";
 import { usePlayback } from "./playback-context";
@@ -16,10 +17,11 @@ import {
   DEFAULT_KEY,
   type EnharmonicDisplayMode,
   MUSICAL_KEYS,
-  formatChordLabel,
   formatKey,
+  formatChordLabel,
   parseKey,
   parseStoredKey,
+  semitoneDelta,
   serializeKey,
   transposePitchClass,
   transposeKey,
@@ -104,7 +106,13 @@ function formatTargetSelectionSummary(semitones: number) {
 
 type TargetShiftOption = {
   semitones: number;
-  label: string;
+  key: MusicalKey;
+};
+
+type SourceKeyOption = {
+  badge: string | null;
+  key: MusicalKey;
+  value: string;
 };
 
 function formatArtifactTimestamp(createdAt: string) {
@@ -358,70 +366,6 @@ function findActiveChordIndex(timeline: ChordSegmentSchema[], playbackTimeSecond
   });
 }
 
-function buildRequestedRetune(
-  retuneMode: "off" | "reference" | "cents",
-  referenceHz: string,
-  centsOffset: string,
-) {
-  if (retuneMode === "reference") {
-    const parsed = Number(referenceHz);
-    return Number.isFinite(parsed) ? { target_reference_hz: parsed } : null;
-  }
-  if (retuneMode === "cents") {
-    const parsed = Number(centsOffset);
-    return Number.isFinite(parsed) ? { target_cents_offset: parsed } : null;
-  }
-  return null;
-}
-
-function matchesPreviewSettings(
-  artifact: ArtifactSchema | null,
-  requestedRetune:
-    | { target_reference_hz: number }
-    | { target_cents_offset: number }
-    | null,
-  transposeSemitones: number,
-) {
-  if (!artifact || artifact.type !== "preview_mix") {
-    return false;
-  }
-
-  const metadata = artifact.metadata ?? {};
-  const retune =
-    typeof metadata.retune === "object" && metadata.retune !== null ? metadata.retune : {};
-  const transpose =
-    typeof metadata.transpose === "object" && metadata.transpose !== null
-      ? metadata.transpose
-      : {};
-
-  const requestedReferenceHz =
-    requestedRetune && "target_reference_hz" in requestedRetune
-      ? requestedRetune.target_reference_hz
-      : null;
-  const requestedCents =
-    requestedRetune && "target_cents_offset" in requestedRetune
-      ? requestedRetune.target_cents_offset
-      : null;
-  const artifactReferenceHz =
-    "target_reference_hz" in retune && typeof retune.target_reference_hz === "number"
-      ? retune.target_reference_hz
-      : null;
-  const artifactCents =
-    "target_cents_offset" in retune && typeof retune.target_cents_offset === "number"
-      ? retune.target_cents_offset
-      : null;
-  const artifactSemitones =
-    "semitones" in transpose && typeof transpose.semitones === "number"
-      ? transpose.semitones
-      : 0;
-
-  return (
-    artifactSemitones === transposeSemitones &&
-    artifactReferenceHz === requestedReferenceHz &&
-    artifactCents === requestedCents
-  );
-}
-
 function formatRetuneSummary(
   retuneMode: "off" | "reference" | "cents",
   referenceHz: string,
@@ -467,6 +411,8 @@ export function ProjectView() {
   const persistedStemSourceArtifactId = useRef<string | null>(null);
   const targetSelectorRef = useRef<HTMLDivElement | null>(null);
   const targetOptionRefs = useRef<Record<number, HTMLButtonElement | null>>({});
+  const sourceKeySelectorRef = useRef<HTMLDivElement | null>(null);
+  const sourceKeyOptionRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const [retuneMode, setRetuneMode] = useState<"off" | "reference" | "cents">("off");
   const [referenceHz, setReferenceHz] = useState("440");
   const [centsOffset, setCentsOffset] = useState("0");
@@ -476,6 +422,7 @@ export function ProjectView() {
   });
   const [targetTransposeSemitones, setTargetTransposeSemitones] = useState(0);
   const [targetSelectorOpen, setTargetSelectorOpen] = useState(false);
+  const [sourceKeySelectorOpen, setSourceKeySelectorOpen] = useState(false);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [selectedPrimaryArtifactId, setSelectedPrimaryArtifactId] = useState<string | null>(null);
   const [hydratedProjectId, setHydratedProjectId] = useState<string | null>(null);
@@ -798,16 +745,7 @@ export function ProjectView() {
   const sourceKey = sourceKeyBasis ?? DEFAULT_KEY;
   const transposeSemitones = clampTargetTranspose(targetTransposeSemitones);
   const targetKey = transposeKey(sourceKey, transposeSemitones);
-  const requestedRetune = buildRequestedRetune(retuneMode, referenceHz, centsOffset);
   const hasTransformChange = retuneMode !== "off" || transposeSemitones !== 0;
-  const previewMatchesCurrentSettings = matchesPreviewSettings(
-    latestPreviewArtifact,
-    requestedRetune,
-    transposeSemitones,
-  );
-  const selectedArtifactMatchesCurrentSettings =
-    (selectedArtifact?.type === "source_audio" && !hasTransformChange) ||
-    matchesPreviewSettings(selectedArtifact, requestedRetune, transposeSemitones);
   const isAnalysisRunning = Boolean(
     analyzeJob && ["pending", "running"].includes(analyzeJob.status),
   );
@@ -815,57 +753,37 @@ export function ProjectView() {
     chordJob && ["pending", "running"].includes(chordJob.status),
   );
   const isStemRunning = Boolean(stemJob && ["pending", "running"].includes(stemJob.status));
-  const currentKeyValue = sourceKeyOverride
-    ? serializeKey(sourceKeyOverride)
-    : detectedKey
-      ? "auto"
-      : serializeKey(sourceKey);
+  const currentKeyValue = sourceKeyOverride ? serializeKey(sourceKeyOverride) : "auto";
   const hasVisibleStems = visibleStemArtifacts.length > 0;
   const stemErrorMessage =
     stemJob?.error_message && !dismissedStemJobIds.includes(stemJob.id)
       ? stemJob.error_message
       : null;
   const visibleJobs = projectJobs;
-  const controlSummary = hasTransformChange ? formatKey(targetKey, "short", { mode: enharmonicDisplayMode }) : "Original key";
   const tuningSummary = formatRetuneSummary(retuneMode, referenceHz, centsOffset);
-  const mixStatus = isStemPlayback
-    ? "Stem monitor"
-    : !hasTransformChange
-      ? latestPreviewArtifact
-        ? "Source settings"
-        : "Source only"
-      : !latestPreviewArtifact
-        ? "No preview yet"
-        : previewMatchesCurrentSettings
-          ? "Up to date"
-          : "Needs update";
-  const mixStatusCopy = isStemPlayback
-    ? "Mute or solo stems without leaving the playback surface."
-    : selectedArtifact
-      ? selectedArtifactMatchesCurrentSettings
-        ? "Selected playback matches current controls."
-        : "Controls differ from selected playback."
-      : "Select source audio or a saved mix.";
   const canDeleteSelectedMix = selectedArtifact?.type === "preview_mix";
   const selectedArtifactTimestamp = selectedPlaybackArtifact
     ? formatArtifactTimestamp(selectedPlaybackArtifact.created_at)
     : "";
+  const correctedSourceChordSemitones =
+    detectedKey && sourceKeyOverride ? semitoneDelta(detectedKey, sourceKeyOverride) : 0;
   const chordTransposeSemitones = artifactTransposeSemitones(
     selectedPlaybackArtifact,
     selectableArtifacts,
   );
+  const displayedChordSemitones = chordTransposeSemitones + correctedSourceChordSemitones;
   const activeEnharmonicKeyContext = sourceKeyBasis
     ? transposeKey(sourceKeyBasis, chordTransposeSemitones)
     : null;
   const displayedChords = useMemo(
     () =>
       (chordsQuery.data?.timeline ?? []).map((segment) =>
-        transposeChordSegment(segment, chordTransposeSemitones, {
+        transposeChordSegment(segment, displayedChordSemitones, {
           activeKey: activeEnharmonicKeyContext,
           mode: enharmonicDisplayMode,
         }),
       ),
-    [activeEnharmonicKeyContext, chordTransposeSemitones, chordsQuery.data?.timeline, enharmonicDisplayMode],
+    [activeEnharmonicKeyContext, chordsQuery.data?.timeline, displayedChordSemitones, enharmonicDisplayMode],
   );
   const activeChordIndex = findActiveChordIndex(displayedChords, playbackTimeSeconds);
   const currentChord =
@@ -878,26 +796,30 @@ export function ProjectView() {
         : null;
   const hasChordTimeline = displayedChords.length > 0;
   const chordContextCopy =
-    chordTransposeSemitones === 0
+    correctedSourceChordSemitones === 0 && chordTransposeSemitones === 0
       ? "Chord labels follow the original arrangement."
-      : `Chord labels follow the selected playback (${formatSemitoneShift(
+      : correctedSourceChordSemitones !== 0 && chordTransposeSemitones === 0
+        ? "Chord labels follow the corrected source key."
+        : correctedSourceChordSemitones === 0
+          ? `Chord labels follow the selected playback (${formatSemitoneShift(
+              chordTransposeSemitones,
+            ).toLowerCase()}).`
+          : `Chord labels follow corrected source key and selected playback (${formatSemitoneShift(
           chordTransposeSemitones,
         ).toLowerCase()}).`;
   const sourceKeyStatus = sourceKeyOverride ? "Corrected" : detectedKey ? "Detected" : "Default";
   const targetShiftSummary =
     transposeSemitones === 0 ? "Original key" : formatSemitoneShift(transposeSemitones);
   const targetSelectionSummary = formatTargetSelectionSummary(transposeSemitones);
+  const sourceKeySelectorCurrentKey = sourceKeyOverride ?? detectedKey ?? sourceKey;
+  const sourceKeySelectorCurrentBadge = sourceKeyOverride ? null : detectedKey ? "Original" : "No override";
   const lowerTargetPreview =
     transposeSemitones > MIN_TARGET_TRANSPOSE
-      ? formatKey(transposeKey(sourceKey, transposeSemitones - 1), "short", {
-          mode: enharmonicDisplayMode,
-        })
+      ? transposeKey(sourceKey, transposeSemitones - 1)
       : null;
   const higherTargetPreview =
     transposeSemitones < MAX_TARGET_TRANSPOSE
-      ? formatKey(transposeKey(sourceKey, transposeSemitones + 1), "short", {
-          mode: enharmonicDisplayMode,
-        })
+      ? transposeKey(sourceKey, transposeSemitones + 1)
       : null;
   const targetShiftOptions = useMemo<TargetShiftOption[]>(
     () =>
@@ -908,10 +830,10 @@ export function ProjectView() {
         const key = transposeKey(sourceKey, semitones);
         return {
           semitones,
-          label: formatKey(key, "short", { mode: enharmonicDisplayMode }),
+          key,
         };
       }),
-    [enharmonicDisplayMode, sourceKey],
+    [sourceKey],
   );
   const lowerTargetShiftOptions = useMemo(
     () => targetShiftOptions.filter((option) => option.semitones < 0).sort((a, b) => b.semitones - a.semitones),
@@ -920,6 +842,23 @@ export function ProjectView() {
   const higherTargetShiftOptions = useMemo(
     () => targetShiftOptions.filter((option) => option.semitones > 0).sort((a, b) => b.semitones - a.semitones),
     [targetShiftOptions],
+  );
+  const sourceKeyOptions = useMemo<SourceKeyOption[]>(
+    () => [
+      {
+        badge: detectedKey ? "Original" : "No override",
+        key: detectedKey ?? sourceKey,
+        value: "auto",
+      },
+      ...MUSICAL_KEYS.filter((key) =>
+        detectedKey ? key.value !== serializeKey(detectedKey) : true,
+      ).map((key) => ({
+        badge: null,
+        key,
+        value: key.value,
+      })),
+    ],
+    [detectedKey, sourceKey],
   );
 
   const soloedStemIds = visibleStemArtifacts
@@ -1064,19 +1003,34 @@ export function ProjectView() {
   }, [targetSelectorOpen, transposeSemitones]);
 
   useEffect(() => {
-    if (!targetSelectorOpen) {
+    if (!sourceKeySelectorOpen) {
+      return;
+    }
+
+    const activeOption = sourceKeyOptionRefs.current[currentKeyValue];
+    activeOption?.scrollIntoView?.({ block: "center" });
+  }, [currentKeyValue, sourceKeySelectorOpen]);
+
+  useEffect(() => {
+    if (!targetSelectorOpen && !sourceKeySelectorOpen) {
       return;
     }
 
     function handlePointerDown(event: PointerEvent) {
-      if (!targetSelectorRef.current?.contains(event.target as Node)) {
+      const targetInside = targetSelectorRef.current?.contains(event.target as Node) ?? false;
+      const sourceInside = sourceKeySelectorRef.current?.contains(event.target as Node) ?? false;
+      if (!targetInside) {
         setTargetSelectorOpen(false);
+      }
+      if (!sourceInside) {
+        setSourceKeySelectorOpen(false);
       }
     }
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         setTargetSelectorOpen(false);
+        setSourceKeySelectorOpen(false);
       }
     }
 
@@ -1087,7 +1041,7 @@ export function ProjectView() {
       window.removeEventListener("pointerdown", handlePointerDown);
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [targetSelectorOpen]);
+  }, [sourceKeySelectorOpen, targetSelectorOpen]);
 
   useEffect(() => {
     setInspectorOpen(defaultInspectorOpen);
@@ -1230,9 +1184,6 @@ export function ProjectView() {
     });
   }, [activeChordIndex, displayedChords]);
 
-  const currentSourceLabel = selectedPrimaryArtifact
-    ? artifactLabel(selectedPrimaryArtifact)
-    : "Source Track";
   const currentSourceSummary = selectedPrimaryArtifact
     ? artifactSummary(selectedPrimaryArtifact) ||
       fileNameFromPath(selectedPrimaryArtifact.path)
@@ -1563,24 +1514,6 @@ export function ProjectView() {
             </div>
 
             <div className="stage-surface">
-              <div className="session-block playback-stage__summary">
-                <div role="group" aria-label="Current source summary">
-                  <p className="metric-label">Current Source</p>
-                  <strong>{currentSourceLabel}</strong>
-                  <p className="artifact-meta">{currentSourceSummary}</p>
-                </div>
-                <div role="group" aria-label="Current control summary">
-                  <p className="metric-label">Mix Controls</p>
-                  <strong>{controlSummary}</strong>
-                  <p className="artifact-meta">{tuningSummary}</p>
-                </div>
-                <div role="group" aria-label="Mix status summary">
-                  <p className="metric-label">Status</p>
-                  <strong>{mixStatus}</strong>
-                  <p className="artifact-meta">{mixStatusCopy}</p>
-                </div>
-              </div>
-
               <div className="transport">
                 <div className="transport__controls">
                   <button
@@ -1675,11 +1608,37 @@ export function ProjectView() {
               <div className="chord-preview-grid">
                 <div className="chord-card" role="group" aria-label="Current chord card">
                   <span className="metric-label">Current</span>
-                  <strong>{currentChord?.label ?? "-"}</strong>
+                  <strong>
+                    {currentChord ? (
+                      <MusicalChordLabel
+                        activeKey={activeEnharmonicKeyContext}
+                        fallbackLabel={currentChord.label ?? "-"}
+                        mode={enharmonicDisplayMode}
+                        pitchClass={currentChord.pitch_class}
+                        quality={currentChord.quality}
+                        variant="chord-card"
+                      />
+                    ) : (
+                      "-"
+                    )}
+                  </strong>
                 </div>
                 <div className="chord-card" role="group" aria-label="Next chord card">
                   <span className="metric-label">Next</span>
-                  <strong>{nextChord?.label ?? "-"}</strong>
+                  <strong>
+                    {nextChord ? (
+                      <MusicalChordLabel
+                        activeKey={activeEnharmonicKeyContext}
+                        fallbackLabel={nextChord.label ?? "-"}
+                        mode={enharmonicDisplayMode}
+                        pitchClass={nextChord.pitch_class}
+                        quality={nextChord.quality}
+                        variant="chord-card"
+                      />
+                    ) : (
+                      "-"
+                    )}
+                  </strong>
                 </div>
               </div>
 
@@ -1711,7 +1670,16 @@ export function ProjectView() {
                         }}
                         onClick={() => seekTo(segment.start_seconds)}
                       >
-                        <span>{segment.label}</span>
+                        <span>
+                          <MusicalChordLabel
+                            activeKey={activeEnharmonicKeyContext}
+                            fallbackLabel={segment.label}
+                            mode={enharmonicDisplayMode}
+                            pitchClass={segment.pitch_class}
+                            quality={segment.quality}
+                            variant="chord-chip"
+                          />
+                        </span>
                         <small>{formatPlaybackClock(segment.start_seconds)}</small>
                       </button>
                     );
@@ -1958,7 +1926,13 @@ export function ProjectView() {
                         <div className="key-shift__card">
                           <div>
                             <span className="metric-label">Source Key</span>
-                            <strong>{formatKey(sourceKey, "short", { mode: enharmonicDisplayMode })}</strong>
+                            <strong>
+                              <MusicalKeyLabel
+                                keyValue={sourceKey}
+                                mode={enharmonicDisplayMode}
+                                variant="key-card"
+                              />
+                            </strong>
                           </div>
                           <div className="key-shift__chips">
                             <span className="key-shift__chip">{sourceKeyStatus}</span>
@@ -1967,7 +1941,13 @@ export function ProjectView() {
                         <div className="key-shift__card key-shift__card--target">
                           <div>
                             <span className="metric-label">Target Key</span>
-                            <strong>{formatKey(targetKey, "short", { mode: enharmonicDisplayMode })}</strong>
+                            <strong>
+                              <MusicalKeyLabel
+                                keyValue={targetKey}
+                                mode={enharmonicDisplayMode}
+                                variant="key-card"
+                              />
+                            </strong>
                           </div>
                           <div className="key-shift__chips">
                             <span className="key-shift__chip key-shift__chip--active">
@@ -2001,7 +1981,9 @@ export function ProjectView() {
                         <div className="key-stepper__value">
                           <div className="target-selector" ref={targetSelectorRef}>
                             <button
-                              className="target-selector__trigger"
+                              className={`target-selector__trigger${
+                                enharmonicDisplayMode === "dual" ? " target-selector__trigger--dual" : ""
+                              }`}
                               aria-label="Target Key"
                               aria-expanded={targetSelectorOpen}
                               aria-haspopup="listbox"
@@ -2013,11 +1995,29 @@ export function ProjectView() {
                                   !lowerTargetPreview ? " target-selector__preview--disabled" : ""
                                 }`}
                               >
-                                <span>{lowerTargetPreview ?? ""}</span>
+                                {lowerTargetPreview ? (
+                                  <MusicalKeyLabel
+                                    keyValue={lowerTargetPreview}
+                                    mode={enharmonicDisplayMode}
+                                    variant="selector-preview"
+                                  />
+                                ) : null}
                               </span>
-                              <span className="target-selector__current">
-                                <span className="target-selector__current-key">
-                                  {formatKey(targetKey, "short", { mode: enharmonicDisplayMode })}
+                              <span
+                                className={`target-selector__current${
+                                  enharmonicDisplayMode === "dual" ? " target-selector__current--dual" : ""
+                                }`}
+                              >
+                                <span
+                                  className={`target-selector__current-key${
+                                    enharmonicDisplayMode === "dual" ? " target-selector__current-key--dual" : ""
+                                  }`}
+                                >
+                                  <MusicalKeyLabel
+                                    keyValue={targetKey}
+                                    mode={enharmonicDisplayMode}
+                                    variant="selector-current"
+                                  />
                                 </span>
                                 <span className="target-selector__current-meta">
                                   {targetSelectionSummary}
@@ -2028,7 +2028,13 @@ export function ProjectView() {
                                   !higherTargetPreview ? " target-selector__preview--disabled" : ""
                                 }`}
                               >
-                                <span>{higherTargetPreview ?? ""}</span>
+                                {higherTargetPreview ? (
+                                  <MusicalKeyLabel
+                                    keyValue={higherTargetPreview}
+                                    mode={enharmonicDisplayMode}
+                                    variant="selector-preview"
+                                  />
+                                ) : null}
                               </span>
                               <span className="target-selector__chevron" aria-hidden="true">
                                 ⌄
@@ -2065,7 +2071,13 @@ export function ProjectView() {
                                       ↑
                                     </span>
                                     <span className="target-selector__option-content">
-                                      <span className="target-selector__option-label">{option.label}</span>
+                                      <span className="target-selector__option-label">
+                                        <MusicalKeyLabel
+                                          keyValue={option.key}
+                                          mode={enharmonicDisplayMode}
+                                          variant="selector-option"
+                                        />
+                                      </span>
                                     </span>
                                   </button>
                                 ))}
@@ -2090,7 +2102,11 @@ export function ProjectView() {
                                   </span>
                                   <span className="target-selector__option-content">
                                     <span className="target-selector__option-label">
-                                      {formatKey(sourceKey, "short", { mode: enharmonicDisplayMode })}
+                                      <MusicalKeyLabel
+                                        keyValue={sourceKey}
+                                        mode={enharmonicDisplayMode}
+                                        variant="selector-option"
+                                      />
                                     </span>
                                   </span>
                                 </button>
@@ -2118,7 +2134,13 @@ export function ProjectView() {
                                       ↓
                                     </span>
                                     <span className="target-selector__option-content">
-                                      <span className="target-selector__option-label">{option.label}</span>
+                                      <span className="target-selector__option-label">
+                                        <MusicalKeyLabel
+                                          keyValue={option.key}
+                                          mode={enharmonicDisplayMode}
+                                          variant="selector-option"
+                                        />
+                                      </span>
                                     </span>
                                   </button>
                                 ))}
@@ -2191,13 +2213,17 @@ export function ProjectView() {
                     <div className="analysis-stat">
                       <span className="metric-label">Estimated Key</span>
                       <strong>
-                        <span className="analysis-stat__value">
-                          {detectedKey
-                            ? formatKey(detectedKey, "short", { mode: enharmonicDisplayMode })
-                            : isAnalysisRunning
-                              ? "Analyzing..."
-                              : "Unknown"}
-                        </span>
+                        {detectedKey ? (
+                          <MusicalKeyLabel
+                            keyValue={detectedKey}
+                            mode={enharmonicDisplayMode}
+                            variant="key-card"
+                          />
+                        ) : (
+                          <span className="analysis-stat__value">
+                            {isAnalysisRunning ? "Analyzing..." : "Unknown"}
+                          </span>
+                        )}
                       </strong>
                     </div>
                     <div className="analysis-stat">
@@ -2214,35 +2240,96 @@ export function ProjectView() {
                     <p className="artifact-meta">
                       {sourceKeyOverride
                         ? `Using ${formatKey(sourceKeyOverride, "short", { mode: enharmonicDisplayMode })} everywhere keys are derived in this project. Analysis data stays unchanged.`
-                        : "Use this to change the detected key, if you think analysis got it wrong. It updates the project key, and practice mixes."}
+                        : "Use this to change the detected key, if you think analysis got it wrong. It updates the project key, chords and practice mixes."}
                     </p>
                     <div className="controls controls--tight">
-                      <label>
-                        Project Source Key
-                        <select
-                          aria-label="Project Source Key"
-                          value={currentKeyValue}
-                          onChange={(event) =>
-                            sourceKeyOverrideMutation.mutate(
-                              event.target.value === "auto" ? null : event.target.value,
-                            )
-                          }
-                          disabled={sourceKeyOverrideMutation.isPending}
-                        >
-                          {detectedKey ? (
-                            <option value="auto">
-                              Use analysis result ({formatKey(detectedKey, "short", { mode: enharmonicDisplayMode })})
-                            </option>
-                          ) : (
-                            <option value={serializeKey(sourceKey)}>No override</option>
-                          )}
-                          {MUSICAL_KEYS.map((key) => (
-                            <option key={key.value} value={key.value}>
-                              {formatKey(key, "short", { mode: enharmonicDisplayMode })}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+                      <div className="source-key-selector-field">
+                        <span className="source-key-selector-field__label">Project Source Key</span>
+                        <div className="source-key-selector" ref={sourceKeySelectorRef}>
+                          <button
+                            className={`source-key-selector__trigger${
+                              sourceKeySelectorOpen ? " source-key-selector__trigger--open" : ""
+                            }`}
+                            aria-label="Project Source Key"
+                            aria-expanded={sourceKeySelectorOpen}
+                            aria-haspopup="listbox"
+                            disabled={sourceKeyOverrideMutation.isPending}
+                            onClick={() => {
+                              setTargetSelectorOpen(false);
+                              setSourceKeySelectorOpen((current) => !current);
+                            }}
+                            type="button"
+                          >
+                            <span className="source-key-selector__current">
+                              <span className="source-key-selector__current-indicator" aria-hidden="true" />
+                              <span className="source-key-selector__current-label">
+                                <MusicalKeyLabel
+                                  keyValue={sourceKeySelectorCurrentKey}
+                                  mode={enharmonicDisplayMode}
+                                  variant="source-selector-current"
+                                />
+                              </span>
+                              {sourceKeySelectorCurrentBadge ? (
+                                <span className="source-key-selector__current-badge">
+                                  {sourceKeySelectorCurrentBadge}
+                                </span>
+                              ) : null}
+                            </span>
+                            <span className="source-key-selector__chevron" aria-hidden="true">
+                              ⌄
+                            </span>
+                          </button>
+
+                          {sourceKeySelectorOpen ? (
+                            <div
+                              className="source-key-selector__menu"
+                              role="listbox"
+                              aria-label="Project Source Key options"
+                            >
+                              {sourceKeyOptions.map((option) => {
+                                const isSelected = option.value === currentKeyValue;
+                                return (
+                                  <button
+                                    key={`${option.value}-${option.badge ?? "key"}`}
+                                    ref={(node) => {
+                                      sourceKeyOptionRefs.current[option.value] = node;
+                                    }}
+                                    aria-selected={isSelected}
+                                    className={`source-key-selector__option${
+                                      isSelected ? " source-key-selector__option--selected" : ""
+                                    }`}
+                                    disabled={sourceKeyOverrideMutation.isPending}
+                                    onClick={() => {
+                                      sourceKeyOverrideMutation.mutate(
+                                        option.value === "auto" ? null : option.value,
+                                      );
+                                      setSourceKeySelectorOpen(false);
+                                    }}
+                                    role="option"
+                                    type="button"
+                                  >
+                                    <span className="source-key-selector__option-content">
+                                      <span className="source-key-selector__option-indicator" aria-hidden="true" />
+                                      <span className="source-key-selector__option-label">
+                                        <MusicalKeyLabel
+                                          keyValue={option.key}
+                                          mode={enharmonicDisplayMode}
+                                          variant="source-selector-option"
+                                        />
+                                      </span>
+                                      {option.badge ? (
+                                        <span className="source-key-selector__option-badge">
+                                          {option.badge}
+                                        </span>
+                                      ) : null}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
                     </div>
                   </details>
                 </div>

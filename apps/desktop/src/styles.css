@@ -711,8 +711,7 @@ a {
 
 .meta-grid,
 .analysis-grid,
-.details-grid,
-.session-block {
+.details-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1rem;
@@ -741,6 +740,7 @@ a {
   flex-wrap: nowrap;
   font-size: 1.18rem;
   line-height: 1.1;
+  min-width: 0;
   white-space: nowrap;
 }
 
@@ -892,11 +892,6 @@ a {
     linear-gradient(180deg, color-mix(in srgb, var(--panel-strong) 80%, transparent), transparent);
 }
 
-.playback-stage__summary {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.session-block strong,
 .stem-mixer__summary strong {
   display: block;
   margin-top: 0.25rem;
@@ -1160,10 +1155,11 @@ a {
 }
 
 .chord-card strong {
-  display: block;
+  display: flex;
   margin-top: 0.45rem;
   font-size: clamp(2rem, 4vw, 2.6rem);
   line-height: 1;
+  min-width: 0;
 }
 
 .chord-context {
@@ -1200,9 +1196,10 @@ a {
 }
 
 .chord-segment span {
+  display: flex;
   font-size: 1.2rem;
   font-weight: 700;
-  white-space: nowrap;
+  min-width: 0;
 }
 
 .chord-segment small {
@@ -1404,10 +1401,173 @@ a {
 }
 
 .key-shift__card strong {
-  display: block;
+  display: flex;
   margin-top: 0.4rem;
   font-size: clamp(2rem, 3vw, 2.4rem);
   line-height: 0.95;
+  min-width: 0;
+}
+
+.musical-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.12em;
+  width: 100%;
+  min-width: 0;
+}
+
+.musical-label__primary,
+.musical-label__secondary {
+  display: block;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.musical-label__root {
+  display: inline;
+}
+
+.musical-label__suffix {
+  display: inline;
+  font-size: 0.54em;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: inherit;
+  margin-left: 0.01em;
+  vertical-align: baseline;
+}
+
+.musical-label__secondary {
+  color: color-mix(in srgb, var(--muted) 86%, var(--text) 14%);
+  font-size: 0.44em;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 0.96;
+}
+
+.musical-label--key-card,
+.musical-label--chord-card {
+  align-items: flex-start;
+  gap: 0.18em;
+}
+
+.musical-label--key-card .musical-label__primary,
+.musical-label--key-card .musical-label__secondary,
+.musical-label--chord-card .musical-label__primary,
+.musical-label--chord-card .musical-label__secondary,
+.musical-label--selector-option .musical-label__primary,
+.musical-label--selector-option .musical-label__secondary,
+.musical-label--chord-chip .musical-label__primary,
+.musical-label--chord-chip .musical-label__secondary {
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.musical-label--selector-preview {
+  gap: 0.08em;
+}
+
+.musical-label--selector-preview .musical-label__primary {
+  font-size: 0.94em;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.musical-label--selector-preview .musical-label__secondary {
+  font-size: 0.54em;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.musical-label--selector-current {
+  gap: 0.08em;
+}
+
+.musical-label--source-selector-current,
+.musical-label--source-selector-option {
+  align-items: flex-start;
+  gap: 0.08em;
+  width: auto;
+}
+
+.musical-label--source-selector-current .musical-label__primary,
+.musical-label--source-selector-current .musical-label__secondary,
+.musical-label--source-selector-option .musical-label__primary,
+.musical-label--source-selector-option .musical-label__secondary {
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.musical-label--source-selector-current .musical-label__primary {
+  font-size: 1.02em;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.musical-label--source-selector-current .musical-label__secondary {
+  color: color-mix(in srgb, var(--text-secondary) 74%, var(--playback-accent) 26%);
+  font-size: 0.42em;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.musical-label--source-selector-option .musical-label__primary {
+  font-size: 1em;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.musical-label--source-selector-option .musical-label__secondary {
+  font-size: 0.54em;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.musical-label--selector-current .musical-label__primary {
+  font-size: 0.88em;
+}
+
+.musical-label--selector-current .musical-label__secondary {
+  color: color-mix(in srgb, var(--text-secondary) 72%, var(--playback-accent) 28%);
+  font-size: 0.34em;
+  font-weight: 650;
+}
+
+.musical-label--selector-option {
+  align-items: flex-start;
+  gap: 0.08em;
+}
+
+.musical-label--selector-option .musical-label__secondary {
+  font-size: 0.72em;
+}
+
+.musical-label--key-card .musical-label__root,
+.musical-label--source-selector-current .musical-label__root,
+.musical-label--source-selector-option .musical-label__root,
+.musical-label--selector-current .musical-label__root,
+.musical-label--selector-preview .musical-label__root,
+.musical-label--selector-option .musical-label__root {
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.musical-label--chord-chip {
+  align-items: flex-start;
+  gap: 0.08em;
+}
+
+.musical-label--chord-chip .musical-label__primary {
+  font-size: 0.98em;
+}
+
+.musical-label--chord-chip .musical-label__secondary {
+  font-size: 0.56em;
 }
 
 .key-shift__chips {
@@ -1472,6 +1632,255 @@ a {
   min-width: 0;
 }
 
+.source-key-selector-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.source-key-selector-field__label {
+  color: var(--muted);
+}
+
+.source-key-selector {
+  position: relative;
+  width: min(100%, 18rem);
+}
+
+.source-key-selector__trigger {
+  width: 100%;
+  min-height: 4rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.85rem;
+  padding: 0.55rem 0.85rem;
+  border: 1px solid color-mix(in srgb, var(--chip-active-border) 36%, var(--input-border));
+  border-radius: 999px;
+  background:
+    radial-gradient(
+      circle at 50% 0%,
+      color-mix(in srgb, white 9%, transparent),
+      transparent 58%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--panel-strong) 91%, var(--panel) 9%),
+      color-mix(in srgb, var(--panel) 88%, black 12%)
+    );
+  color: var(--text);
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 12%, transparent),
+    inset 0 -0.9rem 1.35rem color-mix(in srgb, black 15%, transparent),
+    0 0.65rem 1.5rem color-mix(in srgb, black 14%, transparent);
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease,
+    background 160ms ease;
+}
+
+.source-key-selector__trigger::before {
+  content: "";
+  position: absolute;
+  inset: 0.22rem;
+  border-radius: inherit;
+  border: 1px solid color-mix(in srgb, white 5%, transparent);
+  pointer-events: none;
+  opacity: 0.7;
+}
+
+.source-key-selector__trigger:hover {
+  border-color: var(--button-hover-border);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 13%, transparent),
+    inset 0 -1rem 1.5rem color-mix(in srgb, black 17%, transparent),
+    0 0.85rem 1.75rem color-mix(in srgb, black 17%, transparent);
+  transform: translateY(-1px);
+}
+
+.source-key-selector__trigger:focus-visible,
+.source-key-selector__option:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.source-key-selector__trigger--open {
+  border-color: var(--chip-active-border);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 14%, transparent),
+    inset 0 -1rem 1.55rem color-mix(in srgb, black 18%, transparent),
+    0 1rem 2rem color-mix(in srgb, black 18%, transparent);
+}
+
+.source-key-selector__current {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.source-key-selector__current-indicator,
+.source-key-selector__option-indicator {
+  width: 1.1rem;
+  height: 1.1rem;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--chip-active-border) 28%, var(--divider));
+  background:
+    radial-gradient(circle at 35% 30%, color-mix(in srgb, white 24%, transparent), transparent 48%),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--panel-strong) 88%, transparent),
+      color-mix(in srgb, var(--panel) 78%, black 22%)
+    );
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 10%, transparent);
+  position: relative;
+}
+
+.source-key-selector__current-indicator::after,
+.source-key-selector__option--selected .source-key-selector__option-indicator::after {
+  content: "";
+  position: absolute;
+  inset: 0.24rem;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--playback-accent) 74%, var(--text));
+  box-shadow: 0 0 0.55rem color-mix(in srgb, var(--playback-accent) 24%, transparent);
+}
+
+.source-key-selector__current-label {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex: 1;
+}
+
+.source-key-selector__current-badge,
+.source-key-selector__option-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 1.65rem;
+  padding: 0.15rem 0.55rem;
+  border: 1px solid color-mix(in srgb, var(--chip-active-border) 58%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--chip-active-bg) 86%, transparent);
+  color: color-mix(in srgb, white 88%, var(--text));
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.source-key-selector__chevron {
+  color: color-mix(in srgb, var(--chip-active-border) 82%, var(--text));
+  font-size: 1.08rem;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+.source-key-selector__menu {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 0.65rem);
+  width: 100%;
+  z-index: 10;
+  max-height: 19.5rem;
+  overflow-y: auto;
+  padding: 0.58rem;
+  border: 1px solid color-mix(in srgb, var(--chip-active-border) 18%, var(--divider));
+  border-radius: 24px;
+  background:
+    radial-gradient(
+      circle at top,
+      color-mix(in srgb, var(--playback-accent) 9%, transparent),
+      transparent 43%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--panel-strong) 96%, var(--panel) 4%),
+      color-mix(in srgb, var(--panel) 90%, black 10%)
+    );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 8%, transparent),
+    0 1.25rem 3rem color-mix(in srgb, black 30%, transparent);
+  backdrop-filter: blur(14px);
+}
+
+.source-key-selector__option {
+  width: 100%;
+  display: flex;
+  margin: 0;
+  padding: 0.7rem 0.82rem;
+  border: 1px solid transparent;
+  border-radius: 18px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  box-shadow: inset 0 1px 0 transparent;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.source-key-selector__option:hover {
+  border-color: var(--button-hover-border);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--panel-strong) 78%, transparent),
+      color-mix(in srgb, var(--panel) 62%, transparent)
+    );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 5%, transparent),
+    0 0.55rem 1.2rem color-mix(in srgb, black 10%, transparent);
+  transform: translateY(-1px);
+}
+
+.source-key-selector__option--selected {
+  border-color: color-mix(in srgb, var(--chip-active-border) 82%, var(--playback-accent) 18%);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--playback-accent) 12%, var(--panel-strong) 88%),
+      color-mix(in srgb, var(--panel) 84%, black 16%)
+    );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 8%, transparent),
+    0 0.8rem 1.6rem color-mix(in srgb, black 12%, transparent);
+}
+
+.source-key-selector__option-content {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  width: 100%;
+  min-width: 0;
+}
+
+.source-key-selector__option-label {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex: 1;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.source-key-selector__option--selected .source-key-selector__option-label {
+  color: color-mix(in srgb, white 90%, var(--text));
+}
+
 .target-selector {
   position: relative;
   width: 100%;
@@ -1482,7 +1891,7 @@ a {
   width: 100%;
   min-height: 4.8rem;
   display: grid;
-  grid-template-columns: minmax(0, 0.78fr) minmax(0, 1.08fr) minmax(0, 0.78fr);
+  grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.26fr) minmax(0, 0.7fr);
   align-items: center;
   gap: 0;
   padding: 0.28rem;
@@ -1514,6 +1923,10 @@ a {
     background 160ms ease;
 }
 
+.target-selector__trigger--dual {
+  grid-template-columns: minmax(0, 0.64fr) minmax(0, 1.42fr) minmax(0, 0.64fr);
+}
+
 .target-selector__trigger::before {
   content: "";
   position: absolute;
@@ -1540,20 +1953,28 @@ a {
   min-width: 0;
   color: color-mix(in srgb, var(--muted) 74%, var(--text) 26%);
   min-height: 4.22rem;
-  padding: 0.45rem 0.65rem 0.9rem;
-  font-size: clamp(0.96rem, 1.55vw, 1.14rem);
+  padding: 0.45rem 0.35rem 0.9rem;
+  font-size: clamp(0.88rem, 1.35vw, 1.02rem);
   font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 1.05;
   text-align: center;
+  overflow: visible;
+}
+
+.target-selector__preview > .musical-label {
+  width: auto;
+  max-width: 100%;
 }
 
 .target-selector__preview--lower {
   border-right: 1px solid color-mix(in srgb, var(--divider) 78%, transparent);
+  justify-content: flex-start;
 }
 
 .target-selector__preview--higher {
   border-left: 1px solid color-mix(in srgb, var(--divider) 78%, transparent);
+  justify-content: flex-end;
 }
 
 .target-selector__preview--disabled {
@@ -1569,7 +1990,7 @@ a {
   min-width: 0;
   min-height: 4.18rem;
   margin: 0 0.16rem;
-  padding: 0.52rem 1rem 0.94rem;
+  padding: 0.52rem 0.72rem 0.94rem;
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--chip-active-border) 68%, transparent);
   background:
@@ -1590,11 +2011,52 @@ a {
   text-align: center;
 }
 
+.target-selector__current--dual {
+  padding-inline: 0.58rem;
+}
+
 .target-selector__current-key {
-  font-size: clamp(2rem, 2.7vw, 2.45rem);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
+  font-size: clamp(1.88rem, 2.45vw, 2.28rem);
   font-weight: 700;
-  letter-spacing: -0.03em;
+  letter-spacing: -0.01em;
   line-height: 0.9;
+}
+
+.target-selector__current-key--dual {
+  font-size: clamp(1.72rem, 2.18vw, 2.02rem);
+}
+
+.target-selector__current-key > .musical-label {
+  width: auto;
+  max-width: 100%;
+}
+
+.musical-label--selector-current .musical-label__primary,
+.musical-label--selector-current .musical-label__secondary {
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.musical-label--selector-current.musical-label--dual {
+  gap: 0.04em;
+  width: 100%;
+}
+
+.musical-label--selector-current.musical-label--dual .musical-label__primary {
+  font-size: 0.78em;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.musical-label--selector-current.musical-label--dual .musical-label__secondary {
+  font-size: 0.3em;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 .target-selector__current-meta {
@@ -1726,6 +2188,10 @@ a {
 }
 
 .target-selector__option-label {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
   font-size: 1.04rem;
   font-weight: 700;
   letter-spacing: -0.01em;
@@ -1762,7 +2228,6 @@ a {
 }
 
 .target-selector__preview,
-.target-selector__option-label,
 .target-selector__option-content {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2151,7 +2616,6 @@ a {
   .analysis-grid,
   .details-grid,
   .details-stack,
-  .playback-stage__summary,
   .chord-preview-grid,
   .key-shift__header,
   .stem-row {

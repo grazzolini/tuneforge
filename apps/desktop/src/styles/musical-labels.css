@@ -1,0 +1,224 @@
+.musical-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.12em;
+  width: 100%;
+  min-width: 0;
+}
+
+.musical-label__primary,
+.musical-label__secondary {
+  display: block;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.musical-label__root {
+  display: inline;
+}
+
+.musical-label__suffix {
+  display: inline;
+  font-size: 0.54em;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: inherit;
+  margin-left: 0.01em;
+  vertical-align: baseline;
+}
+
+.musical-label__secondary {
+  color: color-mix(in srgb, var(--muted) 86%, var(--text) 14%);
+  font-size: 0.44em;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 0.96;
+}
+
+.musical-label--key-card,
+.musical-label--chord-card {
+  align-items: flex-start;
+  gap: 0.18em;
+}
+
+.musical-label--key-card .musical-label__primary,
+.musical-label--key-card .musical-label__secondary,
+.musical-label--chord-card .musical-label__primary,
+.musical-label--chord-card .musical-label__secondary,
+.musical-label--selector-option .musical-label__primary,
+.musical-label--selector-option .musical-label__secondary,
+.musical-label--chord-chip .musical-label__primary,
+.musical-label--chord-chip .musical-label__secondary {
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.musical-label--selector-preview {
+  gap: 0.08em;
+}
+
+.musical-label--selector-preview .musical-label__primary {
+  font-size: 0.94em;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.musical-label--selector-preview .musical-label__secondary {
+  font-size: 0.54em;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.musical-label--selector-current {
+  gap: 0.08em;
+}
+
+.musical-label--source-selector-current,
+.musical-label--source-selector-option {
+  align-items: flex-start;
+  gap: 0.08em;
+  width: auto;
+}
+
+.musical-label--source-selector-current .musical-label__primary,
+.musical-label--source-selector-current .musical-label__secondary,
+.musical-label--source-selector-option .musical-label__primary,
+.musical-label--source-selector-option .musical-label__secondary {
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.musical-label--source-selector-current .musical-label__primary {
+  font-size: 1.02em;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.musical-label--source-selector-current .musical-label__secondary {
+  color: var(--source-selector-secondary-text);
+  font-size: 0.42em;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.musical-label--source-selector-option .musical-label__primary {
+  font-size: 1em;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.musical-label--source-selector-option .musical-label__secondary {
+  font-size: 0.54em;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.musical-label--selector-current .musical-label__primary {
+  font-size: 0.88em;
+}
+
+.musical-label--selector-current .musical-label__secondary {
+  color: var(--selector-current-secondary-text);
+  font-size: 0.34em;
+  font-weight: 650;
+}
+
+.musical-label--selector-option {
+  align-items: flex-start;
+  gap: 0.08em;
+}
+
+.musical-label--selector-option .musical-label__secondary {
+  font-size: 0.72em;
+}
+
+.musical-label--key-card .musical-label__root,
+.musical-label--source-selector-current .musical-label__root,
+.musical-label--source-selector-option .musical-label__root,
+.musical-label--selector-current .musical-label__root,
+.musical-label--selector-preview .musical-label__root,
+.musical-label--selector-option .musical-label__root {
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.musical-label--chord-chip {
+  align-items: flex-start;
+  gap: 0.08em;
+}
+
+.musical-label--chord-chip .musical-label__primary {
+  font-size: 0.98em;
+}
+
+.musical-label--chord-chip .musical-label__secondary {
+  font-size: 0.56em;
+}
+
+.key-shift__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: auto;
+}
+
+.key-shift__chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2rem;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid var(--chip-border);
+  border-radius: 999px;
+  background: var(--chip-bg);
+  color: var(--button-text);
+  font-size: 0.84rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.key-shift__chip--active {
+  background: var(--chip-active-bg);
+  border-color: var(--chip-active-border);
+}
+
+.key-stepper__heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+
+.key-stepper {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: stretch;
+  padding: 0.9rem;
+  border: 1px solid color-mix(in srgb, var(--divider) 78%, transparent);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at top, color-mix(in srgb, var(--playback-accent) 10%, transparent), transparent 50%),
+    color-mix(in srgb, var(--panel) 70%, var(--panel-strong) 30%);
+}
+
+.key-stepper > .button {
+  min-width: 4.25rem;
+  min-height: 4.9rem;
+  padding-inline: 0;
+  font-size: 1.8rem;
+  border-radius: 22px;
+}
+
+.key-stepper__value {
+  display: flex;
+  min-width: 0;
+}
+

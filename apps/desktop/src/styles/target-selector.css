@@ -1,0 +1,379 @@
+.target-selector {
+  position: relative;
+  width: 100%;
+  isolation: isolate;
+}
+
+.target-selector__trigger {
+  width: 100%;
+  min-height: 4.8rem;
+  display: grid;
+  grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.26fr) minmax(0, 0.7fr);
+  align-items: center;
+  gap: 0;
+  padding: 0.28rem;
+  border: 1px solid color-mix(in srgb, var(--chip-active-border) 36%, var(--input-border));
+  border-radius: 999px;
+  background:
+    radial-gradient(
+      circle at 50% 0%,
+      color-mix(in srgb, white 9%, transparent),
+      transparent 58%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--panel-strong) 91%, var(--panel) 9%),
+      color-mix(in srgb, var(--panel) 88%, black 12%)
+    );
+  color: var(--text);
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 12%, transparent),
+    inset 0 -0.9rem 1.35rem color-mix(in srgb, black 15%, transparent),
+    0 0.65rem 1.5rem color-mix(in srgb, black 14%, transparent);
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease,
+    background 160ms ease;
+}
+
+.target-selector__trigger--dual {
+  grid-template-columns: minmax(0, 0.64fr) minmax(0, 1.42fr) minmax(0, 0.64fr);
+}
+
+.target-selector__trigger::before {
+  content: "";
+  position: absolute;
+  inset: 0.22rem;
+  border-radius: inherit;
+  border: 1px solid color-mix(in srgb, white 5%, transparent);
+  pointer-events: none;
+  opacity: 0.7;
+}
+
+.target-selector__trigger:hover {
+  border-color: var(--button-hover-border);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 13%, transparent),
+    inset 0 -1rem 1.5rem color-mix(in srgb, black 17%, transparent),
+    0 0.85rem 1.75rem color-mix(in srgb, black 17%, transparent);
+  transform: translateY(-1px);
+}
+
+.target-selector__preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  color: color-mix(in srgb, var(--muted) 74%, var(--text) 26%);
+  min-height: 4.22rem;
+  padding: 0.45rem 0.35rem 0.9rem;
+  font-size: clamp(0.88rem, 1.35vw, 1.02rem);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.05;
+  text-align: center;
+  overflow: visible;
+}
+
+.target-selector__preview > .musical-label {
+  width: auto;
+  max-width: 100%;
+}
+
+.target-selector__preview--lower {
+  border-right: 1px solid color-mix(in srgb, var(--divider) 78%, transparent);
+  justify-content: flex-start;
+}
+
+.target-selector__preview--higher {
+  border-left: 1px solid color-mix(in srgb, var(--divider) 78%, transparent);
+  justify-content: flex-end;
+}
+
+.target-selector__preview--disabled {
+  opacity: 0.2;
+}
+
+.target-selector__current {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.16rem;
+  min-width: 0;
+  min-height: 4.18rem;
+  margin: 0 0.16rem;
+  padding: 0.52rem 0.72rem 0.94rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--chip-active-border) 68%, transparent);
+  background:
+    radial-gradient(
+      circle at 50% 6%,
+      color-mix(in srgb, white 11%, transparent),
+      transparent 42%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--playback-accent) 16%, var(--panel-strong) 84%),
+      color-mix(in srgb, var(--panel) 92%, black 8%)
+    );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 10%, transparent),
+    inset 0 -0.8rem 1.25rem color-mix(in srgb, black 16%, transparent),
+    0 0.4rem 0.95rem color-mix(in srgb, black 10%, transparent);
+  text-align: center;
+}
+
+.target-selector__current--dual {
+  padding-inline: 0.58rem;
+}
+
+.target-selector__current-key {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
+  font-size: clamp(1.88rem, 2.45vw, 2.28rem);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 0.9;
+}
+
+.target-selector__current-key--dual {
+  font-size: clamp(1.72rem, 2.18vw, 2.02rem);
+}
+
+.target-selector__current-key > .musical-label {
+  width: auto;
+  max-width: 100%;
+}
+
+.musical-label--selector-current .musical-label__primary,
+.musical-label--selector-current .musical-label__secondary {
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.musical-label--selector-current.musical-label--dual {
+  gap: 0.04em;
+  width: 100%;
+}
+
+.musical-label--selector-current.musical-label--dual .musical-label__primary {
+  font-size: 0.78em;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.musical-label--selector-current.musical-label--dual .musical-label__secondary {
+  font-size: 0.3em;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.target-selector__current-meta {
+  color: var(--selector-current-meta-text);
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  line-height: 1.05;
+  text-transform: uppercase;
+}
+
+.target-selector__chevron {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  color: color-mix(in srgb, var(--chip-active-border) 82%, var(--text));
+  font-size: 1.08rem;
+  line-height: 1;
+  text-shadow: 0 0 0.75rem color-mix(in srgb, var(--playback-accent) 24%, transparent);
+}
+
+.target-selector__menu {
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 0.65rem);
+  width: min(100%, 19.75rem);
+  z-index: 10;
+  max-height: 19.5rem;
+  overflow-y: auto;
+  padding: 0.58rem;
+  border: 1px solid color-mix(in srgb, var(--chip-active-border) 18%, var(--divider));
+  border-radius: 24px;
+  transform: translateX(-50%);
+  background:
+    radial-gradient(
+      circle at top,
+      color-mix(in srgb, var(--playback-accent) 9%, transparent),
+      transparent 43%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--panel-strong) 96%, var(--panel) 4%),
+      color-mix(in srgb, var(--panel) 90%, black 10%)
+    );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 8%, transparent),
+    0 1.25rem 3rem color-mix(in srgb, black 30%, transparent);
+  backdrop-filter: blur(14px);
+}
+
+.target-selector__group-label {
+  padding: 0.5rem 0.72rem 0.28rem;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.target-selector__option {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0.78rem 0.82rem;
+  border: 1px solid transparent;
+  border-radius: 18px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  box-shadow: inset 0 1px 0 transparent;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.target-selector__option:hover {
+  border-color: var(--button-hover-border);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--panel-strong) 78%, transparent),
+      color-mix(in srgb, var(--panel) 62%, transparent)
+    );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 5%, transparent),
+    0 0.55rem 1.2rem color-mix(in srgb, black 10%, transparent);
+  transform: translateY(-1px);
+}
+
+.target-selector__option--selected {
+  border-color: color-mix(in srgb, var(--chip-active-border) 82%, var(--playback-accent) 18%);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--playback-accent) 12%, var(--panel-strong) 88%),
+      color-mix(in srgb, var(--panel) 84%, black 16%)
+    );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 8%, transparent),
+    0 0.8rem 1.6rem color-mix(in srgb, black 12%, transparent);
+}
+
+.target-selector__option-direction {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.55rem;
+  height: 1.55rem;
+  border: 1px solid color-mix(in srgb, var(--chip-active-border) 22%, transparent);
+  border-radius: 999px;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, white 3%, var(--panel-strong) 97%),
+      color-mix(in srgb, var(--panel) 88%, black 12%)
+    );
+  color: color-mix(in srgb, var(--playback-accent) 62%, var(--text));
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 5%, transparent);
+}
+
+.target-selector__option-label {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  font-size: 1.04rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.target-selector__option-content {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+}
+
+.target-selector__option--selected .target-selector__option-label {
+  color: var(--selector-selected-option-text);
+}
+
+.target-selector__option--selected .target-selector__option-direction {
+  border-color: color-mix(in srgb, var(--chip-active-border) 52%, transparent);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--playback-accent) 18%, var(--panel-strong) 82%),
+      color-mix(in srgb, var(--panel) 82%, black 18%)
+    );
+  color: var(--selector-selected-direction-text);
+}
+
+.target-selector__menu .target-selector__option + .target-selector__group-label {
+  margin-top: 0.42rem;
+}
+
+.target-selector__menu .target-selector__group-label:first-child {
+  padding-top: 0.18rem;
+}
+
+.target-selector__preview,
+.target-selector__option-content {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.target-selector__trigger:focus-visible,
+.target-selector__option:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.target-selector__trigger[aria-expanded="true"] {
+  border-color: var(--chip-active-border);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 14%, transparent),
+    inset 0 -1rem 1.55rem color-mix(in srgb, black 18%, transparent),
+    0 1rem 2rem color-mix(in srgb, black 18%, transparent);
+}
+
+.target-selector__trigger[aria-expanded="true"] .target-selector__current-key {
+  color: var(--selector-open-key-text);
+}
+
+.target-selector__trigger[aria-expanded="true"] .target-selector__current-meta {
+  color: var(--selector-open-meta-text);
+}
+
+.target-selector__trigger[aria-expanded="true"] .target-selector__chevron {
+  color: color-mix(in srgb, var(--playback-accent) 68%, var(--text));
+}
+

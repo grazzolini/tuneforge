@@ -1,0 +1,58 @@
+.artifact-list,
+.job-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.details-block {
+  margin-top: 1rem;
+  border-top: 1px solid var(--divider);
+  padding-top: 1rem;
+}
+
+.details-block--flush {
+  margin-top: 0;
+  border-top: none;
+  padding-top: 0;
+}
+
+.details-block--inset {
+  margin-top: 1rem;
+}
+
+.details-stack {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.artifact-list,
+.job-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.artifact-list li,
+.job-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-bottom: 0.8rem;
+  border-bottom: 1px solid var(--divider);
+}
+
+.artifact-list li:last-child,
+.job-list li:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.job-list li > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+

@@ -1,0 +1,102 @@
+.inspector-panel {
+  position: sticky;
+  top: var(--screen-padding, 2rem);
+}
+
+.player--hidden {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.inline-error {
+  color: var(--danger);
+}
+
+@media (max-width: 1200px) {
+  .project-workbench,
+  .project-workbench--wide {
+    grid-template-columns: 1fr;
+  }
+
+  .inspector-panel {
+    position: static;
+  }
+
+  .settings-overview,
+  .settings-grid,
+  .theme-studio-layout,
+  .theme-studio-preview__shell,
+  .theme-studio-preview__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1000px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+  }
+
+  .nav {
+    flex-direction: row;
+  }
+
+  .screen__header,
+  .screen__header--library,
+  .playback-stage__header,
+  .playback-stage__lane-header,
+  .panel-heading,
+  .transport,
+  .library-toolbar {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+
+  .layout-grid,
+  .meta-grid,
+  .analysis-grid,
+  .details-grid,
+  .settings-overview__stats,
+  .settings-summary-grid,
+  .theme-studio-toolbar__stats,
+  .details-stack,
+  .chord-preview-grid,
+  .key-shift__header,
+  .stem-row {
+    grid-template-columns: 1fr;
+  }
+
+  .playback-focus__meta {
+    align-items: flex-start;
+  }
+
+  .settings-toggle {
+    flex-direction: column;
+    grid-template-columns: 1fr;
+  }
+
+  .theme-studio-token__controls {
+    grid-template-columns: 1fr;
+  }
+
+  .theme-studio-token__footer,
+  .theme-studio-preview__hero,
+  .theme-studio-preview__workspace-header,
+  .theme-studio-preview__playback-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .theme-studio-preview__selector-showcase {
+    grid-template-columns: 1fr;
+  }
+}

@@ -5,8 +5,10 @@ import { Link } from "react-router-dom";
 import { api } from "../../lib/api";
 import {
   usePreferences,
+  type DefaultPlaybackDisplayMode,
   type EnharmonicDisplayMode,
   type InformationDensity,
+  type ProjectWorkspaceMode,
 } from "../../lib/preferences";
 import {
   parseSettingsSnapshot,
@@ -95,6 +97,42 @@ const enharmonicOptions: ChoiceOption<EnharmonicDisplayMode>[] = [
   },
 ];
 
+const projectWorkspaceOptions: ChoiceOption<ProjectWorkspaceMode>[] = [
+  {
+    value: "project",
+    label: "Project first",
+    description: "Open with sources, mix builder, analysis, and jobs.",
+  },
+  {
+    value: "playback",
+    label: "Playback first",
+    description: "Open with large lyrics, chords, transport, and stem practice controls.",
+  },
+];
+
+const playbackDisplayOptions: ChoiceOption<DefaultPlaybackDisplayMode>[] = [
+  {
+    value: "auto",
+    label: "Auto",
+    description: "Use lyrics + chords when both exist, otherwise the available practice view.",
+  },
+  {
+    value: "combined",
+    label: "Lyrics + chords",
+    description: "Open Playback as a lead sheet when possible.",
+  },
+  {
+    value: "lyrics",
+    label: "Lyrics",
+    description: "Open Playback focused on the lyric theater.",
+  },
+  {
+    value: "chords",
+    label: "Chords",
+    description: "Open Playback focused on chord follow.",
+  },
+];
+
 function themePreferenceLabel(themePreference: ThemePreference) {
   if (themePreference === "system") {
     return "Follow system";
@@ -118,6 +156,17 @@ function enharmonicDisplayLabel(value: EnharmonicDisplayMode) {
   if (value === "neutral") return "Neutral fallback";
   if (value === "dual") return "Dual labels";
   return "Auto by key";
+}
+
+function projectWorkspaceLabel(value: ProjectWorkspaceMode) {
+  return value === "playback" ? "Playback first" : "Project first";
+}
+
+function playbackDisplayLabel(value: DefaultPlaybackDisplayMode) {
+  if (value === "auto") return "Auto";
+  if (value === "combined") return "Lyrics + chords";
+  if (value === "lyrics") return "Lyrics";
+  return "Chords";
 }
 
 function ChoiceGroup<T extends string>({
@@ -196,10 +245,18 @@ export function SettingsView() {
     enharmonicDisplayMode,
     defaultInspectorOpen,
     defaultSourcesRailCollapsed,
+    defaultProjectWorkspace,
+    defaultPlaybackDisplayMode,
+    defaultLyricsFollowEnabled,
+    defaultChordsFollowEnabled,
     setInformationDensity,
     setEnharmonicDisplayMode,
     setDefaultInspectorOpen,
     setDefaultSourcesRailCollapsed,
+    setDefaultProjectWorkspace,
+    setDefaultPlaybackDisplayMode,
+    setDefaultLyricsFollowEnabled,
+    setDefaultChordsFollowEnabled,
     resetAppearancePreferences,
     resetNotationPreferences,
     resetVisibilityPreferences,
@@ -250,7 +307,11 @@ export function SettingsView() {
 
       const contents = serializeSettingsSnapshot({
         preferences: {
+          defaultChordsFollowEnabled,
           defaultInspectorOpen,
+          defaultPlaybackDisplayMode,
+          defaultLyricsFollowEnabled,
+          defaultProjectWorkspace,
           defaultSourcesRailCollapsed,
           enharmonicDisplayMode,
           informationDensity,
@@ -352,6 +413,26 @@ export function SettingsView() {
             <dt>Sources rail</dt>
             <dd>{defaultSourcesRailCollapsed ? "Collapsed" : "Expanded"}</dd>
           </div>
+          <div className="settings-overview__stat">
+            <dt>First project workspace</dt>
+            <dd>{projectWorkspaceLabel(defaultProjectWorkspace)}</dd>
+          </div>
+          <div className="settings-overview__stat">
+            <dt>Playback view</dt>
+            <dd>{playbackDisplayLabel(defaultPlaybackDisplayMode)}</dd>
+          </div>
+          <div className="settings-overview__stat">
+            <dt>Playback follow</dt>
+            <dd>
+              {defaultLyricsFollowEnabled && defaultChordsFollowEnabled
+                ? "Lyrics + chords"
+                : defaultLyricsFollowEnabled
+                  ? "Lyrics only"
+                  : defaultChordsFollowEnabled
+                    ? "Chords only"
+                    : "Manual"}
+            </dd>
+          </div>
         </dl>
       </div>
 
@@ -432,6 +513,22 @@ export function SettingsView() {
             </div>
           </div>
 
+          <ChoiceGroup
+            description="Choose which workspace a project uses before it has saved its own last-open state."
+            legend="First-open workspace"
+            onChange={setDefaultProjectWorkspace}
+            options={projectWorkspaceOptions}
+            value={defaultProjectWorkspace}
+          />
+
+          <ChoiceGroup
+            description="Choose the Playback practice view before a project has saved its own display mode."
+            legend="First-open playback view"
+            onChange={setDefaultPlaybackDisplayMode}
+            options={playbackDisplayOptions}
+            value={defaultPlaybackDisplayMode}
+          />
+
           <div className="settings-toggle-list">
             <PreferenceToggle
               description="Keep transform, export, and analysis controls visible on first load."
@@ -444,6 +541,18 @@ export function SettingsView() {
               label="Collapse sources rail by default"
               onChange={setDefaultSourcesRailCollapsed}
               value={defaultSourcesRailCollapsed}
+            />
+            <PreferenceToggle
+              description="Start each project with lyrics follow enabled until that project stores its own setting."
+              label="Enable lyrics follow by default"
+              onChange={setDefaultLyricsFollowEnabled}
+              value={defaultLyricsFollowEnabled}
+            />
+            <PreferenceToggle
+              description="Start each project with chord follow enabled until that project stores its own setting."
+              label="Enable chords follow by default"
+              onChange={setDefaultChordsFollowEnabled}
+              value={defaultChordsFollowEnabled}
             />
           </div>
 
@@ -459,7 +568,9 @@ export function SettingsView() {
         <div className="panel-heading">
           <div>
             <h2>Local Data</h2>
-            <p className="subpanel__copy">Settings backup and backend diagnostics.</p>
+            <p className="subpanel__copy">
+              Settings backup and backend diagnostics. Resetting settings does not clear per-project playback memory.
+            </p>
           </div>
         </div>
 

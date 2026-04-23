@@ -5,6 +5,34 @@
   align-items: start;
 }
 
+.project-workspace-tabs {
+  display: inline-flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+  padding: 0.35rem;
+  border: 1px solid var(--divider);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-strong) 74%, transparent);
+}
+
+.project-workspace-tabs__button {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 700;
+  padding: 0.58rem 1rem;
+  cursor: pointer;
+}
+
+.project-workspace-tabs__button--active {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--playback-accent) 26%, transparent);
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--playback-accent) 12%, transparent);
+}
+
 .project-workbench--wide {
   grid-template-columns: minmax(182px, 0.6fr) minmax(0, 2.12fr);
 }
@@ -340,4 +368,3 @@
   font-size: 0.88rem;
   line-height: 1.05;
 }
-

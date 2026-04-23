@@ -199,9 +199,14 @@ function ThemeStudioPreview({
                 <div className="theme-studio-preview__playback-header">
                   <div>
                     <span className="metric-label">Playback accents</span>
-                    <strong>Localized heat</strong>
+                    <strong>Lyrics + dock</strong>
                   </div>
                   <span className="theme-studio-preview__live-pill">Live</span>
+                </div>
+                <div className="theme-studio-preview__lyrics-card">
+                  <span className="metric-label">Active lyric</span>
+                  <strong>Hold middle line steady</strong>
+                  <p className="artifact-meta">Context lines dim. Active line stays centered.</p>
                 </div>
                 <div className="theme-studio-preview__track" aria-label={`${mode} playback track sample`}>
                   <div className="theme-studio-preview__track-progress" />
@@ -210,6 +215,11 @@ function ThemeStudioPreview({
                   <span className="theme-studio-preview__chip theme-studio-preview__chip--muted">Muted stem</span>
                   <span className="theme-studio-preview__chip theme-studio-preview__chip--solo">Solo stem</span>
                   <span className="theme-studio-preview__chip theme-studio-preview__chip--active">Chord active</span>
+                </div>
+                <div className="theme-studio-preview__dock">
+                  <span className="theme-studio-preview__dock-button" />
+                  <span className="theme-studio-preview__dock-button theme-studio-preview__dock-button--large" />
+                  <span className="theme-studio-preview__dock-track" />
                 </div>
               </section>
 
@@ -542,6 +552,18 @@ export function ThemeStudioView() {
                 <dt>Playback active</dt>
                 <dd>
                   {getThemeVariableValue(editingMode, "--component-playback-active")}
+                </dd>
+              </div>
+              <div>
+                <dt>Lyrics active</dt>
+                <dd>
+                  {getThemeVariableValue(editingMode, "--component-lyrics-active-bg")}
+                </dd>
+              </div>
+              <div>
+                <dt>Transport dock</dt>
+                <dd>
+                  {getThemeVariableValue(editingMode, "--component-transport-dock-bg")}
                 </dd>
               </div>
               <div>

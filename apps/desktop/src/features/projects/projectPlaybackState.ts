@@ -1,3 +1,10 @@
+import {
+  isPlaybackDisplayMode,
+  isProjectWorkspaceMode,
+  type PlaybackDisplayMode,
+  type ProjectWorkspaceMode,
+} from "../../lib/preferences";
+
 export type StemControlState = {
   muted: boolean;
   solo: boolean;
@@ -7,6 +14,10 @@ export type StoredProjectPlaybackState = {
   selectedArtifactId: string | null;
   selectedPrimaryArtifactId: string | null;
   selectedStemSourceArtifactId: string | null;
+  activeWorkspace: ProjectWorkspaceMode;
+  playbackDisplayMode: PlaybackDisplayMode;
+  lyricsFollowEnabled: boolean;
+  chordsFollowEnabled: boolean;
   stemControls: Record<string, StemControlState>;
   dismissedStemJobIds: string[];
 };
@@ -17,6 +28,10 @@ const DEFAULT_STORED_PROJECT_PLAYBACK_STATE: StoredProjectPlaybackState = {
   selectedArtifactId: null,
   selectedPrimaryArtifactId: null,
   selectedStemSourceArtifactId: null,
+  activeWorkspace: "project",
+  playbackDisplayMode: "combined",
+  lyricsFollowEnabled: true,
+  chordsFollowEnabled: true,
   stemControls: {},
   dismissedStemJobIds: [],
 };
@@ -64,6 +79,20 @@ function normalizeStoredProjectPlaybackState(value: unknown): StoredProjectPlayb
       typeof candidate.selectedStemSourceArtifactId === "string"
         ? candidate.selectedStemSourceArtifactId
         : null,
+    activeWorkspace: isProjectWorkspaceMode(candidate.activeWorkspace)
+      ? candidate.activeWorkspace
+      : DEFAULT_STORED_PROJECT_PLAYBACK_STATE.activeWorkspace,
+    playbackDisplayMode: isPlaybackDisplayMode(candidate.playbackDisplayMode)
+      ? candidate.playbackDisplayMode
+      : DEFAULT_STORED_PROJECT_PLAYBACK_STATE.playbackDisplayMode,
+    lyricsFollowEnabled:
+      typeof candidate.lyricsFollowEnabled === "boolean"
+        ? candidate.lyricsFollowEnabled
+        : DEFAULT_STORED_PROJECT_PLAYBACK_STATE.lyricsFollowEnabled,
+    chordsFollowEnabled:
+      typeof candidate.chordsFollowEnabled === "boolean"
+        ? candidate.chordsFollowEnabled
+        : DEFAULT_STORED_PROJECT_PLAYBACK_STATE.chordsFollowEnabled,
     stemControls,
     dismissedStemJobIds,
   };
@@ -102,6 +131,10 @@ function writePlaybackStateMap(value: Record<string, StoredProjectPlaybackState>
 
 export function readProjectPlaybackState(projectId: string): StoredProjectPlaybackState {
   return readPlaybackStateMap()[projectId] ?? DEFAULT_STORED_PROJECT_PLAYBACK_STATE;
+}
+
+export function hasProjectPlaybackState(projectId: string) {
+  return Object.prototype.hasOwnProperty.call(readPlaybackStateMap(), projectId);
 }
 
 export function writeProjectPlaybackState(

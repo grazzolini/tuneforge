@@ -10,6 +10,9 @@ import {
 import type { EnharmonicDisplayMode } from "./music";
 
 export type InformationDensity = "minimal" | "balanced" | "detailed";
+export type ProjectWorkspaceMode = "project" | "playback";
+export type PlaybackDisplayMode = "lyrics" | "chords" | "combined";
+export type DefaultPlaybackDisplayMode = "auto" | PlaybackDisplayMode;
 export type { EnharmonicDisplayMode };
 
 export type UiPreferences = {
@@ -17,13 +20,22 @@ export type UiPreferences = {
   enharmonicDisplayMode: EnharmonicDisplayMode;
   defaultInspectorOpen: boolean;
   defaultSourcesRailCollapsed: boolean;
+  defaultProjectWorkspace: ProjectWorkspaceMode;
+  defaultPlaybackDisplayMode: DefaultPlaybackDisplayMode;
+  defaultLyricsFollowEnabled: boolean;
+  defaultChordsFollowEnabled: boolean;
 };
 
 export type AppearancePreferences = Pick<UiPreferences, "informationDensity">;
 export type NotationPreferences = Pick<UiPreferences, "enharmonicDisplayMode">;
 export type VisibilityPreferences = Pick<
   UiPreferences,
-  "defaultInspectorOpen" | "defaultSourcesRailCollapsed"
+  | "defaultInspectorOpen"
+  | "defaultSourcesRailCollapsed"
+  | "defaultProjectWorkspace"
+  | "defaultPlaybackDisplayMode"
+  | "defaultLyricsFollowEnabled"
+  | "defaultChordsFollowEnabled"
 >;
 
 type PreferencesContextValue = UiPreferences & {
@@ -31,6 +43,10 @@ type PreferencesContextValue = UiPreferences & {
   setEnharmonicDisplayMode: (value: EnharmonicDisplayMode) => void;
   setDefaultInspectorOpen: (value: boolean) => void;
   setDefaultSourcesRailCollapsed: (value: boolean) => void;
+  setDefaultProjectWorkspace: (value: ProjectWorkspaceMode) => void;
+  setDefaultPlaybackDisplayMode: (value: DefaultPlaybackDisplayMode) => void;
+  setDefaultLyricsFollowEnabled: (value: boolean) => void;
+  setDefaultChordsFollowEnabled: (value: boolean) => void;
   replacePreferences: (value: UiPreferences) => void;
   resetAppearancePreferences: () => void;
   resetNotationPreferences: () => void;
@@ -49,8 +65,12 @@ export const DEFAULT_NOTATION_PREFERENCES: NotationPreferences = {
 };
 
 export const DEFAULT_VISIBILITY_PREFERENCES: VisibilityPreferences = {
-  defaultInspectorOpen: false,
+  defaultInspectorOpen: true,
   defaultSourcesRailCollapsed: false,
+  defaultProjectWorkspace: "project",
+  defaultPlaybackDisplayMode: "auto",
+  defaultLyricsFollowEnabled: true,
+  defaultChordsFollowEnabled: true,
 };
 
 export const DEFAULT_PREFERENCES: UiPreferences = {
@@ -67,6 +87,20 @@ function isInformationDensity(value: unknown): value is InformationDensity {
 
 function isEnharmonicDisplayMode(value: unknown): value is EnharmonicDisplayMode {
   return value === "auto" || value === "sharps" || value === "flats" || value === "neutral" || value === "dual";
+}
+
+export function isProjectWorkspaceMode(value: unknown): value is ProjectWorkspaceMode {
+  return value === "project" || value === "playback";
+}
+
+export function isPlaybackDisplayMode(value: unknown): value is PlaybackDisplayMode {
+  return value === "lyrics" || value === "chords" || value === "combined";
+}
+
+export function isDefaultPlaybackDisplayMode(
+  value: unknown,
+): value is DefaultPlaybackDisplayMode {
+  return value === "auto" || isPlaybackDisplayMode(value);
 }
 
 export function normalizePreferences(value: unknown): UiPreferences {
@@ -90,6 +124,20 @@ export function normalizePreferences(value: unknown): UiPreferences {
       typeof candidate.defaultSourcesRailCollapsed === "boolean"
         ? candidate.defaultSourcesRailCollapsed
         : DEFAULT_PREFERENCES.defaultSourcesRailCollapsed,
+    defaultProjectWorkspace: isProjectWorkspaceMode(candidate.defaultProjectWorkspace)
+      ? candidate.defaultProjectWorkspace
+      : DEFAULT_PREFERENCES.defaultProjectWorkspace,
+    defaultPlaybackDisplayMode: isDefaultPlaybackDisplayMode(candidate.defaultPlaybackDisplayMode)
+      ? candidate.defaultPlaybackDisplayMode
+      : DEFAULT_PREFERENCES.defaultPlaybackDisplayMode,
+    defaultLyricsFollowEnabled:
+      typeof candidate.defaultLyricsFollowEnabled === "boolean"
+        ? candidate.defaultLyricsFollowEnabled
+        : DEFAULT_PREFERENCES.defaultLyricsFollowEnabled,
+    defaultChordsFollowEnabled:
+      typeof candidate.defaultChordsFollowEnabled === "boolean"
+        ? candidate.defaultChordsFollowEnabled
+        : DEFAULT_PREFERENCES.defaultChordsFollowEnabled,
   };
 }
 
@@ -144,6 +192,18 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       },
       setDefaultSourcesRailCollapsed: (defaultSourcesRailCollapsed) => {
         setPreferences((current) => mergePreferences(current, { defaultSourcesRailCollapsed }));
+      },
+      setDefaultProjectWorkspace: (defaultProjectWorkspace) => {
+        setPreferences((current) => mergePreferences(current, { defaultProjectWorkspace }));
+      },
+      setDefaultPlaybackDisplayMode: (defaultPlaybackDisplayMode) => {
+        setPreferences((current) => mergePreferences(current, { defaultPlaybackDisplayMode }));
+      },
+      setDefaultLyricsFollowEnabled: (defaultLyricsFollowEnabled) => {
+        setPreferences((current) => mergePreferences(current, { defaultLyricsFollowEnabled }));
+      },
+      setDefaultChordsFollowEnabled: (defaultChordsFollowEnabled) => {
+        setPreferences((current) => mergePreferences(current, { defaultChordsFollowEnabled }));
       },
       replacePreferences: (value) => {
         const normalized = normalizePreferences(value);

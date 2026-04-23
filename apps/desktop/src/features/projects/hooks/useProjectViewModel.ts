@@ -7,6 +7,7 @@ import { usePreferences } from "../../../lib/preferences";
 import { usePlayback } from "../playback-context";
 import {
   clearProjectPlaybackState,
+  hasProjectPlaybackState,
   readProjectPlaybackState,
   writeProjectPlaybackState,
   type StemControlState,
@@ -28,6 +29,7 @@ import {
   artifactLabel,
   artifactSummary,
   artifactTransposeSemitones,
+  buildLeadSheetRows,
   clampTargetTranspose,
   fileNameFromPath,
   findActiveChordIndex,
@@ -47,6 +49,29 @@ import {
   type SourceKeyOption,
   type TargetShiftOption,
 } from "../projectViewUtils";
+import type { DefaultPlaybackDisplayMode, PlaybackDisplayMode } from "../../../lib/preferences";
+
+type PlaybackDisplayModeSource = "default" | "stored" | "user";
+
+function resolveDefaultPlaybackDisplayMode(
+  defaultMode: DefaultPlaybackDisplayMode,
+  hasLyricsTranscript: boolean,
+  hasChordTimeline: boolean,
+): PlaybackDisplayMode {
+  if (defaultMode !== "auto") {
+    return defaultMode;
+  }
+  if (hasLyricsTranscript && hasChordTimeline) {
+    return "combined";
+  }
+  if (hasLyricsTranscript) {
+    return "lyrics";
+  }
+  if (hasChordTimeline) {
+    return "chords";
+  }
+  return "combined";
+}
 
 export function useProjectViewModel() {
   const { projectId = "" } = useParams();
@@ -65,13 +90,21 @@ export function useProjectViewModel() {
     togglePlayback,
   } = usePlayback();
   const {
+    defaultPlaybackDisplayMode,
+    defaultChordsFollowEnabled,
     defaultInspectorOpen,
+    defaultLyricsFollowEnabled,
+    defaultProjectWorkspace,
     defaultSourcesRailCollapsed,
     enharmonicDisplayMode,
     informationDensity,
   } = usePreferences();
   const chordSegmentRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const chordTimelineRef = useRef<HTMLDivElement | null>(null);
+  const combinedLeadSheetRef = useRef<HTMLDivElement | null>(null);
+  const combinedLeadSheetRowRefs = useRef<Record<string, HTMLElement | null>>({});
   const lyricsSegmentRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const lyricsTheaterRef = useRef<HTMLDivElement | null>(null);
   const pendingPreviewSelection = useRef<{ previousLatestPreviewArtifactId: string | null } | null>(
     null,
   );
@@ -97,10 +130,18 @@ export function useProjectViewModel() {
   const [draftName, setDraftName] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(defaultInspectorOpen);
   const [sourcesRailCollapsed, setSourcesRailCollapsed] = useState(defaultSourcesRailCollapsed);
+  const [activeWorkspace, setActiveWorkspace] = useState(defaultProjectWorkspace);
+  const [playbackDisplayMode, setPlaybackDisplayMode] = useState<PlaybackDisplayMode>("combined");
+  const [playbackDisplayModeSource, setPlaybackDisplayModeSource] =
+    useState<PlaybackDisplayModeSource>("default");
   const [stemControls, setStemControls] = useState<Record<string, StemControlState>>({});
   const [dismissedStemJobIds, setDismissedStemJobIds] = useState<string[]>([]);
   const [isEditingLyrics, setIsEditingLyrics] = useState(false);
   const [lyricsDraft, setLyricsDraft] = useState<string[]>([]);
+  const [lyricsFollowEnabled, setLyricsFollowEnabled] = useState(defaultLyricsFollowEnabled);
+  const [chordsFollowEnabled, setChordsFollowEnabled] = useState(defaultChordsFollowEnabled);
+  const [lyricsFollowPaused, setLyricsFollowPaused] = useState(false);
+  const [chordsFollowPaused, setChordsFollowPaused] = useState(false);
   const showSupportingCopy = informationDensity !== "minimal";
 
   const projectQuery = useQuery({
@@ -508,6 +549,15 @@ export function useProjectViewModel() {
     activeLyricsSegment?.words?.length
       ? findActiveLyricsWordIndex(activeLyricsSegment.words, playbackTimeSeconds)
       : -1;
+  const combinedLeadSheetRows = useMemo(
+    () =>
+      buildLeadSheetRows(displayedLyrics, displayedChords, {
+        activeChordIndex,
+        activeLyricsIndex,
+        activeLyricsWordIndex,
+      }),
+    [activeChordIndex, activeLyricsIndex, activeLyricsWordIndex, displayedChords, displayedLyrics],
+  );
   const chordContextCopy =
     correctedSourceChordSemitones === 0 && chordTransposeSemitones === 0
       ? "Chord labels follow the original arrangement."
@@ -599,12 +649,75 @@ export function useProjectViewModel() {
     setSelectedArtifactId(artifact.id);
   }
 
+  function resumePlaybackFollow() {
+    setLyricsFollowPaused(false);
+    setChordsFollowPaused(false);
+  }
+
+  function handleSelectWorkspace(workspace: "project" | "playback") {
+    setActiveWorkspace(workspace);
+  }
+
+  function handleSetPlaybackDisplayMode(displayMode: PlaybackDisplayMode) {
+    setPlaybackDisplayMode(displayMode);
+    setPlaybackDisplayModeSource("user");
+    resumePlaybackFollow();
+  }
+
+  function handleTogglePlaybackDisplayLane(lane: "lyrics" | "chords") {
+    if (playbackDisplayMode === "combined") {
+      handleSetPlaybackDisplayMode(lane === "lyrics" ? "chords" : "lyrics");
+      return;
+    }
+    if (playbackDisplayMode === lane) {
+      return;
+    }
+    handleSetPlaybackDisplayMode("combined");
+  }
+
+  function handleSetLyricsFollowEnabled(enabled: boolean) {
+    setLyricsFollowEnabled(enabled);
+    setLyricsFollowPaused(false);
+  }
+
+  function handleSetChordsFollowEnabled(enabled: boolean) {
+    setChordsFollowEnabled(enabled);
+    setChordsFollowPaused(false);
+  }
+
+  function pauseLyricsFollow() {
+    if (!lyricsFollowEnabled) {
+      return;
+    }
+    setLyricsFollowPaused(true);
+  }
+
+  function pauseChordsFollow() {
+    if (!chordsFollowEnabled) {
+      return;
+    }
+    setChordsFollowPaused(true);
+  }
+
+  async function handleTogglePlayback() {
+    if (!isPlaying) {
+      resumePlaybackFollow();
+    }
+    await togglePlayback();
+  }
+
+  function handleSeekTo(timeSeconds: number) {
+    resumePlaybackFollow();
+    seekTo(timeSeconds);
+  }
+
   function handleSeek(secondsDelta: number) {
     const direction: SeekDirection = secondsDelta < 0 ? "backward" : "forward";
     setSeekAnimationRevision((current) => ({
       ...current,
       [direction]: current[direction] + 1,
     }));
+    resumePlaybackFollow();
     seekBy(secondsDelta);
   }
 
@@ -794,14 +907,66 @@ export function useProjectViewModel() {
 
   useEffect(() => {
     const storedPlaybackState = readProjectPlaybackState(projectId);
+    const hasStoredPlayback = hasProjectPlaybackState(projectId);
     pendingPreviewSelection.current = null;
     persistedStemSourceArtifactId.current = storedPlaybackState.selectedStemSourceArtifactId;
     setSelectedArtifactId(storedPlaybackState.selectedArtifactId);
     setSelectedPrimaryArtifactId(storedPlaybackState.selectedPrimaryArtifactId);
+    setActiveWorkspace(
+      hasStoredPlayback ? storedPlaybackState.activeWorkspace : defaultProjectWorkspace,
+    );
+    setPlaybackDisplayMode(
+      hasStoredPlayback
+        ? storedPlaybackState.playbackDisplayMode
+        : resolveDefaultPlaybackDisplayMode(defaultPlaybackDisplayMode, false, false),
+    );
+    setPlaybackDisplayModeSource(hasStoredPlayback ? "stored" : "default");
+    setLyricsFollowEnabled(
+      hasStoredPlayback
+        ? storedPlaybackState.lyricsFollowEnabled
+        : defaultLyricsFollowEnabled,
+    );
+    setChordsFollowEnabled(
+      hasStoredPlayback
+        ? storedPlaybackState.chordsFollowEnabled
+        : defaultChordsFollowEnabled,
+    );
+    setLyricsFollowPaused(false);
+    setChordsFollowPaused(false);
     setStemControls(storedPlaybackState.stemControls);
     setDismissedStemJobIds(storedPlaybackState.dismissedStemJobIds);
     setHydratedProjectId(projectId);
-  }, [projectId]);
+  }, [
+    defaultChordsFollowEnabled,
+    defaultLyricsFollowEnabled,
+    defaultPlaybackDisplayMode,
+    defaultProjectWorkspace,
+    projectId,
+  ]);
+
+  useEffect(() => {
+    if (
+      hydratedProjectId !== projectId ||
+      playbackDisplayModeSource !== "default"
+    ) {
+      return;
+    }
+
+    setPlaybackDisplayMode(
+      resolveDefaultPlaybackDisplayMode(
+        defaultPlaybackDisplayMode,
+        hasLyricsTranscript,
+        hasChordTimeline,
+      ),
+    );
+  }, [
+    defaultPlaybackDisplayMode,
+    hasChordTimeline,
+    hasLyricsTranscript,
+    hydratedProjectId,
+    playbackDisplayModeSource,
+    projectId,
+  ]);
 
   useEffect(() => {
     if (hydratedProjectId !== projectId) {
@@ -893,12 +1058,20 @@ export function useProjectViewModel() {
       selectedArtifactId,
       selectedPrimaryArtifactId,
       selectedStemSourceArtifactId,
+      activeWorkspace,
+      playbackDisplayMode,
+      lyricsFollowEnabled,
+      chordsFollowEnabled,
       stemControls,
       dismissedStemJobIds,
     });
   }, [
+    activeWorkspace,
+    chordsFollowEnabled,
     dismissedStemJobIds,
     hydratedProjectId,
+    lyricsFollowEnabled,
+    playbackDisplayMode,
     projectId,
     selectedArtifactId,
     selectedPrimaryArtifactId,
@@ -907,7 +1080,13 @@ export function useProjectViewModel() {
   ]);
 
   useEffect(() => {
-    if (activeChordIndex < 0) {
+    if (
+      activeWorkspace !== "playback" ||
+      playbackDisplayMode !== "chords" ||
+      !chordsFollowEnabled ||
+      chordsFollowPaused ||
+      activeChordIndex < 0
+    ) {
       return;
     }
     const activeSegment = displayedChords[activeChordIndex];
@@ -918,15 +1097,52 @@ export function useProjectViewModel() {
       chordSegmentRefs.current[
         `${activeSegment.start_seconds}-${activeSegment.label}-${activeChordIndex}`
       ];
-    activeElement?.scrollIntoView({
-      behavior: "smooth",
-      block: "nearest",
-      inline: "center",
-    });
-  }, [activeChordIndex, displayedChords]);
+    const chordTimeline = chordTimelineRef.current;
+    if (!activeElement || !chordTimeline) {
+      return;
+    }
+    const containerRect = chordTimeline.getBoundingClientRect();
+    const elementRect = activeElement.getBoundingClientRect();
+    const centerOffset =
+      elementRect.left -
+      containerRect.left -
+      chordTimeline.clientWidth / 2 +
+      elementRect.width / 2;
+    const maxScrollLeft = Math.max(
+      chordTimeline.scrollWidth - chordTimeline.clientWidth,
+      0,
+    );
+    const targetScrollLeft = Math.min(
+      Math.max(chordTimeline.scrollLeft + centerOffset, 0),
+      maxScrollLeft,
+    );
+    if (typeof chordTimeline.scrollTo === "function") {
+      chordTimeline.scrollTo({
+        behavior: "smooth",
+        left: targetScrollLeft,
+      });
+      return;
+    }
+    chordTimeline.scrollLeft = targetScrollLeft;
+  }, [
+    activeChordIndex,
+    activeWorkspace,
+    chordsFollowEnabled,
+    chordsFollowPaused,
+    displayedChords,
+    isPlaying,
+    playbackDisplayMode,
+  ]);
 
   useEffect(() => {
-    if (isEditingLyrics || activeLyricsIndex < 0) {
+    if (
+      activeWorkspace !== "playback" ||
+      playbackDisplayMode !== "lyrics" ||
+      !lyricsFollowEnabled ||
+      lyricsFollowPaused ||
+      isEditingLyrics ||
+      activeLyricsIndex < 0
+    ) {
       return;
     }
     const activeSegment = displayedLyrics[activeLyricsIndex];
@@ -937,11 +1153,103 @@ export function useProjectViewModel() {
       lyricsSegmentRefs.current[
         `${activeSegment.start_seconds}-${activeSegment.end_seconds}-${activeLyricsIndex}`
       ];
-    activeElement?.scrollIntoView({
-      behavior: "smooth",
-      block: "nearest",
-    });
-  }, [activeLyricsIndex, displayedLyrics, isEditingLyrics]);
+    const lyricsContainer = lyricsTheaterRef.current;
+    if (!activeElement || !lyricsContainer) {
+      return;
+    }
+    const containerRect = lyricsContainer.getBoundingClientRect();
+    const elementRect = activeElement.getBoundingClientRect();
+    const centerOffset =
+      elementRect.top -
+      containerRect.top -
+      lyricsContainer.clientHeight / 2 +
+      elementRect.height / 2;
+    const maxScrollTop = Math.max(
+      lyricsContainer.scrollHeight - lyricsContainer.clientHeight,
+      0,
+    );
+    const targetScrollTop = Math.min(
+      Math.max(lyricsContainer.scrollTop + centerOffset, 0),
+      maxScrollTop,
+    );
+    if (typeof lyricsContainer.scrollTo === "function") {
+      lyricsContainer.scrollTo({
+        behavior: "smooth",
+        top: targetScrollTop,
+      });
+      return;
+    }
+    lyricsContainer.scrollTop = targetScrollTop;
+  }, [
+    activeLyricsIndex,
+    activeWorkspace,
+    displayedLyrics,
+    isEditingLyrics,
+    isPlaying,
+    lyricsFollowEnabled,
+    lyricsFollowPaused,
+    playbackDisplayMode,
+  ]);
+
+  useEffect(() => {
+    if (
+      activeWorkspace !== "playback" ||
+      playbackDisplayMode !== "combined" ||
+      !lyricsFollowEnabled ||
+      lyricsFollowPaused ||
+      isEditingLyrics
+    ) {
+      return;
+    }
+    const activeRow = combinedLeadSheetRows.find((row) => row.isActive);
+    if (!activeRow) {
+      return;
+    }
+    const activeElement = combinedLeadSheetRowRefs.current[activeRow.id];
+    const leadSheetContainer = combinedLeadSheetRef.current;
+    if (!activeElement || !leadSheetContainer) {
+      return;
+    }
+    const containerRect = leadSheetContainer.getBoundingClientRect();
+    const elementRect = activeElement.getBoundingClientRect();
+    const centerOffset =
+      elementRect.top -
+      containerRect.top -
+      leadSheetContainer.clientHeight / 2 +
+      elementRect.height / 2;
+    const maxScrollTop = Math.max(
+      leadSheetContainer.scrollHeight - leadSheetContainer.clientHeight,
+      0,
+    );
+    const targetScrollTop = Math.min(
+      Math.max(leadSheetContainer.scrollTop + centerOffset, 0),
+      maxScrollTop,
+    );
+    if (typeof leadSheetContainer.scrollTo === "function") {
+      leadSheetContainer.scrollTo({
+        behavior: "smooth",
+        top: targetScrollTop,
+      });
+      return;
+    }
+    leadSheetContainer.scrollTop = targetScrollTop;
+  }, [
+    activeWorkspace,
+    combinedLeadSheetRows,
+    isEditingLyrics,
+    isPlaying,
+    lyricsFollowEnabled,
+    lyricsFollowPaused,
+    playbackDisplayMode,
+  ]);
+
+  useEffect(() => {
+    if (!isPlaying) {
+      return;
+    }
+    setLyricsFollowPaused(false);
+    setChordsFollowPaused(false);
+  }, [isPlaying]);
 
   const currentSourceSummary = selectedPrimaryArtifact
     ? artifactSummary(selectedPrimaryArtifact) ||
@@ -996,6 +1304,7 @@ export function useProjectViewModel() {
 
 
   return {
+    activeWorkspace,
     activeChordIndex,
     activeEnharmonicKeyContext,
     activeLyricsIndex,
@@ -1008,6 +1317,11 @@ export function useProjectViewModel() {
     chordJob,
     chordMutation,
     chordSegmentRefs,
+    chordTimelineRef,
+    chordsFollowEnabled,
+    combinedLeadSheetRef,
+    combinedLeadSheetRowRefs,
+    combinedLeadSheetRows,
     currentChord,
     currentKeyValue,
     centsOffset,
@@ -1024,10 +1338,17 @@ export function useProjectViewModel() {
     handleDeleteProject,
     handleLyricsAction,
     handleSeek,
+    handleSeekTo,
     handleSelectPrimaryArtifact,
     handleSelectStemArtifact,
+    handleSelectWorkspace,
+    handleSetChordsFollowEnabled,
+    handleSetLyricsFollowEnabled,
+    handleSetPlaybackDisplayMode,
     handleStemAction,
+    handleTogglePlaybackDisplayLane,
     hasChordTimeline,
+    hasEditedLyrics: lyricsQuery.data?.has_user_edits ?? false,
     hasLyricsTranscript,
     hasTimedLyricsTranscript,
     hasTransformChange,
@@ -1047,12 +1368,17 @@ export function useProjectViewModel() {
     latestPreviewArtifact,
     lowerTargetPreview,
     lowerTargetShiftOptions,
+    lyricsFollowEnabled,
     lyricsDraft,
     lyricsJob,
     lyricsMutation,
     lyricsSaveMutation,
     lyricsSegmentRefs,
+    lyricsTheaterRef,
+    pauseChordsFollow,
+    pauseLyricsFollow,
     nextChord,
+    playbackDisplayMode,
     playbackDurationSeconds,
     playbackTimeSeconds,
     previewArtifacts,
@@ -1065,6 +1391,7 @@ export function useProjectViewModel() {
     seekTo,
     selectedArtifactId,
     selectedArtifactTimestamp,
+    selectedPlaybackArtifact,
     selectedPrimaryArtifact,
     selectedPrimaryArtifactId,
     setCentsOffset,
@@ -1109,7 +1436,7 @@ export function useProjectViewModel() {
     targetSelectorOpen,
     targetSelectorRef,
     targetShiftSummary,
-    togglePlayback,
+    togglePlayback: handleTogglePlayback,
     toggleStemControl,
     transposeSemitones,
     tuningSummary,

@@ -272,6 +272,192 @@ export function findActiveLyricsWordIndex(words: LyricsWordSchema[], playbackTim
   });
 }
 
+export type LeadSheetChordAnchor =
+  | {
+      type: "word";
+      wordIndex: number;
+    }
+  | {
+      type: "percent";
+      percent: number;
+    };
+
+export type LeadSheetChord = {
+  anchor: LeadSheetChordAnchor;
+  chordIndex: number;
+  id: string;
+  isActive: boolean;
+  segment: ChordSegmentSchema;
+};
+
+export type LeadSheetLyricsRow = {
+  activeWordIndex: number;
+  chords: LeadSheetChord[];
+  id: string;
+  isActive: boolean;
+  lyricIndex: number;
+  segment: LyricsSegmentSchema;
+  type: "lyrics";
+};
+
+export type LeadSheetChordRow = {
+  chords: LeadSheetChord[];
+  id: string;
+  isActive: boolean;
+  type: "chords";
+};
+
+export type LeadSheetRow = LeadSheetLyricsRow | LeadSheetChordRow;
+
+type BuildLeadSheetRowsOptions = {
+  activeChordIndex: number;
+  activeLyricsIndex: number;
+  activeLyricsWordIndex: number;
+};
+
+function clampPercent(value: number) {
+  return Math.max(0, Math.min(100, value));
+}
+
+function chordLeadSheetId(segment: ChordSegmentSchema, chordIndex: number) {
+  return `chord-${chordIndex}-${segment.start_seconds}-${segment.label}`;
+}
+
+function chordAnchorForLyricsSegment(
+  chord: ChordSegmentSchema,
+  segment: LyricsSegmentSchema,
+): LeadSheetChordAnchor {
+  if (segment.words?.length) {
+    const wordIndex = findActiveLyricsWordIndex(segment.words, chord.start_seconds);
+    if (wordIndex >= 0) {
+      return { type: "word", wordIndex };
+    }
+  }
+
+  if (hasTimedLyrics(segment) && segment.end_seconds > segment.start_seconds) {
+    return {
+      type: "percent",
+      percent: clampPercent(
+        ((chord.start_seconds - segment.start_seconds) /
+          (segment.end_seconds - segment.start_seconds)) *
+          100,
+      ),
+    };
+  }
+
+  return { type: "percent", percent: 0 };
+}
+
+function findLyricsIndexForChord(
+  lyrics: LyricsSegmentSchema[],
+  chord: ChordSegmentSchema,
+) {
+  return lyrics.findIndex((segment) => {
+    if (!hasTimedLyrics(segment)) {
+      return false;
+    }
+    return (
+      chord.start_seconds >= segment.start_seconds &&
+      chord.start_seconds < segment.end_seconds
+    );
+  });
+}
+
+function findGapInsertionIndex(lyrics: LyricsSegmentSchema[], chord: ChordSegmentSchema) {
+  const nextTimedLyricsIndex = lyrics.findIndex(
+    (segment) => hasTimedLyrics(segment) && chord.start_seconds < segment.start_seconds,
+  );
+  return nextTimedLyricsIndex >= 0 ? nextTimedLyricsIndex : lyrics.length;
+}
+
+function leadSheetChord(
+  chord: ChordSegmentSchema,
+  chordIndex: number,
+  anchor: LeadSheetChordAnchor,
+  activeChordIndex: number,
+): LeadSheetChord {
+  return {
+    anchor,
+    chordIndex,
+    id: chordLeadSheetId(chord, chordIndex),
+    isActive: chordIndex === activeChordIndex,
+    segment: chord,
+  };
+}
+
+export function buildLeadSheetRows(
+  lyrics: LyricsSegmentSchema[],
+  chords: ChordSegmentSchema[],
+  { activeChordIndex, activeLyricsIndex, activeLyricsWordIndex }: BuildLeadSheetRowsOptions,
+): LeadSheetRow[] {
+  const chordsByLyricsIndex = new Map<number, LeadSheetChord[]>();
+  const gapChordsByInsertionIndex = new Map<number, LeadSheetChord[]>();
+
+  chords.forEach((chord, chordIndex) => {
+    const lyricIndex = findLyricsIndexForChord(lyrics, chord);
+    if (lyricIndex >= 0) {
+      const segment = lyrics[lyricIndex];
+      const current = chordsByLyricsIndex.get(lyricIndex) ?? [];
+      current.push(
+        leadSheetChord(
+          chord,
+          chordIndex,
+          chordAnchorForLyricsSegment(chord, segment),
+          activeChordIndex,
+        ),
+      );
+      chordsByLyricsIndex.set(lyricIndex, current);
+      return;
+    }
+
+    const insertionIndex = findGapInsertionIndex(lyrics, chord);
+    const current = gapChordsByInsertionIndex.get(insertionIndex) ?? [];
+    current.push(
+      leadSheetChord(chord, chordIndex, { type: "percent", percent: 0 }, activeChordIndex),
+    );
+    gapChordsByInsertionIndex.set(insertionIndex, current);
+  });
+
+  const rows: LeadSheetRow[] = [];
+  for (let index = 0; index <= lyrics.length; index += 1) {
+    const gapChords = gapChordsByInsertionIndex.get(index) ?? [];
+    if (gapChords.length) {
+      rows.push({
+        chords: gapChords,
+        id: `lead-sheet-gap-${index}-${gapChords[0]?.segment.start_seconds ?? 0}`,
+        isActive: gapChords.some((chord) => chord.isActive),
+        type: "chords",
+      });
+    }
+
+    const segment = lyrics[index];
+    if (segment) {
+      rows.push({
+        activeWordIndex: index === activeLyricsIndex ? activeLyricsWordIndex : -1,
+        chords: chordsByLyricsIndex.get(index) ?? [],
+        id: `lead-sheet-lyrics-${index}-${segment.start_seconds ?? "static"}`,
+        isActive: index === activeLyricsIndex,
+        lyricIndex: index,
+        segment,
+        type: "lyrics",
+      });
+    }
+  }
+
+  if (!lyrics.length && !rows.length && chords.length) {
+    rows.push({
+      chords: chords.map((chord, chordIndex) =>
+        leadSheetChord(chord, chordIndex, { type: "percent", percent: 0 }, activeChordIndex),
+      ),
+      id: "lead-sheet-gap-0",
+      isActive: activeChordIndex >= 0,
+      type: "chords",
+    });
+  }
+
+  return rows;
+}
+
 export function formatRetuneSummary(
   retuneMode: "off" | "reference" | "cents",
   referenceHz: string,

@@ -21,6 +21,10 @@
     grid-template-columns: 1fr;
   }
 
+  .playback-workspace__utility-grid {
+    grid-template-columns: 1fr;
+  }
+
   .inspector-panel {
     position: static;
   }
@@ -52,6 +56,8 @@
 
   .screen__header,
   .screen__header--library,
+  .project-stage-summary__header,
+  .playback-workspace__utility-header,
   .playback-stage__header,
   .playback-stage__lane-header,
   .panel-heading,
@@ -79,6 +85,11 @@
     align-items: flex-start;
   }
 
+  .project-stage-summary__meta,
+  .playback-workspace__summary-meta {
+    align-items: flex-start;
+  }
+
   .settings-toggle {
     flex-direction: column;
     grid-template-columns: 1fr;
@@ -98,5 +109,17 @@
 
   .theme-studio-preview__selector-showcase {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-height: 900px) {
+  .lyrics-theater {
+    min-height: 23rem;
+    max-height: 23rem;
+  }
+
+  .lyrics-theater__segment--far,
+  .lyrics-theater__segment--distant {
+    display: none;
   }
 }

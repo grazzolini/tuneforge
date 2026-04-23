@@ -18,6 +18,21 @@ import {
 describe("Desktop app settings theme", () => {
   beforeEach(resetAppTestHarness);
 
+  async function openPlaybackWorkspace(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole("tab", { name: "Playback" }));
+  }
+
+  async function switchToChordsOnly(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole("button", { name: "Lyrics" }));
+  }
+
+  async function ensureInspectorVisible(user: ReturnType<typeof userEvent.setup>) {
+    const showInspectorButton = screen.queryByRole("button", { name: "Show Inspector" });
+    if (showInspectorButton) {
+      await user.click(showInspectorButton);
+    }
+  }
+
   it("applies enharmonic display overrides from settings", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem(
@@ -51,9 +66,12 @@ describe("Desktop app settings theme", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    await switchToChordsOnly(user);
     expect(getByAriaKeyLabel(screen.getByRole("group", { name: "Current chord card" }), "D#m")).toBeInTheDocument();
     expect(getByAriaKeyLabel(screen.getByRole("group", { name: "Next chord card" }), "A#")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
+    await user.click(screen.getByRole("tab", { name: "Project" }));
+    await ensureInspectorVisible(user);
 
     const sourceKeyCard = screen.getByText("Source Key", { selector: "span" }).closest("div") as HTMLElement;
     expect(getByAriaKeyLabel(sourceKeyCard, "D#m")).toBeInTheDocument();
@@ -71,14 +89,22 @@ describe("Desktop app settings theme", () => {
     expect(screen.getByRole("button", { name: /^Follow system/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Minimal/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Auto by key/ })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /^Open inspector by default/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /^Open inspector by default/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Collapse sources rail by default/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /^Project first/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^AutoUse lyrics \+ chords/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Enable lyrics follow by default/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Enable chords follow by default/ })).toHaveAttribute("aria-pressed", "true");
     expect(window.localStorage.getItem("tuneforge.theme-preference")).toBe("system");
     expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}")).toMatchObject({
       informationDensity: "minimal",
       enharmonicDisplayMode: "auto",
-      defaultInspectorOpen: false,
+      defaultInspectorOpen: true,
       defaultSourcesRailCollapsed: false,
+      defaultProjectWorkspace: "project",
+      defaultPlaybackDisplayMode: "auto",
+      defaultLyricsFollowEnabled: true,
+      defaultChordsFollowEnabled: true,
     });
   });
 
@@ -93,6 +119,8 @@ describe("Desktop app settings theme", () => {
     await user.click(screen.getByRole("button", { name: /^Prefer sharps/ }));
     await user.click(screen.getByRole("button", { name: /^Open inspector by default/ }));
     await user.click(screen.getByRole("button", { name: /^Collapse sources rail by default/ }));
+    await user.click(screen.getByRole("button", { name: /^Playback first/ }));
+    await user.click(screen.getByRole("button", { name: /^Lyrics \+ chords/ }));
     await user.click(screen.getByText("Show diagnostics"));
     expect(await screen.findByText("/tmp/tuneforge")).toBeInTheDocument();
 
@@ -100,11 +128,41 @@ describe("Desktop app settings theme", () => {
     expect(window.localStorage.getItem("tuneforge.theme-preference")).toBe("light");
     expect(document.documentElement.style.getPropertyValue("--color-bg-app")).toBe("#F4F7FB");
     expect(document.documentElement.style.getPropertyValue("--component-playback-active")).toBe("#D9861A");
+    await waitFor(() =>
+      expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}")).toMatchObject({
+        informationDensity: "detailed",
+        enharmonicDisplayMode: "sharps",
+        defaultInspectorOpen: false,
+        defaultSourcesRailCollapsed: true,
+        defaultProjectWorkspace: "playback",
+        defaultPlaybackDisplayMode: "combined",
+        defaultLyricsFollowEnabled: true,
+        defaultChordsFollowEnabled: true,
+      }),
+    );
+  });
+
+  it("persists playback follow defaults", async () => {
+    const user = userEvent.setup();
+    renderApp(["/settings"]);
+
+    expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
+
+    const lyricsFollowToggle = screen.getByRole("button", {
+      name: /^Enable lyrics follow by default/,
+    });
+    const chordsFollowToggle = screen.getByRole("button", {
+      name: /^Enable chords follow by default/,
+    });
+
+    await user.click(lyricsFollowToggle);
+    await user.click(chordsFollowToggle);
+
+    expect(lyricsFollowToggle).toHaveAttribute("aria-pressed", "false");
+    expect(chordsFollowToggle).toHaveAttribute("aria-pressed", "false");
     expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}")).toMatchObject({
-      informationDensity: "detailed",
-      enharmonicDisplayMode: "sharps",
-      defaultInspectorOpen: true,
-      defaultSourcesRailCollapsed: true,
+      defaultLyricsFollowEnabled: false,
+      defaultChordsFollowEnabled: false,
     });
   });
 
@@ -124,15 +182,19 @@ describe("Desktop app settings theme", () => {
     expect(screen.getByRole("button", { name: /^Follow system/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Minimal/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Prefer sharps/ })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /^Open inspector by default/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Open inspector by default/ })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("button", { name: /^Collapse sources rail by default/ })).toHaveAttribute("aria-pressed", "true");
 
     await user.click(screen.getByRole("button", { name: "Reset Notation" }));
     expect(screen.getByRole("button", { name: /^Auto by key/ })).toHaveAttribute("aria-pressed", "true");
 
     await user.click(screen.getByRole("button", { name: "Reset Playback Defaults" }));
-    expect(screen.getByRole("button", { name: /^Open inspector by default/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /^Open inspector by default/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Collapse sources rail by default/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /^Project first/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^AutoUse lyrics \+ chords/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Enable lyrics follow by default/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Enable chords follow by default/ })).toHaveAttribute("aria-pressed", "true");
 
     await user.click(screen.getByRole("button", { name: /^Dark/ }));
     await user.click(screen.getByRole("button", { name: /^Dual labels/ }));
@@ -142,8 +204,48 @@ describe("Desktop app settings theme", () => {
     expect(screen.getByRole("button", { name: /^Follow system/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Minimal/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Auto by key/ })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /^Open inspector by default/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /^Open inspector by default/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Collapse sources rail by default/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /^Project first/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^AutoUse lyrics \+ chords/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Enable lyrics follow by default/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Enable chords follow by default/ })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("keeps project playback preferences when resetting all settings", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.project-playback-state",
+      JSON.stringify({
+        proj_123: {
+          activeWorkspace: "playback",
+          chordsFollowEnabled: false,
+          dismissedStemJobIds: [],
+          lyricsFollowEnabled: false,
+          playbackDisplayMode: "chords",
+          selectedArtifactId: "art_200",
+          selectedPrimaryArtifactId: "art_source",
+          selectedStemSourceArtifactId: null,
+          stemControls: {},
+        },
+      }),
+    );
+
+    renderApp(["/settings"]);
+
+    expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Reset All Settings" }));
+
+    expect(JSON.parse(window.localStorage.getItem("tuneforge.project-playback-state") ?? "{}")).toMatchObject({
+      proj_123: {
+        activeWorkspace: "playback",
+        chordsFollowEnabled: false,
+        lyricsFollowEnabled: false,
+        playbackDisplayMode: "chords",
+        selectedArtifactId: "art_200",
+        selectedPrimaryArtifactId: "art_source",
+      },
+    });
   });
 
   it("follows system theme when preference is set to system", async () => {
@@ -221,6 +323,8 @@ describe("Desktop app settings theme", () => {
     await user.click(screen.getByRole("button", { name: /^Prefer sharps/i }));
     await user.click(screen.getByRole("button", { name: /Open inspector by default/i }));
     await user.click(screen.getByRole("button", { name: /Collapse sources rail by default/i }));
+    await user.click(screen.getByRole("button", { name: /^Playback first/i }));
+    await user.click(screen.getByRole("button", { name: /^Lyrics \+ chords/i }));
     await user.click(screen.getByRole("link", { name: "Open Theme Studio" }));
 
     expect(await screen.findByRole("heading", { name: "Metal / Heat Studio" })).toBeInTheDocument();
@@ -256,8 +360,10 @@ describe("Desktop app settings theme", () => {
     expect(screen.getByText("Settings imported.")).toBeInTheDocument();
     expect(screen.getAllByText("Detailed").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Prefer sharps")).toHaveLength(2);
-    expect(screen.getByText("Open on load")).toBeInTheDocument();
+    expect(screen.getByText("Closed on load")).toBeInTheDocument();
     expect(screen.getByText("Collapsed")).toBeInTheDocument();
+    expect(screen.getAllByText("Playback first").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Lyrics + chords").length).toBeGreaterThan(0);
     expect(document.documentElement.style.getPropertyValue("--color-bg-app")).toBe("#123456");
   });
 });

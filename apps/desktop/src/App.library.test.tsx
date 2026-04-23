@@ -113,7 +113,7 @@ describe("Desktop app library", () => {
       expect(mockGetProject).toHaveBeenCalledWith(expect.stringMatching(/^proj_/)),
     );
     expect(await screen.findByRole("heading", { name: "New Song" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Show Inspector" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Hide Inspector" })).toBeInTheDocument();
   });
 
   it("deletes project after confirmation and returns to library", async () => {
@@ -121,7 +121,10 @@ describe("Desktop app library", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
+    const showInspectorButton = screen.queryByRole("button", { name: "Show Inspector" });
+    if (showInspectorButton) {
+      await user.click(showInspectorButton);
+    }
     await user.click(screen.getByRole("button", { name: "Delete Project" }));
 
     expect(mockDeleteProject).toHaveBeenCalledWith("proj_123");

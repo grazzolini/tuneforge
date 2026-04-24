@@ -5,6 +5,9 @@
   "type": "module",
   "scripts": {
     "build": "tsc && vite build",
+    "android:build": "bash ../../scripts/android-arm64-env.sh tauri android build --target aarch64 --apk",
+    "android:build:debug": "bash ../../scripts/android-arm64-env.sh tauri android build --debug --target aarch64 --apk",
+    "android:studio": "bash ../../scripts/android-arm64-env.sh tauri android dev --open",
     "dev": "vite",
     "lint": "eslint .",
     "tauri": "tauri",

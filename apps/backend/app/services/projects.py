@@ -108,6 +108,9 @@ def import_project(
         artifact_format=artifact_format,
         path=Path(project.imported_path),
         metadata=artifact_metadata,
+        generated_by="import",
+        can_delete=False,
+        can_regenerate=False,
     )
 
     return project

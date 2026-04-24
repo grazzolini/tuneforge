@@ -13,7 +13,7 @@ from app.config import get_settings
 from app.engines.stems import separate_two_stems
 from app.errors import AppError
 from app.models import Artifact, Project
-from app.services.artifacts import register_artifact
+from app.services.artifacts import refresh_artifact_file_metadata, register_artifact
 from app.services.paths import project_stems_dir
 
 
@@ -116,10 +116,16 @@ def _upsert_stem_artifact(
             artifact_format=artifact_format,
             path=path,
             metadata=metadata,
+            generated_by="demucs",
+            can_delete=True,
+            can_regenerate=True,
         )
 
     existing_artifact.format = artifact_format
-    existing_artifact.path = str(path.resolve())
+    refresh_artifact_file_metadata(existing_artifact, path)
+    existing_artifact.generated_by = "demucs"
+    existing_artifact.can_delete = True
+    existing_artifact.can_regenerate = True
     existing_artifact.metadata_json = metadata
     session.flush()
     return existing_artifact

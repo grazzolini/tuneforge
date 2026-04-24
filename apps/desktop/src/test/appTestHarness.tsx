@@ -35,6 +35,7 @@ const {
   mockDeleteArtifact,
   mockDeleteProject,
   mockGetHealth,
+  mockGetMobileCapabilities,
 } = vi.hoisted(() => {
   const createdAt = "2026-04-18T13:16:00.000Z";
   let state: {
@@ -298,6 +299,7 @@ const {
     default_export_format: "wav",
     preview_format: "wav",
   }));
+  const mockGetMobileCapabilities = vi.fn(async (): Promise<unknown> => null);
   const mockListProjects = vi.fn(async (search?: string) => {
     const normalizedSearch = search?.trim().toLowerCase();
     const filteredProjects = normalizedSearch
@@ -624,6 +626,7 @@ const {
     mockDeleteArtifact,
     mockDeleteProject,
     mockGetHealth,
+    mockGetMobileCapabilities,
   };
 });
 
@@ -658,6 +661,7 @@ export {
   mockDeleteArtifact,
   mockDeleteProject,
   mockGetHealth,
+  mockGetMobileCapabilities,
 };
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
@@ -667,6 +671,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
+  convertFileSrc: (path: string) => path,
   invoke: mockInvoke,
 }));
 
@@ -695,6 +700,7 @@ vi.mock("../lib/api", async (importOriginal) => {
       createExport: mockCreateExport,
       deleteArtifact: mockDeleteArtifact,
       deleteProject: mockDeleteProject,
+      getMobileCapabilities: mockGetMobileCapabilities,
     },
   };
 });
@@ -853,6 +859,7 @@ export function resetAppTestHarness() {
   mockDeleteArtifact.mockClear();
   mockDeleteProject.mockClear();
   mockGetHealth.mockClear();
+  mockGetMobileCapabilities.mockClear();
   vi.mocked(window.HTMLMediaElement.prototype.play).mockClear();
   vi.mocked(window.HTMLMediaElement.prototype.pause).mockClear();
   getMockFetch().mockClear();

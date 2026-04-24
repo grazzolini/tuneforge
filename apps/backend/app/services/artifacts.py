@@ -10,6 +10,28 @@ from app.errors import AppError
 from app.models import Artifact
 from app.utils.ids import new_id
 
+REGENERABLE_ARTIFACT_TYPES = {
+    "analysis_json",
+    "instrumental_stem",
+    "lyrics",
+    "preview_mix",
+    "vocal_stem",
+    "waveform_cache",
+}
+
+
+def _artifact_size_bytes(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def refresh_artifact_file_metadata(artifact: Artifact, path: Path) -> None:
+    resolved_path = path.resolve()
+    artifact.path = str(resolved_path)
+    artifact.size_bytes = _artifact_size_bytes(resolved_path)
+
 
 def register_artifact(
     session: Session,
@@ -20,13 +42,23 @@ def register_artifact(
     path: Path,
     metadata: dict[str, Any] | None = None,
     cache_key: str | None = None,
+    generated_by: str = "unknown",
+    can_delete: bool | None = None,
+    can_regenerate: bool | None = None,
 ) -> Artifact:
+    resolved_path = path.resolve()
     artifact = Artifact(
         id=new_id("art"),
         project_id=project_id,
         type=artifact_type,
         format=artifact_format,
-        path=str(path.resolve()),
+        path=str(resolved_path),
+        size_bytes=_artifact_size_bytes(resolved_path),
+        generated_by=generated_by,
+        can_delete=artifact_type != "source_audio" if can_delete is None else can_delete,
+        can_regenerate=(
+            artifact_type in REGENERABLE_ARTIFACT_TYPES if can_regenerate is None else can_regenerate
+        ),
         metadata_json=metadata or {},
         cache_key=cache_key,
     )

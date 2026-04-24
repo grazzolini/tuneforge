@@ -27,7 +27,11 @@ def test_import_project_persists_metadata_and_source_artifact(client, sample_aud
     assert str(imported_path).startswith(str(data_root / "projects"))
 
     artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
-    assert any(artifact["type"] == "source_audio" for artifact in artifacts)
+    source_artifact = next(artifact for artifact in artifacts if artifact["type"] == "source_audio")
+    assert source_artifact["size_bytes"] > 0
+    assert source_artifact["generated_by"] == "import"
+    assert source_artifact["can_delete"] is False
+    assert source_artifact["can_regenerate"] is False
 
 
 def test_import_project_enqueues_analysis_and_chords(client, sample_chord_audio_file: Path):

@@ -6,7 +6,6 @@ import { MAX_TARGET_TRANSPOSE, MIN_TARGET_TRANSPOSE, clampTargetTranspose } from
 export function InspectorPanel() {
   const {
     analysisQuery,
-    analyzeMutation,
     canDeleteSelectedMix,
     centsOffset,
     currentKeyValue,
@@ -388,18 +387,6 @@ export function InspectorPanel() {
           <div>
             <h3>Analysis</h3>
           </div>
-          <button
-            className="button button--small"
-            onClick={() => analyzeMutation.mutate()}
-            disabled={analyzeMutation.isPending || isAnalysisRunning}
-            type="button"
-          >
-            {analyzeMutation.isPending || isAnalysisRunning
-              ? "Analyzing..."
-              : analysisQuery.data
-                ? "Refresh Analysis"
-                : "Analyze Track"}
-          </button>
         </div>
         <div className="analysis-grid">
           <div className="analysis-stat">

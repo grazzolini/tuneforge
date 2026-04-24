@@ -659,7 +659,7 @@ describe("Desktop app project playback stems", () => {
     await user.click(screen.getByRole("button", { name: "Rebuild Stems" }));
 
     expect(mockConfirm).toHaveBeenCalledWith(
-      expect.stringContaining("Demucs selects GPU automatically when available"),
+      expect.stringContaining("CPU rebuilds may take longer"),
       expect.objectContaining({
         title: "Rebuild stems",
         kind: "warning",

@@ -1,34 +1,58 @@
+# OS / editors
 .DS_Store
 .idea/
 .vscode/
+.codex
+
+# Python / backend
 .venv/
 __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.coverage
-coverage.xml
-node_modules/
-dist/
-build/
-target/
 *.pyc
 *.pyo
-*.sqlite3
-*.db
-*.log
 apps/backend/.venv/
 apps/backend/.pytest_cache/
 apps/backend/.mypy_cache/
 apps/backend/.ruff_cache/
+
+# JavaScript / build output
+node_modules/
+dist/
+build/
+.coverage
+coverage.xml
+
+# Rust / Tauri desktop
+target/
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/resources/*
 !apps/desktop/src-tauri/resources/.gitkeep
 !apps/desktop/src-tauri/resources/placeholder.txt
+
+# Mobile
+# Android Studio may create this when importing the generated Tauri Android project from repo root.
+/settings.gradle
+/build.gradle.kts
+/buildSrc
+/buildSrc/
+/gradle.properties
+/local.properties
+/.gradle/
+/gradle/
+/gradlew
+/gradlew.bat
+apps/desktop/.cargo/
+apps/desktop/src-tauri/.cargo/
 apps/desktop/src-tauri/gen/
+
+# Generated / local data
 packages/shared-types/openapi.json
 data/
-.codex
+*.sqlite3
+*.db
+*.log
 
 # Secrets / credentials (defensive)
 .env

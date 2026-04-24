@@ -45,6 +45,18 @@
   grid-template-columns: 82px minmax(0, 2.22fr);
 }
 
+.processing-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.processing-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
 .stack,
 .section-stack,
 .rail-panel {

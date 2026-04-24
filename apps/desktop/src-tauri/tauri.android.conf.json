@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "beforeBuildCommand": "pnpm --filter @tuneforge/desktop build"
+  },
+  "bundle": {
+    "resources": []
+  }
+}

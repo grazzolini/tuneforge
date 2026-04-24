@@ -22,17 +22,12 @@ export function PlaybackPracticeSurface() {
 
 function PlaybackModeHeader() {
   const {
-    chordMutation,
     chordsFollowEnabled,
     displayedLyrics,
-    handleLyricsAction,
     handleSetChordsFollowEnabled,
     handleSetLyricsFollowEnabled,
     handleTogglePlaybackDisplayLane,
-    hasChordTimeline,
-    hasEditedLyrics,
     hasLyricsTranscript,
-    isChordRunning,
     isEditingLyrics,
     isLyricsRunning,
     lyricsFollowEnabled,
@@ -94,18 +89,6 @@ function PlaybackModeHeader() {
           {lyricsSelected ? (
             <>
               <button
-                className="button button--small"
-                type="button"
-                onClick={() => void handleLyricsAction()}
-                disabled={lyricsMutation.isPending || isLyricsRunning}
-              >
-                {lyricsMutation.isPending || isLyricsRunning
-                  ? "Generating..."
-                  : hasLyricsTranscript
-                    ? "Refresh Lyrics"
-                    : "Generate Lyrics"}
-              </button>
-              <button
                 aria-pressed={lyricsFollowEnabled}
                 className={`chip playback-follow-chip${lyricsFollowEnabled ? " chip--active" : ""}`}
                 onClick={() => handleSetLyricsFollowEnabled(!lyricsFollowEnabled)}
@@ -117,18 +100,6 @@ function PlaybackModeHeader() {
           ) : null}
           {chordsSelected ? (
             <>
-              <button
-                className="button button--small"
-                type="button"
-                onClick={() => chordMutation.mutate()}
-                disabled={chordMutation.isPending || isChordRunning}
-              >
-                {chordMutation.isPending || isChordRunning
-                  ? "Generating..."
-                  : hasChordTimeline
-                    ? "Refresh Chords"
-                    : "Generate Chords"}
-              </button>
               {playbackDisplayMode === "chords" ? (
                 <button
                   aria-pressed={chordsFollowEnabled}
@@ -142,12 +113,6 @@ function PlaybackModeHeader() {
             </>
           ) : null}
         </div>
-
-        {lyricsSelected && hasEditedLyrics ? (
-          <p className="artifact-meta playback-practice-warning">
-            Transcript has user edits. Refresh replaces current edits with fresh AI output.
-          </p>
-        ) : null}
       </div>
     </div>
   );

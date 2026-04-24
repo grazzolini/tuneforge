@@ -3,6 +3,7 @@ import { useProjectViewModelContext } from "./useProjectViewModelContext";
 
 export function ProjectHeader() {
   const {
+    activeWorkspace,
     draftName,
     hasTransformChange,
     inspectorOpen,
@@ -17,7 +18,7 @@ export function ProjectHeader() {
   } = useProjectViewModelContext();
 
   return (
-    <div className="screen__header">
+    <div className={`screen__header${activeWorkspace === "playback" ? " screen__header--compact" : ""}`}>
       <div className="screen__title-block">
     <p className="eyebrow">
       <Link to="/">Library</Link> / Project
@@ -64,29 +65,31 @@ export function ProjectHeader() {
         </button>
       </div>
     )}
-    {showSupportingCopy ? (
+    {showSupportingCopy && activeWorkspace === "project" ? (
       <p className="screen__subtitle">
-        Keep source audio, saved mixes, chords, and stems close to transport.
+        Move between project tools and playback workspace without losing transport context.
       </p>
     ) : null}
       </div>
 
-      <div className="button-row">
-    <button
-      className="button button--primary"
-      onClick={() => previewMutation.mutate()}
-      disabled={previewMutation.isPending || !hasTransformChange}
-    >
-      {previewMutation.isPending ? "Queueing..." : "Create Mix"}
-    </button>
-    <button
-      className="button button--ghost"
-      type="button"
-      onClick={() => setInspectorOpen((current) => !current)}
-    >
-      {inspectorOpen ? "Hide Inspector" : "Show Inspector"}
-    </button>
-      </div>
+      {activeWorkspace === "project" ? (
+        <div className="button-row">
+          <button
+            className="button button--primary"
+            onClick={() => previewMutation.mutate()}
+            disabled={previewMutation.isPending || !hasTransformChange}
+          >
+            {previewMutation.isPending ? "Queueing..." : "Create Mix"}
+          </button>
+          <button
+            className="button button--ghost"
+            type="button"
+            onClick={() => setInspectorOpen((current) => !current)}
+          >
+            {inspectorOpen ? "Hide Inspector" : "Show Inspector"}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

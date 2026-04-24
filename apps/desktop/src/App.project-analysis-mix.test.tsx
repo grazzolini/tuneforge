@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
@@ -21,6 +21,31 @@ import {
 describe("Desktop app project analysis mix", () => {
   beforeEach(resetAppTestHarness);
 
+  async function openPlaybackWorkspace(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole("tab", { name: "Playback" }));
+  }
+
+  async function switchToLyricsOnly(user: ReturnType<typeof userEvent.setup>) {
+    const chordsToggle = screen.getByRole("button", { name: "Chords" });
+    if (chordsToggle.getAttribute("aria-pressed") === "true") {
+      await user.click(chordsToggle);
+    }
+  }
+
+  async function switchToChordsOnly(user: ReturnType<typeof userEvent.setup>) {
+    const lyricsToggle = screen.getByRole("button", { name: "Lyrics" });
+    if (lyricsToggle.getAttribute("aria-pressed") === "true") {
+      await user.click(lyricsToggle);
+    }
+  }
+
+  async function ensureInspectorVisible(user: ReturnType<typeof userEvent.setup>) {
+    const showInspectorButton = screen.queryByRole("button", { name: "Show Inspector" });
+    if (showInspectorButton) {
+      await user.click(showInspectorButton);
+    }
+  }
+
   it("analyzes track from inspector", async () => {
     const user = userEvent.setup();
     setProjectAnalysis("proj_123", null);
@@ -28,7 +53,7 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
+    await ensureInspectorVisible(user);
     await user.click(screen.getByRole("button", { name: "Analyze Track" }));
 
     expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123");
@@ -39,6 +64,7 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
     await user.click(screen.getByRole("button", { name: "Refresh Chords" }));
 
     expect(mockCreateChords).toHaveBeenCalledWith("proj_123", {
@@ -64,6 +90,8 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    await user.click(screen.getByRole("button", { name: "Lyrics" }));
     await user.click(screen.getByRole("button", { name: "Generate Lyrics" }));
 
     expect(mockCreateLyrics).toHaveBeenCalledWith("proj_123", { force: false });
@@ -74,9 +102,11 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    await switchToLyricsOnly(user);
     const lyricsTranscript = screen.getByRole("group", { name: "Lyrics transcript" });
     const activeLyric = within(lyricsTranscript).getByRole("button", { name: /0:00/i });
-    expect(activeLyric.className).toContain("lyrics-segment--active");
+    expect(activeLyric.className).toContain("lyrics-theater__segment--active");
 
     await user.click(screen.getByRole("button", { name: "Edit Lyrics" }));
     const firstTextarea = screen.getByLabelText("Lyric segment 1");
@@ -91,6 +121,31 @@ describe("Desktop app project analysis mix", () => {
       ],
     });
     expect(await screen.findByText("Edited lyric line")).toBeInTheDocument();
+  });
+
+  it("renders a combined lead sheet with lyric chords and instrumental rows", async () => {
+    const user = userEvent.setup();
+    setProjectChords("proj_123", {
+      project_id: "proj_123",
+      backend: "default",
+      source_artifact_id: "art_source",
+      created_at: "2026-04-18T13:16:00.000Z",
+      timeline: [
+        { start_seconds: 0.5, end_seconds: 2, label: "G", confidence: 0.81, pitch_class: 7, quality: "major" },
+        { start_seconds: 20, end_seconds: 24, label: "D", confidence: 0.79, pitch_class: 2, quality: "major" },
+      ],
+    });
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    const leadSheet = screen.getByRole("group", { name: "Lyrics and chords lead sheet" });
+
+    expect(within(leadSheet).getByText("Hello")).toBeInTheDocument();
+    expect(getByAriaKeyLabel(leadSheet, "G")).toBeInTheDocument();
+    expect(within(leadSheet).getByText("Instrumental")).toBeInTheDocument();
+    expect(getByAriaKeyLabel(leadSheet, "D")).toBeInTheDocument();
   });
 
   it("refreshes edited lyrics with confirmation", async () => {
@@ -124,6 +179,7 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
     await user.click(screen.getByRole("button", { name: "Refresh Lyrics" }));
 
     expect(mockConfirm).toHaveBeenCalledWith(
@@ -162,12 +218,15 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    await switchToChordsOnly(user);
     expect(getByAriaKeyLabel(screen.getByRole("group", { name: "Current chord card" }), "Ebm")).toBeInTheDocument();
     expect(getByAriaKeyLabel(screen.getByRole("group", { name: "Next chord card" }), "Bb")).toBeInTheDocument();
     expect(screen.queryByText("D#/Ebm")).not.toBeInTheDocument();
     expect(screen.queryByText("A#/Bb")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
+    await user.click(screen.getByRole("tab", { name: "Project" }));
+    await ensureInspectorVisible(user);
     expect(
       getByAriaKeyLabel(screen.getByText("Source Key", { selector: "span" }).closest("div") as HTMLElement, "Ebm"),
     ).toBeInTheDocument();
@@ -209,9 +268,12 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    await switchToChordsOnly(user);
     expect(getByAriaKeyLabel(screen.getByRole("group", { name: "Current chord card" }), "D#m / Ebm")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
+    await user.click(screen.getByRole("tab", { name: "Project" }));
+    await ensureInspectorVisible(user);
     const sourceKeyCard = screen.getByText("Source Key", { selector: "span" }).closest("div") as HTMLElement;
     expect(getByAriaKeyLabel(sourceKeyCard, "D#m / Ebm")).toBeInTheDocument();
     const estimatedKeyCard = screen.getByText("Estimated Key", { selector: "span" }).closest("div") as HTMLElement;
@@ -234,7 +296,7 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
+    await ensureInspectorVisible(user);
     await user.click(screen.getByLabelText("Raise target key"));
 
     const targetKeyCard = screen.getAllByText("Target Key", { selector: "span" })[0]?.closest("div") as HTMLElement;
@@ -255,7 +317,7 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
+    await ensureInspectorVisible(user);
     const sourceList = screen.getByRole("group", { name: "Source and mix list" });
     await user.click(within(sourceList).getByRole("button", { name: /Source Track/i }));
     await user.click(screen.getByText("Correct source key for this project"));
@@ -305,19 +367,108 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    expect(getByAriaKeyLabel(screen.getByRole("group", { name: "Current chord card" }), "G")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
+    await ensureInspectorVisible(user);
     await user.click(screen.getByText("Correct source key for this project"));
     await user.click(screen.getByLabelText("Project Source Key"));
     await user.click(screen.getByRole("option", { name: "A" }));
 
+    await openPlaybackWorkspace(user);
+    await switchToChordsOnly(user);
     expect(getByAriaKeyLabel(screen.getByRole("group", { name: "Current chord card" }), "A")).toBeInTheDocument();
 
+    await user.click(screen.getByRole("tab", { name: "Project" }));
     const savedMixList = screen.getByRole("group", { name: "Saved mix list" });
     await user.click(within(savedMixList).getByRole("button", { name: /Practice Mix/i }));
 
+    await openPlaybackWorkspace(user);
+    await switchToChordsOnly(user);
     expect(getByAriaKeyLabel(screen.getByRole("group", { name: "Current chord card" }), "B")).toBeInTheDocument();
+  });
+
+  it("opens project first, then remembers playback workspace and display mode per project", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Project" })).toHaveAttribute("aria-selected", "true");
+
+    await openPlaybackWorkspace(user);
+    await switchToChordsOnly(user);
+
+    expect(screen.getByRole("tab", { name: "Playback" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "Lyrics" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "Chords" })).toHaveAttribute("aria-pressed", "true");
+    expect(
+      JSON.parse(window.localStorage.getItem("tuneforge.project-playback-state") ?? "{}"),
+    ).toMatchObject({
+      proj_123: {
+        activeWorkspace: "playback",
+        playbackDisplayMode: "chords",
+      },
+    });
+
+    await user.click(screen.getAllByRole("link", { name: "Library" })[0]);
+    const reopenDemoLinks = screen.getAllByRole("link", { name: "Open Demo Song project" });
+    await user.click(reopenDemoLinks[reopenDemoLinks.length - 1] as HTMLElement);
+
+    expect(await screen.findByRole("tab", { name: "Playback" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "Lyrics" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "Chords" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("resolves auto playback display to the available practice view", async () => {
+    const user = userEvent.setup();
+    setProjectLyrics("proj_123", {
+      project_id: "proj_123",
+      backend: null,
+      source_artifact_id: null,
+      source_kind: null,
+      source_segments: [],
+      segments: [],
+      has_user_edits: false,
+      created_at: null,
+      updated_at: null,
+    });
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Lyrics" })).toHaveAttribute("aria-pressed", "false"),
+    );
+    expect(screen.getByRole("button", { name: "Chords" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("group", { name: "Current chord card" })).toBeInTheDocument();
+  });
+
+  it("persists playback follow toggles per project", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+
+    const lyricsFollow = screen.getByRole("button", { name: "Lyrics Follow" });
+    await user.click(lyricsFollow);
+
+    expect(lyricsFollow).toHaveAttribute("aria-pressed", "false");
+    expect(
+      JSON.parse(window.localStorage.getItem("tuneforge.project-playback-state") ?? "{}"),
+    ).toMatchObject({
+      proj_123: {
+        lyricsFollowEnabled: false,
+        chordsFollowEnabled: true,
+      },
+    });
+
+    await user.click(screen.getAllByRole("link", { name: "Library" })[0]);
+    const reopenDemoLinks = screen.getAllByRole("link", { name: "Open Demo Song project" });
+    await user.click(reopenDemoLinks[reopenDemoLinks.length - 1] as HTMLElement);
+
+    expect(await screen.findByRole("button", { name: "Lyrics Follow" })).toHaveAttribute("aria-pressed", "false");
+    await switchToChordsOnly(user);
+    expect(screen.getByRole("button", { name: "Chords Follow" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("does not duplicate the detected key inside the project source key selector", async () => {
@@ -343,7 +494,7 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
+    await ensureInspectorVisible(user);
     await user.click(screen.getByText("Correct source key for this project"));
     await user.click(screen.getByLabelText("Project Source Key"));
 
@@ -356,7 +507,7 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Show Inspector" }));
+    await ensureInspectorVisible(user);
 
     const raiseTargetKeyButton = screen.getByLabelText("Raise target key");
     for (let index = 0; index < 16; index += 1) {

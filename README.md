@@ -6,7 +6,7 @@ Think "AI-assisted song toolkit for the player at home" — but **fully local, s
 
 ## Status
 
-Pre-1.0. The desktop dev flow (`pnpm dev`) is the supported way to run the app today. Packaged macOS builds are work in progress and currently broken; do not rely on `pnpm package:mac`.
+Pre-1.0. The desktop dev flow (`pnpm dev`) is the fastest way to iterate. Local macOS app/DMG packaging is available with `pnpm package:mac`; generated builds are unsigned, not notarized, and require `ffmpeg`/`ffprobe` on the host `PATH`.
 
 ## Features
 
@@ -125,7 +125,18 @@ CI fails if `packages/shared-types/src/generated/openapi.ts` drifts from the bac
 
 ## Packaging
 
-`pnpm package:mac` and `pnpm bundle:prepare` exist but the packaged macOS build is **work in progress** and not currently functional. Use the development flow (`pnpm dev`) for now. Packaged builds will require `ffmpeg`/`ffprobe` to be installed on the host system; Tuneforge does not bundle them (see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)).
+On macOS, build a local unsigned app bundle and DMG with:
+
+```sh
+pnpm package:mac
+```
+
+The generated artifacts are written under `apps/desktop/src-tauri/target/release/bundle/`:
+
+- `macos/Tuneforge.app`
+- `dmg/Tuneforge_0.1.0_aarch64.dmg` on Apple Silicon
+
+Run packaging from a normal macOS shell so `hdiutil` can create the disk image. Packaged builds require `ffmpeg`/`ffprobe` to be installed on the host system; Tuneforge does not bundle them (see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)).
 
 ## CI
 

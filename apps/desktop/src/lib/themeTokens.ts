@@ -46,6 +46,9 @@ export type ThemeTokens = {
     playbackActive: string;
     playbackTrack: string;
     chordActive: string;
+    lyricsActiveBg: string;
+    lyricsContextText: string;
+    transportDockBg: string;
     stemMuted: string;
     stemSolo: string;
     buttonPrimaryBg: string;
@@ -121,6 +124,9 @@ export const themeTokens: Record<ThemeMode, ThemeTokens> = {
       playbackActive: "#F59E0B",
       playbackTrack: "#3D2512",
       chordActive: "#C96B16",
+      lyricsActiveBg: "#18253B",
+      lyricsContextText: "#8FA2BE",
+      transportDockBg: "#0B1220",
       stemMuted: "#22314B",
       stemSolo: "#4B6FAE",
       buttonPrimaryBg: "#F59E0B",
@@ -183,6 +189,9 @@ export const themeTokens: Record<ThemeMode, ThemeTokens> = {
       playbackActive: "#D9861A",
       playbackTrack: "#F6E3C8",
       chordActive: "#D9861A",
+      lyricsActiveBg: "#F4E5CB",
+      lyricsContextText: "#607189",
+      transportDockBg: "#FDFBF7",
       stemMuted: "#D7E0EC",
       stemSolo: "#44679D",
       buttonPrimaryBg: "#D9861A",
@@ -235,6 +244,9 @@ function buildThemeCssVariables(tokens: ThemeTokens) {
     "--component-playback-active": tokens.component.playbackActive,
     "--component-playback-track": tokens.component.playbackTrack,
     "--component-chord-active": tokens.component.chordActive,
+    "--component-lyrics-active-bg": tokens.component.lyricsActiveBg,
+    "--component-lyrics-context-text": tokens.component.lyricsContextText,
+    "--component-transport-dock-bg": tokens.component.transportDockBg,
     "--component-stem-muted": tokens.component.stemMuted,
     "--component-stem-solo": tokens.component.stemSolo,
     "--component-button-primary-bg": tokens.component.buttonPrimaryBg,
@@ -333,6 +345,9 @@ export const themeVariableSections: ThemeVariableSection[] = [
       { label: "Playback active", variable: "--component-playback-active" },
       { label: "Playback track", variable: "--component-playback-track" },
       { label: "Chord active", variable: "--component-chord-active" },
+      { label: "Lyrics active", variable: "--component-lyrics-active-bg" },
+      { label: "Lyrics context", variable: "--component-lyrics-context-text" },
+      { label: "Transport dock", variable: "--component-transport-dock-bg" },
       { label: "Stem muted", variable: "--component-stem-muted" },
       { label: "Stem solo", variable: "--component-stem-solo" },
       { label: "Primary button", variable: "--component-button-primary-bg" },

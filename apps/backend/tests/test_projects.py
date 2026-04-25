@@ -48,7 +48,9 @@ def test_import_project_enqueues_analysis_and_chords(client, sample_chord_audio_
     chord_job = next(job for job in jobs if job["project_id"] == project["id"] and job["type"] == "chords")
 
     assert wait_for_job(client, analyze_job["id"])["status"] == "completed"
-    assert wait_for_job(client, chord_job["id"])["status"] == "completed"
+    completed_chord_job = wait_for_job(client, chord_job["id"])
+    assert completed_chord_job["status"] == "completed"
+    assert completed_chord_job["chord_source"] == "source"
 
     analysis = client.get(f"/api/v1/projects/{project['id']}/analysis").json()["analysis"]
     chords = client.get(f"/api/v1/projects/{project['id']}/chords").json()

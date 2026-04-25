@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from app.db import SessionLocal
 from app.errors import AppError
 from app.services.artifacts import register_artifact
+from app.services.projects import get_project
 
 from .conftest import wait_for_job
 
@@ -146,6 +147,163 @@ def test_stem_generation_creates_vocal_and_instrumental_artifacts(client, sample
     assert len([artifact for artifact in all_artifacts if artifact["type"] == "vocal_stem"]) == 2
     assert len([artifact for artifact in all_artifacts if artifact["type"] == "instrumental_stem"]) == 2
     assert seen_sources == [source_artifact["path"], source_artifact["path"], preview_artifact["path"]]
+
+
+def test_source_stem_generation_enqueues_chord_refresh_job(
+    client,
+    sample_stereo_audio_file: Path,
+    monkeypatch,
+):
+    def fake_separate_two_stems(
+        source_path: Path,
+        vocal_path: Path,
+        instrumental_path: Path,
+        *,
+        model: str,
+        device: str,
+        on_progress=None,
+        should_cancel=None,
+        register_process=None,
+        unregister_process=None,
+    ):
+        signal, sample_rate = sf.read(source_path, always_2d=True)
+        vocal_path.parent.mkdir(parents=True, exist_ok=True)
+        instrumental_path.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(vocal_path, signal * 0.7, sample_rate)
+        sf.write(instrumental_path, signal * 0.3, sample_rate)
+        if on_progress:
+            on_progress(98)
+        return {"engine": "demucs", "model": model, "requested_device": device, "device": "cpu"}
+
+    monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
+
+    project = client.post(
+        "/api/v1/projects/import",
+        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
+    ).json()["project"]
+
+    initial_jobs = client.get("/api/v1/jobs").json()["jobs"]
+    initial_chord_job = next(
+        job for job in initial_jobs if job["project_id"] == project["id"] and job["type"] == "chords"
+    )
+    assert wait_for_job(client, initial_chord_job["id"])["status"] == "completed"
+
+    stem_job = client.post(
+        f"/api/v1/projects/{project['id']}/stems",
+        json={"mode": "two_stem", "output_format": "wav", "force": False},
+    ).json()["job"]
+    assert wait_for_job(client, stem_job["id"])["status"] == "completed"
+
+    source_stem_jobs = client.get("/api/v1/jobs").json()["jobs"]
+    chord_refresh_jobs = [
+        job
+        for job in source_stem_jobs
+        if job["project_id"] == project["id"] and job["type"] == "chords" and job["id"] != initial_chord_job["id"]
+    ]
+    assert len(chord_refresh_jobs) == 1
+    assert chord_refresh_jobs[0]["chord_source"] == "source+stem"
+    assert wait_for_job(client, chord_refresh_jobs[0]["id"])["status"] == "completed"
+
+    preview_job = client.post(
+        f"/api/v1/projects/{project['id']}/preview",
+        json={"transpose": {"semitones": 1}, "output_format": "wav"},
+    ).json()["job"]
+    assert wait_for_job(client, preview_job["id"])["status"] == "completed"
+
+    artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
+    preview_artifact = next(artifact for artifact in artifacts if artifact["type"] == "preview_mix")
+    preview_stem_job = client.post(
+        f"/api/v1/projects/{project['id']}/stems",
+        json={
+            "mode": "two_stem",
+            "output_format": "wav",
+            "force": False,
+            "source_artifact_id": preview_artifact["id"],
+        },
+    ).json()["job"]
+    assert wait_for_job(client, preview_stem_job["id"])["status"] == "completed"
+
+    preview_stem_jobs = client.get("/api/v1/jobs").json()["jobs"]
+    assert (
+        len(
+            [
+                job
+                for job in preview_stem_jobs
+                if job["project_id"] == project["id"] and job["type"] == "chords"
+            ]
+        )
+        == 2
+    )
+
+
+def test_source_stems_do_not_refresh_edited_chords_without_overwrite(
+    client,
+    sample_stereo_audio_file: Path,
+    monkeypatch,
+):
+    def fake_separate_two_stems(
+        source_path: Path,
+        vocal_path: Path,
+        instrumental_path: Path,
+        *,
+        model: str,
+        device: str,
+        on_progress=None,
+        should_cancel=None,
+        register_process=None,
+        unregister_process=None,
+    ):
+        signal, sample_rate = sf.read(source_path, always_2d=True)
+        vocal_path.parent.mkdir(parents=True, exist_ok=True)
+        instrumental_path.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(vocal_path, signal * 0.7, sample_rate)
+        sf.write(instrumental_path, signal * 0.3, sample_rate)
+        if on_progress:
+            on_progress(98)
+        return {"engine": "demucs", "model": model, "requested_device": device, "device": "cpu"}
+
+    monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
+
+    project = client.post(
+        "/api/v1/projects/import",
+        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
+    ).json()["project"]
+
+    initial_jobs = client.get("/api/v1/jobs").json()["jobs"]
+    initial_chord_job = next(
+        job for job in initial_jobs if job["project_id"] == project["id"] and job["type"] == "chords"
+    )
+    assert wait_for_job(client, initial_chord_job["id"])["status"] == "completed"
+
+    with SessionLocal() as session:
+        project_model = get_project(session, project["id"])
+        assert project_model.chords is not None
+        project_model.chords.has_user_edits = True
+        session.commit()
+
+    stem_job = client.post(
+        f"/api/v1/projects/{project['id']}/stems",
+        json={"mode": "two_stem", "output_format": "wav", "force": False},
+    ).json()["job"]
+    assert wait_for_job(client, stem_job["id"])["status"] == "completed"
+    jobs_after_stems = client.get("/api/v1/jobs").json()["jobs"]
+    assert len([job for job in jobs_after_stems if job["project_id"] == project["id"] and job["type"] == "chords"]) == 1
+
+    rebuild_job = client.post(
+        f"/api/v1/projects/{project['id']}/stems",
+        json={
+            "mode": "two_stem",
+            "output_format": "wav",
+            "force": True,
+            "overwrite_chord_edits": True,
+        },
+    ).json()["job"]
+    assert wait_for_job(client, rebuild_job["id"])["status"] == "completed"
+    jobs_after_rebuild = client.get("/api/v1/jobs").json()["jobs"]
+    chord_jobs_after_rebuild = [
+        job for job in jobs_after_rebuild if job["project_id"] == project["id"] and job["type"] == "chords"
+    ]
+    assert len(chord_jobs_after_rebuild) == 2
 
 
 def test_stem_artifact_unique_constraint_rejects_duplicates(client, sample_stereo_audio_file: Path):

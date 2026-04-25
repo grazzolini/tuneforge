@@ -11,6 +11,16 @@ def test_analysis_job_persists_results(client, sample_audio_file: Path):
         json={"source_path": str(sample_audio_file), "copy_into_project": True},
     ).json()["project"]
 
+    initial_jobs = client.get("/api/v1/jobs").json()["jobs"]
+    import_analyze_job = next(
+        job for job in initial_jobs if job["project_id"] == project["id"] and job["type"] == "analyze"
+    )
+    import_chord_job = next(
+        job for job in initial_jobs if job["project_id"] == project["id"] and job["type"] == "chords"
+    )
+    assert wait_for_job(client, import_analyze_job["id"], timeout=90.0)["status"] == "completed"
+    assert wait_for_job(client, import_chord_job["id"], timeout=90.0)["status"] == "completed"
+
     job = client.post(
         f"/api/v1/projects/{project['id']}/analyze",
         json={"include_tempo": False, "force": False},

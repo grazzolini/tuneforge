@@ -2,7 +2,7 @@ import {
   formatChordDisplay,
   formatKeyDisplay,
   formatRawMusicalLabel,
-  type ChordQuality,
+  isSupportedChordQuality,
   type EnharmonicDisplayMode,
   type FormattedMusicalLabel,
   type MusicalKey,
@@ -84,10 +84,10 @@ export function MusicalChordLabel({
   quality?: string | null;
   variant: MusicalLabelVariant;
 }) {
-  const isSupportedChord = typeof pitchClass === "number" && (quality === "major" || quality === "minor");
+  const isSupportedChord = typeof pitchClass === "number" && isSupportedChordQuality(quality);
   const options: PitchFormatOptions = { activeKey: activeKey ?? null, mode };
   const label = isSupportedChord
-    ? formatChordDisplay(pitchClass, quality as ChordQuality, options)
+    ? formatChordDisplay(pitchClass, quality, options)
     : formatRawMusicalLabel(fallbackLabel);
 
   return <RenderMusicalLabel label={label} variant={variant} />;

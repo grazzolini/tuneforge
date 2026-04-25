@@ -56,4 +56,17 @@ describe("enharmonic formatting", () => {
       secondary: { root: "Eb", suffix: "m" },
     });
   });
+
+  it("formats supported chord extensions", () => {
+    expect(formatChordLabel(0, "7")).toBe("C7");
+    expect(formatChordLabel(0, "maj7")).toBe("Cmaj7");
+    expect(formatChordLabel(0, "m7")).toBe("Cm7");
+    expect(formatChordLabel(0, "sus4")).toBe("Csus4");
+    expect(formatChordLabel(0, "dim")).toBe("Cdim");
+    expect(formatChordDisplay(1, "sus2", { mode: "dual" })).toEqual({
+      ariaLabel: "C#sus2 / Dbsus2",
+      primary: { root: "C#", suffix: "sus2" },
+      secondary: { root: "Db", suffix: "sus2" },
+    });
+  });
 });

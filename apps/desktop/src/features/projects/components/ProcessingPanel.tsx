@@ -59,7 +59,7 @@ export function ProcessingPanel() {
         <button
           className="button button--small"
           disabled={chordsDisabled}
-          onClick={handleChordAction}
+          onClick={() => void handleChordAction()}
           type="button"
         >
           {chordMutation.isPending || isChordRunning

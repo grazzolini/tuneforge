@@ -5,10 +5,7 @@ export function SourcesRail() {
   const {
     handleSelectPrimaryArtifact,
     handleSelectStemArtifact,
-    handleStemAction,
-    hasVisibleStems,
     informationDensity,
-    isStemRunning,
     previewArtifacts,
     selectedArtifactId,
     selectedPrimaryArtifactId,
@@ -20,7 +17,6 @@ export function SourcesRail() {
     sourcesRailSummary,
     stemErrorMessage,
     stemJob,
-    stemMutation,
     stemOutputLabel,
     visibleStemArtifacts,
   } = useProjectViewModelContext();
@@ -144,20 +140,6 @@ export function SourcesRail() {
               <p className="subpanel__copy">Stem playback stays scoped to the selected source or mix.</p>
             ) : null}
           </div>
-          <button
-            className="button button--small"
-            onClick={() => void handleStemAction()}
-            disabled={stemMutation.isPending || isStemRunning || !selectedPrimaryArtifactId}
-            type="button"
-          >
-            {stemMutation.isPending || isStemRunning
-              ? hasVisibleStems
-                ? "Rebuilding..."
-                : "Generating..."
-              : hasVisibleStems
-                ? "Rebuild Stems"
-                : "Generate Stems"}
-          </button>
         </div>
         {visibleStemArtifacts.length ? (
           <div

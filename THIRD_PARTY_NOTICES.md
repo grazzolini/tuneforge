@@ -43,6 +43,12 @@ Tuneforge is distributed under the [MIT License](./LICENSE). It depends on third
 - **License:** Apache-2.0 / MIT (dual)
 - **Source:** <https://github.com/tauri-apps/tauri>
 
+### rusqlite / SQLite
+
+- **License:** MIT for rusqlite; SQLite is public domain
+- **Source:** <https://github.com/rusqlite/rusqlite> and <https://sqlite.org/>
+- **Notes:** Used by the embedded Android backend. Desktop persistence remains in the Python backend.
+
 ### React, Vite, TanStack Query, openapi-fetch, openapi-typescript
 
 - See each project's own license. All are permissively licensed.

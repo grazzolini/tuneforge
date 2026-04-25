@@ -173,6 +173,11 @@ export function useProjectViewModel() {
     queryKey: ["jobs"],
     queryFn: async () => (await api.listJobs()).jobs,
   });
+  const mobileCapabilitiesQuery = useQuery({
+    queryKey: ["mobile-capabilities"],
+    queryFn: async () => api.getMobileCapabilities(),
+    staleTime: Infinity,
+  });
 
   useActiveJobPolling(projectId, jobsQuery.data);
 
@@ -494,6 +499,15 @@ export function useProjectViewModel() {
     lyricsJob && ["pending", "running"].includes(lyricsJob.status),
   );
   const isStemRunning = Boolean(stemJob && ["pending", "running"].includes(stemJob.status));
+  const mobileCapabilities = mobileCapabilitiesQuery.data ?? null;
+  const isMobileRuntime = mobileCapabilities !== null;
+  const mobileGenerationMessage = isMobileRuntime
+    ? "Local generation requires GPU acceleration on this device."
+    : null;
+  const canAnalyze = !isMobileRuntime || mobileCapabilities?.gpuBackend != null;
+  const canGenerateLyrics = !isMobileRuntime || mobileCapabilities?.whisperAvailable === true;
+  const canGenerateStems = !isMobileRuntime || mobileCapabilities?.stemSeparationAvailable === true;
+  const canGenerateChords = !isMobileRuntime || mobileCapabilities?.gpuBackend != null;
   const currentKeyValue = sourceKeyOverride ? serializeKey(sourceKeyOverride) : "auto";
   const hasVisibleStems = visibleStemArtifacts.length > 0;
   const stemErrorMessage =
@@ -675,6 +689,13 @@ export function useProjectViewModel() {
     handleSetPlaybackDisplayMode("combined");
   }
 
+  function handleChordAction() {
+    if (!canGenerateChords) {
+      return;
+    }
+    chordMutation.mutate();
+  }
+
   function handleSetLyricsFollowEnabled(enabled: boolean) {
     setLyricsFollowEnabled(enabled);
     setLyricsFollowPaused(false);
@@ -722,12 +743,15 @@ export function useProjectViewModel() {
   }
 
   async function handleLyricsAction() {
+    if (!canGenerateLyrics) {
+      return;
+    }
     const hasExistingLyrics = (lyricsQuery.data?.segments?.length ?? 0) > 0;
     if (hasExistingLyrics) {
       const approved = await confirm(
         lyricsQuery.data?.has_user_edits
-          ? "Refresh lyrics? This replaces the current transcript, discards your edits, and may take longer when Whisper falls back to CPU."
-          : "Refresh lyrics? This replaces the current transcript with a new pass and may take longer when Whisper falls back to CPU.",
+          ? "Refresh lyrics? This replaces the current transcript and discards your edits."
+          : "Refresh lyrics? This replaces the current transcript with a new pass.",
         {
           title: "Refresh lyrics",
           kind: "warning",
@@ -747,13 +771,16 @@ export function useProjectViewModel() {
     if (!selectedPrimaryArtifactId) {
       return;
     }
+    if (!canGenerateStems) {
+      return;
+    }
 
     if (hasVisibleStems) {
       const stemTargetLabel = selectedPrimaryArtifact
         ? artifactLabel(selectedPrimaryArtifact)
         : "selected audio";
       const approved = await confirm(
-        `Rebuild stems for ${stemTargetLabel}? Existing stems will be replaced. Demucs selects GPU automatically when available, otherwise it falls back to CPU and may take longer.`,
+        `Rebuild stems for ${stemTargetLabel}? Existing stems will be replaced. On desktop, Demucs uses GPU when available; CPU rebuilds may take longer.`,
         {
           title: "Rebuild stems",
           kind: "warning",
@@ -823,12 +850,17 @@ export function useProjectViewModel() {
     if (!selectedArtifact || selectedArtifact.type !== "preview_mix") {
       return;
     }
-    const approved = await confirm("Delete this practice mix and its stem tracks?", {
-      title: "Delete practice mix",
-      kind: "warning",
-      okLabel: "Delete",
-      cancelLabel: "Cancel",
-    });
+    const approved = await confirm(
+      isMobileRuntime
+        ? "Delete this practice mix and its stem tracks? Rebuilding stems later requires GPU acceleration on this device."
+        : "Delete this practice mix and its stem tracks? Rebuilding stems later may take longer on CPU-only desktops.",
+      {
+        title: "Delete practice mix",
+        kind: "warning",
+        okLabel: "Delete",
+        cancelLabel: "Cancel",
+      },
+    );
     if (!approved) {
       return;
     }
@@ -1312,7 +1344,11 @@ export function useProjectViewModel() {
     activeStemCount,
     analysisQuery,
     analyzeMutation,
+    canAnalyze,
     canDeleteSelectedMix,
+    canGenerateChords,
+    canGenerateLyrics,
+    canGenerateStems,
     chordContextCopy,
     chordJob,
     chordMutation,
@@ -1336,6 +1372,7 @@ export function useProjectViewModel() {
     exportMutation,
     handleDeleteMix,
     handleDeleteProject,
+    handleChordAction,
     handleLyricsAction,
     handleSeek,
     handleSeekTo,
@@ -1362,12 +1399,15 @@ export function useProjectViewModel() {
     isChordRunning,
     isEditingLyrics,
     isLyricsRunning,
+    isMobileRuntime,
     isPlaying,
     isStemPlayback,
     isStemRunning,
     latestPreviewArtifact,
     lowerTargetPreview,
     lowerTargetShiftOptions,
+    mobileCapabilities,
+    mobileGenerationMessage,
     lyricsFollowEnabled,
     lyricsDraft,
     lyricsJob,

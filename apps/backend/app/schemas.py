@@ -233,6 +233,10 @@ class ArtifactSchema(BaseModel):
     type: str
     format: str
     path: str
+    size_bytes: int
+    generated_by: str
+    can_delete: bool
+    can_regenerate: bool
     metadata: dict[str, Any] = Field(validation_alias="metadata_json")
     created_at: datetime
 

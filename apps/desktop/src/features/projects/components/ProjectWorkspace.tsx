@@ -1,6 +1,7 @@
 import { useProjectViewModelContext } from "./useProjectViewModelContext";
 import { InspectorPanel } from "./InspectorPanel";
 import { JobsHistory } from "./JobsHistory";
+import { ProcessingPanel } from "./ProcessingPanel";
 import { ProjectPlaybackSummary } from "./ProjectPlaybackSummary";
 import { SourcesRail } from "./SourcesRail";
 
@@ -16,6 +17,7 @@ export function ProjectWorkspace() {
       <SourcesRail />
       <div className="stack">
         <ProjectPlaybackSummary />
+        <ProcessingPanel />
         <JobsHistory />
       </div>
       {inspectorOpen ? <InspectorPanel /> : null}

@@ -34,6 +34,7 @@ Security reports follow the process in [SECURITY.md](./SECURITY.md). "There is n
 - `apps/backend` — FastAPI API, SQLite persistence, job runner, audio analysis/transforms, pytest suite. See [apps/backend/README.md](apps/backend/README.md).
 - `apps/desktop` — Tauri desktop shell and React frontend.
 - `packages/shared-types` — TypeScript contract generated from the backend OpenAPI schema.
+- [MOBILE.md](./MOBILE.md) — Android-first embedded backend architecture and FFmpeg policy.
 
 ## Prerequisites
 

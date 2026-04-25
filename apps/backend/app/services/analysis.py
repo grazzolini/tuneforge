@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.engines.analysis import analyze_track
 from app.models import AnalysisResult, Artifact, Project
-from app.services.artifacts import register_artifact
+from app.services.artifacts import refresh_artifact_file_metadata, register_artifact
 from app.services.paths import project_analysis_dir
 
 
@@ -62,9 +62,13 @@ def analyze_project(session: Session, project: Project) -> AnalysisResult:
                 "analysis_version": analysis.analysis_version,
                 "source_artifact_id": analysis.source_artifact_id,
             },
+            generated_by="analysis",
         )
     else:
-        existing_artifact.path = str(analysis_path.resolve())
+        refresh_artifact_file_metadata(existing_artifact, analysis_path)
+        existing_artifact.generated_by = "analysis"
+        existing_artifact.can_delete = True
+        existing_artifact.can_regenerate = True
         existing_artifact.metadata_json = {
             "analysis_version": analysis.analysis_version,
             "source_artifact_id": analysis.source_artifact_id,

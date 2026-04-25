@@ -46,14 +46,13 @@ describe("Desktop app project analysis mix", () => {
     }
   }
 
-  it("analyzes track from inspector", async () => {
+  it("analyzes track from processing panel", async () => {
     const user = userEvent.setup();
     setProjectAnalysis("proj_123", null);
 
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    await ensureInspectorVisible(user);
     await user.click(screen.getByRole("button", { name: "Analyze Track" }));
 
     expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123");
@@ -64,7 +63,6 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    await openPlaybackWorkspace(user);
     await user.click(screen.getByRole("button", { name: "Refresh Chords" }));
 
     expect(mockCreateChords).toHaveBeenCalledWith("proj_123", {
@@ -90,8 +88,6 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    await openPlaybackWorkspace(user);
-    await user.click(screen.getByRole("button", { name: "Lyrics" }));
     await user.click(screen.getByRole("button", { name: "Generate Lyrics" }));
 
     expect(mockCreateLyrics).toHaveBeenCalledWith("proj_123", { force: false });
@@ -179,11 +175,10 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    await openPlaybackWorkspace(user);
     await user.click(screen.getByRole("button", { name: "Refresh Lyrics" }));
 
     expect(mockConfirm).toHaveBeenCalledWith(
-      "Refresh lyrics? This replaces the current transcript, discards your edits, and may take longer when Whisper falls back to CPU.",
+      "Refresh lyrics? This replaces the current transcript and discards your edits.",
       expect.objectContaining({
         title: "Refresh lyrics",
         kind: "warning",

@@ -147,6 +147,7 @@ def execute_transform_plan(
         path=output_path,
         metadata=plan.metadata,
         cache_key=plan.cache_key,
+        generated_by="ffmpeg",
     )
     return artifact
 
@@ -186,4 +187,7 @@ def export_artifacts(
         artifact_format=output_format,
         path=target,
         metadata={"source_artifact_id": artifact.id},
+        generated_by="ffmpeg",
+        can_delete=True,
+        can_regenerate=False,
     )

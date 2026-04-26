@@ -3,6 +3,7 @@ use std::{fs, process::Child, sync::Mutex};
 #[cfg(not(target_os = "android"))]
 use std::{
     env,
+    ffi::OsString,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
@@ -113,6 +114,75 @@ fn build_python_path(backend_root: &Path) -> Result<String, Box<dyn std::error::
     Ok(joined.to_string_lossy().into_owned())
 }
 
+#[cfg(all(not(target_os = "android"), target_os = "macos"))]
+fn host_tool_fallback_dirs() -> Vec<PathBuf> {
+    [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+        "/opt/local/bin",
+        "/opt/local/sbin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .collect()
+}
+
+#[cfg(all(not(target_os = "android"), not(target_os = "macos")))]
+fn host_tool_fallback_dirs() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+#[cfg(not(target_os = "android"))]
+fn append_unique_paths(
+    mut paths: Vec<PathBuf>,
+    extras: impl IntoIterator<Item = PathBuf>,
+) -> Vec<PathBuf> {
+    for extra in extras {
+        if !paths.iter().any(|path| path == &extra) {
+            paths.push(extra);
+        }
+    }
+    paths
+}
+
+#[cfg(not(target_os = "android"))]
+fn build_backend_search_path() -> Result<OsString, env::JoinPathsError> {
+    let current_paths = env::var_os("PATH")
+        .map(|path| env::split_paths(&path).collect())
+        .unwrap_or_default();
+    env::join_paths(append_unique_paths(
+        current_paths,
+        host_tool_fallback_dirs(),
+    ))
+}
+
+#[cfg(all(not(target_os = "android"), unix))]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::metadata(path)
+        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(all(not(target_os = "android"), not(unix)))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
+}
+
+#[cfg(not(target_os = "android"))]
+fn find_executable_in_path(binary_name: &str, search_path: &OsString) -> Option<PathBuf> {
+    env::split_paths(search_path)
+        .map(|directory| directory.join(binary_name))
+        .find(|candidate| is_executable_file(candidate))
+}
+
 #[cfg(not(target_os = "android"))]
 fn spawn_packaged_backend(app: &AppHandle) -> Result<BackendRuntime, Box<dyn std::error::Error>> {
     let resources_root = app.path().resource_dir()?;
@@ -128,16 +198,23 @@ fn spawn_packaged_backend(app: &AppHandle) -> Result<BackendRuntime, Box<dyn std
     let port = allocate_port()?;
     let base_url = format!("http://127.0.0.1:{port}");
     let python_path = build_python_path(&bundled_backend_root)?;
+    let backend_search_path = build_backend_search_path()?;
+    let ffmpeg_path = find_executable_in_path("ffmpeg", &backend_search_path);
+    let ffprobe_path = find_executable_in_path("ffprobe", &backend_search_path);
 
-    let child = Command::new(&python)
-        .arg("-m")
-        .arg("uvicorn")
-        .arg("app.main:app")
-        .arg("--host")
-        .arg("127.0.0.1")
-        .arg("--port")
+    let mut command = Command::new(&python);
+    command
+        .args([
+            "-m",
+            "uvicorn",
+            "app.main:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+        ])
         .arg(port.to_string())
         .current_dir(&backend_source_root)
+        .env("PATH", &backend_search_path)
         .env("PYTHONHOME", &bundled_python_root)
         .env("PYTHONPATH", python_path)
         .env("PYTORCH_ENABLE_MPS_FALLBACK", "1")
@@ -145,8 +222,20 @@ fn spawn_packaged_backend(app: &AppHandle) -> Result<BackendRuntime, Box<dyn std
         .env("TUNEFORGE_PORT", port.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
+        .stderr(Stdio::null());
+
+    if env::var_os("TUNEFORGE_FFMPEG_PATH").is_none() {
+        if let Some(path) = ffmpeg_path {
+            command.env("TUNEFORGE_FFMPEG_PATH", path);
+        }
+    }
+    if env::var_os("TUNEFORGE_FFPROBE_PATH").is_none() {
+        if let Some(path) = ffprobe_path {
+            command.env("TUNEFORGE_FFPROBE_PATH", path);
+        }
+    }
+
+    let child = command.spawn()?;
 
     wait_for_backend(port, Duration::from_secs(30))?;
 
@@ -215,4 +304,47 @@ pub fn run() {
             runtime.shutdown();
         }
     });
+}
+
+#[cfg(all(test, not(target_os = "android")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn append_unique_paths_preserves_order_without_duplicates() {
+        let first = PathBuf::from("/usr/bin");
+        let second = PathBuf::from("/opt/homebrew/bin");
+        let paths = append_unique_paths(vec![first.clone()], [second.clone(), first.clone()]);
+
+        assert_eq!(paths, vec![first, second]);
+    }
+
+    #[test]
+    fn find_executable_in_path_prefers_first_matching_directory() {
+        let root = env::temp_dir().join(format!("tuneforge-path-test-{}", std::process::id()));
+        let first = root.join("first");
+        let second = root.join("second");
+        fs::create_dir_all(&first).expect("create first temp dir");
+        fs::create_dir_all(&second).expect("create second temp dir");
+
+        let first_binary = first.join("ffmpeg");
+        let second_binary = second.join("ffmpeg");
+        fs::write(&first_binary, "#!/bin/sh\n").expect("write first binary");
+        fs::write(&second_binary, "#!/bin/sh\n").expect("write second binary");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&first_binary, fs::Permissions::from_mode(0o755))
+                .expect("chmod first binary");
+            fs::set_permissions(&second_binary, fs::Permissions::from_mode(0o755))
+                .expect("chmod second binary");
+        }
+
+        let search_path = env::join_paths([&first, &second]).expect("join search path");
+        let resolved = find_executable_in_path("ffmpeg", &search_path);
+
+        fs::remove_dir_all(root).expect("remove temp dirs");
+        assert_eq!(resolved, Some(first_binary));
+    }
 }

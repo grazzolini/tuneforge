@@ -148,7 +148,7 @@ The generated artifacts are written under `apps/desktop/src-tauri/target/release
 - `macos/Tuneforge.app`
 - `dmg/Tuneforge_0.1.0_aarch64.dmg` on Apple Silicon
 
-Run packaging from a normal macOS shell so `hdiutil` can create the disk image. Packaged builds require `ffmpeg`/`ffprobe` to be installed on the host system; Tuneforge does not bundle them (see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)).
+Run packaging from a normal macOS shell so `hdiutil` can create the disk image. Packaged builds require `ffmpeg`/`ffprobe` to be installed on the host system; Tuneforge does not bundle them (see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)). The macOS app checks the inherited `PATH` plus common Homebrew and MacPorts install locations when launching the bundled backend.
 
 ## CI
 

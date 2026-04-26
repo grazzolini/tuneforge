@@ -39,6 +39,8 @@ export type ExportRequest = components["schemas"]["ExportRequest"];
 export type ProjectUpdateRequest = components["schemas"]["ProjectUpdateRequest"];
 export type StemRequest = components["schemas"]["StemRequest"];
 export type ChordRequest = components["schemas"]["ChordRequest"];
+export type ChordBackendSchema = components["schemas"]["ChordBackendSchema"];
+export type ChordBackendsResponse = components["schemas"]["ChordBackendsResponse"];
 export type LyricsGenerateRequest = components["schemas"]["LyricsGenerateRequest"];
 export type LyricsUpdateRequest = components["schemas"]["LyricsUpdateRequest"];
 export type RuntimeCapabilities = MobileCapabilities | null;
@@ -53,6 +55,7 @@ export type TuneForgeClient = {
   deleteProject: (projectId: string) => Promise<components["schemas"]["DeleteResponse"]>;
   analyzeProject: (projectId: string) => Promise<components["schemas"]["JobResponse"]>;
   getAnalysis: (projectId: string) => Promise<AnalysisResponse>;
+  listChordBackends: () => Promise<ChordBackendsResponse>;
   createChords: (projectId: string, body: ChordRequest) => Promise<components["schemas"]["JobResponse"]>;
   getChords: (projectId: string) => Promise<ChordResponse>;
   createLyrics: (projectId: string, body: LyricsGenerateRequest) => Promise<components["schemas"]["JobResponse"]>;
@@ -73,6 +76,48 @@ export type TuneForgeClient = {
 
 let client = createClient<paths>({ baseUrl: apiBaseUrl });
 const mobileArtifactPaths = new Map<string, string>();
+const mobileChordBackendsResponse: ChordBackendsResponse = {
+  backends: [
+    {
+      availability: "available",
+      available: true,
+      capabilities: {
+        desktopOnly: false,
+        estimatedSpeed: "medium",
+        experimental: false,
+        supportsConfidence: true,
+        supportsInversions: false,
+        supportsNoChord: true,
+        supportsSevenths: true,
+      },
+      description: "TuneForge's built-in lightweight chord detector.",
+      desktopOnly: false,
+      experimental: false,
+      id: "tuneforge-fast",
+      label: "Built-in Chords",
+      unavailable_reason: null,
+    },
+    {
+      availability: "unavailable",
+      available: false,
+      capabilities: {
+        desktopOnly: true,
+        estimatedSpeed: "slow",
+        experimental: true,
+        supportsConfidence: true,
+        supportsInversions: true,
+        supportsNoChord: true,
+        supportsSevenths: true,
+      },
+      description: "Optional crema chord detector for desktop builds.",
+      desktopOnly: true,
+      experimental: true,
+      id: "crema-advanced",
+      label: "Advanced Chords",
+      unavailable_reason: "advanced chord backend is disabled on mobile",
+    },
+  ],
+};
 
 export class ApiError extends Error {
   code: string;
@@ -149,6 +194,7 @@ function createHttpTuneForgeClient(): TuneForgeClient {
       ),
     getAnalysis: (projectId: string) =>
       unwrap(client.GET("/api/v1/projects/{project_id}/analysis", { params: { path: { project_id: projectId } } })),
+    listChordBackends: () => unwrap(client.GET("/api/v1/chord-backends")),
     createChords: (projectId: string, body: ChordRequest) =>
       unwrap(client.POST("/api/v1/projects/{project_id}/chords", { params: { path: { project_id: projectId } }, body })),
     getChords: (projectId: string) =>
@@ -198,6 +244,7 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     deleteProject: (projectId: string) => invokeMobile("mobile_delete_project", { projectId }),
     analyzeProject: (projectId: string) => invokeMobile("mobile_submit_analyze", { projectId }),
     getAnalysis: (projectId: string) => invokeMobile("mobile_get_analysis", { projectId }),
+    listChordBackends: async () => mobileChordBackendsResponse,
     createChords: (projectId: string, body: ChordRequest) =>
       invokeMobile("mobile_submit_chords", { projectId, payload: body }),
     getChords: (projectId: string) => invokeMobile("mobile_get_chords", { projectId }),
@@ -283,6 +330,7 @@ export const api: TuneForgeClient = {
   deleteProject: (projectId: string) => activeClient.deleteProject(projectId),
   analyzeProject: (projectId: string) => activeClient.analyzeProject(projectId),
   getAnalysis: (projectId: string) => activeClient.getAnalysis(projectId),
+  listChordBackends: () => activeClient.listChordBackends(),
   createChords: (projectId: string, body: ChordRequest) => activeClient.createChords(projectId, body),
   getChords: (projectId: string) => activeClient.getChords(projectId),
   createLyrics: (projectId: string, body: LyricsGenerateRequest) => activeClient.createLyrics(projectId, body),

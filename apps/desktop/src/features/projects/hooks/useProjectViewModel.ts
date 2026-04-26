@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { confirm, save } from "@tauri-apps/plugin-dialog";
-import { api, type ArtifactSchema, type ProjectSchema } from "../../../lib/api";
+import { api, type ArtifactSchema, type ChordBackendsResponse, type ProjectSchema } from "../../../lib/api";
 import { usePreferences } from "../../../lib/preferences";
 import { usePlayback } from "../playback-context";
 import {
@@ -49,9 +49,13 @@ import {
   type SourceKeyOption,
   type TargetShiftOption,
 } from "../projectViewUtils";
-import type { DefaultPlaybackDisplayMode, PlaybackDisplayMode } from "../../../lib/preferences";
+import type { DefaultChordBackend, DefaultPlaybackDisplayMode, PlaybackDisplayMode } from "../../../lib/preferences";
 
 type PlaybackDisplayModeSource = "default" | "stored" | "user";
+type ChordBackendActionSelection = {
+  backend: DefaultChordBackend;
+  backend_fallback_from?: DefaultChordBackend;
+};
 
 function resolveDefaultPlaybackDisplayMode(
   defaultMode: DefaultPlaybackDisplayMode,
@@ -96,6 +100,7 @@ export function useProjectViewModel() {
     defaultLyricsFollowEnabled,
     defaultProjectWorkspace,
     defaultSourcesRailCollapsed,
+    defaultChordBackend,
     enharmonicDisplayMode,
     informationDensity,
   } = usePreferences();
@@ -173,6 +178,10 @@ export function useProjectViewModel() {
     queryKey: ["jobs"],
     queryFn: async () => (await api.listJobs()).jobs,
   });
+  const chordBackendsQuery = useQuery({
+    queryKey: ["chord-backends"],
+    queryFn: api.listChordBackends,
+  });
   const mobileCapabilitiesQuery = useQuery({
     queryKey: ["mobile-capabilities"],
     queryFn: async () => api.getMobileCapabilities(),
@@ -180,6 +189,33 @@ export function useProjectViewModel() {
   });
 
   useActiveJobPolling(projectId, jobsQuery.data);
+
+  async function chordBackendForAction(): Promise<ChordBackendActionSelection> {
+    if (defaultChordBackend === "tuneforge-fast") {
+      return { backend: "tuneforge-fast" };
+    }
+
+    let backendResponse: ChordBackendsResponse | undefined = chordBackendsQuery.data;
+    if (!backendResponse) {
+      try {
+        backendResponse = await queryClient.fetchQuery({
+          queryKey: ["chord-backends"],
+          queryFn: api.listChordBackends,
+        });
+      } catch {
+        return { backend: "tuneforge-fast", backend_fallback_from: defaultChordBackend };
+      }
+    }
+    if (!backendResponse) {
+      return { backend: "tuneforge-fast", backend_fallback_from: defaultChordBackend };
+    }
+
+    const selectedBackend = backendResponse.backends.find((backend) => backend.id === defaultChordBackend);
+    if (selectedBackend?.available) {
+      return { backend: defaultChordBackend };
+    }
+    return { backend: "tuneforge-fast", backend_fallback_from: defaultChordBackend };
+  }
 
   const analyzeMutation = useMutation({
     mutationFn: () => api.analyzeProject(projectId),
@@ -239,12 +275,14 @@ export function useProjectViewModel() {
   });
 
   const chordMutation = useMutation({
-    mutationFn: async (overwriteUserEdits: boolean) =>
-      api.createChords(projectId, {
-        backend: "default",
+    mutationFn: async (overwriteUserEdits: boolean) => {
+      const backendSelection = await chordBackendForAction();
+      return api.createChords(projectId, {
+        ...backendSelection,
         force: (chordsQuery.data?.timeline?.length ?? 0) > 0,
         overwrite_user_edits: overwriteUserEdits,
-      }),
+      });
+    },
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["jobs"] }),
@@ -312,9 +350,12 @@ export function useProjectViewModel() {
       if (!selectedPrimaryArtifactId) {
         throw new Error("Select source audio or practice mix first.");
       }
+      const backendSelection = await chordBackendForAction();
       return api.createStems(projectId, {
         mode: "two_stem",
         output_format: "wav",
+        chord_backend: backendSelection.backend,
+        chord_backend_fallback_from: backendSelection.backend_fallback_from,
         force: hasVisibleStems,
         source_artifact_id: selectedPrimaryArtifactId,
         overwrite_chord_edits: overwriteChordEdits,

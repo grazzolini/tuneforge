@@ -23,16 +23,23 @@ If unsure whether a feature fits, open a discussion or feature-request issue fir
 ## Setup
 
 ```sh
-pnpm install
-cd apps/backend && uv sync --python 3.11 --all-groups
-cd ../..
-pnpm contracts:generate
+pnpm setup:dev
 ```
+
+This installs workspace dependencies, syncs the backend Python environment, and regenerates shared API contracts.
+
+To install the optional experimental crema/TensorFlow Advanced Chords backend for local desktop development:
+
+```sh
+pnpm setup:dev -- --advanced-chords
+```
+
+`--crema` is accepted as an alias. Default setup and mobile paths do not install crema or TensorFlow.
 
 For Linux `x86_64` machines with older NVIDIA GPUs that are unsupported by the default PyTorch build, you can opt into the backend's local legacy CUDA override instead:
 
 ```sh
-pnpm sync:backend:legacy-nvidia
+pnpm setup:dev -- --legacy-nvidia
 ```
 
 This is a local developer override for `apps/backend/.venv`; it does not change the committed lockfile or the default CI setup. Reset back to the locked default backend environment with:
@@ -42,6 +49,12 @@ pnpm sync:backend:default
 ```
 
 Both helper commands rebuild `apps/backend/.venv` from scratch so switching between the default and legacy CUDA stacks stays deterministic while still reusing the shared `uv` cache.
+
+To combine the legacy NVIDIA profile with Advanced Chords:
+
+```sh
+pnpm setup:dev -- --legacy-nvidia --advanced-chords
+```
 
 ## Development Loop
 

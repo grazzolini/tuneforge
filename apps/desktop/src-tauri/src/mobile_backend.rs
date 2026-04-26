@@ -86,6 +86,9 @@ pub struct JobSchema {
     status: String,
     progress: i64,
     source_artifact_id: Option<String>,
+    chord_backend: Option<String>,
+    chord_backend_fallback_from: Option<String>,
+    chord_source: Option<String>,
     error_message: Option<String>,
     runtime_device: Option<String>,
     started_at: Option<String>,
@@ -119,10 +122,15 @@ pub struct AnalysisResponse {
 #[serde(rename_all = "snake_case")]
 pub struct ChordResponse {
     project_id: String,
+    source_segments: Vec<Value>,
     timeline: Vec<Value>,
     backend: Option<String>,
     source_artifact_id: Option<String>,
+    has_user_edits: bool,
+    source_kind: String,
+    metadata: Value,
     created_at: Option<String>,
+    updated_at: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -368,6 +376,9 @@ mod android {
             status: row.get(3)?,
             progress: row.get(4)?,
             source_artifact_id: row.get(5)?,
+            chord_backend: None,
+            chord_backend_fallback_from: None,
+            chord_source: None,
             error_message: row.get(6)?,
             runtime_device: row.get(7)?,
             started_at: row.get(8)?,
@@ -407,6 +418,9 @@ mod android {
             status: "failed".to_string(),
             progress: 0,
             source_artifact_id: None,
+            chord_backend: None,
+            chord_backend_fallback_from: None,
+            chord_source: None,
             error_message: Some(message.to_string()),
             runtime_device: None,
             started_at: Some(timestamp.clone()),
@@ -720,10 +734,15 @@ mod android {
         let _ = get_project_schema(&connection, &project_id)?;
         Ok(ChordResponse {
             project_id,
+            source_segments: Vec::new(),
             timeline: Vec::new(),
             backend: None,
             source_artifact_id: None,
+            has_user_edits: false,
+            source_kind: "generated".to_string(),
+            metadata: serde_json::json!({}),
             created_at: None,
+            updated_at: None,
         })
     }
 

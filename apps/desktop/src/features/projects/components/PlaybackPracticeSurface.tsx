@@ -327,6 +327,7 @@ function ChordsPracticePanel() {
                 activeKey={activeEnharmonicKeyContext}
                 fallbackLabel={currentChord.label ?? "-"}
                 mode={enharmonicDisplayMode}
+                bassPitchClass={currentChord.bass_pitch_class}
                 pitchClass={currentChord.pitch_class}
                 quality={currentChord.quality}
                 variant="chord-card"
@@ -344,6 +345,7 @@ function ChordsPracticePanel() {
                 activeKey={activeEnharmonicKeyContext}
                 fallbackLabel={nextChord.label ?? "-"}
                 mode={enharmonicDisplayMode}
+                bassPitchClass={nextChord.bass_pitch_class}
                 pitchClass={nextChord.pitch_class}
                 quality={nextChord.quality}
                 variant="chord-card"
@@ -393,6 +395,7 @@ function ChordsPracticePanel() {
                     activeKey={activeEnharmonicKeyContext}
                     fallbackLabel={segment.label}
                     mode={enharmonicDisplayMode}
+                    bassPitchClass={segment.bass_pitch_class}
                     pitchClass={segment.pitch_class}
                     quality={segment.quality}
                     variant="chord-chip"
@@ -616,6 +619,7 @@ function LeadSheetChordButton({ chord }: { chord: LeadSheetChord }) {
         activeKey={activeEnharmonicKeyContext}
         fallbackLabel={chord.segment.label}
         mode={enharmonicDisplayMode}
+        bassPitchClass={chord.segment.bass_pitch_class}
         pitchClass={chord.segment.pitch_class}
         quality={chord.segment.quality}
         variant="chord-chip"

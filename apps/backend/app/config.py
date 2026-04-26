@@ -38,6 +38,8 @@ class Settings:
     lyrics_model: str
     lyrics_device: str
     lyrics_cache_dir: Path
+    default_chord_backend: str
+    runtime_platform: str
     max_workers: int
     backend_root: Path
 
@@ -75,6 +77,8 @@ def get_settings() -> Settings:
         lyrics_model=os.environ.get("TUNEFORGE_LYRICS_MODEL", "turbo"),
         lyrics_device=os.environ.get("TUNEFORGE_LYRICS_DEVICE", "auto"),
         lyrics_cache_dir=Path(os.environ.get("TUNEFORGE_LYRICS_CACHE_DIR", str(cache_root / "lyrics"))),
+        default_chord_backend=os.environ.get("TUNEFORGE_DEFAULT_CHORD_BACKEND", "tuneforge-fast"),
+        runtime_platform=os.environ.get("TUNEFORGE_RUNTIME_PLATFORM", "desktop").strip().lower(),
         max_workers=1,
         backend_root=backend_root,
     )

@@ -13,6 +13,7 @@ export type InformationDensity = "minimal" | "balanced" | "detailed";
 export type ProjectWorkspaceMode = "project" | "playback";
 export type PlaybackDisplayMode = "lyrics" | "chords" | "combined";
 export type DefaultPlaybackDisplayMode = "auto" | PlaybackDisplayMode;
+export type DefaultChordBackend = "tuneforge-fast" | "crema-advanced";
 export type { EnharmonicDisplayMode };
 
 export type UiPreferences = {
@@ -22,12 +23,14 @@ export type UiPreferences = {
   defaultSourcesRailCollapsed: boolean;
   defaultProjectWorkspace: ProjectWorkspaceMode;
   defaultPlaybackDisplayMode: DefaultPlaybackDisplayMode;
+  defaultChordBackend: DefaultChordBackend;
   defaultLyricsFollowEnabled: boolean;
   defaultChordsFollowEnabled: boolean;
 };
 
 export type AppearancePreferences = Pick<UiPreferences, "informationDensity">;
 export type NotationPreferences = Pick<UiPreferences, "enharmonicDisplayMode">;
+export type AnalysisPreferences = Pick<UiPreferences, "defaultChordBackend">;
 export type VisibilityPreferences = Pick<
   UiPreferences,
   | "defaultInspectorOpen"
@@ -45,11 +48,13 @@ type PreferencesContextValue = UiPreferences & {
   setDefaultSourcesRailCollapsed: (value: boolean) => void;
   setDefaultProjectWorkspace: (value: ProjectWorkspaceMode) => void;
   setDefaultPlaybackDisplayMode: (value: DefaultPlaybackDisplayMode) => void;
+  setDefaultChordBackend: (value: DefaultChordBackend) => void;
   setDefaultLyricsFollowEnabled: (value: boolean) => void;
   setDefaultChordsFollowEnabled: (value: boolean) => void;
   replacePreferences: (value: UiPreferences) => void;
   resetAppearancePreferences: () => void;
   resetNotationPreferences: () => void;
+  resetAnalysisPreferences: () => void;
   resetVisibilityPreferences: () => void;
   resetPreferences: () => void;
 };
@@ -64,6 +69,10 @@ export const DEFAULT_NOTATION_PREFERENCES: NotationPreferences = {
   enharmonicDisplayMode: "auto",
 };
 
+export const DEFAULT_ANALYSIS_PREFERENCES: AnalysisPreferences = {
+  defaultChordBackend: "tuneforge-fast",
+};
+
 export const DEFAULT_VISIBILITY_PREFERENCES: VisibilityPreferences = {
   defaultInspectorOpen: true,
   defaultSourcesRailCollapsed: false,
@@ -76,6 +85,7 @@ export const DEFAULT_VISIBILITY_PREFERENCES: VisibilityPreferences = {
 export const DEFAULT_PREFERENCES: UiPreferences = {
   ...DEFAULT_APPEARANCE_PREFERENCES,
   ...DEFAULT_NOTATION_PREFERENCES,
+  ...DEFAULT_ANALYSIS_PREFERENCES,
   ...DEFAULT_VISIBILITY_PREFERENCES,
 };
 
@@ -101,6 +111,10 @@ export function isDefaultPlaybackDisplayMode(
   value: unknown,
 ): value is DefaultPlaybackDisplayMode {
   return value === "auto" || isPlaybackDisplayMode(value);
+}
+
+export function isDefaultChordBackend(value: unknown): value is DefaultChordBackend {
+  return value === "tuneforge-fast" || value === "crema-advanced";
 }
 
 export function normalizePreferences(value: unknown): UiPreferences {
@@ -130,6 +144,9 @@ export function normalizePreferences(value: unknown): UiPreferences {
     defaultPlaybackDisplayMode: isDefaultPlaybackDisplayMode(candidate.defaultPlaybackDisplayMode)
       ? candidate.defaultPlaybackDisplayMode
       : DEFAULT_PREFERENCES.defaultPlaybackDisplayMode,
+    defaultChordBackend: isDefaultChordBackend(candidate.defaultChordBackend)
+      ? candidate.defaultChordBackend
+      : DEFAULT_PREFERENCES.defaultChordBackend,
     defaultLyricsFollowEnabled:
       typeof candidate.defaultLyricsFollowEnabled === "boolean"
         ? candidate.defaultLyricsFollowEnabled
@@ -199,6 +216,9 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       setDefaultPlaybackDisplayMode: (defaultPlaybackDisplayMode) => {
         setPreferences((current) => mergePreferences(current, { defaultPlaybackDisplayMode }));
       },
+      setDefaultChordBackend: (defaultChordBackend) => {
+        setPreferences((current) => mergePreferences(current, { defaultChordBackend }));
+      },
       setDefaultLyricsFollowEnabled: (defaultLyricsFollowEnabled) => {
         setPreferences((current) => mergePreferences(current, { defaultLyricsFollowEnabled }));
       },
@@ -215,6 +235,9 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       },
       resetNotationPreferences: () => {
         setPreferences((current) => mergePreferences(current, DEFAULT_NOTATION_PREFERENCES));
+      },
+      resetAnalysisPreferences: () => {
+        setPreferences((current) => mergePreferences(current, DEFAULT_ANALYSIS_PREFERENCES));
       },
       resetVisibilityPreferences: () => {
         setPreferences((current) => mergePreferences(current, DEFAULT_VISIBILITY_PREFERENCES));

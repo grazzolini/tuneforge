@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.errors import AppError, JobCancelledError
 from app.models import Artifact, ChordTimeline, Job, utcnow
 from app.services.analysis import analyze_project
+from app.services.chord_backends import resolve_chord_backend
 from app.services.chords import detect_project_chords, project_chord_detection_source
 from app.services.lyrics import generate_project_lyrics
 from app.services.projects import get_project
@@ -281,15 +282,22 @@ class InProcessJobRunner:
 
     def _handle_chords(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")
+        backend = str(job.payload_json.get("backend", "default"))
+        selected_backend = resolve_chord_backend(backend, require_available=True)
         job.payload_json = {
             **job.payload_json,
-            "chord_source": project_chord_detection_source(project),
+            "chord_backend": selected_backend.id,
+            "chord_source": project_chord_detection_source(project, backend=selected_backend.id),
         }
         session.flush()
         context.set_progress(20)
         detect_project_chords(
             session,
             project,
+            backend=backend,
+            backend_fallback_from=job.payload_json.get("backend_fallback_from")
+            if isinstance(job.payload_json.get("backend_fallback_from"), str)
+            else None,
             force=bool(job.payload_json.get("force", False)),
             overwrite_user_edits=bool(job.payload_json.get("overwrite_user_edits", False)),
         )
@@ -346,14 +354,22 @@ class InProcessJobRunner:
             unregister_process=context.unregister_process,
         )
         if _should_enqueue_chord_refresh_after_stems(job, artifacts, session.get(ChordTimeline, project.id)):
+            selected_chord_backend = resolve_chord_backend(
+                str(payload.get("chord_backend", "default")),
+                require_available=False,
+            )
             chord_job = self.create_job(
                 session,
                 project_id=project.id,
                 job_type="chords",
                 payload={
-                    "backend": "default",
+                    "backend": selected_chord_backend.id,
+                    "backend_fallback_from": payload.get("chord_backend_fallback_from")
+                    if isinstance(payload.get("chord_backend_fallback_from"), str)
+                    else None,
                     "force": True,
                     "overwrite_user_edits": bool(payload.get("overwrite_chord_edits", False)),
+                    "chord_backend": selected_chord_backend.id,
                     "chord_source": "source+stem",
                 },
             )

@@ -99,12 +99,23 @@ export function formatJobDuration(durationSeconds: number | null | undefined) {
 export function formatJobStatusSummary(job: JobSchema) {
   return [
     job.status,
+    job.type === "chords" ? formatChordBackend(job.chord_backend) : null,
     job.type === "chords" ? job.chord_source : null,
     typeof job.runtime_device === "string" ? job.runtime_device.toUpperCase() : null,
     formatJobDuration(job.duration_seconds),
   ]
     .filter(Boolean)
     .join(" / ");
+}
+
+function formatChordBackend(backend: string | null | undefined) {
+  if (backend === "tuneforge-fast" || backend === "fast" || backend === "default") {
+    return "built-in";
+  }
+  if (backend === "crema-advanced" || backend === "advanced" || backend === "crema") {
+    return "advanced";
+  }
+  return backend ?? null;
 }
 
 export function formatPlaybackClock(totalSeconds: number) {
@@ -225,10 +236,16 @@ export function transposeChordSegment(
     return segment;
   }
   const pitchClass = transposePitchClass(segment.pitch_class, semitones);
+  const bassPitchClass =
+    typeof segment.bass_pitch_class === "number"
+      ? transposePitchClass(segment.bass_pitch_class, semitones)
+      : segment.bass_pitch_class;
   return {
     ...segment,
+    bass_pitch_class: bassPitchClass,
     pitch_class: pitchClass,
-    label: formatChordLabel(pitchClass, segment.quality, options),
+    root_pitch_class: typeof segment.root_pitch_class === "number" ? pitchClass : segment.root_pitch_class,
+    label: formatChordLabel(pitchClass, segment.quality, options, bassPitchClass),
   };
 }
 

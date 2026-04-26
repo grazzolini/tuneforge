@@ -50,6 +50,7 @@ def test_import_project_enqueues_analysis_and_chords(client, sample_chord_audio_
     assert wait_for_job(client, analyze_job["id"])["status"] == "completed"
     completed_chord_job = wait_for_job(client, chord_job["id"])
     assert completed_chord_job["status"] == "completed"
+    assert completed_chord_job["chord_backend"] == "tuneforge-fast"
     assert completed_chord_job["chord_source"] == "source"
 
     analysis = client.get(f"/api/v1/projects/{project['id']}/analysis").json()["analysis"]

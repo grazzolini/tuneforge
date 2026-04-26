@@ -10,9 +10,11 @@ import {
   mockCreateChords,
   mockCreateLyrics,
   mockCreatePreview,
+  mockCreateStems,
   mockUpdateLyrics,
   mockUpdateProject,
   renderApp,
+  setChordBackends,
   setProjectAnalysis,
   setProjectChords,
   setProjectLyrics,
@@ -85,10 +87,84 @@ describe("Desktop app project analysis mix", () => {
     await user.click(screen.getByRole("button", { name: "Refresh Chords" }));
 
     expect(mockCreateChords).toHaveBeenCalledWith("proj_123", {
-      backend: "default",
+      backend: "tuneforge-fast",
       force: true,
       overwrite_user_edits: false,
     });
+  });
+
+  it("uses the selected default chord backend for chord and stem jobs", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultChordBackend: "crema-advanced", defaultSourcesRailCollapsed: false }),
+    );
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Refresh Chords" }));
+    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+
+    expect(mockCreateChords).toHaveBeenCalledWith("proj_123", {
+      backend: "crema-advanced",
+      force: true,
+      overwrite_user_edits: false,
+    });
+    expect(mockCreateStems).toHaveBeenCalledWith(
+      "proj_123",
+      expect.objectContaining({ chord_backend: "crema-advanced" }),
+    );
+  });
+
+  it("falls back to built-in chords when the saved advanced backend is unavailable", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultChordBackend: "crema-advanced", defaultSourcesRailCollapsed: false }),
+    );
+    setChordBackends([
+      {
+        availability: "available",
+        available: true,
+        capabilities: {},
+        desktopOnly: false,
+        experimental: false,
+        id: "tuneforge-fast",
+        label: "Built-in Chords",
+        unavailable_reason: null,
+      },
+      {
+        availability: "unavailable",
+        available: false,
+        capabilities: {},
+        desktopOnly: true,
+        experimental: true,
+        id: "crema-advanced",
+        label: "Advanced Chords",
+        unavailable_reason: "crema is not installed",
+      },
+    ]);
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Refresh Chords" }));
+    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+
+    expect(mockCreateChords).toHaveBeenCalledWith("proj_123", {
+      backend: "tuneforge-fast",
+      backend_fallback_from: "crema-advanced",
+      force: true,
+      overwrite_user_edits: false,
+    });
+    expect(mockCreateStems).toHaveBeenCalledWith(
+      "proj_123",
+      expect.objectContaining({
+        chord_backend: "tuneforge-fast",
+        chord_backend_fallback_from: "crema-advanced",
+      }),
+    );
   });
 
   it("generates lyrics when transcript is empty", async () => {

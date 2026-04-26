@@ -2,9 +2,10 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Link } from "react-router-dom";
-import { api } from "../../lib/api";
+import { api, type ChordBackendSchema } from "../../lib/api";
 import {
   usePreferences,
+  type DefaultChordBackend,
   type DefaultPlaybackDisplayMode,
   type EnharmonicDisplayMode,
   type InformationDensity,
@@ -23,8 +24,10 @@ import {
 } from "../../lib/theme";
 
 type ChoiceOption<T extends string> = {
+  disabled?: boolean;
   description: string;
   label: string;
+  status?: string;
   value: T;
 };
 
@@ -133,6 +136,21 @@ const playbackDisplayOptions: ChoiceOption<DefaultPlaybackDisplayMode>[] = [
   },
 ];
 
+const fallbackChordBackendOptions: ChoiceOption<DefaultChordBackend>[] = [
+  {
+    value: "tuneforge-fast",
+    label: "Built-in Chords",
+    description: "Default local detector with lightweight source and stem analysis.",
+  },
+  {
+    value: "crema-advanced",
+    label: "Advanced Chords",
+    description: "Experimental crema detector with sevenths and inversion labels.",
+    disabled: true,
+    status: "Unavailable",
+  },
+];
+
 function themePreferenceLabel(themePreference: ThemePreference) {
   if (themePreference === "system") {
     return "Follow system";
@@ -169,6 +187,31 @@ function playbackDisplayLabel(value: DefaultPlaybackDisplayMode) {
   return "Chords";
 }
 
+function chordBackendLabel(value: DefaultChordBackend) {
+  return value === "crema-advanced" ? "Advanced Chords" : "Built-in Chords";
+}
+
+function chordBackendOptions(backends: ChordBackendSchema[] | undefined): ChoiceOption<DefaultChordBackend>[] {
+  if (!backends?.length) {
+    return fallbackChordBackendOptions;
+  }
+
+  return fallbackChordBackendOptions.map((fallback) => {
+    const backend = backends.find((candidate) => candidate.id === fallback.value);
+    if (!backend) {
+      return fallback;
+    }
+    const unavailableReason = backend.available ? null : backend.unavailable_reason;
+    return {
+      value: fallback.value,
+      label: backend.label,
+      description: backend.description,
+      disabled: !backend.available,
+      status: unavailableReason ?? (backend.experimental ? "Experimental" : undefined),
+    };
+  });
+}
+
 function ChoiceGroup<T extends string>({
   description,
   legend,
@@ -191,12 +234,14 @@ function ChoiceGroup<T extends string>({
           <button
             key={option.value}
             aria-pressed={value === option.value}
+            disabled={option.disabled}
             className="settings-choice"
             onClick={() => onChange(option.value)}
             type="button"
           >
             <span className="settings-choice__label">{option.label}</span>
             <span className="settings-choice__copy">{option.description}</span>
+            {option.status ? <span className="settings-choice__copy">{option.status}</span> : null}
           </button>
         ))}
       </div>
@@ -247,6 +292,7 @@ export function SettingsView() {
     defaultSourcesRailCollapsed,
     defaultProjectWorkspace,
     defaultPlaybackDisplayMode,
+    defaultChordBackend,
     defaultLyricsFollowEnabled,
     defaultChordsFollowEnabled,
     setInformationDensity,
@@ -255,10 +301,12 @@ export function SettingsView() {
     setDefaultSourcesRailCollapsed,
     setDefaultProjectWorkspace,
     setDefaultPlaybackDisplayMode,
+    setDefaultChordBackend,
     setDefaultLyricsFollowEnabled,
     setDefaultChordsFollowEnabled,
     resetAppearancePreferences,
     resetNotationPreferences,
+    resetAnalysisPreferences,
     resetVisibilityPreferences,
     resetPreferences,
     replacePreferences,
@@ -269,7 +317,12 @@ export function SettingsView() {
     queryKey: ["health"],
     queryFn: api.getHealth,
   });
+  const chordBackendsQuery = useQuery({
+    queryKey: ["chord-backends"],
+    queryFn: api.listChordBackends,
+  });
   const savedThemeOverrideCount = themeOverrideCount(themeOverrides);
+  const chordBackendChoices = chordBackendOptions(chordBackendsQuery.data?.backends);
 
   function handleResetAppearance() {
     setThemePreference(DEFAULT_THEME_PREFERENCE);
@@ -283,6 +336,10 @@ export function SettingsView() {
 
   function handleResetNotation() {
     resetNotationPreferences();
+  }
+
+  function handleResetAnalysis() {
+    resetAnalysisPreferences();
   }
 
   function handleResetAllSettings() {
@@ -308,6 +365,7 @@ export function SettingsView() {
       const contents = serializeSettingsSnapshot({
         preferences: {
           defaultChordsFollowEnabled,
+          defaultChordBackend,
           defaultInspectorOpen,
           defaultPlaybackDisplayMode,
           defaultLyricsFollowEnabled,
@@ -384,6 +442,7 @@ export function SettingsView() {
             <span className="pill">Theme</span>
             <span className="pill">Density</span>
             <span className="pill">Musical notation</span>
+            <span className="pill">Chord backend</span>
             <span className="pill">Playback defaults</span>
           </div>
         </div>
@@ -420,6 +479,10 @@ export function SettingsView() {
           <div className="settings-overview__stat">
             <dt>Playback view</dt>
             <dd>{playbackDisplayLabel(defaultPlaybackDisplayMode)}</dd>
+          </div>
+          <div className="settings-overview__stat">
+            <dt>Chord backend</dt>
+            <dd>{chordBackendLabel(defaultChordBackend)}</dd>
           </div>
           <div className="settings-overview__stat">
             <dt>Playback follow</dt>
@@ -501,6 +564,29 @@ export function SettingsView() {
           <div className="button-row">
             <button className="button button--ghost button--small" onClick={handleResetNotation} type="button">
               Reset Notation
+            </button>
+          </div>
+        </div>
+
+        <div className="panel settings-panel">
+          <div className="panel-heading">
+            <div>
+              <h2>Analysis Defaults</h2>
+              <p className="subpanel__copy">Default engines for generated project analysis.</p>
+            </div>
+          </div>
+
+          <ChoiceGroup
+            description="Choose the backend used when generating or refreshing chords."
+            legend="Default chord backend"
+            onChange={setDefaultChordBackend}
+            options={chordBackendChoices}
+            value={defaultChordBackend}
+          />
+
+          <div className="button-row">
+            <button className="button button--ghost button--small" onClick={handleResetAnalysis} type="button">
+              Reset Analysis Defaults
             </button>
           </div>
         </div>

@@ -33,6 +33,7 @@ from app.schemas import (
     TransposeRequest,
 )
 from app.services.artifacts import delete_project_artifact
+from app.services.chord_backends import FAST_CHORD_BACKEND_ID, resolve_chord_backend
 from app.services.chords import project_chord_detection_source
 from app.services.lyrics import update_project_lyrics
 from app.services.projects import (
@@ -71,6 +72,7 @@ def create_project(
         job_type="chords",
         payload={
             **ChordRequest(backend="default", force=False).model_dump(),
+            "chord_backend": FAST_CHORD_BACKEND_ID,
             "chord_source": "source",
         },
     )
@@ -150,8 +152,10 @@ def project_chords(
     runner=Depends(get_job_runner),
 ) -> JobResponse:
     project = get_project(session, project_id)
+    selected_backend = resolve_chord_backend(payload.backend, require_available=True)
     job_payload = payload.model_dump()
-    job_payload["chord_source"] = project_chord_detection_source(project)
+    job_payload["chord_backend"] = selected_backend.id
+    job_payload["chord_source"] = project_chord_detection_source(project, backend=selected_backend.id)
     job = runner.create_job(
         session,
         project_id=project_id,
@@ -297,6 +301,8 @@ def project_stems(
         source_artifact_id=payload.source_artifact_id,
     )
     job_payload = payload.model_dump()
+    selected_chord_backend = resolve_chord_backend(payload.chord_backend, require_available=False)
+    job_payload["chord_backend"] = selected_chord_backend.id
     job_payload["source_artifact_id"] = source_artifact.id
     job = runner.create_job(
         session,

@@ -108,12 +108,14 @@ export function useProjectViewModel() {
   const chordTimelineRef = useRef<HTMLDivElement | null>(null);
   const combinedLeadSheetRef = useRef<HTMLDivElement | null>(null);
   const combinedLeadSheetRowRefs = useRef<Record<string, HTMLElement | null>>({});
-  const lyricsSegmentRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const lyricsSegmentRefs = useRef<Record<string, HTMLElement | null>>({});
   const lyricsTheaterRef = useRef<HTMLDivElement | null>(null);
+  const playbackTransportRef = useRef<HTMLDivElement | null>(null);
   const pendingPreviewSelection = useRef<{ previousLatestPreviewArtifactId: string | null } | null>(
     null,
   );
   const persistedStemSourceArtifactId = useRef<string | null>(null);
+  const wasPlayingRef = useRef(isPlaying);
   const targetSelectorRef = useRef<HTMLDivElement | null>(null);
   const targetOptionRefs = useRef<Record<number, HTMLButtonElement | null>>({});
   const sourceKeySelectorRef = useRef<HTMLDivElement | null>(null);
@@ -145,8 +147,6 @@ export function useProjectViewModel() {
   const [lyricsDraft, setLyricsDraft] = useState<string[]>([]);
   const [lyricsFollowEnabled, setLyricsFollowEnabled] = useState(defaultLyricsFollowEnabled);
   const [chordsFollowEnabled, setChordsFollowEnabled] = useState(defaultChordsFollowEnabled);
-  const [lyricsFollowPaused, setLyricsFollowPaused] = useState(false);
-  const [chordsFollowPaused, setChordsFollowPaused] = useState(false);
   const showSupportingCopy = informationDensity !== "minimal";
 
   const projectQuery = useQuery({
@@ -706,11 +706,6 @@ export function useProjectViewModel() {
     setSelectedArtifactId(artifact.id);
   }
 
-  function resumePlaybackFollow() {
-    setLyricsFollowPaused(false);
-    setChordsFollowPaused(false);
-  }
-
   function handleSelectWorkspace(workspace: "project" | "playback") {
     setActiveWorkspace(workspace);
   }
@@ -718,7 +713,6 @@ export function useProjectViewModel() {
   function handleSetPlaybackDisplayMode(displayMode: PlaybackDisplayMode) {
     setPlaybackDisplayMode(displayMode);
     setPlaybackDisplayModeSource("user");
-    resumePlaybackFollow();
   }
 
   function handleTogglePlaybackDisplayLane(lane: "lyrics" | "chords") {
@@ -757,37 +751,17 @@ export function useProjectViewModel() {
 
   function handleSetLyricsFollowEnabled(enabled: boolean) {
     setLyricsFollowEnabled(enabled);
-    setLyricsFollowPaused(false);
   }
 
   function handleSetChordsFollowEnabled(enabled: boolean) {
     setChordsFollowEnabled(enabled);
-    setChordsFollowPaused(false);
-  }
-
-  function pauseLyricsFollow() {
-    if (!lyricsFollowEnabled) {
-      return;
-    }
-    setLyricsFollowPaused(true);
-  }
-
-  function pauseChordsFollow() {
-    if (!chordsFollowEnabled) {
-      return;
-    }
-    setChordsFollowPaused(true);
   }
 
   async function handleTogglePlayback() {
-    if (!isPlaying) {
-      resumePlaybackFollow();
-    }
     await togglePlayback();
   }
 
   function handleSeekTo(timeSeconds: number) {
-    resumePlaybackFollow();
     seekTo(timeSeconds);
   }
 
@@ -797,7 +771,6 @@ export function useProjectViewModel() {
       ...current,
       [direction]: current[direction] + 1,
     }));
-    resumePlaybackFollow();
     seekBy(secondsDelta);
   }
 
@@ -1047,8 +1020,6 @@ export function useProjectViewModel() {
         ? storedPlaybackState.chordsFollowEnabled
         : defaultChordsFollowEnabled,
     );
-    setLyricsFollowPaused(false);
-    setChordsFollowPaused(false);
     setStemControls(storedPlaybackState.stemControls);
     setDismissedStemJobIds(storedPlaybackState.dismissedStemJobIds);
     setHydratedProjectId(projectId);
@@ -1200,7 +1171,7 @@ export function useProjectViewModel() {
       activeWorkspace !== "playback" ||
       playbackDisplayMode !== "chords" ||
       !chordsFollowEnabled ||
-      chordsFollowPaused ||
+      !isPlaying ||
       activeChordIndex < 0
     ) {
       return;
@@ -1244,7 +1215,6 @@ export function useProjectViewModel() {
     activeChordIndex,
     activeWorkspace,
     chordsFollowEnabled,
-    chordsFollowPaused,
     displayedChords,
     isPlaying,
     playbackDisplayMode,
@@ -1255,7 +1225,7 @@ export function useProjectViewModel() {
       activeWorkspace !== "playback" ||
       playbackDisplayMode !== "lyrics" ||
       !lyricsFollowEnabled ||
-      lyricsFollowPaused ||
+      !isPlaying ||
       isEditingLyrics ||
       activeLyricsIndex < 0
     ) {
@@ -1298,12 +1268,12 @@ export function useProjectViewModel() {
     lyricsContainer.scrollTop = targetScrollTop;
   }, [
     activeLyricsIndex,
+    activeLyricsWordIndex,
     activeWorkspace,
     displayedLyrics,
     isEditingLyrics,
     isPlaying,
     lyricsFollowEnabled,
-    lyricsFollowPaused,
     playbackDisplayMode,
   ]);
 
@@ -1312,7 +1282,7 @@ export function useProjectViewModel() {
       activeWorkspace !== "playback" ||
       playbackDisplayMode !== "combined" ||
       !lyricsFollowEnabled ||
-      lyricsFollowPaused ||
+      !isPlaying ||
       isEditingLyrics
     ) {
       return;
@@ -1355,17 +1325,20 @@ export function useProjectViewModel() {
     isEditingLyrics,
     isPlaying,
     lyricsFollowEnabled,
-    lyricsFollowPaused,
     playbackDisplayMode,
   ]);
 
   useEffect(() => {
-    if (!isPlaying) {
+    const wasPlaying = wasPlayingRef.current;
+    wasPlayingRef.current = isPlaying;
+    if (wasPlaying || !isPlaying || activeWorkspace !== "playback") {
       return;
     }
-    setLyricsFollowPaused(false);
-    setChordsFollowPaused(false);
-  }, [isPlaying]);
+    playbackTransportRef.current?.scrollIntoView?.({
+      behavior: "smooth",
+      block: "end",
+    });
+  }, [activeWorkspace, isPlaying]);
 
   const currentSourceSummary = selectedPrimaryArtifact
     ? artifactSummary(selectedPrimaryArtifact) ||
@@ -1499,11 +1472,10 @@ export function useProjectViewModel() {
     lyricsSaveMutation,
     lyricsSegmentRefs,
     lyricsTheaterRef,
-    pauseChordsFollow,
-    pauseLyricsFollow,
     nextChord,
     playbackDisplayMode,
     playbackDurationSeconds,
+    playbackTransportRef,
     playbackTimeSeconds,
     previewArtifacts,
     previewMutation,

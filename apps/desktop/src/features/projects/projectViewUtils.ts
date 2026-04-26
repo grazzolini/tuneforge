@@ -265,15 +265,35 @@ export function hasTimedLyrics(
   return typeof segment.start_seconds === "number" && typeof segment.end_seconds === "number";
 }
 
+const ACTIVE_LYRIC_BOUNDARY_EPSILON_SECONDS = 0.005;
+
 export function findActiveLyricsIndex(timeline: LyricsSegmentSchema[], playbackTimeSeconds: number) {
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const segment = timeline[index];
+    if (
+      segment &&
+      hasTimedLyrics(segment) &&
+      Math.abs(playbackTimeSeconds - segment.start_seconds) <= ACTIVE_LYRIC_BOUNDARY_EPSILON_SECONDS
+    ) {
+      return index;
+    }
+  }
+
   return timeline.findIndex((segment, index) => {
     if (!hasTimedLyrics(segment)) {
       return false;
     }
     const isLast = index === timeline.length - 1;
+    const nextTimedSegmentStart = timeline
+      .slice(index + 1)
+      .find((candidate) => typeof candidate.start_seconds === "number")?.start_seconds;
+    const effectiveEndSeconds =
+      !isLast && typeof nextTimedSegmentStart === "number"
+        ? Math.min(segment.end_seconds, nextTimedSegmentStart)
+        : segment.end_seconds;
     return (
       playbackTimeSeconds >= segment.start_seconds &&
-      (playbackTimeSeconds < segment.end_seconds || isLast)
+      (playbackTimeSeconds < effectiveEndSeconds || isLast)
     );
   });
 }

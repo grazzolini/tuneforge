@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import type { CSSProperties, KeyboardEvent } from "react";
 import { MusicalChordLabel } from "../../../components/MusicalLabel";
 import type { LeadSheetChord, LeadSheetLyricsRow, LeadSheetRow } from "../projectViewUtils";
 import {
@@ -18,6 +18,25 @@ export function PlaybackPracticeSurface() {
       {playbackDisplayMode === "combined" ? <CombinedLeadSheetPanel /> : null}
     </main>
   );
+}
+
+function usePracticeTargetSpacePlayback() {
+  const { handleSeekTo, isPlaying, togglePlayback } = useProjectViewModelContext();
+
+  return function handlePracticeTargetSpacePlayback(
+    event: KeyboardEvent<HTMLElement>,
+    timeSeconds: number,
+  ) {
+    if (event.code !== "Space" && event.key !== " ") {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    handleSeekTo(timeSeconds);
+    if (!isPlaying) {
+      void togglePlayback();
+    }
+  };
 }
 
 function PlaybackModeHeader() {
@@ -123,7 +142,6 @@ function LyricsPracticePanel() {
     activeLyricsIndex,
     activeLyricsWordIndex,
     displayedLyrics,
-    handleSeekTo,
     hasLyricsTranscript,
     hasTimedLyricsTranscript,
     isEditingLyrics,
@@ -131,7 +149,6 @@ function LyricsPracticePanel() {
     lyricsSaveMutation,
     lyricsSegmentRefs,
     lyricsTheaterRef,
-    pauseLyricsFollow,
     showSupportingCopy,
   } = useProjectViewModelContext();
 
@@ -143,75 +160,34 @@ function LyricsPracticePanel() {
     <div className="playback-practice-body">
       {hasLyricsTranscript ? (
         <div
-          className="lyrics-theater lyrics-theater--practice"
+          className="lead-sheet lead-sheet--lyrics-only"
           role="group"
           aria-label="Lyrics transcript"
           ref={lyricsTheaterRef}
-          onPointerDownCapture={pauseLyricsFollow}
-          onTouchMove={pauseLyricsFollow}
-          onWheel={pauseLyricsFollow}
         >
-          <div aria-hidden="true" className="lyrics-theater__edge" />
+          <div aria-hidden="true" className="lead-sheet__edge" />
           {displayedLyrics.map((segment, index) => {
-            const isActive = index === activeLyricsIndex;
-            const referenceIndex = activeLyricsIndex >= 0 ? activeLyricsIndex : -999;
-            const distance = Math.abs(index - referenceIndex);
             const segmentKey = `${segment.start_seconds}-${segment.end_seconds}-${index}`;
-            const canSeek = hasTimedLyrics(segment);
-            const content =
-              isActive && (segment.words?.length ?? 0) > 0 ? (
-                <span className="lyrics-segment__words">
-                  {(segment.words ?? []).map((word, wordIndex) => (
-                    <span
-                      key={`${segmentKey}-${wordIndex}-${word.start_seconds}`}
-                      className={`lyrics-word${
-                        wordIndex === activeLyricsWordIndex ? " lyrics-word--active" : ""
-                      }`}
-                    >
-                      {word.text}
-                    </span>
-                  ))}
-                </span>
-              ) : (
-                <span className="lyrics-segment__text">{segment.text}</span>
-              );
-            const distanceClass =
-              distance === 0
-                ? " lyrics-theater__segment--active"
-                : distance === 1
-                  ? " lyrics-theater__segment--near"
-                  : distance === 2
-                    ? " lyrics-theater__segment--far"
-                    : " lyrics-theater__segment--distant";
-
-            if (canSeek) {
-              return (
-                <button
-                  key={segmentKey}
-                  className={`lyrics-segment lyrics-theater__segment${distanceClass}`}
-                  type="button"
-                  ref={(element) => {
-                    lyricsSegmentRefs.current[segmentKey] = element;
-                  }}
-                  onClick={() => handleSeekTo(segment.start_seconds ?? 0)}
-                >
-                  <small>{formatPlaybackClock(segment.start_seconds ?? 0)}</small>
-                  {content}
-                </button>
-              );
-            }
-
+            const row: LeadSheetLyricsRow = {
+              activeWordIndex: index === activeLyricsIndex ? activeLyricsWordIndex : -1,
+              chords: [],
+              id: `lyrics-only-${segmentKey}`,
+              isActive: index === activeLyricsIndex,
+              lyricIndex: index,
+              segment,
+              type: "lyrics",
+            };
             return (
-              <div
+              <LeadSheetLyricsRowView
                 key={segmentKey}
-                className={`lyrics-segment lyrics-segment--static lyrics-theater__segment${distanceClass}`}
-              >
-                <small>Static</small>
-                {content}
-              </div>
+                row={row}
+                setRowRef={(element) => {
+                  lyricsSegmentRefs.current[segmentKey] = element;
+                }}
+              />
             );
           })}
-          <div aria-hidden="true" className="lyrics-theater__edge" />
+          <div aria-hidden="true" className="lead-sheet__edge" />
         </div>
       ) : (
         <EmptyPracticeState copy="Generate a lyrics pass to keep transcription and playback together while you practice." />
@@ -224,7 +200,7 @@ function LyricsPracticePanel() {
       ) : null}
       {hasTimedLyricsTranscript && showSupportingCopy ? (
         <div className="chord-context">
-          <span className="artifact-meta">Scroll inside lyrics to pause follow. Seek or play resumes it.</span>
+          <span className="artifact-meta">Follow keeps the active lyric in view while playback moves.</span>
         </div>
       ) : null}
       {lyricsSaveMutation.error ? (
@@ -312,9 +288,9 @@ function ChordsPracticePanel() {
     handleSeekTo,
     hasChordTimeline,
     nextChord,
-    pauseChordsFollow,
     showSupportingCopy,
   } = useProjectViewModelContext();
+  const handlePracticeTargetSpacePlayback = usePracticeTargetSpacePlayback();
 
   return (
     <div className="playback-practice-body playback-practice-body--chords">
@@ -369,8 +345,6 @@ function ChordsPracticePanel() {
           role="group"
           aria-label="Chord timeline"
           ref={chordTimelineRef}
-          onPointerDownCapture={pauseChordsFollow}
-          onWheel={pauseChordsFollow}
         >
           <div aria-hidden="true" className="chord-timeline__edge" />
           {displayedChords.map((segment, index) => {
@@ -389,6 +363,9 @@ function ChordsPracticePanel() {
                   ] = element;
                 }}
                 onClick={() => handleSeekTo(segment.start_seconds)}
+                onKeyDown={(event) =>
+                  handlePracticeTargetSpacePlayback(event, segment.start_seconds)
+                }
               >
                 <span>
                   <MusicalChordLabel
@@ -412,7 +389,7 @@ function ChordsPracticePanel() {
       )}
       {hasChordTimeline && showSupportingCopy ? (
         <div className="chord-context">
-          <span className="artifact-meta">Scroll inside chords to pause follow. Seek or play resumes it.</span>
+          <span className="artifact-meta">Follow keeps the active chord in view while playback moves.</span>
         </div>
       ) : null}
       {chordJob?.error_message ? <p className="inline-error">{chordJob.error_message}</p> : null}
@@ -432,7 +409,6 @@ function CombinedLeadSheetPanel() {
     isEditingLyrics,
     lyricsJob,
     lyricsSaveMutation,
-    pauseLyricsFollow,
     showSupportingCopy,
   } = useProjectViewModelContext();
 
@@ -448,9 +424,6 @@ function CombinedLeadSheetPanel() {
           role="group"
           aria-label="Lyrics and chords lead sheet"
           ref={combinedLeadSheetRef}
-          onPointerDownCapture={pauseLyricsFollow}
-          onTouchMove={pauseLyricsFollow}
-          onWheel={pauseLyricsFollow}
         >
           <div aria-hidden="true" className="lead-sheet__edge" />
           {combinedLeadSheetRows.map((row) => (
@@ -531,6 +504,7 @@ function LeadSheetLyricsRowView({
   setRowRef: (element: HTMLElement | null) => void;
 }) {
   const { handleSeekTo } = useProjectViewModelContext();
+  const handlePracticeTargetSpacePlayback = usePracticeTargetSpacePlayback();
   const canSeek = hasTimedLyrics(row.segment);
   const wordAnchoredChords = row.chords.filter((chord) => chord.anchor.type === "word");
   const percentAnchoredChords = row.chords.filter((chord) => chord.anchor.type === "percent");
@@ -554,10 +528,12 @@ function LeadSheetLyricsRowView({
       onKeyDown={
         canSeek
           ? (event) => {
-              if (event.key === "Enter" || event.key === " ") {
+              if (event.key === "Enter") {
                 event.preventDefault();
                 handleSeekTo(row.segment.start_seconds ?? 0);
+                return;
               }
+              handlePracticeTargetSpacePlayback(event, row.segment.start_seconds ?? 0);
             }
           : undefined
       }
@@ -600,6 +576,7 @@ function LeadSheetChordButton({ chord }: { chord: LeadSheetChord }) {
     enharmonicDisplayMode,
     handleSeekTo,
   } = useProjectViewModelContext();
+  const handlePracticeTargetSpacePlayback = usePracticeTargetSpacePlayback();
   const style =
     chord.anchor.type === "percent"
       ? ({ "--lead-sheet-chord-left": `${chord.anchor.percent}%` } as CSSProperties)
@@ -614,6 +591,9 @@ function LeadSheetChordButton({ chord }: { chord: LeadSheetChord }) {
         event.stopPropagation();
         handleSeekTo(chord.segment.start_seconds);
       }}
+      onKeyDown={(event) =>
+        handlePracticeTargetSpacePlayback(event, chord.segment.start_seconds)
+      }
     >
       <MusicalChordLabel
         activeKey={activeEnharmonicKeyContext}

@@ -1,10 +1,12 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   resetAppTestHarness,
+  findAudioByArtifactId,
   getAllByAriaKeyLabel,
   getByAriaKeyLabel,
+  markAudioReady,
   mockAnalyzeProject,
   mockConfirm,
   mockCreateChords,
@@ -28,15 +30,31 @@ describe("Desktop app project analysis mix", () => {
   }
 
   async function switchToLyricsOnly(user: ReturnType<typeof userEvent.setup>) {
+    const lyricsToggle = screen.getByRole("button", { name: "Lyrics" });
     const chordsToggle = screen.getByRole("button", { name: "Chords" });
-    if (chordsToggle.getAttribute("aria-pressed") === "true") {
+    const lyricsPressed = lyricsToggle.getAttribute("aria-pressed") === "true";
+    const chordsPressed = chordsToggle.getAttribute("aria-pressed") === "true";
+    if (!lyricsPressed && chordsPressed) {
+      await user.click(lyricsToggle);
+      await user.click(chordsToggle);
+      return;
+    }
+    if (lyricsPressed && chordsPressed) {
       await user.click(chordsToggle);
     }
   }
 
   async function switchToChordsOnly(user: ReturnType<typeof userEvent.setup>) {
     const lyricsToggle = screen.getByRole("button", { name: "Lyrics" });
-    if (lyricsToggle.getAttribute("aria-pressed") === "true") {
+    const chordsToggle = screen.getByRole("button", { name: "Chords" });
+    const lyricsPressed = lyricsToggle.getAttribute("aria-pressed") === "true";
+    const chordsPressed = chordsToggle.getAttribute("aria-pressed") === "true";
+    if (lyricsPressed && !chordsPressed) {
+      await user.click(chordsToggle);
+      await user.click(lyricsToggle);
+      return;
+    }
+    if (lyricsPressed && chordsPressed) {
       await user.click(lyricsToggle);
     }
   }
@@ -46,6 +64,36 @@ describe("Desktop app project analysis mix", () => {
     if (showInspectorButton) {
       await user.click(showInspectorButton);
     }
+  }
+
+  function installScrollMock(element: HTMLElement, axis: "vertical" | "horizontal" = "vertical") {
+    const scrollTo = vi.fn();
+    Object.defineProperty(element, "scrollTo", {
+      configurable: true,
+      value: scrollTo,
+    });
+    if (axis === "vertical") {
+      Object.defineProperty(element, "clientHeight", {
+        configurable: true,
+        value: 100,
+      });
+      Object.defineProperty(element, "scrollHeight", {
+        configurable: true,
+        value: 500,
+      });
+      element.scrollTop = 200;
+    } else {
+      Object.defineProperty(element, "clientWidth", {
+        configurable: true,
+        value: 100,
+      });
+      Object.defineProperty(element, "scrollWidth", {
+        configurable: true,
+        value: 500,
+      });
+      element.scrollLeft = 200;
+    }
+    return scrollTo;
   }
 
   it("analyzes track from processing panel", async () => {
@@ -198,7 +246,9 @@ describe("Desktop app project analysis mix", () => {
     await switchToLyricsOnly(user);
     const lyricsTranscript = screen.getByRole("group", { name: "Lyrics transcript" });
     const activeLyric = within(lyricsTranscript).getByRole("button", { name: /0:00/i });
-    expect(activeLyric.className).toContain("lyrics-theater__segment--active");
+    expect(lyricsTranscript.className).toContain("lead-sheet");
+    expect(activeLyric.className).toContain("lead-sheet__row--lyrics");
+    expect(activeLyric.className).toContain("lead-sheet__row--active");
 
     await user.click(screen.getByRole("button", { name: "Edit Lyrics" }));
     const firstTextarea = screen.getByLabelText("Lyric segment 1");
@@ -213,6 +263,151 @@ describe("Desktop app project analysis mix", () => {
       ],
     });
     expect(await screen.findByText("Edited lyric line")).toBeInTheDocument();
+  });
+
+  it("hard follows lyrics during playback after manual scroll", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    await openPlaybackWorkspace(user);
+    await switchToLyricsOnly(user);
+
+    const lyricsTranscript = screen.getByRole("group", { name: "Lyrics transcript" });
+    const scrollTo = installScrollMock(lyricsTranscript);
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument(),
+    );
+    scrollTo.mockClear();
+
+    fireEvent.wheel(lyricsTranscript, { deltaY: 320 });
+    await user.click(within(lyricsTranscript).getByRole("button", { name: /0:08/i }));
+
+    await waitFor(() => expect(scrollTo).toHaveBeenCalled());
+    expect(within(lyricsTranscript).getByRole("button", { name: /0:08/i }).className).toContain(
+      "lead-sheet__row--active",
+    );
+  });
+
+  it("lets users browse follow views while playback is stopped", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+
+    const leadSheet = screen.getByRole("group", { name: "Lyrics and chords lead sheet" });
+    const leadSheetScrollTo = installScrollMock(leadSheet);
+    const secondLeadSheetRow = Array.from(
+      leadSheet.querySelectorAll<HTMLElement>(".lead-sheet__row--lyrics"),
+    ).find((row) => row.textContent?.includes("Second") && row.textContent.includes("steady"));
+    expect(secondLeadSheetRow).not.toBeNull();
+    fireEvent.wheel(leadSheet, { deltaY: 320 });
+    await user.click(secondLeadSheetRow as HTMLElement);
+    await waitFor(() =>
+      expect((secondLeadSheetRow as HTMLElement).className).toContain("lead-sheet__row--active"),
+    );
+    expect(leadSheetScrollTo).not.toHaveBeenCalled();
+
+    await switchToLyricsOnly(user);
+    const lyricsTranscript = screen.getByRole("group", { name: "Lyrics transcript" });
+    const lyricsScrollTo = installScrollMock(lyricsTranscript);
+    const firstLyric = within(lyricsTranscript).getByRole("button", { name: /0:00/i });
+    fireEvent.wheel(lyricsTranscript, { deltaY: -320 });
+    await user.click(firstLyric);
+    await waitFor(() =>
+      expect(firstLyric.className).toContain("lead-sheet__row--active"),
+    );
+    expect(lyricsScrollTo).not.toHaveBeenCalled();
+
+    await switchToChordsOnly(user);
+    const chordTimeline = screen.getByRole("group", { name: "Chord timeline" });
+    const chordScrollTo = installScrollMock(chordTimeline, "horizontal");
+    const secondChord = within(chordTimeline).getByRole("button", { name: /D\s*0:16/ });
+    fireEvent.wheel(chordTimeline, { deltaX: 320 });
+    await user.click(secondChord);
+    await waitFor(() => expect(secondChord).toHaveAttribute("aria-pressed", "true"));
+    expect(chordScrollTo).not.toHaveBeenCalled();
+  });
+
+  it("keeps lyric highlights current when lyrics follow is off", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    await switchToLyricsOnly(user);
+    await user.click(screen.getByRole("button", { name: "Lyrics Follow" }));
+
+    const lyricsTranscript = screen.getByRole("group", { name: "Lyrics transcript" });
+    const scrollTo = installScrollMock(lyricsTranscript);
+    const secondLyric = within(lyricsTranscript).getByRole("button", { name: /0:08/i });
+
+    fireEvent.wheel(lyricsTranscript, { deltaY: 320 });
+    await user.click(secondLyric);
+
+    await waitFor(() =>
+      expect(secondLyric.className).toContain("lead-sheet__row--active"),
+    );
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it("activates clicked lyric rows when transcript segment timings overlap", async () => {
+    const user = userEvent.setup();
+    const segments = [
+      {
+        start_seconds: 0,
+        end_seconds: 12,
+        text: "First overlapping phrase",
+        words: [],
+      },
+      {
+        start_seconds: 8,
+        end_seconds: 16,
+        text: "Second overlapping phrase",
+        words: [],
+      },
+    ];
+    setProjectLyrics("proj_123", {
+      project_id: "proj_123",
+      backend: "openai-whisper",
+      source_artifact_id: "art_source",
+      source_kind: "ai",
+      source_segments: segments,
+      segments,
+      has_user_edits: false,
+      created_at: "2026-04-18T13:16:00.000Z",
+      updated_at: "2026-04-18T13:16:00.000Z",
+    });
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+
+    const leadSheet = screen.getByRole("group", { name: "Lyrics and chords lead sheet" });
+    const combinedSecond = within(leadSheet).getByRole("button", {
+      name: /Second overlapping phrase/i,
+    });
+    await user.click(combinedSecond);
+    await waitFor(() => expect(combinedSecond.className).toContain("lead-sheet__row--active"));
+
+    await switchToLyricsOnly(user);
+    const lyricsTranscript = screen.getByRole("group", { name: "Lyrics transcript" });
+    const lyricsFirst = within(lyricsTranscript).getByRole("button", {
+      name: /First overlapping phrase/i,
+    });
+    const lyricsSecond = within(lyricsTranscript).getByRole("button", {
+      name: /Second overlapping phrase/i,
+    });
+    await user.click(lyricsFirst);
+    await waitFor(() => expect(lyricsFirst.className).toContain("lead-sheet__row--active"));
+
+    await user.click(lyricsSecond);
+    await waitFor(() => expect(lyricsSecond.className).toContain("lead-sheet__row--active"));
   });
 
   it("renders a combined lead sheet with lyric chords and instrumental rows", async () => {
@@ -238,6 +433,60 @@ describe("Desktop app project analysis mix", () => {
     expect(getByAriaKeyLabel(leadSheet, "G")).toBeInTheDocument();
     expect(within(leadSheet).getByText("Instrumental")).toBeInTheDocument();
     expect(getByAriaKeyLabel(leadSheet, "D")).toBeInTheDocument();
+  });
+
+  it("hard follows combined lead sheet during playback after manual scroll", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    await openPlaybackWorkspace(user);
+
+    const leadSheet = screen.getByRole("group", { name: "Lyrics and chords lead sheet" });
+    const scrollTo = installScrollMock(leadSheet);
+    const secondLyricRow = Array.from(
+      leadSheet.querySelectorAll<HTMLElement>(".lead-sheet__row--lyrics"),
+    ).find((row) => row.textContent?.includes("Second") && row.textContent.includes("steady"));
+    expect(secondLyricRow).not.toBeNull();
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument(),
+    );
+    scrollTo.mockClear();
+
+    fireEvent.wheel(leadSheet, { deltaY: 320 });
+    await user.click(secondLyricRow as HTMLElement);
+
+    await waitFor(() => expect(scrollTo).toHaveBeenCalled());
+    expect((secondLyricRow as HTMLElement).className).toContain("lead-sheet__row--active");
+  });
+
+  it("hard follows chords during playback after manual timeline scroll", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    await openPlaybackWorkspace(user);
+    await switchToChordsOnly(user);
+
+    const chordTimeline = screen.getByRole("group", { name: "Chord timeline" });
+    const scrollTo = installScrollMock(chordTimeline, "horizontal");
+    const secondChord = within(chordTimeline).getByRole("button", { name: /D\s*0:16/ });
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument(),
+    );
+    scrollTo.mockClear();
+
+    fireEvent.wheel(chordTimeline, { deltaX: 320 });
+    await user.click(secondChord);
+
+    await waitFor(() => expect(scrollTo).toHaveBeenCalled());
+    expect(secondChord).toHaveAttribute("aria-pressed", "true");
   });
 
   it("refreshes edited lyrics with confirmation", async () => {
@@ -594,6 +843,60 @@ describe("Desktop app project analysis mix", () => {
     expect(await screen.findByRole("button", { name: "Lyrics Follow" })).toHaveAttribute("aria-pressed", "false");
     await switchToChordsOnly(user);
     expect(screen.getByRole("button", { name: "Chords Follow" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("scrolls the page to transport when playback starts from the playback workspace", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    await switchToLyricsOnly(user);
+
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    const scrollIntoView = vi.mocked(window.HTMLElement.prototype.scrollIntoView);
+    scrollIntoView.mockClear();
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    await waitFor(() =>
+      expect(scrollIntoView).toHaveBeenCalledWith({
+        behavior: "smooth",
+        block: "end",
+      }),
+    );
+  });
+
+  it("plays from the focused lyric when space starts playback", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    await openPlaybackWorkspace(user);
+    await switchToLyricsOnly(user);
+
+    const lyricsTranscript = screen.getByRole("group", { name: "Lyrics transcript" });
+    const secondLyric = within(lyricsTranscript).getByRole("button", { name: /0:08/i });
+    await user.click(secondLyric);
+
+    expect(sourceAudio.currentTime).toBeCloseTo(8, 3);
+    expect(secondLyric).toHaveFocus();
+    fireEvent.keyDown(secondLyric, { code: "Space", key: " " });
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument(),
+    );
+    expect(sourceAudio.currentTime).toBeCloseTo(8, 3);
+
+    sourceAudio.currentTime = 12.5;
+    fireEvent.timeUpdate(sourceAudio);
+    fireEvent.keyDown(secondLyric, { code: "Space", key: " " });
+
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+    expect(sourceAudio.currentTime).toBeCloseTo(8, 3);
   });
 
   it("does not duplicate the detected key inside the project source key selector", async () => {

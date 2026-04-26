@@ -520,12 +520,12 @@
   max-height: 33rem;
   min-height: 33rem;
   overflow-y: auto;
-  padding: 0.4rem 0.35rem 0.4rem 0;
+  padding: 0.5rem 0.65rem;
   scrollbar-gutter: stable;
 }
 
 .lyrics-theater__edge {
-  flex: 0 0 clamp(7rem, 18vh, 10rem);
+  flex: 0 0 clamp(1rem, 4vh, 2.5rem);
 }
 
 .lyrics-segment {
@@ -683,8 +683,7 @@
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
-  position: sticky;
-  top: 1rem;
+  position: static;
 }
 
 .playback-practice-rail__header {
@@ -787,7 +786,7 @@
 }
 
 .playback-practice-body--chords {
-  justify-content: center;
+  justify-content: flex-start;
 }
 
 .lyrics-theater--practice {
@@ -796,7 +795,7 @@
 }
 
 .chord-preview-grid--hero {
-  margin: auto 0 1rem;
+  margin: 0 0 1rem;
 }
 
 .chord-preview-grid--hero .chord-card {
@@ -819,12 +818,12 @@
   min-height: min(42rem, calc(100vh - 20rem));
   max-height: min(42rem, calc(100vh - 20rem));
   overflow-y: auto;
-  padding: 0.45rem 0.45rem 0.45rem 0;
+  padding: 0.5rem 0.65rem;
   scrollbar-gutter: stable;
 }
 
 .lead-sheet__edge {
-  flex: 0 0 clamp(7rem, 18vh, 10rem);
+  flex: 0 0 clamp(1rem, 4vh, 2.5rem);
 }
 
 .lead-sheet__row {

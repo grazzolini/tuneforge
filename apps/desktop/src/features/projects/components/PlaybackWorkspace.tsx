@@ -9,6 +9,7 @@ export function PlaybackWorkspace() {
     handleSeekTo,
     isPlaying,
     playbackDurationSeconds,
+    playbackTransportRef,
     playbackTimeSeconds,
     projectQuery,
     seekAnimationRevision,
@@ -21,7 +22,7 @@ export function PlaybackWorkspace() {
     <div className="playback-workspace playback-workspace--practice">
       <PlaybackPracticeRail />
       <PlaybackPracticeSurface />
-      <div className="panel playback-transport-dock">
+      <div className="panel playback-transport-dock" ref={playbackTransportRef}>
         <PlaybackTransport
           compact
           isPlaying={isPlaying}

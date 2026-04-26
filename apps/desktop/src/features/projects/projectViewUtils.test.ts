@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { ChordSegmentSchema, JobSchema, LyricsSegmentSchema } from "../../lib/api";
-import { buildLeadSheetRows, formatJobStatusSummary, transposeChordSegment } from "./projectViewUtils";
+import {
+  buildLeadSheetRows,
+  findActiveLyricsIndex,
+  formatJobStatusSummary,
+  transposeChordSegment,
+} from "./projectViewUtils";
 
 function chord(startSeconds: number, endSeconds: number, label: string): ChordSegmentSchema {
   return {
@@ -93,6 +98,50 @@ describe("buildLeadSheetRows", () => {
 
     expect(rows.map((row) => row.type)).toEqual(["chords", "lyrics", "chords"]);
     expect(rows[2]?.isActive).toBe(true);
+  });
+});
+
+describe("findActiveLyricsIndex", () => {
+  it("prefers the next phrase once overlapping lyric segments start", () => {
+    const lyrics: LyricsSegmentSchema[] = [
+      {
+        end_seconds: 12,
+        start_seconds: 0,
+        text: "First overlapping phrase",
+        words: [],
+      },
+      {
+        end_seconds: 16,
+        start_seconds: 8,
+        text: "Second overlapping phrase",
+        words: [],
+      },
+    ];
+
+    expect(findActiveLyricsIndex(lyrics, 7.99)).toBe(0);
+    expect(findActiveLyricsIndex(lyrics, 7.9995)).toBe(1);
+    expect(findActiveLyricsIndex(lyrics, 8)).toBe(1);
+  });
+
+  it("keeps lyric gaps inactive outside seek precision tolerance", () => {
+    const lyrics: LyricsSegmentSchema[] = [
+      {
+        end_seconds: 4,
+        start_seconds: 0,
+        text: "Before the gap",
+        words: [],
+      },
+      {
+        end_seconds: 12,
+        start_seconds: 8,
+        text: "After the gap",
+        words: [],
+      },
+    ];
+
+    expect(findActiveLyricsIndex(lyrics, 5)).toBe(-1);
+    expect(findActiveLyricsIndex(lyrics, 7.99)).toBe(-1);
+    expect(findActiveLyricsIndex(lyrics, 7.9995)).toBe(1);
   });
 });
 

@@ -71,6 +71,7 @@ export function MusicalKeyLabel({
 
 export function MusicalChordLabel({
   activeKey,
+  bassPitchClass,
   fallbackLabel,
   mode,
   pitchClass,
@@ -78,6 +79,7 @@ export function MusicalChordLabel({
   variant,
 }: {
   activeKey?: MusicalKey | null;
+  bassPitchClass?: number | null;
   fallbackLabel: string;
   mode: EnharmonicDisplayMode;
   pitchClass?: number | null;
@@ -87,7 +89,7 @@ export function MusicalChordLabel({
   const isSupportedChord = typeof pitchClass === "number" && isSupportedChordQuality(quality);
   const options: PitchFormatOptions = { activeKey: activeKey ?? null, mode };
   const label = isSupportedChord
-    ? formatChordDisplay(pitchClass, quality, options)
+    ? formatChordDisplay(pitchClass, quality, options, bassPitchClass)
     : formatRawMusicalLabel(fallbackLabel);
 
   return <RenderMusicalLabel label={label} variant={variant} />;

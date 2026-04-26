@@ -125,13 +125,17 @@ class AnalysisResponse(BaseModel):
 
 class ChordRequest(BaseModel):
     backend: str = "default"
+    backend_fallback_from: str | None = None
     force: bool = False
     overwrite_user_edits: bool = False
 
     @model_validator(mode="after")
     def validate_backend(self) -> ChordRequest:
-        if self.backend != "default":
-            raise ValueError("Only the default chord backend is supported in v1.")
+        supported = {"default", "fast", "tuneforge-fast", "librosa", "advanced", "crema", "crema-advanced"}
+        if self.backend not in supported or (
+            self.backend_fallback_from is not None and self.backend_fallback_from not in supported
+        ):
+            raise ValueError("Unsupported chord backend.")
         return self
 
 
@@ -139,9 +143,14 @@ class ChordSegmentSchema(BaseModel):
     start_seconds: float
     end_seconds: float
     label: str
+    display_label: str | None = None
+    raw_label: str | None = None
     confidence: float | None = None
     pitch_class: int | None = None
+    root_pitch_class: int | None = None
     quality: str | None = None
+    bass_pitch_class: int | None = None
+    bass_degree: str | None = None
 
 
 class ChordResponse(BaseModel):
@@ -156,8 +165,40 @@ class ChordResponse(BaseModel):
     backend: str | None = None
     source_artifact_id: str | None = None
     has_user_edits: bool = False
+    source_kind: str = "generated"
+    metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="metadata_json")
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+
+class ChordBackendCapabilitiesSchema(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    supports_sevenths: bool = Field(alias="supportsSevenths")
+    supports_inversions: bool = Field(alias="supportsInversions")
+    supports_confidence: bool = Field(alias="supportsConfidence")
+    supports_no_chord: bool = Field(alias="supportsNoChord")
+    estimated_speed: str = Field(alias="estimatedSpeed")
+    desktop_only: bool = Field(alias="desktopOnly")
+    experimental: bool
+
+
+class ChordBackendSchema(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    label: str
+    description: str
+    availability: str
+    available: bool
+    unavailable_reason: str | None = None
+    capabilities: ChordBackendCapabilitiesSchema
+    experimental: bool
+    desktop_only: bool = Field(alias="desktopOnly")
+
+
+class ChordBackendsResponse(BaseModel):
+    backends: list[ChordBackendSchema]
 
 
 class LyricsGenerateRequest(BaseModel):
@@ -215,6 +256,8 @@ class JobSchema(BaseModel):
     status: str
     progress: int
     source_artifact_id: str | None = None
+    chord_backend: str | None = None
+    chord_backend_fallback_from: str | None = None
     chord_source: str | None = None
     error_message: str | None
     runtime_device: str | None = None
@@ -306,6 +349,8 @@ class StemRequest(BaseModel):
     output_format: str = "wav"
     force: bool = False
     source_artifact_id: str | None = None
+    chord_backend: str = "default"
+    chord_backend_fallback_from: str | None = None
     overwrite_chord_edits: bool = False
 
     @model_validator(mode="after")
@@ -314,6 +359,11 @@ class StemRequest(BaseModel):
             raise ValueError("Only two_stem mode is supported in v1.")
         if self.output_format != "wav":
             raise ValueError("Stem output must be wav in v1.")
+        supported = {"default", "fast", "tuneforge-fast", "librosa", "advanced", "crema", "crema-advanced"}
+        if self.chord_backend not in supported or (
+            self.chord_backend_fallback_from is not None and self.chord_backend_fallback_from not in supported
+        ):
+            raise ValueError("Unsupported chord backend.")
         return self
 
 

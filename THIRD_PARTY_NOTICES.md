@@ -26,6 +26,12 @@ Tuneforge is distributed under the [MIT License](./LICENSE). It depends on third
 - **License:** ISC
 - **Source:** <https://github.com/librosa/librosa>
 
+### crema (optional Advanced Chords backend)
+
+- **License:** PyPI metadata lists ISC; upstream `LICENSE.md` currently contains BSD-2-Clause terms.
+- **Source:** <https://github.com/bmcfee/crema>
+- **Notes:** Optional desktop-only experimental chord-recognition backend. It is not installed by default, not required for normal app startup, and not part of the mobile build path. Primary transitive licenses checked for the optional stack include TensorFlow (Apache-2.0), Keras (Apache-2.0), and JAMS (ISC); review the full resolved dependency tree before bundling this optional backend into a packaged desktop app.
+
 ### FastAPI, Pydantic, SQLAlchemy, Alembic, Uvicorn, soundfile
 
 - See each project's own license. All are permissively licensed (MIT / BSD / Apache-2.0 family).

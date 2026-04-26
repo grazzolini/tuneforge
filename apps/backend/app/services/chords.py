@@ -7,33 +7,55 @@ from typing import Any, cast
 
 from sqlalchemy.orm import Session
 
-from app.engines.chords import detect_chord_timeline
+from app.errors import AppError
 from app.models import Artifact, ChordTimeline, Project, utcnow
+from app.services.chord_backends import (
+    ChordDetectionResult,
+    chord_backend_uses_source_instrumental_stem,
+    detect_with_chord_backend,
+    resolve_chord_backend,
+    resolve_chord_backend_id,
+)
 from app.services.paths import project_analysis_dir
-
-CHORD_DETECTION_ENGINE = "librosa"
 
 
 def detect_project_chords(
     session: Session,
     project: Project,
     *,
+    backend: str = "default",
+    backend_fallback_from: str | None = None,
     force: bool = False,
     overwrite_user_edits: bool = False,
 ) -> ChordTimeline:
+    selected_backend = resolve_chord_backend(backend, require_available=True)
+    selected_backend_id = selected_backend.id
     existing = session.get(ChordTimeline, project.id)
-    if existing is not None and existing.segments_json and not force:
-        return existing
     if existing is not None and existing.has_user_edits and not overwrite_user_edits:
+        existing.source_kind = "user-edited"
+        return existing
+    if (
+        existing is not None
+        and existing.segments_json
+        and not force
+        and not overwrite_user_edits
+        and _same_backend(existing.backend, selected_backend_id)
+    ):
         return existing
 
     source_artifact = _source_audio_artifact(project)
     source_path = Path(source_artifact.path) if source_artifact is not None else Path(project.imported_path)
-    source_timeline = cast(list[dict[str, Any]], detect_chord_timeline(source_path))
-    augmented_timeline = _augment_with_source_instrumental_stem(
-        project,
-        source_artifact=source_artifact,
-        source_timeline=source_timeline,
+    source_result = _detect_timeline(source_path, selected_backend_id)
+    source_timeline = source_result.segments
+    augmented_timeline = (
+        _augment_with_source_instrumental_stem(
+            project,
+            backend_id=selected_backend_id,
+            source_artifact=source_artifact,
+            source_timeline=source_timeline,
+        )
+        if chord_backend_uses_source_instrumental_stem(selected_backend_id)
+        else source_timeline
     )
     updated_at = utcnow()
 
@@ -41,12 +63,20 @@ def detect_project_chords(
         existing = ChordTimeline(project_id=project.id, created_at=updated_at)
         session.add(existing)
 
-    existing.backend = CHORD_DETECTION_ENGINE
+    existing.backend = selected_backend_id
     existing.source_artifact_id = source_artifact.id if isinstance(source_artifact, Artifact) else None
     existing.source_segments_json = cast(list[dict[str, Any]], deepcopy(source_timeline))
     existing.segments_json = cast(list[dict[str, Any]], deepcopy(augmented_timeline))
     existing.timeline_json = cast(list[dict[str, Any]], deepcopy(augmented_timeline))
     existing.has_user_edits = False
+    existing.source_kind = "generated"
+    existing.metadata_json = {
+        "backend_id": selected_backend_id,
+        "backend_label": selected_backend.label,
+        "backend_capabilities": selected_backend.capabilities.__dict__,
+        "backend_fallback_from": backend_fallback_from,
+        "detection": source_result.metadata,
+    }
     existing.updated_at = updated_at
     session.flush()
     session.refresh(existing)
@@ -61,6 +91,8 @@ def detect_project_chords(
                 "source_segments": existing.source_segments_json,
                 "timeline": existing.segments_json,
                 "has_user_edits": existing.has_user_edits,
+                "source_kind": existing.source_kind,
+                "metadata": existing.metadata_json,
                 "created_at": existing.created_at.isoformat(),
                 "updated_at": existing.updated_at.isoformat() if existing.updated_at else None,
             },
@@ -76,7 +108,9 @@ def _source_audio_artifact(project: Project) -> Artifact | None:
     return next((artifact for artifact in project.artifacts if artifact.type == "source_audio"), None)
 
 
-def project_chord_detection_source(project: Project) -> str:
+def project_chord_detection_source(project: Project, backend: str = "default") -> str:
+    if not chord_backend_uses_source_instrumental_stem(backend):
+        return "source"
     source_artifact = _source_audio_artifact(project)
     return "source+stem" if _source_instrumental_stem(project, source_artifact) is not None else "source"
 
@@ -99,6 +133,7 @@ def _source_instrumental_stem(project: Project, source_artifact: Artifact | None
 def _augment_with_source_instrumental_stem(
     project: Project,
     *,
+    backend_id: str,
     source_artifact: Artifact | None,
     source_timeline: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -106,7 +141,7 @@ def _augment_with_source_instrumental_stem(
     if instrumental_stem is None or not source_timeline:
         return source_timeline
 
-    stem_timeline = cast(list[dict[str, Any]], detect_chord_timeline(Path(instrumental_stem.path)))
+    stem_timeline = _detect_timeline(Path(instrumental_stem.path), backend_id).segments
     if not stem_timeline:
         return source_timeline
 
@@ -212,3 +247,16 @@ def _confidence_value(segment: dict[str, Any]) -> float:
     if isinstance(confidence, int | float):
         return float(confidence)
     return 0.0
+
+
+def _detect_timeline(source_path: Path, backend_id: str) -> ChordDetectionResult:
+    return detect_with_chord_backend(source_path, backend_id)
+
+
+def _same_backend(existing_backend: str | None, selected_backend_id: str) -> bool:
+    if existing_backend is None:
+        return False
+    try:
+        return resolve_chord_backend_id(existing_backend) == selected_backend_id
+    except AppError:
+        return existing_backend == selected_backend_id

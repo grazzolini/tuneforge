@@ -68,5 +68,8 @@ describe("enharmonic formatting", () => {
       primary: { root: "C#", suffix: "sus2" },
       secondary: { root: "Db", suffix: "sus2" },
     });
+    expect(formatChordLabel(2, "major", { mode: "sharps" }, 6)).toBe("D/F#");
+    expect(formatChordLabel(0, "minor", { mode: "flats" }, 7)).toBe("Cm/G");
+    expect(formatChordLabel(0, "hdim7")).toBe("Cm7b5");
   });
 });

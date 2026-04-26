@@ -11,6 +11,7 @@ import {
   mockSave,
   queryByAriaKeyLabel,
   renderApp,
+  setChordBackends,
   setProjectAnalysis,
   setProjectChords,
 } from "./test/appTestHarness";
@@ -93,6 +94,7 @@ describe("Desktop app settings theme", () => {
     expect(screen.getByRole("button", { name: /^Collapse sources rail by default/ })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("button", { name: /^Project first/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^AutoUse lyrics \+ chords/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Built-in Chords/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Enable lyrics follow by default/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Enable chords follow by default/ })).toHaveAttribute("aria-pressed", "true");
     expect(window.localStorage.getItem("tuneforge.theme-preference")).toBe("system");
@@ -103,6 +105,7 @@ describe("Desktop app settings theme", () => {
       defaultSourcesRailCollapsed: false,
       defaultProjectWorkspace: "project",
       defaultPlaybackDisplayMode: "auto",
+      defaultChordBackend: "tuneforge-fast",
       defaultLyricsFollowEnabled: true,
       defaultChordsFollowEnabled: true,
     });
@@ -121,6 +124,7 @@ describe("Desktop app settings theme", () => {
     await user.click(screen.getByRole("button", { name: /^Collapse sources rail by default/ }));
     await user.click(screen.getByRole("button", { name: /^Playback first/ }));
     await user.click(screen.getByRole("button", { name: /^Lyrics \+ chords/ }));
+    await user.click(screen.getByRole("button", { name: /^Advanced Chords/ }));
     await user.click(screen.getByText("Show diagnostics"));
     expect(await screen.findByText("/tmp/tuneforge")).toBeInTheDocument();
 
@@ -136,6 +140,7 @@ describe("Desktop app settings theme", () => {
         defaultSourcesRailCollapsed: true,
         defaultProjectWorkspace: "playback",
         defaultPlaybackDisplayMode: "combined",
+        defaultChordBackend: "crema-advanced",
         defaultLyricsFollowEnabled: true,
         defaultChordsFollowEnabled: true,
       }),
@@ -166,6 +171,38 @@ describe("Desktop app settings theme", () => {
     });
   });
 
+  it("shows unavailable advanced chord backend without allowing selection", async () => {
+    setChordBackends([
+      {
+        availability: "available",
+        available: true,
+        capabilities: {},
+        desktopOnly: false,
+        experimental: false,
+        id: "tuneforge-fast",
+        label: "Built-in Chords",
+        unavailable_reason: null,
+      },
+      {
+        availability: "unavailable",
+        available: false,
+        capabilities: {},
+        desktopOnly: true,
+        experimental: true,
+        id: "crema-advanced",
+        label: "Advanced Chords",
+        unavailable_reason: "crema is not installed",
+      },
+    ]);
+
+    renderApp(["/settings"]);
+
+    expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Built-in Chords/ })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toBeDisabled();
+    expect(await screen.findByText("crema is not installed")).toBeInTheDocument();
+  });
+
   it("resets appearance, visibility, and all settings independently", async () => {
     const user = userEvent.setup();
     renderApp(["/settings"]);
@@ -175,6 +212,7 @@ describe("Desktop app settings theme", () => {
     await user.click(screen.getByRole("button", { name: /^Light/ }));
     await user.click(screen.getByRole("button", { name: /^Detailed/ }));
     await user.click(screen.getByRole("button", { name: /^Prefer sharps/ }));
+    await user.click(screen.getByRole("button", { name: /^Advanced Chords/ }));
     await user.click(screen.getByRole("button", { name: /^Open inspector by default/ }));
     await user.click(screen.getByRole("button", { name: /^Collapse sources rail by default/ }));
 
@@ -188,6 +226,9 @@ describe("Desktop app settings theme", () => {
     await user.click(screen.getByRole("button", { name: "Reset Notation" }));
     expect(screen.getByRole("button", { name: /^Auto by key/ })).toHaveAttribute("aria-pressed", "true");
 
+    await user.click(screen.getByRole("button", { name: "Reset Analysis Defaults" }));
+    expect(screen.getByRole("button", { name: /^Built-in Chords/ })).toHaveAttribute("aria-pressed", "true");
+
     await user.click(screen.getByRole("button", { name: "Reset Playback Defaults" }));
     expect(screen.getByRole("button", { name: /^Open inspector by default/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Collapse sources rail by default/ })).toHaveAttribute("aria-pressed", "false");
@@ -198,6 +239,7 @@ describe("Desktop app settings theme", () => {
 
     await user.click(screen.getByRole("button", { name: /^Dark/ }));
     await user.click(screen.getByRole("button", { name: /^Dual labels/ }));
+    await user.click(screen.getByRole("button", { name: /^Advanced Chords/ }));
     await user.click(screen.getByRole("button", { name: /^Open inspector by default/ }));
     await user.click(screen.getByRole("button", { name: "Reset All Settings" }));
 
@@ -208,6 +250,7 @@ describe("Desktop app settings theme", () => {
     expect(screen.getByRole("button", { name: /^Collapse sources rail by default/ })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("button", { name: /^Project first/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^AutoUse lyrics \+ chords/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Built-in Chords/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Enable lyrics follow by default/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Enable chords follow by default/ })).toHaveAttribute("aria-pressed", "true");
   });
@@ -325,6 +368,7 @@ describe("Desktop app settings theme", () => {
     await user.click(screen.getByRole("button", { name: /Collapse sources rail by default/i }));
     await user.click(screen.getByRole("button", { name: /^Playback first/i }));
     await user.click(screen.getByRole("button", { name: /^Lyrics \+ chords/i }));
+    await user.click(screen.getByRole("button", { name: /^Advanced Chords/i }));
     await user.click(screen.getByRole("link", { name: "Open Theme Studio" }));
 
     expect(await screen.findByRole("heading", { name: "Metal / Heat Studio" })).toBeInTheDocument();
@@ -364,6 +408,7 @@ describe("Desktop app settings theme", () => {
     expect(screen.getByText("Collapsed")).toBeInTheDocument();
     expect(screen.getAllByText("Playback first").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Lyrics + chords").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Advanced Chords").length).toBeGreaterThan(0);
     expect(document.documentElement.style.getPropertyValue("--color-bg-app")).toBe("#123456");
   });
 });

@@ -153,10 +153,7 @@ Pause and surface the question to the human instead of guessing when:
 
 ```sh
 # Install
-pnpm install
-cd apps/backend && uv sync --python 3.11 --all-groups
-cd ../..
-pnpm contracts:generate
+pnpm setup:dev
 
 # Develop
 pnpm dev                  # backend + desktop together

@@ -73,6 +73,8 @@ class ChordTimeline(Base):
     timeline_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON(), default=list)
     source_segments_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON(), default=list)
     segments_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON(), default=list)
+    source_kind: Mapped[str] = mapped_column(String(32), default="generated")
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON(), default=dict)
     has_user_edits: Mapped[bool] = mapped_column(Boolean(), default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime | None] = mapped_column(
@@ -160,6 +162,28 @@ class Job(Base):
         if self.type != "chords":
             return None
         value = self.payload_json.get("chord_source")
+        return value if isinstance(value, str) else None
+
+    @property
+    def chord_backend(self) -> str | None:
+        if self.type != "chords":
+            return None
+        value = self.payload_json.get("chord_backend")
+        if isinstance(value, str):
+            return value
+        fallback = self.payload_json.get("backend")
+        if fallback == "default":
+            return "tuneforge-fast"
+        return fallback if isinstance(fallback, str) else None
+
+    @property
+    def chord_backend_fallback_from(self) -> str | None:
+        if self.type != "chords":
+            return None
+        value = self.payload_json.get("backend_fallback_from")
+        if isinstance(value, str):
+            return value
+        value = self.payload_json.get("chord_backend_fallback_from")
         return value if isinstance(value, str) else None
 
 

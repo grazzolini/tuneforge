@@ -201,6 +201,7 @@ def test_source_stem_generation_enqueues_chord_refresh_job(
         if job["project_id"] == project["id"] and job["type"] == "chords" and job["id"] != initial_chord_job["id"]
     ]
     assert len(chord_refresh_jobs) == 1
+    assert chord_refresh_jobs[0]["chord_backend"] == "tuneforge-fast"
     assert chord_refresh_jobs[0]["chord_source"] == "source+stem"
     assert wait_for_job(client, chord_refresh_jobs[0]["id"])["status"] == "completed"
 

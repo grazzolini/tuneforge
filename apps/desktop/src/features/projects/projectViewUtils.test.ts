@@ -99,11 +99,13 @@ describe("buildLeadSheetRows", () => {
 describe("transposeChordSegment", () => {
   it("transposes supported chord extensions", () => {
     const segment: ChordSegmentSchema = {
+      bass_pitch_class: 4,
       confidence: 0.9,
       end_seconds: 4,
-      label: "Cmaj7",
+      label: "Cmaj7/E",
       pitch_class: 0,
       quality: "maj7",
+      root_pitch_class: 0,
       start_seconds: 0,
     };
 
@@ -113,8 +115,10 @@ describe("transposeChordSegment", () => {
         mode: "auto",
       }),
     ).toMatchObject({
-      label: "Dmaj7",
+      bass_pitch_class: 6,
+      label: "Dmaj7/F#",
       pitch_class: 2,
+      root_pitch_class: 2,
       quality: "maj7",
     });
   });
@@ -141,6 +145,7 @@ describe("transposeChordSegment", () => {
 describe("formatJobStatusSummary", () => {
   it("includes chord detection source for chord jobs", () => {
     const job: JobSchema = {
+      chord_backend: "tuneforge-fast",
       chord_source: "source+stem",
       completed_at: "2026-04-18T13:16:14.000Z",
       created_at: "2026-04-18T13:16:00.000Z",
@@ -157,6 +162,28 @@ describe("formatJobStatusSummary", () => {
       updated_at: "2026-04-18T13:16:14.000Z",
     };
 
-    expect(formatJobStatusSummary(job)).toBe("completed / source+stem / 14 s");
+    expect(formatJobStatusSummary(job)).toBe("completed / built-in / source+stem / 14 s");
+  });
+
+  it("includes advanced chord backend for crema jobs", () => {
+    const job: JobSchema = {
+      chord_backend: "crema-advanced",
+      chord_source: "source",
+      completed_at: "2026-04-18T13:16:14.000Z",
+      created_at: "2026-04-18T13:16:00.000Z",
+      duration_seconds: 5.3,
+      error_message: null,
+      id: "job_chords_advanced",
+      progress: 100,
+      project_id: "proj_123",
+      runtime_device: null,
+      source_artifact_id: null,
+      started_at: "2026-04-18T13:16:09.000Z",
+      status: "completed",
+      type: "chords",
+      updated_at: "2026-04-18T13:16:14.000Z",
+    };
+
+    expect(formatJobStatusSummary(job)).toBe("completed / advanced / source / 5.3 s");
   });
 });

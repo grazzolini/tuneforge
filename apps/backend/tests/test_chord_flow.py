@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 from app.db import SessionLocal
 from app.services.artifacts import register_artifact
+from app.services.chord_backends import ChordDetectionResult
 from app.services.chords import detect_project_chords
 from app.services.projects import get_project
 
@@ -36,7 +40,7 @@ def test_chord_job_persists_timeline(client, sample_chord_audio_file: Path):
 
     initial = client.get(f"/api/v1/projects/{project['id']}/chords").json()
     assert initial["project_id"] == project["id"]
-    assert initial["backend"] == "librosa"
+    assert initial["backend"] == "tuneforge-fast"
     assert len(initial["timeline"]) >= 3
     assert initial["source_segments"] == initial["timeline"]
     assert initial["has_user_edits"] is False
@@ -45,19 +49,21 @@ def test_chord_job_persists_timeline(client, sample_chord_audio_file: Path):
 
     job = client.post(
         f"/api/v1/projects/{project['id']}/chords",
-        json={"backend": "default", "force": True},
+        json={"backend": "default", "backend_fallback_from": "crema-advanced", "force": True},
     ).json()["job"]
     final_job = wait_for_job(client, job["id"])
     assert final_job["status"] == "completed"
+    assert final_job["chord_backend_fallback_from"] == "crema-advanced"
     assert final_job["runtime_device"] is None
     assert final_job["duration_seconds"] is not None
 
     chords = client.get(f"/api/v1/projects/{project['id']}/chords").json()
     assert chords["project_id"] == project["id"]
-    assert chords["backend"] == "librosa"
+    assert chords["backend"] == "tuneforge-fast"
     assert len(chords["timeline"]) >= 3
     assert len(chords["source_segments"]) >= 3
     assert chords["has_user_edits"] is False
+    assert chords["metadata"]["backend_fallback_from"] == "crema-advanced"
     assert all(segment["end_seconds"] > segment["start_seconds"] for segment in chords["timeline"])
     assert all(segment["pitch_class"] is not None for segment in chords["timeline"])
     supported_qualities = {"major", "minor", "7", "maj7", "m7", "sus2", "sus4", "dim", None}
@@ -72,11 +78,13 @@ def test_chord_job_persists_timeline(client, sample_chord_audio_file: Path):
     assert any(label == "F" for label in labels)
 
 
+@pytest.mark.parametrize("backend_id", ["tuneforge-fast", "crema-advanced"])
 def test_chord_refresh_uses_source_stems_only_for_augmentation(
     client,
     sample_chord_audio_file: Path,
     tmp_path: Path,
     monkeypatch,
+    backend_id: str,
 ):
     project = client.post(
         "/api/v1/projects/import",
@@ -128,20 +136,35 @@ def test_chord_refresh_uses_source_stems_only_for_augmentation(
         )
         session.commit()
 
-    def fake_detect_chord_timeline(path: Path) -> list[dict[str, Any]]:
-        if path == source_stem_path:
-            return [_segment("G", confidence=0.88, pitch_class=7, quality="major")]
-        if path == mix_stem_path:
-            return [_segment("F", confidence=0.95, pitch_class=5, quality="major")]
-        return [_segment("Em", confidence=0.35, pitch_class=4, quality="minor")]
+    def fake_resolve_chord_backend(requested_backend: str, *, require_available: bool = False):
+        del require_available
+        selected_backend_id = "crema-advanced" if requested_backend == "crema-advanced" else "tuneforge-fast"
+        return SimpleNamespace(
+            id=selected_backend_id,
+            label="Advanced Chords" if selected_backend_id == "crema-advanced" else "Built-in Chords",
+            capabilities=SimpleNamespace(),
+        )
 
-    monkeypatch.setattr("app.services.chords.detect_chord_timeline", fake_detect_chord_timeline)
+    def fake_detect_timeline(path: Path, selected_backend_id: str) -> ChordDetectionResult:
+        assert selected_backend_id == backend_id
+        if path == source_stem_path:
+            segments = [_segment("G", confidence=0.88, pitch_class=7, quality="major")]
+            return ChordDetectionResult(segments=segments, backend_id=selected_backend_id, metadata={})
+        if path == mix_stem_path:
+            segments = [_segment("F", confidence=0.95, pitch_class=5, quality="major")]
+            return ChordDetectionResult(segments=segments, backend_id=selected_backend_id, metadata={})
+        segments = [_segment("Em", confidence=0.35, pitch_class=4, quality="minor")]
+        return ChordDetectionResult(segments=segments, backend_id=selected_backend_id, metadata={})
+
+    monkeypatch.setattr("app.services.chords.resolve_chord_backend", fake_resolve_chord_backend)
+    monkeypatch.setattr("app.services.chords._detect_timeline", fake_detect_timeline)
 
     with SessionLocal() as session:
         project_model = get_project(session, project["id"])
-        chords = detect_project_chords(session, project_model, force=True)
+        chords = detect_project_chords(session, project_model, backend=backend_id, force=True)
         session.commit()
 
+    assert chords.backend == backend_id
     assert chords.source_artifact_id == source_artifact.id
     assert [segment["label"] for segment in chords.source_segments_json] == ["Em"]
     assert [segment["label"] for segment in chords.segments_json] == ["G"]
@@ -173,11 +196,13 @@ def test_chord_refresh_preserves_user_edits_without_overwrite(
 
     calls: list[Path] = []
 
-    def fake_detect_chord_timeline(path: Path) -> list[dict[str, Any]]:
+    def fake_detect_timeline(path: Path, backend_id: str) -> ChordDetectionResult:
+        assert backend_id == "tuneforge-fast"
         calls.append(path)
-        return [_segment("G", confidence=0.88, pitch_class=7, quality="major")]
+        segments = [_segment("G", confidence=0.88, pitch_class=7, quality="major")]
+        return ChordDetectionResult(segments=segments, backend_id=backend_id, metadata={})
 
-    monkeypatch.setattr("app.services.chords.detect_chord_timeline", fake_detect_chord_timeline)
+    monkeypatch.setattr("app.services.chords._detect_timeline", fake_detect_timeline)
 
     with SessionLocal() as session:
         project_model = get_project(session, project["id"])
@@ -186,6 +211,7 @@ def test_chord_refresh_preserves_user_edits_without_overwrite(
 
     assert calls == []
     assert chords.has_user_edits is True
+    assert chords.source_kind == "user-edited"
     assert chords.segments_json == [edited_segment]
 
     with SessionLocal() as session:

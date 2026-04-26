@@ -1,5 +1,16 @@
 export type KeyMode = "major" | "minor";
-export type ChordQuality = "major" | "minor" | "7" | "maj7" | "m7" | "sus2" | "sus4" | "dim";
+export type ChordQuality =
+  | "major"
+  | "minor"
+  | "7"
+  | "maj7"
+  | "m7"
+  | "sus2"
+  | "sus4"
+  | "dim"
+  | "aug"
+  | "dim7"
+  | "hdim7";
 export type EnharmonicDisplayMode = "auto" | "sharps" | "flats" | "neutral" | "dual";
 
 export type MusicalKey = {
@@ -255,28 +266,34 @@ export function formatChordLabel(
   pitchClass: number,
   quality: ChordQuality,
   options: PitchFormatOptions = {},
+  bassPitchClass?: number | null,
 ): string {
   const suffix = chordQualitySuffix(quality);
   const noteName =
     options.mode === "dual"
-      ? formatDualPitchClass(pitchClass, suffix)
+      ? formatDualPitchClass(pitchClass, suffix, bassPitchClass)
       : formatChordRoot(pitchClass, options);
   if (options.mode === "dual") {
     return noteName;
   }
-  return `${noteName}${suffix}`;
+  const bassSuffix =
+    typeof bassPitchClass === "number" && bassPitchClass !== pitchClass
+      ? `/${formatPitchClass(bassPitchClass, options)}`
+      : "";
+  return `${noteName}${suffix}${bassSuffix}`;
 }
 
 export function formatChordDisplay(
   pitchClass: number,
   quality: ChordQuality,
   options: PitchFormatOptions = {},
+  bassPitchClass?: number | null,
 ): FormattedMusicalLabel {
   const { primaryLabel, secondaryLabel } =
     options.mode === "dual"
-      ? formatDualChordLabels(pitchClass, quality)
+      ? formatDualChordLabels(pitchClass, quality, bassPitchClass)
       : {
-          primaryLabel: formatChordLabel(pitchClass, quality, options),
+          primaryLabel: formatChordLabel(pitchClass, quality, options, bassPitchClass),
           secondaryLabel: null,
         };
 
@@ -309,12 +326,17 @@ export function formatAlternateChordLabel(
   pitchClass: number,
   quality: ChordQuality,
   options: PitchFormatOptions = {},
+  bassPitchClass?: number | null,
 ): string | null {
   const alternateRoot = formatAlternatePitchClass(pitchClass, options);
   if (!alternateRoot) {
     return null;
   }
-  return `${alternateRoot}${chordQualitySuffix(quality)}`;
+  const alternateBass =
+    typeof bassPitchClass === "number" && bassPitchClass !== pitchClass
+      ? formatAlternatePitchClass(bassPitchClass, options) ?? formatPitchClass(bassPitchClass, options)
+      : null;
+  return `${alternateRoot}${chordQualitySuffix(quality)}${alternateBass ? `/${alternateBass}` : ""}`;
 }
 
 export function isSupportedChordQuality(quality: string | null | undefined): quality is ChordQuality {
@@ -326,7 +348,10 @@ export function isSupportedChordQuality(quality: string | null | undefined): qua
     quality === "m7" ||
     quality === "sus2" ||
     quality === "sus4" ||
-    quality === "dim"
+    quality === "dim" ||
+    quality === "aug" ||
+    quality === "dim7" ||
+    quality === "hdim7"
   );
 }
 
@@ -387,12 +412,22 @@ function formatDualKeyLabels(key: MusicalKey): { primaryLabel: string; secondary
 function formatDualChordLabels(
   pitchClass: number,
   quality: ChordQuality,
+  bassPitchClass?: number | null,
 ): { primaryLabel: string; secondaryLabel: string | null } {
   const { primaryRoot, secondaryRoot } = getDualPitchClassParts(pitchClass);
+  const bassParts =
+    typeof bassPitchClass === "number" && bassPitchClass !== pitchClass
+      ? getDualPitchClassParts(bassPitchClass)
+      : null;
   const suffix = chordQualitySuffix(quality);
+  const primaryBass = bassParts ? `/${bassParts.primaryRoot}` : "";
+  const secondaryBass = bassParts ? `/${bassParts.secondaryRoot ?? bassParts.primaryRoot}` : "";
   return {
-    primaryLabel: `${primaryRoot}${suffix}`,
-    secondaryLabel: secondaryRoot ? `${secondaryRoot}${suffix}` : null,
+    primaryLabel: `${primaryRoot}${suffix}${primaryBass}`,
+    secondaryLabel:
+      secondaryRoot || bassParts?.secondaryRoot
+        ? `${secondaryRoot ?? primaryRoot}${suffix}${secondaryBass}`
+        : null,
   };
 }
 
@@ -406,14 +441,22 @@ function getDualPitchClassParts(pitchClass: number): { primaryRoot: string; seco
   };
 }
 
-function formatDualPitchClass(pitchClass: number, suffix = ""): string {
+function formatDualPitchClass(pitchClass: number, suffix = "", bassPitchClass?: number | null): string {
   const normalizedPitchClass = normalizePitchClass(pitchClass);
   const sharpLabel = SHARP_PITCH_CLASSES[normalizedPitchClass] ?? SHARP_PITCH_CLASSES[0];
   const flatLabel = FLAT_PITCH_CLASSES[normalizedPitchClass] ?? FLAT_PITCH_CLASSES[0];
+  const sharpBassSuffix =
+    typeof bassPitchClass === "number" && bassPitchClass !== pitchClass
+      ? `/${SHARP_PITCH_CLASSES[normalizePitchClass(bassPitchClass)] ?? SHARP_PITCH_CLASSES[0]}`
+      : "";
   if (sharpLabel === flatLabel) {
-    return `${sharpLabel}${suffix}`;
+    return `${sharpLabel}${suffix}${sharpBassSuffix}`;
   }
-  return `${sharpLabel}${suffix}/${flatLabel}${suffix}`;
+  const flatBassSuffix =
+    typeof bassPitchClass === "number" && bassPitchClass !== pitchClass
+      ? `/${FLAT_PITCH_CLASSES[normalizePitchClass(bassPitchClass)] ?? FLAT_PITCH_CLASSES[0]}`
+      : "";
+  return `${sharpLabel}${suffix}${sharpBassSuffix}/${flatLabel}${suffix}${flatBassSuffix}`;
 }
 
 function chordQualitySuffix(quality: ChordQuality): string {
@@ -434,5 +477,11 @@ function chordQualitySuffix(quality: ChordQuality): string {
       return "sus4";
     case "dim":
       return "dim";
+    case "aug":
+      return "aug";
+    case "dim7":
+      return "dim7";
+    case "hdim7":
+      return "m7b5";
   }
 }

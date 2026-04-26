@@ -10,6 +10,7 @@ const {
   setProjectAnalysis,
   setProjectChords,
   setProjectLyrics,
+  setChordBackends,
   setDeferredPreviewCompletion,
   flushPendingPreview,
   mockOpen,
@@ -22,6 +23,7 @@ const {
   mockGetAnalysis,
   mockGetChords,
   mockGetLyrics,
+  mockListChordBackends,
   mockListArtifacts,
   mockListJobs,
   mockCreateChords,
@@ -44,6 +46,7 @@ const {
     chordsByProject: Record<string, Record<string, unknown>>;
     lyricsByProject: Record<string, Record<string, unknown>>;
     artifactsByProject: Record<string, Array<Record<string, unknown>>>;
+    chordBackends: Array<Record<string, unknown>>;
     pendingPreviewArtifactsByProject: Record<string, Array<Record<string, unknown>>>;
     jobs: Array<Record<string, unknown>>;
     snapshotFiles: Record<string, string>;
@@ -146,6 +149,49 @@ const {
     };
   }
 
+  function makeChordBackends() {
+    return [
+      {
+        availability: "available",
+        available: true,
+        capabilities: {
+          desktopOnly: false,
+          estimatedSpeed: "medium",
+          experimental: false,
+          supportsConfidence: true,
+          supportsInversions: false,
+          supportsNoChord: true,
+          supportsSevenths: true,
+        },
+        description: "TuneForge's built-in lightweight chord detector.",
+        desktopOnly: false,
+        experimental: false,
+        id: "tuneforge-fast",
+        label: "Built-in Chords",
+        unavailable_reason: null,
+      },
+      {
+        availability: "available",
+        available: true,
+        capabilities: {
+          desktopOnly: true,
+          estimatedSpeed: "slow",
+          experimental: true,
+          supportsConfidence: true,
+          supportsInversions: true,
+          supportsNoChord: true,
+          supportsSevenths: true,
+        },
+        description: "Experimental crema chord detector.",
+        desktopOnly: true,
+        experimental: true,
+        id: "crema-advanced",
+        label: "Advanced Chords",
+        unavailable_reason: null,
+      },
+    ];
+  }
+
   function setProjects(projects: Array<Record<string, unknown>>) {
     state.projects = clone(projects);
   }
@@ -160,6 +206,10 @@ const {
 
   function setProjectLyrics(projectId: string, lyrics: Record<string, unknown>) {
     state.lyricsByProject[projectId] = clone(lyrics);
+  }
+
+  function setChordBackends(backends: Array<Record<string, unknown>>) {
+    state.chordBackends = clone(backends);
   }
 
   function setDeferredPreviewCompletion(value: boolean) {
@@ -230,6 +280,7 @@ const {
           },
         ],
       },
+      chordBackends: makeChordBackends(),
       pendingPreviewArtifactsByProject: {},
       jobs: [
         {
@@ -304,6 +355,7 @@ const {
     preview_format: "wav",
   }));
   const mockGetMobileCapabilities = vi.fn(async (): Promise<unknown> => null);
+  const mockListChordBackends = vi.fn(async () => ({ backends: clone(state.chordBackends) }));
   const mockListProjects = vi.fn(async (search?: string) => {
     const normalizedSearch = search?.trim().toLowerCase();
     const filteredProjects = normalizedSearch
@@ -381,6 +433,8 @@ const {
       type: "chords",
       status: "completed",
       progress: 100,
+      chord_backend: body?.backend === "crema-advanced" ? "crema-advanced" : "tuneforge-fast",
+      chord_backend_fallback_from: body?.backend_fallback_from ?? null,
       chord_source: body?.chord_source ?? "source",
       error_message: null,
       created_at: createdAt,
@@ -441,7 +495,7 @@ const {
   });
   const mockCreateStems = vi.fn(async (
     projectId: string,
-    body: { source_artifact_id?: string; force?: boolean; overwrite_chord_edits?: boolean },
+    body: { source_artifact_id?: string; force?: boolean; chord_backend?: string; overwrite_chord_edits?: boolean },
   ) => {
     const sourceArtifactId = body.source_artifact_id ?? "art_source";
     state.artifactsByProject[projectId] = (state.artifactsByProject[projectId] ?? []).filter((artifact) => {
@@ -611,6 +665,7 @@ const {
     setProjectAnalysis,
     setProjectChords,
     setProjectLyrics,
+    setChordBackends,
     setDeferredPreviewCompletion,
     flushPendingPreview,
     mockOpen,
@@ -623,6 +678,7 @@ const {
     mockGetAnalysis,
     mockGetChords,
     mockGetLyrics,
+    mockListChordBackends,
     mockListArtifacts,
     mockListJobs,
     mockCreateChords,
@@ -646,6 +702,7 @@ export {
   setProjectAnalysis,
   setProjectChords,
   setProjectLyrics,
+  setChordBackends,
   setDeferredPreviewCompletion,
   flushPendingPreview,
   mockOpen,
@@ -658,6 +715,7 @@ export {
   mockGetAnalysis,
   mockGetChords,
   mockGetLyrics,
+  mockListChordBackends,
   mockListArtifacts,
   mockListJobs,
   mockCreateChords,
@@ -698,6 +756,7 @@ vi.mock("../lib/api", async (importOriginal) => {
       getAnalysis: mockGetAnalysis,
       getChords: mockGetChords,
       getLyrics: mockGetLyrics,
+      listChordBackends: mockListChordBackends,
       listArtifacts: mockListArtifacts,
       listJobs: mockListJobs,
       createChords: mockCreateChords,

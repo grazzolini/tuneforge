@@ -21,6 +21,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/chord-backends": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Chord Backends */
+        get: operations["chord_backends_api_v1_chord_backends_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/import": {
         parameters: {
             query?: never;
@@ -412,6 +429,48 @@ export interface components {
             /** Artifacts */
             artifacts: components["schemas"]["ArtifactSchema"][];
         };
+        /** ChordBackendCapabilitiesSchema */
+        ChordBackendCapabilitiesSchema: {
+            /** Supportssevenths */
+            supportsSevenths: boolean;
+            /** Supportsinversions */
+            supportsInversions: boolean;
+            /** Supportsconfidence */
+            supportsConfidence: boolean;
+            /** Supportsnochord */
+            supportsNoChord: boolean;
+            /** Estimatedspeed */
+            estimatedSpeed: string;
+            /** Desktoponly */
+            desktopOnly: boolean;
+            /** Experimental */
+            experimental: boolean;
+        };
+        /** ChordBackendSchema */
+        ChordBackendSchema: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Description */
+            description: string;
+            /** Availability */
+            availability: string;
+            /** Available */
+            available: boolean;
+            /** Unavailable Reason */
+            unavailable_reason?: string | null;
+            capabilities: components["schemas"]["ChordBackendCapabilitiesSchema"];
+            /** Experimental */
+            experimental: boolean;
+            /** Desktoponly */
+            desktopOnly: boolean;
+        };
+        /** ChordBackendsResponse */
+        ChordBackendsResponse: {
+            /** Backends */
+            backends: components["schemas"]["ChordBackendSchema"][];
+        };
         /** ChordRequest */
         ChordRequest: {
             /**
@@ -419,6 +478,8 @@ export interface components {
              * @default default
              */
             backend: string;
+            /** Backend Fallback From */
+            backend_fallback_from?: string | null;
             /**
              * Force
              * @default false
@@ -447,6 +508,15 @@ export interface components {
              * @default false
              */
             has_user_edits: boolean;
+            /**
+             * Source Kind
+             * @default generated
+             */
+            source_kind: string;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            };
             /** Created At */
             created_at?: string | null;
             /** Updated At */
@@ -460,12 +530,22 @@ export interface components {
             end_seconds: number;
             /** Label */
             label: string;
+            /** Display Label */
+            display_label?: string | null;
+            /** Raw Label */
+            raw_label?: string | null;
             /** Confidence */
             confidence?: number | null;
             /** Pitch Class */
             pitch_class?: number | null;
+            /** Root Pitch Class */
+            root_pitch_class?: number | null;
             /** Quality */
             quality?: string | null;
+            /** Bass Pitch Class */
+            bass_pitch_class?: number | null;
+            /** Bass Degree */
+            bass_degree?: string | null;
         };
         /** DeleteResponse */
         DeleteResponse: {
@@ -529,6 +609,10 @@ export interface components {
             progress: number;
             /** Source Artifact Id */
             source_artifact_id?: string | null;
+            /** Chord Backend */
+            chord_backend?: string | null;
+            /** Chord Backend Fallback From */
+            chord_backend_fallback_from?: string | null;
             /** Chord Source */
             chord_source?: string | null;
             /** Error Message */
@@ -745,6 +829,13 @@ export interface components {
             /** Source Artifact Id */
             source_artifact_id?: string | null;
             /**
+             * Chord Backend
+             * @default default
+             */
+            chord_backend: string;
+            /** Chord Backend Fallback From */
+            chord_backend_fallback_from?: string | null;
+            /**
              * Overwrite Chord Edits
              * @default false
              */
@@ -803,6 +894,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+        };
+    };
+    chord_backends_api_v1_chord_backends_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChordBackendsResponse"];
                 };
             };
         };

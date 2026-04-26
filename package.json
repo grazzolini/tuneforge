@@ -16,6 +16,7 @@
     "package:mac": "pnpm package:mac:app && pnpm package:mac:dmg",
     "package:mac:app": "pnpm --filter @tuneforge/desktop tauri build --bundles app",
     "package:mac:dmg": "node scripts/package-dmg.mjs",
+    "setup:dev": "bash scripts/setup-dev.sh",
     "sync:backend:default": "bash scripts/sync-backend-default.sh",
     "sync:backend:legacy-nvidia": "bash scripts/sync-backend-legacy-nvidia.sh",
     "test": "bash scripts/run-tests.sh",

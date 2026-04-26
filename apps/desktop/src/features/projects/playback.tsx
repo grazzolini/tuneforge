@@ -167,6 +167,25 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     [getAudioContextConstructor],
   );
 
+  const canUseBufferedClock = useCallback(
+    (targetSession: ProjectPlaybackSession | null) => {
+      if (!targetSession || !canUseStemClock()) {
+        return false;
+      }
+
+      const artifactIds = getPlaybackArtifactIds(targetSession);
+      if (!artifactIds.length) {
+        return false;
+      }
+
+      return artifactIds.every((artifactId) => {
+        const streamUrl = api.streamArtifactUrl(artifactId);
+        return Boolean(streamUrl) && !/^https?:\/\/asset\.localhost(?:\/|$)/.test(streamUrl);
+      });
+    },
+    [canUseStemClock],
+  );
+
   function syncStemElementTimes(artifactIds: string[], nextTime: number) {
     artifactIds.forEach((artifactId) => {
       if (
@@ -458,7 +477,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     timeSeconds: number,
     scheduledStartTimeSeconds?: number,
   ) {
-    if (!canUseStemClock()) {
+    if (!canUseBufferedClock(targetSession)) {
       return false;
     }
 
@@ -777,7 +796,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    if (canUseStemClock()) {
+    if (canUseBufferedClock(targetSession)) {
       void (async () => {
         const activePendingTransition = pendingTransitionRef.current;
         const activeSession = sessionRef.current;
@@ -963,7 +982,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     const targetPlaybackState = stemPlaybackRef.current;
     if (
       targetSession &&
-      canUseStemClock() &&
+      canUseBufferedClock(targetSession) &&
       targetPlaybackState &&
       targetPlaybackState.signature === playbackSignature(targetSession)
     ) {
@@ -976,7 +995,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     getActiveMediaElements().forEach((element) => element.pause());
     setIsPlaying(false);
   }, [
-    canUseStemClock,
+    canUseBufferedClock,
     cancelPrecount,
     getActiveMediaElements,
     stopStemSources,
@@ -999,7 +1018,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     tryCompletePendingTransition();
 
     const masterTime = forceStartAtZero ? 0 : readMasterTime(targetSession);
-    if (canUseStemClock()) {
+    if (canUseBufferedClock(targetSession)) {
       const started = await startStemPlayback(
         targetSession,
         masterTime,
@@ -1046,7 +1065,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     const sequence = ++precountSequenceRef.current;
 
     let preparedStemPlaybackState: StemPlaybackState | null = null;
-    const willUsePlaybackAudioContext = canUseStemClock();
+    const willUsePlaybackAudioContext = canUseBufferedClock(targetSession);
     if (willUsePlaybackAudioContext) {
       preparedStemPlaybackState = await prepareStemPlaybackState(targetSession);
       if (!preparedStemPlaybackState) {
@@ -1200,7 +1219,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     const targetPlaybackState = stemPlaybackRef.current;
     if (
       targetSession &&
-      canUseStemClock() &&
+      canUseBufferedClock(targetSession) &&
       targetPlaybackState &&
       targetPlaybackState.signature === playbackSignature(targetSession)
     ) {
@@ -1218,7 +1237,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       element.currentTime = nextTime;
     });
     setPlaybackTimeSeconds(nextTime);
-  }, [canUseStemClock, cancelPrecount, getActiveMediaElements, startStemPlayback]);
+  }, [canUseBufferedClock, cancelPrecount, getActiveMediaElements, startStemPlayback]);
 
   const seekBy = useCallback(
     (secondsDelta: number) => {

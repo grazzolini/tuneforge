@@ -14,9 +14,13 @@ describe("Desktop app mobile capability gates", () => {
     mockGetMobileCapabilities.mockResolvedValue({
       platform: "android",
       mediaBackend: "android_media_codec",
+      isEmulator: false,
       gpuBackend: null,
+      analysisAvailable: true,
+      basicChordsAvailable: true,
       whisperAvailable: false,
       stemSeparationAvailable: false,
+      generationTestingAvailable: false,
       maxRecommendedModel: null,
       cpuFallbackAllowed: false,
     });
@@ -26,11 +30,63 @@ describe("Desktop app mobile capability gates", () => {
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Processing" })).toBeInTheDocument();
     expect(
-      await screen.findByText("Local generation requires GPU acceleration on this device."),
+      await screen.findByText(
+        "Side-load a Whisper model to enable local lyrics. Stem generation is unavailable on this device.",
+      ),
     ).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "Analyze Track" })).toBeDisabled();
-    expect(await screen.findByRole("button", { name: "Refresh Chords" })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: "Analyze Track" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Refresh Chords" })).toBeEnabled();
     expect(await screen.findByRole("button", { name: "Refresh Lyrics" })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: "Generate Stems" })).toBeDisabled();
+  });
+
+  it("allows emulator lyrics flow testing while keeping stems disabled", async () => {
+    mockGetMobileCapabilities.mockResolvedValue({
+      platform: "android",
+      mediaBackend: "android_media_codec",
+      isEmulator: true,
+      gpuBackend: null,
+      analysisAvailable: true,
+      basicChordsAvailable: true,
+      whisperAvailable: false,
+      stemSeparationAvailable: false,
+      generationTestingAvailable: true,
+      maxRecommendedModel: null,
+      cpuFallbackAllowed: false,
+    });
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(
+      await screen.findByText(
+        "Emulator lyrics actions are enabled for flow testing; stem generation is unavailable on this device.",
+      ),
+    ).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Refresh Lyrics" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Generate Stems" })).toBeDisabled();
+  });
+
+  it("enables local lyrics when a side-loaded Whisper model is available", async () => {
+    mockGetMobileCapabilities.mockResolvedValue({
+      platform: "android",
+      mediaBackend: "android_media_codec",
+      isEmulator: false,
+      gpuBackend: null,
+      analysisAvailable: true,
+      basicChordsAvailable: true,
+      whisperAvailable: true,
+      stemSeparationAvailable: false,
+      generationTestingAvailable: false,
+      maxRecommendedModel: "base",
+      cpuFallbackAllowed: false,
+    });
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(
+      await screen.findByText("Local lyrics are available. Stem generation is unavailable on this device."),
+    ).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Refresh Lyrics" })).toBeEnabled();
     expect(await screen.findByRole("button", { name: "Generate Stems" })).toBeDisabled();
   });
 

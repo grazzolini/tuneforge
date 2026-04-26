@@ -56,6 +56,17 @@
   grid-area: danger;
 }
 
+@media (max-width: 1200px) {
+  .inspector-stack--analysis .section-stack {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "summary"
+      "details"
+      "export"
+      "danger";
+  }
+}
+
 .mix-builder__retune {
   display: flex;
   flex-direction: column;

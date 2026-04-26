@@ -59,6 +59,16 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
   const { launchMetronome } = useMetronome();
   const tempoBpm = analysisQuery.data?.tempo_bpm;
   const canOpenMetronome = typeof tempoBpm === "number" && Number.isFinite(tempoBpm);
+  const estimatedReferenceHz = analysisQuery.data?.estimated_reference_hz;
+  const hasEstimatedReferenceHz =
+    typeof estimatedReferenceHz === "number" && Number.isFinite(estimatedReferenceHz);
+  const tuningValue = hasEstimatedReferenceHz
+    ? estimatedReferenceHz.toFixed(2)
+    : analysisQuery.data
+      ? "Not detected"
+      : isAnalysisRunning
+        ? "Analyzing..."
+        : "Pending";
   const metronomeSearchParams = new URLSearchParams();
   if (canOpenMetronome) {
     metronomeSearchParams.set("tool", "metronome");
@@ -256,9 +266,9 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
             <span className="metric-label">Detected Tuning</span>
             <strong>
               <span className="analysis-stat__value">
-                {analysisQuery.data?.estimated_reference_hz?.toFixed(2) ?? "Pending"}
+                {tuningValue}
               </span>
-              <span className="analysis-stat__unit">Hz</span>
+              {hasEstimatedReferenceHz ? <span className="analysis-stat__unit">Hz</span> : null}
             </strong>
           </div>
           <div className="analysis-stat">

@@ -35,6 +35,7 @@ struct SystemDefaultInputVolume {
 }
 
 impl SystemDefaultInputVolume {
+    #[cfg(not(target_os = "android"))]
     fn supported(volume_percent: u8, muted: Option<bool>, backend: &'static str) -> Self {
         Self {
             supported: true,

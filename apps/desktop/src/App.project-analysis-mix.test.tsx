@@ -147,6 +147,27 @@ describe("Desktop app project analysis mix", () => {
     expect(screen.getByText("BPM")).toBeInTheDocument();
   });
 
+  it("does not leave tuning pending when mobile analysis omits reference pitch", async () => {
+    const user = userEvent.setup();
+    setProjectAnalysis("proj_123", {
+      project_id: "proj_123",
+      estimated_key: "E minor",
+      key_confidence: 0.06,
+      estimated_reference_hz: null,
+      tuning_offset_cents: null,
+      tempo_bpm: null,
+      analysis_version: "mobile-cpu-v1",
+      created_at: "2026-05-04T17:43:00.000Z",
+    });
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openAnalysisPanel(user);
+    expect(screen.getByText("Not detected")).toBeInTheDocument();
+    expect(screen.queryByText("Pending")).not.toBeInTheDocument();
+  });
+
   it("refreshes existing chords with force enabled", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);

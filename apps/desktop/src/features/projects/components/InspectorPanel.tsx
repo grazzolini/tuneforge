@@ -424,6 +424,15 @@ export function InspectorPanel() {
             </strong>
           </div>
           <div className="analysis-stat">
+            <span className="metric-label">Tempo</span>
+            <strong>
+              <span className="analysis-stat__value">
+                {analysisQuery.data?.tempo_bpm?.toFixed(1) ?? "-"}
+              </span>
+              <span className="analysis-stat__unit">BPM</span>
+            </strong>
+          </div>
+          <div className="analysis-stat">
             <span className="metric-label">Confidence</span>
             <strong>
               <span className="analysis-stat__value">

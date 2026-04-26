@@ -12,9 +12,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.errors import AppError, JobCancelledError
-from app.models import Job, utcnow
+from app.models import Artifact, ChordTimeline, Job, utcnow
 from app.services.analysis import analyze_project
-from app.services.chords import detect_project_chords
+from app.services.chords import detect_project_chords, project_chord_detection_source
 from app.services.lyrics import generate_project_lyrics
 from app.services.projects import get_project
 from app.services.stems import generate_stems
@@ -281,8 +281,18 @@ class InProcessJobRunner:
 
     def _handle_chords(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")
+        job.payload_json = {
+            **job.payload_json,
+            "chord_source": project_chord_detection_source(project),
+        }
+        session.flush()
         context.set_progress(20)
-        detect_project_chords(session, project, force=bool(job.payload_json.get("force", False)))
+        detect_project_chords(
+            session,
+            project,
+            force=bool(job.payload_json.get("force", False)),
+            overwrite_user_edits=bool(job.payload_json.get("overwrite_user_edits", False)),
+        )
         context.set_progress(90)
         return JobExecutionResult(artifact_ids=[])
 
@@ -335,6 +345,19 @@ class InProcessJobRunner:
             register_process=context.register_process,
             unregister_process=context.unregister_process,
         )
+        if _should_enqueue_chord_refresh_after_stems(job, artifacts, session.get(ChordTimeline, project.id)):
+            chord_job = self.create_job(
+                session,
+                project_id=project.id,
+                job_type="chords",
+                payload={
+                    "backend": "default",
+                    "force": True,
+                    "overwrite_user_edits": bool(payload.get("overwrite_chord_edits", False)),
+                    "chord_source": "source+stem",
+                },
+            )
+            self.enqueue(chord_job.id)
         runtime_device = next(
             (
                 artifact.metadata_json.get("device")
@@ -347,3 +370,29 @@ class InProcessJobRunner:
             artifact_ids=[artifact.id for artifact in artifacts],
             runtime_device=runtime_device,
         )
+
+
+def _should_enqueue_chord_refresh_after_stems(
+    job: Job,
+    artifacts: list[Artifact],
+    chords: ChordTimeline | None,
+) -> bool:
+    source_instrumental = next(
+        (
+            artifact
+            for artifact in artifacts
+            if artifact.type == "instrumental_stem"
+            and artifact.metadata_json.get("source_artifact_type") == "source_audio"
+        ),
+        None,
+    )
+    if source_instrumental is None:
+        return False
+    overwrite_chord_edits = bool(job.payload_json.get("overwrite_chord_edits", False))
+    if chords is not None and chords.has_user_edits and not overwrite_chord_edits:
+        return False
+    if bool(job.payload_json.get("force", False)):
+        return True
+    if job.started_at is None:
+        return True
+    return _as_utc_datetime(source_instrumental.created_at) >= _as_utc_datetime(job.started_at)

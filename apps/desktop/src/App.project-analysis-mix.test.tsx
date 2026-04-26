@@ -58,6 +58,25 @@ describe("Desktop app project analysis mix", () => {
     expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123");
   });
 
+  it("surfaces detected tempo in the analysis panel", async () => {
+    setProjectAnalysis("proj_123", {
+      project_id: "proj_123",
+      estimated_key: "G major",
+      key_confidence: 0.82,
+      estimated_reference_hz: 440,
+      tuning_offset_cents: 0,
+      tempo_bpm: 121.48,
+      analysis_version: "v1",
+      created_at: "2026-04-18T13:16:00.000Z",
+    });
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    expect(screen.getByText("121.5")).toBeInTheDocument();
+    expect(screen.getByText("BPM")).toBeInTheDocument();
+  });
+
   it("refreshes existing chords with force enabled", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);
@@ -68,6 +87,7 @@ describe("Desktop app project analysis mix", () => {
     expect(mockCreateChords).toHaveBeenCalledWith("proj_123", {
       backend: "default",
       force: true,
+      overwrite_user_edits: false,
     });
   });
 
@@ -185,6 +205,40 @@ describe("Desktop app project analysis mix", () => {
       }),
     );
     expect(mockCreateLyrics).toHaveBeenCalledWith("proj_123", { force: true });
+  });
+
+  it("refreshes edited chords with confirmation", async () => {
+    const user = userEvent.setup();
+    const timeline = [
+      { start_seconds: 0, end_seconds: 16, label: "G", confidence: 0.81, pitch_class: 7, quality: "major" },
+    ];
+    setProjectChords("proj_123", {
+      project_id: "proj_123",
+      backend: "librosa",
+      source_artifact_id: "art_source",
+      source_segments: timeline,
+      timeline,
+      has_user_edits: true,
+      created_at: "2026-04-18T13:16:00.000Z",
+      updated_at: "2026-04-18T13:16:00.000Z",
+    });
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Refresh Chords" }));
+
+    expect(mockConfirm).toHaveBeenCalledWith(
+      "Refresh chords? This replaces the current chord timeline and discards your edits.",
+      expect.objectContaining({
+        title: "Refresh chords",
+        kind: "warning",
+      }),
+    );
+    expect(mockCreateChords).toHaveBeenCalledWith(
+      "proj_123",
+      expect.objectContaining({ force: true, overwrite_user_edits: true }),
+    );
   });
 
   it("renders single-label enharmonic spellings by default", async () => {

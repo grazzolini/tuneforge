@@ -239,10 +239,11 @@ export function useProjectViewModel() {
   });
 
   const chordMutation = useMutation({
-    mutationFn: async () =>
+    mutationFn: async (overwriteUserEdits: boolean) =>
       api.createChords(projectId, {
         backend: "default",
         force: (chordsQuery.data?.timeline?.length ?? 0) > 0,
+        overwrite_user_edits: overwriteUserEdits,
       }),
     onSuccess: async () => {
       await Promise.all([
@@ -307,7 +308,7 @@ export function useProjectViewModel() {
   });
 
   const stemMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (overwriteChordEdits: boolean) => {
       if (!selectedPrimaryArtifactId) {
         throw new Error("Select source audio or practice mix first.");
       }
@@ -316,6 +317,7 @@ export function useProjectViewModel() {
         output_format: "wav",
         force: hasVisibleStems,
         source_artifact_id: selectedPrimaryArtifactId,
+        overwrite_chord_edits: overwriteChordEdits,
       });
     },
     onSuccess: async () => {
@@ -689,11 +691,27 @@ export function useProjectViewModel() {
     handleSetPlaybackDisplayMode("combined");
   }
 
-  function handleChordAction() {
+  async function handleChordAction() {
     if (!canGenerateChords) {
       return;
     }
-    chordMutation.mutate();
+    const hasExistingChords = (chordsQuery.data?.timeline?.length ?? 0) > 0;
+    const hasUserChordEdits = chordsQuery.data?.has_user_edits === true;
+    if (hasExistingChords && hasUserChordEdits) {
+      const approved = await confirm(
+        "Refresh chords? This replaces the current chord timeline and discards your edits.",
+        {
+          title: "Refresh chords",
+          kind: "warning",
+          okLabel: "Refresh",
+          cancelLabel: "Cancel",
+        },
+      );
+      if (!approved) {
+        return;
+      }
+    }
+    chordMutation.mutate(hasUserChordEdits);
   }
 
   function handleSetLyricsFollowEnabled(enabled: boolean) {
@@ -775,12 +793,19 @@ export function useProjectViewModel() {
       return;
     }
 
+    const affectsSourceChords = selectedPrimaryArtifact?.type === "source_audio";
+    const hasUserChordEdits = affectsSourceChords && chordsQuery.data?.has_user_edits === true;
+    let overwriteChordEdits = false;
+
     if (hasVisibleStems) {
       const stemTargetLabel = selectedPrimaryArtifact
         ? artifactLabel(selectedPrimaryArtifact)
         : "selected audio";
+      const rebuildMessage = hasUserChordEdits
+        ? `Rebuild stems for ${stemTargetLabel}? Existing chord edits will be replaced. Existing stems will be replaced. On desktop, Demucs uses GPU when available; CPU rebuilds may take longer.`
+        : `Rebuild stems for ${stemTargetLabel}? Existing stems will be replaced. On desktop, Demucs uses GPU when available; CPU rebuilds may take longer.`;
       const approved = await confirm(
-        `Rebuild stems for ${stemTargetLabel}? Existing stems will be replaced. On desktop, Demucs uses GPU when available; CPU rebuilds may take longer.`,
+        rebuildMessage,
         {
           title: "Rebuild stems",
           kind: "warning",
@@ -791,9 +816,27 @@ export function useProjectViewModel() {
       if (!approved) {
         return;
       }
+      overwriteChordEdits = hasUserChordEdits;
+    } else if (hasUserChordEdits) {
+      const stemTargetLabel = selectedPrimaryArtifact
+        ? artifactLabel(selectedPrimaryArtifact)
+        : "selected audio";
+      const approved = await confirm(
+        `Generate stems for ${stemTargetLabel}? Existing chord edits will be replaced when chords refresh after stem generation. On desktop, Demucs uses GPU when available; CPU generation may take longer.`,
+        {
+          title: "Generate stems",
+          kind: "warning",
+          okLabel: "Generate",
+          cancelLabel: "Cancel",
+        },
+      );
+      if (!approved) {
+        return;
+      }
+      overwriteChordEdits = true;
     }
 
-    stemMutation.mutate();
+    stemMutation.mutate(overwriteChordEdits);
   }
 
   function toggleStemControl(

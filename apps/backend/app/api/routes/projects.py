@@ -33,6 +33,7 @@ from app.schemas import (
     TransposeRequest,
 )
 from app.services.artifacts import delete_project_artifact
+from app.services.chords import project_chord_detection_source
 from app.services.lyrics import update_project_lyrics
 from app.services.projects import (
     delete_project,
@@ -68,7 +69,10 @@ def create_project(
         session,
         project_id=project.id,
         job_type="chords",
-        payload=ChordRequest(backend="default", force=False).model_dump(),
+        payload={
+            **ChordRequest(backend="default", force=False).model_dump(),
+            "chord_source": "source",
+        },
     )
     session.commit()
     session.refresh(project)
@@ -145,12 +149,14 @@ def project_chords(
     session: Session = Depends(get_db),
     runner=Depends(get_job_runner),
 ) -> JobResponse:
-    get_project(session, project_id)
+    project = get_project(session, project_id)
+    job_payload = payload.model_dump()
+    job_payload["chord_source"] = project_chord_detection_source(project)
     job = runner.create_job(
         session,
         project_id=project_id,
         job_type="chords",
-        payload=payload.model_dump(),
+        payload=job_payload,
     )
     session.commit()
     session.refresh(job)

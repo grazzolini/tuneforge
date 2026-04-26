@@ -126,6 +126,7 @@ class AnalysisResponse(BaseModel):
 class ChordRequest(BaseModel):
     backend: str = "default"
     force: bool = False
+    overwrite_user_edits: bool = False
 
     @model_validator(mode="after")
     def validate_backend(self) -> ChordRequest:
@@ -147,10 +148,16 @@ class ChordResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     project_id: str
-    timeline: list[ChordSegmentSchema] = Field(default_factory=list, validation_alias="timeline_json")
+    source_segments: list[ChordSegmentSchema] = Field(
+        default_factory=list,
+        validation_alias="source_segments_json",
+    )
+    timeline: list[ChordSegmentSchema] = Field(default_factory=list, validation_alias="segments_json")
     backend: str | None = None
     source_artifact_id: str | None = None
+    has_user_edits: bool = False
     created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class LyricsGenerateRequest(BaseModel):
@@ -208,6 +215,7 @@ class JobSchema(BaseModel):
     status: str
     progress: int
     source_artifact_id: str | None = None
+    chord_source: str | None = None
     error_message: str | None
     runtime_device: str | None = None
     started_at: datetime | None = None
@@ -298,6 +306,7 @@ class StemRequest(BaseModel):
     output_format: str = "wav"
     force: bool = False
     source_artifact_id: str | None = None
+    overwrite_chord_edits: bool = False
 
     @model_validator(mode="after")
     def validate_stem_request(self) -> StemRequest:

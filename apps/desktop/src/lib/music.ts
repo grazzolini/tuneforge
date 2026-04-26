@@ -1,5 +1,5 @@
 export type KeyMode = "major" | "minor";
-export type ChordQuality = "major" | "minor";
+export type ChordQuality = "major" | "minor" | "7" | "maj7" | "m7" | "sus2" | "sus4" | "dim";
 export type EnharmonicDisplayMode = "auto" | "sharps" | "flats" | "neutral" | "dual";
 
 export type MusicalKey = {
@@ -256,14 +256,15 @@ export function formatChordLabel(
   quality: ChordQuality,
   options: PitchFormatOptions = {},
 ): string {
+  const suffix = chordQualitySuffix(quality);
   const noteName =
     options.mode === "dual"
-      ? formatDualPitchClass(pitchClass, quality === "minor" ? "m" : "")
+      ? formatDualPitchClass(pitchClass, suffix)
       : formatChordRoot(pitchClass, options);
   if (options.mode === "dual") {
     return noteName;
   }
-  return quality === "minor" ? `${noteName}m` : noteName;
+  return `${noteName}${suffix}`;
 }
 
 export function formatChordDisplay(
@@ -313,7 +314,20 @@ export function formatAlternateChordLabel(
   if (!alternateRoot) {
     return null;
   }
-  return quality === "minor" ? `${alternateRoot}m` : alternateRoot;
+  return `${alternateRoot}${chordQualitySuffix(quality)}`;
+}
+
+export function isSupportedChordQuality(quality: string | null | undefined): quality is ChordQuality {
+  return (
+    quality === "major" ||
+    quality === "minor" ||
+    quality === "7" ||
+    quality === "maj7" ||
+    quality === "m7" ||
+    quality === "sus2" ||
+    quality === "sus4" ||
+    quality === "dim"
+  );
 }
 
 export function formatRawMusicalLabel(label: string): FormattedMusicalLabel {
@@ -375,7 +389,7 @@ function formatDualChordLabels(
   quality: ChordQuality,
 ): { primaryLabel: string; secondaryLabel: string | null } {
   const { primaryRoot, secondaryRoot } = getDualPitchClassParts(pitchClass);
-  const suffix = quality === "minor" ? "m" : "";
+  const suffix = chordQualitySuffix(quality);
   return {
     primaryLabel: `${primaryRoot}${suffix}`,
     secondaryLabel: secondaryRoot ? `${secondaryRoot}${suffix}` : null,
@@ -400,4 +414,25 @@ function formatDualPitchClass(pitchClass: number, suffix = ""): string {
     return `${sharpLabel}${suffix}`;
   }
   return `${sharpLabel}${suffix}/${flatLabel}${suffix}`;
+}
+
+function chordQualitySuffix(quality: ChordQuality): string {
+  switch (quality) {
+    case "major":
+      return "";
+    case "minor":
+      return "m";
+    case "7":
+      return "7";
+    case "maj7":
+      return "maj7";
+    case "m7":
+      return "m7";
+    case "sus2":
+      return "sus2";
+    case "sus4":
+      return "sus4";
+    case "dim":
+      return "dim";
+  }
 }

@@ -2,6 +2,7 @@ import type { ArtifactSchema, ChordSegmentSchema, JobSchema, LyricsSegmentSchema
 import { formatLocalDateTime } from "../../lib/datetime";
 import {
   formatChordLabel,
+  isSupportedChordQuality,
   type EnharmonicDisplayMode,
   type MusicalKey,
   transposePitchClass,
@@ -98,6 +99,7 @@ export function formatJobDuration(durationSeconds: number | null | undefined) {
 export function formatJobStatusSummary(job: JobSchema) {
   return [
     job.status,
+    job.type === "chords" ? job.chord_source : null,
     typeof job.runtime_device === "string" ? job.runtime_device.toUpperCase() : null,
     formatJobDuration(job.duration_seconds),
   ]
@@ -218,7 +220,7 @@ export function transposeChordSegment(
 ): ChordSegmentSchema {
   if (
     typeof segment.pitch_class !== "number" ||
-    (segment.quality !== "major" && segment.quality !== "minor")
+    !isSupportedChordQuality(segment.quality)
   ) {
     return segment;
   }

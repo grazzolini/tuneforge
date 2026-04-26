@@ -16,6 +16,7 @@ import {
   mockSave,
   mockUpdateProject,
   renderApp,
+  setProjectChords,
   setAudioPlaybackState,
   setDeferredPreviewCompletion,
   setProjects,
@@ -672,6 +673,76 @@ describe("Desktop app project playback stems", () => {
       expect.objectContaining({
         force: true,
         source_artifact_id: "art_source",
+      }),
+    );
+  });
+
+  it("warns before source stem generation can replace chord edits", async () => {
+    const user = userEvent.setup();
+    const timeline = [
+      { start_seconds: 0, end_seconds: 16, label: "G", confidence: 0.81, pitch_class: 7, quality: "major" },
+    ];
+    setProjectChords("proj_123", {
+      project_id: "proj_123",
+      backend: "librosa",
+      source_artifact_id: "art_source",
+      source_segments: timeline,
+      timeline,
+      has_user_edits: true,
+      created_at: "2026-04-18T13:16:00.000Z",
+      updated_at: "2026-04-18T13:16:00.000Z",
+    });
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+
+    expect(mockConfirm).toHaveBeenCalledWith(
+      expect.stringContaining("Existing chord edits will be replaced"),
+      expect.objectContaining({
+        title: "Generate stems",
+        kind: "warning",
+        okLabel: "Generate",
+      }),
+    );
+    expect(mockCreateStems).toHaveBeenCalledWith(
+      "proj_123",
+      expect.objectContaining({
+        force: false,
+        overwrite_chord_edits: true,
+        source_artifact_id: "art_source",
+      }),
+    );
+  });
+
+  it("does not warn about chord edits for practice mix stem generation", async () => {
+    const user = userEvent.setup();
+    const timeline = [
+      { start_seconds: 0, end_seconds: 16, label: "G", confidence: 0.81, pitch_class: 7, quality: "major" },
+    ];
+    setProjectChords("proj_123", {
+      project_id: "proj_123",
+      backend: "librosa",
+      source_artifact_id: "art_source",
+      source_segments: timeline,
+      timeline,
+      has_user_edits: true,
+      created_at: "2026-04-18T13:16:00.000Z",
+      updated_at: "2026-04-18T13:16:00.000Z",
+    });
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const savedMixList = screen.getByRole("group", { name: "Saved mix list" });
+    await user.click(within(savedMixList).getByRole("button", { name: /Practice Mix/i }));
+    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+
+    expect(mockConfirm).not.toHaveBeenCalled();
+    expect(mockCreateStems).toHaveBeenCalledWith(
+      "proj_123",
+      expect.objectContaining({
+        overwrite_chord_edits: false,
+        source_artifact_id: "art_preview",
       }),
     );
   });

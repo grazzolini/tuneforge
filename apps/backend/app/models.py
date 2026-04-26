@@ -56,7 +56,7 @@ class AnalysisResult(Base):
     estimated_reference_hz: Mapped[float | None] = mapped_column(Float(), nullable=True)
     tuning_offset_cents: Mapped[float | None] = mapped_column(Float(), nullable=True)
     tempo_bpm: Mapped[float | None] = mapped_column(Float(), nullable=True)
-    analysis_version: Mapped[str] = mapped_column(String(32), default="v1")
+    analysis_version: Mapped[str] = mapped_column(String(32), default="v2")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     project: Mapped[Project] = relationship(back_populates="analysis")
@@ -71,7 +71,13 @@ class ChordTimeline(Base):
     backend: Mapped[str] = mapped_column(String(64), default="default")
     source_artifact_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     timeline_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON(), default=list)
+    source_segments_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON(), default=list)
+    segments_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON(), default=list)
+    has_user_edits: Mapped[bool] = mapped_column(Boolean(), default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=True
+    )
 
     project: Mapped[Project] = relationship(back_populates="chords")
 
@@ -147,6 +153,13 @@ class Job(Base):
     @property
     def source_artifact_id(self) -> str | None:
         value = self.payload_json.get("source_artifact_id")
+        return value if isinstance(value, str) else None
+
+    @property
+    def chord_source(self) -> str | None:
+        if self.type != "chords":
+            return None
+        value = self.payload_json.get("chord_source")
         return value if isinstance(value, str) else None
 
 

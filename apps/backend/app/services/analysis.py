@@ -25,7 +25,7 @@ def analyze_project(session: Session, project: Project) -> AnalysisResult:
     analysis.estimated_reference_hz = results["estimated_reference_hz"]  # type: ignore[assignment]
     analysis.tuning_offset_cents = results["tuning_offset_cents"]  # type: ignore[assignment]
     analysis.tempo_bpm = results["tempo_bpm"]  # type: ignore[assignment]
-    analysis.analysis_version = "v1"
+    analysis.analysis_version = "v2"
     session.flush()
 
     analysis_path = project_analysis_dir(project.id) / "analysis.json"

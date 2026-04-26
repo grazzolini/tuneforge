@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { ChordSegmentSchema, LyricsSegmentSchema } from "../../lib/api";
-import { buildLeadSheetRows } from "./projectViewUtils";
+import type { ChordSegmentSchema, JobSchema, LyricsSegmentSchema } from "../../lib/api";
+import { buildLeadSheetRows, formatJobStatusSummary, transposeChordSegment } from "./projectViewUtils";
 
 function chord(startSeconds: number, endSeconds: number, label: string): ChordSegmentSchema {
   return {
@@ -93,5 +93,70 @@ describe("buildLeadSheetRows", () => {
 
     expect(rows.map((row) => row.type)).toEqual(["chords", "lyrics", "chords"]);
     expect(rows[2]?.isActive).toBe(true);
+  });
+});
+
+describe("transposeChordSegment", () => {
+  it("transposes supported chord extensions", () => {
+    const segment: ChordSegmentSchema = {
+      confidence: 0.9,
+      end_seconds: 4,
+      label: "Cmaj7",
+      pitch_class: 0,
+      quality: "maj7",
+      start_seconds: 0,
+    };
+
+    expect(
+      transposeChordSegment(segment, 2, {
+        activeKey: { pitchClass: 2, mode: "major" },
+        mode: "auto",
+      }),
+    ).toMatchObject({
+      label: "Dmaj7",
+      pitch_class: 2,
+      quality: "maj7",
+    });
+  });
+
+  it("keeps unknown chord qualities as backend fallbacks", () => {
+    const segment: ChordSegmentSchema = {
+      confidence: 0.9,
+      end_seconds: 4,
+      label: "C6",
+      pitch_class: 0,
+      quality: "6",
+      start_seconds: 0,
+    };
+
+    expect(
+      transposeChordSegment(segment, 2, {
+        activeKey: { pitchClass: 2, mode: "major" },
+        mode: "auto",
+      }),
+    ).toBe(segment);
+  });
+});
+
+describe("formatJobStatusSummary", () => {
+  it("includes chord detection source for chord jobs", () => {
+    const job: JobSchema = {
+      chord_source: "source+stem",
+      completed_at: "2026-04-18T13:16:14.000Z",
+      created_at: "2026-04-18T13:16:00.000Z",
+      duration_seconds: 14,
+      error_message: null,
+      id: "job_chords",
+      progress: 100,
+      project_id: "proj_123",
+      runtime_device: null,
+      source_artifact_id: null,
+      started_at: "2026-04-18T13:16:00.000Z",
+      status: "completed",
+      type: "chords",
+      updated_at: "2026-04-18T13:16:14.000Z",
+    };
+
+    expect(formatJobStatusSummary(job)).toBe("completed / source+stem / 14 s");
   });
 });

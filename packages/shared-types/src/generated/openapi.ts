@@ -424,19 +424,33 @@ export interface components {
              * @default false
              */
             force: boolean;
+            /**
+             * Overwrite User Edits
+             * @default false
+             */
+            overwrite_user_edits: boolean;
         };
         /** ChordResponse */
         ChordResponse: {
             /** Project Id */
             project_id: string;
+            /** Source Segments */
+            source_segments?: components["schemas"]["ChordSegmentSchema"][];
             /** Timeline */
             timeline?: components["schemas"]["ChordSegmentSchema"][];
             /** Backend */
             backend?: string | null;
             /** Source Artifact Id */
             source_artifact_id?: string | null;
+            /**
+             * Has User Edits
+             * @default false
+             */
+            has_user_edits: boolean;
             /** Created At */
             created_at?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
         };
         /** ChordSegmentSchema */
         ChordSegmentSchema: {
@@ -515,6 +529,8 @@ export interface components {
             progress: number;
             /** Source Artifact Id */
             source_artifact_id?: string | null;
+            /** Chord Source */
+            chord_source?: string | null;
             /** Error Message */
             error_message: string | null;
             /** Runtime Device */
@@ -728,6 +744,11 @@ export interface components {
             force: boolean;
             /** Source Artifact Id */
             source_artifact_id?: string | null;
+            /**
+             * Overwrite Chord Edits
+             * @default false
+             */
+            overwrite_chord_edits: boolean;
         };
         /** TransposeRequest */
         TransposeRequest: {

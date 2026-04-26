@@ -87,17 +87,21 @@ const {
   }
 
   function makeChordTimeline(projectId: string) {
+    const timeline = [
+      { start_seconds: 0, end_seconds: 16, label: "G", confidence: 0.81, pitch_class: 7, quality: "major" },
+      { start_seconds: 16, end_seconds: 32, label: "D", confidence: 0.79, pitch_class: 2, quality: "major" },
+      { start_seconds: 32, end_seconds: 48, label: "Em", confidence: 0.74, pitch_class: 4, quality: "minor" },
+      { start_seconds: 48, end_seconds: 64, label: "C", confidence: 0.76, pitch_class: 0, quality: "major" },
+    ];
     return {
       project_id: projectId,
-      backend: "default",
+      backend: "librosa",
       source_artifact_id: "art_source",
+      source_segments: clone(timeline),
+      has_user_edits: false,
       created_at: createdAt,
-      timeline: [
-        { start_seconds: 0, end_seconds: 16, label: "G", confidence: 0.81, pitch_class: 7, quality: "major" },
-        { start_seconds: 16, end_seconds: 32, label: "D", confidence: 0.79, pitch_class: 2, quality: "major" },
-        { start_seconds: 32, end_seconds: 48, label: "Em", confidence: 0.74, pitch_class: 4, quality: "minor" },
-        { start_seconds: 48, end_seconds: 64, label: "C", confidence: 0.76, pitch_class: 0, quality: "major" },
-      ],
+      updated_at: createdAt,
+      timeline: clone(timeline),
     };
   }
 
@@ -344,7 +348,10 @@ const {
         project_id: projectId,
         backend: null,
         source_artifact_id: null,
+        source_segments: [],
         created_at: null,
+        has_user_edits: false,
+        updated_at: null,
         timeline: [],
       },
     ),
@@ -367,7 +374,6 @@ const {
   const mockListArtifacts = vi.fn(async (projectId: string) => ({ artifacts: clone(state.artifactsByProject[projectId] ?? []) }));
   const mockListJobs = vi.fn(async () => ({ jobs: clone(state.jobs) }));
   const mockCreateChords = vi.fn(async (projectId: string, body?: Record<string, unknown>) => {
-    void body;
     state.chordsByProject[projectId] = makeChordTimeline(projectId);
     const job = {
       id: `job_${state.nextJobId++}`,
@@ -375,6 +381,7 @@ const {
       type: "chords",
       status: "completed",
       progress: 100,
+      chord_source: body?.chord_source ?? "source",
       error_message: null,
       created_at: createdAt,
       updated_at: createdAt,
@@ -432,7 +439,10 @@ const {
     state.jobs.unshift(job);
     return { job: clone(job) };
   });
-  const mockCreateStems = vi.fn(async (projectId: string, body: { source_artifact_id?: string; force?: boolean }) => {
+  const mockCreateStems = vi.fn(async (
+    projectId: string,
+    body: { source_artifact_id?: string; force?: boolean; overwrite_chord_edits?: boolean },
+  ) => {
     const sourceArtifactId = body.source_artifact_id ?? "art_source";
     state.artifactsByProject[projectId] = (state.artifactsByProject[projectId] ?? []).filter((artifact) => {
       if (artifact.type !== "vocal_stem" && artifact.type !== "instrumental_stem") return true;

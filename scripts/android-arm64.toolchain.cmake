@@ -1,0 +1,16 @@
+set(ANDROID_ABI arm64-v8a)
+set(CMAKE_ANDROID_ARCH_ABI arm64-v8a)
+set(ANDROID_PLATFORM android-24)
+set(CMAKE_SYSTEM_VERSION 24)
+set(ANDROID_USE_LEGACY_TOOLCHAIN_FILE OFF)
+set(ANDROID_ABI arm64-v8a CACHE STRING "Android ABI" FORCE)
+set(CMAKE_ANDROID_ARCH_ABI arm64-v8a CACHE STRING "Android ABI" FORCE)
+set(ANDROID_PLATFORM android-24 CACHE STRING "Android platform" FORCE)
+set(CMAKE_SYSTEM_VERSION 24 CACHE STRING "Android API level" FORCE)
+set(ANDROID_USE_LEGACY_TOOLCHAIN_FILE OFF CACHE BOOL "Use modern Android NDK CMake toolchain" FORCE)
+
+if(NOT DEFINED ENV{ANDROID_NDK_HOME})
+  message(FATAL_ERROR "ANDROID_NDK_HOME is required for the TuneForge Android arm64 toolchain.")
+endif()
+
+include("$ENV{ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake")

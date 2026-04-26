@@ -11,7 +11,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.0.2", features = [] }
 
 [dependencies]
-tauri = { version = "2.5.0", features = [] }
+tauri = { version = "2.5.0", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2.2.1"
 tauri-plugin-fs = "2.5.0"
 serde = { version = "1", features = ["derive"] }
@@ -19,4 +19,7 @@ serde_json = "1"
 chrono = { version = "0.4.44", features = ["serde"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
+android_system_properties = "0.1.5"
+ndk-sys = { version = "0.6.0", features = ["media"] }
 rusqlite = { version = "0.32.1", features = ["bundled"] }
+whisper-rs = "0.16.0"

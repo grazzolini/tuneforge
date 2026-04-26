@@ -164,7 +164,11 @@ async function invokeMobile<T>(command: string, args?: Record<string, unknown>) 
 
 function rememberArtifactPaths(artifacts: ArtifactSchema[]) {
   artifacts.forEach((artifact) => {
-    mobileArtifactPaths.set(artifact.id, artifact.path);
+    const playbackPath =
+      typeof artifact.metadata.playback_path === "string"
+        ? artifact.metadata.playback_path
+        : artifact.path;
+    mobileArtifactPaths.set(artifact.id, playbackPath);
   });
 }
 

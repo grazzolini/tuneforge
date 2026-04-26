@@ -55,6 +55,24 @@ Tuneforge is distributed under the [MIT License](./LICENSE). It depends on third
 - **Source:** <https://github.com/rusqlite/rusqlite> and <https://sqlite.org/>
 - **Notes:** Used by the embedded Android backend. Desktop persistence remains in the Python backend.
 
+### android_system_properties
+
+- **License:** Apache-2.0 / MIT (dual)
+- **Source:** <https://github.com/nical/android_system_properties>
+- **Notes:** Used by the embedded Android backend to detect emulator runtimes for debug-only flow testing.
+
+### ndk-sys
+
+- **License:** Apache-2.0 / MIT (dual)
+- **Source:** <https://github.com/rust-mobile/ndk>
+- **Notes:** Used by the embedded Android backend to call Android NDK media decode APIs.
+
+### whisper-rs / whisper.cpp
+
+- **License:** Unlicense for whisper-rs; MIT for whisper.cpp
+- **Source:** <https://codeberg.org/tazz4843/whisper-rs> and <https://github.com/ggml-org/whisper.cpp>
+- **Notes:** Used by the embedded Android backend for debug side-loaded local lyrics transcription. Tuneforge does not redistribute Whisper model weights in this MVP.
+
 ### React, Vite, TanStack Query, openapi-fetch, openapi-typescript
 
 - See each project's own license. All are permissively licensed.

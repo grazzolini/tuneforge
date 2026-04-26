@@ -13,40 +13,60 @@ The frontend talks through a `TuneForgeClient` boundary. Desktop uses the existi
 
 ## Android Embedded Backend
 
-Rust owns mobile project persistence, artifact records, job records, and app data paths. Kotlin/Android is the intended bridge for platform-only work:
+Rust owns mobile project persistence, artifact records, job records, and app data paths. Kotlin/Android or Rust NDK bindings are the intended bridge for platform-only work:
 
 - `content://` import resolution and permissions
 - Android media decode/encode through `MediaExtractor`, `MediaCodec`, `MediaMuxer`, and Media3 Transformer
 - GPU/NPU capability probes
-- future native ML runtime integration
+- native ML runtime integration
 
-The current Rust command surface is present even when generation is unavailable. Generation commands must fail closed if accelerated local inference is not available.
+The current Rust command surface is present even when generation is unavailable. Generation commands must fail closed if required local inference assets are unavailable.
 
-## GPU-Only Generation
+## Mobile Processing Gates
 
-Mobile ML generation has no CPU fallback. Capability detection returns:
+Analyze and basic chord detection may run on CPU. Lyrics transcription may also run locally on CPU when a debug side-loaded `whisper.cpp` ggml model is present in app-private storage. Stem separation and other heavier generation paths stay unavailable until a native local runtime is wired. Capability detection returns:
 
 - `gpuBackend`: `vulkan`, `nnapi`, `qnn`, `coreml`, or `null`
+- `isEmulator`
+- `analysisAvailable`
+- `basicChordsAvailable`
 - `whisperAvailable`
 - `stemSeparationAvailable`
+- `generationTestingAvailable`
 - `maxRecommendedModel`
 - `cpuFallbackAllowed: false`
 
-If required acceleration is unavailable, the UI disables generation and shows:
+If the local Whisper model is missing, the UI disables lyrics generation and shows:
 
 ```text
-Local generation requires GPU acceleration on this device.
+Side-load a Whisper model to enable local lyrics. Stem generation is unavailable on this device.
 ```
+
+Debug Android emulator builds may set `generationTestingAvailable` so unavailable generation buttons can submit jobs during UI flow testing. This does not report Whisper or stem separation as available. Once a Whisper model is side-loaded, lyrics use the real local transcription path; stems still fail closed with an explicit unavailable message.
+
+For debug lyrics testing, side-load one of these files before launching the app:
+
+```sh
+adb push ggml-base.bin /data/local/tmp/ggml-base.bin
+adb shell run-as com.tuneforge.desktop mkdir -p models/whisper
+adb shell run-as com.tuneforge.desktop cp /data/local/tmp/ggml-base.bin models/whisper/ggml-base.bin
+```
+
+The supported lookup priority is `ggml-base.bin`, `ggml-base.en.bin`, `ggml-tiny.bin`, then
+`ggml-tiny.en.bin`.
 
 ## FFmpeg Policy
 
 Mobile does not bundle FFmpeg. Android uses platform media APIs instead.
 
 - Import keeps the original file inside app storage.
-- Decode for waveform/ML uses Android media decode APIs.
+- WAV/PCM can be read directly for CPU analysis and basic chord detection.
+- Compressed audio should decode through Android media APIs before waveform or ML processing.
 - Mobile internal generated audio should prefer `m4a`/AAC first.
-- Desktop keeps WAV intermediates and `wav`/`mp3`/`flac` exports through host-installed FFmpeg.
+- Desktop currently keeps WAV intermediates and `wav`/`mp3`/`flac` exports through host-installed FFmpeg.
 - Unsupported mobile export formats stay unavailable until a native encoder path exists.
+
+Future desktop refinement: consider matching the mobile storage model by keeping the original import as the canonical source and creating normalized PCM/WAV files only as disposable derived cache. Analysis, chords, and feature data should stay cached separately so repeated desktop workflows do not require persistent full-size WAV copies.
 
 ## Android Setup
 

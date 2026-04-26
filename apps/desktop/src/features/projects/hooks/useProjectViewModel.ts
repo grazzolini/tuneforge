@@ -220,7 +220,13 @@ export function useProjectViewModel() {
   const analyzeMutation = useMutation({
     mutationFn: () => api.analyzeProject(projectId),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
+        queryClient.invalidateQueries({ queryKey: ["analysis", projectId] }),
+        queryClient.invalidateQueries({ queryKey: ["artifacts", projectId] }),
+        queryClient.invalidateQueries({ queryKey: ["project", projectId] }),
+        queryClient.invalidateQueries({ queryKey: ["projects"] }),
+      ]);
     },
   });
 
@@ -544,13 +550,27 @@ export function useProjectViewModel() {
   const isStemRunning = Boolean(stemJob && ["pending", "running"].includes(stemJob.status));
   const mobileCapabilities = mobileCapabilitiesQuery.data ?? null;
   const isMobileRuntime = mobileCapabilities !== null;
+  const mobileGenerationTestingAvailable =
+    mobileCapabilities?.generationTestingAvailable === true;
   const mobileGenerationMessage = isMobileRuntime
-    ? "Local generation requires GPU acceleration on this device."
+    ? mobileCapabilities?.whisperAvailable === true
+      ? mobileCapabilities.stemSeparationAvailable === true
+        ? null
+        : "Local lyrics are available. Stem generation is unavailable on this device."
+      : mobileGenerationTestingAvailable
+        ? "Emulator generation actions are enabled for flow testing; lyrics and stem engines are still unavailable."
+        : "Side-load a Whisper model to enable local lyrics. Stem generation is unavailable on this device."
     : null;
-  const canAnalyze = !isMobileRuntime || mobileCapabilities?.gpuBackend != null;
-  const canGenerateLyrics = !isMobileRuntime || mobileCapabilities?.whisperAvailable === true;
-  const canGenerateStems = !isMobileRuntime || mobileCapabilities?.stemSeparationAvailable === true;
-  const canGenerateChords = !isMobileRuntime || mobileCapabilities?.gpuBackend != null;
+  const canAnalyze = !isMobileRuntime || mobileCapabilities?.analysisAvailable === true;
+  const canGenerateLyrics =
+    !isMobileRuntime ||
+    mobileCapabilities?.whisperAvailable === true ||
+    mobileGenerationTestingAvailable;
+  const canGenerateStems =
+    !isMobileRuntime ||
+    mobileCapabilities?.stemSeparationAvailable === true ||
+    mobileGenerationTestingAvailable;
+  const canGenerateChords = !isMobileRuntime || mobileCapabilities?.basicChordsAvailable === true;
   const currentKeyValue = sourceKeyOverride ? serializeKey(sourceKeyOverride) : "auto";
   const hasVisibleStems = visibleStemArtifacts.length > 0;
   const stemErrorMessage =

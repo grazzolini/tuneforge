@@ -3,19 +3,36 @@ import {
   artifactSummary,
   formatArtifactTimestamp,
 } from "../projectViewUtils";
+import { TargetKeySelector } from "./TargetKeySelector";
 import { useProjectViewModelContext } from "./useProjectViewModelContext";
 
 export function PlaybackPracticeRail() {
   const {
+    capoKey,
+    capoOptionRefs,
+    capoSelectionSummary,
+    capoSelectorOpen,
+    capoSelectorRef,
+    capoSemitones,
+    capoShiftSummary,
+    enharmonicDisplayMode,
     handleSelectPrimaryArtifact,
     handleSelectStemArtifact,
+    higherCapoPreview,
+    higherTargetShiftOptions,
+    informationDensity,
     isStemPlayback,
+    lowerCapoPreview,
+    lowerTargetShiftOptions,
     previewArtifacts,
     selectedArtifactId,
     selectedArtifactTimestamp,
     selectedPlaybackArtifact,
     selectedPrimaryArtifact,
+    setCapoSelectorOpen,
+    setCapoTransposeSemitones,
     sourceArtifact,
+    sourceKey,
     stageModeLabel,
     stageSummary,
     stageTitle,
@@ -24,24 +41,54 @@ export function PlaybackPracticeRail() {
     toggleStemControl,
     visibleStemArtifacts,
   } = useProjectViewModelContext();
+  const showHeaderDetails =
+    informationDensity === "detailed" || selectedPlaybackArtifact?.type !== "source_audio";
 
   return (
     <aside className="panel playback-practice-rail">
       <div className="playback-practice-rail__header">
         <p className="metric-label">Playback</p>
         <h2>{stageTitle}</h2>
-        <p className="artifact-meta">{stageSummary}</p>
-        <div className="playback-workspace__summary-meta playback-workspace__summary-meta--inline">
-          <span>{stageModeLabel}</span>
-          {selectedArtifactTimestamp ? <span>{selectedArtifactTimestamp}</span> : null}
-          {selectedPlaybackArtifact ? (
-            <span>
-              {artifactSummary(selectedPlaybackArtifact) ||
-                formatArtifactTimestamp(selectedPlaybackArtifact.created_at)}
-            </span>
-          ) : null}
-        </div>
+        {showHeaderDetails ? <p className="artifact-meta">{stageSummary}</p> : null}
+        {showHeaderDetails ? (
+          <div className="playback-workspace__summary-meta playback-workspace__summary-meta--inline">
+            <span>{stageModeLabel}</span>
+            {selectedArtifactTimestamp ? <span>{selectedArtifactTimestamp}</span> : null}
+            {selectedPlaybackArtifact ? (
+              <span>
+                {artifactSummary(selectedPlaybackArtifact) ||
+                  formatArtifactTimestamp(selectedPlaybackArtifact.created_at)}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
       </div>
+
+      <section className="playback-capo-control">
+        <TargetKeySelector
+          currentKey={capoKey}
+          currentMeta={capoSelectionSummary}
+          enharmonicDisplayMode={enharmonicDisplayMode}
+          headingLabel="Transpose / Capo"
+          higherButtonLabel="Raise capo shift"
+          higherPreview={higherCapoPreview}
+          higherTargetShiftOptions={higherTargetShiftOptions}
+          isOpen={capoSelectorOpen}
+          listboxLabel="Capo shift options"
+          lowerButtonLabel="Lower capo shift"
+          lowerPreview={lowerCapoPreview}
+          lowerTargetShiftOptions={lowerTargetShiftOptions}
+          optionRefs={capoOptionRefs}
+          selectorLabel="Capo Shift"
+          selectorRef={capoSelectorRef}
+          setIsOpen={setCapoSelectorOpen}
+          setSemitones={setCapoTransposeSemitones}
+          showCompactControls
+          sourceKey={sourceKey}
+          value={capoSemitones}
+        />
+        <p className="artifact-meta playback-capo-control__summary">{capoShiftSummary}</p>
+      </section>
 
       <section className="playback-picker-group playback-picker-group--compact">
         <div className="playback-picker-group__header">

@@ -108,6 +108,8 @@ describe("Desktop app settings theme", () => {
       defaultChordBackend: "tuneforge-fast",
       defaultLyricsFollowEnabled: true,
       defaultChordsFollowEnabled: true,
+      defaultTunerInputDeviceId: null,
+      defaultTunerReferenceHz: 440,
     });
   });
 

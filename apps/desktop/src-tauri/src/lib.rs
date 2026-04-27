@@ -249,6 +249,40 @@ fn development_backend() -> BackendRuntime {
     BackendRuntime::new(base_url, None)
 }
 
+#[cfg(target_os = "linux")]
+fn install_linux_media_permission_handler(
+    app: &AppHandle,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(webview) = app.get_webview("main") {
+        webview.with_webview(|webview| {
+            use webkit2gtk::prelude::*;
+
+            webview.inner().connect_permission_request(|_, request| {
+                let request_type = request.type_().name();
+                if request_type.as_str().contains("DeviceInfoPermissionRequest") {
+                    request.allow();
+                    return true;
+                }
+
+                if request_type.as_str().contains("UserMediaPermissionRequest") {
+                    let is_audio = request.property::<bool>("is-for-audio-device");
+                    let is_video = request.property::<bool>("is-for-video-device");
+                    if is_audio && !is_video {
+                        request.allow();
+                    } else {
+                        request.deny();
+                    }
+                    return true;
+                }
+
+                false
+            });
+        })?;
+    }
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -264,6 +298,8 @@ pub fn run() {
                 spawn_packaged_backend(app.handle())?
             };
             app.manage(runtime);
+            #[cfg(target_os = "linux")]
+            install_linux_media_permission_handler(app.handle())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

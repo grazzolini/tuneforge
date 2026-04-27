@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Link } from "react-router-dom";
 import { api, type ChordBackendSchema } from "../../lib/api";
+import { TunerPreferenceControls } from "../tools/TunerPreferenceControls";
 import {
   usePreferences,
   type DefaultChordBackend,
@@ -191,6 +192,10 @@ function chordBackendLabel(value: DefaultChordBackend) {
   return value === "crema-advanced" ? "Advanced Chords" : "Built-in Chords";
 }
 
+function tunerInputDeviceLabel(value: string | null) {
+  return value ? "Saved microphone" : "System Default";
+}
+
 function chordBackendOptions(backends: ChordBackendSchema[] | undefined): ChoiceOption<DefaultChordBackend>[] {
   if (!backends?.length) {
     return fallbackChordBackendOptions;
@@ -295,6 +300,8 @@ export function SettingsView() {
     defaultChordBackend,
     defaultLyricsFollowEnabled,
     defaultChordsFollowEnabled,
+    defaultTunerInputDeviceId,
+    defaultTunerReferenceHz,
     setInformationDensity,
     setEnharmonicDisplayMode,
     setDefaultInspectorOpen,
@@ -304,9 +311,12 @@ export function SettingsView() {
     setDefaultChordBackend,
     setDefaultLyricsFollowEnabled,
     setDefaultChordsFollowEnabled,
+    setDefaultTunerInputDeviceId,
+    setDefaultTunerReferenceHz,
     resetAppearancePreferences,
     resetNotationPreferences,
     resetAnalysisPreferences,
+    resetTunerPreferences,
     resetVisibilityPreferences,
     resetPreferences,
     replacePreferences,
@@ -342,6 +352,10 @@ export function SettingsView() {
     resetAnalysisPreferences();
   }
 
+  function handleResetTunerDefaults() {
+    resetTunerPreferences();
+  }
+
   function handleResetAllSettings() {
     setThemePreference(DEFAULT_THEME_PREFERENCE);
     resetThemeOverrides();
@@ -368,6 +382,8 @@ export function SettingsView() {
           defaultChordBackend,
           defaultInspectorOpen,
           defaultPlaybackDisplayMode,
+          defaultTunerInputDeviceId,
+          defaultTunerReferenceHz,
           defaultLyricsFollowEnabled,
           defaultProjectWorkspace,
           defaultSourcesRailCollapsed,
@@ -442,6 +458,7 @@ export function SettingsView() {
             <span className="pill">Theme</span>
             <span className="pill">Density</span>
             <span className="pill">Musical notation</span>
+            <span className="pill">Tuner</span>
             <span className="pill">Chord backend</span>
             <span className="pill">Playback defaults</span>
           </div>
@@ -483,6 +500,14 @@ export function SettingsView() {
           <div className="settings-overview__stat">
             <dt>Chord backend</dt>
             <dd>{chordBackendLabel(defaultChordBackend)}</dd>
+          </div>
+          <div className="settings-overview__stat">
+            <dt>Tuner mic</dt>
+            <dd>{tunerInputDeviceLabel(defaultTunerInputDeviceId)}</dd>
+          </div>
+          <div className="settings-overview__stat">
+            <dt>A4 reference</dt>
+            <dd>{defaultTunerReferenceHz.toFixed(1)} Hz</dd>
           </div>
           <div className="settings-overview__stat">
             <dt>Playback follow</dt>
@@ -541,6 +566,28 @@ export function SettingsView() {
           <div className="button-row">
             <button className="button button--ghost button--small" onClick={handleResetAppearance} type="button">
               Reset Appearance
+            </button>
+          </div>
+        </div>
+
+        <div className="panel settings-panel">
+          <div className="panel-heading">
+            <div>
+              <h2>Tuner Defaults</h2>
+              <p className="subpanel__copy">Default microphone source and A4 reference.</p>
+            </div>
+          </div>
+
+          <TunerPreferenceControls
+            inputDeviceId={defaultTunerInputDeviceId}
+            onInputDeviceChange={setDefaultTunerInputDeviceId}
+            onReferenceHzChange={setDefaultTunerReferenceHz}
+            referenceHz={defaultTunerReferenceHz}
+          />
+
+          <div className="button-row">
+            <button className="button button--ghost button--small" onClick={handleResetTunerDefaults} type="button">
+              Reset Tuner Defaults
             </button>
           </div>
         </div>

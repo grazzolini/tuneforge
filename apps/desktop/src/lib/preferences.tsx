@@ -16,6 +16,10 @@ export type DefaultPlaybackDisplayMode = "auto" | PlaybackDisplayMode;
 export type DefaultChordBackend = "tuneforge-fast" | "crema-advanced";
 export type { EnharmonicDisplayMode };
 
+export const DEFAULT_TUNER_REFERENCE_HZ = 440;
+export const MIN_TUNER_REFERENCE_HZ = 400;
+export const MAX_TUNER_REFERENCE_HZ = 480;
+
 export type UiPreferences = {
   informationDensity: InformationDensity;
   enharmonicDisplayMode: EnharmonicDisplayMode;
@@ -26,11 +30,17 @@ export type UiPreferences = {
   defaultChordBackend: DefaultChordBackend;
   defaultLyricsFollowEnabled: boolean;
   defaultChordsFollowEnabled: boolean;
+  defaultTunerInputDeviceId: string | null;
+  defaultTunerReferenceHz: number;
 };
 
 export type AppearancePreferences = Pick<UiPreferences, "informationDensity">;
 export type NotationPreferences = Pick<UiPreferences, "enharmonicDisplayMode">;
 export type AnalysisPreferences = Pick<UiPreferences, "defaultChordBackend">;
+export type TunerPreferences = Pick<
+  UiPreferences,
+  "defaultTunerInputDeviceId" | "defaultTunerReferenceHz"
+>;
 export type VisibilityPreferences = Pick<
   UiPreferences,
   | "defaultInspectorOpen"
@@ -51,10 +61,13 @@ type PreferencesContextValue = UiPreferences & {
   setDefaultChordBackend: (value: DefaultChordBackend) => void;
   setDefaultLyricsFollowEnabled: (value: boolean) => void;
   setDefaultChordsFollowEnabled: (value: boolean) => void;
+  setDefaultTunerInputDeviceId: (value: string | null) => void;
+  setDefaultTunerReferenceHz: (value: number) => void;
   replacePreferences: (value: UiPreferences) => void;
   resetAppearancePreferences: () => void;
   resetNotationPreferences: () => void;
   resetAnalysisPreferences: () => void;
+  resetTunerPreferences: () => void;
   resetVisibilityPreferences: () => void;
   resetPreferences: () => void;
 };
@@ -73,6 +86,11 @@ export const DEFAULT_ANALYSIS_PREFERENCES: AnalysisPreferences = {
   defaultChordBackend: "tuneforge-fast",
 };
 
+export const DEFAULT_TUNER_PREFERENCES: TunerPreferences = {
+  defaultTunerInputDeviceId: null,
+  defaultTunerReferenceHz: DEFAULT_TUNER_REFERENCE_HZ,
+};
+
 export const DEFAULT_VISIBILITY_PREFERENCES: VisibilityPreferences = {
   defaultInspectorOpen: true,
   defaultSourcesRailCollapsed: false,
@@ -86,6 +104,7 @@ export const DEFAULT_PREFERENCES: UiPreferences = {
   ...DEFAULT_APPEARANCE_PREFERENCES,
   ...DEFAULT_NOTATION_PREFERENCES,
   ...DEFAULT_ANALYSIS_PREFERENCES,
+  ...DEFAULT_TUNER_PREFERENCES,
   ...DEFAULT_VISIBILITY_PREFERENCES,
 };
 
@@ -115,6 +134,26 @@ export function isDefaultPlaybackDisplayMode(
 
 export function isDefaultChordBackend(value: unknown): value is DefaultChordBackend {
   return value === "tuneforge-fast" || value === "crema-advanced";
+}
+
+function normalizeTunerInputDeviceId(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmedValue = value.trim();
+  return trimmedValue.length > 0 ? trimmedValue : null;
+}
+
+export function normalizeTunerReferenceHz(value: unknown): number {
+  const numericValue = typeof value === "number" ? value : Number(value);
+  if (
+    !Number.isFinite(numericValue) ||
+    numericValue < MIN_TUNER_REFERENCE_HZ ||
+    numericValue > MAX_TUNER_REFERENCE_HZ
+  ) {
+    return DEFAULT_TUNER_REFERENCE_HZ;
+  }
+  return Math.round(numericValue * 10) / 10;
 }
 
 export function normalizePreferences(value: unknown): UiPreferences {
@@ -147,6 +186,8 @@ export function normalizePreferences(value: unknown): UiPreferences {
     defaultChordBackend: isDefaultChordBackend(candidate.defaultChordBackend)
       ? candidate.defaultChordBackend
       : DEFAULT_PREFERENCES.defaultChordBackend,
+    defaultTunerInputDeviceId: normalizeTunerInputDeviceId(candidate.defaultTunerInputDeviceId),
+    defaultTunerReferenceHz: normalizeTunerReferenceHz(candidate.defaultTunerReferenceHz),
     defaultLyricsFollowEnabled:
       typeof candidate.defaultLyricsFollowEnabled === "boolean"
         ? candidate.defaultLyricsFollowEnabled
@@ -225,6 +266,20 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       setDefaultChordsFollowEnabled: (defaultChordsFollowEnabled) => {
         setPreferences((current) => mergePreferences(current, { defaultChordsFollowEnabled }));
       },
+      setDefaultTunerInputDeviceId: (defaultTunerInputDeviceId) => {
+        setPreferences((current) =>
+          mergePreferences(current, {
+            defaultTunerInputDeviceId: normalizeTunerInputDeviceId(defaultTunerInputDeviceId),
+          }),
+        );
+      },
+      setDefaultTunerReferenceHz: (defaultTunerReferenceHz) => {
+        setPreferences((current) =>
+          mergePreferences(current, {
+            defaultTunerReferenceHz: normalizeTunerReferenceHz(defaultTunerReferenceHz),
+          }),
+        );
+      },
       replacePreferences: (value) => {
         const normalized = normalizePreferences(value);
         persistPreferences(normalized);
@@ -238,6 +293,9 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       },
       resetAnalysisPreferences: () => {
         setPreferences((current) => mergePreferences(current, DEFAULT_ANALYSIS_PREFERENCES));
+      },
+      resetTunerPreferences: () => {
+        setPreferences((current) => mergePreferences(current, DEFAULT_TUNER_PREFERENCES));
       },
       resetVisibilityPreferences: () => {
         setPreferences((current) => mergePreferences(current, DEFAULT_VISIBILITY_PREFERENCES));

@@ -1,0 +1,392 @@
+.tuner-shell {
+  max-width: 920px;
+}
+
+.tuner-panel {
+  display: grid;
+  gap: 1.1rem;
+  border-color: color-mix(in srgb, var(--chip-active-border) 24%, var(--panel-border));
+  background: color-mix(in srgb, var(--panel-strong) 88%, var(--panel));
+}
+
+.tuner-header {
+  display: flex;
+  gap: 1rem;
+  align-items: start;
+  justify-content: space-between;
+}
+
+.tuner-header h2 {
+  margin: 0;
+}
+
+.tuner-preferences {
+  display: grid;
+  grid-template-columns: minmax(18rem, 1fr) minmax(12rem, 16rem);
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.tuner-preferences--with-mode {
+  grid-template-columns: minmax(16rem, 1fr) minmax(10rem, 12rem) minmax(10rem, 12rem);
+}
+
+.tuner-field {
+  display: grid;
+  gap: 0.36rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.tuner-field input,
+.tuner-field select {
+  width: 100%;
+  height: 2.9rem;
+  border: 1px solid var(--input-border);
+  border-radius: 12px;
+  padding: 0.68rem 0.8rem;
+  background: color-mix(in srgb, var(--input-bg) 92%, var(--panel-strong));
+  color: var(--input-text);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 8%, transparent);
+}
+
+.tuner-field input:focus-visible,
+.tuner-field select:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.tuner-preferences__status {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+}
+
+.simple-tuner-meter,
+.wide-arc-tuner-meter {
+  display: grid;
+  gap: 1.1rem;
+}
+
+.simple-tuner-meter {
+  padding: 1.1rem;
+  border: 1px solid color-mix(in srgb, var(--chip-active-border) 18%, var(--divider));
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface-muted) 64%, transparent);
+}
+
+.simple-tuner-meter__readout {
+  display: grid;
+  justify-items: center;
+  gap: 0.12rem;
+  min-height: 9.8rem;
+  text-align: center;
+}
+
+.simple-tuner-meter__note {
+  min-width: 6rem;
+  padding: 0.08rem 0.95rem 0.34rem;
+  border: 1px solid color-mix(in srgb, var(--chip-active-border) 38%, var(--divider));
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--panel-strong) 88%, var(--surface-muted));
+  color: var(--text);
+  font-size: clamp(4.2rem, 13vw, 7.5rem);
+  font-weight: 900;
+  line-height: 0.95;
+}
+
+.simple-tuner-meter[data-tuning-state="in-tune"] .simple-tuner-meter__note {
+  border-color: color-mix(in srgb, var(--playback-accent) 58%, var(--chip-active-border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--playback-accent) 14%, transparent);
+}
+
+.simple-tuner-meter[data-tuning-state="no-pitch"] .simple-tuner-meter__note {
+  color: var(--muted);
+}
+
+.simple-tuner-meter__status {
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.simple-tuner-meter[data-tuning-state="in-tune"] .simple-tuner-meter__status {
+  color: color-mix(in srgb, var(--playback-accent) 68%, var(--text));
+}
+
+.simple-tuner-meter__cents {
+  color: var(--text);
+  font-size: 1.05rem;
+  font-weight: 850;
+}
+
+.simple-tuner-meter__meta {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.simple-tuner-meter__bar {
+  display: grid;
+  gap: 0.35rem;
+  width: min(100%, 48rem);
+  justify-self: center;
+}
+
+.simple-tuner-meter__scale,
+.simple-tuner-meter__directions {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-align: center;
+}
+
+.simple-tuner-meter__directions {
+  grid-template-columns: repeat(3, 1fr);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+}
+
+.simple-tuner-meter__track {
+  position: relative;
+  height: 1.1rem;
+  border: 1px solid color-mix(in srgb, var(--chip-active-border) 28%, var(--divider));
+  border-radius: 999px;
+  background:
+    linear-gradient(90deg, transparent 0 49.5%, color-mix(in srgb, var(--chip-active-border) 18%, transparent) 49.5% 50.5%, transparent 50.5%),
+    color-mix(in srgb, var(--panel-strong) 84%, var(--surface-muted));
+}
+
+.simple-tuner-meter[data-tuning-state="in-tune"] .simple-tuner-meter__track {
+  background:
+    linear-gradient(90deg, transparent 0 49.5%, color-mix(in srgb, var(--playback-accent) 26%, transparent) 49.5% 50.5%, transparent 50.5%),
+    color-mix(in srgb, var(--panel-strong) 84%, var(--surface-muted));
+}
+
+.simple-tuner-meter[data-tuning-state="no-pitch"] .simple-tuner-meter__track {
+  opacity: 0.68;
+}
+
+.simple-tuner-meter__center {
+  position: absolute;
+  inset-block: -0.38rem;
+  left: 50%;
+  width: 2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--chip-active-border) 62%, var(--divider));
+  transform: translateX(-50%);
+}
+
+.simple-tuner-meter[data-tuning-state="in-tune"] .simple-tuner-meter__center {
+  background: color-mix(in srgb, var(--playback-accent) 62%, var(--chip-active-border));
+}
+
+.simple-tuner-meter[data-tuning-state="no-pitch"] .simple-tuner-meter__center {
+  background: color-mix(in srgb, var(--divider) 82%, transparent);
+  opacity: 0.72;
+}
+
+.simple-tuner-meter__marker {
+  position: absolute;
+  top: 50%;
+  left: var(--tuner-marker-position, 50%);
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid color-mix(in srgb, white 38%, var(--playback-accent));
+  border-radius: 999px;
+  background: var(--playback-accent);
+  box-shadow: 0 0 0 0.32rem color-mix(in srgb, var(--playback-accent) 18%, transparent);
+  transform: translate(-50%, -50%);
+  transition: opacity 90ms ease-out;
+}
+
+.simple-tuner-meter[data-tuning-state="no-pitch"] .simple-tuner-meter__marker {
+  opacity: 0;
+}
+
+.simple-tuner-meter[data-tuning-state="flat"] .simple-tuner-meter__marker,
+.simple-tuner-meter[data-tuning-state="sharp"] .simple-tuner-meter__marker {
+  background: color-mix(in srgb, var(--playback-accent) 70%, var(--chip-active-border));
+}
+
+.tuner-gauge {
+  display: grid;
+  gap: 0.65rem;
+  min-height: 12rem;
+  padding: 0.6rem 0.5rem 0;
+}
+
+.tuner-gauge__scale {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-align: center;
+}
+
+.tuner-gauge__arc {
+  position: relative;
+  width: min(100%, 34rem);
+  aspect-ratio: 2.25;
+  justify-self: center;
+  overflow: hidden;
+  border-bottom: 1px solid color-mix(in srgb, var(--divider) 82%, transparent);
+}
+
+.tuner-gauge__arc::before {
+  content: "";
+  position: absolute;
+  inset: 8% 4% -90%;
+  border: 2px solid color-mix(in srgb, var(--focus-ring) 44%, var(--divider));
+  border-bottom: 0;
+  border-radius: 50% 50% 0 0;
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--chip-active-border) 16%, transparent) 0 34%,
+      color-mix(in srgb, var(--chip-active-border) 12%, transparent) 43% 57%,
+      color-mix(in srgb, var(--chip-active-border) 16%, transparent) 66% 100%
+    ),
+    color-mix(in srgb, var(--surface-muted) 56%, transparent);
+}
+
+.wide-arc-tuner-meter[data-tuning-state="in-tune"] .tuner-gauge__arc::before {
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--chip-active-border) 16%, transparent) 0 34%,
+      color-mix(in srgb, var(--playback-accent) 22%, transparent) 43% 57%,
+      color-mix(in srgb, var(--chip-active-border) 16%, transparent) 66% 100%
+    ),
+    color-mix(in srgb, var(--surface-muted) 56%, transparent);
+}
+
+.tuner-gauge__tick,
+.tuner-gauge__needle {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform-origin: 50% 100%;
+}
+
+.tuner-gauge__tick {
+  width: 2px;
+  height: 70%;
+  background: color-mix(in srgb, var(--divider) 72%, transparent);
+}
+
+.tuner-gauge__tick--left {
+  transform: rotate(-32deg);
+}
+
+.tuner-gauge__tick--center {
+  height: 82%;
+  background: color-mix(in srgb, var(--chip-active-border) 70%, var(--divider));
+  transform: rotate(0deg);
+}
+
+.wide-arc-tuner-meter[data-tuning-state="in-tune"] .tuner-gauge__tick--center {
+  background: color-mix(in srgb, var(--playback-accent) 72%, var(--divider));
+}
+
+.tuner-gauge__tick--right {
+  transform: rotate(32deg);
+}
+
+.tuner-gauge__needle {
+  width: 4px;
+  height: 88%;
+  border-radius: 999px;
+  background: var(--playback-accent);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--playback-accent) 32%, transparent);
+  transform: rotate(var(--tuner-needle-rotation, 0deg));
+  transition: opacity 90ms ease-out;
+}
+
+.wide-arc-tuner-meter[data-tuning-state="no-pitch"] .tuner-gauge__needle {
+  opacity: 0;
+}
+
+.wide-arc-tuner-meter[data-tuning-state="no-pitch"] .tuner-gauge__arc {
+  opacity: 0.68;
+}
+
+.tuner-readout {
+  display: grid;
+  justify-items: center;
+  gap: 0.18rem;
+  text-align: center;
+}
+
+.tuner-readout__note {
+  min-width: 5.3rem;
+  padding: 0.12rem 0.76rem 0.28rem;
+  border: 1px solid color-mix(in srgb, var(--chip-active-border) 48%, transparent);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--panel-strong) 90%, var(--surface-muted));
+  font-size: clamp(4rem, 12vw, 7rem);
+  font-weight: 900;
+  line-height: 0.95;
+}
+
+.wide-arc-tuner-meter[data-tuning-state="no-pitch"] .tuner-readout__note {
+  color: var(--muted);
+}
+
+.tuner-readout__cents {
+  color: var(--text);
+  font-size: 1.1rem;
+  font-weight: 800;
+}
+
+.tuner-readout__meta {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.tuner-level {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.8rem;
+  align-items: center;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.tuner-level__track {
+  height: 0.95rem;
+  overflow: hidden;
+  border: 1px solid var(--divider);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-muted) 80%, transparent);
+}
+
+.tuner-level__bar {
+  display: block;
+  width: var(--tuner-level, 0%);
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--focus-ring), var(--playback-accent));
+  transition: width 90ms ease-out;
+}
+
+@media (max-width: 860px) {
+  .tuner-preferences,
+  .tuner-preferences--with-mode {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .tuner-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .tuner-gauge {
+    min-height: 10.5rem;
+  }
+}

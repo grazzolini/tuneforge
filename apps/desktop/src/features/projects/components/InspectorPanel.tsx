@@ -1,7 +1,7 @@
 import { MusicalKeyLabel } from "../../../components/MusicalLabel";
 import { formatKey } from "../../../lib/music";
+import { TargetKeySelector } from "./TargetKeySelector";
 import { useProjectViewModelContext } from "./useProjectViewModelContext";
-import { MAX_TARGET_TRANSPOSE, MIN_TARGET_TRANSPOSE, clampTargetTranspose } from "../projectViewUtils";
 
 export function InspectorPanel() {
   const {
@@ -166,210 +166,32 @@ export function InspectorPanel() {
               </div>
             </div>
 
-            <div className="key-stepper__heading">
-              <span className="metric-label">Target Selection</span>
-              {showSupportingCopy ? (
-                <span className="artifact-meta">
-                  Step through all shifts from 1 octave down to 1 octave up.
-                </span>
-              ) : null}
-            </div>
-            <div className="key-stepper">
-              <button
-                className="button"
-                aria-label="Lower target key"
-                disabled={transposeSemitones <= MIN_TARGET_TRANSPOSE}
-                onClick={() => {
-                  setTargetSelectorOpen(false);
-                  setTargetTransposeSemitones((current) => clampTargetTranspose(current - 1));
-                }}
-                type="button"
-              >
-                -
-              </button>
-              <div className="key-stepper__value">
-                <div className="target-selector" ref={targetSelectorRef}>
-                  <button
-                    className={`target-selector__trigger${
-                      enharmonicDisplayMode === "dual" ? " target-selector__trigger--dual" : ""
-                    }`}
-                    aria-label="Target Key"
-                    aria-expanded={targetSelectorOpen}
-                    aria-haspopup="listbox"
-                    onClick={() => setTargetSelectorOpen((current) => !current)}
-                    type="button"
-                  >
-                    <span
-                      className={`target-selector__preview target-selector__preview--lower${
-                        !lowerTargetPreview ? " target-selector__preview--disabled" : ""
-                      }`}
-                    >
-                      {lowerTargetPreview ? (
-                        <MusicalKeyLabel
-                          keyValue={lowerTargetPreview}
-                          mode={enharmonicDisplayMode}
-                          variant="selector-preview"
-                        />
-                      ) : null}
-                    </span>
-                    <span
-                      className={`target-selector__current${
-                        enharmonicDisplayMode === "dual" ? " target-selector__current--dual" : ""
-                      }`}
-                    >
-                      <span
-                        className={`target-selector__current-key${
-                          enharmonicDisplayMode === "dual" ? " target-selector__current-key--dual" : ""
-                        }`}
-                      >
-                        <MusicalKeyLabel
-                          keyValue={targetKey}
-                          mode={enharmonicDisplayMode}
-                          variant="selector-current"
-                        />
-                      </span>
-                      <span className="target-selector__current-meta">
-                        {targetSelectionSummary}
-                      </span>
-                    </span>
-                    <span
-                      className={`target-selector__preview target-selector__preview--higher${
-                        !higherTargetPreview ? " target-selector__preview--disabled" : ""
-                      }`}
-                    >
-                      {higherTargetPreview ? (
-                        <MusicalKeyLabel
-                          keyValue={higherTargetPreview}
-                          mode={enharmonicDisplayMode}
-                          variant="selector-preview"
-                        />
-                      ) : null}
-                    </span>
-                    <span className="target-selector__chevron" aria-hidden="true">
-                      ⌄
-                    </span>
-                  </button>
-
-                  {targetSelectorOpen ? (
-                    <div
-                      className="target-selector__menu"
-                      role="listbox"
-                      aria-label="Target key options"
-                    >
-                      <div className="target-selector__group-label">Higher pitch</div>
-                      {higherTargetShiftOptions.map((option) => (
-                        <button
-                          key={option.semitones}
-                          ref={(node) => {
-                            targetOptionRefs.current[option.semitones] = node;
-                          }}
-                          className={`target-selector__option${
-                            option.semitones === transposeSemitones
-                              ? " target-selector__option--selected"
-                              : ""
-                          }`}
-                          role="option"
-                          aria-selected={option.semitones === transposeSemitones}
-                          onClick={() => {
-                            setTargetTransposeSemitones(option.semitones);
-                            setTargetSelectorOpen(false);
-                          }}
-                          type="button"
-                        >
-                          <span className="target-selector__option-direction" aria-hidden="true">
-                            ↑
-                          </span>
-                          <span className="target-selector__option-content">
-                            <span className="target-selector__option-label">
-                              <MusicalKeyLabel
-                                keyValue={option.key}
-                                mode={enharmonicDisplayMode}
-                                variant="selector-option"
-                              />
-                            </span>
-                          </span>
-                        </button>
-                      ))}
-                      <div className="target-selector__group-label">Original</div>
-                      <button
-                        ref={(node) => {
-                          targetOptionRefs.current[0] = node;
-                        }}
-                        className={`target-selector__option${
-                          transposeSemitones === 0 ? " target-selector__option--selected" : ""
-                        }`}
-                        role="option"
-                        aria-selected={transposeSemitones === 0}
-                        onClick={() => {
-                          setTargetTransposeSemitones(0);
-                          setTargetSelectorOpen(false);
-                        }}
-                        type="button"
-                      >
-                        <span className="target-selector__option-direction" aria-hidden="true">
-                          •
-                        </span>
-                        <span className="target-selector__option-content">
-                          <span className="target-selector__option-label">
-                            <MusicalKeyLabel
-                              keyValue={sourceKey}
-                              mode={enharmonicDisplayMode}
-                              variant="selector-option"
-                            />
-                          </span>
-                        </span>
-                      </button>
-                      <div className="target-selector__group-label">Lower pitch</div>
-                      {lowerTargetShiftOptions.map((option) => (
-                        <button
-                          key={option.semitones}
-                          ref={(node) => {
-                            targetOptionRefs.current[option.semitones] = node;
-                          }}
-                          className={`target-selector__option${
-                            option.semitones === transposeSemitones
-                              ? " target-selector__option--selected"
-                              : ""
-                          }`}
-                          role="option"
-                          aria-selected={option.semitones === transposeSemitones}
-                          onClick={() => {
-                            setTargetTransposeSemitones(option.semitones);
-                            setTargetSelectorOpen(false);
-                          }}
-                          type="button"
-                        >
-                          <span className="target-selector__option-direction" aria-hidden="true">
-                            ↓
-                          </span>
-                          <span className="target-selector__option-content">
-                            <span className="target-selector__option-label">
-                              <MusicalKeyLabel
-                                keyValue={option.key}
-                                mode={enharmonicDisplayMode}
-                                variant="selector-option"
-                              />
-                            </span>
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-              <button
-                className="button"
-                aria-label="Raise target key"
-                disabled={transposeSemitones >= MAX_TARGET_TRANSPOSE}
-                onClick={() => {
-                  setTargetSelectorOpen(false);
-                  setTargetTransposeSemitones((current) => clampTargetTranspose(current + 1));
-                }}
-                type="button"
-              >
-                +
-              </button>
-            </div>
+            <TargetKeySelector
+              currentKey={targetKey}
+              currentMeta={targetSelectionSummary}
+              enharmonicDisplayMode={enharmonicDisplayMode}
+              headingLabel="Target Selection"
+              higherButtonLabel="Raise target key"
+              higherPreview={higherTargetPreview}
+              higherTargetShiftOptions={higherTargetShiftOptions}
+              isOpen={targetSelectorOpen}
+              listboxLabel="Target key options"
+              lowerButtonLabel="Lower target key"
+              lowerPreview={lowerTargetPreview}
+              lowerTargetShiftOptions={lowerTargetShiftOptions}
+              optionRefs={targetOptionRefs}
+              selectorLabel="Target Key"
+              selectorRef={targetSelectorRef}
+              setIsOpen={setTargetSelectorOpen}
+              setSemitones={setTargetTransposeSemitones}
+              sourceKey={sourceKey}
+              supportingCopy={
+                showSupportingCopy
+                  ? "Step through all shifts from 1 octave down to 1 octave up."
+                  : null
+              }
+              value={transposeSemitones}
+            />
           </div>
         </div>
 

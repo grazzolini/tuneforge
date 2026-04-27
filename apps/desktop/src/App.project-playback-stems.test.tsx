@@ -5,6 +5,7 @@ import {
   resetAppTestHarness,
   flushPendingPreview,
   findAudioByArtifactId,
+  getByAriaKeyLabel,
   getMockAudioContexts,
   getMockFetch,
   markAudioReady,
@@ -27,6 +28,21 @@ describe("Desktop app project playback stems", () => {
 
   async function openPlaybackWorkspace(user: ReturnType<typeof userEvent.setup>) {
     await user.click(screen.getByRole("tab", { name: "Playback" }));
+  }
+
+  async function switchToChordsOnly(user: ReturnType<typeof userEvent.setup>) {
+    const lyricsToggle = screen.getByRole("button", { name: "Lyrics" });
+    const chordsToggle = screen.getByRole("button", { name: "Chords" });
+    const lyricsPressed = lyricsToggle.getAttribute("aria-pressed") === "true";
+    const chordsPressed = chordsToggle.getAttribute("aria-pressed") === "true";
+    if (lyricsPressed && !chordsPressed) {
+      await user.click(chordsToggle);
+      await user.click(lyricsToggle);
+      return;
+    }
+    if (lyricsPressed && chordsPressed) {
+      await user.click(lyricsToggle);
+    }
   }
 
   async function ensureInspectorVisible(user: ReturnType<typeof userEvent.setup>) {
@@ -64,7 +80,7 @@ describe("Desktop app project playback stems", () => {
     await user.click(within(sourceList).getByRole("button", { name: /Source Track/i }));
 
     expect(await screen.findByRole("heading", { name: "Source Track" })).toBeInTheDocument();
-    expect(screen.getByText("Full playback")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Playback source and mix list" })).toBeInTheDocument();
   });
 
   it("persists selected stem playback state across project reopen", async () => {
@@ -313,6 +329,83 @@ describe("Desktop app project playback stems", () => {
     expect(screen.getByRole("heading", { name: "Practice Mix" })).toBeInTheDocument();
     await waitFor(() => expect(newestPreviewAudio.currentTime).toBeCloseTo(61.437, 3));
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+  });
+
+  it("applies and persists a visual capo shift without creating a mix", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({
+        defaultSourcesRailCollapsed: false,
+        enharmonicDisplayMode: "sharps",
+      }),
+    );
+
+    const { unmount } = renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    await switchToChordsOnly(user);
+    expect(getByAriaKeyLabel(screen.getByRole("group", { name: "Current chord card" }), "G")).toBeInTheDocument();
+
+    await user.click(screen.getByLabelText("Lower capo shift"));
+
+    expect(screen.getByText("Shift -1 semitone / 1st fret")).toBeInTheDocument();
+    expect(getByAriaKeyLabel(screen.getByRole("group", { name: "Current chord card" }), "F#")).toBeInTheDocument();
+    expect(mockCreatePreview).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(
+        JSON.parse(window.localStorage.getItem("tuneforge.project-playback-state") ?? "{}"),
+      ).toMatchObject({
+        proj_123: {
+          activeWorkspace: "playback",
+          capoTransposeSemitones: -1,
+        },
+      }),
+    );
+
+    unmount();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await switchToChordsOnly(user);
+    expect(getByAriaKeyLabel(screen.getByRole("group", { name: "Current chord card" }), "F#")).toBeInTheDocument();
+    expect(screen.getByText("Shift -1 semitone / 1st fret")).toBeInTheDocument();
+  });
+
+  it("keeps playback header compact outside detailed information density", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+
+    const rail = document.querySelector(".playback-practice-rail") as HTMLElement;
+    const sourceList = within(rail).getByRole("group", {
+      name: "Playback source and mix list",
+    });
+    expect(within(rail).queryByText("Full playback")).not.toBeInTheDocument();
+    expect(within(rail).queryAllByText("Original source file")).toHaveLength(1);
+    expect(within(sourceList).getByText("Original source file")).toBeInTheDocument();
+  });
+
+  it("shows playback header details at detailed information density", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({
+        defaultSourcesRailCollapsed: false,
+        informationDensity: "detailed",
+      }),
+    );
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+
+    const rail = document.querySelector(".playback-practice-rail") as HTMLElement;
+    expect(within(rail).getByText("Full playback")).toBeInTheDocument();
+    expect(within(rail).queryAllByText("Original source file")).toHaveLength(3);
   });
 
   it("restores active playback after app reload", async () => {

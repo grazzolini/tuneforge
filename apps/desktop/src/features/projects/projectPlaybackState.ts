@@ -16,6 +16,7 @@ export type StoredProjectPlaybackState = {
   selectedStemSourceArtifactId: string | null;
   activeWorkspace: ProjectWorkspaceMode;
   playbackDisplayMode: PlaybackDisplayMode;
+  capoTransposeSemitones: number;
   lyricsFollowEnabled: boolean;
   chordsFollowEnabled: boolean;
   stemControls: Record<string, StemControlState>;
@@ -30,11 +31,19 @@ const DEFAULT_STORED_PROJECT_PLAYBACK_STATE: StoredProjectPlaybackState = {
   selectedStemSourceArtifactId: null,
   activeWorkspace: "project",
   playbackDisplayMode: "combined",
+  capoTransposeSemitones: 0,
   lyricsFollowEnabled: true,
   chordsFollowEnabled: true,
   stemControls: {},
   dismissedStemJobIds: [],
 };
+
+function normalizeTransposeSemitones(value: unknown) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.min(12, Math.max(-12, Math.trunc(value)));
+}
 
 function normalizeStemControlState(value: unknown): StemControlState {
   if (!value || typeof value !== "object") {
@@ -85,6 +94,7 @@ function normalizeStoredProjectPlaybackState(value: unknown): StoredProjectPlayb
     playbackDisplayMode: isPlaybackDisplayMode(candidate.playbackDisplayMode)
       ? candidate.playbackDisplayMode
       : DEFAULT_STORED_PROJECT_PLAYBACK_STATE.playbackDisplayMode,
+    capoTransposeSemitones: normalizeTransposeSemitones(candidate.capoTransposeSemitones),
     lyricsFollowEnabled:
       typeof candidate.lyricsFollowEnabled === "boolean"
         ? candidate.lyricsFollowEnabled

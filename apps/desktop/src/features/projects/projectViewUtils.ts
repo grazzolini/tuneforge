@@ -45,6 +45,31 @@ export function formatSemitoneShift(semitones: number) {
   return `Shift ${semitones > 0 ? "+" : ""}${semitones} semitone${Math.abs(semitones) === 1 ? "" : "s"}`;
 }
 
+function formatOrdinal(value: number) {
+  const lastTwoDigits = value % 100;
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 13) {
+    return `${value}th`;
+  }
+  if (value % 10 === 1) {
+    return `${value}st`;
+  }
+  if (value % 10 === 2) {
+    return `${value}nd`;
+  }
+  if (value % 10 === 3) {
+    return `${value}rd`;
+  }
+  return `${value}th`;
+}
+
+export function formatCapoShiftSummary(semitones: number) {
+  const shiftSummary = formatSemitoneShift(semitones);
+  if (semitones >= 0) {
+    return shiftSummary;
+  }
+  return `${shiftSummary} / ${formatOrdinal(Math.abs(semitones))} fret`;
+}
+
 export const MIN_TARGET_TRANSPOSE = -12;
 export const MAX_TARGET_TRANSPOSE = 12;
 

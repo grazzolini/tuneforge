@@ -702,6 +702,24 @@
   margin-top: 0.2rem;
 }
 
+.playback-capo-control {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.8rem;
+  border: 1px solid var(--divider);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--surface-muted) 76%, transparent);
+}
+
+.playback-capo-control .key-stepper__heading {
+  margin-bottom: 0;
+}
+
+.playback-capo-control__summary {
+  margin: 0;
+}
+
 .playback-picker-group--compact {
   padding: 0.85rem;
   border-radius: 18px;

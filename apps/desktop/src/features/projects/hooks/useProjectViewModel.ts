@@ -36,6 +36,7 @@ import {
   findActiveLyricsIndex,
   findActiveLyricsWordIndex,
   formatArtifactTimestamp,
+  formatCapoShiftSummary,
   formatRetuneSummary,
   formatSemitoneShift,
   formatTargetSelectionSummary,
@@ -118,6 +119,8 @@ export function useProjectViewModel() {
   const wasPlayingRef = useRef(isPlaying);
   const targetSelectorRef = useRef<HTMLDivElement | null>(null);
   const targetOptionRefs = useRef<Record<number, HTMLButtonElement | null>>({});
+  const capoSelectorRef = useRef<HTMLDivElement | null>(null);
+  const capoOptionRefs = useRef<Record<number, HTMLButtonElement | null>>({});
   const sourceKeySelectorRef = useRef<HTMLDivElement | null>(null);
   const sourceKeyOptionRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const [retuneMode, setRetuneMode] = useState<"off" | "reference" | "cents">("off");
@@ -129,6 +132,8 @@ export function useProjectViewModel() {
   });
   const [targetTransposeSemitones, setTargetTransposeSemitones] = useState(0);
   const [targetSelectorOpen, setTargetSelectorOpen] = useState(false);
+  const [capoTransposeSemitones, setCapoTransposeSemitones] = useState(0);
+  const [capoSelectorOpen, setCapoSelectorOpen] = useState(false);
   const [sourceKeySelectorOpen, setSourceKeySelectorOpen] = useState(false);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [selectedPrimaryArtifactId, setSelectedPrimaryArtifactId] = useState<string | null>(null);
@@ -531,6 +536,8 @@ export function useProjectViewModel() {
   const sourceKey = sourceKeyBasis ?? DEFAULT_KEY;
   const transposeSemitones = clampTargetTranspose(targetTransposeSemitones);
   const targetKey = transposeKey(sourceKey, transposeSemitones);
+  const capoSemitones = clampTargetTranspose(capoTransposeSemitones);
+  const capoKey = transposeKey(sourceKey, capoSemitones);
   const hasTransformChange = retuneMode !== "off" || transposeSemitones !== 0;
   const isAnalysisRunning = Boolean(
     analyzeJob && ["pending", "running"].includes(analyzeJob.status),
@@ -569,9 +576,10 @@ export function useProjectViewModel() {
     selectedPlaybackArtifact,
     selectableArtifacts,
   );
-  const displayedChordSemitones = chordTransposeSemitones + correctedSourceChordSemitones;
+  const displayedChordSemitones =
+    chordTransposeSemitones + correctedSourceChordSemitones + capoSemitones;
   const activeEnharmonicKeyContext = sourceKeyBasis
-    ? transposeKey(sourceKeyBasis, chordTransposeSemitones)
+    ? transposeKey(sourceKeyBasis, chordTransposeSemitones + capoSemitones)
     : null;
   const displayedChords = useMemo(
     () =>
@@ -615,7 +623,7 @@ export function useProjectViewModel() {
       }),
     [activeChordIndex, activeLyricsIndex, activeLyricsWordIndex, displayedChords, displayedLyrics],
   );
-  const chordContextCopy =
+  const baseChordContextCopy =
     correctedSourceChordSemitones === 0 && chordTransposeSemitones === 0
       ? "Chord labels follow the original arrangement."
       : correctedSourceChordSemitones !== 0 && chordTransposeSemitones === 0
@@ -627,10 +635,18 @@ export function useProjectViewModel() {
           : `Chord labels follow corrected source key and selected playback (${formatSemitoneShift(
           chordTransposeSemitones,
         ).toLowerCase()}).`;
+  const chordContextCopy =
+    capoSemitones === 0
+      ? baseChordContextCopy
+      : `${baseChordContextCopy} Visual capo: ${formatCapoShiftSummary(
+          capoSemitones,
+        ).toLowerCase()}.`;
   const sourceKeyStatus = sourceKeyOverride ? "Corrected" : detectedKey ? "Detected" : "Default";
   const targetShiftSummary =
     transposeSemitones === 0 ? "Original key" : formatSemitoneShift(transposeSemitones);
   const targetSelectionSummary = formatTargetSelectionSummary(transposeSemitones);
+  const capoShiftSummary = formatCapoShiftSummary(capoSemitones);
+  const capoSelectionSummary = formatTargetSelectionSummary(capoSemitones);
   const sourceKeySelectorCurrentKey = sourceKeyOverride ?? detectedKey ?? sourceKey;
   const sourceKeySelectorCurrentBadge = sourceKeyOverride ? null : detectedKey ? "Original" : "No override";
   const lowerTargetPreview =
@@ -641,6 +657,10 @@ export function useProjectViewModel() {
     transposeSemitones < MAX_TARGET_TRANSPOSE
       ? transposeKey(sourceKey, transposeSemitones + 1)
       : null;
+  const lowerCapoPreview =
+    capoSemitones > MIN_TARGET_TRANSPOSE ? transposeKey(sourceKey, capoSemitones - 1) : null;
+  const higherCapoPreview =
+    capoSemitones < MAX_TARGET_TRANSPOSE ? transposeKey(sourceKey, capoSemitones + 1) : null;
   const targetShiftOptions = useMemo<TargetShiftOption[]>(
     () =>
       Array.from(
@@ -946,6 +966,15 @@ export function useProjectViewModel() {
   }, [targetSelectorOpen, transposeSemitones]);
 
   useEffect(() => {
+    if (!capoSelectorOpen) {
+      return;
+    }
+
+    const activeOption = capoOptionRefs.current[capoSemitones];
+    activeOption?.scrollIntoView?.({ block: "center" });
+  }, [capoSelectorOpen, capoSemitones]);
+
+  useEffect(() => {
     if (!sourceKeySelectorOpen) {
       return;
     }
@@ -955,18 +984,22 @@ export function useProjectViewModel() {
   }, [currentKeyValue, sourceKeySelectorOpen]);
 
   useEffect(() => {
-    if (!targetSelectorOpen && !sourceKeySelectorOpen) {
+    if (!targetSelectorOpen && !sourceKeySelectorOpen && !capoSelectorOpen) {
       return;
     }
 
     function handlePointerDown(event: PointerEvent) {
       const targetInside = targetSelectorRef.current?.contains(event.target as Node) ?? false;
       const sourceInside = sourceKeySelectorRef.current?.contains(event.target as Node) ?? false;
+      const capoInside = capoSelectorRef.current?.contains(event.target as Node) ?? false;
       if (!targetInside) {
         setTargetSelectorOpen(false);
       }
       if (!sourceInside) {
         setSourceKeySelectorOpen(false);
+      }
+      if (!capoInside) {
+        setCapoSelectorOpen(false);
       }
     }
 
@@ -974,6 +1007,7 @@ export function useProjectViewModel() {
       if (event.key === "Escape") {
         setTargetSelectorOpen(false);
         setSourceKeySelectorOpen(false);
+        setCapoSelectorOpen(false);
       }
     }
 
@@ -984,7 +1018,7 @@ export function useProjectViewModel() {
       window.removeEventListener("pointerdown", handlePointerDown);
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [sourceKeySelectorOpen, targetSelectorOpen]);
+  }, [capoSelectorOpen, sourceKeySelectorOpen, targetSelectorOpen]);
 
   useEffect(() => {
     setInspectorOpen(defaultInspectorOpen);
@@ -1009,6 +1043,7 @@ export function useProjectViewModel() {
         ? storedPlaybackState.playbackDisplayMode
         : resolveDefaultPlaybackDisplayMode(defaultPlaybackDisplayMode, false, false),
     );
+    setCapoTransposeSemitones(storedPlaybackState.capoTransposeSemitones);
     setPlaybackDisplayModeSource(hasStoredPlayback ? "stored" : "default");
     setLyricsFollowEnabled(
       hasStoredPlayback
@@ -1147,6 +1182,7 @@ export function useProjectViewModel() {
       selectedStemSourceArtifactId,
       activeWorkspace,
       playbackDisplayMode,
+      capoTransposeSemitones: capoSemitones,
       lyricsFollowEnabled,
       chordsFollowEnabled,
       stemControls,
@@ -1154,6 +1190,7 @@ export function useProjectViewModel() {
     });
   }, [
     activeWorkspace,
+    capoSemitones,
     chordsFollowEnabled,
     dismissedStemJobIds,
     hydratedProjectId,
@@ -1406,6 +1443,13 @@ export function useProjectViewModel() {
     canGenerateChords,
     canGenerateLyrics,
     canGenerateStems,
+    capoKey,
+    capoOptionRefs,
+    capoSelectionSummary,
+    capoSelectorOpen,
+    capoSelectorRef,
+    capoSemitones,
+    capoShiftSummary,
     chordContextCopy,
     chordJob,
     chordMutation,
@@ -1447,6 +1491,7 @@ export function useProjectViewModel() {
     hasTimedLyricsTranscript,
     hasTransformChange,
     hasVisibleStems,
+    higherCapoPreview,
     higherTargetPreview,
     higherTargetShiftOptions,
     informationDensity,
@@ -1461,6 +1506,7 @@ export function useProjectViewModel() {
     isStemPlayback,
     isStemRunning,
     latestPreviewArtifact,
+    lowerCapoPreview,
     lowerTargetPreview,
     lowerTargetShiftOptions,
     mobileCapabilities,
@@ -1490,6 +1536,8 @@ export function useProjectViewModel() {
     selectedPlaybackArtifact,
     selectedPrimaryArtifact,
     selectedPrimaryArtifactId,
+    setCapoSelectorOpen,
+    setCapoTransposeSemitones,
     setCentsOffset,
     setDismissedStemJobIds,
     setDraftName,

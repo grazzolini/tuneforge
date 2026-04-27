@@ -222,3 +222,55 @@
   min-width: 0;
 }
 
+.key-stepper--small {
+  gap: 0.45rem;
+  padding: 0.55rem;
+  border-radius: 16px;
+}
+
+.key-stepper--small > .button {
+  min-width: 3rem;
+  min-height: 3.55rem;
+  font-size: 1.35rem;
+  border-radius: 16px;
+}
+
+.key-stepper--small .target-selector__trigger {
+  min-height: 3.45rem;
+}
+
+.key-stepper--small .target-selector__preview {
+  min-height: 3rem;
+  padding: 0.28rem 0.22rem 0.62rem;
+  font-size: 0.78rem;
+}
+
+.key-stepper--small .target-selector__current {
+  min-height: 3rem;
+  margin-inline: 0.1rem;
+  padding: 0.38rem 0.48rem 0.68rem;
+}
+
+.key-stepper--small .target-selector__current-key {
+  font-size: 1.5rem;
+  letter-spacing: 0;
+}
+
+.key-stepper--small .target-selector__current-key--dual {
+  font-size: 1.2rem;
+}
+
+.key-stepper--small .target-selector__current-meta {
+  font-size: 0.58rem;
+  letter-spacing: 0.06em;
+}
+
+.key-stepper--small .target-selector__chevron {
+  font-size: 0.92rem;
+}
+
+.key-stepper--small .target-selector__menu {
+  width: min(100%, 17rem);
+  max-height: 15rem;
+  border-radius: 18px;
+}

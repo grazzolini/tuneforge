@@ -74,7 +74,7 @@ describe("Desktop app project playback stems", () => {
     await user.click(within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement);
 
     expect(await screen.findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
-    expect(screen.getByText("Stem monitor")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Playback stem list" })).toBeInTheDocument();
 
     const sourceList = screen.getByRole("group", { name: "Playback source and mix list" });
     await user.click(within(sourceList).getByRole("button", { name: /Source Track/i }));
@@ -114,7 +114,7 @@ describe("Desktop app project playback stems", () => {
     await user.click(reopenDemoLinks[reopenDemoLinks.length - 1] as HTMLElement);
 
     expect(await screen.findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
-    expect(screen.getByText("Stem monitor")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Playback stem list" })).toBeInTheDocument();
   });
 
   it("restores mix-owned stems after reopening the project", async () => {
@@ -196,7 +196,7 @@ describe("Desktop app project playback stems", () => {
     await user.click(reopenDemoLinks[reopenDemoLinks.length - 1] as HTMLElement);
 
     expect(await screen.findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
-    expect(screen.getByText("Stem monitor")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Playback stem list" })).toBeInTheDocument();
   });
 
   it("toggles playback with spacebar and preserves time when switching mixes", async () => {
@@ -373,6 +373,30 @@ describe("Desktop app project playback stems", () => {
     expect(screen.getByText("Shift -1 semitone / 1st fret")).toBeInTheDocument();
   });
 
+  it("bases the visual capo selector on the selected practice mix key", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({
+        defaultSourcesRailCollapsed: false,
+        enharmonicDisplayMode: "sharps",
+      }),
+    );
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const savedMixList = screen.getByRole("group", { name: "Saved mix list" });
+    await user.click(within(savedMixList).getByRole("button", { name: /Practice Mix/i }));
+
+    await openPlaybackWorkspace(user);
+    await switchToChordsOnly(user);
+    await user.click(screen.getByLabelText("Lower capo shift"));
+
+    expect(screen.getByText("Shift -1 semitone / 1st fret")).toBeInTheDocument();
+    expect(getByAriaKeyLabel(screen.getByRole("group", { name: "Current chord card" }), "G#")).toBeInTheDocument();
+    expect(getByAriaKeyLabel(screen.getByLabelText("Capo Shift"), "G#")).toBeInTheDocument();
+  });
+
   it("keeps playback header compact outside detailed information density", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);
@@ -387,6 +411,30 @@ describe("Desktop app project playback stems", () => {
     expect(within(rail).queryByText("Full playback")).not.toBeInTheDocument();
     expect(within(rail).queryAllByText("Original source file")).toHaveLength(1);
     expect(within(sourceList).getByText("Original source file")).toBeInTheDocument();
+
+    await user.click(within(sourceList).getByRole("button", { name: /Practice Mix/i }));
+    const header = rail.querySelector(".playback-practice-rail__header") as HTMLElement;
+    expect(await within(header).findByRole("heading", { name: "Practice Mix" })).toBeInTheDocument();
+    expect(within(header).queryByText("Full playback")).not.toBeInTheDocument();
+    expect(within(header).queryByText("Shift +2 semitones")).not.toBeInTheDocument();
+  });
+
+  it("keeps stem playback header compact outside detailed information density", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    await openPlaybackWorkspace(user);
+    const stemList = await screen.findByRole("group", { name: "Playback stem list" });
+    await user.click(within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement);
+    const rail = document.querySelector(".playback-practice-rail") as HTMLElement;
+    const header = rail.querySelector(".playback-practice-rail__header") as HTMLElement;
+
+    expect(await within(header).findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
+    expect(within(header).queryByText("Stem monitor")).not.toBeInTheDocument();
+    expect(within(header).queryByText("2 of 2 stems audible")).not.toBeInTheDocument();
   });
 
   it("shows playback header details at detailed information density", async () => {
@@ -542,7 +590,7 @@ describe("Desktop app project playback stems", () => {
     );
     expect(vocalAudio).toHaveAttribute("preload", "metadata");
     expect(instrumentalAudio).toHaveAttribute("preload", "metadata");
-    expect(screen.getByText("Full playback")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Source Track" })).toBeInTheDocument();
   });
 
   it("reuses the shared stem clock when returning to stems after pausing", async () => {
@@ -602,7 +650,7 @@ describe("Desktop app project playback stems", () => {
 
     expect(soloVocals).toHaveAttribute("aria-pressed", "true");
     expect(muteInstrumental).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByText("1 of 2 stems audible")).toBeInTheDocument();
+    expect(screen.queryByText("1 of 2 stems audible")).not.toBeInTheDocument();
   });
 
   it("shows failed stem jobs inline and in processing history", async () => {

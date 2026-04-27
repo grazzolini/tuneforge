@@ -537,7 +537,6 @@ export function useProjectViewModel() {
   const transposeSemitones = clampTargetTranspose(targetTransposeSemitones);
   const targetKey = transposeKey(sourceKey, transposeSemitones);
   const capoSemitones = clampTargetTranspose(capoTransposeSemitones);
-  const capoKey = transposeKey(sourceKey, capoSemitones);
   const hasTransformChange = retuneMode !== "off" || transposeSemitones !== 0;
   const isAnalysisRunning = Boolean(
     analyzeJob && ["pending", "running"].includes(analyzeJob.status),
@@ -576,6 +575,8 @@ export function useProjectViewModel() {
     selectedPlaybackArtifact,
     selectableArtifacts,
   );
+  const capoSourceKey = transposeKey(sourceKey, chordTransposeSemitones);
+  const capoKey = transposeKey(capoSourceKey, capoSemitones);
   const displayedChordSemitones =
     chordTransposeSemitones + correctedSourceChordSemitones + capoSemitones;
   const activeEnharmonicKeyContext = sourceKeyBasis
@@ -658,9 +659,9 @@ export function useProjectViewModel() {
       ? transposeKey(sourceKey, transposeSemitones + 1)
       : null;
   const lowerCapoPreview =
-    capoSemitones > MIN_TARGET_TRANSPOSE ? transposeKey(sourceKey, capoSemitones - 1) : null;
+    capoSemitones > MIN_TARGET_TRANSPOSE ? transposeKey(capoSourceKey, capoSemitones - 1) : null;
   const higherCapoPreview =
-    capoSemitones < MAX_TARGET_TRANSPOSE ? transposeKey(sourceKey, capoSemitones + 1) : null;
+    capoSemitones < MAX_TARGET_TRANSPOSE ? transposeKey(capoSourceKey, capoSemitones + 1) : null;
   const targetShiftOptions = useMemo<TargetShiftOption[]>(
     () =>
       Array.from(
@@ -675,6 +676,20 @@ export function useProjectViewModel() {
       }),
     [sourceKey],
   );
+  const capoShiftOptions = useMemo<TargetShiftOption[]>(
+    () =>
+      Array.from(
+        { length: MAX_TARGET_TRANSPOSE - MIN_TARGET_TRANSPOSE + 1 },
+        (_, index) => MIN_TARGET_TRANSPOSE + index,
+      ).map((semitones) => {
+        const key = transposeKey(capoSourceKey, semitones);
+        return {
+          semitones,
+          key,
+        };
+      }),
+    [capoSourceKey],
+  );
   const lowerTargetShiftOptions = useMemo(
     () => targetShiftOptions.filter((option) => option.semitones < 0).sort((a, b) => b.semitones - a.semitones),
     [targetShiftOptions],
@@ -682,6 +697,14 @@ export function useProjectViewModel() {
   const higherTargetShiftOptions = useMemo(
     () => targetShiftOptions.filter((option) => option.semitones > 0).sort((a, b) => b.semitones - a.semitones),
     [targetShiftOptions],
+  );
+  const lowerCapoShiftOptions = useMemo(
+    () => capoShiftOptions.filter((option) => option.semitones < 0).sort((a, b) => b.semitones - a.semitones),
+    [capoShiftOptions],
+  );
+  const higherCapoShiftOptions = useMemo(
+    () => capoShiftOptions.filter((option) => option.semitones > 0).sort((a, b) => b.semitones - a.semitones),
+    [capoShiftOptions],
   );
   const sourceKeyOptions = useMemo<SourceKeyOption[]>(
     () => [
@@ -1450,6 +1473,7 @@ export function useProjectViewModel() {
     capoSelectorRef,
     capoSemitones,
     capoShiftSummary,
+    capoSourceKey,
     chordContextCopy,
     chordJob,
     chordMutation,
@@ -1492,6 +1516,7 @@ export function useProjectViewModel() {
     hasTransformChange,
     hasVisibleStems,
     higherCapoPreview,
+    higherCapoShiftOptions,
     higherTargetPreview,
     higherTargetShiftOptions,
     informationDensity,
@@ -1507,6 +1532,7 @@ export function useProjectViewModel() {
     isStemRunning,
     latestPreviewArtifact,
     lowerCapoPreview,
+    lowerCapoShiftOptions,
     lowerTargetPreview,
     lowerTargetShiftOptions,
     mobileCapabilities,

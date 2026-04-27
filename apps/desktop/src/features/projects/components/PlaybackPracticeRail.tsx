@@ -15,15 +15,16 @@ export function PlaybackPracticeRail() {
     capoSelectorRef,
     capoSemitones,
     capoShiftSummary,
+    capoSourceKey,
     enharmonicDisplayMode,
     handleSelectPrimaryArtifact,
     handleSelectStemArtifact,
     higherCapoPreview,
-    higherTargetShiftOptions,
+    higherCapoShiftOptions,
     informationDensity,
     isStemPlayback,
     lowerCapoPreview,
-    lowerTargetShiftOptions,
+    lowerCapoShiftOptions,
     previewArtifacts,
     selectedArtifactId,
     selectedArtifactTimestamp,
@@ -32,7 +33,6 @@ export function PlaybackPracticeRail() {
     setCapoSelectorOpen,
     setCapoTransposeSemitones,
     sourceArtifact,
-    sourceKey,
     stageModeLabel,
     stageSummary,
     stageTitle,
@@ -41,8 +41,7 @@ export function PlaybackPracticeRail() {
     toggleStemControl,
     visibleStemArtifacts,
   } = useProjectViewModelContext();
-  const showHeaderDetails =
-    informationDensity === "detailed" || selectedPlaybackArtifact?.type !== "source_audio";
+  const showHeaderDetails = informationDensity === "detailed";
 
   return (
     <aside className="panel playback-practice-rail">
@@ -72,19 +71,19 @@ export function PlaybackPracticeRail() {
           headingLabel="Transpose / Capo"
           higherButtonLabel="Raise capo shift"
           higherPreview={higherCapoPreview}
-          higherTargetShiftOptions={higherTargetShiftOptions}
+          higherTargetShiftOptions={higherCapoShiftOptions}
           isOpen={capoSelectorOpen}
           listboxLabel="Capo shift options"
           lowerButtonLabel="Lower capo shift"
           lowerPreview={lowerCapoPreview}
-          lowerTargetShiftOptions={lowerTargetShiftOptions}
+          lowerTargetShiftOptions={lowerCapoShiftOptions}
           optionRefs={capoOptionRefs}
           selectorLabel="Capo Shift"
           selectorRef={capoSelectorRef}
           setIsOpen={setCapoSelectorOpen}
           setSemitones={setCapoTransposeSemitones}
           showCompactControls
-          sourceKey={sourceKey}
+          sourceKey={capoSourceKey}
           value={capoSemitones}
         />
         <p className="artifact-meta playback-capo-control__summary">{capoShiftSummary}</p>

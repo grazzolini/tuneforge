@@ -13,15 +13,39 @@ type MockGainNode = GainNode & {
   disconnect: ReturnType<typeof vi.fn>;
 };
 
+type MockAnalyserNode = AnalyserNode & {
+  getFloatTimeDomainData: ReturnType<typeof vi.fn>;
+  setSamples: (samples: Float32Array | null) => void;
+};
+
+type MockMediaStreamAudioSourceNode = MediaStreamAudioSourceNode & {
+  connect: ReturnType<typeof vi.fn>;
+  disconnect: ReturnType<typeof vi.fn>;
+};
+
 type MockAudioContextInstance = AudioContext & {
   advanceTime: (seconds: number) => void;
+  createdAnalysers: MockAnalyserNode[];
+  createdMediaStreamSources: MockMediaStreamAudioSourceNode[];
   createdSources: MockAudioBufferSourceNode[];
+  createAnalyser: ReturnType<typeof vi.fn>;
   createBufferSource: ReturnType<typeof vi.fn>;
   createGain: ReturnType<typeof vi.fn>;
+  createMediaStreamSource: ReturnType<typeof vi.fn>;
   decodeAudioData: ReturnType<typeof vi.fn>;
   resume: ReturnType<typeof vi.fn>;
   suspend: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
+};
+
+type MockMediaDevicesController = {
+  clearGetUserMediaError: () => void;
+  enumerateDevices: ReturnType<typeof vi.fn>;
+  getUserMedia: ReturnType<typeof vi.fn>;
+  revealLabels: () => void;
+  rejectGetUserMedia: (error: Error | DOMException) => void;
+  reset: () => void;
+  setDevices: (devices: MediaDeviceInfo[]) => void;
 };
 
 function createStorageMock(): Storage {
@@ -57,6 +81,85 @@ Object.defineProperty(window, "localStorage", {
 Object.defineProperty(window, "sessionStorage", {
   writable: true,
   value: createStorageMock(),
+});
+
+function makeMediaDevice(deviceId: string, label: string): MediaDeviceInfo {
+  return {
+    deviceId,
+    groupId: `group-${deviceId}`,
+    kind: "audioinput",
+    label,
+    toJSON: () => ({}),
+  } as MediaDeviceInfo;
+}
+
+function makeMediaStream(): MediaStream {
+  const track = {
+    kind: "audio",
+    stop: vi.fn(),
+  } as unknown as MediaStreamTrack;
+
+  return {
+    getAudioTracks: vi.fn(() => [track]),
+    getTracks: vi.fn(() => [track]),
+  } as unknown as MediaStream;
+}
+
+const defaultMediaDevices = [
+  makeMediaDevice("built-in", "Built-in Microphone"),
+  makeMediaDevice("usb", "USB Interface"),
+];
+let mediaDevices = [...defaultMediaDevices];
+let mediaDeviceLabelsVisible = false;
+let getUserMediaError: Error | DOMException | null = null;
+
+const mockMediaDevices = {
+  addEventListener: vi.fn(),
+  enumerateDevices: vi.fn(async () =>
+    mediaDevices.map((device) => ({
+      ...device,
+      label: mediaDeviceLabelsVisible ? device.label : "",
+    })),
+  ),
+  getUserMedia: vi.fn(async () => {
+    if (getUserMediaError) {
+      throw getUserMediaError;
+    }
+    mediaDeviceLabelsVisible = true;
+    return makeMediaStream();
+  }),
+  removeEventListener: vi.fn(),
+};
+
+const mockMediaDevicesController: MockMediaDevicesController = {
+  clearGetUserMediaError() {
+    getUserMediaError = null;
+  },
+  enumerateDevices: mockMediaDevices.enumerateDevices,
+  getUserMedia: mockMediaDevices.getUserMedia,
+  revealLabels() {
+    mediaDeviceLabelsVisible = true;
+  },
+  rejectGetUserMedia(error) {
+    getUserMediaError = error;
+  },
+  reset() {
+    mediaDevices = [...defaultMediaDevices];
+    mediaDeviceLabelsVisible = false;
+    getUserMediaError = null;
+    mockMediaDevices.addEventListener.mockClear();
+    mockMediaDevices.enumerateDevices.mockClear();
+    mockMediaDevices.getUserMedia.mockClear();
+    mockMediaDevices.removeEventListener.mockClear();
+  },
+  setDevices(devices) {
+    mediaDevices = devices;
+  },
+};
+
+Object.defineProperty(navigator, "mediaDevices", {
+  configurable: true,
+  value: mockMediaDevices,
 });
 
 Object.defineProperty(window, "matchMedia", {
@@ -130,6 +233,8 @@ Object.defineProperty(window, "cancelAnimationFrame", {
 class MockAudioContext {
   destination = {} as AudioDestinationNode;
   state: AudioContextState = "running";
+  createdAnalysers: MockAnalyserNode[] = [];
+  createdMediaStreamSources: MockMediaStreamAudioSourceNode[] = [];
   createdSources: MockAudioBufferSourceNode[] = [];
   private currentTimeSeconds = 0;
 
@@ -187,6 +292,40 @@ class MockAudioContext {
     connect: vi.fn(),
     disconnect: vi.fn(),
   }) as unknown as MockGainNode);
+
+  createAnalyser = vi.fn(() => {
+    let samples: Float32Array | null = null;
+    const analyser = {
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      fftSize: 2048,
+      frequencyBinCount: 1024,
+      getFloatTimeDomainData: vi.fn((target: Float32Array) => {
+        if (!samples) {
+          target.fill(0);
+          return;
+        }
+        for (let index = 0; index < target.length; index += 1) {
+          target[index] = samples[index % samples.length] ?? 0;
+        }
+      }),
+      smoothingTimeConstant: 0,
+      setSamples(nextSamples: Float32Array | null) {
+        samples = nextSamples;
+      },
+    } as unknown as MockAnalyserNode;
+    this.createdAnalysers.push(analyser);
+    return analyser;
+  });
+
+  createMediaStreamSource = vi.fn(() => {
+    const source = {
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    } as unknown as MockMediaStreamAudioSourceNode;
+    this.createdMediaStreamSources.push(source);
+    return source;
+  });
 }
 
 const mockFetch = vi.fn(async () => {
@@ -216,4 +355,9 @@ Object.defineProperty(window, "webkitAudioContext", {
 Object.defineProperty(globalThis, "__mockAudioContexts", {
   writable: true,
   value: mockAudioContexts,
+});
+
+Object.defineProperty(globalThis, "__mockMediaDevices", {
+  writable: true,
+  value: mockMediaDevicesController,
 });

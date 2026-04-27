@@ -6,6 +6,7 @@ import { usePlayback } from "./features/projects/playback-context";
 import { PlaybackProvider } from "./features/projects/playback";
 import { SettingsView } from "./features/settings/SettingsView";
 import { ThemeStudioView } from "./features/settings/ThemeStudioView";
+import { ToolsView } from "./features/tools/ToolsView";
 import { PreferencesProvider } from "./lib/preferences";
 import { ThemeProvider } from "./lib/theme";
 
@@ -166,6 +167,7 @@ function AppChrome() {
           <NavLink to="/" end>
             Library
           </NavLink>
+          <NavLink to="/tools">Tools</NavLink>
           <NavLink to="/settings">Settings</NavLink>
         </nav>
       </aside>
@@ -173,6 +175,7 @@ function AppChrome() {
         <Routes>
           <Route path="/" element={<LibraryView />} />
           <Route path="/projects/:projectId" element={<ProjectView />} />
+          <Route path="/tools" element={<ToolsView />} />
           <Route path="/settings" element={<SettingsView />} />
           <Route path="/settings/theme-studio" element={<ThemeStudioView />} />
           <Route path="/settings/theme-preview" element={<ThemeStudioView />} />

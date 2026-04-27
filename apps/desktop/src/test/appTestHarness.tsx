@@ -885,6 +885,12 @@ export function getMockAudioContexts() {
   return (
     globalThis as typeof globalThis & {
       __mockAudioContexts: Array<{
+        createdAnalysers: Array<{
+          setSamples: (samples: Float32Array | null) => void;
+        }>;
+        createdMediaStreamSources: Array<{
+          connect: ReturnType<typeof vi.fn>;
+        }>;
         createdSources: Array<{
           start: ReturnType<typeof vi.fn>;
         }>;
@@ -895,6 +901,22 @@ export function getMockAudioContexts() {
 
 export function getMockFetch() {
   return globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+}
+
+export function getMockMediaDevices() {
+  return (
+    globalThis as typeof globalThis & {
+      __mockMediaDevices: {
+        clearGetUserMediaError: () => void;
+        enumerateDevices: ReturnType<typeof vi.fn>;
+        getUserMedia: ReturnType<typeof vi.fn>;
+        revealLabels: () => void;
+        rejectGetUserMedia: (error: Error | DOMException) => void;
+        reset: () => void;
+        setDevices: (devices: MediaDeviceInfo[]) => void;
+      };
+    }
+  ).__mockMediaDevices;
 }
 
 
@@ -933,5 +955,6 @@ export function resetAppTestHarness() {
   vi.mocked(window.HTMLMediaElement.prototype.pause).mockClear();
   getMockFetch().mockClear();
   getMockAudioContexts().length = 0;
+  getMockMediaDevices().reset();
   installMatchMediaMock(false);
 }

@@ -888,12 +888,17 @@ export function getMockAudioContexts() {
         createdAnalysers: Array<{
           setSamples: (samples: Float32Array | null) => void;
         }>;
+        createdOscillators: Array<{
+          start: ReturnType<typeof vi.fn>;
+          stop: ReturnType<typeof vi.fn>;
+        }>;
         createdMediaStreamSources: Array<{
           connect: ReturnType<typeof vi.fn>;
         }>;
         createdSources: Array<{
           start: ReturnType<typeof vi.fn>;
         }>;
+        close: ReturnType<typeof vi.fn>;
       }>;
     }
   ).__mockAudioContexts;

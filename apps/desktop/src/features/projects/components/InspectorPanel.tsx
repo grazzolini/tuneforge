@@ -1,5 +1,7 @@
+import { Link } from "react-router-dom";
 import { MusicalKeyLabel } from "../../../components/MusicalLabel";
 import { formatKey } from "../../../lib/music";
+import { useMetronome } from "../../tools/metronome-context";
 import { TargetKeySelector } from "./TargetKeySelector";
 import { useProjectViewModelContext } from "./useProjectViewModelContext";
 
@@ -51,6 +53,18 @@ export function InspectorPanel() {
     transposeSemitones,
     tuningSummary,
   } = useProjectViewModelContext();
+  const { launchMetronome } = useMetronome();
+  const tempoBpm = analysisQuery.data?.tempo_bpm;
+  const canOpenMetronome = typeof tempoBpm === "number" && Number.isFinite(tempoBpm);
+  const metronomeSearchParams = new URLSearchParams();
+  if (canOpenMetronome) {
+    metronomeSearchParams.set("tool", "metronome");
+    metronomeSearchParams.set("bpm", tempoBpm.toFixed(1));
+    metronomeSearchParams.set("followPlayback", "1");
+    if (projectQuery.data?.id) {
+      metronomeSearchParams.set("projectId", projectQuery.data.id);
+    }
+  }
 
   return (
     <aside className="stack">
@@ -249,7 +263,7 @@ export function InspectorPanel() {
             <span className="metric-label">Tempo</span>
             <strong>
               <span className="analysis-stat__value">
-                {analysisQuery.data?.tempo_bpm?.toFixed(1) ?? "-"}
+                {canOpenMetronome ? tempoBpm.toFixed(1) : "-"}
               </span>
               <span className="analysis-stat__unit">BPM</span>
             </strong>
@@ -263,6 +277,18 @@ export function InspectorPanel() {
             </strong>
           </div>
         </div>
+        {canOpenMetronome ? (
+          <div className="analysis-action-row">
+            <Link
+              aria-label={`Follow on metronome at ${tempoBpm.toFixed(1)} BPM`}
+              className="button button--small analysis-stat__action"
+              onClick={() => void launchMetronome({ bpm: tempoBpm, followPlayback: true })}
+              to={`/tools?${metronomeSearchParams.toString()}`}
+            >
+              Follow on Metronome
+            </Link>
+          </div>
+        ) : null}
         <details className="details-block details-block--inset">
           <summary>Correct source key for this project</summary>
           <p className="artifact-meta">

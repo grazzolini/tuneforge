@@ -6,6 +6,7 @@ import { usePlayback } from "./features/projects/playback-context";
 import { PlaybackProvider } from "./features/projects/playback";
 import { SettingsView } from "./features/settings/SettingsView";
 import { ThemeStudioView } from "./features/settings/ThemeStudioView";
+import { MetronomeProvider } from "./features/tools/metronome";
 import { ToolsView } from "./features/tools/ToolsView";
 import { PreferencesProvider } from "./lib/preferences";
 import { ThemeProvider } from "./lib/theme";
@@ -190,7 +191,9 @@ export default function App() {
     <ThemeProvider>
       <PreferencesProvider>
         <PlaybackProvider>
-          <AppChrome />
+          <MetronomeProvider>
+            <AppChrome />
+          </MetronomeProvider>
         </PlaybackProvider>
       </PreferencesProvider>
     </ThemeProvider>

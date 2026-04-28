@@ -523,6 +523,16 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     return getActiveMediaElements(targetSession)[0]?.currentTime ?? playbackTimeSecondsRef.current;
   });
 
+  const getPlaybackSnapshot = useStableCallback(function getPlaybackSnapshot() {
+    const activeSession = sessionRef.current;
+    return {
+      session: activeSession,
+      playbackTimeSeconds: readMasterTime(activeSession),
+      playbackDurationSeconds: playbackDurationSecondsRef.current,
+      isPlaying: isPlayingRef.current,
+    };
+  });
+
   useEffect(() => {
     if (typeof window === "undefined") {
       return;
@@ -1050,6 +1060,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       playbackDurationSeconds,
       isPlaying,
       activateStemPlayback,
+      getPlaybackSnapshot,
       registerProjectSession,
       togglePlayback,
       playPlayback,
@@ -1062,6 +1073,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     [
       dismissSession,
       activateStemPlayback,
+      getPlaybackSnapshot,
       isPlaying,
       pausePlayback,
       playbackDurationSeconds,

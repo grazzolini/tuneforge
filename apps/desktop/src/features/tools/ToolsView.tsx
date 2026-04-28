@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useStableCallback } from "../../lib/useStableCallback";
 import { usePreferences } from "../../lib/preferences";
+import { MetronomePage } from "./MetronomePage";
 import { TunerPreferenceControls } from "./TunerPreferenceControls";
 import {
   SimpleTunerMeter,
@@ -25,10 +27,27 @@ import {
 } from "./tunerPitch";
 
 type TunerStatus = "idle" | "starting" | "listening" | "unsupported" | "error";
+type ToolId = "tuner" | "metronome";
 
 type AudioContextConstructor = typeof AudioContext;
 
 export function ToolsView() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTool = readToolId(searchParams);
+
+  function handleSelectTool(tool: ToolId) {
+    const nextSearchParams = new URLSearchParams(searchParams);
+    if (tool === "tuner") {
+      nextSearchParams.delete("tool");
+      nextSearchParams.delete("bpm");
+      nextSearchParams.delete("followPlayback");
+      nextSearchParams.delete("projectId");
+    } else {
+      nextSearchParams.set("tool", "metronome");
+    }
+    setSearchParams(nextSearchParams);
+  }
+
   return (
     <section className="screen">
       <div className="screen__header">
@@ -40,19 +59,32 @@ export function ToolsView() {
       </div>
 
       <div className="project-workspace-tabs" role="tablist" aria-label="Tools">
-        <button
-          aria-selected="true"
-          className="project-workspace-tabs__button project-workspace-tabs__button--active"
-          role="tab"
-          type="button"
-        >
-          Chromatic Tuner
-        </button>
+        {[
+          { id: "tuner", label: "Chromatic Tuner" },
+          { id: "metronome", label: "Metronome" },
+        ].map((tool) => (
+          <button
+            key={tool.id}
+            aria-selected={activeTool === tool.id}
+            className={`project-workspace-tabs__button${
+              activeTool === tool.id ? " project-workspace-tabs__button--active" : ""
+            }`}
+            onClick={() => handleSelectTool(tool.id as ToolId)}
+            role="tab"
+            type="button"
+          >
+            {tool.label}
+          </button>
+        ))}
       </div>
 
-      <ChromaticTunerPage />
+      {activeTool === "tuner" ? <ChromaticTunerPage /> : <MetronomePage />}
     </section>
   );
+}
+
+function readToolId(searchParams: URLSearchParams): ToolId {
+  return searchParams.get("tool") === "metronome" ? "metronome" : "tuner";
 }
 
 function ChromaticTunerPage() {

@@ -283,6 +283,16 @@
   font-weight: 600;
 }
 
+.analysis-action-row {
+  display: flex;
+  margin-top: 0.85rem;
+}
+
+.analysis-stat__action {
+  justify-content: center;
+  width: 100%;
+}
+
 .meta-stat {
   border: 1px solid color-mix(in srgb, var(--divider) 78%, transparent);
   border-radius: 16px;

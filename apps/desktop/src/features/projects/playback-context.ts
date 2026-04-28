@@ -13,12 +13,20 @@ export type ProjectPlaybackSession = {
   durationHintSeconds: number;
 };
 
+export type PlaybackSnapshot = {
+  session: ProjectPlaybackSession | null;
+  playbackTimeSeconds: number;
+  playbackDurationSeconds: number;
+  isPlaying: boolean;
+};
+
 export type PlaybackContextValue = {
   session: ProjectPlaybackSession | null;
   playbackTimeSeconds: number;
   playbackDurationSeconds: number;
   isPlaying: boolean;
   activateStemPlayback: () => Promise<void>;
+  getPlaybackSnapshot: () => PlaybackSnapshot;
   registerProjectSession: (session: ProjectPlaybackSession) => void;
   togglePlayback: () => Promise<void>;
   playPlayback: () => Promise<void>;

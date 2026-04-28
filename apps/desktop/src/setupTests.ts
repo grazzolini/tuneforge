@@ -8,9 +8,23 @@ type MockAudioBufferSourceNode = AudioBufferSourceNode & {
   disconnect: ReturnType<typeof vi.fn>;
 };
 
+type MockAudioParam = AudioParam & {
+  exponentialRampToValueAtTime: ReturnType<typeof vi.fn>;
+  setValueAtTime: ReturnType<typeof vi.fn>;
+};
+
 type MockGainNode = GainNode & {
+  gain: MockAudioParam;
   connect: ReturnType<typeof vi.fn>;
   disconnect: ReturnType<typeof vi.fn>;
+};
+
+type MockOscillatorNode = OscillatorNode & {
+  connect: ReturnType<typeof vi.fn>;
+  disconnect: ReturnType<typeof vi.fn>;
+  frequency: MockAudioParam;
+  start: ReturnType<typeof vi.fn>;
+  stop: ReturnType<typeof vi.fn>;
 };
 
 type MockAnalyserNode = AnalyserNode & {
@@ -26,11 +40,13 @@ type MockMediaStreamAudioSourceNode = MediaStreamAudioSourceNode & {
 type MockAudioContextInstance = AudioContext & {
   advanceTime: (seconds: number) => void;
   createdAnalysers: MockAnalyserNode[];
+  createdOscillators: MockOscillatorNode[];
   createdMediaStreamSources: MockMediaStreamAudioSourceNode[];
   createdSources: MockAudioBufferSourceNode[];
   createAnalyser: ReturnType<typeof vi.fn>;
   createBufferSource: ReturnType<typeof vi.fn>;
   createGain: ReturnType<typeof vi.fn>;
+  createOscillator: ReturnType<typeof vi.fn>;
   createMediaStreamSource: ReturnType<typeof vi.fn>;
   decodeAudioData: ReturnType<typeof vi.fn>;
   resume: ReturnType<typeof vi.fn>;
@@ -234,6 +250,7 @@ class MockAudioContext {
   destination = {} as AudioDestinationNode;
   state: AudioContextState = "running";
   createdAnalysers: MockAnalyserNode[] = [];
+  createdOscillators: MockOscillatorNode[] = [];
   createdMediaStreamSources: MockMediaStreamAudioSourceNode[] = [];
   createdSources: MockAudioBufferSourceNode[] = [];
   private currentTimeSeconds = 0;
@@ -288,10 +305,32 @@ class MockAudioContext {
   });
 
   createGain = vi.fn(() => ({
-    gain: { value: 1 },
+    gain: {
+      value: 1,
+      exponentialRampToValueAtTime: vi.fn(),
+      setValueAtTime: vi.fn(),
+    },
     connect: vi.fn(),
     disconnect: vi.fn(),
   }) as unknown as MockGainNode);
+
+  createOscillator = vi.fn(() => {
+    const oscillator = {
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      frequency: {
+        value: 440,
+        exponentialRampToValueAtTime: vi.fn(),
+        setValueAtTime: vi.fn(),
+      },
+      onended: null,
+      start: vi.fn(),
+      stop: vi.fn(),
+      type: "sine",
+    } as unknown as MockOscillatorNode;
+    this.createdOscillators.push(oscillator);
+    return oscillator;
+  });
 
   createAnalyser = vi.fn(() => {
     let samples: Float32Array | null = null;

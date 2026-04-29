@@ -4,6 +4,12 @@ Guidance for AI coding agents (Claude Code, Cursor, Copilot, Aider, Codex, etc.)
 
 This file is the agent-facing companion to [CONTRIBUTING.md](./CONTRIBUTING.md). Humans should read CONTRIBUTING.md; agents should read both, but this file takes precedence on conventions specific to automated work.
 
+## How to Read AGENTS Files in This Repo
+
+- This root file applies to the whole repository unless a deeper `AGENTS.md` exists.
+- Always look for a more-specific `AGENTS.md` in the directory tree you are editing.
+- If rules conflict, prefer the most deeply nested file for that path.
+
 ## Project Snapshot
 
 Tuneforge is a local-first desktop app for musicians learning songs: stem separation, chord/key/tempo detection, pitch shift, retune, export. No cloud, no account.
@@ -46,6 +52,7 @@ apps/
     src-tauri/            Rust shell (cargo)
 packages/
   shared-types/           generated TS contracts
+docs/                     product + architecture docs
 scripts/                  packaging helpers
 ```
 
@@ -110,6 +117,12 @@ When asked to implement a change:
 - Frontend uses Vitest + Testing Library. Test user-visible behavior, not implementation details.
 - Don't commit copyrighted audio under any circumstances.
 
+## Documentation Conventions
+
+- Keep docs aligned with behavior; if user-visible behavior changed, update docs in the same PR.
+- Prefer updating existing docs under `docs/` instead of adding near-duplicate pages.
+- Link docs with relative paths and keep section anchors stable where practical.
+
 ## Generated Artifacts
 
 The following files are generated. **Do not edit by hand.**
@@ -138,6 +151,17 @@ The following files are generated. **Do not edit by hand.**
 - Fill in the PR template. Be honest in the test plan — list the commands you actually ran.
 - Mark a PR as draft if any required gate fails locally.
 - Never use `--no-verify` and never `force-push` to `main` or to someone else's branch.
+
+## Recommended Scoped AGENTS.md Files
+
+To reduce ambiguity and keep this root file shorter over time, maintain additional scoped `AGENTS.md` files in:
+
+- `apps/backend/` for backend-only conventions and test commands.
+- `apps/desktop/` for frontend + Tauri guidance.
+- `packages/shared-types/` for generated-contract rules.
+- `docs/` for documentation structure and style.
+
+These scoped files should only include rules that are specific to that subtree; keep global policy in this root file.
 
 ## When to Stop and Ask
 

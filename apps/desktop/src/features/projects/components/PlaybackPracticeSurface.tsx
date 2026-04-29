@@ -1,5 +1,6 @@
 import type { CSSProperties, KeyboardEvent } from "react";
 import { MusicalChordLabel } from "../../../components/MusicalLabel";
+import type { TabSuggestionGroupSchema, TabSuggestionSchema } from "../../../lib/api";
 import type { LeadSheetChord, LeadSheetLyricsRow, LeadSheetRow } from "../projectViewUtils";
 import {
   formatPlaybackClock,
@@ -41,19 +42,33 @@ function usePracticeTargetSpacePlayback() {
 
 function PlaybackModeHeader() {
   const {
+    acceptedTabSuggestionIds,
     chordsFollowEnabled,
     displayedLyrics,
+    handleAcceptTabSuggestionGroup,
+    handleApplyTabSuggestions,
+    handleCloseTabImport,
+    handleCreateTabImportProposal,
+    handleOpenTabImport,
+    handleRejectTabSuggestionGroup,
     handleSetChordsFollowEnabled,
     handleSetLyricsFollowEnabled,
     handleTogglePlaybackDisplayLane,
     hasLyricsTranscript,
     isEditingLyrics,
     isLyricsRunning,
+    isTabImportOpen,
     lyricsFollowEnabled,
-    setLyricsDraft,
     lyricsMutation,
     playbackDisplayMode,
+    selectedTabSuggestionId,
     setIsEditingLyrics,
+    setLyricsDraft,
+    setSelectedTabSuggestionId,
+    setTabImportDraft,
+    tabImportApplyMutation,
+    tabImportDraft,
+    tabImportMutation,
   } = useProjectViewModelContext();
   const lyricsSelected = playbackDisplayMode === "lyrics" || playbackDisplayMode === "combined";
   const chordsSelected = playbackDisplayMode === "chords" || playbackDisplayMode === "combined";
@@ -105,6 +120,13 @@ function PlaybackModeHeader() {
               Edit Lyrics
             </button>
           ) : null}
+          <button
+            className="button button--ghost button--small"
+            type="button"
+            onClick={handleOpenTabImport}
+          >
+            Import Tab
+          </button>
           {lyricsSelected ? (
             <>
               <button
@@ -133,8 +155,275 @@ function PlaybackModeHeader() {
           ) : null}
         </div>
       </div>
+      {isTabImportOpen ? (
+        <TabImportDialog
+          acceptedSuggestionIds={acceptedTabSuggestionIds}
+          applyMutation={tabImportApplyMutation}
+          draft={tabImportDraft}
+          importMutation={tabImportMutation}
+          onAcceptGroup={handleAcceptTabSuggestionGroup}
+          onApply={handleApplyTabSuggestions}
+          onClose={handleCloseTabImport}
+          onCreateProposal={handleCreateTabImportProposal}
+          onRejectGroup={handleRejectTabSuggestionGroup}
+          onSelectSuggestion={setSelectedTabSuggestionId}
+          onSetDraft={setTabImportDraft}
+          selectedSuggestionId={selectedTabSuggestionId}
+        />
+      ) : null}
     </div>
   );
+}
+
+function TabImportDialog({
+  acceptedSuggestionIds,
+  applyMutation,
+  draft,
+  importMutation,
+  onAcceptGroup,
+  onApply,
+  onClose,
+  onCreateProposal,
+  onRejectGroup,
+  onSelectSuggestion,
+  onSetDraft,
+  selectedSuggestionId,
+}: {
+  acceptedSuggestionIds: string[];
+  applyMutation: ReturnType<typeof useProjectViewModelContext>["tabImportApplyMutation"];
+  draft: string;
+  importMutation: ReturnType<typeof useProjectViewModelContext>["tabImportMutation"];
+  onAcceptGroup: (suggestionIds: string[]) => void;
+  onApply: () => void;
+  onClose: () => void;
+  onCreateProposal: () => void;
+  onRejectGroup: (suggestionIds: string[]) => void;
+  onSelectSuggestion: (suggestionId: string | null) => void;
+  onSetDraft: (value: string) => void;
+  selectedSuggestionId: string | null;
+}) {
+  const { handleToggleTabSuggestion } = useProjectViewModelContext();
+  const groups = importMutation.data?.tab_import.groups ?? [];
+  const suggestions = groups.flatMap((group) => group.suggestions ?? []);
+  const selectedSuggestion =
+    suggestions.find((suggestion) => suggestion.id === selectedSuggestionId) ?? suggestions[0] ?? null;
+  const acceptedCount = acceptedSuggestionIds.length;
+
+  return (
+    <div className="tab-import-overlay" role="presentation">
+      <section
+        aria-label="Import tab suggestions"
+        aria-modal="true"
+        className="tab-import-drawer"
+        role="dialog"
+      >
+        <div className="tab-import-drawer__header">
+          <div>
+            <p className="metric-label">Tab Import</p>
+            <h3>Review Suggestions</h3>
+          </div>
+          <button
+            className="button button--ghost button--small"
+            disabled={importMutation.isPending || applyMutation.isPending}
+            onClick={onClose}
+            type="button"
+          >
+            Close
+          </button>
+        </div>
+
+        <label className="tab-import-input">
+          <span>Tab text</span>
+          <textarea
+            value={draft}
+            onChange={(event) => onSetDraft(event.currentTarget.value)}
+            placeholder={"[Verse]\nG       D\nHello from the first line"}
+          />
+        </label>
+
+        <div className="button-row tab-import-actions">
+          <button
+            className="button button--primary button--small"
+            disabled={!draft.trim() || importMutation.isPending || applyMutation.isPending}
+            onClick={onCreateProposal}
+            type="button"
+          >
+            {importMutation.isPending ? "Reading..." : "Create Suggestions"}
+          </button>
+          <button
+            className="button button--ghost button--small"
+            disabled={acceptedCount === 0 || importMutation.isPending || applyMutation.isPending}
+            onClick={onApply}
+            type="button"
+          >
+            {applyMutation.isPending ? "Applying..." : `Apply Accepted (${acceptedCount})`}
+          </button>
+        </div>
+
+        {importMutation.error ? <p className="inline-error">{mutationErrorMessage(importMutation.error)}</p> : null}
+        {applyMutation.error ? <p className="inline-error">{mutationErrorMessage(applyMutation.error)}</p> : null}
+
+        {groups.length ? (
+          <div className="tab-import-review">
+            <div className="tab-import-groups">
+              {groups.map((group) => (
+                <TabSuggestionGroup
+                  acceptedSuggestionIds={acceptedSuggestionIds}
+                  group={group}
+                  key={group.kind}
+                  onAcceptGroup={onAcceptGroup}
+                  onRejectGroup={onRejectGroup}
+                  onSelectSuggestion={onSelectSuggestion}
+                  onToggleSuggestion={handleToggleTabSuggestion}
+                  selectedSuggestionId={selectedSuggestion?.id ?? null}
+                />
+              ))}
+            </div>
+
+            <TabSuggestionDetail suggestion={selectedSuggestion} />
+          </div>
+        ) : null}
+      </section>
+    </div>
+  );
+}
+
+function TabSuggestionGroup({
+  acceptedSuggestionIds,
+  group,
+  onAcceptGroup,
+  onRejectGroup,
+  onSelectSuggestion,
+  onToggleSuggestion,
+  selectedSuggestionId,
+}: {
+  acceptedSuggestionIds: string[];
+  group: TabSuggestionGroupSchema;
+  onAcceptGroup: (suggestionIds: string[]) => void;
+  onRejectGroup: (suggestionIds: string[]) => void;
+  onSelectSuggestion: (suggestionId: string | null) => void;
+  onToggleSuggestion: (suggestionId: string) => void;
+  selectedSuggestionId: string | null;
+}) {
+  const suggestions = group.suggestions ?? [];
+  const suggestionIds = suggestions.map((suggestion) => suggestion.id);
+
+  return (
+    <section className="tab-import-group">
+      <div className="tab-import-group__header">
+        <div>
+          <h4>{group.label}</h4>
+          <span className="artifact-meta">{suggestions.length} suggestions</span>
+        </div>
+        <div className="button-row">
+          <button
+            className="button button--ghost button--small"
+            disabled={!suggestionIds.length}
+            onClick={() => onAcceptGroup(suggestionIds)}
+            type="button"
+          >
+            Accept Group
+          </button>
+          <button
+            className="button button--ghost button--small"
+            disabled={!suggestionIds.length}
+            onClick={() => onRejectGroup(suggestionIds)}
+            type="button"
+          >
+            Reject Group
+          </button>
+        </div>
+      </div>
+
+      <div className="tab-import-suggestions">
+        {suggestions.map((suggestion) => {
+          const accepted = acceptedSuggestionIds.includes(suggestion.id);
+          const selected = suggestion.id === selectedSuggestionId;
+          return (
+            <div
+              className={`tab-import-suggestion${selected ? " tab-import-suggestion--selected" : ""}`}
+              key={suggestion.id}
+            >
+              <input
+                aria-label={`Accept ${suggestion.title}`}
+                checked={accepted}
+                onChange={() => onToggleSuggestion(suggestion.id)}
+                type="checkbox"
+              />
+              <button
+                className="tab-import-suggestion__summary"
+                onClick={(event) => {
+                  event.preventDefault();
+                  onSelectSuggestion(suggestion.id);
+                }}
+                type="button"
+              >
+                <span className="tab-import-suggestion__heading">
+                  <span>{suggestion.title}</span>
+                  <small>{suggestionTimeLabel(suggestion)}</small>
+                </span>
+                <span className="tab-import-suggestion__comparison">
+                  <span className="tab-import-suggestion__cell">
+                    <span className="metric-label">Current</span>
+                    <span>{suggestion.current_text ?? "-"}</span>
+                  </span>
+                  <span className="tab-import-suggestion__cell">
+                    <span className="metric-label">Tab</span>
+                    <span>{suggestion.suggested_text ?? "-"}</span>
+                  </span>
+                </span>
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function TabSuggestionDetail({ suggestion }: { suggestion: TabSuggestionSchema | null }) {
+  if (!suggestion) {
+    return (
+      <aside className="tab-import-detail">
+        <p className="artifact-meta">No suggestions yet.</p>
+      </aside>
+    );
+  }
+
+  return (
+    <aside className="tab-import-detail">
+      <div>
+        <p className="metric-label">{suggestion.kind}</p>
+        <h4>{suggestion.title}</h4>
+        <span className="artifact-meta">{suggestionTimeLabel(suggestion)}</span>
+      </div>
+      <div className="tab-import-diff">
+        <div>
+          <span className="metric-label">Current</span>
+          <p>{suggestion.current_text ?? "-"}</p>
+        </div>
+        <div>
+          <span className="metric-label">Tab</span>
+          <p>{suggestion.suggested_text ?? "-"}</p>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function suggestionTimeLabel(suggestion: TabSuggestionSchema) {
+  if (typeof suggestion.start_seconds !== "number") {
+    return "Untimed";
+  }
+  const start = formatPlaybackClock(suggestion.start_seconds);
+  if (typeof suggestion.end_seconds !== "number") {
+    return start;
+  }
+  return `${start} - ${formatPlaybackClock(suggestion.end_seconds)}`;
+}
+
+function mutationErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "The request failed.";
 }
 
 function LyricsPracticePanel() {

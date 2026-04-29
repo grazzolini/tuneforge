@@ -47,6 +47,7 @@ Roadmap items are grouped by track so related work can move independently.
 - Improve editable lyrics timeline behavior for segment timing, text correction, and playback follow.
 - Add Android lyrics MVP using local Whisper or an equivalent local runtime behind the mobile capability model.
 - Support tab import for lyrics correction and chord/lyric alignment where useful.
+- Research local forced-alignment second passes, such as WhisperX- or Gentle-style alignment, after lyrics generation or accepted lyric/tab edits to refine word and phrase timing.
 - Keep generated lyrics positioned as editable draft output, not guaranteed transcription truth.
 
 ## Mobile

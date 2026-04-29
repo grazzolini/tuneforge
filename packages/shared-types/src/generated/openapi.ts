@@ -162,6 +162,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/tabs/proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Project Tab Import Create */
+        post: operations["project_tab_import_create_api_v1_projects__project_id__tabs_proposals_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/tabs/{tab_import_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Project Tab Import Detail */
+        get: operations["project_tab_import_detail_api_v1_projects__project_id__tabs__tab_import_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/tabs/{tab_import_id}/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Project Tab Import Accept */
+        post: operations["project_tab_import_accept_api_v1_projects__project_id__tabs__tab_import_id__accept_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/sections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Project Sections */
+        get: operations["project_sections_api_v1_projects__project_id__sections_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/retune": {
         parameters: {
             query?: never;
@@ -809,6 +877,42 @@ export interface components {
              */
             output_format: string;
         };
+        /** SongSectionSchema */
+        SongSectionSchema: {
+            /** Id */
+            id: string;
+            /** Project Id */
+            project_id: string;
+            /** Tab Import Id */
+            tab_import_id?: string | null;
+            /** Label */
+            label: string;
+            /** Start Seconds */
+            start_seconds?: number | null;
+            /** End Seconds */
+            end_seconds?: number | null;
+            /** Source */
+            source: string;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** SongSectionsResponse */
+        SongSectionsResponse: {
+            /** Sections */
+            sections?: components["schemas"]["SongSectionSchema"][];
+        };
         /** StemRequest */
         StemRequest: {
             /**
@@ -840,6 +944,101 @@ export interface components {
              * @default false
              */
             overwrite_chord_edits: boolean;
+        };
+        /** TabImportApplyRequest */
+        TabImportApplyRequest: {
+            /** Accepted Suggestion Ids */
+            accepted_suggestion_ids?: string[];
+        };
+        /** TabImportApplyResponse */
+        TabImportApplyResponse: {
+            tab_import: components["schemas"]["TabImportSchema"];
+            /** Accepted Suggestion Ids */
+            accepted_suggestion_ids?: string[];
+            /** Ignored Suggestion Ids */
+            ignored_suggestion_ids?: string[];
+            lyrics?: components["schemas"]["LyricsResponse"] | null;
+            chords?: components["schemas"]["ChordResponse"] | null;
+            /** Sections */
+            sections?: components["schemas"]["SongSectionSchema"][];
+            project: components["schemas"]["ProjectSchema"];
+        };
+        /** TabImportCreateRequest */
+        TabImportCreateRequest: {
+            /** Raw Text */
+            raw_text: string;
+        };
+        /** TabImportResponse */
+        TabImportResponse: {
+            tab_import: components["schemas"]["TabImportSchema"];
+        };
+        /** TabImportSchema */
+        TabImportSchema: {
+            /** Id */
+            id: string;
+            /** Project Id */
+            project_id: string;
+            /** Raw Text */
+            raw_text: string;
+            /** Parser Version */
+            parser_version: string;
+            /** Status */
+            status: string;
+            /** Parsed */
+            parsed?: {
+                [key: string]: unknown;
+            };
+            /** Groups */
+            groups?: components["schemas"]["TabSuggestionGroupSchema"][];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** TabSuggestionGroupSchema */
+        TabSuggestionGroupSchema: {
+            /** Kind */
+            kind: string;
+            /** Label */
+            label: string;
+            /** Suggestions */
+            suggestions?: components["schemas"]["TabSuggestionSchema"][];
+        };
+        /** TabSuggestionSchema */
+        TabSuggestionSchema: {
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /**
+             * Status
+             * @default pending
+             */
+            status: string;
+            /** Title */
+            title: string;
+            /** Current Text */
+            current_text?: string | null;
+            /** Suggested Text */
+            suggested_text?: string | null;
+            /** Start Seconds */
+            start_seconds?: number | null;
+            /** End Seconds */
+            end_seconds?: number | null;
+            /** Segment Index */
+            segment_index?: number | null;
+            /** Chord Index */
+            chord_index?: number | null;
+            /** Payload */
+            payload?: {
+                [key: string]: unknown;
+            };
         };
         /** TransposeRequest */
         TransposeRequest: {
@@ -1300,6 +1499,140 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    project_tab_import_create_api_v1_projects__project_id__tabs_proposals_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TabImportCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TabImportResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    project_tab_import_detail_api_v1_projects__project_id__tabs__tab_import_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                tab_import_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TabImportResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    project_tab_import_accept_api_v1_projects__project_id__tabs__tab_import_id__accept_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                tab_import_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TabImportApplyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TabImportApplyResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    project_sections_api_v1_projects__project_id__sections_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SongSectionsResponse"];
                 };
             };
             /** @description Validation Error */

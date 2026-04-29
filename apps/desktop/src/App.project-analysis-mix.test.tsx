@@ -9,10 +9,12 @@ import {
   markAudioReady,
   mockAnalyzeProject,
   mockConfirm,
+  mockAcceptTabImport,
   mockCreateChords,
   mockCreateLyrics,
   mockCreatePreview,
   mockCreateStems,
+  mockCreateTabImport,
   mockUpdateLyrics,
   mockUpdateProject,
   renderApp,
@@ -262,7 +264,59 @@ describe("Desktop app project analysis mix", () => {
         { text: "Second lyric line stays steady" },
       ],
     });
-    expect(await screen.findByText("Edited lyric line")).toBeInTheDocument();
+    const editedWord = await screen.findByText("Edited");
+    expect(editedWord).toHaveClass("lyrics-word");
+  });
+
+  it("reviews pasted tab suggestions before applying accepted changes", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    expect(screen.getByRole("group", { name: "Lyrics and chords lead sheet" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Import Tab" }));
+    const dialog = await screen.findByRole("dialog", { name: "Import tab suggestions" });
+    fireEvent.change(within(dialog).getByLabelText("Tab text"), {
+      target: { value: "[Verse]\nF#\nHello from the fast line" },
+    });
+    await user.click(within(dialog).getByRole("button", { name: "Create Suggestions" }));
+
+    expect(mockCreateTabImport).toHaveBeenCalledWith("proj_123", {
+      raw_text: "[Verse]\nF#\nHello from the fast line",
+    });
+    expect(await within(dialog).findByRole("heading", { name: "Lyrics" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("heading", { name: "Chords" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("heading", { name: "Sections" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("heading", { name: "Key" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Apply Accepted (0)" })).toBeDisabled();
+
+    const lyricCheckbox = within(dialog).getByLabelText("Accept Update lyric segment 1");
+    const lyricSuggestion = lyricCheckbox.closest(".tab-import-suggestion");
+    expect(lyricSuggestion).not.toBeNull();
+    expect(within(lyricSuggestion as HTMLElement).getByText("Hello from the first line")).toBeInTheDocument();
+    expect(within(lyricSuggestion as HTMLElement).getByText("Hello from the fast line")).toBeInTheDocument();
+    expect(lyricCheckbox).not.toBeChecked();
+    await user.click(lyricCheckbox);
+    const chordGroup = within(dialog).getByRole("heading", { name: "Chords" }).closest("section");
+    expect(chordGroup).not.toBeNull();
+    await user.click(within(chordGroup as HTMLElement).getByRole("button", { name: "Accept Group" }));
+    await user.click(within(dialog).getByRole("button", { name: "Apply Accepted (2)" }));
+
+    await waitFor(() =>
+      expect(mockAcceptTabImport).toHaveBeenCalledWith("proj_123", "tab_200", {
+        accepted_suggestion_ids: ["tab_200_lyrics_1", "tab_200_chord_1"],
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Import tab suggestions" })).not.toBeInTheDocument(),
+    );
+
+    const leadSheet = screen.getByRole("group", { name: "Lyrics and chords lead sheet" });
+    const fastWord = await within(leadSheet).findByText("fast");
+    expect(fastWord).toHaveClass("lyrics-word");
+    expect(getByAriaKeyLabel(leadSheet, "F#")).toBeInTheDocument();
   });
 
   it("hard follows lyrics during playback after manual scroll", async () => {
@@ -523,7 +577,7 @@ describe("Desktop app project analysis mix", () => {
     await user.click(screen.getByRole("button", { name: "Refresh Lyrics" }));
 
     expect(mockConfirm).toHaveBeenCalledWith(
-      "Refresh lyrics? This replaces the current transcript and discards your edits.",
+      "Refresh lyrics? This replaces the current transcript and discards your edits, including accepted tab suggestions.",
       expect.objectContaining({
         title: "Refresh lyrics",
         kind: "warning",
@@ -554,7 +608,7 @@ describe("Desktop app project analysis mix", () => {
     await user.click(screen.getByRole("button", { name: "Refresh Chords" }));
 
     expect(mockConfirm).toHaveBeenCalledWith(
-      "Refresh chords? This replaces the current chord timeline and discards your edits.",
+      "Refresh chords? This replaces the current chord timeline and discards your edits, including accepted tab suggestions.",
       expect.objectContaining({
         title: "Refresh chords",
         kind: "warning",

@@ -45,6 +45,7 @@ QUALITY_ALIASES: dict[str, str] = {
     "augmented": "aug",
     "+": "aug",
     "sus2": "sus2",
+    "sus": "sus4",
     "sus4": "sus4",
     "7": "7",
     "dom7": "7",
@@ -99,6 +100,10 @@ DEGREE_TO_SEMITONE: dict[str, int] = {
 }
 
 HARTE_LABEL_RE = re.compile(r"^([A-Ga-g](?:#|b)?)(?::([^/]+))?(?:/(.+))?$")
+LEAD_SHEET_LABEL_RE = re.compile(
+    r"^([A-Ga-g](?:#|b)?)(maj7|major7|M7|min7|minor7|m7|min|minor|maj|major|m|"
+    r"dim7|dim|aug|sus2|sus4|sus|7|\+)?(?:/([A-Ga-g](?:#|b)?))?$"
+)
 
 
 @dataclass(frozen=True)
@@ -138,6 +143,17 @@ def parse_chord_label(raw_label: str) -> ParsedChordLabel:
         )
 
     match = HARTE_LABEL_RE.match(normalized)
+    lead_sheet_match = LEAD_SHEET_LABEL_RE.match(normalized)
+    if lead_sheet_match and (not match or match.group(2) is None and len(normalized) > len(lead_sheet_match.group(1))):
+        root_name, quality_raw, bass_raw = lead_sheet_match.groups()
+        return _parsed_chord_label_from_parts(
+            raw_label=raw_label,
+            normalized=normalized,
+            root_name=root_name,
+            quality_raw=quality_raw,
+            bass_raw=bass_raw,
+        )
+
     if not match:
         return ParsedChordLabel(
             raw_label=raw_label,
@@ -150,6 +166,23 @@ def parse_chord_label(raw_label: str) -> ParsedChordLabel:
         )
 
     root_name, quality_raw, bass_raw = match.groups()
+    return _parsed_chord_label_from_parts(
+        raw_label=raw_label,
+        normalized=normalized,
+        root_name=root_name,
+        quality_raw=quality_raw,
+        bass_raw=bass_raw,
+    )
+
+
+def _parsed_chord_label_from_parts(
+    *,
+    raw_label: str,
+    normalized: str,
+    root_name: str,
+    quality_raw: str | None,
+    bass_raw: str | None,
+) -> ParsedChordLabel:
     root_pitch_class = NOTE_TO_PITCH_CLASS.get(_normalize_note_name(root_name))
     if root_pitch_class is None:
         return ParsedChordLabel(

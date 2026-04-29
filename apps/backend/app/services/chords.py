@@ -17,6 +17,7 @@ from app.services.chord_backends import (
     resolve_chord_backend_id,
 )
 from app.services.paths import project_analysis_dir
+from app.services.tab_state import clear_project_tab_state
 
 
 def detect_project_chords(
@@ -59,6 +60,7 @@ def detect_project_chords(
         else source_timeline
     )
     updated_at = utcnow()
+    clear_project_tab_state(session, project_id=project.id)
 
     if existing is None:
         existing = ChordTimeline(project_id=project.id, created_at=updated_at)

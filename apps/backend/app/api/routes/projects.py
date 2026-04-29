@@ -29,7 +29,14 @@ from app.schemas import (
     ProjectsResponse,
     ProjectUpdateRequest,
     RetuneRequest,
+    SongSectionSchema,
+    SongSectionsResponse,
     StemRequest,
+    TabImportApplyRequest,
+    TabImportApplyResponse,
+    TabImportCreateRequest,
+    TabImportResponse,
+    TabImportSchema,
     TransposeRequest,
 )
 from app.services.artifacts import delete_project_artifact
@@ -44,6 +51,12 @@ from app.services.projects import (
     update_project,
 )
 from app.services.stems import resolve_stem_source_artifact
+from app.services.tabs import (
+    apply_tab_suggestions,
+    create_tab_import,
+    get_tab_import,
+    list_project_sections,
+)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -225,6 +238,61 @@ def project_lyrics_update(
     project = get_project(session, project_id)
     lyrics = update_project_lyrics(session, project=project, edits=payload.segments)
     return LyricsResponse.model_validate(lyrics)
+
+
+@router.post("/{project_id}/tabs/proposals", response_model=TabImportResponse)
+def project_tab_import_create(
+    project_id: str,
+    payload: TabImportCreateRequest,
+    session: Session = Depends(get_db),
+) -> TabImportResponse:
+    project = get_project(session, project_id)
+    tab_import = create_tab_import(session, project=project, raw_text=payload.raw_text)
+    return TabImportResponse(tab_import=TabImportSchema.model_validate(tab_import))
+
+
+@router.get("/{project_id}/tabs/{tab_import_id}", response_model=TabImportResponse)
+def project_tab_import_detail(
+    project_id: str,
+    tab_import_id: str,
+    session: Session = Depends(get_db),
+) -> TabImportResponse:
+    get_project(session, project_id)
+    tab_import = get_tab_import(session, project_id=project_id, tab_import_id=tab_import_id)
+    return TabImportResponse(tab_import=TabImportSchema.model_validate(tab_import))
+
+
+@router.post("/{project_id}/tabs/{tab_import_id}/accept", response_model=TabImportApplyResponse)
+def project_tab_import_accept(
+    project_id: str,
+    tab_import_id: str,
+    payload: TabImportApplyRequest,
+    session: Session = Depends(get_db),
+) -> TabImportApplyResponse:
+    project = get_project(session, project_id)
+    tab_import = get_tab_import(session, project_id=project_id, tab_import_id=tab_import_id)
+    result = apply_tab_suggestions(
+        session,
+        project=project,
+        tab_import=tab_import,
+        accepted_suggestion_ids=payload.accepted_suggestion_ids,
+    )
+    return TabImportApplyResponse(
+        tab_import=TabImportSchema.model_validate(result["tab_import"]),
+        accepted_suggestion_ids=result["accepted_suggestion_ids"],
+        ignored_suggestion_ids=result["ignored_suggestion_ids"],
+        lyrics=LyricsResponse.model_validate(result["lyrics"]) if result["lyrics"] is not None else None,
+        chords=ChordResponse.model_validate(result["chords"]) if result["chords"] is not None else None,
+        sections=[SongSectionSchema.model_validate(section) for section in result["sections"]],
+        project=ProjectSchema.model_validate(result["project"]),
+    )
+
+
+@router.get("/{project_id}/sections", response_model=SongSectionsResponse)
+def project_sections(project_id: str, session: Session = Depends(get_db)) -> SongSectionsResponse:
+    get_project(session, project_id)
+    sections = list_project_sections(session, project_id=project_id)
+    return SongSectionsResponse(sections=[SongSectionSchema.model_validate(section) for section in sections])
 
 
 @router.post("/{project_id}/retune", response_model=JobResponse)

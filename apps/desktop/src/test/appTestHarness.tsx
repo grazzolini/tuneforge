@@ -28,11 +28,15 @@ const {
   mockListJobs,
   mockCreateChords,
   mockCreateLyrics,
+  mockCreateTabImport,
   mockCreatePreview,
   mockCreateStems,
   mockAnalyzeProject,
   mockUpdateLyrics,
   mockUpdateProject,
+  mockGetTabImport,
+  mockAcceptTabImport,
+  mockListSections,
   mockCreateExport,
   mockDeleteArtifact,
   mockDeleteProject,
@@ -45,6 +49,8 @@ const {
     analysisByProject: Record<string, Record<string, unknown> | null>;
     chordsByProject: Record<string, Record<string, unknown>>;
     lyricsByProject: Record<string, Record<string, unknown>>;
+    tabImportsByProject: Record<string, Array<Record<string, unknown>>>;
+    sectionsByProject: Record<string, Array<Record<string, unknown>>>;
     artifactsByProject: Record<string, Array<Record<string, unknown>>>;
     chordBackends: Array<Record<string, unknown>>;
     pendingPreviewArtifactsByProject: Record<string, Array<Record<string, unknown>>>;
@@ -53,6 +59,8 @@ const {
     nextProjectId: number;
     nextArtifactId: number;
     nextJobId: number;
+    nextTabImportId: number;
+    nextSectionId: number;
     deferPreviewCompletion: boolean;
   };
 
@@ -255,6 +263,10 @@ const {
       lyricsByProject: {
         proj_123: makeLyricsTranscript("proj_123"),
       },
+      tabImportsByProject: {},
+      sectionsByProject: {
+        proj_123: [],
+      },
       artifactsByProject: {
         proj_123: [
           {
@@ -308,6 +320,8 @@ const {
       nextProjectId: 200,
       nextArtifactId: 200,
       nextJobId: 200,
+      nextTabImportId: 200,
+      nextSectionId: 200,
       deferPreviewCompletion: false,
     };
   }
@@ -583,6 +597,36 @@ const {
     project.updated_at = createdAt;
     return { project: clone(project) };
   });
+
+  function retimeWordsForText(segment: Record<string, unknown>, text: string) {
+    const words = text.trim().split(/\s+/).filter(Boolean);
+    const currentWords = Array.isArray(segment.words)
+      ? (segment.words as Array<Record<string, unknown>>)
+      : [];
+    if (!words.length || !currentWords.length) {
+      return undefined;
+    }
+    const segmentStart = Number(segment.start_seconds ?? currentWords[0]?.start_seconds ?? 0);
+    const segmentEnd = Number(
+      segment.end_seconds ?? currentWords[currentWords.length - 1]?.end_seconds ?? segmentStart + words.length,
+    );
+    const span = Math.max(segmentEnd - segmentStart, 0.001);
+    return words.map((word, index) => {
+      const matchedWord = currentWords[Math.min(index, currentWords.length - 1)] ?? {};
+      if (index < currentWords.length) {
+        return { ...matchedWord, text: word };
+      }
+      const startSeconds = segmentStart + (span * index) / words.length;
+      const endSeconds = segmentStart + (span * (index + 1)) / words.length;
+      return {
+        confidence: null,
+        end_seconds: endSeconds,
+        start_seconds: startSeconds,
+        text: word,
+      };
+    });
+  }
+
   const mockUpdateLyrics = vi.fn(async (projectId: string, body: { segments: Array<{ text: string }> }) => {
     const current = clone(
       state.lyricsByProject[projectId] ?? {
@@ -614,7 +658,10 @@ const {
         return clone(sourceSegment);
       }
       if (nextText !== segment.text) {
-        delete nextSegment.words;
+        const retimedWords = retimeWordsForText(segment, nextText);
+        if (retimedWords) {
+          nextSegment.words = retimedWords;
+        }
       }
       return nextSegment;
     });
@@ -624,6 +671,210 @@ const {
     state.lyricsByProject[projectId] = current;
     return clone(current);
   });
+  function buildTabImport(projectId: string, rawText: string, tabImportId = `tab_${state.nextTabImportId++}`) {
+    const lyrics = state.lyricsByProject[projectId];
+    const chords = state.chordsByProject[projectId];
+    const project = getProjectOrThrow(projectId);
+    const currentLyric = String(((lyrics?.segments as Array<Record<string, unknown>> | undefined)?.[0]?.text) ?? "");
+    const currentChord = String(((chords?.timeline as Array<Record<string, unknown>> | undefined)?.[0]?.label) ?? "");
+    return {
+      id: tabImportId,
+      project_id: projectId,
+      raw_text: rawText,
+      parser_version: "test",
+      status: "pending",
+      parsed: {
+        key: "D",
+        sections: [{ label: "Verse" }],
+      },
+      groups: [
+        {
+          kind: "lyrics",
+          label: "Lyrics",
+          suggestions: [
+            {
+              id: `${tabImportId}_lyrics_1`,
+              kind: "lyrics",
+              status: "pending",
+              title: "Update lyric segment 1",
+              current_text: currentLyric,
+              suggested_text: "Hello from the fast line",
+              start_seconds: 0,
+              end_seconds: 8,
+              segment_index: 0,
+              payload: { text: "Hello from the fast line" },
+            },
+          ],
+        },
+        {
+          kind: "chords",
+          label: "Chords",
+          suggestions: [
+            {
+              id: `${tabImportId}_chord_1`,
+              kind: "chords",
+              status: "pending",
+              title: "Use F# at 00:00",
+              current_text: currentChord,
+              suggested_text: "F#",
+              start_seconds: 0,
+              end_seconds: 8,
+              chord_index: 0,
+              payload: { label: "F#" },
+            },
+          ],
+        },
+        {
+          kind: "sections",
+          label: "Sections",
+          suggestions: [
+            {
+              id: `${tabImportId}_section_1`,
+              kind: "sections",
+              status: "pending",
+              title: "Add Verse section",
+              current_text: null,
+              suggested_text: "Verse",
+              start_seconds: 0,
+              end_seconds: null,
+              payload: { label: "Verse" },
+            },
+          ],
+        },
+        {
+          kind: "key",
+          label: "Key",
+          suggestions: [
+            {
+              id: `${tabImportId}_key_1`,
+              kind: "key",
+              status: "pending",
+              title: "Set source key to D",
+              current_text: String(project.source_key_override ?? "G major"),
+              suggested_text: "D",
+              start_seconds: null,
+              end_seconds: null,
+              payload: { source_key: "D" },
+            },
+          ],
+        },
+      ],
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+  }
+  const mockCreateTabImport = vi.fn(async (projectId: string, body: { raw_text: string }) => {
+    const existingTabImport = state.tabImportsByProject[projectId]?.[0] ?? null;
+    const existingId = typeof existingTabImport?.id === "string" ? existingTabImport.id : undefined;
+    const tabImport = buildTabImport(projectId, body.raw_text, existingId);
+    state.tabImportsByProject[projectId] = [tabImport];
+    return { tab_import: clone(tabImport) };
+  });
+  const mockGetTabImport = vi.fn(async (projectId: string, tabImportId: string) => {
+    const tabImport = (state.tabImportsByProject[projectId] ?? []).find((item) => item.id === tabImportId);
+    if (!tabImport) {
+      throw new Error(`Unknown tab import ${tabImportId}`);
+    }
+    return { tab_import: clone(tabImport) };
+  });
+  const mockAcceptTabImport = vi.fn(async (projectId: string, tabImportId: string, body: { accepted_suggestion_ids?: string[] }) => {
+    const tabImport = (state.tabImportsByProject[projectId] ?? []).find((item) => item.id === tabImportId);
+    if (!tabImport) {
+      throw new Error(`Unknown tab import ${tabImportId}`);
+    }
+    const acceptedIds = new Set(body.accepted_suggestion_ids ?? []);
+    const groups = (tabImport.groups as Array<Record<string, unknown>>).map((group) => ({
+      ...group,
+      suggestions: ((group.suggestions as Array<Record<string, unknown>>) ?? []).map((suggestion) => {
+        const suggestionId = String(suggestion.id);
+        const accepted = acceptedIds.has(suggestionId);
+        if (!accepted) {
+          return { ...suggestion, status: "ignored" };
+        }
+        if (suggestion.kind === "lyrics") {
+          const currentLyrics = state.lyricsByProject[projectId];
+          const segments = (currentLyrics.segments as Array<Record<string, unknown>>).map((segment, index) => {
+            if (index !== 0) {
+              return segment;
+            }
+            const suggestedText = String(suggestion.suggested_text ?? "");
+            return {
+              ...segment,
+              text: suggestedText,
+              words: retimeWordsForText(segment, suggestedText),
+            };
+          });
+          state.lyricsByProject[projectId] = {
+            ...currentLyrics,
+            has_user_edits: true,
+            segments,
+            updated_at: createdAt,
+          };
+        }
+        if (suggestion.kind === "chords") {
+          const currentChords = state.chordsByProject[projectId];
+          const timeline = (currentChords.timeline as Array<Record<string, unknown>>).map((segment, index) =>
+            index === 0
+              ? {
+                  ...segment,
+                  label: "F#",
+                  pitch_class: 6,
+                  quality: "major",
+                }
+              : segment,
+          );
+          state.chordsByProject[projectId] = {
+            ...currentChords,
+            has_user_edits: true,
+            timeline,
+            updated_at: createdAt,
+          };
+        }
+        if (suggestion.kind === "sections") {
+          const section = {
+            id: `section_${state.nextSectionId++}`,
+            project_id: projectId,
+            tab_import_id: tabImportId,
+            label: "Verse",
+            start_seconds: 0,
+            end_seconds: null,
+            source: "tab",
+            metadata: {},
+            created_at: createdAt,
+            updated_at: createdAt,
+          };
+          state.sectionsByProject[projectId] = [
+            ...(state.sectionsByProject[projectId] ?? []),
+            section,
+          ];
+        }
+        if (suggestion.kind === "key") {
+          const project = getProjectOrThrow(projectId);
+          project.source_key_override = "D";
+          project.updated_at = createdAt;
+        }
+        return { ...suggestion, status: "accepted" };
+      }),
+    }));
+    tabImport.groups = groups;
+    tabImport.status = "applied";
+    tabImport.updated_at = createdAt;
+    const allSuggestionIds = groups.flatMap((group) =>
+      ((group.suggestions as Array<Record<string, unknown>>) ?? []).map((suggestion) => String(suggestion.id)),
+    );
+    return {
+      tab_import: clone(tabImport),
+      accepted_suggestion_ids: Array.from(acceptedIds),
+      ignored_suggestion_ids: allSuggestionIds.filter((suggestionId) => !acceptedIds.has(suggestionId)),
+      lyrics: clone(state.lyricsByProject[projectId] ?? null),
+      chords: clone(state.chordsByProject[projectId] ?? null),
+      sections: clone(state.sectionsByProject[projectId] ?? []),
+      project: clone(getProjectOrThrow(projectId)),
+    };
+  });
+  const mockListSections = vi.fn(async (projectId: string) => ({
+    sections: clone(state.sectionsByProject[projectId] ?? []),
+  }));
   const mockCreateExport = vi.fn(async (projectId: string, body: Record<string, unknown>) => {
     const job = {
       id: `job_${state.nextJobId++}`,
@@ -683,11 +934,15 @@ const {
     mockListJobs,
     mockCreateChords,
     mockCreateLyrics,
+    mockCreateTabImport,
     mockCreatePreview,
     mockCreateStems,
     mockAnalyzeProject,
     mockUpdateLyrics,
     mockUpdateProject,
+    mockGetTabImport,
+    mockAcceptTabImport,
+    mockListSections,
     mockCreateExport,
     mockDeleteArtifact,
     mockDeleteProject,
@@ -720,11 +975,15 @@ export {
   mockListJobs,
   mockCreateChords,
   mockCreateLyrics,
+  mockCreateTabImport,
   mockCreatePreview,
   mockCreateStems,
   mockAnalyzeProject,
   mockUpdateLyrics,
   mockUpdateProject,
+  mockGetTabImport,
+  mockAcceptTabImport,
+  mockListSections,
   mockCreateExport,
   mockDeleteArtifact,
   mockDeleteProject,
@@ -761,6 +1020,10 @@ vi.mock("../lib/api", async (importOriginal) => {
       listJobs: mockListJobs,
       createChords: mockCreateChords,
       createLyrics: mockCreateLyrics,
+      createTabImport: mockCreateTabImport,
+      getTabImport: mockGetTabImport,
+      acceptTabImport: mockAcceptTabImport,
+      listSections: mockListSections,
       createPreview: mockCreatePreview,
       createStems: mockCreateStems,
       analyzeProject: mockAnalyzeProject,
@@ -946,6 +1209,10 @@ export function resetAppTestHarness() {
   mockListJobs.mockClear();
   mockCreateChords.mockClear();
   mockCreateLyrics.mockClear();
+  mockCreateTabImport.mockClear();
+  mockGetTabImport.mockClear();
+  mockAcceptTabImport.mockClear();
+  mockListSections.mockClear();
   mockCreatePreview.mockClear();
   mockCreateStems.mockClear();
   mockAnalyzeProject.mockClear();

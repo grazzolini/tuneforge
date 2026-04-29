@@ -199,10 +199,11 @@ Validation failures return `INVALID_REQUEST` with serialized validation details.
 ## Packaging Constraints
 
 - FFmpeg is a host dependency and is not bundled.
-- Optional Advanced Chords dependencies are not installed by default.
+- Advanced Chords dependencies are currently optional. If they become a default desktop backend, packaged builds must treat crema, its bundled chord model files, TensorFlow/Keras, h5py/HDF5, gRPC/Protobuf, and TensorBoard as default-runtime notice scope.
 - Demucs and lyrics models follow first-use local download/cache behavior.
 - The Linux legacy NVIDIA profile is an opt-in local backend environment override; it does not change the default lockfile, CI setup, or packaged dependency baseline.
 - Mobile avoids FFmpeg and uses platform media APIs where possible.
+- Mobile does not run the desktop Python/FastAPI backend today.
 
 ## Extensibility Rules
 

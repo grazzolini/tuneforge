@@ -25,11 +25,13 @@ uv sync --python 3.11 --all-groups
 
 From the workspace root, `pnpm setup:dev` also runs the full developer setup: `pnpm install`, backend sync, and shared contract generation.
 
-### Optional Advanced Chords backend
+### Advanced Chords backend
 
 Built-in Chords is the default TuneForge chord backend. It uses TuneForge's built-in librosa/chroma/template pipeline and stays available on every supported backend path.
 
-Advanced Chords is an experimental desktop-only backend backed by [`crema`](https://github.com/bmcfee/crema). It can preserve richer chord labels from crema, including sevenths and inversion/slash-chord bass notes, but it pulls in TensorFlow/Keras and may start and run more slowly. It is optional and is not installed by the default backend sync. The optional extra pins the crema stack to TensorFlow/Keras 2.15, scikit-learn `<1.6`, and setuptools `<81` because crema 0.2.0 uses legacy model-loading, encoder, and `pkg_resources` APIs that are not compatible with newer releases.
+Advanced Chords is an experimental backend backed by [`crema`](https://github.com/bmcfee/crema). It can preserve richer chord labels from crema, including sevenths and inversion/slash-chord bass notes, but it pulls in TensorFlow/Keras and may start and run more slowly. It is still optional in the current setup, but it is being evaluated as a future desktop default. The optional extra pins the crema stack to TensorFlow/Keras 2.15, scikit-learn `<1.6`, and setuptools `<81` because crema 0.2.0 uses legacy model-loading, encoder, and `pkg_resources` APIs that are not compatible with newer releases.
+
+The current mobile backend does not run the desktop Python/FastAPI stack and disables Advanced Chords through `TUNEFORGE_RUNTIME_PLATFORM`.
 
 Built-in Chords and Advanced Chords both analyze the source track first. When a matching source instrumental stem exists, chord refresh also analyzes that stem and augments the source timeline, so chord jobs can report `source+stem`.
 
@@ -151,7 +153,7 @@ The command writes machine-readable JSON to stdout and a short summary to stderr
 
 ### Licensing note
 
-The optional crema package metadata on PyPI lists ISC, while the upstream repository currently shows a BSD-2-Clause license file. Both are permissive. Primary optional-stack transitive licenses checked here are TensorFlow (Apache-2.0), Keras (Apache-2.0), and JAMS (ISC), but the full resolved dependency tree should still be reviewed before bundling Advanced Chords into a packaged desktop build. TuneForge does not install or bundle crema in the default backend or mobile path.
+The crema package metadata on PyPI lists ISC, while the upstream repository and wheel license file show BSD-2-Clause terms. Both are permissive, but the mismatch should stay documented. The `crema-0.2.0` wheel includes its pretrained chord model files under `crema/models/chord/`, including `model.h5`, so packaged desktop builds that include Advanced Chords redistribute those model artifacts. Primary transitive licenses in the pinned stack include TensorFlow (Apache-2.0), Keras (Apache-2.0), TensorBoard (Apache-2.0), gRPC (Apache-2.0), Protobuf (BSD-3-Clause), h5py/HDF5 (BSD-style), and JAMS (ISC). Complete a fresh full inventory before making Advanced Chords part of the default packaged desktop environment.
 
 ## Migrations
 

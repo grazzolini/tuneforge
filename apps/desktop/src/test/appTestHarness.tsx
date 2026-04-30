@@ -42,6 +42,7 @@ const {
   mockDeleteProject,
   mockGetHealth,
   mockGetMobileCapabilities,
+  setMockSystemInputVolume,
 } = vi.hoisted(() => {
   const createdAt = "2026-04-18T13:16:00.000Z";
   let state: {
@@ -56,6 +57,13 @@ const {
     pendingPreviewArtifactsByProject: Record<string, Array<Record<string, unknown>>>;
     jobs: Array<Record<string, unknown>>;
     snapshotFiles: Record<string, string>;
+    systemInputVolume: {
+      supported: boolean;
+      volumePercent: number | null;
+      muted: boolean | null;
+      backend: string | null;
+      error: string | null;
+    };
     nextProjectId: number;
     nextArtifactId: number;
     nextJobId: number;
@@ -317,6 +325,13 @@ const {
         },
       ],
       snapshotFiles: {},
+      systemInputVolume: {
+        supported: true,
+        volumePercent: 64,
+        muted: false,
+        backend: "test",
+        error: null,
+      },
       nextProjectId: 200,
       nextArtifactId: 200,
       nextJobId: 200,
@@ -339,6 +354,14 @@ const {
   const mockOpen = vi.fn(async (): Promise<string | string[] | null> => null);
   const mockSave = vi.fn(async (): Promise<string | null> => null);
   const mockConfirm = vi.fn(async (): Promise<boolean> => true);
+  function setMockSystemInputVolume(
+    nextState: Partial<typeof state.systemInputVolume>,
+  ) {
+    state.systemInputVolume = {
+      ...state.systemInputVolume,
+      ...nextState,
+    };
+  }
   const mockInvoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
     if (command === "backend_base_url") {
       return "http://127.0.0.1:8765";
@@ -357,6 +380,22 @@ const {
         throw new Error(`Missing snapshot file: ${path}`);
       }
       return contents;
+    }
+
+    if (command === "get_system_default_input_volume") {
+      return clone(state.systemInputVolume);
+    }
+
+    if (command === "set_system_default_input_volume") {
+      const nextVolume = Math.max(0, Math.min(100, Math.round(Number(args?.volumePercent ?? 0))));
+      state.systemInputVolume = {
+        supported: true,
+        volumePercent: nextVolume,
+        muted: false,
+        backend: "test",
+        error: null,
+      };
+      return clone(state.systemInputVolume);
     }
 
     throw new Error(`Unexpected invoke command: ${command}`);
@@ -948,6 +987,7 @@ const {
     mockDeleteProject,
     mockGetHealth,
     mockGetMobileCapabilities,
+    setMockSystemInputVolume,
   };
 });
 
@@ -1169,6 +1209,16 @@ export function getMockAudioContexts() {
 
 export function getMockFetch() {
   return globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+}
+
+export function getMockInvoke() {
+  return mockInvoke;
+}
+
+export function setMockSystemInputVolumeState(
+  nextState: Parameters<typeof setMockSystemInputVolume>[0],
+) {
+  setMockSystemInputVolume(nextState);
 }
 
 export function getMockMediaDevices() {

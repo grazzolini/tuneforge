@@ -3,6 +3,12 @@ import { useSearchParams } from "react-router-dom";
 import { useStableCallback } from "../../lib/useStableCallback";
 import { usePreferences } from "../../lib/preferences";
 import { MetronomePage } from "./MetronomePage";
+import {
+  clampSystemInputVolume,
+  getSystemDefaultInputVolume,
+  setSystemDefaultInputVolume,
+  type SystemDefaultInputVolume,
+} from "./systemInputVolume";
 import { TunerPreferenceControls } from "./TunerPreferenceControls";
 import {
   SimpleTunerMeter,
@@ -25,6 +31,8 @@ import {
   calculateTunerInputLevel,
   type TunerPitchReading,
 } from "./tunerPitch";
+
+const SYSTEM_INPUT_VOLUME_COMMIT_DELAY_MS = 180;
 
 type TunerStatus = "idle" | "starting" | "listening" | "unsupported" | "error";
 type ToolId = "tuner" | "metronome";
@@ -101,6 +109,7 @@ function ChromaticTunerPage() {
   const [inputLevel, setInputLevel] = useState(0);
   const [reading, setReading] = useState<TunerPitchReading | null>(null);
   const [deviceRefreshToken, setDeviceRefreshToken] = useState(0);
+  const [systemInputVolumeRefreshToken, setSystemInputVolumeRefreshToken] = useState(0);
   const [visualMode, setVisualMode] = useState<TunerVisualMode>("simple");
   const analyserRef = useRef<AnalyserNode | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -198,6 +207,7 @@ function ChromaticTunerPage() {
     releaseCapture();
     setErrorMessage(null);
     resetTunerDisplay();
+    setSystemInputVolumeRefreshToken(Date.now());
     setStatus("starting");
 
     const requestId = requestIdRef.current + 1;
@@ -324,6 +334,8 @@ function ChromaticTunerPage() {
           </label>
         </TunerPreferenceControls>
 
+        <SystemInputVolumeControl refreshToken={systemInputVolumeRefreshToken} />
+
         {errorMessage ? <p className="inline-error">{errorMessage}</p> : null}
 
         {visualMode === "simple" ? (
@@ -383,6 +395,164 @@ function TunerHeader({
       </div>
     </div>
   );
+}
+
+function SystemInputVolumeControl({ refreshToken }: { refreshToken: number }) {
+  const [volumeState, setVolumeState] = useState<SystemDefaultInputVolume | null>(null);
+  const [draftVolume, setDraftVolume] = useState(0);
+  const [isSetting, setIsSetting] = useState(false);
+  const volumeSetRequestIdRef = useRef(0);
+  const volumeCommitTimeoutRef = useRef<number | null>(null);
+  const latestDraftVolumeRef = useRef(0);
+
+  const refreshVolume = useStableCallback(async function refreshVolume() {
+    try {
+      const nextState = await getSystemDefaultInputVolume();
+      setVolumeState(nextState);
+      if (typeof nextState.volumePercent === "number") {
+        setDraftVolume(nextState.volumePercent);
+        latestDraftVolumeRef.current = nextState.volumePercent;
+      }
+    } catch (error) {
+      setVolumeState({
+        supported: false,
+        volumePercent: null,
+        muted: null,
+        backend: null,
+        error: error instanceof Error ? error.message : "System input volume unavailable.",
+      });
+    }
+  });
+
+  useEffect(() => {
+    void refreshVolume();
+  }, [refreshToken, refreshVolume]);
+
+  useEffect(() => {
+    return () => {
+      if (volumeCommitTimeoutRef.current !== null) {
+        window.clearTimeout(volumeCommitTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+
+    function refreshOnFocus() {
+      void refreshVolume();
+    }
+
+    window.addEventListener("focus", refreshOnFocus);
+    return () => window.removeEventListener("focus", refreshOnFocus);
+  }, [refreshVolume]);
+
+  const supported = Boolean(volumeState?.supported && typeof volumeState.volumePercent === "number");
+  const statusText = systemInputVolumeStatus(volumeState, isSetting);
+
+  const commitVolume = useStableCallback(async function commitVolume(volume: number) {
+    const requestId = volumeSetRequestIdRef.current + 1;
+    volumeSetRequestIdRef.current = requestId;
+    setIsSetting(true);
+    try {
+      const nextState = await setSystemDefaultInputVolume(volume);
+      if (volumeSetRequestIdRef.current !== requestId) {
+        return;
+      }
+      setVolumeState(nextState);
+    } catch (error) {
+      if (volumeSetRequestIdRef.current !== requestId) {
+        return;
+      }
+      setVolumeState({
+        supported: false,
+        volumePercent: null,
+        muted: null,
+        backend: null,
+        error: error instanceof Error ? error.message : "System input volume unavailable.",
+      });
+    } finally {
+      if (volumeSetRequestIdRef.current === requestId) {
+        setIsSetting(false);
+      }
+    }
+  });
+
+  function clearScheduledVolumeCommit() {
+    if (volumeCommitTimeoutRef.current !== null) {
+      window.clearTimeout(volumeCommitTimeoutRef.current);
+      volumeCommitTimeoutRef.current = null;
+    }
+  }
+
+  function scheduleVolumeCommit(volume: number) {
+    clearScheduledVolumeCommit();
+    volumeCommitTimeoutRef.current = window.setTimeout(() => {
+      volumeCommitTimeoutRef.current = null;
+      void commitVolume(volume);
+    }, SYSTEM_INPUT_VOLUME_COMMIT_DELAY_MS);
+  }
+
+  function flushVolumeCommit() {
+    if (!supported) {
+      return;
+    }
+    clearScheduledVolumeCommit();
+    void commitVolume(latestDraftVolumeRef.current);
+  }
+
+  function handleVolumeChange(value: string) {
+    const nextVolume = clampSystemInputVolume(Number(value));
+    latestDraftVolumeRef.current = nextVolume;
+    setDraftVolume(nextVolume);
+    scheduleVolumeCommit(nextVolume);
+  }
+
+  return (
+    <div className="tuner-system-volume">
+      <label className="tuner-field">
+        <span className="tuner-field__label-row">
+          <span>System input volume</span>
+          {supported ? <strong>{draftVolume}%</strong> : null}
+        </span>
+        <input
+          aria-label="System input volume"
+          disabled={!supported}
+          max={100}
+          min={0}
+          onChange={(event) => void handleVolumeChange(event.target.value)}
+          onBlur={flushVolumeCommit}
+          onKeyUp={flushVolumeCommit}
+          onPointerUp={flushVolumeCommit}
+          step={1}
+          type="range"
+          value={draftVolume}
+        />
+      </label>
+      <p className="tuner-preferences__status">{statusText}</p>
+    </div>
+  );
+}
+
+function systemInputVolumeStatus(
+  volumeState: SystemDefaultInputVolume | null,
+  isSetting: boolean,
+) {
+  if (isSetting) {
+    return "Updating system input volume.";
+  }
+  if (!volumeState) {
+    return "Checking system input volume.";
+  }
+  if (!volumeState.supported) {
+    return volumeState.error ?? "System input volume control is unavailable.";
+  }
+  if (volumeState.muted) {
+    return "Default microphone is muted.";
+  }
+  return "Controls the operating system default microphone.";
 }
 
 function getAudioContextConstructor(): AudioContextConstructor | null {

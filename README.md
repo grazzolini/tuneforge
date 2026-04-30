@@ -50,6 +50,8 @@ Security reports follow the process in [SECURITY.md](./SECURITY.md). "There is n
 - [`uv`](https://docs.astral.sh/uv/)
 - Python 3.11
 - `ffmpeg` and `ffprobe` available on `PATH` (install via `brew install ffmpeg`, `apt install ffmpeg`, etc.)
+- macOS system mic volume control uses the built-in CoreAudio API.
+- Linux system mic volume control uses `wpctl` or `pactl` for the active PipeWire/PulseAudio session.
 - Rust toolchain for Tauri
 
 ## Setup
@@ -163,7 +165,7 @@ The generated artifacts are written under `apps/desktop/src-tauri/target/release
 - `macos/Tuneforge.app`
 - `dmg/Tuneforge_0.1.0_aarch64.dmg` on Apple Silicon
 
-Run packaging from a normal macOS shell so `hdiutil` can create the disk image. Packaged builds require `ffmpeg`/`ffprobe` to be installed on the host system; Tuneforge does not bundle them (see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)). The macOS app checks the inherited `PATH` plus common Homebrew and MacPorts install locations when launching the bundled backend.
+Run packaging from a normal macOS shell so `hdiutil` can create the disk image. Packaged builds require `ffmpeg`/`ffprobe` to be installed on the host system; Tuneforge does not bundle them (see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)). System microphone volume control uses CoreAudio on macOS and depends on `wpctl` or `pactl` on Linux. The macOS app checks the inherited `PATH` plus common Homebrew and MacPorts install locations when launching the bundled backend.
 
 ## CI
 

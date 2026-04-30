@@ -253,18 +253,24 @@ fn development_backend() -> BackendRuntime {
 fn install_linux_media_permission_handler(
     app: &AppHandle,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(webview) = app.get_webview("main") {
+    if let Some(webview) = app.get_webview_window("main") {
         webview.with_webview(|webview| {
-            use webkit2gtk::prelude::*;
+            use webkit2gtk::{glib::prelude::*, PermissionRequestExt, SettingsExt, WebViewExt};
+
+            if cfg!(debug_assertions) {
+                if let Some(settings) = webview.inner().settings() {
+                    settings.set_enable_write_console_messages_to_stdout(true);
+                }
+            }
 
             webview.inner().connect_permission_request(|_, request| {
                 let request_type = request.type_().name();
-                if request_type.as_str().contains("DeviceInfoPermissionRequest") {
+                if request_type.contains("DeviceInfoPermissionRequest") {
                     request.allow();
                     return true;
                 }
 
-                if request_type.as_str().contains("UserMediaPermissionRequest") {
+                if request_type.contains("UserMediaPermissionRequest") {
                     let is_audio = request.property::<bool>("is-for-audio-device");
                     let is_video = request.property::<bool>("is-for-video-device");
                     if is_audio && !is_video {

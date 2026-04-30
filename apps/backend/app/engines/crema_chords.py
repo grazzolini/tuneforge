@@ -58,6 +58,14 @@ def detect_crema_chord_timeline(
     return segments
 
 
+def crema_runtime_device() -> str:
+    try:
+        import tensorflow as tf
+    except Exception:
+        return "cpu"
+    return "cuda" if tf.config.list_physical_devices("GPU") else "cpu"
+
+
 def crema_annotation_to_timeline(annotation: Any) -> list[dict[str, Any]]:
     segments: list[dict[str, Any]] = []
     for row in _annotation_rows(annotation):

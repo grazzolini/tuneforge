@@ -56,6 +56,13 @@ To combine the legacy NVIDIA profile with Advanced Chords:
 pnpm setup:dev -- --legacy-nvidia --advanced-chords
 ```
 
+If you later switch backend profiles directly, pass `--advanced-chords` / `--crema` to the sync helper too:
+
+```sh
+pnpm sync:backend:legacy-nvidia -- --advanced-chords
+pnpm sync:backend:default -- --advanced-chords
+```
+
 ## Development Loop
 
 Two terminals:

@@ -203,7 +203,7 @@ describe("formatJobStatusSummary", () => {
       id: "job_chords",
       progress: 100,
       project_id: "proj_123",
-      runtime_device: null,
+      runtime_device: "cpu",
       source_artifact_id: null,
       started_at: "2026-04-18T13:16:00.000Z",
       status: "completed",
@@ -211,7 +211,7 @@ describe("formatJobStatusSummary", () => {
       updated_at: "2026-04-18T13:16:14.000Z",
     };
 
-    expect(formatJobStatusSummary(job)).toBe("completed / built-in / source+stem / 14 s");
+    expect(formatJobStatusSummary(job)).toBe("completed / built-in / source+stem / CPU / 14 s");
   });
 
   it("includes advanced chord backend for crema jobs", () => {
@@ -225,7 +225,7 @@ describe("formatJobStatusSummary", () => {
       id: "job_chords_advanced",
       progress: 100,
       project_id: "proj_123",
-      runtime_device: null,
+      runtime_device: "cuda",
       source_artifact_id: null,
       started_at: "2026-04-18T13:16:09.000Z",
       status: "completed",
@@ -233,6 +233,6 @@ describe("formatJobStatusSummary", () => {
       updated_at: "2026-04-18T13:16:14.000Z",
     };
 
-    expect(formatJobStatusSummary(job)).toBe("completed / advanced / source / 5.3 s");
+    expect(formatJobStatusSummary(job)).toBe("completed / advanced / source / CUDA / 5.3 s");
   });
 });

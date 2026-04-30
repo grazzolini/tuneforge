@@ -54,7 +54,7 @@ def test_chord_job_persists_timeline(client, sample_chord_audio_file: Path):
     final_job = wait_for_job(client, job["id"])
     assert final_job["status"] == "completed"
     assert final_job["chord_backend_fallback_from"] == "crema-advanced"
-    assert final_job["runtime_device"] is None
+    assert final_job["runtime_device"] == "cpu"
     assert final_job["duration_seconds"] is not None
 
     chords = client.get(f"/api/v1/projects/{project['id']}/chords").json()
@@ -64,6 +64,7 @@ def test_chord_job_persists_timeline(client, sample_chord_audio_file: Path):
     assert len(chords["source_segments"]) >= 3
     assert chords["has_user_edits"] is False
     assert chords["metadata"]["backend_fallback_from"] == "crema-advanced"
+    assert chords["metadata"]["runtime_device"] == "cpu"
     assert all(segment["end_seconds"] > segment["start_seconds"] for segment in chords["timeline"])
     assert all(segment["pitch_class"] is not None for segment in chords["timeline"])
     supported_qualities = {"major", "minor", "7", "maj7", "m7", "sus2", "sus4", "dim", None}

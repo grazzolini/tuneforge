@@ -88,6 +88,13 @@ To combine the legacy NVIDIA profile with Advanced Chords:
 pnpm setup:dev -- --legacy-nvidia --advanced-chords
 ```
 
+The standalone backend sync helpers also accept `--advanced-chords` / `--crema` when switching profiles:
+
+```sh
+pnpm sync:backend:legacy-nvidia -- --advanced-chords
+pnpm sync:backend:default -- --advanced-chords
+```
+
 Both backend sync helpers recreate `apps/backend/.venv` from scratch to avoid stale mixed CUDA stacks when switching profiles. `uv` still reuses its shared cache, so after the first install, switching is usually much faster than a cold download. It is intended for cards like the GTX 1050 Ti. macOS, CI, and the default Linux setup remain unchanged.
 
 ## Development

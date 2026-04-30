@@ -107,6 +107,21 @@ def test_crema_detection_suppresses_known_runtime_noise(monkeypatch, capsys, rec
     assert timeline[0]["label"] == "C"
 
 
+def test_crema_backend_reports_tensorflow_runtime_device(monkeypatch):
+    monkeypatch.setattr("app.engines.crema_chords.importlib.util.find_spec", lambda _: object())
+    monkeypatch.setattr(
+        "app.services.chord_backends.detect_crema_chord_timeline",
+        lambda _: [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "C"}],
+    )
+    monkeypatch.setattr("app.services.chord_backends.crema_runtime_device", lambda: "cuda")
+
+    backend = resolve_chord_backend("crema-advanced", require_available=True)
+    result = backend.detect(Path("/tmp/source.wav"))
+
+    assert result.runtime_device == "cuda"
+    assert result.metadata["runtime_device"] == "cuda"
+
+
 def test_backend_registry_reports_fast_and_missing_crema(monkeypatch):
     def fake_find_spec(module_name: str):
         return None if module_name == "crema" else object()

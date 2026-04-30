@@ -10,6 +10,7 @@ from app.engines.chords import detect_chord_timeline
 from app.engines.crema_chords import (
     crema_dependency_status,
     crema_model_metadata,
+    crema_runtime_device,
     detect_crema_chord_timeline,
 )
 from app.errors import AppError
@@ -43,6 +44,7 @@ class ChordDetectionResult:
     segments: list[dict[str, Any]]
     backend_id: str
     metadata: dict[str, Any]
+    runtime_device: str | None = None
 
 
 class ChordDetectionBackend(Protocol):
@@ -86,6 +88,7 @@ class FastChordBackend:
                 "engine": "librosa-chroma-template-viterbi",
                 "analysis_version": "v2",
             },
+            runtime_device="cpu",
         )
 
 
@@ -116,10 +119,15 @@ class CremaChordBackend:
                 availability.unavailable_reason or "Advanced chord backend is unavailable.",
                 status_code=409,
             )
+        segments = detect_crema_chord_timeline(source_path)
+        runtime_device = crema_runtime_device()
+        metadata = crema_model_metadata()
+        metadata["runtime_device"] = runtime_device
         return ChordDetectionResult(
-            segments=detect_crema_chord_timeline(source_path),
+            segments=segments,
             backend_id=self.id,
-            metadata=crema_model_metadata(),
+            metadata=metadata,
+            runtime_device=runtime_device,
         )
 
 

@@ -46,6 +46,7 @@ def detect_project_chords(
     source_artifact = _source_audio_artifact(project)
     source_path = Path(source_artifact.path) if source_artifact is not None else Path(project.imported_path)
     source_result = _detect_timeline(source_path, selected_backend_id)
+    runtime_device = source_result.runtime_device
     source_timeline = source_result.segments
     augmented_timeline = (
         _augment_with_source_instrumental_stem(
@@ -75,6 +76,7 @@ def detect_project_chords(
         "backend_label": selected_backend.label,
         "backend_capabilities": selected_backend.capabilities.__dict__,
         "backend_fallback_from": backend_fallback_from,
+        "runtime_device": runtime_device,
         "detection": source_result.metadata,
     }
     existing.updated_at = updated_at

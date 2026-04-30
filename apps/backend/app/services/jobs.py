@@ -291,7 +291,7 @@ class InProcessJobRunner:
         }
         session.flush()
         context.set_progress(20)
-        detect_project_chords(
+        chords = detect_project_chords(
             session,
             project,
             backend=backend,
@@ -302,7 +302,11 @@ class InProcessJobRunner:
             overwrite_user_edits=bool(job.payload_json.get("overwrite_user_edits", False)),
         )
         context.set_progress(90)
-        return JobExecutionResult(artifact_ids=[])
+        runtime_device = chords.metadata_json.get("runtime_device")
+        return JobExecutionResult(
+            artifact_ids=[],
+            runtime_device=runtime_device if isinstance(runtime_device, str) else None,
+        )
 
     def _handle_lyrics(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")

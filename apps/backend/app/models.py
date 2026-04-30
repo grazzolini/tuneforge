@@ -38,6 +38,12 @@ class Project(Base):
     lyrics: Mapped[LyricsTranscript | None] = relationship(
         back_populates="project", uselist=False, cascade="all, delete-orphan"
     )
+    tab_import: Mapped[TabImport | None] = relationship(
+        back_populates="project", uselist=False, cascade="all, delete-orphan"
+    )
+    song_sections: Mapped[list[SongSection]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
     artifacts: Mapped[list[Artifact]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
@@ -106,6 +112,52 @@ class LyricsTranscript(Base):
     )
 
     project: Mapped[Project] = relationship(back_populates="lyrics")
+
+
+class TabImport(Base):
+    __tablename__ = "tab_imports"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(32), ForeignKey("projects.id", ondelete="CASCADE"))
+    raw_text: Mapped[str] = mapped_column(Text())
+    parser_version: Mapped[str] = mapped_column(String(32), default="v1")
+    status: Mapped[str] = mapped_column(String(32), default="proposed")
+    parsed_json: Mapped[dict[str, Any]] = mapped_column(JSON(), default=dict)
+    proposal_json: Mapped[dict[str, Any]] = mapped_column(JSON(), default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    project: Mapped[Project] = relationship(back_populates="tab_import")
+    song_sections: Mapped[list[SongSection]] = relationship(back_populates="tab_import")
+
+    @property
+    def groups(self) -> list[dict[str, Any]]:
+        groups = self.proposal_json.get("groups")
+        return groups if isinstance(groups, list) else []
+
+
+class SongSection(Base):
+    __tablename__ = "song_sections"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(32), ForeignKey("projects.id", ondelete="CASCADE"))
+    tab_import_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("tab_imports.id", ondelete="SET NULL"), nullable=True
+    )
+    label: Mapped[str] = mapped_column(String(128))
+    start_seconds: Mapped[float | None] = mapped_column(Float(), nullable=True)
+    end_seconds: Mapped[float | None] = mapped_column(Float(), nullable=True)
+    source: Mapped[str] = mapped_column(String(32), default="tab")
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON(), default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    project: Mapped[Project] = relationship(back_populates="song_sections")
+    tab_import: Mapped[TabImport | None] = relationship(back_populates="song_sections")
 
 
 class Artifact(Base):

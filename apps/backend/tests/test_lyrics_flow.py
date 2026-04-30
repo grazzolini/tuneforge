@@ -91,7 +91,9 @@ def test_lyrics_job_persists_transcript_and_update_preserves_timings(
     assert updated["segments"][0]["text"] == "Edited first line"
     assert updated["segments"][0]["start_seconds"] == 0.0
     assert updated["segments"][0]["end_seconds"] == 1.2
-    assert updated["segments"][0]["words"] == []
+    assert [word["text"] for word in updated["segments"][0]["words"]] == ["Edited", "first", "line"]
+    assert updated["segments"][0]["words"][0]["start_seconds"] == 0.0
+    assert updated["segments"][0]["words"][-1]["end_seconds"] == 1.2
     assert updated["source_segments"][0]["text"] == "First line"
     assert updated["has_user_edits"] is True
 

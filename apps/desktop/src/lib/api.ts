@@ -43,6 +43,15 @@ export type ChordBackendSchema = components["schemas"]["ChordBackendSchema"];
 export type ChordBackendsResponse = components["schemas"]["ChordBackendsResponse"];
 export type LyricsGenerateRequest = components["schemas"]["LyricsGenerateRequest"];
 export type LyricsUpdateRequest = components["schemas"]["LyricsUpdateRequest"];
+export type SongSectionSchema = components["schemas"]["SongSectionSchema"];
+export type SongSectionsResponse = components["schemas"]["SongSectionsResponse"];
+export type TabImportApplyRequest = components["schemas"]["TabImportApplyRequest"];
+export type TabImportApplyResponse = components["schemas"]["TabImportApplyResponse"];
+export type TabImportCreateRequest = components["schemas"]["TabImportCreateRequest"];
+export type TabImportResponse = components["schemas"]["TabImportResponse"];
+export type TabImportSchema = components["schemas"]["TabImportSchema"];
+export type TabSuggestionGroupSchema = components["schemas"]["TabSuggestionGroupSchema"];
+export type TabSuggestionSchema = components["schemas"]["TabSuggestionSchema"];
 export type RuntimeCapabilities = MobileCapabilities | null;
 
 export type TuneForgeClient = {
@@ -61,6 +70,14 @@ export type TuneForgeClient = {
   createLyrics: (projectId: string, body: LyricsGenerateRequest) => Promise<components["schemas"]["JobResponse"]>;
   getLyrics: (projectId: string) => Promise<LyricsResponse>;
   updateLyrics: (projectId: string, body: LyricsUpdateRequest) => Promise<LyricsResponse>;
+  createTabImport: (projectId: string, body: TabImportCreateRequest) => Promise<TabImportResponse>;
+  getTabImport: (projectId: string, tabImportId: string) => Promise<TabImportResponse>;
+  acceptTabImport: (
+    projectId: string,
+    tabImportId: string,
+    body: TabImportApplyRequest,
+  ) => Promise<TabImportApplyResponse>;
+  listSections: (projectId: string) => Promise<SongSectionsResponse>;
   createPreview: (projectId: string, body: PreviewRequest) => Promise<components["schemas"]["JobResponse"]>;
   createStems: (projectId: string, body: StemRequest) => Promise<components["schemas"]["JobResponse"]>;
   createRetune: (projectId: string, body: RetuneRequest) => Promise<components["schemas"]["JobResponse"]>;
@@ -205,6 +222,23 @@ function createHttpTuneForgeClient(): TuneForgeClient {
       unwrap(client.GET("/api/v1/projects/{project_id}/lyrics", { params: { path: { project_id: projectId } } })),
     updateLyrics: (projectId: string, body: LyricsUpdateRequest) =>
       unwrap(client.PUT("/api/v1/projects/{project_id}/lyrics", { params: { path: { project_id: projectId } }, body })),
+    createTabImport: (projectId: string, body: TabImportCreateRequest) =>
+      unwrap(client.POST("/api/v1/projects/{project_id}/tabs/proposals", { params: { path: { project_id: projectId } }, body })),
+    getTabImport: (projectId: string, tabImportId: string) =>
+      unwrap(
+        client.GET("/api/v1/projects/{project_id}/tabs/{tab_import_id}", {
+          params: { path: { project_id: projectId, tab_import_id: tabImportId } },
+        }),
+      ),
+    acceptTabImport: (projectId: string, tabImportId: string, body: TabImportApplyRequest) =>
+      unwrap(
+        client.POST("/api/v1/projects/{project_id}/tabs/{tab_import_id}/accept", {
+          params: { path: { project_id: projectId, tab_import_id: tabImportId } },
+          body,
+        }),
+      ),
+    listSections: (projectId: string) =>
+      unwrap(client.GET("/api/v1/projects/{project_id}/sections", { params: { path: { project_id: projectId } } })),
     createPreview: (projectId: string, body: PreviewRequest) =>
       unwrap(client.POST("/api/v1/projects/{project_id}/preview", { params: { path: { project_id: projectId } }, body })),
     createStems: (projectId: string, body: StemRequest) =>
@@ -253,6 +287,28 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     getLyrics: (projectId: string) => invokeMobile("mobile_get_lyrics", { projectId }),
     updateLyrics: (projectId: string, body: LyricsUpdateRequest) =>
       invokeMobile("mobile_update_lyrics", { projectId, payload: body }),
+    createTabImport: async () => {
+      throw new ApiError({
+        code: "UNSUPPORTED_RUNTIME",
+        message: "Tab import is not available on mobile yet.",
+        details: {},
+      });
+    },
+    getTabImport: async () => {
+      throw new ApiError({
+        code: "UNSUPPORTED_RUNTIME",
+        message: "Tab import is not available on mobile yet.",
+        details: {},
+      });
+    },
+    acceptTabImport: async () => {
+      throw new ApiError({
+        code: "UNSUPPORTED_RUNTIME",
+        message: "Tab import is not available on mobile yet.",
+        details: {},
+      });
+    },
+    listSections: async () => ({ sections: [] }),
     createPreview: (projectId: string, body: PreviewRequest) =>
       invokeMobile("mobile_submit_preview", { projectId, payload: body }),
     createStems: (projectId: string, body: StemRequest) =>
@@ -336,6 +392,11 @@ export const api: TuneForgeClient = {
   createLyrics: (projectId: string, body: LyricsGenerateRequest) => activeClient.createLyrics(projectId, body),
   getLyrics: (projectId: string) => activeClient.getLyrics(projectId),
   updateLyrics: (projectId: string, body: LyricsUpdateRequest) => activeClient.updateLyrics(projectId, body),
+  createTabImport: (projectId: string, body: TabImportCreateRequest) => activeClient.createTabImport(projectId, body),
+  getTabImport: (projectId: string, tabImportId: string) => activeClient.getTabImport(projectId, tabImportId),
+  acceptTabImport: (projectId: string, tabImportId: string, body: TabImportApplyRequest) =>
+    activeClient.acceptTabImport(projectId, tabImportId, body),
+  listSections: (projectId: string) => activeClient.listSections(projectId),
   createPreview: (projectId: string, body: PreviewRequest) => activeClient.createPreview(projectId, body),
   createStems: (projectId: string, body: StemRequest) => activeClient.createStems(projectId, body),
   createRetune: (projectId: string, body: RetuneRequest) => activeClient.createRetune(projectId, body),

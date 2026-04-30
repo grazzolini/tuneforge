@@ -150,6 +150,10 @@ export function useProjectViewModel() {
   const [dismissedStemJobIds, setDismissedStemJobIds] = useState<string[]>([]);
   const [isEditingLyrics, setIsEditingLyrics] = useState(false);
   const [lyricsDraft, setLyricsDraft] = useState<string[]>([]);
+  const [isTabImportOpen, setIsTabImportOpen] = useState(false);
+  const [tabImportDraft, setTabImportDraft] = useState("");
+  const [acceptedTabSuggestionIds, setAcceptedTabSuggestionIds] = useState<string[]>([]);
+  const [selectedTabSuggestionId, setSelectedTabSuggestionId] = useState<string | null>(null);
   const [lyricsFollowEnabled, setLyricsFollowEnabled] = useState(defaultLyricsFollowEnabled);
   const [chordsFollowEnabled, setChordsFollowEnabled] = useState(defaultChordsFollowEnabled);
   const showSupportingCopy = informationDensity !== "minimal";
@@ -172,6 +176,11 @@ export function useProjectViewModel() {
   const lyricsQuery = useQuery({
     queryKey: ["lyrics", projectId],
     queryFn: async () => api.getLyrics(projectId),
+    enabled: Boolean(projectId),
+  });
+  const sectionsQuery = useQuery({
+    queryKey: ["sections", projectId],
+    queryFn: async () => api.listSections(projectId),
     enabled: Boolean(projectId),
   });
   const artifactsQuery = useQuery({
@@ -315,6 +324,41 @@ export function useProjectViewModel() {
     onSuccess: async () => {
       setIsEditingLyrics(false);
       await queryClient.invalidateQueries({ queryKey: ["lyrics", projectId] });
+    },
+  });
+
+  const tabImportMutation = useMutation({
+    mutationFn: async (rawText: string) => api.createTabImport(projectId, { raw_text: rawText }),
+    onSuccess: (response) => {
+      const firstSuggestion =
+        response.tab_import.groups?.flatMap((group) => group.suggestions ?? [])[0] ?? null;
+      setAcceptedTabSuggestionIds([]);
+      setSelectedTabSuggestionId(firstSuggestion?.id ?? null);
+    },
+  });
+
+  const tabImportApplyMutation = useMutation({
+    mutationFn: async () => {
+      const tabImportId = tabImportMutation.data?.tab_import.id;
+      if (!tabImportId) {
+        throw new Error("Create tab suggestions first.");
+      }
+      return api.acceptTabImport(projectId, tabImportId, {
+        accepted_suggestion_ids: acceptedTabSuggestionIds,
+      });
+    },
+    onSuccess: async () => {
+      setIsTabImportOpen(false);
+      setAcceptedTabSuggestionIds([]);
+      setSelectedTabSuggestionId(null);
+      setTabImportDraft("");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["project", projectId] }),
+        queryClient.invalidateQueries({ queryKey: ["projects"] }),
+        queryClient.invalidateQueries({ queryKey: ["lyrics", projectId] }),
+        queryClient.invalidateQueries({ queryKey: ["chords", projectId] }),
+        queryClient.invalidateQueries({ queryKey: ["sections", projectId] }),
+      ]);
     },
   });
 
@@ -777,7 +821,7 @@ export function useProjectViewModel() {
     const hasUserChordEdits = chordsQuery.data?.has_user_edits === true;
     if (hasExistingChords && hasUserChordEdits) {
       const approved = await confirm(
-        "Refresh chords? This replaces the current chord timeline and discards your edits.",
+        "Refresh chords? This replaces the current chord timeline and discards your edits, including accepted tab suggestions.",
         {
           title: "Refresh chords",
           kind: "warning",
@@ -798,6 +842,53 @@ export function useProjectViewModel() {
 
   function handleSetChordsFollowEnabled(enabled: boolean) {
     setChordsFollowEnabled(enabled);
+  }
+
+  function handleOpenTabImport() {
+    setIsTabImportOpen(true);
+  }
+
+  function handleCloseTabImport() {
+    if (tabImportMutation.isPending || tabImportApplyMutation.isPending) {
+      return;
+    }
+    setIsTabImportOpen(false);
+  }
+
+  function handleCreateTabImportProposal() {
+    if (!tabImportDraft.trim()) {
+      return;
+    }
+    tabImportMutation.mutate(tabImportDraft);
+  }
+
+  function handleToggleTabSuggestion(suggestionId: string) {
+    setAcceptedTabSuggestionIds((current) =>
+      current.includes(suggestionId)
+        ? current.filter((id) => id !== suggestionId)
+        : [...current, suggestionId],
+    );
+    setSelectedTabSuggestionId(suggestionId);
+  }
+
+  function handleAcceptTabSuggestionGroup(suggestionIds: string[]) {
+    setAcceptedTabSuggestionIds((current) => Array.from(new Set([...current, ...suggestionIds])));
+    setSelectedTabSuggestionId(suggestionIds[0] ?? null);
+  }
+
+  function handleRejectTabSuggestionGroup(suggestionIds: string[]) {
+    const ids = new Set(suggestionIds);
+    setAcceptedTabSuggestionIds((current) => current.filter((id) => !ids.has(id)));
+    if (selectedTabSuggestionId && ids.has(selectedTabSuggestionId)) {
+      setSelectedTabSuggestionId(null);
+    }
+  }
+
+  function handleApplyTabSuggestions() {
+    if (!acceptedTabSuggestionIds.length) {
+      return;
+    }
+    tabImportApplyMutation.mutate();
   }
 
   async function handleTogglePlayback() {
@@ -825,8 +916,8 @@ export function useProjectViewModel() {
     if (hasExistingLyrics) {
       const approved = await confirm(
         lyricsQuery.data?.has_user_edits
-          ? "Refresh lyrics? This replaces the current transcript and discards your edits."
-          : "Refresh lyrics? This replaces the current transcript with a new pass.",
+          ? "Refresh lyrics? This replaces the current transcript and discards your edits, including accepted tab suggestions."
+          : "Refresh lyrics? This replaces the current transcript with a new pass and clears the current tab import.",
         {
           title: "Refresh lyrics",
           kind: "warning",
@@ -1495,6 +1586,7 @@ export function useProjectViewModel() {
     draftName,
     enharmonicDisplayMode,
     exportMutation,
+    acceptedTabSuggestionIds,
     handleDeleteMix,
     handleDeleteProject,
     handleChordAction,
@@ -1506,9 +1598,16 @@ export function useProjectViewModel() {
     handleSelectWorkspace,
     handleSetChordsFollowEnabled,
     handleSetLyricsFollowEnabled,
+    handleAcceptTabSuggestionGroup,
+    handleApplyTabSuggestions,
+    handleCloseTabImport,
+    handleCreateTabImportProposal,
+    handleOpenTabImport,
+    handleRejectTabSuggestionGroup,
     handleSetPlaybackDisplayMode,
     handleStemAction,
     handleTogglePlaybackDisplayLane,
+    handleToggleTabSuggestion,
     hasChordTimeline,
     hasEditedLyrics: lyricsQuery.data?.has_user_edits ?? false,
     hasLyricsTranscript,
@@ -1525,6 +1624,7 @@ export function useProjectViewModel() {
     isAnalysisRunning,
     isChordRunning,
     isEditingLyrics,
+    isTabImportOpen,
     isLyricsRunning,
     isMobileRuntime,
     isPlaying,
@@ -1557,7 +1657,9 @@ export function useProjectViewModel() {
     retuneMode,
     seekAnimationRevision,
     seekTo,
+    sectionsQuery,
     selectedArtifactId,
+    selectedTabSuggestionId,
     selectedArtifactTimestamp,
     selectedPlaybackArtifact,
     selectedPrimaryArtifact,
@@ -1577,6 +1679,8 @@ export function useProjectViewModel() {
     setTargetSelectorOpen,
     setTargetTransposeSemitones,
     setLyricsDraft,
+    setSelectedTabSuggestionId,
+    setTabImportDraft,
     showSupportingCopy,
     sourceArtifact,
     sourceKey,
@@ -1600,6 +1704,9 @@ export function useProjectViewModel() {
     stemMutation,
     stemOutputLabel,
     stopPlayback,
+    tabImportApplyMutation,
+    tabImportDraft,
+    tabImportMutation,
     targetKey,
     targetOptionRefs,
     targetSelectionSummary,

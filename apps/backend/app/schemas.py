@@ -247,6 +247,88 @@ class LyricsResponse(BaseModel):
     updated_at: datetime | None = None
 
 
+class SongSectionSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    project_id: str
+    tab_import_id: str | None = None
+    label: str
+    start_seconds: float | None = None
+    end_seconds: float | None = None
+    source: str
+    metadata: dict[str, Any] = Field(default_factory=dict, validation_alias="metadata_json")
+    created_at: datetime
+    updated_at: datetime
+
+
+class SongSectionsResponse(BaseModel):
+    sections: list[SongSectionSchema] = Field(default_factory=list)
+
+
+class TabImportCreateRequest(BaseModel):
+    raw_text: str
+
+    @field_validator("raw_text")
+    @classmethod
+    def validate_raw_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Tab text cannot be empty.")
+        return value
+
+
+class TabSuggestionSchema(BaseModel):
+    id: str
+    kind: str
+    status: str = "pending"
+    title: str
+    current_text: str | None = None
+    suggested_text: str | None = None
+    start_seconds: float | None = None
+    end_seconds: float | None = None
+    segment_index: int | None = None
+    chord_index: int | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class TabSuggestionGroupSchema(BaseModel):
+    kind: str
+    label: str
+    suggestions: list[TabSuggestionSchema] = Field(default_factory=list)
+
+
+class TabImportSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    project_id: str
+    raw_text: str
+    parser_version: str
+    status: str
+    parsed: dict[str, Any] = Field(default_factory=dict, validation_alias="parsed_json")
+    groups: list[TabSuggestionGroupSchema] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+class TabImportResponse(BaseModel):
+    tab_import: TabImportSchema
+
+
+class TabImportApplyRequest(BaseModel):
+    accepted_suggestion_ids: list[str] = Field(default_factory=list)
+
+
+class TabImportApplyResponse(BaseModel):
+    tab_import: TabImportSchema
+    accepted_suggestion_ids: list[str] = Field(default_factory=list)
+    ignored_suggestion_ids: list[str] = Field(default_factory=list)
+    lyrics: LyricsResponse | None = None
+    chords: ChordResponse | None = None
+    sections: list[SongSectionSchema] = Field(default_factory=list)
+    project: ProjectSchema
+
+
 class JobSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

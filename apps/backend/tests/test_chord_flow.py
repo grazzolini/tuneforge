@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from app.db import SessionLocal
+from app.models import SongSection, TabImport
 from app.services.artifacts import register_artifact
 from app.services.chord_backends import ChordDetectionResult
 from app.services.chords import detect_project_chords
@@ -223,3 +224,57 @@ def test_chord_refresh_preserves_user_edits_without_overwrite(
     assert calls
     assert chords.has_user_edits is False
     assert [segment["label"] for segment in chords.segments_json] == ["G"]
+
+
+def test_chord_refresh_clears_current_tab_state(client, sample_chord_audio_file: Path, monkeypatch):
+    project = client.post(
+        "/api/v1/projects/import",
+        json={"source_path": str(sample_chord_audio_file), "copy_into_project": True},
+    ).json()["project"]
+
+    initial_jobs = client.get("/api/v1/jobs").json()["jobs"]
+    initial_chord_job = next(
+        job for job in initial_jobs if job["project_id"] == project["id"] and job["type"] == "chords"
+    )
+    assert wait_for_job(client, initial_chord_job["id"])["status"] == "completed"
+
+    with SessionLocal() as session:
+        session.add(
+            TabImport(
+                id="tab_test",
+                project_id=project["id"],
+                raw_text="Key: D",
+                parser_version="test",
+                status="applied",
+                parsed_json={},
+                proposal_json={},
+            )
+        )
+        session.add(
+            SongSection(
+                id="sec_test",
+                project_id=project["id"],
+                tab_import_id="tab_test",
+                label="Verse",
+                source="tab",
+                metadata_json={},
+            )
+        )
+        session.commit()
+
+    def fake_detect_timeline(path: Path, backend_id: str) -> ChordDetectionResult:
+        del path
+        return ChordDetectionResult(
+            segments=[_segment("G", confidence=0.88, pitch_class=7, quality="major")],
+            backend_id=backend_id,
+            metadata={},
+        )
+
+    monkeypatch.setattr("app.services.chords._detect_timeline", fake_detect_timeline)
+
+    with SessionLocal() as session:
+        project_model = get_project(session, project["id"])
+        detect_project_chords(session, project_model, force=True)
+        assert session.get(TabImport, "tab_test") is None
+        assert session.get(SongSection, "sec_test") is None
+        session.commit()

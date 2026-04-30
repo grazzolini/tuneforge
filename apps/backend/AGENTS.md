@@ -28,4 +28,8 @@ Use the root `AGENTS.md` for global rules. This file adds backend-specific guida
 ## Migrations
 
 - Database schema changes require a new Alembic revision in `alembic/versions/`.
+- Before adding a new model or migration, check whether the default dev database is already stamped with
+  migrations from another branch. If it is, inspect the other branch's migration, evaluate whether it can be
+  imported into the current branch without breaking current work, and ask the user before importing it. Do not
+  switch branches to resolve this; the other branch can contain unrelated work that conflicts with current work.
 - Avoid destructive migrations unless explicitly approved by a human.

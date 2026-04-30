@@ -3,6 +3,7 @@ name = "tuneforge"
 version = "0.1.0"
 description = "Tuneforge desktop shell"
 edition = "2021"
+license = "MIT"
 
 [lib]
 crate-type = ["staticlib", "cdylib", "rlib"]

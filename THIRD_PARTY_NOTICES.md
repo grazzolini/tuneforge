@@ -49,6 +49,12 @@ This document is an engineering notice and distribution checklist, not legal adv
 - **Source:** <https://ffmpeg.org/>
 - **Notes:** **Tuneforge does not bundle FFmpeg.** It must be installed separately by the user (for example via Homebrew, apt, or winget) and discoverable on `PATH`. Users are responsible for the licensing terms of the FFmpeg build they install.
 
+### PulseAudio pactl
+
+- **License:** LGPL-2.1+
+- **Source:** <https://www.freedesktop.org/software/pulseaudio/>
+- **Notes:** Bundled in the Flatpak build as client-only PulseAudio utilities/libraries so Linux system microphone volume control can use `pactl` inside the sandbox. The PulseAudio daemon is not bundled.
+
 ## Desktop Shell
 
 ### Tauri

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -15,10 +16,12 @@ from app.api.routes.health import router as health_router
 from app.api.routes.jobs import router as jobs_router
 from app.api.routes.projects import router as projects_router
 from app.config import ensure_data_dirs, get_settings
-from app.db import SessionLocal, reconfigure_engine, run_migrations
+from app.db import SessionLocal, UnknownDatabaseRevisionError, reconfigure_engine, run_migrations
 from app.errors import AppError
 from app.schemas import ErrorInfo, ErrorResponse
 from app.services.jobs import InProcessJobRunner
+
+logger = logging.getLogger("tuneforge.startup")
 
 
 @asynccontextmanager
@@ -26,7 +29,11 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     ensure_data_dirs(settings)
     reconfigure_engine(settings)
-    run_migrations(settings)
+    try:
+        run_migrations(settings)
+    except UnknownDatabaseRevisionError as error:
+        logger.error("%s", error)
+        raise
     runner = InProcessJobRunner(SessionLocal, max_workers=settings.max_workers)
     runner.recover_running_jobs()
     runner.start()

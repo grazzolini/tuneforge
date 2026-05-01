@@ -21,10 +21,19 @@ export function PlaybackPracticeRail() {
     handleSelectStemArtifact,
     higherCapoPreview,
     higherCapoShiftOptions,
+    handleSetPrecountClickCount,
+    handleSetPrecountEnabled,
     informationDensity,
     isStemPlayback,
     lowerCapoPreview,
     lowerCapoShiftOptions,
+    precountClickCount,
+    precountDisabledReason,
+    precountEnabled,
+    precountMaxClickCount,
+    precountMinClickCount,
+    precountTempoBpm,
+    canUsePrecount,
     previewArtifacts,
     selectedArtifactId,
     selectedArtifactTimestamp,
@@ -87,6 +96,54 @@ export function PlaybackPracticeRail() {
           value={capoSemitones}
         />
         <p className="artifact-meta playback-capo-control__summary">{capoShiftSummary}</p>
+      </section>
+
+      <section
+        className={`playback-precount-control${
+          canUsePrecount ? "" : " playback-precount-control--disabled"
+        }`}
+        aria-labelledby="playback-precount-heading"
+      >
+        <div className="playback-precount-control__header">
+          <div>
+            <p className="metric-label">Pre-count</p>
+            <h3 id="playback-precount-heading">Count-in</h3>
+          </div>
+          <label className="playback-precount-control__toggle">
+            <input
+              aria-label="Enable pre-count"
+              checked={precountEnabled}
+              disabled={!canUsePrecount}
+              onChange={(event) => handleSetPrecountEnabled(event.target.checked)}
+              type="checkbox"
+            />
+            <span>{precountEnabled ? "On" : "Off"}</span>
+          </label>
+        </div>
+        <div className="playback-precount-control__stepper" role="group" aria-label="Pre-count clicks">
+          <button
+            aria-label="Decrease pre-count clicks"
+            disabled={!canUsePrecount || precountClickCount <= precountMinClickCount}
+            onClick={() => handleSetPrecountClickCount(precountClickCount - 1)}
+            type="button"
+          >
+            -
+          </button>
+          <strong aria-live="polite">{precountClickCount}</strong>
+          <button
+            aria-label="Increase pre-count clicks"
+            disabled={!canUsePrecount || precountClickCount >= precountMaxClickCount}
+            onClick={() => handleSetPrecountClickCount(precountClickCount + 1)}
+            type="button"
+          >
+            +
+          </button>
+        </div>
+        <p className="artifact-meta playback-precount-control__summary">
+          {canUsePrecount && precountTempoBpm !== null
+            ? `${precountClickCount} clicks at ${precountTempoBpm.toFixed(1)} BPM`
+            : precountDisabledReason}
+        </p>
       </section>
 
       <section className="playback-picker-group playback-picker-group--compact">

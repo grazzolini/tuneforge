@@ -1,7 +1,7 @@
 import type {
   ProjectPlaybackSession,
 } from "./playback-context";
-import type { StemControlState } from "./projectPlaybackState";
+import { normalizePrecountClickCount, type StemControlState } from "./projectPlaybackState";
 
 export type PersistedPlaybackState = {
   session: ProjectPlaybackSession;
@@ -71,6 +71,14 @@ function normalizeProjectPlaybackSession(value: unknown): ProjectPlaybackSession
       candidate.durationHintSeconds >= 0
         ? candidate.durationHintSeconds
         : 0,
+    precountEnabled: Boolean(candidate.precountEnabled),
+    precountClickCount: normalizePrecountClickCount(candidate.precountClickCount),
+    precountTempoBpm:
+      typeof candidate.precountTempoBpm === "number" &&
+      Number.isFinite(candidate.precountTempoBpm) &&
+      candidate.precountTempoBpm > 0
+        ? candidate.precountTempoBpm
+        : null,
   };
 }
 

@@ -814,6 +814,10 @@ export interface components {
             copy_into_project: boolean;
             /** Display Name */
             display_name?: string | null;
+            /** Chord Backend */
+            chord_backend?: string | null;
+            /** Chord Backend Fallback From */
+            chord_backend_fallback_from?: string | null;
         };
         /** ProjectResponse */
         ProjectResponse: {

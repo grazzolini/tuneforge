@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { confirm, save } from "@tauri-apps/plugin-dialog";
-import { api, type ArtifactSchema, type ChordBackendsResponse, type ProjectSchema } from "../../../lib/api";
+import { api, type ArtifactSchema, type ProjectSchema } from "../../../lib/api";
 import { usePreferences } from "../../../lib/preferences";
 import { usePlayback } from "../playback-context";
 import {
@@ -50,13 +50,10 @@ import {
   type SourceKeyOption,
   type TargetShiftOption,
 } from "../projectViewUtils";
-import type { DefaultChordBackend, DefaultPlaybackDisplayMode, PlaybackDisplayMode } from "../../../lib/preferences";
+import type { DefaultPlaybackDisplayMode, PlaybackDisplayMode } from "../../../lib/preferences";
+import { useChordBackendActionSelection } from "./useChordBackendActionSelection";
 
 type PlaybackDisplayModeSource = "default" | "stored" | "user";
-type ChordBackendActionSelection = {
-  backend: DefaultChordBackend;
-  backend_fallback_from?: DefaultChordBackend;
-};
 
 function resolveDefaultPlaybackDisplayMode(
   defaultMode: DefaultPlaybackDisplayMode,
@@ -101,10 +98,10 @@ export function useProjectViewModel() {
     defaultLyricsFollowEnabled,
     defaultProjectWorkspace,
     defaultSourcesRailCollapsed,
-    defaultChordBackend,
     enharmonicDisplayMode,
     informationDensity,
   } = usePreferences();
+  const { chordBackendForAction } = useChordBackendActionSelection();
   const chordSegmentRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const chordTimelineRef = useRef<HTMLDivElement | null>(null);
   const combinedLeadSheetRef = useRef<HTMLDivElement | null>(null);
@@ -192,10 +189,6 @@ export function useProjectViewModel() {
     queryKey: ["jobs"],
     queryFn: async () => (await api.listJobs()).jobs,
   });
-  const chordBackendsQuery = useQuery({
-    queryKey: ["chord-backends"],
-    queryFn: api.listChordBackends,
-  });
   const mobileCapabilitiesQuery = useQuery({
     queryKey: ["mobile-capabilities"],
     queryFn: async () => api.getMobileCapabilities(),
@@ -203,33 +196,6 @@ export function useProjectViewModel() {
   });
 
   useActiveJobPolling(projectId, jobsQuery.data);
-
-  async function chordBackendForAction(): Promise<ChordBackendActionSelection> {
-    if (defaultChordBackend === "tuneforge-fast") {
-      return { backend: "tuneforge-fast" };
-    }
-
-    let backendResponse: ChordBackendsResponse | undefined = chordBackendsQuery.data;
-    if (!backendResponse) {
-      try {
-        backendResponse = await queryClient.fetchQuery({
-          queryKey: ["chord-backends"],
-          queryFn: api.listChordBackends,
-        });
-      } catch {
-        return { backend: "tuneforge-fast", backend_fallback_from: defaultChordBackend };
-      }
-    }
-    if (!backendResponse) {
-      return { backend: "tuneforge-fast", backend_fallback_from: defaultChordBackend };
-    }
-
-    const selectedBackend = backendResponse.backends.find((backend) => backend.id === defaultChordBackend);
-    if (selectedBackend?.available) {
-      return { backend: defaultChordBackend };
-    }
-    return { backend: "tuneforge-fast", backend_fallback_from: defaultChordBackend };
-  }
 
   const analyzeMutation = useMutation({
     mutationFn: () => api.analyzeProject(projectId),

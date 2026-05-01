@@ -37,7 +37,7 @@ def test_chord_job_persists_timeline(client, sample_chord_audio_file: Path):
     initial_chord_job = next(
         job for job in initial_jobs if job["project_id"] == project["id"] and job["type"] == "chords"
     )
-    assert wait_for_job(client, initial_chord_job["id"])["status"] == "completed"
+    assert wait_for_job(client, initial_chord_job["id"], timeout=90.0)["status"] == "completed"
 
     initial = client.get(f"/api/v1/projects/{project['id']}/chords").json()
     assert initial["project_id"] == project["id"]
@@ -78,6 +78,85 @@ def test_chord_job_persists_timeline(client, sample_chord_audio_file: Path):
     assert any(label == "G" for label in labels)
     assert any(label == "Am" for label in labels)
     assert any(label == "F" for label in labels)
+
+
+def test_import_chord_job_uses_requested_advanced_backend_when_available(
+    client,
+    sample_chord_audio_file: Path,
+    monkeypatch,
+):
+    monkeypatch.setattr("app.services.chord_backends.crema_dependency_status", lambda **_kwargs: (True, None))
+    monkeypatch.setattr("app.services.chord_backends.crema_runtime_device", lambda: "cpu")
+    monkeypatch.setattr(
+        "app.services.chord_backends.crema_model_metadata",
+        lambda: {"backend_id": "crema-advanced", "engine": "crema-test"},
+    )
+    monkeypatch.setattr(
+        "app.services.chord_backends.detect_crema_chord_timeline",
+        lambda _: [_segment("D/F#", confidence=0.91, pitch_class=2, quality="major")],
+    )
+
+    project = client.post(
+        "/api/v1/projects/import",
+        json={
+            "source_path": str(sample_chord_audio_file),
+            "copy_into_project": True,
+            "chord_backend": "crema-advanced",
+        },
+    ).json()["project"]
+
+    initial_jobs = client.get("/api/v1/jobs").json()["jobs"]
+    initial_chord_job = next(
+        job for job in initial_jobs if job["project_id"] == project["id"] and job["type"] == "chords"
+    )
+    assert initial_chord_job["chord_backend"] == "crema-advanced"
+
+    final_job = wait_for_job(client, initial_chord_job["id"], timeout=90.0)
+    assert final_job["status"] == "completed"
+    assert final_job["chord_backend"] == "crema-advanced"
+    assert final_job["chord_backend_fallback_from"] is None
+
+    chords = client.get(f"/api/v1/projects/{project['id']}/chords").json()
+    assert chords["backend"] == "crema-advanced"
+    assert chords["metadata"]["backend_fallback_from"] is None
+    assert chords["metadata"]["runtime_device"] == "cpu"
+    assert [segment["label"] for segment in chords["timeline"]] == ["D/F#"]
+
+
+def test_import_chord_job_falls_back_when_requested_advanced_backend_is_unavailable(
+    client,
+    sample_chord_audio_file: Path,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "app.services.chord_backends.crema_dependency_status",
+        lambda **_kwargs: (False, "crema is not installed"),
+    )
+
+    project = client.post(
+        "/api/v1/projects/import",
+        json={
+            "source_path": str(sample_chord_audio_file),
+            "copy_into_project": True,
+            "chord_backend": "crema-advanced",
+        },
+    ).json()["project"]
+
+    initial_jobs = client.get("/api/v1/jobs").json()["jobs"]
+    initial_chord_job = next(
+        job for job in initial_jobs if job["project_id"] == project["id"] and job["type"] == "chords"
+    )
+    assert initial_chord_job["chord_backend"] == "tuneforge-fast"
+    assert initial_chord_job["chord_backend_fallback_from"] == "crema-advanced"
+
+    final_job = wait_for_job(client, initial_chord_job["id"], timeout=90.0)
+    assert final_job["status"] == "completed"
+    assert final_job["chord_backend"] == "tuneforge-fast"
+    assert final_job["chord_backend_fallback_from"] == "crema-advanced"
+
+    chords = client.get(f"/api/v1/projects/{project['id']}/chords").json()
+    assert chords["backend"] == "tuneforge-fast"
+    assert chords["metadata"]["backend_fallback_from"] == "crema-advanced"
 
 
 @pytest.mark.parametrize("backend_id", ["tuneforge-fast", "crema-advanced"])

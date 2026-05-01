@@ -31,6 +31,13 @@ apps/desktop/src-tauri/resources/*
 !apps/desktop/src-tauri/resources/.gitkeep
 !apps/desktop/src-tauri/resources/placeholder.txt
 
+# Flatpak packaging output
+.flatpak-builder/
+packaging/flatpak/build-dir/
+packaging/flatpak/generated/
+packaging/flatpak/repo/
+packaging/flatpak/*.flatpak
+
 # Mobile
 # Android Studio may create this when importing the generated Tauri Android project from repo root.
 /settings.gradle

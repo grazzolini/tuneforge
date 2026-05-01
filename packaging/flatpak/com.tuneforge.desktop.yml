@@ -1,0 +1,255 @@
+app-id: com.tuneforge.desktop
+runtime: org.gnome.Platform
+runtime-version: "50"
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.node22
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: tuneforge
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  - --socket=pulseaudio
+  - --share=network
+  - --talk-name=org.freedesktop.portal.Desktop
+  - --talk-name=org.freedesktop.portal.Documents
+  - --env=TUNEFORGE_BUNDLED_BACKEND_ROOT=/app/lib/tuneforge/backend
+  - --env=TUNEFORGE_DATA_DIR=/var/data/tuneforge
+  - --env=TUNEFORGE_FFMPEG_PATH=/app/bin/ffmpeg
+  - --env=TUNEFORGE_FFPROBE_PATH=/app/bin/ffprobe
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /share/doc
+  - /share/gtk-doc
+  - /share/man
+  - /share/pkgconfig
+  - "*.a"
+  - "*.la"
+
+modules:
+  - name: cpython-3.11
+    buildsystem: simple
+    build-options:
+      env:
+        LD_LIBRARY_PATH: /app/lib/tuneforge/backend/python/lib
+    sources:
+      - type: archive
+        url: https://www.python.org/ftp/python/3.11.15/Python-3.11.15.tar.xz
+        sha256: 272179ddd9a2e41a0fc8e42e33dfbdca0b3711aa5abf372d3f2d51543d09b625
+    build-commands:
+      - ./configure --prefix=/app/lib/tuneforge/backend/python --enable-shared --with-ensurepip=install
+      - make -j${FLATPAK_BUILDER_N_JOBS}
+      - make install
+      - /app/lib/tuneforge/backend/python/bin/python3.11 -m ensurepip --upgrade
+
+  - name: python-runtime-deps
+    buildsystem: simple
+    build-options:
+      env:
+        LD_LIBRARY_PATH: /app/lib/tuneforge/backend/python/lib
+        PYTHONPATH: /app/lib/tuneforge/backend/site-packages
+    sources:
+      - generated/python-sources.json
+      - type: file
+        path: generated/python-requirements.txt
+    build-commands:
+      - install -dm755 /app/lib/tuneforge/backend/site-packages
+      - /app/lib/tuneforge/backend/python/bin/python3.11 -m pip install --no-index --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages setuptools wheel
+      - /app/lib/tuneforge/backend/python/bin/python3.11 -m pip install --no-index --no-build-isolation --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages -r python-requirements.txt
+
+  - name: pnpm
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/node22/bin
+    sources:
+      - type: archive
+        url: https://registry.npmjs.org/pnpm/-/pnpm-10.33.0.tgz
+        sha256: bfcc1bcbad279b13a516c446a75b3c58b6904b45d57a1951411015e50b751a80
+        dest: pnpm
+    build-commands:
+      - install -dm755 /app/lib/pnpm /app/bin
+      - cp -a pnpm/. /app/lib/pnpm/
+      - ln -sf ../lib/pnpm/bin/pnpm.cjs /app/bin/pnpm
+      - ln -sf ../lib/pnpm/bin/pnpx.cjs /app/bin/pnpx
+
+  - name: node-sources
+    buildsystem: simple
+    sources:
+      - generated/node-sources.json
+    build-commands:
+      - install -dm755 /app/share/tuneforge/node-sources
+      - cp node-sources/*.tgz /app/share/tuneforge/node-sources/
+
+  - name: pulseaudio-client-tools
+    buildsystem: meson
+    builddir: true
+    config-opts:
+      - --buildtype=release
+      - -Ddaemon=false
+      - -Dclient=true
+      - -Ddoxygen=false
+      - -Dman=false
+      - -Dtests=false
+      - -Ddatabase=simple
+      - -Dalsa=disabled
+      - -Dasyncns=disabled
+      - -Davahi=disabled
+      - -Dbluez5=disabled
+      - -Dbluez5-gstreamer=disabled
+      - -Dconsolekit=disabled
+      - -Ddbus=disabled
+      - -Delogind=disabled
+      - -Dfftw=disabled
+      - -Dglib=disabled
+      - -Dgsettings=disabled
+      - -Dgstreamer=disabled
+      - -Dgtk=disabled
+      - -Djack=disabled
+      - -Dlirc=disabled
+      - -Dopenssl=disabled
+      - -Dorc=disabled
+      - -Doss-output=disabled
+      - -Dsamplerate=disabled
+      - -Dsoxr=disabled
+      - -Dspeex=disabled
+      - -Dsystemd=disabled
+      - -Dtcpwrap=disabled
+      - -Dudev=disabled
+      - -Dvalgrind=disabled
+      - -Dx11=disabled
+      - -Dwebrtc-aec=disabled
+      - -Dbashcompletiondir=no
+      - -Dzshcompletiondir=no
+    sources:
+      - type: archive
+        url: https://www.freedesktop.org/software/pulseaudio/releases/pulseaudio-17.0.tar.xz
+        sha256: 053794d6671a3e397d849e478a80b82a63cb9d8ca296bd35b73317bb5ceb87b5
+    cleanup:
+      - /bin/pacat
+      - /bin/pacmd
+      - /bin/padsp
+      - /bin/pasuspender
+      - /bin/pax11publish
+      - /bin/pulseaudio
+      - /share/bash-completion
+      - /share/zsh
+
+  - name: tuneforge
+    buildsystem: simple
+    build-options:
+      append-path: /app/bin:/usr/lib/sdk/node22/bin:/usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/tuneforge/cargo-home
+        CARGO_NET_OFFLINE: "true"
+        HUSKY: "0"
+        LD_LIBRARY_PATH: /app/lib/tuneforge/backend/python/lib
+        PYTHONPATH: /app/lib/tuneforge/backend/site-packages
+        TUNEFORGE_BUNDLED_BACKEND_ROOT: /app/lib/tuneforge/backend
+    sources:
+      - type: file
+        path: ../../package.json
+      - type: file
+        path: ../../pnpm-lock.yaml
+      - type: file
+        path: ../../pnpm-workspace.yaml
+      - type: file
+        path: ../../LICENSE
+      - type: file
+        path: ../../apps/desktop/package.json
+        dest: apps/desktop
+      - type: file
+        path: ../../apps/desktop/index.html
+        dest: apps/desktop
+      - type: file
+        path: ../../apps/desktop/tsconfig.json
+        dest: apps/desktop
+      - type: file
+        path: ../../apps/desktop/tsconfig.node.json
+        dest: apps/desktop
+      - type: file
+        path: ../../apps/desktop/vite.config.ts
+        dest: apps/desktop
+      - type: dir
+        path: ../../apps/desktop/src
+        dest: apps/desktop/src
+      - type: file
+        path: ../../apps/desktop/src-tauri/Cargo.lock
+        dest: apps/desktop/src-tauri
+      - type: file
+        path: ../../apps/desktop/src-tauri/Cargo.toml
+        dest: apps/desktop/src-tauri
+      - type: file
+        path: ../../apps/desktop/src-tauri/build.rs
+        dest: apps/desktop/src-tauri
+      - type: file
+        path: ../../apps/desktop/src-tauri/tauri.conf.json
+        dest: apps/desktop/src-tauri
+      - type: dir
+        path: ../../apps/desktop/src-tauri/capabilities
+        dest: apps/desktop/src-tauri/capabilities
+      - type: dir
+        path: ../../apps/desktop/src-tauri/icons
+        dest: apps/desktop/src-tauri/icons
+      - type: dir
+        path: ../../apps/desktop/src-tauri/resources
+        dest: apps/desktop/src-tauri/resources
+      - type: dir
+        path: ../../apps/desktop/src-tauri/src
+        dest: apps/desktop/src-tauri/src
+      - type: file
+        path: ../../packages/shared-types/package.json
+        dest: packages/shared-types
+      - type: dir
+        path: ../../packages/shared-types/src
+        dest: packages/shared-types/src
+      - type: dir
+        path: ../../apps/backend/app
+        dest: apps/backend/app
+      - type: dir
+        path: ../../apps/backend/alembic
+        dest: apps/backend/alembic
+      - type: file
+        path: ../../apps/backend/alembic.ini
+        dest: apps/backend
+      - type: file
+        path: ../../apps/backend/pyproject.toml
+        dest: apps/backend
+      - generated/cargo-sources.json
+      - type: file
+        path: ffmpeg-wrapper.sh
+        dest-filename: ffmpeg
+      - type: file
+        path: ffprobe-wrapper.sh
+        dest-filename: ffprobe
+      - type: file
+        path: rewrite-pnpm-lock.mjs
+      - type: file
+        path: com.tuneforge.desktop.desktop
+      - type: file
+        path: com.tuneforge.desktop.metainfo.xml
+    build-commands:
+      - install -Dm755 ffmpeg /app/bin/ffmpeg
+      - install -Dm755 ffprobe /app/bin/ffprobe
+      - /app/bin/ffmpeg -version
+      - /app/bin/ffprobe -version
+      - /app/bin/pactl --version
+      - bash cargo-checksums.sh
+      - node rewrite-pnpm-lock.mjs /app/share/tuneforge/node-sources
+      - /app/bin/pnpm install --offline --frozen-lockfile
+      - /app/bin/pnpm --filter @tuneforge/desktop build
+      - cargo build --release --locked --features custom-protocol --manifest-path apps/desktop/src-tauri/Cargo.toml
+      - install -Dm755 apps/desktop/src-tauri/target/release/tuneforge /app/bin/tuneforge
+      - install -dm755 /app/lib/tuneforge/backend/src
+      - cp -a apps/backend/app /app/lib/tuneforge/backend/src/app
+      - cp -a apps/backend/alembic /app/lib/tuneforge/backend/src/alembic
+      - install -Dm644 apps/backend/alembic.ini /app/lib/tuneforge/backend/src/alembic.ini
+      - install -Dm644 apps/backend/pyproject.toml /app/lib/tuneforge/backend/src/pyproject.toml
+      - install -Dm644 com.tuneforge.desktop.desktop /app/share/applications/com.tuneforge.desktop.desktop
+      - install -Dm644 com.tuneforge.desktop.metainfo.xml /app/share/metainfo/com.tuneforge.desktop.metainfo.xml
+      - install -Dm644 apps/desktop/src-tauri/icons/32x32.png /app/share/icons/hicolor/32x32/apps/com.tuneforge.desktop.png
+      - install -Dm644 apps/desktop/src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/com.tuneforge.desktop.png
+      - install -Dm644 apps/desktop/src-tauri/icons/512x512.png /app/share/icons/hicolor/512x512/apps/com.tuneforge.desktop.png
+      - /app/lib/tuneforge/backend/python/bin/python3.11 -c "import fastapi, demucs, whisper, torch"

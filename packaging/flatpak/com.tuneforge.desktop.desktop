@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Tuneforge
+Comment=Local-first music practice toolkit
+Exec=tuneforge
+Icon=com.tuneforge.desktop
+Terminal=false
+Categories=AudioVideo;Audio;Music;
+StartupWMClass=Tuneforge

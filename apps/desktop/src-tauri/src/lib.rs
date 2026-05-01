@@ -462,7 +462,8 @@ fn read_wpctl_default_input_volume() -> Result<SystemDefaultInputVolume, String>
 
 #[cfg(target_os = "linux")]
 fn read_pactl_default_input_volume() -> Result<SystemDefaultInputVolume, String> {
-    let volume_output = run_host_audio_command("pactl", &["get-source-volume", "@DEFAULT_SOURCE@"])?;
+    let volume_output =
+        run_host_audio_command("pactl", &["get-source-volume", "@DEFAULT_SOURCE@"])?;
     let volume_percent = parse_first_percent(&volume_output)
         .ok_or_else(|| "Could not parse pactl default source volume.".to_string())?;
     let muted = run_host_audio_command("pactl", &["get-source-mute", "@DEFAULT_SOURCE@"])
@@ -489,7 +490,9 @@ fn read_system_default_input_volume() -> SystemDefaultInputVolume {
 }
 
 #[cfg(target_os = "linux")]
-fn write_wpctl_default_input_volume(volume_percent: u8) -> Result<SystemDefaultInputVolume, String> {
+fn write_wpctl_default_input_volume(
+    volume_percent: u8,
+) -> Result<SystemDefaultInputVolume, String> {
     let volume = format!("{volume_percent}%");
     run_host_audio_command("wpctl", &["set-mute", "@DEFAULT_AUDIO_SOURCE@", "0"])?;
     run_host_audio_command("wpctl", &["set-volume", "@DEFAULT_AUDIO_SOURCE@", &volume])?;
@@ -497,7 +500,9 @@ fn write_wpctl_default_input_volume(volume_percent: u8) -> Result<SystemDefaultI
 }
 
 #[cfg(target_os = "linux")]
-fn write_pactl_default_input_volume(volume_percent: u8) -> Result<SystemDefaultInputVolume, String> {
+fn write_pactl_default_input_volume(
+    volume_percent: u8,
+) -> Result<SystemDefaultInputVolume, String> {
     let volume = format!("{volume_percent}%");
     run_host_audio_command("pactl", &["set-source-mute", "@DEFAULT_SOURCE@", "0"])?;
     run_host_audio_command("pactl", &["set-source-volume", "@DEFAULT_SOURCE@", &volume])?;
@@ -586,6 +591,27 @@ fn build_python_path(backend_root: &Path) -> Result<String, Box<dyn std::error::
     Ok(joined.to_string_lossy().into_owned())
 }
 
+#[cfg(not(target_os = "android"))]
+fn build_backend_library_path(python_root: &Path) -> Result<OsString, env::JoinPathsError> {
+    let current_paths: Vec<PathBuf> = env::var_os("LD_LIBRARY_PATH")
+        .map(|path| env::split_paths(&path).collect())
+        .unwrap_or_default();
+    env::join_paths(append_unique_paths(
+        vec![python_root.join("lib")],
+        current_paths,
+    ))
+}
+
+#[cfg(not(target_os = "android"))]
+fn resolve_bundled_backend_root(app: &AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Some(root) = env::var_os("TUNEFORGE_BUNDLED_BACKEND_ROOT") {
+        return Ok(PathBuf::from(root));
+    }
+
+    let resources_root = app.path().resource_dir()?;
+    Ok(resources_root.join("resources").join("backend"))
+}
+
 #[cfg(all(not(target_os = "android"), target_os = "macos"))]
 fn host_tool_fallback_dirs() -> Vec<PathBuf> {
     [
@@ -657,8 +683,7 @@ fn find_executable_in_path(binary_name: &str, search_path: &OsString) -> Option<
 
 #[cfg(not(target_os = "android"))]
 fn spawn_packaged_backend(app: &AppHandle) -> Result<BackendRuntime, Box<dyn std::error::Error>> {
-    let resources_root = app.path().resource_dir()?;
-    let bundled_backend_root = resources_root.join("resources").join("backend");
+    let bundled_backend_root = resolve_bundled_backend_root(app)?;
     let bundled_python_root = bundled_backend_root.join("python");
     let backend_source_root = bundled_backend_root.join("src");
     let python = python_executable(&bundled_python_root);
@@ -670,6 +695,7 @@ fn spawn_packaged_backend(app: &AppHandle) -> Result<BackendRuntime, Box<dyn std
     let port = allocate_port()?;
     let base_url = format!("http://127.0.0.1:{port}");
     let python_path = build_python_path(&bundled_backend_root)?;
+    let backend_library_path = build_backend_library_path(&bundled_python_root)?;
     let backend_search_path = build_backend_search_path()?;
     let ffmpeg_path = find_executable_in_path("ffmpeg", &backend_search_path);
     let ffprobe_path = find_executable_in_path("ffprobe", &backend_search_path);
@@ -686,6 +712,7 @@ fn spawn_packaged_backend(app: &AppHandle) -> Result<BackendRuntime, Box<dyn std
         ])
         .arg(port.to_string())
         .current_dir(&backend_source_root)
+        .env("LD_LIBRARY_PATH", &backend_library_path)
         .env("PATH", &backend_search_path)
         .env("PYTHONHOME", &bundled_python_root)
         .env("PYTHONPATH", python_path)
@@ -833,6 +860,15 @@ mod tests {
         let paths = append_unique_paths(vec![first.clone()], [second.clone(), first.clone()]);
 
         assert_eq!(paths, vec![first, second]);
+    }
+
+    #[test]
+    fn backend_library_path_starts_with_bundled_python_lib() {
+        let python_root = PathBuf::from("/app/lib/tuneforge/backend/python");
+        let library_path = build_backend_library_path(&python_root).expect("build library path");
+        let paths = env::split_paths(&library_path).collect::<Vec<_>>();
+
+        assert_eq!(paths.first(), Some(&python_root.join("lib")));
     }
 
     #[test]

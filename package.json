@@ -13,6 +13,8 @@
     "lint": "pnpm --filter @tuneforge/desktop lint && bash scripts/run-backend-module.sh ruff check . && bash scripts/run-backend-module.sh mypy app",
     "package:android": "pnpm --filter @tuneforge/desktop android:build",
     "package:android:debug": "pnpm --filter @tuneforge/desktop android:build:debug",
+    "package:linux": "pnpm package:linux:flatpak",
+    "package:linux:flatpak": "node scripts/package-flatpak.mjs",
     "package:mac": "pnpm package:mac:app && pnpm package:mac:dmg",
     "package:mac:app": "pnpm --filter @tuneforge/desktop tauri build --bundles app",
     "package:mac:dmg": "node scripts/package-dmg.mjs",

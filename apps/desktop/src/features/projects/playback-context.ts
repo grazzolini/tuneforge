@@ -11,12 +11,16 @@ export type ProjectPlaybackSession = {
   visibleStemArtifactIds: string[];
   stemControls: Record<string, StemControlState>;
   durationHintSeconds: number;
+  precountEnabled: boolean;
+  precountClickCount: number;
+  precountTempoBpm: number | null;
 };
 
 export type PlaybackSnapshot = {
   session: ProjectPlaybackSession | null;
   playbackTimeSeconds: number;
   playbackDurationSeconds: number;
+  isPrecounting: boolean;
   isPlaying: boolean;
 };
 
@@ -24,6 +28,7 @@ export type PlaybackContextValue = {
   session: ProjectPlaybackSession | null;
   playbackTimeSeconds: number;
   playbackDurationSeconds: number;
+  isPrecounting: boolean;
   isPlaying: boolean;
   activateStemPlayback: () => Promise<void>;
   getPlaybackSnapshot: () => PlaybackSnapshot;

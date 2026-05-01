@@ -6,8 +6,12 @@ import { api, type ArtifactSchema, type ProjectSchema } from "../../../lib/api";
 import { usePreferences } from "../../../lib/preferences";
 import { usePlayback } from "../playback-context";
 import {
+  DEFAULT_PRECOUNT_CLICK_COUNT,
+  MAX_PRECOUNT_CLICK_COUNT,
+  MIN_PRECOUNT_CLICK_COUNT,
   clearProjectPlaybackState,
   hasProjectPlaybackState,
+  normalizePrecountClickCount,
   readProjectPlaybackState,
   writeProjectPlaybackState,
   type StemControlState,
@@ -131,6 +135,8 @@ export function useProjectViewModel() {
   const [targetSelectorOpen, setTargetSelectorOpen] = useState(false);
   const [capoTransposeSemitones, setCapoTransposeSemitones] = useState(0);
   const [capoSelectorOpen, setCapoSelectorOpen] = useState(false);
+  const [precountEnabled, setPrecountEnabled] = useState(false);
+  const [precountClickCount, setPrecountClickCount] = useState(DEFAULT_PRECOUNT_CLICK_COUNT);
   const [sourceKeySelectorOpen, setSourceKeySelectorOpen] = useState(false);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [selectedPrimaryArtifactId, setSelectedPrimaryArtifactId] = useState<string | null>(null);
@@ -541,6 +547,13 @@ export function useProjectViewModel() {
     : "";
 
   const detectedKey = parseKey(analysisQuery.data?.estimated_key);
+  const analyzedTempoBpm = analysisQuery.data?.tempo_bpm;
+  const precountTempoBpm =
+    typeof analyzedTempoBpm === "number" && Number.isFinite(analyzedTempoBpm) && analyzedTempoBpm > 0
+      ? analyzedTempoBpm
+      : null;
+  const canUsePrecount = precountTempoBpm !== null;
+  const precountDisabledReason = canUsePrecount ? null : "Waiting for BPM analysis";
   const sourceKeyOverride = parseStoredKey(projectQuery.data?.source_key_override);
   const sourceKeyBasis = sourceKeyOverride ?? detectedKey ?? null;
   const sourceKey = sourceKeyBasis ?? DEFAULT_KEY;
@@ -861,6 +874,17 @@ export function useProjectViewModel() {
     await togglePlayback();
   }
 
+  function handleSetPrecountEnabled(enabled: boolean) {
+    if (enabled && !canUsePrecount) {
+      return;
+    }
+    setPrecountEnabled(enabled);
+  }
+
+  function handleSetPrecountClickCount(value: number) {
+    setPrecountClickCount(normalizePrecountClickCount(value));
+  }
+
   function handleSeekTo(timeSeconds: number) {
     seekTo(timeSeconds);
   }
@@ -1124,6 +1148,8 @@ export function useProjectViewModel() {
         : resolveDefaultPlaybackDisplayMode(defaultPlaybackDisplayMode, false, false),
     );
     setCapoTransposeSemitones(storedPlaybackState.capoTransposeSemitones);
+    setPrecountEnabled(storedPlaybackState.precountEnabled);
+    setPrecountClickCount(storedPlaybackState.precountClickCount);
     setPlaybackDisplayModeSource(hasStoredPlayback ? "stored" : "default");
     setLyricsFollowEnabled(
       hasStoredPlayback
@@ -1263,6 +1289,8 @@ export function useProjectViewModel() {
       activeWorkspace,
       playbackDisplayMode,
       capoTransposeSemitones: capoSemitones,
+      precountEnabled,
+      precountClickCount,
       lyricsFollowEnabled,
       chordsFollowEnabled,
       stemControls,
@@ -1276,6 +1304,8 @@ export function useProjectViewModel() {
     hydratedProjectId,
     lyricsFollowEnabled,
     playbackDisplayMode,
+    precountClickCount,
+    precountEnabled,
     projectId,
     selectedArtifactId,
     selectedPrimaryArtifactId,
@@ -1493,6 +1523,9 @@ export function useProjectViewModel() {
       visibleStemArtifactIds: visibleStemArtifacts.map((artifact) => artifact.id),
       stemControls,
       durationHintSeconds: projectQuery.data?.duration_seconds ?? 0,
+      precountEnabled,
+      precountClickCount,
+      precountTempoBpm,
     });
   }, [
     hydratedProjectId,
@@ -1500,6 +1533,9 @@ export function useProjectViewModel() {
     projectId,
     projectQuery.data?.display_name,
     projectQuery.data?.duration_seconds,
+    precountClickCount,
+    precountEnabled,
+    precountTempoBpm,
     registerProjectSession,
     selectedPlaybackArtifact,
     stageSummary,
@@ -1564,6 +1600,8 @@ export function useProjectViewModel() {
     handleSelectWorkspace,
     handleSetChordsFollowEnabled,
     handleSetLyricsFollowEnabled,
+    handleSetPrecountClickCount,
+    handleSetPrecountEnabled,
     handleAcceptTabSuggestionGroup,
     handleApplyTabSuggestions,
     handleCloseTabImport,
@@ -1615,6 +1653,13 @@ export function useProjectViewModel() {
     playbackDurationSeconds,
     playbackTransportRef,
     playbackTimeSeconds,
+    precountClickCount,
+    precountDisabledReason,
+    precountEnabled,
+    precountMaxClickCount: MAX_PRECOUNT_CLICK_COUNT,
+    precountMinClickCount: MIN_PRECOUNT_CLICK_COUNT,
+    precountTempoBpm,
+    canUsePrecount,
     previewArtifacts,
     previewMutation,
     projectQuery,

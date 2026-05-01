@@ -10,6 +10,10 @@ export type StemControlState = {
   solo: boolean;
 };
 
+export const DEFAULT_PRECOUNT_CLICK_COUNT = 4;
+export const MIN_PRECOUNT_CLICK_COUNT = 1;
+export const MAX_PRECOUNT_CLICK_COUNT = 8;
+
 export type StoredProjectPlaybackState = {
   selectedArtifactId: string | null;
   selectedPrimaryArtifactId: string | null;
@@ -17,6 +21,8 @@ export type StoredProjectPlaybackState = {
   activeWorkspace: ProjectWorkspaceMode;
   playbackDisplayMode: PlaybackDisplayMode;
   capoTransposeSemitones: number;
+  precountEnabled: boolean;
+  precountClickCount: number;
   lyricsFollowEnabled: boolean;
   chordsFollowEnabled: boolean;
   stemControls: Record<string, StemControlState>;
@@ -32,6 +38,8 @@ const DEFAULT_STORED_PROJECT_PLAYBACK_STATE: StoredProjectPlaybackState = {
   activeWorkspace: "project",
   playbackDisplayMode: "combined",
   capoTransposeSemitones: 0,
+  precountEnabled: false,
+  precountClickCount: DEFAULT_PRECOUNT_CLICK_COUNT,
   lyricsFollowEnabled: true,
   chordsFollowEnabled: true,
   stemControls: {},
@@ -43,6 +51,16 @@ function normalizeTransposeSemitones(value: unknown) {
     return 0;
   }
   return Math.min(12, Math.max(-12, Math.trunc(value)));
+}
+
+export function normalizePrecountClickCount(value: unknown) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_PRECOUNT_CLICK_COUNT;
+  }
+  return Math.min(
+    MAX_PRECOUNT_CLICK_COUNT,
+    Math.max(MIN_PRECOUNT_CLICK_COUNT, Math.trunc(value)),
+  );
 }
 
 function normalizeStemControlState(value: unknown): StemControlState {
@@ -95,6 +113,11 @@ function normalizeStoredProjectPlaybackState(value: unknown): StoredProjectPlayb
       ? candidate.playbackDisplayMode
       : DEFAULT_STORED_PROJECT_PLAYBACK_STATE.playbackDisplayMode,
     capoTransposeSemitones: normalizeTransposeSemitones(candidate.capoTransposeSemitones),
+    precountEnabled:
+      typeof candidate.precountEnabled === "boolean"
+        ? candidate.precountEnabled
+        : DEFAULT_STORED_PROJECT_PLAYBACK_STATE.precountEnabled,
+    precountClickCount: normalizePrecountClickCount(candidate.precountClickCount),
     lyricsFollowEnabled:
       typeof candidate.lyricsFollowEnabled === "boolean"
         ? candidate.lyricsFollowEnabled

@@ -3,9 +3,11 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   getMockAudioContexts,
+  getMockInvoke,
   getMockMediaDevices,
   resetAppTestHarness,
   renderApp,
+  setMockSystemInputVolumeState,
 } from "./test/appTestHarness";
 
 describe("Desktop app tools tuner", () => {
@@ -75,6 +77,49 @@ describe("Desktop app tools tuner", () => {
     expect(window.localStorage.getItem("tuneforge.ui-preferences")).toContain(
       '"defaultTunerReferenceHz":442',
     );
+  });
+
+  it("controls the system default microphone volume", async () => {
+    renderApp(["/tools"]);
+
+    expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
+    const systemInputVolume = await screen.findByLabelText("System input volume");
+
+    expect(systemInputVolume).toHaveValue("64");
+    fireEvent.change(systemInputVolume, { target: { value: "83" } });
+    fireEvent.change(systemInputVolume, { target: { value: "84" } });
+    fireEvent.change(systemInputVolume, { target: { value: "87" } });
+
+    expect(systemInputVolume).toBeEnabled();
+    expect(systemInputVolume).toHaveValue("87");
+    expect(getMockInvoke()).not.toHaveBeenCalledWith("set_system_default_input_volume", {
+      volumePercent: 83,
+    });
+    fireEvent.pointerUp(systemInputVolume);
+
+    await waitFor(() =>
+      expect(getMockInvoke()).toHaveBeenCalledWith("set_system_default_input_volume", {
+        volumePercent: 87,
+      }),
+    );
+    expect(getMockInvoke()).not.toHaveBeenCalledWith("set_system_default_input_volume", {
+      volumePercent: 84,
+    });
+  });
+
+  it("shows unsupported system microphone volume state", async () => {
+    setMockSystemInputVolumeState({
+      supported: false,
+      volumePercent: null,
+      muted: null,
+      backend: null,
+      error: "System input volume control is unavailable.",
+    });
+    renderApp(["/tools"]);
+
+    expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
+    expect(await screen.findByText("System input volume control is unavailable.")).toBeInTheDocument();
+    expect(screen.getByLabelText("System input volume")).toBeDisabled();
   });
 
   it("normalizes invalid stored tuner preferences", async () => {

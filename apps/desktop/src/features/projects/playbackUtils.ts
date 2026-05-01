@@ -15,6 +15,7 @@ const PRIMARY_MEDIA_KEY = "__primary__";
 
 export type StemPlaybackState = {
   signature: string;
+  artifactIds: string[];
   context: AudioContext;
   durationSeconds: number;
   startedAtContextTime: number;

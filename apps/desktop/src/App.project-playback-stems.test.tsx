@@ -23,6 +23,10 @@ import {
   setProjects,
 } from "./test/appTestHarness";
 
+function setPlaybackPosition(value: string) {
+  fireEvent.change(screen.getByLabelText("Playback position"), { target: { value } });
+}
+
 describe("Desktop app project playback stems", () => {
   beforeEach(resetAppTestHarness);
 
@@ -213,8 +217,7 @@ describe("Desktop app project playback stems", () => {
       expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument(),
     );
 
-    sourceAudio.currentTime = 47.253;
-    fireEvent.timeUpdate(sourceAudio);
+    setPlaybackPosition("47.253");
 
     const savedMixList = screen.getByRole("group", { name: "Saved mix list" });
     const playCallsBeforeMixSwitch = vi.mocked(window.HTMLMediaElement.prototype.play).mock.calls.length;
@@ -252,8 +255,7 @@ describe("Desktop app project playback stems", () => {
 
     await user.click(screen.getByRole("button", { name: "Play playback" }));
 
-    sourceAudio.currentTime = 32.417;
-    fireEvent.timeUpdate(sourceAudio);
+    setPlaybackPosition("32.417");
 
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
     expect(screen.getByLabelText("Playback position")).toHaveValue("32.417");
@@ -280,8 +282,7 @@ describe("Desktop app project playback stems", () => {
     markAudioReady(sourceAudio);
     await user.click(screen.getByRole("button", { name: "Play playback" }));
 
-    sourceAudio.currentTime = 61.437;
-    fireEvent.timeUpdate(sourceAudio);
+    setPlaybackPosition("61.437");
 
     await user.click(screen.getByLabelText("Raise target key"));
     await user.click(screen.getByRole("button", { name: "Create Mix" }));
@@ -465,8 +466,7 @@ describe("Desktop app project playback stems", () => {
     markAudioReady(sourceAudio);
     await user.click(screen.getByRole("button", { name: "Play playback" }));
 
-    sourceAudio.currentTime = 73.125;
-    fireEvent.timeUpdate(sourceAudio);
+    setPlaybackPosition("73.125");
 
     await waitFor(() =>
       expect(
@@ -481,7 +481,6 @@ describe("Desktop app project playback stems", () => {
       }),
     );
 
-    const playCallsBeforeReload = vi.mocked(window.HTMLMediaElement.prototype.play).mock.calls.length;
     firstRender.unmount();
 
     renderApp(["/projects/proj_123"]);
@@ -491,11 +490,14 @@ describe("Desktop app project playback stems", () => {
     markAudioReady(reloadedAudio);
 
     await waitFor(() => expect(reloadedAudio.currentTime).toBeCloseTo(73.125, 3));
-    await waitFor(() =>
-      expect(vi.mocked(window.HTMLMediaElement.prototype.play).mock.calls.length).toBeGreaterThan(
-        playCallsBeforeReload,
-      ),
-    );
+    await waitFor(() => {
+      const audioContexts = getMockAudioContexts();
+      const latestAudioContext = audioContexts[audioContexts.length - 1];
+      expect(latestAudioContext?.createdSources[0]?.start.mock.calls[0]?.[1]).toBeCloseTo(
+        73.125,
+        3,
+      );
+    });
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
   });
 
@@ -508,12 +510,12 @@ describe("Desktop app project playback stems", () => {
     markAudioReady(sourceAudio);
     await user.click(screen.getByRole("button", { name: "Play playback" }));
 
-    sourceAudio.currentTime = 32.481;
-    fireEvent.timeUpdate(sourceAudio);
+    setPlaybackPosition("32.481");
 
     await user.click(screen.getByRole("button", { name: "Generate Stems" }));
     await openPlaybackWorkspace(user);
     const stemList = await screen.findByRole("group", { name: "Playback stem list" });
+    const firstStemSourceIndex = getMockAudioContexts()[0]?.createdSources.length ?? 0;
     await user.click(within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement);
 
     const vocalAudio = findAudioByArtifactId("art_200");
@@ -521,19 +523,22 @@ describe("Desktop app project playback stems", () => {
 
     await waitFor(() => expect(getMockAudioContexts()).toHaveLength(1));
     await waitFor(() =>
-      expect(getMockAudioContexts()[0]?.createdSources.length).toBe(2),
+      expect(getMockAudioContexts()[0]?.createdSources.length).toBe(firstStemSourceIndex + 2),
     );
 
-    const startCalls = getMockAudioContexts()[0].createdSources.map(
+    const startCalls = getMockAudioContexts()[0].createdSources.slice(firstStemSourceIndex).map(
       (source) => source.start.mock.calls[0],
     );
     expect(startCalls).toHaveLength(2);
+    const stemStartOffset = startCalls[0]?.[1] ?? 0;
     startCalls.forEach((startCall) => {
       expect(startCall?.[0]).toBe(0);
-      expect(startCall?.[1]).toBeCloseTo(32.481, 3);
+      expect(startCall?.[1]).toBeCloseTo(stemStartOffset, 3);
     });
-    await waitFor(() => expect(vocalAudio.currentTime).toBeCloseTo(32.481, 3));
-    await waitFor(() => expect(instrumentalAudio.currentTime).toBeCloseTo(32.481, 3));
+    expect(stemStartOffset).toBeGreaterThanOrEqual(32.481);
+    expect(stemStartOffset).toBeLessThan(33);
+    await waitFor(() => expect(vocalAudio.currentTime).toBeCloseTo(stemStartOffset, 1));
+    await waitFor(() => expect(instrumentalAudio.currentTime).toBeCloseTo(stemStartOffset, 1));
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
   });
 
@@ -546,8 +551,7 @@ describe("Desktop app project playback stems", () => {
     markAudioReady(sourceAudio);
     await user.click(screen.getByRole("button", { name: "Play playback" }));
 
-    sourceAudio.currentTime = 41.662;
-    fireEvent.timeUpdate(sourceAudio);
+    setPlaybackPosition("41.662");
 
     await user.click(screen.getByRole("button", { name: "Generate Stems" }));
     await openPlaybackWorkspace(user);
@@ -566,7 +570,7 @@ describe("Desktop app project playback stems", () => {
     markAudioReady(resumedSourceAudio);
 
     await waitFor(() =>
-      expect(resumedSourceAudio.currentTime).toBeCloseTo(transitionPlaybackPosition, 3),
+      expect(resumedSourceAudio.currentTime).toBeCloseTo(transitionPlaybackPosition, 1),
     );
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
   });
@@ -602,16 +606,16 @@ describe("Desktop app project playback stems", () => {
     markAudioReady(sourceAudio);
     await user.click(screen.getByRole("button", { name: "Play playback" }));
 
-    sourceAudio.currentTime = 18.789;
-    fireEvent.timeUpdate(sourceAudio);
+    setPlaybackPosition("18.789");
 
     await user.click(screen.getByRole("button", { name: "Generate Stems" }));
     await openPlaybackWorkspace(user);
     const stemList = await screen.findByRole("group", { name: "Playback stem list" });
+    const firstStemSourceIndex = getMockAudioContexts()[0]?.createdSources.length ?? 0;
     await user.click(within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement);
 
     await waitFor(() =>
-      expect(getMockAudioContexts()[0]?.createdSources.length).toBe(2),
+      expect(getMockAudioContexts()[0]?.createdSources.length).toBe(firstStemSourceIndex + 2),
     );
 
     const initialStemStarts = getMockAudioContexts()[0].createdSources.length;

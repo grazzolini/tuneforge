@@ -64,7 +64,7 @@ export function stopStemSources(
   targetPlaybackState.isPlaying = false;
   targetPlaybackState.offsetSeconds = clampTime(nextTime, targetPlaybackState.durationSeconds);
   targetPlaybackState.startedAtContextTime = targetPlaybackState.context.currentTime;
-  syncStemElementTimes(Object.keys(targetPlaybackState.gains), targetPlaybackState.offsetSeconds);
+  syncStemElementTimes(targetPlaybackState.artifactIds, targetPlaybackState.offsetSeconds);
   return targetPlaybackState.offsetSeconds;
 }
 

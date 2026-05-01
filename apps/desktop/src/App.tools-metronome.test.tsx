@@ -11,6 +11,10 @@ import {
   setProjects,
 } from "./test/appTestHarness";
 
+function getMetronomeAudioContext() {
+  return getMockAudioContexts().find((context) => context.createdOscillators.length > 0);
+}
+
 describe("Desktop app tools metronome", () => {
   beforeEach(resetAppTestHarness);
 
@@ -132,9 +136,9 @@ describe("Desktop app tools metronome", () => {
     await user.click(screen.getByLabelText("Follow project playback"));
 
     await waitFor(() =>
-      expect(getMockAudioContexts()[0]?.createdOscillators.length).toBeGreaterThan(0),
+      expect(getMetronomeAudioContext()?.createdOscillators.length).toBeGreaterThan(0),
     );
-    const syncedContext = getMockAudioContexts()[0];
+    const syncedContext = getMetronomeAudioContext();
     const scheduledBeforePause = syncedContext?.createdOscillators.length ?? 0;
 
     await user.click(screen.getByRole("button", { name: "Pause background playback" }));
@@ -166,9 +170,9 @@ describe("Desktop app tools metronome", () => {
     await user.click(await screen.findByRole("tab", { name: "Metronome" }));
     await user.click(screen.getByLabelText("Follow project playback"));
     await waitFor(() =>
-      expect(getMockAudioContexts()[0]?.createdOscillators.length).toBeGreaterThan(0),
+      expect(getMetronomeAudioContext()?.createdOscillators.length).toBeGreaterThan(0),
     );
-    const syncedContext = getMockAudioContexts()[0];
+    const syncedContext = getMetronomeAudioContext();
 
     await user.click(screen.getByRole("link", { name: "Open Demo Song project" }));
 

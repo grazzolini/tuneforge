@@ -5,6 +5,15 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+SUPPORTED_CHORD_BACKENDS = {"default", "fast", "tuneforge-fast", "librosa", "advanced", "crema", "crema-advanced"}
+
+
+def _validate_chord_backend_fields(backend: str | None, backend_fallback_from: str | None) -> None:
+    if backend is not None and backend not in SUPPORTED_CHORD_BACKENDS:
+        raise ValueError("Unsupported chord backend.")
+    if backend_fallback_from is not None and backend_fallback_from not in SUPPORTED_CHORD_BACKENDS:
+        raise ValueError("Unsupported chord backend.")
+
 
 class ErrorInfo(BaseModel):
     code: str
@@ -45,6 +54,13 @@ class ProjectImportRequest(BaseModel):
     source_path: str
     copy_into_project: bool = True
     display_name: str | None = None
+    chord_backend: str | None = None
+    chord_backend_fallback_from: str | None = None
+
+    @model_validator(mode="after")
+    def validate_chord_backend(self) -> ProjectImportRequest:
+        _validate_chord_backend_fields(self.chord_backend, self.chord_backend_fallback_from)
+        return self
 
 
 class ProjectUpdateRequest(BaseModel):
@@ -131,11 +147,7 @@ class ChordRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_backend(self) -> ChordRequest:
-        supported = {"default", "fast", "tuneforge-fast", "librosa", "advanced", "crema", "crema-advanced"}
-        if self.backend not in supported or (
-            self.backend_fallback_from is not None and self.backend_fallback_from not in supported
-        ):
-            raise ValueError("Unsupported chord backend.")
+        _validate_chord_backend_fields(self.backend, self.backend_fallback_from)
         return self
 
 
@@ -441,11 +453,7 @@ class StemRequest(BaseModel):
             raise ValueError("Only two_stem mode is supported in v1.")
         if self.output_format != "wav":
             raise ValueError("Stem output must be wav in v1.")
-        supported = {"default", "fast", "tuneforge-fast", "librosa", "advanced", "crema", "crema-advanced"}
-        if self.chord_backend not in supported or (
-            self.chord_backend_fallback_from is not None and self.chord_backend_fallback_from not in supported
-        ):
-            raise ValueError("Unsupported chord backend.")
+        _validate_chord_backend_fields(self.chord_backend, self.chord_backend_fallback_from)
         return self
 
 

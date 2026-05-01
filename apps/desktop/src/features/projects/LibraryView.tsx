@@ -5,6 +5,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { api, type ProjectSchema } from "../../lib/api";
 import { formatLocalDateTime, normalizeApiDateTime } from "../../lib/datetime";
 import { usePreferences } from "../../lib/preferences";
+import { useChordBackendActionSelection } from "./hooks/useChordBackendActionSelection";
 
 function formatDuration(durationSeconds: number | null | undefined) {
   if (!durationSeconds) return "Unknown length";
@@ -88,6 +89,7 @@ export function LibraryView() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { informationDensity } = usePreferences();
+  const { chordBackendForAction } = useChordBackendActionSelection();
   const [searchDraft, setSearchDraft] = useState("");
   const deferredSearch = useDeferredValue(searchDraft.trim());
   const showSubtitle = informationDensity !== "minimal";
@@ -112,9 +114,14 @@ export function LibraryView() {
       if (!selection || Array.isArray(selection)) {
         return null;
       }
+      const backendSelection = await chordBackendForAction();
       const response = await api.importProject({
         source_path: selection,
         copy_into_project: true,
+        chord_backend: backendSelection.backend,
+        ...(backendSelection.backend_fallback_from
+          ? { chord_backend_fallback_from: backendSelection.backend_fallback_from }
+          : {}),
       });
       return response.project;
     },

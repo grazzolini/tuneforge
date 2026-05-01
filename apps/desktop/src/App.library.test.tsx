@@ -9,6 +9,7 @@ import {
   mockListProjects,
   mockOpen,
   renderApp,
+  setChordBackends,
   setProjects,
 } from "./test/appTestHarness";
 
@@ -108,12 +109,76 @@ describe("Desktop app library", () => {
     expect(mockImportProject).toHaveBeenCalledWith({
       source_path: "/tmp/new-song.mp4",
       copy_into_project: true,
+      chord_backend: "tuneforge-fast",
     });
     await waitFor(() =>
       expect(mockGetProject).toHaveBeenCalledWith(expect.stringMatching(/^proj_/)),
     );
     expect(await screen.findByRole("heading", { name: "New Song" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Hide Inspector" })).toBeInTheDocument();
+  });
+
+  it("uses the selected default chord backend when importing a track", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultChordBackend: "crema-advanced", defaultSourcesRailCollapsed: false }),
+    );
+    mockOpen.mockResolvedValue("/tmp/new-song.mp4");
+
+    renderApp(["/"]);
+
+    expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Import Track" }));
+
+    expect(mockImportProject).toHaveBeenCalledWith({
+      source_path: "/tmp/new-song.mp4",
+      copy_into_project: true,
+      chord_backend: "crema-advanced",
+    });
+  });
+
+  it("falls back to built-in chords when importing with unavailable advanced chords", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultChordBackend: "crema-advanced", defaultSourcesRailCollapsed: false }),
+    );
+    setChordBackends([
+      {
+        availability: "available",
+        available: true,
+        capabilities: {},
+        desktopOnly: false,
+        experimental: false,
+        id: "tuneforge-fast",
+        label: "Built-in Chords",
+        unavailable_reason: null,
+      },
+      {
+        availability: "unavailable",
+        available: false,
+        capabilities: {},
+        desktopOnly: true,
+        experimental: true,
+        id: "crema-advanced",
+        label: "Advanced Chords",
+        unavailable_reason: "crema is not installed",
+      },
+    ]);
+    mockOpen.mockResolvedValue("/tmp/new-song.mp4");
+
+    renderApp(["/"]);
+
+    expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Import Track" }));
+
+    expect(mockImportProject).toHaveBeenCalledWith({
+      source_path: "/tmp/new-song.mp4",
+      copy_into_project: true,
+      chord_backend: "tuneforge-fast",
+      chord_backend_fallback_from: "crema-advanced",
+    });
   });
 
   it("deletes project after confirmation and returns to library", async () => {

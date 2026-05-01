@@ -40,7 +40,7 @@ from app.schemas import (
     TransposeRequest,
 )
 from app.services.artifacts import delete_project_artifact
-from app.services.chord_backends import FAST_CHORD_BACKEND_ID, resolve_chord_backend
+from app.services.chord_backends import FAST_CHORD_BACKEND_ID, ChordDetectionBackend, resolve_chord_backend
 from app.services.chords import project_chord_detection_source
 from app.services.lyrics import update_project_lyrics
 from app.services.projects import (
@@ -61,6 +61,18 @@ from app.services.tabs import (
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
+def _resolve_import_chord_backend(
+    requested_backend: str | None,
+    backend_fallback_from: str | None,
+) -> tuple[ChordDetectionBackend, str | None]:
+    selected_backend = resolve_chord_backend(requested_backend, require_available=False)
+    availability = selected_backend.availability()
+    if availability.available:
+        return selected_backend, backend_fallback_from
+    fallback_backend = resolve_chord_backend(FAST_CHORD_BACKEND_ID, require_available=True)
+    return fallback_backend, backend_fallback_from or selected_backend.id
+
+
 @router.post("/import", response_model=ProjectResponse)
 def create_project(
     payload: ProjectImportRequest,
@@ -79,13 +91,21 @@ def create_project(
         job_type="analyze",
         payload=AnalysisRequest(include_tempo=False, force=False).model_dump(),
     )
+    selected_chord_backend, chord_backend_fallback_from = _resolve_import_chord_backend(
+        payload.chord_backend,
+        payload.chord_backend_fallback_from,
+    )
     chords_job = runner.create_job(
         session,
         project_id=project.id,
         job_type="chords",
         payload={
-            **ChordRequest(backend="default", force=False).model_dump(),
-            "chord_backend": FAST_CHORD_BACKEND_ID,
+            **ChordRequest(
+                backend=selected_chord_backend.id,
+                backend_fallback_from=chord_backend_fallback_from,
+                force=False,
+            ).model_dump(),
+            "chord_backend": selected_chord_backend.id,
             "chord_source": "source",
         },
     )

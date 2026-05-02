@@ -1,6 +1,7 @@
 import { startTransition, useDeferredValue, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
+import { Music2, Upload } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, type ProjectSchema } from "../../lib/api";
 import { formatLocalDateTime, normalizeApiDateTime } from "../../lib/datetime";
@@ -29,27 +30,33 @@ function ProjectCard({ project }: { project: ProjectSchema }) {
   const { informationDensity } = usePreferences();
   const updatedAtLabel = formatUpdatedAt(project.updated_at);
   const normalizedUpdatedAt = normalizeApiDateTime(project.updated_at);
+  const fileType = project.source_path.split(".").pop()?.toUpperCase() ?? "Audio";
 
   return (
-    <article className="project-card">
+    <article className="project-card project-library-row">
       <Link
         aria-label={`Open ${project.display_name} project`}
         className="project-card__link"
         to={`/projects/${project.id}`}
       >
-        <div className="project-card__meta-row">
-          <span className="pill">
-            <time dateTime={normalizedUpdatedAt}>{updatedAtLabel}</time>
-          </span>
-        </div>
+        <span className="project-library-row__icon" aria-hidden="true">
+          <Music2 />
+        </span>
 
         <div className="project-card__title-block">
           <h2>{project.display_name}</h2>
+          {informationDensity === "detailed" ? (
+            <span className="artifact-meta">{project.source_path}</span>
+          ) : null}
+        </div>
+
+        <div className="project-library-row__cell project-library-row__cell--date">
+          <time dateTime={normalizedUpdatedAt}>{updatedAtLabel}</time>
         </div>
 
         <div className="project-card__stats" role="list" aria-label={`${project.display_name} summary`}>
           <span className="stat-chip" role="listitem">
-            {project.source_path.split(".").pop()?.toUpperCase() ?? "Audio"}
+            {fileType}
           </span>
           <span className="stat-chip" role="listitem">
             {formatDuration(project.duration_seconds)}
@@ -152,6 +159,7 @@ export function LibraryView() {
           disabled={importMutation.isPending}
         >
           {importMutation.isPending ? "Importing..." : "Import Track"}
+          <Upload aria-hidden="true" className="button__icon" />
         </button>
       </div>
 
@@ -194,9 +202,17 @@ export function LibraryView() {
         <div className="panel panel--error">Could not load projects.</div>
       ) : null}
 
-      <div className="project-grid">
+      <div className="project-grid project-library-table">
         {projectsQuery.data?.length ? (
-          projectsQuery.data.map((project) => <ProjectCard key={project.id} project={project} />)
+          <>
+            <div className="project-library-table__header" aria-hidden="true">
+              <span />
+              <span>Title</span>
+              <span>Updated</span>
+              <span>Format / Duration</span>
+            </div>
+            {projectsQuery.data.map((project) => <ProjectCard key={project.id} project={project} />)}
+          </>
         ) : (
           <div className="panel panel--empty">
             <h2>{deferredSearch ? "No matching projects" : "No projects yet"}</h2>

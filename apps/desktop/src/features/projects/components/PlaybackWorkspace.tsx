@@ -19,7 +19,7 @@ export function PlaybackWorkspace() {
   const maxSeconds = playbackDurationSeconds || projectQuery.data?.duration_seconds || 0;
 
   return (
-    <div className="playback-workspace playback-workspace--practice">
+    <div className={`playback-workspace playback-workspace--practice${isPlaying ? " playback-workspace--focus" : ""}`}>
       <PlaybackPracticeRail />
       <PlaybackPracticeSurface />
       <div className="panel playback-transport-dock" ref={playbackTransportRef}>

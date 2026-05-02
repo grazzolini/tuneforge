@@ -19,6 +19,7 @@
     "@tauri-apps/api": "^2.4.0",
     "@tauri-apps/plugin-dialog": "^2.2.1",
     "@tuneforge/shared-types": "workspace:*",
+    "lucide-react": "^1.14.0",
     "openapi-fetch": "^0.17.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

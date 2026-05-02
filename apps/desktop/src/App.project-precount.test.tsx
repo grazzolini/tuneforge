@@ -29,6 +29,10 @@ async function openPlaybackWorkspace(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("tab", { name: "Playback" }));
 }
 
+async function openStudioPanel(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("tab", { name: "Studio" }));
+}
+
 function setPlaybackPosition(value: string) {
   fireEvent.change(screen.getByLabelText("Playback position"), { target: { value } });
 }
@@ -187,6 +191,7 @@ describe("Desktop app project playback pre-count", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openStudioPanel(user);
     await user.click(screen.getByRole("button", { name: "Generate Stems" }));
     await openPlaybackWorkspace(user);
 

@@ -1,3 +1,4 @@
+import { ArrowUpDown, AudioLines, Drumstick, Layers } from "lucide-react";
 import {
   artifactLabel,
   artifactSummary,
@@ -54,6 +55,25 @@ export function PlaybackPracticeRail() {
 
   return (
     <aside className="panel playback-practice-rail">
+      <div
+        aria-label="Playback rail shortcuts"
+        className="playback-practice-rail__focus-icons"
+        tabIndex={0}
+      >
+        <span title="Transpose / Capo">
+          <ArrowUpDown aria-hidden="true" />
+        </span>
+        <span title="Pre-count">
+          <Drumstick aria-hidden="true" />
+        </span>
+        <span title="Source and Mixes">
+          <Layers aria-hidden="true" />
+        </span>
+        <span title="Stem Practice">
+          <AudioLines aria-hidden="true" />
+        </span>
+      </div>
+      <div className="playback-practice-rail__content">
       <div className="playback-practice-rail__header">
         <p className="metric-label">Playback</p>
         <h2>{stageTitle}</h2>
@@ -255,6 +275,7 @@ export function PlaybackPracticeRail() {
           </p>
         )}
       </section>
+      </div>
     </aside>
   );
 }

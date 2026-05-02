@@ -14,6 +14,7 @@ import {
   normalizePrecountClickCount,
   readProjectPlaybackState,
   writeProjectPlaybackState,
+  type ProjectPanelMode,
   type StemControlState,
 } from "../projectPlaybackState";
 import {
@@ -146,6 +147,7 @@ export function useProjectViewModel() {
   const [inspectorOpen, setInspectorOpen] = useState(defaultInspectorOpen);
   const [sourcesRailCollapsed, setSourcesRailCollapsed] = useState(defaultSourcesRailCollapsed);
   const [activeWorkspace, setActiveWorkspace] = useState(defaultProjectWorkspace);
+  const [activeProjectPanel, setActiveProjectPanel] = useState<ProjectPanelMode>("studio");
   const [playbackDisplayMode, setPlaybackDisplayMode] = useState<PlaybackDisplayMode>("combined");
   const [playbackDisplayModeSource, setPlaybackDisplayModeSource] =
     useState<PlaybackDisplayModeSource>("default");
@@ -1142,6 +1144,7 @@ export function useProjectViewModel() {
     setActiveWorkspace(
       hasStoredPlayback ? storedPlaybackState.activeWorkspace : defaultProjectWorkspace,
     );
+    setActiveProjectPanel(storedPlaybackState.activeProjectPanel);
     setPlaybackDisplayMode(
       hasStoredPlayback
         ? storedPlaybackState.playbackDisplayMode
@@ -1287,6 +1290,7 @@ export function useProjectViewModel() {
       selectedPrimaryArtifactId,
       selectedStemSourceArtifactId,
       activeWorkspace,
+      activeProjectPanel,
       playbackDisplayMode,
       capoTransposeSemitones: capoSemitones,
       precountEnabled,
@@ -1297,6 +1301,7 @@ export function useProjectViewModel() {
       dismissedStemJobIds,
     });
   }, [
+    activeProjectPanel,
     activeWorkspace,
     capoSemitones,
     chordsFollowEnabled,
@@ -1547,6 +1552,7 @@ export function useProjectViewModel() {
 
   return {
     activeWorkspace,
+    activeProjectPanel,
     activeChordIndex,
     activeEnharmonicKeyContext,
     activeLyricsIndex,
@@ -1598,6 +1604,7 @@ export function useProjectViewModel() {
     handleSelectPrimaryArtifact,
     handleSelectStemArtifact,
     handleSelectWorkspace,
+    handleSelectProjectPanel: setActiveProjectPanel,
     handleSetChordsFollowEnabled,
     handleSetLyricsFollowEnabled,
     handleSetPrecountClickCount,

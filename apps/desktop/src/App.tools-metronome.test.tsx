@@ -109,6 +109,7 @@ describe("Desktop app tools metronome", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Analysis" }));
     await user.click(screen.getByRole("link", { name: "Follow on metronome at 121.5 BPM" }));
 
     expect(await screen.findByRole("heading", { name: "Metronome" })).toBeInTheDocument();
@@ -237,6 +238,7 @@ describe("Desktop app tools metronome", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Analysis" }));
     await user.click(screen.getByRole("link", { name: "Follow on metronome at 121.5 BPM" }));
     expect(await screen.findByRole("heading", { name: "Metronome" })).toBeInTheDocument();
     expect(screen.getByLabelText("Tempo BPM")).toHaveValue(121.5);

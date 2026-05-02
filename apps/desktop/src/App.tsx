@@ -1,4 +1,5 @@
 import { useEffect, useId } from "react";
+import { Library, Music2, Settings, Wrench } from "lucide-react";
 import { Link, NavLink, Route, Routes, matchPath, useLocation } from "react-router-dom";
 import { LibraryView } from "./features/projects/LibraryView";
 import { ProjectView } from "./features/projects/ProjectView";
@@ -147,6 +148,7 @@ function AppChrome() {
   const { dismissSession, session } = usePlayback();
   const routeProjectId =
     matchPath("/projects/:projectId", location.pathname)?.params.projectId ?? null;
+  const compactChrome = Boolean(routeProjectId);
 
   useEffect(() => {
     if (!routeProjectId || !session || routeProjectId === session.projectId) {
@@ -157,19 +159,47 @@ function AppChrome() {
   }, [dismissSession, routeProjectId, session]);
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${compactChrome ? " app-shell--compact" : ""}`}>
       <aside className="sidebar">
-        <div className="brand">
-          <span className="brand__eyebrow">Tuneforge</span>
-          <strong>Local Practice Rig</strong>
-        </div>
+        <Link aria-label="Tuneforge library" className="brand" title="Tuneforge" to="/">
+          <span className="brand__mark" aria-hidden="true">
+            <Music2 className="brand__icon" />
+          </span>
+          <span className="brand__copy">
+            <span className="brand__eyebrow">Tuneforge</span>
+            <strong>Local Practice Rig</strong>
+          </span>
+        </Link>
         <BackgroundPlaybackCard />
         <nav className="nav">
-          <NavLink to="/" end>
-            Library
+          <NavLink
+            aria-label="Library"
+            className={({ isActive }) => (isActive ? "active" : undefined)}
+            title="Library"
+            to="/"
+            end
+          >
+            <Library aria-hidden="true" className="nav__icon" />
+            <span className="nav__label">Library</span>
           </NavLink>
-          <NavLink to="/tools">Tools</NavLink>
-          <NavLink to="/settings">Settings</NavLink>
+          <NavLink
+            aria-label="Tools"
+            className={({ isActive }) => (isActive ? "active" : undefined)}
+            title="Tools"
+            to="/tools"
+          >
+            <Wrench aria-hidden="true" className="nav__icon" />
+            <span className="nav__label">Tools</span>
+          </NavLink>
+          <NavLink
+            aria-label="Settings"
+            className={({ isActive }) => (isActive ? "active" : undefined)}
+            title="Settings"
+            to="/settings"
+          >
+            <Settings aria-hidden="true" className="nav__icon" />
+            <span className="nav__label">Settings</span>
+          </NavLink>
         </nav>
       </aside>
       <main className="main-content">

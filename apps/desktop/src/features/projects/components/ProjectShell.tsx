@@ -7,7 +7,7 @@ export function ProjectShell() {
   const { activeWorkspace, handleSelectWorkspace } = useProjectViewModelContext();
 
   return (
-    <section className="screen">
+    <section className={`screen project-screen project-screen--${activeWorkspace}`}>
       <ProjectHeader />
 
       <div className="project-workspace-tabs" role="tablist" aria-label="Project workspace">

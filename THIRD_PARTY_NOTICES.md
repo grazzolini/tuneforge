@@ -69,7 +69,7 @@ This document is an engineering notice and distribution checklist, not legal adv
 - **Source:** <https://github.com/rusqlite/rusqlite> and <https://sqlite.org/>
 - **Notes:** Used by the embedded Android backend. Desktop persistence remains in the Python backend.
 
-### React, Vite, TanStack Query, openapi-fetch, openapi-typescript
+### React, Vite, TanStack Query, openapi-fetch, openapi-typescript, lucide-react
 
 - See each project's own license. The installed JavaScript tree is primarily permissive, with some non-copyleft notice/data licenses such as MPL-2.0 (`lightningcss`), BlueOak-1.0.0 (`lru-cache` / `minimatch`), CC-BY-4.0 (`caniuse-lite` browser data), and CC0-1.0 (`mdn-data`).
 

@@ -117,7 +117,12 @@ export function TargetKeySelector({
                     variant="selector-current"
                   />
                 </span>
-                <span className="target-selector__current-meta">{currentMeta}</span>
+                <span className="target-selector__current-meta">
+                  <span className="target-selector__current-meta-icon" aria-hidden="true">
+                    •
+                  </span>
+                  <span className="target-selector__current-meta-text">{currentMeta}</span>
+                </span>
               </span>
               <span
                 className={`target-selector__preview target-selector__preview--higher${
@@ -139,7 +144,12 @@ export function TargetKeySelector({
 
             {isOpen ? (
               <div className="target-selector__menu" role="listbox" aria-label={listboxLabel}>
-                <div className="target-selector__group-label">Higher pitch</div>
+                <div className="target-selector__group-label target-selector__group-label--higher">
+                  <span className="target-selector__group-icon" aria-hidden="true">
+                    ↑
+                  </span>
+                  <span className="target-selector__group-text">Higher pitch</span>
+                </div>
                 {higherTargetShiftOptions.map((option) => (
                   <button
                     key={option.semitones}
@@ -171,7 +181,12 @@ export function TargetKeySelector({
                     </span>
                   </button>
                 ))}
-                <div className="target-selector__group-label">Original</div>
+                <div className="target-selector__group-label target-selector__group-label--original">
+                  <span className="target-selector__group-icon" aria-hidden="true">
+                    •
+                  </span>
+                  <span className="target-selector__group-text">Original</span>
+                </div>
                 <button
                   ref={(node) => {
                     optionRefs.current[0] = node;
@@ -200,7 +215,12 @@ export function TargetKeySelector({
                     </span>
                   </span>
                 </button>
-                <div className="target-selector__group-label">Lower pitch</div>
+                <div className="target-selector__group-label target-selector__group-label--lower">
+                  <span className="target-selector__group-icon" aria-hidden="true">
+                    ↓
+                  </span>
+                  <span className="target-selector__group-text">Lower pitch</span>
+                </div>
                 {lowerTargetShiftOptions.map((option) => (
                   <button
                     key={option.semitones}

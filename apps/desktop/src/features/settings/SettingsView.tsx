@@ -304,8 +304,6 @@ export function SettingsView() {
     defaultTunerReferenceHz,
     setInformationDensity,
     setEnharmonicDisplayMode,
-    setDefaultInspectorOpen,
-    setDefaultSourcesRailCollapsed,
     setDefaultProjectWorkspace,
     setDefaultPlaybackDisplayMode,
     setDefaultChordBackend,
@@ -482,14 +480,6 @@ export function SettingsView() {
             <dd>{enharmonicDisplayLabel(enharmonicDisplayMode)}</dd>
           </div>
           <div className="settings-overview__stat">
-            <dt>Inspector</dt>
-            <dd>{defaultInspectorOpen ? "Open on load" : "Closed on load"}</dd>
-          </div>
-          <div className="settings-overview__stat">
-            <dt>Sources rail</dt>
-            <dd>{defaultSourcesRailCollapsed ? "Collapsed" : "Expanded"}</dd>
-          </div>
-          <div className="settings-overview__stat">
             <dt>First project workspace</dt>
             <dd>{projectWorkspaceLabel(defaultProjectWorkspace)}</dd>
           </div>
@@ -663,18 +653,6 @@ export function SettingsView() {
           />
 
           <div className="settings-toggle-list">
-            <PreferenceToggle
-              description="Keep transform, export, and analysis controls visible on first load."
-              label="Open inspector by default"
-              onChange={setDefaultInspectorOpen}
-              value={defaultInspectorOpen}
-            />
-            <PreferenceToggle
-              description="Start with more playback space when you reopen dense projects."
-              label="Collapse sources rail by default"
-              onChange={setDefaultSourcesRailCollapsed}
-              value={defaultSourcesRailCollapsed}
-            />
             <PreferenceToggle
               description="Start each project with lyrics follow enabled until that project stores its own setting."
               label="Enable lyrics follow by default"

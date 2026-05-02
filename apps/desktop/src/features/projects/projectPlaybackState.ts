@@ -5,6 +5,8 @@ import {
   type ProjectWorkspaceMode,
 } from "../../lib/preferences";
 
+export type ProjectPanelMode = "studio" | "analysis";
+
 export type StemControlState = {
   muted: boolean;
   solo: boolean;
@@ -19,6 +21,7 @@ export type StoredProjectPlaybackState = {
   selectedPrimaryArtifactId: string | null;
   selectedStemSourceArtifactId: string | null;
   activeWorkspace: ProjectWorkspaceMode;
+  activeProjectPanel: ProjectPanelMode;
   playbackDisplayMode: PlaybackDisplayMode;
   capoTransposeSemitones: number;
   precountEnabled: boolean;
@@ -36,6 +39,7 @@ const DEFAULT_STORED_PROJECT_PLAYBACK_STATE: StoredProjectPlaybackState = {
   selectedPrimaryArtifactId: null,
   selectedStemSourceArtifactId: null,
   activeWorkspace: "project",
+  activeProjectPanel: "studio",
   playbackDisplayMode: "combined",
   capoTransposeSemitones: 0,
   precountEnabled: false,
@@ -75,6 +79,10 @@ function normalizeStemControlState(value: unknown): StemControlState {
   };
 }
 
+function isProjectPanelMode(value: unknown): value is ProjectPanelMode {
+  return value === "studio" || value === "analysis";
+}
+
 function normalizeStoredProjectPlaybackState(value: unknown): StoredProjectPlaybackState {
   if (!value || typeof value !== "object") {
     return DEFAULT_STORED_PROJECT_PLAYBACK_STATE;
@@ -109,6 +117,9 @@ function normalizeStoredProjectPlaybackState(value: unknown): StoredProjectPlayb
     activeWorkspace: isProjectWorkspaceMode(candidate.activeWorkspace)
       ? candidate.activeWorkspace
       : DEFAULT_STORED_PROJECT_PLAYBACK_STATE.activeWorkspace,
+    activeProjectPanel: isProjectPanelMode(candidate.activeProjectPanel)
+      ? candidate.activeProjectPanel
+      : DEFAULT_STORED_PROJECT_PLAYBACK_STATE.activeProjectPanel,
     playbackDisplayMode: isPlaybackDisplayMode(candidate.playbackDisplayMode)
       ? candidate.playbackDisplayMode
       : DEFAULT_STORED_PROJECT_PLAYBACK_STATE.playbackDisplayMode,

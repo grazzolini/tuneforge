@@ -74,85 +74,87 @@ function PlaybackModeHeader() {
   const chordsSelected = playbackDisplayMode === "chords" || playbackDisplayMode === "combined";
 
   return (
-    <div className="playback-practice-surface__header">
-      <div>
-        <p className="metric-label">Practice View</p>
-        <h2>
-          {playbackDisplayMode === "combined"
-            ? "Lyrics + chords"
-            : playbackDisplayMode === "lyrics"
-              ? "Lyrics"
-              : "Chords"}
-        </h2>
-      </div>
-
-      <div className="playback-practice-surface__controls">
-        <div className="playback-mode-toggle" role="group" aria-label="Playback display mode">
-          <button
-            aria-pressed={lyricsSelected}
-            className={lyricsSelected ? "playback-mode-toggle__button playback-mode-toggle__button--active" : "playback-mode-toggle__button"}
-            onClick={() => handleTogglePlaybackDisplayLane("lyrics")}
-            type="button"
-          >
-            Lyrics
-          </button>
-          <button
-            aria-pressed={chordsSelected}
-            className={chordsSelected ? "playback-mode-toggle__button playback-mode-toggle__button--active" : "playback-mode-toggle__button"}
-            onClick={() => handleTogglePlaybackDisplayLane("chords")}
-            type="button"
-          >
-            Chords
-          </button>
+    <>
+      <div className="playback-practice-surface__header">
+        <div>
+          <p className="metric-label">Practice View</p>
+          <h2>
+            {playbackDisplayMode === "combined"
+              ? "Lyrics + chords"
+              : playbackDisplayMode === "lyrics"
+                ? "Lyrics"
+                : "Chords"}
+          </h2>
         </div>
 
-        <div className="button-row playback-practice-actions">
-          {lyricsSelected && hasLyricsTranscript && !isEditingLyrics ? (
+        <div className="playback-practice-surface__controls">
+          <div className="playback-mode-toggle" role="group" aria-label="Playback display mode">
+            <button
+              aria-pressed={lyricsSelected}
+              className={lyricsSelected ? "playback-mode-toggle__button playback-mode-toggle__button--active" : "playback-mode-toggle__button"}
+              onClick={() => handleTogglePlaybackDisplayLane("lyrics")}
+              type="button"
+            >
+              Lyrics
+            </button>
+            <button
+              aria-pressed={chordsSelected}
+              className={chordsSelected ? "playback-mode-toggle__button playback-mode-toggle__button--active" : "playback-mode-toggle__button"}
+              onClick={() => handleTogglePlaybackDisplayLane("chords")}
+              type="button"
+            >
+              Chords
+            </button>
+          </div>
+
+          <div className="button-row playback-practice-actions">
+            {lyricsSelected && hasLyricsTranscript && !isEditingLyrics ? (
+              <button
+                className="button button--ghost button--small"
+                type="button"
+                onClick={() => {
+                  setLyricsDraft(displayedLyrics.map((segment) => segment.text));
+                  setIsEditingLyrics(true);
+                }}
+                disabled={lyricsMutation.isPending || isLyricsRunning}
+              >
+                Edit Lyrics
+              </button>
+            ) : null}
             <button
               className="button button--ghost button--small"
               type="button"
-              onClick={() => {
-                setLyricsDraft(displayedLyrics.map((segment) => segment.text));
-                setIsEditingLyrics(true);
-              }}
-              disabled={lyricsMutation.isPending || isLyricsRunning}
+              onClick={handleOpenTabImport}
             >
-              Edit Lyrics
+              Import Tab
             </button>
-          ) : null}
-          <button
-            className="button button--ghost button--small"
-            type="button"
-            onClick={handleOpenTabImport}
-          >
-            Import Tab
-          </button>
-          {lyricsSelected ? (
-            <>
-              <button
-                aria-pressed={lyricsFollowEnabled}
-                className={`chip playback-follow-chip${lyricsFollowEnabled ? " chip--active" : ""}`}
-                onClick={() => handleSetLyricsFollowEnabled(!lyricsFollowEnabled)}
-                type="button"
-              >
-                Lyrics Follow
-              </button>
-            </>
-          ) : null}
-          {chordsSelected ? (
-            <>
-              {playbackDisplayMode === "chords" ? (
+            {lyricsSelected ? (
+              <>
                 <button
-                  aria-pressed={chordsFollowEnabled}
-                  className={`chip playback-follow-chip${chordsFollowEnabled ? " chip--active" : ""}`}
-                  onClick={() => handleSetChordsFollowEnabled(!chordsFollowEnabled)}
+                  aria-pressed={lyricsFollowEnabled}
+                  className={`chip playback-follow-chip${lyricsFollowEnabled ? " chip--active" : ""}`}
+                  onClick={() => handleSetLyricsFollowEnabled(!lyricsFollowEnabled)}
                   type="button"
                 >
-                  Chords Follow
+                  Lyrics Follow
                 </button>
-              ) : null}
-            </>
-          ) : null}
+              </>
+            ) : null}
+            {chordsSelected ? (
+              <>
+                {playbackDisplayMode === "chords" ? (
+                  <button
+                    aria-pressed={chordsFollowEnabled}
+                    className={`chip playback-follow-chip${chordsFollowEnabled ? " chip--active" : ""}`}
+                    onClick={() => handleSetChordsFollowEnabled(!chordsFollowEnabled)}
+                    type="button"
+                  >
+                    Chords Follow
+                  </button>
+                ) : null}
+              </>
+            ) : null}
+          </div>
         </div>
       </div>
       {isTabImportOpen ? (
@@ -171,7 +173,7 @@ function PlaybackModeHeader() {
           selectedSuggestionId={selectedTabSuggestionId}
         />
       ) : null}
-    </div>
+    </>
   );
 }
 
@@ -213,7 +215,6 @@ function TabImportDialog({
     <div className="tab-import-overlay" role="presentation">
       <section
         aria-label="Import tab suggestions"
-        aria-modal="true"
         className="tab-import-drawer"
         role="dialog"
       >

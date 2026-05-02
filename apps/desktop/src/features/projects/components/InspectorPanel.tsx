@@ -1,11 +1,12 @@
 import { Link } from "react-router-dom";
+import { PanelRightClose } from "lucide-react";
 import { MusicalKeyLabel } from "../../../components/MusicalLabel";
 import { formatKey } from "../../../lib/music";
 import { useMetronome } from "../../tools/metronome-context";
 import { TargetKeySelector } from "./TargetKeySelector";
 import { useProjectViewModelContext } from "./useProjectViewModelContext";
 
-export function InspectorPanel() {
+export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysis" }) {
   const {
     analysisQuery,
     canDeleteSelectedMix,
@@ -18,6 +19,7 @@ export function InspectorPanel() {
     exportMutation,
     handleDeleteMix,
     handleDeleteProject,
+    hasTransformChange,
     higherTargetPreview,
     higherTargetShiftOptions,
     isAnalysisRunning,
@@ -28,6 +30,7 @@ export function InspectorPanel() {
     referenceHz,
     retuneMode,
     setCentsOffset,
+    setInspectorOpen,
     setReferenceHz,
     setRetuneMode,
     setSourceKeySelectorOpen,
@@ -67,24 +70,35 @@ export function InspectorPanel() {
   }
 
   return (
-    <aside className="stack">
+    <aside className={`stack inspector-stack inspector-stack--${mode}`}>
       <div className="panel inspector-panel">
-        <div className="panel-heading">
-      <div>
-        <h2>Inspector</h2>
-        {showSupportingCopy ? (
-          <p className="subpanel__copy">
-            Mix decisions stay compact and close to playback.
-          </p>
-        ) : null}
-      </div>
+        <div className="panel-heading inspector-panel__heading">
+          <div>
+            <h2>{mode === "studio" ? "Mix Builder" : "Project Analysis"}</h2>
+            {showSupportingCopy ? (
+              <p className="subpanel__copy">
+                {mode === "studio"
+                  ? "Mix decisions stay compact and close to playback."
+                  : "Analysis, jobs, and project details stay out of the practice flow."}
+              </p>
+            ) : null}
+          </div>
+          {mode === "studio" ? (
+            <button
+              aria-label="Hide Inspector"
+              className="button button--ghost button--small rail-panel__toggle inspector-panel__toggle"
+              onClick={() => setInspectorOpen(false)}
+              type="button"
+            >
+              <PanelRightClose aria-hidden="true" className="project-inspector-toggle__icon" />
+              <span>Hide</span>
+            </button>
+          ) : null}
         </div>
 
         <div className="section-stack">
+      {mode === "studio" ? (
       <div className="subpanel">
-        <div className="subpanel__header">
-          <h3>Mix Builder</h3>
-        </div>
         <div className="mix-builder">
           <div className="mix-builder__retune">
             <div className="mix-builder__section-head">
@@ -216,9 +230,22 @@ export function InspectorPanel() {
               : "Could not create preview."}
           </p>
         ) : null}
+        <div className="mix-builder__footer">
+          <button
+            className="button button--primary"
+            onClick={() => previewMutation.mutate()}
+            disabled={previewMutation.isPending || !hasTransformChange}
+            type="button"
+          >
+            {previewMutation.isPending ? "Queueing..." : "Create Mix"}
+          </button>
+        </div>
       </div>
+      ) : null}
 
-      <div className="subpanel">
+      {mode === "analysis" ? (
+        <>
+      <div className="subpanel analysis-summary-panel">
         <div className="panel-heading panel-heading--compact">
           <div>
             <h3>Analysis</h3>
@@ -388,7 +415,7 @@ export function InspectorPanel() {
         </details>
       </div>
 
-      <div className="subpanel subpanel--compact">
+      <div className="subpanel subpanel--compact analysis-export-panel">
         <div className="subpanel__header">
           <h3>Export</h3>
           {showSupportingCopy ? (
@@ -407,7 +434,7 @@ export function InspectorPanel() {
         </button>
       </div>
 
-      <div className="subpanel">
+      <div className="subpanel analysis-details-panel">
         <div className="subpanel__header">
           <h3>Project Details</h3>
         </div>
@@ -455,7 +482,7 @@ export function InspectorPanel() {
         </details>
       </div>
 
-      <div className="subpanel subpanel--compact subpanel--danger">
+      <div className="subpanel subpanel--compact subpanel--danger analysis-danger-panel">
         <div className="subpanel__header">
           <h3>Danger Zone</h3>
         </div>
@@ -480,6 +507,8 @@ export function InspectorPanel() {
           </button>
         </div>
       </div>
+        </>
+      ) : null}
         </div>
       </div>
     </aside>

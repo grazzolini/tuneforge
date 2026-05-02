@@ -1,16 +1,82 @@
+.project-screen {
+  min-height: 0;
+}
+
+.project-screen--playback {
+  height: 100%;
+  overflow: hidden;
+}
+
+.project-workspace {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.project-panel-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.project-panel-tabs {
+  display: inline-flex;
+  gap: 0.3rem;
+  padding: 0.24rem;
+  border: 1px solid var(--divider);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-strong) 74%, transparent);
+}
+
+.project-panel-tabs__button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-weight: 750;
+  padding: 0.45rem 0.8rem;
+}
+
+.project-panel-tabs__button--active {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--playback-accent) 30%, transparent);
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+}
+
+.project-panel-tabs__icon,
+.project-inspector-toggle__icon {
+  inline-size: 1rem;
+  block-size: 1rem;
+}
+
+.project-inspector-toggle {
+  gap: 0.45rem;
+}
+
+.project-inspector-toggle--active {
+  border-color: color-mix(in srgb, var(--playback-accent) 34%, var(--button-border));
+}
+
 .project-workbench {
   display: grid;
-  grid-template-columns: minmax(182px, 0.56fr) minmax(0, 1.86fr) minmax(320px, 0.95fr);
-  gap: 1rem;
+  grid-template-columns: minmax(12rem, 0.58fr) minmax(0, 1fr) minmax(20rem, 0.95fr);
+  gap: 0.85rem;
   align-items: start;
+  min-height: 0;
 }
 
 .project-workspace-tabs {
   display: inline-flex;
   gap: 0.45rem;
   flex-wrap: wrap;
-  margin-bottom: 1rem;
-  padding: 0.35rem;
+  margin-bottom: 0.15rem;
+  padding: 0.28rem;
   border: 1px solid var(--divider);
   border-radius: 999px;
   background: color-mix(in srgb, var(--panel-strong) 74%, transparent);
@@ -22,7 +88,7 @@
   background: transparent;
   color: var(--muted);
   font-weight: 700;
-  padding: 0.58rem 1rem;
+  padding: 0.48rem 0.9rem;
   cursor: pointer;
 }
 
@@ -34,15 +100,41 @@
 }
 
 .project-workbench--wide {
-  grid-template-columns: minmax(182px, 0.6fr) minmax(0, 2.12fr);
+  grid-template-columns: minmax(12rem, 0.58fr) minmax(0, 1fr);
+}
+
+.project-workbench--inspector-collapsed {
+  grid-template-columns: minmax(12rem, 0.58fr) minmax(0, 1fr) 4.75rem;
 }
 
 .project-workbench--sources-collapsed {
-  grid-template-columns: 82px minmax(0, 1.98fr) minmax(320px, 0.95fr);
+  grid-template-columns: 4.75rem minmax(0, 1fr) minmax(20rem, 0.95fr);
 }
 
 .project-workbench--sources-collapsed.project-workbench--wide {
-  grid-template-columns: 82px minmax(0, 2.22fr);
+  grid-template-columns: 4.75rem minmax(0, 1fr);
+}
+
+.project-workbench--sources-collapsed.project-workbench--inspector-collapsed {
+  grid-template-columns: 4.75rem minmax(0, 1fr) 4.75rem;
+}
+
+.project-analysis-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "analysis"
+    "jobs";
+  gap: 0.85rem;
+  align-items: start;
+}
+
+.project-analysis-workspace .inspector-stack--analysis {
+  grid-area: analysis;
+}
+
+.project-analysis-workspace .jobs-history {
+  grid-area: jobs;
 }
 
 .processing-panel {
@@ -164,6 +256,22 @@
 
 .rail-summary-chip strong {
   font-size: 0.94rem;
+}
+
+.inspector-collapsed {
+  display: flex;
+  min-height: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  padding: 0.72rem 0.48rem;
+  color: var(--text);
+  cursor: pointer;
+  writing-mode: vertical-rl;
+}
+
+.inspector-collapsed:hover {
+  border-color: var(--button-hover-border);
 }
 
 .rail-section {
@@ -389,4 +497,36 @@
   color: var(--muted);
   font-size: 0.88rem;
   line-height: 1.05;
+}
+
+@media (max-width: 1200px) {
+  .project-analysis-workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "analysis"
+      "jobs";
+  }
+
+  .inspector-stack--analysis .section-stack {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "summary"
+      "details"
+      "export"
+      "danger";
+  }
+}
+
+@media (max-width: 1024px) {
+  .project-workbench,
+  .project-workbench--sources-collapsed,
+  .project-workbench--inspector-collapsed,
+  .project-workbench--sources-collapsed.project-workbench--inspector-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .inspector-collapsed {
+    min-height: 3.75rem;
+    writing-mode: horizontal-tb;
+  }
 }

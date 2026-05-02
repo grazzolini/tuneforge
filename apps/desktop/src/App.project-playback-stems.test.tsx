@@ -56,12 +56,32 @@ describe("Desktop app project playback stems", () => {
     }
   }
 
+  async function openProjectPanel(user: ReturnType<typeof userEvent.setup>, name: "Studio" | "Analysis") {
+    const tab = screen.getByRole("tab", { name });
+    if (tab.getAttribute("aria-selected") !== "true") {
+      await user.click(tab);
+    }
+  }
+
+  async function openStudioPanel(user: ReturnType<typeof userEvent.setup>) {
+    await openProjectPanel(user, "Studio");
+  }
+
+  async function openAnalysisPanel(user: ReturnType<typeof userEvent.setup>) {
+    await openProjectPanel(user, "Analysis");
+  }
+
+  async function generateStems(user: ReturnType<typeof userEvent.setup>) {
+    await openStudioPanel(user);
+    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+  }
+
   it("switches between source playback and stems", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    await generateStems(user);
 
     expect(mockCreateStems).toHaveBeenCalledWith(
       "proj_123",
@@ -92,7 +112,7 @@ describe("Desktop app project playback stems", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    await generateStems(user);
 
     await openPlaybackWorkspace(user);
     const stemList = await screen.findByRole("group", { name: "Playback stem list" });
@@ -151,11 +171,12 @@ describe("Desktop app project playback stems", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    await generateStems(user);
 
+    await openStudioPanel(user);
     const savedMixList = screen.getByRole("group", { name: "Saved mix list" });
     await user.click(within(savedMixList).getByRole("button", { name: /Practice Mix/i }));
-    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    await generateStems(user);
 
     expect(mockCreateStems).toHaveBeenLastCalledWith(
       "proj_123",
@@ -426,7 +447,7 @@ describe("Desktop app project playback stems", () => {
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    await generateStems(user);
     await openPlaybackWorkspace(user);
     const stemList = await screen.findByRole("group", { name: "Playback stem list" });
     await user.click(within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement);
@@ -512,7 +533,7 @@ describe("Desktop app project playback stems", () => {
 
     setPlaybackPosition("32.481");
 
-    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    await generateStems(user);
     await openPlaybackWorkspace(user);
     const stemList = await screen.findByRole("group", { name: "Playback stem list" });
     const firstStemSourceIndex = getMockAudioContexts()[0]?.createdSources.length ?? 0;
@@ -553,7 +574,7 @@ describe("Desktop app project playback stems", () => {
 
     setPlaybackPosition("41.662");
 
-    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    await generateStems(user);
     await openPlaybackWorkspace(user);
     const stemList = await screen.findByRole("group", { name: "Playback stem list" });
     await user.click(within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement);
@@ -580,7 +601,7 @@ describe("Desktop app project playback stems", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    await generateStems(user);
     const vocalAudio = findAudioByArtifactId("art_200");
     const instrumentalAudio = findAudioByArtifactId("art_201");
     await waitFor(() =>
@@ -594,6 +615,7 @@ describe("Desktop app project playback stems", () => {
     );
     expect(vocalAudio).toHaveAttribute("preload", "metadata");
     expect(instrumentalAudio).toHaveAttribute("preload", "metadata");
+    await openStudioPanel(user);
     expect(screen.getByRole("heading", { name: "Source Track" })).toBeInTheDocument();
   });
 
@@ -608,7 +630,7 @@ describe("Desktop app project playback stems", () => {
 
     setPlaybackPosition("18.789");
 
-    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    await generateStems(user);
     await openPlaybackWorkspace(user);
     const stemList = await screen.findByRole("group", { name: "Playback stem list" });
     const firstStemSourceIndex = getMockAudioContexts()[0]?.createdSources.length ?? 0;
@@ -641,7 +663,7 @@ describe("Desktop app project playback stems", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    await generateStems(user);
 
     await openPlaybackWorkspace(user);
     const stemList = await screen.findByRole("group", { name: "Playback stem list" });
@@ -682,6 +704,7 @@ describe("Desktop app project playback stems", () => {
     const stemError = await screen.findByRole("group", { name: "Stem error" });
     expect(within(stemError).getByText("Demucs failed to separate the track.")).toBeInTheDocument();
 
+    await openAnalysisPanel(user);
     await user.click(screen.getByText("Show raw artifacts and processing history"));
     const jobHistory = screen.getByText("Show raw artifacts and processing history").closest("details");
     expect(jobHistory).not.toBeNull();
@@ -747,6 +770,7 @@ describe("Desktop app project playback stems", () => {
     await ensureInspectorVisible(user);
     const sourceList = screen.getByRole("group", { name: "Source and mix list" });
     await user.click(within(sourceList).getByRole("button", { name: /Source Track/i }));
+    await openAnalysisPanel(user);
     await user.click(screen.getByRole("button", { name: "Export Selected Audio" }));
 
     expect(mockSave).toHaveBeenCalled();
@@ -780,12 +804,14 @@ describe("Desktop app project playback stems", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    await generateStems(user);
 
+    await openStudioPanel(user);
     const savedMixList = screen.getByRole("group", { name: "Saved mix list" });
     await user.click(within(savedMixList).getByRole("button", { name: /Practice Mix/i }));
-    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    await generateStems(user);
 
+    await openStudioPanel(user);
     await user.click(screen.getByRole("button", { name: "Collapse sources rail" }));
 
     const stemSummaryChip = screen.getByText("Stem").closest(".rail-summary-chip");
@@ -799,7 +825,7 @@ describe("Desktop app project playback stems", () => {
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    await generateStems(user);
     expect(mockCreateStems).toHaveBeenCalledTimes(1);
 
     await user.click(screen.getByRole("button", { name: "Rebuild Stems" }));
@@ -840,7 +866,7 @@ describe("Desktop app project playback stems", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    await generateStems(user);
 
     expect(mockConfirm).toHaveBeenCalledWith(
       expect.stringContaining("Existing chord edits will be replaced"),
@@ -880,7 +906,7 @@ describe("Desktop app project playback stems", () => {
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
     const savedMixList = screen.getByRole("group", { name: "Saved mix list" });
     await user.click(within(savedMixList).getByRole("button", { name: /Practice Mix/i }));
-    await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    await generateStems(user);
 
     expect(mockConfirm).not.toHaveBeenCalled();
     expect(mockCreateStems).toHaveBeenCalledWith(

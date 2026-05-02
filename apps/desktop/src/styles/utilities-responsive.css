@@ -17,7 +17,8 @@
 
 @media (max-width: 1200px) {
   .project-workbench,
-  .project-workbench--wide {
+  .project-workbench--wide,
+  .project-analysis-workspace {
     grid-template-columns: 1fr;
   }
 
@@ -41,6 +42,7 @@
 @media (max-width: 1000px) {
   .app-shell {
     grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .sidebar {
@@ -52,6 +54,41 @@
 
   .nav {
     flex-direction: row;
+  }
+
+  .app-shell--compact .brand__copy {
+    display: flex;
+  }
+
+  .app-shell--compact .nav__label {
+    display: inline;
+  }
+
+  .app-shell--compact .nav a {
+    justify-content: flex-start;
+    padding-inline: 0.85rem;
+  }
+
+  .main-content {
+    --screen-padding: 1rem;
+  }
+
+  .project-panel-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .project-library-table__header {
+    display: none;
+  }
+
+  .project-card__link {
+    grid-template-columns: 2.75rem minmax(0, 1fr);
+  }
+
+  .project-library-row__cell,
+  .project-card__stats {
+    grid-column: 2;
   }
 
   .screen__header,
@@ -109,6 +146,47 @@
 
   .theme-studio-preview__selector-showcase {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .sidebar {
+    gap: 0.75rem;
+    padding: 0.75rem;
+  }
+
+  .brand__copy,
+  .app-shell--compact .brand__copy {
+    display: none;
+  }
+
+  .nav {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .nav a {
+    flex: 1;
+    justify-content: center;
+  }
+
+  .nav__label,
+  .app-shell--compact .nav__label {
+    display: none;
+  }
+
+  .project-panel-tabs {
+    width: 100%;
+  }
+
+  .project-panel-tabs__button {
+    flex: 1;
+    justify-content: center;
+  }
+
+  .project-inspector-toggle {
+    width: 100%;
+    justify-content: center;
   }
 }
 

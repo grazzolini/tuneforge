@@ -190,6 +190,7 @@ describe("Desktop app library", () => {
     if (showInspectorButton) {
       await user.click(showInspectorButton);
     }
+    await user.click(screen.getByRole("tab", { name: "Analysis" }));
     await user.click(screen.getByRole("button", { name: "Delete Project" }));
 
     expect(mockDeleteProject).toHaveBeenCalledWith("proj_123");

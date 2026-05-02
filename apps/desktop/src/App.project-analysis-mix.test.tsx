@@ -31,6 +31,21 @@ describe("Desktop app project analysis mix", () => {
     await user.click(screen.getByRole("tab", { name: "Playback" }));
   }
 
+  async function openProjectPanel(user: ReturnType<typeof userEvent.setup>, name: "Studio" | "Analysis") {
+    const tab = screen.getByRole("tab", { name });
+    if (tab.getAttribute("aria-selected") !== "true") {
+      await user.click(tab);
+    }
+  }
+
+  async function openStudioPanel(user: ReturnType<typeof userEvent.setup>) {
+    await openProjectPanel(user, "Studio");
+  }
+
+  async function openAnalysisPanel(user: ReturnType<typeof userEvent.setup>) {
+    await openProjectPanel(user, "Analysis");
+  }
+
   async function switchToLyricsOnly(user: ReturnType<typeof userEvent.setup>) {
     const lyricsToggle = screen.getByRole("button", { name: "Lyrics" });
     const chordsToggle = screen.getByRole("button", { name: "Chords" });
@@ -105,12 +120,14 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openStudioPanel(user);
     await user.click(screen.getByRole("button", { name: "Analyze Track" }));
 
     expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123");
   });
 
   it("surfaces detected tempo in the analysis panel", async () => {
+    const user = userEvent.setup();
     setProjectAnalysis("proj_123", {
       project_id: "proj_123",
       estimated_key: "G major",
@@ -125,6 +142,7 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openAnalysisPanel(user);
     expect(screen.getByText("121.5")).toBeInTheDocument();
     expect(screen.getByText("BPM")).toBeInTheDocument();
   });
@@ -134,6 +152,7 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openStudioPanel(user);
     await user.click(screen.getByRole("button", { name: "Refresh Chords" }));
 
     expect(mockCreateChords).toHaveBeenCalledWith("proj_123", {
@@ -153,6 +172,7 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openStudioPanel(user);
     await user.click(screen.getByRole("button", { name: "Refresh Chords" }));
     await user.click(screen.getByRole("button", { name: "Generate Stems" }));
 
@@ -199,6 +219,7 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openStudioPanel(user);
     await user.click(screen.getByRole("button", { name: "Refresh Chords" }));
     await user.click(screen.getByRole("button", { name: "Generate Stems" }));
 
@@ -234,6 +255,7 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openStudioPanel(user);
     await user.click(screen.getByRole("button", { name: "Generate Lyrics" }));
 
     expect(mockCreateLyrics).toHaveBeenCalledWith("proj_123", { force: false });
@@ -574,6 +596,7 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openStudioPanel(user);
     await user.click(screen.getByRole("button", { name: "Refresh Lyrics" }));
 
     expect(mockConfirm).toHaveBeenCalledWith(
@@ -605,6 +628,7 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openStudioPanel(user);
     await user.click(screen.getByRole("button", { name: "Refresh Chords" }));
 
     expect(mockConfirm).toHaveBeenCalledWith(
@@ -654,6 +678,7 @@ describe("Desktop app project analysis mix", () => {
     expect(screen.queryByText("A#/Bb")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "Project" }));
+    await openStudioPanel(user);
     await ensureInspectorVisible(user);
     expect(
       getByAriaKeyLabel(screen.getByText("Source Key", { selector: "span" }).closest("div") as HTMLElement, "Ebm"),
@@ -701,12 +726,15 @@ describe("Desktop app project analysis mix", () => {
     expect(getByAriaKeyLabel(screen.getByRole("group", { name: "Current chord card" }), "D#m / Ebm")).toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "Project" }));
+    await openStudioPanel(user);
     await ensureInspectorVisible(user);
     const sourceKeyCard = screen.getByText("Source Key", { selector: "span" }).closest("div") as HTMLElement;
     expect(getByAriaKeyLabel(sourceKeyCard, "D#m / Ebm")).toBeInTheDocument();
+    await openAnalysisPanel(user);
     const estimatedKeyCard = screen.getByText("Estimated Key", { selector: "span" }).closest("div") as HTMLElement;
     expect(getByAriaKeyLabel(estimatedKeyCard, "D#m / Ebm")).toBeInTheDocument();
 
+    await openStudioPanel(user);
     await user.click(screen.getByLabelText("Target Key"));
     const targetKeyList = screen.getByRole("listbox", { name: "Target key options" });
     expect(getAllByAriaKeyLabel(targetKeyList as HTMLElement, "D#m / Ebm").length).toBeGreaterThan(0);
@@ -730,14 +758,19 @@ describe("Desktop app project analysis mix", () => {
     const targetKeyCard = screen.getAllByText("Target Key", { selector: "span" })[0]?.closest("div") as HTMLElement;
     expect(within(targetKeyCard).getByText("G#")).toBeInTheDocument();
 
+    await openAnalysisPanel(user);
     await user.click(screen.getByText("Correct source key for this project"));
     await user.click(screen.getByLabelText("Project Source Key"));
     await user.click(screen.getByRole("option", { name: "G#" }));
 
+    await openStudioPanel(user);
     const sourceKeyCard = screen.getByText("Source Key", { selector: "span" }).closest("div") as HTMLElement;
+    const updatedTargetKeyCard = screen
+      .getAllByText("Target Key", { selector: "span" })[0]
+      ?.closest("div") as HTMLElement;
     expect(mockUpdateProject).toHaveBeenCalledWith("proj_123", { source_key_override: "8:major" });
     expect(within(sourceKeyCard).getByText("G#")).toBeInTheDocument();
-    expect(within(targetKeyCard).getByText("A")).toBeInTheDocument();
+    expect(within(updatedTargetKeyCard).getByText("A")).toBeInTheDocument();
   });
 
   it("creates a new mix from the project source key override and target controls", async () => {
@@ -748,9 +781,11 @@ describe("Desktop app project analysis mix", () => {
     await ensureInspectorVisible(user);
     const sourceList = screen.getByRole("group", { name: "Source and mix list" });
     await user.click(within(sourceList).getByRole("button", { name: /Source Track/i }));
+    await openAnalysisPanel(user);
     await user.click(screen.getByText("Correct source key for this project"));
     await user.click(screen.getByLabelText("Project Source Key"));
     await user.click(screen.getByRole("option", { name: "A" }));
+    await openStudioPanel(user);
     await user.click(screen.getByLabelText("Raise target key"));
     await user.click(screen.getByRole("button", { name: "Create Mix" }));
 
@@ -796,6 +831,7 @@ describe("Desktop app project analysis mix", () => {
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
     await ensureInspectorVisible(user);
+    await openAnalysisPanel(user);
     await user.click(screen.getByText("Correct source key for this project"));
     await user.click(screen.getByLabelText("Project Source Key"));
     await user.click(screen.getByRole("option", { name: "A" }));
@@ -805,6 +841,7 @@ describe("Desktop app project analysis mix", () => {
     expect(getByAriaKeyLabel(screen.getByRole("group", { name: "Current chord card" }), "A")).toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "Project" }));
+    await openStudioPanel(user);
     const savedMixList = screen.getByRole("group", { name: "Saved mix list" });
     await user.click(within(savedMixList).getByRole("button", { name: /Practice Mix/i }));
 
@@ -977,6 +1014,7 @@ describe("Desktop app project analysis mix", () => {
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
     await ensureInspectorVisible(user);
+    await openAnalysisPanel(user);
     await user.click(screen.getByText("Correct source key for this project"));
     await user.click(screen.getByLabelText("Project Source Key"));
 
@@ -1037,7 +1075,9 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openStudioPanel(user);
     await user.click(screen.getByRole("button", { name: "Generate Stems" }));
+    await openAnalysisPanel(user);
     await user.click(screen.getByText("Show raw artifacts and processing history"));
 
     const jobHistory = screen.getByText("Show raw artifacts and processing history").closest("details");

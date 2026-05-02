@@ -23,6 +23,7 @@ describe("Desktop app mobile capability gates", () => {
 
     renderApp(["/projects/proj_123"]);
 
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Processing" })).toBeInTheDocument();
     expect(
       await screen.findByText("Local generation requires GPU acceleration on this device."),

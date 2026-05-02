@@ -10,7 +10,7 @@ export function JobsHistory() {
   } = useProjectViewModelContext();
 
   return (
-    <div className="panel">
+    <div className="panel jobs-history">
       <div className="panel-heading">
         <div>
       <h2>Jobs and History</h2>

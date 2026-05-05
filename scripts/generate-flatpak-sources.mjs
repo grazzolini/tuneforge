@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -12,6 +13,21 @@ const generatedRoot = path.join(flatpakRoot, "generated");
 const cargoLockPath = path.join(workspaceRoot, "apps", "desktop", "src-tauri", "Cargo.lock");
 const pnpmLockPath = path.join(workspaceRoot, "pnpm-lock.yaml");
 const uvLockPath = path.join(workspaceRoot, "apps", "backend", "uv.lock");
+const flatpakProfile = readProfileArg();
+const profileIncludesAdvancedChords = flatpakProfile === "full";
+const profileUsesLegacyNvidia = flatpakProfile === "full";
+
+function readProfileArg() {
+  const profileFlagIndex = process.argv.indexOf("--profile");
+  const profile =
+    profileFlagIndex === -1
+      ? process.env.FLATPAK_PROFILE ?? "standard"
+      : process.argv[profileFlagIndex + 1];
+  if (!["standard", "full"].includes(profile)) {
+    throw new Error(`Unsupported Flatpak profile: ${profile}`);
+  }
+  return profile;
+}
 
 function readRequiredFile(filePath) {
   return readFileSync(filePath, "utf8");
@@ -293,11 +309,14 @@ function parseOptionalDependencies(block) {
 
 function parsePythonArtifact(inlineTable) {
   const url = inlineTable.match(/url = "([^"]+)"/)?.[1];
-  const hash = inlineTable.match(/hash = "sha256:([^"]+)"/)?.[1];
+  const hash =
+    inlineTable.match(/hash = "sha256:([^"]+)"/)?.[1] ??
+    inlineTable.match(/hashes = \{ sha256 = "([^"]+)"/)?.[1];
+  const sizeMatch = inlineTable.match(/size = (\d+)/)?.[1];
   if (!url || !hash) {
     throw new Error(`Could not parse Python artifact: ${inlineTable}`);
   }
-  return { url, sha256: hash, fileName: basenameFromUrl(url) };
+  return { url, sha256: hash, fileName: basenameFromUrl(url), size: sizeMatch ? Number(sizeMatch) : null };
 }
 
 function parseUvLock(contents) {
@@ -335,6 +354,84 @@ function parseUvLock(contents) {
   return packages;
 }
 
+function extractArrayAssignment(block, name) {
+  const start = block.indexOf(`\n${name} = [`);
+  if (start === -1) {
+    return null;
+  }
+  const openIndex = block.indexOf("[", start);
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = openIndex; index < block.length; index += 1) {
+    const character = block[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = inString;
+      continue;
+    }
+    if (character === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) {
+      continue;
+    }
+    if (character === "[") {
+      depth += 1;
+    }
+    if (character === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        return block.slice(openIndex + 1, index);
+      }
+    }
+  }
+  throw new Error(`Could not parse ${name} array`);
+}
+
+function parsePythonArtifactsFromInlineTables(contents) {
+  return Array.from(
+    contents.matchAll(
+      /\{[^{}]*url = "([^"]+)"(?:[^{}]|\{[^{}]*\})*?(?:hash = "sha256:([^"]+)"|hashes = \{ sha256 = "([^"]+)")(?:[^{}]|\{[^{}]*\})*?\}/g,
+    ),
+  ).map((match) => parsePythonArtifact(match[0]));
+}
+
+function parsePylock(contents) {
+  const packages = new Map();
+  const packageBlocks = contents.matchAll(/\[\[packages\]\]\n([\s\S]*?)(?=\n\[\[packages\]\]|\s*$)/g);
+
+  for (const match of packageBlocks) {
+    const block = match[1];
+    const name = block.match(/^name = "([^"]+)"$/m)?.[1];
+    const version = block.match(/^version = "([^"]+)"$/m)?.[1];
+    if (!name || !version) {
+      throw new Error(`Could not parse pylock package block:\n${block}`);
+    }
+
+    const wheelsBody = extractArrayAssignment(`\n${block}`, "wheels");
+    const wheels = wheelsBody ? parsePythonArtifactsFromInlineTables(wheelsBody) : [];
+    const sdistLine = block.match(/^sdist = \{(.+)$/m)?.[0];
+    const sdist = sdistLine ? parsePythonArtifact(sdistLine) : null;
+
+    packages.set(normalizePackageName(name), {
+      name,
+      version,
+      dependencies: [],
+      optionalDependencies: new Map(),
+      wheels,
+      sdist,
+      editable: false,
+    });
+  }
+
+  return packages;
+}
+
 function wheelScore(fileName) {
   const lower = fileName.toLowerCase();
   if (/(macosx|win32|win_amd64|win_arm64|musllinux|aarch64|armv7l|i686|ppc64le|s390x|riscv64)/.test(lower)) {
@@ -342,6 +439,9 @@ function wheelScore(fileName) {
   }
   if (/(py2\.py3|py3)-none-any/.test(lower)) {
     return 10;
+  }
+  if (lower.includes("linux_x86_64")) {
+    return lower.includes("cp311") ? 25 : 15;
   }
   if (lower.includes("manylinux") && lower.includes("x86_64")) {
     return lower.includes("cp311") ? 30 : 20;
@@ -365,13 +465,20 @@ function selectPythonArtifact(pkg) {
   throw new Error(`No Linux x86_64-compatible artifact found for ${pkg.name} ${pkg.version}`);
 }
 
-function resolvePythonRuntimePackages(packages) {
+function resolvePythonRuntimePackages(packages, { extras = [] } = {}) {
   const root = packages.get("tuneforge-backend");
   if (!root) {
     throw new Error("Could not find tuneforge-backend in uv.lock");
   }
 
   const queue = [...root.dependencies, { name: "setuptools" }, { name: "wheel" }];
+  for (const extra of extras) {
+    const extraDependencies = root.optionalDependencies.get(extra);
+    if (!extraDependencies) {
+      throw new Error(`tuneforge-backend does not define requested extra "${extra}"`);
+    }
+    queue.push(...extraDependencies);
+  }
   const resolved = new Map();
   const processedExtrasByPackage = new Map();
 
@@ -419,9 +526,90 @@ function resolvePythonRuntimePackages(packages) {
   return Array.from(resolved.values()).sort((left, right) => left.name.localeCompare(right.name));
 }
 
+function run(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    cwd: workspaceRoot,
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      UV_CACHE_DIR: process.env.UV_CACHE_DIR ?? path.join(flatpakRoot, ".uv-cache"),
+      ...options.env,
+    },
+  });
+
+  if (result.error?.code === "ENOENT") {
+    throw new Error(`Required command not found: ${command}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(`${command} exited with status ${result.status}`);
+  }
+}
+
+function resolveLegacyTorchPackages() {
+  const requirementsPath = path.join(generatedRoot, "python-legacy-torch.in");
+  const pylockPath = path.join(generatedRoot, "pylock.legacy-torch.toml");
+  writeGeneratedFile("python-legacy-torch.in", "torch==2.6.0\ntorchaudio==2.6.0\n");
+  run("uv", [
+    "--quiet",
+    "pip",
+    "compile",
+    requirementsPath,
+    "--python-version",
+    "3.11",
+    "--python-platform",
+    "x86_64-manylinux_2_28",
+    "--torch-backend",
+    "cu126",
+    "--format",
+    "pylock.toml",
+    "--output-file",
+    pylockPath,
+    "--no-header",
+    "--no-annotate",
+  ]);
+
+  return parsePylock(readRequiredFile(pylockPath));
+}
+
+function mergeLegacyTorchPackages(packages) {
+  const merged = new Map(packages.map((pkg) => [normalizePackageName(pkg.name), pkg]));
+  const legacyPackages = resolveLegacyTorchPackages();
+
+  for (const packageName of Array.from(merged.keys())) {
+    if (
+      packageName === "torch" ||
+      packageName === "torchaudio" ||
+      packageName === "triton" ||
+      packageName === "sympy" ||
+      packageName.startsWith("nvidia-")
+    ) {
+      merged.delete(packageName);
+    }
+  }
+
+  for (const [packageName, pkg] of legacyPackages) {
+    if (
+      packageName === "torch" ||
+      packageName === "torchaudio" ||
+      packageName === "triton" ||
+      packageName === "sympy" ||
+      packageName.startsWith("nvidia-")
+    ) {
+      merged.set(packageName, pkg);
+    }
+  }
+
+  return Array.from(merged.values()).sort((left, right) => left.name.localeCompare(right.name));
+}
+
 function generatePythonSources() {
-  const packages = resolvePythonRuntimePackages(parseUvLock(readRequiredFile(uvLockPath)));
+  const extras = profileIncludesAdvancedChords ? ["advanced-chords"] : [];
+  let packages = resolvePythonRuntimePackages(parseUvLock(readRequiredFile(uvLockPath)), { extras });
+  if (profileUsesLegacyNvidia) {
+    packages = mergeLegacyTorchPackages(packages);
+  }
   const sourceByUrl = new Map();
+  const artifactReport = [];
 
   for (const pkg of packages) {
     const artifact = selectPythonArtifact(pkg);
@@ -431,6 +619,13 @@ function generatePythonSources() {
       sha256: artifact.sha256,
       dest: "python-sources",
       "dest-filename": artifact.fileName,
+    });
+    artifactReport.push({
+      name: pkg.name,
+      version: pkg.version,
+      fileName: artifact.fileName,
+      size: artifact.size,
+      url: artifact.url,
     });
   }
 
@@ -442,6 +637,10 @@ function generatePythonSources() {
 
   writeGeneratedJson("python-sources.json", sources);
   writeGeneratedFile("python-requirements.txt", `${runtimeRequirements.join("\n")}\n`);
+  writeGeneratedJson(
+    "python-size-report.json",
+    artifactReport.sort((left, right) => (right.size ?? -1) - (left.size ?? -1) || left.name.localeCompare(right.name)),
+  );
 
   return packages.length;
 }
@@ -452,7 +651,7 @@ function main() {
   const pythonCount = generatePythonSources();
 
   process.stdout.write(
-    `Generated Flatpak sources: ${cargoCount} Cargo crates, ${nodeCount} pnpm tarballs, ${pythonCount} Python packages.\n`,
+    `Generated ${flatpakProfile} Flatpak sources: ${cargoCount} Cargo crates, ${nodeCount} pnpm tarballs, ${pythonCount} Python packages.\n`,
   );
 }
 

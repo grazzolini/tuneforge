@@ -15,6 +15,7 @@
     "package:android:debug": "pnpm --filter @tuneforge/desktop android:build:debug",
     "package:linux": "pnpm package:linux:flatpak",
     "package:linux:flatpak": "node scripts/package-flatpak.mjs",
+    "package:linux:flatpak:full": "node scripts/package-flatpak.mjs --profile full",
     "package:mac": "pnpm package:mac:app && pnpm package:mac:dmg",
     "package:mac:app": "pnpm --filter @tuneforge/desktop tauri build --bundles app",
     "package:mac:dmg": "node scripts/package-dmg.mjs",

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -6,18 +6,34 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(__filename);
 const workspaceRoot = path.resolve(scriptDir, "..");
-const manifestPath = path.join(workspaceRoot, "packaging", "flatpak", "com.tuneforge.desktop.yml");
-const buildDir = process.env.FLATPAK_BUILD_DIR ?? path.join(workspaceRoot, "packaging", "flatpak", "build-dir");
-const repoDir = process.env.FLATPAK_REPO_DIR ?? path.join(workspaceRoot, "packaging", "flatpak", "repo");
+const flatpakRoot = path.join(workspaceRoot, "packaging", "flatpak");
+const baseManifestPath = path.join(flatpakRoot, "com.tuneforge.desktop.yml");
 const appId = "com.tuneforge.desktop";
-const localRepoRemote = "tuneforge-local";
 const skipBundle = process.argv.includes("--no-bundle") || process.env.FLATPAK_NO_BUNDLE === "1";
+const profile = readProfileArg();
+const profileSuffix = profile === "standard" ? "" : `-${profile}`;
+const localRepoRemote = profile === "standard" ? "tuneforge-local" : `tuneforge-local-${profile}`;
+const buildDir =
+  process.env.FLATPAK_BUILD_DIR ?? path.join(flatpakRoot, profile === "standard" ? "build-dir" : `build-dir-${profile}`);
+const repoDir = process.env.FLATPAK_REPO_DIR ?? path.join(flatpakRoot, profile === "standard" ? "repo" : `repo-${profile}`);
 const appVersion = JSON.parse(
   readFileSync(path.join(workspaceRoot, "apps", "desktop", "src-tauri", "tauri.conf.json"), "utf8"),
 ).version;
 const bundlePath =
   process.env.FLATPAK_BUNDLE_PATH ??
-  path.join(workspaceRoot, "packaging", "flatpak", `Tuneforge_${appVersion}_x86_64.flatpak`);
+  path.join(flatpakRoot, `Tuneforge_${appVersion}_x86_64${profileSuffix}.flatpak`);
+
+function readProfileArg() {
+  const profileFlagIndex = process.argv.indexOf("--profile");
+  const requestedProfile =
+    profileFlagIndex === -1
+      ? process.env.FLATPAK_PROFILE ?? "standard"
+      : process.argv[profileFlagIndex + 1];
+  if (!["standard", "full"].includes(requestedProfile)) {
+    throw new Error(`Unsupported Flatpak profile: ${requestedProfile}`);
+  }
+  return requestedProfile;
+}
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -44,15 +60,95 @@ function checkCommand(command, installHint) {
   }
 }
 
+function fullProfileManifestPath() {
+  const generatedManifestPath = path.join(flatpakRoot, "com.tuneforge.desktop.full.generated.yml");
+  const baseManifest = readFileSync(baseManifestPath, "utf8");
+  let fullManifest = replaceManifestFragment(
+    baseManifest,
+    "  - --device=dri\n",
+    "  - --device=all\n  - --filesystem=xdg-data/tuneforge:create\n",
+  );
+  fullManifest = replaceManifestFragment(
+    fullManifest,
+    "  - --env=TUNEFORGE_DATA_DIR=/var/data/tuneforge\n",
+    "  - --env=TUNEFORGE_DATA_DIR=~/.local/share/tuneforge\n",
+  );
+  fullManifest = replaceManifestFragment(
+    fullManifest,
+    '      - /app/lib/tuneforge/backend/python/bin/python3.11 -c "import fastapi, demucs, whisper, torch"\n',
+    '      - /app/lib/tuneforge/backend/python/bin/python3.11 -c "import fastapi, demucs, whisper, torch, crema, tensorflow, keras"\n',
+  );
+  writeFileSync(generatedManifestPath, fullManifest);
+  return generatedManifestPath;
+}
+
+function replaceManifestFragment(contents, search, replacement) {
+  if (!contents.includes(search)) {
+    throw new Error(`Could not find expected Flatpak manifest fragment: ${search.trim()}`);
+  }
+  return contents.replace(search, replacement);
+}
+
+function manifestPathForProfile() {
+  return profile === "standard" ? baseManifestPath : fullProfileManifestPath();
+}
+
+function bytesToMiB(bytes) {
+  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+}
+
+function directorySize(targetPath) {
+  const stats = lstatSync(targetPath);
+  if (!stats.isDirectory()) {
+    return stats.size;
+  }
+  return readdirSync(targetPath).reduce(
+    (total, childName) => total + directorySize(path.join(targetPath, childName)),
+    0,
+  );
+}
+
+function printAppDirectorySizeReport() {
+  const appFilesRoot = path.join(buildDir, "files");
+  if (!existsSync(appFilesRoot)) {
+    return;
+  }
+  const rows = readdirSync(appFilesRoot)
+    .map((name) => {
+      const targetPath = path.join(appFilesRoot, name);
+      return { name: `/app/${name}`, size: directorySize(targetPath) };
+    })
+    .sort((left, right) => right.size - left.size)
+    .slice(0, 12);
+  process.stdout.write(`Flatpak ${profile} /app size report:\n`);
+  for (const row of rows) {
+    process.stdout.write(`  ${bytesToMiB(row.size).padStart(10)} ${row.name}\n`);
+  }
+}
+
+function printPythonWheelSizeReport() {
+  const reportPath = path.join(flatpakRoot, "generated", "python-size-report.json");
+  if (!existsSync(reportPath)) {
+    return;
+  }
+  const entries = JSON.parse(readFileSync(reportPath, "utf8")).slice(0, 15);
+  process.stdout.write(`Flatpak ${profile} selected Python artifact report:\n`);
+  for (const entry of entries) {
+    const size = typeof entry.size === "number" ? bytesToMiB(entry.size).padStart(10) : "unknown".padStart(10);
+    process.stdout.write(`  ${size} ${entry.name}==${entry.version} ${entry.fileName}\n`);
+  }
+}
+
 function main() {
   if (process.arch !== "x64") {
     throw new Error("Tuneforge Flatpak packaging currently targets Linux x86_64 only.");
   }
-  if (!existsSync(manifestPath)) {
-    throw new Error(`Flatpak manifest not found at ${manifestPath}`);
+  if (!existsSync(baseManifestPath)) {
+    throw new Error(`Flatpak manifest not found at ${baseManifestPath}`);
   }
 
-  run(process.execPath, [path.join("scripts", "generate-flatpak-sources.mjs")]);
+  run(process.execPath, [path.join("scripts", "generate-flatpak-sources.mjs"), "--profile", profile]);
+  const manifestPath = manifestPathForProfile();
 
   checkCommand(
     "flatpak-builder",
@@ -70,6 +166,8 @@ function main() {
     buildDir,
     manifestPath,
   ]);
+  printAppDirectorySizeReport();
+  printPythonWheelSizeReport();
   if (skipBundle) {
     process.stdout.write(`Flatpak repo exported to ${repoDir}\n`);
     process.stdout.write(

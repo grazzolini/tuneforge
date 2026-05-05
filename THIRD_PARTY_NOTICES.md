@@ -69,6 +69,24 @@ This document is an engineering notice and distribution checklist, not legal adv
 - **Source:** <https://github.com/rusqlite/rusqlite> and <https://sqlite.org/>
 - **Notes:** Used by the embedded Android backend. Desktop persistence remains in the Python backend.
 
+### android_system_properties
+
+- **License:** Apache-2.0 / MIT (dual)
+- **Source:** <https://github.com/nical/android_system_properties>
+- **Notes:** Used by the embedded Android backend to detect emulator runtimes for debug-only flow testing.
+
+### ndk-sys
+
+- **License:** Apache-2.0 / MIT (dual)
+- **Source:** <https://github.com/rust-mobile/ndk>
+- **Notes:** Used by the embedded Android backend to call Android NDK media decode APIs.
+
+### whisper-rs / whisper.cpp
+
+- **License:** Unlicense for whisper-rs; MIT for whisper.cpp
+- **Source:** <https://codeberg.org/tazz4843/whisper-rs> and <https://github.com/ggml-org/whisper.cpp>
+- **Notes:** Used by the embedded Android backend for side-loaded local lyrics transcription. Tuneforge does not redistribute Whisper model weights.
+
 ### React, Vite, TanStack Query, openapi-fetch, openapi-typescript, lucide-react
 
 - See each project's own license. The installed JavaScript tree is primarily permissive, with some non-copyleft notice/data licenses such as MPL-2.0 (`lightningcss`), BlueOak-1.0.0 (`lru-cache` / `minimatch`), CC-BY-4.0 (`caniuse-lite` browser data), and CC0-1.0 (`mdn-data`).

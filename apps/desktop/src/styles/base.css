@@ -3,6 +3,10 @@
   font-family: "Avenir Next", "Segoe UI", sans-serif;
   line-height: 1.5;
   font-weight: 400;
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
   --text: var(--color-text-primary);
   --text-secondary: var(--color-text-secondary);
   --muted: var(--color-text-muted);
@@ -79,8 +83,8 @@
 html,
 body,
 #root {
-  height: 100vh;
-  min-height: 100vh;
+  height: 100dvh;
+  min-height: 100dvh;
 }
 
 body {
@@ -142,7 +146,7 @@ a {
 .app-shell {
   display: grid;
   grid-template-columns: var(--app-sidebar-width, 15rem) minmax(0, 1fr);
-  height: 100vh;
+  height: 100dvh;
   min-height: 0;
   overflow: hidden;
   transition: grid-template-columns 180ms ease;
@@ -348,7 +352,10 @@ a {
 .main-content {
   min-height: 0;
   overflow: auto;
-  padding: var(--screen-padding, 2rem);
+  padding-block-start: calc(var(--screen-padding, 2rem) + var(--safe-area-top));
+  padding-block-end: calc(var(--screen-padding, 2rem) + var(--safe-area-bottom));
+  padding-inline-start: calc(var(--screen-padding, 2rem) + var(--safe-area-left));
+  padding-inline-end: calc(var(--screen-padding, 2rem) + var(--safe-area-right));
 }
 
 .screen {

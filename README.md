@@ -40,6 +40,7 @@ Security reports follow the process in [SECURITY.md](./SECURITY.md). "There is n
 - [Product specification](./docs/SPEC.md)
 - [Architecture](./docs/ARCHITECTURE.md)
 - [API](./docs/API.md)
+- [Packaging](./docs/PACKAGING.md)
 - [Roadmap](./docs/ROADMAP.md)
 - [Mobile architecture](./docs/MOBILE.md)
 - [References](./docs/REFERENCES.md)
@@ -154,32 +155,27 @@ CI fails if `packages/shared-types/src/generated/openapi.ts` drifts from the bac
 
 ## Packaging
 
-On macOS, build a local unsigned app bundle and DMG with:
+Build local unsigned desktop packages with:
 
 ```sh
 pnpm package:mac
-```
-
-The generated artifacts are written under `apps/desktop/src-tauri/target/release/bundle/`:
-
-- `macos/Tuneforge.app`
-- `dmg/Tuneforge_0.1.0_aarch64.dmg` on Apple Silicon
-
-Run packaging from a normal macOS shell so `hdiutil` can create the disk image. Packaged builds require `ffmpeg`/`ffprobe` to be installed on the host system; Tuneforge does not bundle them (see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)). System microphone volume control uses CoreAudio on macOS and depends on `wpctl` or `pactl` on Linux. The macOS app checks the inherited `PATH` plus common Homebrew and MacPorts install locations when launching the bundled backend.
-
-On Linux, build a local Flatpak directly from source with:
-
-```sh
 pnpm package:linux:flatpak
 ```
 
-For faster local iteration, skip the single-file bundle step:
+For Linux local/dev packaging with Advanced Chords, legacy NVIDIA Torch, and shared host XDG data, use the full Flatpak profile:
+
+```sh
+pnpm package:linux:flatpak:full
+```
+
+For faster Flatpak testing, skip the single-file bundle step:
 
 ```sh
 pnpm package:linux:flatpak -- --no-bundle
+pnpm package:linux:flatpak:full -- --no-bundle
 ```
 
-The Flatpak flow generates local dependency source manifests, builds inside the SDK sandbox, installs the backend under `/app/lib/tuneforge/backend`, and stores private app data under `/var/data/tuneforge`. It bundles `pactl` for microphone volume control but does not bundle FFmpeg.
+Packaged builds require host `ffmpeg` / `ffprobe`; Tuneforge does not bundle FFmpeg. See [Packaging](./docs/PACKAGING.md) for output paths, Flatpak profiles, local repo install commands, data-directory behavior, and size expectations.
 
 ## CI
 

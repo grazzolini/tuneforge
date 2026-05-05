@@ -20,12 +20,16 @@ finish-args:
   - --env=TUNEFORGE_FFMPEG_PATH=/app/bin/ffmpeg
   - --env=TUNEFORGE_FFPROBE_PATH=/app/bin/ffprobe
 cleanup:
+  - /bin/pnpm
+  - /bin/pnpx
   - /include
+  - /lib/pnpm
   - /lib/pkgconfig
   - /share/doc
   - /share/gtk-doc
   - /share/man
   - /share/pkgconfig
+  - /share/tuneforge/node-sources
   - "*.a"
   - "*.la"
 
@@ -44,6 +48,8 @@ modules:
       - make -j${FLATPAK_BUILDER_N_JOBS}
       - make install
       - /app/lib/tuneforge/backend/python/bin/python3.11 -m ensurepip --upgrade
+      - find /app/lib/tuneforge/backend/python -type d -name __pycache__ -prune -exec rm -rf {} +
+      - find /app/lib/tuneforge/backend/python -type f -name '*.pyc' -delete
 
   - name: python-runtime-deps
     buildsystem: simple
@@ -59,6 +65,8 @@ modules:
       - install -dm755 /app/lib/tuneforge/backend/site-packages
       - /app/lib/tuneforge/backend/python/bin/python3.11 -m pip install --no-index --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages setuptools wheel
       - /app/lib/tuneforge/backend/python/bin/python3.11 -m pip install --no-index --no-build-isolation --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages -r python-requirements.txt
+      - find /app/lib/tuneforge/backend/site-packages -type d -name __pycache__ -prune -exec rm -rf {} +
+      - find /app/lib/tuneforge/backend/site-packages -type f -name '*.pyc' -delete
 
   - name: pnpm
     buildsystem: simple
@@ -240,6 +248,7 @@ modules:
       - node rewrite-pnpm-lock.mjs /app/share/tuneforge/node-sources
       - /app/bin/pnpm install --offline --frozen-lockfile
       - /app/bin/pnpm --filter @tuneforge/desktop build
+      - rm -rf /app/share/tuneforge/node-sources /app/lib/pnpm /app/bin/pnpm /app/bin/pnpx
       - cargo build --release --locked --features custom-protocol --manifest-path apps/desktop/src-tauri/Cargo.toml
       - install -Dm755 apps/desktop/src-tauri/target/release/tuneforge /app/bin/tuneforge
       - install -dm755 /app/lib/tuneforge/backend/src

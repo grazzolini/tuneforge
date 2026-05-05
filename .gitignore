@@ -32,9 +32,13 @@ apps/desktop/src-tauri/resources/*
 
 # Flatpak packaging output
 .flatpak-builder/
+packaging/flatpak/.uv-cache/
 packaging/flatpak/build-dir/
+packaging/flatpak/build-dir-*/
 packaging/flatpak/generated/
 packaging/flatpak/repo/
+packaging/flatpak/repo-*/
+packaging/flatpak/*.generated.yml
 packaging/flatpak/*.flatpak
 
 # Mobile

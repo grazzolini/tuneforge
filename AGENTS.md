@@ -144,7 +144,7 @@ The following files are generated. **Do not edit by hand.**
 
 ## Commit and PR Hygiene
 
-- **Conventional Commits required.** Format: `<type>(<optional scope>): <subject>`. Allowed types: `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `revert`. Subject is imperative (`add ...`, not `Added`/`Adds`). Header ≤ 100 chars. The `commit-msg` Husky hook and a CI job (`commitlint`) enforce this on every commit and on the PR title.
+- **Conventional Commits required.** Format: `<type>(<optional scope>): <subject>`, followed by a blank line and at least one body line describing the change. Allowed types: `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `revert`. Subject is imperative (`add ...`, not `Added`/`Adds`). Header, body, and footer lines must be ≤ 100 chars. The `commit-msg` Husky hook and a CI job (`commitlint`) enforce this on every commit; CI also checks the single-line PR title with the body requirement disabled.
 - Reference issues with `Fixes #123` / `Refs #123` in the body or footer.
 - One concern per commit and per PR. If a refactor and a feature are tangled, split them into separate PRs.
 - **Prefer one commit per PR.** A repository ruleset enforces squash merges and linear history on `main`, so any extra commits in a PR get folded into one at merge time anyway. The PR title becomes the squash commit message, so it must also pass commitlint. Recommended workflow: amend the existing commit and push with `git push --force-with-lease` rather than stacking fix-up commits.

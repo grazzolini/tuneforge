@@ -106,6 +106,8 @@ Format:
 
 ```
 <type>(<optional scope>): <subject>
+
+One or more lines describing what changed.
 ```
 
 Allowed types: `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `revert`.
@@ -114,9 +116,20 @@ Examples:
 
 ```
 feat(backend): add chord smoothing window
+
+Add a configurable smoothing pass to reduce noisy chord transitions.
+
 fix(desktop): keep playback position on tab switch
+
+Keep the shared playback clock mounted while navigating project views.
+
 ci: pin commitlint action to v6.2.1
+
+Use the same action version across branch and pull request checks.
+
 docs: clarify ffmpeg prerequisite
+
+Explain that FFmpeg is host-installed instead of bundled with Tuneforge.
 ```
 
 Rules:
@@ -124,6 +137,8 @@ Rules:
 - Use a concise, imperative subject (`add ...`, not `added ...` / `adds ...`).
 - Subject must not start with a capitalised word, PascalCase, or all-caps.
 - Header (full first line) must be ≤ 100 characters.
+- Include at least one body line describing the change.
+- Body and footer lines must be ≤ 100 characters.
 - Reference issues in the body or footer with `Fixes #123` / `Refs #123`.
 - Keep unrelated changes in separate PRs.
 

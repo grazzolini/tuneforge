@@ -14,6 +14,15 @@ desktop_start=${SECONDS}
 desktop_elapsed=$((SECONDS - desktop_start))
 printf '\n[tests] Desktop tests finished in %ss\n' "${desktop_elapsed}"
 
+printf '\n[tests] Starting Tauri shell tests\n\n'
+tauri_start=${SECONDS}
+(
+  cd "${repo_root}/apps/desktop/src-tauri"
+  cargo test
+)
+tauri_elapsed=$((SECONDS - tauri_start))
+printf '\n[tests] Tauri shell tests finished in %ss\n' "${tauri_elapsed}"
+
 printf '\n[tests] Starting backend tests\n\n'
 backend_start=${SECONDS}
 (

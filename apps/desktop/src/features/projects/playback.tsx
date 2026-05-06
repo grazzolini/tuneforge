@@ -342,16 +342,16 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   const finalizeStemPlaybackEnded = useStableCallback(function finalizeStemPlaybackEnded(targetPlaybackState: StemPlaybackState) {
     clearStemClock(targetPlaybackState);
     targetPlaybackState.isPlaying = false;
-    targetPlaybackState.offsetSeconds = targetPlaybackState.durationSeconds;
+    targetPlaybackState.offsetSeconds = 0;
     targetPlaybackState.startedAtContextTime = targetPlaybackState.context.currentTime;
     targetPlaybackState.sources = {};
-    syncStemElementTimes(targetPlaybackState.artifactIds, targetPlaybackState.durationSeconds);
+    syncStemElementTimes(targetPlaybackState.artifactIds, 0);
 
     if (stemPlaybackRef.current !== targetPlaybackState) {
       return;
     }
 
-    setPlaybackTimeSeconds(targetPlaybackState.durationSeconds);
+    setPlaybackTimeSeconds(0);
     setIsPlaying(false);
   });
 
@@ -1451,7 +1451,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           if (!sessionRef.current || sessionRef.current.isStemPlayback) {
             return;
           }
-          setIsPlaying(false);
+          stopPlayback();
         }}
       />
       {session?.visibleStemArtifactIds.map((artifactId) => (
@@ -1496,7 +1496,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             if (sessionRef.current.visibleStemArtifactIds[0] !== artifactId) {
               return;
             }
-            setIsPlaying(false);
+            stopPlayback();
           }}
         />
       ))}

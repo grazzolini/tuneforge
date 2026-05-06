@@ -48,7 +48,7 @@ jobs:
         if: github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]'
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
-        run: echo "$PR_TITLE" | pnpm exec commitlint
+        run: echo "$PR_TITLE" | pnpm exec commitlint --config commitlint.pr-title.config.cjs
 
   backend:
     runs-on: ubuntu-latest

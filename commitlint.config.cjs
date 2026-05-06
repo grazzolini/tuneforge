@@ -3,10 +3,11 @@
 /**
  * Commitlint configuration.
  *
- * Enforces Conventional Commits on every commit and on PR titles
- * (since `main` uses squash merges, the PR title becomes the squash
- * commit message). Keep types in sync with what auto-labelling and
- * any future semantic-release config expect.
+ * Enforces Conventional Commits on every commit. PR titles use
+ * `commitlint.pr-title.config.cjs` because they intentionally stay
+ * single-line while commit messages require a descriptive body.
+ * Keep types in sync with what auto-labelling and any future
+ * semantic-release config expect.
  *
  * Allowed types:
  *   feat      new user-facing feature
@@ -48,6 +49,7 @@ module.exports = {
       ["start-case", "pascal-case", "upper-case"],
     ],
     "header-max-length": [2, "always", 100],
-    "body-max-line-length": [1, "always", 100],
+    "body-empty": [2, "never"],
+    "body-max-line-length": [2, "always", 100],
   },
 };

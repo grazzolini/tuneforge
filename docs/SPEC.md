@@ -118,6 +118,7 @@ Capo-relative display is a harmonic presentation feature. It should not alter au
 
 - Persist per-project playback session state.
 - Support source playback, saved mixes, and stem playback.
+- Support playback-level tempo changes by BPM without rendering new audio files.
 - Support lyrics-only, chords-only, and combined practice displays.
 - Future practice work should build from beat/bar artifacts: current bar/beat highlight, count-in, loop-by-bars, and section practice.
 

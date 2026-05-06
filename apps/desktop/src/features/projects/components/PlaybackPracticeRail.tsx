@@ -1,4 +1,4 @@
-import { ArrowUpDown, AudioLines, Drumstick, Layers } from "lucide-react";
+import { ArrowUpDown, AudioLines, Drumstick, Gauge, Layers } from "lucide-react";
 import {
   artifactLabel,
   artifactSummary,
@@ -18,6 +18,10 @@ export function PlaybackPracticeRail() {
     capoShiftSummary,
     capoSourceKey,
     enharmonicDisplayMode,
+    canUseTempo,
+    handleDecreasePlaybackTempo,
+    handleIncreasePlaybackTempo,
+    handleResetPlaybackTempo,
     handleSelectPrimaryArtifact,
     handleSelectStemArtifact,
     higherCapoPreview,
@@ -48,10 +52,28 @@ export function PlaybackPracticeRail() {
     stageTitle,
     stemControls,
     stemOutputLabel,
+    tempoDisplayBpm,
+    tempoMaxBpm,
+    tempoMinBpm,
+    tempoOriginalBpm,
+    tempoPlaybackRate,
+    tempoTargetBpm,
     toggleStemControl,
     visibleStemArtifacts,
   } = useProjectViewModelContext();
   const showHeaderDetails = informationDensity === "detailed";
+  const tempoDisplayLabel =
+    tempoDisplayBpm === null
+      ? "--"
+      : Number.isInteger(tempoDisplayBpm)
+        ? tempoDisplayBpm.toFixed(0)
+        : tempoDisplayBpm.toFixed(1);
+  const tempoSummary =
+    canUseTempo && tempoDisplayBpm !== null && tempoOriginalBpm !== null
+      ? tempoTargetBpm === null
+        ? `Original ${tempoOriginalBpm.toFixed(1)} BPM`
+        : `${tempoTargetBpm.toFixed(0)} BPM (${tempoPlaybackRate.toFixed(3)}x)`
+      : "Waiting for tempo analysis";
 
   return (
     <aside className="panel playback-practice-rail">
@@ -65,6 +87,9 @@ export function PlaybackPracticeRail() {
         </span>
         <span title="Pre-count">
           <Drumstick aria-hidden="true" />
+        </span>
+        <span title="Tempo">
+          <Gauge aria-hidden="true" />
         </span>
         <span title="Source and Mixes">
           <Layers aria-hidden="true" />
@@ -164,6 +189,51 @@ export function PlaybackPracticeRail() {
             ? `${precountClickCount} clicks at ${precountTempoBpm.toFixed(1)} BPM`
             : precountDisabledReason}
         </p>
+      </section>
+
+      <section
+        className={`playback-tempo-control${
+          canUseTempo ? "" : " playback-tempo-control--disabled"
+        }`}
+        aria-labelledby="playback-tempo-heading"
+      >
+        <div className="playback-tempo-control__header">
+          <div>
+            <p className="metric-label">Tempo</p>
+            <h3 id="playback-tempo-heading">Playback BPM</h3>
+          </div>
+          <button
+            className="button button--ghost button--small"
+            disabled={!canUseTempo || tempoTargetBpm === null}
+            onClick={handleResetPlaybackTempo}
+            type="button"
+          >
+            Reset
+          </button>
+        </div>
+        <div className="playback-tempo-control__stepper" role="group" aria-label="Playback tempo BPM">
+          <button
+            aria-label="Decrease playback tempo"
+            disabled={!canUseTempo || tempoDisplayBpm === null || tempoDisplayBpm <= tempoMinBpm}
+            onClick={handleDecreasePlaybackTempo}
+            type="button"
+          >
+            -
+          </button>
+          <strong aria-live="polite">
+            {tempoDisplayLabel}
+            <span>BPM</span>
+          </strong>
+          <button
+            aria-label="Increase playback tempo"
+            disabled={!canUseTempo || tempoDisplayBpm === null || tempoDisplayBpm >= tempoMaxBpm}
+            onClick={handleIncreasePlaybackTempo}
+            type="button"
+          >
+            +
+          </button>
+        </div>
+        <p className="artifact-meta playback-tempo-control__summary">{tempoSummary}</p>
       </section>
 
       <section className="playback-picker-group playback-picker-group--compact">

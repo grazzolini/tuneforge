@@ -1,10 +1,15 @@
 import type { ProjectPlaybackSession } from "./playback-context";
+import {
+  isDefaultPlaybackRate,
+  tempoPlaybackRate,
+} from "./playbackTempo";
 
 export type PendingTransition = {
   id: number;
   signature: string;
   shouldPlay: boolean;
   targetTime: number;
+  awaitSeekBeforePlay: boolean;
   awaitingLoadKeys: string[];
   awaitingSeekKeys: string[];
   forceSeekKeys: string[];
@@ -32,10 +37,33 @@ export function playbackSignature(session: ProjectPlaybackSession | null) {
     return "none";
   }
 
+  const playbackRate = playbackRateForSession(session).toFixed(6);
+  return `${playbackTargetSignature(session)}:rate:${playbackRate}`;
+}
+
+export function playbackTargetSignature(session: ProjectPlaybackSession | null) {
+  if (!session) {
+    return "none";
+  }
+
   const activeSignature = session.isStemPlayback
     ? `stems:${session.visibleStemArtifactIds.join(",")}`
     : `primary:${session.selectedPlaybackArtifactId ?? "none"}`;
   return `${session.projectId}:${activeSignature}`;
+}
+
+export function playbackRateForSession(session: ProjectPlaybackSession | null) {
+  if (!session) {
+    return 1;
+  }
+  return tempoPlaybackRate({
+    originalBpm: session.tempoOriginalBpm,
+    targetBpm: session.tempoTargetBpm,
+  });
+}
+
+export function usesDefaultPlaybackRate(session: ProjectPlaybackSession | null) {
+  return isDefaultPlaybackRate(playbackRateForSession(session));
 }
 
 export function isInteractiveTarget(target: EventTarget | null) {

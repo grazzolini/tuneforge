@@ -1,6 +1,7 @@
 import type {
   ProjectPlaybackSession,
 } from "./playback-context";
+import { normalizeTempoBpm, normalizeTempoTargetBpm } from "./playbackTempo";
 import { normalizePrecountClickCount, type StemControlState } from "./projectPlaybackState";
 
 export type PersistedPlaybackState = {
@@ -79,6 +80,8 @@ function normalizeProjectPlaybackSession(value: unknown): ProjectPlaybackSession
       candidate.precountTempoBpm > 0
         ? candidate.precountTempoBpm
         : null,
+    tempoOriginalBpm: normalizeTempoBpm(candidate.tempoOriginalBpm),
+    tempoTargetBpm: normalizeTempoTargetBpm(candidate.tempoTargetBpm),
   };
 }
 

@@ -4,6 +4,7 @@ import {
   type PlaybackDisplayMode,
   type ProjectWorkspaceMode,
 } from "../../lib/preferences";
+import { normalizeTempoTargetBpm } from "./playbackTempo";
 
 export type ProjectPanelMode = "studio" | "analysis";
 
@@ -26,6 +27,7 @@ export type StoredProjectPlaybackState = {
   capoTransposeSemitones: number;
   precountEnabled: boolean;
   precountClickCount: number;
+  tempoTargetBpm: number | null;
   lyricsFollowEnabled: boolean;
   chordsFollowEnabled: boolean;
   stemControls: Record<string, StemControlState>;
@@ -44,6 +46,7 @@ const DEFAULT_STORED_PROJECT_PLAYBACK_STATE: StoredProjectPlaybackState = {
   capoTransposeSemitones: 0,
   precountEnabled: false,
   precountClickCount: DEFAULT_PRECOUNT_CLICK_COUNT,
+  tempoTargetBpm: null,
   lyricsFollowEnabled: true,
   chordsFollowEnabled: true,
   stemControls: {},
@@ -129,6 +132,7 @@ function normalizeStoredProjectPlaybackState(value: unknown): StoredProjectPlayb
         ? candidate.precountEnabled
         : DEFAULT_STORED_PROJECT_PLAYBACK_STATE.precountEnabled,
     precountClickCount: normalizePrecountClickCount(candidate.precountClickCount),
+    tempoTargetBpm: normalizeTempoTargetBpm(candidate.tempoTargetBpm),
     lyricsFollowEnabled:
       typeof candidate.lyricsFollowEnabled === "boolean"
         ? candidate.lyricsFollowEnabled

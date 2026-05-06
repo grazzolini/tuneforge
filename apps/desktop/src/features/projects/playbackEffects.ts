@@ -6,6 +6,7 @@ type MediaSessionControls = {
   isPlaying: boolean;
   pausePlayback: () => void;
   playbackDurationSeconds: number;
+  playbackRate: number;
   playbackTimeSeconds: number;
   playPlayback: () => Promise<void>;
   seekBy: (secondsDelta: number) => void;
@@ -17,6 +18,7 @@ export function useMediaSessionControls({
   isPlaying,
   pausePlayback,
   playbackDurationSeconds,
+  playbackRate,
   playbackTimeSeconds,
   playPlayback,
   seekBy,
@@ -77,7 +79,7 @@ export function useMediaSessionControls({
       ) {
         navigator.mediaSession.setPositionState({
           duration: playbackDurationSeconds,
-          playbackRate: 1,
+          playbackRate,
           position: clampTime(playbackTimeSeconds, playbackDurationSeconds),
         });
       }
@@ -102,6 +104,7 @@ export function useMediaSessionControls({
     isPlaying,
     pausePlayback,
     playbackDurationSeconds,
+    playbackRate,
     playbackTimeSeconds,
     playPlayback,
     seekBy,

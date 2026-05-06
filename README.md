@@ -17,7 +17,7 @@ Pre-1.0. The desktop dev flow (`pnpm dev`) is the fastest way to iterate. Local 
 - Pitch transpose (semitones) and retune (target reference Hz).
 - Stem separation via a local Demucs backend (`htdemucs_ft` by default).
 - Preview rendering (cached) and export to `wav`, `mp3`, or `flac`.
-- Per-project playback session with persistence across navigation.
+- Per-project playback session with persistence, count-in, and playback-level tempo changes.
 
 ## Threat Model and Scope
 

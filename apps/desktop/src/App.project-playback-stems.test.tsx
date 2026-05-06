@@ -27,6 +27,10 @@ function setPlaybackPosition(value: string) {
   fireEvent.change(screen.getByLabelText("Playback position"), { target: { value } });
 }
 
+function triggerBufferSourceEnded(source: { onended: AudioBufferSourceNode["onended"] }) {
+  source.onended?.call(source as unknown as AudioBufferSourceNode, new Event("ended"));
+}
+
 describe("Desktop app project playback stems", () => {
   beforeEach(resetAppTestHarness);
 
@@ -286,6 +290,38 @@ describe("Desktop app project playback stems", () => {
     expect(sourceAudio.currentTime).toBe(0);
     expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
     expect(screen.getByLabelText("Playback position")).toHaveValue("0");
+  });
+
+  it("rewinds source playback after natural end and restarts from the beginning with space", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() => expect(getMockAudioContexts()[0]?.createdSources).toHaveLength(1));
+
+    const endedSource = getMockAudioContexts()[0].createdSources[0];
+    act(() => {
+      sourceAudio.currentTime = 182;
+      triggerBufferSourceEnded(endedSource);
+    });
+
+    expect(sourceAudio.currentTime).toBe(0);
+    expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Playback position")).toHaveValue("0");
+
+    const sourceCountAfterEnd = getMockAudioContexts()[0].createdSources.length;
+    fireEvent.keyDown(window, { code: "Space", key: " " });
+
+    await waitFor(() =>
+      expect(getMockAudioContexts()[0].createdSources.length).toBeGreaterThan(sourceCountAfterEnd),
+    );
+    const restartedSource = getMockAudioContexts()[0].createdSources[sourceCountAfterEnd];
+    expect(restartedSource?.start.mock.calls[0]?.[1]).toBe(0);
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
   });
 
   it("keeps playback position when a newly created mix becomes active", async () => {
@@ -561,6 +597,34 @@ describe("Desktop app project playback stems", () => {
     await waitFor(() => expect(vocalAudio.currentTime).toBeCloseTo(stemStartOffset, 1));
     await waitFor(() => expect(instrumentalAudio.currentTime).toBeCloseTo(stemStartOffset, 1));
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+  });
+
+  it("rewinds stem playback after buffered audio reaches the end", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await generateStems(user);
+    await openPlaybackWorkspace(user);
+    const stemList = await screen.findByRole("group", { name: "Playback stem list" });
+    await user.click(within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement);
+
+    const vocalAudio = findAudioByArtifactId("art_200");
+    const instrumentalAudio = findAudioByArtifactId("art_201");
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() => expect(getMockAudioContexts()[0]?.createdSources).toHaveLength(2));
+
+    const endedSources = getMockAudioContexts()[0].createdSources.slice(0, 2);
+    act(() => {
+      vocalAudio.currentTime = 182;
+      instrumentalAudio.currentTime = 182;
+      endedSources.forEach(triggerBufferSourceEnded);
+    });
+
+    expect(vocalAudio.currentTime).toBe(0);
+    expect(instrumentalAudio.currentTime).toBe(0);
+    expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Playback position")).toHaveValue("0");
   });
 
   it("preserves playback time when returning to full mix during a pending stem handoff", async () => {

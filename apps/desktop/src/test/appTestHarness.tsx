@@ -1199,6 +1199,7 @@ export function getMockAudioContexts() {
           connect: ReturnType<typeof vi.fn>;
         }>;
         createdSources: Array<{
+          onended: AudioBufferSourceNode["onended"];
           start: ReturnType<typeof vi.fn>;
         }>;
         close: ReturnType<typeof vi.fn>;

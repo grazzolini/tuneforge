@@ -1,5 +1,9 @@
 export const PRECOUNT_START_DELAY_SECONDS = 0.035;
-export const PRECOUNT_GAIN = 0.36;
+export const PRECOUNT_GAIN = 1;
+const PRECOUNT_FREQUENCY_HZ = 760;
+const PRECOUNT_CLICK_ATTACK_SECONDS = 0.002;
+const PRECOUNT_CLICK_DURATION_SECONDS = 0.045;
+const PRECOUNT_STOP_TAIL_SECONDS = 0.004;
 
 export function schedulePrecountClaveClick({
   audioContext,
@@ -11,12 +15,11 @@ export function schedulePrecountClaveClick({
   const oscillator = audioContext.createOscillator();
   const gainNode = audioContext.createGain();
   const safeStartTimeSeconds = Math.max(audioContext.currentTime, startTimeSeconds);
-  const peakTimeSeconds = safeStartTimeSeconds + 0.003;
-  const stopTimeSeconds = safeStartTimeSeconds + 0.072;
+  const peakTimeSeconds = safeStartTimeSeconds + PRECOUNT_CLICK_ATTACK_SECONDS;
+  const stopTimeSeconds = safeStartTimeSeconds + PRECOUNT_CLICK_DURATION_SECONDS;
 
-  oscillator.type = "triangle";
-  oscillator.frequency.setValueAtTime(2100, safeStartTimeSeconds);
-  oscillator.frequency.exponentialRampToValueAtTime(1450, stopTimeSeconds);
+  oscillator.type = "square";
+  oscillator.frequency.setValueAtTime(PRECOUNT_FREQUENCY_HZ, safeStartTimeSeconds);
   gainNode.gain.setValueAtTime(0.0001, safeStartTimeSeconds);
   gainNode.gain.exponentialRampToValueAtTime(PRECOUNT_GAIN, peakTimeSeconds);
   gainNode.gain.exponentialRampToValueAtTime(0.0001, stopTimeSeconds);
@@ -28,5 +31,5 @@ export function schedulePrecountClaveClick({
     gainNode.disconnect();
   };
   oscillator.start(safeStartTimeSeconds);
-  oscillator.stop(stopTimeSeconds + 0.006);
+  oscillator.stop(stopTimeSeconds + PRECOUNT_STOP_TAIL_SECONDS);
 }

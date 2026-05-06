@@ -1,3 +1,4 @@
+import { RotateCcw } from "lucide-react";
 import { PlayPauseGlyph, SeekGlyph, StopGlyph } from "./TransportGlyphs";
 import { formatPlaybackClock } from "../projectViewUtils";
 
@@ -7,8 +8,11 @@ export function PlaybackTransport({
   maxSeconds,
   playbackTimeSeconds,
   seekAnimationRevision,
+  tempoDisplayBpm,
+  tempoTargetBpm,
   onSeek,
   onSeekTo,
+  onResetTempo,
   onStop,
   onTogglePlayback,
 }: {
@@ -17,11 +21,21 @@ export function PlaybackTransport({
   maxSeconds: number;
   playbackTimeSeconds: number;
   seekAnimationRevision: Record<"backward" | "forward", number>;
+  tempoDisplayBpm: number | null;
+  tempoTargetBpm: number | null;
   onSeek: (secondsDelta: number) => void;
   onSeekTo: (timeSeconds: number) => void;
+  onResetTempo: () => void;
   onStop: () => void;
   onTogglePlayback: () => Promise<void>;
 }) {
+  const tempoLabel =
+    tempoDisplayBpm === null
+      ? "--"
+      : Number.isInteger(tempoDisplayBpm)
+        ? tempoDisplayBpm.toFixed(0)
+        : tempoDisplayBpm.toFixed(1);
+
   return (
     <div className={`transport${compact ? " transport--compact" : ""}`}>
       <div className="transport__controls">
@@ -67,6 +81,18 @@ export function PlaybackTransport({
           />
         </button>
       </div>
+
+      <button
+        aria-label={tempoTargetBpm === null ? "Tempo at original" : "Reset tempo"}
+        className={`transport__tempo${tempoTargetBpm === null ? "" : " transport__tempo--active"}`}
+        disabled={tempoDisplayBpm === null || tempoTargetBpm === null}
+        onClick={onResetTempo}
+        type="button"
+      >
+        <span>Tempo</span>
+        <strong>{tempoLabel} BPM</strong>
+        {tempoTargetBpm !== null ? <RotateCcw aria-hidden="true" size={14} /> : null}
+      </button>
 
       <label className="transport__scrubber">
         <span className="metric-label">Playback position</span>

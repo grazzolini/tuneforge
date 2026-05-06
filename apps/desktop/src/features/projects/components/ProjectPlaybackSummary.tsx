@@ -5,6 +5,7 @@ export function ProjectPlaybackSummary() {
   const {
     handleSeek,
     handleSeekTo,
+    handleResetPlaybackTempo,
     handleSelectWorkspace,
     isPlaying,
     playbackDurationSeconds,
@@ -17,6 +18,8 @@ export function ProjectPlaybackSummary() {
     stageSummary,
     stageTitle,
     stopPlayback,
+    tempoDisplayBpm,
+    tempoTargetBpm,
     togglePlayback,
   } = useProjectViewModelContext();
   const maxSeconds = playbackDurationSeconds || projectQuery.data?.duration_seconds || 0;
@@ -49,8 +52,11 @@ export function ProjectPlaybackSummary() {
           maxSeconds={maxSeconds}
           playbackTimeSeconds={playbackTimeSeconds}
           seekAnimationRevision={seekAnimationRevision}
+          tempoDisplayBpm={tempoDisplayBpm}
+          tempoTargetBpm={tempoTargetBpm}
           onSeek={handleSeek}
           onSeekTo={handleSeekTo}
+          onResetTempo={handleResetPlaybackTempo}
           onStop={stopPlayback}
           onTogglePlayback={togglePlayback}
         />

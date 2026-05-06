@@ -14,6 +14,8 @@ export type ProjectPlaybackSession = {
   precountEnabled: boolean;
   precountClickCount: number;
   precountTempoBpm: number | null;
+  tempoOriginalBpm: number | null;
+  tempoTargetBpm: number | null;
 };
 
 export type PlaybackSnapshot = {

@@ -57,6 +57,13 @@ import {
 } from "../projectViewUtils";
 import type { DefaultPlaybackDisplayMode, PlaybackDisplayMode } from "../../../lib/preferences";
 import { useChordBackendActionSelection } from "./useChordBackendActionSelection";
+import {
+  MAX_PLAYBACK_TEMPO_BPM,
+  MIN_PLAYBACK_TEMPO_BPM,
+  normalizeTempoBpm,
+  tempoPlaybackRate,
+  tempoTargetBpmFromStep,
+} from "../playbackTempo";
 
 type PlaybackDisplayModeSource = "default" | "stored" | "user";
 
@@ -138,6 +145,7 @@ export function useProjectViewModel() {
   const [capoSelectorOpen, setCapoSelectorOpen] = useState(false);
   const [precountEnabled, setPrecountEnabled] = useState(false);
   const [precountClickCount, setPrecountClickCount] = useState(DEFAULT_PRECOUNT_CLICK_COUNT);
+  const [tempoTargetBpm, setTempoTargetBpm] = useState<number | null>(null);
   const [sourceKeySelectorOpen, setSourceKeySelectorOpen] = useState(false);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [selectedPrimaryArtifactId, setSelectedPrimaryArtifactId] = useState<string | null>(null);
@@ -555,12 +563,16 @@ export function useProjectViewModel() {
     : "";
 
   const detectedKey = parseKey(analysisQuery.data?.estimated_key);
-  const analyzedTempoBpm = analysisQuery.data?.tempo_bpm;
-  const precountTempoBpm =
-    typeof analyzedTempoBpm === "number" && Number.isFinite(analyzedTempoBpm) && analyzedTempoBpm > 0
-      ? analyzedTempoBpm
-      : null;
-  const canUsePrecount = precountTempoBpm !== null;
+  const tempoOriginalBpm = normalizeTempoBpm(analysisQuery.data?.tempo_bpm);
+  const tempoTargetBpmForPlayback = tempoOriginalBpm === null ? null : tempoTargetBpm;
+  const tempoDisplayBpm = tempoTargetBpmForPlayback ?? tempoOriginalBpm;
+  const tempoPlaybackRateValue = tempoPlaybackRate({
+    originalBpm: tempoOriginalBpm,
+    targetBpm: tempoTargetBpmForPlayback,
+  });
+  const precountTempoBpm = tempoDisplayBpm;
+  const canUsePrecount = tempoOriginalBpm !== null;
+  const canUseTempo = tempoOriginalBpm !== null;
   const precountDisabledReason = canUsePrecount ? null : "Waiting for BPM analysis";
   const sourceKeyOverride = parseStoredKey(projectQuery.data?.source_key_override);
   const sourceKeyBasis = sourceKeyOverride ?? detectedKey ?? null;
@@ -905,6 +917,36 @@ export function useProjectViewModel() {
     setPrecountClickCount(normalizePrecountClickCount(value));
   }
 
+  function handleDecreasePlaybackTempo() {
+    if (!canUseTempo) {
+      return;
+    }
+    setTempoTargetBpm((current) =>
+      tempoTargetBpmFromStep({
+        currentTargetBpm: current,
+        delta: -1,
+        originalBpm: tempoOriginalBpm,
+      }),
+    );
+  }
+
+  function handleIncreasePlaybackTempo() {
+    if (!canUseTempo) {
+      return;
+    }
+    setTempoTargetBpm((current) =>
+      tempoTargetBpmFromStep({
+        currentTargetBpm: current,
+        delta: 1,
+        originalBpm: tempoOriginalBpm,
+      }),
+    );
+  }
+
+  function handleResetPlaybackTempo() {
+    setTempoTargetBpm(null);
+  }
+
   function handleSeekTo(timeSeconds: number) {
     seekTo(timeSeconds);
   }
@@ -1171,6 +1213,7 @@ export function useProjectViewModel() {
     setCapoTransposeSemitones(storedPlaybackState.capoTransposeSemitones);
     setPrecountEnabled(storedPlaybackState.precountEnabled);
     setPrecountClickCount(storedPlaybackState.precountClickCount);
+    setTempoTargetBpm(storedPlaybackState.tempoTargetBpm);
     setPlaybackDisplayModeSource(hasStoredPlayback ? "stored" : "default");
     setLyricsFollowEnabled(
       hasStoredPlayback
@@ -1313,6 +1356,7 @@ export function useProjectViewModel() {
       capoTransposeSemitones: capoSemitones,
       precountEnabled,
       precountClickCount,
+      tempoTargetBpm,
       lyricsFollowEnabled,
       chordsFollowEnabled,
       stemControls,
@@ -1334,6 +1378,7 @@ export function useProjectViewModel() {
     selectedPrimaryArtifactId,
     selectedStemSourceArtifactId,
     stemControls,
+    tempoTargetBpm,
   ]);
 
   useEffect(() => {
@@ -1549,6 +1594,8 @@ export function useProjectViewModel() {
       precountEnabled,
       precountClickCount,
       precountTempoBpm,
+      tempoOriginalBpm,
+      tempoTargetBpm: tempoTargetBpmForPlayback,
     });
   }, [
     hydratedProjectId,
@@ -1564,6 +1611,8 @@ export function useProjectViewModel() {
     stageSummary,
     stageTitle,
     stemControls,
+    tempoOriginalBpm,
+    tempoTargetBpmForPlayback,
     visibleStemArtifacts,
   ]);
 
@@ -1583,6 +1632,7 @@ export function useProjectViewModel() {
     canGenerateChords,
     canGenerateLyrics,
     canGenerateStems,
+    canUseTempo,
     capoKey,
     capoOptionRefs,
     capoSelectionSummary,
@@ -1616,6 +1666,7 @@ export function useProjectViewModel() {
     handleDeleteMix,
     handleDeleteProject,
     handleChordAction,
+    handleDecreasePlaybackTempo,
     handleLyricsAction,
     handleSeek,
     handleSeekTo,
@@ -1627,12 +1678,14 @@ export function useProjectViewModel() {
     handleSetLyricsFollowEnabled,
     handleSetPrecountClickCount,
     handleSetPrecountEnabled,
+    handleIncreasePlaybackTempo,
     handleAcceptTabSuggestionGroup,
     handleApplyTabSuggestions,
     handleCloseTabImport,
     handleCreateTabImportProposal,
     handleOpenTabImport,
     handleRejectTabSuggestionGroup,
+    handleResetPlaybackTempo,
     handleSetPlaybackDisplayMode,
     handleStemAction,
     handleTogglePlaybackDisplayLane,
@@ -1749,6 +1802,12 @@ export function useProjectViewModel() {
     targetSelectorOpen,
     targetSelectorRef,
     targetShiftSummary,
+    tempoDisplayBpm,
+    tempoMaxBpm: MAX_PLAYBACK_TEMPO_BPM,
+    tempoMinBpm: MIN_PLAYBACK_TEMPO_BPM,
+    tempoOriginalBpm,
+    tempoPlaybackRate: tempoPlaybackRateValue,
+    tempoTargetBpm: tempoTargetBpmForPlayback,
     togglePlayback: handleTogglePlayback,
     toggleStemControl,
     transposeSemitones,

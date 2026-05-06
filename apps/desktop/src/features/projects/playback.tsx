@@ -23,9 +23,12 @@ import {
   PRIMARY_MEDIA_KEY,
   SEEK_TOLERANCE_SECONDS,
   clampTime,
+  playbackRateForSession,
   playbackSignature,
+  playbackTargetSignature,
   type PendingTransition,
   type StemPlaybackState,
+  usesDefaultPlaybackRate,
 } from "./playbackUtils";
 import {
   clearStemClock as clearStemClockFrame,
@@ -48,6 +51,20 @@ type ActivePrecount = {
   timeoutId: number;
 };
 
+type PitchPreservingAudioElement = HTMLAudioElement & {
+  mozPreservesPitch?: boolean;
+  preservesPitch?: boolean;
+  webkitPreservesPitch?: boolean;
+};
+
+function applyMediaElementPlaybackRate(element: HTMLAudioElement, playbackRate: number) {
+  const pitchPreservingElement = element as PitchPreservingAudioElement;
+  pitchPreservingElement.preservesPitch = true;
+  pitchPreservingElement.mozPreservesPitch = true;
+  pitchPreservingElement.webkitPreservesPitch = true;
+  element.playbackRate = playbackRate;
+}
+
 export function PlaybackProvider({ children }: { children: ReactNode }) {
   const restoredPlaybackState = useRef(readPersistedPlaybackState()).current;
   const primaryAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -66,6 +83,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           signature: playbackSignature(restoredPlaybackState.session),
           shouldPlay: restoredPlaybackState.isPlaying,
           targetTime: restoredPlaybackState.playbackTimeSeconds,
+          awaitSeekBeforePlay: true,
           awaitingLoadKeys: [],
           awaitingSeekKeys: [],
           forceSeekKeys: [],
@@ -120,9 +138,17 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     });
   }, [isPlaying, playbackTimeSeconds, session]);
 
+  function setPrimaryAudioRef(element: HTMLAudioElement | null) {
+    primaryAudioRef.current = element;
+    if (element) {
+      applyMediaElementPlaybackRate(element, playbackRateForSession(sessionRef.current));
+    }
+  }
+
   function setStemAudioRef(artifactId: string, element: HTMLAudioElement | null) {
     if (element) {
       stemAudioRefs.current[artifactId] = element;
+      applyMediaElementPlaybackRate(element, playbackRateForSession(sessionRef.current));
       return;
     }
     delete stemAudioRefs.current[artifactId];
@@ -169,7 +195,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
   const canUseBufferedClock = useCallback(
     (targetSession: ProjectPlaybackSession | null) => {
-      if (!targetSession || !canUseStemClock()) {
+      if (!targetSession || !canUseStemClock() || !usesDefaultPlaybackRate(targetSession)) {
         return false;
       }
 
@@ -610,6 +636,15 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       : [];
   });
 
+  const applyMediaPlaybackRate = useStableCallback(function applyMediaPlaybackRate(
+    targetSession: ProjectPlaybackSession | null = sessionRef.current,
+  ) {
+    const playbackRate = playbackRateForSession(targetSession);
+    getRenderedMediaElements(targetSession).forEach((element) => {
+      applyMediaElementPlaybackRate(element, playbackRate);
+    });
+  });
+
   const applyStemVolumes = useStableCallback(function applyStemVolumes(
     targetSession: ProjectPlaybackSession | null = sessionRef.current,
   ) {
@@ -861,6 +896,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             element.currentTime = nextTime;
           }
         });
+        applyMediaPlaybackRate(latestSession);
 
         const results = await Promise.allSettled(
           fallbackElements.map((element) => Promise.resolve(element.play())),
@@ -876,10 +912,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    const minimumReadyState =
-      pendingTransition.shouldPlay && targetSession.isStemPlayback
-        ? HTMLMediaElement.HAVE_FUTURE_DATA
-        : HTMLMediaElement.HAVE_METADATA;
+    const minimumReadyState = HTMLMediaElement.HAVE_METADATA;
     const ready = targetElements.every((element) => {
       if (element.readyState >= minimumReadyState) {
         return true;
@@ -920,19 +953,23 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       const shouldForceSeek = forceSeekKeys.includes(mediaKey);
       if (shouldForceSeek) {
         element.currentTime = nextTime;
-        if (!awaitingSeekKeys.includes(mediaKey)) {
+        if (pendingTransition.awaitSeekBeforePlay && !awaitingSeekKeys.includes(mediaKey)) {
           awaitingSeekKeys.push(mediaKey);
         }
         return;
       }
       if (Math.abs(element.currentTime - nextTime) > SEEK_TOLERANCE_SECONDS) {
         element.currentTime = nextTime;
-        if (!awaitingSeekKeys.includes(mediaKey)) {
+        if (pendingTransition.awaitSeekBeforePlay && !awaitingSeekKeys.includes(mediaKey)) {
           awaitingSeekKeys.push(mediaKey);
         }
         return;
       }
-      if (element.seeking && !awaitingSeekKeys.includes(mediaKey)) {
+      if (
+        pendingTransition.awaitSeekBeforePlay &&
+        element.seeking &&
+        !awaitingSeekKeys.includes(mediaKey)
+      ) {
         awaitingSeekKeys.push(mediaKey);
       }
     });
@@ -958,6 +995,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    applyMediaPlaybackRate(targetSession);
     void Promise.allSettled(
       targetElements.map((element) => Promise.resolve(element.play())),
     ).then((results) => {
@@ -1040,6 +1078,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       }
     });
     applyStemVolumes(targetSession);
+    applyMediaPlaybackRate(targetSession);
 
     const results = await Promise.allSettled(
       activeElements.map((element) => Promise.resolve(element.play())),
@@ -1297,15 +1336,36 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       cancelPrecount();
       const nextTime = readMasterTime(previousSession);
       const shouldPlay = isPlayingRef.current;
+      const samePlaybackTarget =
+        playbackTargetSignature(previousSession) === playbackTargetSignature(nextSession);
+      const previousUsesBufferedClock = canUseBufferedClock(previousSession);
+      const nextUsesBufferedClock = canUseBufferedClock(nextSession);
+      if (samePlaybackTarget && !previousUsesBufferedClock && !nextUsesBufferedClock) {
+        const pendingTransition = pendingTransitionRef.current;
+        if (
+          pendingTransition &&
+          playbackTargetSignature(previousSession) === playbackTargetSignature(nextSession)
+        ) {
+          pendingTransition.signature = nextSignature;
+          pendingTransition.shouldPlay = pendingTransition.shouldPlay || shouldPlay;
+        }
+        applyMediaPlaybackRate(nextSession);
+        sessionRef.current = nextSession;
+        setSession(nextSession);
+        return;
+      }
       const primarySwap =
-        !previousSession.isStemPlayback && !nextSession.isStemPlayback;
+        !samePlaybackTarget && !previousSession.isStemPlayback && !nextSession.isStemPlayback;
       const awaitingLoadKeys = primarySwap ? [PRIMARY_MEDIA_KEY] : [];
       const awaitingSeekKeys =
         primarySwap
           ? [PRIMARY_MEDIA_KEY]
           : [];
       const forceSeekKeys = primarySwap ? [PRIMARY_MEDIA_KEY] : [];
-      if (shouldPlay) {
+      if (
+        shouldPlay &&
+        (!samePlaybackTarget || previousUsesBufferedClock || nextUsesBufferedClock)
+      ) {
         getActiveMediaElements(previousSession).forEach((element) => element.pause());
       }
       disposeStemPlaybackState();
@@ -1314,6 +1374,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         signature: nextSignature,
         shouldPlay,
         targetTime: nextTime,
+        awaitSeekBeforePlay: !samePlaybackTarget,
         awaitingLoadKeys,
         awaitingSeekKeys,
         forceSeekKeys,
@@ -1329,6 +1390,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     setSession(nextSession);
   }, [
     cancelPrecount,
+    applyMediaPlaybackRate,
+    canUseBufferedClock,
     clearPendingTransition,
     closePlaybackAudioContext,
     disposeStemPlaybackState,
@@ -1338,10 +1401,17 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   ]);
 
   useEffect(() => {
+    applyMediaPlaybackRate(session);
     applyStemVolumes(session);
     tryCompletePendingTransition();
     updateDurationFromActiveMedia(session);
-  }, [applyStemVolumes, session, tryCompletePendingTransition, updateDurationFromActiveMedia]);
+  }, [
+    applyMediaPlaybackRate,
+    applyStemVolumes,
+    session,
+    tryCompletePendingTransition,
+    updateDurationFromActiveMedia,
+  ]);
 
   useEffect(() => {
     if (!session?.visibleStemArtifactIds.length || !canUseStemClock()) {
@@ -1365,6 +1435,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     isPlaying,
     pausePlayback,
     playbackDurationSeconds,
+    playbackRate: playbackRateForSession(session),
     playbackTimeSeconds,
     playPlayback,
     seekBy,
@@ -1419,7 +1490,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             ? session.selectedPlaybackArtifactId ?? "__none__"
             : "__none__"
         }
-        ref={primaryAudioRef}
+        ref={setPrimaryAudioRef}
         src={
           session && !session.isStemPlayback && session.selectedPlaybackArtifactId
             ? api.streamArtifactUrl(session.selectedPlaybackArtifactId)
@@ -1434,6 +1505,12 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           setPlaybackTimeSeconds(event.currentTarget.currentTime);
         }}
         onLoadedMetadata={() => {
+          if (primaryAudioRef.current) {
+            applyMediaElementPlaybackRate(
+              primaryAudioRef.current,
+              playbackRateForSession(sessionRef.current),
+            );
+          }
           markPendingLoadComplete(PRIMARY_MEDIA_KEY);
           updateDurationFromActiveMedia();
           tryCompletePendingTransition();
@@ -1471,6 +1548,13 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             setPlaybackTimeSeconds(event.currentTarget.currentTime);
           }}
           onLoadedMetadata={() => {
+            const element = stemAudioRefs.current[artifactId];
+            if (element) {
+              applyMediaElementPlaybackRate(
+                element,
+                playbackRateForSession(sessionRef.current),
+              );
+            }
             if (sessionRef.current?.visibleStemArtifactIds[0] === artifactId) {
               updateDurationFromActiveMedia();
             }

@@ -28,3 +28,8 @@ name = "Package Mac"
 icon = "tool"
 command = "pnpm package:mac"
 platform = "darwin"
+
+[[actions]]
+name = "Run Tests"
+icon = "test"
+command = "pnpm test"

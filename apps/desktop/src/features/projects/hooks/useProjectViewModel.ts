@@ -1575,6 +1575,10 @@ export function useProjectViewModel() {
     { label: "Mix", value: `${previewArtifacts.length}` },
     { label: "Stem", value: `${stemArtifacts.length}` },
   ];
+  const nativePlaybackArtifacts = useMemo(
+    () => [...primaryArtifacts, ...visibleStemArtifacts].filter((artifact) => isPlayableArtifact(artifact)),
+    [primaryArtifacts, visibleStemArtifacts],
+  );
 
   useEffect(() => {
     if (hydratedProjectId !== projectId || !projectId || !selectedPlaybackArtifact) {
@@ -1588,6 +1592,13 @@ export function useProjectViewModel() {
       stageSummary,
       selectedPlaybackArtifactId: selectedPlaybackArtifact.id,
       isStemPlayback,
+      playbackArtifactIds: nativePlaybackArtifacts.map((artifact) => artifact.id),
+      artifactPathsById: Object.fromEntries(
+        nativePlaybackArtifacts.map((artifact) => [artifact.id, artifact.path]),
+      ),
+      artifactFormatsById: Object.fromEntries(
+        nativePlaybackArtifacts.map((artifact) => [artifact.id, artifact.format]),
+      ),
       visibleStemArtifactIds: visibleStemArtifacts.map((artifact) => artifact.id),
       stemControls,
       durationHintSeconds: projectQuery.data?.duration_seconds ?? 0,
@@ -1607,6 +1618,7 @@ export function useProjectViewModel() {
     precountEnabled,
     precountTempoBpm,
     registerProjectSession,
+    nativePlaybackArtifacts,
     selectedPlaybackArtifact,
     stageSummary,
     stageTitle,

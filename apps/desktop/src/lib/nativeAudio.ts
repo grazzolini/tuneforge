@@ -95,6 +95,27 @@ export type NativeAudioSnapshot = {
   lanes: NativeAudioLane[];
 };
 
+export type NativeAudioClickRequest = {
+  enabled: boolean;
+  bpm?: number | null;
+  beatsPerBar?: number | null;
+  accentFirstBeat?: boolean | null;
+  gain?: number | null;
+  followTransport?: boolean | null;
+};
+
+export type NativeAudioPositionEvent = {
+  sessionId: string | null;
+  positionSeconds: number;
+  durationSeconds: number;
+  state: "stopped" | "playing" | "paused";
+};
+
+export type NativeAudioErrorEvent = {
+  sessionId: string | null;
+  message: string;
+};
+
 export type NativeAudioInputRequest = {
   deviceId?: string | null;
   monitorEnabled?: boolean | null;
@@ -167,6 +188,10 @@ export function setNativeAudioLanes(payload: NativeAudioLaneUpdate) {
   return invoke<NativeAudioSnapshot>("audio_set_lanes", { payload });
 }
 
+export function setNativeAudioClick(payload: NativeAudioClickRequest) {
+  return invoke<NativeAudioSnapshot>("audio_set_click", { payload });
+}
+
 export function getNativeAudioSnapshot() {
   return invoke<NativeAudioSnapshot>("audio_get_snapshot");
 }
@@ -191,6 +216,26 @@ export function listenNativeAudioInputFrames(
   handler: (frame: NativeAudioInputFrame) => void,
 ) {
   return listen<NativeAudioInputFrame>("audio://input-frame", (event) => {
+    handler(event.payload);
+  });
+}
+
+export function listenNativeAudioPositions(
+  handler: (position: NativeAudioPositionEvent) => void,
+) {
+  return listen<NativeAudioPositionEvent>("audio://position", (event) => {
+    handler(event.payload);
+  });
+}
+
+export function listenNativeAudioEnded(handler: (snapshot: NativeAudioSnapshot) => void) {
+  return listen<NativeAudioSnapshot>("audio://ended", (event) => {
+    handler(event.payload);
+  });
+}
+
+export function listenNativeAudioErrors(handler: (error: NativeAudioErrorEvent) => void) {
+  return listen<NativeAudioErrorEvent>("audio://error", (event) => {
     handler(event.payload);
   });
 }

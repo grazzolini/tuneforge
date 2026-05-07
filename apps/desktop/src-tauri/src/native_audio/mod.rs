@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, State};
 
 pub mod android_media;
@@ -18,20 +18,21 @@ pub const AUDIO_EVENT_INPUT_LEVEL: &str = "audio://input-level";
 pub const AUDIO_EVENT_INPUT_FRAME: &str = "audio://input-frame";
 pub const AUDIO_EVENT_DEVICES_CHANGED: &str = "audio://devices-changed";
 
+#[derive(Clone)]
 pub struct NativeAudioState {
     capabilities: AudioCapabilities,
-    mixer: Mutex<mixer::MixerState>,
-    transport: Mutex<transport::TransportState>,
-    capture: Mutex<capture::CaptureState>,
+    mixer: Arc<Mutex<mixer::MixerState>>,
+    transport: Arc<Mutex<transport::TransportState>>,
+    capture: Arc<Mutex<capture::CaptureState>>,
 }
 
 impl NativeAudioState {
     pub fn new() -> Self {
         Self {
             capabilities: AudioCapabilities::detect(),
-            mixer: Mutex::new(mixer::MixerState::default()),
-            transport: Mutex::new(transport::TransportState::default()),
-            capture: Mutex::new(capture::CaptureState::default()),
+            mixer: Arc::new(Mutex::new(mixer::MixerState::default())),
+            transport: Arc::new(Mutex::new(transport::TransportState::default())),
+            capture: Arc::new(Mutex::new(capture::CaptureState::default())),
         }
     }
 
@@ -93,24 +94,30 @@ pub fn audio_get_capabilities(state: State<'_, NativeAudioState>) -> AudioCapabi
 }
 
 #[tauri::command]
-pub fn audio_prepare_session(
+pub async fn audio_prepare_session(
+    app: AppHandle,
     state: State<'_, NativeAudioState>,
     payload: transport::AudioSessionRequest,
 ) -> Result<transport::AudioSession, String> {
-    let effective_lanes = {
-        let mut mixer = state
-            .mixer
-            .lock()
-            .map_err(|_| "Native audio mixer state is unavailable.".to_string())?;
-        mixer.set_lanes(payload.lanes.clone());
-        mixer.effective_lanes()
-    };
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let effective_lanes = {
+            let mut mixer = state
+                .mixer
+                .lock()
+                .map_err(|_| "Native audio mixer state is unavailable.".to_string())?;
+            mixer.set_lanes(payload.lanes.clone());
+            mixer.effective_lanes()
+        };
 
-    let mut transport = state
-        .transport
-        .lock()
-        .map_err(|_| "Native audio transport state is unavailable.".to_string())?;
-    Ok(transport.prepare(payload, effective_lanes, state.capabilities()))
+        let mut transport = state
+            .transport
+            .lock()
+            .map_err(|_| "Native audio transport state is unavailable.".to_string())?;
+        Ok(transport.prepare(Some(app), payload, effective_lanes, state.capabilities()))
+    })
+    .await
+    .map_err(|error| format!("Native audio prepare task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -164,20 +171,33 @@ pub fn audio_set_lanes(
     state: State<'_, NativeAudioState>,
     payload: mixer::AudioLaneUpdate,
 ) -> Result<transport::AudioSnapshot, String> {
+    let raw_lanes = payload.lanes;
     let effective_lanes = {
         let mut mixer = state
             .mixer
             .lock()
             .map_err(|_| "Native audio mixer state is unavailable.".to_string())?;
-        mixer.set_lanes(payload.lanes);
+        mixer.set_lanes(raw_lanes.clone());
         mixer.effective_lanes()
     };
     let mut transport = state
         .transport
         .lock()
         .map_err(|_| "Native audio transport state is unavailable.".to_string())?;
-    transport.set_effective_lanes(effective_lanes);
+    transport.set_lanes(raw_lanes, effective_lanes);
     Ok(transport.snapshot())
+}
+
+#[tauri::command]
+pub fn audio_set_click(
+    state: State<'_, NativeAudioState>,
+    payload: transport::AudioClickRequest,
+) -> Result<transport::AudioSnapshot, String> {
+    let mut transport = state
+        .transport
+        .lock()
+        .map_err(|_| "Native audio transport state is unavailable.".to_string())?;
+    Ok(transport.set_click(payload))
 }
 
 #[tauri::command]

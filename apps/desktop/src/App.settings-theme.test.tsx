@@ -129,6 +129,11 @@ describe("Desktop app settings theme", () => {
       JSON.stringify({ backend: "native", detail: "desktop-cpal" }),
     );
     window.localStorage.setItem("tuneforge.tuner-native-capture-error", "Native microphone failed.");
+    window.localStorage.setItem(
+      "tuneforge.playback-backend",
+      JSON.stringify({ backend: "web", detail: null }),
+    );
+    window.localStorage.setItem("tuneforge.playback-native-error", "Native output failed.");
     renderApp(["/settings"]);
 
     expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
@@ -143,7 +148,8 @@ describe("Desktop app settings theme", () => {
     expect(await screen.findByText("/tmp/tuneforge")).toBeInTheDocument();
     expect(screen.getAllByText("Native (desktop-cpal)")).toHaveLength(2);
     expect(screen.getByText("Native microphone failed.")).toBeInTheDocument();
-    expect(screen.getByText("Web Audio")).toBeInTheDocument();
+    expect(screen.getByText("Native output failed.")).toBeInTheDocument();
+    expect(screen.getAllByText("Web Audio")).toHaveLength(2);
 
     expect(document.documentElement).toHaveAttribute("data-theme", "light");
     expect(window.localStorage.getItem("tuneforge.theme-preference")).toBe("light");

@@ -74,7 +74,19 @@ This document is an engineering notice and distribution checklist, not legal adv
 
 - **License:** Apache-2.0 / MIT (dual)
 - **Source:** <https://github.com/RustAudio/cpal>
-- **Notes:** Used by the desktop shell for local microphone device enumeration and tuner input capture.
+- **Notes:** Used by the desktop shell for local microphone device enumeration, tuner input capture, and native desktop playback.
+
+### signalsmith-stretch
+
+- **License:** MIT
+- **Source:** <https://github.com/colinmarc/signalsmith-stretch-rs>
+- **Notes:** Used by the native desktop playback engine for tempo changes with pitch preservation. Its resolved Rust transitive stack is permissively licensed.
+
+### Symphonia
+
+- **License:** MPL-2.0
+- **Source:** <https://github.com/pdeljanov/Symphonia>
+- **Notes:** Used only by the native desktop playback engine for streaming demux/decode of local playback files. FFmpeg remains the host dependency for transform/export work.
 
 ### rusqlite / SQLite
 

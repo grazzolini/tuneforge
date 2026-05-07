@@ -1,4 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  isWebAudioBackendForced,
+  setNativeAudioClick,
+} from "../../lib/nativeAudio";
 import { useStableCallback } from "../../lib/useStableCallback";
 import { usePlayback, type PlaybackSnapshot } from "../projects/playback-context";
 import { MetronomeContext, type MetronomeLaunchOptions } from "./metronome-context";
@@ -45,6 +49,7 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
   const isRunningRef = useRef(isRunning);
   const lastSyncedPlaybackTimeRef = useRef<number | null>(null);
   const lastSyncedScheduledBeatRef = useRef<number | null>(null);
+  const nativeFollowClickActiveRef = useRef(false);
   const nextFreeRunBeatIndexRef = useRef(0);
   const schedulerIntervalRef = useRef<number | null>(null);
   const tapTempoStateRef = useRef<TapTempoState>(createTapTempoState());
@@ -142,13 +147,15 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
   ) {
     const beatNumber = beatNumberForIndex(beatIndex, beatsPerBarRef.current);
     const accent = isAccentBeat(beatIndex, beatsPerBarRef.current, accentFirstBeatRef.current);
-    scheduleMetronomeClick({
-      accent,
-      audioContext,
-      sound: DEFAULT_METRONOME_SOUND,
-      startTimeSeconds,
-      volume: volumeRef.current,
-    });
+    if (!(followPlaybackRef.current && nativeFollowClickActiveRef.current)) {
+      scheduleMetronomeClick({
+        accent,
+        audioContext,
+        sound: DEFAULT_METRONOME_SOUND,
+        startTimeSeconds,
+        volume: volumeRef.current,
+      });
+    }
 
     const timeoutId = window.setTimeout(
       () => setActiveBeat(beatNumber),
@@ -365,6 +372,42 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     scheduleSynced,
   ]);
 
+  useEffect(() => {
+    if (!isTauriRuntime() || isWebAudioBackendForced() || !isRunning || !followPlayback) {
+      nativeFollowClickActiveRef.current = false;
+      if (isTauriRuntime()) {
+        void setNativeAudioClick({ enabled: false }).catch(() => undefined);
+      }
+      return;
+    }
+
+    let cancelled = false;
+    void setNativeAudioClick({
+      enabled: true,
+      bpm,
+      beatsPerBar,
+      accentFirstBeat,
+      gain: volume,
+      followTransport: true,
+    })
+      .then((snapshot) => {
+        if (!cancelled) {
+          nativeFollowClickActiveRef.current = Boolean(
+            snapshot.nativePlaybackSupported && snapshot.sessionId,
+          );
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          nativeFollowClickActiveRef.current = false;
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [accentFirstBeat, beatsPerBar, bpm, followPlayback, isRunning, volume]);
+
   const syncStatus = followPlayback
     ? session
       ? isPlaying
@@ -438,6 +481,10 @@ function getAudioContextConstructor(): AudioContextConstructor | null {
       .webkitAudioContext ??
     null
   );
+}
+
+function isTauriRuntime() {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
 function getCurrentMetronomeTimeMs() {

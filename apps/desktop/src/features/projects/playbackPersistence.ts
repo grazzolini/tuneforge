@@ -44,6 +44,29 @@ function normalizeProjectPlaybackSession(value: unknown): ProjectPlaybackSession
         (artifactId): artifactId is string => typeof artifactId === "string",
       )
     : [];
+  const playbackArtifactIds = Array.isArray(candidate.playbackArtifactIds)
+    ? candidate.playbackArtifactIds.filter(
+        (artifactId): artifactId is string => typeof artifactId === "string",
+      )
+    : [];
+  const artifactPathsById =
+    candidate.artifactPathsById && typeof candidate.artifactPathsById === "object"
+      ? Object.fromEntries(
+          Object.entries(candidate.artifactPathsById).filter(
+            (entry): entry is [string, string] =>
+              typeof entry[0] === "string" && typeof entry[1] === "string",
+          ),
+        )
+      : {};
+  const artifactFormatsById =
+    candidate.artifactFormatsById && typeof candidate.artifactFormatsById === "object"
+      ? Object.fromEntries(
+          Object.entries(candidate.artifactFormatsById).filter(
+            (entry): entry is [string, string] =>
+              typeof entry[0] === "string" && typeof entry[1] === "string",
+          ),
+        )
+      : {};
   const stemControlsInput =
     candidate.stemControls && typeof candidate.stemControls === "object"
       ? candidate.stemControls
@@ -59,6 +82,9 @@ function normalizeProjectPlaybackSession(value: unknown): ProjectPlaybackSession
         ? candidate.selectedPlaybackArtifactId
         : null,
     isStemPlayback: Boolean(candidate.isStemPlayback),
+    playbackArtifactIds,
+    artifactPathsById,
+    artifactFormatsById,
     visibleStemArtifactIds,
     stemControls: Object.fromEntries(
       Object.entries(stemControlsInput).map(([artifactId, controlState]) => [

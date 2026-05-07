@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
+  getNativeAudioCapabilities,
+  listNativeAudioInputDevices,
+} from "../../lib/nativeAudio";
+import {
   MAX_TUNER_REFERENCE_HZ,
   MIN_TUNER_REFERENCE_HZ,
   normalizeTunerReferenceHz,
@@ -16,20 +20,26 @@ type TunerPreferenceControlsProps = {
   children?: ReactNode;
   className?: string;
   inputDeviceId: string | null;
+  nativeCaptureDisabled?: boolean;
   onInputDeviceChange: (value: string | null) => void;
   onReferenceHzChange: (value: number) => void;
   referenceHz: number;
   refreshToken?: number;
+  systemDefaultOnly?: boolean;
 };
+
+const NATIVE_DEVICE_REFRESH_INTERVAL_MS = 5000;
 
 export function TunerPreferenceControls({
   children,
   className,
   inputDeviceId,
+  nativeCaptureDisabled = false,
   onInputDeviceChange,
   onReferenceHzChange,
   referenceHz,
   refreshToken = 0,
+  systemDefaultOnly = false,
 }: TunerPreferenceControlsProps) {
   const [devices, setDevices] = useState<TunerMicrophoneDevice[]>([]);
   const [deviceError, setDeviceError] = useState<string | null>(null);
@@ -45,17 +55,13 @@ export function TunerPreferenceControls({
   }, [isReferenceFocused, referenceHz]);
 
   useEffect(() => {
-    if (!canEnumerateDevices) {
-      setDevices([]);
-      setDeviceError("Microphone list unavailable.");
-      return undefined;
-    }
-
     let active = true;
 
     async function refreshDevices() {
       try {
-        const availableDevices = await enumerateAudioInputDevices();
+        const availableDevices = await enumerateTunerInputDevices({
+          includeNativeDevices: !nativeCaptureDisabled,
+        });
         if (!active) {
           return;
         }
@@ -70,18 +76,33 @@ export function TunerPreferenceControls({
     }
 
     void refreshDevices();
-    navigator.mediaDevices.addEventListener?.("devicechange", refreshDevices);
+    const refreshIntervalId = window.setInterval(
+      refreshDevices,
+      NATIVE_DEVICE_REFRESH_INTERVAL_MS,
+    );
+    if (canEnumerateDevices) {
+      navigator.mediaDevices?.addEventListener?.("devicechange", refreshDevices);
+    }
 
     return () => {
       active = false;
-      navigator.mediaDevices.removeEventListener?.("devicechange", refreshDevices);
+      window.clearInterval(refreshIntervalId);
+      if (canEnumerateDevices) {
+        navigator.mediaDevices?.removeEventListener?.("devicechange", refreshDevices);
+      }
     };
-  }, [canEnumerateDevices, refreshToken]);
+  }, [canEnumerateDevices, nativeCaptureDisabled, refreshToken]);
 
   const selectedDeviceMissing = useMemo(
-    () => Boolean(inputDeviceId && !devices.some((device) => device.deviceId === inputDeviceId)),
-    [devices, inputDeviceId],
+    () =>
+      Boolean(
+        !systemDefaultOnly &&
+          inputDeviceId &&
+          !devices.some((device) => device.deviceId === inputDeviceId),
+      ),
+    [devices, inputDeviceId, systemDefaultOnly],
   );
+  const selectedInputDeviceId = systemDefaultOnly ? "" : inputDeviceId ?? "";
 
   function commitReferenceDraft() {
     const normalizedReferenceHz = normalizeTunerReferenceHz(referenceDraft);
@@ -103,13 +124,23 @@ export function TunerPreferenceControls({
         <span>Microphone source</span>
         <select
           aria-label="Microphone source"
-          onChange={(event) => onInputDeviceChange(event.target.value || null)}
-          value={inputDeviceId ?? ""}
+          onChange={(event) => {
+            const nextValue = event.target.value || null;
+            if (systemDefaultOnly && nextValue) {
+              return;
+            }
+            onInputDeviceChange(nextValue);
+          }}
+          value={selectedInputDeviceId}
         >
           <option value="">System Default</option>
           {selectedDeviceMissing ? <option value={inputDeviceId ?? ""}>Saved microphone</option> : null}
           {devices.map((device) => (
-            <option key={device.deviceId || device.label} value={device.deviceId}>
+            <option
+              disabled={systemDefaultOnly}
+              key={device.deviceId || device.label}
+              value={device.deviceId}
+            >
               {device.label}
             </option>
           ))}
@@ -152,7 +183,47 @@ function canUseMediaDeviceEnumeration() {
   return typeof navigator !== "undefined" && typeof navigator.mediaDevices?.enumerateDevices === "function";
 }
 
+async function enumerateTunerInputDevices({
+  includeNativeDevices,
+}: {
+  includeNativeDevices: boolean;
+}) {
+  if (includeNativeDevices) {
+    const nativeDevices = await enumerateNativeAudioInputDevices();
+    if (nativeDevices.length > 0) {
+      rememberTunerMicrophoneDevices(nativeDevices);
+      return nativeDevices;
+    }
+  }
+  return enumerateAudioInputDevices();
+}
+
+async function enumerateNativeAudioInputDevices() {
+  try {
+    const capabilities = await getNativeAudioCapabilities();
+    if (!capabilities.micCaptureSupported) {
+      return [];
+    }
+    const deviceState = await listNativeAudioInputDevices();
+    if (!deviceState.supported) {
+      return [];
+    }
+    return deviceState.devices
+      .map((device) => ({
+        deviceId: device.id,
+        label: device.isDefault ? `${device.label} (Default)` : device.label,
+      }))
+      .filter((device) => device.label.trim());
+  } catch {
+    return [];
+  }
+}
+
 async function enumerateAudioInputDevices() {
+  if (!canUseMediaDeviceEnumeration()) {
+    return readRememberedTunerMicrophoneDevices();
+  }
+
   const devices = await navigator.mediaDevices.enumerateDevices();
   const visibleDevices = toVisibleTunerMicrophoneDevices(devices);
   if (visibleDevices.length > 0) {

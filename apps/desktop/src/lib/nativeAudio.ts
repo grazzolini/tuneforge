@@ -1,4 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+
+const FORCE_WEB_AUDIO_VALUES = new Set(["1", "true", "yes", "on"]);
 
 export type NativeAudioEventName =
   | "audio://state"
@@ -6,6 +9,7 @@ export type NativeAudioEventName =
   | "audio://ended"
   | "audio://error"
   | "audio://input-level"
+  | "audio://input-frame"
   | "audio://devices-changed";
 
 export type NativeAudioCapabilities = {
@@ -108,7 +112,24 @@ export type NativeAudioInputState = {
   monitorEnabled: boolean;
   monitorGain: number;
   inputLevel: number;
+  sampleRate: number | null;
 };
+
+export type NativeAudioInputFrame = {
+  deviceId: string | null;
+  sampleRate: number;
+  inputLevel: number;
+  samples: number[];
+  timestampMs: number;
+};
+
+export function isWebAudioBackendForced() {
+  const configuredValue = import.meta.env.VITE_TUNEFORGE_FORCE_WEB_AUDIO;
+  return (
+    typeof configuredValue === "string" &&
+    FORCE_WEB_AUDIO_VALUES.has(configuredValue.trim().toLowerCase())
+  );
+}
 
 export function getNativeAudioCapabilities() {
   return invoke<NativeAudioCapabilities>("audio_get_capabilities");
@@ -150,6 +171,10 @@ export function getNativeAudioSnapshot() {
   return invoke<NativeAudioSnapshot>("audio_get_snapshot");
 }
 
+export function getNativeAudioInputState() {
+  return invoke<NativeAudioInputState>("audio_get_input_state");
+}
+
 export function startNativeAudioInput(payload: NativeAudioInputRequest = {}) {
   return invoke<NativeAudioInputState>("audio_start_input", { payload });
 }
@@ -160,4 +185,12 @@ export function stopNativeAudioInput() {
 
 export function setNativeAudioMonitor(payload: NativeAudioMonitorRequest) {
   return invoke<NativeAudioInputState>("audio_set_monitor", { payload });
+}
+
+export function listenNativeAudioInputFrames(
+  handler: (frame: NativeAudioInputFrame) => void,
+) {
+  return listen<NativeAudioInputFrame>("audio://input-frame", (event) => {
+    handler(event.payload);
+  });
 }

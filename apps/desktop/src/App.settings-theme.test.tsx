@@ -1,6 +1,6 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   resetAppTestHarness,
   getAllByAriaKeyLabel,
@@ -12,12 +12,14 @@ import {
   queryByAriaKeyLabel,
   renderApp,
   setChordBackends,
+  setMockNativeAudioState,
   setProjectAnalysis,
   setProjectChords,
 } from "./test/appTestHarness";
 
 describe("Desktop app settings theme", () => {
   beforeEach(resetAppTestHarness);
+  afterEach(() => vi.unstubAllEnvs());
 
   async function openPlaybackWorkspace(user: ReturnType<typeof userEvent.setup>) {
     await user.click(screen.getByRole("tab", { name: "Playback" }));
@@ -115,6 +117,18 @@ describe("Desktop app settings theme", () => {
 
   it("persists theme and visible UI preferences", async () => {
     const user = userEvent.setup();
+    setMockNativeAudioState({
+      capabilities: {
+        backend: "desktop-cpal",
+        micCaptureSupported: true,
+        nativePlaybackSupported: false,
+      },
+    });
+    window.localStorage.setItem(
+      "tuneforge.tuner-input-capture-backend",
+      JSON.stringify({ backend: "native", detail: "desktop-cpal" }),
+    );
+    window.localStorage.setItem("tuneforge.tuner-native-capture-error", "Native microphone failed.");
     renderApp(["/settings"]);
 
     expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
@@ -127,6 +141,9 @@ describe("Desktop app settings theme", () => {
     await user.click(screen.getByRole("button", { name: /^Advanced Chords/ }));
     await user.click(screen.getByText("Show diagnostics"));
     expect(await screen.findByText("/tmp/tuneforge")).toBeInTheDocument();
+    expect(screen.getAllByText("Native (desktop-cpal)")).toHaveLength(2);
+    expect(screen.getByText("Native microphone failed.")).toBeInTheDocument();
+    expect(screen.getByText("Web Audio")).toBeInTheDocument();
 
     expect(document.documentElement).toHaveAttribute("data-theme", "light");
     expect(window.localStorage.getItem("tuneforge.theme-preference")).toBe("light");
@@ -145,6 +162,26 @@ describe("Desktop app settings theme", () => {
         defaultChordsFollowEnabled: true,
       }),
     );
+  });
+
+  it("shows forced Web Audio diagnostics", async () => {
+    const user = userEvent.setup();
+    vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "1");
+    setMockNativeAudioState({
+      capabilities: {
+        backend: "desktop-cpal",
+        micCaptureSupported: true,
+        nativePlaybackSupported: true,
+      },
+    });
+    renderApp(["/settings"]);
+
+    expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
+    await user.click(screen.getByText("Show diagnostics"));
+
+    expect(await screen.findByText("/tmp/tuneforge")).toBeInTheDocument();
+    expect(screen.getAllByText("Web Audio (forced)")).toHaveLength(2);
+    expect(mockInvoke).not.toHaveBeenCalledWith("audio_get_capabilities");
   });
 
   it("persists playback follow defaults", async () => {

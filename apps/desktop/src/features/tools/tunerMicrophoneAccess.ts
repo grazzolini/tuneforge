@@ -1,9 +1,16 @@
 const TUNER_MICROPHONE_ACCESS_KEY = "tuneforge.tuner-microphone-access-granted";
+const TUNER_INPUT_CAPTURE_BACKEND_KEY = "tuneforge.tuner-input-capture-backend";
 const TUNER_MICROPHONE_DEVICES_KEY = "tuneforge.tuner-microphone-devices";
+const TUNER_NATIVE_CAPTURE_ERROR_KEY = "tuneforge.tuner-native-capture-error";
 
 export type TunerMicrophoneDevice = {
   deviceId: string;
   label: string;
+};
+
+export type TunerInputCaptureBackend = {
+  backend: "native" | "web";
+  detail: string | null;
 };
 
 export function rememberTunerMicrophoneAccessGranted() {
@@ -11,6 +18,58 @@ export function rememberTunerMicrophoneAccessGranted() {
     return;
   }
   window.localStorage.setItem(TUNER_MICROPHONE_ACCESS_KEY, "true");
+}
+
+export function rememberTunerInputCaptureBackend(backend: TunerInputCaptureBackend) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(
+    TUNER_INPUT_CAPTURE_BACKEND_KEY,
+    JSON.stringify({
+      backend: backend.backend,
+      detail: backend.detail,
+    }),
+  );
+}
+
+export function readRememberedTunerInputCaptureBackend(): TunerInputCaptureBackend | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const rawBackend = JSON.parse(window.localStorage.getItem(TUNER_INPUT_CAPTURE_BACKEND_KEY) ?? "null");
+    if (!isTunerInputCaptureBackend(rawBackend)) {
+      return null;
+    }
+    return {
+      backend: rawBackend.backend,
+      detail: rawBackend.detail,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function rememberTunerNativeCaptureError(error: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(TUNER_NATIVE_CAPTURE_ERROR_KEY, error);
+}
+
+export function readRememberedTunerNativeCaptureError() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  return window.localStorage.getItem(TUNER_NATIVE_CAPTURE_ERROR_KEY);
+}
+
+export function clearRememberedTunerNativeCaptureError() {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.removeItem(TUNER_NATIVE_CAPTURE_ERROR_KEY);
 }
 
 export function forgetTunerMicrophoneAccessGranted() {
@@ -96,5 +155,16 @@ function isTunerMicrophoneDevice(device: unknown): device is TunerMicrophoneDevi
     "label" in device &&
     typeof device.deviceId === "string" &&
     typeof device.label === "string"
+  );
+}
+
+function isTunerInputCaptureBackend(device: unknown): device is TunerInputCaptureBackend {
+  return (
+    typeof device === "object" &&
+    device !== null &&
+    "backend" in device &&
+    "detail" in device &&
+    (device.backend === "native" || device.backend === "web") &&
+    (device.detail === null || typeof device.detail === "string")
   );
 }

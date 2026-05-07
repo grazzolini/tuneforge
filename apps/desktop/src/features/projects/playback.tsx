@@ -103,11 +103,10 @@ function nativeSessionSignature(session: ProjectPlaybackSession | null) {
   if (!session) {
     return "none";
   }
-  const playbackRate = playbackRateForSession(session).toFixed(6);
   const artifactIds = nativeActiveArtifactIds(session)
     .sort()
     .join(",");
-  return `${session.projectId}:native:${artifactIds}:rate:${playbackRate}`;
+  return `${session.projectId}:native:${artifactIds}`;
 }
 
 function nativeActiveArtifactIds(session: ProjectPlaybackSession) {
@@ -166,7 +165,15 @@ function nativeLaneRequestsForSession(session: ProjectPlaybackSession): NativeAu
   });
 }
 
+function nativeLaneUpdateForSession(session: ProjectPlaybackSession) {
+  return {
+    lanes: nativeLaneRequestsForSession(session),
+    playbackRate: playbackRateForSession(session),
+  };
+}
+
 export function PlaybackProvider({ children }: { children: ReactNode }) {
+  const initialWebMediaSourcesEnabled = isWebAudioBackendForced() || !isTauriRuntime();
   const restoredPlaybackState = useRef(readPersistedPlaybackState()).current;
   const primaryAudioRef = useRef<HTMLAudioElement | null>(null);
   const activePrecountRef = useRef<ActivePrecount | null>(null);
@@ -185,7 +192,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     sessionSignature: null,
     playbackSignature: null,
   });
+  const nativeStopPromiseRef = useRef<Promise<void> | null>(null);
   const nativeCapabilitiesPromiseRef = useRef<ReturnType<typeof getNativeAudioCapabilities> | null>(null);
+  const webMediaSourcesEnabledRef = useRef(initialWebMediaSourcesEnabled);
   const pendingTransitionRef = useRef<PendingTransition | null>(
     restoredPlaybackState
         ? {
@@ -218,6 +227,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   );
   const [isPrecounting, setIsPrecounting] = useState(false);
   const [isPlaying, setIsPlaying] = useState(restoredPlaybackState?.isPlaying ?? false);
+  const [webMediaSourcesEnabled, setWebMediaSourcesEnabled] = useState(
+    initialWebMediaSourcesEnabled,
+  );
 
   useEffect(() => {
     sessionRef.current = session;
@@ -293,7 +305,12 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
   const canUseBufferedClock = useCallback(
     (targetSession: ProjectPlaybackSession | null) => {
-      if (!targetSession || !canUseStemClock() || !usesDefaultPlaybackRate(targetSession)) {
+      if (
+        !webMediaSourcesEnabledRef.current ||
+        !targetSession ||
+        !canUseStemClock() ||
+        !usesDefaultPlaybackRate(targetSession)
+      ) {
         return false;
       }
 
@@ -309,6 +326,14 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     },
     [canUseStemClock],
   );
+
+  const enableWebMediaSources = useStableCallback(function enableWebMediaSources() {
+    if (webMediaSourcesEnabledRef.current) {
+      return;
+    }
+    webMediaSourcesEnabledRef.current = true;
+    setWebMediaSourcesEnabled(true);
+  });
 
   const getNativeAudioCapabilityState = useStableCallback(async function getNativeAudioCapabilityState() {
     if (isWebAudioBackendForced() || !isTauriRuntime()) {
@@ -354,6 +379,19 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     };
   });
 
+  const requestNativeStop = useStableCallback(function requestNativeStop() {
+    const stopPromise = stopNativeAudio()
+      .catch(() => undefined)
+      .then(() => undefined)
+      .finally(() => {
+        if (nativeStopPromiseRef.current === stopPromise) {
+          nativeStopPromiseRef.current = null;
+        }
+      });
+    nativeStopPromiseRef.current = stopPromise;
+    return stopPromise;
+  });
+
   const pauseRenderedMediaElements = useStableCallback(function pauseRenderedMediaElements(
     targetSession: ProjectPlaybackSession | null = sessionRef.current,
   ) {
@@ -369,7 +407,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     const sessionSignature = nativeSessionSignature(targetSession);
     const lanes = nativeLaneRequestsForSession(targetSession);
     if (nativePlaybackRef.current.sessionSignature === sessionSignature) {
-      await setNativeAudioLanes({ lanes });
+      await setNativeAudioLanes(nativeLaneUpdateForSession(targetSession));
       return true;
     }
 
@@ -380,9 +418,13 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     ) {
       const prepared = await pendingPrepare.preparePromise;
       if (prepared && nativePlaybackRef.current.sessionSignature === sessionSignature) {
-        await setNativeAudioLanes({ lanes });
+        await setNativeAudioLanes(nativeLaneUpdateForSession(targetSession));
       }
       return prepared;
+    }
+
+    if (nativeStopPromiseRef.current) {
+      await nativeStopPromiseRef.current;
     }
 
     const preparePromise = (async () => {
@@ -408,7 +450,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       }
       if (nativePlaybackRef.current.blockedSessionSignature === sessionSignature) {
         if (nativePlaybackRef.current.prepareSignature === sessionSignature) {
-          void stopNativeAudio().catch(() => undefined);
+          void requestNativeStop();
           nativePlaybackRef.current = {
             ...nativePlaybackRef.current,
             preparePromise: null,
@@ -420,7 +462,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       const currentNative = nativePlaybackRef.current;
       if (currentNative.prepareSignature !== sessionSignature) {
         if (!currentNative.active && !currentNative.prepareSignature) {
-          void stopNativeAudio().catch(() => undefined);
+          void requestNativeStop();
         }
         return false;
       }
@@ -446,7 +488,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     try {
       const prepared = await preparePromise;
       if (prepared && nativePlaybackRef.current.sessionSignature === sessionSignature) {
-        await setNativeAudioLanes({ lanes });
+        await setNativeAudioLanes(nativeLaneUpdateForSession(targetSession));
       }
       return prepared;
     } catch (error) {
@@ -471,6 +513,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     timeSeconds: number,
   ) {
     const sessionSignature = nativeSessionSignature(targetSession);
+    const wasNativeActive =
+      nativePlaybackRef.current.active &&
+      nativePlaybackRef.current.sessionSignature === sessionSignature;
     try {
       if (!(await ensureNativePlaybackSession(targetSession))) {
         return false;
@@ -486,14 +531,14 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           !nativePlaybackRef.current.active
         ) {
           markNativePlaybackInactive();
-          void stopNativeAudio().catch(() => undefined);
+          void requestNativeStop();
         }
         return false;
       }
-      await setNativeAudioLanes({ lanes: nativeLaneRequestsForSession(latestSession) });
+      await setNativeAudioLanes(nativeLaneUpdateForSession(latestSession));
       const snapshot = await playNativeAudio({
         startTimeSeconds:
-          timeSeconds <= SEEK_TOLERANCE_SECONDS
+          wasNativeActive || timeSeconds <= SEEK_TOLERANCE_SECONDS
             ? null
             : clampTime(timeSeconds, latestSession.durationHintSeconds || 0),
       });
@@ -1007,7 +1052,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       nativePlaybackRef.current.active &&
       nativePlaybackRef.current.sessionSignature === nativeSessionSignature(targetSession)
     ) {
-      void setNativeAudioLanes({ lanes: nativeLaneRequestsForSession(targetSession) }).catch(
+      void setNativeAudioLanes(nativeLaneUpdateForSession(targetSession)).catch(
         (error) => {
           rememberNativePlaybackError(playbackErrorMessage(error));
         },
@@ -1254,6 +1299,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      if (!webMediaSourcesEnabledRef.current) {
+        enableWebMediaSources();
+        return;
+      }
+
       const targetElements = getActiveMediaElements(targetSession);
       const targetKeys = getActiveMediaKeys(targetSession);
       if (!targetElements.length) {
@@ -1435,6 +1485,25 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         markNativePlaybackInactive();
         return;
       }
+    }
+
+    if (!webMediaSourcesEnabledRef.current) {
+      const activeKeys = getActiveMediaKeys(targetSession);
+      if (!activeKeys.length) {
+        return;
+      }
+      pendingTransitionRef.current = {
+        id: ++transitionCounterRef.current,
+        signature: playbackSignature(targetSession),
+        shouldPlay: true,
+        targetTime: masterTime,
+        awaitSeekBeforePlay: true,
+        awaitingLoadKeys: activeKeys,
+        awaitingSeekKeys: activeKeys,
+        forceSeekKeys: activeKeys,
+      };
+      enableWebMediaSources();
+      return;
     }
 
     const activeElements = getActiveMediaElements(targetSession);
@@ -1679,7 +1748,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     cancelPrecount();
     clearPendingTransition();
     if (nativePlaybackRef.current.active) {
-      void stopNativeAudio().catch(() => undefined);
+      void requestNativeStop();
       markNativePlaybackInactive();
     }
     if (stemPlaybackRef.current) {
@@ -1699,6 +1768,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     clearPendingTransition,
     getRenderedMediaElements,
     markNativePlaybackInactive,
+    requestNativeStop,
     stopStemSources,
     syncStemElementTimes,
     updateDurationFromActiveMedia,
@@ -1737,8 +1807,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       const previousUsesNative =
         nativePlaybackRef.current.active &&
         nativePlaybackRef.current.playbackSignature === previousSignature;
-      if (previousUsesNative) {
-        void stopNativeAudio().catch(() => undefined);
+      const carriesNativeSession =
+        previousUsesNative &&
+        nativeSessionSignature(previousSession) === nativeSessionSignature(nextSession);
+      if (previousUsesNative && !carriesNativeSession) {
+        void requestNativeStop();
         markNativePlaybackInactive();
         getActiveMediaElements(previousSession).forEach((element) => {
           element.pause();
@@ -1807,6 +1880,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     getRenderedMediaElements,
     markNativePlaybackInactive,
     readMasterTime,
+    requestNativeStop,
     syncStemElementTimes,
   ]);
 
@@ -1824,34 +1898,18 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   ]);
 
   useEffect(() => {
-    if (!session || !usesDefaultPlaybackRate(session)) {
-      if (nativePlaybackRef.current.preparePromise) {
-        nativePlaybackRef.current = {
-          ...nativePlaybackRef.current,
-          preparePromise: null,
-          prepareSignature: null,
-        };
-      }
-      return;
-    }
-    if (isPlayingRef.current) {
-      return;
-    }
-
-    void ensureNativePlaybackSession(session).catch((error) => {
-      rememberNativePlaybackError(playbackErrorMessage(error));
-    });
-  }, [ensureNativePlaybackSession, session]);
-
-  useEffect(() => {
-    if (!session?.visibleStemArtifactIds.length || !canUseStemClock()) {
+    if (
+      !webMediaSourcesEnabled ||
+      !session?.visibleStemArtifactIds.length ||
+      !canUseStemClock()
+    ) {
       return;
     }
 
     void Promise.allSettled(
       session.visibleStemArtifactIds.map((artifactId) => loadStemBuffer(artifactId)),
     );
-  }, [canUseStemClock, loadStemBuffer, session]);
+  }, [canUseStemClock, loadStemBuffer, session, webMediaSourcesEnabled]);
 
   useEffect(
     () => () => {
@@ -1885,7 +1943,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           return;
         }
         markNativePlaybackInactive();
-        void stopNativeAudio().catch(() => undefined);
+        void requestNativeStop();
         setPlaybackTimeSeconds(0);
         setIsPlaying(false);
         syncStemElementTimes(sessionRef.current?.visibleStemArtifactIds ?? [], 0);
@@ -1907,7 +1965,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         nativePlaybackRef.current.blockedSessionSignature = nativeSessionSignature(activeSession);
         markNativePlaybackInactive();
         setIsPlaying(false);
-        void stopNativeAudio().catch(() => undefined);
+        void requestNativeStop();
         syncStemElementTimes(activeSession.visibleStemArtifactIds, fallbackTime);
         getRenderedMediaElements(activeSession).forEach((element) => {
           element.pause();
@@ -1927,6 +1985,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     getRenderedMediaElements,
     markNativePlaybackInactive,
     playPlaybackImmediately,
+    requestNativeStop,
     syncStemElementTimes,
   ]);
 
@@ -1991,11 +2050,14 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         }
         ref={setPrimaryAudioRef}
         src={
-          session && !session.isStemPlayback && session.selectedPlaybackArtifactId
+          webMediaSourcesEnabled &&
+          session &&
+          !session.isStemPlayback &&
+          session.selectedPlaybackArtifactId
             ? api.streamArtifactUrl(session.selectedPlaybackArtifactId)
             : undefined
         }
-        preload="metadata"
+        preload={webMediaSourcesEnabled ? "metadata" : "none"}
         className="player player--hidden"
         onTimeUpdate={(event) => {
           if (!sessionRef.current || sessionRef.current.isStemPlayback) {
@@ -2034,8 +2096,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         <audio
           key={artifactId}
           ref={(element) => setStemAudioRef(artifactId, element)}
-          src={api.streamArtifactUrl(artifactId)}
-          preload="metadata"
+          src={webMediaSourcesEnabled ? api.streamArtifactUrl(artifactId) : undefined}
+          preload={webMediaSourcesEnabled ? "metadata" : "none"}
           className="player player--hidden"
           onTimeUpdate={(event) => {
             if (!sessionRef.current || !sessionRef.current.isStemPlayback) {

@@ -50,6 +50,7 @@ export type NativeAudioLaneRequest = {
 
 export type NativeAudioLaneUpdate = {
   lanes: NativeAudioLaneRequest[];
+  playbackRate?: number | null;
 };
 
 export type NativeAudioSessionRequest = {

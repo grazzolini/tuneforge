@@ -14,7 +14,10 @@ import {
 
 describe("Desktop app tools tuner", () => {
   beforeEach(resetAppTestHarness);
-  afterEach(() => vi.unstubAllEnvs());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
 
   it("renders the tools route with chromatic tuner defaults", async () => {
     renderApp(["/tools"]);
@@ -272,6 +275,29 @@ describe("Desktop app tools tuner", () => {
     await user.click(screen.getByRole("button", { name: "Stop" }));
 
     expect(getMockInvoke()).toHaveBeenCalledWith("audio_stop_input");
+  });
+
+  it("does not poll native microphone devices while the tuner is idle", async () => {
+    const setIntervalSpy = vi.spyOn(window, "setInterval");
+    setMockNativeAudioState({
+      capabilities: {
+        micCaptureSupported: true,
+        backend: "desktop-cpal",
+      },
+      inputDevices: {
+        supported: true,
+        devices: [{ id: "cpal:1:usb", label: "USB Interface", isDefault: false }],
+        error: null,
+      },
+    });
+
+    renderApp(["/tools"]);
+
+    expect(await screen.findByRole("option", { name: "USB Interface" })).toBeInTheDocument();
+    expect(
+      getMockInvoke().mock.calls.filter(([command]) => command === "audio_list_input_devices"),
+    ).toHaveLength(1);
+    expect(setIntervalSpy).not.toHaveBeenCalledWith(expect.any(Function), 5000);
   });
 
   it("can force Web Audio capture when native capture is available", async () => {

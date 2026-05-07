@@ -1,9 +1,10 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   findAudioByArtifactId,
   getMockAudioContexts,
+  getMockInvoke,
   markAudioReady,
   mockCreateExport,
   mockCreatePreview,
@@ -11,6 +12,7 @@ import {
   renderApp,
   resetAppTestHarness,
   setAudioPlaybackState,
+  setMockNativeAudioState,
   setProjectAnalysis,
 } from "./test/appTestHarness";
 
@@ -53,8 +55,22 @@ function setPlaybackPosition(value: string) {
   fireEvent.change(screen.getByLabelText("Playback position"), { target: { value } });
 }
 
+function mockTauriRuntime() {
+  Object.defineProperty(window, "__TAURI_INTERNALS__", {
+    configurable: true,
+    value: {},
+  });
+
+  return () => {
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  };
+}
+
 describe("Desktop app project playback tempo", () => {
   beforeEach(resetAppTestHarness);
+  afterEach(() => {
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
 
   it("persists whole-BPM tempo changes and reset without creating audio files", async () => {
     const user = userEvent.setup();
@@ -82,6 +98,34 @@ describe("Desktop app project playback tempo", () => {
 
     await user.click(screen.getByRole("button", { name: "Reset" }));
     expect(screen.getByText("Original 123.5 BPM")).toBeInTheDocument();
+  });
+
+  it("does not open native playback while the project is idle", async () => {
+    const restoreTauriRuntime = mockTauriRuntime();
+    const user = userEvent.setup();
+    setupTempoAnalysis();
+    setMockNativeAudioState({
+      capabilities: {
+        nativePlaybackSupported: true,
+        fallbackRequired: false,
+        fallbackReason: null,
+        backend: "desktop-cpal",
+      },
+    });
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+
+    expect(
+      Array.from(document.querySelectorAll("audio")).every(
+        (element) => !element.getAttribute("src"),
+      ),
+    ).toBe(true);
+    expect(
+      getMockInvoke().mock.calls.some(([command]) => command === "audio_prepare_session"),
+    ).toBe(false);
+    restoreTauriRuntime();
   });
 
   it("keeps source and practice mix switching on the streamed media path when tempo is changed", async () => {

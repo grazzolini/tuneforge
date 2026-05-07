@@ -1,5 +1,18 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { existsSync, realpathSync } from "node:fs";
+import { resolve } from "node:path";
+
+const workspaceRoot = resolve(import.meta.dirname, "../..");
+const fsAllow = Array.from(
+  new Set(
+    [
+      workspaceRoot,
+      realpathIfPresent(workspaceRoot),
+      realpathIfPresent(resolve(workspaceRoot, "node_modules")),
+    ].filter((path): path is string => Boolean(path)),
+  ),
+);
 
 const reactRefreshPreamble = {
   name: "tuneforge-react-refresh-preamble",
@@ -31,6 +44,9 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 1420,
     strictPort: true,
+    fs: {
+      allow: fsAllow,
+    },
   },
   test: {
     environment: "jsdom",
@@ -41,3 +57,7 @@ export default defineConfig({
     setupFiles: "./src/setupTests.ts",
   },
 });
+
+function realpathIfPresent(path: string) {
+  return existsSync(path) ? realpathSync(path) : null;
+}

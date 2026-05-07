@@ -28,8 +28,6 @@ type TunerPreferenceControlsProps = {
   systemDefaultOnly?: boolean;
 };
 
-const NATIVE_DEVICE_REFRESH_INTERVAL_MS = 5000;
-
 export function TunerPreferenceControls({
   children,
   className,
@@ -76,17 +74,12 @@ export function TunerPreferenceControls({
     }
 
     void refreshDevices();
-    const refreshIntervalId = window.setInterval(
-      refreshDevices,
-      NATIVE_DEVICE_REFRESH_INTERVAL_MS,
-    );
     if (canEnumerateDevices) {
       navigator.mediaDevices?.addEventListener?.("devicechange", refreshDevices);
     }
 
     return () => {
       active = false;
-      window.clearInterval(refreshIntervalId);
       if (canEnumerateDevices) {
         navigator.mediaDevices?.removeEventListener?.("devicechange", refreshDevices);
       }

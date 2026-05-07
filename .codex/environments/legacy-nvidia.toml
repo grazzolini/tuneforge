@@ -34,3 +34,8 @@ name = "Default Backend"
 icon = "tool"
 command = "pnpm sync:backend:default"
 platform = "linux"
+
+[[actions]]
+name = "Run Tests"
+icon = "test"
+command = "pnpm test"

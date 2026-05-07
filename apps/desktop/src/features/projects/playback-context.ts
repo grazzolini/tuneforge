@@ -8,6 +8,9 @@ export type ProjectPlaybackSession = {
   stageSummary: string;
   selectedPlaybackArtifactId: string | null;
   isStemPlayback: boolean;
+  playbackArtifactIds: string[];
+  artifactPathsById: Record<string, string>;
+  artifactFormatsById: Record<string, string>;
   visibleStemArtifactIds: string[];
   stemControls: Record<string, StemControlState>;
   durationHintSeconds: number;

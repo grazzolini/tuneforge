@@ -28,10 +28,12 @@ import {
   listNativeAudioInputDevices,
   listNativeAudioOutputDevices,
   listenNativeAudioInputFrames,
+  listenNativeAudioPositions,
   pauseNativeAudio,
   playNativeAudio,
   prepareNativeAudioSession,
   seekNativeAudio,
+  setNativeAudioClick,
   setNativeAudioLanes,
   setNativeAudioMonitor,
   startNativeAudioInput,
@@ -134,6 +136,14 @@ describe("native audio adapter", () => {
     await playNativeAudio({ startTimeSeconds: 4, scheduledStartTimeSeconds: 10 });
     await seekNativeAudio({ timeSeconds: 24 });
     await setNativeAudioLanes(laneUpdate);
+    await setNativeAudioClick({
+      enabled: true,
+      bpm: 120,
+      beatsPerBar: 4,
+      accentFirstBeat: true,
+      gain: 0.75,
+      followTransport: true,
+    });
 
     expect(mockInvoke).toHaveBeenNthCalledWith(1, "audio_prepare_session", {
       payload: sessionRequest,
@@ -146,6 +156,16 @@ describe("native audio adapter", () => {
     });
     expect(mockInvoke).toHaveBeenNthCalledWith(4, "audio_set_lanes", {
       payload: laneUpdate,
+    });
+    expect(mockInvoke).toHaveBeenNthCalledWith(5, "audio_set_click", {
+      payload: {
+        enabled: true,
+        bpm: 120,
+        beatsPerBar: 4,
+        accentFirstBeat: true,
+        gain: 0.75,
+        followTransport: true,
+      },
     });
   });
 
@@ -202,6 +222,28 @@ describe("native audio adapter", () => {
 
     expect(mockListen).toHaveBeenCalledWith("audio://input-frame", expect.any(Function));
     expect(handler).toHaveBeenCalledWith(frame);
+    stopListening();
+    expect(unlisten).toHaveBeenCalled();
+  });
+
+  it("wraps native position events", async () => {
+    const unlisten = vi.fn();
+    const position = {
+      sessionId: "session-1",
+      positionSeconds: 12,
+      durationSeconds: 180,
+      state: "playing" as const,
+    };
+    mockListen.mockImplementation(async (_eventName, callback) => {
+      callback({ event: "audio://position", id: 1, payload: position });
+      return unlisten;
+    });
+    const handler = vi.fn();
+
+    const stopListening = await listenNativeAudioPositions(handler);
+
+    expect(mockListen).toHaveBeenCalledWith("audio://position", expect.any(Function));
+    expect(handler).toHaveBeenCalledWith(position);
     stopListening();
     expect(unlisten).toHaveBeenCalled();
   });

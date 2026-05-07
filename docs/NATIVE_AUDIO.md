@@ -7,8 +7,14 @@ added feature by feature behind the Tauri native audio boundary.
 
 - Tuner microphone capture uses native `cpal` on supported desktop builds.
 - Tuner device listing uses native input enumeration first, then cached/browser labels as fallback.
-- Source, stem, and project playback still use Web Audio.
-- Native playback is intentionally not implemented yet.
+- Source, practice-mix, and stem playback prefer native `cpal` on macOS/Linux when every active
+  artifact has a local path. WAV uses a fast streaming reader; other common formats decode through
+  Symphonia for playback only.
+- Native playback supports shared transport play/pause/seek, position events, mute/solo lane gains,
+  and generated metronome click lanes for follow-playback mode.
+- Native tempo changes use `signalsmith-stretch` for pitch-preserving playback.
+- If native setup, decode, seek, or output startup fails, playback falls back to Web Audio at the
+  same transport position.
 
 ## Backend Selection
 
@@ -27,9 +33,8 @@ If the backend is already running separately:
 VITE_TUNEFORGE_FORCE_WEB_AUDIO=1 pnpm dev:desktop
 ```
 
-This is a global native audio override, not a per-feature setting. It currently affects tuner
-capture. Future native playback work should use the same override so Web Audio can remain the
-comparison path for both capture and playback.
+This is a global native audio override, not a per-feature setting. It affects tuner capture and
+project playback so Web Audio remains the comparison path for both.
 
 ## Diagnostics
 
@@ -39,6 +44,8 @@ Settings -> Local Data -> Show diagnostics reports:
 - last tuner capture backend
 - last native capture error
 - playback backend
+- last playback backend
+- last native playback error
 
 When `VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` is active, diagnostics report `Web Audio (forced)`.
 

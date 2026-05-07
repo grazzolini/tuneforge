@@ -4,6 +4,11 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { Link } from "react-router-dom";
 import { api, type ChordBackendSchema } from "../../lib/api";
 import {
+  readRememberedNativePlaybackError,
+  readRememberedPlaybackBackend,
+  type PlaybackBackend,
+} from "../../lib/playbackDiagnostics";
+import {
   getNativeAudioCapabilities,
   isWebAudioBackendForced,
   type NativeAudioCapabilities,
@@ -241,6 +246,15 @@ function lastInputCaptureBackendLabel(backend: TunerInputCaptureBackend | null) 
     : "Web Audio";
 }
 
+function lastPlaybackBackendLabel(backend: PlaybackBackend | null) {
+  if (!backend) {
+    return "Not started";
+  }
+  return backend.backend === "native"
+    ? `Native (${backend.detail ?? "unknown"})`
+    : "Web Audio";
+}
+
 function chordBackendOptions(backends: ChordBackendSchema[] | undefined): ChoiceOption<DefaultChordBackend>[] {
   if (!backends?.length) {
     return fallbackChordBackendOptions;
@@ -382,6 +396,8 @@ export function SettingsView() {
   });
   const lastInputCaptureBackend = readRememberedTunerInputCaptureBackend();
   const lastNativeCaptureError = readRememberedTunerNativeCaptureError();
+  const lastPlaybackBackend = readRememberedPlaybackBackend();
+  const lastNativePlaybackError = readRememberedNativePlaybackError();
   const savedThemeOverrideCount = themeOverrideCount(themeOverrides);
   const chordBackendChoices = chordBackendOptions(chordBackendsQuery.data?.backends);
 
@@ -778,6 +794,14 @@ export function SettingsView() {
             <div>
               <dt>Playback Backend</dt>
               <dd>{playbackBackendLabel(nativeAudioQuery.data, webAudioForced)}</dd>
+            </div>
+            <div>
+              <dt>Last Playback Backend</dt>
+              <dd>{lastPlaybackBackendLabel(lastPlaybackBackend)}</dd>
+            </div>
+            <div>
+              <dt>Last Native Playback Error</dt>
+              <dd>{lastNativePlaybackError ?? "None"}</dd>
             </div>
           </dl>
         </details>

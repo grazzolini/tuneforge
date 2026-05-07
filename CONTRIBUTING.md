@@ -19,6 +19,8 @@ If unsure whether a feature fits, open a discussion or feature-request issue fir
 - Python 3.11
 - `ffmpeg` and `ffprobe` on your `PATH`
 - Rust toolchain (for the Tauri shell)
+- Linux desktop builds need Clang/libclang for native audio bindings (`sudo pacman -S clang` on
+  Arch, `sudo apt-get install clang libclang-dev` on Debian/Ubuntu).
 
 ## Setup
 
@@ -26,7 +28,8 @@ If unsure whether a feature fits, open a discussion or feature-request issue fir
 pnpm setup:dev
 ```
 
-This installs workspace dependencies, syncs the backend Python environment, and regenerates shared API contracts.
+This installs workspace dependencies, checks Tauri build prerequisites, syncs the backend Python
+environment, and regenerates shared API contracts.
 
 To install the optional experimental crema/TensorFlow Advanced Chords backend for local desktop development:
 

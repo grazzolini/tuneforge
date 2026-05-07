@@ -18,6 +18,7 @@ printf '\n[tests] Starting Tauri shell tests\n\n'
 tauri_start=${SECONDS}
 (
   cd "${repo_root}/apps/desktop/src-tauri"
+  source "${repo_root}/scripts/configure-tauri-build-env.sh"
   cargo test
 )
 tauri_elapsed=$((SECONDS - tauri_start))

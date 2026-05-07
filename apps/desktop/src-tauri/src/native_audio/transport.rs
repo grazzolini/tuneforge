@@ -212,6 +212,10 @@ impl RingBuffer {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 enum WorkerControl {
+    SetPlaybackRate {
+        playback_rate: f64,
+        position_seconds: f64,
+    },
     Seek(f64),
     Stop,
 }
@@ -337,6 +341,8 @@ impl TransportState {
         let mut fallback_reason = capabilities.fallback_reason.map(str::to_string);
         let mut next_runtime = None;
 
+        self.stop_runtime();
+
         if native_playback_supported {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             if let Some(app) = app {
@@ -367,7 +373,6 @@ impl TransportState {
             }
         }
 
-        self.stop_runtime();
         self.session_id = Some(request.session_id.clone());
         self.status = TransportStatus::Stopped;
         self.started_at = None;
@@ -391,13 +396,41 @@ impl TransportState {
         }
     }
 
-    pub fn set_lanes(&mut self, raw_lanes: Vec<AudioLaneRequest>, lanes: Vec<EffectiveAudioLane>) {
+    pub fn set_lanes(
+        &mut self,
+        raw_lanes: Vec<AudioLaneRequest>,
+        lanes: Vec<EffectiveAudioLane>,
+        playback_rate: Option<f64>,
+    ) {
         self.raw_lanes = raw_lanes;
         self.lanes = lanes.clone();
+        let mut next_playback_rate = None;
+        if playback_rate.is_some() {
+            let rate = normalize_playback_rate(playback_rate);
+            if (rate - self.playback_rate).abs() > RATE_TOLERANCE {
+                self.position_seconds = self.current_position();
+                self.playback_rate = rate;
+                if self.status == TransportStatus::Playing {
+                    self.started_at = Some(Instant::now());
+                }
+                next_playback_rate = Some(rate);
+            }
+        }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let Some(runtime) = &self.runtime {
             if let Ok(mut shared) = runtime.shared.lock() {
                 update_shared_lanes(&mut shared, &lanes);
+                if let Some(rate) = next_playback_rate {
+                    let position_seconds = shared.position_seconds;
+                    self.position_seconds = position_seconds;
+                    shared.playback_rate = rate;
+                    for sender in &runtime.worker_control_senders {
+                        let _ = sender.send(WorkerControl::SetPlaybackRate {
+                            playback_rate: rate,
+                            position_seconds,
+                        });
+                    }
+                }
             }
         }
     }
@@ -1090,6 +1123,7 @@ fn spawn_decoder_worker(
     playback_rate: f64,
     error_sender: mpsc::Sender<String>,
 ) -> Result<(mpsc::Sender<WorkerControl>, JoinHandle<()>), String> {
+    let mut playback_rate = normalize_playback_rate(Some(playback_rate));
     let mut decoder = StreamingDecoder::open(
         path.clone(),
         target_sample_rate,
@@ -1101,6 +1135,33 @@ fn spawn_decoder_worker(
     let worker_thread = thread::spawn(move || loop {
         while let Ok(control) = receiver.try_recv() {
             match control {
+                WorkerControl::SetPlaybackRate {
+                    playback_rate: next_playback_rate,
+                    position_seconds,
+                } => {
+                    playback_rate = normalize_playback_rate(Some(next_playback_rate));
+                    if let Ok(mut guard) = ring.lock() {
+                        guard.clear();
+                    }
+                    decoder.set_playback_rate(playback_rate);
+                    if decoder.seek(position_seconds).is_err() {
+                        match StreamingDecoder::open(
+                            path.clone(),
+                            target_sample_rate,
+                            target_channels,
+                            playback_rate,
+                            position_seconds,
+                        ) {
+                            Ok(reopened) => {
+                                decoder = reopened;
+                            }
+                            Err(error) => {
+                                let _ = error_sender.send(error);
+                                return;
+                            }
+                        }
+                    }
+                }
                 WorkerControl::Seek(position_seconds) => {
                     if let Ok(mut guard) = ring.lock() {
                         guard.clear();
@@ -1233,6 +1294,13 @@ impl StreamingDecoder {
         match self {
             Self::Wav(decoder) => decoder.seek(position_seconds),
             Self::Symphonia(decoder) => decoder.seek(position_seconds),
+        }
+    }
+
+    fn set_playback_rate(&mut self, playback_rate: f64) {
+        match self {
+            Self::Wav(decoder) => decoder.set_playback_rate(playback_rate),
+            Self::Symphonia(decoder) => decoder.set_playback_rate(playback_rate),
         }
     }
 }
@@ -1426,6 +1494,11 @@ impl WavStreamDecoder {
         self.stretch.reset();
         Ok(())
     }
+
+    fn set_playback_rate(&mut self, playback_rate: f64) {
+        self.playback_rate = normalize_playback_rate(Some(playback_rate));
+        self.stretch.reset();
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1593,6 +1666,11 @@ impl SymphoniaStreamDecoder {
             }
         }
     }
+
+    fn set_playback_rate(&mut self, playback_rate: f64) {
+        self.playback_rate = normalize_playback_rate(Some(playback_rate));
+        self.stretch.reset();
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1708,6 +1786,28 @@ mod tests {
 
         assert!(session.native_playback_supported);
         assert_eq!(session.fallback_reason.as_deref(), None);
+    }
+
+    #[test]
+    fn lane_update_can_change_playback_rate_without_reprepare() {
+        let mut state = TransportState::default();
+        state.prepare(
+            None,
+            AudioSessionRequest {
+                session_id: "session".to_string(),
+                duration_seconds: Some(30.0),
+                playback_rate: Some(1.0),
+                lanes: Vec::new(),
+            },
+            Vec::new(),
+            capabilities(),
+        );
+
+        state.set_lanes(Vec::new(), Vec::new(), Some(1.5));
+        let snapshot = state.snapshot();
+
+        assert_eq!(snapshot.session_id.as_deref(), Some("session"));
+        assert!((snapshot.playback_rate - 1.5).abs() < RATE_TOLERANCE);
     }
 
     #[test]

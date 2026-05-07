@@ -25,6 +25,7 @@ pub enum AudioLaneRole {
 #[serde(rename_all = "camelCase")]
 pub struct AudioLaneUpdate {
     pub lanes: Vec<AudioLaneRequest>,
+    pub playback_rate: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize)]

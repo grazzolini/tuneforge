@@ -172,6 +172,7 @@ pub fn audio_set_lanes(
     payload: mixer::AudioLaneUpdate,
 ) -> Result<transport::AudioSnapshot, String> {
     let raw_lanes = payload.lanes;
+    let playback_rate = payload.playback_rate;
     let effective_lanes = {
         let mut mixer = state
             .mixer
@@ -184,7 +185,7 @@ pub fn audio_set_lanes(
         .transport
         .lock()
         .map_err(|_| "Native audio transport state is unavailable.".to_string())?;
-    transport.set_lanes(raw_lanes, effective_lanes);
+    transport.set_lanes(raw_lanes, effective_lanes, playback_rate);
     Ok(transport.snapshot())
 }
 

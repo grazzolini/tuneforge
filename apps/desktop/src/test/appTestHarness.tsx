@@ -456,6 +456,13 @@ const {
       eventName: string,
       handler: (event: NativeAudioInputFrameEvent) => void,
     ) => {
+      if (
+        eventName === "audio://position" ||
+        eventName === "audio://ended" ||
+        eventName === "audio://error"
+      ) {
+        return () => undefined;
+      }
       if (eventName !== "audio://input-frame") {
         throw new Error(`Unexpected listen event: ${eventName}`);
       }

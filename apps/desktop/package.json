@@ -12,7 +12,7 @@
     "android:studio": "bash ../../scripts/android-arm64-env.sh tauri android dev --open",
     "dev": "vite",
     "lint": "eslint .",
-    "tauri": "tauri",
+    "tauri": "bash ../../scripts/run-tauri-command.sh",
     "test": "vitest",
     "typecheck": "tsc --noEmit"
   },

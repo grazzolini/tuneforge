@@ -53,6 +53,8 @@ Security reports follow the process in [SECURITY.md](./SECURITY.md). "There is n
 - `ffmpeg` and `ffprobe` available on `PATH` (install via `brew install ffmpeg`, `apt install ffmpeg`, etc.)
 - macOS system mic volume control uses the built-in CoreAudio API.
 - Linux system mic volume control uses `wpctl` or `pactl` for the active PipeWire/PulseAudio session.
+- Linux native tempo playback builds require Clang/libclang for `bindgen` (`sudo pacman -S clang`
+  on Arch, `sudo apt-get install clang libclang-dev` on Debian/Ubuntu).
 - Rust toolchain for Tauri
 
 ## Setup
@@ -61,7 +63,10 @@ Security reports follow the process in [SECURITY.md](./SECURITY.md). "There is n
 pnpm setup:dev
 ```
 
-That command installs workspace dependencies, syncs the backend Python environment, and regenerates shared API contracts. The first backend sync is heavy because it installs Demucs and Torch. The first stem-separation run will additionally download the Demucs model weights into the local Torch cache.
+That command installs workspace dependencies, checks Tauri build prerequisites, syncs the backend
+Python environment, and regenerates shared API contracts. The first backend sync is heavy because it
+installs Demucs and Torch. The first stem-separation run will additionally download the Demucs model
+weights into the local Torch cache.
 
 To install the optional experimental crema/TensorFlow Advanced Chords backend for local desktop development:
 

@@ -15,11 +15,32 @@ added feature by feature behind the Tauri native audio boundary.
 - Native tempo changes use `signalsmith-stretch` for pitch-preserving playback.
 - If native setup, decode, seek, or output startup fails, playback falls back to Web Audio at the
   same transport position.
+- Linux native capture and playback currently use `cpal`'s ALSA host. On PipeWire/PulseAudio
+  desktops this usually routes through the host ALSA compatibility layer, but device labels may
+  still look like ALSA PCM names.
 
 ## Backend Selection
 
 The frontend prefers native audio when a feature is supported and falls back to Web Audio when
 native support is unavailable or startup fails.
+
+## Linux Build Prerequisites
+
+Native tempo playback uses `signalsmith-stretch`, which runs Rust `bindgen` during the Tauri build.
+Linux developers need Clang/libclang development files available to Cargo:
+
+```sh
+# Arch
+sudo pacman -S clang
+
+# Debian/Ubuntu
+sudo apt-get install clang libclang-dev
+```
+
+`pnpm setup:dev` checks these prerequisites. `pnpm --filter @tuneforge/desktop tauri ...` runs
+through a wrapper that sets `LIBCLANG_PATH` from a system install or from the backend `.venv` when
+the optional TensorFlow stack already installed the Python `libclang` wheel. Direct `cargo check` /
+`cargo test` commands still require the same system toolchain or equivalent `LIBCLANG_PATH`.
 
 For development comparisons, force Web Audio for native-audio-backed features:
 

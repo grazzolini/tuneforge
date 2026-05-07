@@ -81,6 +81,9 @@ if [[ "${skip_pnpm_install}" -eq 0 ]]; then
   pnpm install
 fi
 
+echo "Checking Tauri build dependencies..."
+source "${repo_root}/scripts/configure-tauri-build-env.sh"
+
 cd "${backend_dir}"
 
 if [[ "${legacy_nvidia}" -eq 1 ]]; then

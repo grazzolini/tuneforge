@@ -117,6 +117,8 @@ pnpm dev
 
 The backend serves the local API on `http://127.0.0.1:8765/api/v1`.
 
+Native audio notes and the Web Audio fallback override are in [docs/NATIVE_AUDIO.md](docs/NATIVE_AUDIO.md).
+
 ## Configuration
 
 Backend behavior is environment-driven. Full table is in [apps/backend/README.md](apps/backend/README.md#configuration). The most relevant variables:

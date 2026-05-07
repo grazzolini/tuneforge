@@ -70,6 +70,12 @@ This document is an engineering notice and distribution checklist, not legal adv
 - **Source:** <https://github.com/tauri-apps/tauri>
 - **Notes:** The Rust crate inventory is primarily MIT / Apache-2.0 / BSD / ISC / Zlib family. It also includes MPL-2.0 and Unicode-3.0 notice obligations. Crates with LGPL-2.1-or-later as one license option, such as `r-efi`, also provide MIT or Apache-2.0 alternatives in the resolved metadata.
 
+### cpal
+
+- **License:** Apache-2.0 / MIT (dual)
+- **Source:** <https://github.com/RustAudio/cpal>
+- **Notes:** Used by the desktop shell for local microphone device enumeration and tuner input capture.
+
 ### rusqlite / SQLite
 
 - **License:** MIT for rusqlite; SQLite is public domain

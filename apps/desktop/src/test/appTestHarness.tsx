@@ -43,8 +43,28 @@ const {
   mockGetHealth,
   mockGetMobileCapabilities,
   setMockSystemInputVolume,
+  setMockNativeAudio,
+  emitMockNativeAudioInputFrame,
+  mockListen,
 } = vi.hoisted(() => {
   const createdAt = "2026-04-18T13:16:00.000Z";
+  type NativeAudioInputFrame = {
+    deviceId: string | null;
+    sampleRate: number;
+    inputLevel: number;
+    samples: number[];
+    timestampMs: number;
+  };
+  type NativeAudioInputFrameEvent = {
+    event: "audio://input-frame";
+    id: number;
+    payload: NativeAudioInputFrame;
+  };
+  const nativeInputFrameListeners = new Map<
+    number,
+    (event: NativeAudioInputFrameEvent) => void
+  >();
+  let nextNativeInputFrameListenerId = 1;
   let state: {
     projects: Array<Record<string, unknown>>;
     analysisByProject: Record<string, Record<string, unknown> | null>;
@@ -64,6 +84,17 @@ const {
       backend: string | null;
       error: string | null;
     };
+    nativeAudioCapabilities: Record<string, unknown>;
+    nativeAudioInputDevices: Record<string, unknown>;
+    nativeAudioInputState: {
+      active: boolean;
+      deviceId: string | null;
+      monitorEnabled: boolean;
+      monitorGain: number;
+      inputLevel: number;
+      sampleRate: number | null;
+    };
+    nativeAudioStartError: string | null;
     nextProjectId: number;
     nextArtifactId: number;
     nextJobId: number;
@@ -332,6 +363,31 @@ const {
         backend: "test",
         error: null,
       },
+      nativeAudioCapabilities: {
+        platform: "test",
+        backend: "test",
+        nativePlaybackSupported: false,
+        micCaptureSupported: false,
+        micMonitoringSupported: false,
+        systemInputVolumeSupported: true,
+        emitsEvents: ["audio://input-frame", "audio://devices-changed"],
+        fallbackRequired: true,
+        fallbackReason: "Native audio playback is not wired yet; use existing WebView playback.",
+      },
+      nativeAudioInputDevices: {
+        supported: true,
+        devices: [],
+        error: null,
+      },
+      nativeAudioInputState: {
+        active: false,
+        deviceId: null,
+        monitorEnabled: false,
+        monitorGain: 0,
+        inputLevel: 0,
+        sampleRate: null,
+      },
+      nativeAudioStartError: null,
       nextProjectId: 200,
       nextArtifactId: 200,
       nextJobId: 200,
@@ -339,6 +395,8 @@ const {
       nextSectionId: 200,
       deferPreviewCompletion: false,
     };
+    nativeInputFrameListeners.clear();
+    nextNativeInputFrameListenerId = 1;
   }
 
   resetMockApiState();
@@ -362,6 +420,51 @@ const {
       ...nextState,
     };
   }
+  function setMockNativeAudio(nextState: {
+    capabilities?: Record<string, unknown>;
+    inputDevices?: Record<string, unknown>;
+    inputState?: Partial<typeof state.nativeAudioInputState>;
+    startError?: string | null;
+  }) {
+    state.nativeAudioCapabilities = {
+      ...state.nativeAudioCapabilities,
+      ...nextState.capabilities,
+    };
+    state.nativeAudioInputDevices = {
+      ...state.nativeAudioInputDevices,
+      ...nextState.inputDevices,
+    };
+    state.nativeAudioInputState = {
+      ...state.nativeAudioInputState,
+      ...nextState.inputState,
+    };
+    if ("startError" in nextState) {
+      state.nativeAudioStartError = nextState.startError ?? null;
+    }
+  }
+  function emitMockNativeAudioInputFrame(frame: NativeAudioInputFrame) {
+    nativeInputFrameListeners.forEach((listener, id) => {
+      listener({
+        event: "audio://input-frame",
+        id,
+        payload: clone(frame),
+      });
+    });
+  }
+  const mockListen = vi.fn(
+    async (
+      eventName: string,
+      handler: (event: NativeAudioInputFrameEvent) => void,
+    ) => {
+      if (eventName !== "audio://input-frame") {
+        throw new Error(`Unexpected listen event: ${eventName}`);
+      }
+      const listenerId = nextNativeInputFrameListenerId;
+      nextNativeInputFrameListenerId += 1;
+      nativeInputFrameListeners.set(listenerId, handler);
+      return () => nativeInputFrameListeners.delete(listenerId);
+    },
+  );
   const mockInvoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
     if (command === "backend_base_url") {
       return "http://127.0.0.1:8765";
@@ -396,6 +499,48 @@ const {
         error: null,
       };
       return clone(state.systemInputVolume);
+    }
+
+    if (command === "audio_get_capabilities") {
+      return clone(state.nativeAudioCapabilities);
+    }
+
+    if (command === "audio_list_input_devices") {
+      return clone(state.nativeAudioInputDevices);
+    }
+
+    if (command === "audio_get_input_state") {
+      return clone(state.nativeAudioInputState);
+    }
+
+    if (command === "audio_start_input") {
+      if (state.nativeAudioStartError) {
+        throw new Error(state.nativeAudioStartError);
+      }
+      const payload = (args?.payload ?? {}) as {
+        deviceId?: string | null;
+        monitorEnabled?: boolean | null;
+        monitorGain?: number | null;
+      };
+      state.nativeAudioInputState = {
+        active: true,
+        deviceId: payload.deviceId ?? null,
+        monitorEnabled: payload.monitorEnabled ?? false,
+        monitorGain: payload.monitorGain ?? 0,
+        inputLevel: 0,
+        sampleRate: 48000,
+      };
+      return clone(state.nativeAudioInputState);
+    }
+
+    if (command === "audio_stop_input") {
+      state.nativeAudioInputState = {
+        ...state.nativeAudioInputState,
+        active: false,
+        inputLevel: 0,
+        sampleRate: null,
+      };
+      return clone(state.nativeAudioInputState);
     }
 
     throw new Error(`Unexpected invoke command: ${command}`);
@@ -988,6 +1133,9 @@ const {
     mockGetHealth,
     mockGetMobileCapabilities,
     setMockSystemInputVolume,
+    setMockNativeAudio,
+    emitMockNativeAudioInputFrame,
+    mockListen,
   };
 });
 
@@ -1029,6 +1177,7 @@ export {
   mockDeleteProject,
   mockGetHealth,
   mockGetMobileCapabilities,
+  mockListen,
 };
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
@@ -1040,6 +1189,10 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => path,
   invoke: mockInvoke,
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: mockListen,
 }));
 
 vi.mock("../lib/api", async (importOriginal) => {
@@ -1222,6 +1375,18 @@ export function setMockSystemInputVolumeState(
   setMockSystemInputVolume(nextState);
 }
 
+export function setMockNativeAudioState(
+  nextState: Parameters<typeof setMockNativeAudio>[0],
+) {
+  setMockNativeAudio(nextState);
+}
+
+export function emitMockNativeInputFrame(
+  frame: Parameters<typeof emitMockNativeAudioInputFrame>[0],
+) {
+  emitMockNativeAudioInputFrame(frame);
+}
+
 export function getMockMediaDevices() {
   return (
     globalThis as typeof globalThis & {
@@ -1249,6 +1414,7 @@ export function resetAppTestHarness() {
   mockSave.mockReset();
   mockConfirm.mockReset();
   mockInvoke.mockClear();
+  mockListen.mockClear();
   mockConfirm.mockResolvedValue(true);
   mockListProjects.mockClear();
   mockImportProject.mockClear();

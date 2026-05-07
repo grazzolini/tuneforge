@@ -199,6 +199,8 @@ Validation failures return `INVALID_REQUEST` with serialized validation details.
 ## Packaging Constraints
 
 - FFmpeg is a host dependency and is not bundled.
+- Desktop tuner microphone capture uses `cpal` locally and falls back to Web Audio when native capture is unavailable.
+- Native audio development notes live in [NATIVE_AUDIO.md](NATIVE_AUDIO.md).
 - Desktop system microphone volume control uses CoreAudio on macOS, or host `wpctl`/`pactl` tools on Linux with an active PipeWire/PulseAudio session.
 - Advanced Chords dependencies are currently optional. If they become a default desktop backend, packaged builds must treat crema, its bundled chord model files, TensorFlow/Keras, h5py/HDF5, gRPC/Protobuf, and TensorBoard as default-runtime notice scope.
 - Demucs and lyrics models follow first-use local download/cache behavior.

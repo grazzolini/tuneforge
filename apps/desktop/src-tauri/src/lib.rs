@@ -348,6 +348,7 @@ pub fn run() {
             native_audio::audio_get_snapshot,
             native_audio::audio_list_input_devices,
             native_audio::audio_list_output_devices,
+            native_audio::audio_get_input_state,
             native_audio::audio_start_input,
             native_audio::audio_stop_input,
             native_audio::audio_set_monitor,

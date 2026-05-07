@@ -1,6 +1,6 @@
 use serde::Serialize;
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 pub mod android_media;
 pub mod capture;
@@ -15,6 +15,7 @@ pub const AUDIO_EVENT_POSITION: &str = "audio://position";
 pub const AUDIO_EVENT_ENDED: &str = "audio://ended";
 pub const AUDIO_EVENT_ERROR: &str = "audio://error";
 pub const AUDIO_EVENT_INPUT_LEVEL: &str = "audio://input-level";
+pub const AUDIO_EVENT_INPUT_FRAME: &str = "audio://input-frame";
 pub const AUDIO_EVENT_DEVICES_CHANGED: &str = "audio://devices-changed";
 
 pub struct NativeAudioState {
@@ -75,6 +76,7 @@ impl AudioCapabilities {
                 AUDIO_EVENT_ENDED,
                 AUDIO_EVENT_ERROR,
                 AUDIO_EVENT_INPUT_LEVEL,
+                AUDIO_EVENT_INPUT_FRAME,
                 AUDIO_EVENT_DEVICES_CHANGED,
             ],
             fallback_required: !platform.native_playback_supported,
@@ -212,7 +214,19 @@ pub fn audio_list_output_devices(
 }
 
 #[tauri::command]
+pub fn audio_get_input_state(
+    state: State<'_, NativeAudioState>,
+) -> Result<capture::AudioInputState, String> {
+    let capture = state
+        .capture
+        .lock()
+        .map_err(|_| "Native audio capture state is unavailable.".to_string())?;
+    Ok(capture.state())
+}
+
+#[tauri::command]
 pub fn audio_start_input(
+    app: AppHandle,
     state: State<'_, NativeAudioState>,
     payload: capture::AudioInputRequest,
 ) -> Result<capture::AudioInputState, String> {
@@ -227,7 +241,7 @@ pub fn audio_start_input(
         .capture
         .lock()
         .map_err(|_| "Native audio capture state is unavailable.".to_string())?;
-    capture.start(payload)
+    capture.start(app, payload)
 }
 
 #[tauri::command]

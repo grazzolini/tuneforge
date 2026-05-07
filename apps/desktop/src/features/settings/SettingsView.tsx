@@ -3,6 +3,11 @@ import { useQuery } from "@tanstack/react-query";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Link } from "react-router-dom";
 import { api, type ChordBackendSchema } from "../../lib/api";
+import {
+  getNativeAudioCapabilities,
+  isWebAudioBackendForced,
+  type NativeAudioCapabilities,
+} from "../../lib/nativeAudio";
 import { TunerPreferenceControls } from "../tools/TunerPreferenceControls";
 import {
   usePreferences,
@@ -23,6 +28,11 @@ import {
   useTheme,
   type ThemePreference,
 } from "../../lib/theme";
+import {
+  readRememberedTunerInputCaptureBackend,
+  readRememberedTunerNativeCaptureError,
+  type TunerInputCaptureBackend,
+} from "../tools/tunerMicrophoneAccess";
 
 type ChoiceOption<T extends string> = {
   disabled?: boolean;
@@ -196,6 +206,41 @@ function tunerInputDeviceLabel(value: string | null) {
   return value ? "Saved microphone" : "System Default";
 }
 
+function inputCaptureBackendLabel(
+  capabilities: NativeAudioCapabilities | undefined,
+  webAudioForced: boolean,
+) {
+  if (webAudioForced) {
+    return "Web Audio (forced)";
+  }
+  if (!capabilities) {
+    return "Unknown";
+  }
+  return capabilities.micCaptureSupported ? `Native (${capabilities.backend})` : "Web Audio";
+}
+
+function playbackBackendLabel(
+  capabilities: NativeAudioCapabilities | undefined,
+  webAudioForced: boolean,
+) {
+  if (webAudioForced) {
+    return "Web Audio (forced)";
+  }
+  if (!capabilities) {
+    return "Unknown";
+  }
+  return capabilities.nativePlaybackSupported ? `Native (${capabilities.backend})` : "Web Audio";
+}
+
+function lastInputCaptureBackendLabel(backend: TunerInputCaptureBackend | null) {
+  if (!backend) {
+    return "Not started";
+  }
+  return backend.backend === "native"
+    ? `Native (${backend.detail ?? "unknown"})`
+    : "Web Audio";
+}
+
 function chordBackendOptions(backends: ChordBackendSchema[] | undefined): ChoiceOption<DefaultChordBackend>[] {
   if (!backends?.length) {
     return fallbackChordBackendOptions;
@@ -321,6 +366,7 @@ export function SettingsView() {
   } = usePreferences();
   const [isSnapshotBusy, setIsSnapshotBusy] = useState(false);
   const [snapshotStatus, setSnapshotStatus] = useState<SnapshotStatus | null>(null);
+  const webAudioForced = isWebAudioBackendForced();
   const healthQuery = useQuery({
     queryKey: ["health"],
     queryFn: api.getHealth,
@@ -329,6 +375,13 @@ export function SettingsView() {
     queryKey: ["chord-backends"],
     queryFn: api.listChordBackends,
   });
+  const nativeAudioQuery = useQuery({
+    queryKey: ["native-audio-capabilities", webAudioForced],
+    queryFn: getNativeAudioCapabilities,
+    enabled: !webAudioForced,
+  });
+  const lastInputCaptureBackend = readRememberedTunerInputCaptureBackend();
+  const lastNativeCaptureError = readRememberedTunerNativeCaptureError();
   const savedThemeOverrideCount = themeOverrideCount(themeOverrides);
   const chordBackendChoices = chordBackendOptions(chordBackendsQuery.data?.backends);
 
@@ -570,9 +623,11 @@ export function SettingsView() {
 
           <TunerPreferenceControls
             inputDeviceId={defaultTunerInputDeviceId}
+            nativeCaptureDisabled={webAudioForced}
             onInputDeviceChange={setDefaultTunerInputDeviceId}
             onReferenceHzChange={setDefaultTunerReferenceHz}
             referenceHz={defaultTunerReferenceHz}
+            systemDefaultOnly={webAudioForced}
           />
 
           <div className="button-row">
@@ -707,6 +762,22 @@ export function SettingsView() {
             <div>
               <dt>Default Export Format</dt>
               <dd>{healthQuery.data?.default_export_format ?? "wav"}</dd>
+            </div>
+            <div>
+              <dt>Input Capture Available</dt>
+              <dd>{inputCaptureBackendLabel(nativeAudioQuery.data, webAudioForced)}</dd>
+            </div>
+            <div>
+              <dt>Last Tuner Capture</dt>
+              <dd>{lastInputCaptureBackendLabel(lastInputCaptureBackend)}</dd>
+            </div>
+            <div>
+              <dt>Last Native Capture Error</dt>
+              <dd>{lastNativeCaptureError ?? "None"}</dd>
+            </div>
+            <div>
+              <dt>Playback Backend</dt>
+              <dd>{playbackBackendLabel(nativeAudioQuery.data, webAudioForced)}</dd>
             </div>
           </dl>
         </details>

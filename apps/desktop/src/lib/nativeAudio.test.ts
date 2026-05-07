@@ -1,24 +1,33 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   NativeAudioCapabilities,
   NativeAudioDevices,
+  NativeAudioInputFrame,
   NativeAudioInputState,
   NativeAudioSnapshot,
 } from "./nativeAudio";
 
-const { mockInvoke } = vi.hoisted(() => ({
+const { mockInvoke, mockListen } = vi.hoisted(() => ({
   mockInvoke: vi.fn(),
+  mockListen: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: mockInvoke,
 }));
 
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: mockListen,
+}));
+
 import {
   getNativeAudioCapabilities,
+  getNativeAudioInputState,
   getNativeAudioSnapshot,
+  isWebAudioBackendForced,
   listNativeAudioInputDevices,
   listNativeAudioOutputDevices,
+  listenNativeAudioInputFrames,
   pauseNativeAudio,
   playNativeAudio,
   prepareNativeAudioSession,
@@ -37,7 +46,7 @@ const capabilities: NativeAudioCapabilities = {
   micCaptureSupported: false,
   micMonitoringSupported: false,
   systemInputVolumeSupported: true,
-  emitsEvents: ["audio://state", "audio://devices-changed"],
+  emitsEvents: ["audio://state", "audio://input-frame", "audio://devices-changed"],
   fallbackRequired: true,
   fallbackReason: "Native audio playback is not wired yet; use existing WebView playback.",
 };
@@ -65,11 +74,25 @@ const inputState: NativeAudioInputState = {
   monitorEnabled: true,
   monitorGain: 0.5,
   inputLevel: 0,
+  sampleRate: 48000,
 };
 
 describe("native audio adapter", () => {
   beforeEach(() => {
+    vi.unstubAllEnvs();
     mockInvoke.mockReset();
+    mockListen.mockReset();
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("detects the Web Audio backend override from env", () => {
+    expect(isWebAudioBackendForced()).toBe(false);
+
+    vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "true");
+    expect(isWebAudioBackendForced()).toBe(true);
+
+    vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "0");
+    expect(isWebAudioBackendForced()).toBe(false);
   });
 
   it("wraps capability and device discovery commands", async () => {
@@ -141,6 +164,7 @@ describe("native audio adapter", () => {
   it("wraps native input and monitor payloads", async () => {
     mockInvoke.mockResolvedValue(inputState);
 
+    await getNativeAudioInputState();
     await startNativeAudioInput({
       deviceId: "built-in",
       monitorEnabled: true,
@@ -149,13 +173,37 @@ describe("native audio adapter", () => {
     await setNativeAudioMonitor({ enabled: false, gain: 0 });
     await stopNativeAudioInput();
 
-    expect(mockInvoke).toHaveBeenNthCalledWith(1, "audio_start_input", {
+    expect(mockInvoke).toHaveBeenNthCalledWith(1, "audio_get_input_state");
+    expect(mockInvoke).toHaveBeenNthCalledWith(2, "audio_start_input", {
       payload: { deviceId: "built-in", monitorEnabled: true, monitorGain: 0.5 },
     });
-    expect(mockInvoke).toHaveBeenNthCalledWith(2, "audio_set_monitor", {
+    expect(mockInvoke).toHaveBeenNthCalledWith(3, "audio_set_monitor", {
       payload: { enabled: false, gain: 0 },
     });
-    expect(mockInvoke).toHaveBeenNthCalledWith(3, "audio_stop_input");
+    expect(mockInvoke).toHaveBeenNthCalledWith(4, "audio_stop_input");
+  });
+
+  it("wraps native input frame events", async () => {
+    const unlisten = vi.fn();
+    const frame: NativeAudioInputFrame = {
+      deviceId: "built-in",
+      sampleRate: 48000,
+      inputLevel: 0.25,
+      samples: [0, 0.5, -0.5],
+      timestampMs: 1234,
+    };
+    mockListen.mockImplementation(async (_eventName, callback) => {
+      callback({ event: "audio://input-frame", id: 1, payload: frame });
+      return unlisten;
+    });
+    const handler = vi.fn();
+
+    const stopListening = await listenNativeAudioInputFrames(handler);
+
+    expect(mockListen).toHaveBeenCalledWith("audio://input-frame", expect.any(Function));
+    expect(handler).toHaveBeenCalledWith(frame);
+    stopListening();
+    expect(unlisten).toHaveBeenCalled();
   });
 
   it("leaves invoke errors visible to callers", async () => {

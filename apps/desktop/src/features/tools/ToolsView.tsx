@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import {
+  getNativeAudioCapabilities,
+  isWebAudioBackendForced,
+  listenNativeAudioInputFrames,
+  startNativeAudioInput,
+  stopNativeAudioInput,
+  type NativeAudioCapabilities,
+  type NativeAudioInputFrame,
+} from "../../lib/nativeAudio";
 import { useStableCallback } from "../../lib/useStableCallback";
 import { usePreferences } from "../../lib/preferences";
 import { MetronomePage } from "./MetronomePage";
@@ -21,9 +30,12 @@ import {
   updateStabilizedTunerReading,
 } from "./tunerReadingSmoothing";
 import {
+  clearRememberedTunerNativeCaptureError,
   forgetTunerMicrophoneAccessGranted,
+  rememberTunerInputCaptureBackend,
   rememberTunerMicrophoneDevices,
   rememberTunerMicrophoneAccessGranted,
+  rememberTunerNativeCaptureError,
   toVisibleTunerMicrophoneDevices,
 } from "./tunerMicrophoneAccess";
 import {
@@ -36,6 +48,7 @@ const SYSTEM_INPUT_VOLUME_COMMIT_DELAY_MS = 180;
 
 type TunerStatus = "idle" | "starting" | "listening" | "unsupported" | "error";
 type ToolId = "tuner" | "metronome";
+type CaptureBackend = "native" | "web";
 
 type AudioContextConstructor = typeof AudioContext;
 
@@ -103,10 +116,14 @@ function ChromaticTunerPage() {
     setDefaultTunerReferenceHz,
   } = usePreferences();
   const [status, setStatus] = useState<TunerStatus>(() =>
-    canUseTunerCapture() ? "idle" : "unsupported",
+    canUseTunerCapture(null) ? "idle" : "unsupported",
   );
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [inputLevel, setInputLevel] = useState(0);
+  const [activeCaptureBackend, setActiveCaptureBackend] = useState<CaptureBackend | null>(null);
+  const [nativeAudioCapabilities, setNativeAudioCapabilities] =
+    useState<NativeAudioCapabilities | null>(null);
+  const webAudioForced = isWebAudioBackendForced();
   const [reading, setReading] = useState<TunerPitchReading | null>(null);
   const [deviceRefreshToken, setDeviceRefreshToken] = useState(0);
   const [systemInputVolumeRefreshToken, setSystemInputVolumeRefreshToken] = useState(0);
@@ -116,6 +133,8 @@ function ChromaticTunerPage() {
   const frameIdRef = useRef<number | null>(null);
   const inputDeviceIdRef = useRef(defaultTunerInputDeviceId);
   const mediaSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const nativeCaptureActiveRef = useRef(false);
+  const nativeInputUnlistenRef = useRef<(() => void) | null>(null);
   const referenceHzRef = useRef(defaultTunerReferenceHz);
   const requestIdRef = useRef(0);
   const readingStabilizerRef = useRef(createStabilizedTunerReadingState());
@@ -135,10 +154,54 @@ function ChromaticTunerPage() {
     statusRef.current = status;
   }, [status]);
 
+  useEffect(() => {
+    let active = true;
+
+    async function refreshNativeAudioCapabilities() {
+      if (webAudioForced) {
+        setNativeAudioCapabilities(null);
+        if (statusRef.current === "unsupported" && canUseTunerCapture(null)) {
+          setStatus("idle");
+          setErrorMessage(null);
+        }
+        return;
+      }
+
+      try {
+        const capabilities = await getNativeAudioCapabilities();
+        if (!active) {
+          return;
+        }
+        setNativeAudioCapabilities(capabilities);
+        if (capabilities.micCaptureSupported && statusRef.current === "unsupported") {
+          setStatus("idle");
+          setErrorMessage(null);
+        }
+      } catch {
+        if (active) {
+          setNativeAudioCapabilities(null);
+        }
+      }
+    }
+
+    void refreshNativeAudioCapabilities();
+    return () => {
+      active = false;
+    };
+  }, [webAudioForced]);
+
   const releaseCapture = useStableCallback(function releaseCapture() {
     if (frameIdRef.current !== null) {
       window.cancelAnimationFrame(frameIdRef.current);
       frameIdRef.current = null;
+    }
+    setActiveCaptureBackend(null);
+
+    nativeInputUnlistenRef.current?.();
+    nativeInputUnlistenRef.current = null;
+    if (nativeCaptureActiveRef.current) {
+      nativeCaptureActiveRef.current = false;
+      void stopNativeAudioInput().catch(() => undefined);
     }
 
     try {
@@ -167,6 +230,23 @@ function ChromaticTunerPage() {
     setReading(null);
   });
 
+  const processTunerSamples = useStableCallback(function processTunerSamples(
+    samples: Float32Array<ArrayBufferLike>,
+    sampleRate: number,
+    inputLevel: number,
+    timestampMs: number,
+  ) {
+    setInputLevel(inputLevel);
+    const rawReading = analyzeTunerBuffer(samples, sampleRate, referenceHzRef.current);
+    const stabilizedState = updateStabilizedTunerReading(
+      readingStabilizerRef.current,
+      rawReading,
+      timestampMs,
+    );
+    readingStabilizerRef.current = stabilizedState;
+    setReading(stabilizedState.displayedReading);
+  });
+
   const readTunerFrame = useStableCallback(function readTunerFrame(timestampMs?: number) {
     const analyser = analyserRef.current;
     const audioContext = audioContextRef.current;
@@ -179,31 +259,126 @@ function ChromaticTunerPage() {
     }
 
     analyser.getFloatTimeDomainData(timeDomainDataRef.current);
-    setInputLevel(calculateTunerInputLevel(timeDomainDataRef.current));
-    const rawReading = analyzeTunerBuffer(
+    processTunerSamples(
       timeDomainDataRef.current,
       audioContext.sampleRate,
-      referenceHzRef.current,
-    );
-    const stabilizedState = updateStabilizedTunerReading(
-      readingStabilizerRef.current,
-      rawReading,
+      calculateTunerInputLevel(timeDomainDataRef.current),
       timestampMs ?? getCurrentTunerTimeMs(),
     );
-    readingStabilizerRef.current = stabilizedState;
-    setReading(stabilizedState.displayedReading);
     frameIdRef.current = window.requestAnimationFrame(readTunerFrame);
   });
 
-  const startTuner = useStableCallback(async function startTuner(nextDeviceId?: string | null) {
+  const resolveNativeAudioCapabilities = useStableCallback(async function resolveNativeAudioCapabilities() {
+    if (webAudioForced) {
+      setNativeAudioCapabilities(null);
+      return null;
+    }
+    if (nativeAudioCapabilities) {
+      return nativeAudioCapabilities;
+    }
+    try {
+      const capabilities = await getNativeAudioCapabilities();
+      setNativeAudioCapabilities(capabilities);
+      return capabilities;
+    } catch {
+      setNativeAudioCapabilities(null);
+      return null;
+    }
+  });
+
+  const handleNativeInputFrame = useStableCallback(function handleNativeInputFrame(
+    frame: NativeAudioInputFrame,
+  ) {
+    if (!nativeCaptureActiveRef.current || frame.sampleRate <= 0 || frame.samples.length === 0) {
+      return;
+    }
+    processTunerSamples(
+      new Float32Array(frame.samples),
+      frame.sampleRate,
+      frame.inputLevel,
+      frame.timestampMs,
+    );
+  });
+
+  const startNativeTuner = useStableCallback(async function startNativeTuner(
+    deviceId: string | null,
+    requestId: number,
+    backend: string | null,
+  ) {
+    const unlisten = await listenNativeAudioInputFrames(handleNativeInputFrame);
+    if (requestIdRef.current !== requestId) {
+      unlisten();
+      return;
+    }
+    nativeInputUnlistenRef.current = unlisten;
+    const inputState = await startNativeAudioInput({ deviceId });
+    nativeCaptureActiveRef.current = inputState.active;
+    if (requestIdRef.current !== requestId) {
+      releaseCapture();
+      return;
+    }
+    if (inputState.deviceId) {
+      inputDeviceIdRef.current = deviceId;
+    }
+    rememberTunerMicrophoneAccessGranted();
+    rememberTunerInputCaptureBackend({
+      backend: "native",
+      detail: backend,
+    });
+    clearRememberedTunerNativeCaptureError();
+    setActiveCaptureBackend("native");
+    setDeviceRefreshToken(Date.now());
+    setStatus("listening");
+  });
+
+  const startWebTuner = useStableCallback(async function startWebTuner(
+    _nextDeviceId: string | null,
+    requestId: number,
+  ) {
     const AudioContextCtor = getAudioContextConstructor();
     const mediaDevices = getMediaDevices();
     if (!AudioContextCtor || !mediaDevices) {
-      setStatus("unsupported");
-      setErrorMessage("Microphone capture is unavailable.");
+      throw new Error("Microphone capture is unavailable.");
+    }
+
+    const stream = await mediaDevices.getUserMedia(createAudioConstraints());
+    if (requestIdRef.current !== requestId) {
+      stream.getTracks().forEach((track) => track.stop());
       return;
     }
 
+    const audioContext = new AudioContextCtor();
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.12;
+
+    const mediaSource = audioContext.createMediaStreamSource(stream);
+    mediaSource.connect(analyser);
+
+    streamRef.current = stream;
+    audioContextRef.current = audioContext;
+    analyserRef.current = analyser;
+    mediaSourceRef.current = mediaSource;
+
+    if (audioContext.state === "suspended") {
+      await audioContext.resume();
+    }
+
+    if (requestIdRef.current !== requestId) {
+      releaseCapture();
+      return;
+    }
+
+    rememberTunerMicrophoneAccessGranted();
+    rememberTunerInputCaptureBackend({ backend: "web", detail: null });
+    await rememberVisibleAudioInputDevices(mediaDevices);
+    setActiveCaptureBackend("web");
+    setDeviceRefreshToken(Date.now());
+    setStatus("listening");
+    readTunerFrame();
+  });
+
+  const startTuner = useStableCallback(async function startTuner(nextDeviceId?: string | null) {
     releaseCapture();
     setErrorMessage(null);
     resetTunerDisplay();
@@ -212,43 +387,29 @@ function ChromaticTunerPage() {
 
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
+    const selectedDeviceId = nextDeviceId ?? inputDeviceIdRef.current;
+    const selectedNativeDevice = isNativeAudioInputDeviceId(selectedDeviceId);
+    const nativeCapabilities = await resolveNativeAudioCapabilities();
+
+    if (!webAudioForced && nativeCapabilities?.micCaptureSupported) {
+      try {
+        await startNativeTuner(selectedDeviceId, requestId, nativeCapabilities.backend);
+        return;
+      } catch (error) {
+        rememberTunerNativeCaptureError(captureErrorMessage(error));
+        if (requestIdRef.current !== requestId) {
+          return;
+        }
+        releaseCapture();
+      }
+    } else if (!webAudioForced && selectedNativeDevice) {
+      rememberTunerNativeCaptureError(
+        "Selected microphone requires native input capture, but native capture is unavailable.",
+      );
+    }
 
     try {
-      const stream = await mediaDevices.getUserMedia(
-        createAudioConstraints(nextDeviceId ?? inputDeviceIdRef.current),
-      );
-      if (requestIdRef.current !== requestId) {
-        stream.getTracks().forEach((track) => track.stop());
-        return;
-      }
-
-      const audioContext = new AudioContextCtor();
-      const analyser = audioContext.createAnalyser();
-      analyser.fftSize = 2048;
-      analyser.smoothingTimeConstant = 0.12;
-
-      const mediaSource = audioContext.createMediaStreamSource(stream);
-      mediaSource.connect(analyser);
-
-      streamRef.current = stream;
-      audioContextRef.current = audioContext;
-      analyserRef.current = analyser;
-      mediaSourceRef.current = mediaSource;
-
-      if (audioContext.state === "suspended") {
-        await audioContext.resume();
-      }
-
-      if (requestIdRef.current !== requestId) {
-        releaseCapture();
-        return;
-      }
-
-      rememberTunerMicrophoneAccessGranted();
-      await rememberVisibleAudioInputDevices(mediaDevices);
-      setDeviceRefreshToken(Date.now());
-      setStatus("listening");
-      readTunerFrame();
+      await startWebTuner(selectedDeviceId, requestId);
     } catch (error) {
       if (requestIdRef.current !== requestId) {
         return;
@@ -267,7 +428,11 @@ function ChromaticTunerPage() {
     releaseCapture();
     setErrorMessage(null);
     resetTunerDisplay();
-    setStatus(canUseTunerCapture() ? "idle" : "unsupported");
+    setStatus(
+      canUseTunerCapture(webAudioForced ? null : nativeAudioCapabilities)
+        ? "idle"
+        : "unsupported",
+    );
   });
 
   useEffect(
@@ -298,8 +463,19 @@ function ChromaticTunerPage() {
 
   const isBusy = status === "starting";
   const isListening = status === "listening";
-  const canStart = canUseTunerCapture() && !isBusy && !isListening;
+  const canStart =
+    canUseTunerCapture(webAudioForced ? null : nativeAudioCapabilities) && !isBusy && !isListening;
   const statusText = headerStatusLabel(status, reading);
+  const systemDefaultInputOnly =
+    webAudioForced ||
+    activeCaptureBackend === "web" ||
+    nativeAudioCapabilities?.micCaptureSupported === false;
+  const inputVolumeDeviceId =
+    webAudioForced ||
+    activeCaptureBackend === "web" ||
+    !isNativeAudioInputDeviceId(defaultTunerInputDeviceId)
+      ? null
+      : defaultTunerInputDeviceId;
 
   return (
     <div className="tuner-shell">
@@ -316,10 +492,12 @@ function ChromaticTunerPage() {
         <TunerPreferenceControls
           className="tuner-preferences--with-mode"
           inputDeviceId={defaultTunerInputDeviceId}
+          nativeCaptureDisabled={webAudioForced}
           onInputDeviceChange={handleInputDeviceChange}
           onReferenceHzChange={handleReferenceHzChange}
           referenceHz={defaultTunerReferenceHz}
           refreshToken={deviceRefreshToken}
+          systemDefaultOnly={systemDefaultInputOnly}
         >
           <label className="tuner-field">
             <span>Visual mode</span>
@@ -334,7 +512,10 @@ function ChromaticTunerPage() {
           </label>
         </TunerPreferenceControls>
 
-        <SystemInputVolumeControl refreshToken={systemInputVolumeRefreshToken} />
+        <SystemInputVolumeControl
+          deviceId={inputVolumeDeviceId}
+          refreshToken={systemInputVolumeRefreshToken}
+        />
 
         {errorMessage ? <p className="inline-error">{errorMessage}</p> : null}
 
@@ -397,7 +578,13 @@ function TunerHeader({
   );
 }
 
-function SystemInputVolumeControl({ refreshToken }: { refreshToken: number }) {
+function SystemInputVolumeControl({
+  deviceId,
+  refreshToken,
+}: {
+  deviceId: string | null;
+  refreshToken: number;
+}) {
   const [volumeState, setVolumeState] = useState<SystemDefaultInputVolume | null>(null);
   const [draftVolume, setDraftVolume] = useState(0);
   const [isSetting, setIsSetting] = useState(false);
@@ -407,7 +594,7 @@ function SystemInputVolumeControl({ refreshToken }: { refreshToken: number }) {
 
   const refreshVolume = useStableCallback(async function refreshVolume() {
     try {
-      const nextState = await getSystemDefaultInputVolume();
+      const nextState = await getSystemDefaultInputVolume(deviceId);
       setVolumeState(nextState);
       if (typeof nextState.volumePercent === "number") {
         setDraftVolume(nextState.volumePercent);
@@ -425,8 +612,13 @@ function SystemInputVolumeControl({ refreshToken }: { refreshToken: number }) {
   });
 
   useEffect(() => {
+    volumeSetRequestIdRef.current += 1;
+    if (volumeCommitTimeoutRef.current !== null) {
+      window.clearTimeout(volumeCommitTimeoutRef.current);
+      volumeCommitTimeoutRef.current = null;
+    }
     void refreshVolume();
-  }, [refreshToken, refreshVolume]);
+  }, [deviceId, refreshToken, refreshVolume]);
 
   useEffect(() => {
     return () => {
@@ -450,14 +642,15 @@ function SystemInputVolumeControl({ refreshToken }: { refreshToken: number }) {
   }, [refreshVolume]);
 
   const supported = Boolean(volumeState?.supported && typeof volumeState.volumePercent === "number");
-  const statusText = systemInputVolumeStatus(volumeState, isSetting);
+  const hasDeviceTarget = Boolean(deviceId);
+  const statusText = systemInputVolumeStatus(volumeState, isSetting, hasDeviceTarget);
 
   const commitVolume = useStableCallback(async function commitVolume(volume: number) {
     const requestId = volumeSetRequestIdRef.current + 1;
     volumeSetRequestIdRef.current = requestId;
     setIsSetting(true);
     try {
-      const nextState = await setSystemDefaultInputVolume(volume);
+      const nextState = await setSystemDefaultInputVolume(volume, deviceId);
       if (volumeSetRequestIdRef.current !== requestId) {
         return;
       }
@@ -513,12 +706,12 @@ function SystemInputVolumeControl({ refreshToken }: { refreshToken: number }) {
   return (
     <div className="tuner-system-volume">
       <label className="tuner-field">
-        <span className="tuner-field__label-row">
-          <span>System input volume</span>
+          <span className="tuner-field__label-row">
+          <span>{hasDeviceTarget ? "Selected input volume" : "System input volume"}</span>
           {supported ? <strong>{draftVolume}%</strong> : null}
         </span>
         <input
-          aria-label="System input volume"
+          aria-label={hasDeviceTarget ? "Selected input volume" : "System input volume"}
           disabled={!supported}
           max={100}
           min={0}
@@ -539,20 +732,28 @@ function SystemInputVolumeControl({ refreshToken }: { refreshToken: number }) {
 function systemInputVolumeStatus(
   volumeState: SystemDefaultInputVolume | null,
   isSetting: boolean,
+  hasDeviceTarget: boolean,
 ) {
   if (isSetting) {
-    return "Updating system input volume.";
+    return hasDeviceTarget ? "Updating selected input volume." : "Updating system input volume.";
   }
   if (!volumeState) {
-    return "Checking system input volume.";
+    return hasDeviceTarget ? "Checking selected input volume." : "Checking system input volume.";
   }
   if (!volumeState.supported) {
-    return volumeState.error ?? "System input volume control is unavailable.";
+    return (
+      volumeState.error ??
+      (hasDeviceTarget
+        ? "Selected input volume control is unavailable."
+        : "System input volume control is unavailable.")
+    );
   }
   if (volumeState.muted) {
-    return "Default microphone is muted.";
+    return hasDeviceTarget ? "Selected microphone is muted." : "Default microphone is muted.";
   }
-  return "Controls the operating system default microphone.";
+  return hasDeviceTarget
+    ? "Controls the selected microphone."
+    : "Controls the operating system default microphone.";
 }
 
 function getAudioContextConstructor(): AudioContextConstructor | null {
@@ -577,8 +778,8 @@ function getMediaDevices() {
   return navigator.mediaDevices;
 }
 
-function canUseTunerCapture() {
-  return Boolean(getAudioContextConstructor() && getMediaDevices());
+function canUseTunerCapture(nativeAudioCapabilities: NativeAudioCapabilities | null) {
+  return Boolean(nativeAudioCapabilities?.micCaptureSupported || (getAudioContextConstructor() && getMediaDevices()));
 }
 
 async function rememberVisibleAudioInputDevices(mediaDevices: MediaDevices) {
@@ -593,19 +794,23 @@ async function rememberVisibleAudioInputDevices(mediaDevices: MediaDevices) {
   }
 }
 
-function createAudioConstraints(inputDeviceId: string | null): MediaStreamConstraints {
+function createAudioConstraints(): MediaStreamConstraints {
   const audio: MediaTrackConstraints = {
     autoGainControl: false,
     echoCancellation: false,
     noiseSuppression: false,
   };
-  if (inputDeviceId) {
-    audio.deviceId = { exact: inputDeviceId };
-  }
   return { audio, video: false };
 }
 
+function isNativeAudioInputDeviceId(inputDeviceId: string | null) {
+  return inputDeviceId?.startsWith("cpal:") ?? false;
+}
+
 function captureErrorMessage(error: unknown) {
+  if (typeof error === "string" && error.trim()) {
+    return error;
+  }
   if (error instanceof DOMException) {
     if (isMicrophonePermissionError(error)) {
       return "Microphone permission was denied.";

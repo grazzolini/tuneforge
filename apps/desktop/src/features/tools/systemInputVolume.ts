@@ -8,12 +8,18 @@ export type SystemDefaultInputVolume = {
   error: string | null;
 };
 
-export async function getSystemDefaultInputVolume() {
-  return invoke<SystemDefaultInputVolume>("get_system_default_input_volume");
+export async function getSystemDefaultInputVolume(deviceId?: string | null) {
+  return invoke<SystemDefaultInputVolume>("get_system_default_input_volume", {
+    deviceId: deviceId ?? null,
+  });
 }
 
-export async function setSystemDefaultInputVolume(volumePercent: number) {
+export async function setSystemDefaultInputVolume(
+  volumePercent: number,
+  deviceId?: string | null,
+) {
   return invoke<SystemDefaultInputVolume>("set_system_default_input_volume", {
+    deviceId: deviceId ?? null,
     volumePercent: clampSystemInputVolume(volumePercent),
   });
 }

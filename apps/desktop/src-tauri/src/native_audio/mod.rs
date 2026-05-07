@@ -201,6 +201,17 @@ pub fn audio_list_input_devices(
 }
 
 #[tauri::command]
+pub fn audio_list_output_devices(
+    state: State<'_, NativeAudioState>,
+) -> Result<capture::AudioOutputDevices, String> {
+    let capture = state
+        .capture
+        .lock()
+        .map_err(|_| "Native audio capture state is unavailable.".to_string())?;
+    Ok(capture.list_output_devices(state.capabilities()))
+}
+
+#[tauri::command]
 pub fn audio_start_input(
     state: State<'_, NativeAudioState>,
     payload: capture::AudioInputRequest,

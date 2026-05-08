@@ -36,6 +36,7 @@ export type PlaybackContextValue = {
   isPrecounting: boolean;
   isPlaying: boolean;
   activateStemPlayback: () => Promise<void>;
+  primeWebAudioForGesture: () => Promise<void>;
   getPlaybackSnapshot: () => PlaybackSnapshot;
   registerProjectSession: (session: ProjectPlaybackSession) => void;
   togglePlayback: () => Promise<void>;

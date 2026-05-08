@@ -28,6 +28,11 @@ import {
   rememberNativePlaybackError,
   rememberPlaybackBackend,
 } from "../../lib/playbackDiagnostics";
+import {
+  activateWebAudioContext,
+  getWebAudioContextConstructor,
+  primeWebAudioContext,
+} from "../../lib/webAudio";
 import { useStableCallback } from "../../lib/useStableCallback";
 import {
   PlaybackContext,
@@ -282,18 +287,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       .filter(Boolean) as HTMLAudioElement[];
   }
 
-  const getAudioContextConstructor = useCallback(() => {
-    if (typeof window === "undefined") {
-      return null;
-    }
-
-    return (
-      window.AudioContext ??
-      (window as Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext })
-        .webkitAudioContext ??
-      null
-    );
-  }, []);
+  const getAudioContextConstructor = useCallback(() => getWebAudioContextConstructor(), []);
 
   const canUseStemClock = useCallback(
     () =>
@@ -615,6 +609,30 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     return context;
   }, [getAudioContextConstructor]);
 
+  const activatePlaybackAudioContext = useStableCallback(async function activatePlaybackAudioContext(
+    context: AudioContext,
+  ) {
+    await activateWebAudioContext(context);
+  });
+
+  const primeWebAudioForGesture = useStableCallback(async function primeWebAudioForGesture() {
+    if (!canUseStemClock()) {
+      return;
+    }
+
+    const context = getStemAudioContext();
+    if (!context) {
+      return;
+    }
+
+    primeWebAudioContext(context);
+    try {
+      await activatePlaybackAudioContext(context);
+    } catch {
+      stemClockBlockedRef.current = true;
+    }
+  });
+
   const cancelPrecount = useStableCallback(function cancelPrecount() {
     const activePrecount = activePrecountRef.current;
     activePrecountRef.current = null;
@@ -682,20 +700,12 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    // WebKit on Linux is stricter about user-gesture timing for AudioContext resume.
     try {
-      await context.resume();
+      await activatePlaybackAudioContext(context);
     } catch {
       stemClockBlockedRef.current = true;
-      return;
     }
-
-    const contextState = (context as AudioContext).state;
-    if (contextState !== "running") {
-      stemClockBlockedRef.current = true;
-      return;
-    }
-  }, [canUseStemClock, getStemAudioContext]);
+  }, [activatePlaybackAudioContext, canUseStemClock, getStemAudioContext]);
 
   const loadStemBuffer = useStableCallback(async function loadStemBuffer(artifactId: string) {
     return loadStemPlaybackBuffer(artifactId, {
@@ -875,14 +885,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     }
 
     try {
-      await targetPlaybackState.context.resume();
+      await activatePlaybackAudioContext(targetPlaybackState.context);
     } catch {
-      stemClockBlockedRef.current = true;
-      disposeStemPlaybackState();
-      setIsPlaying(false);
-      return false;
-    }
-    if (targetPlaybackState.context.state !== "running") {
       stemClockBlockedRef.current = true;
       disposeStemPlaybackState();
       setIsPlaying(false);
@@ -936,9 +940,24 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     syncStemElementTimes(targetPlaybackState.artifactIds, nextTime);
     applyStemVolumes(targetSession);
 
-    Object.values(nextSources).forEach((sourceNode) =>
-      sourceNode.start(sourceStartTimeSeconds, nextTime),
-    );
+    let scheduledCount = 0;
+    try {
+      Object.values(nextSources).forEach((sourceNode) => {
+        sourceNode.start(sourceStartTimeSeconds, nextTime);
+        scheduledCount += 1;
+      });
+    } catch {
+      stemClockBlockedRef.current = true;
+      disposeStemPlaybackState();
+      setIsPlaying(false);
+      return false;
+    }
+    if (scheduledCount !== Object.keys(nextSources).length || scheduledCount === 0) {
+      stemClockBlockedRef.current = true;
+      disposeStemPlaybackState();
+      setIsPlaying(false);
+      return false;
+    }
 
     setPlaybackTimeSeconds(nextTime);
     setPlaybackDurationSeconds(targetPlaybackState.durationSeconds);
@@ -1171,6 +1190,19 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     }
   });
 
+  const playWebMediaElements = useStableCallback(async function playWebMediaElements(
+    elements: HTMLAudioElement[],
+  ) {
+    if (!elements.length) {
+      return false;
+    }
+
+    const results = await Promise.allSettled(
+      elements.map((element) => Promise.resolve(element.play())),
+    );
+    return results.some((result) => result.status === "fulfilled");
+  });
+
   const clearPendingTransition = useStableCallback(function clearPendingTransition() {
     pendingTransitionRef.current = null;
   });
@@ -1275,6 +1307,10 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         if (started) {
           return;
         }
+        if (stemClockBlockedRef.current) {
+          setIsPlaying(false);
+          return;
+        }
 
         const fallbackElements = getActiveMediaElements(latestSession);
         if (!fallbackElements.length) {
@@ -1288,10 +1324,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         });
         applyMediaPlaybackRate(latestSession);
 
-        const results = await Promise.allSettled(
-          fallbackElements.map((element) => Promise.resolve(element.play())),
-        );
-        const fallbackStarted = results.some((result) => result.status === "fulfilled");
+        const fallbackStarted = await playWebMediaElements(fallbackElements);
         if (fallbackStarted) {
           rememberPlaybackBackend({ backend: "web", detail: null });
         }
@@ -1394,16 +1427,13 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       }
 
       applyMediaPlaybackRate(targetSession);
-      const results = await Promise.allSettled(
-        targetElements.map((element) => Promise.resolve(element.play())),
-      );
+      const started = await playWebMediaElements(targetElements);
       if (pendingTransitionRef.current?.id === transitionId) {
         return;
       }
       if (playbackSignature(sessionRef.current) !== transitionSignature) {
         return;
       }
-      const started = results.some((result) => result.status === "fulfilled");
       if (started) {
         rememberPlaybackBackend({ backend: "web", detail: null });
       }
@@ -1485,6 +1515,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         markNativePlaybackInactive();
         return;
       }
+      if (stemClockBlockedRef.current) {
+        markNativePlaybackInactive();
+        setIsPlaying(false);
+        return;
+      }
     }
 
     if (!webMediaSourcesEnabledRef.current) {
@@ -1519,11 +1554,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     applyStemVolumes(targetSession);
     applyMediaPlaybackRate(targetSession);
 
-    const results = await Promise.allSettled(
-      activeElements.map((element) => Promise.resolve(element.play())),
-    );
     markNativePlaybackInactive();
-    const started = results.some((result) => result.status === "fulfilled");
+    const started = await playWebMediaElements(activeElements);
     if (started) {
       rememberPlaybackBackend({ backend: "web", detail: null });
     }
@@ -1565,20 +1597,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     }
 
     try {
-      if (precountAudio.context.state === "suspended") {
-        await precountAudio.context.resume();
-      }
+      await activatePlaybackAudioContext(precountAudio.context);
     } catch {
-      if (precountAudio.ownsContext && precountAudioContextRef.current === precountAudio.context) {
-        precountAudioContextRef.current = null;
-      }
-      if (precountAudio.ownsContext) {
-        void precountAudio.context.close().catch(() => undefined);
-      }
-      return false;
-    }
-
-    if (precountAudio.context.state !== "running") {
       if (precountAudio.ownsContext && precountAudioContextRef.current === precountAudio.context) {
         precountAudioContextRef.current = null;
       }
@@ -1687,8 +1707,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       pausePlayback();
       return;
     }
+    await primeWebAudioForGesture();
     await playPlayback();
-  }, [cancelPrecount, pausePlayback, playPlayback]);
+  }, [cancelPrecount, pausePlayback, playPlayback, primeWebAudioForGesture]);
 
   const seekTo = useCallback((timeSeconds: number) => {
     cancelPrecount();
@@ -2010,6 +2031,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       isPrecounting,
       isPlaying,
       activateStemPlayback,
+      primeWebAudioForGesture,
       getPlaybackSnapshot,
       registerProjectSession,
       togglePlayback,
@@ -2023,6 +2045,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     [
       dismissSession,
       activateStemPlayback,
+      primeWebAudioForGesture,
       getPlaybackSnapshot,
       isPrecounting,
       isPlaying,

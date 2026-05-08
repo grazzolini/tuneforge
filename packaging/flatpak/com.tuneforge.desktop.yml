@@ -156,6 +156,7 @@ modules:
         LD_LIBRARY_PATH: /app/lib/tuneforge/backend/python/lib
         PYTHONPATH: /app/lib/tuneforge/backend/site-packages
         TUNEFORGE_BUNDLED_BACKEND_ROOT: /app/lib/tuneforge/backend
+        TUNEFORGE_VERSION_FILE: /run/build/tuneforge/version.json
     sources:
       - type: file
         path: ../../package.json
@@ -238,6 +239,8 @@ modules:
         path: com.tuneforge.desktop.desktop
       - type: file
         path: com.tuneforge.desktop.metainfo.xml
+      - type: file
+        path: generated/version.json
     build-commands:
       - install -Dm755 ffmpeg /app/bin/ffmpeg
       - install -Dm755 ffprobe /app/bin/ffprobe
@@ -251,6 +254,7 @@ modules:
       - rm -rf /app/share/tuneforge/node-sources /app/lib/pnpm /app/bin/pnpm /app/bin/pnpx
       - cargo build --release --locked --features custom-protocol --manifest-path apps/desktop/src-tauri/Cargo.toml
       - install -Dm755 apps/desktop/src-tauri/target/release/tuneforge /app/bin/tuneforge
+      - install -Dm644 version.json /app/lib/tuneforge/backend/version.json
       - install -dm755 /app/lib/tuneforge/backend/src
       - cp -a apps/backend/app /app/lib/tuneforge/backend/src/app
       - cp -a apps/backend/alembic /app/lib/tuneforge/backend/src/alembic

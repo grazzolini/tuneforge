@@ -2,12 +2,14 @@ import { existsSync, lstatSync, readdirSync, readFileSync, writeFileSync } from 
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { writeBuildInfoFile } from "./build-info.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(__filename);
 const workspaceRoot = path.resolve(scriptDir, "..");
 const flatpakRoot = path.join(workspaceRoot, "packaging", "flatpak");
 const baseManifestPath = path.join(flatpakRoot, "com.tuneforge.desktop.yml");
+const flatpakVersionInfoPath = path.join(flatpakRoot, "generated", "version.json");
 const appId = "com.tuneforge.desktop";
 const skipBundle = process.argv.includes("--no-bundle") || process.env.FLATPAK_NO_BUNDLE === "1";
 const profile = readProfileArg();
@@ -148,6 +150,7 @@ function main() {
   }
 
   run(process.execPath, [path.join("scripts", "generate-flatpak-sources.mjs"), "--profile", profile]);
+  writeBuildInfoFile(flatpakVersionInfoPath, { workspaceRoot });
   const manifestPath = manifestPathForProfile();
 
   checkCommand(

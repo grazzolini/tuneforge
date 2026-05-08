@@ -243,6 +243,10 @@ fn spawn_packaged_backend(app: &AppHandle) -> Result<BackendRuntime, Box<dyn std
         .env("PYTORCH_ENABLE_MPS_FALLBACK", "1")
         .env("TUNEFORGE_HOST", "127.0.0.1")
         .env("TUNEFORGE_PORT", port.to_string())
+        .env(
+            "TUNEFORGE_VERSION_FILE",
+            bundled_backend_root.join("version.json"),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

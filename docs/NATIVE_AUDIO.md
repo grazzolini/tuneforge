@@ -61,6 +61,8 @@ project playback so Web Audio remains the comparison path for both.
 
 Settings -> Local Data -> Show diagnostics reports:
 
+- backend package version and git ref
+- frontend package version and git ref
 - input capture availability
 - last tuner capture backend
 - last native capture error

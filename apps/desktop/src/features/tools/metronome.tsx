@@ -4,6 +4,10 @@ import {
   setNativeAudioClick,
 } from "../../lib/nativeAudio";
 import { useStableCallback } from "../../lib/useStableCallback";
+import {
+  activateWebAudioContext,
+  getWebAudioContextConstructor,
+} from "../../lib/webAudio";
 import { usePlayback, type PlaybackSnapshot } from "../projects/playback-context";
 import { MetronomeContext, type MetronomeLaunchOptions } from "./metronome-context";
 import { DEFAULT_METRONOME_SOUND, scheduleMetronomeClick } from "./metronomeSound";
@@ -24,8 +28,6 @@ import {
 const SCHEDULE_AHEAD_SECONDS = 0.12;
 const SCHEDULER_INTERVAL_MS = 25;
 const START_DELAY_SECONDS = 0.035;
-
-type AudioContextConstructor = typeof AudioContext;
 
 export function MetronomeProvider({ children }: { children: ReactNode }) {
   const { getPlaybackSnapshot, isPlaying, session } = usePlayback();
@@ -114,7 +116,7 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     if (audioContextRef.current && audioContextRef.current.state !== "closed") {
       return audioContextRef.current;
     }
-    const AudioContextCtor = getAudioContextConstructor();
+    const AudioContextCtor = getWebAudioContextConstructor();
     if (!AudioContextCtor) {
       setErrorMessage("Audio playback is unavailable.");
       return null;
@@ -130,9 +132,7 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
       return null;
     }
     try {
-      if (audioContext.state === "suspended") {
-        await audioContext.resume();
-      }
+      await activateWebAudioContext(audioContext);
     } catch {
       setErrorMessage("Could not start metronome audio.");
       return null;
@@ -348,9 +348,7 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
       } else {
         const audioContext = ensureAudioContext();
         if (audioContext) {
-          if (audioContext.state === "suspended") {
-            void audioContext.resume().catch(() => undefined);
-          }
+          void activateWebAudioContext(audioContext).catch(() => undefined);
           scheduleSynced(audioContext, snapshot);
         }
       }
@@ -469,18 +467,6 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
   );
 
   return <MetronomeContext.Provider value={value}>{children}</MetronomeContext.Provider>;
-}
-
-function getAudioContextConstructor(): AudioContextConstructor | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  return (
-    window.AudioContext ??
-    (window as Window & typeof globalThis & { webkitAudioContext?: AudioContextConstructor })
-      .webkitAudioContext ??
-    null
-  );
 }
 
 function isTauriRuntime() {

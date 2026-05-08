@@ -44,6 +44,7 @@ type MockAudioContextInstance = AudioContext & {
   createdMediaStreamSources: MockMediaStreamAudioSourceNode[];
   createdSources: MockAudioBufferSourceNode[];
   createAnalyser: ReturnType<typeof vi.fn>;
+  createBuffer: ReturnType<typeof vi.fn>;
   createBufferSource: ReturnType<typeof vi.fn>;
   createGain: ReturnType<typeof vi.fn>;
   createOscillator: ReturnType<typeof vi.fn>;
@@ -208,6 +209,8 @@ Object.defineProperty(window.HTMLMediaElement.prototype, "pause", {
 });
 
 const mockAudioContexts: MockAudioContextInstance[] = [];
+let mockAudioContextInitialState: AudioContextState = "running";
+let mockAudioSourceStartError: Error | null = null;
 const RAF_STEP_SECONDS = 1 / 60;
 let nextAnimationFrameId = 1;
 let mockAnimationTimeMs = 0;
@@ -248,7 +251,8 @@ Object.defineProperty(window, "cancelAnimationFrame", {
 
 class MockAudioContext {
   destination = {} as AudioDestinationNode;
-  state: AudioContextState = "running";
+  sampleRate = 48000;
+  state: AudioContextState = mockAudioContextInitialState;
   createdAnalysers: MockAnalyserNode[] = [];
   createdOscillators: MockOscillatorNode[] = [];
   createdMediaStreamSources: MockMediaStreamAudioSourceNode[] = [];
@@ -291,16 +295,37 @@ class MockAudioContext {
     return { duration } as AudioBuffer;
   });
 
+  createBuffer = vi.fn((numberOfChannels: number, length: number, sampleRate: number) => ({
+    duration: sampleRate > 0 ? length / sampleRate : 0,
+    length,
+    numberOfChannels,
+    sampleRate,
+  }) as AudioBuffer);
+
   createBufferSource = vi.fn(() => {
     const source = {
       buffer: null,
       onended: null,
       connect: vi.fn(),
       disconnect: vi.fn(),
-      start: vi.fn(),
+      start: vi.fn(() => {
+        if (
+          !(this as MockAudioContext & { __tuneforgePriming?: boolean }).__tuneforgePriming &&
+          mockAudioSourceStartError
+        ) {
+          const error = mockAudioSourceStartError;
+          mockAudioSourceStartError = null;
+          throw error;
+        }
+        this.createdAnalysers.forEach((analyser) => {
+          analyser.setSamples(new Float32Array([0.08, -0.08, 0.04, -0.04]));
+        });
+      }),
       stop: vi.fn(),
     } as unknown as MockAudioBufferSourceNode;
-    this.createdSources.push(source);
+    if (!(this as MockAudioContext & { __tuneforgePriming?: boolean }).__tuneforgePriming) {
+      this.createdSources.push(source);
+    }
     return source;
   });
 
@@ -324,7 +349,11 @@ class MockAudioContext {
         setValueAtTime: vi.fn(),
       },
       onended: null,
-      start: vi.fn(),
+      start: vi.fn(() => {
+        this.createdAnalysers.forEach((analyser) => {
+          analyser.setSamples(new Float32Array([0.08, -0.08, 0.04, -0.04]));
+        });
+      }),
       stop: vi.fn(),
       type: "sine",
     } as unknown as MockOscillatorNode;
@@ -359,7 +388,12 @@ class MockAudioContext {
 
   createMediaStreamSource = vi.fn(() => {
     const source = {
-      connect: vi.fn(),
+      connect: vi.fn((node: AudioNode) => {
+        const analyser = node as MockAnalyserNode;
+        if (typeof analyser.setSamples === "function") {
+          analyser.setSamples(new Float32Array([0.08, -0.08, 0.04, -0.04]));
+        }
+      }),
       disconnect: vi.fn(),
     } as unknown as MockMediaStreamAudioSourceNode;
     this.createdMediaStreamSources.push(source);
@@ -394,6 +428,20 @@ Object.defineProperty(window, "webkitAudioContext", {
 Object.defineProperty(globalThis, "__mockAudioContexts", {
   writable: true,
   value: mockAudioContexts,
+});
+
+Object.defineProperty(globalThis, "__setMockAudioContextInitialState", {
+  writable: true,
+  value: (state: AudioContextState) => {
+    mockAudioContextInitialState = state;
+  },
+});
+
+Object.defineProperty(globalThis, "__setMockAudioSourceStartError", {
+  writable: true,
+  value: (error: Error | null) => {
+    mockAudioSourceStartError = error;
+  },
 });
 
 Object.defineProperty(globalThis, "__mockMediaDevices", {

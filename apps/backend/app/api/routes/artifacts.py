@@ -12,6 +12,18 @@ from app.models import Artifact
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 
+AUDIO_MEDIA_TYPES = {
+    "aac": "audio/aac",
+    "flac": "audio/flac",
+    "m4a": "audio/mp4",
+    "mka": "audio/x-matroska",
+    "mkv": "video/x-matroska",
+    "mp3": "audio/mpeg",
+    "ogg": "audio/ogg",
+    "wav": "audio/wav",
+    "webm": "audio/webm",
+}
+
 
 @router.get("/{artifact_id}/stream")
 def stream_artifact(artifact_id: str, session: Session = Depends(get_db)) -> FileResponse:
@@ -21,5 +33,5 @@ def stream_artifact(artifact_id: str, session: Session = Depends(get_db)) -> Fil
     path = Path(artifact.path)
     if not path.exists():
         raise AppError("ARTIFACT_NOT_FOUND", "Artifact file no longer exists.", status_code=404)
-    return FileResponse(path=path, media_type=f"audio/{artifact.format}", filename=path.name)
-
+    media_type = AUDIO_MEDIA_TYPES.get(artifact.format.lower(), f"audio/{artifact.format}")
+    return FileResponse(path=path, media_type=media_type, filename=path.name)

@@ -20,6 +20,8 @@ import {
   setProjectChords,
   setAudioPlaybackState,
   setDeferredPreviewCompletion,
+  setMockAudioContextInitialState,
+  setMockAudioSourceStartError,
   setProjects,
 } from "./test/appTestHarness";
 
@@ -322,6 +324,44 @@ describe("Desktop app project playback stems", () => {
     const restartedSource = getMockAudioContexts()[0].createdSources[sourceCountAfterEnd];
     expect(restartedSource?.start.mock.calls[0]?.[1]).toBe(0);
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+  });
+
+  it("primes Web Audio from the playback gesture before artifact buffers finish loading", async () => {
+    const user = userEvent.setup();
+    setMockAudioContextInitialState("suspended");
+    getMockFetch().mockImplementationOnce(
+      () => new Promise<Response>(() => undefined),
+    );
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    await waitFor(() => expect(getMockAudioContexts()).toHaveLength(1));
+    expect(getMockAudioContexts()[0]?.resume).toHaveBeenCalled();
+    expect(getMockAudioContexts()[0]?.createdSources).toHaveLength(0);
+  });
+
+  it("keeps playback stopped when Web Audio sources cannot start", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() => expect(getMockAudioContexts()[0]?.createdSources).toHaveLength(1));
+    setMockAudioSourceStartError(new Error("start failed"));
+
+    await user.click(screen.getByRole("button", { name: "Pause playback" }));
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
   });
 
   it("keeps playback position when a newly created mix becomes active", async () => {

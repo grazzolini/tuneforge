@@ -11,6 +11,10 @@ import {
 } from "../../lib/nativeAudio";
 import { useStableCallback } from "../../lib/useStableCallback";
 import { usePreferences } from "../../lib/preferences";
+import {
+  activateWebAudioContext,
+  getWebAudioContextConstructor,
+} from "../../lib/webAudio";
 import { MetronomePage } from "./MetronomePage";
 import {
   clampSystemInputVolume,
@@ -49,8 +53,6 @@ const SYSTEM_INPUT_VOLUME_COMMIT_DELAY_MS = 180;
 type TunerStatus = "idle" | "starting" | "listening" | "unsupported" | "error";
 type ToolId = "tuner" | "metronome";
 type CaptureBackend = "native" | "web";
-
-type AudioContextConstructor = typeof AudioContext;
 
 export function ToolsView() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -335,7 +337,7 @@ function ChromaticTunerPage() {
     _nextDeviceId: string | null,
     requestId: number,
   ) {
-    const AudioContextCtor = getAudioContextConstructor();
+    const AudioContextCtor = getWebAudioContextConstructor();
     const mediaDevices = getMediaDevices();
     if (!AudioContextCtor || !mediaDevices) {
       throw new Error("Microphone capture is unavailable.");
@@ -360,9 +362,7 @@ function ChromaticTunerPage() {
     analyserRef.current = analyser;
     mediaSourceRef.current = mediaSource;
 
-    if (audioContext.state === "suspended") {
-      await audioContext.resume();
-    }
+    await activateWebAudioContext(audioContext);
 
     if (requestIdRef.current !== requestId) {
       releaseCapture();
@@ -756,18 +756,6 @@ function systemInputVolumeStatus(
     : "Controls the operating system default microphone.";
 }
 
-function getAudioContextConstructor(): AudioContextConstructor | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  return (
-    window.AudioContext ??
-    (window as Window & typeof globalThis & { webkitAudioContext?: AudioContextConstructor })
-      .webkitAudioContext ??
-    null
-  );
-}
-
 function getMediaDevices() {
   if (
     typeof navigator === "undefined" ||
@@ -779,7 +767,7 @@ function getMediaDevices() {
 }
 
 function canUseTunerCapture(nativeAudioCapabilities: NativeAudioCapabilities | null) {
-  return Boolean(nativeAudioCapabilities?.micCaptureSupported || (getAudioContextConstructor() && getMediaDevices()));
+  return Boolean(nativeAudioCapabilities?.micCaptureSupported || (getWebAudioContextConstructor() && getMediaDevices()));
 }
 
 async function rememberVisibleAudioInputDevices(mediaDevices: MediaDevices) {

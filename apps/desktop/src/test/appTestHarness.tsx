@@ -1363,9 +1363,26 @@ export function getMockAudioContexts() {
           start: ReturnType<typeof vi.fn>;
         }>;
         close: ReturnType<typeof vi.fn>;
+        resume: ReturnType<typeof vi.fn>;
       }>;
     }
   ).__mockAudioContexts;
+}
+
+export function setMockAudioContextInitialState(state: AudioContextState) {
+  (
+    globalThis as typeof globalThis & {
+      __setMockAudioContextInitialState: (state: AudioContextState) => void;
+    }
+  ).__setMockAudioContextInitialState(state);
+}
+
+export function setMockAudioSourceStartError(error: Error | null) {
+  (
+    globalThis as typeof globalThis & {
+      __setMockAudioSourceStartError: (error: Error | null) => void;
+    }
+  ).__setMockAudioSourceStartError(error);
 }
 
 export function getMockFetch() {
@@ -1451,6 +1468,8 @@ export function resetAppTestHarness() {
   vi.mocked(window.HTMLMediaElement.prototype.pause).mockClear();
   getMockFetch().mockClear();
   getMockAudioContexts().length = 0;
+  setMockAudioContextInitialState("running");
+  setMockAudioSourceStartError(null);
   getMockMediaDevices().reset();
   installMatchMediaMock(false);
 }

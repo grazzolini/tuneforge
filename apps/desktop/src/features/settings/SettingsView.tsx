@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Link } from "react-router-dom";
 import { api, type ChordBackendSchema } from "../../lib/api";
+import { FRONTEND_VERSION_INFO } from "../../lib/buildInfo";
 import {
   readRememberedNativePlaybackError,
   readRememberedPlaybackBackend,
@@ -253,6 +254,11 @@ function lastPlaybackBackendLabel(backend: PlaybackBackend | null) {
   return backend.backend === "native"
     ? `Native (${backend.detail ?? "unknown"})`
     : "Web Audio";
+}
+
+function diagnosticVersionValue(value: string | undefined) {
+  const normalized = value?.trim();
+  return normalized ? normalized : "Unknown";
 }
 
 function chordBackendOptions(backends: ChordBackendSchema[] | undefined): ChoiceOption<DefaultChordBackend>[] {
@@ -762,6 +768,24 @@ export function SettingsView() {
             <div>
               <dt>Status</dt>
               <dd>{healthQuery.data?.status ?? "Unknown"}</dd>
+            </div>
+            <div>
+              <dt>Backend Package Version</dt>
+              <dd>{diagnosticVersionValue(healthQuery.data?.backend_version?.package_version)}</dd>
+            </div>
+            <div>
+              <dt>Backend Git Ref</dt>
+              <dd className="path">
+                {diagnosticVersionValue(healthQuery.data?.backend_version?.git_ref ?? healthQuery.data?.version)}
+              </dd>
+            </div>
+            <div>
+              <dt>Frontend Package Version</dt>
+              <dd>{diagnosticVersionValue(FRONTEND_VERSION_INFO.package_version)}</dd>
+            </div>
+            <div>
+              <dt>Frontend Git Ref</dt>
+              <dd className="path">{diagnosticVersionValue(FRONTEND_VERSION_INFO.git_ref)}</dd>
             </div>
             <div>
               <dt>API Base URL</dt>

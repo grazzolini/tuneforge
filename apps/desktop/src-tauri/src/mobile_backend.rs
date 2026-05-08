@@ -31,9 +31,18 @@ pub struct MobileCapabilities {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub struct VersionInfo {
+    package_version: String,
+    git_ref: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct HealthResponse {
     name: String,
     version: String,
+    backend_version: VersionInfo,
+    frontend_version: VersionInfo,
     status: String,
     api_base_url: String,
     data_root: String,
@@ -1631,9 +1640,19 @@ mod android {
     #[tauri::command]
     pub fn mobile_get_health(app: AppHandle) -> Result<HealthResponse, String> {
         let root = app_data_root(&app)?;
+        let package_version = env!("CARGO_PKG_VERSION").to_string();
+        let git_ref = option_env!("TUNEFORGE_GIT_REF")
+            .unwrap_or("unknown")
+            .to_string();
+        let version_info = VersionInfo {
+            package_version,
+            git_ref: git_ref.clone(),
+        };
         Ok(HealthResponse {
             name: "Tuneforge Mobile".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: git_ref,
+            backend_version: version_info.clone(),
+            frontend_version: version_info,
             status: "ok".to_string(),
             api_base_url: "mobile://embedded".to_string(),
             data_root: root.to_string_lossy().into_owned(),

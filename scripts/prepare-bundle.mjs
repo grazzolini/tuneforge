@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeBuildInfoFile } from "./build-info.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(__filename);
@@ -88,6 +89,7 @@ function main() {
   copyInto(path.join(backendRoot, "pyproject.toml"), path.join(stagedBackendSourceRoot, "pyproject.toml"));
   copyInto(pythonInstallRoot, stagedPythonRoot, { dereference: true });
   copyInto(sitePackagesRoot, stagedSitePackagesRoot, { filter: shouldIncludeBundledSitePackage });
+  writeBuildInfoFile(path.join(stagedBackendRoot, "version.json"), { workspaceRoot });
 
   writeFileSync(
     path.join(stagedBackendRoot, "manifest.json"),
@@ -97,6 +99,7 @@ function main() {
         python_root: path.relative(resourcesRoot, stagedPythonRoot),
         site_packages: path.relative(resourcesRoot, stagedSitePackagesRoot),
         backend_source: path.relative(resourcesRoot, stagedBackendSourceRoot),
+        version_info: path.relative(resourcesRoot, path.join(stagedBackendRoot, "version.json")),
       },
       null,
       2,

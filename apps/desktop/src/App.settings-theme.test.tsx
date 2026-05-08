@@ -1,6 +1,7 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FRONTEND_VERSION_INFO } from "./lib/buildInfo";
 import {
   resetAppTestHarness,
   getAllByAriaKeyLabel,
@@ -146,6 +147,12 @@ describe("Desktop app settings theme", () => {
     await user.click(screen.getByRole("button", { name: /^Advanced Chords/ }));
     await user.click(screen.getByText("Show diagnostics"));
     expect(await screen.findByText("/tmp/tuneforge")).toBeInTheDocument();
+    expect(screen.getByText("Backend Package Version")).toBeInTheDocument();
+    expect(screen.getByText("Backend Git Ref")).toBeInTheDocument();
+    expect(screen.getByText("backend-test-ref")).toBeInTheDocument();
+    expect(screen.getByText("Frontend Package Version")).toBeInTheDocument();
+    expect(screen.getByText("Frontend Git Ref")).toBeInTheDocument();
+    expect(screen.getByText(FRONTEND_VERSION_INFO.git_ref)).toBeInTheDocument();
     expect(screen.getAllByText("Native (desktop-cpal)")).toHaveLength(2);
     expect(screen.getByText("Native microphone failed.")).toBeInTheDocument();
     expect(screen.getByText("Native output failed.")).toBeInTheDocument();

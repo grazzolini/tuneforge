@@ -25,9 +25,16 @@ class ErrorResponse(BaseModel):
     error: ErrorInfo
 
 
+class VersionInfo(BaseModel):
+    package_version: str
+    git_ref: str
+
+
 class HealthResponse(BaseModel):
     name: str
     version: str
+    backend_version: VersionInfo
+    frontend_version: VersionInfo
     status: str
     api_base_url: str
     data_root: str

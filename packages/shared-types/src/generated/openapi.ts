@@ -648,6 +648,8 @@ export interface components {
             name: string;
             /** Version */
             version: string;
+            backend_version: components["schemas"]["VersionInfo"];
+            frontend_version: components["schemas"]["VersionInfo"];
             /** Status */
             status: string;
             /** Api Base Url */
@@ -1071,6 +1073,13 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /** VersionInfo */
+        VersionInfo: {
+            /** Package Version */
+            package_version: string;
+            /** Git Ref */
+            git_ref: string;
         };
     };
     responses: never;

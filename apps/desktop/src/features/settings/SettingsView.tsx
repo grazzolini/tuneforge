@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Link } from "react-router-dom";
-import { api, type ChordBackendSchema } from "../../lib/api";
+import { api, type ChordBackendSchema, type StemModelSchema } from "../../lib/api";
 import { FRONTEND_VERSION_INFO } from "../../lib/buildInfo";
 import {
   readRememberedNativePlaybackError,
@@ -19,6 +19,7 @@ import {
   usePreferences,
   type DefaultChordBackend,
   type DefaultPlaybackDisplayMode,
+  type DefaultStemModel,
   type EnharmonicDisplayMode,
   type InformationDensity,
   type ProjectWorkspaceMode,
@@ -168,6 +169,19 @@ const fallbackChordBackendOptions: ChoiceOption<DefaultChordBackend>[] = [
   },
 ];
 
+const fallbackStemModelOptions: ChoiceOption<DefaultStemModel>[] = [
+  {
+    value: "htdemucs_6s",
+    label: "Default (6 stems model)",
+    description: "Separate vocals, drums, bass, guitar, piano, and other.",
+  },
+  {
+    value: "htdemucs_ft",
+    label: "2 stems model",
+    description: "Separate vocals and a single instrumental track.",
+  },
+];
+
 function themePreferenceLabel(themePreference: ThemePreference) {
   if (themePreference === "system") {
     return "Follow system";
@@ -206,6 +220,10 @@ function playbackDisplayLabel(value: DefaultPlaybackDisplayMode) {
 
 function chordBackendLabel(value: DefaultChordBackend) {
   return value === "crema-advanced" ? "Advanced Chords" : "Built-in Chords";
+}
+
+function stemModelLabel(value: DefaultStemModel) {
+  return value === "htdemucs_ft" ? "2 stems model" : "Default (6 stems model)";
 }
 
 function tunerInputDeviceLabel(value: string | null) {
@@ -280,6 +298,23 @@ function chordBackendOptions(backends: ChordBackendSchema[] | undefined): Choice
       status: unavailableReason ?? (backend.experimental ? "Experimental" : undefined),
     };
   });
+}
+
+function stemModelOptions(models: StemModelSchema[] | undefined): ChoiceOption<DefaultStemModel>[] {
+  if (!models?.length) {
+    return fallbackStemModelOptions;
+  }
+  return models
+    .filter((model): model is StemModelSchema & { id: DefaultStemModel } =>
+      model.id === "htdemucs_6s" || model.id === "htdemucs_ft",
+    )
+    .map((model) => ({
+      value: model.id,
+      label: model.label,
+      description: model.description,
+      disabled: !model.available,
+      status: model.available ? `${model.sourceCount} stems` : "Unavailable",
+    }));
 }
 
 function ChoiceGroup<T extends string>({
@@ -363,6 +398,7 @@ export function SettingsView() {
     defaultProjectWorkspace,
     defaultPlaybackDisplayMode,
     defaultChordBackend,
+    defaultStemModel,
     defaultLyricsFollowEnabled,
     defaultChordsFollowEnabled,
     defaultTunerInputDeviceId,
@@ -372,6 +408,7 @@ export function SettingsView() {
     setDefaultProjectWorkspace,
     setDefaultPlaybackDisplayMode,
     setDefaultChordBackend,
+    setDefaultStemModel,
     setDefaultLyricsFollowEnabled,
     setDefaultChordsFollowEnabled,
     setDefaultTunerInputDeviceId,
@@ -395,6 +432,10 @@ export function SettingsView() {
     queryKey: ["chord-backends"],
     queryFn: api.listChordBackends,
   });
+  const stemModelsQuery = useQuery({
+    queryKey: ["stem-models"],
+    queryFn: api.listStemModels,
+  });
   const nativeAudioQuery = useQuery({
     queryKey: ["native-audio-capabilities", webAudioForced],
     queryFn: getNativeAudioCapabilities,
@@ -406,6 +447,7 @@ export function SettingsView() {
   const lastNativePlaybackError = readRememberedNativePlaybackError();
   const savedThemeOverrideCount = themeOverrideCount(themeOverrides);
   const chordBackendChoices = chordBackendOptions(chordBackendsQuery.data?.backends);
+  const stemModelChoices = stemModelOptions(stemModelsQuery.data?.models);
 
   function handleResetAppearance() {
     setThemePreference(DEFAULT_THEME_PREFERENCE);
@@ -453,6 +495,7 @@ export function SettingsView() {
         preferences: {
           defaultChordsFollowEnabled,
           defaultChordBackend,
+          defaultStemModel,
           defaultInspectorOpen,
           defaultPlaybackDisplayMode,
           defaultTunerInputDeviceId,
@@ -533,6 +576,7 @@ export function SettingsView() {
             <span className="pill">Musical notation</span>
             <span className="pill">Tuner</span>
             <span className="pill">Chord backend</span>
+            <span className="pill">Stem model</span>
             <span className="pill">Playback defaults</span>
           </div>
         </div>
@@ -565,6 +609,10 @@ export function SettingsView() {
           <div className="settings-overview__stat">
             <dt>Chord backend</dt>
             <dd>{chordBackendLabel(defaultChordBackend)}</dd>
+          </div>
+          <div className="settings-overview__stat">
+            <dt>Stem model</dt>
+            <dd>{stemModelLabel(defaultStemModel)}</dd>
           </div>
           <div className="settings-overview__stat">
             <dt>Tuner mic</dt>
@@ -696,6 +744,14 @@ export function SettingsView() {
             onChange={setDefaultChordBackend}
             options={chordBackendChoices}
             value={defaultChordBackend}
+          />
+
+          <ChoiceGroup
+            description="Choose the Demucs model used when generating stems."
+            legend="Default stem model"
+            onChange={setDefaultStemModel}
+            options={stemModelChoices}
+            value={defaultStemModel}
           />
 
           <div className="button-row">

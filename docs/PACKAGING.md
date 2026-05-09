@@ -1,6 +1,6 @@
 # Packaging
 
-Tuneforge packaging is currently intended for local unsigned desktop builds. Packaged builds launch the bundled backend locally and still require host-installed `ffmpeg` and `ffprobe`; Tuneforge does not bundle FFmpeg.
+Tuneforge packaging is currently intended for local unsigned desktop builds. Packaged builds launch the bundled backend locally, include both supported Demucs stem model weights, and still require host-installed `ffmpeg` and `ffprobe`; Tuneforge does not bundle FFmpeg.
 
 ## macOS
 
@@ -19,6 +19,8 @@ Run packaging from a normal macOS shell so `hdiutil` can create the disk image. 
 
 The packaged backend checks the inherited `PATH` plus common Homebrew and MacPorts install locations when looking for `ffmpeg` and `ffprobe`. System microphone volume control uses the built-in CoreAudio API on macOS.
 
+`pnpm package:mac` prepares `resources/backend/models/demucs` with pinned `htdemucs_6s` and `htdemucs_ft` weights. The app sets `TUNEFORGE_DEMUCS_MODEL_REPO` for the bundled backend so stem generation never downloads model weights at runtime. Use `pnpm models:demucs:prepare -- --cache-only` for offline packaging checks that must fail instead of downloading missing weights.
+
 ## Linux Flatpak
 
 Build the standard local Flatpak profile with:
@@ -33,7 +35,7 @@ For faster local iteration, skip the single-file bundle step:
 pnpm package:linux:flatpak -- --no-bundle
 ```
 
-The standard profile generates local dependency source manifests, builds inside the SDK sandbox, installs the backend under `/app/lib/tuneforge/backend`, and stores private app data under `/var/data/tuneforge`. It bundles `pactl` for microphone volume control but does not bundle FFmpeg.
+The standard profile generates local dependency source manifests, fetches pinned Demucs model sources, builds inside the SDK sandbox, installs the backend under `/app/lib/tuneforge/backend`, and stores private app data under `/var/data/tuneforge`. It bundles `pactl` for microphone volume control but does not bundle FFmpeg.
 
 ## Linux Full Flatpak Profile
 
@@ -71,6 +73,6 @@ Without `--no-bundle`, the Flatpak bundle is written under `packaging/flatpak/` 
 
 ## Size Expectations
 
-Linux Flatpak bundles that include GPU ML stacks are large. The standard profile is already dominated by Torch and NVIDIA CUDA Python wheels, and the full profile adds TensorFlow and related Advanced Chords dependencies.
+Linux Flatpak bundles that include GPU ML stacks are large. The standard profile is already dominated by Torch and NVIDIA CUDA Python wheels, plus about 373 MiB of raw Demucs stem weights. The full profile adds TensorFlow and related Advanced Chords dependencies.
 
 Packaging prints a size report for the built `/app` tree and selected Python artifacts. Use that report to distinguish accidental copied build inputs from expected ML runtime payloads.

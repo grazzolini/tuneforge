@@ -247,6 +247,10 @@ fn spawn_packaged_backend(app: &AppHandle) -> Result<BackendRuntime, Box<dyn std
             "TUNEFORGE_VERSION_FILE",
             bundled_backend_root.join("version.json"),
         )
+        .env(
+            "TUNEFORGE_DEMUCS_MODEL_REPO",
+            bundled_backend_root.join("models").join("demucs"),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

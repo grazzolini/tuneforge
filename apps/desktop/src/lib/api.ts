@@ -38,6 +38,8 @@ export type RetuneRequest = components["schemas"]["RetuneRequest"];
 export type ExportRequest = components["schemas"]["ExportRequest"];
 export type ProjectUpdateRequest = components["schemas"]["ProjectUpdateRequest"];
 export type StemRequest = components["schemas"]["StemRequest"];
+export type StemModelSchema = components["schemas"]["StemModelSchema"];
+export type StemModelsResponse = components["schemas"]["StemModelsResponse"];
 export type ChordRequest = components["schemas"]["ChordRequest"];
 export type ChordBackendSchema = components["schemas"]["ChordBackendSchema"];
 export type ChordBackendsResponse = components["schemas"]["ChordBackendsResponse"];
@@ -65,6 +67,7 @@ export type TuneForgeClient = {
   analyzeProject: (projectId: string) => Promise<components["schemas"]["JobResponse"]>;
   getAnalysis: (projectId: string) => Promise<AnalysisResponse>;
   listChordBackends: () => Promise<ChordBackendsResponse>;
+  listStemModels: () => Promise<StemModelsResponse>;
   createChords: (projectId: string, body: ChordRequest) => Promise<components["schemas"]["JobResponse"]>;
   getChords: (projectId: string) => Promise<ChordResponse>;
   createLyrics: (projectId: string, body: LyricsGenerateRequest) => Promise<components["schemas"]["JobResponse"]>;
@@ -132,6 +135,32 @@ const mobileChordBackendsResponse: ChordBackendsResponse = {
       id: "crema-advanced",
       label: "Advanced Chords",
       unavailable_reason: "advanced chord backend is disabled on mobile",
+    },
+  ],
+};
+const mobileStemModelsResponse: StemModelsResponse = {
+  models: [
+    {
+      availability: "unavailable",
+      available: false,
+      default: true,
+      description: "Demucs six-source stem separation is not available on mobile.",
+      id: "htdemucs_6s",
+      label: "Default (6 stems model)",
+      sourceCount: 6,
+      sources: ["vocals", "drums", "bass", "guitar", "piano", "other"],
+      unavailable_reason: "stem separation is disabled on mobile",
+    },
+    {
+      availability: "unavailable",
+      available: false,
+      default: false,
+      description: "Demucs two-source stem separation is not available on mobile.",
+      id: "htdemucs_ft",
+      label: "2 stems model",
+      sourceCount: 2,
+      sources: ["vocals", "instrumental"],
+      unavailable_reason: "stem separation is disabled on mobile",
     },
   ],
 };
@@ -216,6 +245,7 @@ function createHttpTuneForgeClient(): TuneForgeClient {
     getAnalysis: (projectId: string) =>
       unwrap(client.GET("/api/v1/projects/{project_id}/analysis", { params: { path: { project_id: projectId } } })),
     listChordBackends: () => unwrap(client.GET("/api/v1/chord-backends")),
+    listStemModels: () => unwrap(client.GET("/api/v1/stem-models")),
     createChords: (projectId: string, body: ChordRequest) =>
       unwrap(client.POST("/api/v1/projects/{project_id}/chords", { params: { path: { project_id: projectId } }, body })),
     getChords: (projectId: string) =>
@@ -283,6 +313,7 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     analyzeProject: (projectId: string) => invokeMobile("mobile_submit_analyze", { projectId }),
     getAnalysis: (projectId: string) => invokeMobile("mobile_get_analysis", { projectId }),
     listChordBackends: async () => mobileChordBackendsResponse,
+    listStemModels: async () => mobileStemModelsResponse,
     createChords: (projectId: string, body: ChordRequest) =>
       invokeMobile("mobile_submit_chords", { projectId, payload: body }),
     getChords: (projectId: string) => invokeMobile("mobile_get_chords", { projectId }),
@@ -391,6 +422,7 @@ export const api: TuneForgeClient = {
   analyzeProject: (projectId: string) => activeClient.analyzeProject(projectId),
   getAnalysis: (projectId: string) => activeClient.getAnalysis(projectId),
   listChordBackends: () => activeClient.listChordBackends(),
+  listStemModels: () => activeClient.listStemModels(),
   createChords: (projectId: string, body: ChordRequest) => activeClient.createChords(projectId, body),
   getChords: (projectId: string) => activeClient.getChords(projectId),
   createLyrics: (projectId: string, body: LyricsGenerateRequest) => activeClient.createLyrics(projectId, body),

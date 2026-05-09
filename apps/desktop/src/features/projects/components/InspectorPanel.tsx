@@ -9,26 +9,34 @@ import { useProjectViewModelContext } from "./useProjectViewModelContext";
 export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysis" }) {
   const {
     analysisQuery,
-    canDeleteSelectedMix,
+    canDeleteAnyMixes,
+    canDeleteAnyStems,
     centsOffset,
     currentKeyValue,
-    deleteMixMutation,
+    deleteStemMutation,
     deleteMutation,
     detectedKey,
     enharmonicDisplayMode,
     exportMutation,
-    handleDeleteMix,
+    handleDeleteAllMixes,
+    handleDeleteAllStems,
     handleDeleteProject,
+    handleDeleteSelectedPrimaryStems,
     hasTransformChange,
     higherTargetPreview,
     higherTargetShiftOptions,
     isAnalysisRunning,
+    isDeleteArtifactsPending,
+    isDeleteMixDisabled,
+    isDeleteStemDisabled,
     lowerTargetPreview,
     lowerTargetShiftOptions,
     previewMutation,
     projectQuery,
     referenceHz,
     retuneMode,
+    selectedPrimaryStemArtifacts,
+    selectedPrimaryStemDeleteLabel,
     setCentsOffset,
     setInspectorOpen,
     setReferenceHz,
@@ -497,16 +505,6 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
           <h3>Danger Zone</h3>
         </div>
         <div className="button-row">
-          {canDeleteSelectedMix ? (
-            <button
-              className="button button--ghost button--small"
-              onClick={handleDeleteMix}
-              disabled={deleteMixMutation.isPending}
-              type="button"
-            >
-              {deleteMixMutation.isPending ? "Deleting..." : "Delete Practice Mix"}
-            </button>
-          ) : null}
           <button
             className="button button--ghost button--small"
             onClick={handleDeleteProject}
@@ -515,6 +513,32 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
           >
             Delete Project
           </button>
+          <button
+            className="button button--ghost button--small"
+            onClick={handleDeleteAllMixes}
+            disabled={!canDeleteAnyMixes || isDeleteMixDisabled}
+            type="button"
+          >
+            {isDeleteArtifactsPending ? "Deleting..." : "Delete All Mixes"}
+          </button>
+          <button
+            className="button button--ghost button--small"
+            onClick={handleDeleteAllStems}
+            disabled={!canDeleteAnyStems || isDeleteStemDisabled}
+            type="button"
+          >
+            {deleteStemMutation.isPending ? "Deleting..." : "Delete All Stems"}
+          </button>
+          {selectedPrimaryStemDeleteLabel ? (
+            <button
+              className="button button--ghost button--small"
+              onClick={handleDeleteSelectedPrimaryStems}
+              disabled={!selectedPrimaryStemArtifacts.length || isDeleteStemDisabled}
+              type="button"
+            >
+              {deleteStemMutation.isPending ? "Deleting..." : selectedPrimaryStemDeleteLabel}
+            </button>
+          ) : null}
         </div>
       </div>
         </>

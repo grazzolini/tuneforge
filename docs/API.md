@@ -83,6 +83,14 @@ metadata when available, otherwise local development resolves them with `git des
 
 Returns available chord backends and capability metadata. Built-in chords are always expected to be available. Advanced Chords may be unavailable when optional desktop-only dependencies are not installed or the runtime platform is mobile.
 
+## Stem Models
+
+### List stem models
+
+`GET /api/v1/stem-models`
+
+Returns supported stem models and availability metadata. Labels are `Default (6 stems model)` for `htdemucs_6s` and `2 stems model` for `htdemucs_ft`.
+
 ## Projects
 
 ### Import project
@@ -268,11 +276,12 @@ Response: `JobResponse`.
 
 `POST /api/v1/projects/{project_id}/stems`
 
-Queues two-stem generation.
+Queues stem generation for the selected source audio or practice mix.
 
 Request fields:
 
 - `mode`
+- `stem_model`
 - `output_format`
 - `force`
 - `source_artifact_id`
@@ -280,7 +289,9 @@ Request fields:
 - `chord_backend_fallback_from`
 - `overwrite_chord_edits`
 
-Current validation allows `mode: "two_stem"` and `output_format: "wav"`.
+Current validation allows `mode: "stems"` or `mode: "two_stem"` and `output_format: "wav"`. If `stem_model` is omitted, `mode: "stems"` uses the backend default `htdemucs_6s`; `mode: "two_stem"` maps to `htdemucs_ft` for compatibility.
+
+`htdemucs_6s` creates visible `Vocals`, `Drums`, `Bass`, `Guitar`, `Piano`, and `Other` artifacts. `htdemucs_ft` creates visible `Vocals` and `Instrumental` artifacts.
 
 Response: `JobResponse`.
 

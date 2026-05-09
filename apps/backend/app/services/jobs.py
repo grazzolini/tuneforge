@@ -346,18 +346,25 @@ class InProcessJobRunner:
     def _handle_stems(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")
         payload = job.payload_json
-        artifacts = generate_stems(
+        stem_result = generate_stems(
             session,
             project=project,
             source_artifact_id=payload.get("source_artifact_id"),
             output_format=payload.get("output_format", "wav"),
             force=bool(payload.get("force", False)),
+            stem_model=payload.get("stem_model") if isinstance(payload.get("stem_model"), str) else None,
             on_progress=context.set_progress,
             should_cancel=context.should_cancel,
             register_process=context.register_process,
             unregister_process=context.unregister_process,
         )
-        if _should_enqueue_chord_refresh_after_stems(job, artifacts, session.get(ChordTimeline, project.id)):
+        artifacts = stem_result.artifacts
+        if _should_enqueue_chord_refresh_after_stems(
+            job,
+            artifacts,
+            session.get(ChordTimeline, project.id),
+            generated_this_job=stem_result.generated_this_job,
+        ):
             selected_chord_backend = resolve_chord_backend(
                 str(payload.get("chord_backend", "default")),
                 require_available=False,
@@ -396,23 +403,23 @@ def _should_enqueue_chord_refresh_after_stems(
     job: Job,
     artifacts: list[Artifact],
     chords: ChordTimeline | None,
+    *,
+    generated_this_job: bool,
 ) -> bool:
-    source_instrumental = next(
+    if not generated_this_job:
+        return False
+    source_stem = next(
         (
             artifact
             for artifact in artifacts
-            if artifact.type == "instrumental_stem"
-            and artifact.metadata_json.get("source_artifact_type") == "source_audio"
+            if artifact.metadata_json.get("source_artifact_type") == "source_audio"
+            and artifact.metadata_json.get("source_artifact_id")
         ),
         None,
     )
-    if source_instrumental is None:
+    if source_stem is None:
         return False
     overwrite_chord_edits = bool(job.payload_json.get("overwrite_chord_edits", False))
     if chords is not None and chords.has_user_edits and not overwrite_chord_edits:
         return False
-    if bool(job.payload_json.get("force", False)):
-        return True
-    if job.started_at is None:
-        return True
-    return _as_utc_datetime(source_instrumental.created_at) >= _as_utc_datetime(job.started_at)
+    return True

@@ -6,9 +6,11 @@ import os
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
+import numpy as np
+import soundfile as sf
 from fastapi import status
 
 from app.errors import AppError, JobCancelledError
@@ -31,6 +33,7 @@ def separate_two_stems(
     *,
     model: str = "htdemucs_ft",
     device: str = "cpu",
+    model_repo: Path | None = None,
     on_progress: Callable[[int], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
     register_process: Callable[[subprocess.Popen[str]], None] | None = None,
@@ -53,7 +56,74 @@ def separate_two_stems(
         "--device",
         device,
     ]
+    if model_repo is not None:
+        command.extend(["--model-repo", str(model_repo)])
 
+    return _run_demucs_worker(
+        command,
+        expected_outputs=[vocal_path, instrumental_path],
+        model=model,
+        device=device,
+        on_progress=on_progress,
+        should_cancel=should_cancel,
+        register_process=register_process,
+        unregister_process=unregister_process,
+    )
+
+
+def separate_sources(
+    source_path: Path,
+    output_paths: Mapping[str, Path],
+    *,
+    model: str,
+    device: str = "cpu",
+    model_repo: Path | None = None,
+    on_progress: Callable[[int], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+    register_process: Callable[[subprocess.Popen[str]], None] | None = None,
+    unregister_process: Callable[[], None] | None = None,
+) -> dict[str, object]:
+    _require_demucs_dependency()
+
+    command = [
+        sys.executable,
+        "-m",
+        "app.engines.demucs_worker",
+        "--source",
+        str(source_path),
+        "--model",
+        model,
+        "--device",
+        device,
+    ]
+    for source, output_path in output_paths.items():
+        command.extend(["--stem", f"{source}={output_path}"])
+    if model_repo is not None:
+        command.extend(["--model-repo", str(model_repo)])
+
+    return _run_demucs_worker(
+        command,
+        expected_outputs=list(output_paths.values()),
+        model=model,
+        device=device,
+        on_progress=on_progress,
+        should_cancel=should_cancel,
+        register_process=register_process,
+        unregister_process=unregister_process,
+    )
+
+
+def _run_demucs_worker(
+    command: list[str],
+    *,
+    expected_outputs: list[Path],
+    model: str,
+    device: str,
+    on_progress: Callable[[int], None] | None,
+    should_cancel: Callable[[], bool] | None,
+    register_process: Callable[[subprocess.Popen[str]], None] | None,
+    unregister_process: Callable[[], None] | None,
+) -> dict[str, object]:
     if on_progress:
         on_progress(10)
 
@@ -104,7 +174,7 @@ def separate_two_stems(
                 details={"stdout": (stdout or "").strip(), "stderr": (stderr or "").strip()},
             )
 
-        if not vocal_path.exists() or not instrumental_path.exists():
+        if any(not output_path.exists() for output_path in expected_outputs):
             raise AppError(
                 "PROCESSING_FAILED",
                 "Demucs completed without producing the expected stem files.",
@@ -133,3 +203,47 @@ def separate_two_stems(
     finally:
         if process and process.poll() is None:
             process.kill()
+
+
+def mix_audio_files(
+    source_paths: list[Path],
+    output_path: Path,
+    *,
+    subtype: str = "FLOAT",
+    block_size: int = 131_072,
+) -> None:
+    if not source_paths:
+        raise AppError("INVALID_REQUEST", "At least one stem file is required for audio mixing.")
+
+    handles = []
+    try:
+        for source_path in source_paths:
+            handles.append(sf.SoundFile(source_path, mode="r"))
+        samplerate = handles[0].samplerate
+        channels = handles[0].channels
+        if any(handle.samplerate != samplerate or handle.channels != channels for handle in handles):
+            raise AppError("PROCESSING_FAILED", "Stem files have incompatible sample rates or channel counts.")
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with sf.SoundFile(
+            output_path,
+            mode="w",
+            samplerate=samplerate,
+            channels=channels,
+            format="WAV",
+            subtype=subtype,
+        ) as output:
+            while True:
+                blocks = [handle.read(block_size, dtype="float32", always_2d=True) for handle in handles]
+                if blocks[0].shape[0] == 0:
+                    break
+                frame_count = min(block.shape[0] for block in blocks)
+                if frame_count == 0:
+                    break
+                mixed = np.zeros((frame_count, channels), dtype=np.float32)
+                for block in blocks:
+                    mixed += block[:frame_count]
+                output.write(mixed)
+    finally:
+        for handle in handles:
+            handle.close()

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, cast
 
 from sqlalchemy.orm import Session
 
+from app.engines.stems import mix_audio_files
 from app.errors import AppError
 from app.models import Artifact, ChordTimeline, Project, utcnow
 from app.services.chord_backends import (
@@ -17,6 +19,7 @@ from app.services.chord_backends import (
     resolve_chord_backend_id,
 )
 from app.services.paths import project_analysis_dir
+from app.services.stem_models import NON_VOCAL_SIX_STEM_SOURCES, model_output_artifact_type
 from app.services.tab_state import clear_project_tab_state
 
 
@@ -50,7 +53,7 @@ def detect_project_chords(
     runtime_device = source_result.runtime_device
     source_timeline = source_result.segments
     augmented_timeline = (
-        _augment_with_source_instrumental_stem(
+        _augment_with_source_stems(
             project,
             backend_id=selected_backend_id,
             source_artifact=source_artifact,
@@ -116,7 +119,7 @@ def project_chord_detection_source(project: Project, backend: str = "default") -
     if not chord_backend_uses_source_instrumental_stem(backend):
         return "source"
     source_artifact = _source_audio_artifact(project)
-    return "source+stem" if _source_instrumental_stem(project, source_artifact) is not None else "source"
+    return "source+stem" if _source_stem_analysis_available(project, source_artifact) else "source"
 
 
 def _source_instrumental_stem(project: Project, source_artifact: Artifact | None) -> Artifact | None:
@@ -134,18 +137,67 @@ def _source_instrumental_stem(project: Project, source_artifact: Artifact | None
     return None
 
 
-def _augment_with_source_instrumental_stem(
+def _source_non_vocal_stems(project: Project, source_artifact: Artifact | None) -> list[Artifact]:
+    if source_artifact is None:
+        return []
+    stems_by_source = {
+        artifact.metadata_json.get("stem_source"): artifact
+        for artifact in project.artifacts
+        if artifact.type in {model_output_artifact_type(source) for source in NON_VOCAL_SIX_STEM_SOURCES}
+        and Path(artifact.path).exists()
+        and artifact.metadata_json.get("source_artifact_id") == source_artifact.id
+    }
+    stems = [stems_by_source.get(source) for source in NON_VOCAL_SIX_STEM_SOURCES]
+    if any(stem is None for stem in stems):
+        return []
+    return [stem for stem in stems if stem is not None]
+
+
+def _source_stem_analysis_available(project: Project, source_artifact: Artifact | None) -> bool:
+    return _source_instrumental_stem(project, source_artifact) is not None or bool(
+        _source_non_vocal_stems(project, source_artifact)
+    )
+
+
+def _detect_source_stem_timeline(
+    project: Project,
+    *,
+    backend_id: str,
+    source_artifact: Artifact | None,
+) -> list[dict[str, Any]]:
+    instrumental_stem = _source_instrumental_stem(project, source_artifact)
+    if instrumental_stem is not None:
+        return _detect_timeline(Path(instrumental_stem.path), backend_id).segments
+
+    non_vocal_stems = _source_non_vocal_stems(project, source_artifact)
+    if not non_vocal_stems:
+        return []
+
+    temp_file = tempfile.NamedTemporaryFile(prefix="tuneforge-chord-mix-", suffix=".wav", delete=False)
+    mix_path = Path(temp_file.name)
+    temp_file.close()
+    try:
+        mix_audio_files([Path(stem.path) for stem in non_vocal_stems], mix_path, subtype="FLOAT")
+        return _detect_timeline(mix_path, backend_id).segments
+    finally:
+        mix_path.unlink(missing_ok=True)
+
+
+def _augment_with_source_stems(
     project: Project,
     *,
     backend_id: str,
     source_artifact: Artifact | None,
     source_timeline: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    instrumental_stem = _source_instrumental_stem(project, source_artifact)
-    if instrumental_stem is None or not source_timeline:
+    if not source_timeline:
         return source_timeline
 
-    stem_timeline = _detect_timeline(Path(instrumental_stem.path), backend_id).segments
+    stem_timeline = _detect_source_stem_timeline(
+        project,
+        backend_id=backend_id,
+        source_artifact=source_artifact,
+    )
     if not stem_timeline:
         return source_timeline
 

@@ -1,8 +1,10 @@
 import { Buffer } from "node:buffer";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { readDemucsModelManifest } from "./prepare-demucs-models.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(__filename);
@@ -13,9 +15,16 @@ const generatedRoot = path.join(flatpakRoot, "generated");
 const cargoLockPath = path.join(workspaceRoot, "apps", "desktop", "src-tauri", "Cargo.lock");
 const pnpmLockPath = path.join(workspaceRoot, "pnpm-lock.yaml");
 const uvLockPath = path.join(workspaceRoot, "apps", "backend", "uv.lock");
+const demucsModelRoot = path.join(workspaceRoot, "packaging", "demucs");
 const flatpakProfile = readProfileArg();
 const profileIncludesAdvancedChords = flatpakProfile === "full";
 const profileUsesLegacyNvidia = flatpakProfile === "full";
+
+function sha256File(filePath) {
+  const hash = createHash("sha256");
+  hash.update(readFileSync(filePath));
+  return hash.digest("hex");
+}
 
 function readProfileArg() {
   const profileFlagIndex = process.argv.indexOf("--profile");
@@ -645,13 +654,63 @@ function generatePythonSources() {
   return packages.length;
 }
 
+function generateDemucsModelSources() {
+  const manifest = readDemucsModelManifest();
+  const modelMode = (modelId) => {
+    if (modelId === "htdemucs_6s") {
+      return "six_stems";
+    }
+    if (modelId === "htdemucs_ft") {
+      return "two_stems";
+    }
+    throw new Error(`Unsupported Demucs model id: ${modelId}`);
+  };
+  const sources = manifest.models.flatMap((model) =>
+    model.files.map((file) => ({
+      type: "file",
+      url: `${manifest.rootUrl}${file.fileName}`,
+      sha256: file.sha256,
+      dest: "demucs-models",
+      "dest-filename": file.fileName,
+    })),
+  );
+  const runtimeManifest = {
+    models: Object.fromEntries(
+      manifest.models.map((model) => [
+        model.id,
+        {
+          mode: modelMode(model.id),
+          yaml: model.yaml,
+          files: [
+            {
+              name: model.yaml,
+              size_bytes: statSync(path.join(demucsModelRoot, model.yaml)).size,
+              sha256: sha256File(path.join(demucsModelRoot, model.yaml)),
+            },
+            ...model.files.map((file) => ({
+              name: file.fileName,
+              size_bytes: file.size,
+              sha256: file.sha256,
+            })),
+          ],
+        },
+      ]),
+    ),
+  };
+
+  writeGeneratedJson("demucs-model-sources.json", sources);
+  writeGeneratedJson("demucs-model-manifest.json", runtimeManifest);
+  return sources.length;
+}
+
 function main() {
   const cargoCount = generateCargoSources();
   const nodeCount = generateNodeSources();
   const pythonCount = generatePythonSources();
+  const demucsModelCount = generateDemucsModelSources();
 
   process.stdout.write(
-    `Generated ${flatpakProfile} Flatpak sources: ${cargoCount} Cargo crates, ${nodeCount} pnpm tarballs, ${pythonCount} Python packages.\n`,
+    `Generated ${flatpakProfile} Flatpak sources: ${cargoCount} Cargo crates, ${nodeCount} pnpm tarballs, ${pythonCount} Python packages, ${demucsModelCount} Demucs model files.\n`,
   );
 }
 

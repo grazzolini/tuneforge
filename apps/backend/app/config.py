@@ -35,6 +35,7 @@ class Settings:
     ffprobe_path: str
     stem_model: str
     stem_device: str
+    demucs_model_repo: Path | None
     lyrics_model: str
     lyrics_device: str
     lyrics_cache_dir: Path
@@ -72,8 +73,13 @@ def get_settings() -> Settings:
         preview_format="wav",
         ffmpeg_path=os.environ.get("TUNEFORGE_FFMPEG_PATH", "ffmpeg"),
         ffprobe_path=os.environ.get("TUNEFORGE_FFPROBE_PATH", "ffprobe"),
-        stem_model=os.environ.get("TUNEFORGE_STEM_MODEL", "htdemucs_ft"),
+        stem_model=os.environ.get("TUNEFORGE_STEM_MODEL", "htdemucs_6s"),
         stem_device=os.environ.get("TUNEFORGE_STEM_DEVICE", "auto"),
+        demucs_model_repo=(
+            Path(os.environ["TUNEFORGE_DEMUCS_MODEL_REPO"]).expanduser().resolve()
+            if os.environ.get("TUNEFORGE_DEMUCS_MODEL_REPO")
+            else None
+        ),
         lyrics_model=os.environ.get("TUNEFORGE_LYRICS_MODEL", "turbo"),
         lyrics_device=os.environ.get("TUNEFORGE_LYRICS_DEVICE", "auto"),
         lyrics_cache_dir=Path(os.environ.get("TUNEFORGE_LYRICS_CACHE_DIR", str(cache_root / "lyrics"))),

@@ -9,10 +9,12 @@ Runs the standard developer setup:
   pnpm install
   uv sync --python 3.11 --all-groups
   pnpm contracts:generate
+  pnpm models:demucs:prepare
 
 Options:
   --advanced-chords, --crema  Install the optional crema/TensorFlow chord backend.
   --legacy-nvidia             Use the Linux x86_64 legacy NVIDIA Torch profile.
+  --skip-demucs-models        Skip preparing the local pinned Demucs model repo.
   --skip-pnpm-install         Skip workspace dependency installation.
   --skip-contracts            Skip OpenAPI contract generation.
   -h, --help                  Show this help.
@@ -21,6 +23,7 @@ EOF
 
 advanced_chords=0
 legacy_nvidia=0
+skip_demucs_models=0
 skip_pnpm_install=0
 skip_contracts=0
 
@@ -31,6 +34,9 @@ while [[ $# -gt 0 ]]; do
       ;;
     --legacy-nvidia)
       legacy_nvidia=1
+      ;;
+    --skip-demucs-models)
+      skip_demucs_models=1
       ;;
     --skip-pnpm-install)
       skip_pnpm_install=1
@@ -116,6 +122,12 @@ if [[ "${skip_contracts}" -eq 0 ]]; then
   cd "${repo_root}"
   echo "Generating shared API contracts..."
   pnpm contracts:generate
+fi
+
+if [[ "${skip_demucs_models}" -eq 0 ]]; then
+  cd "${repo_root}"
+  echo "Preparing local Demucs model repo..."
+  pnpm models:demucs:prepare
 fi
 
 echo "Setup complete."

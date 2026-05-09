@@ -251,6 +251,94 @@ def test_chord_refresh_uses_source_stems_only_for_augmentation(
     assert [segment["label"] for segment in chords.segments_json] == ["G"]
 
 
+def test_chord_refresh_uses_temporary_six_stem_non_vocal_mix(
+    client,
+    sample_chord_audio_file: Path,
+    tmp_path: Path,
+    monkeypatch,
+):
+    project = client.post(
+        "/api/v1/projects/import",
+        json={"source_path": str(sample_chord_audio_file), "copy_into_project": True},
+    ).json()["project"]
+
+    initial_jobs = client.get("/api/v1/jobs").json()["jobs"]
+    initial_chord_job = next(
+        job for job in initial_jobs if job["project_id"] == project["id"] and job["type"] == "chords"
+    )
+    assert wait_for_job(client, initial_chord_job["id"])["status"] == "completed"
+
+    with SessionLocal() as session:
+        project_model = get_project(session, project["id"])
+        source_artifact = next(artifact for artifact in project_model.artifacts if artifact.type == "source_audio")
+        for source, artifact_type in [
+            ("drums", "drums_stem"),
+            ("bass", "bass_stem"),
+            ("guitar", "guitar_stem"),
+            ("piano", "piano_stem"),
+            ("other", "other_stem"),
+        ]:
+            path = tmp_path / f"{source}.wav"
+            path.write_bytes(source.encode("utf-8"))
+            register_artifact(
+                session,
+                project_id=project_model.id,
+                artifact_type=artifact_type,
+                artifact_format="wav",
+                path=path,
+                metadata={
+                    "source_artifact_id": source_artifact.id,
+                    "source_artifact_type": "source_audio",
+                    "stem_model": "htdemucs_6s",
+                    "stem_source": source,
+                },
+                generated_by="demucs",
+            )
+        session.commit()
+
+    temp_mix_paths: list[Path] = []
+
+    def fake_mix_audio_files(
+        source_paths: list[Path],
+        output_path: Path,
+        *,
+        subtype: str = "FLOAT",
+        block_size: int = 0,
+    ):
+        assert subtype == "FLOAT"
+        assert [path.name for path in source_paths] == ["drums.wav", "bass.wav", "guitar.wav", "piano.wav", "other.wav"]
+        output_path.write_bytes(b"non-vocal")
+        temp_mix_paths.append(output_path)
+
+    def fake_detect_timeline(path: Path, selected_backend_id: str) -> ChordDetectionResult:
+        del selected_backend_id
+        if path in temp_mix_paths:
+            assert path.exists()
+            return ChordDetectionResult(
+                segments=[_segment("G", confidence=0.88, pitch_class=7, quality="major")],
+                backend_id="tuneforge-fast",
+                metadata={},
+            )
+        return ChordDetectionResult(
+            segments=[_segment("Em", confidence=0.35, pitch_class=4, quality="minor")],
+            backend_id="tuneforge-fast",
+            metadata={},
+        )
+
+    monkeypatch.setattr("app.services.chords.mix_audio_files", fake_mix_audio_files)
+    monkeypatch.setattr("app.services.chords._detect_timeline", fake_detect_timeline)
+
+    with SessionLocal() as session:
+        project_model = get_project(session, project["id"])
+        chords = detect_project_chords(session, project_model, force=True)
+        session.commit()
+
+    assert [segment["label"] for segment in chords.source_segments_json] == ["Em"]
+    assert [segment["label"] for segment in chords.segments_json] == ["G"]
+    assert temp_mix_paths
+    assert all(not path.exists() for path in temp_mix_paths)
+
+
 def test_chord_refresh_preserves_user_edits_without_overwrite(
     client,
     sample_chord_audio_file: Path,

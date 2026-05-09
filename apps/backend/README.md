@@ -33,7 +33,7 @@ Advanced Chords is an experimental backend backed by [`crema`](https://github.co
 
 The current mobile backend does not run the desktop Python/FastAPI stack and disables Advanced Chords through `TUNEFORGE_RUNTIME_PLATFORM`.
 
-Built-in Chords and Advanced Chords both analyze the source track first. When a matching source instrumental stem exists, chord refresh also analyzes that stem and augments the source timeline, so chord jobs can report `source+stem`.
+Built-in Chords and Advanced Chords both analyze the source track first. When matching source stems exist, chord refresh also analyzes a non-vocal stem input and augments the source timeline, so chord jobs can report `source+stem`. For the 6 stems model, the non-vocal input is a temporary float mix of drums, bass, guitar, piano, and other that is deleted after analysis.
 
 For local desktop development:
 
@@ -114,8 +114,9 @@ All configuration is environment-driven (see [`app/config.py`](./app/config.py))
 | `TUNEFORGE_DATA_DIR` | OS-specific | Override for the data directory (database, projects, cache). |
 | `TUNEFORGE_FFMPEG_PATH` | `ffmpeg` | Override the `ffmpeg` binary location. |
 | `TUNEFORGE_FFPROBE_PATH` | `ffprobe` | Override the `ffprobe` binary location. |
-| `TUNEFORGE_STEM_MODEL` | `htdemucs_ft` | Demucs model used for stem separation. |
+| `TUNEFORGE_STEM_MODEL` | `htdemucs_6s` | Default Demucs model used for stem separation. |
 | `TUNEFORGE_STEM_DEVICE` | `auto` | One of `auto`, `cpu`, `mps`, `cuda`. `auto` prefers compatible CUDA, then MPS, then CPU. |
+| `TUNEFORGE_DEMUCS_MODEL_REPO` | unset | Local Demucs model repo containing packaged `.yaml` and `.th` files. `pnpm setup:dev` and packaged desktop builds set this automatically so stem weights are never downloaded at runtime. |
 | `TUNEFORGE_LYRICS_MODEL` | `turbo` | Whisper model used for lyrics generation. |
 | `TUNEFORGE_LYRICS_DEVICE` | `auto` | One of `auto`, `cpu`, `mps`, `cuda`. `auto` prefers compatible CUDA, then MPS, then CPU. |
 | `TUNEFORGE_LYRICS_CACHE_DIR` | `<data>/cache/lyrics` | Override where Whisper model weights are cached. |
@@ -127,7 +128,7 @@ Default data directory:
 - macOS: `~/Library/Application Support/Tuneforge`
 - Linux: `~/.local/share/tuneforge`
 
-Lyrics models follow the same first-use download pattern as Demucs. The selected Whisper weights are downloaded on demand into the lyrics cache directory, then reused offline on later runs.
+Lyrics models are downloaded on demand into the lyrics cache directory, then reused offline on later runs. Stem generation does not use Demucs runtime downloads; run `pnpm models:demucs:prepare`, configure `TUNEFORGE_DEMUCS_MODEL_REPO`, or use a packaged desktop build.
 
 ## Chord backends
 
@@ -152,10 +153,10 @@ Accepted backend aliases are `fast` / `tuneforge-fast` and `advanced` / `crema-a
 Benchmark Built-in Chords against Advanced Chords:
 
 ```sh
-uv run --python 3.11 python -m app.benchmarks.chords --audio /path/to/song.mp3
+bash scripts/run-backend-module.sh app.benchmarks.chords --audio /path/to/song.mp3
 ```
 
-The command writes machine-readable JSON to stdout and a short summary to stderr. Use `--json-only` for JSON-only output.
+Run from the repository root. The command writes machine-readable JSON to stdout and a short summary to stderr. Use `--json-only` for JSON-only output.
 
 ### Licensing note
 

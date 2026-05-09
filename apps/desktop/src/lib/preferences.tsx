@@ -14,6 +14,7 @@ export type ProjectWorkspaceMode = "project" | "playback";
 export type PlaybackDisplayMode = "lyrics" | "chords" | "combined";
 export type DefaultPlaybackDisplayMode = "auto" | PlaybackDisplayMode;
 export type DefaultChordBackend = "tuneforge-fast" | "crema-advanced";
+export type DefaultStemModel = "htdemucs_6s" | "htdemucs_ft";
 export type { EnharmonicDisplayMode };
 
 export const DEFAULT_TUNER_REFERENCE_HZ = 440;
@@ -28,6 +29,7 @@ export type UiPreferences = {
   defaultProjectWorkspace: ProjectWorkspaceMode;
   defaultPlaybackDisplayMode: DefaultPlaybackDisplayMode;
   defaultChordBackend: DefaultChordBackend;
+  defaultStemModel: DefaultStemModel;
   defaultLyricsFollowEnabled: boolean;
   defaultChordsFollowEnabled: boolean;
   defaultTunerInputDeviceId: string | null;
@@ -36,7 +38,7 @@ export type UiPreferences = {
 
 export type AppearancePreferences = Pick<UiPreferences, "informationDensity">;
 export type NotationPreferences = Pick<UiPreferences, "enharmonicDisplayMode">;
-export type AnalysisPreferences = Pick<UiPreferences, "defaultChordBackend">;
+export type AnalysisPreferences = Pick<UiPreferences, "defaultChordBackend" | "defaultStemModel">;
 export type TunerPreferences = Pick<
   UiPreferences,
   "defaultTunerInputDeviceId" | "defaultTunerReferenceHz"
@@ -59,6 +61,7 @@ type PreferencesContextValue = UiPreferences & {
   setDefaultProjectWorkspace: (value: ProjectWorkspaceMode) => void;
   setDefaultPlaybackDisplayMode: (value: DefaultPlaybackDisplayMode) => void;
   setDefaultChordBackend: (value: DefaultChordBackend) => void;
+  setDefaultStemModel: (value: DefaultStemModel) => void;
   setDefaultLyricsFollowEnabled: (value: boolean) => void;
   setDefaultChordsFollowEnabled: (value: boolean) => void;
   setDefaultTunerInputDeviceId: (value: string | null) => void;
@@ -84,6 +87,7 @@ export const DEFAULT_NOTATION_PREFERENCES: NotationPreferences = {
 
 export const DEFAULT_ANALYSIS_PREFERENCES: AnalysisPreferences = {
   defaultChordBackend: "tuneforge-fast",
+  defaultStemModel: "htdemucs_6s",
 };
 
 export const DEFAULT_TUNER_PREFERENCES: TunerPreferences = {
@@ -136,6 +140,10 @@ export function isDefaultChordBackend(value: unknown): value is DefaultChordBack
   return value === "tuneforge-fast" || value === "crema-advanced";
 }
 
+export function isDefaultStemModel(value: unknown): value is DefaultStemModel {
+  return value === "htdemucs_6s" || value === "htdemucs_ft";
+}
+
 function normalizeTunerInputDeviceId(value: unknown): string | null {
   if (typeof value !== "string") {
     return null;
@@ -186,6 +194,9 @@ export function normalizePreferences(value: unknown): UiPreferences {
     defaultChordBackend: isDefaultChordBackend(candidate.defaultChordBackend)
       ? candidate.defaultChordBackend
       : DEFAULT_PREFERENCES.defaultChordBackend,
+    defaultStemModel: isDefaultStemModel(candidate.defaultStemModel)
+      ? candidate.defaultStemModel
+      : DEFAULT_PREFERENCES.defaultStemModel,
     defaultTunerInputDeviceId: normalizeTunerInputDeviceId(candidate.defaultTunerInputDeviceId),
     defaultTunerReferenceHz: normalizeTunerReferenceHz(candidate.defaultTunerReferenceHz),
     defaultLyricsFollowEnabled:
@@ -259,6 +270,9 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       },
       setDefaultChordBackend: (defaultChordBackend) => {
         setPreferences((current) => mergePreferences(current, { defaultChordBackend }));
+      },
+      setDefaultStemModel: (defaultStemModel) => {
+        setPreferences((current) => mergePreferences(current, { defaultStemModel }));
       },
       setDefaultLyricsFollowEnabled: (defaultLyricsFollowEnabled) => {
         setPreferences((current) => mergePreferences(current, { defaultLyricsFollowEnabled }));

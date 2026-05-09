@@ -15,6 +15,7 @@ from app.api.routes.chord_backends import router as chord_backends_router
 from app.api.routes.health import router as health_router
 from app.api.routes.jobs import router as jobs_router
 from app.api.routes.projects import router as projects_router
+from app.api.routes.stem_models import router as stem_models_router
 from app.config import ensure_data_dirs, get_settings
 from app.db import SessionLocal, UnknownDatabaseRevisionError, reconfigure_engine, run_migrations
 from app.errors import AppError
@@ -79,6 +80,7 @@ async def validation_error_handler(_: Request, exc: RequestValidationError) -> J
 
 app.include_router(health_router, prefix=get_settings().api_prefix)
 app.include_router(chord_backends_router, prefix=get_settings().api_prefix)
+app.include_router(stem_models_router, prefix=get_settings().api_prefix)
 app.include_router(projects_router, prefix=get_settings().api_prefix)
 app.include_router(jobs_router, prefix=get_settings().api_prefix)
 app.include_router(artifacts_router, prefix=get_settings().api_prefix)

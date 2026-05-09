@@ -1,8 +1,8 @@
 # Tuneforge
 
-Tuneforge is a local-first, open-source desktop app for musicians who want to learn, rehearse, and play along with songs. Drop in any track and Tuneforge will split it into vocals and backing instruments, work out the key, tempo, chord progression, and lyrics, and let you shift the pitch, retune to a reference frequency, follow the transcript during playback, and export a custom version to practice with.
+Tuneforge is a local-first, open-source desktop app for musicians who want to learn, rehearse, and play along with songs. Drop in any track and Tuneforge will split it into vocals, drums, bass, guitar, piano, and other stems, work out the key, tempo, chord progression, and lyrics, and let you shift the pitch, retune to a reference frequency, follow the transcript during playback, and export a custom version to practice with.
 
-Think "AI-assisted song toolkit for the player at home" — but **fully local, single-user, and with no cloud component**. Every track stays on your machine, no account, no upload, no network round-trip after the initial model download.
+Think "AI-assisted song toolkit for the player at home" — but **fully local, single-user, and with no cloud component**. Every track stays on your machine, no account, no upload.
 
 ## Status
 
@@ -15,7 +15,7 @@ Pre-1.0. The desktop dev flow (`pnpm dev`) is the fastest way to iterate. Local 
 - Local lyrics transcription with segment and word timestamps when available.
 - In-app lyrics editing with transcript refresh and playback follow.
 - Pitch transpose (semitones) and retune (target reference Hz).
-- Stem separation via a local Demucs backend (`htdemucs_ft` by default).
+- Stem separation via a local Demucs backend. The app defaults to `Default (6 stems model)` and also offers `2 stems model`.
 - Preview rendering (cached) and export to `wav`, `mp3`, or `flac`.
 - Per-project playback session with persistence, count-in, and playback-level tempo changes.
 
@@ -38,6 +38,7 @@ Security reports follow the process in [SECURITY.md](./SECURITY.md). "There is n
 ## Documentation
 
 - [Product specification](./docs/SPEC.md)
+- [Stem separation](./docs/STEM_SEPARATION.md)
 - [Architecture](./docs/ARCHITECTURE.md)
 - [API](./docs/API.md)
 - [Packaging](./docs/PACKAGING.md)
@@ -64,9 +65,19 @@ pnpm setup:dev
 ```
 
 That command installs workspace dependencies, checks Tauri build prerequisites, syncs the backend
-Python environment, and regenerates shared API contracts. The first backend sync is heavy because it
-installs Demucs and Torch. The first stem-separation run will additionally download the Demucs model
-weights into the local Torch cache.
+Python environment, regenerates shared API contracts, and prepares the pinned local Demucs model repo.
+The first setup is heavy because it installs Demucs/Torch and downloads stem weights into
+`packaging/demucs/cache/`. Later backend launches use the prepared repo automatically, so stem
+generation does not download weights at runtime.
+
+Skip model preparation when you only need non-stem development:
+
+```sh
+pnpm setup:dev -- --skip-demucs-models
+```
+
+Prepare models manually with `pnpm models:demucs:prepare`. Add `-- --cache-only` or set
+`TUNEFORGE_DEMUCS_CACHE_ONLY=1` to require already cached weights.
 
 To install the optional experimental crema/TensorFlow Advanced Chords backend for local desktop development:
 
@@ -134,8 +145,9 @@ Backend behavior is environment-driven. Full table is in [apps/backend/README.md
 | `TUNEFORGE_PORT` | `8765` | Bind port. |
 | `TUNEFORGE_DATA_DIR` | OS-specific | Override the data directory. |
 | `TUNEFORGE_FFMPEG_PATH` / `TUNEFORGE_FFPROBE_PATH` | `ffmpeg` / `ffprobe` | Override binary lookup. |
-| `TUNEFORGE_STEM_MODEL` | `htdemucs_ft` | Demucs model. |
+| `TUNEFORGE_STEM_MODEL` | `htdemucs_6s` | Default Demucs stem model. |
 | `TUNEFORGE_STEM_DEVICE` | `auto` | `auto` / `cpu` / `mps` / `cuda`. |
+| `TUNEFORGE_DEMUCS_MODEL_REPO` | unset | Local Demucs model repo containing bundled weights/YAML. See `docs/STEM_SEPARATION.md`. |
 | `TUNEFORGE_LYRICS_MODEL` | `turbo` | Whisper model for lyrics transcription. |
 | `TUNEFORGE_LYRICS_DEVICE` | `auto` | `auto` / `cpu` / `mps` / `cuda`. |
 

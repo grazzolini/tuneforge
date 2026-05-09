@@ -38,6 +38,11 @@ export function resolveBuildInfo({
 
 export function writeBuildInfoFile(outputPath, options = {}) {
   const buildInfo = resolveBuildInfo({ ...options, versionFilePath: null });
+  writeResolvedBuildInfoFile(outputPath, buildInfo);
+  return buildInfo;
+}
+
+export function writeResolvedBuildInfoFile(outputPath, buildInfo) {
   writeFileSync(outputPath, `${JSON.stringify(buildInfo, null, 2)}\n`);
   return buildInfo;
 }

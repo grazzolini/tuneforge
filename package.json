@@ -3,6 +3,7 @@
   "private": true,
   "packageManager": "pnpm@10.33.0",
   "scripts": {
+    "build:packaged-frontend": "node scripts/build-packaged-frontend.mjs",
     "bundle:prepare": "node scripts/prepare-bundle.mjs",
     "contracts:generate": "pnpm --filter @tuneforge/shared-types generate",
     "dev": "concurrently -n backend,desktop -c blue,green \"pnpm dev:backend\" \"pnpm dev:desktop\"",

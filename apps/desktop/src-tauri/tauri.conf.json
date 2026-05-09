@@ -5,7 +5,7 @@
   "identifier": "com.tuneforge.desktop",
   "build": {
     "beforeDevCommand": "pnpm --filter @tuneforge/desktop dev",
-    "beforeBuildCommand": "pnpm -w bundle:prepare && pnpm --filter @tuneforge/desktop build",
+    "beforeBuildCommand": "pnpm -w bundle:prepare && pnpm -w build:packaged-frontend",
     "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../dist"
   },

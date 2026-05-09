@@ -6,6 +6,18 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SUPPORTED_CHORD_BACKENDS = {"default", "fast", "tuneforge-fast", "librosa", "advanced", "crema", "crema-advanced"}
+SUPPORTED_STEM_MODELS = {
+    "default",
+    "6_stems",
+    "six_stems",
+    "htdemucs_6s",
+    "2_stems",
+    "two_stems",
+    "two_stem",
+    "htdemucs_ft",
+}
+SIX_STEM_MODEL_ALIASES = {"6_stems", "six_stems", "htdemucs_6s"}
+TWO_STEM_MODEL_ALIASES = {"2_stems", "two_stems", "two_stem", "htdemucs_ft"}
 
 
 def _validate_chord_backend_fields(backend: str | None, backend_fallback_from: str | None) -> None:
@@ -220,6 +232,24 @@ class ChordBackendsResponse(BaseModel):
     backends: list[ChordBackendSchema]
 
 
+class StemModelSchema(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    label: str
+    description: str
+    sources: list[str]
+    source_count: int = Field(alias="sourceCount")
+    default: bool
+    availability: str
+    available: bool
+    unavailable_reason: str | None = None
+
+
+class StemModelsResponse(BaseModel):
+    models: list[StemModelSchema]
+
+
 class LyricsGenerateRequest(BaseModel):
     force: bool = False
 
@@ -360,6 +390,8 @@ class JobSchema(BaseModel):
     chord_backend: str | None = None
     chord_backend_fallback_from: str | None = None
     chord_source: str | None = None
+    stem_model: str | None = None
+    stem_model_label: str | None = None
     error_message: str | None
     runtime_device: str | None = None
     started_at: datetime | None = None
@@ -446,7 +478,8 @@ class PreviewRequest(BaseModel):
 
 
 class StemRequest(BaseModel):
-    mode: str = "two_stem"
+    mode: str = "stems"
+    stem_model: str | None = None
     output_format: str = "wav"
     force: bool = False
     source_artifact_id: str | None = None
@@ -456,8 +489,12 @@ class StemRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_stem_request(self) -> StemRequest:
-        if self.mode != "two_stem":
-            raise ValueError("Only two_stem mode is supported in v1.")
+        if self.mode not in {"stems", "two_stem"}:
+            raise ValueError("Only stems mode is supported.")
+        if self.stem_model is not None and self.stem_model not in SUPPORTED_STEM_MODELS:
+            raise ValueError("Unsupported stem model.")
+        if self.mode == "two_stem" and self.stem_model in SIX_STEM_MODEL_ALIASES:
+            raise ValueError("two_stem mode requires a two-stem model.")
         if self.output_format != "wav":
             raise ValueError("Stem output must be wav in v1.")
         _validate_chord_backend_fields(self.chord_backend, self.chord_backend_fallback_from)

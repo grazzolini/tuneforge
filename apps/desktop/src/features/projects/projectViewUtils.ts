@@ -8,24 +8,35 @@ import {
   transposePitchClass,
 } from "../../lib/music";
 
+const STEM_ARTIFACT_LABELS: Record<string, string> = {
+  bass_stem: "Bass",
+  drums_stem: "Drums",
+  guitar_stem: "Guitar",
+  instrumental_stem: "Instrumental",
+  other_stem: "Other",
+  piano_stem: "Piano",
+  vocal_stem: "Vocals",
+};
+
+const STEM_ARTIFACT_TYPES = new Set(Object.keys(STEM_ARTIFACT_LABELS));
+
 export type SeekDirection = "backward" | "forward";
 
 export function artifactLabel(artifact: ArtifactSchema) {
   if (artifact.type === "source_audio") return "Source Track";
   if (artifact.type === "preview_mix") return "Practice Mix";
   if (artifact.type === "export_mix") return "Export File";
-  if (artifact.type === "vocal_stem") return "Vocals";
-  if (artifact.type === "instrumental_stem") return "Instrumental";
+  if (artifact.type in STEM_ARTIFACT_LABELS) return STEM_ARTIFACT_LABELS[artifact.type];
   if (artifact.type === "analysis_json") return "Analysis JSON";
   return artifact.type;
 }
 
 export function isPlayableArtifact(artifact: ArtifactSchema) {
-  return ["source_audio", "preview_mix", "vocal_stem", "instrumental_stem"].includes(artifact.type);
+  return artifact.type === "source_audio" || artifact.type === "preview_mix" || isStemArtifact(artifact);
 }
 
 export function isStemArtifact(artifact: ArtifactSchema | null | undefined) {
-  return artifact?.type === "vocal_stem" || artifact?.type === "instrumental_stem";
+  return Boolean(artifact && STEM_ARTIFACT_TYPES.has(artifact.type));
 }
 
 export function preferredArtifactSelection(artifacts: ArtifactSchema[]) {
@@ -126,11 +137,22 @@ export function formatJobStatusSummary(job: JobSchema) {
     job.status,
     job.type === "chords" ? formatChordBackend(job.chord_backend) : null,
     job.type === "chords" ? job.chord_source : null,
+    job.type === "stems" ? formatStemModel(job.stem_model_label ?? job.stem_model) : null,
     typeof job.runtime_device === "string" ? job.runtime_device.toUpperCase() : null,
     formatJobDuration(job.duration_seconds),
   ]
     .filter(Boolean)
     .join(" / ");
+}
+
+function formatStemModel(model: string | null | undefined) {
+  if (model === "htdemucs_6s") {
+    return "Default (6 stems model)";
+  }
+  if (model === "htdemucs_ft") {
+    return "2 stems model";
+  }
+  return model;
 }
 
 function formatChordBackend(backend: string | null | undefined) {
@@ -163,14 +185,16 @@ export function artifactSummary(artifact: ArtifactSchema) {
   if (artifact.type === "source_audio") {
     return "Original source file";
   }
-  if (artifact.type === "vocal_stem" || artifact.type === "instrumental_stem") {
+  if (isStemArtifact(artifact)) {
     const engine = typeof artifact.metadata?.engine === "string" ? artifact.metadata.engine : null;
     const mode = typeof artifact.metadata?.mode === "string" ? artifact.metadata.mode : null;
     const model = typeof artifact.metadata?.model === "string" ? artifact.metadata.model : null;
+    const stemSource = typeof artifact.metadata?.stem_source === "string" ? artifact.metadata.stem_source : null;
     const device =
       typeof artifact.metadata?.device === "string" ? artifact.metadata.device.toUpperCase() : null;
     return [
-      artifact.type === "vocal_stem" ? "Vocal stem" : "Instrumental stem",
+      `${artifactLabel(artifact)} stem`,
+      stemSource,
       mode,
       engine,
       model,
@@ -207,7 +231,7 @@ export function artifactSummary(artifact: ArtifactSchema) {
 
 export function sourceArtifactIdForStems(artifact: ArtifactSchema | null) {
   if (!artifact) return null;
-  if (artifact.type === "vocal_stem" || artifact.type === "instrumental_stem") {
+  if (isStemArtifact(artifact)) {
     const sourceArtifactId = artifact.metadata?.source_artifact_id;
     return typeof sourceArtifactId === "string" ? sourceArtifactId : null;
   }
@@ -235,7 +259,7 @@ export function artifactTransposeSemitones(
     const semitones = "semitones" in transpose ? transpose.semitones : null;
     return typeof semitones === "number" ? semitones : 0;
   }
-  if (artifact.type === "vocal_stem" || artifact.type === "instrumental_stem") {
+  if (isStemArtifact(artifact)) {
     const sourceArtifactId = artifact.metadata?.source_artifact_id;
     return artifactTransposeSemitones(
       artifactById(

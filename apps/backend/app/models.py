@@ -19,6 +19,7 @@ class Project(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     display_name: Mapped[str] = mapped_column(String(255))
     source_key_override: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     source_path: Mapped[str] = mapped_column(String(2048))
     imported_path: Mapped[str] = mapped_column(String(2048))
     duration_seconds: Mapped[float | None] = mapped_column(Float(), nullable=True)
@@ -168,6 +169,7 @@ class Artifact(Base):
     type: Mapped[str] = mapped_column(String(64))
     format: Mapped[str] = mapped_column(String(32))
     path: Mapped[str] = mapped_column(String(2048))
+    content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     size_bytes: Mapped[int] = mapped_column(Integer(), default=0)
     generated_by: Mapped[str] = mapped_column(String(128), default="unknown")
     can_delete: Mapped[bool] = mapped_column(Boolean(), default=True)
@@ -237,6 +239,24 @@ class Job(Base):
             return value
         value = self.payload_json.get("chord_backend_fallback_from")
         return value if isinstance(value, str) else None
+
+    @property
+    def stem_model(self) -> str | None:
+        if self.type != "stems":
+            return None
+        value = self.payload_json.get("stem_model")
+        return value if isinstance(value, str) else None
+
+    @property
+    def stem_model_label(self) -> str | None:
+        value = self.payload_json.get("stem_model_label")
+        if isinstance(value, str):
+            return value
+        if self.stem_model == "htdemucs_6s":
+            return "Default (6 stems model)"
+        if self.stem_model == "htdemucs_ft":
+            return "2 stems model"
+        return self.stem_model
 
 
 class Setting(Base):

@@ -83,3 +83,22 @@ def test_choose_torch_device_rejects_requested_cuda_when_arch_is_unsupported():
 def test_choose_torch_device_rejects_unknown_backend():
     with pytest.raises(ValueError, match="Unsupported torch device"):
         choose_torch_device("metal", torch_module=make_fake_torch(has_mps=True, has_cuda=False))
+
+
+def test_demucs_worker_uses_trusted_checkpoint_loading(monkeypatch):
+    from app.engines import demucs_worker
+
+    calls: list[dict[str, object]] = []
+
+    def fake_load(*args: object, **kwargs: object) -> dict[str, object]:
+        del args
+        calls.append(dict(kwargs))
+        return {}
+
+    monkeypatch.setattr(demucs_worker.torch, "load", fake_load)
+
+    with demucs_worker._trusted_demucs_checkpoint_loading():
+        demucs_worker.torch.load("checkpoint.th", "cpu")
+
+    assert calls == [{"weights_only": False}]
+    assert demucs_worker.torch.load is fake_load

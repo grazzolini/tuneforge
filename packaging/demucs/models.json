@@ -1,0 +1,42 @@
+{
+  "rootUrl": "https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/",
+  "models": [
+    {
+      "id": "htdemucs_6s",
+      "yaml": "htdemucs_6s.yaml",
+      "files": [
+        {
+          "fileName": "5c90dfd2-34c22ccb.th",
+          "sha256": "34c22ccb381c6f9fdbf324f04e1e2fe21aaaf293f5ded163a162697ff9a02ddd",
+          "size": 54996327
+        }
+      ]
+    },
+    {
+      "id": "htdemucs_ft",
+      "yaml": "htdemucs_ft.yaml",
+      "files": [
+        {
+          "fileName": "f7e0c4bc-ba3fe64a.th",
+          "sha256": "ba3fe64ae8ef66ac9a4857222ce48efbdc5eb3ad375cb79dd13debee5aaa4066",
+          "size": 84141271
+        },
+        {
+          "fileName": "d12395a8-e57c48e6.th",
+          "sha256": "e57c48e6b0e38af4f7118d7bd08c49f0a0c0edf7d09143bdd902ea0d237303e6",
+          "size": 84141271
+        },
+        {
+          "fileName": "92cfc3b6-ef3bcb9c.th",
+          "sha256": "ef3bcb9c8b40d14ae5d51b6db2587339cc12c6b77c0be151ce6d69002e087bf2",
+          "size": 84141271
+        },
+        {
+          "fileName": "04573f0d-f3cf25b2.th",
+          "sha256": "f3cf25b222c4eed7cd49dd8b2c9597d50c18bd154090f7b919cfa5f93cf22c49",
+          "size": 84141271
+        }
+      ]
+    }
+  ]
+}

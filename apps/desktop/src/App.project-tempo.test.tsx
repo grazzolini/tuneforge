@@ -55,6 +55,16 @@ function setPlaybackPosition(value: string) {
   fireEvent.change(screen.getByLabelText("Playback position"), { target: { value } });
 }
 
+function useTwoStemModelDefault() {
+  window.localStorage.setItem(
+    "tuneforge.ui-preferences",
+    JSON.stringify({
+      defaultSourcesRailCollapsed: false,
+      defaultStemModel: "htdemucs_ft",
+    }),
+  );
+}
+
 function mockTauriRuntime() {
   Object.defineProperty(window, "__TAURI_INTERNALS__", {
     configurable: true,
@@ -197,6 +207,7 @@ describe("Desktop app project playback tempo", () => {
   it("starts tempo-adjusted stems from metadata without requiring a pause toggle", async () => {
     const user = userEvent.setup();
     setupTempoAnalysis(120);
+    useTwoStemModelDefault();
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
@@ -249,6 +260,7 @@ describe("Desktop app project playback tempo", () => {
   it("updates tempo-adjusted stem rate in place without replaying or seeking", async () => {
     const user = userEvent.setup();
     setupTempoAnalysis(120);
+    useTwoStemModelDefault();
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
@@ -297,6 +309,7 @@ describe("Desktop app project playback tempo", () => {
   it("keeps tempo-adjusted stem playback synced with mute, solo, and full-mix handoff", async () => {
     const user = userEvent.setup();
     setupTempoAnalysis(120);
+    useTwoStemModelDefault();
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();

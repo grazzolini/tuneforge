@@ -11,6 +11,8 @@ const {
   setProjectChords,
   setProjectLyrics,
   setChordBackends,
+  setStemModels,
+  setJobs,
   setDeferredPreviewCompletion,
   flushPendingPreview,
   mockOpen,
@@ -24,6 +26,7 @@ const {
   mockGetChords,
   mockGetLyrics,
   mockListChordBackends,
+  mockListStemModels,
   mockListArtifacts,
   mockListJobs,
   mockCreateChords,
@@ -74,6 +77,7 @@ const {
     sectionsByProject: Record<string, Array<Record<string, unknown>>>;
     artifactsByProject: Record<string, Array<Record<string, unknown>>>;
     chordBackends: Array<Record<string, unknown>>;
+    stemModels: Array<Record<string, unknown>>;
     pendingPreviewArtifactsByProject: Record<string, Array<Record<string, unknown>>>;
     jobs: Array<Record<string, unknown>>;
     snapshotFiles: Record<string, string>;
@@ -239,6 +243,33 @@ const {
     ];
   }
 
+  function makeStemModels() {
+    return [
+      {
+        availability: "available",
+        available: true,
+        default: true,
+        description: "Demucs six-source model.",
+        id: "htdemucs_6s",
+        label: "Default (6 stems model)",
+        sourceCount: 6,
+        sources: ["vocals", "drums", "bass", "guitar", "piano", "other"],
+        unavailable_reason: null,
+      },
+      {
+        availability: "available",
+        available: true,
+        default: false,
+        description: "Demucs two-source model.",
+        id: "htdemucs_ft",
+        label: "2 stems model",
+        sourceCount: 2,
+        sources: ["vocals", "instrumental"],
+        unavailable_reason: null,
+      },
+    ];
+  }
+
   function setProjects(projects: Array<Record<string, unknown>>) {
     state.projects = clone(projects);
   }
@@ -257,6 +288,14 @@ const {
 
   function setChordBackends(backends: Array<Record<string, unknown>>) {
     state.chordBackends = clone(backends);
+  }
+
+  function setStemModels(models: Array<Record<string, unknown>>) {
+    state.stemModels = clone(models);
+  }
+
+  function setJobs(jobs: Array<Record<string, unknown>>) {
+    state.jobs = clone(jobs);
   }
 
   function setDeferredPreviewCompletion(value: boolean) {
@@ -332,6 +371,7 @@ const {
         ],
       },
       chordBackends: makeChordBackends(),
+      stemModels: makeStemModels(),
       pendingPreviewArtifactsByProject: {},
       jobs: [
         {
@@ -571,6 +611,7 @@ const {
   }));
   const mockGetMobileCapabilities = vi.fn(async (): Promise<unknown> => null);
   const mockListChordBackends = vi.fn(async () => ({ backends: clone(state.chordBackends) }));
+  const mockListStemModels = vi.fn(async () => ({ models: clone(state.stemModels) }));
   const mockListProjects = vi.fn(async (search?: string) => {
     const normalizedSearch = search?.trim().toLowerCase();
     const filteredProjects = normalizedSearch
@@ -710,43 +751,54 @@ const {
   });
   const mockCreateStems = vi.fn(async (
     projectId: string,
-    body: { source_artifact_id?: string; force?: boolean; chord_backend?: string; overwrite_chord_edits?: boolean },
+    body: {
+      source_artifact_id?: string;
+      force?: boolean;
+      chord_backend?: string;
+      overwrite_chord_edits?: boolean;
+      stem_model?: string;
+    },
   ) => {
     const sourceArtifactId = body.source_artifact_id ?? "art_source";
+    const stemModel = body.stem_model === "htdemucs_ft" ? "htdemucs_ft" : "htdemucs_6s";
+    const stemSources =
+      stemModel === "htdemucs_ft"
+        ? [
+            ["vocals", "vocal_stem"],
+            ["instrumental", "instrumental_stem"],
+          ]
+        : [
+            ["vocals", "vocal_stem"],
+            ["drums", "drums_stem"],
+            ["bass", "bass_stem"],
+            ["guitar", "guitar_stem"],
+            ["piano", "piano_stem"],
+            ["other", "other_stem"],
+          ];
+    const stemTypes = new Set(["vocal_stem", "instrumental_stem", "drums_stem", "bass_stem", "guitar_stem", "piano_stem", "other_stem"]);
     state.artifactsByProject[projectId] = (state.artifactsByProject[projectId] ?? []).filter((artifact) => {
-      if (artifact.type !== "vocal_stem" && artifact.type !== "instrumental_stem") return true;
+      if (!stemTypes.has(String(artifact.type))) return true;
       const metadata = (artifact.metadata ?? {}) as { source_artifact_id?: string };
       return metadata.source_artifact_id !== sourceArtifactId;
     });
-    const vocalArtifact = {
+    const stemArtifacts = stemSources.map(([source, type]) => ({
       id: `art_${state.nextArtifactId++}`,
       project_id: projectId,
-      type: "vocal_stem",
+      type,
       format: "wav",
-      path: `/tmp/${projectId}-${sourceArtifactId}-vocals.wav`,
+      path: `/tmp/${projectId}-${sourceArtifactId}-${source}.wav`,
       metadata: {
-        mode: "two_stem",
+        mode: stemModel === "htdemucs_ft" ? "two_stems" : "six_stems",
+        stem_model: stemModel,
+        stem_source: source,
         engine: "demucs",
+        model: stemModel,
         source_artifact_id: sourceArtifactId,
       },
       created_at: createdAt,
-    };
-    const instrumentalArtifact = {
-      id: `art_${state.nextArtifactId++}`,
-      project_id: projectId,
-      type: "instrumental_stem",
-      format: "wav",
-      path: `/tmp/${projectId}-${sourceArtifactId}-instrumental.wav`,
-      metadata: {
-        mode: "two_stem",
-        engine: "demucs",
-        source_artifact_id: sourceArtifactId,
-      },
-      created_at: createdAt,
-    };
+    }));
     state.artifactsByProject[projectId] = [
-      vocalArtifact,
-      instrumentalArtifact,
+      ...stemArtifacts,
       ...(state.artifactsByProject[projectId] ?? []),
     ];
     const job = {
@@ -756,6 +808,8 @@ const {
       status: "completed",
       progress: 100,
       source_artifact_id: sourceArtifactId,
+      stem_model: stemModel,
+      stem_model_label: stemModel === "htdemucs_ft" ? "2 stems model" : "Default (6 stems model)",
       error_message: null,
       created_at: createdAt,
       updated_at: createdAt,
@@ -1096,7 +1150,16 @@ const {
         return false;
       }
       const metadata = (artifact.metadata ?? {}) as { source_artifact_id?: string };
-      if ((artifact.type === "vocal_stem" || artifact.type === "instrumental_stem") && metadata.source_artifact_id === artifactId) {
+      const isStem = [
+        "vocal_stem",
+        "instrumental_stem",
+        "drums_stem",
+        "bass_stem",
+        "guitar_stem",
+        "piano_stem",
+        "other_stem",
+      ].includes(String(artifact.type));
+      if (isStem && metadata.source_artifact_id === artifactId) {
         return false;
       }
       return true;
@@ -1118,6 +1181,8 @@ const {
     setProjectChords,
     setProjectLyrics,
     setChordBackends,
+    setStemModels,
+    setJobs,
     setDeferredPreviewCompletion,
     flushPendingPreview,
     mockOpen,
@@ -1131,6 +1196,7 @@ const {
     mockGetChords,
     mockGetLyrics,
     mockListChordBackends,
+    mockListStemModels,
     mockListArtifacts,
     mockListJobs,
     mockCreateChords,
@@ -1163,6 +1229,8 @@ export {
   setProjectChords,
   setProjectLyrics,
   setChordBackends,
+  setStemModels,
+  setJobs,
   setDeferredPreviewCompletion,
   flushPendingPreview,
   mockOpen,
@@ -1176,6 +1244,7 @@ export {
   mockGetChords,
   mockGetLyrics,
   mockListChordBackends,
+  mockListStemModels,
   mockListArtifacts,
   mockListJobs,
   mockCreateChords,
@@ -1226,6 +1295,7 @@ vi.mock("../lib/api", async (importOriginal) => {
       getChords: mockGetChords,
       getLyrics: mockGetLyrics,
       listChordBackends: mockListChordBackends,
+      listStemModels: mockListStemModels,
       listArtifacts: mockListArtifacts,
       listJobs: mockListJobs,
       createChords: mockCreateChords,

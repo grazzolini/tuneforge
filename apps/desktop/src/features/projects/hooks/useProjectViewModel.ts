@@ -66,6 +66,12 @@ import {
 } from "../playbackTempo";
 
 type PlaybackDisplayModeSource = "default" | "stored" | "user";
+type DeleteArtifactsRequest = {
+  artifactIds: string[];
+  nextSelectedArtifactId?: string | null;
+  nextSelectedPrimaryArtifactId?: string | null;
+  stemArtifactIds?: string[];
+};
 
 function resolveDefaultPlaybackDisplayMode(
   defaultMode: DefaultPlaybackDisplayMode,
@@ -110,6 +116,7 @@ export function useProjectViewModel() {
     defaultLyricsFollowEnabled,
     defaultProjectWorkspace,
     defaultSourcesRailCollapsed,
+    defaultStemModel,
     enharmonicDisplayMode,
     informationDensity,
   } = usePreferences();
@@ -389,7 +396,8 @@ export function useProjectViewModel() {
       }
       const backendSelection = await chordBackendForAction();
       return api.createStems(projectId, {
-        mode: "two_stem",
+        mode: "stems",
+        stem_model: defaultStemModel,
         output_format: "wav",
         chord_backend: backendSelection.backend,
         chord_backend_fallback_from: backendSelection.backend_fallback_from,
@@ -446,15 +454,27 @@ export function useProjectViewModel() {
     },
   });
 
-  const deleteMixMutation = useMutation({
-    mutationFn: async () => {
-      if (!selectedArtifact || selectedArtifact.type !== "preview_mix") {
-        throw new Error("Select a saved practice mix first.");
+  const deleteArtifactsMutation = useMutation({
+    mutationFn: async (request: DeleteArtifactsRequest) => {
+      for (const artifactId of Array.from(new Set(request.artifactIds))) {
+        await api.deleteArtifact(projectId, artifactId);
       }
-      return api.deleteArtifact(projectId, selectedArtifact.id);
     },
-    onSuccess: async () => {
-      setSelectedArtifactId(null);
+    onSuccess: async (_data, request) => {
+      if ("nextSelectedPrimaryArtifactId" in request) {
+        setSelectedPrimaryArtifactId(request.nextSelectedPrimaryArtifactId ?? null);
+      }
+      if ("nextSelectedArtifactId" in request) {
+        setSelectedArtifactId(request.nextSelectedArtifactId ?? null);
+      }
+      if (request.stemArtifactIds?.length) {
+        const deletedStemIds = new Set(request.stemArtifactIds);
+        setStemControls((current) =>
+          Object.fromEntries(
+            Object.entries(current).filter(([artifactId]) => !deletedStemIds.has(artifactId)),
+          ),
+        );
+      }
       await queryClient.invalidateQueries({ queryKey: ["artifacts", projectId] });
     },
   });
@@ -470,14 +490,17 @@ export function useProjectViewModel() {
     () => projectJobs.filter((job) => job.type === "stems"),
     [projectJobs],
   );
+  const exportJobs = useMemo(
+    () => projectJobs.filter((job) => job.type === "export"),
+    [projectJobs],
+  );
 
   const displayArtifacts = useMemo(() => {
     const artifacts = artifactsQuery.data ?? [];
     const source = artifacts.find((artifact) => artifact.type === "source_audio");
     const previews = artifacts.filter((artifact) => artifact.type === "preview_mix");
     const stems = artifacts.filter(
-      (artifact) =>
-        artifact.type === "vocal_stem" || artifact.type === "instrumental_stem",
+      (artifact) => isStemArtifact(artifact),
     );
     const analysisJson = artifacts.find((artifact) => artifact.type === "analysis_json");
     const exports = artifacts.filter((artifact) => artifact.type === "export_mix");
@@ -502,7 +525,7 @@ export function useProjectViewModel() {
   const stemArtifacts = useMemo(
     () =>
       displayArtifacts.filter(
-        (artifact) => artifact.type === "vocal_stem" || artifact.type === "instrumental_stem",
+        (artifact) => isStemArtifact(artifact),
       ),
     [displayArtifacts],
   );
@@ -591,6 +614,10 @@ export function useProjectViewModel() {
     lyricsJob && ["pending", "running"].includes(lyricsJob.status),
   );
   const isStemRunning = Boolean(stemJob && ["pending", "running"].includes(stemJob.status));
+  const isAnyStemJobRunning = stemJobs.some((job) => ["pending", "running"].includes(job.status));
+  const isAnyExportJobRunning = exportJobs.some((job) =>
+    ["pending", "running"].includes(job.status),
+  );
   const mobileCapabilities = mobileCapabilitiesQuery.data ?? null;
   const isMobileRuntime = mobileCapabilities !== null;
   const mobileGenerationTestingAvailable =
@@ -621,6 +648,43 @@ export function useProjectViewModel() {
   const visibleJobs = projectJobs;
   const tuningSummary = formatRetuneSummary(retuneMode, referenceHz, centsOffset);
   const canDeleteSelectedMix = selectedArtifact?.type === "preview_mix";
+  const canDeleteSelectedStem = isStemArtifact(selectedArtifact);
+  const isDeleteArtifactsPending = deleteArtifactsMutation.isPending;
+  const isDeleteStemDisabled =
+    isDeleteArtifactsPending ||
+    isPlaying ||
+    isChordRunning ||
+    isAnyStemJobRunning ||
+    isAnyExportJobRunning;
+  const isDeleteMixDisabled =
+    isDeleteArtifactsPending ||
+    isPlaying ||
+    isChordRunning ||
+    isAnyStemJobRunning ||
+    isAnyExportJobRunning;
+  const allDeletableMixArtifacts = previewArtifacts.filter((artifact) => artifact.can_delete !== false);
+  const allDeletableStemArtifacts = stemArtifacts.filter((artifact) => artifact.can_delete !== false);
+  const selectedPrimaryStemArtifacts = selectedPrimaryArtifact
+    ? allDeletableStemArtifacts.filter(
+        (artifact) => artifact.metadata?.source_artifact_id === selectedPrimaryArtifact.id,
+      )
+    : [];
+  const canDeleteAnyMixes = allDeletableMixArtifacts.length > 0;
+  const canDeleteAnyStems = allDeletableStemArtifacts.length > 0;
+  const selectedPrimaryStemDeleteLabel =
+    selectedPrimaryArtifact?.type === "source_audio"
+      ? "Delete Source Track Stems"
+      : selectedPrimaryArtifact?.type === "preview_mix"
+        ? "Delete Practice Mix Stems"
+        : null;
+  const selectedPrimaryStemDeleteTitle =
+    selectedPrimaryArtifact?.type === "source_audio"
+      ? "Delete source stems"
+      : "Delete practice mix stems";
+  const selectedPrimaryStemDeleteMessage =
+    selectedPrimaryArtifact?.type === "source_audio"
+      ? "Delete stems for Source Track? Source audio stays."
+      : "Delete stems for Practice Mix? Practice mix stays.";
   const selectedArtifactTimestamp = selectedPlaybackArtifact
     ? formatArtifactTimestamp(selectedPlaybackArtifact.created_at)
     : "";
@@ -1089,8 +1153,13 @@ export function useProjectViewModel() {
     deleteMutation.mutate();
   }
 
-  async function handleDeleteMix() {
-    if (!selectedArtifact || selectedArtifact.type !== "preview_mix") {
+  async function handleDeleteMix(artifact = selectedArtifact) {
+    if (
+      !artifact ||
+      artifact.type !== "preview_mix" ||
+      artifact.can_delete === false ||
+      isDeleteMixDisabled
+    ) {
       return;
     }
     const approved = await confirm(
@@ -1107,7 +1176,130 @@ export function useProjectViewModel() {
     if (!approved) {
       return;
     }
-    deleteMixMutation.mutate();
+    const shouldMoveSelection =
+      selectedArtifactId === artifact.id || selectedPrimaryArtifactId === artifact.id;
+    const deletedStemIds = allDeletableStemArtifacts
+      .filter((stemArtifact) => sourceArtifactIdForStems(stemArtifact) === artifact.id)
+      .map((stemArtifact) => stemArtifact.id);
+    deleteArtifactsMutation.mutate({
+      artifactIds: [artifact.id],
+      nextSelectedArtifactId: shouldMoveSelection ? sourceArtifact?.id ?? null : selectedArtifactId,
+      nextSelectedPrimaryArtifactId: shouldMoveSelection
+        ? sourceArtifact?.id ?? null
+        : selectedPrimaryArtifactId,
+      stemArtifactIds: deletedStemIds,
+    });
+  }
+
+  async function handleDeleteStem(artifact = selectedArtifact) {
+    if (!artifact || !isStemArtifact(artifact) || artifact.can_delete === false || isDeleteStemDisabled) {
+      return;
+    }
+    const approved = await confirm(
+      `Delete ${artifactLabel(artifact)} stem? Regenerating stems rebuilds the full selected stem model set.`,
+      {
+        title: "Delete stem",
+        kind: "warning",
+        okLabel: "Delete",
+        cancelLabel: "Cancel",
+      },
+    );
+    if (!approved) {
+      return;
+    }
+    const sourceArtifactId = sourceArtifactIdForStems(artifact);
+    deleteArtifactsMutation.mutate({
+      artifactIds: [artifact.id],
+      nextSelectedArtifactId: sourceArtifactId ?? selectedPrimaryArtifact?.id ?? null,
+      nextSelectedPrimaryArtifactId: sourceArtifactId ?? selectedPrimaryArtifact?.id ?? null,
+      stemArtifactIds: [artifact.id],
+    });
+  }
+
+  async function handleDeleteAllMixes() {
+    if (!canDeleteAnyMixes || isDeleteMixDisabled) {
+      return;
+    }
+    const approved = await confirm(
+      "Delete all practice mixes and their stem tracks?",
+      {
+        title: "Delete all mixes",
+        kind: "warning",
+        okLabel: "Delete",
+        cancelLabel: "Cancel",
+      },
+    );
+    if (!approved) {
+      return;
+    }
+    const deletedMixIds = new Set(allDeletableMixArtifacts.map((artifact) => artifact.id));
+    const shouldMoveSelection =
+      Boolean(selectedArtifactId && deletedMixIds.has(selectedArtifactId)) ||
+      Boolean(selectedPrimaryArtifactId && deletedMixIds.has(selectedPrimaryArtifactId));
+    const deletedStemIds = allDeletableStemArtifacts
+      .filter((artifact) => {
+        const sourceArtifactId = sourceArtifactIdForStems(artifact);
+        return Boolean(sourceArtifactId && deletedMixIds.has(sourceArtifactId));
+      })
+      .map((artifact) => artifact.id);
+    deleteArtifactsMutation.mutate({
+      artifactIds: allDeletableMixArtifacts.map((artifact) => artifact.id),
+      nextSelectedArtifactId: shouldMoveSelection ? sourceArtifact?.id ?? null : selectedArtifactId,
+      nextSelectedPrimaryArtifactId: shouldMoveSelection
+        ? sourceArtifact?.id ?? null
+        : selectedPrimaryArtifactId,
+      stemArtifactIds: deletedStemIds,
+    });
+  }
+
+  async function handleDeleteAllStems() {
+    if (!canDeleteAnyStems || isDeleteStemDisabled) {
+      return;
+    }
+    const approved = await confirm(
+      "Delete all stem tracks? Mixes and source track stay.",
+      {
+        title: "Delete all stems",
+        kind: "warning",
+        okLabel: "Delete",
+        cancelLabel: "Cancel",
+      },
+    );
+    if (!approved) {
+      return;
+    }
+    const deletedStemIds = allDeletableStemArtifacts.map((artifact) => artifact.id);
+    deleteArtifactsMutation.mutate({
+      artifactIds: deletedStemIds,
+      nextSelectedArtifactId: selectedPrimaryArtifact?.id ?? sourceArtifact?.id ?? null,
+      nextSelectedPrimaryArtifactId: selectedPrimaryArtifact?.id ?? sourceArtifact?.id ?? null,
+      stemArtifactIds: deletedStemIds,
+    });
+  }
+
+  async function handleDeleteSelectedPrimaryStems() {
+    if (!selectedPrimaryStemDeleteLabel || !selectedPrimaryStemArtifacts.length || isDeleteStemDisabled) {
+      return;
+    }
+    const approved = await confirm(
+      selectedPrimaryStemDeleteMessage,
+      {
+        title: selectedPrimaryStemDeleteTitle,
+        kind: "warning",
+        okLabel: "Delete",
+        cancelLabel: "Cancel",
+      },
+    );
+    if (!approved) {
+      return;
+    }
+    const deletedStemIds = selectedPrimaryStemArtifacts.map((artifact) => artifact.id);
+    deleteArtifactsMutation.mutate({
+      artifactIds: deletedStemIds,
+      nextSelectedArtifactId: selectedPrimaryArtifact?.id ?? sourceArtifact?.id ?? null,
+      nextSelectedPrimaryArtifactId: selectedPrimaryArtifact?.id ?? sourceArtifact?.id ?? null,
+      stemArtifactIds: deletedStemIds,
+    });
   }
 
   useEffect(() => {
@@ -1640,7 +1832,10 @@ export function useProjectViewModel() {
     analysisQuery,
     analyzeMutation,
     canAnalyze,
+    canDeleteSelectedStem,
     canDeleteSelectedMix,
+    canDeleteAnyMixes,
+    canDeleteAnyStems,
     canGenerateChords,
     canGenerateLyrics,
     canGenerateStems,
@@ -1665,7 +1860,8 @@ export function useProjectViewModel() {
     currentChord,
     currentKeyValue,
     centsOffset,
-    deleteMixMutation,
+    deleteMixMutation: deleteArtifactsMutation,
+    deleteStemMutation: deleteArtifactsMutation,
     deleteMutation,
     detectedKey,
     displayArtifacts,
@@ -1676,7 +1872,11 @@ export function useProjectViewModel() {
     exportMutation,
     acceptedTabSuggestionIds,
     handleDeleteMix,
+    handleDeleteStem,
+    handleDeleteAllMixes,
+    handleDeleteAllStems,
     handleDeleteProject,
+    handleDeleteSelectedPrimaryStems,
     handleChordAction,
     handleDecreasePlaybackTempo,
     handleLyricsAction,
@@ -1722,6 +1922,9 @@ export function useProjectViewModel() {
     isLyricsRunning,
     isMobileRuntime,
     isPlaying,
+    isDeleteArtifactsPending,
+    isDeleteMixDisabled,
+    isDeleteStemDisabled,
     isStemPlayback,
     isStemRunning,
     latestPreviewArtifact,
@@ -1765,6 +1968,8 @@ export function useProjectViewModel() {
     selectedPlaybackArtifact,
     selectedPrimaryArtifact,
     selectedPrimaryArtifactId,
+    selectedPrimaryStemArtifacts,
+    selectedPrimaryStemDeleteLabel,
     setCapoSelectorOpen,
     setCapoTransposeSemitones,
     setCentsOffset,

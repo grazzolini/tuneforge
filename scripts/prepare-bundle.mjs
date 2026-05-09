@@ -9,6 +9,7 @@ import {
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBuildInfo, writeResolvedBuildInfoFile } from "./build-info.mjs";
+import { prepareDemucsModelRepo } from "./prepare-demucs-models.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(__filename);
@@ -20,6 +21,7 @@ const stagedBackendRoot = path.join(resourcesRoot, "backend");
 const stagedBackendSourceRoot = path.join(stagedBackendRoot, "src");
 const stagedPythonRoot = path.join(stagedBackendRoot, "python");
 const stagedSitePackagesRoot = path.join(stagedBackendRoot, "site-packages");
+const stagedDemucsModelRoot = path.join(stagedBackendRoot, "models", "demucs");
 
 function requirePath(targetPath, description) {
   if (!existsSync(targetPath)) {
@@ -68,7 +70,7 @@ function shouldIncludeBundledSitePackage(sourcePath) {
 
 let sitePackagesRootForFilter = "";
 
-function main() {
+async function main() {
   const venvConfigPath = path.join(backendRoot, ".venv", "pyvenv.cfg");
   const sitePackagesRoot = path.join(backendRoot, ".venv", "lib", "python3.11", "site-packages");
   requirePath(venvConfigPath, "Backend virtualenv config");
@@ -90,6 +92,7 @@ function main() {
   copyInto(path.join(backendRoot, "pyproject.toml"), path.join(stagedBackendSourceRoot, "pyproject.toml"));
   copyInto(pythonInstallRoot, stagedPythonRoot, { dereference: true });
   copyInto(sitePackagesRoot, stagedSitePackagesRoot, { filter: shouldIncludeBundledSitePackage });
+  await prepareDemucsModelRepo({ destinationRoot: stagedDemucsModelRoot });
   writeResolvedBuildInfoFile(path.join(stagedBackendRoot, "version.json"), buildInfo);
 
   writeFileSync(
@@ -100,6 +103,7 @@ function main() {
         python_root: path.relative(resourcesRoot, stagedPythonRoot),
         site_packages: path.relative(resourcesRoot, stagedSitePackagesRoot),
         backend_source: path.relative(resourcesRoot, stagedBackendSourceRoot),
+        demucs_model_repo: path.relative(resourcesRoot, stagedDemucsModelRoot),
         version_info: path.relative(resourcesRoot, path.join(stagedBackendRoot, "version.json")),
       },
       null,
@@ -112,4 +116,7 @@ function main() {
   process.stdout.write(`Prepared bundled backend resources in ${resourcesRoot}\n`);
 }
 
-main();
+main().catch((error) => {
+  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  process.exitCode = 1;
+});

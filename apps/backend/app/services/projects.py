@@ -13,6 +13,7 @@ from app.models import Project
 from app.services.artifacts import register_artifact
 from app.services.metadata import extract_audio_metadata, normalize_media_to_wav
 from app.services.paths import ensure_project_dirs, project_root, project_source_dir
+from app.utils.hashing import file_sha256
 from app.utils.ids import new_id
 
 NORMALIZED_IMPORT_FORMATS = {"mp4", "webm"}
@@ -92,6 +93,7 @@ def import_project(
     project = Project(
         id=project_id,
         display_name=display_name or resolved_source.stem,
+        source_sha256=file_sha256(resolved_source),
         source_path=str(resolved_source),
         imported_path=str(imported_path),
         duration_seconds=metadata["duration_seconds"],

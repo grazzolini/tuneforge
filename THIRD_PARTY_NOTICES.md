@@ -12,11 +12,11 @@ This document is an engineering notice and distribution checklist, not legal adv
 - **Source:** <https://github.com/facebookresearch/demucs>
 - **Notes:** Used for source separation. Installed via `pip` as a normal Python dependency.
 
-### htdemucs / htdemucs_ft model weights
+### htdemucs_6s / htdemucs_ft model weights
 
 - **License:** MIT
 - **Source:** <https://github.com/facebookresearch/demucs>
-- **Notes:** Pretrained weights are downloaded by Demucs at runtime into the local Torch cache on first use. Tuneforge does not redistribute them.
+- **Notes:** Packaged desktop builds redistribute pinned Demucs stem model weights for `Default (6 stems model)` and `2 stems model` so stem generation does not download weights at runtime. Local development must point `TUNEFORGE_DEMUCS_MODEL_REPO` at a prepared model repo before generating stems.
 
 ### PyTorch
 

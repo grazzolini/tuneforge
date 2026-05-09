@@ -7,17 +7,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
-from app.models import Artifact
+from app.models import Artifact, Job
+from app.services.stem_models import STEM_ARTIFACT_TYPES
+from app.utils.hashing import file_sha256
 from app.utils.ids import new_id
 
 REGENERABLE_ARTIFACT_TYPES = {
     "analysis_json",
-    "instrumental_stem",
     "lyrics",
     "preview_mix",
-    "vocal_stem",
     "waveform_cache",
-}
+} | STEM_ARTIFACT_TYPES
 
 
 def _artifact_size_bytes(path: Path) -> int:
@@ -31,6 +31,7 @@ def refresh_artifact_file_metadata(artifact: Artifact, path: Path) -> None:
     resolved_path = path.resolve()
     artifact.path = str(resolved_path)
     artifact.size_bytes = _artifact_size_bytes(resolved_path)
+    artifact.content_sha256 = file_sha256(resolved_path)
 
 
 def register_artifact(
@@ -53,6 +54,7 @@ def register_artifact(
         type=artifact_type,
         format=artifact_format,
         path=str(resolved_path),
+        content_sha256=file_sha256(resolved_path),
         size_bytes=_artifact_size_bytes(resolved_path),
         generated_by=generated_by,
         can_delete=artifact_type != "source_audio" if can_delete is None else can_delete,
@@ -103,18 +105,44 @@ def _cleanup_artifact_path(path: Path) -> None:
         pass
 
 
+def _has_pending_audio_job(session: Session, *, project_id: str) -> bool:
+    pending_audio_job_types = ("chords", "stems", "export")
+    stmt = select(Job.id).where(
+        Job.project_id == project_id,
+        Job.type.in_(pending_audio_job_types),
+        Job.status.in_(("pending", "running")),
+    )
+    return session.scalar(stmt) is not None
+
+
 def delete_project_artifact(session: Session, *, project_id: str, artifact_id: str) -> None:
     artifact = session.get(Artifact, artifact_id)
     if artifact is None or artifact.project_id != project_id:
         raise AppError("ARTIFACT_NOT_FOUND", "Artifact does not belong to this project.", status_code=404)
     if artifact.type == "source_audio":
         raise AppError("INVALID_REQUEST", "Source audio cannot be deleted from a project.")
+    if artifact.type in STEM_ARTIFACT_TYPES and _has_pending_audio_job(session, project_id=project_id):
+        raise AppError(
+            "ARTIFACT_BUSY",
+            "Stem artifacts cannot be deleted while chord, stem, or export jobs are pending or running.",
+            status_code=409,
+        )
+    if artifact.type == "preview_mix" and _has_pending_audio_job(session, project_id=project_id):
+        raise AppError(
+            "ARTIFACT_BUSY",
+            "Practice mixes cannot be deleted while chord, stem, or export jobs are pending or running.",
+            status_code=409,
+        )
+    if artifact.type in STEM_ARTIFACT_TYPES:
+        _cleanup_artifact_path(Path(artifact.path))
+        session.delete(artifact)
+        return
     if artifact.type != "preview_mix":
-        raise AppError("INVALID_REQUEST", "Only saved practice mixes can be deleted.")
+        raise AppError("INVALID_REQUEST", "Only saved practice mixes and stem tracks can be deleted.")
 
     stmt = select(Artifact).where(
         Artifact.project_id == project_id,
-        Artifact.type.in_(("vocal_stem", "instrumental_stem")),
+        Artifact.type.in_(tuple(STEM_ARTIFACT_TYPES)),
     )
     related_stems = [
         stem

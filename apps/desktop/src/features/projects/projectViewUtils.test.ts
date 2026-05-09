@@ -235,4 +235,29 @@ describe("formatJobStatusSummary", () => {
 
     expect(formatJobStatusSummary(job)).toBe("completed / advanced / source / CUDA / 5.3 s");
   });
+
+  it("includes stem model label for stem jobs", () => {
+    const job: JobSchema = {
+      chord_backend: null,
+      chord_backend_fallback_from: null,
+      chord_source: null,
+      completed_at: "2026-04-18T13:16:21.000Z",
+      created_at: "2026-04-18T13:16:00.000Z",
+      duration_seconds: 21,
+      error_message: null,
+      id: "job_stems",
+      progress: 100,
+      project_id: "proj_123",
+      runtime_device: "mps",
+      source_artifact_id: "art_source",
+      started_at: "2026-04-18T13:16:00.000Z",
+      status: "completed",
+      stem_model: "htdemucs_6s",
+      stem_model_label: "Default (6 stems model)",
+      type: "stems",
+      updated_at: "2026-04-18T13:16:21.000Z",
+    };
+
+    expect(formatJobStatusSummary(job)).toBe("completed / Default (6 stems model) / MPS / 21 s");
+  });
 });

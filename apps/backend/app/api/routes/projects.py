@@ -50,6 +50,7 @@ from app.services.projects import (
     list_projects,
     update_project,
 )
+from app.services.stem_models import TWO_STEMS_MODEL_ID, resolve_stem_model
 from app.services.stems import resolve_stem_source_artifact
 from app.services.tabs import (
     apply_tab_suggestions,
@@ -390,7 +391,13 @@ def project_stems(
     )
     job_payload = payload.model_dump()
     selected_chord_backend = resolve_chord_backend(payload.chord_backend, require_available=False)
+    requested_stem_model = payload.stem_model
+    if payload.mode == "two_stem" and requested_stem_model in {None, "default"}:
+        requested_stem_model = TWO_STEMS_MODEL_ID
+    selected_stem_model = resolve_stem_model(requested_stem_model, require_available=False)
     job_payload["chord_backend"] = selected_chord_backend.id
+    job_payload["stem_model"] = selected_stem_model.id
+    job_payload["stem_model_label"] = selected_stem_model.label
     job_payload["source_artifact_id"] = source_artifact.id
     job = runner.create_job(
         session,

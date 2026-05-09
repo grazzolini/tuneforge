@@ -38,6 +38,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/stem-models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Stem Models */
+        get: operations["stem_models_api_v1_stem_models_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/import": {
         parameters: {
             query?: never;
@@ -685,6 +702,10 @@ export interface components {
             chord_backend_fallback_from?: string | null;
             /** Chord Source */
             chord_source?: string | null;
+            /** Stem Model */
+            stem_model?: string | null;
+            /** Stem Model Label */
+            stem_model_label?: string | null;
             /** Error Message */
             error_message: string | null;
             /** Runtime Device */
@@ -919,13 +940,41 @@ export interface components {
             /** Sections */
             sections?: components["schemas"]["SongSectionSchema"][];
         };
+        /** StemModelSchema */
+        StemModelSchema: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Description */
+            description: string;
+            /** Sources */
+            sources: string[];
+            /** Sourcecount */
+            sourceCount: number;
+            /** Default */
+            default: boolean;
+            /** Availability */
+            availability: string;
+            /** Available */
+            available: boolean;
+            /** Unavailable Reason */
+            unavailable_reason?: string | null;
+        };
+        /** StemModelsResponse */
+        StemModelsResponse: {
+            /** Models */
+            models: components["schemas"]["StemModelSchema"][];
+        };
         /** StemRequest */
         StemRequest: {
             /**
              * Mode
-             * @default two_stem
+             * @default stems
              */
             mode: string;
+            /** Stem Model */
+            stem_model?: string | null;
             /**
              * Output Format
              * @default wav
@@ -1126,6 +1175,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChordBackendsResponse"];
+                };
+            };
+        };
+    };
+    stem_models_api_v1_stem_models_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StemModelsResponse"];
                 };
             };
         };

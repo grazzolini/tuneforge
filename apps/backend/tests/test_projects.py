@@ -5,6 +5,9 @@ from pathlib import Path
 import pytest
 
 from app.config import get_settings
+from app.db import SessionLocal
+from app.models import Artifact, Project
+from app.utils.hashing import file_sha256
 from tests.conftest import wait_for_job
 
 
@@ -32,6 +35,16 @@ def test_import_project_persists_metadata_and_source_artifact(client, sample_aud
     assert source_artifact["generated_by"] == "import"
     assert source_artifact["can_delete"] is False
     assert source_artifact["can_regenerate"] is False
+    assert "content_sha256" not in source_artifact
+    assert "source_sha256" not in project
+
+    with SessionLocal() as session:
+        project_row = session.get(Project, project["id"])
+        artifact_row = session.get(Artifact, source_artifact["id"])
+        assert project_row is not None
+        assert artifact_row is not None
+        assert project_row.source_sha256 == file_sha256(sample_audio_file)
+        assert artifact_row.content_sha256 == file_sha256(imported_path)
 
 
 def test_import_project_enqueues_analysis_and_chords(client, sample_chord_audio_file: Path):

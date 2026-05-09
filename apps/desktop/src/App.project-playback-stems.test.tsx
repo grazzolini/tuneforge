@@ -13,11 +13,13 @@ import {
   mockCreateExport,
   mockCreatePreview,
   mockCreateStems,
+  mockDeleteArtifact,
   mockListJobs,
   mockSave,
   mockUpdateProject,
   renderApp,
   setProjectChords,
+  setJobs,
   setAudioPlaybackState,
   setDeferredPreviewCompletion,
   setMockAudioContextInitialState,
@@ -82,6 +84,18 @@ describe("Desktop app project playback stems", () => {
     await user.click(screen.getByRole("button", { name: "Generate Stems" }));
   }
 
+  async function refreshJobs(queryClient: ReturnType<typeof renderApp>["queryClient"]) {
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    });
+  }
+
+  async function selectFirstStemInAnalysis(user: ReturnType<typeof userEvent.setup>) {
+    const stemList = await screen.findByRole("group", { name: "Stem track list" });
+    await user.click(within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement);
+    await openAnalysisPanel(user);
+  }
+
   it("switches between source playback and stems", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);
@@ -92,7 +106,8 @@ describe("Desktop app project playback stems", () => {
     expect(mockCreateStems).toHaveBeenCalledWith(
       "proj_123",
       expect.objectContaining({
-        mode: "two_stem",
+        mode: "stems",
+        stem_model: "htdemucs_6s",
         output_format: "wav",
         force: false,
         source_artifact_id: "art_source",
@@ -187,7 +202,8 @@ describe("Desktop app project playback stems", () => {
     expect(mockCreateStems).toHaveBeenLastCalledWith(
       "proj_123",
       expect.objectContaining({
-        mode: "two_stem",
+        mode: "stems",
+        stem_model: "htdemucs_6s",
         output_format: "wav",
         force: false,
         source_artifact_id: "art_preview",
@@ -204,7 +220,7 @@ describe("Desktop app project playback stems", () => {
         JSON.parse(window.localStorage.getItem("tuneforge.project-playback-state") ?? "{}"),
       ).toMatchObject({
         proj_123: {
-          selectedArtifactId: "art_202",
+          selectedArtifactId: "art_206",
           selectedPrimaryArtifactId: "art_preview",
           selectedStemSourceArtifactId: "art_preview",
         },
@@ -532,7 +548,7 @@ describe("Desktop app project playback stems", () => {
 
     expect(await within(header).findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
     expect(within(header).queryByText("Stem monitor")).not.toBeInTheDocument();
-    expect(within(header).queryByText("2 of 2 stems audible")).not.toBeInTheDocument();
+    expect(within(header).queryByText("6 of 6 stems audible")).not.toBeInTheDocument();
   });
 
   it("shows playback header details at detailed information density", async () => {
@@ -598,7 +614,7 @@ describe("Desktop app project playback stems", () => {
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
   });
 
-  it("starts both stems from the same playback offset when switching playback modes", async () => {
+  it("starts visible stems from the same playback offset when switching playback modes", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);
 
@@ -616,17 +632,17 @@ describe("Desktop app project playback stems", () => {
     await user.click(within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement);
 
     const vocalAudio = findAudioByArtifactId("art_200");
-    const instrumentalAudio = findAudioByArtifactId("art_201");
+    const drumsAudio = findAudioByArtifactId("art_201");
 
     await waitFor(() => expect(getMockAudioContexts()).toHaveLength(1));
     await waitFor(() =>
-      expect(getMockAudioContexts()[0]?.createdSources.length).toBe(firstStemSourceIndex + 2),
+      expect(getMockAudioContexts()[0]?.createdSources.length).toBe(firstStemSourceIndex + 6),
     );
 
     const startCalls = getMockAudioContexts()[0].createdSources.slice(firstStemSourceIndex).map(
       (source) => source.start.mock.calls[0],
     );
-    expect(startCalls).toHaveLength(2);
+    expect(startCalls).toHaveLength(6);
     const stemStartOffset = startCalls[0]?.[1] ?? 0;
     startCalls.forEach((startCall) => {
       expect(startCall?.[0]).toBe(0);
@@ -635,7 +651,7 @@ describe("Desktop app project playback stems", () => {
     expect(stemStartOffset).toBeGreaterThanOrEqual(32.481);
     expect(stemStartOffset).toBeLessThan(33);
     await waitFor(() => expect(vocalAudio.currentTime).toBeCloseTo(stemStartOffset, 1));
-    await waitFor(() => expect(instrumentalAudio.currentTime).toBeCloseTo(stemStartOffset, 1));
+    await waitFor(() => expect(drumsAudio.currentTime).toBeCloseTo(stemStartOffset, 1));
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
   });
 
@@ -650,19 +666,19 @@ describe("Desktop app project playback stems", () => {
     await user.click(within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement);
 
     const vocalAudio = findAudioByArtifactId("art_200");
-    const instrumentalAudio = findAudioByArtifactId("art_201");
+    const drumsAudio = findAudioByArtifactId("art_201");
     await user.click(screen.getByRole("button", { name: "Play playback" }));
-    await waitFor(() => expect(getMockAudioContexts()[0]?.createdSources).toHaveLength(2));
+    await waitFor(() => expect(getMockAudioContexts()[0]?.createdSources).toHaveLength(6));
 
-    const endedSources = getMockAudioContexts()[0].createdSources.slice(0, 2);
+    const endedSources = getMockAudioContexts()[0].createdSources.slice(0, 6);
     act(() => {
       vocalAudio.currentTime = 182;
-      instrumentalAudio.currentTime = 182;
+      drumsAudio.currentTime = 182;
       endedSources.forEach(triggerBufferSourceEnded);
     });
 
     expect(vocalAudio.currentTime).toBe(0);
-    expect(instrumentalAudio.currentTime).toBe(0);
+    expect(drumsAudio.currentTime).toBe(0);
     expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
     expect(screen.getByLabelText("Playback position")).toHaveValue("0");
   });
@@ -707,18 +723,21 @@ describe("Desktop app project playback stems", () => {
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
     await generateStems(user);
     const vocalAudio = findAudioByArtifactId("art_200");
-    const instrumentalAudio = findAudioByArtifactId("art_201");
+    const drumsAudio = findAudioByArtifactId("art_201");
     await waitFor(() =>
-      expect(getMockFetch().mock.calls.length).toBeGreaterThanOrEqual(2),
-    );
-    expect(getMockFetch().mock.calls.map(([url]) => String(url))).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("/artifacts/art_200/stream"),
-        expect.stringContaining("/artifacts/art_201/stream"),
-      ]),
+      expect(getMockFetch().mock.calls.map(([url]) => String(url))).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("/artifacts/art_200/stream"),
+          expect.stringContaining("/artifacts/art_201/stream"),
+          expect.stringContaining("/artifacts/art_202/stream"),
+          expect.stringContaining("/artifacts/art_203/stream"),
+          expect.stringContaining("/artifacts/art_204/stream"),
+          expect.stringContaining("/artifacts/art_205/stream"),
+        ]),
+      ),
     );
     expect(vocalAudio).toHaveAttribute("preload", "metadata");
-    expect(instrumentalAudio).toHaveAttribute("preload", "metadata");
+    expect(drumsAudio).toHaveAttribute("preload", "metadata");
     await openStudioPanel(user);
     expect(screen.getByRole("heading", { name: "Source Track" })).toBeInTheDocument();
   });
@@ -741,7 +760,7 @@ describe("Desktop app project playback stems", () => {
     await user.click(within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement);
 
     await waitFor(() =>
-      expect(getMockAudioContexts()[0]?.createdSources.length).toBe(firstStemSourceIndex + 2),
+      expect(getMockAudioContexts()[0]?.createdSources.length).toBe(firstStemSourceIndex + 6),
     );
 
     const initialStemStarts = getMockAudioContexts()[0].createdSources.length;
@@ -774,13 +793,277 @@ describe("Desktop app project playback stems", () => {
     await user.click(within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement);
 
     const soloVocals = screen.getByRole("button", { name: "Solo Vocals" });
-    const muteInstrumental = screen.getByRole("button", { name: "Mute Instrumental" });
+    const muteDrums = screen.getByRole("button", { name: "Mute Drums" });
     await user.click(soloVocals);
-    await user.click(muteInstrumental);
+    await user.click(muteDrums);
 
     expect(soloVocals).toHaveAttribute("aria-pressed", "true");
-    expect(muteInstrumental).toHaveAttribute("aria-pressed", "true");
-    expect(screen.queryByText("1 of 2 stems audible")).not.toBeInTheDocument();
+    expect(muteDrums).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByText("1 of 6 stems audible")).not.toBeInTheDocument();
+  });
+
+  it("enables source stem delete in analysis when playback and jobs are idle", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await generateStems(user);
+    await selectFirstStemInAnalysis(user);
+
+    expect(screen.getByRole("button", { name: "Delete Source Track Stems" })).toBeEnabled();
+  });
+
+  it("disables source stem delete while playback is active", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await generateStems(user);
+    await selectFirstStemInAnalysis(user);
+
+    expect(screen.getByRole("button", { name: "Delete Source Track Stems" })).toBeDisabled();
+  });
+
+  it.each([
+    { label: "chord", jobType: "chords", status: "running" },
+    { label: "stem", jobType: "stems", status: "running" },
+    { label: "export running", jobType: "export", status: "running" },
+    { label: "export pending", jobType: "export", status: "pending" },
+  ] as const)("disables stem delete while a $label job is active", async ({ jobType, status }) => {
+    const user = userEvent.setup();
+    const { queryClient } = renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await generateStems(user);
+    await selectFirstStemInAnalysis(user);
+
+    setJobs([
+      {
+        id: `job_${jobType}_${status}`,
+        project_id: "proj_123",
+        type: jobType,
+        status,
+        progress: 50,
+        source_artifact_id: jobType === "stems" ? "art_source" : null,
+        error_message: null,
+        created_at: "2026-04-18T13:16:00.000Z",
+        updated_at: "2026-04-18T13:16:00.000Z",
+      },
+    ]);
+    await refreshJobs(queryClient);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Delete Source Track Stems" })).toBeDisabled(),
+    );
+  });
+
+  it.each(["pending", "running"] as const)(
+    "disables saved mix delete while an export job is %s",
+    async (jobStatus) => {
+      const { queryClient } = renderApp(["/projects/proj_123"]);
+
+      expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+      const savedMixList = screen.getByRole("group", { name: "Saved mix list" });
+      setJobs([
+        {
+          id: `job_export_${jobStatus}`,
+          project_id: "proj_123",
+          type: "export",
+          status: jobStatus,
+          progress: 50,
+          source_artifact_id: null,
+          error_message: null,
+          created_at: "2026-04-18T13:16:00.000Z",
+          updated_at: "2026-04-18T13:16:00.000Z",
+        },
+      ]);
+      await refreshJobs(queryClient);
+
+      await waitFor(() =>
+        expect(within(savedMixList).getByRole("button", { name: "Delete saved mix" })).toBeDisabled(),
+      );
+    },
+  );
+
+  it("deletes a visible stem from the sources rail", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await generateStems(user);
+    const stemList = await screen.findByRole("group", { name: "Stem track list" });
+
+    await user.click(
+      within(stemList).getAllByRole("button", { name: "Delete stem track" })[0] as HTMLElement,
+    );
+
+    expect(mockConfirm).toHaveBeenCalledWith(
+      "Delete Vocals stem? Regenerating stems rebuilds the full selected stem model set.",
+      expect.objectContaining({
+        title: "Delete stem",
+        kind: "warning",
+        okLabel: "Delete",
+      }),
+    );
+    await waitFor(() => expect(mockDeleteArtifact).toHaveBeenCalledWith("proj_123", "art_200"));
+    const updatedStemList = screen.queryByRole("group", { name: "Stem track list" });
+    expect(
+      updatedStemList
+        ? within(updatedStemList).queryByRole("button", { name: /Vocals/i })
+        : null,
+    ).not.toBeInTheDocument();
+  });
+
+  it("exposes sources rail delete for saved mixes but not the source track", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceList = screen.getByRole("group", { name: "Source and mix list" });
+
+    expect(
+      within(sourceList).queryByRole("button", { name: "Delete Source Track" }),
+    ).not.toBeInTheDocument();
+    const savedMixList = screen.getByRole("group", { name: "Saved mix list" });
+
+    await user.click(within(savedMixList).getByRole("button", { name: "Delete saved mix" }));
+
+    expect(mockConfirm).toHaveBeenCalledWith(
+      "Delete this practice mix and its stem tracks? Rebuilding stems later may take longer on CPU-only desktops.",
+      expect.objectContaining({
+        title: "Delete practice mix",
+        kind: "warning",
+        okLabel: "Delete",
+      }),
+    );
+    await waitFor(() => expect(mockDeleteArtifact).toHaveBeenCalledWith("proj_123", "art_preview"));
+  });
+
+  it("disables saved mix delete while playback is active", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    const savedMixList = screen.getByRole("group", { name: "Saved mix list" });
+    expect(within(savedMixList).getByRole("button", { name: "Delete saved mix" })).toBeDisabled();
+  });
+
+  it("shows analysis bulk delete buttons and deletes all mixes", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openAnalysisPanel(user);
+
+    expect(screen.getByRole("button", { name: "Delete Project" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete All Mixes" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Delete All Stems" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Delete All Mixes" }));
+
+    expect(mockConfirm).toHaveBeenCalledWith(
+      "Delete all practice mixes and their stem tracks?",
+      expect.objectContaining({
+        title: "Delete all mixes",
+        kind: "warning",
+        okLabel: "Delete",
+      }),
+    );
+    await waitFor(() => expect(mockDeleteArtifact).toHaveBeenCalledWith("proj_123", "art_preview"));
+  });
+
+  it("deletes all stems across source audio and saved mixes from analysis", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await generateStems(user);
+    const savedMixList = screen.getByRole("group", { name: "Saved mix list" });
+    await user.click(within(savedMixList).getByRole("button", { name: /Practice Mix/i }));
+    await generateStems(user);
+    await openAnalysisPanel(user);
+
+    await user.click(screen.getByRole("button", { name: "Delete All Stems" }));
+
+    expect(mockConfirm).toHaveBeenCalledWith(
+      "Delete all stem tracks? Mixes and source track stay.",
+      expect.objectContaining({
+        title: "Delete all stems",
+        kind: "warning",
+        okLabel: "Delete",
+      }),
+    );
+    await waitFor(() => expect(mockDeleteArtifact).toHaveBeenCalledTimes(12));
+  });
+
+  it("deletes only source stems from the analysis context button", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await generateStems(user);
+    await openAnalysisPanel(user);
+
+    await user.click(screen.getByRole("button", { name: "Delete Source Track Stems" }));
+
+    expect(mockConfirm).toHaveBeenCalledWith(
+      "Delete stems for Source Track? Source audio stays.",
+      expect.objectContaining({
+        title: "Delete source stems",
+        kind: "warning",
+        okLabel: "Delete",
+      }),
+    );
+    await waitFor(() => expect(mockDeleteArtifact).toHaveBeenCalledTimes(6));
+    expect(mockDeleteArtifact.mock.calls.map((call) => call[1])).toEqual([
+      "art_200",
+      "art_201",
+      "art_202",
+      "art_203",
+      "art_204",
+      "art_205",
+    ]);
+  });
+
+  it("derives practice mix stem deletion from selected stem metadata", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await generateStems(user);
+    const savedMixList = screen.getByRole("group", { name: "Saved mix list" });
+    await user.click(within(savedMixList).getByRole("button", { name: /Practice Mix/i }));
+    await generateStems(user);
+    const stemList = await screen.findByRole("group", { name: "Stem track list" });
+    await user.click(within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement);
+    await openAnalysisPanel(user);
+
+    await user.click(screen.getByRole("button", { name: "Delete Practice Mix Stems" }));
+
+    expect(mockConfirm).toHaveBeenCalledWith(
+      "Delete stems for Practice Mix? Practice mix stays.",
+      expect.objectContaining({
+        title: "Delete practice mix stems",
+        kind: "warning",
+        okLabel: "Delete",
+      }),
+    );
+    await waitFor(() => expect(mockDeleteArtifact).toHaveBeenCalledTimes(6));
+    expect(mockDeleteArtifact.mock.calls.map((call) => call[1])).toEqual([
+      "art_206",
+      "art_207",
+      "art_208",
+      "art_209",
+      "art_210",
+      "art_211",
+    ]);
   });
 
   it("shows failed stem jobs inline and in processing history", async () => {
@@ -794,6 +1077,8 @@ describe("Desktop app project playback stems", () => {
           status: "failed",
           progress: 15,
           source_artifact_id: "art_source",
+          stem_model: "htdemucs_ft",
+          stem_model_label: "2 stems model",
           error_message: "Demucs failed to separate the track.",
           runtime_device: "cpu",
           duration_seconds: 3.4,
@@ -814,7 +1099,9 @@ describe("Desktop app project playback stems", () => {
     expect(jobHistory).not.toBeNull();
 
     expect(within(jobHistory as HTMLElement).getByText("stems")).toBeInTheDocument();
-    expect(within(jobHistory as HTMLElement).getByText(/failed \/ CPU \/ 3.4 s/i)).toBeInTheDocument();
+    expect(
+      within(jobHistory as HTMLElement).getByText(/failed \/ 2 stems model \/ CPU \/ 3.4 s/i),
+    ).toBeInTheDocument();
     expect(
       within(jobHistory as HTMLElement).getByText("Demucs failed to separate the track."),
     ).toBeInTheDocument();
@@ -920,7 +1207,7 @@ describe("Desktop app project playback stems", () => {
 
     const stemSummaryChip = screen.getByText("Stem").closest(".rail-summary-chip");
     expect(stemSummaryChip).not.toBeNull();
-    expect(within(stemSummaryChip as HTMLElement).getByText("4")).toBeInTheDocument();
+    expect(within(stemSummaryChip as HTMLElement).getByText("12")).toBeInTheDocument();
   });
 
   it("asks for confirmation before rebuilding existing stems", async () => {

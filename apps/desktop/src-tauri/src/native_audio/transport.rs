@@ -31,7 +31,10 @@ use symphonia::core::{
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use tauri::Emitter;
 
-use super::{mixer::AudioLaneRequest, mixer::EffectiveAudioLane, AudioCapabilities};
+use super::{
+    mixer::{AudioLaneRequest, AudioLaneRole, EffectiveAudioLane},
+    AudioCapabilities,
+};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::{
@@ -54,6 +57,15 @@ const CLICK_ACCENT_FREQUENCY_HZ: f64 = 1760.0;
 const STREAM_CHUNK_FRAMES: usize = 2048;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const RING_BUFFER_SECONDS: usize = 8;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const PREBUFFER_TARGET_SECONDS: f64 = 0.12;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const PREBUFFER_TIMEOUT: Duration = Duration::from_millis(1500);
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const PREBUFFER_POLL_INTERVAL: Duration = Duration::from_millis(5);
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const SUSTAINED_UNDERRUN_ERROR_SECONDS: f64 = 0.5;
+const AUDIBLE_GAIN_FLOOR: f32 = 0.0001;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -132,6 +144,20 @@ pub struct AudioSnapshot {
     pub native_playback_supported: bool,
     pub fallback_reason: Option<String>,
     pub lanes: Vec<EffectiveAudioLane>,
+    pub buffer_health: Vec<AudioBufferHealth>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioBufferHealth {
+    pub lane_id: String,
+    pub artifact_id: Option<String>,
+    pub role: AudioLaneRole,
+    pub ring_fill_samples: usize,
+    pub ring_capacity_samples: usize,
+    pub underrun_count: u64,
+    pub worker_error_count: u64,
+    pub last_worker_error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -159,17 +185,23 @@ enum PlaybackLaneSource {
 #[derive(Clone)]
 struct PlaybackLane {
     id: String,
+    artifact_id: Option<String>,
+    role: AudioLaneRole,
     muted: bool,
     solo: bool,
     current_gain: f32,
     target_gain: f32,
     scratch: Vec<f32>,
     source: PlaybackLaneSource,
+    underrun_count: u64,
+    worker_error_count: u64,
+    last_worker_error: Option<String>,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 struct StreamingLane {
     ring: Arc<Mutex<RingBuffer>>,
+    capacity_samples: usize,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -191,13 +223,28 @@ impl RingBuffer {
         self.capacity_samples.saturating_sub(self.samples.len())
     }
 
+    fn fill_samples(&self) -> usize {
+        self.samples.len()
+    }
+
     fn clear(&mut self) {
         self.samples.clear();
     }
 
-    fn pop_into(&mut self, output: &mut [f32]) {
-        for sample in output {
+    fn pop_into(&mut self, output: &mut [f32]) -> RingReadStatus {
+        let available = self.samples.len().min(output.len());
+        for sample in &mut output[..available] {
             *sample = self.samples.pop_front().unwrap_or(0.0);
+        }
+        for sample in &mut output[available..] {
+            *sample = 0.0;
+        }
+        if available == output.len() {
+            RingReadStatus::Full
+        } else if available == 0 {
+            RingReadStatus::Empty
+        } else {
+            RingReadStatus::Partial
         }
     }
 
@@ -211,6 +258,22 @@ impl RingBuffer {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RingReadStatus {
+    Full,
+    Empty,
+    Partial,
+    LockMiss,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl RingReadStatus {
+    fn is_underrun(self) -> bool {
+        !matches!(self, Self::Full)
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 enum WorkerControl {
     SetPlaybackRate {
         playback_rate: f64,
@@ -218,6 +281,31 @@ enum WorkerControl {
     },
     Seek(f64),
     Stop,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct WorkerError {
+    lane_id: String,
+    message: String,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativePlaybackFallbackCause {
+    PrebufferTimeout,
+    SustainedUnderrun,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl NativePlaybackFallbackCause {
+    fn message(self) -> &'static str {
+        match self {
+            Self::PrebufferTimeout => "Native playback prebuffer timed out.",
+            Self::SustainedUnderrun => {
+                "Native playback underrun persisted; falling back to Web Audio."
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -258,21 +346,81 @@ struct PlaybackShared {
     click: ClickState,
     ended_pending: bool,
     error_pending: Option<String>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    buffering: bool,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    sustained_underrun_frames: usize,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    underrun_error_pending: bool,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fallback_cause: Option<NativePlaybackFallbackCause>,
 }
 
 impl PlaybackShared {
     fn snapshot(&self) -> AudioSnapshot {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let fallback_reason = self
+            .fallback_reason
+            .clone()
+            .or_else(|| self.fallback_cause.map(|cause| cause.message().to_string()));
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let fallback_reason = self.fallback_reason.clone();
+
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let native_playback_supported =
+            self.native_playback_supported && self.fallback_cause.is_none();
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let native_playback_supported = self.native_playback_supported;
+
         AudioSnapshot {
             session_id: self.session_id.clone(),
             state: self.status.as_str(),
             position_seconds: self.position_seconds,
             duration_seconds: self.duration_seconds,
             playback_rate: self.playback_rate,
-            native_playback_supported: self.native_playback_supported,
-            fallback_reason: self.fallback_reason.clone(),
+            native_playback_supported,
+            fallback_reason,
             lanes: self.snapshot_lanes.clone(),
+            buffer_health: runtime_buffer_health(&self.snapshot_lanes, &self.lanes),
         }
     }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn prebuffer_ready(&self) -> bool {
+        if self.duration_seconds > 0.0 && self.position_seconds >= self.duration_seconds {
+            return true;
+        }
+
+        let target_samples = prebuffer_target_samples(self.sample_rate, self.channels);
+        let mut has_audible_lane = false;
+        for lane in &self.lanes {
+            if !lane.is_audible() {
+                continue;
+            }
+            has_audible_lane = true;
+            match &lane.source {
+                PlaybackLaneSource::Stream(stream) => {
+                    let target = target_samples.min(stream.capacity_samples);
+                    let Ok(ring) = stream.ring.lock() else {
+                        return false;
+                    };
+                    if ring.fill_samples() < target {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        !has_audible_lane || self.fallback_cause.is_none()
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn prebuffer_target_samples(sample_rate: u32, channels: usize) -> usize {
+    let target_frames = (sample_rate as f64 * PREBUFFER_TARGET_SECONDS).ceil() as usize;
+    target_frames
+        .saturating_mul(channels)
+        .max(STREAM_CHUNK_FRAMES.saturating_mul(channels))
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -418,18 +566,37 @@ impl TransportState {
         }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let Some(runtime) = &self.runtime {
+            let mut should_prebuffer = false;
             if let Ok(mut shared) = runtime.shared.lock() {
                 update_shared_lanes(&mut shared, &lanes);
                 if let Some(rate) = next_playback_rate {
                     let position_seconds = shared.position_seconds;
                     self.position_seconds = position_seconds;
                     shared.playback_rate = rate;
+                    shared.sustained_underrun_frames = 0;
+                    shared.underrun_error_pending = false;
+                    if shared.status == TransportStatus::Playing {
+                        shared.buffering = true;
+                        clear_lane_rings(&mut shared.lanes);
+                        should_prebuffer = true;
+                    }
                     for sender in &runtime.worker_control_senders {
                         let _ = sender.send(WorkerControl::SetPlaybackRate {
                             playback_rate: rate,
                             position_seconds,
                         });
                     }
+                }
+            }
+            if should_prebuffer {
+                match wait_for_runtime_prebuffer(runtime) {
+                    Ok(()) => {
+                        if let Ok(mut shared) = runtime.shared.lock() {
+                            shared.buffering = false;
+                            shared.sustained_underrun_frames = 0;
+                        }
+                    }
+                    Err(cause) => mark_runtime_fallback(runtime, cause),
                 }
             }
         }
@@ -465,14 +632,23 @@ impl TransportState {
             self.position_seconds = self.clamp_position(start_time_seconds);
         }
         let _ = request.scheduled_start_time_seconds;
-        self.status = TransportStatus::Playing;
-        self.started_at = Some(Instant::now());
-
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let Some(runtime) = &self.runtime {
             if should_seek_workers {
                 seek_runtime_workers(runtime, self.position_seconds);
             }
+            if let Ok(mut shared) = runtime.shared.lock() {
+                shared.position_seconds = self.position_seconds;
+                shared.ended_pending = false;
+            }
+            if let Err(cause) = wait_for_runtime_prebuffer(runtime) {
+                mark_runtime_fallback(runtime, cause);
+                self.status = TransportStatus::Paused;
+                self.started_at = None;
+                return Ok(self.snapshot());
+            }
+            self.status = TransportStatus::Playing;
+            self.started_at = Some(Instant::now());
             let mut shared = runtime
                 .shared
                 .lock()
@@ -480,7 +656,15 @@ impl TransportState {
             shared.position_seconds = self.position_seconds;
             shared.status = TransportStatus::Playing;
             shared.ended_pending = false;
+            shared.buffering = false;
+            shared.sustained_underrun_frames = 0;
+            shared.underrun_error_pending = false;
+            shared.fallback_cause = None;
+            return Ok(shared.snapshot());
         }
+
+        self.status = TransportStatus::Playing;
+        self.started_at = Some(Instant::now());
 
         Ok(self.snapshot())
     }
@@ -495,6 +679,8 @@ impl TransportState {
             if let Ok(mut shared) = runtime.shared.lock() {
                 self.position_seconds = shared.position_seconds;
                 shared.status = TransportStatus::Paused;
+                shared.buffering = false;
+                shared.sustained_underrun_frames = 0;
             }
         }
 
@@ -508,11 +694,18 @@ impl TransportState {
 
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let Some(runtime) = &self.runtime {
-            seek_runtime_workers(runtime, 0.0);
+            for sender in &runtime.worker_control_senders {
+                let _ = sender.send(WorkerControl::Seek(0.0));
+            }
             if let Ok(mut shared) = runtime.shared.lock() {
+                clear_lane_rings(&mut shared.lanes);
                 shared.position_seconds = 0.0;
                 shared.status = TransportStatus::Stopped;
                 shared.ended_pending = false;
+                shared.buffering = false;
+                shared.sustained_underrun_frames = 0;
+                shared.underrun_error_pending = false;
+                shared.fallback_cause = None;
             }
         }
 
@@ -527,7 +720,30 @@ impl TransportState {
 
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let Some(runtime) = &self.runtime {
+            let was_playing = self.status == TransportStatus::Playing;
+            if was_playing {
+                if let Ok(mut shared) = runtime.shared.lock() {
+                    shared.buffering = true;
+                    clear_lane_rings(&mut shared.lanes);
+                }
+            }
             seek_runtime_workers(runtime, self.position_seconds);
+            if let Ok(mut shared) = runtime.shared.lock() {
+                shared.position_seconds = self.position_seconds;
+                shared.ended_pending = false;
+            }
+            if was_playing {
+                match wait_for_runtime_prebuffer(runtime) {
+                    Ok(()) => {
+                        if let Ok(mut shared) = runtime.shared.lock() {
+                            shared.buffering = false;
+                            shared.sustained_underrun_frames = 0;
+                            shared.underrun_error_pending = false;
+                        }
+                    }
+                    Err(cause) => mark_runtime_fallback(runtime, cause),
+                }
+            }
             if let Ok(mut shared) = runtime.shared.lock() {
                 shared.position_seconds = self.position_seconds;
                 shared.ended_pending = false;
@@ -554,6 +770,7 @@ impl TransportState {
             native_playback_supported: self.native_playback_supported,
             fallback_reason: self.fallback_reason.clone(),
             lanes: self.lanes.clone(),
+            buffer_health: empty_buffer_health(&self.lanes),
         }
     }
 
@@ -596,8 +813,44 @@ impl TransportState {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn seek_runtime_workers(runtime: &PlaybackRuntime, position_seconds: f64) {
+    if let Ok(mut shared) = runtime.shared.lock() {
+        clear_lane_rings(&mut shared.lanes);
+        shared.sustained_underrun_frames = 0;
+        shared.underrun_error_pending = false;
+    }
     for sender in &runtime.worker_control_senders {
         let _ = sender.send(WorkerControl::Seek(position_seconds));
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn wait_for_runtime_prebuffer(
+    runtime: &PlaybackRuntime,
+) -> Result<(), NativePlaybackFallbackCause> {
+    let started_at = Instant::now();
+    loop {
+        let ready = runtime
+            .shared
+            .lock()
+            .map(|shared| shared.prebuffer_ready())
+            .unwrap_or(false);
+        if ready {
+            return Ok(());
+        }
+        if started_at.elapsed() >= PREBUFFER_TIMEOUT {
+            return Err(NativePlaybackFallbackCause::PrebufferTimeout);
+        }
+        thread::sleep(PREBUFFER_POLL_INTERVAL);
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn mark_runtime_fallback(runtime: &PlaybackRuntime, cause: NativePlaybackFallbackCause) {
+    if let Ok(mut shared) = runtime.shared.lock() {
+        shared.status = TransportStatus::Paused;
+        shared.buffering = false;
+        shared.fallback_cause = Some(cause);
+        shared.underrun_error_pending = true;
     }
 }
 
@@ -640,6 +893,88 @@ fn update_shared_lanes(shared: &mut PlaybackShared, lanes: &[EffectiveAudioLane]
         if let Some(effective) = lanes.iter().find(|candidate| candidate.id == lane.id) {
             lane.muted = effective.muted;
             lane.solo = effective.solo;
+        }
+    }
+}
+
+fn empty_buffer_health(lanes: &[EffectiveAudioLane]) -> Vec<AudioBufferHealth> {
+    lanes
+        .iter()
+        .map(|lane| AudioBufferHealth {
+            lane_id: lane.id.clone(),
+            artifact_id: lane.artifact_id.clone(),
+            role: lane.role,
+            ring_fill_samples: 0,
+            ring_capacity_samples: 0,
+            underrun_count: 0,
+            worker_error_count: 0,
+            last_worker_error: None,
+        })
+        .collect()
+}
+
+fn runtime_buffer_health(
+    snapshot_lanes: &[EffectiveAudioLane],
+    playback_lanes: &[PlaybackLane],
+) -> Vec<AudioBufferHealth> {
+    if snapshot_lanes.is_empty() {
+        return playback_lanes
+            .iter()
+            .map(|lane| lane.buffer_health(None))
+            .collect();
+    }
+
+    snapshot_lanes
+        .iter()
+        .map(|snapshot_lane| {
+            playback_lanes
+                .iter()
+                .find(|lane| lane.id == snapshot_lane.id)
+                .map(|lane| lane.buffer_health(Some(snapshot_lane)))
+                .unwrap_or_else(|| AudioBufferHealth {
+                    lane_id: snapshot_lane.id.clone(),
+                    artifact_id: snapshot_lane.artifact_id.clone(),
+                    role: snapshot_lane.role,
+                    ring_fill_samples: 0,
+                    ring_capacity_samples: 0,
+                    underrun_count: 0,
+                    worker_error_count: 0,
+                    last_worker_error: None,
+                })
+        })
+        .collect()
+}
+
+impl PlaybackLane {
+    fn is_audible(&self) -> bool {
+        self.current_gain > AUDIBLE_GAIN_FLOOR || self.target_gain > AUDIBLE_GAIN_FLOOR
+    }
+
+    fn buffer_health(&self, metadata: Option<&EffectiveAudioLane>) -> AudioBufferHealth {
+        let (ring_fill_samples, ring_capacity_samples) = match &self.source {
+            PlaybackLaneSource::Stream(stream) => {
+                let fill = stream
+                    .ring
+                    .try_lock()
+                    .map(|ring| ring.fill_samples())
+                    .unwrap_or(0);
+                (fill, stream.capacity_samples)
+            }
+        };
+
+        AudioBufferHealth {
+            lane_id: metadata
+                .map(|lane| lane.id.clone())
+                .unwrap_or_else(|| self.id.clone()),
+            artifact_id: metadata
+                .map(|lane| lane.artifact_id.clone())
+                .unwrap_or_else(|| self.artifact_id.clone()),
+            role: metadata.map(|lane| lane.role).unwrap_or(self.role),
+            ring_fill_samples,
+            ring_capacity_samples,
+            underrun_count: self.underrun_count,
+            worker_error_count: self.worker_error_count,
+            last_worker_error: self.last_worker_error.clone(),
         }
     }
 }
@@ -702,7 +1037,9 @@ fn mix_shared_frame(shared: &mut PlaybackShared, channel: usize, sample_index: u
     sample.clamp(-1.0, 1.0)
 }
 
-fn prepare_lane_scratch(lanes: &mut [PlaybackLane], sample_count: usize) {
+fn prepare_lane_scratch(lanes: &mut [PlaybackLane], sample_count: usize) -> bool {
+    let mut audible_underrun = false;
+
     for lane in lanes {
         if lane.scratch.len() < sample_count {
             lane.scratch.resize(sample_count, 0.0);
@@ -710,10 +1047,55 @@ fn prepare_lane_scratch(lanes: &mut [PlaybackLane], sample_count: usize) {
             lane.scratch[..sample_count].fill(0.0);
         }
 
+        let is_audible = lane.is_audible();
+        let read_status = match &lane.source {
+            PlaybackLaneSource::Stream(stream) => match stream.ring.try_lock() {
+                Ok(mut ring) => ring.pop_into(&mut lane.scratch[..sample_count]),
+                Err(_) => RingReadStatus::LockMiss,
+            },
+        };
+
+        if read_status.is_underrun() {
+            lane.underrun_count = lane.underrun_count.saturating_add(1);
+            if is_audible {
+                audible_underrun = true;
+            }
+        }
+    }
+
+    audible_underrun
+}
+
+fn update_underrun_state(shared: &mut PlaybackShared, audible_underrun: bool, frame_count: usize) {
+    if shared.status != TransportStatus::Playing || shared.buffering {
+        shared.sustained_underrun_frames = 0;
+        return;
+    }
+
+    if !audible_underrun {
+        shared.sustained_underrun_frames = 0;
+        return;
+    }
+
+    shared.sustained_underrun_frames = shared
+        .sustained_underrun_frames
+        .saturating_add(frame_count.max(1));
+    let threshold_frames =
+        (shared.sample_rate as f64 * SUSTAINED_UNDERRUN_ERROR_SECONDS).ceil() as usize;
+    if shared.fallback_cause.is_none() && shared.sustained_underrun_frames >= threshold_frames {
+        shared.status = TransportStatus::Paused;
+        shared.buffering = false;
+        shared.fallback_cause = Some(NativePlaybackFallbackCause::SustainedUnderrun);
+        shared.underrun_error_pending = true;
+    }
+}
+
+fn clear_lane_rings(lanes: &mut [PlaybackLane]) {
+    for lane in lanes {
         match &lane.source {
             PlaybackLaneSource::Stream(stream) => {
-                if let Ok(mut ring) = stream.ring.try_lock() {
-                    ring.pop_into(&mut lane.scratch[..sample_count]);
+                if let Ok(mut ring) = stream.ring.lock() {
+                    ring.clear();
                 }
             }
         }
@@ -726,12 +1108,14 @@ fn render_shared_output(shared: &mut PlaybackShared, output: &mut [f32]) {
         output.fill(0.0);
         return;
     }
-    if shared.status == TransportStatus::Playing {
-        prepare_lane_scratch(&mut shared.lanes, output.len());
+    if shared.status == TransportStatus::Playing && !shared.buffering {
+        let frame_count = output.len() / shared.channels;
+        let audible_underrun = prepare_lane_scratch(&mut shared.lanes, output.len());
+        update_underrun_state(shared, audible_underrun, frame_count);
     }
 
     for (frame_index, frame) in output.chunks_mut(shared.channels).enumerate() {
-        if shared.status != TransportStatus::Playing {
+        if shared.status != TransportStatus::Playing || shared.buffering {
             frame.fill(0.0);
             continue;
         }
@@ -761,12 +1145,14 @@ where
         }
         return;
     }
-    if shared.status == TransportStatus::Playing {
-        prepare_lane_scratch(&mut shared.lanes, output.len());
+    if shared.status == TransportStatus::Playing && !shared.buffering {
+        let frame_count = output.len() / shared.channels;
+        let audible_underrun = prepare_lane_scratch(&mut shared.lanes, output.len());
+        update_underrun_state(shared, audible_underrun, frame_count);
     }
 
     for (frame_index, frame) in output.chunks_mut(shared.channels).enumerate() {
-        if shared.status != TransportStatus::Playing {
+        if shared.status != TransportStatus::Playing || shared.buffering {
             for sample in frame {
                 *sample = silent;
             }
@@ -836,6 +1222,10 @@ fn start_desktop_runtime(
         click: click.clone(),
         ended_pending: false,
         error_pending: None,
+        buffering: false,
+        sustained_underrun_frames: 0,
+        underrun_error_pending: false,
+        fallback_cause: None,
     }));
 
     drop(device);
@@ -877,10 +1267,19 @@ fn start_desktop_runtime(
             if reporter_stop_receiver.try_recv().is_ok() {
                 break;
             }
-            while let Ok(message) = worker_error_receiver.try_recv() {
+            while let Ok(worker_error) = worker_error_receiver.try_recv() {
                 if let Ok(mut shared) = shared.lock() {
-                    shared.error_pending = Some(message);
+                    if let Some(lane) = shared
+                        .lanes
+                        .iter_mut()
+                        .find(|lane| lane.id == worker_error.lane_id)
+                    {
+                        lane.worker_error_count = lane.worker_error_count.saturating_add(1);
+                        lane.last_worker_error = Some(worker_error.message.clone());
+                    }
+                    shared.error_pending = Some(worker_error.message);
                     shared.status = TransportStatus::Paused;
+                    shared.buffering = false;
                 }
             }
             emit_runtime_events(&app, &shared);
@@ -1012,7 +1411,15 @@ fn emit_runtime_events(app: &AppHandle, shared: &Arc<Mutex<PlaybackShared>>) {
         let snapshot = shared.snapshot();
         let ended = shared.ended_pending;
         shared.ended_pending = false;
-        let error = shared.error_pending.take();
+        let mut error = shared.error_pending.take();
+        if shared.underrun_error_pending {
+            shared.underrun_error_pending = false;
+            if error.is_none() {
+                error = shared
+                    .fallback_cause
+                    .map(|cause| cause.message().to_string());
+            }
+        }
         (snapshot, ended, error)
     };
 
@@ -1061,7 +1468,7 @@ fn load_playback_lanes(
     sample_rate: u32,
     channels: usize,
     playback_rate: f64,
-    worker_error_sender: mpsc::Sender<String>,
+    worker_error_sender: mpsc::Sender<WorkerError>,
 ) -> Result<LoadedPlaybackLanes, String> {
     let mut lanes = Vec::new();
     let mut worker_control_senders = Vec::new();
@@ -1086,6 +1493,7 @@ fn load_playback_lanes(
             );
         let ring = Arc::new(Mutex::new(RingBuffer::new(capacity_samples)));
         let (sender, worker_thread) = spawn_decoder_worker(
+            lane.id.clone(),
             path,
             ring.clone(),
             sample_rate,
@@ -1098,12 +1506,20 @@ fn load_playback_lanes(
         worker_threads.push(worker_thread);
         lanes.push(PlaybackLane {
             id: lane.id.clone(),
+            artifact_id: lane.artifact_id.clone(),
+            role: lane.role,
             muted: lane.muted,
             solo: lane.solo,
             current_gain: target_gain,
             target_gain,
             scratch: vec![0.0; sample_rate as usize * channels],
-            source: PlaybackLaneSource::Stream(Arc::new(StreamingLane { ring })),
+            source: PlaybackLaneSource::Stream(Arc::new(StreamingLane {
+                ring,
+                capacity_samples,
+            })),
+            underrun_count: 0,
+            worker_error_count: 0,
+            last_worker_error: None,
         });
     }
 
@@ -1116,12 +1532,13 @@ fn load_playback_lanes(
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn spawn_decoder_worker(
+    lane_id: String,
     path: PathBuf,
     ring: Arc<Mutex<RingBuffer>>,
     target_sample_rate: u32,
     target_channels: usize,
     playback_rate: f64,
-    error_sender: mpsc::Sender<String>,
+    error_sender: mpsc::Sender<WorkerError>,
 ) -> Result<(mpsc::Sender<WorkerControl>, JoinHandle<()>), String> {
     let mut playback_rate = normalize_playback_rate(Some(playback_rate));
     let mut decoder = StreamingDecoder::open(
@@ -1132,6 +1549,7 @@ fn spawn_decoder_worker(
         0.0,
     )?;
     let (sender, receiver) = mpsc::channel();
+    let mut pending_samples: Option<Vec<f32>> = None;
     let worker_thread = thread::spawn(move || loop {
         while let Ok(control) = receiver.try_recv() {
             match control {
@@ -1143,6 +1561,7 @@ fn spawn_decoder_worker(
                     if let Ok(mut guard) = ring.lock() {
                         guard.clear();
                     }
+                    pending_samples = None;
                     decoder.set_playback_rate(playback_rate);
                     if decoder.seek(position_seconds).is_err() {
                         match StreamingDecoder::open(
@@ -1156,7 +1575,10 @@ fn spawn_decoder_worker(
                                 decoder = reopened;
                             }
                             Err(error) => {
-                                let _ = error_sender.send(error);
+                                let _ = error_sender.send(WorkerError {
+                                    lane_id: lane_id.clone(),
+                                    message: error,
+                                });
                                 return;
                             }
                         }
@@ -1166,6 +1588,7 @@ fn spawn_decoder_worker(
                     if let Ok(mut guard) = ring.lock() {
                         guard.clear();
                     }
+                    pending_samples = None;
                     if decoder.seek(position_seconds).is_err() {
                         match StreamingDecoder::open(
                             path.clone(),
@@ -1178,13 +1601,27 @@ fn spawn_decoder_worker(
                                 decoder = reopened;
                             }
                             Err(error) => {
-                                let _ = error_sender.send(error);
+                                let _ = error_sender.send(WorkerError {
+                                    lane_id: lane_id.clone(),
+                                    message: error,
+                                });
                                 return;
                             }
                         }
                     }
                 }
                 WorkerControl::Stop => return,
+            }
+        }
+
+        if let Some(samples) = pending_samples.take() {
+            match push_or_defer_worker_samples(&ring, &mut pending_samples, samples) {
+                Ok(true) => continue,
+                Ok(false) => {
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(()) => return,
             }
         }
 
@@ -1204,26 +1641,41 @@ fn spawn_decoder_worker(
                     thread::sleep(Duration::from_millis(2));
                     continue;
                 }
-                if let Ok(mut guard) = ring.lock() {
-                    if !guard.push_samples(&samples) {
-                        drop(guard);
-                        thread::sleep(Duration::from_millis(5));
-                    }
-                } else {
-                    return;
+                match push_or_defer_worker_samples(&ring, &mut pending_samples, samples) {
+                    Ok(true) => {}
+                    Ok(false) => thread::sleep(Duration::from_millis(5)),
+                    Err(()) => return,
                 }
             }
             Ok(None) => {
                 thread::sleep(Duration::from_millis(20));
             }
             Err(error) => {
-                let _ = error_sender.send(error);
+                let _ = error_sender.send(WorkerError {
+                    lane_id: lane_id.clone(),
+                    message: error,
+                });
                 return;
             }
         }
     });
 
     Ok((sender, worker_thread))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn push_or_defer_worker_samples(
+    ring: &Arc<Mutex<RingBuffer>>,
+    pending_samples: &mut Option<Vec<f32>>,
+    samples: Vec<f32>,
+) -> Result<bool, ()> {
+    let mut guard = ring.lock().map_err(|_| ())?;
+    if guard.push_samples(&samples) {
+        Ok(true)
+    } else {
+        *pending_samples = Some(samples);
+        Ok(false)
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1727,6 +2179,61 @@ mod tests {
         }
     }
 
+    fn stream_lane(id: &str, ring: Arc<Mutex<RingBuffer>>, target_gain: f32) -> PlaybackLane {
+        PlaybackLane {
+            id: id.to_string(),
+            artifact_id: Some(format!("artifact-{id}")),
+            role: AudioLaneRole::Stem,
+            muted: false,
+            solo: false,
+            current_gain: target_gain,
+            target_gain,
+            scratch: vec![0.0; 1_000],
+            source: PlaybackLaneSource::Stream(Arc::new(StreamingLane {
+                ring,
+                capacity_samples: 1_000,
+            })),
+            underrun_count: 0,
+            worker_error_count: 0,
+            last_worker_error: None,
+        }
+    }
+
+    fn shared_with_lane(
+        ring: Arc<Mutex<RingBuffer>>,
+        sample_rate: u32,
+        channels: usize,
+        target_gain: f32,
+    ) -> PlaybackShared {
+        PlaybackShared {
+            session_id: Some("session".to_string()),
+            status: TransportStatus::Playing,
+            position_seconds: 0.0,
+            duration_seconds: 10.0,
+            playback_rate: 1.0,
+            native_playback_supported: true,
+            fallback_reason: None,
+            sample_rate,
+            channels,
+            lanes: vec![stream_lane("lane", ring, target_gain)],
+            snapshot_lanes: vec![EffectiveAudioLane {
+                id: "lane".to_string(),
+                artifact_id: Some("artifact-lane".to_string()),
+                role: AudioLaneRole::Stem,
+                effective_gain: target_gain,
+                muted: false,
+                solo: false,
+            }],
+            click: ClickState::default(),
+            ended_pending: false,
+            error_pending: None,
+            buffering: false,
+            sustained_underrun_frames: 0,
+            underrun_error_pending: false,
+            fallback_cause: None,
+        }
+    }
+
     #[test]
     fn seek_clamps_to_duration() {
         let mut state = TransportState::default();
@@ -1833,36 +2340,143 @@ mod tests {
         ring.lock()
             .expect("ring lock")
             .push_samples(&vec![0.5; 1_000]);
-        let mut shared = PlaybackShared {
-            session_id: Some("session".to_string()),
-            status: TransportStatus::Playing,
-            position_seconds: 0.0,
-            duration_seconds: 10.0,
-            playback_rate: 2.0,
-            native_playback_supported: true,
-            fallback_reason: None,
-            sample_rate: 1_000,
-            channels: 1,
-            lanes: vec![PlaybackLane {
-                id: "lane".to_string(),
-                muted: false,
-                solo: false,
-                current_gain: 1.0,
-                target_gain: 1.0,
-                scratch: vec![0.0; 1_000],
-                source: PlaybackLaneSource::Stream(Arc::new(StreamingLane { ring })),
-            }],
-            snapshot_lanes: Vec::new(),
-            click: ClickState::default(),
-            ended_pending: false,
-            error_pending: None,
-        };
+        let mut shared = shared_with_lane(ring, 1_000, 1, 1.0);
+        shared.playback_rate = 2.0;
         let mut output = vec![0.0; 10];
 
         render_shared_output(&mut shared, &mut output);
 
         assert_eq!(output[0], 0.5);
         assert!((shared.position_seconds - 0.02).abs() < 0.0001);
+    }
+
+    #[test]
+    fn snapshot_reports_buffer_health_for_stream_lane() {
+        let ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
+        ring.lock()
+            .expect("ring lock")
+            .push_samples(&vec![0.5; 128]);
+        let mut shared = shared_with_lane(ring, 1_000, 1, 1.0);
+        shared.lanes[0].underrun_count = 2;
+        shared.lanes[0].worker_error_count = 1;
+        shared.lanes[0].last_worker_error = Some("decode failed".to_string());
+
+        let snapshot = shared.snapshot();
+
+        assert_eq!(snapshot.buffer_health.len(), 1);
+        let health = &snapshot.buffer_health[0];
+        assert_eq!(health.lane_id, "lane");
+        assert_eq!(health.artifact_id.as_deref(), Some("artifact-lane"));
+        assert_eq!(health.role, AudioLaneRole::Stem);
+        assert_eq!(health.ring_fill_samples, 128);
+        assert_eq!(health.ring_capacity_samples, 1_000);
+        assert_eq!(health.underrun_count, 2);
+        assert_eq!(health.worker_error_count, 1);
+        assert_eq!(health.last_worker_error.as_deref(), Some("decode failed"));
+    }
+
+    #[test]
+    fn prepare_lane_scratch_counts_empty_partial_and_lock_miss_underruns() {
+        let empty_ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
+        let mut empty_lane = stream_lane("empty", empty_ring, 1.0);
+        assert!(prepare_lane_scratch(
+            std::slice::from_mut(&mut empty_lane),
+            10
+        ));
+        assert_eq!(empty_lane.underrun_count, 1);
+
+        let partial_ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
+        partial_ring
+            .lock()
+            .expect("ring lock")
+            .push_samples(&[0.25; 5]);
+        let mut partial_lane = stream_lane("partial", partial_ring, 1.0);
+        assert!(prepare_lane_scratch(
+            std::slice::from_mut(&mut partial_lane),
+            10
+        ));
+        assert_eq!(partial_lane.underrun_count, 1);
+        assert_eq!(partial_lane.scratch[0], 0.25);
+        assert_eq!(partial_lane.scratch[5], 0.0);
+
+        let locked_ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
+        let guard = locked_ring.lock().expect("ring lock");
+        let mut locked_lane = stream_lane("locked", locked_ring.clone(), 1.0);
+        assert!(prepare_lane_scratch(
+            std::slice::from_mut(&mut locked_lane),
+            10
+        ));
+        drop(guard);
+        assert_eq!(locked_lane.underrun_count, 1);
+    }
+
+    #[test]
+    fn sustained_underrun_marks_native_fallback_without_advancing() {
+        let ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
+        let mut shared = shared_with_lane(ring, 10, 1, 1.0);
+        let mut output = vec![0.0; 5];
+
+        render_shared_output(&mut shared, &mut output);
+        let snapshot = shared.snapshot();
+
+        assert_eq!(shared.status, TransportStatus::Paused);
+        assert_eq!(
+            shared.fallback_cause,
+            Some(NativePlaybackFallbackCause::SustainedUnderrun)
+        );
+        assert!(!snapshot.native_playback_supported);
+        assert_eq!(
+            snapshot.fallback_reason.as_deref(),
+            Some("Native playback underrun persisted; falling back to Web Audio.")
+        );
+        assert_eq!(shared.position_seconds, 0.0);
+    }
+
+    #[test]
+    fn render_shared_output_does_not_advance_while_buffering() {
+        let ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
+        ring.lock()
+            .expect("ring lock")
+            .push_samples(&vec![0.5; 1_000]);
+        let mut shared = shared_with_lane(ring, 1_000, 1, 1.0);
+        shared.buffering = true;
+        let mut output = vec![1.0; 10];
+
+        render_shared_output(&mut shared, &mut output);
+
+        assert!(output.iter().all(|sample| *sample == 0.0));
+        assert_eq!(shared.position_seconds, 0.0);
+        assert_eq!(shared.lanes[0].underrun_count, 0);
+    }
+
+    #[test]
+    fn worker_defers_stretched_tempo_chunks_instead_of_dropping_them() {
+        let ring = Arc::new(Mutex::new(RingBuffer::new(8)));
+        ring.lock()
+            .expect("ring lock")
+            .push_samples(&[0.1, 0.1, 0.1, 0.1, 0.1]);
+        let mut pending_samples = None;
+
+        let pushed =
+            push_or_defer_worker_samples(&ring, &mut pending_samples, vec![1.0, 2.0, 3.0, 4.0])
+                .expect("push samples");
+
+        assert!(!pushed);
+        assert_eq!(pending_samples.as_deref(), Some(&[1.0, 2.0, 3.0, 4.0][..]));
+        assert_eq!(ring.lock().expect("ring lock").fill_samples(), 5);
+
+        let mut drained = vec![0.0; 3];
+        ring.lock().expect("ring lock").pop_into(&mut drained);
+        let retry = pending_samples.take().expect("pending samples");
+
+        let pushed = push_or_defer_worker_samples(&ring, &mut pending_samples, retry)
+            .expect("retry pending samples");
+
+        assert!(pushed);
+        assert!(pending_samples.is_none());
+        let mut output = vec![0.0; 6];
+        ring.lock().expect("ring lock").pop_into(&mut output);
+        assert_eq!(output, vec![0.1, 0.1, 1.0, 2.0, 3.0, 4.0]);
     }
 
     #[test]

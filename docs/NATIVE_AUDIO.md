@@ -69,6 +69,9 @@ Settings -> Local Data -> Show diagnostics reports:
 - playback backend
 - last playback backend
 - last native playback error
+- latest native fallback cause
+- native playback buffer health per lane, including fill level, underrun count, worker errors, and
+  the last worker error when present
 
 When `VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` is active, diagnostics report `Web Audio (forced)`.
 

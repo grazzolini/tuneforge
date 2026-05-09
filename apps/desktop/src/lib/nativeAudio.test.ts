@@ -68,6 +68,7 @@ const snapshot: NativeAudioSnapshot = {
   nativePlaybackSupported: false,
   fallbackReason: "Native audio playback is not wired yet; use existing WebView playback.",
   lanes: [],
+  bufferHealth: [],
 };
 
 const inputState: NativeAudioInputState = {

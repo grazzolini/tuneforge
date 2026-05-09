@@ -1,3 +1,4 @@
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { ArrowUpDown, AudioLines, Drumstick, Gauge, Layers } from "lucide-react";
 import {
   artifactLabel,
@@ -19,8 +20,7 @@ export function PlaybackPracticeRail() {
     capoSourceKey,
     enharmonicDisplayMode,
     canUseTempo,
-    handleDecreasePlaybackTempo,
-    handleIncreasePlaybackTempo,
+    handleSetPlaybackTempo,
     handleResetPlaybackTempo,
     handleSelectPrimaryArtifact,
     handleSelectStemArtifact,
@@ -62,21 +62,121 @@ export function PlaybackPracticeRail() {
     visibleStemArtifacts,
   } = useProjectViewModelContext();
   const showHeaderDetails = informationDensity === "detailed";
-  const tempoDisplayLabel =
-    tempoDisplayBpm === null
-      ? "--"
-      : Number.isInteger(tempoDisplayBpm)
-        ? tempoDisplayBpm.toFixed(0)
-        : tempoDisplayBpm.toFixed(1);
   const tempoSummary =
     canUseTempo && tempoDisplayBpm !== null && tempoOriginalBpm !== null
       ? tempoTargetBpm === null
         ? `Original ${tempoOriginalBpm.toFixed(1)} BPM`
         : `${tempoTargetBpm.toFixed(0)} BPM (${tempoPlaybackRate.toFixed(3)}x)`
       : "Waiting for tempo analysis";
+  const [tempoDraftText, setTempoDraftText] = useState(() =>
+    tempoDisplayBpm === null
+      ? ""
+      : Number.isInteger(tempoDisplayBpm)
+        ? tempoDisplayBpm.toFixed(0)
+        : tempoDisplayBpm.toFixed(1),
+  );
+  const tempoCommitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const skipNextTempoBlurCommit = useRef(false);
+
+  const clampTempoBpm = (value: number) =>
+    Math.max(tempoMinBpm, Math.min(tempoMaxBpm, Math.round(value)));
+
+  const formatTempoDraftText = (value: number | null) =>
+    value === null ? "" : Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1);
+
+  useEffect(() => {
+    setTempoDraftText(
+      tempoDisplayBpm === null ? "" : formatTempoDraftText(tempoDisplayBpm),
+    );
+  }, [tempoDisplayBpm]);
+
+  useEffect(() => () => {
+    if (tempoCommitTimer.current !== null) {
+      clearTimeout(tempoCommitTimer.current);
+      tempoCommitTimer.current = null;
+    }
+  }, []);
+
+  const clearTempoCommitTimer = () => {
+    if (tempoCommitTimer.current !== null) {
+      clearTimeout(tempoCommitTimer.current);
+      tempoCommitTimer.current = null;
+    }
+  };
+
+  const restoreTempoDraft = () => {
+    setTempoDraftText(tempoDisplayBpm === null ? "" : formatTempoDraftText(tempoDisplayBpm));
+  };
+
+  const commitTempoFromInput = () => {
+    const trimmedDraft = tempoDraftText.trim();
+    const parsed = Number(trimmedDraft);
+    if (!Number.isFinite(parsed) || trimmedDraft === "") {
+      restoreTempoDraft();
+      return;
+    }
+    clearTempoCommitTimer();
+    const target = clampTempoBpm(parsed);
+    setTempoDraftText(formatTempoDraftText(target));
+    handleSetPlaybackTempo(target);
+  };
+
+  const scheduleTempoCommit = (value: number) => {
+    const target = clampTempoBpm(value);
+    setTempoDraftText(formatTempoDraftText(target));
+    clearTempoCommitTimer();
+    tempoCommitTimer.current = setTimeout(() => {
+      tempoCommitTimer.current = null;
+      handleSetPlaybackTempo(target);
+    }, 250);
+  };
+
+  const flushPendingTempoCommit = () => {
+    if (tempoCommitTimer.current === null) {
+      return;
+    }
+    commitTempoFromInput();
+  };
+
+  const handleTempoInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commitTempoFromInput();
+      event.currentTarget.blur();
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      clearTempoCommitTimer();
+      restoreTempoDraft();
+      skipNextTempoBlurCommit.current = true;
+      event.currentTarget.blur();
+    }
+  };
+
+  const trimmedDraftTempoText = tempoDraftText.trim();
+  const draftTempoValue = Number(trimmedDraftTempoText);
+  const tempoDraftNumeric = trimmedDraftTempoText !== "" && Number.isFinite(draftTempoValue)
+    ? draftTempoValue
+    : tempoDisplayBpm ?? tempoMinBpm;
+  const canDecreaseTempo = canUseTempo && tempoDraftNumeric > tempoMinBpm;
+  const canIncreaseTempo = canUseTempo && tempoDraftNumeric < tempoMaxBpm;
+
+  const handleTempoReset = () => {
+    clearTempoCommitTimer();
+    handleResetPlaybackTempo();
+    setTempoDraftText(formatTempoDraftText(tempoOriginalBpm ?? tempoDisplayBpm ?? null));
+  };
 
   return (
-    <aside className="panel playback-practice-rail">
+    <aside
+      className="panel playback-practice-rail"
+      onBlur={(event) => {
+        const nextTarget = event.relatedTarget;
+        if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
+          flushPendingTempoCommit();
+        }
+      }}
+    >
       <div
         aria-label="Playback rail shortcuts"
         className="playback-practice-rail__focus-icons"
@@ -205,7 +305,7 @@ export function PlaybackPracticeRail() {
           <button
             className="button button--ghost button--small"
             disabled={!canUseTempo || tempoTargetBpm === null}
-            onClick={handleResetPlaybackTempo}
+            onClick={handleTempoReset}
             type="button"
           >
             Reset
@@ -214,20 +314,39 @@ export function PlaybackPracticeRail() {
         <div className="playback-tempo-control__stepper" role="group" aria-label="Playback tempo BPM">
           <button
             aria-label="Decrease playback tempo"
-            disabled={!canUseTempo || tempoDisplayBpm === null || tempoDisplayBpm <= tempoMinBpm}
-            onClick={handleDecreasePlaybackTempo}
+            disabled={!canDecreaseTempo}
+            onClick={() => scheduleTempoCommit(tempoDraftNumeric - 1)}
             type="button"
           >
             -
           </button>
-          <strong aria-live="polite">
-            {tempoDisplayLabel}
+          <label aria-label="Playback BPM input" className="playback-tempo-control__input-wrap">
+            <input
+              aria-live="polite"
+              aria-label="Playback BPM"
+              className="playback-tempo-control__input"
+              disabled={!canUseTempo || tempoDisplayBpm === null}
+              max={tempoMaxBpm}
+              min={tempoMinBpm}
+              onBlur={() => {
+                if (skipNextTempoBlurCommit.current) {
+                  skipNextTempoBlurCommit.current = false;
+                  return;
+                }
+                commitTempoFromInput();
+              }}
+              onChange={(event) => setTempoDraftText(event.target.value)}
+              onKeyDown={handleTempoInputKeyDown}
+              step={1}
+              type="number"
+              value={tempoDraftText}
+            />
             <span>BPM</span>
-          </strong>
+          </label>
           <button
             aria-label="Increase playback tempo"
-            disabled={!canUseTempo || tempoDisplayBpm === null || tempoDisplayBpm >= tempoMaxBpm}
-            onClick={handleIncreasePlaybackTempo}
+            disabled={!canIncreaseTempo}
+            onClick={() => scheduleTempoCommit(tempoDraftNumeric + 1)}
             type="button"
           >
             +

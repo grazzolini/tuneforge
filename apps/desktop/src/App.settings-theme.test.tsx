@@ -124,6 +124,21 @@ describe("Desktop app settings theme", () => {
         micCaptureSupported: true,
         nativePlaybackSupported: false,
       },
+      snapshot: {
+        fallbackReason: "buffer underrun on native lane vocals",
+        bufferHealth: [
+          {
+            laneId: "vocals",
+            artifactId: "art_vocals",
+            role: "stem",
+            ringFillSamples: 1200,
+            ringCapacitySamples: 4800,
+            underrunCount: 3,
+            workerErrorCount: 1,
+            lastWorkerError: "decoder stalled",
+          },
+        ],
+      },
     });
     window.localStorage.setItem(
       "tuneforge.tuner-input-capture-backend",
@@ -155,7 +170,10 @@ describe("Desktop app settings theme", () => {
     expect(screen.getByText(FRONTEND_VERSION_INFO.git_ref)).toBeInTheDocument();
     expect(screen.getAllByText("Native (desktop-cpal)")).toHaveLength(2);
     expect(screen.getByText("Native microphone failed.")).toBeInTheDocument();
-    expect(screen.getByText("Native output failed.")).toBeInTheDocument();
+    expect(screen.getAllByText("Native output failed.")).toHaveLength(2);
+    expect(screen.getByText("Latest Native Fallback Cause")).toBeInTheDocument();
+    expect(screen.getByText("Native Playback Buffer Health")).toBeInTheDocument();
+    expect(screen.getByText(/art_vocals: 25% buffer, 3 underruns, 1 worker errors/)).toBeInTheDocument();
     expect(screen.getAllByText("Web Audio")).toHaveLength(2);
 
     expect(document.documentElement).toHaveAttribute("data-theme", "light");

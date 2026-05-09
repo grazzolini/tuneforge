@@ -85,6 +85,17 @@ export type NativeAudioLane = {
   solo: boolean;
 };
 
+export type NativeAudioBufferHealth = {
+  laneId: string;
+  artifactId: string | null;
+  role: NativeAudioLaneRole;
+  ringFillSamples: number;
+  ringCapacitySamples: number;
+  underrunCount: number;
+  workerErrorCount: number;
+  lastWorkerError: string | null;
+};
+
 export type NativeAudioSnapshot = {
   sessionId: string | null;
   state: "stopped" | "playing" | "paused";
@@ -94,6 +105,7 @@ export type NativeAudioSnapshot = {
   nativePlaybackSupported: boolean;
   fallbackReason: string | null;
   lanes: NativeAudioLane[];
+  bufferHealth: NativeAudioBufferHealth[];
 };
 
 export type NativeAudioClickRequest = {

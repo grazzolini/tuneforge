@@ -47,7 +47,9 @@ const {
   mockGetMobileCapabilities,
   setMockSystemInputVolume,
   setMockNativeAudio,
+  emitMockNativeAudioError,
   emitMockNativeAudioInputFrame,
+  emitMockNativeAudioPosition,
   mockListen,
 } = vi.hoisted(() => {
   const createdAt = "2026-04-18T13:16:00.000Z";
@@ -63,11 +65,34 @@ const {
     id: number;
     payload: NativeAudioInputFrame;
   };
+  type NativeAudioPositionPayload = {
+    sessionId: string | null;
+    positionSeconds: number;
+    durationSeconds: number;
+    state: "stopped" | "playing" | "paused";
+  };
+  type NativeAudioErrorPayload = {
+    sessionId: string | null;
+    message: string;
+  };
+  type NativeAudioRuntimeEvent = {
+    event: "audio://position" | "audio://ended" | "audio://error";
+    id: number;
+    payload: Record<string, unknown>;
+  };
   const nativeInputFrameListeners = new Map<
     number,
     (event: NativeAudioInputFrameEvent) => void
   >();
+  const nativeRuntimeListeners = new Map<
+    number,
+    {
+      eventName: NativeAudioRuntimeEvent["event"];
+      handler: (event: NativeAudioRuntimeEvent) => void;
+    }
+  >();
   let nextNativeInputFrameListenerId = 1;
+  let nextNativeRuntimeListenerId = 1;
   let state: {
     projects: Array<Record<string, unknown>>;
     analysisByProject: Record<string, Record<string, unknown> | null>;
@@ -98,7 +123,9 @@ const {
       inputLevel: number;
       sampleRate: number | null;
     };
+    nativeAudioSnapshot: Record<string, unknown>;
     nativeAudioStartError: string | null;
+    nativeAudioPlayFallbackReason: string | null;
     nextProjectId: number;
     nextArtifactId: number;
     nextJobId: number;
@@ -427,7 +454,19 @@ const {
         inputLevel: 0,
         sampleRate: null,
       },
+      nativeAudioSnapshot: {
+        sessionId: null,
+        state: "stopped",
+        positionSeconds: 0,
+        durationSeconds: 0,
+        playbackRate: 1,
+        nativePlaybackSupported: false,
+        fallbackReason: "Native audio playback is not wired yet; use existing WebView playback.",
+        lanes: [],
+        bufferHealth: [],
+      },
       nativeAudioStartError: null,
+      nativeAudioPlayFallbackReason: null,
       nextProjectId: 200,
       nextArtifactId: 200,
       nextJobId: 200,
@@ -436,7 +475,9 @@ const {
       deferPreviewCompletion: false,
     };
     nativeInputFrameListeners.clear();
+    nativeRuntimeListeners.clear();
     nextNativeInputFrameListenerId = 1;
+    nextNativeRuntimeListenerId = 1;
   }
 
   resetMockApiState();
@@ -464,7 +505,9 @@ const {
     capabilities?: Record<string, unknown>;
     inputDevices?: Record<string, unknown>;
     inputState?: Partial<typeof state.nativeAudioInputState>;
+    snapshot?: Record<string, unknown>;
     startError?: string | null;
+    playFallbackReason?: string | null;
   }) {
     state.nativeAudioCapabilities = {
       ...state.nativeAudioCapabilities,
@@ -478,9 +521,39 @@ const {
       ...state.nativeAudioInputState,
       ...nextState.inputState,
     };
+    state.nativeAudioSnapshot = {
+      ...state.nativeAudioSnapshot,
+      ...nextState.snapshot,
+    };
     if ("startError" in nextState) {
       state.nativeAudioStartError = nextState.startError ?? null;
     }
+    if ("playFallbackReason" in nextState) {
+      state.nativeAudioPlayFallbackReason = nextState.playFallbackReason ?? null;
+    }
+  }
+  function effectiveNativeAudioLanes(
+    lanes: Array<{
+      id: string;
+      artifactId?: string | null;
+      role: string;
+      gain: number;
+      muted: boolean;
+      solo: boolean;
+    }>,
+  ) {
+    const hasSolo = lanes.some((lane) => lane.solo);
+    return lanes.map((lane) => {
+      const active = hasSolo ? lane.solo : !lane.muted;
+      return {
+        id: lane.id,
+        artifactId: lane.artifactId ?? null,
+        role: lane.role,
+        effectiveGain: active ? Math.max(0, Math.min(1, lane.gain)) : 0,
+        muted: lane.muted,
+        solo: lane.solo,
+      };
+    });
   }
   function emitMockNativeAudioInputFrame(frame: NativeAudioInputFrame) {
     nativeInputFrameListeners.forEach((listener, id) => {
@@ -491,24 +564,54 @@ const {
       });
     });
   }
+  function emitMockNativeAudioPosition(position: NativeAudioPositionPayload) {
+    emitMockNativeRuntimeEvent("audio://position", position);
+  }
+  function emitMockNativeAudioError(error: NativeAudioErrorPayload) {
+    emitMockNativeRuntimeEvent("audio://error", error);
+  }
+  function emitMockNativeRuntimeEvent(
+    eventName: NativeAudioRuntimeEvent["event"],
+    payload: Record<string, unknown>,
+  ) {
+    nativeRuntimeListeners.forEach((listener, id) => {
+      if (listener.eventName !== eventName) {
+        return;
+      }
+      listener.handler({
+        event: eventName,
+        id,
+        payload: clone(payload),
+      });
+    });
+  }
   const mockListen = vi.fn(
     async (
       eventName: string,
-      handler: (event: NativeAudioInputFrameEvent) => void,
+      handler: (event: NativeAudioInputFrameEvent | NativeAudioRuntimeEvent) => void,
     ) => {
       if (
         eventName === "audio://position" ||
         eventName === "audio://ended" ||
         eventName === "audio://error"
       ) {
-        return () => undefined;
+        const listenerId = nextNativeRuntimeListenerId;
+        nextNativeRuntimeListenerId += 1;
+        nativeRuntimeListeners.set(listenerId, {
+          eventName,
+          handler: handler as (event: NativeAudioRuntimeEvent) => void,
+        });
+        return () => nativeRuntimeListeners.delete(listenerId);
       }
       if (eventName !== "audio://input-frame") {
         throw new Error(`Unexpected listen event: ${eventName}`);
       }
       const listenerId = nextNativeInputFrameListenerId;
       nextNativeInputFrameListenerId += 1;
-      nativeInputFrameListeners.set(listenerId, handler);
+      nativeInputFrameListeners.set(
+        listenerId,
+        handler as (event: NativeAudioInputFrameEvent) => void,
+      );
       return () => nativeInputFrameListeners.delete(listenerId);
     },
   );
@@ -558,6 +661,136 @@ const {
 
     if (command === "audio_get_input_state") {
       return clone(state.nativeAudioInputState);
+    }
+
+    if (command === "audio_prepare_session") {
+      const payload = (args?.payload ?? {}) as {
+        sessionId?: string;
+        durationSeconds?: number | null;
+        playbackRate?: number | null;
+        lanes?: Array<{
+          id: string;
+          artifactId?: string | null;
+          role: string;
+          gain: number;
+          muted: boolean;
+          solo: boolean;
+        }>;
+      };
+      const nativePlaybackSupported = state.nativeAudioCapabilities.nativePlaybackSupported === true;
+      const fallbackReason =
+        nativePlaybackSupported
+          ? null
+          : String(state.nativeAudioCapabilities.fallbackReason ?? "Native audio playback is unavailable.");
+      const lanes = effectiveNativeAudioLanes(payload.lanes ?? []);
+      state.nativeAudioSnapshot = {
+        ...state.nativeAudioSnapshot,
+        sessionId: payload.sessionId ?? null,
+        state: "stopped",
+        positionSeconds: 0,
+        durationSeconds: payload.durationSeconds ?? 0,
+        playbackRate: payload.playbackRate ?? 1,
+        nativePlaybackSupported,
+        fallbackReason,
+        lanes,
+        bufferHealth: (payload.lanes ?? []).map((lane) => ({
+          laneId: lane.id,
+          artifactId: lane.artifactId ?? null,
+          role: lane.role,
+          ringFillSamples: 0,
+          ringCapacitySamples: 0,
+          underrunCount: 0,
+          workerErrorCount: 0,
+          lastWorkerError: null,
+        })),
+      };
+      return {
+        id: payload.sessionId ?? "session",
+        nativePlaybackSupported,
+        fallbackReason,
+        laneCount: lanes.length,
+      };
+    }
+
+    if (command === "audio_play") {
+      const payload = (args?.payload ?? {}) as { startTimeSeconds?: number | null };
+      if (state.nativeAudioPlayFallbackReason) {
+        state.nativeAudioSnapshot = {
+          ...state.nativeAudioSnapshot,
+          state: "paused",
+          nativePlaybackSupported: false,
+          fallbackReason: state.nativeAudioPlayFallbackReason,
+          positionSeconds: payload.startTimeSeconds ?? Number(state.nativeAudioSnapshot.positionSeconds ?? 0),
+        };
+        return clone(state.nativeAudioSnapshot);
+      }
+      state.nativeAudioSnapshot = {
+        ...state.nativeAudioSnapshot,
+        state: "playing",
+        positionSeconds: payload.startTimeSeconds ?? Number(state.nativeAudioSnapshot.positionSeconds ?? 0),
+      };
+      return clone(state.nativeAudioSnapshot);
+    }
+
+    if (command === "audio_pause") {
+      state.nativeAudioSnapshot = {
+        ...state.nativeAudioSnapshot,
+        state: "paused",
+      };
+      return clone(state.nativeAudioSnapshot);
+    }
+
+    if (command === "audio_stop") {
+      state.nativeAudioSnapshot = {
+        ...state.nativeAudioSnapshot,
+        state: "stopped",
+        positionSeconds: 0,
+      };
+      return clone(state.nativeAudioSnapshot);
+    }
+
+    if (command === "audio_seek") {
+      const payload = (args?.payload ?? {}) as { timeSeconds?: number };
+      state.nativeAudioSnapshot = {
+        ...state.nativeAudioSnapshot,
+        positionSeconds: payload.timeSeconds ?? 0,
+      };
+      return clone(state.nativeAudioSnapshot);
+    }
+
+    if (command === "audio_set_lanes") {
+      const payload = (args?.payload ?? {}) as {
+        playbackRate?: number | null;
+        lanes?: Array<{
+          id: string;
+          artifactId?: string | null;
+          role: string;
+          gain: number;
+          muted: boolean;
+          solo: boolean;
+        }>;
+      };
+      const lanes = effectiveNativeAudioLanes(payload.lanes ?? []);
+      state.nativeAudioSnapshot = {
+        ...state.nativeAudioSnapshot,
+        playbackRate: payload.playbackRate ?? Number(state.nativeAudioSnapshot.playbackRate ?? 1),
+        lanes,
+        bufferHealth: (payload.lanes ?? []).map((lane) => ({
+          laneId: lane.id,
+          artifactId: lane.artifactId ?? null,
+          role: lane.role,
+          ringFillSamples: 0,
+          ringCapacitySamples: 0,
+          underrunCount: 0,
+          workerErrorCount: 0,
+          lastWorkerError: null,
+        })),
+      };
+      return clone(state.nativeAudioSnapshot);
+    }
+
+    if (command === "audio_set_click" || command === "audio_get_snapshot") {
+      return clone(state.nativeAudioSnapshot);
     }
 
     if (command === "audio_start_input") {
@@ -1217,7 +1450,9 @@ const {
     mockGetMobileCapabilities,
     setMockSystemInputVolume,
     setMockNativeAudio,
+    emitMockNativeAudioError,
     emitMockNativeAudioInputFrame,
+    emitMockNativeAudioPosition,
     mockListen,
   };
 });
@@ -1489,6 +1724,18 @@ export function emitMockNativeInputFrame(
   frame: Parameters<typeof emitMockNativeAudioInputFrame>[0],
 ) {
   emitMockNativeAudioInputFrame(frame);
+}
+
+export function emitMockNativePlaybackPosition(
+  position: Parameters<typeof emitMockNativeAudioPosition>[0],
+) {
+  emitMockNativeAudioPosition(position);
+}
+
+export function emitMockNativePlaybackError(
+  error: Parameters<typeof emitMockNativeAudioError>[0],
+) {
+  emitMockNativeAudioError(error);
 }
 
 export function getMockMediaDevices() {

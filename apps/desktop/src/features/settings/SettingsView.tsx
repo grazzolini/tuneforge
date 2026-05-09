@@ -11,7 +11,9 @@ import {
 } from "../../lib/playbackDiagnostics";
 import {
   getNativeAudioCapabilities,
+  getNativeAudioSnapshot,
   isWebAudioBackendForced,
+  type NativeAudioBufferHealth,
   type NativeAudioCapabilities,
 } from "../../lib/nativeAudio";
 import { TunerPreferenceControls } from "../tools/TunerPreferenceControls";
@@ -274,6 +276,29 @@ function lastPlaybackBackendLabel(backend: PlaybackBackend | null) {
     : "Web Audio";
 }
 
+function nativePlaybackHealthLabel(
+  health: NativeAudioBufferHealth[] | undefined,
+  webAudioForced: boolean,
+) {
+  if (webAudioForced) {
+    return "Web Audio forced";
+  }
+  if (!health?.length) {
+    return "No active native lanes";
+  }
+  return health
+    .map((lane) => {
+      const label = lane.artifactId ?? lane.laneId;
+      const fillPercent =
+        lane.ringCapacitySamples > 0
+          ? Math.round((lane.ringFillSamples / lane.ringCapacitySamples) * 100)
+          : 0;
+      const error = lane.lastWorkerError ? `, last worker error: ${lane.lastWorkerError}` : "";
+      return `${label}: ${fillPercent}% buffer, ${lane.underrunCount} underruns, ${lane.workerErrorCount} worker errors${error}`;
+    })
+    .join(" / ");
+}
+
 function diagnosticVersionValue(value: string | undefined) {
   const normalized = value?.trim();
   return normalized ? normalized : "Unknown";
@@ -441,10 +466,17 @@ export function SettingsView() {
     queryFn: getNativeAudioCapabilities,
     enabled: !webAudioForced,
   });
+  const nativeAudioSnapshotQuery = useQuery({
+    queryKey: ["native-audio-snapshot", webAudioForced],
+    queryFn: getNativeAudioSnapshot,
+    enabled: !webAudioForced,
+  });
   const lastInputCaptureBackend = readRememberedTunerInputCaptureBackend();
   const lastNativeCaptureError = readRememberedTunerNativeCaptureError();
   const lastPlaybackBackend = readRememberedPlaybackBackend();
   const lastNativePlaybackError = readRememberedNativePlaybackError();
+  const latestNativeFallbackCause =
+    lastNativePlaybackError ?? nativeAudioSnapshotQuery.data?.fallbackReason ?? "None";
   const savedThemeOverrideCount = themeOverrideCount(themeOverrides);
   const chordBackendChoices = chordBackendOptions(chordBackendsQuery.data?.backends);
   const stemModelChoices = stemModelOptions(stemModelsQuery.data?.models);
@@ -882,6 +914,18 @@ export function SettingsView() {
             <div>
               <dt>Last Native Playback Error</dt>
               <dd>{lastNativePlaybackError ?? "None"}</dd>
+            </div>
+            <div>
+              <dt>Latest Native Fallback Cause</dt>
+              <dd>{latestNativeFallbackCause}</dd>
+            </div>
+            <div>
+              <dt>Native Playback Buffer Health</dt>
+              <dd>
+                {nativeAudioSnapshotQuery.isError
+                  ? "Unavailable"
+                  : nativePlaybackHealthLabel(nativeAudioSnapshotQuery.data?.bufferHealth, webAudioForced)}
+              </dd>
             </div>
           </dl>
         </details>

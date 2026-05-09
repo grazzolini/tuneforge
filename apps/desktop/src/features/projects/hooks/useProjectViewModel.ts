@@ -61,6 +61,7 @@ import {
   MAX_PLAYBACK_TEMPO_BPM,
   MIN_PLAYBACK_TEMPO_BPM,
   normalizeTempoBpm,
+  normalizeTempoTargetBpm,
   tempoPlaybackRate,
   tempoTargetBpmFromStep,
 } from "../playbackTempo";
@@ -985,25 +986,39 @@ export function useProjectViewModel() {
     if (!canUseTempo) {
       return;
     }
-    setTempoTargetBpm((current) =>
-      tempoTargetBpmFromStep({
+    setTempoTargetBpm((current) => {
+      const next = tempoTargetBpmFromStep({
         currentTargetBpm: current,
         delta: -1,
         originalBpm: tempoOriginalBpm,
-      }),
-    );
+      });
+      return next === null ? null : Math.max(MIN_PLAYBACK_TEMPO_BPM, Math.min(MAX_PLAYBACK_TEMPO_BPM, next));
+    });
   }
 
   function handleIncreasePlaybackTempo() {
     if (!canUseTempo) {
       return;
     }
-    setTempoTargetBpm((current) =>
-      tempoTargetBpmFromStep({
+    setTempoTargetBpm((current) => {
+      const next = tempoTargetBpmFromStep({
         currentTargetBpm: current,
         delta: 1,
         originalBpm: tempoOriginalBpm,
-      }),
+      });
+      return next === null ? null : Math.max(MIN_PLAYBACK_TEMPO_BPM, Math.min(MAX_PLAYBACK_TEMPO_BPM, next));
+    });
+  }
+
+  function handleSetPlaybackTempo(targetBpm: number | null) {
+    if (!canUseTempo) {
+      return;
+    }
+    const normalizedTargetBpm = targetBpm === null ? null : normalizeTempoTargetBpm(targetBpm);
+    setTempoTargetBpm(() =>
+      normalizedTargetBpm === null
+        ? null
+        : Math.max(MIN_PLAYBACK_TEMPO_BPM, Math.min(MAX_PLAYBACK_TEMPO_BPM, normalizedTargetBpm)),
     );
   }
 
@@ -1891,6 +1906,7 @@ export function useProjectViewModel() {
     handleSetPrecountClickCount,
     handleSetPrecountEnabled,
     handleIncreasePlaybackTempo,
+    handleSetPlaybackTempo,
     handleAcceptTabSuggestionGroup,
     handleApplyTabSuggestions,
     handleCloseTabImport,

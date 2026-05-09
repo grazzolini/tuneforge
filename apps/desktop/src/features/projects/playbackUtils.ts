@@ -10,11 +10,14 @@ export type PendingTransition = {
   shouldPlay: boolean;
   targetTime: number;
   awaitSeekBeforePlay: boolean;
+  crossfadeStemPlayback: boolean;
   awaitingLoadKeys: string[];
   awaitingSeekKeys: string[];
   forceSeekKeys: string[];
 };
 
+export const MEDIA_PLAYBACK_RATE_RAMP_MS = 64;
+export const STEM_PLAYBACK_CROSSFADE_SECONDS = 0.05;
 const SEEK_TOLERANCE_SECONDS = 0.001;
 const PRIMARY_MEDIA_KEY = "__primary__";
 

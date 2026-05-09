@@ -914,7 +914,7 @@
 }
 
 .playback-tempo-control__stepper button,
-.playback-tempo-control__stepper strong {
+.playback-tempo-control__input-wrap {
   display: inline-grid;
   min-height: 2.8rem;
   place-items: center;
@@ -934,16 +934,37 @@
   opacity: 0.56;
 }
 
-.playback-tempo-control__stepper strong {
+.playback-tempo-control__input-wrap {
   gap: 0.1rem;
   background: color-mix(in srgb, var(--panel-strong) 76%, transparent);
   font-size: 1.25rem;
 }
 
-.playback-tempo-control__stepper strong span {
+.playback-tempo-control__input-wrap span {
   color: var(--muted);
   font-size: 0.72rem;
   font-weight: 800;
+}
+
+.playback-tempo-control__input {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 1.25rem;
+  font: inherit;
+  width: 100%;
+  text-align: center;
+  -moz-appearance: textfield;
+}
+
+.playback-tempo-control__input::-webkit-outer-spin-button,
+.playback-tempo-control__input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.playback-tempo-control__input:disabled {
+  opacity: 0.56;
 }
 
 .playback-tempo-control__summary {

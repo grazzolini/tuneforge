@@ -46,8 +46,10 @@ import {
 } from "./playbackPersistence";
 import { normalizePrecountClickCount } from "./projectPlaybackState";
 import {
+  MEDIA_PLAYBACK_RATE_RAMP_MS,
   PRIMARY_MEDIA_KEY,
   SEEK_TOLERANCE_SECONDS,
+  STEM_PLAYBACK_CROSSFADE_SECONDS,
   clampTime,
   playbackRateForSession,
   playbackSignature,
@@ -92,12 +94,91 @@ type NativePlaybackState = {
   playbackSignature: string | null;
 };
 
-function applyMediaElementPlaybackRate(element: HTMLAudioElement, playbackRate: number) {
+const mediaPlaybackRateRampFrames = new WeakMap<
+  HTMLAudioElement,
+  { frameId: number; targetPlaybackRate: number }
+>();
+
+function cancelMediaElementPlaybackRateRamp(element: HTMLAudioElement) {
+  const activeRamp = mediaPlaybackRateRampFrames.get(element);
+  if (!activeRamp || typeof window === "undefined") {
+    return;
+  }
+  window.cancelAnimationFrame(activeRamp.frameId);
+  mediaPlaybackRateRampFrames.delete(element);
+}
+
+function applyMediaElementPlaybackRate(
+  element: HTMLAudioElement,
+  playbackRate: number,
+  { ramp = false }: { ramp?: boolean } = {},
+) {
   const pitchPreservingElement = element as PitchPreservingAudioElement;
   pitchPreservingElement.preservesPitch = true;
   pitchPreservingElement.mozPreservesPitch = true;
   pitchPreservingElement.webkitPreservesPitch = true;
-  element.playbackRate = playbackRate;
+  if (!ramp || typeof window === "undefined") {
+    const activeRamp = mediaPlaybackRateRampFrames.get(element);
+    if (
+      activeRamp &&
+      Math.abs(activeRamp.targetPlaybackRate - playbackRate) <= 0.0001
+    ) {
+      return;
+    }
+    cancelMediaElementPlaybackRateRamp(element);
+    element.playbackRate = playbackRate;
+    return;
+  }
+
+  cancelMediaElementPlaybackRateRamp(element);
+  const initialPlaybackRate = element.playbackRate;
+  if (Math.abs(initialPlaybackRate - playbackRate) <= 0.0001) {
+    element.playbackRate = playbackRate;
+    return;
+  }
+
+  let startTimestamp: number | null = null;
+  const scheduleStep = () => {
+    const frameId = window.requestAnimationFrame((timestamp) => {
+      startTimestamp ??= timestamp;
+      const progress = Math.min(
+        1,
+        (timestamp - startTimestamp) / MEDIA_PLAYBACK_RATE_RAMP_MS,
+      );
+      element.playbackRate =
+        initialPlaybackRate + (playbackRate - initialPlaybackRate) * progress;
+      if (progress < 1) {
+        scheduleStep();
+        return;
+      }
+      mediaPlaybackRateRampFrames.delete(element);
+      element.playbackRate = playbackRate;
+    });
+    mediaPlaybackRateRampFrames.set(element, { frameId, targetPlaybackRate: playbackRate });
+  };
+  scheduleStep();
+}
+
+function setGainValue(gainNode: GainNode, value: number) {
+  gainNode.gain.value = value;
+}
+
+function rampGainValue(
+  gainNode: GainNode,
+  context: AudioContext,
+  value: number,
+  durationSeconds: number,
+) {
+  const gainParam = gainNode.gain;
+  if (typeof gainParam.linearRampToValueAtTime !== "function") {
+    setGainValue(gainNode, value);
+    return;
+  }
+
+  const startTime = context.currentTime;
+  gainParam.cancelScheduledValues(startTime);
+  gainParam.setValueAtTime(gainParam.value, startTime);
+  gainParam.linearRampToValueAtTime(value, startTime + durationSeconds);
 }
 
 function isTauriRuntime() {
@@ -208,6 +289,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           shouldPlay: restoredPlaybackState.isPlaying,
           targetTime: restoredPlaybackState.playbackTimeSeconds,
           awaitSeekBeforePlay: true,
+          crossfadeStemPlayback: false,
           awaitingLoadKeys: [],
           awaitingSeekKeys: [],
           forceSeekKeys: [],
@@ -542,6 +624,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         rememberNativePlaybackError(
           snapshot.fallbackReason ?? "Native playback start fell back to Web Audio.",
         );
+        nativePlaybackRef.current.blockedSessionSignature = sessionSignature;
+        markNativePlaybackInactive();
+        void requestNativeStop();
         return false;
       }
       const capabilities = await getNativeAudioCapabilityState();
@@ -794,15 +879,70 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     });
   });
 
-  const disposeStemPlaybackState = useStableCallback(function disposeStemPlaybackState() {
+  const fadeOutStemPlaybackState = useStableCallback(function fadeOutStemPlaybackState(
+    targetPlaybackState: StemPlaybackState,
+  ) {
+    const nextTime = getStemPlaybackTime(targetPlaybackState);
+    clearStemClock(targetPlaybackState);
+    targetPlaybackState.offsetSeconds = nextTime;
+    targetPlaybackState.startedAtContextTime = targetPlaybackState.context.currentTime;
+    targetPlaybackState.isPlaying = false;
+    syncStemElementTimes(targetPlaybackState.artifactIds, nextTime);
+
+    if (typeof window === "undefined") {
+      stopStemSources(targetPlaybackState, true);
+      disconnectStemGains(targetPlaybackState);
+      return;
+    }
+
+    const sources = targetPlaybackState.sources;
+    targetPlaybackState.sources = {};
+    const stopTime =
+      targetPlaybackState.context.currentTime + STEM_PLAYBACK_CROSSFADE_SECONDS;
+    Object.values(targetPlaybackState.gains).forEach((gainNode) => {
+      rampGainValue(
+        gainNode,
+        targetPlaybackState.context,
+        0,
+        STEM_PLAYBACK_CROSSFADE_SECONDS,
+      );
+    });
+    Object.values(sources).forEach((source) => {
+      source.onended = null;
+      try {
+        source.stop(stopTime);
+      } catch {
+        return;
+      }
+    });
+    window.setTimeout(() => {
+      Object.values(sources).forEach((source) => {
+        try {
+          source.disconnect();
+        } catch {
+          return;
+        }
+      });
+      disconnectStemGains(targetPlaybackState);
+    }, STEM_PLAYBACK_CROSSFADE_SECONDS * 1000);
+  });
+
+  const disposeStemPlaybackState = useStableCallback(function disposeStemPlaybackState(
+    { crossfade = false }: { crossfade?: boolean } = {},
+  ) {
     const targetPlaybackState = stemPlaybackRef.current;
     if (!targetPlaybackState) {
       return;
     }
 
+    stemPlaybackRef.current = null;
+    if (crossfade && targetPlaybackState.isPlaying) {
+      fadeOutStemPlaybackState(targetPlaybackState);
+      return;
+    }
+
     stopStemSources(targetPlaybackState, true);
     disconnectStemGains(targetPlaybackState);
-    stemPlaybackRef.current = null;
   });
 
   const closePlaybackAudioContext = useStableCallback(function closePlaybackAudioContext() {
@@ -870,6 +1010,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     targetSession: ProjectPlaybackSession,
     timeSeconds: number,
     scheduledStartTimeSeconds?: number,
+    { fadeIn = false }: { fadeIn?: boolean } = {},
   ) {
     if (!canUseBufferedClock(targetSession)) {
       return false;
@@ -938,7 +1079,15 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     targetPlaybackState.startedAtContextTime = clockStartTimeSeconds;
     targetPlaybackState.isPlaying = true;
     syncStemElementTimes(targetPlaybackState.artifactIds, nextTime);
-    applyStemVolumes(targetSession);
+    if (fadeIn) {
+      targetPlaybackState.artifactIds.forEach((artifactId) => {
+        const gainNode = targetPlaybackState.gains[artifactId];
+        if (gainNode) {
+          setGainValue(gainNode, 0);
+        }
+      });
+    }
+    applyStemVolumes(targetSession, { rampGains: fadeIn });
 
     let scheduledCount = 0;
     try {
@@ -1016,15 +1165,17 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
   const applyMediaPlaybackRate = useStableCallback(function applyMediaPlaybackRate(
     targetSession: ProjectPlaybackSession | null = sessionRef.current,
+    { ramp = false }: { ramp?: boolean } = {},
   ) {
     const playbackRate = playbackRateForSession(targetSession);
     getRenderedMediaElements(targetSession).forEach((element) => {
-      applyMediaElementPlaybackRate(element, playbackRate);
+      applyMediaElementPlaybackRate(element, playbackRate, { ramp });
     });
   });
 
   const applyStemVolumes = useStableCallback(function applyStemVolumes(
     targetSession: ProjectPlaybackSession | null = sessionRef.current,
+    { rampGains = false }: { rampGains?: boolean } = {},
   ) {
     if (!targetSession) {
       return;
@@ -1062,7 +1213,16 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           : 1;
         const gainNode = targetPlaybackState.gains[artifactId];
         if (gainNode) {
-          gainNode.gain.value = volume;
+          if (rampGains) {
+            rampGainValue(
+              gainNode,
+              targetPlaybackState.context,
+              volume,
+              STEM_PLAYBACK_CROSSFADE_SECONDS,
+            );
+          } else {
+            setGainValue(gainNode, volume);
+          }
         }
       });
     }
@@ -1303,7 +1463,9 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           return;
         }
 
-        const started = await startStemPlayback(latestSession, nextTime);
+        const started = await startStemPlayback(latestSession, nextTime, undefined, {
+          fadeIn: latestPendingTransition.crossfadeStemPlayback,
+        });
         if (started) {
           return;
         }
@@ -1533,6 +1695,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         shouldPlay: true,
         targetTime: masterTime,
         awaitSeekBeforePlay: true,
+        crossfadeStemPlayback: false,
         awaitingLoadKeys: activeKeys,
         awaitingSeekKeys: activeKeys,
         forceSeekKeys: activeKeys,
@@ -1831,6 +1994,81 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       const carriesNativeSession =
         previousUsesNative &&
         nativeSessionSignature(previousSession) === nativeSessionSignature(nextSession);
+      const nextNativeSessionSignature = nativeSessionSignature(nextSession);
+      if (samePlaybackTarget && carriesNativeSession) {
+        clearPendingTransition();
+        nativePlaybackRef.current = {
+          ...nativePlaybackRef.current,
+          playbackSignature: nextSignature,
+        };
+        sessionRef.current = nextSession;
+        setSession(nextSession);
+        setPlaybackTimeSeconds(nextTime);
+        setPlaybackDurationSeconds(nextSession.durationHintSeconds || playbackDurationSecondsRef.current);
+
+        const fallbackFromNativeLaneUpdate = (message: string) => {
+          const latestSession = sessionRef.current;
+          if (
+            !latestSession ||
+            playbackSignature(latestSession) !== nextSignature ||
+            nativeSessionSignature(latestSession) !== nextNativeSessionSignature
+          ) {
+            return;
+          }
+
+          rememberNativePlaybackError(message);
+          nativePlaybackRef.current.blockedSessionSignature = nextNativeSessionSignature;
+          markNativePlaybackInactive();
+          const fallbackTime = clampTime(
+            playbackTimeSecondsRef.current,
+            playbackDurationSecondsRef.current || latestSession.durationHintSeconds || 0,
+          );
+          void requestNativeStop();
+          syncStemElementTimes(latestSession.visibleStemArtifactIds, fallbackTime);
+          getRenderedMediaElements(latestSession).forEach((element) => {
+            element.pause();
+            element.currentTime = fallbackTime;
+          });
+          setPlaybackTimeSeconds(fallbackTime);
+          setIsPlaying(false);
+          if (shouldPlay) {
+            void playPlaybackImmediately();
+          }
+        };
+
+        void setNativeAudioLanes(nativeLaneUpdateForSession(nextSession))
+          .then((snapshot) => {
+            const latestSession = sessionRef.current;
+            if (
+              !latestSession ||
+              playbackSignature(latestSession) !== nextSignature ||
+              nativeSessionSignature(latestSession) !== nextNativeSessionSignature
+            ) {
+              return;
+            }
+            if (!snapshot.nativePlaybackSupported) {
+              fallbackFromNativeLaneUpdate(
+                snapshot.fallbackReason ?? "Native playback lane update fell back to Web Audio.",
+              );
+              return;
+            }
+
+            nativePlaybackRef.current = {
+              ...nativePlaybackRef.current,
+              active: snapshot.state === "playing",
+              blockedSessionSignature: null,
+              playbackSignature: nextSignature,
+            };
+            clearRememberedNativePlaybackError();
+            setPlaybackTimeSeconds(snapshot.positionSeconds);
+            setPlaybackDurationSeconds(snapshot.durationSeconds || latestSession.durationHintSeconds || 0);
+            setIsPlaying(snapshot.state === "playing");
+          })
+          .catch((error) => {
+            fallbackFromNativeLaneUpdate(playbackErrorMessage(error));
+          });
+        return;
+      }
       if (previousUsesNative && !carriesNativeSession) {
         void requestNativeStop();
         markNativePlaybackInactive();
@@ -1851,7 +2089,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           pendingTransition.signature = nextSignature;
           pendingTransition.shouldPlay = pendingTransition.shouldPlay || shouldPlay;
         }
-        applyMediaPlaybackRate(nextSession);
+        applyMediaPlaybackRate(nextSession, { ramp: shouldPlay });
         sessionRef.current = nextSession;
         setSession(nextSession);
         return;
@@ -1864,19 +2102,25 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           ? [PRIMARY_MEDIA_KEY]
           : [];
       const forceSeekKeys = primarySwap ? [PRIMARY_MEDIA_KEY] : [];
+      const shouldCrossfadeStemPlayback = shouldPlay && previousUsesBufferedClock;
       if (
         shouldPlay &&
-        (!samePlaybackTarget || previousUsesBufferedClock || nextUsesBufferedClock)
+        !shouldCrossfadeStemPlayback &&
+        (previousUsesBufferedClock || nextUsesBufferedClock)
       ) {
         getActiveMediaElements(previousSession).forEach((element) => element.pause());
       }
-      disposeStemPlaybackState();
+      disposeStemPlaybackState({ crossfade: shouldCrossfadeStemPlayback });
       pendingTransitionRef.current = {
         id: ++transitionCounterRef.current,
         signature: nextSignature,
         shouldPlay,
         targetTime: nextTime,
         awaitSeekBeforePlay: !samePlaybackTarget,
+        crossfadeStemPlayback:
+          shouldPlay &&
+          nextUsesBufferedClock &&
+          (previousUsesBufferedClock || !samePlaybackTarget),
         awaitingLoadKeys,
         awaitingSeekKeys,
         forceSeekKeys,
@@ -1900,6 +2144,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     getActiveMediaElements,
     getRenderedMediaElements,
     markNativePlaybackInactive,
+    playPlaybackImmediately,
     readMasterTime,
     requestNativeStop,
     syncStemElementTimes,
@@ -1975,7 +2220,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       }),
       listenNativeAudioErrors((error) => {
         const activeSession = sessionRef.current;
-        if (!activeSession || !nativePlaybackRef.current.active) {
+        if (
+          !activeSession ||
+          !nativePlaybackRef.current.active ||
+          error.sessionId !== nativePlaybackRef.current.sessionSignature
+        ) {
           return;
         }
         rememberNativePlaybackError(error.message);

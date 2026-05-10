@@ -1,5 +1,5 @@
 import { createContext, useContext } from "react";
-import type { StemControlState } from "./projectPlaybackState";
+import type { PlaybackLoopRange, StemControlState } from "./projectPlaybackState";
 
 export type ProjectPlaybackSession = {
   projectId: string;
@@ -19,6 +19,7 @@ export type ProjectPlaybackSession = {
   precountTempoBpm: number | null;
   tempoOriginalBpm: number | null;
   tempoTargetBpm: number | null;
+  loopRange: PlaybackLoopRange | null;
 };
 
 export type PlaybackSnapshot = {

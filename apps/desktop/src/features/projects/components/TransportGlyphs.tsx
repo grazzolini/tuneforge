@@ -110,4 +110,3 @@ export function SeekGlyph({ animate = false, direction }: { animate?: boolean; d
     </span>
   );
 }
-

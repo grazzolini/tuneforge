@@ -1,11 +1,16 @@
-import { RotateCcw } from "lucide-react";
-import { PlayPauseGlyph, SeekGlyph, StopGlyph } from "./TransportGlyphs";
+import { useId } from "react";
+import { RefreshCw, RefreshCwOff, RotateCcw } from "lucide-react";
+import { MetallicGlyphDefs, PlayPauseGlyph, SeekGlyph, StopGlyph } from "./TransportGlyphs";
 import { formatPlaybackClock } from "../projectViewUtils";
+import type { PlaybackLoopRange } from "../projectPlaybackState";
 
 export function PlaybackTransport({
   compact = false,
   isPlaying,
+  loopRange,
+  loopStatusMessage,
   maxSeconds,
+  pendingLoopStartSeconds,
   playbackTimeSeconds,
   seekAnimationRevision,
   tempoDisplayBpm,
@@ -14,11 +19,15 @@ export function PlaybackTransport({
   onSeekTo,
   onResetTempo,
   onStop,
+  onToggleLoop,
   onTogglePlayback,
 }: {
   compact?: boolean;
   isPlaying: boolean;
+  loopRange: PlaybackLoopRange | null;
+  loopStatusMessage: "Loop in" | "Loop set" | "Loop cleared" | null;
   maxSeconds: number;
+  pendingLoopStartSeconds: number | null;
   playbackTimeSeconds: number;
   seekAnimationRevision: Record<"backward" | "forward", number>;
   tempoDisplayBpm: number | null;
@@ -27,6 +36,7 @@ export function PlaybackTransport({
   onSeekTo: (timeSeconds: number) => void;
   onResetTempo: () => void;
   onStop: () => void;
+  onToggleLoop: () => void;
   onTogglePlayback: () => Promise<void>;
 }) {
   const tempoLabel =
@@ -35,6 +45,16 @@ export function PlaybackTransport({
       : Number.isInteger(tempoDisplayBpm)
         ? tempoDisplayBpm.toFixed(0)
         : tempoDisplayBpm.toFixed(1);
+  const loopButtonLabel =
+    pendingLoopStartSeconds !== null
+      ? "Set loop end"
+      : loopRange
+        ? "Clear loop"
+        : "Set loop start";
+  const loopButtonActive = Boolean(loopRange || pendingLoopStartSeconds !== null);
+  const LoopIcon = loopRange ? RefreshCwOff : RefreshCw;
+  const loopGradientId = useId();
+  const loopIconStroke = `url(#${loopGradientId})`;
 
   return (
     <div className={`transport${compact ? " transport--compact" : ""}`}>
@@ -80,6 +100,29 @@ export function PlaybackTransport({
             direction="forward"
           />
         </button>
+        <button
+          aria-label={loopButtonLabel}
+          aria-pressed={loopButtonActive}
+          className={`button transport__button transport__button--loop${
+            loopButtonActive ? " transport__button--loop-active" : ""
+          }`}
+          onClick={onToggleLoop}
+          type="button"
+        >
+          <LoopIcon
+            aria-hidden="true"
+            className="transport__icon transport__icon--loop"
+            stroke={loopIconStroke}
+            strokeWidth={2.35}
+          >
+            <MetallicGlyphDefs gradientId={loopGradientId} />
+          </LoopIcon>
+        </button>
+        {loopStatusMessage ? (
+          <span className="transport__loop-status" role="status">
+            {loopStatusMessage}
+          </span>
+        ) : null}
       </div>
 
       <button

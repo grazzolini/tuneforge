@@ -13,9 +13,15 @@ export type StemControlState = {
   solo: boolean;
 };
 
+export type PlaybackLoopRange = {
+  startSeconds: number;
+  endSeconds: number;
+};
+
 export const DEFAULT_PRECOUNT_CLICK_COUNT = 4;
 export const MIN_PRECOUNT_CLICK_COUNT = 1;
 export const MAX_PRECOUNT_CLICK_COUNT = 8;
+export const MIN_PLAYBACK_LOOP_SECONDS = 0.25;
 
 export type StoredProjectPlaybackState = {
   selectedArtifactId: string | null;
@@ -28,6 +34,7 @@ export type StoredProjectPlaybackState = {
   precountEnabled: boolean;
   precountClickCount: number;
   tempoTargetBpm: number | null;
+  loopRange: PlaybackLoopRange | null;
   lyricsFollowEnabled: boolean;
   chordsFollowEnabled: boolean;
   stemControls: Record<string, StemControlState>;
@@ -47,6 +54,7 @@ const DEFAULT_STORED_PROJECT_PLAYBACK_STATE: StoredProjectPlaybackState = {
   precountEnabled: false,
   precountClickCount: DEFAULT_PRECOUNT_CLICK_COUNT,
   tempoTargetBpm: null,
+  loopRange: null,
   lyricsFollowEnabled: true,
   chordsFollowEnabled: true,
   stemControls: {},
@@ -80,6 +88,34 @@ function normalizeStemControlState(value: unknown): StemControlState {
     muted: Boolean(candidate.muted),
     solo: Boolean(candidate.solo),
   };
+}
+
+function normalizeLoopPoint(value: unknown) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  return Math.max(0, value);
+}
+
+export function normalizePlaybackLoopRange(value: unknown): PlaybackLoopRange | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Partial<PlaybackLoopRange>;
+  const firstPoint = normalizeLoopPoint(candidate.startSeconds);
+  const secondPoint = normalizeLoopPoint(candidate.endSeconds);
+  if (firstPoint === null || secondPoint === null) {
+    return null;
+  }
+
+  const startSeconds = Math.min(firstPoint, secondPoint);
+  const endSeconds = Math.max(firstPoint, secondPoint);
+  if (endSeconds - startSeconds < MIN_PLAYBACK_LOOP_SECONDS) {
+    return null;
+  }
+
+  return { startSeconds, endSeconds };
 }
 
 function isProjectPanelMode(value: unknown): value is ProjectPanelMode {
@@ -133,6 +169,7 @@ function normalizeStoredProjectPlaybackState(value: unknown): StoredProjectPlayb
         : DEFAULT_STORED_PROJECT_PLAYBACK_STATE.precountEnabled,
     precountClickCount: normalizePrecountClickCount(candidate.precountClickCount),
     tempoTargetBpm: normalizeTempoTargetBpm(candidate.tempoTargetBpm),
+    loopRange: normalizePlaybackLoopRange(candidate.loopRange),
     lyricsFollowEnabled:
       typeof candidate.lyricsFollowEnabled === "boolean"
         ? candidate.lyricsFollowEnabled

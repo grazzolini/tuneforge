@@ -198,9 +198,9 @@ Packaged builds require host `ffmpeg` / `ffprobe`; Tuneforge does not bundle FFm
 
 ## CI
 
-GitHub Actions runs two jobs on every push and pull request:
+GitHub Actions runs path-aware checks on pull requests and full checks on `main`:
 
-- `backend`: `uv sync`, `ruff`, `mypy`, `pytest`
+- `backend`: `uv sync`, `ruff`, `mypy`, and FFmpeg-backed `pytest` only when backend/runtime paths require it
 - `desktop`: `pnpm install`, `pnpm contracts:generate`, generated-contract drift check, desktop `lint`, `typecheck`, `test`
 
 ## Contributing

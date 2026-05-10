@@ -10,6 +10,98 @@ permissions:
   contents: read
 
 jobs:
+  ci-scope:
+    runs-on: ubuntu-latest
+    outputs:
+      backend_static: ${{ steps.scope.outputs.backend_static }}
+      backend_ffmpeg: ${{ steps.scope.outputs.backend_ffmpeg }}
+      desktop: ${{ steps.scope.outputs.desktop }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Determine CI scope
+        id: scope
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          backend_static=false
+          backend_ffmpeg=false
+          desktop=false
+          full_gate=false
+          changed_files="${RUNNER_TEMP}/changed-files.txt"
+
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            full_gate=true
+            : > "${changed_files}"
+          else
+            base_sha="${{ github.event.pull_request.base.sha }}"
+            head_sha="${{ github.event.pull_request.head.sha }}"
+            if ! git diff --name-only "${base_sha}" "${head_sha}" > "${changed_files}"; then
+              echo "Could not compute changed files; running the full gate." >&2
+              full_gate=true
+              : > "${changed_files}"
+            fi
+          fi
+
+          if [[ -s "${changed_files}" ]]; then
+            while IFS= read -r path; do
+              case "${path}" in
+                .github/workflows/*|scripts/*|package.json|pnpm-lock.yaml|apps/backend/pyproject.toml|apps/backend/uv.lock)
+                  full_gate=true
+                  ;;
+                apps/backend/app/api/*|apps/backend/app/schemas.py|apps/backend/app/main.py)
+                  backend_static=true
+                  backend_ffmpeg=true
+                  desktop=true
+                  ;;
+                apps/backend/*)
+                  backend_static=true
+                  backend_ffmpeg=true
+                  ;;
+                apps/desktop/*|packages/shared-types/*)
+                  desktop=true
+                  ;;
+                docs/*|README.md|CONTRIBUTING.md|CODE_OF_CONDUCT.md|LICENSE|THIRD_PARTY_NOTICES.md|SECURITY.md|AGENTS.md|.github/ISSUE_TEMPLATE/*|.github/PULL_REQUEST_TEMPLATE.md)
+                  ;;
+                *)
+                  full_gate=true
+                  ;;
+              esac
+            done < "${changed_files}"
+          fi
+
+          if [[ "${full_gate}" == "true" ]]; then
+            backend_static=true
+            backend_ffmpeg=true
+            desktop=true
+          fi
+
+          {
+            echo "backend_static=${backend_static}"
+            echo "backend_ffmpeg=${backend_ffmpeg}"
+            echo "desktop=${desktop}"
+          } >> "${GITHUB_OUTPUT}"
+
+          {
+            echo "## CI scope"
+            echo
+            echo "- Backend static checks: ${backend_static}"
+            echo "- Backend FFmpeg tests: ${backend_ffmpeg}"
+            echo "- Desktop checks: ${desktop}"
+            if [[ -s "${changed_files}" ]]; then
+              echo
+              echo "<details><summary>Changed files</summary>"
+              echo
+              sed 's/^/- `/' "${changed_files}" | sed 's/$/`/'
+              echo
+              echo "</details>"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
   commitlint:
     runs-on: ubuntu-latest
     permissions:
@@ -51,54 +143,97 @@ jobs:
         run: echo "$PR_TITLE" | pnpm exec commitlint --config commitlint.pr-title.config.cjs
 
   backend:
+    needs: ci-scope
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
+      - name: Require CI scope
+        if: needs.ci-scope.result != 'success'
+        run: |
+          echo "ci-scope did not complete successfully; failing backend required check."
+          exit 1
+
       - name: Check out code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Skip backend checks
+        if: needs.ci-scope.outputs.backend_static != 'true' && needs.ci-scope.outputs.backend_ffmpeg != 'true'
+        run: echo "No backend paths changed; skipping backend setup."
+
       - name: Set up Python
+        if: needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true'
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.11"
 
       - name: Set up uv
+        if: needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true'
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.11"
 
-      - name: Install FFmpeg
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-
       - name: Sync backend dependencies
+        if: needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true'
         working-directory: apps/backend
         run: uv sync --locked --all-groups
 
       - name: Lint backend
+        if: needs.ci-scope.outputs.backend_static == 'true'
         working-directory: apps/backend
         run: uv run --python 3.11 ruff check .
 
       - name: Type-check backend
+        if: needs.ci-scope.outputs.backend_static == 'true'
         working-directory: apps/backend
         run: uv run --python 3.11 mypy app
 
+      - name: Install FFmpeg
+        if: needs.ci-scope.outputs.backend_ffmpeg == 'true'
+        run: |
+          set -euo pipefail
+          started_at="$(date +%s)"
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          elapsed_seconds=$(($(date +%s) - started_at))
+          {
+            echo "## Backend FFmpeg setup"
+            echo
+            echo "- Duration: ${elapsed_seconds}s"
+            echo "- $(ffmpeg -version | sed -n '1p')"
+            echo "- $(ffprobe -version | sed -n '1p')"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Test backend
+        if: needs.ci-scope.outputs.backend_ffmpeg == 'true'
         working-directory: apps/backend
         run: uv run --python 3.11 pytest
 
   desktop:
+    needs: ci-scope
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
+      - name: Require CI scope
+        if: needs.ci-scope.result != 'success'
+        run: |
+          echo "ci-scope did not complete successfully; failing desktop required check."
+          exit 1
+
       - name: Check out code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Skip desktop checks
+        if: needs.ci-scope.outputs.desktop != 'true'
+        run: echo "No desktop or contract paths changed; skipping desktop setup."
+
       - name: Set up pnpm
+        if: needs.ci-scope.outputs.desktop == 'true'
         uses: pnpm/action-setup@8912a9102ac27614460f54aedde9e1e7f9aec20d # v6.0.5
         with:
           version: 10.33.0
 
       - name: Set up Node
+        if: needs.ci-scope.outputs.desktop == 'true'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "22"
@@ -106,21 +241,25 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
 
       - name: Set up Python
+        if: needs.ci-scope.outputs.desktop == 'true'
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.11"
 
       - name: Set up uv
+        if: needs.ci-scope.outputs.desktop == 'true'
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.11"
 
       - name: Set up Rust
+        if: needs.ci-scope.outputs.desktop == 'true'
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
 
       - name: Install Tauri system dependencies
+        if: needs.ci-scope.outputs.desktop == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -133,31 +272,40 @@ jobs:
             libssl-dev
 
       - name: Install dependencies
+        if: needs.ci-scope.outputs.desktop == 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Sync backend dependencies for OpenAPI generation
+        if: needs.ci-scope.outputs.desktop == 'true'
         working-directory: apps/backend
         run: uv sync --locked --all-groups
 
       - name: Generate shared contracts
+        if: needs.ci-scope.outputs.desktop == 'true'
         run: pnpm contracts:generate
 
       - name: Verify generated contracts are committed
+        if: needs.ci-scope.outputs.desktop == 'true'
         run: git diff --exit-code -- packages/shared-types/src/generated/openapi.ts
 
       - name: Lint desktop
+        if: needs.ci-scope.outputs.desktop == 'true'
         run: pnpm --filter @tuneforge/desktop lint
 
       - name: Type-check desktop
+        if: needs.ci-scope.outputs.desktop == 'true'
         run: pnpm --filter @tuneforge/desktop typecheck
 
       - name: Test desktop
+        if: needs.ci-scope.outputs.desktop == 'true'
         run: pnpm --filter @tuneforge/desktop test --run
 
       - name: Check Tauri shell
+        if: needs.ci-scope.outputs.desktop == 'true'
         working-directory: apps/desktop/src-tauri
         run: cargo check
 
       - name: Test Tauri shell
+        if: needs.ci-scope.outputs.desktop == 'true'
         working-directory: apps/desktop/src-tauri
         run: cargo test

@@ -7,13 +7,16 @@ import { usePreferences } from "../../../lib/preferences";
 import { usePlayback } from "../playback-context";
 import {
   DEFAULT_PRECOUNT_CLICK_COUNT,
+  MIN_PLAYBACK_LOOP_SECONDS,
   MAX_PRECOUNT_CLICK_COUNT,
   MIN_PRECOUNT_CLICK_COUNT,
   clearProjectPlaybackState,
   hasProjectPlaybackState,
+  normalizePlaybackLoopRange,
   normalizePrecountClickCount,
   readProjectPlaybackState,
   writeProjectPlaybackState,
+  type PlaybackLoopRange,
   type ProjectPanelMode,
   type StemControlState,
 } from "../projectPlaybackState";
@@ -94,6 +97,36 @@ function resolveDefaultPlaybackDisplayMode(
   return "combined";
 }
 
+function clampPlaybackLoopPoint(value: number, durationSeconds: number) {
+  const point = Number.isFinite(value) ? Math.max(0, value) : 0;
+  return durationSeconds > 0 ? Math.min(durationSeconds, point) : point;
+}
+
+function loopRangeFromPoints(
+  firstPoint: number,
+  secondPoint: number,
+  durationSeconds: number,
+): PlaybackLoopRange {
+  const boundedFirstPoint = clampPlaybackLoopPoint(firstPoint, durationSeconds);
+  const boundedSecondPoint = clampPlaybackLoopPoint(secondPoint, durationSeconds);
+  let startSeconds = Math.min(boundedFirstPoint, boundedSecondPoint);
+  let endSeconds = Math.max(boundedFirstPoint, boundedSecondPoint);
+
+  if (endSeconds - startSeconds < MIN_PLAYBACK_LOOP_SECONDS) {
+    if (durationSeconds > 0) {
+      endSeconds = Math.min(durationSeconds, startSeconds + MIN_PLAYBACK_LOOP_SECONDS);
+      startSeconds = Math.max(0, endSeconds - MIN_PLAYBACK_LOOP_SECONDS);
+    } else {
+      endSeconds = startSeconds + MIN_PLAYBACK_LOOP_SECONDS;
+    }
+  }
+
+  return normalizePlaybackLoopRange({ startSeconds, endSeconds }) ?? {
+    startSeconds,
+    endSeconds,
+  };
+}
+
 export function useProjectViewModel() {
   const { projectId = "" } = useParams();
   const navigate = useNavigate();
@@ -154,6 +187,11 @@ export function useProjectViewModel() {
   const [precountEnabled, setPrecountEnabled] = useState(false);
   const [precountClickCount, setPrecountClickCount] = useState(DEFAULT_PRECOUNT_CLICK_COUNT);
   const [tempoTargetBpm, setTempoTargetBpm] = useState<number | null>(null);
+  const [loopRange, setLoopRange] = useState<PlaybackLoopRange | null>(null);
+  const [pendingLoopStartSeconds, setPendingLoopStartSeconds] = useState<number | null>(null);
+  const [loopStatusMessage, setLoopStatusMessage] = useState<
+    "Loop in" | "Loop set" | "Loop cleared" | null
+  >(null);
   const [sourceKeySelectorOpen, setSourceKeySelectorOpen] = useState(false);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [selectedPrimaryArtifactId, setSelectedPrimaryArtifactId] = useState<string | null>(null);
@@ -1026,6 +1064,30 @@ export function useProjectViewModel() {
     setTempoTargetBpm(null);
   }
 
+  function handleTogglePlaybackLoop() {
+    if (pendingLoopStartSeconds !== null) {
+      const nextLoopRange = loopRangeFromPoints(
+        pendingLoopStartSeconds,
+        playbackTimeSeconds,
+        playbackDurationSeconds || projectQuery.data?.duration_seconds || 0,
+      );
+      setLoopRange(nextLoopRange);
+      setPendingLoopStartSeconds(null);
+      setLoopStatusMessage("Loop set");
+      seekTo(nextLoopRange.startSeconds);
+      return;
+    }
+
+    if (loopRange) {
+      setLoopRange(null);
+      setLoopStatusMessage("Loop cleared");
+      return;
+    }
+
+    setPendingLoopStartSeconds(playbackTimeSeconds);
+    setLoopStatusMessage("Loop in");
+  }
+
   function handleSeekTo(timeSeconds: number) {
     seekTo(timeSeconds);
   }
@@ -1421,6 +1483,9 @@ export function useProjectViewModel() {
     setPrecountEnabled(storedPlaybackState.precountEnabled);
     setPrecountClickCount(storedPlaybackState.precountClickCount);
     setTempoTargetBpm(storedPlaybackState.tempoTargetBpm);
+    setLoopRange(storedPlaybackState.loopRange);
+    setPendingLoopStartSeconds(null);
+    setLoopStatusMessage(null);
     setPlaybackDisplayModeSource(hasStoredPlayback ? "stored" : "default");
     setLyricsFollowEnabled(
       hasStoredPlayback
@@ -1468,7 +1533,7 @@ export function useProjectViewModel() {
   ]);
 
   useEffect(() => {
-    if (hydratedProjectId !== projectId) {
+    if (hydratedProjectId !== projectId || !artifactsQuery.isSuccess) {
       return;
     }
 
@@ -1516,6 +1581,7 @@ export function useProjectViewModel() {
     }
   }, [
     defaultPrimaryArtifact,
+    artifactsQuery.isSuccess,
     hydratedProjectId,
     latestPreviewArtifact,
     primaryArtifacts,
@@ -1548,6 +1614,18 @@ export function useProjectViewModel() {
   }, [hydratedProjectId, jobsQuery.data, projectId, stemJobs]);
 
   useEffect(() => {
+    if (!loopStatusMessage || typeof window === "undefined") {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setLoopStatusMessage(null);
+    }, 1400);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [loopStatusMessage]);
+
+  useEffect(() => {
     if (hydratedProjectId !== projectId) {
       return;
     }
@@ -1564,6 +1642,7 @@ export function useProjectViewModel() {
       precountEnabled,
       precountClickCount,
       tempoTargetBpm,
+      loopRange,
       lyricsFollowEnabled,
       chordsFollowEnabled,
       stemControls,
@@ -1577,6 +1656,7 @@ export function useProjectViewModel() {
     dismissedStemJobIds,
     hydratedProjectId,
     lyricsFollowEnabled,
+    loopRange,
     playbackDisplayMode,
     precountClickCount,
     precountEnabled,
@@ -1814,6 +1894,7 @@ export function useProjectViewModel() {
       precountTempoBpm,
       tempoOriginalBpm,
       tempoTargetBpm: tempoTargetBpmForPlayback,
+      loopRange,
     });
   }, [
     hydratedProjectId,
@@ -1825,6 +1906,7 @@ export function useProjectViewModel() {
     precountEnabled,
     precountTempoBpm,
     registerProjectSession,
+    loopRange,
     nativePlaybackArtifacts,
     selectedPlaybackArtifact,
     stageSummary,
@@ -1914,6 +1996,7 @@ export function useProjectViewModel() {
     handleOpenTabImport,
     handleRejectTabSuggestionGroup,
     handleResetPlaybackTempo,
+    handleTogglePlaybackLoop,
     handleSetPlaybackDisplayMode,
     handleStemAction,
     handleTogglePlaybackDisplayLane,
@@ -1938,6 +2021,8 @@ export function useProjectViewModel() {
     isLyricsRunning,
     isMobileRuntime,
     isPlaying,
+    loopRange,
+    loopStatusMessage,
     isDeleteArtifactsPending,
     isDeleteMixDisabled,
     isDeleteStemDisabled,
@@ -1962,6 +2047,7 @@ export function useProjectViewModel() {
     playbackDurationSeconds,
     playbackTransportRef,
     playbackTimeSeconds,
+    pendingLoopStartSeconds,
     precountClickCount,
     precountDisabledReason,
     precountEnabled,

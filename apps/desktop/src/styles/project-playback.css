@@ -205,6 +205,14 @@
   --transport-button-size: 3.35rem;
 }
 
+.transport__button--loop {
+  --transport-button-size: 3.35rem;
+}
+
+.transport__button--loop-active {
+  border-color: color-mix(in srgb, var(--playback-accent) 54%, white 46%);
+}
+
 .transport__icon {
   pointer-events: none;
   filter: drop-shadow(0 1px 1px rgba(15, 23, 42, 0.45));
@@ -220,11 +228,31 @@
   block-size: 2rem;
 }
 
+.transport__icon--loop {
+  inline-size: 2rem;
+  block-size: 2rem;
+  transform-origin: center;
+  transition: transform 140ms ease;
+}
+
+.transport__button--loop:active .transport__icon--loop {
+  transform: scale(0.9);
+}
+
 .transport__icon--seek {
   display: grid;
   inline-size: 2rem;
   block-size: 2rem;
   place-items: center;
+}
+
+.transport__loop-status {
+  min-width: 5.2rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .transport__seek-glyph {
@@ -416,12 +444,17 @@
   --transport-button-size: 2.75rem;
 }
 
+.transport--compact .transport__button--loop {
+  --transport-button-size: 2.75rem;
+}
+
 .transport--compact .transport__icon--playpause {
   inline-size: 1.72rem;
   block-size: 1.72rem;
 }
 
 .transport--compact .transport__icon--stop,
+.transport--compact .transport__icon--loop,
 .transport--compact .transport__icon--seek {
   inline-size: 1.52rem;
   block-size: 1.52rem;
@@ -432,7 +465,8 @@
 }
 
 .transport--compact .transport__times span,
-.transport--compact .metric-label {
+.transport--compact .metric-label,
+.transport--compact .transport__loop-status {
   font-size: 0.82rem;
 }
 

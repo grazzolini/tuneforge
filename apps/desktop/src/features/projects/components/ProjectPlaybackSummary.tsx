@@ -7,9 +7,13 @@ export function ProjectPlaybackSummary() {
     handleSeekTo,
     handleResetPlaybackTempo,
     handleSelectWorkspace,
+    handleTogglePlaybackLoop,
     isPlaying,
+    loopRange,
+    loopStatusMessage,
     playbackDurationSeconds,
     playbackTimeSeconds,
+    pendingLoopStartSeconds,
     projectQuery,
     seekAnimationRevision,
     selectedArtifactTimestamp,
@@ -49,7 +53,10 @@ export function ProjectPlaybackSummary() {
       <div className="stage-surface stage-surface--compact">
         <PlaybackTransport
           isPlaying={isPlaying}
+          loopRange={loopRange}
+          loopStatusMessage={loopStatusMessage}
           maxSeconds={maxSeconds}
+          pendingLoopStartSeconds={pendingLoopStartSeconds}
           playbackTimeSeconds={playbackTimeSeconds}
           seekAnimationRevision={seekAnimationRevision}
           tempoDisplayBpm={tempoDisplayBpm}
@@ -58,6 +65,7 @@ export function ProjectPlaybackSummary() {
           onSeekTo={handleSeekTo}
           onResetTempo={handleResetPlaybackTempo}
           onStop={stopPlayback}
+          onToggleLoop={handleTogglePlaybackLoop}
           onTogglePlayback={togglePlayback}
         />
 

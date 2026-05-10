@@ -31,6 +31,18 @@ function setPlaybackPosition(value: string) {
   fireEvent.change(screen.getByLabelText("Playback position"), { target: { value } });
 }
 
+function readStoredProjectPlaybackState() {
+  return JSON.parse(window.localStorage.getItem("tuneforge.project-playback-state") ?? "{}") as Record<
+    string,
+    {
+      loopRange?: {
+        startSeconds: number;
+        endSeconds: number;
+      } | null;
+    }
+  >;
+}
+
 function triggerBufferSourceEnded(source: { onended: AudioBufferSourceNode["onended"] }) {
   source.onended?.call(source as unknown as AudioBufferSourceNode, new Event("ended"));
 }
@@ -310,6 +322,143 @@ describe("Desktop app project playback stems", () => {
     expect(screen.getByLabelText("Playback position")).toHaveValue("0");
   });
 
+  it("cycles the source loop control and only persists a complete loop", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+
+    setPlaybackPosition("12.25");
+    await user.click(screen.getByRole("button", { name: "Set loop start" }));
+
+    expect(screen.getByText("Loop in")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Set loop end" })).toBeInTheDocument();
+    await waitFor(() => expect(readStoredProjectPlaybackState().proj_123?.loopRange).toBeNull());
+
+    setPlaybackPosition("24.5");
+    await user.click(screen.getByRole("button", { name: "Set loop end" }));
+
+    expect(screen.getByText("Loop set")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Clear loop" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Playback position")).toHaveValue("12.25");
+    await waitFor(() =>
+      expect(readStoredProjectPlaybackState()).toMatchObject({
+        proj_123: {
+          loopRange: {
+            startSeconds: 12.25,
+            endSeconds: 24.5,
+          },
+        },
+      }),
+    );
+  });
+
+  it("restarts an active source loop at the loop end", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+
+    setPlaybackPosition("12.25");
+    await user.click(screen.getByRole("button", { name: "Set loop start" }));
+    setPlaybackPosition("24.5");
+    await user.click(screen.getByRole("button", { name: "Set loop end" }));
+
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    await waitFor(() => expect(getMockAudioContexts()[0]?.createdSources).toHaveLength(1));
+    const sourceCountBeforeRollover = getMockAudioContexts()[0].createdSources.length;
+
+    act(() => {
+      sourceAudio.currentTime = 24.5;
+      fireEvent.timeUpdate(sourceAudio);
+    });
+
+    await waitFor(() =>
+      expect(getMockAudioContexts()[0].createdSources.length).toBe(
+        sourceCountBeforeRollover + 1,
+      ),
+    );
+    const restartedSource =
+      getMockAudioContexts()[0].createdSources[sourceCountBeforeRollover];
+    expect(restartedSource?.start.mock.calls[0]?.[1]).toBeCloseTo(12.25, 3);
+    expect(sourceAudio.currentTime).toBeCloseTo(12.25, 3);
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+    expect(Number((screen.getByLabelText("Playback position") as HTMLInputElement).value)).toBeCloseTo(
+      12.25,
+      1,
+    );
+  });
+
+  it("starts and stops source playback at a persisted loop start", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.project-playback-state",
+      JSON.stringify({
+        proj_123: {
+          loopRange: {
+            startSeconds: 12.25,
+            endSeconds: 24.5,
+          },
+        },
+      }),
+    );
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText("Playback position")).toHaveValue("12.25"));
+
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    await waitFor(() => expect(getMockAudioContexts()[0]?.createdSources).toHaveLength(1));
+    expect(getMockAudioContexts()[0]?.createdSources[0]?.start.mock.calls[0]?.[1]).toBeCloseTo(
+      12.25,
+      3,
+    );
+
+    setPlaybackPosition("18");
+    await user.click(screen.getByRole("button", { name: "Stop playback" }));
+
+    expect(sourceAudio.currentTime).toBeCloseTo(12.25, 3);
+    expect(screen.getByLabelText("Playback position")).toHaveValue("12.25");
+  });
+
+  it("clears the persisted source loop from the transport", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.project-playback-state",
+      JSON.stringify({
+        proj_123: {
+          loopRange: {
+            startSeconds: 12.25,
+            endSeconds: 24.5,
+          },
+        },
+      }),
+    );
+    const firstRender = renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Clear loop" })).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Clear loop" }));
+
+    expect(screen.getByText("Loop cleared")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Set loop start" })).toBeInTheDocument();
+    await waitFor(() => expect(readStoredProjectPlaybackState().proj_123?.loopRange).toBeNull());
+
+    firstRender.unmount();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText("Playback position")).toHaveValue("0"));
+    expect(screen.getByRole("button", { name: "Set loop start" })).toBeInTheDocument();
+  });
+
   it("rewinds source playback after natural end and restarts from the beginning with space", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);
@@ -570,48 +719,89 @@ describe("Desktop app project playback stems", () => {
     expect(within(rail).queryAllByText("Original source file")).toHaveLength(3);
   });
 
-  it("restores active playback after app reload", async () => {
+  it("persists selected practice mix across app reload without restoring playback time", async () => {
     const user = userEvent.setup();
     const firstRender = renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    const sourceAudio = findAudioByArtifactId("art_source");
-    markAudioReady(sourceAudio);
+    const savedMixList = screen.getByRole("group", { name: "Saved mix list" });
+    await user.click(within(savedMixList).getByRole("button", { name: /Practice Mix/i }));
+
+    expect(await screen.findByRole("heading", { name: "Practice Mix" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        JSON.parse(window.localStorage.getItem("tuneforge.project-playback-state") ?? "{}"),
+      ).toMatchObject({
+        proj_123: {
+          selectedArtifactId: "art_preview",
+          selectedPrimaryArtifactId: "art_preview",
+        },
+      }),
+    );
+
+    const previewAudio = findAudioByArtifactId("art_preview");
+    markAudioReady(previewAudio);
     await user.click(screen.getByRole("button", { name: "Play playback" }));
 
     setPlaybackPosition("73.125");
+    expect(screen.getByLabelText("Playback position")).toHaveValue("73.125");
 
-    await waitFor(() =>
-      expect(
-        JSON.parse(window.sessionStorage.getItem("tuneforge.playback-session") ?? "null"),
-      ).toMatchObject({
+    firstRender.unmount();
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Practice Mix" })).toBeInTheDocument();
+    const reloadedPreviewAudio = findAudioByArtifactId("art_preview");
+    markAudioReady(reloadedPreviewAudio);
+
+    expect(screen.getByLabelText("Playback position")).toHaveValue("0");
+    expect(reloadedPreviewAudio.currentTime).toBe(0);
+    expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+  });
+
+  it("ignores stale playback session storage on project load", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      "tuneforge.playback-session",
+      JSON.stringify({
         session: {
           projectId: "proj_123",
+          projectName: "Demo Song",
+          stageTitle: "Source Track",
+          stageSummary: "Original source file",
           selectedPlaybackArtifactId: "art_source",
+          isStemPlayback: false,
+          playbackArtifactIds: ["art_source"],
+          artifactPathsById: { art_source: "/tmp/projects/demo.wav" },
+          artifactFormatsById: { art_source: "wav" },
+          visibleStemArtifactIds: [],
+          stemControls: {},
+          durationHintSeconds: 182,
+          precountEnabled: false,
+          precountClickCount: 4,
+          precountTempoBpm: null,
+          tempoOriginalBpm: null,
+          tempoTargetBpm: null,
         },
         playbackTimeSeconds: 73.125,
         isPlaying: true,
       }),
     );
 
-    firstRender.unmount();
-
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    const reloadedAudio = findAudioByArtifactId("art_source");
-    markAudioReady(reloadedAudio);
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
 
-    await waitFor(() => expect(reloadedAudio.currentTime).toBeCloseTo(73.125, 3));
-    await waitFor(() => {
-      const audioContexts = getMockAudioContexts();
-      const latestAudioContext = audioContexts[audioContexts.length - 1];
-      expect(latestAudioContext?.createdSources[0]?.start.mock.calls[0]?.[1]).toBeCloseTo(
-        73.125,
-        3,
-      );
-    });
-    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Playback position")).toHaveValue("0");
+    expect(sourceAudio.currentTime).toBe(0);
+    expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    await waitFor(() => expect(getMockAudioContexts()[0]?.createdSources).toHaveLength(1));
+    expect(getMockAudioContexts()[0]?.createdSources[0]?.start.mock.calls[0]?.[1]).toBe(0);
   });
 
   it("starts visible stems from the same playback offset when switching playback modes", async () => {
@@ -681,6 +871,57 @@ describe("Desktop app project playback stems", () => {
     expect(drumsAudio.currentTime).toBe(0);
     expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
     expect(screen.getByLabelText("Playback position")).toHaveValue("0");
+  });
+
+  it("restarts buffered stem playback when a loop reaches the end", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await generateStems(user);
+    await openPlaybackWorkspace(user);
+    const stemList = await screen.findByRole("group", { name: "Playback stem list" });
+    await user.click(within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement);
+
+    setPlaybackPosition("12.25");
+    await user.click(screen.getByRole("button", { name: "Set loop start" }));
+    setPlaybackPosition("24.5");
+    await user.click(screen.getByRole("button", { name: "Set loop end" }));
+
+    const vocalAudio = findAudioByArtifactId("art_200");
+    const drumsAudio = findAudioByArtifactId("art_201");
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    await waitFor(() => expect(getMockAudioContexts()[0]?.createdSources).toHaveLength(6));
+    const stemSourceCountBeforeRollover = getMockAudioContexts()[0].createdSources.length;
+    const endedSources = getMockAudioContexts()[0].createdSources.slice(
+      stemSourceCountBeforeRollover - 6,
+      stemSourceCountBeforeRollover,
+    );
+
+    act(() => {
+      vocalAudio.currentTime = 24.5;
+      drumsAudio.currentTime = 24.5;
+      endedSources.forEach(triggerBufferSourceEnded);
+    });
+
+    await waitFor(() =>
+      expect(getMockAudioContexts()[0].createdSources.length).toBe(
+        stemSourceCountBeforeRollover + 6,
+      ),
+    );
+    getMockAudioContexts()[0].createdSources
+      .slice(stemSourceCountBeforeRollover)
+      .forEach((source) => {
+        expect(source.start.mock.calls[0]?.[1]).toBeCloseTo(12.25, 3);
+      });
+    expect(vocalAudio.currentTime).toBeCloseTo(12.25, 3);
+    expect(drumsAudio.currentTime).toBeCloseTo(12.25, 3);
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+    expect(Number((screen.getByLabelText("Playback position") as HTMLInputElement).value)).toBeCloseTo(
+      12.25,
+      1,
+    );
   });
 
   it("preserves playback time when returning to full mix during a pending stem handoff", async () => {

@@ -8,10 +8,14 @@ export function PlaybackWorkspace() {
     handleSeek,
     handleSeekTo,
     handleResetPlaybackTempo,
+    handleTogglePlaybackLoop,
     isPlaying,
+    loopRange,
+    loopStatusMessage,
     playbackDurationSeconds,
     playbackTransportRef,
     playbackTimeSeconds,
+    pendingLoopStartSeconds,
     projectQuery,
     seekAnimationRevision,
     stopPlayback,
@@ -29,7 +33,10 @@ export function PlaybackWorkspace() {
         <PlaybackTransport
           compact
           isPlaying={isPlaying}
+          loopRange={loopRange}
+          loopStatusMessage={loopStatusMessage}
           maxSeconds={maxSeconds}
+          pendingLoopStartSeconds={pendingLoopStartSeconds}
           playbackTimeSeconds={playbackTimeSeconds}
           seekAnimationRevision={seekAnimationRevision}
           tempoDisplayBpm={tempoDisplayBpm}
@@ -38,6 +45,7 @@ export function PlaybackWorkspace() {
           onSeekTo={handleSeekTo}
           onResetTempo={handleResetPlaybackTempo}
           onStop={stopPlayback}
+          onToggleLoop={handleTogglePlaybackLoop}
           onTogglePlayback={togglePlayback}
         />
       </div>

@@ -13,6 +13,7 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.execute("DROP INDEX IF EXISTS uq_artifacts_stem_per_source")
     with op.batch_alter_table("artifacts") as batch_op:
         batch_op.add_column(sa.Column("size_bytes", sa.Integer(), nullable=False, server_default="0"))
         batch_op.add_column(

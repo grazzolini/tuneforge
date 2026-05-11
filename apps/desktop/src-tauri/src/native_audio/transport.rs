@@ -2255,6 +2255,49 @@ mod tests {
     }
 
     #[test]
+    fn seek_clamps_to_zero() {
+        let mut state = TransportState::default();
+        state.prepare(
+            None,
+            AudioSessionRequest {
+                session_id: "session".to_string(),
+                duration_seconds: Some(30.0),
+                playback_rate: Some(1.0),
+                lanes: Vec::new(),
+            },
+            Vec::new(),
+            capabilities(),
+        );
+
+        let snapshot = state.seek(AudioSeekRequest { time_seconds: -10.0 });
+
+        assert_eq!(snapshot.position_seconds, 0.0);
+    }
+
+    #[test]
+    fn stop_resets_transport_position() {
+        let mut state = TransportState::default();
+        state.prepare(
+            None,
+            AudioSessionRequest {
+                session_id: "session".to_string(),
+                duration_seconds: Some(30.0),
+                playback_rate: Some(1.0),
+                lanes: Vec::new(),
+            },
+            Vec::new(),
+            capabilities(),
+        );
+        state.position_seconds = 12.0;
+
+        let snapshot = state.stop();
+
+        assert_eq!(snapshot.position_seconds, 0.0);
+        assert_eq!(snapshot.state, "stopped");
+        assert_eq!(snapshot.playback_rate, 1.0);
+    }
+
+    #[test]
     fn pause_preserves_current_position() {
         let mut state = TransportState::default();
         state.prepare(

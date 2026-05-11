@@ -7,6 +7,7 @@ Usage: pnpm setup:dev [options]
 
 Runs the standard developer setup:
   pnpm install
+  pnpm --filter @tuneforge/desktop exec playwright install chromium
   uv sync --python 3.11 --all-groups
   pnpm contracts:generate
   pnpm models:demucs:prepare
@@ -15,6 +16,7 @@ Options:
   --advanced-chords, --crema  Install the optional crema/TensorFlow chord backend.
   --legacy-nvidia             Use the Linux x86_64 legacy NVIDIA Torch profile.
   --skip-demucs-models        Skip preparing the local pinned Demucs model repo.
+  --skip-playwright-browsers  Skip installing Playwright's Chromium browser.
   --skip-pnpm-install         Skip workspace dependency installation.
   --skip-contracts            Skip OpenAPI contract generation.
   -h, --help                  Show this help.
@@ -24,6 +26,7 @@ EOF
 advanced_chords=0
 legacy_nvidia=0
 skip_demucs_models=0
+skip_playwright_browsers=0
 skip_pnpm_install=0
 skip_contracts=0
 
@@ -37,6 +40,9 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-demucs-models)
       skip_demucs_models=1
+      ;;
+    --skip-playwright-browsers)
+      skip_playwright_browsers=1
       ;;
     --skip-pnpm-install)
       skip_pnpm_install=1
@@ -85,6 +91,11 @@ cd "${repo_root}"
 if [[ "${skip_pnpm_install}" -eq 0 ]]; then
   echo "Installing workspace dependencies..."
   pnpm install
+fi
+
+if [[ "${skip_playwright_browsers}" -eq 0 ]]; then
+  echo "Installing Playwright Chromium browser..."
+  pnpm --filter @tuneforge/desktop exec playwright install chromium
 fi
 
 echo "Checking Tauri build dependencies..."

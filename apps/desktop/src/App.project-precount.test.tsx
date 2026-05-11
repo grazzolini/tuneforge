@@ -61,6 +61,7 @@ describe("Desktop app project playback pre-count", () => {
     await openPlaybackWorkspace(user);
 
     expect(screen.getByLabelText("Enable pre-count")).toBeDisabled();
+    expect(screen.getByLabelText("Enable loop pre-count")).toBeDisabled();
     expect(screen.getByRole("group", { name: "Pre-count clicks" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Decrease pre-count clicks" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Increase pre-count clicks" })).toBeDisabled();
@@ -76,9 +77,11 @@ describe("Desktop app project playback pre-count", () => {
     await openPlaybackWorkspace(user);
 
     await user.click(screen.getByLabelText("Enable pre-count"));
+    await user.click(screen.getByLabelText("Enable loop pre-count"));
     await user.click(screen.getByRole("button", { name: "Increase pre-count clicks" }));
 
     expect(screen.getByLabelText("Enable pre-count")).toBeChecked();
+    expect(screen.getByLabelText("Enable loop pre-count")).toBeChecked();
     expect(screen.getByText("5 clicks at 120.0 BPM")).toBeInTheDocument();
 
     firstRender.unmount();
@@ -87,6 +90,7 @@ describe("Desktop app project playback pre-count", () => {
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
     await openPlaybackWorkspace(user);
     expect(screen.getByLabelText("Enable pre-count")).toBeChecked();
+    expect(screen.getByLabelText("Enable loop pre-count")).toBeChecked();
     expect(screen.getByText("5 clicks at 120.0 BPM")).toBeInTheDocument();
   });
 
@@ -183,6 +187,117 @@ describe("Desktop app project playback pre-count", () => {
       3,
     );
     expect(sourceAudio.currentTime).toBeCloseTo(12.5, 3);
+  });
+
+  it("does not pre-count when resuming after pause", async () => {
+    const user = userEvent.setup();
+    setupTempoAnalysis();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByLabelText("Enable pre-count"));
+    fireEvent.click(screen.getByRole("button", { name: "Play playback" }));
+    await flushMicrotasks();
+
+    const audioContext = getMockAudioContexts()[0];
+    expect(audioContext?.createdOscillators).toHaveLength(4);
+
+    act(() => {
+      vi.advanceTimersByTime(2035);
+    });
+    await flushMicrotasks();
+    const sourceStartCount = audioContext?.createdSources.length ?? 0;
+    const oscillatorCount = audioContext?.createdOscillators.length ?? 0;
+    expect(sourceStartCount).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Pause playback" }));
+    fireEvent.click(screen.getByRole("button", { name: "Play playback" }));
+    await flushMicrotasks();
+
+    expect(audioContext?.createdSources.length).toBeGreaterThanOrEqual(sourceStartCount);
+    expect(audioContext?.createdOscillators).toHaveLength(oscillatorCount);
+    vi.useRealTimers();
+  }, 15000);
+
+  it("loop pre-counts from loop start on fresh playback and each loop wrap", async () => {
+    const user = userEvent.setup();
+    setupTempoAnalysis();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    setPlaybackPosition("12.25");
+    await user.click(screen.getByRole("button", { name: "Set loop start" }));
+    setPlaybackPosition("24.5");
+    await user.click(screen.getByRole("button", { name: "Set loop end" }));
+
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    vi.useFakeTimers();
+
+    fireEvent.click(screen.getByLabelText("Enable loop pre-count"));
+    fireEvent.click(screen.getByRole("button", { name: "Play playback" }));
+    await flushMicrotasks();
+
+    const audioContext = getMockAudioContexts()[0];
+    expect(audioContext?.createdSources).toHaveLength(0);
+    expect(audioContext?.createdOscillators).toHaveLength(4);
+    act(() => {
+      vi.advanceTimersByTime(2035);
+    });
+    await flushMicrotasks();
+    expect(audioContext?.createdSources).toHaveLength(1);
+    expect(audioContext?.createdSources[0]?.start.mock.calls[0]?.[1]).toBeCloseTo(12.25, 3);
+    expect(sourceAudio.currentTime).toBeCloseTo(12.25, 3);
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+
+    act(() => {
+      sourceAudio.currentTime = 24.5;
+      fireEvent.timeUpdate(sourceAudio);
+    });
+    await flushMicrotasks();
+    expect(audioContext?.createdOscillators).toHaveLength(8);
+    const sourceCountBeforeRollover = audioContext?.createdSources.length ?? 0;
+    act(() => {
+      vi.advanceTimersByTime(2035);
+    });
+    await flushMicrotasks();
+    expect(audioContext?.createdSources).toHaveLength(sourceCountBeforeRollover + 1);
+    expect(audioContext?.createdSources[sourceCountBeforeRollover]?.start.mock.calls[0]?.[1]).toBeCloseTo(
+      12.25,
+      3,
+    );
+    vi.useRealTimers();
+  }, 15000);
+
+  it("does not use song pre-count for a nonzero loop start", async () => {
+    const user = userEvent.setup();
+    setupTempoAnalysis();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    setPlaybackPosition("12.25");
+    await user.click(screen.getByRole("button", { name: "Set loop start" }));
+    setPlaybackPosition("24.5");
+    await user.click(screen.getByRole("button", { name: "Set loop end" }));
+
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    await user.click(screen.getByLabelText("Enable pre-count"));
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    await waitFor(() => expect(getMockAudioContexts()[0]?.createdSources).toHaveLength(1));
+    expect(getMockAudioContexts()[0]?.createdOscillators).toHaveLength(0);
+    expect(getMockAudioContexts()[0]?.createdSources[0]?.start.mock.calls[0]?.[1]).toBeCloseTo(
+      12.25,
+      3,
+    );
   });
 
   it("schedules stem playback on the pre-count clock after the last click", async () => {

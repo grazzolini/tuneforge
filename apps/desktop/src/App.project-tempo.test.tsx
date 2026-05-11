@@ -128,6 +128,33 @@ describe("Desktop app project playback tempo", () => {
     expect(screen.getByText("Original 123.5 BPM")).toBeInTheDocument();
   });
 
+  it("keeps tempo-correct playback when seeking is loop-bounded", async () => {
+    const user = userEvent.setup();
+    setupTempoAnalysis(120);
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    setPlaybackPosition("12.25");
+    await user.click(screen.getByRole("button", { name: "Set loop start" }));
+    setPlaybackPosition("24.5");
+    await user.click(screen.getByRole("button", { name: "Set loop end" }));
+
+    setPlaybackPosition("99");
+    expect(screen.getByLabelText("Playback position")).toHaveValue("12.25");
+
+    await user.click(screen.getByRole("button", { name: "Decrease playback tempo" }));
+    await waitForTempoSummary("119 BPM (0.992x)");
+
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    await waitFor(() => expect(sourceAudio.currentTime).toBeCloseTo(12.25, 3));
+    await waitFor(() => expect(sourceAudio.playbackRate).toBeCloseTo(119 / 120, 4));
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+  });
+
   it("flushes a pending tempo step before playback starts", async () => {
     const user = userEvent.setup();
     setupTempoAnalysis(120);

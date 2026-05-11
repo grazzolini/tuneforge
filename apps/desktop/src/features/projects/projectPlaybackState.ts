@@ -32,6 +32,7 @@ export type StoredProjectPlaybackState = {
   playbackDisplayMode: PlaybackDisplayMode;
   capoTransposeSemitones: number;
   precountEnabled: boolean;
+  precountLoopEnabled: boolean;
   precountClickCount: number;
   tempoTargetBpm: number | null;
   loopRange: PlaybackLoopRange | null;
@@ -52,6 +53,7 @@ const DEFAULT_STORED_PROJECT_PLAYBACK_STATE: StoredProjectPlaybackState = {
   playbackDisplayMode: "combined",
   capoTransposeSemitones: 0,
   precountEnabled: false,
+  precountLoopEnabled: false,
   precountClickCount: DEFAULT_PRECOUNT_CLICK_COUNT,
   tempoTargetBpm: null,
   loopRange: null,
@@ -167,6 +169,10 @@ function normalizeStoredProjectPlaybackState(value: unknown): StoredProjectPlayb
       typeof candidate.precountEnabled === "boolean"
         ? candidate.precountEnabled
         : DEFAULT_STORED_PROJECT_PLAYBACK_STATE.precountEnabled,
+    precountLoopEnabled:
+      typeof candidate.precountLoopEnabled === "boolean"
+        ? candidate.precountLoopEnabled
+        : DEFAULT_STORED_PROJECT_PLAYBACK_STATE.precountLoopEnabled,
     precountClickCount: normalizePrecountClickCount(candidate.precountClickCount),
     tempoTargetBpm: normalizeTempoTargetBpm(candidate.tempoTargetBpm),
     loopRange: normalizePlaybackLoopRange(candidate.loopRange),

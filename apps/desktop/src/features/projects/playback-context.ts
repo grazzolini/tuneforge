@@ -15,6 +15,7 @@ export type ProjectPlaybackSession = {
   stemControls: Record<string, StemControlState>;
   durationHintSeconds: number;
   precountEnabled: boolean;
+  precountLoopEnabled: boolean;
   precountClickCount: number;
   precountTempoBpm: number | null;
   tempoOriginalBpm: number | null;

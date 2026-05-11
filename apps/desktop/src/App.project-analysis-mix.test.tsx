@@ -6,6 +6,7 @@ import {
   findAudioByArtifactId,
   getAllByAriaKeyLabel,
   getByAriaKeyLabel,
+  getMockAudioContexts,
   markAudioReady,
   mockAnalyzeProject,
   mockConfirm,
@@ -1009,6 +1010,56 @@ describe("Desktop app project analysis mix", () => {
 
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
     expect(sourceAudio.currentTime).toBeCloseTo(8, 3);
+  });
+
+  it("starts transport playback from a stopped lyric selection", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    await openPlaybackWorkspace(user);
+    await switchToLyricsOnly(user);
+
+    const lyricsTranscript = screen.getByRole("group", { name: "Lyrics transcript" });
+    const secondLyric = within(lyricsTranscript).getByRole("button", { name: /0:08/i });
+    await user.click(secondLyric);
+    sourceAudio.currentTime = 0;
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    await waitFor(() => expect(getMockAudioContexts()[0]?.createdSources).toHaveLength(1));
+    expect(getMockAudioContexts()[0]?.createdSources[0]?.start.mock.calls[0]?.[1]).toBeCloseTo(
+      8,
+      3,
+    );
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+  });
+
+  it("starts transport playback from a stopped chord selection", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    await openPlaybackWorkspace(user);
+    await switchToChordsOnly(user);
+
+    const chordTimeline = screen.getByRole("group", { name: "Chord timeline" });
+    const secondChord = within(chordTimeline).getByRole("button", { name: /D\s*0:16/ });
+    await user.click(secondChord);
+    sourceAudio.currentTime = 0;
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    await waitFor(() => expect(getMockAudioContexts()[0]?.createdSources).toHaveLength(1));
+    expect(getMockAudioContexts()[0]?.createdSources[0]?.start.mock.calls[0]?.[1]).toBeCloseTo(
+      16,
+      3,
+    );
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
   });
 
   it("does not duplicate the detected key inside the project source key selector", async () => {

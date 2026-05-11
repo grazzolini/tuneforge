@@ -28,6 +28,7 @@ export function PlaybackPracticeRail() {
     higherCapoShiftOptions,
     handleSetPrecountClickCount,
     handleSetPrecountEnabled,
+    handleSetPrecountLoopEnabled,
     informationDensity,
     isStemPlayback,
     lowerCapoPreview,
@@ -35,6 +36,7 @@ export function PlaybackPracticeRail() {
     precountClickCount,
     precountDisabledReason,
     precountEnabled,
+    precountLoopEnabled,
     precountMaxClickCount,
     precountMinClickCount,
     precountTempoBpm,
@@ -265,6 +267,16 @@ export function PlaybackPracticeRail() {
             <span>{precountEnabled ? "On" : "Off"}</span>
           </label>
         </div>
+        <label className="playback-precount-control__toggle">
+          <input
+            aria-label="Enable loop pre-count"
+            checked={precountLoopEnabled}
+            disabled={!canUsePrecount}
+            onChange={(event) => handleSetPrecountLoopEnabled(event.target.checked)}
+            type="checkbox"
+          />
+          <span>{precountLoopEnabled ? "Loop on" : "Loop off"}</span>
+        </label>
         <div className="playback-precount-control__stepper" role="group" aria-label="Pre-count clicks">
           <button
             aria-label="Decrease pre-count clicks"

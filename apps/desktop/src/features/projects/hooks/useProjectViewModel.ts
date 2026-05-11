@@ -185,6 +185,7 @@ export function useProjectViewModel() {
   const [capoTransposeSemitones, setCapoTransposeSemitones] = useState(0);
   const [capoSelectorOpen, setCapoSelectorOpen] = useState(false);
   const [precountEnabled, setPrecountEnabled] = useState(false);
+  const [precountLoopEnabled, setPrecountLoopEnabled] = useState(false);
   const [precountClickCount, setPrecountClickCount] = useState(DEFAULT_PRECOUNT_CLICK_COUNT);
   const [tempoTargetBpm, setTempoTargetBpm] = useState<number | null>(null);
   const [loopRange, setLoopRange] = useState<PlaybackLoopRange | null>(null);
@@ -1016,6 +1017,13 @@ export function useProjectViewModel() {
     setPrecountEnabled(enabled);
   }
 
+  function handleSetPrecountLoopEnabled(enabled: boolean) {
+    if (enabled && !canUsePrecount) {
+      return;
+    }
+    setPrecountLoopEnabled(enabled);
+  }
+
   function handleSetPrecountClickCount(value: number) {
     setPrecountClickCount(normalizePrecountClickCount(value));
   }
@@ -1481,6 +1489,7 @@ export function useProjectViewModel() {
     );
     setCapoTransposeSemitones(storedPlaybackState.capoTransposeSemitones);
     setPrecountEnabled(storedPlaybackState.precountEnabled);
+    setPrecountLoopEnabled(storedPlaybackState.precountLoopEnabled);
     setPrecountClickCount(storedPlaybackState.precountClickCount);
     setTempoTargetBpm(storedPlaybackState.tempoTargetBpm);
     setLoopRange(storedPlaybackState.loopRange);
@@ -1640,6 +1649,7 @@ export function useProjectViewModel() {
       playbackDisplayMode,
       capoTransposeSemitones: capoSemitones,
       precountEnabled,
+      precountLoopEnabled,
       precountClickCount,
       tempoTargetBpm,
       loopRange,
@@ -1660,6 +1670,7 @@ export function useProjectViewModel() {
     playbackDisplayMode,
     precountClickCount,
     precountEnabled,
+    precountLoopEnabled,
     projectId,
     selectedArtifactId,
     selectedPrimaryArtifactId,
@@ -1890,6 +1901,7 @@ export function useProjectViewModel() {
       stemControls,
       durationHintSeconds: projectQuery.data?.duration_seconds ?? 0,
       precountEnabled,
+      precountLoopEnabled,
       precountClickCount,
       precountTempoBpm,
       tempoOriginalBpm,
@@ -1904,6 +1916,7 @@ export function useProjectViewModel() {
     projectQuery.data?.duration_seconds,
     precountClickCount,
     precountEnabled,
+    precountLoopEnabled,
     precountTempoBpm,
     registerProjectSession,
     loopRange,
@@ -1987,6 +2000,7 @@ export function useProjectViewModel() {
     handleSetLyricsFollowEnabled,
     handleSetPrecountClickCount,
     handleSetPrecountEnabled,
+    handleSetPrecountLoopEnabled,
     handleIncreasePlaybackTempo,
     handleSetPlaybackTempo,
     handleAcceptTabSuggestionGroup,
@@ -2051,6 +2065,7 @@ export function useProjectViewModel() {
     precountClickCount,
     precountDisabledReason,
     precountEnabled,
+    precountLoopEnabled,
     precountMaxClickCount: MAX_PRECOUNT_CLICK_COUNT,
     precountMinClickCount: MIN_PRECOUNT_CLICK_COUNT,
     precountTempoBpm,

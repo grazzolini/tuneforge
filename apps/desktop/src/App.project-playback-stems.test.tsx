@@ -322,6 +322,27 @@ describe("Desktop app project playback stems", () => {
     expect(screen.getByLabelText("Playback position")).toHaveValue("0");
   });
 
+  it("starts source playback from a stopped scrubber selection", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+
+    setPlaybackPosition("32.417");
+    sourceAudio.currentTime = 0;
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    await waitFor(() => expect(getMockAudioContexts()[0]?.createdSources).toHaveLength(1));
+    expect(getMockAudioContexts()[0]?.createdSources[0]?.start.mock.calls[0]?.[1]).toBeCloseTo(
+      32.417,
+      3,
+    );
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+  });
+
   it("cycles the source loop control and only persists a complete loop", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);

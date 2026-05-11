@@ -370,7 +370,7 @@ fn start_capture_stream(
         .map_err(|error| format!("Could not open native input configuration: {error}"))?;
     let sample_format = supported_config.sample_format();
     let config: cpal::StreamConfig = supported_config.into();
-    let sample_rate = config.sample_rate.0;
+    let sample_rate = config.sample_rate;
     let channels = usize::from(config.channels.max(1));
     let (sender, receiver) = mpsc::sync_channel::<AudioInputFrame>(2);
     let device_id = Some(effective_device_id.clone());

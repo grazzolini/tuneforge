@@ -25,6 +25,7 @@ import {
   type EnharmonicDisplayMode,
   type InformationDensity,
   type ProjectWorkspaceMode,
+  type TunerVisualMode,
 } from "../../lib/preferences";
 import {
   parseSettingsSnapshot,
@@ -232,6 +233,10 @@ function tunerInputDeviceLabel(value: string | null) {
   return value ? "Saved microphone" : "System Default";
 }
 
+function tunerVisualModeLabel(value: TunerVisualMode) {
+  return value === "simple" ? "Simple Meter" : "Wide Arc";
+}
+
 function inputCaptureBackendLabel(
   capabilities: NativeAudioCapabilities | undefined,
   webAudioForced: boolean,
@@ -428,6 +433,7 @@ export function SettingsView() {
     defaultChordsFollowEnabled,
     defaultTunerInputDeviceId,
     defaultTunerReferenceHz,
+    defaultTunerVisualMode,
     setInformationDensity,
     setEnharmonicDisplayMode,
     setDefaultProjectWorkspace,
@@ -438,6 +444,7 @@ export function SettingsView() {
     setDefaultChordsFollowEnabled,
     setDefaultTunerInputDeviceId,
     setDefaultTunerReferenceHz,
+    setDefaultTunerVisualMode,
     resetAppearancePreferences,
     resetNotationPreferences,
     resetAnalysisPreferences,
@@ -532,6 +539,7 @@ export function SettingsView() {
           defaultPlaybackDisplayMode,
           defaultTunerInputDeviceId,
           defaultTunerReferenceHz,
+          defaultTunerVisualMode,
           defaultLyricsFollowEnabled,
           defaultProjectWorkspace,
           defaultSourcesRailCollapsed,
@@ -655,6 +663,10 @@ export function SettingsView() {
             <dd>{defaultTunerReferenceHz.toFixed(1)} Hz</dd>
           </div>
           <div className="settings-overview__stat">
+            <dt>Default tuner</dt>
+            <dd>{tunerVisualModeLabel(defaultTunerVisualMode)}</dd>
+          </div>
+          <div className="settings-overview__stat">
             <dt>Playback follow</dt>
             <dd>
               {defaultLyricsFollowEnabled && defaultChordsFollowEnabled
@@ -719,7 +731,7 @@ export function SettingsView() {
           <div className="panel-heading">
             <div>
               <h2>Tuner Defaults</h2>
-              <p className="subpanel__copy">Default microphone source and A4 reference.</p>
+              <p className="subpanel__copy">Default microphone source, A4 reference, and tuner view.</p>
             </div>
           </div>
 
@@ -728,8 +740,10 @@ export function SettingsView() {
             nativeCaptureDisabled={webAudioForced}
             onInputDeviceChange={setDefaultTunerInputDeviceId}
             onReferenceHzChange={setDefaultTunerReferenceHz}
+            onVisualModeChange={setDefaultTunerVisualMode}
             referenceHz={defaultTunerReferenceHz}
             systemDefaultOnly={webAudioForced}
+            visualMode={defaultTunerVisualMode}
           />
 
           <div className="button-row">

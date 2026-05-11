@@ -113,6 +113,7 @@ describe("Desktop app settings theme", () => {
       defaultChordsFollowEnabled: true,
       defaultTunerInputDeviceId: null,
       defaultTunerReferenceHz: 440,
+      defaultTunerVisualMode: "wide-arc",
     });
   });
 
@@ -299,9 +300,14 @@ describe("Desktop app settings theme", () => {
     expect(screen.getByRole("button", { name: /^Enable lyrics follow by default/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Enable chords follow by default/ })).toHaveAttribute("aria-pressed", "true");
 
+    await user.selectOptions(screen.getByLabelText("Default tuner"), "simple");
+    await user.click(screen.getByRole("button", { name: "Reset Tuner Defaults" }));
+    expect(screen.getByLabelText("Default tuner")).toHaveValue("wide-arc");
+
     await user.click(screen.getByRole("button", { name: /^Dark/ }));
     await user.click(screen.getByRole("button", { name: /^Dual labels/ }));
     await user.click(screen.getByRole("button", { name: /^Advanced Chords/ }));
+    await user.selectOptions(screen.getByLabelText("Default tuner"), "simple");
     await user.click(screen.getByRole("button", { name: "Reset All Settings" }));
 
     expect(screen.getByRole("button", { name: /^Follow system/ })).toHaveAttribute("aria-pressed", "true");
@@ -312,6 +318,7 @@ describe("Desktop app settings theme", () => {
     expect(screen.getByRole("button", { name: /^Built-in Chords/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Enable lyrics follow by default/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Enable chords follow by default/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByLabelText("Default tuner")).toHaveValue("wide-arc");
   });
 
   it("keeps project playback preferences when resetting all settings", async () => {

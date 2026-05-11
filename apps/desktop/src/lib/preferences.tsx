@@ -15,6 +15,7 @@ export type PlaybackDisplayMode = "lyrics" | "chords" | "combined";
 export type DefaultPlaybackDisplayMode = "auto" | PlaybackDisplayMode;
 export type DefaultChordBackend = "tuneforge-fast" | "crema-advanced";
 export type DefaultStemModel = "htdemucs_6s" | "htdemucs_ft";
+export type TunerVisualMode = "simple" | "wide-arc";
 export type { EnharmonicDisplayMode };
 
 export const DEFAULT_TUNER_REFERENCE_HZ = 440;
@@ -34,6 +35,7 @@ export type UiPreferences = {
   defaultChordsFollowEnabled: boolean;
   defaultTunerInputDeviceId: string | null;
   defaultTunerReferenceHz: number;
+  defaultTunerVisualMode: TunerVisualMode;
 };
 
 export type AppearancePreferences = Pick<UiPreferences, "informationDensity">;
@@ -41,7 +43,7 @@ export type NotationPreferences = Pick<UiPreferences, "enharmonicDisplayMode">;
 export type AnalysisPreferences = Pick<UiPreferences, "defaultChordBackend" | "defaultStemModel">;
 export type TunerPreferences = Pick<
   UiPreferences,
-  "defaultTunerInputDeviceId" | "defaultTunerReferenceHz"
+  "defaultTunerInputDeviceId" | "defaultTunerReferenceHz" | "defaultTunerVisualMode"
 >;
 export type VisibilityPreferences = Pick<
   UiPreferences,
@@ -66,6 +68,7 @@ type PreferencesContextValue = UiPreferences & {
   setDefaultChordsFollowEnabled: (value: boolean) => void;
   setDefaultTunerInputDeviceId: (value: string | null) => void;
   setDefaultTunerReferenceHz: (value: number) => void;
+  setDefaultTunerVisualMode: (value: TunerVisualMode) => void;
   replacePreferences: (value: UiPreferences) => void;
   resetAppearancePreferences: () => void;
   resetNotationPreferences: () => void;
@@ -93,6 +96,7 @@ export const DEFAULT_ANALYSIS_PREFERENCES: AnalysisPreferences = {
 export const DEFAULT_TUNER_PREFERENCES: TunerPreferences = {
   defaultTunerInputDeviceId: null,
   defaultTunerReferenceHz: DEFAULT_TUNER_REFERENCE_HZ,
+  defaultTunerVisualMode: "wide-arc",
 };
 
 export const DEFAULT_VISIBILITY_PREFERENCES: VisibilityPreferences = {
@@ -142,6 +146,10 @@ export function isDefaultChordBackend(value: unknown): value is DefaultChordBack
 
 export function isDefaultStemModel(value: unknown): value is DefaultStemModel {
   return value === "htdemucs_6s" || value === "htdemucs_ft";
+}
+
+function isTunerVisualMode(value: unknown): value is TunerVisualMode {
+  return value === "simple" || value === "wide-arc";
 }
 
 function normalizeTunerInputDeviceId(value: unknown): string | null {
@@ -199,6 +207,9 @@ export function normalizePreferences(value: unknown): UiPreferences {
       : DEFAULT_PREFERENCES.defaultStemModel,
     defaultTunerInputDeviceId: normalizeTunerInputDeviceId(candidate.defaultTunerInputDeviceId),
     defaultTunerReferenceHz: normalizeTunerReferenceHz(candidate.defaultTunerReferenceHz),
+    defaultTunerVisualMode: isTunerVisualMode(candidate.defaultTunerVisualMode)
+      ? candidate.defaultTunerVisualMode
+      : DEFAULT_PREFERENCES.defaultTunerVisualMode,
     defaultLyricsFollowEnabled:
       typeof candidate.defaultLyricsFollowEnabled === "boolean"
         ? candidate.defaultLyricsFollowEnabled
@@ -293,6 +304,9 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
             defaultTunerReferenceHz: normalizeTunerReferenceHz(defaultTunerReferenceHz),
           }),
         );
+      },
+      setDefaultTunerVisualMode: (defaultTunerVisualMode) => {
+        setPreferences((current) => mergePreferences(current, { defaultTunerVisualMode }));
       },
       replacePreferences: (value) => {
         const normalized = normalizePreferences(value);

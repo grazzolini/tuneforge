@@ -10,7 +10,7 @@ import {
   type NativeAudioInputFrame,
 } from "../../lib/nativeAudio";
 import { useStableCallback } from "../../lib/useStableCallback";
-import { usePreferences } from "../../lib/preferences";
+import { usePreferences, type TunerVisualMode } from "../../lib/preferences";
 import {
   activateWebAudioContext,
   getWebAudioContextConstructor,
@@ -25,7 +25,6 @@ import {
 import { TunerPreferenceControls } from "./TunerPreferenceControls";
 import {
   SimpleTunerMeter,
-  type TunerVisualMode,
   WideArcTunerMeter,
 } from "./TunerMeters";
 import { getTunerStatusLabel } from "./tunerMeterState";
@@ -114,8 +113,10 @@ function ChromaticTunerPage() {
   const {
     defaultTunerInputDeviceId,
     defaultTunerReferenceHz,
+    defaultTunerVisualMode,
     setDefaultTunerInputDeviceId,
     setDefaultTunerReferenceHz,
+    setDefaultTunerVisualMode,
   } = usePreferences();
   const [status, setStatus] = useState<TunerStatus>(() =>
     canUseTunerCapture(null) ? "idle" : "unsupported",
@@ -129,7 +130,6 @@ function ChromaticTunerPage() {
   const [reading, setReading] = useState<TunerPitchReading | null>(null);
   const [deviceRefreshToken, setDeviceRefreshToken] = useState(0);
   const [systemInputVolumeRefreshToken, setSystemInputVolumeRefreshToken] = useState(0);
-  const [visualMode, setVisualMode] = useState<TunerVisualMode>("simple");
   const analyserRef = useRef<AnalyserNode | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const frameIdRef = useRef<number | null>(null);
@@ -461,6 +461,12 @@ function ChromaticTunerPage() {
     setDefaultTunerReferenceHz(value);
   });
 
+  const handleVisualModeChange = useStableCallback(function handleVisualModeChange(
+    value: TunerVisualMode,
+  ) {
+    setDefaultTunerVisualMode(value);
+  });
+
   const isBusy = status === "starting";
   const isListening = status === "listening";
   const canStart =
@@ -495,22 +501,14 @@ function ChromaticTunerPage() {
           nativeCaptureDisabled={webAudioForced}
           onInputDeviceChange={handleInputDeviceChange}
           onReferenceHzChange={handleReferenceHzChange}
+          onVisualModeChange={handleVisualModeChange}
           referenceHz={defaultTunerReferenceHz}
           refreshToken={deviceRefreshToken}
           systemDefaultOnly={systemDefaultInputOnly}
-        >
-          <label className="tuner-field">
-            <span>Visual mode</span>
-            <select
-              aria-label="Tuner visual mode"
-              onChange={(event) => setVisualMode(event.target.value as TunerVisualMode)}
-              value={visualMode}
-            >
-              <option value="simple">Simple Meter</option>
-              <option value="wide-arc">Wide Arc</option>
-            </select>
-          </label>
-        </TunerPreferenceControls>
+          visualMode={defaultTunerVisualMode}
+          visualModeAriaLabel="Tuner visual mode"
+          visualModeLabel="Visual mode"
+        />
 
         <SystemInputVolumeControl
           deviceId={inputVolumeDeviceId}
@@ -519,7 +517,7 @@ function ChromaticTunerPage() {
 
         {errorMessage ? <p className="inline-error">{errorMessage}</p> : null}
 
-        {visualMode === "simple" ? (
+        {defaultTunerVisualMode === "simple" ? (
           <SimpleTunerMeter
             inputLevel={inputLevel}
             reading={reading}

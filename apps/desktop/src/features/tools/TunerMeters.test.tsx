@@ -30,7 +30,7 @@ describe("tuner visual meters", () => {
     expect(screen.getAllByText("In tune")).toHaveLength(2);
     expect(screen.getByText("+2 cents")).toBeInTheDocument();
     expect(screen.getByTestId("simple-tuner-meter")).toHaveAttribute("data-tuning-state", "in-tune");
-    expect(screen.getByTestId("simple-tuner-meter")).toHaveStyle("--tuner-marker-position: 52%");
+    expect(screen.getByTestId("simple-tuner-meter")).toHaveStyle("--tuner-marker-position: 50%");
   });
 
   it("uses a less twitchy in-tune tolerance", () => {
@@ -38,6 +38,7 @@ describe("tuner visual meters", () => {
 
     expect(screen.getAllByText("In tune")).toHaveLength(2);
     expect(screen.getByText("+5 cents")).toBeInTheDocument();
+    expect(screen.getByTestId("simple-tuner-meter")).toHaveStyle("--tuner-marker-position: 50%");
   });
 
   it("renders flat readings to the left of center", () => {

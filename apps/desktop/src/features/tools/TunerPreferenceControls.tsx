@@ -7,6 +7,7 @@ import {
   MAX_TUNER_REFERENCE_HZ,
   MIN_TUNER_REFERENCE_HZ,
   normalizeTunerReferenceHz,
+  type TunerVisualMode,
 } from "../../lib/preferences";
 import {
   forgetTunerMicrophoneAccessGranted,
@@ -23,9 +24,13 @@ type TunerPreferenceControlsProps = {
   nativeCaptureDisabled?: boolean;
   onInputDeviceChange: (value: string | null) => void;
   onReferenceHzChange: (value: number) => void;
+  onVisualModeChange?: (value: TunerVisualMode) => void;
   referenceHz: number;
   refreshToken?: number;
   systemDefaultOnly?: boolean;
+  visualMode?: TunerVisualMode;
+  visualModeAriaLabel?: string;
+  visualModeLabel?: string;
 };
 
 export function TunerPreferenceControls({
@@ -35,9 +40,13 @@ export function TunerPreferenceControls({
   nativeCaptureDisabled = false,
   onInputDeviceChange,
   onReferenceHzChange,
+  onVisualModeChange,
   referenceHz,
   refreshToken = 0,
   systemDefaultOnly = false,
+  visualMode,
+  visualModeAriaLabel = "Default tuner",
+  visualModeLabel = "Default tuner",
 }: TunerPreferenceControlsProps) {
   const [devices, setDevices] = useState<TunerMicrophoneDevice[]>([]);
   const [deviceError, setDeviceError] = useState<string | null>(null);
@@ -164,6 +173,20 @@ export function TunerPreferenceControls({
           value={referenceDraft}
         />
       </label>
+
+      {visualMode && onVisualModeChange ? (
+        <label className="tuner-field">
+          <span>{visualModeLabel}</span>
+          <select
+            aria-label={visualModeAriaLabel}
+            onChange={(event) => onVisualModeChange(event.target.value as TunerVisualMode)}
+            value={visualMode}
+          >
+            <option value="wide-arc">Wide Arc</option>
+            <option value="simple">Simple Meter</option>
+          </select>
+        </label>
+      ) : null}
 
       {children}
 

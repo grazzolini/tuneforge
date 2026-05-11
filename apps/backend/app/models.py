@@ -63,7 +63,8 @@ class AnalysisResult(Base):
     estimated_reference_hz: Mapped[float | None] = mapped_column(Float(), nullable=True)
     tuning_offset_cents: Mapped[float | None] = mapped_column(Float(), nullable=True)
     tempo_bpm: Mapped[float | None] = mapped_column(Float(), nullable=True)
-    analysis_version: Mapped[str] = mapped_column(String(32), default="v2")
+    timing_json: Mapped[dict[str, Any] | None] = mapped_column(JSON(), nullable=True)
+    analysis_version: Mapped[str] = mapped_column(String(32), default="v3")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     project: Mapped[Project] = relationship(back_populates="analysis")

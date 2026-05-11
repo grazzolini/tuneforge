@@ -94,6 +94,26 @@ def sample_audio_file(tmp_path: Path) -> Path:
 
 
 @pytest.fixture()
+def sample_rhythmic_audio_file(tmp_path: Path) -> Path:
+    sample_rate = 44100
+    duration = 8.0
+    timeline = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
+    signal = (
+        0.28 * np.sin(2 * np.pi * 261.63 * timeline)
+        + 0.22 * np.sin(2 * np.pi * 329.63 * timeline)
+        + 0.18 * np.sin(2 * np.pi * 392.0 * timeline)
+    )
+    interval = 0.5
+    pulse = np.zeros_like(timeline)
+    for start in np.arange(0.0, duration, interval):
+        distance = np.abs(timeline - start)
+        pulse += 0.26 * np.exp(-((distance / 0.012) ** 2))
+    output_path = tmp_path / "fixture_rhythmic.wav"
+    sf.write(output_path, (signal + pulse).astype(np.float32), sample_rate)
+    return output_path
+
+
+@pytest.fixture()
 def sample_stereo_audio_file(tmp_path: Path) -> Path:
     sample_rate = 44100
     duration = 2.0

@@ -8,6 +8,8 @@ import numpy as np
 from app.engines.audio_features import HarmonicFeatures, active_chroma_mean, extract_harmonic_features
 from app.engines.chords import ChordSegment, detect_chords_from_features
 
+BEATS_PER_BAR = 4
+
 MAJOR_PROFILE = np.array(
     [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88],
     dtype=np.float32,
@@ -38,12 +40,33 @@ MINOR_DIATONIC_QUALITIES: dict[int, set[str]] = {
 }
 
 
+class AnalysisTimingBeatPayload(TypedDict):
+    index: int
+    seconds: float
+    bar_index: int
+    beat_in_bar: int
+
+
+class AnalysisTimingBarPayload(TypedDict):
+    index: int
+    start_seconds: float
+    end_seconds: float
+
+
+class AnalysisTimingPayload(TypedDict):
+    beats_per_bar: int
+    source: str
+    beats: list[AnalysisTimingBeatPayload]
+    bars: list[AnalysisTimingBarPayload]
+
+
 class AnalysisPayload(TypedDict):
     estimated_key: str | None
     key_confidence: float | None
     estimated_reference_hz: float | None
     tuning_offset_cents: float | None
     tempo_bpm: float | None
+    timing: AnalysisTimingPayload | None
 
 
 def analyze_track(source_path: Path) -> AnalysisPayload:
@@ -55,6 +78,7 @@ def analyze_track(source_path: Path) -> AnalysisPayload:
             "estimated_reference_hz": None,
             "tuning_offset_cents": None,
             "tempo_bpm": None,
+            "timing": None,
         }
 
     chord_timeline = detect_chords_from_features(features)
@@ -65,7 +89,101 @@ def analyze_track(source_path: Path) -> AnalysisPayload:
         "estimated_reference_hz": features.estimated_reference_hz,
         "tuning_offset_cents": features.tuning_offset_cents,
         "tempo_bpm": features.tempo_bpm,
+        "timing": _build_timing_payload(features),
     }
+
+
+def _build_timing_payload(features: HarmonicFeatures) -> AnalysisTimingPayload | None:
+    if features.duration_seconds <= 0.0:
+        return None
+
+    beat_times = _detected_beat_times(features)
+    source = "detected"
+    if beat_times.size < BEATS_PER_BAR:
+        beat_times = _fallback_beat_times(features.tempo_bpm, features.duration_seconds)
+        source = "tempo_fallback"
+    if beat_times.size < 2:
+        return None
+
+    beats: list[AnalysisTimingBeatPayload] = [
+        {
+            "index": index,
+            "seconds": round(float(seconds), 6),
+            "bar_index": index // BEATS_PER_BAR,
+            "beat_in_bar": (index % BEATS_PER_BAR) + 1,
+        }
+        for index, seconds in enumerate(beat_times.tolist())
+    ]
+    bars = _timing_bars(beats, features.duration_seconds)
+    if not bars:
+        return None
+    payload: AnalysisTimingPayload = {
+        "beats_per_bar": BEATS_PER_BAR,
+        "source": source,
+        "beats": beats,
+        "bars": bars,
+    }
+    return payload
+
+
+def _detected_beat_times(features: HarmonicFeatures) -> np.ndarray:
+    if features.beat_frames.size == 0 or features.times.size == 0:
+        return np.zeros(0, dtype=np.float64)
+    beat_frames = features.beat_frames[features.beat_frames < features.times.size]
+    if beat_frames.size == 0:
+        return np.zeros(0, dtype=np.float64)
+    beat_times = features.times[beat_frames].astype(np.float64)
+    return _clean_beat_times(beat_times, features.duration_seconds)
+
+
+def _fallback_beat_times(tempo_bpm: float | None, duration_seconds: float) -> np.ndarray:
+    if tempo_bpm is None or tempo_bpm <= 0.0 or duration_seconds <= 0.0:
+        return np.zeros(0, dtype=np.float64)
+    beat_seconds = 60.0 / tempo_bpm
+    if beat_seconds <= 0.0:
+        return np.zeros(0, dtype=np.float64)
+    beat_times = np.arange(0.0, duration_seconds + beat_seconds * 0.5, beat_seconds)
+    return _clean_beat_times(beat_times, duration_seconds)
+
+
+def _clean_beat_times(beat_times: np.ndarray, duration_seconds: float) -> np.ndarray:
+    finite_times = beat_times[np.isfinite(beat_times)]
+    bounded_times = finite_times[
+        (finite_times >= 0.0) & (finite_times <= duration_seconds + 1e-6)
+    ]
+    if bounded_times.size == 0:
+        return np.zeros(0, dtype=np.float64)
+    ordered_times = np.sort(bounded_times.astype(np.float64))
+    deduped: list[float] = []
+    for seconds in ordered_times.tolist():
+        if not deduped or seconds - deduped[-1] >= 0.05:
+            deduped.append(seconds)
+    return np.asarray(deduped, dtype=np.float64)
+
+
+def _timing_bars(
+    beats: list[AnalysisTimingBeatPayload],
+    duration_seconds: float,
+) -> list[AnalysisTimingBarPayload]:
+    bars: list[AnalysisTimingBarPayload] = []
+    for beat_index in range(0, len(beats), BEATS_PER_BAR):
+        start_seconds = beats[beat_index]["seconds"]
+        next_bar_index = beat_index + BEATS_PER_BAR
+        end_seconds = (
+            beats[next_bar_index]["seconds"]
+            if next_bar_index < len(beats)
+            else max(duration_seconds, start_seconds)
+        )
+        if end_seconds <= start_seconds:
+            continue
+        bars.append(
+            {
+                "index": beat_index // BEATS_PER_BAR,
+                "start_seconds": round(float(start_seconds), 6),
+                "end_seconds": round(float(end_seconds), 6),
+            }
+        )
+    return bars
 
 
 def _estimate_key(

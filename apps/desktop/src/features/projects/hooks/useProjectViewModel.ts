@@ -4,6 +4,13 @@ import { useNavigate, useParams } from "react-router-dom";
 import { confirm, save } from "@tauri-apps/plugin-dialog";
 import { api, type ArtifactSchema, type ProjectSchema } from "../../../lib/api";
 import { usePreferences } from "../../../lib/preferences";
+import {
+  normalizeAnalysisTimingGrid,
+  normalizeLoopAlignmentMode,
+  snapLoopPointToTiming,
+  type AnalysisTimingGrid,
+  type LoopAlignmentMode,
+} from "../../../lib/timingGrid";
 import { usePlayback } from "../playback-context";
 import {
   DEFAULT_PRECOUNT_CLICK_COUNT,
@@ -106,9 +113,17 @@ function loopRangeFromPoints(
   firstPoint: number,
   secondPoint: number,
   durationSeconds: number,
+  loopAlignmentMode: LoopAlignmentMode = "free",
+  timingGrid: AnalysisTimingGrid | null = null,
 ): PlaybackLoopRange {
-  const boundedFirstPoint = clampPlaybackLoopPoint(firstPoint, durationSeconds);
-  const boundedSecondPoint = clampPlaybackLoopPoint(secondPoint, durationSeconds);
+  const boundedFirstPoint = clampPlaybackLoopPoint(
+    snapLoopPointToTiming(firstPoint, loopAlignmentMode, timingGrid),
+    durationSeconds,
+  );
+  const boundedSecondPoint = clampPlaybackLoopPoint(
+    snapLoopPointToTiming(secondPoint, loopAlignmentMode, timingGrid),
+    durationSeconds,
+  );
   let startSeconds = Math.min(boundedFirstPoint, boundedSecondPoint);
   let endSeconds = Math.max(boundedFirstPoint, boundedSecondPoint);
 
@@ -147,6 +162,7 @@ export function useProjectViewModel() {
     defaultPlaybackDisplayMode,
     defaultChordsFollowEnabled,
     defaultInspectorOpen,
+    defaultLoopAlignmentMode,
     defaultLyricsFollowEnabled,
     defaultProjectWorkspace,
     defaultSourcesRailCollapsed,
@@ -189,6 +205,8 @@ export function useProjectViewModel() {
   const [precountClickCount, setPrecountClickCount] = useState(DEFAULT_PRECOUNT_CLICK_COUNT);
   const [tempoTargetBpm, setTempoTargetBpm] = useState<number | null>(null);
   const [loopRange, setLoopRange] = useState<PlaybackLoopRange | null>(null);
+  const [loopAlignmentModeOverride, setLoopAlignmentModeOverride] =
+    useState<LoopAlignmentMode | null>(null);
   const [pendingLoopStartSeconds, setPendingLoopStartSeconds] = useState<number | null>(null);
   const [loopStatusMessage, setLoopStatusMessage] = useState<
     "Loop in" | "Loop set" | "Loop cleared" | null
@@ -625,7 +643,12 @@ export function useProjectViewModel() {
     ? artifactSummary(selectedPlaybackArtifact)
     : "";
 
+  const analysisTimingGrid = useMemo(
+    () => normalizeAnalysisTimingGrid(analysisQuery.data?.timing),
+    [analysisQuery.data?.timing],
+  );
   const detectedKey = parseKey(analysisQuery.data?.estimated_key);
+  const loopAlignmentMode = loopAlignmentModeOverride ?? defaultLoopAlignmentMode;
   const tempoOriginalBpm = normalizeTempoBpm(analysisQuery.data?.tempo_bpm);
   const tempoTargetBpmForPlayback = tempoOriginalBpm === null ? null : tempoTargetBpm;
   const tempoDisplayBpm = tempoTargetBpmForPlayback ?? tempoOriginalBpm;
@@ -1028,6 +1051,10 @@ export function useProjectViewModel() {
     setPrecountClickCount(normalizePrecountClickCount(value));
   }
 
+  function handleSetLoopAlignmentMode(value: LoopAlignmentMode) {
+    setLoopAlignmentModeOverride(normalizeLoopAlignmentMode(value));
+  }
+
   function handleDecreasePlaybackTempo() {
     if (!canUseTempo) {
       return;
@@ -1078,6 +1105,8 @@ export function useProjectViewModel() {
         pendingLoopStartSeconds,
         playbackTimeSeconds,
         playbackDurationSeconds || projectQuery.data?.duration_seconds || 0,
+        loopAlignmentMode,
+        analysisTimingGrid,
       );
       setLoopRange(nextLoopRange);
       setPendingLoopStartSeconds(null);
@@ -1493,6 +1522,7 @@ export function useProjectViewModel() {
     setPrecountClickCount(storedPlaybackState.precountClickCount);
     setTempoTargetBpm(storedPlaybackState.tempoTargetBpm);
     setLoopRange(storedPlaybackState.loopRange);
+    setLoopAlignmentModeOverride(storedPlaybackState.loopAlignmentMode);
     setPendingLoopStartSeconds(null);
     setLoopStatusMessage(null);
     setPlaybackDisplayModeSource(hasStoredPlayback ? "stored" : "default");
@@ -1653,6 +1683,7 @@ export function useProjectViewModel() {
       precountClickCount,
       tempoTargetBpm,
       loopRange,
+      loopAlignmentMode: loopAlignmentModeOverride,
       lyricsFollowEnabled,
       chordsFollowEnabled,
       stemControls,
@@ -1667,6 +1698,7 @@ export function useProjectViewModel() {
     hydratedProjectId,
     lyricsFollowEnabled,
     loopRange,
+    loopAlignmentModeOverride,
     playbackDisplayMode,
     precountClickCount,
     precountEnabled,
@@ -1906,9 +1938,11 @@ export function useProjectViewModel() {
       precountTempoBpm,
       tempoOriginalBpm,
       tempoTargetBpm: tempoTargetBpmForPlayback,
+      timingGrid: analysisTimingGrid,
       loopRange,
     });
   }, [
+    analysisTimingGrid,
     hydratedProjectId,
     isStemPlayback,
     projectId,
@@ -2001,6 +2035,7 @@ export function useProjectViewModel() {
     handleSetPrecountClickCount,
     handleSetPrecountEnabled,
     handleSetPrecountLoopEnabled,
+    handleSetLoopAlignmentMode,
     handleIncreasePlaybackTempo,
     handleSetPlaybackTempo,
     handleAcceptTabSuggestionGroup,
@@ -2036,6 +2071,8 @@ export function useProjectViewModel() {
     isMobileRuntime,
     isPlaying,
     loopRange,
+    loopAlignmentMode,
+    loopAlignmentModeOverride,
     loopStatusMessage,
     isDeleteArtifactsPending,
     isDeleteMixDisabled,

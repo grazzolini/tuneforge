@@ -4,6 +4,10 @@ import {
   type PlaybackDisplayMode,
   type ProjectWorkspaceMode,
 } from "../../lib/preferences";
+import {
+  normalizeLoopAlignmentMode,
+  type LoopAlignmentMode,
+} from "../../lib/timingGrid";
 import { normalizeTempoTargetBpm } from "./playbackTempo";
 
 export type ProjectPanelMode = "studio" | "analysis";
@@ -36,6 +40,7 @@ export type StoredProjectPlaybackState = {
   precountClickCount: number;
   tempoTargetBpm: number | null;
   loopRange: PlaybackLoopRange | null;
+  loopAlignmentMode: LoopAlignmentMode | null;
   lyricsFollowEnabled: boolean;
   chordsFollowEnabled: boolean;
   stemControls: Record<string, StemControlState>;
@@ -57,6 +62,7 @@ const DEFAULT_STORED_PROJECT_PLAYBACK_STATE: StoredProjectPlaybackState = {
   precountClickCount: DEFAULT_PRECOUNT_CLICK_COUNT,
   tempoTargetBpm: null,
   loopRange: null,
+  loopAlignmentMode: null,
   lyricsFollowEnabled: true,
   chordsFollowEnabled: true,
   stemControls: {},
@@ -176,6 +182,10 @@ function normalizeStoredProjectPlaybackState(value: unknown): StoredProjectPlayb
     precountClickCount: normalizePrecountClickCount(candidate.precountClickCount),
     tempoTargetBpm: normalizeTempoTargetBpm(candidate.tempoTargetBpm),
     loopRange: normalizePlaybackLoopRange(candidate.loopRange),
+    loopAlignmentMode:
+      candidate.loopAlignmentMode === null || candidate.loopAlignmentMode === undefined
+        ? null
+        : normalizeLoopAlignmentMode(candidate.loopAlignmentMode),
     lyricsFollowEnabled:
       typeof candidate.lyricsFollowEnabled === "boolean"
         ? candidate.lyricsFollowEnabled

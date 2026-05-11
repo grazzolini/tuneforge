@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from .conftest import wait_for_job
 
 
-def test_analysis_job_persists_results(client, sample_audio_file: Path):
+def test_analysis_job_persists_results(client, sample_rhythmic_audio_file: Path):
     project = client.post(
         "/api/v1/projects/import",
-        json={"source_path": str(sample_audio_file), "copy_into_project": True},
+        json={"source_path": str(sample_rhythmic_audio_file), "copy_into_project": True},
     ).json()["project"]
 
     initial_jobs = client.get("/api/v1/jobs").json()["jobs"]
@@ -34,6 +35,10 @@ def test_analysis_job_persists_results(client, sample_audio_file: Path):
     assert analysis["estimated_reference_hz"] is not None
     assert analysis["tuning_offset_cents"] is not None
     assert analysis["estimated_key"] is not None
+    assert analysis["timing"] is not None
+    assert analysis["analysis_version"] == "v3"
+    assert analysis["timing"]["beats_per_bar"] == 4
+    assert analysis["timing"]["beats"][0]["beat_in_bar"] == 1
 
     artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
     source_artifact = next(artifact for artifact in artifacts if artifact["type"] == "source_audio")
@@ -41,6 +46,8 @@ def test_analysis_job_persists_results(client, sample_audio_file: Path):
     assert len(analysis_artifacts) == 1
     assert analysis["source_artifact_id"] == source_artifact["id"]
     assert analysis_artifacts[0]["metadata"]["source_artifact_id"] == source_artifact["id"]
+    analysis_payload = json.loads(Path(analysis_artifacts[0]["path"]).read_text(encoding="utf-8"))
+    assert analysis_payload["timing"] == analysis["timing"]
 
     refresh_job = client.post(
         f"/api/v1/projects/{project['id']}/analyze",

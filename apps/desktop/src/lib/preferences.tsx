@@ -8,6 +8,11 @@ import {
   type ReactNode,
 } from "react";
 import type { EnharmonicDisplayMode } from "./music";
+import {
+  DEFAULT_LOOP_ALIGNMENT_MODE,
+  normalizeLoopAlignmentMode,
+  type LoopAlignmentMode,
+} from "./timingGrid";
 
 export type InformationDensity = "minimal" | "balanced" | "detailed";
 export type ProjectWorkspaceMode = "project" | "playback";
@@ -16,7 +21,7 @@ export type DefaultPlaybackDisplayMode = "auto" | PlaybackDisplayMode;
 export type DefaultChordBackend = "tuneforge-fast" | "crema-advanced";
 export type DefaultStemModel = "htdemucs_6s" | "htdemucs_ft";
 export type TunerVisualMode = "simple" | "wide-arc";
-export type { EnharmonicDisplayMode };
+export type { EnharmonicDisplayMode, LoopAlignmentMode };
 
 export const DEFAULT_TUNER_REFERENCE_HZ = 440;
 export const MIN_TUNER_REFERENCE_HZ = 400;
@@ -29,6 +34,7 @@ export type UiPreferences = {
   defaultSourcesRailCollapsed: boolean;
   defaultProjectWorkspace: ProjectWorkspaceMode;
   defaultPlaybackDisplayMode: DefaultPlaybackDisplayMode;
+  defaultLoopAlignmentMode: LoopAlignmentMode;
   defaultChordBackend: DefaultChordBackend;
   defaultStemModel: DefaultStemModel;
   defaultLyricsFollowEnabled: boolean;
@@ -51,6 +57,7 @@ export type VisibilityPreferences = Pick<
   | "defaultSourcesRailCollapsed"
   | "defaultProjectWorkspace"
   | "defaultPlaybackDisplayMode"
+  | "defaultLoopAlignmentMode"
   | "defaultLyricsFollowEnabled"
   | "defaultChordsFollowEnabled"
 >;
@@ -62,6 +69,7 @@ type PreferencesContextValue = UiPreferences & {
   setDefaultSourcesRailCollapsed: (value: boolean) => void;
   setDefaultProjectWorkspace: (value: ProjectWorkspaceMode) => void;
   setDefaultPlaybackDisplayMode: (value: DefaultPlaybackDisplayMode) => void;
+  setDefaultLoopAlignmentMode: (value: LoopAlignmentMode) => void;
   setDefaultChordBackend: (value: DefaultChordBackend) => void;
   setDefaultStemModel: (value: DefaultStemModel) => void;
   setDefaultLyricsFollowEnabled: (value: boolean) => void;
@@ -104,6 +112,7 @@ export const DEFAULT_VISIBILITY_PREFERENCES: VisibilityPreferences = {
   defaultSourcesRailCollapsed: false,
   defaultProjectWorkspace: "project",
   defaultPlaybackDisplayMode: "auto",
+  defaultLoopAlignmentMode: DEFAULT_LOOP_ALIGNMENT_MODE,
   defaultLyricsFollowEnabled: true,
   defaultChordsFollowEnabled: true,
 };
@@ -199,6 +208,10 @@ export function normalizePreferences(value: unknown): UiPreferences {
     defaultPlaybackDisplayMode: isDefaultPlaybackDisplayMode(candidate.defaultPlaybackDisplayMode)
       ? candidate.defaultPlaybackDisplayMode
       : DEFAULT_PREFERENCES.defaultPlaybackDisplayMode,
+    defaultLoopAlignmentMode: normalizeLoopAlignmentMode(
+      candidate.defaultLoopAlignmentMode,
+      DEFAULT_PREFERENCES.defaultLoopAlignmentMode,
+    ),
     defaultChordBackend: isDefaultChordBackend(candidate.defaultChordBackend)
       ? candidate.defaultChordBackend
       : DEFAULT_PREFERENCES.defaultChordBackend,
@@ -278,6 +291,9 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       },
       setDefaultPlaybackDisplayMode: (defaultPlaybackDisplayMode) => {
         setPreferences((current) => mergePreferences(current, { defaultPlaybackDisplayMode }));
+      },
+      setDefaultLoopAlignmentMode: (defaultLoopAlignmentMode) => {
+        setPreferences((current) => mergePreferences(current, { defaultLoopAlignmentMode }));
       },
       setDefaultChordBackend: (defaultChordBackend) => {
         setPreferences((current) => mergePreferences(current, { defaultChordBackend }));

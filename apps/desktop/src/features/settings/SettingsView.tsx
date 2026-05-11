@@ -24,6 +24,7 @@ import {
   type DefaultStemModel,
   type EnharmonicDisplayMode,
   type InformationDensity,
+  type LoopAlignmentMode,
   type ProjectWorkspaceMode,
   type TunerVisualMode,
 } from "../../lib/preferences";
@@ -157,6 +158,24 @@ const playbackDisplayOptions: ChoiceOption<DefaultPlaybackDisplayMode>[] = [
   },
 ];
 
+const loopAlignmentOptions: ChoiceOption<LoopAlignmentMode>[] = [
+  {
+    value: "free",
+    label: "Exact",
+    description: "Keep loop points where they are set.",
+  },
+  {
+    value: "beat",
+    label: "Beat",
+    description: "Snap new loop points to detected beats.",
+  },
+  {
+    value: "bar",
+    label: "Bar",
+    description: "Snap new loop points to inferred bar starts.",
+  },
+];
+
 const fallbackChordBackendOptions: ChoiceOption<DefaultChordBackend>[] = [
   {
     value: "tuneforge-fast",
@@ -219,6 +238,12 @@ function playbackDisplayLabel(value: DefaultPlaybackDisplayMode) {
   if (value === "combined") return "Lyrics + chords";
   if (value === "lyrics") return "Lyrics";
   return "Chords";
+}
+
+function loopAlignmentLabel(value: LoopAlignmentMode) {
+  if (value === "beat") return "Beat";
+  if (value === "bar") return "Bar";
+  return "Exact";
 }
 
 function chordBackendLabel(value: DefaultChordBackend) {
@@ -427,6 +452,7 @@ export function SettingsView() {
     defaultSourcesRailCollapsed,
     defaultProjectWorkspace,
     defaultPlaybackDisplayMode,
+    defaultLoopAlignmentMode,
     defaultChordBackend,
     defaultStemModel,
     defaultLyricsFollowEnabled,
@@ -438,6 +464,7 @@ export function SettingsView() {
     setEnharmonicDisplayMode,
     setDefaultProjectWorkspace,
     setDefaultPlaybackDisplayMode,
+    setDefaultLoopAlignmentMode,
     setDefaultChordBackend,
     setDefaultStemModel,
     setDefaultLyricsFollowEnabled,
@@ -534,6 +561,7 @@ export function SettingsView() {
         preferences: {
           defaultChordsFollowEnabled,
           defaultChordBackend,
+          defaultLoopAlignmentMode,
           defaultStemModel,
           defaultInspectorOpen,
           defaultPlaybackDisplayMode,
@@ -645,6 +673,10 @@ export function SettingsView() {
           <div className="settings-overview__stat">
             <dt>Playback view</dt>
             <dd>{playbackDisplayLabel(defaultPlaybackDisplayMode)}</dd>
+          </div>
+          <div className="settings-overview__stat">
+            <dt>Loop alignment</dt>
+            <dd>{loopAlignmentLabel(defaultLoopAlignmentMode)}</dd>
           </div>
           <div className="settings-overview__stat">
             <dt>Chord backend</dt>
@@ -829,6 +861,14 @@ export function SettingsView() {
             onChange={setDefaultPlaybackDisplayMode}
             options={playbackDisplayOptions}
             value={defaultPlaybackDisplayMode}
+          />
+
+          <ChoiceGroup
+            description="Choose how new project loops align before that project stores its own mode."
+            legend="Default loop alignment"
+            onChange={setDefaultLoopAlignmentMode}
+            options={loopAlignmentOptions}
+            value={defaultLoopAlignmentMode}
           />
 
           <div className="settings-toggle-list">

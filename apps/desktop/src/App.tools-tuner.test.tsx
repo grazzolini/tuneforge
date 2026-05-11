@@ -27,24 +27,30 @@ describe("Desktop app tools tuner", () => {
     expect(screen.getByRole("button", { name: "Start" })).toBeEnabled();
     expect(screen.getByLabelText("Microphone source")).toHaveValue("");
     expect(screen.getByLabelText("A4 reference tuning")).toHaveValue(440);
-    expect(screen.getByLabelText("Tuner visual mode")).toHaveValue("simple");
+    expect(screen.getByLabelText("Tuner visual mode")).toHaveValue("wide-arc");
     expect(screen.getByRole("option", { name: "Wide Arc" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Simple Meter" })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "Microphone 1" })).not.toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "USB Interface" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("wide-arc-tuner-meter")).toBeInTheDocument();
     expect(screen.getByRole("meter", { name: "Tuning offset" })).toBeInTheDocument();
     expect(screen.getByRole("meter", { name: "Input signal level" })).toBeInTheDocument();
     expect(getMockMediaDevices().getUserMedia).not.toHaveBeenCalled();
   });
 
-  it("keeps the wide arc visual mode available", async () => {
+  it("keeps the simple visual mode available and persists it", async () => {
     const user = userEvent.setup();
     renderApp(["/tools"]);
 
     expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
-    await user.selectOptions(screen.getByLabelText("Tuner visual mode"), "wide-arc");
+    await user.selectOptions(screen.getByLabelText("Tuner visual mode"), "simple");
 
-    expect(screen.getByLabelText("Tuner visual mode")).toHaveValue("wide-arc");
+    expect(screen.getByLabelText("Tuner visual mode")).toHaveValue("simple");
+    expect(screen.getByTestId("simple-tuner-meter")).toBeInTheDocument();
     expect(screen.getByRole("meter", { name: "Tuning offset" })).toBeInTheDocument();
+    expect(window.localStorage.getItem("tuneforge.ui-preferences")).toContain(
+      '"defaultTunerVisualMode":"simple"',
+    );
   });
 
   it("keeps tuner preferences synced between tools and settings", async () => {
@@ -66,22 +72,26 @@ describe("Desktop app tools tuner", () => {
     expect(await screen.findByRole("option", { name: "USB Interface" })).toBeInTheDocument();
     await user.selectOptions(screen.getByLabelText("Microphone source"), "cpal:1:usb");
     changeReferenceInput("442.5");
+    await user.selectOptions(screen.getByLabelText("Tuner visual mode"), "simple");
 
     await user.click(screen.getByRole("link", { name: "Settings" }));
 
     expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
     expect(screen.getByLabelText("Microphone source")).toHaveValue("cpal:1:usb");
     expect(screen.getByLabelText("A4 reference tuning")).toHaveValue(442.5);
+    expect(screen.getByLabelText("Default tuner")).toHaveValue("simple");
     expect(screen.getByText("Saved microphone")).toBeInTheDocument();
     expect(screen.getByText("442.5 Hz")).toBeInTheDocument();
 
     await user.selectOptions(screen.getByLabelText("Microphone source"), "");
     changeReferenceInput("441");
+    await user.selectOptions(screen.getByLabelText("Default tuner"), "wide-arc");
     await user.click(screen.getByRole("link", { name: "Tools" }));
 
     expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
     expect(screen.getByLabelText("Microphone source")).toHaveValue("");
     expect(screen.getByLabelText("A4 reference tuning")).toHaveValue(441);
+    expect(screen.getByLabelText("Tuner visual mode")).toHaveValue("wide-arc");
   });
 
   it("applies valid reference tuning edits before the field blurs", async () => {
@@ -183,6 +193,7 @@ describe("Desktop app tools tuner", () => {
       JSON.stringify({
         defaultTunerInputDeviceId: "",
         defaultTunerReferenceHz: 999,
+        defaultTunerVisualMode: "needle",
       }),
     );
 
@@ -191,6 +202,7 @@ describe("Desktop app tools tuner", () => {
     expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
     expect(screen.getByLabelText("Microphone source")).toHaveValue("");
     expect(screen.getByLabelText("A4 reference tuning")).toHaveValue(440);
+    expect(screen.getByLabelText("Tuner visual mode")).toHaveValue("wide-arc");
   });
 
   it("starts Web Audio capture with the system default source and stops cleanly", async () => {
@@ -267,7 +279,7 @@ describe("Desktop app tools tuner", () => {
         "50",
       ),
     );
-    expect(screen.getByTestId("simple-tuner-meter")).not.toHaveAttribute(
+    expect(screen.getByTestId("wide-arc-tuner-meter")).not.toHaveAttribute(
       "data-tuning-state",
       "no-pitch",
     );

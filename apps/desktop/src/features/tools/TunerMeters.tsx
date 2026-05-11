@@ -2,8 +2,6 @@ import { type CSSProperties } from "react";
 import { getTunerDisplay } from "./tunerMeterState";
 import { type TunerPitchReading } from "./tunerPitch";
 
-export type TunerVisualMode = "simple" | "wide-arc";
-
 type TunerMeterProps = {
   inputLevel: number;
   reading: TunerPitchReading | null;
@@ -12,8 +10,10 @@ type TunerMeterProps = {
 
 export function SimpleTunerMeter({ inputLevel, reading, referenceHz }: TunerMeterProps) {
   const display = getTunerDisplay(reading, referenceHz);
+  const markerPositionPercent =
+    display.toneState === "in-tune" ? 50 : display.markerPositionPercent;
   const style = {
-    "--tuner-marker-position": `${display.markerPositionPercent}%`,
+    "--tuner-marker-position": `${markerPositionPercent}%`,
   } as CSSProperties;
   const centerDirectionLabel = display.hasPitch ? "In tune" : "Center";
 

@@ -34,6 +34,7 @@ import {
   primeWebAudioContext,
 } from "../../lib/webAudio";
 import { useStableCallback } from "../../lib/useStableCallback";
+import { countInIntervalsForTiming } from "../../lib/timingGrid";
 import {
   PlaybackContext,
   type PlaybackContextValue,
@@ -1873,13 +1874,22 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     setPlaybackTimeSeconds(startTimeSeconds);
 
     const beatSeconds = 60 / tempoBpm;
+    const countInIntervals = countInIntervalsForTiming({
+      clickCount,
+      fallbackBeatSeconds: beatSeconds,
+      startTimeSeconds,
+      timingGrid: targetSession.timingGrid,
+    });
     const firstClickTimeSeconds = precountAudio.context.currentTime + PRECOUNT_START_DELAY_SECONDS;
-    const playbackStartTimeSeconds = firstClickTimeSeconds + clickCount * beatSeconds;
+    const playbackStartTimeSeconds =
+      firstClickTimeSeconds + countInIntervals.reduce((total, interval) => total + interval, 0);
+    let nextClickTimeSeconds = firstClickTimeSeconds;
     for (let index = 0; index < clickCount; index += 1) {
       schedulePrecountClaveClick({
         audioContext: precountAudio.context,
-        startTimeSeconds: firstClickTimeSeconds + index * beatSeconds,
+        startTimeSeconds: nextClickTimeSeconds,
       });
+      nextClickTimeSeconds += countInIntervals[index] ?? beatSeconds;
     }
 
     const timeoutId = window.setTimeout(() => {

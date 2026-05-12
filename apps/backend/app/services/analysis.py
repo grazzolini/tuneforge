@@ -25,24 +25,24 @@ def analyze_project(session: Session, project: Project) -> AnalysisResult:
     analysis.estimated_reference_hz = results["estimated_reference_hz"]  # type: ignore[assignment]
     analysis.tuning_offset_cents = results["tuning_offset_cents"]  # type: ignore[assignment]
     analysis.tempo_bpm = results["tempo_bpm"]  # type: ignore[assignment]
-    analysis.analysis_version = "v2"
+    analysis.timing_json = results["timing"]  # type: ignore[assignment]
+    analysis.analysis_version = "v3"
     session.flush()
 
+    analysis_payload = {
+        "project_id": project.id,
+        "source_artifact_id": analysis.source_artifact_id,
+        "estimated_key": analysis.estimated_key,
+        "key_confidence": analysis.key_confidence,
+        "estimated_reference_hz": analysis.estimated_reference_hz,
+        "tuning_offset_cents": analysis.tuning_offset_cents,
+        "tempo_bpm": analysis.tempo_bpm,
+        "timing": analysis.timing_json,
+        "analysis_version": analysis.analysis_version,
+    }
     analysis_path = project_analysis_dir(project.id) / "analysis.json"
     analysis_path.write_text(
-        json.dumps(
-            {
-                "project_id": project.id,
-                "source_artifact_id": analysis.source_artifact_id,
-                "estimated_key": analysis.estimated_key,
-                "key_confidence": analysis.key_confidence,
-                "estimated_reference_hz": analysis.estimated_reference_hz,
-                "tuning_offset_cents": analysis.tuning_offset_cents,
-                "tempo_bpm": analysis.tempo_bpm,
-                "analysis_version": analysis.analysis_version,
-            },
-            indent=2,
-        ),
+        json.dumps(analysis_payload, indent=2),
         encoding="utf-8",
     )
 

@@ -123,6 +123,7 @@ def test_chord_engine_handles_silence_and_short_audio(tmp_path: Path):
         "estimated_reference_hz": None,
         "tuning_offset_cents": None,
         "tempo_bpm": None,
+        "timing": None,
     }
 
     silence_path = tmp_path / "silence.wav"
@@ -172,6 +173,16 @@ def test_analysis_uses_harmonic_features_for_key_tuning_and_tempo(tmp_path: Path
     rhythmic = analyze_track(rhythmic_path)
     assert rhythmic["tempo_bpm"] is not None
     assert 100.0 <= rhythmic["tempo_bpm"] <= 140.0
+    assert rhythmic["timing"] is not None
+    assert rhythmic["timing"]["beats_per_bar"] == 4
+    assert rhythmic["timing"]["source"] in {"detected", "tempo_fallback"}
+    assert len(rhythmic["timing"]["beats"]) >= 4
+    assert len(rhythmic["timing"]["bars"]) >= 1
+    beat_seconds = [beat["seconds"] for beat in rhythmic["timing"]["beats"]]
+    assert beat_seconds == sorted(beat_seconds)
+    median_beat_seconds = float(np.median(np.diff(np.asarray(beat_seconds[:8]))))
+    assert 0.35 <= median_beat_seconds <= 0.65
+    assert rhythmic["timing"]["beats"][0]["beat_in_bar"] == 1
 
 
 def test_analysis_keeps_common_borrowed_chords_in_major_context(tmp_path: Path):

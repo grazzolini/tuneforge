@@ -140,6 +140,26 @@ class AnalysisRequest(BaseModel):
     force: bool = False
 
 
+class AnalysisTimingBeatSchema(BaseModel):
+    index: int
+    seconds: float
+    bar_index: int
+    beat_in_bar: int
+
+
+class AnalysisTimingBarSchema(BaseModel):
+    index: int
+    start_seconds: float
+    end_seconds: float
+
+
+class AnalysisTimingSchema(BaseModel):
+    beats_per_bar: int
+    source: str
+    beats: list[AnalysisTimingBeatSchema] = Field(default_factory=list)
+    bars: list[AnalysisTimingBarSchema] = Field(default_factory=list)
+
+
 class AnalysisSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -150,6 +170,7 @@ class AnalysisSchema(BaseModel):
     estimated_reference_hz: float | None
     tuning_offset_cents: float | None
     tempo_bpm: float | None
+    timing: AnalysisTimingSchema | None = Field(default=None, validation_alias="timing_json")
     analysis_version: str
     created_at: datetime
 

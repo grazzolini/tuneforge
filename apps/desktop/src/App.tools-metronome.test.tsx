@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -14,6 +14,33 @@ import {
 function getMetronomeAudioContext() {
   return getMockAudioContexts().find((context) => context.createdOscillators.length > 0);
 }
+
+const timingAnalysis = {
+  project_id: "proj_123",
+  estimated_key: "G major",
+  key_confidence: 0.82,
+  estimated_reference_hz: 440,
+  tuning_offset_cents: 0,
+  tempo_bpm: 60,
+  analysis_version: "v3",
+  created_at: "2026-04-18T13:16:00.000Z",
+  timing: {
+    beats_per_bar: 4,
+    source: "detected",
+    beats: [
+      { index: 0, seconds: 0, bar_index: 0, beat_in_bar: 1 },
+      { index: 1, seconds: 0.12, bar_index: 0, beat_in_bar: 2 },
+      { index: 2, seconds: 0.24, bar_index: 0, beat_in_bar: 3 },
+      { index: 3, seconds: 0.36, bar_index: 0, beat_in_bar: 4 },
+      { index: 4, seconds: 0.48, bar_index: 1, beat_in_bar: 1 },
+      { index: 5, seconds: 0.62, bar_index: 1, beat_in_bar: 2 },
+    ],
+    bars: [
+      { index: 0, start_seconds: 0, end_seconds: 0.48 },
+      { index: 1, start_seconds: 0.48, end_seconds: 1 },
+    ],
+  },
+};
 
 describe("Desktop app tools metronome", () => {
   beforeEach(resetAppTestHarness);
@@ -152,6 +179,37 @@ describe("Desktop app tools metronome", () => {
     await waitFor(() =>
       expect(syncedContext?.createdOscillators.length).toBeGreaterThan(scheduledBeforePause),
     );
+  });
+
+  it("schedules followed clicks from analysis timing when available", async () => {
+    const user = userEvent.setup();
+    setProjectAnalysis("proj_123", timingAnalysis);
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    await user.click(screen.getByRole("tab", { name: "Playback" }));
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument(),
+    );
+    act(() => {
+      sourceAudio.currentTime = 0.45;
+      fireEvent.timeUpdate(sourceAudio);
+    });
+
+    await user.click(screen.getByRole("link", { name: "Tools" }));
+    await user.click(await screen.findByRole("tab", { name: "Metronome" }));
+    await user.click(screen.getByLabelText("Follow project playback"));
+
+    await waitFor(() => {
+      const frequencies =
+        getMetronomeAudioContext()?.createdOscillators.flatMap((oscillator) =>
+          oscillator.frequency.setValueAtTime.mock.calls.map((call) => call[0]),
+        ) ?? [];
+      expect(frequencies).toContain(1760);
+    });
   });
 
   it("keeps synced metronome armed when opening the playback project page", async () => {

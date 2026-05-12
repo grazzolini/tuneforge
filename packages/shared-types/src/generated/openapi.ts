@@ -471,6 +471,7 @@ export interface components {
             tuning_offset_cents: number | null;
             /** Tempo Bpm */
             tempo_bpm: number | null;
+            timing?: components["schemas"]["AnalysisTimingSchema"] | null;
             /** Analysis Version */
             analysis_version: string;
             /**
@@ -478,6 +479,37 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+        };
+        /** AnalysisTimingBarSchema */
+        AnalysisTimingBarSchema: {
+            /** Index */
+            index: number;
+            /** Start Seconds */
+            start_seconds: number;
+            /** End Seconds */
+            end_seconds: number;
+        };
+        /** AnalysisTimingBeatSchema */
+        AnalysisTimingBeatSchema: {
+            /** Index */
+            index: number;
+            /** Seconds */
+            seconds: number;
+            /** Bar Index */
+            bar_index: number;
+            /** Beat In Bar */
+            beat_in_bar: number;
+        };
+        /** AnalysisTimingSchema */
+        AnalysisTimingSchema: {
+            /** Beats Per Bar */
+            beats_per_bar: number;
+            /** Source */
+            source: string;
+            /** Beats */
+            beats?: components["schemas"]["AnalysisTimingBeatSchema"][];
+            /** Bars */
+            bars?: components["schemas"]["AnalysisTimingBarSchema"][];
         };
         /** ArtifactSchema */
         ArtifactSchema: {

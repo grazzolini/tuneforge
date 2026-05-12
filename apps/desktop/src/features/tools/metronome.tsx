@@ -4,6 +4,7 @@ import {
   setNativeAudioClick,
 } from "../../lib/nativeAudio";
 import { useStableCallback } from "../../lib/useStableCallback";
+import { nextTimedBeatIndex, type AnalysisTimingBeat } from "../../lib/timingGrid";
 import {
   activateWebAudioContext,
   getWebAudioContextConstructor,
@@ -144,9 +145,13 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     audioContext: AudioContext,
     beatIndex: number,
     startTimeSeconds: number,
+    timingBeat?: AnalysisTimingBeat,
   ) {
-    const beatNumber = beatNumberForIndex(beatIndex, beatsPerBarRef.current);
-    const accent = isAccentBeat(beatIndex, beatsPerBarRef.current, accentFirstBeatRef.current);
+    const beatNumber =
+      timingBeat?.beat_in_bar ?? beatNumberForIndex(beatIndex, beatsPerBarRef.current);
+    const accent = timingBeat
+      ? accentFirstBeatRef.current && timingBeat.beat_in_bar === 1
+      : isAccentBeat(beatIndex, beatsPerBarRef.current, accentFirstBeatRef.current);
     if (!(followPlaybackRef.current && nativeFollowClickActiveRef.current)) {
       scheduleMetronomeClick({
         accent,
@@ -191,10 +196,46 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     );
   });
 
+  const scheduleTimed = useStableCallback(function scheduleTimed(
+    audioContext: AudioContext,
+    snapshot: PlaybackSnapshot,
+  ) {
+    const timingGrid = snapshot.session?.timingGrid;
+    if (!timingGrid || timingGrid.beats.length < 2) {
+      return;
+    }
+    const playbackTimeSeconds = Math.max(0, snapshot.playbackTimeSeconds);
+    let beatIndex = nextTimedBeatIndex({
+      lastPlaybackTimeSeconds: lastSyncedPlaybackTimeRef.current,
+      lastScheduledBeatIndex: lastSyncedScheduledBeatRef.current,
+      playbackTimeSeconds,
+      timingGrid,
+    });
+    const scheduleUntilPlaybackSeconds = playbackTimeSeconds + SCHEDULE_AHEAD_SECONDS;
+
+    while (
+      beatIndex < timingGrid.beats.length &&
+      timingGrid.beats[beatIndex].seconds <= scheduleUntilPlaybackSeconds
+    ) {
+      const beat = timingGrid.beats[beatIndex];
+      const startTimeSeconds =
+        audioContext.currentTime + Math.max(0, beat.seconds - playbackTimeSeconds);
+      scheduleBeat(audioContext, beat.index, startTimeSeconds, beat);
+      lastSyncedScheduledBeatRef.current = beatIndex;
+      beatIndex += 1;
+    }
+
+    lastSyncedPlaybackTimeRef.current = playbackTimeSeconds;
+  });
+
   const scheduleSynced = useStableCallback(function scheduleSynced(
     audioContext: AudioContext,
     snapshot: PlaybackSnapshot,
   ) {
+    if (snapshot.session?.timingGrid) {
+      scheduleTimed(audioContext, snapshot);
+      return;
+    }
     const beatSeconds = secondsPerBeat(bpmRef.current);
     const playbackTimeSeconds = Math.max(0, snapshot.playbackTimeSeconds);
     let beatIndex = nextSyncedBeatIndex({
@@ -371,7 +412,13 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
   ]);
 
   useEffect(() => {
-    if (!isTauriRuntime() || isWebAudioBackendForced() || !isRunning || !followPlayback) {
+    if (
+      !isTauriRuntime() ||
+      isWebAudioBackendForced() ||
+      !isRunning ||
+      !followPlayback ||
+      session?.timingGrid
+    ) {
       nativeFollowClickActiveRef.current = false;
       if (isTauriRuntime()) {
         void setNativeAudioClick({ enabled: false }).catch(() => undefined);
@@ -404,7 +451,7 @@ export function MetronomeProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [accentFirstBeat, beatsPerBar, bpm, followPlayback, isRunning, volume]);
+  }, [accentFirstBeat, beatsPerBar, bpm, followPlayback, isRunning, session?.timingGrid, volume]);
 
   const syncStatus = followPlayback
     ? session

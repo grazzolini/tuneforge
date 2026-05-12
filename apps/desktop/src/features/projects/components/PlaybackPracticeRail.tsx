@@ -1,5 +1,6 @@
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { ArrowUpDown, AudioLines, Drumstick, Gauge, Layers } from "lucide-react";
+import { LOOP_ALIGNMENT_MODES, type LoopAlignmentMode } from "../../../lib/timingGrid";
 import {
   artifactLabel,
   artifactSummary,
@@ -21,6 +22,7 @@ export function PlaybackPracticeRail() {
     enharmonicDisplayMode,
     canUseTempo,
     handleSetPlaybackTempo,
+    handleSetLoopAlignmentMode,
     handleResetPlaybackTempo,
     handleSelectPrimaryArtifact,
     handleSelectStemArtifact,
@@ -33,6 +35,7 @@ export function PlaybackPracticeRail() {
     isStemPlayback,
     lowerCapoPreview,
     lowerCapoShiftOptions,
+    loopAlignmentMode,
     precountClickCount,
     precountDisabledReason,
     precountEnabled,
@@ -70,6 +73,11 @@ export function PlaybackPracticeRail() {
         ? `Original ${tempoOriginalBpm.toFixed(1)} BPM`
         : `${tempoTargetBpm.toFixed(0)} BPM (${tempoPlaybackRate.toFixed(3)}x)`
       : "Waiting for tempo analysis";
+  const loopAlignmentLabel = (mode: LoopAlignmentMode) => {
+    if (mode === "beat") return "Beat";
+    if (mode === "bar") return "Bar";
+    return "Exact";
+  };
   const [tempoDraftText, setTempoDraftText] = useState(() =>
     tempoDisplayBpm === null
       ? ""
@@ -301,6 +309,26 @@ export function PlaybackPracticeRail() {
             ? `${precountClickCount} clicks at ${precountTempoBpm.toFixed(1)} BPM`
             : precountDisabledReason}
         </p>
+      </section>
+
+      <section className="playback-loop-alignment-control" aria-labelledby="playback-loop-alignment-heading">
+        <div>
+          <p className="metric-label">Loop</p>
+          <h3 id="playback-loop-alignment-heading">Alignment</h3>
+        </div>
+        <div className="playback-loop-alignment-control__segments" role="group" aria-label="Loop alignment">
+          {LOOP_ALIGNMENT_MODES.map((mode) => (
+            <button
+              aria-pressed={loopAlignmentMode === mode}
+              className="button button--ghost button--small"
+              key={mode}
+              onClick={() => handleSetLoopAlignmentMode(mode)}
+              type="button"
+            >
+              {loopAlignmentLabel(mode)}
+            </button>
+          ))}
+        </div>
       </section>
 
       <section

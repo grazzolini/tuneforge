@@ -160,6 +160,7 @@ describe("Desktop app settings theme", () => {
     await user.click(screen.getByRole("button", { name: /^Prefer sharps/ }));
     await user.click(screen.getByRole("button", { name: /^Playback first/ }));
     await user.click(screen.getByRole("button", { name: /^Lyrics \+ chords/ }));
+    await user.click(screen.getByRole("button", { name: /^Beat/ }));
     await user.click(screen.getByRole("button", { name: /^Advanced Chords/ }));
     await user.click(screen.getByText("Show diagnostics"));
     expect(await screen.findByText("/tmp/tuneforge")).toBeInTheDocument();
@@ -189,6 +190,7 @@ describe("Desktop app settings theme", () => {
         defaultSourcesRailCollapsed: false,
         defaultProjectWorkspace: "playback",
         defaultPlaybackDisplayMode: "combined",
+        defaultLoopAlignmentMode: "beat",
         defaultChordBackend: "crema-advanced",
         defaultLyricsFollowEnabled: true,
         defaultChordsFollowEnabled: true,

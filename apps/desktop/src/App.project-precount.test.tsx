@@ -21,6 +21,30 @@ const analysisWithTempo = {
   created_at: "2026-04-18T13:16:00.000Z",
 };
 
+const analysisWithTiming = {
+  ...analysisWithTempo,
+  timing: {
+    beats_per_bar: 4,
+    source: "detected",
+    beats: [
+      { index: 0, seconds: 0, bar_index: 0, beat_in_bar: 1 },
+      { index: 1, seconds: 0.48, bar_index: 0, beat_in_bar: 2 },
+      { index: 2, seconds: 1.01, bar_index: 0, beat_in_bar: 3 },
+      { index: 3, seconds: 1.5, bar_index: 0, beat_in_bar: 4 },
+      { index: 4, seconds: 2.04, bar_index: 1, beat_in_bar: 1 },
+      { index: 5, seconds: 2.52, bar_index: 1, beat_in_bar: 2 },
+      { index: 6, seconds: 3.02, bar_index: 1, beat_in_bar: 3 },
+      { index: 7, seconds: 3.51, bar_index: 1, beat_in_bar: 4 },
+      { index: 8, seconds: 4.04, bar_index: 2, beat_in_bar: 1 },
+    ],
+    bars: [
+      { index: 0, start_seconds: 0, end_seconds: 2.04 },
+      { index: 1, start_seconds: 2.04, end_seconds: 4.04 },
+      { index: 2, start_seconds: 4.04, end_seconds: 6 },
+    ],
+  },
+};
+
 function setupTempoAnalysis() {
   setProjectAnalysis("proj_123", analysisWithTempo);
 }
@@ -274,6 +298,110 @@ describe("Desktop app project playback pre-count", () => {
     );
     vi.useRealTimers();
   }, 15000);
+
+  it("uses timing-grid spacing for loop pre-counts when available", async () => {
+    const user = userEvent.setup();
+    setProjectAnalysis("proj_123", analysisWithTiming);
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    setPlaybackPosition("2.04");
+    await user.click(screen.getByRole("button", { name: "Set loop start" }));
+    setPlaybackPosition("4.04");
+    await user.click(screen.getByRole("button", { name: "Set loop end" }));
+
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    vi.useFakeTimers();
+
+    fireEvent.click(screen.getByLabelText("Enable loop pre-count"));
+    fireEvent.click(screen.getByRole("button", { name: "Play playback" }));
+    await flushMicrotasks();
+
+    const audioContext = getMockAudioContexts()[0];
+    expect(audioContext?.createdOscillators).toHaveLength(4);
+    const clickStartTimes = audioContext?.createdOscillators.map(
+      (oscillator) => oscillator.start.mock.calls[0]?.[0],
+    ) ?? [];
+    expect(Number(clickStartTimes[1]) - Number(clickStartTimes[0])).toBeCloseTo(0.48, 3);
+    expect(Number(clickStartTimes[2]) - Number(clickStartTimes[1])).toBeCloseTo(0.53, 3);
+    expect(Number(clickStartTimes[3]) - Number(clickStartTimes[2])).toBeCloseTo(0.49, 3);
+
+    act(() => {
+      vi.advanceTimersByTime(2075);
+    });
+    await flushMicrotasks();
+
+    expect(audioContext?.createdSources[0]?.start.mock.calls[0]?.[0]).toBeCloseTo(2.075, 3);
+    expect(audioContext?.createdSources[0]?.start.mock.calls[0]?.[1]).toBeCloseTo(2.04, 3);
+    vi.useRealTimers();
+  }, 15000);
+
+  it("snaps newly set loops by the project loop alignment mode", async () => {
+    const user = userEvent.setup();
+    setProjectAnalysis("proj_123", analysisWithTiming);
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+
+    await user.click(screen.getByRole("button", { name: "Beat" }));
+    setPlaybackPosition("1.9");
+    await user.click(screen.getByRole("button", { name: "Set loop start" }));
+    setPlaybackPosition("3.8");
+    await user.click(screen.getByRole("button", { name: "Set loop end" }));
+
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    await waitFor(() => expect(getMockAudioContexts()[0]?.createdSources).toHaveLength(1));
+    expect(getMockAudioContexts()[0]?.createdSources[0]?.start.mock.calls[0]?.[1]).toBeCloseTo(
+      2.04,
+      3,
+    );
+    const storedPlaybackState = JSON.parse(
+      window.localStorage.getItem("tuneforge.project-playback-state") ?? "{}",
+    );
+    expect(storedPlaybackState.proj_123.loopAlignmentMode).toBe("beat");
+  });
+
+  it("keeps project loop alignment override after resetting global settings", async () => {
+    const user = userEvent.setup();
+    const settingsRender = renderApp(["/settings"]);
+
+    expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^Bar/ }));
+    settingsRender.unmount();
+
+    setProjectAnalysis("proj_123", analysisWithTiming);
+    const projectRender = renderApp(["/projects/proj_123"]);
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    expect(screen.getByRole("button", { name: "Bar" })).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(screen.getByRole("button", { name: "Beat" }));
+    projectRender.unmount();
+
+    const resetRender = renderApp(["/settings"]);
+    expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Reset All Settings" }));
+
+    expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}")).toMatchObject({
+      defaultLoopAlignmentMode: "free",
+    });
+    const storedProjectPlaybackState = JSON.parse(
+      window.localStorage.getItem("tuneforge.project-playback-state") ?? "{}",
+    );
+    expect(storedProjectPlaybackState.proj_123.loopAlignmentMode).toBe("beat");
+    resetRender.unmount();
+
+    renderApp(["/projects/proj_123"]);
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    expect(screen.getByRole("button", { name: "Beat" })).toHaveAttribute("aria-pressed", "true");
+  });
 
   it("does not use song pre-count for a nonzero loop start", async () => {
     const user = userEvent.setup();

@@ -1195,7 +1195,7 @@ fn start_desktop_runtime(
         .map_err(|error| format!("Native audio output config is unavailable: {error}"))?;
     let sample_format = supported_config.sample_format();
     let stream_config: cpal::StreamConfig = supported_config.into();
-    let sample_rate = stream_config.sample_rate.0;
+    let sample_rate = stream_config.sample_rate;
     let channels = usize::from(stream_config.channels).max(1);
     let (worker_error_sender, worker_error_receiver) = mpsc::channel();
     let loaded_lanes = load_playback_lanes(

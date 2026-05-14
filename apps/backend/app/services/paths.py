@@ -3,10 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.config import get_settings
+from app.services.sync_identity import project_id_to_storage_key
 
 
 def project_root(project_id: str) -> Path:
-    return get_settings().projects_root / project_id
+    return get_settings().projects_root / project_id_to_storage_key(project_id)
 
 
 def project_source_dir(project_id: str) -> Path:

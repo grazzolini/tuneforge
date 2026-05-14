@@ -434,6 +434,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sync/preflight": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Sync Preflight */
+        get: operations["sync_preflight_api_v1_sync_preflight_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1031,6 +1048,69 @@ export interface components {
              * @default false
              */
             overwrite_chord_edits: boolean;
+        };
+        /** SyncPreflightDuplicateGroupSchema */
+        SyncPreflightDuplicateGroupSchema: {
+            /** Source Sha256 */
+            source_sha256: string;
+            /** Expected Project Id */
+            expected_project_id: string;
+            /** Projects */
+            projects: components["schemas"]["SyncPreflightDuplicateProjectSchema"][];
+        };
+        /** SyncPreflightDuplicateProjectSchema */
+        SyncPreflightDuplicateProjectSchema: {
+            /** Project Id */
+            project_id: string;
+            /** Display Name */
+            display_name: string;
+        };
+        /** SyncPreflightProjectSchema */
+        SyncPreflightProjectSchema: {
+            /** Project Id */
+            project_id: string;
+            /** Display Name */
+            display_name: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready" | "missing_source_hash" | "invalid_source_hash" | "duplicate_source_hash" | "noncanonical_project_id";
+            /** Source Sha256 */
+            source_sha256: string | null;
+            /** Expected Project Id */
+            expected_project_id: string | null;
+            /** Expected Storage Key */
+            expected_storage_key: string | null;
+            /** Source Hash Source */
+            source_hash_source: ("database" | "source_path" | "original_copy_path" | "source_artifact_path" | "imported_path") | null;
+            /** Reason */
+            reason?: string | null;
+        };
+        /** SyncPreflightResponse */
+        SyncPreflightResponse: {
+            /** Ok */
+            ok: boolean;
+            /** Total Projects */
+            total_projects: number;
+            /** Ready Projects */
+            ready_projects: number;
+            /** Missing Source Hash Projects */
+            missing_source_hash_projects: number;
+            /** Invalid Source Hash Projects */
+            invalid_source_hash_projects: number;
+            /** Duplicate Source Hash Projects */
+            duplicate_source_hash_projects: number;
+            /** Noncanonical Project Id Projects */
+            noncanonical_project_id_projects: number;
+            /** Projects */
+            projects: components["schemas"]["SyncPreflightProjectSchema"][];
+            /** Duplicate Groups */
+            duplicate_groups: components["schemas"]["SyncPreflightDuplicateGroupSchema"][];
+            /** Manual Cleanup Required */
+            manual_cleanup_required: boolean;
+            /** Manual Cleanup Guidance */
+            manual_cleanup_guidance: string[];
         };
         /** TabImportApplyRequest */
         TabImportApplyRequest: {
@@ -2107,6 +2187,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_preflight_api_v1_sync_preflight_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncPreflightResponse"];
                 };
             };
         };

@@ -3,10 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
 from app.db import SessionLocal
+from app.errors import AppError
 from app.models import Artifact, Project
+from app.services.paths import project_root
+from app.services.projects import import_project
+from app.services.sync_identity import source_hash_to_project_id, source_hash_to_project_storage_key
 from app.utils.hashing import file_sha256
 from tests.conftest import wait_for_job
 
@@ -24,10 +29,16 @@ def test_import_project_persists_metadata_and_source_artifact(client, sample_aud
     assert project["sample_rate"] == 44100
     assert project["channels"] == 1
 
+    expected_hash = file_sha256(sample_audio_file)
+    assert expected_hash is not None
+    assert project["id"] == source_hash_to_project_id(expected_hash)
+
     data_root = get_settings().data_root
     imported_path = Path(project["imported_path"])
     assert imported_path.exists()
-    assert str(imported_path).startswith(str(data_root / "projects"))
+    assert str(imported_path).startswith(
+        str(data_root / "projects" / source_hash_to_project_storage_key(expected_hash))
+    )
 
     artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
     source_artifact = next(artifact for artifact in artifacts if artifact["type"] == "source_audio")
@@ -43,8 +54,58 @@ def test_import_project_persists_metadata_and_source_artifact(client, sample_aud
         artifact_row = session.get(Artifact, source_artifact["id"])
         assert project_row is not None
         assert artifact_row is not None
-        assert project_row.source_sha256 == file_sha256(sample_audio_file)
+        assert project_row.source_sha256 == expected_hash
         assert artifact_row.content_sha256 == file_sha256(imported_path)
+
+
+def test_import_project_rejects_duplicate_source_hash(client, sample_audio_file: Path):
+    first = client.post(
+        "/api/v1/projects/import",
+        json={"source_path": str(sample_audio_file), "copy_into_project": True},
+    ).json()["project"]
+
+    response = client.post(
+        "/api/v1/projects/import",
+        json={"source_path": str(sample_audio_file), "copy_into_project": True},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"] == {
+        "code": "DUPLICATE_PROJECT_SOURCE",
+        "message": "This source track is already imported.",
+        "details": {"project_id": first["id"]},
+    }
+    for job in client.get("/api/v1/jobs").json()["jobs"]:
+        if job["project_id"] == first["id"]:
+            assert wait_for_job(client, job["id"])["status"] == "completed"
+
+
+def test_import_project_translates_duplicate_project_id_race(
+    monkeypatch: pytest.MonkeyPatch,
+    sample_audio_file: Path,
+) -> None:
+    source_hash = file_sha256(sample_audio_file)
+    assert source_hash is not None
+    project_id = source_hash_to_project_id(source_hash)
+
+    with SessionLocal() as session:
+        def raise_duplicate_project_id(*args, **kwargs):
+            raise IntegrityError("INSERT INTO projects", {}, Exception("duplicate project id"))
+
+        monkeypatch.setattr(session, "flush", raise_duplicate_project_id)
+
+        with pytest.raises(AppError) as exc:
+            import_project(
+                session,
+                source_path=str(sample_audio_file),
+                copy_into_project=True,
+                display_name=None,
+            )
+
+    assert exc.value.code == "DUPLICATE_PROJECT_SOURCE"
+    assert exc.value.status_code == 409
+    assert exc.value.details == {"project_id": project_id}
+    assert not project_root(project_id).exists()
 
 
 def test_import_project_enqueues_analysis_and_chords(client, sample_chord_audio_file: Path):
@@ -111,10 +172,11 @@ def test_project_source_key_override_can_be_updated_and_cleared(client, sample_a
     assert cleared_response.json()["project"]["source_key_override"] is None
 
 
-def test_project_list_can_filter_by_search_term(client, sample_audio_file: Path, tmp_path: Path):
-    second_source = tmp_path / "bass-riff.wav"
-    second_source.write_bytes(sample_audio_file.read_bytes())
-
+def test_project_list_can_filter_by_search_term(
+    client,
+    sample_audio_file: Path,
+    sample_stereo_audio_file: Path,
+):
     client.post(
         "/api/v1/projects/import",
         json={
@@ -126,7 +188,7 @@ def test_project_list_can_filter_by_search_term(client, sample_audio_file: Path,
     client.post(
         "/api/v1/projects/import",
         json={
-            "source_path": str(second_source),
+            "source_path": str(sample_stereo_audio_file),
             "copy_into_project": True,
             "display_name": "Bass Drill",
         },

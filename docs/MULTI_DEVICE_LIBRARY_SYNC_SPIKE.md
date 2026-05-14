@@ -60,7 +60,7 @@ Remote processing should not be part of v1 sync. If it is revisited later, it sh
 
 With backend parity assumed, the syncable library should include durable project data:
 
-- Project records: local project ID, sync project ID, display name, source key override, duration, sample rate, channels, timestamps, source hash, and project revision metadata.
+- Project records: canonical project ID, display name, source key override, duration, sample rate, channels, timestamps, source hash, and project revision metadata.
 - Source files: original imported source plus any normalized working source required by the receiving runtime.
 - Artifacts: source audio, stems, saved practice mixes, previews, exports, analysis JSON snapshots, and future timing artifacts.
 - Analysis: key, tuning, tempo, timing grids, source artifact link, analysis version, and timestamps.
@@ -82,20 +82,20 @@ In-progress jobs should not be synced as runnable jobs. A receiving device can d
 
 ## Identity, Existing Projects, And Migration
 
-The UI does not treat project IDs as user-facing library identity. That is useful for sync because the local project ID can remain an internal storage/API detail even though it may appear in routes, APIs, paths, or diagnostics. Existing libraries already contain projects with random IDs, so v1 sync needs a deliberate migration or compatibility plan before sync is enabled.
+The UI does not treat project IDs as user-facing library identity, but project IDs do appear in routes, APIs, paths, diagnostics, foreign keys, and manifests. Keeping a second project identity would make the sync model harder to reason about. V1 sync therefore makes the database/API `project_id` the canonical sync identity.
 
-The safest v1 direction is to introduce a canonical sync identity derived from the source track SHA-256 while keeping local database project IDs as internal IDs:
+Canonical project identity is derived from the source track SHA-256:
 
-- `project_id`: local database/API ID used by the current backend and project directory layout. Existing projects may keep their random IDs.
-- `sync_project_id`: deterministic sync identity derived from the full SHA-256 of the canonical imported source bytes, for example `proj_sha256_<full_hex_or_base32_sha256>`.
+- `project_id`: deterministic database/API identity derived from the full SHA-256 of the canonical imported source bytes, for example `proj_sha256_<full_sha256_hex>`.
+- `project_storage_key`: short storage directory key derived from the same hash, for example `proj_<first_24_sha256_hex>`.
 - `source_sha256`: full SHA-256 of the canonical imported source bytes.
-- `artifact_id`: stable artifact record identity. It can be deterministic where practical from sync project ID, artifact type, source artifact relation, generation parameters, and content hash, but replacement/regeneration semantics should be explicit.
+- `artifact_id`: stable artifact record identity. It can be deterministic where practical from project ID, artifact type, source artifact relation, generation parameters, and content hash, but replacement/regeneration semantics should be explicit.
 - `content_sha256`: full SHA-256 of the artifact bytes for verification and dedupe.
 - `entity_revision`: durable revision metadata for editable or regenerable entities such as project metadata, chords, lyrics, and sections.
 
-This keeps the sync contract deterministic without requiring an immediate risky rewrite of every local project directory and database foreign key. New sync-enabled imports may choose to set local `project_id` equal to `sync_project_id`, but the sync layer should not require that. The important rule is that sync manifests use `sync_project_id`, not a random local `project_id`.
+The full source hash remains in the database/API identity for collision detection and verification. The shorter storage key is only an implementation detail for local project folders and compact relative paths.
 
-A future storage cleanup migration could re-key local project IDs and project root directories to match the sync identity. Since project IDs are not exposed in the UI, that would not be a user-facing rename. It is still an internal data migration and should not be required for the first sync spike.
+Existing libraries may contain random project IDs. The migration is best-effort: TuneForge attempts to compute source hashes, re-key safe projects to canonical IDs, rewrite project foreign keys, and move project folders to the derived storage key. If the original source is missing, duplicate source hashes exist, or a path conflict makes re-keying unsafe, the project can remain on a legacy ID and sync preflight will require cleanup or re-import before sync is enabled.
 
 Expected migration flow before enabling sync:
 
@@ -103,15 +103,14 @@ Expected migration flow before enabling sync:
 2. Ensure every project has `source_sha256`; compute it from the canonical imported source bytes if missing.
 3. Detect duplicate `source_sha256` values in the local library.
 4. If duplicates exist, fail migration and require manual cleanup before enabling sync. The user can delete a duplicate project and import it again later if needed.
-5. Assign `sync_project_id = proj_sha256_<full_source_sha256>` for every migrated project.
-6. Add a uniqueness constraint or equivalent guard for `source_sha256` / `sync_project_id` in sync-enabled libraries.
-7. Keep a mapping from `sync_project_id` to local `project_id` for backend import/export, API calls, and path rewriting.
-8. Only enable sync after the migration has completed without unresolved duplicates.
+5. Re-key each safe project to `project_id = proj_sha256_<full_source_sha256>` and move its folder to `proj_<first_24_source_sha256_hex>`.
+6. Add a uniqueness constraint or equivalent guard for `source_sha256` in sync-enabled libraries.
+7. Only enable sync after the migration has completed without unresolved missing hashes, duplicates, or legacy project IDs.
 
 Import behavior should be strict:
 
 - If the local library already has the same `source_sha256`, import should fail hard with a message such as: `You already have project "<project name>" imported.`
-- If the sync group manifest already knows the same `sync_project_id`, import should fail or redirect to the existing synced project rather than creating a duplicate.
+- If the sync group manifest already knows the same canonical project ID, import should fail or redirect to the existing synced project rather than creating a duplicate.
 - V1 should not support intentional same-source duplicate projects or variants. If the user wants to reset a project, they can delete it from the library and import it again.
 - The project ID must be based on the original source bytes, not a platform-specific normalized WAV proxy, otherwise macOS, Linux, and mobile could derive different sync IDs for the same import.
 - Hash prefixes must not be the only stored identity. Prefixes are acceptable for display, logs, or compact filenames only if the implementation retains the full hash for collision detection and verification.
@@ -120,8 +119,15 @@ Tradeoffs:
 
 - Byte-identical source imports naturally converge to the same sync project.
 - The same song encoded in different containers or bitrates will not dedupe unless a future audio fingerprinting layer is added.
-- Existing random project IDs can remain as local compatibility details while sync identity is deterministic.
+- Existing random project IDs are allowed only as migration leftovers that must be cleaned up before sync is enabled.
 - The no-duplicates rule keeps v1 simple, but it rules out multiple independent arrangements from the exact same source until a future explicit variant model exists.
+
+Implementation decision for the first sync milestone:
+
+- Desktop backend imports now use canonical `project_id = proj_sha256_<full_source_sha256>`.
+- Project directories use the shorter derived storage key instead of the full project ID.
+- `GET /api/v1/sync/preflight` checks existing libraries for missing hashes, invalid hashes, duplicate source hashes, and noncanonical project IDs before sync is enabled.
+- Duplicate import rejection is enforced for backend imports because the canonical project ID makes same-source duplicates a primary-key conflict.
 
 ## Storage And Portability
 
@@ -132,8 +138,8 @@ The portable unit should be a sync group manifest plus project manifests and con
 - `sync_group_manifest`: sync group ID, schema version, known devices, known projects, group-level feature flags, delete tombstone summary, and high-water marks.
 - `device_manifest`: device ID, display name, platform, public identity, protocol versions, advertised capabilities, last-seen metadata, and trust state.
 - `library_manifest`: local device ID, schema version, known sync projects, available artifacts, group delete tombstones, and high-water marks.
-- `project_manifest`: sync project ID, local display/project metadata, analysis/chords/lyrics/sections records, artifact list, revision records, and dependency links.
-- `artifact_manifest`: artifact ID, sync project ID, type, format, relative project path, byte size, SHA-256, generated-by metadata, can-delete/can-regenerate flags, metadata, cache key when meaningful, source artifact relation, and replacement/supersession state.
+- `project_manifest`: canonical project ID, local display/project metadata, analysis/chords/lyrics/sections records, artifact list, revision records, and dependency links.
+- `artifact_manifest`: artifact ID, canonical project ID, type, format, relative project path, byte size, SHA-256, generated-by metadata, can-delete/can-regenerate flags, metadata, cache key when meaningful, source artifact relation, and replacement/supersession state.
 - `peer_inventory`: per-device advertisement of which content hashes and artifact bytes are currently available, transferring, or missing.
 - `entity_revision`: durable entity type, entity ID, revision ID, base revision ID, author device ID, logical counter or monotonic sequence, updated timestamp, generation metadata when relevant, and content hash.
 - `delete_tombstone`: durable record for group-level deletion of a project, artifact, or entity revision.
@@ -252,7 +258,7 @@ Benefits:
 
 - Best fit for project/artifact semantics.
 - Can exclude preferences and local app state by construction.
-- Can model generated artifacts, user edits, conflict branches, deterministic sync project IDs, and group delete tombstones explicitly.
+- Can model generated artifacts, user edits, conflict branches, canonical project IDs, and group delete tombstones explicitly.
 - Works across Linux, macOS, mobile, and future platforms without syncing raw database files.
 - Allows transport choices to change without changing the library contract.
 
@@ -406,7 +412,7 @@ The first real implementation milestone should be library sync between two deskt
 
 Recommended spike sequence:
 
-1. Existing-library migration preflight: compute missing source hashes, detect duplicate source hashes, assign `sync_project_id`, and fail hard if manual cleanup is required.
+1. Existing-library migration preflight: compute missing source hashes, detect duplicate source hashes, re-key safe projects to canonical IDs, and fail hard if manual cleanup is required.
 2. Manifest-only desktop project export/import with path rewriting and hash verification.
 3. Strict duplicate import behavior based on source SHA-256.
 4. Content-addressed artifact staging and idempotent import.
@@ -572,9 +578,9 @@ Notifications:
 
 For the eventual implementation spike, validate in this order:
 
-1. Existing-library migration tests for projects with random IDs, missing source hashes, duplicate source hashes, and successful `sync_project_id` assignment.
+1. Existing-library migration tests for projects with random IDs, missing source hashes, duplicate source hashes, and successful canonical project ID assignment.
 2. Manifest tests for desktop project export/import, path rewriting, hashes, and dedupe.
-3. Deterministic sync project ID tests from full source SHA-256.
+3. Deterministic canonical project ID tests from full source SHA-256.
 4. Duplicate import tests proving same-source imports fail hard and point to the existing project.
 5. Staged import tests proving that synced data is imported through backend services rather than raw database writes.
 6. Entity revision tests for chords, lyrics, sections, project renames, base revision tracking, rebuild events, and conflict branches.
@@ -607,8 +613,6 @@ For the eventual implementation spike, validate in this order:
 ## Open Questions
 
 - Should v1 sync job history at all, or only current durable outputs and metadata?
-- Should `sync_project_id` remain a separate canonical sync field permanently, or should local `project_id` eventually be migrated to match it?
-- What exact `sync_project_id` encoding should be used for source-hash-derived IDs?
 - How long should delete tombstones be retained?
 - Should TuneForge support undo for group deletes, and if so, how does that interact with offline peers?
 - Should source imports always copy into the project for syncable projects?

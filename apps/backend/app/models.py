@@ -8,6 +8,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 
+PROJECT_ID_LENGTH = 80
+
 
 def utcnow() -> datetime:
     return datetime.now(UTC)
@@ -16,7 +18,7 @@ def utcnow() -> datetime:
 class Project(Base):
     __tablename__ = "projects"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    id: Mapped[str] = mapped_column(String(PROJECT_ID_LENGTH), primary_key=True)
     display_name: Mapped[str] = mapped_column(String(255))
     source_key_override: Mapped[str | None] = mapped_column(String(32), nullable=True)
     source_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -55,7 +57,7 @@ class AnalysisResult(Base):
     __tablename__ = "analysis_results"
 
     project_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True
+        String(PROJECT_ID_LENGTH), ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True
     )
     source_artifact_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     estimated_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -74,7 +76,7 @@ class ChordTimeline(Base):
     __tablename__ = "chord_timelines"
 
     project_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True
+        String(PROJECT_ID_LENGTH), ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True
     )
     backend: Mapped[str] = mapped_column(String(64), default="default")
     source_artifact_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -96,7 +98,7 @@ class LyricsTranscript(Base):
     __tablename__ = "lyrics_transcripts"
 
     project_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True
+        String(PROJECT_ID_LENGTH), ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True
     )
     backend: Mapped[str] = mapped_column(String(64), default="openai-whisper")
     source_artifact_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -120,7 +122,9 @@ class TabImport(Base):
     __tablename__ = "tab_imports"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    project_id: Mapped[str] = mapped_column(String(32), ForeignKey("projects.id", ondelete="CASCADE"))
+    project_id: Mapped[str] = mapped_column(
+        String(PROJECT_ID_LENGTH), ForeignKey("projects.id", ondelete="CASCADE")
+    )
     raw_text: Mapped[str] = mapped_column(Text())
     parser_version: Mapped[str] = mapped_column(String(32), default="v1")
     status: Mapped[str] = mapped_column(String(32), default="proposed")
@@ -144,7 +148,9 @@ class SongSection(Base):
     __tablename__ = "song_sections"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    project_id: Mapped[str] = mapped_column(String(32), ForeignKey("projects.id", ondelete="CASCADE"))
+    project_id: Mapped[str] = mapped_column(
+        String(PROJECT_ID_LENGTH), ForeignKey("projects.id", ondelete="CASCADE")
+    )
     tab_import_id: Mapped[str | None] = mapped_column(
         String(32), ForeignKey("tab_imports.id", ondelete="SET NULL"), nullable=True
     )
@@ -166,7 +172,9 @@ class Artifact(Base):
     __tablename__ = "artifacts"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    project_id: Mapped[str] = mapped_column(String(32), ForeignKey("projects.id", ondelete="CASCADE"))
+    project_id: Mapped[str] = mapped_column(
+        String(PROJECT_ID_LENGTH), ForeignKey("projects.id", ondelete="CASCADE")
+    )
     type: Mapped[str] = mapped_column(String(64))
     format: Mapped[str] = mapped_column(String(32))
     path: Mapped[str] = mapped_column(String(2048))
@@ -187,7 +195,7 @@ class Job(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     project_id: Mapped[str | None] = mapped_column(
-        String(32), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True
+        String(PROJECT_ID_LENGTH), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True
     )
     type: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(32), default="pending")

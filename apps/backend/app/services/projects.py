@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import status
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -13,8 +14,8 @@ from app.models import Project
 from app.services.artifacts import register_artifact
 from app.services.metadata import extract_audio_metadata, normalize_media_to_wav
 from app.services.paths import ensure_project_dirs, project_root, project_source_dir
+from app.services.sync_identity import source_hash_to_project_id
 from app.utils.hashing import file_sha256
-from app.utils.ids import new_id
 
 NORMALIZED_IMPORT_FORMATS = {"mp4", "webm"}
 
@@ -54,6 +55,15 @@ def get_project(session: Session, project_id: str) -> Project:
     return project
 
 
+def _duplicate_project_source_error(project_id: str) -> AppError:
+    return AppError(
+        "DUPLICATE_PROJECT_SOURCE",
+        "This source track is already imported.",
+        status_code=status.HTTP_409_CONFLICT,
+        details={"project_id": project_id},
+    )
+
+
 def import_project(
     session: Session,
     *,
@@ -64,36 +74,42 @@ def import_project(
     resolved_source = Path(source_path).expanduser().resolve()
     _validate_import_path(resolved_source)
     metadata = extract_audio_metadata(resolved_source)
+    source_sha256 = file_sha256(resolved_source)
+    if source_sha256 is None:
+        raise AppError(
+            "SOURCE_HASH_UNAVAILABLE",
+            "Could not compute a source hash for this file.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
 
-    project_id = new_id("proj")
-    ensure_project_dirs(project_id)
+    project_id = source_hash_to_project_id(source_sha256)
+    existing_project = session.get(Project, project_id)
+    if existing_project is None:
+        existing_project = session.scalar(select(Project).where(Project.source_sha256 == source_sha256))
+    if existing_project is not None:
+        raise _duplicate_project_source_error(existing_project.id)
+
     destination_name = resolved_source.name
     source_dir = project_source_dir(project_id)
     imported_path = source_dir / destination_name
     artifact_format = resolved_source.suffix.lower().lstrip(".")
     artifact_metadata = {"source_path": str(resolved_source)}
+    needs_normalization = artifact_format in NORMALIZED_IMPORT_FORMATS
 
-    if artifact_format in NORMALIZED_IMPORT_FORMATS:
-        working_source = resolved_source
+    if needs_normalization:
         if copy_into_project:
             original_copy_path = source_dir / destination_name
-            shutil.copy2(resolved_source, original_copy_path)
-            working_source = original_copy_path
             artifact_metadata["original_copy_path"] = str(original_copy_path)
         imported_path = source_dir / f"{resolved_source.stem}.wav"
-        normalize_media_to_wav(working_source, imported_path)
         artifact_format = "wav"
         artifact_metadata["original_format"] = resolved_source.suffix.lower().lstrip(".")
-    else:
-        if copy_into_project:
-            shutil.copy2(resolved_source, imported_path)
-        else:
-            imported_path = resolved_source
+    elif not copy_into_project:
+        imported_path = resolved_source
 
     project = Project(
         id=project_id,
         display_name=display_name or resolved_source.stem,
-        source_sha256=file_sha256(resolved_source),
+        source_sha256=source_sha256,
         source_path=str(resolved_source),
         imported_path=str(imported_path),
         duration_seconds=metadata["duration_seconds"],
@@ -101,7 +117,22 @@ def import_project(
         channels=metadata["channels"],
     )
     session.add(project)
-    session.flush()
+    try:
+        session.flush()
+    except IntegrityError as exc:
+        session.rollback()
+        raise _duplicate_project_source_error(project_id) from exc
+
+    ensure_project_dirs(project_id)
+    if needs_normalization:
+        working_source = resolved_source
+        if copy_into_project:
+            original_copy_path = source_dir / destination_name
+            shutil.copy2(resolved_source, original_copy_path)
+            working_source = original_copy_path
+        normalize_media_to_wav(working_source, imported_path)
+    elif copy_into_project:
+        shutil.copy2(resolved_source, imported_path)
 
     register_artifact(
         session,

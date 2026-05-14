@@ -91,6 +91,24 @@ Returns available chord backends and capability metadata. Built-in chords are al
 
 Returns supported stem models and availability metadata. Labels are `Default (6 stems model)` for `htdemucs_6s` and `2 stems model` for `htdemucs_ft`.
 
+## Sync
+
+### Run sync preflight
+
+`GET /api/v1/sync/preflight`
+
+Checks the local library before multi-device sync is enabled. The endpoint returns HTTP `200` for both passing and failing preflight results because failures are actionable diagnostics rather than request errors.
+
+The response includes:
+
+- `ok`
+- project status counts
+- per-project sync identity status
+- duplicate source-hash groups
+- manual cleanup guidance
+
+Project status values are `ready`, `missing_source_hash`, `invalid_source_hash`, `duplicate_source_hash`, and `noncanonical_project_id`. Canonical project IDs use `proj_sha256_<full_source_sha256>`, while project storage directories use a shorter derived key such as `proj_<first_24_sha256_hex>`. This endpoint is sync-specific; general project responses do not expose source hashes.
+
 ## Projects
 
 ### Import project

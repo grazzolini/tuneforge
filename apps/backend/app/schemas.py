@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -133,6 +133,66 @@ class ProjectsResponse(BaseModel):
 
 class DeleteResponse(BaseModel):
     deleted: bool
+
+
+SyncPreflightProjectStatus = Literal[
+    "ready",
+    "missing_source_hash",
+    "invalid_source_hash",
+    "duplicate_source_hash",
+    "noncanonical_project_id",
+]
+SyncPreflightSourceHashSource = Literal[
+    "database",
+    "source_path",
+    "original_copy_path",
+    "source_artifact_path",
+    "imported_path",
+]
+
+
+class SyncPreflightProjectSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    project_id: str
+    display_name: str
+    status: SyncPreflightProjectStatus
+    source_sha256: str | None
+    expected_project_id: str | None
+    expected_storage_key: str | None
+    source_hash_source: SyncPreflightSourceHashSource | None
+    reason: str | None = None
+
+
+class SyncPreflightDuplicateProjectSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    project_id: str
+    display_name: str
+
+
+class SyncPreflightDuplicateGroupSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    source_sha256: str
+    expected_project_id: str
+    projects: list[SyncPreflightDuplicateProjectSchema]
+
+
+class SyncPreflightResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    ok: bool
+    total_projects: int
+    ready_projects: int
+    missing_source_hash_projects: int
+    invalid_source_hash_projects: int
+    duplicate_source_hash_projects: int
+    noncanonical_project_id_projects: int
+    projects: list[SyncPreflightProjectSchema]
+    duplicate_groups: list[SyncPreflightDuplicateGroupSchema]
+    manual_cleanup_required: bool
+    manual_cleanup_guidance: list[str]
 
 
 class AnalysisRequest(BaseModel):

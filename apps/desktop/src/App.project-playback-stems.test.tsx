@@ -14,6 +14,7 @@ import {
   mockCreatePreview,
   mockCreateStems,
   mockDeleteArtifact,
+  mockListArtifacts,
   mockListJobs,
   mockSave,
   mockUpdateProject,
@@ -580,10 +581,12 @@ describe("Desktop app project playback stems", () => {
 
     await act(async () => {
       flushPendingPreview("proj_123");
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
-        queryClient.invalidateQueries({ queryKey: ["artifacts", "proj_123"] }),
+      const [{ artifacts }, { jobs }] = await Promise.all([
+        mockListArtifacts("proj_123"),
+        mockListJobs(),
       ]);
+      queryClient.setQueryData(["artifacts", "proj_123"], artifacts);
+      queryClient.setQueryData(["jobs"], jobs);
     });
 
     await waitFor(() =>

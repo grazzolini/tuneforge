@@ -50,7 +50,11 @@ const {
   emitMockNativeAudioError,
   emitMockNativeAudioInputFrame,
   emitMockNativeAudioPosition,
+  emitMockSystemMediaControl,
+  deferNextSystemMediaControlListen,
   mockListen,
+  rejectSystemMediaCommand,
+  resolveDeferredSystemMediaControlListen,
 } = vi.hoisted(() => {
   const createdAt = "2026-04-18T13:16:00.000Z";
   type NativeAudioInputFrame = {
@@ -80,6 +84,20 @@ const {
     id: number;
     payload: Record<string, unknown>;
   };
+  type SystemMediaControlPayload = {
+    action: "play" | "pause" | "playPause" | "stop" | "seekBackward" | "seekForward" | "seekTo";
+    positionSeconds?: number | null;
+    seekOffsetSeconds?: number | null;
+  };
+  type SystemMediaControlEvent = {
+    event: "system-media://control";
+    id: number;
+    payload: SystemMediaControlPayload;
+  };
+  type SystemMediaCommand =
+    | "system_media_update_state"
+    | "system_media_clear_state"
+    | "system_media_set_idle_inhibition";
   const nativeInputFrameListeners = new Map<
     number,
     (event: NativeAudioInputFrameEvent) => void
@@ -91,8 +109,14 @@ const {
       handler: (event: NativeAudioRuntimeEvent) => void;
     }
   >();
+  const systemMediaControlListeners = new Map<
+    number,
+    (event: SystemMediaControlEvent) => void
+  >();
   let nextNativeInputFrameListenerId = 1;
   let nextNativeRuntimeListenerId = 1;
+  let nextSystemMediaControlListenerId = 1;
+  let deferredSystemMediaControlListenResolver: (() => void) | null = null;
   let state: {
     projects: Array<Record<string, unknown>>;
     analysisByProject: Record<string, Record<string, unknown> | null>;
@@ -126,6 +150,10 @@ const {
     nativeAudioSnapshot: Record<string, unknown>;
     nativeAudioStartError: string | null;
     nativeAudioPlayFallbackReason: string | null;
+    systemMediaState: Record<string, unknown> | null;
+    systemMediaIdleInhibited: boolean;
+    systemMediaCommandErrors: Partial<Record<SystemMediaCommand, string>>;
+    deferNextSystemMediaControlListen: boolean;
     nextProjectId: number;
     nextArtifactId: number;
     nextJobId: number;
@@ -467,6 +495,10 @@ const {
       },
       nativeAudioStartError: null,
       nativeAudioPlayFallbackReason: null,
+      systemMediaState: null,
+      systemMediaIdleInhibited: false,
+      systemMediaCommandErrors: {},
+      deferNextSystemMediaControlListen: false,
       nextProjectId: 200,
       nextArtifactId: 200,
       nextJobId: 200,
@@ -476,8 +508,11 @@ const {
     };
     nativeInputFrameListeners.clear();
     nativeRuntimeListeners.clear();
+    systemMediaControlListeners.clear();
     nextNativeInputFrameListenerId = 1;
     nextNativeRuntimeListenerId = 1;
+    nextSystemMediaControlListenerId = 1;
+    deferredSystemMediaControlListenResolver = null;
   }
 
   resetMockApiState();
@@ -570,6 +605,24 @@ const {
   function emitMockNativeAudioError(error: NativeAudioErrorPayload) {
     emitMockNativeRuntimeEvent("audio://error", error);
   }
+  function emitMockSystemMediaControl(payload: SystemMediaControlPayload) {
+    systemMediaControlListeners.forEach((listener, id) => {
+      listener({
+        event: "system-media://control",
+        id,
+        payload: clone(payload),
+      });
+    });
+  }
+  function deferNextSystemMediaControlListen() {
+    state.deferNextSystemMediaControlListen = true;
+  }
+  function resolveDeferredSystemMediaControlListen() {
+    deferredSystemMediaControlListenResolver?.();
+  }
+  function rejectSystemMediaCommand(command: SystemMediaCommand, message: string) {
+    state.systemMediaCommandErrors[command] = message;
+  }
   function emitMockNativeRuntimeEvent(
     eventName: NativeAudioRuntimeEvent["event"],
     payload: Record<string, unknown>,
@@ -588,8 +641,27 @@ const {
   const mockListen = vi.fn(
     async (
       eventName: string,
-      handler: (event: NativeAudioInputFrameEvent | NativeAudioRuntimeEvent) => void,
+      handler: (event: NativeAudioInputFrameEvent | NativeAudioRuntimeEvent | SystemMediaControlEvent) => void,
     ) => {
+      if (eventName === "system-media://control") {
+        const listenerId = nextSystemMediaControlListenerId;
+        nextSystemMediaControlListenerId += 1;
+        systemMediaControlListeners.set(
+          listenerId,
+          handler as (event: SystemMediaControlEvent) => void,
+        );
+        const unlisten = () => systemMediaControlListeners.delete(listenerId);
+        if (state.deferNextSystemMediaControlListen) {
+          state.deferNextSystemMediaControlListen = false;
+          await new Promise<void>((resolve) => {
+            deferredSystemMediaControlListenResolver = () => {
+              deferredSystemMediaControlListenResolver = null;
+              resolve();
+            };
+          });
+        }
+        return unlisten;
+      }
       if (
         eventName === "audio://position" ||
         eventName === "audio://ended" ||
@@ -649,6 +721,30 @@ const {
         error: null,
       };
       return clone(state.systemInputVolume);
+    }
+
+    if (command === "system_media_update_state") {
+      if (state.systemMediaCommandErrors.system_media_update_state) {
+        throw new Error(state.systemMediaCommandErrors.system_media_update_state);
+      }
+      state.systemMediaState = clone((args?.payload ?? {}) as Record<string, unknown>);
+      return null;
+    }
+
+    if (command === "system_media_clear_state") {
+      if (state.systemMediaCommandErrors.system_media_clear_state) {
+        throw new Error(state.systemMediaCommandErrors.system_media_clear_state);
+      }
+      state.systemMediaState = null;
+      return null;
+    }
+
+    if (command === "system_media_set_idle_inhibition") {
+      if (state.systemMediaCommandErrors.system_media_set_idle_inhibition) {
+        throw new Error(state.systemMediaCommandErrors.system_media_set_idle_inhibition);
+      }
+      state.systemMediaIdleInhibited = Boolean(args?.active);
+      return null;
     }
 
     if (command === "audio_get_capabilities") {
@@ -1453,7 +1549,11 @@ const {
     emitMockNativeAudioError,
     emitMockNativeAudioInputFrame,
     emitMockNativeAudioPosition,
+    emitMockSystemMediaControl,
+    deferNextSystemMediaControlListen,
     mockListen,
+    rejectSystemMediaCommand,
+    resolveDeferredSystemMediaControlListen,
   };
 });
 
@@ -1741,6 +1841,30 @@ export function emitMockNativePlaybackError(
   emitMockNativeAudioError(error);
 }
 
+export function emitMockSystemMediaPlaybackControl(
+  payload: Parameters<typeof emitMockSystemMediaControl>[0],
+) {
+  emitMockSystemMediaControl(payload);
+}
+
+export function deferNextMockSystemMediaControlListen() {
+  deferNextSystemMediaControlListen();
+}
+
+export function resolveDeferredMockSystemMediaControlListen() {
+  resolveDeferredSystemMediaControlListen();
+}
+
+export function rejectMockSystemMediaCommand(
+  command:
+    | "system_media_update_state"
+    | "system_media_clear_state"
+    | "system_media_set_idle_inhibition",
+  message: string,
+) {
+  rejectSystemMediaCommand(command, message);
+}
+
 export function getMockMediaDevices() {
   return (
     globalThis as typeof globalThis & {
@@ -1757,9 +1881,41 @@ export function getMockMediaDevices() {
   ).__mockMediaDevices;
 }
 
+export function getMockMediaSession() {
+  return (
+    globalThis as typeof globalThis & {
+      __mockMediaSession: MediaSession & {
+        actionHandlers: Map<string, (details?: MediaSessionActionDetails) => void>;
+        dispatchAction: (action: string, details?: MediaSessionActionDetails) => void;
+        reset: () => void;
+        setActionHandler: ReturnType<typeof vi.fn>;
+        setPositionState: ReturnType<typeof vi.fn>;
+        throwOnAction: (action: MediaSessionAction | "seekto") => void;
+      };
+    }
+  ).__mockMediaSession;
+}
+
+export function getMockWakeLock() {
+  return (
+    globalThis as typeof globalThis & {
+      __mockWakeLock: {
+        request: ReturnType<typeof vi.fn>;
+        reset: () => void;
+        sentinels: Array<{
+          dispatchRelease: () => void;
+          released: boolean;
+          release: ReturnType<typeof vi.fn>;
+        }>;
+      };
+    }
+  ).__mockWakeLock;
+}
+
 
 export function resetAppTestHarness() {
   resetMockApiState();
+  delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   window.localStorage.clear();
   window.sessionStorage.clear();
   delete document.documentElement.dataset.theme;
@@ -1770,6 +1926,9 @@ export function resetAppTestHarness() {
   mockInvoke.mockClear();
   mockListen.mockClear();
   mockConfirm.mockResolvedValue(true);
+  getMockMediaSession().reset();
+  getMockWakeLock().reset();
+  getMockMediaDevices().reset();
   mockListProjects.mockClear();
   mockImportProject.mockClear();
   mockGetProject.mockClear();

@@ -24,6 +24,22 @@ added feature by feature behind the Tauri native audio boundary.
 The frontend prefers native audio when a feature is supported and falls back to Web Audio when
 native support is unavailable or startup fails.
 
+Playback also owns media-key controls and wake prevention through the active backend only:
+
+- TuneForge registers one desktop system-media adapter with the OS for media keys and headset
+  controls. That adapter does not choose the audio engine; it routes play/pause/stop/seek events to
+  the current playback owner.
+- Native playback owns the transport only after native playback has successfully started, and uses
+  native idle/display inhibition while playing.
+- Web Audio/HTML media playback owns the transport when playback starts through browser media,
+  including `VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` and native fallback. It uses the browser Screen Wake
+  Lock while playing.
+- Native fallback is an explicit ownership transfer. TuneForge clears system media state and native
+  idle inhibition, starts the Web Audio path at the fallback position, then re-registers system
+  media state for the Web Audio owner and acquires the browser wake lock. Diagnostics keep the
+  native fallback reason.
+- Failed native prepare/play attempts before audio starts never activate native transport ownership.
+
 ## Linux Build Prerequisites
 
 Native tempo playback uses `signalsmith-stretch`, which runs Rust `bindgen` during the Tauri build.
@@ -101,6 +117,9 @@ Run once with native playback selected per platform, then rerun with forced Web 
 | Loop count-in | runs at loop start and on loop wrap, never on pause/resume | same | same |
 | Tempo control | tempo change applies and stays stable | tempo change applies and stays stable | tempo change applies and stays stable |
 | Metronome follow | follows active track tempo while BPM changes | follows active track tempo while BPM changes | follows active track tempo while BPM changes |
+| Media keys / headset controls | system media controls play/pause/stop/seek native transport only | MPRIS controls play/pause/stop/seek native transport only | system media controls play/pause/stop/seek browser transport only |
+| Wake prevention | native display idle inhibition while playing; released on pause/stop/end/fallback | desktop idle inhibition while playing; released on pause/stop/end/fallback | Screen Wake Lock while playing; released on pause/stop/end |
+| Native runtime fallback ownership | system state/inhibition clear before Web Audio starts at fallback position, then system controls route to Web Audio | same | not applicable; web owns controls from start |
 | Fallback + no output device | falls back (or errors and recovers) without crash when no native output exists | same | same |
 
 ## Local-only Playwright Smoke Harness

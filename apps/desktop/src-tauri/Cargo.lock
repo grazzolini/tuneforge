@@ -4725,9 +4725,13 @@ name = "tuneforge"
 version = "0.1.0"
 dependencies = [
  "android_system_properties",
+ "block2",
  "chrono",
  "cpal",
+ "dbus",
  "ndk-sys",
+ "objc2",
+ "objc2-foundation",
  "rusqlite",
  "serde",
  "serde_json",

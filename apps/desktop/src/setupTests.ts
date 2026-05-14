@@ -65,6 +65,29 @@ type MockMediaDevicesController = {
   setDevices: (devices: MediaDeviceInfo[]) => void;
 };
 
+type MockMediaSessionActionHandler = (details?: MediaSessionActionDetails) => void;
+
+type MockMediaSessionController = MediaSession & {
+  actionHandlers: Map<string, MockMediaSessionActionHandler>;
+  dispatchAction: (action: string, details?: MediaSessionActionDetails) => void;
+  reset: () => void;
+  throwOnAction: (action: MediaSessionAction | "seekto") => void;
+};
+
+type MockWakeLockSentinel = {
+  released: boolean;
+  release: ReturnType<typeof vi.fn>;
+  addEventListener: ReturnType<typeof vi.fn>;
+  dispatchRelease: () => void;
+  removeEventListener: ReturnType<typeof vi.fn>;
+};
+
+type MockWakeLockController = {
+  request: ReturnType<typeof vi.fn>;
+  sentinels: MockWakeLockSentinel[];
+  reset: () => void;
+};
+
 function createStorageMock(): Storage {
   let storage = new Map<string, string>();
 
@@ -177,6 +200,110 @@ const mockMediaDevicesController: MockMediaDevicesController = {
 Object.defineProperty(navigator, "mediaDevices", {
   configurable: true,
   value: mockMediaDevices,
+});
+
+const mockMediaSessionActionHandlers = new Map<string, MockMediaSessionActionHandler>();
+const mockMediaSessionThrowingActions = new Set<MediaSessionAction | "seekto">();
+const mockSetMediaSessionActionHandler = vi.fn(
+  (action: MediaSessionAction | "seekto", handler: MockMediaSessionActionHandler | null) => {
+    if (mockMediaSessionThrowingActions.has(action)) {
+      throw new Error(`Unsupported media session action: ${action}`);
+    }
+    if (handler) {
+      mockMediaSessionActionHandlers.set(action, handler);
+      return;
+    }
+    mockMediaSessionActionHandlers.delete(action);
+  },
+);
+const mockSetMediaSessionPositionState = vi.fn();
+const mockMediaSession = {
+  metadata: null,
+  playbackState: "none",
+  setActionHandler: mockSetMediaSessionActionHandler,
+  setPositionState: mockSetMediaSessionPositionState,
+  actionHandlers: mockMediaSessionActionHandlers,
+  dispatchAction(action: string, details?: MediaSessionActionDetails) {
+    mockMediaSessionActionHandlers.get(action)?.(details);
+  },
+  reset: () => {
+    mockMediaSession.metadata = null;
+    mockMediaSession.playbackState = "none";
+    mockMediaSessionActionHandlers.clear();
+    mockMediaSessionThrowingActions.clear();
+    mockSetMediaSessionActionHandler.mockClear();
+    mockSetMediaSessionPositionState.mockClear();
+  },
+  throwOnAction: (action: MediaSessionAction | "seekto") => {
+    mockMediaSessionThrowingActions.add(action);
+  },
+} as unknown as MockMediaSessionController;
+
+class MockMediaMetadata {
+  album?: string;
+  artist?: string;
+  artwork?: MediaImage[];
+  title?: string;
+
+  constructor(init: MediaMetadataInit = {}) {
+    this.album = init.album;
+    this.artist = init.artist;
+    this.artwork = init.artwork;
+    this.title = init.title;
+  }
+}
+
+const mockWakeLock: MockWakeLockController = {
+  request: vi.fn(async () => {
+    const releaseListeners = new Set<() => void>();
+    const sentinel: MockWakeLockSentinel = {
+      released: false,
+      release: vi.fn(async () => {
+        sentinel.released = true;
+      }),
+      addEventListener: vi.fn((type: "release", listener: () => void) => {
+        if (type === "release") {
+          releaseListeners.add(listener);
+        }
+      }),
+      dispatchRelease() {
+        sentinel.released = true;
+        releaseListeners.forEach((listener) => listener());
+      },
+      removeEventListener: vi.fn((type: "release", listener: () => void) => {
+        if (type === "release") {
+          releaseListeners.delete(listener);
+        }
+      }),
+    };
+    mockWakeLock.sentinels.push(sentinel);
+    return sentinel;
+  }),
+  sentinels: [],
+  reset() {
+    this.request.mockClear();
+    this.sentinels.splice(0, this.sentinels.length);
+  },
+};
+
+Object.defineProperty(navigator, "mediaSession", {
+  configurable: true,
+  value: mockMediaSession,
+});
+
+Object.defineProperty(navigator, "wakeLock", {
+  configurable: true,
+  value: mockWakeLock,
+});
+
+Object.defineProperty(globalThis, "MediaMetadata", {
+  configurable: true,
+  value: MockMediaMetadata,
+});
+
+Object.defineProperty(window, "MediaMetadata", {
+  configurable: true,
+  value: MockMediaMetadata,
 });
 
 Object.defineProperty(window, "matchMedia", {
@@ -447,4 +574,14 @@ Object.defineProperty(globalThis, "__setMockAudioSourceStartError", {
 Object.defineProperty(globalThis, "__mockMediaDevices", {
   writable: true,
   value: mockMediaDevicesController,
+});
+
+Object.defineProperty(globalThis, "__mockMediaSession", {
+  writable: true,
+  value: mockMediaSession,
+});
+
+Object.defineProperty(globalThis, "__mockWakeLock", {
+  writable: true,
+  value: mockWakeLock,
 });

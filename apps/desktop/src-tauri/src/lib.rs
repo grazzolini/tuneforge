@@ -18,6 +18,7 @@ use tauri::{Manager, State};
 
 mod mobile_backend;
 mod native_audio;
+mod system_media;
 
 struct BackendRuntime {
     base_url: String,
@@ -336,6 +337,7 @@ pub fn run() {
             };
             app.manage(runtime);
             app.manage(native_audio::NativeAudioState::new());
+            app.manage(system_media::SystemMediaState::new(app.handle().clone()));
             #[cfg(target_os = "linux")]
             install_linux_media_permission_handler(app.handle())?;
             Ok(())
@@ -361,6 +363,9 @@ pub fn run() {
             native_audio::audio_start_input,
             native_audio::audio_stop_input,
             native_audio::audio_set_monitor,
+            system_media::system_media_update_state,
+            system_media::system_media_clear_state,
+            system_media::system_media_set_idle_inhibition,
             mobile_backend::mobile_capabilities,
             mobile_backend::mobile_get_health,
             mobile_backend::mobile_list_projects,

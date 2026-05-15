@@ -509,6 +509,11 @@ a {
   color: var(--danger);
 }
 
+.panel--warning {
+  border-color: color-mix(in srgb, var(--color-state-warning) 55%, transparent);
+  color: color-mix(in srgb, var(--color-state-warning) 76%, var(--text));
+}
+
 .panel--empty {
   text-align: center;
 }

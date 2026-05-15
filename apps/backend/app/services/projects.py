@@ -55,12 +55,28 @@ def get_project(session: Session, project_id: str) -> Project:
     return project
 
 
-def _duplicate_project_source_error(project_id: str) -> AppError:
+def _duplicate_project_source_error(project_id: str, project_name: str) -> AppError:
     return AppError(
         "DUPLICATE_PROJECT_SOURCE",
-        "This source track is already imported.",
+        f'This project is already imported with name "{project_name}".',
         status_code=status.HTTP_409_CONFLICT,
-        details={"project_id": project_id},
+        details={"project_id": project_id, "project_name": project_name},
+    )
+
+
+def _find_existing_source_project(
+    session: Session,
+    *,
+    project_id: str,
+    source_sha256: str,
+) -> Project | None:
+    existing_project = session.get(Project, project_id)
+    if existing_project is not None:
+        return existing_project
+    return session.scalar(
+        select(Project)
+        .where(Project.source_sha256 == source_sha256)
+        .order_by(Project.created_at.asc(), Project.id.asc())
     )
 
 
@@ -83,11 +99,13 @@ def import_project(
         )
 
     project_id = source_hash_to_project_id(source_sha256)
-    existing_project = session.get(Project, project_id)
-    if existing_project is None:
-        existing_project = session.scalar(select(Project).where(Project.source_sha256 == source_sha256))
+    existing_project = _find_existing_source_project(
+        session,
+        project_id=project_id,
+        source_sha256=source_sha256,
+    )
     if existing_project is not None:
-        raise _duplicate_project_source_error(existing_project.id)
+        raise _duplicate_project_source_error(existing_project.id, existing_project.display_name)
 
     destination_name = resolved_source.name
     source_dir = project_source_dir(project_id)
@@ -95,6 +113,7 @@ def import_project(
     artifact_format = resolved_source.suffix.lower().lstrip(".")
     artifact_metadata = {"source_path": str(resolved_source)}
     needs_normalization = artifact_format in NORMALIZED_IMPORT_FORMATS
+    fallback_project_name = display_name or resolved_source.stem
 
     if needs_normalization:
         if copy_into_project:
@@ -108,7 +127,7 @@ def import_project(
 
     project = Project(
         id=project_id,
-        display_name=display_name or resolved_source.stem,
+        display_name=fallback_project_name,
         source_sha256=source_sha256,
         source_path=str(resolved_source),
         imported_path=str(imported_path),
@@ -121,7 +140,14 @@ def import_project(
         session.flush()
     except IntegrityError as exc:
         session.rollback()
-        raise _duplicate_project_source_error(project_id) from exc
+        existing_project = _find_existing_source_project(
+            session,
+            project_id=project_id,
+            source_sha256=source_sha256,
+        )
+        if existing_project is not None:
+            raise _duplicate_project_source_error(existing_project.id, existing_project.display_name) from exc
+        raise _duplicate_project_source_error(project_id, fallback_project_name) from exc
 
     ensure_project_dirs(project_id)
     if needs_normalization:

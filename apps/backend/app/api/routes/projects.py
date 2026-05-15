@@ -16,6 +16,7 @@ from app.schemas import (
     ChordRequest,
     ChordResponse,
     DeleteResponse,
+    ErrorResponse,
     ExportRequest,
     JobResponse,
     JobSchema,
@@ -74,7 +75,11 @@ def _resolve_import_chord_backend(
     return fallback_backend, backend_fallback_from or selected_backend.id
 
 
-@router.post("/import", response_model=ProjectResponse)
+@router.post(
+    "/import",
+    response_model=ProjectResponse,
+    responses={409: {"model": ErrorResponse, "description": "Duplicate project source."}},
+)
 def create_project(
     payload: ProjectImportRequest,
     session: Session = Depends(get_db),

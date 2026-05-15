@@ -13,6 +13,14 @@
   white-space: nowrap;
 }
 
+.library-import-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
 .search-field {
   display: flex;
   flex-direction: column;

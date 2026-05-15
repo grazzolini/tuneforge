@@ -266,12 +266,32 @@ class SyncProjectManifestArtifactSchema(BaseModel):
     created_at: datetime
 
 
+class SyncProjectManifestEntityRevisionSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    revision_id: str
+    project_id: str
+    entity_type: str
+    entity_id: str
+    revision_type: str
+    base_revision_id: str | None
+    author_device_id: str
+    source_artifact_id: str | None
+    content_sha256: str
+    state: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
 class SyncProjectManifestSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     schema_version: str
     exported_at: datetime
     project: SyncProjectManifestProjectSchema
+    entity_revisions: list[SyncProjectManifestEntityRevisionSchema] = Field(default_factory=list)
     artifacts: list[SyncProjectManifestArtifactSchema]
 
 

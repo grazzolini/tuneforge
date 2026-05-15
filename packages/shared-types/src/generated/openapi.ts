@@ -1478,6 +1478,47 @@ export interface components {
              */
             created_at: string;
         };
+        /** SyncProjectManifestEntityRevisionSchema */
+        SyncProjectManifestEntityRevisionSchema: {
+            /** Revision Id */
+            revision_id: string;
+            /** Project Id */
+            project_id: string;
+            /** Entity Type */
+            entity_type: string;
+            /** Entity Id */
+            entity_id: string;
+            /** Revision Type */
+            revision_type: string;
+            /** Base Revision Id */
+            base_revision_id: string | null;
+            /** Author Device Id */
+            author_device_id: string;
+            /** Source Artifact Id */
+            source_artifact_id: string | null;
+            /** Content Sha256 */
+            content_sha256: string;
+            /** State */
+            state: string;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            };
+            /** Payload */
+            payload?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
         /** SyncProjectManifestProjectSchema */
         SyncProjectManifestProjectSchema: {
             /** Project Id */
@@ -1519,6 +1560,8 @@ export interface components {
              */
             exported_at: string;
             project: components["schemas"]["SyncProjectManifestProjectSchema"];
+            /** Entity Revisions */
+            entity_revisions?: components["schemas"]["SyncProjectManifestEntityRevisionSchema"][];
             /** Artifacts */
             artifacts: components["schemas"]["SyncProjectManifestArtifactSchema"][];
         };

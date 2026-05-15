@@ -265,11 +265,19 @@ fn calculate_input_level(samples: &[f32]) -> f32 {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+struct DesktopInputDeviceDescriptor {
+    exposed_id: String,
+    stable_hash: u64,
+    label: String,
+    cpal_id: Option<cpal::DeviceId>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn list_desktop_input_devices() -> Result<Vec<AudioInputDevice>, String> {
     let host = cpal::default_host();
-    let default_name = host
+    let default_device_id = host
         .default_input_device()
-        .and_then(|device| device.name().ok());
+        .and_then(|device| device.id().ok());
     let devices = host
         .input_devices()
         .map_err(|error| format!("Could not list native input devices: {error}"))?;
@@ -278,16 +286,15 @@ fn list_desktop_input_devices() -> Result<Vec<AudioInputDevice>, String> {
     Ok(devices
         .enumerate()
         .map(|(index, device)| {
-            let label = device
-                .name()
-                .unwrap_or_else(|_| format!("Input Device {}", index + 1));
-            let is_default = !marked_default && default_name.as_deref() == Some(label.as_str());
+            let descriptor = describe_desktop_input_device(index, &device);
+            let is_default =
+                !marked_default && descriptor.cpal_id.as_ref() == default_device_id.as_ref();
             if is_default {
                 marked_default = true;
             }
             AudioInputDevice {
-                id: native_input_device_id(index, &label),
-                label,
+                id: descriptor.exposed_id,
+                label: descriptor.label,
                 is_default,
             }
         })
@@ -522,15 +529,12 @@ fn select_input_device(
     let mut hash_match: Option<(cpal::Device, String)> = None;
 
     for (index, device) in devices.enumerate() {
-        let label = device
-            .name()
-            .unwrap_or_else(|_| format!("Input Device {}", index + 1));
-        let candidate_id = native_input_device_id(index, &label);
-        if candidate_id == requested_device_id {
-            return Ok((device, candidate_id));
+        let descriptor = describe_desktop_input_device(index, &device);
+        if descriptor.exposed_id == requested_device_id {
+            return Ok((device, descriptor.exposed_id));
         }
-        if requested_hash == Some(stable_name_hash(&label)) && hash_match.is_none() {
-            hash_match = Some((device, candidate_id));
+        if requested_hash == Some(descriptor.stable_hash) && hash_match.is_none() {
+            hash_match = Some((device, descriptor.exposed_id));
         }
     }
 
@@ -695,8 +699,63 @@ fn convert_u64_sample(sample: u64) -> f32 {
         as f32
 }
 
+#[cfg(test)]
 fn native_input_device_id(index: usize, label: &str) -> String {
-    format!("cpal:{index}:{:016x}", stable_name_hash(label))
+    native_input_device_id_from_hash(index, stable_name_hash(label))
+}
+
+fn native_input_device_id_from_hash(index: usize, hash: u64) -> String {
+    format!("cpal:{index}:{hash:016x}")
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn describe_desktop_input_device(
+    index: usize,
+    device: &cpal::Device,
+) -> DesktopInputDeviceDescriptor {
+    let label = device
+        .description()
+        .map(|description| description.name().trim().to_string())
+        .ok()
+        .filter(|label| !label.is_empty())
+        .unwrap_or_else(|| format!("Input Device {}", index + 1));
+
+    let cpal_id = device.id().ok();
+    let stable_hash = stable_name_hash(native_input_device_hash_source(&label, cpal_id.as_ref()));
+
+    DesktopInputDeviceDescriptor {
+        exposed_id: native_input_device_id_from_hash(index, stable_hash),
+        stable_hash,
+        label,
+        cpal_id,
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn native_input_device_hash_source<'a>(
+    label: &'a str,
+    cpal_id: Option<&'a cpal::DeviceId>,
+) -> &'a str {
+    native_input_device_hash_source_for_platform(
+        label,
+        cpal_id.map(|device_id| device_id.1.as_str()),
+        cfg!(target_os = "linux"),
+    )
+}
+
+fn native_input_device_hash_source_for_platform<'a>(
+    label: &'a str,
+    backend_device_id: Option<&'a str>,
+    prefer_backend_device_id: bool,
+) -> &'a str {
+    if prefer_backend_device_id {
+        if let Some(backend_device_id) =
+            backend_device_id.filter(|device_id| !device_id.trim().is_empty())
+        {
+            return backend_device_id;
+        }
+    }
+    label
 }
 
 fn native_input_device_hash(device_id: &str) -> Option<u64> {
@@ -845,6 +904,44 @@ mod tests {
             native_input_device_hash(&reordered)
         );
         assert_ne!(original, reordered);
+    }
+
+    #[test]
+    fn native_device_hash_source_can_preserve_linux_backend_ids() {
+        let display_label = "USB Audio Interface";
+        let legacy_backend_id = "alsa_input.usb-interface";
+        let hash_source = native_input_device_hash_source_for_platform(
+            display_label,
+            Some(legacy_backend_id),
+            true,
+        );
+
+        assert_eq!(hash_source, legacy_backend_id);
+        assert_eq!(
+            native_input_device_hash(&native_input_device_id_from_hash(
+                0,
+                stable_name_hash(hash_source),
+            )),
+            native_input_device_hash(&native_input_device_id(0, legacy_backend_id)),
+        );
+        assert_ne!(
+            stable_name_hash(display_label),
+            stable_name_hash(hash_source)
+        );
+    }
+
+    #[test]
+    fn native_device_hash_source_keeps_display_label_when_backend_id_is_not_preferred() {
+        let display_label = "USB Audio Interface";
+
+        assert_eq!(
+            native_input_device_hash_source_for_platform(
+                display_label,
+                Some("coreaudio-device-uid"),
+                false,
+            ),
+            display_label,
+        );
     }
 
     #[test]

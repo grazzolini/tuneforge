@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -35,6 +35,7 @@ describe("Desktop app tools tuner", () => {
     expect(screen.getByTestId("wide-arc-tuner-meter")).toBeInTheDocument();
     expect(screen.getByRole("meter", { name: "Tuning offset" })).toBeInTheDocument();
     expect(screen.getByRole("meter", { name: "Input signal level" })).toBeInTheDocument();
+    expect(getMockInvoke()).not.toHaveBeenCalledWith("audio_list_input_devices");
     expect(getMockMediaDevices().getUserMedia).not.toHaveBeenCalled();
   });
 
@@ -69,7 +70,7 @@ describe("Desktop app tools tuner", () => {
     renderApp(["/tools"]);
 
     expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
-    expect(await screen.findByRole("option", { name: "USB Interface" })).toBeInTheDocument();
+    await refreshMicrophoneOptions("USB Interface");
     await user.selectOptions(screen.getByLabelText("Microphone source"), "cpal:1:usb");
     changeReferenceInput("442.5");
     await user.selectOptions(screen.getByLabelText("Tuner visual mode"), "simple");
@@ -80,7 +81,7 @@ describe("Desktop app tools tuner", () => {
     expect(screen.getByLabelText("Microphone source")).toHaveValue("cpal:1:usb");
     expect(screen.getByLabelText("A4 reference tuning")).toHaveValue(442.5);
     expect(screen.getByLabelText("Default tuner")).toHaveValue("simple");
-    expect(screen.getByText("Saved microphone")).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "USB Interface" })).toBeInTheDocument();
     expect(screen.getByText("442.5 Hz")).toBeInTheDocument();
 
     await user.selectOptions(screen.getByLabelText("Microphone source"), "");
@@ -152,6 +153,7 @@ describe("Desktop app tools tuner", () => {
     renderApp(["/tools"]);
 
     expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
+    await refreshMicrophoneOptions("Built-in Microphone");
     await user.selectOptions(screen.getByLabelText("Microphone source"), "cpal:0:built-in");
 
     const selectedInputVolume = await screen.findByLabelText("Selected input volume");
@@ -211,9 +213,7 @@ describe("Desktop app tools tuner", () => {
     renderApp(["/tools"]);
 
     expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.getByRole("option", { name: "USB Interface" })).toBeDisabled(),
-    );
+    expect(screen.queryByRole("option", { name: "USB Interface" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Start" }));
 
     await waitFor(() => expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument());
@@ -251,7 +251,7 @@ describe("Desktop app tools tuner", () => {
     renderApp(["/tools"]);
 
     expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
-    expect(await screen.findByRole("option", { name: "USB Interface" })).toBeInTheDocument();
+    await refreshMicrophoneOptions("USB Interface");
     await user.selectOptions(screen.getByLabelText("Microphone source"), "cpal:1:usb");
     await user.click(screen.getByRole("button", { name: "Start" }));
 
@@ -265,12 +265,14 @@ describe("Desktop app tools tuner", () => {
     );
     expect(getMockMediaDevices().getUserMedia).not.toHaveBeenCalled();
 
-    emitMockNativeInputFrame({
-      deviceId: "cpal:1:usb",
-      sampleRate: 48000,
-      inputLevel: 0.25,
-      samples: makeSineSamples(440, 48000, 2048),
-      timestampMs: 1000,
+    act(() => {
+      emitMockNativeInputFrame({
+        deviceId: "cpal:1:usb",
+        sampleRate: 48000,
+        inputLevel: 0.25,
+        samples: makeSineSamples(440, 48000, 2048),
+        timestampMs: 1000,
+      });
     });
 
     await waitFor(() =>
@@ -289,7 +291,7 @@ describe("Desktop app tools tuner", () => {
     expect(getMockInvoke()).toHaveBeenCalledWith("audio_stop_input");
   });
 
-  it("does not poll native microphone devices while the tuner is idle", async () => {
+  it("does not query native microphone devices while the tuner is idle until the picker is opened", async () => {
     const setIntervalSpy = vi.spyOn(window, "setInterval");
     setMockNativeAudioState({
       capabilities: {
@@ -305,11 +307,80 @@ describe("Desktop app tools tuner", () => {
 
     renderApp(["/tools"]);
 
-    expect(await screen.findByRole("option", { name: "USB Interface" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "USB Interface" })).not.toBeInTheDocument();
+    expect(
+      getMockInvoke().mock.calls.filter(([command]) => command === "audio_list_input_devices"),
+    ).toHaveLength(0);
+
+    await refreshMicrophoneOptions("USB Interface");
+
     expect(
       getMockInvoke().mock.calls.filter(([command]) => command === "audio_list_input_devices"),
     ).toHaveLength(1);
     expect(setIntervalSpy).not.toHaveBeenCalledWith(expect.any(Function), 5000);
+  });
+
+  it("runs a follow-up refresh when devices change during active native discovery", async () => {
+    setMockNativeAudioState({
+      capabilities: {
+        micCaptureSupported: true,
+        backend: "desktop-cpal",
+      },
+    });
+    const mockInvoke = getMockInvoke();
+    const originalInvoke = mockInvoke.getMockImplementation();
+    if (!originalInvoke) {
+      throw new Error("Missing invoke mock implementation.");
+    }
+    type NativeInputDevicesResponse = {
+      supported: boolean;
+      devices: Array<{ id: string; label: string; isDefault: boolean }>;
+      error: string | null;
+    };
+    let resolveFirstInputDevices: (value: NativeInputDevicesResponse) => void = () => undefined;
+    const firstInputDevices = new Promise<NativeInputDevicesResponse>((resolve) => {
+      resolveFirstInputDevices = resolve;
+    });
+    let inputDeviceCalls = 0;
+    mockInvoke.mockImplementation(async (command, args) => {
+      if (command === "audio_list_input_devices") {
+        inputDeviceCalls += 1;
+        if (inputDeviceCalls === 1) {
+          return firstInputDevices;
+        }
+        return {
+          supported: true,
+          devices: [{ id: "cpal:2:new", label: "New Interface", isDefault: false }],
+          error: null,
+        };
+      }
+      return originalInvoke(command, args);
+    });
+
+    try {
+      renderApp(["/tools"]);
+
+      expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
+      fireEvent.focus(screen.getByLabelText("Microphone source"));
+      await waitFor(() => expect(inputDeviceCalls).toBe(1));
+
+      emitMockMediaDeviceChange();
+      await act(async () => {
+        resolveFirstInputDevices({
+          supported: true,
+          devices: [{ id: "cpal:1:old", label: "Old Interface", isDefault: false }],
+          error: null,
+        });
+        await firstInputDevices;
+      });
+
+      expect(await screen.findByRole("option", { name: "New Interface" })).toBeInTheDocument();
+      expect(screen.queryByRole("option", { name: "Old Interface" })).not.toBeInTheDocument();
+      expect(inputDeviceCalls).toBe(2);
+    } finally {
+      mockInvoke.mockImplementation(originalInvoke);
+    }
   });
 
   it("can force Web Audio capture when native capture is available", async () => {
@@ -330,9 +401,6 @@ describe("Desktop app tools tuner", () => {
     renderApp(["/tools"]);
 
     expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.getByRole("option", { name: "USB Interface" })).toBeDisabled(),
-    );
     expect(screen.queryByRole("option", { name: "Native USB Interface" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Start" }));
 
@@ -412,7 +480,7 @@ describe("Desktop app tools tuner", () => {
     renderApp(["/tools"]);
 
     expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
-    expect(await screen.findByRole("option", { name: "Built-in Microphone" })).toBeInTheDocument();
+    await refreshMicrophoneOptions("Built-in Microphone");
     await user.selectOptions(screen.getByLabelText("Microphone source"), "cpal:0:built-in");
     await user.click(screen.getByRole("button", { name: "Start" }));
 
@@ -454,6 +522,7 @@ describe("Desktop app tools tuner", () => {
 
     expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
     expect(screen.getByLabelText("Microphone source")).toHaveValue("");
+    expect(getMockInvoke()).not.toHaveBeenCalledWith("audio_list_input_devices");
     expect(getMockMediaDevices().getUserMedia).not.toHaveBeenCalled();
   });
 
@@ -486,6 +555,29 @@ function changeReferenceInput(value: string) {
   const input = screen.getByLabelText("A4 reference tuning");
   fireEvent.change(input, { target: { value } });
   fireEvent.blur(input);
+}
+
+async function refreshMicrophoneOptions(optionName: string) {
+  const inputSource = screen.getByLabelText("Microphone source");
+  fireEvent.pointerDown(inputSource);
+  fireEvent.focus(inputSource);
+  return screen.findByRole("option", { name: optionName });
+}
+
+function emitMockMediaDeviceChange() {
+  const addEventListener = vi.mocked(navigator.mediaDevices.addEventListener);
+  const listener = addEventListener.mock.calls.find(
+    ([eventName]) => eventName === "devicechange",
+  )?.[1];
+  if (!listener) {
+    throw new Error("Missing media devicechange listener.");
+  }
+  const event = new Event("devicechange");
+  if (typeof listener === "function") {
+    act(() => listener(event));
+    return;
+  }
+  act(() => listener.handleEvent(event));
 }
 
 function makeSineSamples(frequencyHz: number, sampleRate: number, sampleCount: number) {

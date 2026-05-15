@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SUPPORTED_CHORD_BACKENDS = {"default", "fast", "tuneforge-fast", "librosa", "advanced", "crema", "crema-advanced"}
 SUPPORTED_STEM_MODELS = {
@@ -286,6 +286,140 @@ class SyncProjectStagedImportRequest(BaseModel):
 
 class SyncProjectImportResponse(BaseModel):
     project: ProjectSchema
+
+
+class SyncLocalIdentitySchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    device_id: str
+    sync_group_id: str
+    display_name: str | None = None
+    public_key: str = Field(validation_alias=AliasChoices("public_key", "public_key_pem", "public_identity"))
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class SyncLocalIdentityResponse(BaseModel):
+    identity: SyncLocalIdentitySchema
+
+
+class SyncLocalIdentityUpdateRequest(BaseModel):
+    display_name: str = Field(min_length=1, max_length=255)
+
+    @field_validator("display_name")
+    @classmethod
+    def validate_display_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Display name cannot be empty.")
+        return normalized
+
+
+class SyncPairingPayloadSchema(BaseModel):
+    sync_group_id: str
+    device_id: str
+    display_name: str | None = None
+    public_key: str = Field(validation_alias=AliasChoices("public_key", "public_key_pem", "public_identity"))
+    endpoint_hints: list[str] = Field(default_factory=list)
+    protocol_version: str
+    pairing_offer_id: str = Field(min_length=1)
+    pairing_secret: str = Field(
+        validation_alias=AliasChoices("pairing_secret", "secret", "confirmation_code"),
+        min_length=1,
+    )
+    expires_at: datetime
+    signature: str = Field(min_length=1)
+
+    @field_validator("display_name")
+    @classmethod
+    def validate_display_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Display name cannot be empty.")
+        return normalized
+
+    @field_validator("endpoint_hints")
+    @classmethod
+    def validate_endpoint_hints(cls, value: list[str]) -> list[str]:
+        normalized = [hint.strip() for hint in value]
+        if any(not hint for hint in normalized):
+            raise ValueError("Endpoint hints cannot be empty.")
+        return normalized
+
+
+class SyncPairingOfferSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    payload: SyncPairingPayloadSchema
+    expires_at: datetime
+    ttl_seconds: int | None = None
+
+
+class SyncPairingOfferRequest(BaseModel):
+    endpoint_hints: list[str] = Field(default_factory=list)
+    ttl_seconds: int = Field(default=600, ge=1, le=3600)
+
+    @field_validator("endpoint_hints")
+    @classmethod
+    def validate_endpoint_hints(cls, value: list[str]) -> list[str]:
+        normalized = [hint.strip() for hint in value]
+        if any(not hint for hint in normalized):
+            raise ValueError("Endpoint hints cannot be empty.")
+        return normalized
+
+
+class SyncPairingOfferResponse(BaseModel):
+    pairing_offer: SyncPairingOfferSchema
+
+
+class SyncTrustedPeerSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    device_id: str
+    sync_group_id: str
+    display_name: str | None = None
+    public_key: str = Field(validation_alias=AliasChoices("public_key", "public_key_pem", "public_identity"))
+    endpoint_hints: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("endpoint_hints", "endpoint_hints_json"),
+    )
+    trusted_at: datetime = Field(validation_alias=AliasChoices("trusted_at", "created_at"))
+    revoked_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class SyncTrustedPeerCreateRequest(BaseModel):
+    payload: SyncPairingPayloadSchema
+    adopt_sync_group: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_payload_wrapper(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or "payload" in value:
+            return value
+        pairing_payload_fields = {
+            "protocol_version",
+            "sync_group_id",
+            "device_id",
+            "public_key",
+            "pairing_secret",
+            "expires_at",
+        }
+        if not pairing_payload_fields <= set(value):
+            return value
+        adopt_sync_group = value.get("adopt_sync_group", False)
+        payload = {key: child for key, child in value.items() if key != "adopt_sync_group"}
+        return {"payload": payload, "adopt_sync_group": adopt_sync_group}
+
+
+class SyncTrustedPeerResponse(BaseModel):
+    trusted_peer: SyncTrustedPeerSchema
+
+
+class SyncTrustedPeersResponse(BaseModel):
+    trusted_peers: list[SyncTrustedPeerSchema]
 
 
 class AnalysisRequest(BaseModel):

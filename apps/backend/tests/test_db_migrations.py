@@ -31,6 +31,28 @@ def test_run_migrations_reports_unknown_database_revision() -> None:
     assert "TUNEFORGE_DATA_DIR" in message
 
 
+def test_sync_trust_identity_migration_creates_identity_and_trust_tables() -> None:
+    settings = get_settings()
+    ensure_data_dirs(settings)
+
+    reconfigure_engine(settings)
+    run_migrations(settings)
+
+    with sqlite3.connect(settings.database_path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+
+    assert {
+        "sync_local_identities",
+        "sync_pairing_offers",
+        "sync_trusted_peers",
+    } <= tables
+
+
 def test_hash_storage_migration_backfills_existing_files(tmp_path: Path) -> None:
     settings = get_settings()
     ensure_data_dirs(settings)

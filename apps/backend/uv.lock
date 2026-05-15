@@ -1895,6 +1895,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
+    { name = "cryptography" },
     { name = "demucs" },
     { name = "fastapi" },
     { name = "librosa" },
@@ -1927,6 +1928,7 @@ dev = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.14.1,<2.0.0" },
     { name = "crema", marker = "extra == 'advanced-chords'", specifier = ">=0.2.0,<0.3.0" },
+    { name = "cryptography", specifier = ">=47.0.0,<48.0.0" },
     { name = "demucs", specifier = ">=4.0.1,<5.0.0" },
     { name = "fastapi", specifier = ">=0.115.12,<1.0.0" },
     { name = "keras", marker = "extra == 'advanced-chords'", specifier = ">=2.15,<3.15" },

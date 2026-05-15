@@ -218,7 +218,9 @@ describe("Desktop app project media controls", () => {
     expect(getMockMediaSession().setActionHandler).not.toHaveBeenCalled();
     expect(getMockWakeLock().request).not.toHaveBeenCalled();
 
-    emitMockSystemMediaPlaybackControl({ action: "pause" });
+    act(() => {
+      emitMockSystemMediaPlaybackControl({ action: "pause" });
+    });
     await waitFor(() => expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument());
     await waitFor(() => expect(hasNativeIdleInhibition(false)).toBe(true));
 
@@ -243,7 +245,9 @@ describe("Desktop app project media controls", () => {
     await user.click(screen.getByRole("button", { name: "Play playback" }));
     await waitForNativeControls();
 
-    emitMockSystemMediaPlaybackControl({ action: "seekForward", seekOffsetSeconds: 10 });
+    act(() => {
+      emitMockSystemMediaPlaybackControl({ action: "seekForward", seekOffsetSeconds: 10 });
+    });
     await waitFor(() => {
       expect(
         invokeCalls("audio_seek").some(([, args]) => {

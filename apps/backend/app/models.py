@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -51,6 +51,64 @@ class Project(Base):
         back_populates="project", cascade="all, delete-orphan"
     )
     jobs: Mapped[list[Job]] = relationship(back_populates="project", cascade="all, delete-orphan")
+
+
+class SyncLocalIdentity(Base):
+    __tablename__ = "sync_local_identities"
+    __table_args__ = (
+        CheckConstraint("id = 'local'", name="ck_sync_local_identities_singleton"),
+        Index("ix_sync_local_identities_sync_group_id", "sync_group_id"),
+        Index("uq_sync_local_identities_device_id", "device_id", unique=True),
+        Index("uq_sync_local_identities_public_key", "public_key", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String(16), primary_key=True, default="local")
+    sync_group_id: Mapped[str] = mapped_column(String(80))
+    device_id: Mapped[str] = mapped_column(String(96))
+    display_name: Mapped[str] = mapped_column(String(255))
+    public_key: Mapped[str] = mapped_column(String(128))
+    private_key: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class SyncTrustedPeer(Base):
+    __tablename__ = "sync_trusted_peers"
+    __table_args__ = (
+        Index("ix_sync_trusted_peers_sync_group_id", "sync_group_id"),
+        Index("ix_sync_trusted_peers_revoked_at", "revoked_at"),
+        Index("uq_sync_trusted_peers_public_key", "public_key", unique=True),
+    )
+
+    device_id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    sync_group_id: Mapped[str] = mapped_column(String(80))
+    display_name: Mapped[str] = mapped_column(String(255))
+    public_key: Mapped[str] = mapped_column(String(128))
+    endpoint_hints_json: Mapped[list[str]] = mapped_column(JSON(), default=list)
+    trusted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class SyncPairingOffer(Base):
+    __tablename__ = "sync_pairing_offers"
+    __table_args__ = (
+        Index("ix_sync_pairing_offers_expires_at", "expires_at"),
+        Index("ix_sync_pairing_offers_used_at", "used_at"),
+        Index("uq_sync_pairing_offers_secret_hash", "secret_hash", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    secret_hash: Mapped[str] = mapped_column(String(96))
+    endpoint_hints_json: Mapped[list[str]] = mapped_column(JSON(), default=list)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class AnalysisResult(Base):

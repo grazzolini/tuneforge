@@ -93,6 +93,149 @@ Returns supported stem models and availability metadata. Labels are `Default (6 
 
 ## Sync
 
+The sync API exposes local sync metadata, identity, and trust management for the bundled desktop app.
+FastAPI remains bound to loopback; LAN transport, peer discovery, QR scanning, and file transfer belong to
+the separate native sync layer.
+
+`device_id` is the stable identity for one TuneForge install. `sync_group_id` identifies the sync group that
+trusted devices may share. Display names are editable convenience labels and must not be treated as identity.
+
+### Get local sync identity
+
+`GET /api/v1/sync/identity`
+
+Returns the local sync identity, creating it if it does not exist yet.
+
+Response wrapper:
+
+- `identity`
+
+Identity fields:
+
+- `device_id`
+- `sync_group_id`
+- `display_name` - nullable convenience label.
+- `public_key`
+- `created_at` - nullable when the service returns an identity DTO without persistence metadata.
+- `updated_at` - nullable when the service returns an identity DTO without persistence metadata.
+
+### Update local sync identity
+
+`PATCH /api/v1/sync/identity`
+
+Updates the local identity display name.
+
+Request fields:
+
+- `display_name`
+
+Response wrapper:
+
+- `identity`
+
+Changing `display_name` does not change `device_id`, `sync_group_id`, or public identity material.
+
+### Create sync pairing offer
+
+`POST /api/v1/sync/pairing/offers`
+
+Creates a short-lived manual pairing offer for copy/paste style pairing. The endpoint does not start LAN
+discovery, expose FastAPI beyond loopback, or create QR UI.
+
+Request fields:
+
+- `endpoint_hints` - optional advisory peer endpoints, default `[]`.
+- `ttl_seconds` - pairing offer lifetime in seconds, default `600`, maximum `3600`.
+
+Response wrapper:
+
+- `pairing_offer`
+
+Pairing offer fields:
+
+- `payload`
+- `expires_at`
+- `ttl_seconds`
+
+The `payload` is the portable value another device submits inside the `payload` field of
+`POST /api/v1/sync/trusted-peers`. For this backend-first slice, a peer trust request must carry
+the `pairing_offer_id` and `pairing_secret` from a pending local offer so this install can verify
+the manual exchange before storing trust. It includes:
+
+- `protocol_version`
+- `pairing_offer_id`
+- `sync_group_id`
+- `device_id`
+- `display_name`
+- `public_key`
+- `endpoint_hints`
+- `pairing_secret`
+- `expires_at`
+- `signature`
+
+Pairing payloads are signed by the source device's private identity key so copied payloads are
+tamper-evident. Endpoint hints are advisory and do not authenticate a peer. The receiving install
+must still explicitly trust the payload before accepting manifests, revisions, tombstones, or
+artifact bytes from that device. The payload submitted to this endpoint must reference a locally
+issued `pairing_offer_id`; that local offer must still be unused, unexpired, and match the
+payload's `pairing_secret`.
+
+### List trusted peers
+
+`GET /api/v1/sync/trusted-peers`
+
+Returns active peers this install explicitly trusts. Revoked peers are not returned by this list.
+
+Response wrapper:
+
+- `trusted_peers`
+
+Trusted peer fields:
+
+- `device_id`
+- `sync_group_id`
+- `display_name`
+- `public_key`
+- `endpoint_hints`
+- `trusted_at`
+- `revoked_at`
+- `updated_at`
+
+Trust is explicit and non-transitive. Joining the same `sync_group_id`, discovering a device, or hearing about
+a peer from another trusted device does not automatically trust that peer.
+
+### Trust peer from pairing payload
+
+`POST /api/v1/sync/trusted-peers`
+
+Stores trust for one peer from a manual pairing payload.
+
+Request fields:
+
+- `payload` - pairing payload copied from another device.
+- `adopt_sync_group` - whether this install should adopt the payload's `sync_group_id`, default `false`.
+
+Response wrapper:
+
+- `trusted_peer`
+
+Trusting a peer records its `device_id`, public identity, display name, endpoint hints, and sync group. The
+peer can later be revoked without deleting local projects or changing this install's own `device_id`.
+Standalone payloads that do not reference a local pending offer are rejected.
+
+### Revoke trusted peer
+
+`DELETE /api/v1/sync/trusted-peers/{device_id}`
+
+Revokes trust for the peer with the matching `device_id`.
+
+Response wrapper:
+
+- `trusted_peer`
+
+Revocation stops this install from accepting future sync material from that peer unless it is explicitly paired
+again. Revocation is local to this install and does not revoke trust transitively on any other device.
+
 ### Run sync preflight
 
 `GET /api/v1/sync/preflight`

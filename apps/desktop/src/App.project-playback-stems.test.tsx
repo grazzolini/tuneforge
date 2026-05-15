@@ -48,6 +48,29 @@ function triggerBufferSourceEnded(source: { onended: AudioBufferSourceNode["onen
   source.onended?.call(source as unknown as AudioBufferSourceNode, new Event("ended"));
 }
 
+async function waitForPlaybackSourceStartAfter(
+  sourceCount: number,
+  expectedOffsetSeconds?: number,
+) {
+  let offsetSeconds: number | undefined;
+
+  await waitFor(() => {
+    const source = getMockAudioContexts()[0]?.createdSources[sourceCount];
+    expect(source?.start).toHaveBeenCalled();
+    const nextOffsetSeconds = source?.start.mock.calls[0]?.[1];
+    expect(typeof nextOffsetSeconds).toBe("number");
+    if (typeof expectedOffsetSeconds === "number") {
+      expect(nextOffsetSeconds).toBeCloseTo(expectedOffsetSeconds, 3);
+    }
+    offsetSeconds = nextOffsetSeconds;
+  });
+
+  if (typeof offsetSeconds !== "number") {
+    throw new Error("Expected playback source start offset.");
+  }
+  return offsetSeconds;
+}
+
 describe("Desktop app project playback stems", () => {
   beforeEach(resetAppTestHarness);
 
@@ -564,13 +587,17 @@ describe("Desktop app project playback stems", () => {
 
     const sourceAudio = findAudioByArtifactId("art_source");
     markAudioReady(sourceAudio);
+    const sourceStartsBeforePlay = getMockAudioContexts()[0]?.createdSources.length ?? 0;
     await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitForPlaybackSourceStartAfter(sourceStartsBeforePlay, 0);
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument(),
     );
 
     const initialPlaybackPosition = 61.437;
+    const sourceStartsBeforeSeek = getMockAudioContexts()[0]?.createdSources.length ?? 0;
     setPlaybackPosition(String(initialPlaybackPosition));
+    await waitForPlaybackSourceStartAfter(sourceStartsBeforeSeek, initialPlaybackPosition);
     expect(
       Number((screen.getByLabelText("Playback position") as HTMLInputElement).value),
     ).toBeCloseTo(
@@ -589,6 +616,10 @@ describe("Desktop app project playback stems", () => {
       }),
     );
 
+    const sourceStartsBeforeNewMix = getMockAudioContexts()[0]?.createdSources.length ?? 0;
+    const mediaPlayCallsBeforeNewMixActivation = vi.mocked(
+      window.HTMLMediaElement.prototype.play,
+    ).mock.calls.length;
     await act(async () => {
       flushPendingPreview("proj_123");
       const [{ artifacts }, { jobs }] = await Promise.all([
@@ -604,38 +635,18 @@ describe("Desktop app project playback stems", () => {
         document.querySelector('audio[src*="/artifacts/art_200/stream"]'),
       ).toBeTruthy(),
     );
-    const playCallsBeforeNewMixSeek = vi.mocked(window.HTMLMediaElement.prototype.play).mock.calls.length;
-
-    const newestPreviewAudio = findAudioByArtifactId("art_200");
-    expect(vi.mocked(window.HTMLMediaElement.prototype.play).mock.calls.length).toBe(
-      playCallsBeforeNewMixSeek,
-    );
-    const transitionPlaybackPosition = Number(
-      (screen.getByLabelText("Playback position") as HTMLInputElement).value,
-    );
-    expect(transitionPlaybackPosition).toBeGreaterThan(initialPlaybackPosition - 0.5);
-
-    newestPreviewAudio.currentTime = 0;
-    setAudioPlaybackState(newestPreviewAudio);
-    fireEvent.loadedMetadata(newestPreviewAudio);
-    fireEvent.canPlay(newestPreviewAudio);
-
-    expect(vi.mocked(window.HTMLMediaElement.prototype.play).mock.calls.length).toBe(
-      playCallsBeforeNewMixSeek,
-    );
-
-    newestPreviewAudio.currentTime = transitionPlaybackPosition;
-    fireEvent.seeked(newestPreviewAudio);
 
     expect(screen.getByRole("heading", { name: "Practice Mix" })).toBeInTheDocument();
-    await waitFor(() =>
-      expect(newestPreviewAudio.currentTime).toBeCloseTo(transitionPlaybackPosition, 3),
+    const newMixStartOffset = await waitForPlaybackSourceStartAfter(sourceStartsBeforeNewMix);
+    expect(newMixStartOffset).toBeGreaterThan(initialPlaybackPosition - 0.5);
+    expect(newMixStartOffset).toBeLessThan(initialPlaybackPosition + 2);
+    expect(vi.mocked(window.HTMLMediaElement.prototype.play).mock.calls.length).toBe(
+      mediaPlayCallsBeforeNewMixActivation,
     );
     const transportPosition = Number(
       (screen.getByLabelText("Playback position") as HTMLInputElement).value,
     );
-    expect(transportPosition).toBeGreaterThanOrEqual(transitionPlaybackPosition - 0.001);
-    expect(transportPosition).toBeLessThan(transitionPlaybackPosition + 0.25);
+    expect(transportPosition).toBeGreaterThanOrEqual(newMixStartOffset - 0.001);
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
   });
 

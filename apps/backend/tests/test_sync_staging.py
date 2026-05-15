@@ -1,0 +1,146 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from app.db import SessionLocal
+from app.errors import AppError
+from app.models import SyncStagedArtifact
+from app.services.sync_staging import (
+    get_staged_artifact_path,
+    require_staged_artifact,
+    stage_sync_artifact,
+)
+from app.utils.hashing import file_sha256
+
+
+def test_stage_sync_artifact_stores_verified_bytes_under_content_addressed_path(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source.bin"
+    source_path.write_bytes(b"sync artifact bytes")
+    content_sha256 = file_sha256(source_path)
+    assert content_sha256 is not None
+
+    with SessionLocal() as session:
+        staged = stage_sync_artifact(
+            session,
+            source_path=source_path,
+            content_sha256=content_sha256.upper(),
+            size_bytes=source_path.stat().st_size,
+            provider_device_id="device-a",
+            metadata={"kind": "source_audio"},
+        )
+        staged_path = get_staged_artifact_path(session, content_sha256=content_sha256)
+        record = session.get(SyncStagedArtifact, content_sha256)
+
+    assert staged.content_sha256 == content_sha256
+    assert staged.size_bytes == source_path.stat().st_size
+    assert staged.relative_path == f"sha256/{content_sha256[:2]}/{content_sha256}"
+    assert staged.provider_device_id == "device-a"
+    assert staged.metadata == {"kind": "source_audio"}
+    assert staged.resolved_path == staged_path
+    assert staged.resolved_path.read_bytes() == b"sync artifact bytes"
+    assert not Path(staged.relative_path).is_absolute()
+    assert record is not None
+    assert record.relative_path == staged.relative_path
+
+
+def test_stage_sync_artifact_is_idempotent_and_repairs_missing_staged_file(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source.bin"
+    source_path.write_bytes(b"idempotent bytes")
+    content_sha256 = file_sha256(source_path)
+    assert content_sha256 is not None
+
+    with SessionLocal() as session:
+        first = stage_sync_artifact(
+            session,
+            source_path=source_path,
+            content_sha256=content_sha256,
+            size_bytes=source_path.stat().st_size,
+        )
+        first.resolved_path.unlink()
+
+        second = stage_sync_artifact(
+            session,
+            source_path=source_path,
+            content_sha256=content_sha256,
+            size_bytes=source_path.stat().st_size,
+            provider_device_id="device-b",
+            metadata={"restaged": True},
+        )
+        records = session.query(SyncStagedArtifact).all()
+
+    assert second.content_sha256 == first.content_sha256
+    assert second.resolved_path == first.resolved_path
+    assert second.resolved_path.read_bytes() == b"idempotent bytes"
+    assert second.provider_device_id == "device-b"
+    assert second.metadata == {"restaged": True}
+    assert len(records) == 1
+
+
+def test_stage_sync_artifact_rejects_hash_mismatch(client: object, tmp_path: Path) -> None:
+    source_path = tmp_path / "source.bin"
+    source_path.write_bytes(b"actual bytes")
+    expected_sha256 = file_sha256(tmp_path / "missing.bin") or "0" * 64
+
+    with SessionLocal() as session:
+        with pytest.raises(AppError) as exc:
+            stage_sync_artifact(
+                session,
+                source_path=source_path,
+                content_sha256=expected_sha256,
+                size_bytes=source_path.stat().st_size,
+            )
+
+    assert exc.value.code == "SYNC_STAGING_SOURCE_HASH_MISMATCH"
+    assert exc.value.status_code == 409
+
+
+def test_stage_sync_artifact_rejects_size_mismatch(client: object, tmp_path: Path) -> None:
+    source_path = tmp_path / "source.bin"
+    source_path.write_bytes(b"actual bytes")
+    content_sha256 = file_sha256(source_path)
+    assert content_sha256 is not None
+
+    with SessionLocal() as session:
+        with pytest.raises(AppError) as exc:
+            stage_sync_artifact(
+                session,
+                source_path=source_path,
+                content_sha256=content_sha256,
+                size_bytes=source_path.stat().st_size + 1,
+            )
+
+    assert exc.value.code == "SYNC_STAGING_SOURCE_SIZE_MISMATCH"
+    assert exc.value.status_code == 409
+
+
+def test_require_staged_artifact_rejects_missing_staged_content(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source.bin"
+    source_path.write_bytes(b"missing staged bytes")
+    content_sha256 = file_sha256(source_path)
+    assert content_sha256 is not None
+
+    with SessionLocal() as session:
+        staged = stage_sync_artifact(
+            session,
+            source_path=source_path,
+            content_sha256=content_sha256,
+            size_bytes=source_path.stat().st_size,
+        )
+        staged.resolved_path.unlink()
+
+        with pytest.raises(AppError) as exc:
+            require_staged_artifact(session, content_sha256=content_sha256)
+
+    assert exc.value.code == "SYNC_STAGING_FILE_MISSING"
+    assert exc.value.status_code == 404

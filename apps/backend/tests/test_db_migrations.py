@@ -53,6 +53,46 @@ def test_sync_trust_identity_migration_creates_identity_and_trust_tables() -> No
     } <= tables
 
 
+def test_sync_artifact_staging_migration_creates_table_and_indexes() -> None:
+    settings = get_settings()
+    ensure_data_dirs(settings)
+
+    reconfigure_engine(settings)
+    run_migrations(settings)
+
+    with sqlite3.connect(settings.database_path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info('sync_staged_artifacts')")
+        }
+        indexes = {
+            row[1]
+            for row in connection.execute("PRAGMA index_list('sync_staged_artifacts')")
+        }
+
+    assert "sync_staged_artifacts" in tables
+    assert {
+        "content_sha256",
+        "size_bytes",
+        "relative_path",
+        "provider_device_id",
+        "metadata_json",
+        "verified_at",
+        "created_at",
+        "updated_at",
+    } <= columns
+    assert {
+        "ix_sync_staged_artifacts_provider_device_id",
+        "ix_sync_staged_artifacts_verified_at",
+    } <= indexes
+
+
 def test_hash_storage_migration_backfills_existing_files(tmp_path: Path) -> None:
     settings = get_settings()
     ensure_data_dirs(settings)

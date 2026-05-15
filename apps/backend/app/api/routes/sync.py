@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
@@ -7,6 +9,7 @@ from app.dependencies import get_db
 from app.schemas import (
     ErrorResponse,
     ProjectSchema,
+    SyncArtifactStagingRequest,
     SyncLocalIdentityResponse,
     SyncLocalIdentitySchema,
     SyncLocalIdentityUpdateRequest,
@@ -18,6 +21,7 @@ from app.schemas import (
     SyncProjectImportResponse,
     SyncProjectManifestResponse,
     SyncProjectStagedImportRequest,
+    SyncStagedArtifactSchema,
     SyncTrustedPeerCreateRequest,
     SyncTrustedPeerResponse,
     SyncTrustedPeerSchema,
@@ -35,6 +39,37 @@ from app.services.sync_trust import (
 )
 
 router = APIRouter(prefix="/sync", tags=["sync"])
+
+
+def _stage_sync_artifact(
+    session: Session,
+    *,
+    source_path: str,
+    content_sha256: str,
+    size_bytes: int,
+    provider_device_id: str | None,
+    metadata: dict[str, Any],
+) -> Any:
+    from app.services.sync_staging import stage_sync_artifact
+
+    return stage_sync_artifact(
+        session,
+        source_path=source_path,
+        content_sha256=content_sha256,
+        size_bytes=size_bytes,
+        provider_device_id=provider_device_id,
+        metadata=metadata,
+    )
+
+
+def _require_staged_artifact(
+    session: Session,
+    *,
+    content_sha256: str,
+) -> Any:
+    from app.services.sync_staging import require_staged_artifact
+
+    return require_staged_artifact(session, content_sha256=content_sha256)
 
 
 @router.get("/preflight", response_model=SyncPreflightResponse)
@@ -122,6 +157,31 @@ def sync_project_manifest(
     return SyncProjectManifestResponse.model_validate({"project_manifest": project_manifest})
 
 
+@router.post("/artifacts/staging", response_model=SyncStagedArtifactSchema)
+def sync_artifact_stage(
+    payload: SyncArtifactStagingRequest,
+    session: Session = Depends(get_db),
+) -> SyncStagedArtifactSchema:
+    staged_artifact = _stage_sync_artifact(
+        session,
+        source_path=payload.source_path,
+        content_sha256=payload.content_sha256,
+        size_bytes=payload.size_bytes,
+        provider_device_id=payload.provider_device_id,
+        metadata=payload.metadata,
+    )
+    return SyncStagedArtifactSchema.model_validate(staged_artifact)
+
+
+@router.get("/artifacts/staging/{content_sha256}", response_model=SyncStagedArtifactSchema)
+def sync_artifact_staging_detail(
+    content_sha256: str,
+    session: Session = Depends(get_db),
+) -> SyncStagedArtifactSchema:
+    staged_artifact = _require_staged_artifact(session, content_sha256=content_sha256)
+    return SyncStagedArtifactSchema.model_validate(staged_artifact)
+
+
 @router.post(
     "/projects/import",
     response_model=SyncProjectImportResponse,
@@ -133,11 +193,13 @@ def sync_project_import(
 ) -> SyncProjectImportResponse:
     from app.services.sync_manifest import import_staged_project_manifest
 
-    project = import_staged_project_manifest(
-        session,
-        manifest=payload.manifest.model_dump(mode="python"),
-        staging_root=payload.staging_root,
-    )
+    import_kwargs: dict[str, Any] = {
+        "manifest": payload.manifest.model_dump(mode="python"),
+        "staging_root": payload.staging_root,
+        "use_content_addressed_staging": payload.use_content_addressed_staging is True,
+    }
+
+    project = import_staged_project_manifest(session, **import_kwargs)
     session.commit()
     session.refresh(project)
     return SyncProjectImportResponse(project=ProjectSchema.model_validate(project))

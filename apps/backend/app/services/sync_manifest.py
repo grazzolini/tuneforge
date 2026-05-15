@@ -145,16 +145,38 @@ def import_staged_project_manifest(
     session: Session,
     *,
     manifest: SyncProjectManifest | Mapping[str, Any] | object,
-    staging_root: Path | str,
+    staging_root: Path | str | None = None,
+    use_content_addressed_staging: bool = False,
+    staged_content_addressed: bool | None = None,
 ) -> Project:
+    if staged_content_addressed is not None:
+        flags_conflict = (
+            use_content_addressed_staging is not False
+            and use_content_addressed_staging != staged_content_addressed
+        )
+        if flags_conflict:
+            raise AppError(
+                "SYNC_MANIFEST_STAGING_MODE_CONFLICT",
+                "Sync manifest import received conflicting staging mode flags.",
+            )
+        use_content_addressed_staging = staged_content_addressed
+
     project_manifest = _coerce_project_manifest(manifest)
     _validate_project_manifest_schema_version(project_manifest)
     _validate_project_manifest_identity(project_manifest)
     _validate_source_artifact_matches_project_source(project_manifest)
     _reject_duplicate_project_source(session, project_manifest)
     root = project_root(project_manifest.project_id).resolve(strict=False)
-    staged_root = Path(staging_root).expanduser().resolve(strict=False)
-    verified_artifacts = _verify_staged_artifacts(project_manifest, staging_root=staged_root, project_root_path=root)
+    staged_root = (
+        None if staging_root is None else Path(staging_root).expanduser().resolve(strict=False)
+    )
+    verified_artifacts = _verify_staged_artifacts(
+        session,
+        project_manifest,
+        staging_root=staged_root,
+        project_root_path=root,
+        use_content_addressed_staging=use_content_addressed_staging,
+    )
     source_artifact = _source_artifact_manifest(project_manifest)
     source_path = root / _safe_relative_path(source_artifact.relative_path)
 
@@ -304,14 +326,22 @@ def _export_artifact_manifest(artifact: Artifact) -> SyncArtifactManifest:
 
 
 def _verify_staged_artifacts(
+    session: Session,
     manifest: SyncProjectManifest,
     *,
-    staging_root: Path,
+    staging_root: Path | None,
     project_root_path: Path,
+    use_content_addressed_staging: bool,
 ) -> list[_VerifiedStagedArtifact]:
     verified: list[_VerifiedStagedArtifact] = []
     destination_paths: set[Path] = set()
     artifact_ids: set[str] = set()
+
+    if not use_content_addressed_staging and staging_root is None:
+        raise AppError(
+            "SYNC_MANIFEST_STAGING_ROOT_REQUIRED",
+            "A staging root is required for relative staged artifact import.",
+        )
 
     for artifact in manifest.artifacts:
         if artifact.project_id != manifest.project_id:
@@ -329,9 +359,7 @@ def _verify_staged_artifacts(
         artifact_ids.add(artifact.artifact_id)
 
         relative_path = _safe_relative_path(artifact.relative_path)
-        staged_path = (staging_root / relative_path).resolve(strict=False)
         destination_path = (project_root_path / relative_path).resolve(strict=False)
-        _ensure_child_path(staging_root, staged_path, "staged artifact")
         _ensure_child_path(project_root_path, destination_path, "destination artifact")
         if destination_path in destination_paths:
             raise AppError(
@@ -348,7 +376,14 @@ def _verify_staged_artifacts(
                 details={"relative_path": artifact.relative_path},
             )
 
-        _verify_staged_file(artifact, staged_path)
+        if use_content_addressed_staging:
+            staged_path = _content_addressed_staged_path(session, artifact)
+        else:
+            assert staging_root is not None
+            staged_path = (staging_root / relative_path).resolve(strict=False)
+            _ensure_child_path(staging_root, staged_path, "staged artifact")
+            _verify_staged_file(artifact, staged_path)
+
         verified.append(
             _VerifiedStagedArtifact(
                 manifest=artifact,
@@ -358,6 +393,32 @@ def _verify_staged_artifacts(
         )
 
     return verified
+
+
+def _content_addressed_staged_path(session: Session, artifact: SyncArtifactManifest) -> Path:
+    try:
+        from app.services.sync_staging import require_staged_artifact
+    except ModuleNotFoundError as exc:
+        if exc.name == "app.services.sync_staging":
+            raise AppError(
+                "SYNC_STAGING_SERVICE_UNAVAILABLE",
+                "Content-addressed sync staging is not available.",
+            ) from exc
+        raise
+
+    staged_artifact = require_staged_artifact(
+        session,
+        content_sha256=artifact.content_sha256,
+        size_bytes=artifact.size_bytes,
+    )
+    resolved_path = getattr(staged_artifact, "resolved_path", None)
+    if not isinstance(resolved_path, Path):
+        raise AppError(
+            "SYNC_STAGING_ARTIFACT_PATH_INVALID",
+            "A staged sync artifact resolved to an invalid local path.",
+            details={"artifact_id": artifact.artifact_id},
+        )
+    return resolved_path
 
 
 def _verify_staged_file(artifact: SyncArtifactManifest, staged_path: Path) -> None:

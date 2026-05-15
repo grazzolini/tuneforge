@@ -555,6 +555,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sync/artifacts/staging": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sync Artifact Stage */
+        post: operations["sync_artifact_stage_api_v1_sync_artifacts_staging_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sync/artifacts/staging/{content_sha256}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Sync Artifact Staging Detail */
+        get: operations["sync_artifact_staging_detail_api_v1_sync_artifacts_staging__content_sha256__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sync/projects/import": {
         parameters: {
             query?: never;
@@ -1185,6 +1219,21 @@ export interface components {
              */
             overwrite_chord_edits: boolean;
         };
+        /** SyncArtifactStagingRequest */
+        SyncArtifactStagingRequest: {
+            /** Source Path */
+            source_path: string;
+            /** Content Sha256 */
+            content_sha256: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Provider Device Id */
+            provider_device_id?: string | null;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            };
+        };
         /** SyncLocalIdentityResponse */
         SyncLocalIdentityResponse: {
             identity: components["schemas"]["SyncLocalIdentitySchema"];
@@ -1477,7 +1526,39 @@ export interface components {
         SyncProjectStagedImportRequest: {
             manifest: components["schemas"]["SyncProjectManifestSchema"];
             /** Staging Root */
-            staging_root: string;
+            staging_root?: string | null;
+            /** Use Content Addressed Staging */
+            use_content_addressed_staging?: boolean | null;
+        };
+        /** SyncStagedArtifactSchema */
+        SyncStagedArtifactSchema: {
+            /** Content Sha256 */
+            content_sha256: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Relative Path */
+            relative_path: string;
+            /** Provider Device Id */
+            provider_device_id?: string | null;
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Verified At
+             * Format: date-time
+             */
+            verified_at: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
         };
         /** SyncTrustedPeerCreateRequest */
         SyncTrustedPeerCreateRequest: {
@@ -2835,6 +2916,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SyncProjectManifestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_artifact_stage_api_v1_sync_artifacts_staging_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncArtifactStagingRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncStagedArtifactSchema"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_artifact_staging_detail_api_v1_sync_artifacts_staging__content_sha256__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                content_sha256: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncStagedArtifactSchema"];
                 };
             };
             /** @description Validation Error */

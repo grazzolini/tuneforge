@@ -106,6 +106,14 @@ def _artifact_metadata(artifact: Artifact) -> SyncMetadataArtifact:
     )
 
 
+def project_relative_artifact_path(artifact: Artifact) -> str | None:
+    return _project_relative_artifact_path(artifact)
+
+
+def sanitize_sync_metadata(value: Any) -> Any:
+    return _sanitize_metadata(value)
+
+
 def _project_relative_artifact_path(artifact: Artifact) -> str | None:
     try:
         root = project_root(artifact.project_id).resolve(strict=False)

@@ -234,6 +234,60 @@ class SyncMetadataResponse(BaseModel):
     artifacts: list[SyncMetadataArtifactSchema]
 
 
+class SyncProjectManifestProjectSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    project_id: str
+    display_name: str
+    source_key_override: str | None
+    source_sha256: str
+    duration_seconds: float | None
+    sample_rate: int | None
+    channels: int | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SyncProjectManifestArtifactSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    artifact_id: str
+    project_id: str
+    type: str
+    format: str
+    relative_path: str
+    content_sha256: str
+    size_bytes: int
+    generated_by: str
+    can_delete: bool
+    can_regenerate: bool
+    cache_key: str | None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class SyncProjectManifestSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    schema_version: str
+    exported_at: datetime
+    project: SyncProjectManifestProjectSchema
+    artifacts: list[SyncProjectManifestArtifactSchema]
+
+
+class SyncProjectManifestResponse(BaseModel):
+    project_manifest: SyncProjectManifestSchema
+
+
+class SyncProjectStagedImportRequest(BaseModel):
+    manifest: SyncProjectManifestSchema
+    staging_root: str = Field(min_length=1)
+
+
+class SyncProjectImportResponse(BaseModel):
+    project: ProjectSchema
+
+
 class AnalysisRequest(BaseModel):
     include_tempo: bool = False
     force: bool = False

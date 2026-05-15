@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -41,15 +42,20 @@ def register_artifact(
     artifact_type: str,
     artifact_format: str,
     path: Path,
+    artifact_id: str | None = None,
     metadata: dict[str, Any] | None = None,
     cache_key: str | None = None,
     generated_by: str = "unknown",
     can_delete: bool | None = None,
     can_regenerate: bool | None = None,
+    created_at: datetime | None = None,
 ) -> Artifact:
     resolved_path = path.resolve()
+    artifact_kwargs: dict[str, Any] = {}
+    if created_at is not None:
+        artifact_kwargs["created_at"] = created_at
     artifact = Artifact(
-        id=new_id("art"),
+        id=artifact_id or new_id("art"),
         project_id=project_id,
         type=artifact_type,
         format=artifact_format,
@@ -63,6 +69,7 @@ def register_artifact(
         ),
         metadata_json=metadata or {},
         cache_key=cache_key,
+        **artifact_kwargs,
     )
     session.add(artifact)
     session.flush()

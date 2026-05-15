@@ -145,6 +145,38 @@ Artifact fields:
 
 `relative_path` is project-root relative when the artifact is stored under the backend-managed project root; otherwise it is `null`. Artifact metadata is sanitized recursively before returning and removes local path-bearing keys such as `source_path`, `original_copy_path`, `playback_path`, `imported_path`, and any metadata key ending in `_path`. Non-path metadata such as retune/transpose settings, `stem_model`, and `source_artifact_id` is preserved. Job internals such as `result_artifact_ids_json` are not exposed.
 
+### Export project sync manifest
+
+`GET /api/v1/sync/projects/{project_id}/manifest`
+
+Returns a single project manifest for manifest-only sync export. The response is wrapped as `project_manifest` and includes:
+
+- `schema_version`
+- `exported_at`
+- `project`
+- `artifacts`
+
+Manifest paths are project-root relative and use portable path separators. The response does not expose absolute local source, project, artifact, or app data paths. Artifact entries include `content_sha256`, and the project entry includes `source_sha256`; receiving peers must verify staged bytes against these SHA-256 values before accepting the import. For this v1 manifest spike, a portable manifest must contain exactly one `source_audio` artifact, and that artifact must match the project `source_sha256`; normalized proxy-only source imports are not portable until original-source artifacts are modeled explicitly. The endpoint exports metadata only. File transfer and LAN peer discovery belong to the native sync layer, not the loopback FastAPI API.
+
+### Import staged project sync manifest
+
+`POST /api/v1/sync/projects/import`
+
+Imports a project from a previously exported project manifest plus files that have already been staged on disk by the sync transport.
+
+Request fields:
+
+- `manifest`
+- `staging_root`
+
+`staging_root` is a local directory containing the staged project files at the relative paths declared in the manifest. During import, the backend verifies source and artifact bytes with SHA-256, rewrites accepted paths into this install's backend-managed project root, and persists the project through backend services instead of copying database rows from another device.
+
+If the local library already contains the same canonical project or source SHA-256, staged import rejects the duplicate with HTTP `409` instead of creating a second project. The response uses the normal project wrapper shape:
+
+- `project`
+
+Staged import does not enqueue analysis, chord, lyrics, stem, or other generation jobs. Synced projects should import the durable state that was actually exported; future rebuilds are explicit user actions. This endpoint also does not expose FastAPI on the LAN. Peer communication should keep using the separate native sync layer while FastAPI remains bound to loopback.
+
 ## Projects
 
 ### Import project

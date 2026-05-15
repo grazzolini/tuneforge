@@ -251,6 +251,28 @@ def _stage_manifest_files(
         shutil.copy2(source_path, staged_path)
 
 
+def _stage_manifest_content_addressed_files(
+    session: Any,
+    manifest: dict[str, Any],
+    *,
+    source_root: Path,
+) -> dict[str, Path]:
+    from app.services.sync_staging import stage_sync_artifact
+
+    staged_paths: dict[str, Path] = {}
+    for artifact in manifest["artifacts"]:
+        relative_path = artifact["relative_path"]
+        source_path = source_root / relative_path
+        staged = stage_sync_artifact(
+            session,
+            source_path=source_path,
+            content_sha256=artifact["content_sha256"],
+            size_bytes=artifact["size_bytes"],
+        )
+        staged_paths[artifact["content_sha256"]] = staged.resolved_path
+    return staged_paths
+
+
 def _delete_live_project(session: Any, fixture: ManifestProjectFixture) -> None:
     project = session.get(Project, fixture.project_id)
     assert project is not None
@@ -477,6 +499,125 @@ def test_import_staged_project_manifest_rewrites_paths_preserves_hashes_and_skip
             session.scalars(select(Job.type).where(Job.project_id == fixture.project_id))
         )
         assert not job_types.intersection({"analyze", "chords"})
+
+
+def test_import_staged_project_manifest_imports_content_addressed_staging(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    export_manifest, import_manifest = _sync_manifest_services()
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+        staged_paths = _stage_manifest_content_addressed_files(
+            session,
+            manifest,
+            source_root=fixture.root,
+        )
+        _delete_live_project(session, fixture)
+
+        import_manifest(
+            session,
+            manifest=manifest,
+            use_content_addressed_staging=True,
+        )
+        session.commit()
+
+        receiving_root = project_root(fixture.project_id)
+        project = session.get(Project, fixture.project_id)
+        assert project is not None
+        expected_source_path = receiving_root / fixture.source_relative_path
+        assert Path(project.source_path) == expected_source_path
+        assert Path(project.imported_path) == expected_source_path
+
+        artifacts = {
+            artifact.id: artifact
+            for artifact in session.scalars(
+                select(Artifact).where(Artifact.project_id == fixture.project_id)
+            )
+        }
+        assert set(artifacts) == {"art_source_audio", "art_vocals"}
+        for artifact_id, relative_path in {
+            "art_source_audio": fixture.source_relative_path,
+            "art_vocals": fixture.stem_relative_path,
+        }.items():
+            imported_path = receiving_root / relative_path
+            assert Path(artifacts[artifact_id].path) == imported_path
+            assert imported_path.exists()
+            assert imported_path not in staged_paths.values()
+            assert file_sha256(imported_path) == fixture.artifact_hashes[artifact_id]
+
+
+def test_import_staged_project_manifest_rejects_missing_content_addressed_staging_before_writes(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    export_manifest, import_manifest = _sync_manifest_services()
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+        staged_paths = _stage_manifest_content_addressed_files(
+            session,
+            manifest,
+            source_root=fixture.root,
+        )
+        missing_path = staged_paths[fixture.artifact_hashes["art_source_audio"]]
+        _delete_live_project(session, fixture)
+        missing_path.unlink()
+
+        with pytest.raises(AppError) as exc:
+            import_manifest(
+                session,
+                manifest=manifest,
+                use_content_addressed_staging=True,
+            )
+        session.rollback()
+
+        receiving_root = project_root(fixture.project_id)
+        assert session.get(Project, fixture.project_id) is None
+        assert not (receiving_root / fixture.source_relative_path).exists()
+        assert not (receiving_root / fixture.stem_relative_path).exists()
+
+    assert exc.value.code == "SYNC_STAGING_FILE_MISSING"
+    assert exc.value.details["content_sha256"] == fixture.artifact_hashes["art_source_audio"]
+
+
+def test_import_staged_project_manifest_rejects_corrupt_content_addressed_staging(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    export_manifest, import_manifest = _sync_manifest_services()
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+        staged_paths = _stage_manifest_content_addressed_files(
+            session,
+            manifest,
+            source_root=fixture.root,
+        )
+        corrupt_path = staged_paths[fixture.artifact_hashes["art_vocals"]]
+        _delete_live_project(session, fixture)
+        corrupt_path.write_bytes(b"corrupt stem!!!")
+
+        with pytest.raises(AppError) as exc:
+            import_manifest(
+                session,
+                manifest=manifest,
+                use_content_addressed_staging=True,
+            )
+        session.rollback()
+
+        receiving_root = project_root(fixture.project_id)
+        assert session.get(Project, fixture.project_id) is None
+        assert not (receiving_root / fixture.source_relative_path).exists()
+        assert not (receiving_root / fixture.stem_relative_path).exists()
+
+    assert exc.value.code == "SYNC_STAGING_FILE_HASH_MISMATCH"
+    assert exc.value.details["content_sha256"] == fixture.artifact_hashes["art_vocals"]
+    assert exc.value.details["actual_sha256"] != fixture.artifact_hashes["art_vocals"]
 
 
 def test_import_staged_project_manifest_rejects_hash_mismatch(

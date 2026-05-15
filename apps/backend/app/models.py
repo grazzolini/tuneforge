@@ -111,6 +111,27 @@ class SyncPairingOffer(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class SyncStagedArtifact(Base):
+    __tablename__ = "sync_staged_artifacts"
+    __table_args__ = (
+        CheckConstraint("length(content_sha256) = 64", name="ck_sync_staged_artifacts_sha256_len"),
+        CheckConstraint("size_bytes >= 0", name="ck_sync_staged_artifacts_size_nonnegative"),
+        Index("ix_sync_staged_artifacts_provider_device_id", "provider_device_id"),
+        Index("ix_sync_staged_artifacts_verified_at", "verified_at"),
+    )
+
+    content_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    size_bytes: Mapped[int] = mapped_column(Integer())
+    relative_path: Mapped[str] = mapped_column(String(2048))
+    provider_device_id: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON(), default=dict)
+    verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class AnalysisResult(Base):
     __tablename__ = "analysis_results"
 

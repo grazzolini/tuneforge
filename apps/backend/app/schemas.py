@@ -279,9 +279,31 @@ class SyncProjectManifestResponse(BaseModel):
     project_manifest: SyncProjectManifestSchema
 
 
+class SyncArtifactStagingRequest(BaseModel):
+    source_path: str = Field(min_length=1)
+    content_sha256: str = Field(min_length=64, max_length=64)
+    size_bytes: int = Field(ge=0)
+    provider_device_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SyncStagedArtifactSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    content_sha256: str
+    size_bytes: int
+    relative_path: str
+    provider_device_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    verified_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
 class SyncProjectStagedImportRequest(BaseModel):
     manifest: SyncProjectManifestSchema
-    staging_root: str = Field(min_length=1)
+    staging_root: str | None = Field(default=None, min_length=1)
+    use_content_addressed_staging: bool | None = None
 
 
 class SyncProjectImportResponse(BaseModel):

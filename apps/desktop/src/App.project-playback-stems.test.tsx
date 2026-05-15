@@ -565,8 +565,18 @@ describe("Desktop app project playback stems", () => {
     const sourceAudio = findAudioByArtifactId("art_source");
     markAudioReady(sourceAudio);
     await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument(),
+    );
 
-    setPlaybackPosition("61.437");
+    const initialPlaybackPosition = 61.437;
+    setPlaybackPosition(String(initialPlaybackPosition));
+    expect(
+      Number((screen.getByLabelText("Playback position") as HTMLInputElement).value),
+    ).toBeCloseTo(
+      initialPlaybackPosition,
+      1,
+    );
 
     await user.click(screen.getByLabelText("Raise target key"));
     await user.click(screen.getByRole("button", { name: "Create Mix" }));
@@ -600,6 +610,10 @@ describe("Desktop app project playback stems", () => {
     expect(vi.mocked(window.HTMLMediaElement.prototype.play).mock.calls.length).toBe(
       playCallsBeforeNewMixSeek,
     );
+    const transitionPlaybackPosition = Number(
+      (screen.getByLabelText("Playback position") as HTMLInputElement).value,
+    );
+    expect(transitionPlaybackPosition).toBeGreaterThan(initialPlaybackPosition - 0.5);
 
     newestPreviewAudio.currentTime = 0;
     setAudioPlaybackState(newestPreviewAudio);
@@ -610,11 +624,18 @@ describe("Desktop app project playback stems", () => {
       playCallsBeforeNewMixSeek,
     );
 
-    newestPreviewAudio.currentTime = 61.437;
+    newestPreviewAudio.currentTime = transitionPlaybackPosition;
     fireEvent.seeked(newestPreviewAudio);
 
     expect(screen.getByRole("heading", { name: "Practice Mix" })).toBeInTheDocument();
-    await waitFor(() => expect(newestPreviewAudio.currentTime).toBeCloseTo(61.437, 3));
+    await waitFor(() =>
+      expect(newestPreviewAudio.currentTime).toBeCloseTo(transitionPlaybackPosition, 3),
+    );
+    const transportPosition = Number(
+      (screen.getByLabelText("Playback position") as HTMLInputElement).value,
+    );
+    expect(transportPosition).toBeGreaterThanOrEqual(transitionPlaybackPosition - 0.001);
+    expect(transportPosition).toBeLessThan(transitionPlaybackPosition + 0.25);
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
   });
 

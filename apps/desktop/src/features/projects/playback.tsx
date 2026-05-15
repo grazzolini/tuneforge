@@ -290,7 +290,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   const playbackDurationSecondsRef = useRef(0);
   const isPlayingRef = useRef(false);
   const [session, setSession] = useState<ProjectPlaybackSession | null>(null);
-  const [playbackTimeSeconds, setPlaybackTimeSeconds] = useState(0);
+  const [playbackTimeSeconds, setPlaybackTimeSecondsState] = useState(0);
   const [playbackDurationSeconds, setPlaybackDurationSeconds] = useState(0);
   const [isPrecounting, setIsPrecounting] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -307,6 +307,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     playbackTimeSecondsRef.current = playbackTimeSeconds;
   }, [playbackTimeSeconds]);
+
+  const setPlaybackTimeSeconds = useCallback((nextTimeSeconds: number) => {
+    playbackTimeSecondsRef.current = nextTimeSeconds;
+    setPlaybackTimeSecondsState(nextTimeSeconds);
+  }, []);
 
   useEffect(() => {
     playbackDurationSecondsRef.current = playbackDurationSeconds;
@@ -1733,6 +1738,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     cancelPrecount,
     getActiveMediaElements,
     markNativePlaybackInactive,
+    setPlaybackTimeSeconds,
     stopStemSources,
   ]);
 
@@ -2052,6 +2058,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     getActiveMediaElements,
     markNativePlaybackInactive,
     playbackStartTimeForSession,
+    setPlaybackTimeSeconds,
     startStemPlayback,
     syncStemElementTimes,
   ]);
@@ -2094,6 +2101,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     markNativePlaybackInactive,
     playbackResetTimeForSession,
     requestNativeStop,
+    setPlaybackTimeSeconds,
     stopStemSources,
     syncStemElementTimes,
     updateDurationFromActiveMedia,
@@ -2128,9 +2136,14 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       setIsPlaying(false);
     } else if (previousSession && previousSignature !== nextSignature) {
       cancelPrecount();
+      const activePendingTransition = pendingTransitionRef.current;
+      const requestedTransitionTime =
+        activePendingTransition?.signature === nextSignature
+          ? activePendingTransition.targetTime
+          : readMasterTime(previousSession);
       const nextTime = playbackStartTimeForSession(
         nextSession,
-        readMasterTime(previousSession),
+        requestedTransitionTime,
       );
       const shouldPlay = isPlayingRef.current;
       const samePlaybackTarget =
@@ -2313,6 +2326,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     playPlaybackImmediately,
     readMasterTime,
     requestNativeStop,
+    setPlaybackTimeSeconds,
     syncStemElementTimes,
   ]);
 
@@ -2446,6 +2460,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     requestNativeStop,
     restartActiveLoopPlayback,
     restartLoopIfNeeded,
+    setPlaybackTimeSeconds,
     syncStemElementTimes,
   ]);
 

@@ -92,12 +92,49 @@ function ProjectCard({ project }: { project: ProjectSchema }) {
   );
 }
 
+type ImportNotice =
+  | { kind: "duplicate"; message: string; projectId: string }
+  | { kind: "error"; message: string };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function getDuplicateImportNotice(error: unknown): ImportNotice | null {
+  if (!isRecord(error) || error.code !== "DUPLICATE_PROJECT_SOURCE" || !isRecord(error.details)) {
+    return null;
+  }
+
+  const projectId = error.details.project_id;
+  const projectName = error.details.project_name;
+  if (typeof projectId !== "string" || typeof projectName !== "string" || !projectId || !projectName) {
+    return null;
+  }
+
+  return {
+    kind: "duplicate",
+    message: `This project is already imported with name "${projectName}".`,
+    projectId,
+  };
+}
+
+function getImportErrorNotice(error: unknown): ImportNotice {
+  const duplicateNotice = getDuplicateImportNotice(error);
+  if (duplicateNotice) {
+    return duplicateNotice;
+  }
+
+  const message = error instanceof Error && error.message.trim() ? error.message.trim() : "The request failed.";
+  return { kind: "error", message: `Could not import track. ${message}` };
+}
+
 export function LibraryView() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { informationDensity } = usePreferences();
   const { chordBackendForAction } = useChordBackendActionSelection();
   const [searchDraft, setSearchDraft] = useState("");
+  const [importNotice, setImportNotice] = useState<ImportNotice | null>(null);
   const deferredSearch = useDeferredValue(searchDraft.trim());
   const showSubtitle = informationDensity !== "minimal";
 
@@ -132,10 +169,17 @@ export function LibraryView() {
       });
       return response.project;
     },
+    onMutate: () => {
+      setImportNotice(null);
+    },
     onSuccess: async (project) => {
+      setImportNotice(null);
       if (!project) return;
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
       navigate(`/projects/${project.id}`);
+    },
+    onError: (error) => {
+      setImportNotice(getImportErrorNotice(error));
     },
   });
 
@@ -162,6 +206,22 @@ export function LibraryView() {
           <Upload aria-hidden="true" className="button__icon" />
         </button>
       </div>
+
+      {importNotice ? (
+        <div
+          className={`panel library-import-notice ${
+            importNotice.kind === "duplicate" ? "panel--warning" : "panel--error"
+          }`}
+          role={importNotice.kind === "duplicate" ? "status" : "alert"}
+        >
+          <span>{importNotice.message}</span>
+          {importNotice.kind === "duplicate" ? (
+            <Link className="button button--ghost button--small" to={`/projects/${importNotice.projectId}`}>
+              Open project
+            </Link>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="panel library-toolbar">
         <label className="search-field">

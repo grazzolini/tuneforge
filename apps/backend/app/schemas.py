@@ -195,6 +195,45 @@ class SyncPreflightResponse(BaseModel):
     manual_cleanup_guidance: list[str]
 
 
+class SyncMetadataProjectSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    project_id: str
+    display_name: str
+    source_key_override: str | None
+    source_sha256: str | None
+    duration_seconds: float | None
+    sample_rate: int | None
+    channels: int | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SyncMetadataArtifactSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    artifact_id: str
+    project_id: str
+    type: str
+    format: str
+    relative_path: str | None
+    content_sha256: str | None
+    size_bytes: int
+    generated_by: str
+    can_delete: bool
+    can_regenerate: bool
+    cache_key: str | None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class SyncMetadataResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    projects: list[SyncMetadataProjectSchema]
+    artifacts: list[SyncMetadataArtifactSchema]
+
+
 class AnalysisRequest(BaseModel):
     include_tempo: bool = False
     force: bool = False

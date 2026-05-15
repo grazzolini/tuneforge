@@ -6,6 +6,7 @@ import pytest
 
 from app.db import SessionLocal
 from app.models import Artifact, Project
+from app.services.paths import project_root
 from app.services.sync_identity import (
     project_id_to_storage_key,
     source_hash_to_project_id,
@@ -74,6 +75,140 @@ def test_sync_preflight_reports_ready_projects(client, sample_audio_file: Path) 
             "reason": None,
         }
     ]
+
+
+def test_sync_metadata_exposes_sync_safe_project_and_artifact_metadata(
+    client,
+    sample_audio_file: Path,
+    tmp_path: Path,
+) -> None:
+    source_hash = file_sha256(sample_audio_file)
+    assert source_hash is not None
+    project_id = source_hash_to_project_id(source_hash)
+    root = project_root(project_id)
+    project_artifact_path = root / "stems" / "vocals.wav"
+    external_artifact_path = tmp_path / "external.wav"
+    project_artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    project_artifact_path.write_bytes(b"project artifact")
+    external_artifact_path.write_bytes(b"external artifact")
+    project_artifact_hash = file_sha256(project_artifact_path)
+    external_artifact_hash = file_sha256(external_artifact_path)
+    assert project_artifact_hash is not None
+    assert external_artifact_hash is not None
+
+    with SessionLocal() as session:
+        project = Project(
+            id=project_id,
+            display_name="Sync Fixture",
+            source_key_override="8:major",
+            source_sha256=source_hash,
+            source_path=str(sample_audio_file),
+            imported_path=str(sample_audio_file),
+            duration_seconds=2.0,
+            sample_rate=44100,
+            channels=1,
+        )
+        session.add(project)
+        session.flush()
+        session.add_all(
+            [
+                Artifact(
+                    id="art_project_safe",
+                    project_id=project.id,
+                    type="vocals",
+                    format="wav",
+                    path=str(project_artifact_path),
+                    content_sha256=project_artifact_hash,
+                    size_bytes=project_artifact_path.stat().st_size,
+                    generated_by="stems",
+                    can_delete=True,
+                    can_regenerate=True,
+                    cache_key="stem-cache-key",
+                    metadata_json={
+                        "source_path": str(sample_audio_file),
+                        "stem_model": "htdemucs_6s",
+                        "source_artifact_id": "art_source",
+                        "retune": {
+                            "target_cents_offset": 12.0,
+                            "path": str(tmp_path / "retune.wav"),
+                            "render_path": str(tmp_path / "render.wav"),
+                        },
+                        "nested": {
+                            "playback_path": str(tmp_path / "playback.wav"),
+                            "transpose": {"semitones": 2},
+                        },
+                        "items": [
+                            {
+                                "imported_path": str(tmp_path / "imported.wav"),
+                                "stem_model": "htdemucs_6s",
+                            },
+                            {"source_artifact_id": "art_source"},
+                        ],
+                    },
+                ),
+                Artifact(
+                    id="art_external",
+                    project_id=project.id,
+                    type="external_reference",
+                    format="wav",
+                    path=str(external_artifact_path),
+                    content_sha256=external_artifact_hash,
+                    size_bytes=external_artifact_path.stat().st_size,
+                    generated_by="test",
+                    can_delete=False,
+                    can_regenerate=False,
+                    metadata_json={
+                        "original_copy_path": str(tmp_path / "copy.wav"),
+                        "transpose": {"semitones": -1},
+                    },
+                ),
+            ]
+        )
+        session.commit()
+
+    response = client.get("/api/v1/sync/metadata")
+
+    assert response.status_code == 200
+    assert str(tmp_path) not in response.text
+    payload = response.json()
+    assert len(payload["projects"]) == 1
+    project_payload = payload["projects"][0]
+    assert project_payload["project_id"] == project_id
+    assert project_payload["display_name"] == "Sync Fixture"
+    assert project_payload["source_key_override"] == "8:major"
+    assert project_payload["source_sha256"] == source_hash
+    assert project_payload["duration_seconds"] == 2.0
+    assert project_payload["sample_rate"] == 44100
+    assert project_payload["channels"] == 1
+    assert "source_path" not in project_payload
+    assert "imported_path" not in project_payload
+
+    artifacts = {artifact["artifact_id"]: artifact for artifact in payload["artifacts"]}
+    assert set(artifacts) == {"art_project_safe", "art_external"}
+    safe_artifact = artifacts["art_project_safe"]
+    assert safe_artifact["project_id"] == project_id
+    assert safe_artifact["type"] == "vocals"
+    assert safe_artifact["format"] == "wav"
+    assert safe_artifact["relative_path"] == "stems/vocals.wav"
+    assert safe_artifact["content_sha256"] == project_artifact_hash
+    assert safe_artifact["size_bytes"] == project_artifact_path.stat().st_size
+    assert safe_artifact["generated_by"] == "stems"
+    assert safe_artifact["can_delete"] is True
+    assert safe_artifact["can_regenerate"] is True
+    assert safe_artifact["cache_key"] == "stem-cache-key"
+    assert safe_artifact["metadata"] == {
+        "stem_model": "htdemucs_6s",
+        "source_artifact_id": "art_source",
+        "retune": {"target_cents_offset": 12.0},
+        "nested": {"transpose": {"semitones": 2}},
+        "items": [{"stem_model": "htdemucs_6s"}, {"source_artifact_id": "art_source"}],
+    }
+    assert "path" not in safe_artifact
+    assert "result_artifact_ids_json" not in safe_artifact
+
+    external_artifact = artifacts["art_external"]
+    assert external_artifact["relative_path"] is None
+    assert external_artifact["metadata"] == {"transpose": {"semitones": -1}}
 
 
 def test_sync_preflight_resolves_missing_hash_from_source_path(client, sample_audio_file: Path) -> None:

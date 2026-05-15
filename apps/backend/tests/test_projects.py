@@ -59,10 +59,20 @@ def test_import_project_persists_metadata_and_source_artifact(client, sample_aud
 
 
 def test_import_project_rejects_duplicate_source_hash(client, sample_audio_file: Path):
-    first = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    source_hash = file_sha256(sample_audio_file)
+    assert source_hash is not None
+    project_id = source_hash_to_project_id(source_hash)
+    with SessionLocal() as session:
+        session.add(
+            Project(
+                id=project_id,
+                display_name="Existing Song",
+                source_sha256=source_hash,
+                source_path=str(sample_audio_file),
+                imported_path=str(sample_audio_file),
+            )
+        )
+        session.commit()
 
     response = client.post(
         "/api/v1/projects/import",
@@ -72,19 +82,18 @@ def test_import_project_rejects_duplicate_source_hash(client, sample_audio_file:
     assert response.status_code == 409
     assert response.json()["error"] == {
         "code": "DUPLICATE_PROJECT_SOURCE",
-        "message": "This source track is already imported.",
-        "details": {"project_id": first["id"]},
+        "message": 'This project is already imported with name "Existing Song".',
+        "details": {"project_id": project_id, "project_name": "Existing Song"},
     }
-    for job in client.get("/api/v1/jobs").json()["jobs"]:
-        if job["project_id"] == first["id"]:
-            assert wait_for_job(client, job["id"])["status"] == "completed"
 
 
 def test_import_project_translates_duplicate_project_id_race(
     monkeypatch: pytest.MonkeyPatch,
     sample_audio_file: Path,
 ) -> None:
-    source_hash = file_sha256(sample_audio_file)
+    race_audio_file = sample_audio_file.with_name("race-fixture.wav")
+    race_audio_file.write_bytes(sample_audio_file.read_bytes() + b"race")
+    source_hash = file_sha256(race_audio_file)
     assert source_hash is not None
     project_id = source_hash_to_project_id(source_hash)
 
@@ -97,14 +106,15 @@ def test_import_project_translates_duplicate_project_id_race(
         with pytest.raises(AppError) as exc:
             import_project(
                 session,
-                source_path=str(sample_audio_file),
+                source_path=str(race_audio_file),
                 copy_into_project=True,
                 display_name=None,
             )
 
     assert exc.value.code == "DUPLICATE_PROJECT_SOURCE"
     assert exc.value.status_code == 409
-    assert exc.value.details == {"project_id": project_id}
+    assert exc.value.message == 'This project is already imported with name "race-fixture".'
+    assert exc.value.details == {"project_id": project_id, "project_name": "race-fixture"}
     assert not project_root(project_id).exists()
 
 

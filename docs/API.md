@@ -109,6 +109,42 @@ The response includes:
 
 Project status values are `ready`, `missing_source_hash`, `invalid_source_hash`, `duplicate_source_hash`, and `noncanonical_project_id`. Canonical project IDs use `proj_sha256_<full_source_sha256>`, while project storage directories use a shorter derived key such as `proj_<first_24_sha256_hex>`. This endpoint is sync-specific; general project responses do not expose source hashes.
 
+### Get sync metadata
+
+`GET /api/v1/sync/metadata`
+
+Returns sync-safe project and artifact metadata so sync clients do not need to read the local SQLite database directly. The endpoint does not expose absolute local file paths.
+
+Project fields:
+
+- `project_id`
+- `display_name`
+- `source_key_override`
+- `source_sha256`
+- `duration_seconds`
+- `sample_rate`
+- `channels`
+- `created_at`
+- `updated_at`
+
+Artifact fields:
+
+- `artifact_id`
+- `project_id`
+- `type`
+- `format`
+- `relative_path`
+- `content_sha256`
+- `size_bytes`
+- `generated_by`
+- `can_delete`
+- `can_regenerate`
+- `cache_key`
+- `metadata`
+- `created_at`
+
+`relative_path` is project-root relative when the artifact is stored under the backend-managed project root; otherwise it is `null`. Artifact metadata is sanitized recursively before returning and removes local path-bearing keys such as `source_path`, `original_copy_path`, `playback_path`, `imported_path`, and any metadata key ending in `_path`. Non-path metadata such as retune/transpose settings, `stem_model`, and `source_artifact_id` is preserved. Job internals such as `result_artifact_ids_json` are not exposed.
+
 ## Projects
 
 ### Import project
@@ -124,6 +160,11 @@ Request fields:
 - `display_name`
 
 Response: `ProjectResponse`.
+
+If the same source track has already been imported, the endpoint returns HTTP `409` with code `DUPLICATE_PROJECT_SOURCE`, message `This project is already imported with name "{name}".`, and details containing:
+
+- `project_id`
+- `project_name`
 
 ### List projects
 

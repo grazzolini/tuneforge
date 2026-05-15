@@ -118,6 +118,78 @@ describe("Desktop app library", () => {
     expect(screen.getByRole("button", { name: "Hide Inspector" })).toBeInTheDocument();
   });
 
+  it("shows duplicate import warning with a link to the existing project", async () => {
+    const user = userEvent.setup();
+    const duplicateMessage = 'This project is already imported with name "Demo Song".';
+    mockOpen.mockResolvedValue("/tmp/demo.wav");
+    mockImportProject.mockRejectedValueOnce(
+      Object.assign(new Error(duplicateMessage), {
+        code: "DUPLICATE_PROJECT_SOURCE",
+        details: {
+          project_id: "proj_123",
+          project_name: "Demo Song",
+        },
+      }),
+    );
+
+    renderApp(["/"]);
+
+    expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Import Track" }));
+
+    const warning = await screen.findByRole("status");
+    expect(within(warning).getByText(duplicateMessage)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    const openProjectLink = within(warning).getByRole("link", { name: "Open project" });
+    expect(openProjectLink).toHaveAttribute("href", "/projects/proj_123");
+    await user.click(openProjectLink);
+
+    await waitFor(() => expect(mockGetProject).toHaveBeenCalledWith("proj_123"));
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+  });
+
+  it("shows generic import errors without a project link and clears them on the next import", async () => {
+    const user = userEvent.setup();
+    const existingProject = {
+      id: "proj_123",
+      display_name: "Demo Song",
+      source_key_override: null,
+      source_path: "/tmp/demo.wav",
+      imported_path: "/tmp/app/demo-song.wav",
+      duration_seconds: 182,
+      sample_rate: 44100,
+      channels: 2,
+      created_at: "2026-04-18T13:16:00.000Z",
+      updated_at: "2026-04-18T13:16:00.000Z",
+    };
+    const genericMessage = "Could not import track. Disk is full.";
+    let resolveImport!: (value: { project: typeof existingProject }) => void;
+    const importPromise = new Promise<{ project: typeof existingProject }>((resolve) => {
+      resolveImport = resolve;
+    });
+    mockOpen.mockResolvedValue("/tmp/new-song.mp4");
+    mockImportProject.mockRejectedValueOnce(new Error("Disk is full."));
+
+    renderApp(["/"]);
+
+    expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Import Track" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(within(alert).getByText(genericMessage)).toBeInTheDocument();
+    expect(within(alert).queryByRole("link", { name: "Open project" })).not.toBeInTheDocument();
+
+    mockImportProject.mockImplementationOnce(async () => importPromise);
+    await user.click(screen.getByRole("button", { name: "Import Track" }));
+
+    await waitFor(() => expect(screen.queryByText(genericMessage)).not.toBeInTheDocument());
+    resolveImport({ project: existingProject });
+
+    await waitFor(() => expect(mockGetProject).toHaveBeenCalledWith("proj_123"));
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+  });
+
   it("uses the selected default chord backend when importing a track", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem(

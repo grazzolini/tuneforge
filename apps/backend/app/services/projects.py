@@ -10,12 +10,17 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.errors import AppError
-from app.models import Project
+from app.models import Artifact, Project, SyncEntityRevision
 from app.services.artifacts import register_artifact
 from app.services.metadata import extract_audio_metadata, normalize_audio_to_wav
 from app.services.paths import ensure_project_dirs, project_root, project_source_dir
 from app.services.sync_identity import source_hash_to_project_id
 from app.services.sync_revisions import record_project_metadata_revision
+from app.services.sync_tombstones import (
+    record_artifact_delete_tombstone,
+    record_entity_revision_delete_tombstone,
+    record_project_delete_tombstone,
+)
 from app.utils.hashing import file_sha256
 
 
@@ -158,6 +163,13 @@ def import_project(
 def delete_project(session: Session, project_id: str) -> None:
     project = get_project(session, project_id)
     root = project_root(project.id)
+    record_project_delete_tombstone(session, project)
+    for artifact in list(session.scalars(select(Artifact).where(Artifact.project_id == project.id))):
+        record_artifact_delete_tombstone(session, artifact)
+    for revision in list(
+        session.scalars(select(SyncEntityRevision).where(SyncEntityRevision.project_id == project.id))
+    ):
+        record_entity_revision_delete_tombstone(session, revision)
     session.delete(project)
     session.flush()
     if root.exists():

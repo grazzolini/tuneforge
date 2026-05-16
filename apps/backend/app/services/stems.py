@@ -23,6 +23,7 @@ from app.services.stem_models import (
     model_output_artifact_type,
     resolve_stem_model,
 )
+from app.services.sync_tombstones import record_artifact_delete_tombstone
 from app.utils.ids import new_id
 
 
@@ -215,6 +216,7 @@ def _prune_extra_stem_artifacts(
         stem_model_id=stem_model_id,
     ):
         if artifact.id not in keep_ids:
+            record_artifact_delete_tombstone(session, artifact)
             _cleanup_artifact_path(Path(artifact.path))
             session.delete(artifact)
 

@@ -3,12 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Artifact, Project
+from app.models import Artifact, Project, SyncDeleteTombstone
 from app.services.paths import project_root
 
 LOCAL_METADATA_PATH_KEYS = {
@@ -51,9 +51,24 @@ class SyncMetadataArtifact:
 
 
 @dataclass(frozen=True)
+class SyncMetadataDeleteTombstone:
+    tombstone_id: str
+    sync_group_id: str
+    project_id: str
+    target_type: str
+    target_id: str
+    author_device_id: str
+    deleted_at: datetime
+    prior_metadata: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
 class SyncMetadataResult:
     projects: list[SyncMetadataProject]
     artifacts: list[SyncMetadataArtifact]
+    delete_tombstones: list[SyncMetadataDeleteTombstone]
 
 
 def get_sync_metadata(session: Session) -> SyncMetadataResult:
@@ -67,10 +82,15 @@ def get_sync_metadata(session: Session) -> SyncMetadataResult:
             )
         )
     )
+    delete_tombstones = _list_delete_tombstones(session)
 
     return SyncMetadataResult(
         projects=[_project_metadata(project) for project in projects],
         artifacts=[_artifact_metadata(artifact) for artifact in artifacts],
+        delete_tombstones=[
+            _delete_tombstone_metadata(tombstone)
+            for tombstone in delete_tombstones
+        ],
     )
 
 
@@ -106,12 +126,47 @@ def _artifact_metadata(artifact: Artifact) -> SyncMetadataArtifact:
     )
 
 
+def _delete_tombstone_metadata(tombstone: SyncDeleteTombstone) -> SyncMetadataDeleteTombstone:
+    return SyncMetadataDeleteTombstone(
+        tombstone_id=tombstone.id,
+        sync_group_id=tombstone.sync_group_id,
+        project_id=tombstone.project_id,
+        target_type=tombstone.target_type,
+        target_id=tombstone.target_id,
+        author_device_id=tombstone.author_device_id,
+        deleted_at=tombstone.deleted_at,
+        prior_metadata=cast_metadata(tombstone.prior_metadata_json),
+        created_at=tombstone.created_at,
+        updated_at=tombstone.updated_at,
+    )
+
+
 def project_relative_artifact_path(artifact: Artifact) -> str | None:
     return _project_relative_artifact_path(artifact)
 
 
 def sanitize_sync_metadata(value: Any) -> Any:
     return _sanitize_metadata(value)
+
+
+def cast_metadata(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return cast(dict[str, Any], _sanitize_metadata(value))
+
+
+def _list_delete_tombstones(session: Session) -> list[SyncDeleteTombstone]:
+    return list(
+        session.scalars(
+            select(SyncDeleteTombstone).order_by(
+                SyncDeleteTombstone.project_id.asc(),
+                SyncDeleteTombstone.target_type.asc(),
+                SyncDeleteTombstone.target_id.asc(),
+                SyncDeleteTombstone.deleted_at.asc(),
+                SyncDeleteTombstone.id.asc(),
+            )
+        )
+    )
 
 
 def _project_relative_artifact_path(artifact: Artifact) -> str | None:
@@ -139,4 +194,6 @@ def _is_local_path_key(key: object) -> bool:
     if not isinstance(key, str):
         return False
     normalized = key.lower()
+    if normalized == "relative_path":
+        return False
     return normalized in LOCAL_METADATA_PATH_KEYS or normalized.endswith("_path")

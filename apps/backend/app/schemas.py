@@ -224,11 +224,30 @@ class SyncMetadataArtifactSchema(BaseModel):
     created_at: datetime
 
 
+class SyncDeleteTombstoneSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    tombstone_id: str = Field(validation_alias=AliasChoices("tombstone_id", "id"))
+    sync_group_id: str
+    project_id: str
+    target_type: str
+    target_id: str
+    author_device_id: str
+    deleted_at: datetime
+    prior_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("prior_metadata", "prior_metadata_json"),
+    )
+    created_at: datetime
+    updated_at: datetime
+
+
 class SyncMetadataResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     projects: list[SyncMetadataProjectSchema]
     artifacts: list[SyncMetadataArtifactSchema]
+    delete_tombstones: list[SyncDeleteTombstoneSchema] = Field(default_factory=list)
 
 
 class SyncProjectManifestProjectSchema(BaseModel):
@@ -290,6 +309,7 @@ class SyncProjectManifestSchema(BaseModel):
     project: SyncProjectManifestProjectSchema
     entity_revisions: list[SyncProjectManifestEntityRevisionSchema] = Field(default_factory=list)
     artifacts: list[SyncProjectManifestArtifactSchema]
+    delete_tombstones: list[SyncDeleteTombstoneSchema] = Field(default_factory=list)
 
 
 class SyncProjectManifestResponse(BaseModel):

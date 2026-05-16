@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
+import json
 import shutil
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import asdict, dataclass, is_dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -12,9 +15,18 @@ from sqlalchemy import select
 
 from app.db import SessionLocal
 from app.errors import AppError
-from app.models import Artifact, Job, Project
+from app.models import (
+    Artifact,
+    ChordTimeline,
+    Job,
+    LyricsTranscript,
+    Project,
+    SongSection,
+    SyncEntityRevision,
+)
 from app.services.paths import project_root
 from app.services.sync_identity import source_hash_to_project_id
+from app.services.sync_revisions import CURRENT_REVISION_STATE
 from app.utils.hashing import file_sha256
 
 ManifestService = Callable[..., Any]
@@ -87,13 +99,29 @@ def _plain_manifest(value: Any) -> dict[str, Any]:
     if "project" in manifest:
         project = manifest["project"]
         artifacts = manifest.get("artifacts")
+        entity_revisions = manifest.get("entity_revisions", [])
     else:
-        project = {key: child for key, child in manifest.items() if key != "artifacts"}
+        project = {
+            key: child
+            for key, child in manifest.items()
+            if key not in {"artifacts", "entity_revisions"}
+        }
         artifacts = manifest.get("artifacts")
+        entity_revisions = manifest.get("entity_revisions", [])
 
     assert isinstance(project, dict)
     assert isinstance(artifacts, list)
-    return {"project": project, "artifacts": artifacts}
+    assert isinstance(entity_revisions, list)
+    result: dict[str, Any] = {
+        "project": project,
+        "artifacts": artifacts,
+        "entity_revisions": entity_revisions,
+    }
+    if "schema_version" in manifest:
+        result["schema_version"] = manifest["schema_version"]
+    if "exported_at" in manifest:
+        result["exported_at"] = manifest["exported_at"]
+    return result
 
 
 def _iter_strings(value: Any) -> Iterator[str]:
@@ -137,6 +165,11 @@ def _assert_no_local_path_keys(payload: dict[str, Any]) -> None:
 def _artifacts_by_id(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
     artifacts = manifest["artifacts"]
     return {artifact["artifact_id"]: artifact for artifact in artifacts}
+
+
+def _entity_revisions_by_id(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    revisions = manifest["entity_revisions"]
+    return {revision["revision_id"]: revision for revision in revisions}
 
 
 def _write_bytes(path: Path, contents: bytes) -> tuple[str, int]:
@@ -237,6 +270,163 @@ def _create_project_with_artifacts(
     )
 
 
+def _revision_content_hash(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _add_entity_revision(
+    session: Any,
+    *,
+    revision_id: str,
+    project_id: str,
+    entity_type: str,
+    entity_id: str,
+    payload: dict[str, Any],
+    revision_type: str = "edit",
+    base_revision_id: str | None = None,
+    source_artifact_id: str | None = None,
+    state: str = CURRENT_REVISION_STATE,
+    metadata: dict[str, Any] | None = None,
+    created_at: datetime | None = None,
+    updated_at: datetime | None = None,
+) -> None:
+    timestamp = created_at or datetime(2026, 1, 1, tzinfo=UTC)
+    session.add(
+        SyncEntityRevision(
+            id=revision_id,
+            project_id=project_id,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            revision_type=revision_type,
+            base_revision_id=base_revision_id,
+            author_device_id="device_alpha",
+            source_artifact_id=source_artifact_id,
+            content_sha256=_revision_content_hash(payload),
+            state=state,
+            metadata_json=metadata or {},
+            payload_json=payload,
+            created_at=timestamp,
+            updated_at=updated_at or timestamp,
+        )
+    )
+
+
+def _add_project_entity_revisions(session: Any, fixture: ManifestProjectFixture) -> None:
+    local_path = str(fixture.external_source_path)
+    _add_entity_revision(
+        session,
+        revision_id="rev_project_metadata_current",
+        project_id=fixture.project_id,
+        entity_type="project_metadata",
+        entity_id=fixture.project_id,
+        payload={
+            "display_name": "Synced Fixture",
+            "source_key_override": "2:major",
+            "source_path": local_path,
+        },
+        metadata={"source_path": local_path, "reason": "rename"},
+    )
+    _add_entity_revision(
+        session,
+        revision_id="rev_chords_previous",
+        project_id=fixture.project_id,
+        entity_type="chords",
+        entity_id="chords",
+        state="superseded",
+        payload={
+            "backend": "tuneforge-fast",
+            "timeline": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "G"}],
+        },
+    )
+    _add_entity_revision(
+        session,
+        revision_id="rev_chords_current",
+        project_id=fixture.project_id,
+        entity_type="chords",
+        entity_id="chords",
+        base_revision_id="rev_chords_previous",
+        source_artifact_id="art_source_audio",
+        payload={
+            "backend": "tuneforge-fast",
+            "source_artifact_id": "art_source_audio",
+            "source_segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "C"}],
+            "timeline": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "Am"}],
+            "has_user_edits": True,
+            "source_kind": "user-edited",
+            "metadata": {"reviewed": True, "source_path": local_path},
+        },
+    )
+    _add_entity_revision(
+        session,
+        revision_id="rev_lyrics_current",
+        project_id=fixture.project_id,
+        entity_type="lyrics",
+        entity_id="lyrics",
+        source_artifact_id="art_source_audio",
+        payload={
+            "backend": "whisper.cpp",
+            "source_artifact_id": "art_source_audio",
+            "source_kind": "user-edited",
+            "language": "en",
+            "source_segments": [
+                {"start_seconds": 0.0, "end_seconds": 1.0, "text": "hello", "words": []}
+            ],
+            "segments": [
+                {"start_seconds": 0.0, "end_seconds": 1.0, "text": "hello sync", "words": []}
+            ],
+            "has_user_edits": True,
+        },
+    )
+    _add_entity_revision(
+        session,
+        revision_id="rev_section_intro",
+        project_id=fixture.project_id,
+        entity_type="section",
+        entity_id="sec_intro",
+        payload={
+            "id": "sec_intro",
+            "label": "Intro",
+            "start_seconds": 0.0,
+            "end_seconds": 4.0,
+            "source": "tab",
+            "metadata": {"color": "blue", "source_path": local_path},
+        },
+    )
+    _add_entity_revision(
+        session,
+        revision_id="rev_section_verse",
+        project_id=fixture.project_id,
+        entity_type="section",
+        entity_id="sec_verse",
+        payload={
+            "id": "sec_verse",
+            "label": "Verse",
+            "start_seconds": 4.0,
+            "end_seconds": 12.0,
+            "source": "tab",
+            "metadata": {"color": "green"},
+        },
+    )
+    _add_entity_revision(
+        session,
+        revision_id="rev_unknown_marker",
+        project_id=fixture.project_id,
+        entity_type="marker",
+        entity_id="marker_one",
+        revision_type="generated",
+        payload={"label": "Marker", "source_path": local_path},
+    )
+    session.commit()
+
+
 def _stage_manifest_files(
     manifest: dict[str, Any],
     *,
@@ -274,11 +464,55 @@ def _stage_manifest_content_addressed_files(
 
 
 def _delete_live_project(session: Any, fixture: ManifestProjectFixture) -> None:
+    revisions = list(
+        session.scalars(
+            select(SyncEntityRevision).where(SyncEntityRevision.project_id == fixture.project_id)
+        )
+    )
+    for revision in revisions:
+        session.delete(revision)
     project = session.get(Project, fixture.project_id)
     assert project is not None
     session.delete(project)
     session.commit()
     shutil.rmtree(fixture.root, ignore_errors=True)
+
+
+def _create_foreign_source_artifact(session: Any, tmp_path: Path) -> str:
+    source_sha256 = "b" * 64
+    project_id = source_hash_to_project_id(source_sha256)
+    foreign_path = tmp_path / "foreign" / "source.wav"
+    content_sha256, size_bytes = _write_bytes(foreign_path, b"foreign source")
+    project = Project(
+        id=project_id,
+        display_name="Foreign Sync Fixture",
+        source_key_override=None,
+        source_sha256=source_sha256,
+        source_path=str(foreign_path),
+        imported_path=str(foreign_path),
+        duration_seconds=1.0,
+        sample_rate=44100,
+        channels=1,
+    )
+    session.add(project)
+    session.flush()
+    artifact_id = "art_foreign_source"
+    session.add(
+        Artifact(
+            id=artifact_id,
+            project_id=project_id,
+            type="source_audio",
+            format="wav",
+            path=str(foreign_path),
+            content_sha256=content_sha256,
+            size_bytes=size_bytes,
+            generated_by="import",
+            can_delete=False,
+            can_regenerate=False,
+        )
+    )
+    session.commit()
+    return artifact_id
 
 
 def test_export_project_manifest_omits_local_paths_and_includes_sync_safe_fields(
@@ -336,6 +570,76 @@ def test_export_project_manifest_omits_local_paths_and_includes_sync_safe_fields
         "stem_model": "htdemucs_6s",
         "source_artifact_id": "art_source_audio",
     }
+
+
+def test_export_project_manifest_includes_entity_revisions_without_local_paths(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    export_manifest, _ = _sync_manifest_services()
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        _add_project_entity_revisions(session, fixture)
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+
+    _assert_no_absolute_local_paths(manifest, (tmp_path, fixture.root))
+    _assert_no_local_path_keys(manifest)
+
+    revisions = manifest["entity_revisions"]
+    assert [
+        (
+            revision["entity_type"],
+            revision["entity_id"],
+            revision["created_at"],
+            revision["revision_id"],
+        )
+        for revision in revisions
+    ] == sorted(
+        (
+            revision["entity_type"],
+            revision["entity_id"],
+            revision["created_at"],
+            revision["revision_id"],
+        )
+        for revision in revisions
+    )
+
+    by_id = _entity_revisions_by_id(manifest)
+    assert set(by_id) == {
+        "rev_chords_current",
+        "rev_chords_previous",
+        "rev_lyrics_current",
+        "rev_project_metadata_current",
+        "rev_section_intro",
+        "rev_section_verse",
+        "rev_unknown_marker",
+    }
+
+    project_revision = by_id["rev_project_metadata_current"]
+    assert project_revision["project_id"] == fixture.project_id
+    assert project_revision["entity_type"] == "project_metadata"
+    assert project_revision["entity_id"] == fixture.project_id
+    assert project_revision["revision_type"] == "edit"
+    assert project_revision["base_revision_id"] is None
+    assert project_revision["author_device_id"] == "device_alpha"
+    assert project_revision["source_artifact_id"] is None
+    assert project_revision["state"] == CURRENT_REVISION_STATE
+    assert project_revision["payload"] == {
+        "display_name": "Synced Fixture",
+        "source_key_override": "2:major",
+    }
+    assert project_revision["metadata"] == {"reason": "rename"}
+    assert len(project_revision["content_sha256"]) == 64
+    assert "created_at" in project_revision
+    assert "updated_at" in project_revision
+
+    chord_revision = by_id["rev_chords_current"]
+    assert chord_revision["source_artifact_id"] == "art_source_audio"
+    assert chord_revision["base_revision_id"] == "rev_chords_previous"
+    assert chord_revision["payload"]["timeline"] == [
+        {"start_seconds": 0.0, "end_seconds": 1.0, "label": "Am"}
+    ]
+    assert chord_revision["payload"]["metadata"] == {"reviewed": True}
 
 
 @pytest.mark.parametrize("unportable_path", ["outside_project_root", "project_root_directory"])
@@ -499,6 +803,174 @@ def test_import_staged_project_manifest_rewrites_paths_preserves_hashes_and_skip
             session.scalars(select(Job.type).where(Job.project_id == fixture.project_id))
         )
         assert not job_types.intersection({"analyze", "chords"})
+
+
+def test_import_staged_project_manifest_hydrates_current_entity_revisions_and_skips_jobs(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    export_manifest, import_manifest = _sync_manifest_services()
+    staging_root = tmp_path / "staging"
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        _add_project_entity_revisions(session, fixture)
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+        _stage_manifest_files(manifest, staging_root=staging_root, source_root=fixture.root)
+        _delete_live_project(session, fixture)
+
+        import_manifest(session, manifest=manifest, staging_root=staging_root)
+        session.commit()
+
+        project = session.get(Project, fixture.project_id)
+        assert project is not None
+        assert project.display_name == "Synced Fixture"
+        assert project.source_key_override == "2:major"
+
+        chords = session.get(ChordTimeline, fixture.project_id)
+        assert chords is not None
+        assert chords.backend == "tuneforge-fast"
+        assert chords.source_artifact_id == "art_source_audio"
+        assert chords.source_segments_json == [
+            {"start_seconds": 0.0, "end_seconds": 1.0, "label": "C"}
+        ]
+        assert chords.segments_json == [
+            {"start_seconds": 0.0, "end_seconds": 1.0, "label": "Am"}
+        ]
+        assert chords.timeline_json == chords.segments_json
+        assert chords.has_user_edits is True
+        assert chords.source_kind == "user-edited"
+        assert chords.metadata_json == {"reviewed": True}
+
+        lyrics = session.get(LyricsTranscript, fixture.project_id)
+        assert lyrics is not None
+        assert lyrics.backend == "whisper.cpp"
+        assert lyrics.source_artifact_id == "art_source_audio"
+        assert lyrics.source_kind == "user-edited"
+        assert lyrics.language == "en"
+        assert lyrics.source_segments_json == [
+            {"start_seconds": 0.0, "end_seconds": 1.0, "text": "hello", "words": []}
+        ]
+        assert lyrics.segments_json == [
+            {"start_seconds": 0.0, "end_seconds": 1.0, "text": "hello sync", "words": []}
+        ]
+        assert lyrics.has_user_edits is True
+
+        sections = list(
+            session.scalars(
+                select(SongSection)
+                .where(SongSection.project_id == fixture.project_id)
+                .order_by(SongSection.start_seconds.asc(), SongSection.id.asc())
+            )
+        )
+        assert [section.id for section in sections] == ["sec_intro", "sec_verse"]
+        assert [section.label for section in sections] == ["Intro", "Verse"]
+        assert [section.start_seconds for section in sections] == [0.0, 4.0]
+        assert [section.end_seconds for section in sections] == [4.0, 12.0]
+        assert [section.source for section in sections] == ["tab", "tab"]
+        assert sections[0].metadata_json == {"color": "blue"}
+        assert sections[1].metadata_json == {"color": "green"}
+
+        revision_ids = set(
+            session.scalars(
+                select(SyncEntityRevision.id)
+                .where(SyncEntityRevision.project_id == fixture.project_id)
+            )
+        )
+        assert revision_ids == set(_entity_revisions_by_id(manifest))
+
+        job_types = set(session.scalars(select(Job.type).where(Job.project_id == fixture.project_id)))
+        assert job_types == set()
+
+
+def test_import_staged_project_manifest_rejects_foreign_revision_base(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    export_manifest, import_manifest = _sync_manifest_services()
+    staging_root = tmp_path / "staging"
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        _add_project_entity_revisions(session, fixture)
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+        _stage_manifest_files(manifest, staging_root=staging_root, source_root=fixture.root)
+        foreign_project_id = source_hash_to_project_id("c" * 64)
+        foreign_source = tmp_path / "foreign-source.wav"
+        session.add(
+            Project(
+                id=foreign_project_id,
+                display_name="Foreign Revision Project",
+                source_key_override=None,
+                source_sha256="c" * 64,
+                source_path=str(foreign_source),
+                imported_path=str(foreign_source),
+            )
+        )
+        _add_entity_revision(
+            session,
+            revision_id="rev_foreign_base",
+            project_id=foreign_project_id,
+            entity_type="chords",
+            entity_id="chords",
+            payload={"timeline": []},
+        )
+        session.commit()
+        _entity_revisions_by_id(manifest)["rev_chords_current"]["base_revision_id"] = "rev_foreign_base"
+        _delete_live_project(session, fixture)
+
+        with pytest.raises(AppError) as exc:
+            import_manifest(session, manifest=manifest, staging_root=staging_root)
+
+    assert exc.value.code == "SYNC_MANIFEST_INVALID"
+    assert "base_revision_id" in exc.value.message
+
+
+def test_import_staged_project_manifest_rejects_foreign_revision_source_artifact(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    export_manifest, import_manifest = _sync_manifest_services()
+    staging_root = tmp_path / "staging"
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        _add_project_entity_revisions(session, fixture)
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+        _stage_manifest_files(manifest, staging_root=staging_root, source_root=fixture.root)
+        foreign_artifact_id = _create_foreign_source_artifact(session, tmp_path)
+        _entity_revisions_by_id(manifest)["rev_chords_current"]["source_artifact_id"] = foreign_artifact_id
+        _delete_live_project(session, fixture)
+
+        with pytest.raises(AppError) as exc:
+            import_manifest(session, manifest=manifest, staging_root=staging_root)
+
+    assert exc.value.code == "SYNC_MANIFEST_INVALID"
+    assert "source_artifact_id" in exc.value.message
+
+
+def test_import_staged_project_manifest_rejects_non_sync_safe_revision_payload(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    export_manifest, import_manifest = _sync_manifest_services()
+    staging_root = tmp_path / "staging"
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        _add_project_entity_revisions(session, fixture)
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+        _stage_manifest_files(manifest, staging_root=staging_root, source_root=fixture.root)
+        revision = _entity_revisions_by_id(manifest)["rev_project_metadata_current"]
+        revision["payload"]["source_path"] = str(tmp_path / "peer-local.wav")
+        revision["content_sha256"] = _revision_content_hash(revision["payload"])
+        _delete_live_project(session, fixture)
+
+        with pytest.raises(AppError) as exc:
+            import_manifest(session, manifest=manifest, staging_root=staging_root)
+
+    assert exc.value.code == "SYNC_MANIFEST_INVALID"
+    assert "sync-safe" in exc.value.message
 
 
 def test_import_staged_project_manifest_imports_content_addressed_staging(

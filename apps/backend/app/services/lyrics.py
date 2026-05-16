@@ -16,6 +16,7 @@ from app.errors import AppError
 from app.models import Artifact, LyricsTranscript, Project
 from app.schemas import LyricsEditSegmentSchema
 from app.services.paths import project_analysis_dir
+from app.services.sync_revisions import record_lyrics_revision
 from app.services.tab_state import clear_project_tab_state
 
 WORD_RE = re.compile(r"\S+")
@@ -82,6 +83,7 @@ def generate_project_lyrics(session: Session, *, project: Project, force: bool =
     existing.has_user_edits = False
     session.flush()
     session.refresh(existing)
+    record_lyrics_revision(session, lyrics=existing, revision_type="generated")
 
     _write_lyrics_snapshot(project_id=project.id, lyrics=existing)
     return existing
@@ -129,6 +131,8 @@ def update_project_lyrics(
     lyrics.has_user_edits = updated_segments != source_segments
     session.flush()
     session.refresh(lyrics)
+    if updated_segments != current_segments:
+        record_lyrics_revision(session, lyrics=lyrics, revision_type="user_edit")
     _write_lyrics_snapshot(project_id=project.id, lyrics=lyrics)
     return lyrics
 
@@ -143,10 +147,13 @@ def persist_project_lyrics_segments(
     if lyrics is None:
         raise AppError("LYRICS_NOT_FOUND", "Lyrics have not been generated for this project.", status_code=404)
 
+    current_segments = lyrics.segments_json
     lyrics.segments_json = cast(list[dict[str, Any]], deepcopy(segments))
     lyrics.has_user_edits = lyrics.segments_json != lyrics.source_segments_json
     session.flush()
     session.refresh(lyrics)
+    if lyrics.segments_json != current_segments:
+        record_lyrics_revision(session, lyrics=lyrics, revision_type="user_edit")
     _write_lyrics_snapshot(project_id=project_id, lyrics=lyrics)
     return lyrics
 

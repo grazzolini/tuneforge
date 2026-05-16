@@ -93,6 +93,61 @@ def test_sync_artifact_staging_migration_creates_table_and_indexes() -> None:
     } <= indexes
 
 
+def test_sync_entity_revisions_migration_creates_table_columns_and_indexes() -> None:
+    settings = get_settings()
+    ensure_data_dirs(settings)
+
+    reconfigure_engine(settings)
+    run_migrations(settings)
+
+    with sqlite3.connect(settings.database_path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info('sync_entity_revisions')")
+        }
+        indexes = {
+            row[1]
+            for row in connection.execute("PRAGMA index_list('sync_entity_revisions')")
+        }
+        project_entity_index_columns = [
+            row[2]
+            for row in connection.execute(
+                "PRAGMA index_info('ix_sync_entity_revisions_project_entity')"
+            )
+        ]
+
+    assert "sync_entity_revisions" in tables
+    assert {
+        "id",
+        "project_id",
+        "entity_type",
+        "entity_id",
+        "revision_type",
+        "base_revision_id",
+        "source_artifact_id",
+        "content_sha256",
+        "author_device_id",
+        "state",
+        "metadata_json",
+        "payload_json",
+        "created_at",
+        "updated_at",
+    } <= columns
+    assert {
+        "ix_sync_entity_revisions_project_entity",
+        "ix_sync_entity_revisions_base_revision_id",
+        "ix_sync_entity_revisions_author_device_id",
+        "ix_sync_entity_revisions_state",
+    } <= indexes
+    assert project_entity_index_columns == ["project_id", "entity_type", "entity_id"]
+
+
 def test_hash_storage_migration_backfills_existing_files(tmp_path: Path) -> None:
     settings = get_settings()
     ensure_data_dirs(settings)

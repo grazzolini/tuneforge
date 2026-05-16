@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -13,11 +14,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
-from app.models import Artifact, Project
+from app.models import Artifact, ChordTimeline, LyricsTranscript, Project, SongSection, SyncEntityRevision
 from app.services.artifacts import register_artifact
 from app.services.paths import ensure_project_dirs, project_root
 from app.services.sync_identity import source_hash_to_project_id
 from app.services.sync_metadata import project_relative_artifact_path, sanitize_sync_metadata
+from app.services.sync_revisions import (
+    CURRENT_REVISION_STATE,
+    revision_payload_sha256,
+    sanitize_revision_payload,
+)
 from app.utils.hashing import file_sha256
 
 SYNC_PROJECT_MANIFEST_SCHEMA_VERSION = "1"
@@ -41,6 +47,24 @@ class SyncArtifactManifest:
 
 
 @dataclass(frozen=True)
+class SyncEntityRevisionManifest:
+    revision_id: str
+    project_id: str
+    entity_type: str
+    entity_id: str
+    revision_type: str
+    base_revision_id: str | None
+    author_device_id: str
+    source_artifact_id: str | None
+    content_sha256: str
+    state: str
+    metadata: dict[str, Any]
+    payload: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
 class SyncProjectManifestProject:
     project_id: str
     display_name: str
@@ -58,6 +82,7 @@ class SyncProjectManifest:
     schema_version: str
     exported_at: datetime
     project: SyncProjectManifestProject
+    entity_revisions: list[SyncEntityRevisionManifest]
     artifacts: list[SyncArtifactManifest]
 
     @property
@@ -120,6 +145,7 @@ def export_project_manifest(session: Session, project_id: str) -> SyncProjectMan
             .order_by(Artifact.created_at.asc(), Artifact.id.asc())
         )
     )
+    entity_revisions = _list_project_entity_revisions(session, project_id=project.id)
 
     manifest = SyncProjectManifest(
         schema_version=SYNC_PROJECT_MANIFEST_SCHEMA_VERSION,
@@ -135,6 +161,10 @@ def export_project_manifest(session: Session, project_id: str) -> SyncProjectMan
             created_at=project.created_at,
             updated_at=project.updated_at,
         ),
+        entity_revisions=[
+            _export_entity_revision_manifest(revision)
+            for revision in entity_revisions
+        ],
         artifacts=[_export_artifact_manifest(artifact) for artifact in artifacts],
     )
     _validate_source_artifact_matches_project_source(manifest)
@@ -231,6 +261,8 @@ def import_staged_project_manifest(
                     "A copied artifact file does not match its manifest.",
                     details={"artifact_id": verified_artifact.manifest.artifact_id},
                 )
+        _import_entity_revisions(session, project_manifest)
+        _hydrate_current_entity_revisions(session, project, project_manifest.entity_revisions)
     except OSError as exc:
         _cleanup_copied_artifacts(copied_paths, root)
         raise AppError(
@@ -252,6 +284,25 @@ def import_staged_project_manifest(
         raise
 
     return project
+
+
+def _list_project_entity_revisions(
+    session: Session,
+    *,
+    project_id: str,
+) -> list[SyncEntityRevision]:
+    return list(
+        session.scalars(
+            select(SyncEntityRevision)
+            .where(SyncEntityRevision.project_id == project_id)
+            .order_by(
+                SyncEntityRevision.entity_type.asc(),
+                SyncEntityRevision.entity_id.asc(),
+                SyncEntityRevision.created_at.asc(),
+                SyncEntityRevision.id.asc(),
+            )
+        )
+    )
 
 
 def _export_artifact_manifest(artifact: Artifact) -> SyncArtifactManifest:
@@ -323,6 +374,315 @@ def _export_artifact_manifest(artifact: Artifact) -> SyncArtifactManifest:
         metadata=cast(dict[str, Any], sanitize_sync_metadata(artifact.metadata_json or {})),
         created_at=artifact.created_at,
     )
+
+
+def _export_entity_revision_manifest(revision: SyncEntityRevision) -> SyncEntityRevisionManifest:
+    metadata = sanitize_revision_payload(revision.metadata_json or {})
+    payload = sanitize_revision_payload(revision.payload_json or {})
+    return SyncEntityRevisionManifest(
+        revision_id=revision.id,
+        project_id=revision.project_id,
+        entity_type=revision.entity_type,
+        entity_id=revision.entity_id,
+        revision_type=revision.revision_type,
+        base_revision_id=revision.base_revision_id,
+        author_device_id=revision.author_device_id,
+        source_artifact_id=revision.source_artifact_id,
+        content_sha256=revision_payload_sha256(payload),
+        state=revision.state,
+        metadata=metadata,
+        payload=payload,
+        created_at=revision.created_at,
+        updated_at=revision.updated_at,
+    )
+
+
+def _import_entity_revisions(session: Session, manifest: SyncProjectManifest) -> None:
+    if not manifest.entity_revisions:
+        return
+
+    seen_revision_ids: set[str] = set()
+    manifest_revisions_by_id = {
+        revision.revision_id: revision for revision in manifest.entity_revisions
+    }
+    for revision in manifest.entity_revisions:
+        if revision.project_id != manifest.project_id:
+            raise AppError(
+                "SYNC_MANIFEST_ENTITY_REVISION_PROJECT_MISMATCH",
+                "Entity revision manifest belongs to a different project.",
+                details={
+                    "revision_id": revision.revision_id,
+                    "project_id": revision.project_id,
+                },
+            )
+        if revision.revision_id in seen_revision_ids:
+            raise AppError(
+                "SYNC_MANIFEST_DUPLICATE_ENTITY_REVISION",
+                "Project manifest contains duplicate entity revision IDs.",
+                details={"revision_id": revision.revision_id},
+            )
+        seen_revision_ids.add(revision.revision_id)
+
+        _validate_entity_revision_base_reference(session, manifest.project_id, revision, manifest_revisions_by_id)
+        _validate_entity_revision_source_artifact_reference(session, manifest.project_id, revision)
+
+
+        if session.get(SyncEntityRevision, revision.revision_id) is not None:
+            raise AppError(
+                "SYNC_MANIFEST_ENTITY_REVISION_CONFLICT",
+                "A synced entity revision conflicts with an existing local revision.",
+                status_code=status.HTTP_409_CONFLICT,
+                details={"revision_id": revision.revision_id},
+            )
+
+    for revision in _entity_revisions_in_dependency_order(manifest.entity_revisions):
+        row = SyncEntityRevision(
+            id=revision.revision_id,
+            project_id=revision.project_id,
+            entity_type=revision.entity_type,
+            entity_id=revision.entity_id,
+            revision_type=revision.revision_type,
+            base_revision_id=revision.base_revision_id,
+            author_device_id=revision.author_device_id,
+            source_artifact_id=revision.source_artifact_id,
+            content_sha256=revision.content_sha256,
+            state=_normalize_revision_state(revision.state),
+            metadata_json=deepcopy(revision.metadata),
+            payload_json=deepcopy(revision.payload),
+            created_at=revision.created_at,
+            updated_at=revision.updated_at,
+        )
+        session.add(row)
+
+    session.flush()
+
+
+def _validate_entity_revision_base_reference(
+    session: Session,
+    project_id: str,
+    revision: SyncEntityRevisionManifest,
+    manifest_revisions_by_id: dict[str, SyncEntityRevisionManifest],
+) -> None:
+    if revision.base_revision_id is None:
+        return
+
+    manifest_base = manifest_revisions_by_id.get(revision.base_revision_id)
+    if manifest_base is not None:
+        if (
+            manifest_base.project_id != project_id
+            or manifest_base.entity_type != revision.entity_type
+            or manifest_base.entity_id != revision.entity_id
+        ):
+            raise _invalid_manifest(
+                "Entity revision base_revision_id must reference the same project entity."
+            )
+        return
+
+    existing_base = session.get(SyncEntityRevision, revision.base_revision_id)
+    if existing_base is None:
+        raise _invalid_manifest("Entity revision base_revision_id does not exist in the manifest.")
+    if (
+        existing_base.project_id != project_id
+        or existing_base.entity_type != revision.entity_type
+        or existing_base.entity_id != revision.entity_id
+    ):
+        raise _invalid_manifest("Entity revision base_revision_id must reference the same project entity.")
+
+
+def _validate_entity_revision_source_artifact_reference(
+    session: Session,
+    project_id: str,
+    revision: SyncEntityRevisionManifest,
+) -> None:
+    if revision.source_artifact_id is None:
+        return
+    artifact = session.get(Artifact, revision.source_artifact_id)
+    if artifact is None:
+        raise _invalid_manifest("Entity revision source_artifact_id does not exist in the manifest.")
+    if artifact.project_id != project_id:
+        raise _invalid_manifest("Entity revision source_artifact_id must belong to the manifest project.")
+
+
+def _entity_revisions_in_dependency_order(
+    revisions: list[SyncEntityRevisionManifest],
+) -> list[SyncEntityRevisionManifest]:
+    pending = {revision.revision_id: revision for revision in revisions}
+    ordered: list[SyncEntityRevisionManifest] = []
+    while pending:
+        ready = sorted(
+            (
+                revision
+                for revision in pending.values()
+                if revision.base_revision_id not in pending
+            ),
+            key=_entity_revision_sort_key,
+        )
+        if not ready:
+            raise _invalid_manifest("Entity revision base_revision_id contains a cycle.")
+        for revision in ready:
+            ordered.append(revision)
+            del pending[revision.revision_id]
+    return ordered
+
+
+def _entity_revision_sort_key(revision: SyncEntityRevisionManifest) -> tuple[str, str, datetime, str]:
+    return (
+        revision.entity_type,
+        revision.entity_id,
+        revision.created_at,
+        revision.revision_id,
+    )
+
+
+def _hydrate_current_entity_revisions(
+    session: Session,
+    project: Project,
+    revisions: list[SyncEntityRevisionManifest],
+) -> None:
+    current_revisions = [
+        revision for revision in revisions if _is_current_revision_state(revision.state)
+    ]
+    singleton_current: set[str] = set()
+    section_ids: set[str] = set()
+    for revision in current_revisions:
+        if revision.entity_type in {"project_metadata", "chords", "lyrics"}:
+            if revision.entity_type in singleton_current:
+                raise _invalid_manifest(
+                    f"Project manifest contains multiple current {revision.entity_type} revisions."
+                )
+            singleton_current.add(revision.entity_type)
+        elif revision.entity_type == "section":
+            if revision.entity_id in section_ids:
+                raise _invalid_manifest(
+                    "Project manifest contains multiple current section revisions for the same entity."
+                )
+            section_ids.add(revision.entity_id)
+
+    for revision in current_revisions:
+        if revision.entity_type == "project_metadata":
+            _hydrate_project_metadata_revision(project, revision)
+        elif revision.entity_type == "chords":
+            _hydrate_chord_revision(session, project, revision)
+        elif revision.entity_type == "lyrics":
+            _hydrate_lyrics_revision(session, project, revision)
+        elif revision.entity_type == "section":
+            _hydrate_section_revision(session, project, revision)
+
+    session.flush()
+
+
+def _is_current_revision_state(state: str) -> bool:
+    return _normalize_revision_state(state) == CURRENT_REVISION_STATE
+
+
+def _normalize_revision_state(state: str) -> str:
+    normalized = state.strip().lower()
+    if normalized == "current":
+        return CURRENT_REVISION_STATE
+    return normalized
+
+
+def _hydrate_project_metadata_revision(
+    project: Project,
+    revision: SyncEntityRevisionManifest,
+) -> None:
+    payload = revision.payload
+    if "display_name" in payload:
+        display_name = payload["display_name"]
+        if not isinstance(display_name, str) or not display_name.strip():
+            raise _invalid_manifest("Project metadata revision display_name must be a non-empty string.")
+        project.display_name = display_name.strip()
+    if "source_key_override" in payload:
+        source_key_override = payload["source_key_override"]
+        if source_key_override is not None and not isinstance(source_key_override, str):
+            raise _invalid_manifest("Project metadata revision source_key_override must be a string or null.")
+        project.source_key_override = source_key_override
+    project.updated_at = revision.updated_at
+
+
+def _hydrate_chord_revision(
+    session: Session,
+    project: Project,
+    revision: SyncEntityRevisionManifest,
+) -> None:
+    payload = revision.payload
+    chords = session.get(ChordTimeline, project.id)
+    if chords is None:
+        chords = ChordTimeline(project_id=project.id, created_at=revision.created_at)
+        session.add(chords)
+
+    segments = _payload_list(payload, ("segments", "segments_json", "timeline"))
+    timeline = _payload_list(payload, ("timeline", "timeline_json"), default=segments)
+    chords.backend = _payload_optional_str(payload, "backend") or "default"
+    chords.source_artifact_id = _payload_optional_str(payload, "source_artifact_id") or revision.source_artifact_id
+    chords.source_segments_json = _payload_list(payload, ("source_segments", "source_segments_json"))
+    chords.segments_json = segments
+    chords.timeline_json = timeline
+    chords.source_kind = _payload_optional_str(payload, "source_kind") or "generated"
+    chords.has_user_edits = _payload_bool(payload, "has_user_edits", default=False)
+    chords.metadata_json = _payload_mapping(
+        payload,
+        ("metadata", "metadata_json"),
+        default=revision.metadata,
+    )
+    chords.created_at = _payload_datetime(payload, "created_at") or revision.created_at
+    chords.updated_at = _payload_datetime(payload, "updated_at") or revision.updated_at
+
+
+def _hydrate_lyrics_revision(
+    session: Session,
+    project: Project,
+    revision: SyncEntityRevisionManifest,
+) -> None:
+    payload = revision.payload
+    lyrics = session.get(LyricsTranscript, project.id)
+    if lyrics is None:
+        lyrics = LyricsTranscript(project_id=project.id, created_at=revision.created_at)
+        session.add(lyrics)
+
+    lyrics.backend = _payload_optional_str(payload, "backend") or "openai-whisper"
+    lyrics.source_artifact_id = _payload_optional_str(payload, "source_artifact_id") or revision.source_artifact_id
+    lyrics.source_kind = _payload_optional_str(payload, "source_kind") or "ai"
+    lyrics.requested_device = _payload_optional_str(payload, "requested_device")
+    lyrics.device = _payload_optional_str(payload, "device")
+    lyrics.model_name = _payload_optional_str(payload, "model_name")
+    lyrics.language = _payload_optional_str(payload, "language")
+    lyrics.source_segments_json = _payload_list(payload, ("source_segments", "source_segments_json"))
+    lyrics.segments_json = _payload_list(payload, ("segments", "segments_json"))
+    lyrics.has_user_edits = _payload_bool(payload, "has_user_edits", default=False)
+    lyrics.created_at = _payload_datetime(payload, "created_at") or revision.created_at
+    lyrics.updated_at = _payload_datetime(payload, "updated_at") or revision.updated_at
+
+
+def _hydrate_section_revision(
+    session: Session,
+    project: Project,
+    revision: SyncEntityRevisionManifest,
+) -> None:
+    payload = revision.payload
+    section_id = _payload_optional_str(payload, "id") or revision.entity_id
+    if section_id != revision.entity_id:
+        raise _invalid_manifest("Section revision payload id must match entity_id.")
+    label = _payload_optional_str(payload, "label")
+    if label is None or not label.strip():
+        raise _invalid_manifest("Section revision label must be a non-empty string.")
+
+    section = session.get(SongSection, section_id)
+    if section is not None and section.project_id != project.id:
+        raise _invalid_manifest("Section revision conflicts with another project.")
+    if section is None:
+        section = SongSection(id=section_id, project_id=project.id, created_at=revision.created_at)
+        session.add(section)
+
+    section.project_id = project.id
+    section.tab_import_id = _payload_optional_str(payload, "tab_import_id")
+    section.label = label.strip()
+    section.start_seconds = _payload_optional_float(payload, "start_seconds")
+    section.end_seconds = _payload_optional_float(payload, "end_seconds")
+    section.source = _payload_optional_str(payload, "source") or "sync"
+    section.metadata_json = _payload_mapping(payload, ("metadata", "metadata_json"))
+    section.created_at = _payload_datetime(payload, "created_at") or revision.created_at
+    section.updated_at = _payload_datetime(payload, "updated_at") or revision.updated_at
 
 
 def _verify_staged_artifacts(
@@ -589,6 +949,9 @@ def _coerce_project_manifest(manifest: SyncProjectManifest | Mapping[str, Any] |
     raw_artifacts = _field(manifest, "artifacts")
     if not isinstance(raw_artifacts, list):
         raise _invalid_manifest("Project manifest artifacts must be a list.")
+    raw_entity_revisions = _field(manifest, "entity_revisions", default=[])
+    if not isinstance(raw_entity_revisions, list):
+        raise _invalid_manifest("Project manifest entity_revisions must be a list.")
 
     project_id = _required_str(project_fields, "project_id")
     source_sha256 = _required_str(project_fields, "source_sha256").strip().lower()
@@ -607,6 +970,10 @@ def _coerce_project_manifest(manifest: SyncProjectManifest | Mapping[str, Any] |
             created_at=_required_datetime(project_fields, "created_at"),
             updated_at=_required_datetime(project_fields, "updated_at"),
         ),
+        entity_revisions=[
+            _coerce_entity_revision_manifest(revision)
+            for revision in raw_entity_revisions
+        ],
         artifacts=[_coerce_artifact_manifest(artifact) for artifact in raw_artifacts],
     )
     _validate_project_manifest_identity(project_manifest)
@@ -640,6 +1007,114 @@ def _coerce_artifact_manifest(manifest: Mapping[str, Any] | object) -> SyncArtif
         metadata=metadata,
         created_at=_required_datetime(manifest, "created_at"),
     )
+
+
+def _coerce_entity_revision_manifest(manifest: Mapping[str, Any] | object) -> SyncEntityRevisionManifest:
+    content_sha256 = _required_str(manifest, "content_sha256").strip().lower()
+    if not _is_sha256(content_sha256):
+        raise _invalid_manifest("Entity revision manifest content_sha256 must be a full SHA-256 hex digest.")
+
+    metadata = _field(manifest, "metadata", default={})
+    if not isinstance(metadata, dict):
+        raise _invalid_manifest("Entity revision manifest metadata must be an object.")
+    payload = _field(manifest, "payload", default={})
+    if not isinstance(payload, dict):
+        raise _invalid_manifest("Entity revision manifest payload must be an object.")
+    safe_metadata = sanitize_revision_payload(metadata)
+    safe_payload = sanitize_revision_payload(payload)
+    if safe_metadata != metadata or safe_payload != payload:
+        raise _invalid_manifest(
+            "Entity revision manifest metadata and payload must be sync-safe."
+        )
+    if content_sha256 != revision_payload_sha256(safe_payload):
+        raise _invalid_manifest("Entity revision manifest content_sha256 must match payload.")
+
+    return SyncEntityRevisionManifest(
+        revision_id=_required_str(manifest, "revision_id"),
+        project_id=_required_str(manifest, "project_id"),
+        entity_type=_required_str(manifest, "entity_type"),
+        entity_id=_required_str(manifest, "entity_id"),
+        revision_type=_required_str(manifest, "revision_type"),
+        base_revision_id=_optional_str(manifest, "base_revision_id"),
+        author_device_id=_required_str(manifest, "author_device_id"),
+        source_artifact_id=_optional_str(manifest, "source_artifact_id"),
+        content_sha256=content_sha256,
+        state=_normalize_revision_state(_required_str(manifest, "state")),
+        metadata=safe_metadata,
+        payload=safe_payload,
+        created_at=_required_datetime(manifest, "created_at"),
+        updated_at=_required_datetime(manifest, "updated_at"),
+    )
+
+
+def _payload_optional_str(payload: Mapping[str, Any], name: str) -> str | None:
+    value = payload.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise _invalid_manifest(f"Entity revision payload field must be a string or null: {name}.")
+    return value
+
+
+def _payload_bool(payload: Mapping[str, Any], name: str, *, default: bool) -> bool:
+    value = payload.get(name, default)
+    if not isinstance(value, bool):
+        raise _invalid_manifest(f"Entity revision payload field must be a boolean: {name}.")
+    return value
+
+
+def _payload_optional_float(payload: Mapping[str, Any], name: str) -> float | None:
+    value = payload.get(name)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise _invalid_manifest(f"Entity revision payload field must be numeric or null: {name}.")
+    return float(value)
+
+
+def _payload_list(
+    payload: Mapping[str, Any],
+    names: tuple[str, ...],
+    *,
+    default: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    value = _payload_first(payload, names, default=[] if default is None else default)
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise _invalid_manifest(f"Entity revision payload field must be a list of objects: {names[0]}.")
+    return cast(list[dict[str, Any]], deepcopy(value))
+
+
+def _payload_mapping(
+    payload: Mapping[str, Any],
+    names: tuple[str, ...],
+    *,
+    default: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    value = _payload_first(payload, names, default={} if default is None else default)
+    if not isinstance(value, dict):
+        raise _invalid_manifest(f"Entity revision payload field must be an object: {names[0]}.")
+    return cast(dict[str, Any], deepcopy(value))
+
+
+def _payload_datetime(payload: Mapping[str, Any], name: str) -> datetime | None:
+    value = payload.get(name)
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise _invalid_manifest(f"Entity revision payload field must be an ISO datetime: {name}.") from exc
+    raise _invalid_manifest(f"Entity revision payload field must be a datetime or null: {name}.")
+
+
+def _payload_first(payload: Mapping[str, Any], names: tuple[str, ...], *, default: Any) -> Any:
+    for name in names:
+        if name in payload:
+            return payload[name]
+    return default
 
 
 def _field(source: Mapping[str, Any] | object, name: str, *, default: Any = ...) -> Any:

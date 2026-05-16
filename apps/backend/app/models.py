@@ -50,6 +50,9 @@ class Project(Base):
     artifacts: Mapped[list[Artifact]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    sync_entity_revisions: Mapped[list[SyncEntityRevision]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
     jobs: Mapped[list[Job]] = relationship(back_populates="project", cascade="all, delete-orphan")
 
 
@@ -130,6 +133,50 @@ class SyncStagedArtifact(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+class SyncEntityRevision(Base):
+    __tablename__ = "sync_entity_revisions"
+    __table_args__ = (
+        CheckConstraint(
+            "length(content_sha256) = 64",
+            name="ck_sync_entity_revisions_sha256_len",
+        ),
+        Index(
+            "ix_sync_entity_revisions_project_entity",
+            "project_id",
+            "entity_type",
+            "entity_id",
+        ),
+        Index("ix_sync_entity_revisions_base_revision_id", "base_revision_id"),
+        Index("ix_sync_entity_revisions_author_device_id", "author_device_id"),
+        Index("ix_sync_entity_revisions_state", "state"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(PROJECT_ID_LENGTH), ForeignKey("projects.id", ondelete="CASCADE")
+    )
+    entity_type: Mapped[str] = mapped_column(String(64))
+    entity_id: Mapped[str] = mapped_column(String(PROJECT_ID_LENGTH))
+    revision_type: Mapped[str] = mapped_column(String(32))
+    base_revision_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("sync_entity_revisions.id", ondelete="SET NULL"), nullable=True
+    )
+    source_artifact_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("artifacts.id", ondelete="SET NULL"), nullable=True
+    )
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    author_device_id: Mapped[str] = mapped_column(String(96))
+    state: Mapped[str] = mapped_column(String(32), default="active")
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON(), default=dict)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON(), default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    project: Mapped[Project] = relationship(back_populates="sync_entity_revisions")
 
 
 class AnalysisResult(Base):

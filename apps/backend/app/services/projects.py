@@ -15,6 +15,7 @@ from app.services.artifacts import register_artifact
 from app.services.metadata import extract_audio_metadata, normalize_media_to_wav
 from app.services.paths import ensure_project_dirs, project_root, project_source_dir
 from app.services.sync_identity import source_hash_to_project_id
+from app.services.sync_revisions import record_project_metadata_revision
 from app.utils.hashing import file_sha256
 
 NORMALIZED_IMPORT_FORMATS = {"mp4", "webm"}
@@ -186,12 +187,23 @@ def delete_project(session: Session, project_id: str) -> None:
 
 def update_project(session: Session, project_id: str, *, updates: dict[str, str | None]) -> Project:
     project = get_project(session, project_id)
+    metadata_changed = False
     if "display_name" in updates:
         display_name = updates["display_name"]
         if display_name is not None:
-            project.display_name = display_name.strip()
+            normalized_display_name = display_name.strip()
+            if project.display_name != normalized_display_name:
+                project.display_name = normalized_display_name
+                metadata_changed = True
     if "source_key_override" in updates:
         source_key_override = updates["source_key_override"]
-        project.source_key_override = source_key_override.strip() if isinstance(source_key_override, str) else None
+        normalized_source_key_override = (
+            source_key_override.strip() if isinstance(source_key_override, str) else None
+        )
+        if project.source_key_override != normalized_source_key_override:
+            project.source_key_override = normalized_source_key_override
+            metadata_changed = True
     session.flush()
+    if metadata_changed:
+        record_project_metadata_revision(session, project=project, revision_type="metadata_change")
     return project

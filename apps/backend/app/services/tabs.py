@@ -13,6 +13,11 @@ from app.engines.chord_labels import chord_label_to_segment, parse_chord_label
 from app.errors import AppError
 from app.models import ChordTimeline, LyricsTranscript, Project, SongSection, TabImport, utcnow
 from app.services.lyrics import persist_project_lyrics_segments, retime_lyrics_segment_text
+from app.services.sync_revisions import (
+    record_chord_revision,
+    record_project_metadata_revision,
+    record_section_revision,
+)
 from app.utils.ids import new_id
 
 PARSER_VERSION = "v1"
@@ -132,13 +137,15 @@ def apply_tab_suggestions(
     lyrics = _apply_lyric_suggestions(session, project, accepted_suggestions)
     chords = _apply_chord_suggestions(session, project, accepted_suggestions)
     sections = _apply_section_suggestions(session, project, tab_import, accepted_suggestions)
-    _apply_key_suggestions(project, accepted_suggestions)
+    project_metadata_changed = _apply_key_suggestions(project, accepted_suggestions)
 
     now = utcnow()
     tab_import.status = "applied" if accepted_ids else "reviewed"
     tab_import.updated_at = now
     tab_import.proposal_json = _mark_suggestions(tab_import.proposal_json, set(accepted_ids))
     session.flush()
+    if project_metadata_changed:
+        record_project_metadata_revision(session, project=project, revision_type="metadata_change")
     session.refresh(tab_import)
     if lyrics is not None:
         session.refresh(lyrics)
@@ -788,6 +795,7 @@ def _apply_chord_suggestions(
     chords.has_user_edits = True
     chords.source_kind = "user-edited"
     session.flush()
+    record_chord_revision(session, chords=chords, revision_type="user_edit")
     return chords
 
 
@@ -817,15 +825,21 @@ def _apply_section_suggestions(
         session.add(section)
         created.append(section)
     session.flush()
+    for section in created:
+        record_section_revision(session, section=section, revision_type="user_edit")
     return created
 
 
-def _apply_key_suggestions(project: Project, suggestions: list[dict[str, Any]]) -> None:
+def _apply_key_suggestions(project: Project, suggestions: list[dict[str, Any]]) -> bool:
+    metadata_changed = False
     for suggestion in suggestions:
         payload = suggestion.get("payload", {})
         source_key_override = payload.get("source_key_override")
         if suggestion["kind"] == "key" and isinstance(source_key_override, str):
-            project.source_key_override = source_key_override
+            if project.source_key_override != source_key_override:
+                project.source_key_override = source_key_override
+                metadata_changed = True
+    return metadata_changed
 
 
 def _overlay_chord_segments(

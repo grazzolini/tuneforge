@@ -20,6 +20,7 @@ from app.services.chord_backends import (
 )
 from app.services.paths import project_analysis_dir
 from app.services.stem_models import NON_VOCAL_SIX_STEM_SOURCES, model_output_artifact_type
+from app.services.sync_revisions import record_chord_revision
 from app.services.tab_state import clear_project_tab_state
 
 
@@ -87,6 +88,7 @@ def detect_project_chords(
     existing.updated_at = updated_at
     session.flush()
     session.refresh(existing)
+    record_chord_revision(session, chords=existing, revision_type="generated")
 
     chord_path = project_analysis_dir(project.id) / "chords.json"
     chord_path.write_text(

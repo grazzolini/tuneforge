@@ -1,0 +1,198 @@
+.activity-screen {
+  max-width: 1180px;
+}
+
+.activity-jobs-panel {
+  display: grid;
+  gap: 1rem;
+}
+
+.activity-jobs-panel__heading {
+  align-items: center;
+}
+
+.activity-jobs-panel__state,
+.activity-jobs-panel__empty {
+  border: 1px solid color-mix(in srgb, var(--divider) 78%, transparent);
+  border-radius: 18px;
+  padding: 1rem;
+  background: color-mix(in srgb, var(--surface-muted) 62%, transparent);
+}
+
+.activity-jobs-panel__state--error {
+  border-color: color-mix(in srgb, var(--danger) 44%, transparent);
+  color: var(--danger);
+}
+
+.activity-jobs-panel__empty {
+  text-align: center;
+}
+
+.activity-jobs-panel__empty h3,
+.activity-jobs-panel__empty p {
+  margin: 0;
+}
+
+.activity-jobs-panel__empty p {
+  margin-top: 0.35rem;
+  color: var(--muted);
+}
+
+.activity-job-list {
+  display: grid;
+  gap: 0.8rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.activity-job-row__article {
+  display: grid;
+  gap: 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--divider) 80%, transparent);
+  border-radius: 18px;
+  padding: 0.95rem;
+  background: color-mix(in srgb, var(--panel-strong) 76%, transparent);
+}
+
+.activity-job-row__main {
+  display: grid;
+  grid-template-columns: minmax(16rem, 1fr) minmax(10rem, 14rem) auto;
+  gap: 1rem;
+  align-items: center;
+}
+
+.activity-job-row__identity {
+  display: grid;
+  min-width: 0;
+  gap: 0.42rem;
+}
+
+.activity-job-row__title-line,
+.activity-job-row__project,
+.activity-job-row__progress {
+  display: flex;
+  min-width: 0;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.activity-job-row__type {
+  font-size: 1rem;
+}
+
+.activity-job-row__status,
+.activity-job-row__queue-position {
+  border: 1px solid color-mix(in srgb, var(--chip-border) 82%, transparent);
+  border-radius: 999px;
+  padding: 0.22rem 0.55rem;
+  background: color-mix(in srgb, var(--chip-bg) 76%, transparent);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.activity-job-row__status--running {
+  border-color: color-mix(in srgb, var(--playback-accent) 38%, var(--chip-border));
+  color: var(--text);
+}
+
+.activity-job-row__status--failed {
+  border-color: color-mix(in srgb, var(--danger) 46%, var(--chip-border));
+  color: var(--danger);
+}
+
+.activity-job-row__queue-position {
+  color: var(--text);
+}
+
+.activity-job-row__project {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.activity-job-row__project-link {
+  color: var(--text);
+  font-weight: 760;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--playback-accent) 42%, transparent);
+  text-underline-offset: 0.18rem;
+}
+
+.activity-job-row__project-link:focus-visible {
+  border-radius: 6px;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+
+.activity-job-row__details,
+.activity-job-row__error {
+  margin: 0;
+}
+
+.activity-job-row__details {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.activity-job-row__progress {
+  justify-content: flex-end;
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.activity-job-row__progress progress {
+  width: min(100%, 9rem);
+  accent-color: var(--playback-accent);
+}
+
+.activity-job-row__cancel {
+  justify-self: end;
+  white-space: nowrap;
+}
+
+.activity-job-row__timestamps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.7rem;
+  margin: 0;
+}
+
+.activity-job-row__timestamps div {
+  min-width: 0;
+}
+
+.activity-job-row__timestamps dt {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.activity-job-row__timestamps dd {
+  margin: 0.18rem 0 0;
+  color: var(--text);
+}
+
+.activity-job-row__error {
+  border-left: 3px solid var(--danger);
+  padding-left: 0.7rem;
+  color: var(--danger);
+  font-weight: 720;
+}
+
+@media (max-width: 920px) {
+  .activity-job-row__main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .activity-job-row__progress {
+    justify-content: flex-start;
+  }
+
+  .activity-job-row__cancel {
+    justify-self: start;
+  }
+}

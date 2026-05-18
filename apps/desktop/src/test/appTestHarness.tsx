@@ -29,6 +29,7 @@ const {
   mockListStemModels,
   mockListArtifacts,
   mockListJobs,
+  mockCancelJob,
   mockCreateChords,
   mockCreateLyrics,
   mockCreateTabImport,
@@ -349,8 +350,50 @@ const {
     state.stemModels = clone(models);
   }
 
+  function isTerminalJobStatus(status: string) {
+    return ["completed", "failed", "cancelled"].includes(status);
+  }
+
+  function completedAtForJobStatus(status: string) {
+    return isTerminalJobStatus(status) ? createdAt : null;
+  }
+
+  function normalizeMockJob(job: Record<string, unknown>, index = 0): Record<string, unknown> {
+    const clonedJob = clone(job) as Record<string, unknown>;
+    const status = typeof clonedJob.status === "string" ? clonedJob.status : "pending";
+    const type = typeof clonedJob.type === "string" && clonedJob.type ? clonedJob.type : "activity";
+    const progress =
+      typeof clonedJob.progress === "number"
+        ? clonedJob.progress
+        : status === "completed"
+          ? 100
+          : 0;
+
+    return {
+      ...clonedJob,
+      id: typeof clonedJob.id === "string" && clonedJob.id ? clonedJob.id : `job_${index + 1}`,
+      project_id: "project_id" in clonedJob ? clonedJob.project_id : null,
+      type,
+      status,
+      progress,
+      error_message: "error_message" in clonedJob ? clonedJob.error_message : null,
+      completed_at: "completed_at" in clonedJob
+        ? clonedJob.completed_at
+        : completedAtForJobStatus(status),
+      created_at: typeof clonedJob.created_at === "string" ? clonedJob.created_at : createdAt,
+      updated_at: typeof clonedJob.updated_at === "string" ? clonedJob.updated_at : createdAt,
+    };
+  }
+
+  function makeMockJob(job: Record<string, unknown>) {
+    return normalizeMockJob({
+      id: `job_${state.nextJobId++}`,
+      ...job,
+    });
+  }
+
   function setJobs(jobs: Array<Record<string, unknown>>) {
-    state.jobs = clone(jobs);
+    state.jobs = jobs.map((job, index) => normalizeMockJob(job, index));
   }
 
   function setDeferredPreviewCompletion(value: boolean) {
@@ -367,9 +410,18 @@ const {
       ...(state.artifactsByProject[projectId] ?? []),
     ];
     state.pendingPreviewArtifactsByProject[projectId] = [];
-    state.jobs = state.jobs.map((job) =>
+    state.jobs = state.jobs.map((job, index) =>
       job.project_id === projectId && job.type === "preview" && job.status !== "completed"
-        ? { ...job, status: "completed", progress: 100, updated_at: createdAt }
+        ? normalizeMockJob(
+            {
+              ...job,
+              status: "completed",
+              progress: 100,
+              completed_at: job.completed_at ?? createdAt,
+              updated_at: createdAt,
+            },
+            index,
+          )
         : job,
     );
   }
@@ -957,16 +1009,46 @@ const {
       : state.projects;
     return { projects: clone(filteredProjects) };
   });
-  const mockImportProject = vi.fn(async ({ source_path }: { source_path: string; stem_model?: string }) => {
+  const mockImportProject = vi.fn(async (body: {
+    source_path: string;
+    display_name?: string | null;
+    chord_backend?: string | null;
+    chord_backend_fallback_from?: string | null;
+    stem_model?: string | null;
+  }) => {
+    const { source_path } = body;
     const id = `proj_${state.nextProjectId++}`;
     const baseName = source_path.split("/").pop() ?? "Imported Track";
-    const displayName = titleize(baseName);
+    const displayName = body.display_name?.trim() || titleize(baseName);
     const project = makeProject(id, displayName, source_path);
+    const sourceArtifactId = `art_${state.nextArtifactId++}`;
     state.projects.unshift(project);
     state.analysisByProject[id] = null;
+    state.chordsByProject[id] = {
+      project_id: id,
+      backend: null,
+      source_artifact_id: null,
+      source_segments: [],
+      created_at: null,
+      has_user_edits: false,
+      updated_at: null,
+      timeline: [],
+    };
+    state.lyricsByProject[id] = {
+      project_id: id,
+      backend: null,
+      source_artifact_id: null,
+      source_kind: null,
+      source_segments: [],
+      segments: [],
+      has_user_edits: false,
+      created_at: null,
+      updated_at: null,
+    };
+    state.sectionsByProject[id] = [];
     state.artifactsByProject[id] = [
       {
-        id: `art_${state.nextArtifactId++}`,
+        id: sourceArtifactId,
         project_id: id,
         type: "source_audio",
         format: "wav",
@@ -975,6 +1057,39 @@ const {
         created_at: createdAt,
       },
     ];
+    const selectedStemModel = body.stem_model === "htdemucs_ft" ? "htdemucs_ft" : "htdemucs_6s";
+    state.jobs.unshift(
+      makeMockJob({
+        project_id: id,
+        type: "stems",
+        status: "pending",
+        progress: 0,
+        source_artifact_id: sourceArtifactId,
+        stem_model: selectedStemModel,
+        stem_model_label: selectedStemModel === "htdemucs_ft" ? "2 stems model" : "Default (6 stems model)",
+      }),
+      makeMockJob({
+        project_id: id,
+        type: "lyrics",
+        status: "pending",
+        progress: 0,
+      }),
+      makeMockJob({
+        project_id: id,
+        type: "chords",
+        status: "pending",
+        progress: 0,
+        chord_backend: body.chord_backend === "crema-advanced" ? "crema-advanced" : "tuneforge-fast",
+        chord_backend_fallback_from: body.chord_backend_fallback_from ?? null,
+        chord_source: "source",
+      }),
+      makeMockJob({
+        project_id: id,
+        type: "analyze",
+        status: "pending",
+        progress: 0,
+      }),
+    );
     return { project: clone(project) };
   });
   const mockGetProject = vi.fn(async (projectId: string) => ({ project: clone(getProjectOrThrow(projectId)) }));
@@ -1009,11 +1124,31 @@ const {
     ),
   );
   const mockListArtifacts = vi.fn(async (projectId: string) => ({ artifacts: clone(state.artifactsByProject[projectId] ?? []) }));
-  const mockListJobs = vi.fn(async () => ({ jobs: clone(state.jobs) }));
+  const mockListJobs = vi.fn(async () => ({
+    jobs: clone(state.jobs.map((job, index) => normalizeMockJob(job, index))),
+  }));
+  const mockCancelJob = vi.fn(async (jobId: string) => {
+    const jobIndex = state.jobs.findIndex((job) => job.id === jobId);
+    if (jobIndex === -1) {
+      throw new Error(`Unknown job ${jobId}`);
+    }
+    const cancelledJob = normalizeMockJob(
+      {
+        ...state.jobs[jobIndex],
+        status: "cancelled",
+        progress: 0,
+        error_message: null,
+        completed_at: state.jobs[jobIndex]?.completed_at ?? createdAt,
+        updated_at: createdAt,
+      },
+      jobIndex,
+    );
+    state.jobs = state.jobs.map((job, index) => (index === jobIndex ? cancelledJob : job));
+    return { job: clone(cancelledJob) };
+  });
   const mockCreateChords = vi.fn(async (projectId: string, body?: Record<string, unknown>) => {
     state.chordsByProject[projectId] = makeChordTimeline(projectId);
-    const job = {
-      id: `job_${state.nextJobId++}`,
+    const job = makeMockJob({
       project_id: projectId,
       type: "chords",
       status: "completed",
@@ -1024,15 +1159,14 @@ const {
       error_message: null,
       created_at: createdAt,
       updated_at: createdAt,
-    };
+    });
     state.jobs.unshift(job);
     return { job: clone(job) };
   });
   const mockCreateLyrics = vi.fn(async (projectId: string, body?: { force?: boolean }) => {
     void body;
     state.lyricsByProject[projectId] = makeLyricsTranscript(projectId);
-    const job = {
-      id: `job_${state.nextJobId++}`,
+    const job = makeMockJob({
       project_id: projectId,
       type: "lyrics",
       status: "completed",
@@ -1040,7 +1174,7 @@ const {
       error_message: null,
       created_at: createdAt,
       updated_at: createdAt,
-    };
+    });
     state.jobs.unshift(job);
     return { job: clone(job) };
   });
@@ -1528,6 +1662,7 @@ const {
     mockListStemModels,
     mockListArtifacts,
     mockListJobs,
+    mockCancelJob,
     mockCreateChords,
     mockCreateLyrics,
     mockCreateTabImport,
@@ -1582,6 +1717,7 @@ export {
   mockListStemModels,
   mockListArtifacts,
   mockListJobs,
+  mockCancelJob,
   mockCreateChords,
   mockCreateLyrics,
   mockCreateTabImport,
@@ -1633,6 +1769,7 @@ vi.mock("../lib/api", async (importOriginal) => {
       listStemModels: mockListStemModels,
       listArtifacts: mockListArtifacts,
       listJobs: mockListJobs,
+      cancelJob: mockCancelJob,
       createChords: mockCreateChords,
       createLyrics: mockCreateLyrics,
       createTabImport: mockCreateTabImport,
@@ -1937,6 +2074,7 @@ export function resetAppTestHarness() {
   mockGetLyrics.mockClear();
   mockListArtifacts.mockClear();
   mockListJobs.mockClear();
+  mockCancelJob.mockClear();
   mockCreateChords.mockClear();
   mockCreateLyrics.mockClear();
   mockCreateTabImport.mockClear();

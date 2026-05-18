@@ -250,7 +250,7 @@ The response includes:
 - duplicate source-hash groups
 - manual cleanup guidance
 
-Project status values are `ready`, `missing_source_hash`, `invalid_source_hash`, `duplicate_source_hash`, and `noncanonical_project_id`. Canonical project IDs use `proj_sha256_<full_source_sha256>`, while project storage directories use a shorter derived key such as `proj_<first_24_sha256_hex>`. This endpoint is sync-specific; general project responses do not expose source hashes.
+Project status values are `ready`, `missing_source_hash`, `invalid_source_hash`, `duplicate_source_hash`, and `noncanonical_project_id`. Canonical project IDs use `proj_sha256_<full_source_sha256>`, while project storage directories use a shorter derived key such as `proj_<first_24_sha256_hex>`. Preflight uses a stored `projects.source_sha256` when present. If that field is missing, preflight only recovers it from an explicit app-managed original-byte copy and otherwise reports `missing_source_hash`; `source_path` is provenance only and is not hashed during recovery. This endpoint is sync-specific; general project responses do not expose source hashes.
 
 ### Get sync metadata
 
@@ -299,7 +299,7 @@ Returns a single project manifest for manifest-only sync export. The response is
 - `project`
 - `artifacts`
 
-Manifest paths are project-root relative and use portable path separators. The response does not expose absolute local source, project, artifact, or app data paths. Artifact entries include `content_sha256`, and the project entry includes `source_sha256`; receiving peers must verify staged bytes against these SHA-256 values before accepting the import. For this v1 manifest spike, a portable manifest must contain exactly one `source_audio` artifact, and that artifact must match the project `source_sha256`; normalized proxy-only source imports are not portable until original-source artifacts are modeled explicitly. The endpoint exports metadata only. File transfer and LAN peer discovery belong to the native sync layer, not the loopback FastAPI API.
+Manifest paths are project-root relative and use portable path separators. The response does not expose absolute local source, project, artifact, or app data paths. The project entry's `source_sha256` is the identity hash of the original imported source bytes. Artifact entries' `content_sha256` values hash the bytes for those specific staged artifact files, which may include backend-managed runtime files such as normalized WAV proxies. `sync_entity_revisions.content_sha256` is also per-entity revision payload content, not project source identity. Receiving peers must verify staged files against the artifact SHA-256 values and must preserve the project `source_sha256` as identity metadata before accepting the import. The endpoint exports metadata only. File transfer and LAN peer discovery belong to the native sync layer, not the loopback FastAPI API.
 
 ### Import staged project sync manifest
 
@@ -335,6 +335,8 @@ Request fields:
 - `display_name`
 
 Response: `ProjectResponse`.
+
+`source_path` records where the user imported the file from on this install. Sync treats it as local provenance, not a durable source of original bytes. `copy_into_project=false` is accepted for compatibility, but new imports still create an app-managed operational source file under the project root.
 
 If the same source track has already been imported, the endpoint returns HTTP `409` with code `DUPLICATE_PROJECT_SOURCE`, message `This project is already imported with name "{name}".`, and details containing:
 

@@ -1411,7 +1411,7 @@ export interface components {
             /** Expected Storage Key */
             expected_storage_key: string | null;
             /** Source Hash Source */
-            source_hash_source: ("database" | "source_path" | "original_copy_path" | "source_artifact_path" | "imported_path") | null;
+            source_hash_source: ("database" | "original_copy_path") | null;
             /** Reason */
             reason?: string | null;
         };

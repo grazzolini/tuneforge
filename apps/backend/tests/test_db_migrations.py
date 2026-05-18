@@ -165,7 +165,6 @@ def test_hash_storage_migration_backfills_existing_files(tmp_path: Path) -> None
     expected_project_hash = file_sha256(source_path)
     expected_project_id = source_hash_to_project_id(expected_project_hash)
     expected_storage_key = source_hash_to_project_storage_key(expected_project_hash)
-    duplicate_hash = file_sha256(duplicate_source_path)
 
     with sqlite3.connect(settings.database_path) as connection:
         connection.execute("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)")
@@ -317,14 +316,14 @@ def test_hash_storage_migration_backfills_existing_files(tmp_path: Path) -> None
         (
             "proj_duplicate_1",
             "Duplicate Song 1",
-            duplicate_hash,
+            None,
             str(duplicate_source_path),
             str(duplicate_source_path),
         ),
         (
             "proj_duplicate_2",
             "Duplicate Song 2",
-            duplicate_hash,
+            None,
             str(duplicate_source_path),
             str(duplicate_source_path),
         ),
@@ -455,13 +454,14 @@ def test_sync_identity_migration_prefers_imported_copy_when_hash_missing(tmp_pat
     assert source_artifact == (expected_project_id, str(expected_imported_path))
 
 
-def test_sync_identity_migration_recovers_already_moved_project_root(tmp_path: Path) -> None:
+def test_sync_identity_migration_does_not_recover_moved_root_from_external_source_hash(
+    tmp_path: Path,
+) -> None:
     settings = get_settings()
     ensure_data_dirs(settings)
     source_path = tmp_path / "source.wav"
     source_path.write_bytes(b"source")
     expected_project_hash = file_sha256(source_path)
-    expected_project_id = source_hash_to_project_id(expected_project_hash)
     expected_storage_key = source_hash_to_project_storage_key(expected_project_hash)
 
     old_project_root = settings.projects_root / "proj_interrupted"
@@ -554,8 +554,8 @@ def test_sync_identity_migration_recovers_already_moved_project_root(tmp_path: P
             "SELECT project_id, path FROM artifacts WHERE id = 'source_interrupted'"
         ).fetchone()
 
-    assert project == (expected_project_id, str(recovered_imported_path))
-    assert artifact == (expected_project_id, str(recovered_imported_path))
+    assert project == ("proj_interrupted", str(old_imported_path))
+    assert artifact == ("proj_interrupted", str(old_imported_path))
     assert recovered_imported_path.exists()
 
 

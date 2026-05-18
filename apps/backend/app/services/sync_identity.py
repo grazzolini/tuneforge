@@ -8,13 +8,13 @@ from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.models import Artifact, Project
 from app.utils.hashing import file_sha256
 
 PROJECT_ID_PREFIX = "proj_sha256_"
 PROJECT_STORAGE_KEY_PREFIX = "proj_"
 PROJECT_STORAGE_HASH_LENGTH = 24
-NORMALIZED_IMPORT_SOURCE_FORMATS = {"mp4", "webm"}
 HEX_DIGITS = frozenset("0123456789abcdef")
 
 SyncPreflightProjectStatus = Literal[
@@ -26,10 +26,7 @@ SyncPreflightProjectStatus = Literal[
 ]
 SyncPreflightSourceHashSource = Literal[
     "database",
-    "source_path",
     "original_copy_path",
-    "source_artifact_path",
-    "imported_path",
 ]
 
 
@@ -184,7 +181,7 @@ def _project_preflight(project: Project, source_artifact: Artifact | None) -> Sy
             expected_project_id=None,
             expected_storage_key=None,
             source_hash_source=None,
-            reason="No readable canonical source file is available for this project.",
+            reason="No readable original-byte source copy is available for this project.",
         )
     source_sha256, source = resolved
     return _project_preflight_with_hash(project, source_sha256, source)
@@ -229,23 +226,10 @@ def _resolve_missing_source_hash(
     project: Project,
     source_artifact: Artifact | None,
 ) -> tuple[str, SyncPreflightSourceHashSource] | None:
-    original_copy_path = _original_copy_path(source_artifact)
+    original_copy_path = _original_copy_path(project, source_artifact)
     original_copy_hash = _path_hash(original_copy_path)
     if original_copy_hash is not None:
         return original_copy_hash, "original_copy_path"
-
-    if not _uses_normalized_source_proxy(project, source_artifact):
-        artifact_hash = _path_hash(source_artifact.path if source_artifact is not None else None)
-        if artifact_hash is not None:
-            return artifact_hash, "source_artifact_path"
-
-        imported_path_hash = _path_hash(project.imported_path)
-        if imported_path_hash is not None:
-            return imported_path_hash, "imported_path"
-
-    source_path_hash = _path_hash(project.source_path)
-    if source_path_hash is not None:
-        return source_path_hash, "source_path"
 
     return None
 
@@ -256,20 +240,23 @@ def _path_hash(raw_path: str | None) -> str | None:
     return file_sha256(Path(raw_path))
 
 
-def _original_copy_path(source_artifact: Artifact | None) -> str | None:
+def _original_copy_path(project: Project, source_artifact: Artifact | None) -> str | None:
     if source_artifact is None:
         return None
     value = source_artifact.metadata_json.get("original_copy_path")
-    return value if isinstance(value, str) else None
+    if not isinstance(value, str):
+        return None
+    root = _project_root(project.id).resolve(strict=False)
+    candidate = Path(value).expanduser().resolve(strict=False)
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    return str(candidate)
 
 
-def _uses_normalized_source_proxy(project: Project, source_artifact: Artifact | None) -> bool:
-    original_format = source_artifact.metadata_json.get("original_format") if source_artifact else None
-    if isinstance(original_format, str) and original_format.lower() in NORMALIZED_IMPORT_SOURCE_FORMATS:
-        return True
-    source_format = Path(project.source_path).suffix.lower().lstrip(".")
-    imported_format = Path(project.imported_path).suffix.lower().lstrip(".")
-    return source_format in NORMALIZED_IMPORT_SOURCE_FORMATS and imported_format == "wav"
+def _project_root(project_id: str) -> Path:
+    return get_settings().projects_root / project_id_to_storage_key(project_id)
 
 
 def _with_duplicate_status(project: SyncPreflightProject) -> SyncPreflightProject:

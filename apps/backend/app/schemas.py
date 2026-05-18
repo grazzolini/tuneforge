@@ -144,10 +144,7 @@ SyncPreflightProjectStatus = Literal[
 ]
 SyncPreflightSourceHashSource = Literal[
     "database",
-    "source_path",
     "original_copy_path",
-    "source_artifact_path",
-    "imported_path",
 ]
 
 

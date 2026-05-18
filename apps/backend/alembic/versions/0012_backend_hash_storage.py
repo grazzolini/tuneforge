@@ -34,12 +34,6 @@ def upgrade() -> None:
     op.create_index("ix_artifacts_content_sha256", "artifacts", ["content_sha256"], unique=False)
 
     connection = op.get_bind()
-    for row in connection.execute(text("SELECT id, source_path FROM projects")):
-        connection.execute(
-            text("UPDATE projects SET source_sha256 = :sha WHERE id = :id"),
-            {"id": row.id, "sha": _file_sha256(row.source_path)},
-        )
-
     for row in connection.execute(text("SELECT id, path FROM artifacts")):
         connection.execute(
             text("UPDATE artifacts SET content_sha256 = :sha WHERE id = :id"),

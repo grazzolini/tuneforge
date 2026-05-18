@@ -46,6 +46,7 @@ from app.services.chords import project_chord_detection_source
 from app.services.lyrics import update_project_lyrics
 from app.services.projects import (
     delete_project,
+    get_mutable_project,
     get_project,
     import_project,
     list_projects,
@@ -195,7 +196,7 @@ def project_analyze(
     session: Session = Depends(get_db),
     runner=Depends(get_job_runner),
 ) -> JobResponse:
-    get_project(session, project_id)
+    get_mutable_project(session, project_id)
     job = runner.create_job(
         session,
         project_id=project_id,
@@ -222,7 +223,7 @@ def project_chords(
     session: Session = Depends(get_db),
     runner=Depends(get_job_runner),
 ) -> JobResponse:
-    project = get_project(session, project_id)
+    project = get_mutable_project(session, project_id)
     selected_backend = resolve_chord_backend(payload.backend, require_available=True)
     job_payload = payload.model_dump()
     job_payload["chord_backend"] = selected_backend.id
@@ -255,7 +256,7 @@ def project_lyrics(
     session: Session = Depends(get_db),
     runner=Depends(get_job_runner),
 ) -> JobResponse:
-    get_project(session, project_id)
+    get_mutable_project(session, project_id)
     job = runner.create_job(
         session,
         project_id=project_id,
@@ -293,7 +294,7 @@ def project_lyrics_update(
     payload: LyricsUpdateRequest,
     session: Session = Depends(get_db),
 ) -> LyricsResponse:
-    project = get_project(session, project_id)
+    project = get_mutable_project(session, project_id)
     lyrics = update_project_lyrics(session, project=project, edits=payload.segments)
     return LyricsResponse.model_validate(lyrics)
 
@@ -304,7 +305,7 @@ def project_tab_import_create(
     payload: TabImportCreateRequest,
     session: Session = Depends(get_db),
 ) -> TabImportResponse:
-    project = get_project(session, project_id)
+    project = get_mutable_project(session, project_id)
     tab_import = create_tab_import(session, project=project, raw_text=payload.raw_text)
     return TabImportResponse(tab_import=TabImportSchema.model_validate(tab_import))
 
@@ -327,7 +328,7 @@ def project_tab_import_accept(
     payload: TabImportApplyRequest,
     session: Session = Depends(get_db),
 ) -> TabImportApplyResponse:
-    project = get_project(session, project_id)
+    project = get_mutable_project(session, project_id)
     tab_import = get_tab_import(session, project_id=project_id, tab_import_id=tab_import_id)
     result = apply_tab_suggestions(
         session,
@@ -360,7 +361,7 @@ def project_retune(
     session: Session = Depends(get_db),
     runner=Depends(get_job_runner),
 ) -> JobResponse:
-    get_project(session, project_id)
+    get_mutable_project(session, project_id)
     job = runner.create_job(
         session,
         project_id=project_id,
@@ -380,7 +381,7 @@ def project_transpose(
     session: Session = Depends(get_db),
     runner=Depends(get_job_runner),
 ) -> JobResponse:
-    get_project(session, project_id)
+    get_mutable_project(session, project_id)
     job = runner.create_job(
         session,
         project_id=project_id,
@@ -400,7 +401,7 @@ def project_preview(
     session: Session = Depends(get_db),
     runner=Depends(get_job_runner),
 ) -> JobResponse:
-    get_project(session, project_id)
+    get_mutable_project(session, project_id)
     job = runner.create_job(
         session,
         project_id=project_id,
@@ -420,7 +421,7 @@ def project_stems(
     session: Session = Depends(get_db),
     runner=Depends(get_job_runner),
 ) -> JobResponse:
-    project = get_project(session, project_id)
+    project = get_mutable_project(session, project_id)
     source_artifact = resolve_stem_source_artifact(
         session,
         project=project,
@@ -458,7 +459,7 @@ def project_artifacts(project_id: str, session: Session = Depends(get_db)) -> Ar
 
 @router.delete("/{project_id}/artifacts/{artifact_id}", response_model=DeleteResponse)
 def project_artifact_delete(project_id: str, artifact_id: str, session: Session = Depends(get_db)) -> DeleteResponse:
-    get_project(session, project_id)
+    get_mutable_project(session, project_id)
     delete_project_artifact(session, project_id=project_id, artifact_id=artifact_id)
     session.commit()
     return DeleteResponse(deleted=True)
@@ -471,7 +472,7 @@ def project_export(
     session: Session = Depends(get_db),
     runner=Depends(get_job_runner),
 ) -> JobResponse:
-    project = get_project(session, project_id)
+    project = get_mutable_project(session, project_id)
     for artifact_id in payload.artifact_ids:
         artifact = session.get(Artifact, artifact_id)
         if artifact is None or artifact.project_id != project.id:

@@ -21,6 +21,8 @@ from app.schemas import (
     SyncProjectImportResponse,
     SyncProjectManifestResponse,
     SyncProjectStagedImportRequest,
+    SyncProjectStatusUpdateRequest,
+    SyncProjectStatusUpdateResponse,
     SyncReconciliationPlanRequest,
     SyncReconciliationPlanResponse,
     SyncStagedArtifactSchema,
@@ -31,6 +33,7 @@ from app.schemas import (
 )
 from app.services.sync_identity import run_sync_preflight
 from app.services.sync_metadata import get_sync_metadata
+from app.services.sync_project_status import update_project_sync_status
 from app.services.sync_trust import (
     create_pairing_offer,
     get_or_create_local_identity,
@@ -172,6 +175,32 @@ def sync_project_manifest(
 
     project_manifest = export_project_manifest(session, project_id=project_id)
     return SyncProjectManifestResponse.model_validate({"project_manifest": project_manifest})
+
+
+@router.patch("/projects/{project_id}/status", response_model=SyncProjectStatusUpdateResponse)
+def sync_project_status_update(
+    project_id: str,
+    payload: SyncProjectStatusUpdateRequest,
+    session: Session = Depends(get_db),
+) -> SyncProjectStatusUpdateResponse:
+    placeholder_metadata: dict[str, Any] | None = None
+    if payload.manifest is not None:
+        placeholder_metadata = payload.manifest.model_dump(mode="python")
+    elif payload.project is not None:
+        placeholder_metadata = payload.project.model_dump(mode="python")
+    project = update_project_sync_status(
+        session,
+        project_id=project_id,
+        sync_status=payload.sync_status,
+        sync_status_reason=payload.sync_status_reason,
+        sync_required_artifact_ids=payload.sync_required_artifact_ids,
+        sync_provider_device_ids=payload.sync_provider_device_ids,
+        sync_conflict_count=payload.sync_conflict_count,
+        manifest=placeholder_metadata,
+    )
+    session.commit()
+    session.refresh(project)
+    return SyncProjectStatusUpdateResponse(project=ProjectSchema.model_validate(project))
 
 
 @router.post("/artifacts/staging", response_model=SyncStagedArtifactSchema)

@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Music2, Upload } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
-import { api, type ProjectSchema } from "../../lib/api";
+import { api, getProjectSyncSummary, type ProjectSchema } from "../../lib/api";
 import { formatLocalDateTime, normalizeApiDateTime } from "../../lib/datetime";
 import { usePreferences } from "../../lib/preferences";
 import { useChordBackendActionSelection } from "./hooks/useChordBackendActionSelection";
@@ -33,6 +33,8 @@ function ProjectCard({ project }: { project: ProjectSchema }) {
   const updatedAtLabel = formatUpdatedAt(project.updated_at);
   const normalizedUpdatedAt = normalizeApiDateTime(project.updated_at);
   const fileType = project.source_path.split(".").pop()?.toUpperCase() ?? "Audio";
+  const syncSummary = getProjectSyncSummary(project);
+  const syncReason = syncSummary.lockReason ? ` ${syncSummary.lockReason}` : "";
 
   return (
     <article className="project-card project-library-row">
@@ -46,7 +48,18 @@ function ProjectCard({ project }: { project: ProjectSchema }) {
         </span>
 
         <div className="project-card__title-block">
-          <h2>{project.display_name}</h2>
+          <div className="project-card__title-row">
+            <h2>{project.display_name}</h2>
+            {!syncSummary.isLocal || syncSummary.isLocked ? (
+              <span
+                aria-label={`Sync status: ${syncSummary.label}.${syncReason}`}
+                className={`sync-status-badge sync-status-badge--${syncSummary.state}`}
+                title={syncSummary.lockReason ?? undefined}
+              >
+                {syncSummary.label}
+              </span>
+            ) : null}
+          </div>
           {informationDensity === "detailed" ? (
             <span className="artifact-meta">{project.source_path}</span>
           ) : null}

@@ -61,6 +61,8 @@ function PlaybackModeHeader() {
     lyricsFollowEnabled,
     lyricsMutation,
     playbackDisplayMode,
+    projectEditLocked,
+    projectSyncLockReason,
     selectedTabSuggestionId,
     setIsEditingLyrics,
     setLyricsDraft,
@@ -113,10 +115,14 @@ function PlaybackModeHeader() {
                 className="button button--ghost button--small"
                 type="button"
                 onClick={() => {
+                  if (projectEditLocked) {
+                    return;
+                  }
                   setLyricsDraft(displayedLyrics.map((segment) => segment.text));
                   setIsEditingLyrics(true);
                 }}
-                disabled={lyricsMutation.isPending || isLyricsRunning}
+                disabled={projectEditLocked || lyricsMutation.isPending || isLyricsRunning}
+                title={projectSyncLockReason ?? undefined}
               >
                 Edit Lyrics
               </button>
@@ -125,6 +131,8 @@ function PlaybackModeHeader() {
               className="button button--ghost button--small"
               type="button"
               onClick={handleOpenTabImport}
+              disabled={projectEditLocked}
+              title={projectSyncLockReason ?? undefined}
             >
               Import Tab
             </button>
@@ -163,6 +171,8 @@ function PlaybackModeHeader() {
           applyMutation={tabImportApplyMutation}
           draft={tabImportDraft}
           importMutation={tabImportMutation}
+          isProjectLocked={projectEditLocked}
+          lockReason={projectSyncLockReason}
           onAcceptGroup={handleAcceptTabSuggestionGroup}
           onApply={handleApplyTabSuggestions}
           onClose={handleCloseTabImport}
@@ -182,6 +192,8 @@ function TabImportDialog({
   applyMutation,
   draft,
   importMutation,
+  isProjectLocked,
+  lockReason,
   onAcceptGroup,
   onApply,
   onClose,
@@ -195,6 +207,8 @@ function TabImportDialog({
   applyMutation: ReturnType<typeof useProjectViewModelContext>["tabImportApplyMutation"];
   draft: string;
   importMutation: ReturnType<typeof useProjectViewModelContext>["tabImportMutation"];
+  isProjectLocked: boolean;
+  lockReason: string | null;
   onAcceptGroup: (suggestionIds: string[]) => void;
   onApply: () => void;
   onClose: () => void;
@@ -239,22 +253,29 @@ function TabImportDialog({
             value={draft}
             onChange={(event) => onSetDraft(event.currentTarget.value)}
             placeholder={"[Verse]\nG       D\nHello from the first line"}
+            disabled={isProjectLocked}
           />
         </label>
 
         <div className="button-row tab-import-actions">
           <button
             className="button button--primary button--small"
-            disabled={!draft.trim() || importMutation.isPending || applyMutation.isPending}
+            disabled={
+              isProjectLocked || !draft.trim() || importMutation.isPending || applyMutation.isPending
+            }
             onClick={onCreateProposal}
+            title={lockReason ?? undefined}
             type="button"
           >
             {importMutation.isPending ? "Reading..." : "Create Suggestions"}
           </button>
           <button
             className="button button--ghost button--small"
-            disabled={acceptedCount === 0 || importMutation.isPending || applyMutation.isPending}
+            disabled={
+              isProjectLocked || acceptedCount === 0 || importMutation.isPending || applyMutation.isPending
+            }
             onClick={onApply}
+            title={lockReason ?? undefined}
             type="button"
           >
             {applyMutation.isPending ? "Applying..." : `Apply Accepted (${acceptedCount})`}
@@ -271,7 +292,9 @@ function TabImportDialog({
                 <TabSuggestionGroup
                   acceptedSuggestionIds={acceptedSuggestionIds}
                   group={group}
+                  isProjectLocked={isProjectLocked}
                   key={group.kind}
+                  lockReason={lockReason}
                   onAcceptGroup={onAcceptGroup}
                   onRejectGroup={onRejectGroup}
                   onSelectSuggestion={onSelectSuggestion}
@@ -292,6 +315,8 @@ function TabImportDialog({
 function TabSuggestionGroup({
   acceptedSuggestionIds,
   group,
+  isProjectLocked,
+  lockReason,
   onAcceptGroup,
   onRejectGroup,
   onSelectSuggestion,
@@ -300,6 +325,8 @@ function TabSuggestionGroup({
 }: {
   acceptedSuggestionIds: string[];
   group: TabSuggestionGroupSchema;
+  isProjectLocked: boolean;
+  lockReason: string | null;
   onAcceptGroup: (suggestionIds: string[]) => void;
   onRejectGroup: (suggestionIds: string[]) => void;
   onSelectSuggestion: (suggestionId: string | null) => void;
@@ -319,16 +346,18 @@ function TabSuggestionGroup({
         <div className="button-row">
           <button
             className="button button--ghost button--small"
-            disabled={!suggestionIds.length}
+            disabled={isProjectLocked || !suggestionIds.length}
             onClick={() => onAcceptGroup(suggestionIds)}
+            title={lockReason ?? undefined}
             type="button"
           >
             Accept Group
           </button>
           <button
             className="button button--ghost button--small"
-            disabled={!suggestionIds.length}
+            disabled={isProjectLocked || !suggestionIds.length}
             onClick={() => onRejectGroup(suggestionIds)}
+            title={lockReason ?? undefined}
             type="button"
           >
             Reject Group
@@ -348,6 +377,7 @@ function TabSuggestionGroup({
               <input
                 aria-label={`Accept ${suggestion.title}`}
                 checked={accepted}
+                disabled={isProjectLocked}
                 onChange={() => onToggleSuggestion(suggestion.id)}
                 type="checkbox"
               />
@@ -511,6 +541,8 @@ function LyricsEditor() {
     displayedLyrics,
     lyricsDraft,
     lyricsSaveMutation,
+    projectEditLocked,
+    projectSyncLockReason,
     setIsEditingLyrics,
     setLyricsDraft,
   } = useProjectViewModelContext();
@@ -525,6 +557,7 @@ function LyricsEditor() {
           <textarea
             aria-label={`Lyric segment ${index + 1}`}
             className="lyrics-editor__input"
+            disabled={projectEditLocked}
             value={lyricsDraft[index] ?? ""}
             onChange={(event) => {
               const nextValue = event.currentTarget.value;
@@ -544,7 +577,8 @@ function LyricsEditor() {
           className="button button--primary button--small"
           type="button"
           onClick={() => lyricsSaveMutation.mutate()}
-          disabled={lyricsSaveMutation.isPending}
+          disabled={projectEditLocked || lyricsSaveMutation.isPending}
+          title={projectSyncLockReason ?? undefined}
         >
           {lyricsSaveMutation.isPending ? "Saving..." : "Save Lyrics"}
         </button>

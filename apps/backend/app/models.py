@@ -26,8 +26,32 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
 class Project(Base):
     __tablename__ = "projects"
+    __table_args__ = (
+        CheckConstraint(
+            "sync_status IN ("
+            "'local', "
+            "'syncing', "
+            "'remote_available', "
+            "'downloading', "
+            "'missing', "
+            "'deleted', "
+            "'conflicted'"
+            ")",
+            name="ck_projects_sync_status",
+        ),
+        CheckConstraint(
+            "sync_conflict_count >= 0",
+            name="ck_projects_sync_conflict_count_nonnegative",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(PROJECT_ID_LENGTH), primary_key=True)
     display_name: Mapped[str] = mapped_column(String(255))
@@ -41,6 +65,14 @@ class Project(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    sync_status: Mapped[str] = mapped_column(String(32), default="local")
+    sync_status_reason: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    sync_required_artifact_ids_json: Mapped[list[str]] = mapped_column(JSON(), default=list)
+    sync_provider_device_ids_json: Mapped[list[str]] = mapped_column(JSON(), default=list)
+    sync_conflict_count: Mapped[int] = mapped_column(Integer(), default=0)
+    sync_status_updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
     )
 
     analysis: Mapped[AnalysisResult | None] = relationship(
@@ -65,6 +97,18 @@ class Project(Base):
         back_populates="project", cascade="all, delete-orphan"
     )
     jobs: Mapped[list[Job]] = relationship(back_populates="project", cascade="all, delete-orphan")
+
+    @property
+    def sync_editable(self) -> bool:
+        return self.sync_status == "local"
+
+    @property
+    def sync_required_artifact_ids(self) -> list[str]:
+        return _string_list(self.sync_required_artifact_ids_json)
+
+    @property
+    def sync_provider_device_ids(self) -> list[str]:
+        return _string_list(self.sync_provider_device_ids_json)
 
 
 class SyncLocalIdentity(Base):

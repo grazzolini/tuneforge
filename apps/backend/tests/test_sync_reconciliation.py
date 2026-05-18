@@ -29,6 +29,7 @@ from app.services.sync_reconciliation import (
     ACTION_IMPORT_PROJECT_MANIFEST,
     ACTION_NOOP,
     ACTION_RECORD_CONFLICT,
+    ACTION_UPSERT_PROJECT_STATUS,
     ITEM_ARTIFACT,
     ITEM_DELETE_TOMBSTONE,
     ITEM_ENTITY_REVISION,
@@ -234,6 +235,10 @@ def test_valid_tombstones_apply_first_and_untrusted_tombstones_are_noop(
     assert _item(plan, ITEM_DELETE_TOMBSTONE, "tomb_wrong_group").action_type == ACTION_NOOP
     assert _item(plan, ITEM_DELETE_TOMBSTONE, "tomb_revoked").status == "noop"
     assert _action(plan, ACTION_IMPORT_PROJECT_MANIFEST, ITEM_PROJECT, "proj_deleted_remote") is None
+    deleted_status = _action(plan, ACTION_UPSERT_PROJECT_STATUS, ITEM_PROJECT, "proj_deleted_remote")
+    assert deleted_status is not None
+    assert deleted_status.details["project_status"] == "deleted"
+    assert deleted_status.details["create_placeholder"] is False
     assert all(
         action.action_type == ACTION_APPLY_DELETE_TOMBSTONE
         for action in plan.actions[:2]
@@ -501,6 +506,24 @@ def test_missing_project_import_requires_manifest_and_source_availability(
     assert _item(plan, ITEM_PROJECT, missing_project_id).status == "missing_provider"
     assert _item(plan, ITEM_PROJECT, no_manifest_project_id).status == "missing_provider"
     assert _item(plan, ITEM_ARTIFACT, "art_no_manifest").status == "missing_provider"
+    provider_status = _action(
+        plan,
+        ACTION_UPSERT_PROJECT_STATUS,
+        ITEM_PROJECT,
+        remote_provider_project_id,
+    )
+    assert provider_status is not None
+    assert provider_status.provider_device_id == "peer-a"
+    assert provider_status.details["project_status"] == "remote_available"
+    assert provider_status.details["edit_locked"] is True
+    assert provider_status.details["remote_metadata"]["source_sha256"] == remote_provider_hash
+    missing_status = _action(plan, ACTION_UPSERT_PROJECT_STATUS, ITEM_PROJECT, missing_project_id)
+    assert missing_status is not None
+    assert missing_status.details["project_status"] == "missing"
+    no_manifest_status = _action(plan, ACTION_UPSERT_PROJECT_STATUS, ITEM_PROJECT, no_manifest_project_id)
+    assert no_manifest_status is not None
+    assert no_manifest_status.details["project_status"] == "missing"
+    assert _action(plan, ACTION_UPSERT_PROJECT_STATUS, ITEM_PROJECT, duplicate_project_id) is None
     assert _action(plan, ACTION_IMPORT_PROJECT_MANIFEST, ITEM_PROJECT, duplicate_project_id) is not None
     assert (
         _action(plan, ACTION_FETCH_ARTIFACT_CONTENT, ITEM_ARTIFACT, f"art_source_{remote_provider_project_id}")
@@ -509,6 +532,46 @@ def test_missing_project_import_requires_manifest_and_source_availability(
     assert _action(plan, ACTION_IMPORT_PROJECT_MANIFEST, ITEM_PROJECT, remote_provider_project_id) is not None
     assert _action(plan, ACTION_FETCH_ARTIFACT_CONTENT, ITEM_ARTIFACT, "art_no_manifest") is None
     assert _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, "art_no_manifest") is None
+
+
+def test_existing_sync_placeholder_still_plans_manifest_import(
+    db_session: Session,
+) -> None:
+    _add_identity_and_peers(db_session)
+    source_hash = _sha("placeholder source")
+    project_id = source_hash_to_project_id(source_hash)
+    placeholder = Project(
+        id=project_id,
+        display_name="Remote Placeholder",
+        source_sha256=source_hash,
+        source_path="",
+        imported_path="",
+    )
+    placeholder.sync_status = "remote_available"
+    placeholder.sync_required_artifact_ids_json = [f"art_source_{project_id}"]
+    placeholder.sync_provider_device_ids_json = ["peer-a"]
+    db_session.add(placeholder)
+    db_session.commit()
+
+    request = {
+        "remote_library": {
+            "projects": [{"project_id": project_id, "source_sha256": source_hash}],
+        },
+        "project_manifests": [_project_manifest(project_id, source_hash)],
+        "peer_inventory": [{"device_id": "peer-a", "available_content_hashes": [source_hash]}],
+    }
+
+    plan = plan_sync_reconciliation(db_session, request)
+
+    placeholder_item = _item(plan, ITEM_PROJECT, project_id)
+    assert placeholder_item.status == "remote_available"
+    assert placeholder_item.action_type == ACTION_IMPORT_PROJECT_MANIFEST
+    status_action = _action(plan, ACTION_UPSERT_PROJECT_STATUS, ITEM_PROJECT, project_id)
+    assert status_action is not None
+    assert status_action.details["project_status"] == "remote_available"
+    assert _action(plan, ACTION_FETCH_ARTIFACT_CONTENT, ITEM_ARTIFACT, f"art_source_{project_id}") is not None
+    assert _action(plan, ACTION_IMPORT_PROJECT_MANIFEST, ITEM_PROJECT, project_id) is not None
+    assert _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, f"art_source_{project_id}") is None
 
 
 def test_missing_project_import_requires_every_manifest_artifact_available(
@@ -565,6 +628,13 @@ def test_missing_project_import_requires_every_manifest_artifact_available(
 
     available_project = _item(plan, ITEM_PROJECT, available_project_id)
     assert available_project.status == "remote_available"
+    available_status = _action(plan, ACTION_UPSERT_PROJECT_STATUS, ITEM_PROJECT, available_project_id)
+    assert available_status is not None
+    assert available_status.details["project_status"] == "remote_available"
+    assert available_status.details["status_details"]["artifact_providers"] == {
+        f"art_source_{available_project_id}": "peer-a",
+        "art_stem_available": "peer-a",
+    }
     assert _action(plan, ACTION_FETCH_ARTIFACT_CONTENT, ITEM_ARTIFACT, f"art_source_{available_project_id}") is not None
     assert _action(plan, ACTION_FETCH_ARTIFACT_CONTENT, ITEM_ARTIFACT, "art_stem_available") is not None
     assert _action(plan, ACTION_IMPORT_PROJECT_MANIFEST, ITEM_PROJECT, available_project_id) is not None
@@ -579,6 +649,10 @@ def test_missing_project_import_requires_every_manifest_artifact_available(
     blocked_project = _item(plan, ITEM_PROJECT, blocked_project_id)
     assert blocked_project.status == "missing_provider"
     assert blocked_project.details == {"artifact_ids": ["art_stem_blocked"]}
+    blocked_status = _action(plan, ACTION_UPSERT_PROJECT_STATUS, ITEM_PROJECT, blocked_project_id)
+    assert blocked_status is not None
+    assert blocked_status.details["project_status"] == "missing"
+    assert blocked_status.details["status_details"] == {"artifact_ids": ["art_stem_blocked"]}
     assert _action(plan, ACTION_IMPORT_PROJECT_MANIFEST, ITEM_PROJECT, blocked_project_id) is None
     assert _action(plan, ACTION_FETCH_ARTIFACT_CONTENT, ITEM_ARTIFACT, f"art_source_{blocked_project_id}") is None
     assert _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, "art_stem_blocked") is None
@@ -640,6 +714,10 @@ def test_missing_project_manifest_source_artifact_must_match_import_contract(
     assert item.status == "conflicted"
     assert item.action_type == ACTION_RECORD_CONFLICT
     assert item.reason == expected_reason
+    status_action = _action(plan, ACTION_UPSERT_PROJECT_STATUS, ITEM_PROJECT, project_id)
+    assert status_action is not None
+    assert status_action.details["project_status"] == "conflicted"
+    assert status_action.details["lock_reason"] == expected_reason
     assert _action(plan, ACTION_IMPORT_PROJECT_MANIFEST, ITEM_PROJECT, project_id) is None
     assert _action(plan, ACTION_RECORD_CONFLICT, ITEM_PROJECT, project_id) is not None
 

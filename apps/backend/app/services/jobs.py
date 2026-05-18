@@ -17,7 +17,7 @@ from app.services.analysis import analyze_project
 from app.services.chord_backends import resolve_chord_backend
 from app.services.chords import detect_project_chords, project_chord_detection_source
 from app.services.lyrics import generate_project_lyrics
-from app.services.projects import get_project
+from app.services.projects import get_mutable_project, get_project
 from app.services.stems import generate_stems
 from app.services.transformations import (
     build_preview_plan,
@@ -108,6 +108,8 @@ class InProcessJobRunner:
         self._queue.put(job_id)
 
     def create_job(self, session: Session, *, project_id: str | None, job_type: str, payload: dict[str, Any]) -> Job:
+        if project_id is not None:
+            get_mutable_project(session, project_id)
         job = Job(
             id=new_id("job"),
             project_id=project_id,
@@ -234,6 +236,8 @@ class InProcessJobRunner:
                 handler = self._handlers.get(job.type)
                 if handler is None:
                     raise AppError("PROCESSING_FAILED", f"Unsupported job type: {job.type}")
+                if job.project_id is not None:
+                    get_mutable_project(session, job.project_id)
                 result = handler(context, session, job)
                 job.status = "completed"
                 job.progress = 100

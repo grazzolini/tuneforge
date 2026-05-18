@@ -12,6 +12,7 @@ export function SourcesRail() {
     isDeleteMixDisabled,
     isDeleteStemDisabled,
     previewArtifacts,
+    projectSyncLockReason,
     selectedArtifactId,
     selectedPrimaryArtifactId,
     setDismissedStemJobIds,
@@ -25,6 +26,7 @@ export function SourcesRail() {
     stemOutputLabel,
     visibleStemArtifacts,
   } = useProjectViewModelContext();
+  const editLockTitle = projectSyncLockReason ?? undefined;
 
   return (
     <aside className={`stack sources-rail${sourcesRailCollapsed ? " sources-rail--collapsed" : ""}`}>
@@ -133,7 +135,7 @@ export function SourcesRail() {
                         className="button button--ghost button--small artifact-action-row__delete"
                         disabled={isDeleteMixDisabled || artifact.can_delete === false}
                         onClick={() => void handleDeleteMix(artifact)}
-                        title="Delete saved mix"
+                        title={editLockTitle ?? "Delete saved mix"}
                         type="button"
                       >
                         <Trash2 aria-hidden="true" className="artifact-action-row__delete-icon" />
@@ -181,7 +183,7 @@ export function SourcesRail() {
                         className="button button--ghost button--small artifact-action-row__delete"
                         disabled={isDeleteStemDisabled || artifact.can_delete === false}
                         onClick={() => void handleDeleteStem(artifact)}
-                        title="Delete stem track"
+                        title={editLockTitle ?? "Delete stem track"}
                         type="button"
                       >
                         <Trash2 aria-hidden="true" className="artifact-action-row__delete-icon" />

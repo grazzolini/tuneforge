@@ -55,6 +55,150 @@ export type TabImportSchema = components["schemas"]["TabImportSchema"];
 export type TabSuggestionGroupSchema = components["schemas"]["TabSuggestionGroupSchema"];
 export type TabSuggestionSchema = components["schemas"]["TabSuggestionSchema"];
 export type RuntimeCapabilities = MobileCapabilities | null;
+export type ProjectSyncSummary = {
+  state: string;
+  label: string;
+  isLocal: boolean;
+  isLocked: boolean;
+  lockReason: string | null;
+};
+
+const LOCAL_SYNC_STATES = new Set(["local", "noop", "identical_content"]);
+const PROJECT_SYNC_STATE_LABELS: Record<string, string> = {
+  conflicted: "Conflicted",
+  deleted: "Deleted",
+  downloading: "Downloading",
+  local: "Local",
+  missing: "Missing",
+  missing_local_bytes: "Missing Bytes",
+  missing_provider: "Missing Provider",
+  remote_available: "Remote Available",
+  syncing: "Syncing",
+};
+const PROJECT_SYNC_LOCK_REASONS: Record<string, string> = {
+  conflicted: "Resolve sync conflicts before editing this project.",
+  deleted: "This project was deleted in the sync group and cannot be edited.",
+  downloading: "This project is downloading required local data before edits are enabled.",
+  missing: "Required project data is missing on this device.",
+  missing_local_bytes: "Required project audio is missing on this device.",
+  missing_provider: "No trusted synced device can provide the required project data.",
+  remote_available: "Required project data is available from another synced device and must be downloaded before editing.",
+  syncing: "This project is still syncing required local data before edits are enabled.",
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? value as Record<string, unknown> : null;
+}
+
+function firstStringField(records: Array<Record<string, unknown> | null>, keys: string[]) {
+  for (const record of records) {
+    if (!record) {
+      continue;
+    }
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+    }
+  }
+  return null;
+}
+
+function firstBooleanField(records: Array<Record<string, unknown> | null>, keys: string[]) {
+  for (const record of records) {
+    if (!record) {
+      continue;
+    }
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === "boolean") {
+        return value;
+      }
+    }
+  }
+  return null;
+}
+
+function normalizeProjectSyncState(value: string | null) {
+  return value?.toLowerCase().replace(/[\s-]+/g, "_") ?? "local";
+}
+
+function labelFromSyncState(state: string) {
+  return PROJECT_SYNC_STATE_LABELS[state] ??
+    state
+      .split("_")
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ");
+}
+
+function defaultProjectLockReason(state: string, isLocal: boolean) {
+  if (PROJECT_SYNC_LOCK_REASONS[state]) {
+    return PROJECT_SYNC_LOCK_REASONS[state];
+  }
+  return isLocal
+    ? "This project is locked until sync makes it editable."
+    : "This project is not ready for local edits yet.";
+}
+
+export function getProjectSyncSummary(project: ProjectSchema | null | undefined): ProjectSyncSummary {
+  if (!project) {
+    return {
+      state: "local",
+      label: PROJECT_SYNC_STATE_LABELS.local,
+      isLocal: true,
+      isLocked: false,
+      lockReason: null,
+    };
+  }
+
+  const projectRecord = project as ProjectSchema & Record<string, unknown>;
+  const syncRecord =
+    asRecord(projectRecord.sync) ??
+    asRecord(projectRecord.sync_status) ??
+    asRecord(projectRecord.sync_state);
+  const state = normalizeProjectSyncState(
+    firstStringField([projectRecord], ["sync_state", "sync_status", "syncState", "syncStatus"]) ??
+      firstStringField(
+        [syncRecord],
+        ["sync_state", "sync_status", "syncState", "syncStatus", "state", "status"],
+      ),
+  );
+  const isLocal = LOCAL_SYNC_STATES.has(state);
+  const explicitLocked = firstBooleanField(
+    [projectRecord, syncRecord],
+    ["edit_locked", "is_edit_locked", "locked", "read_only", "readOnly"],
+  );
+  const explicitEditable = firstBooleanField(
+    [projectRecord, syncRecord],
+    ["sync_editable", "syncEditable", "can_edit", "editable", "is_editable", "canEdit"],
+  );
+  const isLocked = explicitLocked ?? (explicitEditable === null ? !isLocal : !explicitEditable);
+  const lockReason = isLocked
+    ? firstStringField(
+        [projectRecord, syncRecord],
+        [
+          "edit_lock_reason",
+          "lock_reason",
+          "sync_status_reason",
+          "syncStatusReason",
+          "sync_lock_reason",
+          "unavailable_reason",
+          "reason",
+          "message",
+        ],
+      ) ?? defaultProjectLockReason(state, isLocal)
+    : null;
+
+  return {
+    state,
+    label: labelFromSyncState(state),
+    isLocal,
+    isLocked,
+    lockReason,
+  };
+}
 
 export type TuneForgeClient = {
   getMobileCapabilities: () => Promise<RuntimeCapabilities>;

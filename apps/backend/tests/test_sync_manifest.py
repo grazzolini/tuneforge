@@ -940,6 +940,61 @@ def test_import_staged_project_manifest_rewrites_paths_preserves_hashes_and_skip
         assert not job_types.intersection({"analyze", "chords"})
 
 
+def test_import_staged_project_manifest_upgrades_placeholder_and_clears_sync_lock(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    export_manifest, import_manifest = _sync_manifest_services()
+    staging_root = tmp_path / "staging"
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+        _stage_manifest_files(manifest, staging_root=staging_root, source_root=fixture.root)
+        _delete_live_project(session, fixture)
+
+        placeholder = Project(
+            id=fixture.project_id,
+            display_name="Remote Placeholder",
+            source_key_override=None,
+            source_sha256=fixture.source_sha256,
+            source_path="",
+            imported_path="",
+            duration_seconds=None,
+            sample_rate=None,
+            channels=None,
+        )
+        placeholder.sync_status = "remote_available"
+        placeholder.sync_status_reason = "Waiting for source audio."
+        placeholder.sync_required_artifact_ids_json = ["art_source_audio"]
+        placeholder.sync_provider_device_ids_json = ["peer-a"]
+        placeholder.sync_conflict_count = 2
+        session.add(placeholder)
+        session.flush()
+
+        imported_project = import_manifest(session, manifest=manifest, staging_root=staging_root)
+        session.commit()
+
+        assert imported_project.id == fixture.project_id
+        project = session.get(Project, fixture.project_id)
+        assert project is not None
+        receiving_root = project_root(fixture.project_id)
+        expected_source_path = receiving_root / fixture.source_relative_path
+        assert Path(project.source_path) == expected_source_path
+        assert Path(project.imported_path) == expected_source_path
+        assert project.display_name == "Sync Fixture"
+        assert project.sync_status == "local"
+        assert project.sync_status_reason is None
+        assert project.sync_required_artifact_ids_json == []
+        assert project.sync_provider_device_ids_json == []
+        assert project.sync_conflict_count == 0
+
+        artifact_ids = set(
+            session.scalars(select(Artifact.id).where(Artifact.project_id == fixture.project_id))
+        )
+        assert artifact_ids == {"art_source_audio", "art_vocals"}
+
+
 def test_import_staged_project_manifest_hydrates_current_entity_revisions_and_skips_jobs(
     client: object,
     tmp_path: Path,

@@ -572,6 +572,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sync/projects/{project_id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Sync Project Status Update */
+        patch: operations["sync_project_status_update_api_v1_sync_projects__project_id__status_patch"];
+        trace?: never;
+    };
     "/api/v1/sync/artifacts/staging": {
         parameters: {
             query?: never;
@@ -1102,6 +1119,28 @@ export interface components {
             sample_rate: number | null;
             /** Channels */
             channels: number | null;
+            /**
+             * Sync Status
+             * @default local
+             * @enum {string}
+             */
+            sync_status: "local" | "syncing" | "remote_available" | "downloading" | "missing" | "deleted" | "conflicted";
+            /** Sync Status Reason */
+            sync_status_reason?: string | null;
+            /**
+             * Sync Editable
+             * @default true
+             */
+            sync_editable: boolean;
+            /** Sync Required Artifact Ids */
+            sync_required_artifact_ids?: string[];
+            /** Sync Provider Device Ids */
+            sync_provider_device_ids?: string[];
+            /**
+             * Sync Conflict Count
+             * @default 0
+             */
+            sync_conflict_count: number;
             /**
              * Created At
              * Format: date-time
@@ -1641,13 +1680,56 @@ export interface components {
             /** Use Content Addressed Staging */
             use_content_addressed_staging?: boolean | null;
         };
+        /** SyncProjectStatusProjectMetadataSchema */
+        SyncProjectStatusProjectMetadataSchema: {
+            /** Project Id */
+            project_id: string;
+            /** Display Name */
+            display_name: string;
+            /** Source Key Override */
+            source_key_override?: string | null;
+            /** Source Sha256 */
+            source_sha256?: string | null;
+            /** Duration Seconds */
+            duration_seconds?: number | null;
+            /** Sample Rate */
+            sample_rate?: number | null;
+            /** Channels */
+            channels?: number | null;
+            /** Created At */
+            created_at?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /** SyncProjectStatusUpdateRequest */
+        SyncProjectStatusUpdateRequest: {
+            /**
+             * Sync Status
+             * @enum {string}
+             */
+            sync_status: "local" | "syncing" | "remote_available" | "downloading" | "missing" | "deleted" | "conflicted";
+            /** Sync Status Reason */
+            sync_status_reason?: string | null;
+            /** Sync Required Artifact Ids */
+            sync_required_artifact_ids?: string[] | null;
+            /** Sync Provider Device Ids */
+            sync_provider_device_ids?: string[] | null;
+            /** Sync Conflict Count */
+            sync_conflict_count?: number | null;
+            manifest?: components["schemas"]["SyncProjectManifestSchema"] | null;
+            project?: components["schemas"]["SyncProjectStatusProjectMetadataSchema"] | null;
+        };
+        /** SyncProjectStatusUpdateResponse */
+        SyncProjectStatusUpdateResponse: {
+            project: components["schemas"]["ProjectSchema"];
+        };
         /** SyncReconciliationActionSchema */
         SyncReconciliationActionSchema: {
             /**
              * Action Type
              * @enum {string}
              */
-            action_type: "apply_delete_tombstone" | "import_project_manifest" | "import_entity_revision" | "fetch_artifact_content" | "import_artifact_manifest" | "record_conflict" | "noop";
+            action_type: "apply_delete_tombstone" | "import_project_manifest" | "import_entity_revision" | "fetch_artifact_content" | "import_artifact_manifest" | "upsert_project_status" | "record_conflict" | "noop";
             /** Item Type */
             item_type: string;
             /** Item Id */
@@ -1681,7 +1763,7 @@ export interface components {
              */
             status: "noop" | "identical_content" | "missing_local_bytes" | "remote_available" | "missing_provider" | "deleted" | "conflicted";
             /** Action Type */
-            action_type?: ("apply_delete_tombstone" | "import_project_manifest" | "import_entity_revision" | "fetch_artifact_content" | "import_artifact_manifest" | "record_conflict" | "noop") | null;
+            action_type?: ("apply_delete_tombstone" | "import_project_manifest" | "import_entity_revision" | "fetch_artifact_content" | "import_artifact_manifest" | "upsert_project_status" | "record_conflict" | "noop") | null;
             /** Content Sha256 */
             content_sha256?: string | null;
             /** Chosen Provider Device Id */
@@ -3152,6 +3234,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SyncProjectManifestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_project_status_update_api_v1_sync_projects__project_id__status_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncProjectStatusUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncProjectStatusUpdateResponse"];
                 };
             };
             /** @description Validation Error */

@@ -30,6 +30,7 @@ from app.services.artifacts import register_artifact
 from app.services.paths import ensure_project_dirs, project_root
 from app.services.sync_identity import source_hash_to_project_id
 from app.services.sync_metadata import project_relative_artifact_path, sanitize_sync_metadata
+from app.services.sync_project_status import mark_project_sync_local
 from app.services.sync_revisions import (
     CURRENT_REVISION_STATE,
     revision_payload_sha256,
@@ -236,12 +237,18 @@ def import_staged_project_manifest(
         sync_group_id=local_sync_group_id,
     )
     existing_project = _find_existing_project_source(session, project_manifest)
+    project: Project | None = None
+    upgrading_placeholder = False
     if existing_project is not None:
         if existing_project.id == project_manifest.project_id and project_manifest.delete_tombstones:
             imported_tombstones = _import_delete_tombstones(session, project_manifest)
             _apply_delete_tombstones(session, imported_tombstones)
             return existing_project
-        raise _duplicate_project_source_error(existing_project.id, existing_project.display_name)
+        if _can_upgrade_project_placeholder(existing_project, project_manifest):
+            project = existing_project
+            upgrading_placeholder = True
+        else:
+            raise _duplicate_project_source_error(existing_project.id, existing_project.display_name)
     _reject_manifest_artifact_conflicts(session, project_manifest)
     root = project_root(project_manifest.project_id).resolve(strict=False)
     staged_root = (
@@ -256,25 +263,33 @@ def import_staged_project_manifest(
     )
     source_path = root / _safe_relative_path(source_artifact.relative_path)
 
-    project = Project(
-        id=project_manifest.project_id,
-        display_name=project_manifest.display_name,
-        source_key_override=project_manifest.source_key_override,
-        source_sha256=project_manifest.source_sha256,
-        source_path=str(source_path),
-        imported_path=str(source_path),
-        duration_seconds=project_manifest.duration_seconds,
-        sample_rate=project_manifest.sample_rate,
-        channels=project_manifest.channels,
-        created_at=project_manifest.created_at,
-        updated_at=project_manifest.updated_at,
-    )
-    session.add(project)
-    try:
+    if project is None:
+        project = Project(
+            id=project_manifest.project_id,
+            display_name=project_manifest.display_name,
+            source_key_override=project_manifest.source_key_override,
+            source_sha256=project_manifest.source_sha256,
+            source_path=str(source_path),
+            imported_path=str(source_path),
+            duration_seconds=project_manifest.duration_seconds,
+            sample_rate=project_manifest.sample_rate,
+            channels=project_manifest.channels,
+            created_at=project_manifest.created_at,
+            updated_at=project_manifest.updated_at,
+        )
+        session.add(project)
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            session.rollback()
+            _raise_duplicate_project_source(session, project_manifest.project_id, project_manifest.source_sha256, exc)
+    else:
+        _upgrade_project_placeholder_from_manifest(
+            project,
+            project_manifest,
+            source_path=source_path,
+        )
         session.flush()
-    except IntegrityError as exc:
-        session.rollback()
-        _raise_duplicate_project_source(session, project_manifest.project_id, project_manifest.source_sha256, exc)
 
     ensure_project_dirs(project.id)
     copied_paths: list[Path] = []
@@ -311,6 +326,8 @@ def import_staged_project_manifest(
         imported_tombstones = _import_delete_tombstones(session, project_manifest)
         _apply_delete_tombstones(session, imported_tombstones)
         _hydrate_current_entity_revisions(session, project, project_manifest.entity_revisions)
+        if upgrading_placeholder:
+            mark_project_sync_local(session, project)
     except OSError as exc:
         _cleanup_copied_artifacts(copied_paths, root)
         raise AppError(
@@ -1309,6 +1326,45 @@ def _find_existing_project_source(
             .order_by(Project.created_at.asc(), Project.id.asc())
         )
     return existing_project
+
+
+def _can_upgrade_project_placeholder(project: Project, manifest: SyncProjectManifest) -> bool:
+    if project.id != manifest.project_id:
+        return False
+    if project.source_sha256 is not None and project.source_sha256 != manifest.source_sha256:
+        return False
+    return _is_project_placeholder(project)
+
+
+def _is_project_placeholder(project: Project) -> bool:
+    for field_name in ("sync_status", "sync_state"):
+        value = getattr(project, field_name, None)
+        if isinstance(value, str) and value.strip().lower() != "local":
+            return True
+
+    source_path = project.source_path.strip()
+    imported_path = project.imported_path.strip()
+    if not source_path and not imported_path:
+        return True
+    return source_path.startswith("sync-placeholder:") and imported_path.startswith("sync-placeholder:")
+
+
+def _upgrade_project_placeholder_from_manifest(
+    project: Project,
+    manifest: SyncProjectManifest,
+    *,
+    source_path: Path,
+) -> None:
+    project.display_name = manifest.display_name
+    project.source_key_override = manifest.source_key_override
+    project.source_sha256 = manifest.source_sha256
+    project.source_path = str(source_path)
+    project.imported_path = str(source_path)
+    project.duration_seconds = manifest.duration_seconds
+    project.sample_rate = manifest.sample_rate
+    project.channels = manifest.channels
+    project.created_at = manifest.created_at
+    project.updated_at = manifest.updated_at
 
 
 def _reject_duplicate_project_source(session: Session, manifest: SyncProjectManifest) -> None:

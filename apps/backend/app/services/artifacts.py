@@ -124,6 +124,9 @@ def _has_pending_audio_job(session: Session, *, project_id: str) -> bool:
 
 
 def delete_project_artifact(session: Session, *, project_id: str, artifact_id: str) -> None:
+    from app.services.projects import get_mutable_project
+
+    get_mutable_project(session, project_id)
     artifact = session.get(Artifact, artifact_id)
     if artifact is None or artifact.project_id != project_id:
         raise AppError("ARTIFACT_NOT_FOUND", "Artifact does not belong to this project.", status_code=404)

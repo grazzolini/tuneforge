@@ -11,6 +11,7 @@ import {
 type TargetKeySelectorProps = {
   currentKey: MusicalKey;
   currentMeta: string;
+  disabled?: boolean;
   enharmonicDisplayMode: EnharmonicDisplayMode;
   headingLabel: string;
   higherButtonLabel: string;
@@ -35,6 +36,7 @@ type TargetKeySelectorProps = {
 export function TargetKeySelector({
   currentKey,
   currentMeta,
+  disabled = false,
   enharmonicDisplayMode,
   headingLabel,
   higherButtonLabel,
@@ -67,7 +69,7 @@ export function TargetKeySelector({
         <button
           className="button"
           aria-label={lowerButtonLabel}
-          disabled={value <= MIN_TARGET_TRANSPOSE}
+          disabled={disabled || value <= MIN_TARGET_TRANSPOSE}
           onClick={() => {
             setIsOpen(false);
             setSemitones((current) => clampTargetTranspose(current - 1));
@@ -85,6 +87,7 @@ export function TargetKeySelector({
               aria-label={selectorLabel}
               aria-expanded={isOpen}
               aria-haspopup="listbox"
+              disabled={disabled}
               onClick={() => setIsOpen((current) => !current)}
               type="button"
             >
@@ -161,6 +164,7 @@ export function TargetKeySelector({
                     }`}
                     role="option"
                     aria-selected={option.semitones === value}
+                    disabled={disabled}
                     onClick={() => {
                       setSemitones(option.semitones);
                       setIsOpen(false);
@@ -196,6 +200,7 @@ export function TargetKeySelector({
                   }`}
                   role="option"
                   aria-selected={value === 0}
+                  disabled={disabled}
                   onClick={() => {
                     setSemitones(0);
                     setIsOpen(false);
@@ -232,6 +237,7 @@ export function TargetKeySelector({
                     }`}
                     role="option"
                     aria-selected={option.semitones === value}
+                    disabled={disabled}
                     onClick={() => {
                       setSemitones(option.semitones);
                       setIsOpen(false);
@@ -259,7 +265,7 @@ export function TargetKeySelector({
         <button
           className="button"
           aria-label={higherButtonLabel}
-          disabled={value >= MAX_TARGET_TRANSPOSE}
+          disabled={disabled || value >= MAX_TARGET_TRANSPOSE}
           onClick={() => {
             setIsOpen(false);
             setSemitones((current) => clampTargetTranspose(current + 1));

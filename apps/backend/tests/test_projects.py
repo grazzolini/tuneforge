@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
+import soundfile as sf
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -32,6 +34,17 @@ def _prepare_database() -> None:
     ensure_data_dirs(settings)
     reconfigure_engine(settings)
     run_migrations(settings)
+
+
+def _wait_for_project_job(client, project_id: str, predicate, *, timeout: float = 5.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        jobs = client.get("/api/v1/jobs").json()["jobs"]
+        for job in jobs:
+            if job["project_id"] == project_id and predicate(job):
+                return job
+        time.sleep(0.1)
+    raise AssertionError(f"Timed out waiting for matching job in project {project_id}")
 
 
 def test_import_project_persists_metadata_and_source_artifact(client, sample_audio_file: Path):
@@ -408,30 +421,91 @@ def test_pruning_stem_artifacts_records_tombstones(tmp_path: Path) -> None:
         }
 
 
-def test_import_project_enqueues_analysis_and_chords(client, sample_chord_audio_file: Path):
+def test_import_project_enqueues_full_source_processing(
+    client,
+    sample_chord_audio_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def fake_separate_two_stems(
+        source_path: Path,
+        vocal_path: Path,
+        instrumental_path: Path,
+        *,
+        model: str,
+        device: str,
+        model_repo=None,
+        on_progress=None,
+        should_cancel=None,
+        register_process=None,
+        unregister_process=None,
+    ):
+        signal, sample_rate = sf.read(source_path, always_2d=True)
+        vocal_path.parent.mkdir(parents=True, exist_ok=True)
+        instrumental_path.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(vocal_path, signal * 0.7, sample_rate)
+        sf.write(instrumental_path, signal * 0.3, sample_rate)
+        if on_progress:
+            on_progress(98)
+        return {"engine": "demucs", "model": model, "requested_device": device, "device": "cpu"}
+
+    monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
+
     response = client.post(
         "/api/v1/projects/import",
-        json={"source_path": str(sample_chord_audio_file), "copy_into_project": True},
+        json={
+            "source_path": str(sample_chord_audio_file),
+            "copy_into_project": True,
+            "stem_model": "htdemucs_ft",
+        },
     )
 
     assert response.status_code == 200
     project = response.json()["project"]
+    source_artifact = next(
+        artifact
+        for artifact in client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
+        if artifact["type"] == "source_audio"
+    )
 
     jobs = client.get("/api/v1/jobs").json()["jobs"]
     analyze_job = next(job for job in jobs if job["project_id"] == project["id"] and job["type"] == "analyze")
-    chord_job = next(job for job in jobs if job["project_id"] == project["id"] and job["type"] == "chords")
+    chord_job = next(
+        job
+        for job in jobs
+        if job["project_id"] == project["id"] and job["type"] == "chords" and job["chord_source"] == "source"
+    )
+    lyrics_job = next(job for job in jobs if job["project_id"] == project["id"] and job["type"] == "lyrics")
+    stem_job = next(job for job in jobs if job["project_id"] == project["id"] and job["type"] == "stems")
 
-    assert wait_for_job(client, analyze_job["id"])["status"] == "completed"
-    completed_chord_job = wait_for_job(client, chord_job["id"])
+    assert wait_for_job(client, analyze_job["id"], timeout=90.0)["status"] == "completed"
+    completed_chord_job = wait_for_job(client, chord_job["id"], timeout=90.0)
     assert completed_chord_job["status"] == "completed"
     assert completed_chord_job["chord_backend"] == "tuneforge-fast"
     assert completed_chord_job["chord_source"] == "source"
+    assert wait_for_job(client, lyrics_job["id"])["status"] == "completed"
+    completed_stem_job = wait_for_job(client, stem_job["id"])
+    assert completed_stem_job["status"] == "completed"
+    assert completed_stem_job["source_artifact_id"] == source_artifact["id"]
+    assert completed_stem_job["stem_model"] == "htdemucs_ft"
+    assert completed_stem_job["stem_model_label"] == "2 stems model"
+
+    chord_refresh_job = _wait_for_project_job(
+        client,
+        project["id"],
+        lambda job: job["type"] == "chords" and job["id"] != chord_job["id"],
+    )
+    completed_chord_refresh_job = wait_for_job(client, chord_refresh_job["id"])
+    assert completed_chord_refresh_job["status"] == "completed"
+    assert completed_chord_refresh_job["chord_backend"] == "tuneforge-fast"
+    assert completed_chord_refresh_job["chord_source"] == "source+stem"
 
     analysis = client.get(f"/api/v1/projects/{project['id']}/analysis").json()["analysis"]
     chords = client.get(f"/api/v1/projects/{project['id']}/chords").json()
+    lyrics = client.get(f"/api/v1/projects/{project['id']}/lyrics").json()
 
     assert analysis is not None
     assert len(chords["timeline"]) >= 3
+    assert lyrics["segments"][0]["text"] == "Test lyric"
 
 
 def test_project_can_be_renamed(client, sample_audio_file: Path):

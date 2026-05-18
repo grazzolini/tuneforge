@@ -115,10 +115,42 @@ def create_project(
             "chord_source": "source",
         },
     )
+    lyrics_job = runner.create_job(
+        session,
+        project_id=project.id,
+        job_type="lyrics",
+        payload=LyricsGenerateRequest(force=False).model_dump(),
+    )
+    source_artifact = resolve_stem_source_artifact(
+        session,
+        project=project,
+        source_artifact_id=None,
+    )
+    selected_stem_model = resolve_stem_model(payload.stem_model, require_available=False)
+    stem_job = runner.create_job(
+        session,
+        project_id=project.id,
+        job_type="stems",
+        payload={
+            **StemRequest(
+                mode="stems",
+                stem_model=selected_stem_model.id,
+                output_format="wav",
+                force=False,
+                source_artifact_id=source_artifact.id,
+                chord_backend=selected_chord_backend.id,
+                chord_backend_fallback_from=chord_backend_fallback_from,
+                overwrite_chord_edits=False,
+            ).model_dump(),
+            "stem_model_label": selected_stem_model.label,
+        },
+    )
     session.commit()
     session.refresh(project)
     runner.enqueue(analyze_job.id)
     runner.enqueue(chords_job.id)
+    runner.enqueue(lyrics_job.id)
+    runner.enqueue(stem_job.id)
     return ProjectResponse(project=ProjectSchema.model_validate(project))
 
 

@@ -1060,6 +1060,8 @@ export interface components {
             chord_backend?: string | null;
             /** Chord Backend Fallback From */
             chord_backend_fallback_from?: string | null;
+            /** Stem Model */
+            stem_model?: string | null;
         };
         /** ProjectResponse */
         ProjectResponse: {

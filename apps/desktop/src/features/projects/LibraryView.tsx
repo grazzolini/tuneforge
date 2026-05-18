@@ -131,7 +131,7 @@ function getImportErrorNotice(error: unknown): ImportNotice {
 export function LibraryView() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { informationDensity } = usePreferences();
+  const { defaultStemModel, informationDensity } = usePreferences();
   const { chordBackendForAction } = useChordBackendActionSelection();
   const [searchDraft, setSearchDraft] = useState("");
   const [importNotice, setImportNotice] = useState<ImportNotice | null>(null);
@@ -163,6 +163,7 @@ export function LibraryView() {
         source_path: selection,
         copy_into_project: true,
         chord_backend: backendSelection.backend,
+        stem_model: defaultStemModel,
         ...(backendSelection.backend_fallback_from
           ? { chord_backend_fallback_from: backendSelection.backend_fallback_from }
           : {}),

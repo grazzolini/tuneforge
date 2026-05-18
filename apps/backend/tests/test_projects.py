@@ -37,16 +37,21 @@ def test_import_project_persists_metadata_and_source_artifact(client, sample_aud
     data_root = get_settings().data_root
     imported_path = Path(project["imported_path"])
     assert imported_path.exists()
+    assert imported_path.suffix == ".wav"
     assert str(imported_path).startswith(
         str(data_root / "projects" / source_hash_to_project_storage_key(expected_hash))
     )
 
     artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
     source_artifact = next(artifact for artifact in artifacts if artifact["type"] == "source_audio")
+    assert source_artifact["format"] == "wav"
     assert source_artifact["size_bytes"] > 0
     assert source_artifact["generated_by"] == "import"
     assert source_artifact["can_delete"] is False
     assert source_artifact["can_regenerate"] is False
+    assert source_artifact["metadata"]["source_path"] == str(sample_audio_file.resolve())
+    assert source_artifact["metadata"]["original_format"] == "wav"
+    assert "original_copy_path" not in source_artifact["metadata"]
     assert "content_sha256" not in source_artifact
     assert "source_sha256" not in project
 
@@ -88,12 +93,10 @@ def test_import_project_rejects_duplicate_source_hash(client, sample_audio_file:
     }
 
 
-def test_import_project_with_deprecated_external_reference_copies_source_under_project_root(
-    sample_audio_file: Path,
-    tmp_path: Path,
+def test_import_project_without_copy_still_materializes_internal_wav(
+    sample_mp3_file: Path,
 ) -> None:
-    source_path = tmp_path / "deprecated-external.wav"
-    source_path.write_bytes(sample_audio_file.read_bytes() + b"deprecated-external")
+    source_path = sample_mp3_file
     expected_hash = file_sha256(source_path)
     assert expected_hash is not None
     original_path = source_path.resolve()
@@ -112,12 +115,19 @@ def test_import_project_with_deprecated_external_reference_copies_source_under_p
         assert project.source_sha256 == expected_hash
         assert project.source_path == str(original_path)
         assert imported_path.exists()
+        assert imported_path.suffix == ".wav"
         assert imported_path.is_relative_to(project_root(project.id))
         assert imported_path != original_path
+        assert not (imported_path.parent / source_path.name).exists()
 
         source_artifact = next(artifact for artifact in project.artifacts if artifact.type == "source_audio")
         assert Path(source_artifact.path) == imported_path
-        assert source_artifact.content_sha256 == expected_hash
+        assert source_artifact.format == "wav"
+        assert source_artifact.metadata_json["source_path"] == str(original_path)
+        assert source_artifact.metadata_json["original_format"] == "mp3"
+        assert "original_copy_path" not in source_artifact.metadata_json
+        assert source_artifact.content_sha256 == file_sha256(imported_path)
+        assert source_artifact.content_sha256 != expected_hash
 
         source_path.unlink()
         analysis = analyze_project(session, project)
@@ -297,9 +307,29 @@ def test_retune_request_rejects_invalid_payload(client, sample_audio_file: Path)
     assert response.json()["error"]["code"] == "INVALID_REQUEST"
 
 
-@pytest.mark.parametrize("fixture_name", ["sample_mp4_file", "sample_webm_file"])
-def test_container_imports_are_normalized_and_analyzable(client, request, fixture_name: str):
+@pytest.mark.parametrize(
+    ("fixture_name", "original_format"),
+    [
+        ("sample_audio_file", "wav"),
+        ("sample_mp3_file", "mp3"),
+        ("sample_flac_file", "flac"),
+        ("sample_m4a_file", "m4a"),
+        ("sample_aac_file", "aac"),
+        ("sample_ogg_file", "ogg"),
+        ("sample_mp4_file", "mp4"),
+        ("sample_webm_file", "webm"),
+    ],
+)
+def test_supported_imports_are_normalized_to_internal_wav(
+    client,
+    request,
+    fixture_name: str,
+    original_format: str,
+):
     source_path = request.getfixturevalue(fixture_name)
+    source_hash = file_sha256(source_path)
+    assert source_hash is not None
+
     response = client.post(
         "/api/v1/projects/import",
         json={"source_path": str(source_path), "copy_into_project": True},
@@ -307,15 +337,26 @@ def test_container_imports_are_normalized_and_analyzable(client, request, fixtur
 
     assert response.status_code == 200
     project = response.json()["project"]
-    assert project["imported_path"].endswith(".wav")
+    imported_path = Path(project["imported_path"])
+    assert imported_path.exists()
+    assert imported_path.name == f"{source_path.stem}.wav"
+    assert project["id"] == source_hash_to_project_id(source_hash)
 
     artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
     source_artifact = next(artifact for artifact in artifacts if artifact["type"] == "source_audio")
     assert source_artifact["format"] == "wav"
-    assert source_artifact["metadata"]["original_format"] in {"mp4", "webm"}
+    assert source_artifact["metadata"]["source_path"] == str(source_path.resolve())
+    assert source_artifact["metadata"]["original_format"] == original_format
+    assert "original_copy_path" not in source_artifact["metadata"]
+    if original_format != "wav":
+        assert not (imported_path.parent / source_path.name).exists()
 
-    analyze_job = client.post(
-        f"/api/v1/projects/{project['id']}/analyze",
-        json={"include_tempo": False, "force": False},
-    ).json()["job"]
-    assert wait_for_job(client, analyze_job["id"])["status"] == "completed"
+    with SessionLocal() as session:
+        project_row = session.get(Project, project["id"])
+        artifact_row = session.get(Artifact, source_artifact["id"])
+        assert project_row is not None
+        assert artifact_row is not None
+        assert project_row.source_sha256 == source_hash
+        assert artifact_row.content_sha256 == file_sha256(imported_path)
+        if original_format != "wav":
+            assert artifact_row.content_sha256 != source_hash

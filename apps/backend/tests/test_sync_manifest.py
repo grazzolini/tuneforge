@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import io
 import json
 import shutil
+import wave
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import UTC, datetime
@@ -180,13 +182,25 @@ def _write_bytes(path: Path, contents: bytes) -> tuple[str, int]:
     return content_hash, path.stat().st_size
 
 
+def _wav_bytes(*, frame_count: int = 64, sample_rate: int = 44100) -> bytes:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"\0\0" * frame_count)
+    return buffer.getvalue()
+
+
 def _create_project_with_artifacts(
     session: Any,
     tmp_path: Path,
     *,
-    source_bytes: bytes = b"sync source audio",
+    source_bytes: bytes | None = None,
     stem_bytes: bytes = b"sync vocal stem",
 ) -> ManifestProjectFixture:
+    if source_bytes is None:
+        source_bytes = _wav_bytes()
     external_source = tmp_path / "user-library" / "fixture.wav"
     source_sha256, _ = _write_bytes(external_source, source_bytes)
     project_id = source_hash_to_project_id(source_sha256)
@@ -694,7 +708,7 @@ def test_export_project_manifest_allows_source_artifact_hash_to_differ_from_proj
     with SessionLocal() as session:
         fixture = _create_project_with_artifacts(session, tmp_path)
         source_path = fixture.root / fixture.source_relative_path
-        proxy_hash, proxy_size = _write_bytes(source_path, b"normalized proxy bytes")
+        proxy_hash, proxy_size = _write_bytes(source_path, _wav_bytes(frame_count=128))
         source_artifact = session.get(Artifact, "art_source_audio")
         assert source_artifact is not None
         source_artifact.content_sha256 = proxy_hash
@@ -708,6 +722,26 @@ def test_export_project_manifest_allows_source_artifact_hash_to_differ_from_proj
     assert source_artifact_manifest["content_sha256"] != fixture.source_sha256
 
 
+def test_export_project_manifest_rejects_non_wav_source_audio_artifact(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    export_manifest, _ = _sync_manifest_services()
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        source_artifact = session.get(Artifact, "art_source_audio")
+        assert source_artifact is not None
+        source_artifact.format = "mp3"
+
+        with pytest.raises(AppError) as exc:
+            export_manifest(session, project_id=fixture.project_id)
+
+    assert exc.value.code == "SYNC_MANIFEST_SOURCE_ARTIFACT_UNSUPPORTED"
+    assert exc.value.status_code == 400
+    assert exc.value.details["artifact_id"] == "art_source_audio"
+    assert exc.value.details["format"] == "mp3"
+
+
 def test_export_project_manifest_rejects_multiple_source_artifacts(
     client: object,
     tmp_path: Path,
@@ -716,7 +750,10 @@ def test_export_project_manifest_rejects_multiple_source_artifacts(
     with SessionLocal() as session:
         fixture = _create_project_with_artifacts(session, tmp_path)
         duplicate_source_path = fixture.root / "source" / "duplicate.wav"
-        duplicate_hash, duplicate_size = _write_bytes(duplicate_source_path, b"duplicate source")
+        duplicate_hash, duplicate_size = _write_bytes(
+            duplicate_source_path,
+            _wav_bytes(frame_count=96),
+        )
         session.add(
             Artifact(
                 id="art_source_audio_duplicate",
@@ -1149,7 +1186,7 @@ def test_import_staged_project_manifest_preserves_independent_source_artifact_ha
     with SessionLocal() as session:
         fixture = _create_project_with_artifacts(session, tmp_path)
         source_path = fixture.root / fixture.source_relative_path
-        proxy_hash, proxy_size = _write_bytes(source_path, b"normalized proxy bytes")
+        proxy_hash, proxy_size = _write_bytes(source_path, _wav_bytes(frame_count=128))
         source_artifact = session.get(Artifact, "art_source_audio")
         assert source_artifact is not None
         source_artifact.content_sha256 = proxy_hash
@@ -1157,6 +1194,8 @@ def test_import_staged_project_manifest_preserves_independent_source_artifact_ha
 
         manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
         artifacts = _artifacts_by_id(manifest)
+        assert artifacts["art_source_audio"]["format"] == "wav"
+        assert artifacts["art_source_audio"]["relative_path"] == fixture.source_relative_path
         assert artifacts["art_source_audio"]["content_sha256"] == proxy_hash
         assert artifacts["art_source_audio"]["content_sha256"] != fixture.source_sha256
 
@@ -1169,8 +1208,83 @@ def test_import_staged_project_manifest_preserves_independent_source_artifact_ha
 
     assert imported_project.source_sha256 == fixture.source_sha256
     assert imported_source_artifact is not None
+    assert imported_source_artifact.format == "wav"
+    assert Path(imported_source_artifact.path).suffix == ".wav"
     assert imported_source_artifact.content_sha256 == proxy_hash
     assert imported_source_artifact.content_sha256 != imported_project.source_sha256
+
+
+@pytest.mark.parametrize(
+    ("artifact_field", "artifact_value", "message_fragment"),
+    [
+        ("format", "mp3", "format"),
+        ("relative_path", "source/fixture.mp3", "relative_path"),
+    ],
+)
+def test_import_staged_project_manifest_rejects_non_wav_source_audio_artifact(
+    client: object,
+    tmp_path: Path,
+    artifact_field: str,
+    artifact_value: str,
+    message_fragment: str,
+) -> None:
+    export_manifest, import_manifest = _sync_manifest_services()
+    staging_root = tmp_path / "staging"
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+        _stage_manifest_files(manifest, staging_root=staging_root, source_root=fixture.root)
+
+        if artifact_field == "relative_path":
+            staged_source_path = staging_root / fixture.source_relative_path
+            staged_non_wav_path = staging_root / artifact_value
+            staged_non_wav_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(staged_source_path, staged_non_wav_path)
+
+        _artifacts_by_id(manifest)["art_source_audio"][artifact_field] = artifact_value
+        _delete_live_project(session, fixture)
+
+        with pytest.raises(AppError) as exc:
+            import_manifest(session, manifest=manifest, staging_root=staging_root)
+        session.rollback()
+
+        assert session.get(Project, fixture.project_id) is None
+
+    assert exc.value.code == "SYNC_MANIFEST_INVALID"
+    assert exc.value.status_code == 400
+    assert message_fragment in exc.value.message
+
+
+def test_import_staged_project_manifest_rejects_non_wav_source_audio_bytes(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    export_manifest, import_manifest = _sync_manifest_services()
+    staging_root = tmp_path / "staging"
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+        _stage_manifest_files(manifest, staging_root=staging_root, source_root=fixture.root)
+
+        staged_source_path = staging_root / fixture.source_relative_path
+        invalid_hash, invalid_size = _write_bytes(staged_source_path, b"not a wav file")
+        source_artifact = _artifacts_by_id(manifest)["art_source_audio"]
+        source_artifact["content_sha256"] = invalid_hash
+        source_artifact["size_bytes"] = invalid_size
+        _delete_live_project(session, fixture)
+
+        with pytest.raises(AppError) as exc:
+            import_manifest(session, manifest=manifest, staging_root=staging_root)
+        session.rollback()
+
+        assert session.get(Project, fixture.project_id) is None
+
+    assert exc.value.code == "SYNC_MANIFEST_SOURCE_ARTIFACT_NOT_WAV"
+    assert exc.value.status_code == 400
+    assert exc.value.details["artifact_id"] == "art_source_audio"
+    assert exc.value.details["relative_path"] == fixture.source_relative_path
 
 
 def test_import_staged_project_manifest_rejects_multiple_source_artifacts(

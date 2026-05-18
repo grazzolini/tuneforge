@@ -170,6 +170,31 @@ def _transcode_fixture(source_path: Path, destination_path: Path, codec: str) ->
 
 
 @pytest.fixture()
+def sample_mp3_file(tmp_path: Path, sample_audio_file: Path) -> Path:
+    return _transcode_fixture(sample_audio_file, tmp_path / "fixture.mp3", "libmp3lame")
+
+
+@pytest.fixture()
+def sample_flac_file(tmp_path: Path, sample_audio_file: Path) -> Path:
+    return _transcode_fixture(sample_audio_file, tmp_path / "fixture.flac", "flac")
+
+
+@pytest.fixture()
+def sample_m4a_file(tmp_path: Path, sample_audio_file: Path) -> Path:
+    return _transcode_fixture(sample_audio_file, tmp_path / "fixture.m4a", "aac")
+
+
+@pytest.fixture()
+def sample_aac_file(tmp_path: Path, sample_audio_file: Path) -> Path:
+    return _transcode_fixture(sample_audio_file, tmp_path / "fixture.aac", "aac")
+
+
+@pytest.fixture()
+def sample_ogg_file(tmp_path: Path, sample_audio_file: Path) -> Path:
+    return _transcode_fixture(sample_audio_file, tmp_path / "fixture.ogg", "libopus")
+
+
+@pytest.fixture()
 def sample_mp4_file(tmp_path: Path, sample_audio_file: Path) -> Path:
     return _transcode_fixture(sample_audio_file, tmp_path / "fixture.mp4", "aac")
 

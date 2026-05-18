@@ -286,7 +286,7 @@ Artifact fields:
 - `metadata`
 - `created_at`
 
-`relative_path` is project-root relative when the artifact is stored under the backend-managed project root; otherwise it is `null`. Artifact metadata is sanitized recursively before returning and removes local path-bearing keys such as `source_path`, `original_copy_path`, `playback_path`, `imported_path`, and any metadata key ending in `_path`. Non-path metadata such as retune/transpose settings, `stem_model`, and `source_artifact_id` is preserved. Job internals such as `result_artifact_ids_json` are not exposed.
+`relative_path` is project-root relative when the artifact is stored under the backend-managed project root; otherwise it is `null`. Operational `source_audio` artifacts are app-managed WAV files under the project root. Artifact metadata is sanitized recursively before returning and removes local path-bearing keys such as `source_path`, `original_copy_path`, `playback_path`, `imported_path`, and any metadata key ending in `_path`. Non-path metadata such as retune/transpose settings, `stem_model`, and `source_artifact_id` is preserved. Job internals such as `result_artifact_ids_json` are not exposed.
 
 ### Export project sync manifest
 
@@ -299,7 +299,7 @@ Returns a single project manifest for manifest-only sync export. The response is
 - `project`
 - `artifacts`
 
-Manifest paths are project-root relative and use portable path separators. The response does not expose absolute local source, project, artifact, or app data paths. The project entry's `source_sha256` is the identity hash of the original imported source bytes. Artifact entries' `content_sha256` values hash the bytes for those specific staged artifact files, which may include backend-managed runtime files such as normalized WAV proxies. `sync_entity_revisions.content_sha256` is also per-entity revision payload content, not project source identity. Receiving peers must verify staged files against the artifact SHA-256 values and must preserve the project `source_sha256` as identity metadata before accepting the import. The endpoint exports metadata only. File transfer and LAN peer discovery belong to the native sync layer, not the loopback FastAPI API.
+Manifest paths are project-root relative and use portable path separators. The response does not expose absolute local source, project, artifact, or app data paths. The project entry's `source_sha256` is the identity hash of the original imported source bytes. Artifact entries' `content_sha256` values hash the bytes for those specific staged artifact files, including the `source_audio` artifact. These hashes are separate on purpose: an app-managed normalized WAV source artifact may have different bytes from the original import identity hash. `sync_entity_revisions.content_sha256` is also per-entity revision payload content, not project source identity. Projects whose `source_audio` artifact is not an app-managed readable PCM WAV must be reimported or repaired before manifest export. Receiving peers must verify staged files against the artifact SHA-256 values and must preserve the project `source_sha256` as identity metadata before accepting the import. The endpoint exports metadata only. File transfer and LAN peer discovery belong to the native sync layer, not the loopback FastAPI API.
 
 ### Import staged project sync manifest
 
@@ -312,7 +312,7 @@ Request fields:
 - `manifest`
 - `staging_root`
 
-`staging_root` is a local directory containing the staged project files at the relative paths declared in the manifest. During import, the backend verifies source and artifact bytes with SHA-256, rewrites accepted paths into this install's backend-managed project root, and persists the project through backend services instead of copying database rows from another device.
+`staging_root` is a local directory containing the staged project files at the relative paths declared in the manifest. During import, the backend requires exactly one `source_audio` artifact, and that artifact must use `format="wav"` with a `.wav` relative path. The backend verifies source and artifact bytes with SHA-256, rewrites accepted paths into this install's backend-managed project root, and persists the project through backend services instead of copying database rows from another device. Original absolute import paths are local provenance only and are not sync-operational inputs.
 
 If the local library already contains the same canonical project or source SHA-256, staged import rejects the duplicate with HTTP `409` instead of creating a second project. The response uses the normal project wrapper shape:
 
@@ -336,7 +336,7 @@ Request fields:
 
 Response: `ProjectResponse`.
 
-`source_path` records where the user imported the file from on this install. Sync treats it as local provenance, not a durable source of original bytes. `copy_into_project=false` is accepted for compatibility, but new imports still create an app-managed operational source file under the project root.
+`source_path` records where the user imported the file from on this install. Sync treats it as local provenance, not a durable source of original bytes or an operational sync input. `copy_into_project=false` is accepted for compatibility, but new imports still create an app-managed operational WAV source artifact under the project root.
 
 If the same source track has already been imported, the endpoint returns HTTP `409` with code `DUPLICATE_PROJECT_SOURCE`, message `This project is already imported with name "{name}".`, and details containing:
 

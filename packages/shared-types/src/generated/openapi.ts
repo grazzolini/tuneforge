@@ -468,6 +468,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sync/reconciliation/plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sync Reconciliation Plan */
+        post: operations["sync_reconciliation_plan_api_v1_sync_reconciliation_plan_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sync/identity": {
         parameters: {
             query?: never;
@@ -1415,6 +1432,17 @@ export interface components {
             /** Signature */
             signature: string;
         };
+        /** SyncPeerInventoryEntrySchema */
+        SyncPeerInventoryEntrySchema: {
+            /** Device Id */
+            device_id: string;
+            /** Available Content Sha256 */
+            available_content_sha256: string[];
+            /** Metadata */
+            metadata?: {
+                [key: string]: unknown;
+            };
+        };
         /** SyncPreflightDuplicateGroupSchema */
         SyncPreflightDuplicateGroupSchema: {
             /** Source Sha256 */
@@ -1612,6 +1640,98 @@ export interface components {
             staging_root?: string | null;
             /** Use Content Addressed Staging */
             use_content_addressed_staging?: boolean | null;
+        };
+        /** SyncReconciliationActionSchema */
+        SyncReconciliationActionSchema: {
+            /**
+             * Action Type
+             * @enum {string}
+             */
+            action_type: "apply_delete_tombstone" | "import_project_manifest" | "import_entity_revision" | "fetch_artifact_content" | "import_artifact_manifest" | "record_conflict" | "noop";
+            /** Item Type */
+            item_type: string;
+            /** Item Id */
+            item_id: string;
+            /** Project Id */
+            project_id?: string | null;
+            /** Content Sha256 */
+            content_sha256?: string | null;
+            /** Provider Device Id */
+            provider_device_id?: string | null;
+            /** Reason */
+            reason?: string | null;
+            /** Priority */
+            priority: number;
+            /** Details */
+            details?: {
+                [key: string]: unknown;
+            };
+        };
+        /** SyncReconciliationItemSchema */
+        SyncReconciliationItemSchema: {
+            /** Item Type */
+            item_type: string;
+            /** Item Id */
+            item_id: string;
+            /** Project Id */
+            project_id?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "noop" | "identical_content" | "missing_local_bytes" | "remote_available" | "missing_provider" | "deleted" | "conflicted";
+            /** Action Type */
+            action_type?: ("apply_delete_tombstone" | "import_project_manifest" | "import_entity_revision" | "fetch_artifact_content" | "import_artifact_manifest" | "record_conflict" | "noop") | null;
+            /** Content Sha256 */
+            content_sha256?: string | null;
+            /** Chosen Provider Device Id */
+            chosen_provider_device_id?: string | null;
+            /** Reason */
+            reason?: string | null;
+            /** Details */
+            details?: {
+                [key: string]: unknown;
+            };
+        };
+        /** SyncReconciliationPlanRequest */
+        SyncReconciliationPlanRequest: {
+            remote_library: components["schemas"]["SyncReconciliationRemoteLibrarySchema"];
+            /** Project Manifests */
+            project_manifests?: components["schemas"]["SyncProjectManifestSchema"][];
+            /** Peer Inventory */
+            peer_inventory: components["schemas"]["SyncPeerInventoryEntrySchema"][];
+        };
+        /** SyncReconciliationPlanResponse */
+        SyncReconciliationPlanResponse: {
+            summary: components["schemas"]["SyncReconciliationSummarySchema"];
+            /** Items */
+            items: components["schemas"]["SyncReconciliationItemSchema"][];
+            /** Actions */
+            actions: components["schemas"]["SyncReconciliationActionSchema"][];
+        };
+        /** SyncReconciliationRemoteLibrarySchema */
+        SyncReconciliationRemoteLibrarySchema: {
+            /** Projects */
+            projects: components["schemas"]["SyncMetadataProjectSchema"][];
+            /** Artifacts */
+            artifacts: components["schemas"]["SyncMetadataArtifactSchema"][];
+            /** Entity Revisions */
+            entity_revisions?: components["schemas"]["SyncProjectManifestEntityRevisionSchema"][];
+            /** Delete Tombstones */
+            delete_tombstones?: components["schemas"]["SyncDeleteTombstoneSchema"][];
+        };
+        /** SyncReconciliationSummarySchema */
+        SyncReconciliationSummarySchema: {
+            /** Total Items */
+            total_items: number;
+            /** Total Actions */
+            total_actions: number;
+            /** Total Conflicts */
+            total_conflicts: number;
+            /** Status Counts */
+            status_counts?: {
+                [key: string]: number;
+            };
         };
         /** SyncStagedArtifactSchema */
         SyncStagedArtifactSchema: {
@@ -2807,6 +2927,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SyncMetadataResponse"];
+                };
+            };
+        };
+    };
+    sync_reconciliation_plan_api_v1_sync_reconciliation_plan_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncReconciliationPlanRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncReconciliationPlanResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

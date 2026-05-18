@@ -21,6 +21,8 @@ from app.schemas import (
     SyncProjectImportResponse,
     SyncProjectManifestResponse,
     SyncProjectStagedImportRequest,
+    SyncReconciliationPlanRequest,
+    SyncReconciliationPlanResponse,
     SyncStagedArtifactSchema,
     SyncTrustedPeerCreateRequest,
     SyncTrustedPeerResponse,
@@ -72,6 +74,12 @@ def _require_staged_artifact(
     return require_staged_artifact(session, content_sha256=content_sha256)
 
 
+def plan_sync_reconciliation(session: Session, payload: SyncReconciliationPlanRequest) -> Any:
+    from app.services.sync_reconciliation import plan_sync_reconciliation as service_plan_sync_reconciliation
+
+    return service_plan_sync_reconciliation(session, payload)
+
+
 @router.get("/preflight", response_model=SyncPreflightResponse)
 def sync_preflight(session: Session = Depends(get_db)) -> SyncPreflightResponse:
     return SyncPreflightResponse.model_validate(run_sync_preflight(session))
@@ -80,6 +88,15 @@ def sync_preflight(session: Session = Depends(get_db)) -> SyncPreflightResponse:
 @router.get("/metadata", response_model=SyncMetadataResponse)
 def sync_metadata(session: Session = Depends(get_db)) -> SyncMetadataResponse:
     return SyncMetadataResponse.model_validate(get_sync_metadata(session))
+
+
+@router.post("/reconciliation/plan", response_model=SyncReconciliationPlanResponse)
+def sync_reconciliation_plan(
+    payload: SyncReconciliationPlanRequest,
+    session: Session = Depends(get_db),
+) -> SyncReconciliationPlanResponse:
+    plan = plan_sync_reconciliation(session, payload)
+    return SyncReconciliationPlanResponse.model_validate(plan)
 
 
 @router.get("/identity", response_model=SyncLocalIdentityResponse)

@@ -350,6 +350,92 @@ class SyncProjectImportResponse(BaseModel):
     project: ProjectSchema
 
 
+SyncReconciliationStatus = Literal[
+    "noop",
+    "identical_content",
+    "missing_local_bytes",
+    "remote_available",
+    "missing_provider",
+    "deleted",
+    "conflicted",
+]
+SyncReconciliationActionType = Literal[
+    "apply_delete_tombstone",
+    "import_project_manifest",
+    "import_entity_revision",
+    "fetch_artifact_content",
+    "import_artifact_manifest",
+    "record_conflict",
+    "noop",
+]
+
+
+class SyncPeerInventoryEntrySchema(BaseModel):
+    device_id: str
+    available_content_sha256: list[str]
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SyncReconciliationRemoteLibrarySchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    projects: list[SyncMetadataProjectSchema]
+    artifacts: list[SyncMetadataArtifactSchema]
+    entity_revisions: list[SyncProjectManifestEntityRevisionSchema] = Field(default_factory=list)
+    delete_tombstones: list[SyncDeleteTombstoneSchema] = Field(default_factory=list)
+
+
+class SyncReconciliationPlanRequest(BaseModel):
+    remote_library: SyncReconciliationRemoteLibrarySchema
+    project_manifests: list[SyncProjectManifestSchema] = Field(default_factory=list)
+    peer_inventory: list[SyncPeerInventoryEntrySchema]
+
+
+class SyncReconciliationSummarySchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    total_items: int
+    total_actions: int
+    total_conflicts: int
+    status_counts: dict[SyncReconciliationStatus, int] = Field(default_factory=dict)
+
+
+class SyncReconciliationItemSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    item_type: str
+    item_id: str
+    project_id: str | None = None
+    status: SyncReconciliationStatus
+    action_type: SyncReconciliationActionType | None = None
+    content_sha256: str | None = None
+    chosen_provider_device_id: str | None = None
+    reason: str | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class SyncReconciliationActionSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    action_type: SyncReconciliationActionType
+    item_type: str
+    item_id: str
+    project_id: str | None = None
+    content_sha256: str | None = None
+    provider_device_id: str | None = None
+    reason: str | None = None
+    priority: int
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class SyncReconciliationPlanResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    summary: SyncReconciliationSummarySchema
+    items: list[SyncReconciliationItemSchema]
+    actions: list[SyncReconciliationActionSchema]
+
+
 class SyncLocalIdentitySchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

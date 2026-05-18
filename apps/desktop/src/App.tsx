@@ -1,6 +1,7 @@
 import { useEffect, useId } from "react";
-import { Library, Music2, Settings, Wrench } from "lucide-react";
+import { Activity, Library, Music2, Settings, Wrench } from "lucide-react";
 import { Link, NavLink, Route, Routes, matchPath, useLocation } from "react-router-dom";
+import { ActivityView } from "./features/activity/ActivityView";
 import { LibraryView } from "./features/projects/LibraryView";
 import { ProjectView } from "./features/projects/ProjectView";
 import { usePlayback } from "./features/projects/playback-context";
@@ -192,6 +193,15 @@ function AppChrome() {
             <span className="nav__label">Tools</span>
           </NavLink>
           <NavLink
+            aria-label="Activity"
+            className={({ isActive }) => (isActive ? "active" : undefined)}
+            title="Activity"
+            to="/activity"
+          >
+            <Activity aria-hidden="true" className="nav__icon" />
+            <span className="nav__label">Activity</span>
+          </NavLink>
+          <NavLink
             aria-label="Settings"
             className={({ isActive }) => (isActive ? "active" : undefined)}
             title="Settings"
@@ -207,6 +217,7 @@ function AppChrome() {
           <Route path="/" element={<LibraryView />} />
           <Route path="/projects/:projectId" element={<ProjectView />} />
           <Route path="/tools" element={<ToolsView />} />
+          <Route path="/activity" element={<ActivityView />} />
           <Route path="/settings" element={<SettingsView />} />
           <Route path="/settings/theme-studio" element={<ThemeStudioView />} />
           <Route path="/settings/theme-preview" element={<ThemeStudioView />} />

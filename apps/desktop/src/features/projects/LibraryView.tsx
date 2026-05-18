@@ -8,6 +8,8 @@ import { formatLocalDateTime, normalizeApiDateTime } from "../../lib/datetime";
 import { usePreferences } from "../../lib/preferences";
 import { useChordBackendActionSelection } from "./hooks/useChordBackendActionSelection";
 
+const MAX_IMPORT_SELECTION = 25;
+
 function formatDuration(durationSeconds: number | null | undefined) {
   if (!durationSeconds) return "Unknown length";
   const minutes = Math.floor(durationSeconds / 60);
@@ -94,14 +96,89 @@ function ProjectCard({ project }: { project: ProjectSchema }) {
 
 type ImportNotice =
   | { kind: "duplicate"; message: string; projectId: string }
+  | { kind: "summary"; message: string }
+  | { kind: "warning"; message: string }
   | { kind: "error"; message: string };
+
+type BatchImportSummary = {
+  failures: Array<{ message: string; sourcePath: string }>;
+  importedCount: number;
+  skippedCount: number;
+  failedCount: number;
+};
+
+type ImportMutationResult =
+  | { kind: "none" }
+  | { kind: "selectionLimit" }
+  | { kind: "single"; project: ProjectSchema }
+  | { kind: "batch"; summary: BatchImportSummary };
+
+function normalizeImportSelection(selection: string | string[] | null): string[] {
+  if (!selection) {
+    return [];
+  }
+  return Array.isArray(selection) ? selection : [selection];
+}
+
+function getUniqueImportPaths(paths: string[]) {
+  const seen = new Set<string>();
+  const uniquePaths: string[] = [];
+  let duplicateCount = 0;
+
+  for (const path of paths) {
+    if (seen.has(path)) {
+      duplicateCount += 1;
+      continue;
+    }
+    seen.add(path);
+    uniquePaths.push(path);
+  }
+
+  return { duplicateCount, uniquePaths };
+}
+
+function pluralize(count: number, singular: string, plural = `${singular}s`) {
+  return count === 1 ? singular : plural;
+}
+
+function formatBatchImportSummary({ importedCount, skippedCount, failedCount }: BatchImportSummary) {
+  return `${importedCount} ${pluralize(importedCount, "track")} imported, ${skippedCount} ${pluralize(
+    skippedCount,
+    "duplicate",
+  )} skipped, ${failedCount} failed.`;
+}
+
+function formatBatchFailureSummary(failures: BatchImportSummary["failures"]) {
+  if (!failures.length) {
+    return "";
+  }
+
+  const visibleFailures = failures.slice(0, 3);
+  const hiddenFailureCount = failures.length - visibleFailures.length;
+  const failureSummary = visibleFailures
+    .map((failure) => `${failure.sourcePath}: ${trimTrailingPeriod(failure.message)}`)
+    .join("; ");
+  return ` Failed: ${failureSummary}${hiddenFailureCount ? `; and ${hiddenFailureCount} more` : ""}.`;
+}
+
+function trimTrailingPeriod(value: string) {
+  return value.replace(/[.]+$/, "");
+}
+
+function formatBatchImportNotice(summary: BatchImportSummary) {
+  return `${formatBatchImportSummary(summary)}${formatBatchFailureSummary(summary.failures)}`;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function isDuplicateProjectSourceError(error: unknown): error is Record<string, unknown> {
+  return isRecord(error) && error.code === "DUPLICATE_PROJECT_SOURCE";
+}
+
 function getDuplicateImportNotice(error: unknown): ImportNotice | null {
-  if (!isRecord(error) || error.code !== "DUPLICATE_PROJECT_SOURCE" || !isRecord(error.details)) {
+  if (!isDuplicateProjectSourceError(error) || !isRecord(error.details)) {
     return null;
   }
 
@@ -124,8 +201,27 @@ function getImportErrorNotice(error: unknown): ImportNotice {
     return duplicateNotice;
   }
 
-  const message = error instanceof Error && error.message.trim() ? error.message.trim() : "The request failed.";
+  const message = getImportErrorMessage(error);
   return { kind: "error", message: `Could not import track. ${message}` };
+}
+
+function getImportErrorMessage(error: unknown) {
+  const message = error instanceof Error && error.message.trim() ? error.message.trim() : "The request failed.";
+  return message;
+}
+
+function getImportNoticeClassName(importNotice: ImportNotice) {
+  if (importNotice.kind === "error") {
+    return "panel library-import-notice panel--error";
+  }
+  if (importNotice.kind === "duplicate" || importNotice.kind === "warning") {
+    return "panel library-import-notice panel--warning";
+  }
+  return "panel library-import-notice";
+}
+
+function getImportNoticeRole(importNotice: ImportNotice) {
+  return importNotice.kind === "error" ? "alert" : "status";
 }
 
 export function LibraryView() {
@@ -147,7 +243,7 @@ export function LibraryView() {
     mutationFn: async () => {
       const selection = await open({
         directory: false,
-        multiple: false,
+        multiple: true,
         filters: [
           {
             name: "Audio / Video",
@@ -155,29 +251,89 @@ export function LibraryView() {
           },
         ],
       });
-      if (!selection || Array.isArray(selection)) {
-        return null;
+      const selectedPaths = normalizeImportSelection(selection);
+      if (!selectedPaths.length) {
+        return { kind: "none" } satisfies ImportMutationResult;
+      }
+      const { duplicateCount, uniquePaths } = getUniqueImportPaths(selectedPaths);
+      if (uniquePaths.length > MAX_IMPORT_SELECTION) {
+        return { kind: "selectionLimit" } satisfies ImportMutationResult;
       }
       const backendSelection = await chordBackendForAction();
-      const response = await api.importProject({
-        source_path: selection,
+      const importPayload = {
         copy_into_project: true,
         chord_backend: backendSelection.backend,
         stem_model: defaultStemModel,
         ...(backendSelection.backend_fallback_from
           ? { chord_backend_fallback_from: backendSelection.backend_fallback_from }
           : {}),
-      });
-      return response.project;
+      };
+
+      if (selectedPaths.length === 1) {
+        const sourcePath = uniquePaths[0];
+        if (!sourcePath) {
+          return { kind: "none" } satisfies ImportMutationResult;
+        }
+        const response = await api.importProject({
+          source_path: sourcePath,
+          ...importPayload,
+        });
+        return { kind: "single", project: response.project } satisfies ImportMutationResult;
+      }
+
+      let importedCount = 0;
+      let skippedCount = duplicateCount;
+      let failedCount = 0;
+      const failures: BatchImportSummary["failures"] = [];
+
+      for (const sourcePath of uniquePaths) {
+        try {
+          await api.importProject({
+            source_path: sourcePath,
+            ...importPayload,
+          });
+          importedCount += 1;
+        } catch (error) {
+          if (isDuplicateProjectSourceError(error)) {
+            skippedCount += 1;
+          } else {
+            failedCount += 1;
+            failures.push({ sourcePath, message: getImportErrorMessage(error) });
+          }
+        }
+      }
+
+      return {
+        kind: "batch",
+        summary: { failures, importedCount, skippedCount, failedCount },
+      } satisfies ImportMutationResult;
     },
     onMutate: () => {
       setImportNotice(null);
     },
-    onSuccess: async (project) => {
-      setImportNotice(null);
-      if (!project) return;
-      await queryClient.invalidateQueries({ queryKey: ["projects"] });
-      navigate(`/projects/${project.id}`);
+    onSuccess: async (result) => {
+      if (result.kind === "none") {
+        return;
+      }
+      if (result.kind === "selectionLimit") {
+        setImportNotice({ kind: "warning", message: "Select up to 25 tracks at a time." });
+        return;
+      }
+      if (result.kind === "single") {
+        setImportNotice(null);
+        await queryClient.invalidateQueries({ queryKey: ["projects"] });
+        navigate(`/projects/${result.project.id}`);
+        return;
+      }
+
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["projects"] }),
+        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
+      ]);
+      setImportNotice({
+        kind: result.summary.failedCount ? "warning" : "summary",
+        message: formatBatchImportNotice(result.summary),
+      });
     },
     onError: (error) => {
       setImportNotice(getImportErrorNotice(error));
@@ -203,17 +359,15 @@ export function LibraryView() {
           onClick={() => importMutation.mutate()}
           disabled={importMutation.isPending}
         >
-          {importMutation.isPending ? "Importing..." : "Import Track"}
+          {importMutation.isPending ? "Importing..." : "Import Track(s)"}
           <Upload aria-hidden="true" className="button__icon" />
         </button>
       </div>
 
       {importNotice ? (
         <div
-          className={`panel library-import-notice ${
-            importNotice.kind === "duplicate" ? "panel--warning" : "panel--error"
-          }`}
-          role={importNotice.kind === "duplicate" ? "status" : "alert"}
+          className={getImportNoticeClassName(importNotice)}
+          role={getImportNoticeRole(importNotice)}
         >
           <span>{importNotice.message}</span>
           {importNotice.kind === "duplicate" ? (

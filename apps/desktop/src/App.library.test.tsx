@@ -104,7 +104,7 @@ describe("Desktop app library", () => {
     renderApp(["/"]);
 
     expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Import Track" }));
+    await user.click(screen.getByRole("button", { name: "Import Track(s)" }));
 
     expect(mockImportProject).toHaveBeenCalledWith({
       source_path: "/tmp/new-song.mp4",
@@ -112,11 +112,157 @@ describe("Desktop app library", () => {
       chord_backend: "tuneforge-fast",
       stem_model: "htdemucs_6s",
     });
+    expect(mockOpen).toHaveBeenCalledWith(
+      expect.objectContaining({
+        multiple: true,
+      }),
+    );
     await waitFor(() =>
       expect(mockGetProject).toHaveBeenCalledWith(expect.stringMatching(/^proj_/)),
     );
     expect(await screen.findByRole("heading", { name: "New Song" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Hide Inspector" })).toBeInTheDocument();
+  });
+
+  it("imports multiple tracks in order and stays on the library", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({
+        defaultChordBackend: "crema-advanced",
+        defaultSourcesRailCollapsed: false,
+        defaultStemModel: "htdemucs_ft",
+      }),
+    );
+    mockOpen.mockResolvedValue(["/tmp/first-song.mp4", "/tmp/second-song.wav"]);
+
+    renderApp(["/"]);
+
+    expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Import Track(s)" }));
+
+    await waitFor(() => expect(mockImportProject).toHaveBeenCalledTimes(2));
+    expect(mockImportProject.mock.calls.map(([payload]) => payload.source_path)).toEqual([
+      "/tmp/first-song.mp4",
+      "/tmp/second-song.wav",
+    ]);
+    for (const [payload] of mockImportProject.mock.calls) {
+      expect(payload).toEqual(
+        expect.objectContaining({
+          copy_into_project: true,
+          chord_backend: "crema-advanced",
+          stem_model: "htdemucs_ft",
+        }),
+      );
+    }
+
+    const summary = await screen.findByRole("status");
+    expect(within(summary).getByText("2 tracks imported, 0 duplicates skipped, 0 failed.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    expect(mockGetProject).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates selected import paths before importing", async () => {
+    const user = userEvent.setup();
+    mockOpen.mockResolvedValue([
+      "/tmp/first-song.mp4",
+      "/tmp/first-song.mp4",
+      "/tmp/second-song.wav",
+      "/tmp/first-song.mp4",
+    ]);
+
+    renderApp(["/"]);
+
+    expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Import Track(s)" }));
+
+    await waitFor(() => expect(mockImportProject).toHaveBeenCalledTimes(2));
+    expect(mockImportProject.mock.calls.map(([payload]) => payload.source_path)).toEqual([
+      "/tmp/first-song.mp4",
+      "/tmp/second-song.wav",
+    ]);
+
+    const summary = await screen.findByRole("status");
+    expect(within(summary).getByText("2 tracks imported, 2 duplicates skipped, 0 failed.")).toBeInTheDocument();
+    expect(mockGetProject).not.toHaveBeenCalled();
+  });
+
+  it("does not import when more than twenty-five files are selected", async () => {
+    const user = userEvent.setup();
+    mockOpen.mockResolvedValue(Array.from({ length: 26 }, (_, index) => `/tmp/song-${index + 1}.wav`));
+
+    renderApp(["/"]);
+
+    expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Import Track(s)" }));
+
+    const warning = await screen.findByRole("status");
+    expect(within(warning).getByText("Select up to 25 tracks at a time.")).toBeInTheDocument();
+    expect(mockImportProject).not.toHaveBeenCalled();
+    expect(mockGetProject).not.toHaveBeenCalled();
+  });
+
+  it("applies the import cap after deduplicating selected paths", async () => {
+    const user = userEvent.setup();
+    const uniquePaths = Array.from({ length: 25 }, (_, index) => `/tmp/song-${index + 1}.wav`);
+    mockOpen.mockResolvedValue([...uniquePaths, uniquePaths[0]]);
+
+    renderApp(["/"]);
+
+    expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Import Track(s)" }));
+
+    await waitFor(() => expect(mockImportProject).toHaveBeenCalledTimes(25));
+    expect(mockImportProject.mock.calls.map(([payload]) => payload.source_path)).toEqual(uniquePaths);
+
+    const summary = await screen.findByRole("status");
+    expect(within(summary).getByText("25 tracks imported, 1 duplicate skipped, 0 failed.")).toBeInTheDocument();
+    expect(mockGetProject).not.toHaveBeenCalled();
+  });
+
+  it("summarizes duplicate-content imports as skipped during a batch", async () => {
+    const user = userEvent.setup();
+    mockOpen.mockResolvedValue(["/tmp/demo.wav", "/tmp/new-song.wav"]);
+    mockImportProject.mockRejectedValueOnce(
+      Object.assign(new Error('This project is already imported with name "Demo Song".'), {
+        code: "DUPLICATE_PROJECT_SOURCE",
+        details: {
+          project_id: "proj_123",
+          project_name: "Demo Song",
+        },
+      }),
+    );
+
+    renderApp(["/"]);
+
+    expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Import Track(s)" }));
+
+    await waitFor(() => expect(mockImportProject).toHaveBeenCalledTimes(2));
+    const summary = await screen.findByRole("status");
+    expect(within(summary).getByText("1 track imported, 1 duplicate skipped, 0 failed.")).toBeInTheDocument();
+    expect(within(summary).queryByRole("link", { name: "Open project" })).not.toBeInTheDocument();
+    expect(mockGetProject).not.toHaveBeenCalled();
+  });
+
+  it("summarizes failed batch imports with file and error details", async () => {
+    const user = userEvent.setup();
+    mockOpen.mockResolvedValue(["/tmp/broken.wav", "/tmp/new-song.wav"]);
+    mockImportProject.mockRejectedValueOnce(new Error("Unsupported codec."));
+
+    renderApp(["/"]);
+
+    expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Import Track(s)" }));
+
+    await waitFor(() => expect(mockImportProject).toHaveBeenCalledTimes(2));
+    const summary = await screen.findByRole("status");
+    expect(
+      within(summary).getByText(
+        "1 track imported, 0 duplicates skipped, 1 failed. Failed: /tmp/broken.wav: Unsupported codec.",
+      ),
+    ).toBeInTheDocument();
+    expect(mockGetProject).not.toHaveBeenCalled();
   });
 
   it("shows duplicate import warning with a link to the existing project", async () => {
@@ -136,7 +282,7 @@ describe("Desktop app library", () => {
     renderApp(["/"]);
 
     expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Import Track" }));
+    await user.click(screen.getByRole("button", { name: "Import Track(s)" }));
 
     const warning = await screen.findByRole("status");
     expect(within(warning).getByText(duplicateMessage)).toBeInTheDocument();
@@ -175,14 +321,14 @@ describe("Desktop app library", () => {
     renderApp(["/"]);
 
     expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Import Track" }));
+    await user.click(screen.getByRole("button", { name: "Import Track(s)" }));
 
     const alert = await screen.findByRole("alert");
     expect(within(alert).getByText(genericMessage)).toBeInTheDocument();
     expect(within(alert).queryByRole("link", { name: "Open project" })).not.toBeInTheDocument();
 
     mockImportProject.mockImplementationOnce(async () => importPromise);
-    await user.click(screen.getByRole("button", { name: "Import Track" }));
+    await user.click(screen.getByRole("button", { name: "Import Track(s)" }));
 
     await waitFor(() => expect(screen.queryByText(genericMessage)).not.toBeInTheDocument());
     resolveImport({ project: existingProject });
@@ -206,7 +352,7 @@ describe("Desktop app library", () => {
     renderApp(["/"]);
 
     expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Import Track" }));
+    await user.click(screen.getByRole("button", { name: "Import Track(s)" }));
 
     expect(mockImportProject).toHaveBeenCalledWith({
       source_path: "/tmp/new-song.mp4",
@@ -249,7 +395,7 @@ describe("Desktop app library", () => {
     renderApp(["/"]);
 
     expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Import Track" }));
+    await user.click(screen.getByRole("button", { name: "Import Track(s)" }));
 
     expect(mockImportProject).toHaveBeenCalledWith({
       source_path: "/tmp/new-song.mp4",

@@ -60,14 +60,18 @@ def extract_audio_metadata(source_path: Path) -> dict[str, Any]:
     }
 
 
-def normalize_media_to_wav(source_path: Path, destination_path: Path) -> None:
+def normalize_audio_to_wav(source_path: Path, destination_path: Path) -> None:
     destination_path.parent.mkdir(parents=True, exist_ok=True)
     command = [
         get_settings().ffmpeg_path,
         "-y",
         "-i",
         str(source_path),
+        "-map",
+        "0:a:0",
         "-vn",
+        "-c:a",
+        "pcm_s16le",
         str(destination_path),
     ]
     try:
@@ -75,13 +79,13 @@ def normalize_media_to_wav(source_path: Path, destination_path: Path) -> None:
     except FileNotFoundError as exc:
         raise AppError(
             "DEPENDENCY_MISSING",
-            "ffmpeg is required to import mp4 and webm sources.",
+            "ffmpeg is required to normalize imported audio.",
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         ) from exc
     except subprocess.CalledProcessError as exc:
         raise AppError(
             "PROCESSING_FAILED",
-            "Could not extract audio from the imported media file.",
+            "Could not normalize imported audio to WAV.",
             status_code=status.HTTP_400_BAD_REQUEST,
             details={"stderr": exc.stderr.strip()},
         ) from exc

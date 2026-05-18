@@ -957,7 +957,7 @@ const {
       : state.projects;
     return { projects: clone(filteredProjects) };
   });
-  const mockImportProject = vi.fn(async ({ source_path }: { source_path: string }) => {
+  const mockImportProject = vi.fn(async ({ source_path }: { source_path: string; stem_model?: string }) => {
     const id = `proj_${state.nextProjectId++}`;
     const baseName = source_path.split("/").pop() ?? "Imported Track";
     const displayName = titleize(baseName);

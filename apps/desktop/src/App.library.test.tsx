@@ -110,6 +110,7 @@ describe("Desktop app library", () => {
       source_path: "/tmp/new-song.mp4",
       copy_into_project: true,
       chord_backend: "tuneforge-fast",
+      stem_model: "htdemucs_6s",
     });
     await waitFor(() =>
       expect(mockGetProject).toHaveBeenCalledWith(expect.stringMatching(/^proj_/)),
@@ -190,11 +191,15 @@ describe("Desktop app library", () => {
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
   });
 
-  it("uses the selected default chord backend when importing a track", async () => {
+  it("uses the selected default chord backend and stem model when importing a track", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem(
       "tuneforge.ui-preferences",
-      JSON.stringify({ defaultChordBackend: "crema-advanced", defaultSourcesRailCollapsed: false }),
+      JSON.stringify({
+        defaultChordBackend: "crema-advanced",
+        defaultSourcesRailCollapsed: false,
+        defaultStemModel: "htdemucs_ft",
+      }),
     );
     mockOpen.mockResolvedValue("/tmp/new-song.mp4");
 
@@ -207,6 +212,7 @@ describe("Desktop app library", () => {
       source_path: "/tmp/new-song.mp4",
       copy_into_project: true,
       chord_backend: "crema-advanced",
+      stem_model: "htdemucs_ft",
     });
   });
 
@@ -249,6 +255,7 @@ describe("Desktop app library", () => {
       source_path: "/tmp/new-song.mp4",
       copy_into_project: true,
       chord_backend: "tuneforge-fast",
+      stem_model: "htdemucs_6s",
       chord_backend_fallback_from: "crema-advanced",
     });
   });

@@ -69,6 +69,29 @@ def isolated_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     get_settings.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def fast_lyrics_engine(isolated_data_dir, monkeypatch: pytest.MonkeyPatch):
+    from app.engines.lyrics import LyricsTranscription
+
+    def fake_transcription(*_args, **_kwargs):
+        return LyricsTranscription(
+            backend="openai-whisper",
+            requested_device="cpu",
+            device="cpu",
+            model="turbo",
+            language="en",
+            segments=[
+                {
+                    "start_seconds": 0.0,
+                    "end_seconds": 1.0,
+                    "text": "Test lyric",
+                }
+            ],
+        )
+
+    monkeypatch.setattr("app.services.lyrics.transcribe_project_lyrics", fake_transcription)
+
+
 @pytest.fixture()
 def client() -> TestClient:
     from app.main import app

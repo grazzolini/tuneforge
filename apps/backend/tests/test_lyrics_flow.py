@@ -13,16 +13,20 @@ def _first_source_artifact_id(client, project_id: str) -> str:
     return next(artifact["id"] for artifact in artifacts if artifact["type"] == "source_audio")
 
 
-def test_get_lyrics_returns_empty_payload_until_generated(client, sample_audio_file: Path):
+def test_import_queues_lyrics_generation(client, sample_audio_file: Path):
     project = client.post(
         "/api/v1/projects/import",
         json={"source_path": str(sample_audio_file), "copy_into_project": True},
     ).json()["project"]
 
+    jobs = client.get("/api/v1/jobs").json()["jobs"]
+    lyrics_job = next(job for job in jobs if job["project_id"] == project["id"] and job["type"] == "lyrics")
+    assert wait_for_job(client, lyrics_job["id"])["status"] == "completed"
+
     payload = client.get(f"/api/v1/projects/{project['id']}/lyrics").json()
     assert payload["project_id"] == project["id"]
-    assert payload["segments"] == []
-    assert payload["source_segments"] == []
+    assert payload["segments"][0]["text"] == "Test lyric"
+    assert payload["source_segments"][0]["text"] == "Test lyric"
     assert payload["has_user_edits"] is False
 
 

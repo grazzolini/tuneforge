@@ -345,15 +345,19 @@ Staged import does not enqueue analysis, chord, lyrics, stem, or other generatio
 
 `POST /api/v1/projects/import`
 
-Creates a project from a source path and queues initial analysis and chord jobs.
+Creates a project from a source path and queues initial analysis, chord, lyrics, and source stem jobs.
 
 Request fields:
 
 - `source_path`
 - `copy_into_project`
 - `display_name`
+- `stem_model`
 
 Response: `ProjectResponse`.
+
+`stem_model` is optional. Desktop imports send the user's default stem model so automatic source stems match
+manual stem generation preferences; if omitted, the backend stem model default is used.
 
 `source_path` records where the user imported the file from on this install. Sync treats it as local provenance, not a durable source of original bytes or an operational sync input. `copy_into_project=false` is accepted for compatibility, but new imports still create an app-managed operational WAV source artifact under the project root.
 

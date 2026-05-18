@@ -75,10 +75,13 @@ class ProjectImportRequest(BaseModel):
     display_name: str | None = None
     chord_backend: str | None = None
     chord_backend_fallback_from: str | None = None
+    stem_model: str | None = None
 
     @model_validator(mode="after")
-    def validate_chord_backend(self) -> ProjectImportRequest:
+    def validate_import_request(self) -> ProjectImportRequest:
         _validate_chord_backend_fields(self.chord_backend, self.chord_backend_fallback_from)
+        if self.stem_model is not None and self.stem_model not in SUPPORTED_STEM_MODELS:
+            raise ValueError("Unsupported stem model.")
         return self
 
 

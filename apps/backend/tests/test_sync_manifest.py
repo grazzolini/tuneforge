@@ -686,7 +686,7 @@ def test_export_project_manifest_rejects_unportable_artifact_paths(
     assert exc.value.details["artifact_id"] == f"art_bad_{unportable_path}"
 
 
-def test_export_project_manifest_requires_source_artifact_to_match_project_source_hash(
+def test_export_project_manifest_allows_source_artifact_hash_to_differ_from_project_source_hash(
     client: object,
     tmp_path: Path,
 ) -> None:
@@ -700,15 +700,12 @@ def test_export_project_manifest_requires_source_artifact_to_match_project_sourc
         source_artifact.content_sha256 = proxy_hash
         source_artifact.size_bytes = proxy_size
 
-        with pytest.raises(AppError) as exc:
-            export_manifest(session, project_id=fixture.project_id)
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
 
-    assert exc.value.code == "SYNC_MANIFEST_SOURCE_ARTIFACT_HASH_MISMATCH"
-    assert exc.value.status_code == 400
-    assert exc.value.details["project_id"] == fixture.project_id
-    assert exc.value.details["artifact_id"] == "art_source_audio"
-    assert exc.value.details["source_sha256"] == fixture.source_sha256
-    assert exc.value.details["artifact_content_sha256"] == proxy_hash
+    source_artifact_manifest = _artifacts_by_id(manifest)["art_source_audio"]
+    assert manifest["project"]["source_sha256"] == fixture.source_sha256
+    assert source_artifact_manifest["content_sha256"] == proxy_hash
+    assert source_artifact_manifest["content_sha256"] != fixture.source_sha256
 
 
 def test_export_project_manifest_rejects_multiple_source_artifacts(
@@ -1143,7 +1140,7 @@ def test_import_staged_project_manifest_rejects_unsupported_schema_version(
     }
 
 
-def test_import_staged_project_manifest_rejects_source_artifact_hash_mismatch(
+def test_import_staged_project_manifest_preserves_independent_source_artifact_hash(
     client: object,
     tmp_path: Path,
 ) -> None:
@@ -1151,20 +1148,29 @@ def test_import_staged_project_manifest_rejects_source_artifact_hash_mismatch(
 
     with SessionLocal() as session:
         fixture = _create_project_with_artifacts(session, tmp_path)
+        source_path = fixture.root / fixture.source_relative_path
+        proxy_hash, proxy_size = _write_bytes(source_path, b"normalized proxy bytes")
+        source_artifact = session.get(Artifact, "art_source_audio")
+        assert source_artifact is not None
+        source_artifact.content_sha256 = proxy_hash
+        source_artifact.size_bytes = proxy_size
+
         manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
         artifacts = _artifacts_by_id(manifest)
-        artifacts["art_source_audio"]["content_sha256"] = fixture.artifact_hashes["art_vocals"]
+        assert artifacts["art_source_audio"]["content_sha256"] == proxy_hash
+        assert artifacts["art_source_audio"]["content_sha256"] != fixture.source_sha256
+
+        staging_root = tmp_path / "staging"
+        _stage_manifest_files(manifest, staging_root=staging_root, source_root=fixture.root)
         _delete_live_project(session, fixture)
 
-        with pytest.raises(AppError) as exc:
-            import_manifest(session, manifest=manifest, staging_root=tmp_path / "unused-staging")
+        imported_project = import_manifest(session, manifest=manifest, staging_root=staging_root)
+        imported_source_artifact = session.get(Artifact, "art_source_audio")
 
-    assert exc.value.code == "SYNC_MANIFEST_SOURCE_ARTIFACT_HASH_MISMATCH"
-    assert exc.value.status_code == 400
-    assert exc.value.details["project_id"] == fixture.project_id
-    assert exc.value.details["artifact_id"] == "art_source_audio"
-    assert exc.value.details["source_sha256"] == fixture.source_sha256
-    assert exc.value.details["artifact_content_sha256"] == fixture.artifact_hashes["art_vocals"]
+    assert imported_project.source_sha256 == fixture.source_sha256
+    assert imported_source_artifact is not None
+    assert imported_source_artifact.content_sha256 == proxy_hash
+    assert imported_source_artifact.content_sha256 != imported_project.source_sha256
 
 
 def test_import_staged_project_manifest_rejects_multiple_source_artifacts(

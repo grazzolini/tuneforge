@@ -167,7 +167,7 @@ def export_project_manifest(session: Session, project_id: str) -> SyncProjectMan
         ],
         artifacts=[_export_artifact_manifest(artifact) for artifact in artifacts],
     )
-    _validate_source_artifact_matches_project_source(manifest)
+    _validate_source_artifact_present(manifest)
     return manifest
 
 
@@ -194,7 +194,7 @@ def import_staged_project_manifest(
     project_manifest = _coerce_project_manifest(manifest)
     _validate_project_manifest_schema_version(project_manifest)
     _validate_project_manifest_identity(project_manifest)
-    _validate_source_artifact_matches_project_source(project_manifest)
+    _validate_source_artifact_present(project_manifest)
     _reject_duplicate_project_source(session, project_manifest)
     root = project_root(project_manifest.project_id).resolve(strict=False)
     staged_root = (
@@ -831,19 +831,8 @@ def _source_artifact_manifest(manifest: SyncProjectManifest) -> SyncArtifactMani
     return source_artifacts[0]
 
 
-def _validate_source_artifact_matches_project_source(manifest: SyncProjectManifest) -> None:
-    source_artifact = _source_artifact_manifest(manifest)
-    if source_artifact.content_sha256 != manifest.source_sha256:
-        raise AppError(
-            "SYNC_MANIFEST_SOURCE_ARTIFACT_HASH_MISMATCH",
-            "Project manifest source artifact SHA-256 must match project source_sha256.",
-            details={
-                "project_id": manifest.project_id,
-                "artifact_id": source_artifact.artifact_id,
-                "source_sha256": manifest.source_sha256,
-                "artifact_content_sha256": source_artifact.content_sha256,
-            },
-        )
+def _validate_source_artifact_present(manifest: SyncProjectManifest) -> None:
+    _source_artifact_manifest(manifest)
 
 
 def _required_source_sha256(project: Project) -> str:

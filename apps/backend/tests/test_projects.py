@@ -9,6 +9,7 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.errors import AppError
 from app.models import Artifact, Project
+from app.services.analysis import analyze_project
 from app.services.paths import project_root
 from app.services.projects import import_project
 from app.services.sync_identity import source_hash_to_project_id, source_hash_to_project_storage_key
@@ -85,6 +86,75 @@ def test_import_project_rejects_duplicate_source_hash(client, sample_audio_file:
         "message": 'This project is already imported with name "Existing Song".',
         "details": {"project_id": project_id, "project_name": "Existing Song"},
     }
+
+
+def test_import_project_with_deprecated_external_reference_copies_source_under_project_root(
+    sample_audio_file: Path,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "deprecated-external.wav"
+    source_path.write_bytes(sample_audio_file.read_bytes() + b"deprecated-external")
+    expected_hash = file_sha256(source_path)
+    assert expected_hash is not None
+    original_path = source_path.resolve()
+
+    with SessionLocal() as session:
+        project = import_project(
+            session,
+            source_path=str(source_path),
+            copy_into_project=False,
+            display_name=None,
+        )
+        session.commit()
+        session.refresh(project)
+
+        imported_path = Path(project.imported_path)
+        assert project.source_sha256 == expected_hash
+        assert project.source_path == str(original_path)
+        assert imported_path.exists()
+        assert imported_path.is_relative_to(project_root(project.id))
+        assert imported_path != original_path
+
+        source_artifact = next(artifact for artifact in project.artifacts if artifact.type == "source_audio")
+        assert Path(source_artifact.path) == imported_path
+        assert source_artifact.content_sha256 == expected_hash
+
+        source_path.unlink()
+        analysis = analyze_project(session, project)
+
+        assert analysis.project_id == project.id
+        assert imported_path.exists()
+
+
+def test_import_project_with_deprecated_external_reference_still_rejects_duplicate_source_hash(
+    sample_audio_file: Path,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "deprecated-original.wav"
+    source_path.write_bytes(sample_audio_file.read_bytes() + b"deprecated-duplicate")
+    duplicate_source = tmp_path / "same-audio-different-path.wav"
+    duplicate_source.write_bytes(source_path.read_bytes())
+
+    with SessionLocal() as session:
+        project = import_project(
+            session,
+            source_path=str(source_path),
+            copy_into_project=False,
+            display_name="Original",
+        )
+        session.commit()
+
+    with SessionLocal() as session:
+        with pytest.raises(AppError) as exc:
+            import_project(
+                session,
+                source_path=str(duplicate_source),
+                copy_into_project=False,
+                display_name="Duplicate",
+            )
+
+    assert exc.value.code == "DUPLICATE_PROJECT_SOURCE"
+    assert exc.value.details == {"project_id": project.id, "project_name": "Original"}
 
 
 def test_import_project_translates_duplicate_project_id_race(

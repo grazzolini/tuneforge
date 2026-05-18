@@ -320,28 +320,45 @@ def _resolve_source_hash(
     source_artifact: dict[str, Any] | None,
 ) -> str | None:
     stored_hash = _normalize_source_hash(project.get("source_sha256"))
-    if stored_hash is not None:
+    if stored_hash is not None and _stored_source_hash_is_trusted(project, source_artifact, stored_hash):
         return stored_hash
 
     original_copy_path = _original_copy_path(source_artifact)
-    original_copy_hash = _file_sha256(original_copy_path)
+    original_copy_hash = _file_sha256(original_copy_path) if _is_app_managed_path(original_copy_path) else None
     if original_copy_hash is not None:
         return original_copy_hash
 
+    candidate_paths = [project.get("source_path")]
     if not _uses_normalized_source_proxy(project, source_artifact):
-        artifact_hash = _file_sha256(source_artifact.get("path") if source_artifact is not None else None)
-        if artifact_hash is not None:
-            return artifact_hash
+        candidate_paths.extend(
+            [
+                source_artifact.get("path") if source_artifact is not None else None,
+                project.get("imported_path"),
+            ]
+        )
+    return _first_app_managed_file_hash(candidate_paths)
 
-        imported_path_hash = _file_sha256(project.get("imported_path"))
-        if imported_path_hash is not None:
-            return imported_path_hash
 
-    source_path_hash = _file_sha256(project.get("source_path"))
-    if source_path_hash is not None:
-        return source_path_hash
-
-    return None
+def _stored_source_hash_is_trusted(
+    project: dict[str, Any],
+    source_artifact: dict[str, Any] | None,
+    stored_hash: str,
+) -> bool:
+    candidate_paths = [
+        _original_copy_path(source_artifact),
+        project.get("source_path"),
+    ]
+    if not _uses_normalized_source_proxy(project, source_artifact):
+        candidate_paths.extend(
+            [
+                source_artifact.get("path") if source_artifact is not None else None,
+                project.get("imported_path"),
+            ]
+        )
+    return any(
+        _is_app_managed_path(candidate_path) and _file_sha256(candidate_path) == stored_hash
+        for candidate_path in candidate_paths
+    )
 
 
 def _normalize_source_hash(value: Any) -> str | None:
@@ -372,6 +389,22 @@ def _original_copy_path(source_artifact: dict[str, Any] | None) -> str | None:
         return None
     value = _metadata_dict(source_artifact.get("metadata_json")).get("original_copy_path")
     return value if isinstance(value, str) else None
+
+
+def _is_app_managed_path(raw_path: Any) -> bool:
+    if not isinstance(raw_path, str) or not raw_path:
+        return False
+    return _project_root_for_path(raw_path, _projects_root()) is not None
+
+
+def _first_app_managed_file_hash(raw_paths: list[Any]) -> str | None:
+    for raw_path in raw_paths:
+        if not _is_app_managed_path(raw_path):
+            continue
+        file_hash = _file_sha256(raw_path)
+        if file_hash is not None:
+            return file_hash
+    return None
 
 
 def _uses_normalized_source_proxy(

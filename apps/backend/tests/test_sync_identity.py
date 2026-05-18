@@ -77,6 +77,41 @@ def test_sync_preflight_reports_ready_projects(client, sample_audio_file: Path) 
     ]
 
 
+def test_sync_preflight_uses_stored_source_hash_before_original_copy(client, tmp_path: Path) -> None:
+    original_copy = tmp_path / "copy.wav"
+    original_copy.write_bytes(b"copy bytes")
+    stored_hash = "a" * 64
+    project_id = source_hash_to_project_id(stored_hash)
+    with SessionLocal() as session:
+        project = Project(
+            id=project_id,
+            display_name="Stored",
+            source_sha256=stored_hash,
+            source_path=str(tmp_path / "source.wav"),
+            imported_path=str(tmp_path / "imported.wav"),
+        )
+        session.add(project)
+        session.add(
+            Artifact(
+                id="art_stored_source",
+                project_id=project.id,
+                type="source_audio",
+                format="wav",
+                path=str(tmp_path / "proxy.wav"),
+                metadata_json={"original_copy_path": str(original_copy)},
+            )
+        )
+        session.commit()
+
+    response = client.get("/api/v1/sync/preflight")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["projects"][0]["source_sha256"] == stored_hash
+    assert payload["projects"][0]["source_hash_source"] == "database"
+
+
 def test_sync_metadata_exposes_sync_safe_project_and_artifact_metadata(
     client,
     sample_audio_file: Path,
@@ -211,7 +246,10 @@ def test_sync_metadata_exposes_sync_safe_project_and_artifact_metadata(
     assert external_artifact["metadata"] == {"transpose": {"semitones": -1}}
 
 
-def test_sync_preflight_resolves_missing_hash_from_source_path(client, sample_audio_file: Path) -> None:
+def test_sync_preflight_does_not_recover_missing_hash_from_source_path(
+    client,
+    sample_audio_file: Path,
+) -> None:
     expected_hash = file_sha256(sample_audio_file)
     assert expected_hash is not None
     with SessionLocal() as session:
@@ -229,14 +267,18 @@ def test_sync_preflight_resolves_missing_hash_from_source_path(client, sample_au
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["ok"] is True
-    assert payload["projects"][0]["status"] == "ready"
-    assert payload["projects"][0]["source_sha256"] == expected_hash
-    assert payload["projects"][0]["expected_project_id"] == source_hash_to_project_id(expected_hash)
-    assert payload["projects"][0]["source_hash_source"] == "source_path"
+    assert payload["ok"] is False
+    assert payload["missing_source_hash_projects"] == 1
+    assert payload["projects"][0]["status"] == "missing_source_hash"
+    assert payload["projects"][0]["source_sha256"] is None
+    assert payload["projects"][0]["expected_project_id"] is None
+    assert payload["projects"][0]["source_hash_source"] is None
 
 
-def test_sync_preflight_prefers_imported_copy_over_changed_source_path(client, tmp_path: Path) -> None:
+def test_sync_preflight_does_not_recover_missing_hash_from_runtime_artifacts(
+    client,
+    tmp_path: Path,
+) -> None:
     external_source = tmp_path / "external.wav"
     imported_copy = tmp_path / "project-source.wav"
     external_source.write_bytes(b"changed external bytes")
@@ -270,9 +312,9 @@ def test_sync_preflight_prefers_imported_copy_over_changed_source_path(client, t
 
     assert response.status_code == 200
     project = response.json()["projects"][0]
-    assert project["status"] == "ready"
-    assert project["source_sha256"] == expected_hash
-    assert project["source_hash_source"] == "source_artifact_path"
+    assert project["status"] == "missing_source_hash"
+    assert project["source_sha256"] is None
+    assert project["source_hash_source"] is None
 
 
 def test_sync_preflight_reports_missing_source_hash(client, tmp_path: Path) -> None:
@@ -300,6 +342,7 @@ def test_sync_preflight_reports_missing_source_hash(client, tmp_path: Path) -> N
     ]
     assert payload["projects"][0]["status"] == "missing_source_hash"
     assert payload["projects"][0]["expected_project_id"] is None
+    assert payload["projects"][0]["reason"] == "No readable original-byte source copy is available for this project."
 
 
 def test_sync_preflight_reports_invalid_source_hash(client, sample_audio_file: Path) -> None:
@@ -404,12 +447,16 @@ def test_sync_preflight_reports_noncanonical_project_id(client, sample_audio_fil
 def test_sync_preflight_uses_original_copy_before_normalized_proxy(client, sample_audio_file: Path) -> None:
     expected_hash = file_sha256(sample_audio_file)
     assert expected_hash is not None
-    original_copy = sample_audio_file
-    normalized_proxy = sample_audio_file.parent / "proxy.wav"
+    project_id = source_hash_to_project_id(expected_hash)
+    root = project_root(project_id)
+    original_copy = root / "source" / "original.webm"
+    original_copy.parent.mkdir(parents=True, exist_ok=True)
+    original_copy.write_bytes(sample_audio_file.read_bytes())
+    normalized_proxy = root / "source" / "proxy.wav"
     normalized_proxy.write_bytes(b"normalized proxy bytes")
     with SessionLocal() as session:
         project = Project(
-            id=source_hash_to_project_id(expected_hash),
+            id=project_id,
             display_name="Normalized",
             source_sha256=None,
             source_path=str(sample_audio_file.parent / "missing.webm"),
@@ -438,3 +485,43 @@ def test_sync_preflight_uses_original_copy_before_normalized_proxy(client, sampl
     assert project["status"] == "ready"
     assert project["source_sha256"] == expected_hash
     assert project["source_hash_source"] == "original_copy_path"
+
+
+def test_sync_preflight_ignores_external_original_copy_path(client, tmp_path: Path) -> None:
+    external_copy = tmp_path / "external-copy.wav"
+    external_copy.write_bytes(b"external original bytes")
+    external_hash = file_sha256(external_copy)
+    assert external_hash is not None
+    project_id = source_hash_to_project_id(external_hash)
+    runtime_path = project_root(project_id) / "source" / "runtime.wav"
+    runtime_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_path.write_bytes(b"runtime bytes")
+
+    with SessionLocal() as session:
+        project = Project(
+            id=project_id,
+            display_name="External Copy",
+            source_sha256=None,
+            source_path=str(tmp_path / "missing.wav"),
+            imported_path=str(runtime_path),
+        )
+        session.add(project)
+        session.add(
+            Artifact(
+                id="art_external_copy",
+                project_id=project.id,
+                type="source_audio",
+                format="wav",
+                path=str(runtime_path),
+                metadata_json={"original_copy_path": str(external_copy)},
+            )
+        )
+        session.commit()
+
+    response = client.get("/api/v1/sync/preflight")
+
+    assert response.status_code == 200
+    project = response.json()["projects"][0]
+    assert project["status"] == "missing_source_hash"
+    assert project["source_sha256"] is None
+    assert project["source_hash_source"] is None

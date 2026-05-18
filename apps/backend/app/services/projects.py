@@ -123,8 +123,6 @@ def import_project(
         imported_path = source_dir / f"{resolved_source.stem}.wav"
         artifact_format = "wav"
         artifact_metadata["original_format"] = resolved_source.suffix.lower().lstrip(".")
-    elif not copy_into_project:
-        imported_path = resolved_source
 
     project = Project(
         id=project_id,
@@ -158,7 +156,7 @@ def import_project(
             shutil.copy2(resolved_source, original_copy_path)
             working_source = original_copy_path
         normalize_media_to_wav(working_source, imported_path)
-    elif copy_into_project:
+    else:
         shutil.copy2(resolved_source, imported_path)
 
     register_artifact(

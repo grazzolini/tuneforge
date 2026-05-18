@@ -301,6 +301,36 @@ Delete tombstone fields:
 
 `relative_path` is project-root relative when the artifact is stored under the backend-managed project root; otherwise it is `null`. Operational `source_audio` artifacts are app-managed WAV files under the project root. Artifact metadata is sanitized recursively before returning and removes local path-bearing keys such as `source_path`, `original_copy_path`, `playback_path`, `imported_path`, and any metadata key ending in `_path`. Non-path metadata such as retune/transpose settings, `stem_model`, and `source_artifact_id` is preserved. Job internals such as `result_artifact_ids_json` are not exposed.
 
+### Plan sync reconciliation
+
+`POST /api/v1/sync/reconciliation/plan`
+
+Returns a stateless sync plan comparing the local library with metadata supplied by the native sync layer. The
+endpoint reads local state but does not write projects, artifacts, revisions, tombstones, staged files, jobs, or
+conflict records. Clients execute returned actions through the existing import, staging, and future sync flows.
+
+Request fields:
+
+- `remote_library` - sync metadata in the same shape returned by `GET /api/v1/sync/metadata`, plus optional
+  `entity_revisions`: `projects`, `artifacts`, `entity_revisions`, and optional `delete_tombstones`.
+- `project_manifests` - optional list of exported project manifests, default `[]`.
+- `peer_inventory` - peer entries with `device_id`, `available_content_sha256`, and optional small `metadata`.
+
+Response fields:
+
+- `summary` - `total_items`, `total_actions`, `total_conflicts`, and `status_counts`.
+- `items` - per-project, artifact, revision, or tombstone decisions with `item_type`, `item_id`, optional
+  `project_id`, `status`, optional `action_type`, optional `content_sha256`, optional
+  `chosen_provider_device_id`, optional `reason`, and `details`.
+- `actions` - ordered operations with `action_type`, `item_type`, `item_id`, optional `project_id`, optional
+  `content_sha256`, optional `provider_device_id`, optional `reason`, `priority`, and `details`.
+
+Planner statuses are `noop`, `identical_content`, `missing_local_bytes`, `remote_available`,
+`missing_provider`, `deleted`, and `conflicted`.
+
+Action types are `apply_delete_tombstone`, `import_project_manifest`, `import_entity_revision`,
+`fetch_artifact_content`, `import_artifact_manifest`, `record_conflict`, and `noop`.
+
 ### Export project sync manifest
 
 `GET /api/v1/sync/projects/{project_id}/manifest`

@@ -3,18 +3,35 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.config import get_settings
-from app.db import SessionLocal
+from app.config import ensure_data_dirs, get_settings
+from app.db import SessionLocal, reconfigure_engine, run_migrations
 from app.errors import AppError
-from app.models import Artifact, Project
+from app.models import Artifact, Project, SyncDeleteTombstone, SyncEntityRevision
 from app.services.analysis import analyze_project
+from app.services.artifacts import delete_project_artifact, register_artifact
 from app.services.paths import project_root
-from app.services.projects import import_project
+from app.services.projects import delete_project, import_project
+from app.services.stems import _prune_extra_stem_artifacts
 from app.services.sync_identity import source_hash_to_project_id, source_hash_to_project_storage_key
+from app.services.sync_tombstones import (
+    ARTIFACT_TARGET_TYPE,
+    ENTITY_REVISION_TARGET_TYPE,
+    PROJECT_TARGET_TYPE,
+)
+from app.services.sync_trust import get_or_create_local_identity
 from app.utils.hashing import file_sha256
+from app.utils.ids import new_id
 from tests.conftest import wait_for_job
+
+
+def _prepare_database() -> None:
+    settings = get_settings()
+    ensure_data_dirs(settings)
+    reconfigure_engine(settings)
+    run_migrations(settings)
 
 
 def test_import_project_persists_metadata_and_source_artifact(client, sample_audio_file: Path):
@@ -196,6 +213,199 @@ def test_import_project_translates_duplicate_project_id_race(
     assert exc.value.message == 'This project is already imported with name "race-fixture".'
     assert exc.value.details == {"project_id": project_id, "project_name": "race-fixture"}
     assert not project_root(project_id).exists()
+
+
+def test_delete_project_records_tombstones_for_cascaded_sync_rows(tmp_path: Path) -> None:
+    _prepare_database()
+    artifact_path = tmp_path / "source.wav"
+    artifact_path.write_bytes(b"source")
+    project_id = "proj_delete_tombstones"
+    revision_id = new_id("rev")
+
+    with SessionLocal() as session:
+        project = Project(
+            id=project_id,
+            display_name="Delete Me",
+            source_sha256="a" * 64,
+            source_path=str(tmp_path / "leaky-source.wav"),
+            imported_path=str(artifact_path),
+        )
+        session.add(project)
+        artifact = register_artifact(
+            session,
+            project_id=project_id,
+            artifact_id="art_delete_source",
+            artifact_type="source_audio",
+            artifact_format="wav",
+            path=artifact_path,
+            metadata={"render_path": str(tmp_path / "render.wav"), "safe": "kept"},
+            generated_by="import",
+            can_delete=False,
+            can_regenerate=False,
+        )
+        identity = get_or_create_local_identity(session)
+        session.add(
+            SyncEntityRevision(
+                id=revision_id,
+                project_id=project_id,
+                entity_type="project_metadata",
+                entity_id=project_id,
+                revision_type="metadata_change",
+                base_revision_id=None,
+                source_artifact_id=None,
+                content_sha256="b" * 64,
+                author_device_id=identity.device_id,
+                state="active",
+                metadata_json={"local_path": str(tmp_path / "metadata.wav"), "safe": "metadata"},
+                payload_json={"display_name": "Delete Me"},
+            )
+        )
+        session.flush()
+
+        delete_project(session, project_id)
+        session.commit()
+
+        tombstones = list(session.query(SyncDeleteTombstone).order_by(SyncDeleteTombstone.target_type))
+        tombstone_keys = {(tombstone.target_type, tombstone.target_id) for tombstone in tombstones}
+
+        assert session.get(Project, project_id) is None
+        assert session.get(Artifact, artifact.id) is None
+        assert session.get(SyncEntityRevision, revision_id) is None
+        assert tombstone_keys == {
+            (PROJECT_TARGET_TYPE, project_id),
+            (ARTIFACT_TARGET_TYPE, artifact.id),
+            (ENTITY_REVISION_TARGET_TYPE, revision_id),
+        }
+        artifact_tombstone = next(
+            tombstone for tombstone in tombstones if tombstone.target_type == ARTIFACT_TARGET_TYPE
+        )
+        assert artifact_tombstone.sync_group_id == identity.sync_group_id
+        assert artifact_tombstone.author_device_id == identity.device_id
+        assert artifact_tombstone.prior_metadata_json["metadata"] == {"safe": "kept"}
+        assert "path" not in artifact_tombstone.prior_metadata_json
+
+
+def test_delete_preview_mix_records_tombstones_for_related_stems(tmp_path: Path) -> None:
+    _prepare_database()
+    mix_path = tmp_path / "mix.wav"
+    related_stem_path = tmp_path / "mix-vocals.wav"
+    source_stem_path = tmp_path / "source-vocals.wav"
+    for path in (mix_path, related_stem_path, source_stem_path):
+        path.write_bytes(path.name.encode("utf-8"))
+
+    with SessionLocal() as session:
+        project = Project(
+            id="proj_mix_tombstones",
+            display_name="Mix Delete",
+            source_sha256="c" * 64,
+            source_path=str(tmp_path / "source.wav"),
+            imported_path=str(tmp_path / "source.wav"),
+        )
+        session.add(project)
+        mix = register_artifact(
+            session,
+            project_id=project.id,
+            artifact_id="art_mix_delete",
+            artifact_type="preview_mix",
+            artifact_format="wav",
+            path=mix_path,
+            metadata={"transpose": {"semitones": 1}},
+        )
+        related_stem = register_artifact(
+            session,
+            project_id=project.id,
+            artifact_id="art_mix_vocal_stem",
+            artifact_type="vocal_stem",
+            artifact_format="wav",
+            path=related_stem_path,
+            metadata={"source_artifact_id": mix.id, "source_artifact_type": "preview_mix"},
+        )
+        source_stem = register_artifact(
+            session,
+            project_id=project.id,
+            artifact_id="art_source_vocal_stem",
+            artifact_type="vocal_stem",
+            artifact_format="wav",
+            path=source_stem_path,
+            metadata={"source_artifact_id": "art_source", "source_artifact_type": "source_audio"},
+        )
+
+        delete_project_artifact(session, project_id=project.id, artifact_id=mix.id)
+        session.commit()
+
+        tombstone_ids = {
+            tombstone.target_id
+            for tombstone in session.query(SyncDeleteTombstone).filter_by(
+                project_id=project.id,
+                target_type=ARTIFACT_TARGET_TYPE,
+            )
+        }
+
+        assert session.get(Artifact, mix.id) is None
+        assert session.get(Artifact, related_stem.id) is None
+        assert session.get(Artifact, source_stem.id) is not None
+        assert tombstone_ids == {mix.id, related_stem.id}
+
+
+def test_pruning_stem_artifacts_records_tombstones(tmp_path: Path) -> None:
+    _prepare_database()
+    kept_path = tmp_path / "kept-vocals.wav"
+    pruned_path = tmp_path / "pruned-drums.wav"
+    source_path = tmp_path / "source.wav"
+    for path in (kept_path, pruned_path, source_path):
+        path.write_bytes(path.name.encode("utf-8"))
+
+    with SessionLocal() as session:
+        project = Project(
+            id="proj_prune_stem_tombstones",
+            display_name="Stem Prune",
+            source_sha256="d" * 64,
+            source_path=str(source_path),
+            imported_path=str(source_path),
+        )
+        session.add(project)
+        kept = register_artifact(
+            session,
+            project_id=project.id,
+            artifact_id="art_kept_vocals",
+            artifact_type="vocal_stem",
+            artifact_format="wav",
+            path=kept_path,
+            metadata={"source_artifact_id": "art_source", "stem_model": "htdemucs_6s"},
+        )
+        pruned = register_artifact(
+            session,
+            project_id=project.id,
+            artifact_id="art_pruned_drums",
+            artifact_type="drums_stem",
+            artifact_format="wav",
+            path=pruned_path,
+            metadata={"source_artifact_id": "art_source", "stem_model": "htdemucs_6s"},
+        )
+
+        _prune_extra_stem_artifacts(
+            session,
+            project_id=project.id,
+            source_artifact_id="art_source",
+            stem_model_id="htdemucs_6s",
+            keep_ids={kept.id},
+        )
+        session.commit()
+
+        tombstone = session.scalar(
+            select(SyncDeleteTombstone).where(
+                SyncDeleteTombstone.target_type == ARTIFACT_TARGET_TYPE,
+                SyncDeleteTombstone.target_id == pruned.id,
+            )
+        )
+        assert session.get(Artifact, kept.id) is not None
+        assert session.get(Artifact, pruned.id) is None
+        assert tombstone is not None
+        assert tombstone.project_id == project.id
+        assert tombstone.prior_metadata_json["metadata"] == {
+            "source_artifact_id": "art_source",
+            "stem_model": "htdemucs_6s",
+        }
 
 
 def test_import_project_enqueues_analysis_and_chords(client, sample_chord_audio_file: Path):

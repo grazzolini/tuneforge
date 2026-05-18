@@ -1234,6 +1234,40 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** SyncDeleteTombstoneSchema */
+        SyncDeleteTombstoneSchema: {
+            /** Tombstone Id */
+            tombstone_id: string;
+            /** Sync Group Id */
+            sync_group_id: string;
+            /** Project Id */
+            project_id: string;
+            /** Target Type */
+            target_type: string;
+            /** Target Id */
+            target_id: string;
+            /** Author Device Id */
+            author_device_id: string;
+            /**
+             * Deleted At
+             * Format: date-time
+             */
+            deleted_at: string;
+            /** Prior Metadata */
+            prior_metadata?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
         /** SyncLocalIdentityResponse */
         SyncLocalIdentityResponse: {
             identity: components["schemas"]["SyncLocalIdentitySchema"];
@@ -1325,6 +1359,8 @@ export interface components {
             projects: components["schemas"]["SyncMetadataProjectSchema"][];
             /** Artifacts */
             artifacts: components["schemas"]["SyncMetadataArtifactSchema"][];
+            /** Delete Tombstones */
+            delete_tombstones?: components["schemas"]["SyncDeleteTombstoneSchema"][];
         };
         /** SyncPairingOfferRequest */
         SyncPairingOfferRequest: {
@@ -1564,6 +1600,8 @@ export interface components {
             entity_revisions?: components["schemas"]["SyncProjectManifestEntityRevisionSchema"][];
             /** Artifacts */
             artifacts: components["schemas"]["SyncProjectManifestArtifactSchema"][];
+            /** Delete Tombstones */
+            delete_tombstones?: components["schemas"]["SyncDeleteTombstoneSchema"][];
         };
         /** SyncProjectStagedImportRequest */
         SyncProjectStagedImportRequest: {

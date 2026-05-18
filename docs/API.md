@@ -286,6 +286,19 @@ Artifact fields:
 - `metadata`
 - `created_at`
 
+Delete tombstone fields:
+
+- `tombstone_id`
+- `sync_group_id`
+- `project_id`
+- `target_type`
+- `target_id`
+- `author_device_id`
+- `deleted_at`
+- `prior_metadata`
+- `created_at`
+- `updated_at`
+
 `relative_path` is project-root relative when the artifact is stored under the backend-managed project root; otherwise it is `null`. Operational `source_audio` artifacts are app-managed WAV files under the project root. Artifact metadata is sanitized recursively before returning and removes local path-bearing keys such as `source_path`, `original_copy_path`, `playback_path`, `imported_path`, and any metadata key ending in `_path`. Non-path metadata such as retune/transpose settings, `stem_model`, and `source_artifact_id` is preserved. Job internals such as `result_artifact_ids_json` are not exposed.
 
 ### Export project sync manifest
@@ -297,9 +310,15 @@ Returns a single project manifest for manifest-only sync export. The response is
 - `schema_version`
 - `exported_at`
 - `project`
+- `entity_revisions`
 - `artifacts`
+- `delete_tombstones`
 
 Manifest paths are project-root relative and use portable path separators. The response does not expose absolute local source, project, artifact, or app data paths. The project entry's `source_sha256` is the identity hash of the original imported source bytes. Artifact entries' `content_sha256` values hash the bytes for those specific staged artifact files, including the `source_audio` artifact. These hashes are separate on purpose: an app-managed normalized WAV source artifact may have different bytes from the original import identity hash. `sync_entity_revisions.content_sha256` is also per-entity revision payload content, not project source identity. Projects whose `source_audio` artifact is not an app-managed readable PCM WAV must be reimported or repaired before manifest export. Receiving peers must verify staged files against the artifact SHA-256 values and must preserve the project `source_sha256` as identity metadata before accepting the import. The endpoint exports metadata only. File transfer and LAN peer discovery belong to the native sync layer, not the loopback FastAPI API.
+
+`entity_revisions` carries durable sync records for project metadata, chords, lyrics, sections, regeneration events, and other editable or generated project entities. Each revision records `revision_id`, `project_id`, `entity_type`, `entity_id`, `revision_type`, optional `base_revision_id`, `author_device_id`, optional `source_artifact_id`, `content_sha256`, `state`, `metadata`, `payload`, `created_at`, and `updated_at`.
+
+`delete_tombstones` carries durable group-delete records for project, artifact, and entity revision targets so offline peers do not resurrect deleted records when they reconnect. Each tombstone records the author device, delete timestamp, target type, target ID, sync group/project context, and prior metadata needed for diagnostics.
 
 ### Import staged project sync manifest
 
@@ -318,7 +337,7 @@ If the local library already contains the same canonical project or source SHA-2
 
 - `project`
 
-Staged import does not enqueue analysis, chord, lyrics, stem, or other generation jobs. Synced projects should import the durable state that was actually exported; future rebuilds are explicit user actions. This endpoint also does not expose FastAPI on the LAN. Peer communication should keep using the separate native sync layer while FastAPI remains bound to loopback.
+Staged import does not enqueue analysis, chord, lyrics, stem, or other generation jobs. Synced projects should import the durable state that was actually exported; future rebuilds are explicit user actions. Imports must reject older manifests that would recreate a project, artifact, or entity revision covered by an accepted delete tombstone. This endpoint also does not expose FastAPI on the LAN. Peer communication should keep using the separate native sync layer while FastAPI remains bound to loopback.
 
 ## Projects
 

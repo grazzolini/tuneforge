@@ -17,7 +17,15 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.errors import AppError
-from app.models import Artifact, ChordTimeline, LyricsTranscript, Project, SongSection, SyncEntityRevision
+from app.models import (
+    Artifact,
+    ChordTimeline,
+    LyricsTranscript,
+    Project,
+    SongSection,
+    SyncDeleteTombstone,
+    SyncEntityRevision,
+)
 from app.services.artifacts import register_artifact
 from app.services.paths import ensure_project_dirs, project_root
 from app.services.sync_identity import source_hash_to_project_id
@@ -27,6 +35,8 @@ from app.services.sync_revisions import (
     revision_payload_sha256,
     sanitize_revision_payload,
 )
+from app.services.sync_tombstones import apply_delete_tombstone
+from app.services.sync_trust import get_or_create_local_identity
 from app.utils.hashing import file_sha256
 
 SYNC_PROJECT_MANIFEST_SCHEMA_VERSION = "1"
@@ -68,6 +78,20 @@ class SyncEntityRevisionManifest:
 
 
 @dataclass(frozen=True)
+class SyncDeleteTombstoneManifest:
+    tombstone_id: str
+    sync_group_id: str
+    project_id: str
+    target_type: str
+    target_id: str
+    author_device_id: str
+    deleted_at: datetime
+    prior_metadata: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
 class SyncProjectManifestProject:
     project_id: str
     display_name: str
@@ -87,6 +111,7 @@ class SyncProjectManifest:
     project: SyncProjectManifestProject
     entity_revisions: list[SyncEntityRevisionManifest]
     artifacts: list[SyncArtifactManifest]
+    delete_tombstones: list[SyncDeleteTombstoneManifest]
 
     @property
     def project_id(self) -> str:
@@ -149,6 +174,7 @@ def export_project_manifest(session: Session, project_id: str) -> SyncProjectMan
         )
     )
     entity_revisions = _list_project_entity_revisions(session, project_id=project.id)
+    delete_tombstones = _list_project_delete_tombstones(session, project_id=project.id)
 
     manifest = SyncProjectManifest(
         schema_version=SYNC_PROJECT_MANIFEST_SCHEMA_VERSION,
@@ -169,6 +195,10 @@ def export_project_manifest(session: Session, project_id: str) -> SyncProjectMan
             for revision in entity_revisions
         ],
         artifacts=[_export_artifact_manifest(artifact) for artifact in artifacts],
+        delete_tombstones=[
+            _export_delete_tombstone_manifest(tombstone)
+            for tombstone in delete_tombstones
+        ],
     )
     _validate_source_artifact_present(manifest)
     return manifest
@@ -198,7 +228,21 @@ def import_staged_project_manifest(
     _validate_project_manifest_schema_version(project_manifest)
     _validate_project_manifest_identity(project_manifest)
     source_artifact = _validate_staged_import_source_artifact(project_manifest)
-    _reject_duplicate_project_source(session, project_manifest)
+    local_sync_group_id = get_or_create_local_identity(session).sync_group_id
+    _validate_delete_tombstones(project_manifest, sync_group_id=local_sync_group_id)
+    _reject_locally_tombstoned_manifest_targets(
+        session,
+        project_manifest,
+        sync_group_id=local_sync_group_id,
+    )
+    existing_project = _find_existing_project_source(session, project_manifest)
+    if existing_project is not None:
+        if existing_project.id == project_manifest.project_id and project_manifest.delete_tombstones:
+            imported_tombstones = _import_delete_tombstones(session, project_manifest)
+            _apply_delete_tombstones(session, imported_tombstones)
+            return existing_project
+        raise _duplicate_project_source_error(existing_project.id, existing_project.display_name)
+    _reject_manifest_artifact_conflicts(session, project_manifest)
     root = project_root(project_manifest.project_id).resolve(strict=False)
     staged_root = (
         None if staging_root is None else Path(staging_root).expanduser().resolve(strict=False)
@@ -264,6 +308,8 @@ def import_staged_project_manifest(
                     details={"artifact_id": verified_artifact.manifest.artifact_id},
                 )
         _import_entity_revisions(session, project_manifest)
+        imported_tombstones = _import_delete_tombstones(session, project_manifest)
+        _apply_delete_tombstones(session, imported_tombstones)
         _hydrate_current_entity_revisions(session, project, project_manifest.entity_revisions)
     except OSError as exc:
         _cleanup_copied_artifacts(copied_paths, root)
@@ -302,6 +348,25 @@ def _list_project_entity_revisions(
                 SyncEntityRevision.entity_id.asc(),
                 SyncEntityRevision.created_at.asc(),
                 SyncEntityRevision.id.asc(),
+            )
+        )
+    )
+
+
+def _list_project_delete_tombstones(
+    session: Session,
+    *,
+    project_id: str,
+) -> list[SyncDeleteTombstone]:
+    return list(
+        session.scalars(
+            select(SyncDeleteTombstone)
+            .where(SyncDeleteTombstone.project_id == project_id)
+            .order_by(
+                SyncDeleteTombstone.target_type.asc(),
+                SyncDeleteTombstone.target_id.asc(),
+                SyncDeleteTombstone.deleted_at.asc(),
+                SyncDeleteTombstone.id.asc(),
             )
         )
     )
@@ -385,6 +450,24 @@ def _export_artifact_manifest(artifact: Artifact) -> SyncArtifactManifest:
     )
 
 
+def _export_delete_tombstone_manifest(tombstone: object) -> SyncDeleteTombstoneManifest:
+    prior_metadata = _tombstone_prior_metadata(tombstone)
+    if not isinstance(prior_metadata, dict):
+        prior_metadata = {}
+    return SyncDeleteTombstoneManifest(
+        tombstone_id=_tombstone_id(tombstone),
+        sync_group_id=_attr(tombstone, "sync_group_id"),
+        project_id=_attr(tombstone, "project_id"),
+        target_type=_normalize_tombstone_target_type(_attr(tombstone, "target_type")),
+        target_id=_attr(tombstone, "target_id"),
+        author_device_id=_attr(tombstone, "author_device_id"),
+        deleted_at=_attr(tombstone, "deleted_at"),
+        prior_metadata=cast(dict[str, Any], sanitize_sync_metadata(prior_metadata)),
+        created_at=_attr(tombstone, "created_at"),
+        updated_at=_attr(tombstone, "updated_at"),
+    )
+
+
 def _export_entity_revision_manifest(revision: SyncEntityRevision) -> SyncEntityRevisionManifest:
     metadata = sanitize_revision_payload(revision.metadata_json or {})
     payload = sanitize_revision_payload(revision.payload_json or {})
@@ -464,6 +547,59 @@ def _import_entity_revisions(session: Session, manifest: SyncProjectManifest) ->
         session.add(row)
 
     session.flush()
+
+
+def _import_delete_tombstones(
+    session: Session,
+    manifest: SyncProjectManifest,
+) -> list[SyncDeleteTombstone]:
+    if not manifest.delete_tombstones:
+        return []
+
+    imported: list[SyncDeleteTombstone] = []
+    for tombstone in manifest.delete_tombstones:
+        existing = session.scalar(
+            select(SyncDeleteTombstone).where(
+                SyncDeleteTombstone.sync_group_id == tombstone.sync_group_id,
+                SyncDeleteTombstone.target_type == tombstone.target_type,
+                SyncDeleteTombstone.target_id == tombstone.target_id,
+            )
+        )
+        if existing is not None:
+            imported.append(existing)
+            continue
+        if session.get(SyncDeleteTombstone, tombstone.tombstone_id) is not None:
+            raise AppError(
+                "SYNC_MANIFEST_TOMBSTONE_CONFLICT",
+                "A synced delete tombstone conflicts with an existing local tombstone.",
+                status_code=status.HTTP_409_CONFLICT,
+                details={"tombstone_id": tombstone.tombstone_id},
+            )
+        row = SyncDeleteTombstone(
+            id=tombstone.tombstone_id,
+            sync_group_id=tombstone.sync_group_id,
+            project_id=tombstone.project_id,
+            target_type=tombstone.target_type,
+            target_id=tombstone.target_id,
+            author_device_id=tombstone.author_device_id,
+            deleted_at=tombstone.deleted_at,
+            prior_metadata_json=deepcopy(tombstone.prior_metadata),
+            created_at=tombstone.created_at,
+            updated_at=tombstone.updated_at,
+        )
+        session.add(row)
+        imported.append(row)
+
+    session.flush()
+    return imported
+
+
+def _apply_delete_tombstones(
+    session: Session,
+    tombstones: list[SyncDeleteTombstone],
+) -> None:
+    for tombstone in tombstones:
+        apply_delete_tombstone(session, tombstone)
 
 
 def _validate_entity_revision_base_reference(
@@ -984,6 +1120,137 @@ def _source_artifact_not_wav_error(
     )
 
 
+def _validate_delete_tombstones(
+    manifest: SyncProjectManifest,
+    *,
+    sync_group_id: str,
+) -> None:
+    seen_tombstone_ids: set[str] = set()
+    seen_targets: set[tuple[str, str, str]] = set()
+    live_targets = _manifest_live_targets(manifest)
+    for tombstone in manifest.delete_tombstones:
+        if tombstone.project_id != manifest.project_id:
+            raise AppError(
+                "SYNC_MANIFEST_TOMBSTONE_PROJECT_MISMATCH",
+                "Delete tombstone manifest belongs to a different project.",
+                details={
+                    "tombstone_id": tombstone.tombstone_id,
+                    "project_id": tombstone.project_id,
+                },
+            )
+        if tombstone.sync_group_id != sync_group_id:
+            raise AppError(
+                "SYNC_MANIFEST_TOMBSTONE_SYNC_GROUP_MISMATCH",
+                "Delete tombstone manifest belongs to a different sync group.",
+                details={
+                    "tombstone_id": tombstone.tombstone_id,
+                    "sync_group_id": tombstone.sync_group_id,
+                },
+            )
+        if tombstone.target_type == "project" and tombstone.target_id != manifest.project_id:
+            raise AppError(
+                "SYNC_MANIFEST_TOMBSTONE_PROJECT_TARGET_MISMATCH",
+                "Project delete tombstone target_id must match the manifest project.",
+                details={
+                    "tombstone_id": tombstone.tombstone_id,
+                    "target_id": tombstone.target_id,
+                    "project_id": manifest.project_id,
+                },
+            )
+        if tombstone.tombstone_id in seen_tombstone_ids:
+            raise AppError(
+                "SYNC_MANIFEST_DUPLICATE_TOMBSTONE",
+                "Project manifest contains duplicate delete tombstone IDs.",
+                details={"tombstone_id": tombstone.tombstone_id},
+            )
+        seen_tombstone_ids.add(tombstone.tombstone_id)
+        tombstone_target = (tombstone.sync_group_id, tombstone.target_type, tombstone.target_id)
+        if tombstone_target in seen_targets:
+            raise AppError(
+                "SYNC_MANIFEST_DUPLICATE_TOMBSTONE_TARGET",
+                "Project manifest contains duplicate delete tombstones for the same target.",
+                details={
+                    "sync_group_id": tombstone.sync_group_id,
+                    "target_type": tombstone.target_type,
+                    "target_id": tombstone.target_id,
+                },
+            )
+        seen_targets.add(tombstone_target)
+        if (tombstone.target_type, tombstone.target_id) in live_targets:
+            raise AppError(
+                "SYNC_MANIFEST_TOMBSTONE_LIVE_TARGET",
+                "Project manifest contains a delete tombstone for a live sync target.",
+                details={
+                    "tombstone_id": tombstone.tombstone_id,
+                    "target_type": tombstone.target_type,
+                    "target_id": tombstone.target_id,
+                },
+            )
+
+
+def _reject_locally_tombstoned_manifest_targets(
+    session: Session,
+    manifest: SyncProjectManifest,
+    *,
+    sync_group_id: str,
+) -> None:
+    conflicts = _local_tombstone_conflicts(session, manifest, sync_group_id=sync_group_id)
+    if not conflicts:
+        return
+
+    tombstone = conflicts[0]
+    raise AppError(
+        "SYNC_MANIFEST_LOCAL_TOMBSTONE_CONFLICT",
+        "Project manifest would resurrect a locally tombstoned sync target.",
+        status_code=status.HTTP_409_CONFLICT,
+        details={
+            "tombstone_id": tombstone.tombstone_id,
+            "project_id": tombstone.project_id,
+            "target_type": tombstone.target_type,
+            "target_id": tombstone.target_id,
+        },
+    )
+
+
+def _local_tombstone_conflicts(
+    session: Session,
+    manifest: SyncProjectManifest,
+    *,
+    sync_group_id: str,
+) -> list[SyncDeleteTombstoneManifest]:
+    tombstones = _list_project_delete_tombstones(session, project_id=manifest.project_id)
+    if not tombstones:
+        return []
+
+    live_targets = _manifest_live_targets(manifest)
+    conflicts: list[SyncDeleteTombstoneManifest] = []
+    for row in tombstones:
+        tombstone = _export_delete_tombstone_manifest(row)
+        if tombstone.sync_group_id != sync_group_id:
+            continue
+        target = (_normalize_tombstone_target_type(tombstone.target_type), tombstone.target_id)
+        if target in live_targets:
+            conflicts.append(tombstone)
+    return conflicts
+
+
+def _manifest_live_targets(manifest: SyncProjectManifest) -> set[tuple[str, str]]:
+    targets = {("project", manifest.project_id)}
+    targets.update(("artifact", artifact.artifact_id) for artifact in manifest.artifacts)
+    targets.update(
+        ("entity_revision", revision.revision_id)
+        for revision in manifest.entity_revisions
+    )
+    return targets
+
+
+def _normalize_tombstone_target_type(target_type: str) -> str:
+    normalized = target_type.strip().lower()
+    if normalized in {"revision", "sync_entity_revision"}:
+        return "entity_revision"
+    return normalized
+
+
 def _required_source_sha256(project: Project) -> str:
     if project.source_sha256 is None:
         raise AppError(
@@ -1030,7 +1297,10 @@ def _validate_project_manifest_schema_version(manifest: SyncProjectManifest) -> 
         )
 
 
-def _reject_duplicate_project_source(session: Session, manifest: SyncProjectManifest) -> None:
+def _find_existing_project_source(
+    session: Session,
+    manifest: SyncProjectManifest,
+) -> Project | None:
     existing_project = session.get(Project, manifest.project_id)
     if existing_project is None:
         existing_project = session.scalar(
@@ -1038,9 +1308,18 @@ def _reject_duplicate_project_source(session: Session, manifest: SyncProjectMani
             .where(Project.source_sha256 == manifest.source_sha256)
             .order_by(Project.created_at.asc(), Project.id.asc())
         )
+    return existing_project
+
+
+def _reject_duplicate_project_source(session: Session, manifest: SyncProjectManifest) -> None:
+    existing_project = _find_existing_project_source(session, manifest)
     if existing_project is not None:
         raise _duplicate_project_source_error(existing_project.id, existing_project.display_name)
 
+    _reject_manifest_artifact_conflicts(session, manifest)
+
+
+def _reject_manifest_artifact_conflicts(session: Session, manifest: SyncProjectManifest) -> None:
     for artifact in manifest.artifacts:
         if session.get(Artifact, artifact.artifact_id) is not None:
             raise AppError(
@@ -1090,6 +1369,9 @@ def _coerce_project_manifest(manifest: SyncProjectManifest | Mapping[str, Any] |
     raw_entity_revisions = _field(manifest, "entity_revisions", default=[])
     if not isinstance(raw_entity_revisions, list):
         raise _invalid_manifest("Project manifest entity_revisions must be a list.")
+    raw_delete_tombstones = _field(manifest, "delete_tombstones", default=[])
+    if not isinstance(raw_delete_tombstones, list):
+        raise _invalid_manifest("Project manifest delete_tombstones must be a list.")
 
     project_id = _required_str(project_fields, "project_id")
     source_sha256 = _required_str(project_fields, "source_sha256").strip().lower()
@@ -1113,6 +1395,10 @@ def _coerce_project_manifest(manifest: SyncProjectManifest | Mapping[str, Any] |
             for revision in raw_entity_revisions
         ],
         artifacts=[_coerce_artifact_manifest(artifact) for artifact in raw_artifacts],
+        delete_tombstones=[
+            _coerce_delete_tombstone_manifest(tombstone)
+            for tombstone in raw_delete_tombstones
+        ],
     )
     _validate_project_manifest_identity(project_manifest)
     return project_manifest
@@ -1180,6 +1466,32 @@ def _coerce_entity_revision_manifest(manifest: Mapping[str, Any] | object) -> Sy
         state=_normalize_revision_state(_required_str(manifest, "state")),
         metadata=safe_metadata,
         payload=safe_payload,
+        created_at=_required_datetime(manifest, "created_at"),
+        updated_at=_required_datetime(manifest, "updated_at"),
+    )
+
+
+def _coerce_delete_tombstone_manifest(manifest: Mapping[str, Any] | object) -> SyncDeleteTombstoneManifest:
+    prior_metadata = _field(manifest, "prior_metadata", default={})
+    if not isinstance(prior_metadata, dict):
+        raise _invalid_manifest("Delete tombstone manifest prior_metadata must be an object.")
+    safe_prior_metadata = sanitize_sync_metadata(prior_metadata)
+    if safe_prior_metadata != prior_metadata:
+        raise _invalid_manifest("Delete tombstone manifest prior_metadata must be sync-safe.")
+
+    target_type = _normalize_tombstone_target_type(_required_str(manifest, "target_type"))
+    if target_type not in {"project", "artifact", "entity_revision"}:
+        raise _invalid_manifest("Delete tombstone manifest target_type is unsupported.")
+
+    return SyncDeleteTombstoneManifest(
+        tombstone_id=_required_tombstone_id(manifest),
+        sync_group_id=_required_str(manifest, "sync_group_id"),
+        project_id=_required_str(manifest, "project_id"),
+        target_type=target_type,
+        target_id=_required_str(manifest, "target_id"),
+        author_device_id=_required_str(manifest, "author_device_id"),
+        deleted_at=_required_datetime(manifest, "deleted_at"),
+        prior_metadata=cast(dict[str, Any], safe_prior_metadata),
         created_at=_required_datetime(manifest, "created_at"),
         updated_at=_required_datetime(manifest, "updated_at"),
     )
@@ -1270,6 +1582,15 @@ def _required_str(source: Mapping[str, Any] | object, name: str) -> str:
     value = _field(source, name)
     if not isinstance(value, str) or not value:
         raise _invalid_manifest(f"Project manifest field must be a non-empty string: {name}.")
+    return value
+
+
+def _required_tombstone_id(source: Mapping[str, Any] | object) -> str:
+    value = _field(source, "tombstone_id", default=None)
+    if value is None:
+        value = _field(source, "id")
+    if not isinstance(value, str) or not value:
+        raise _invalid_manifest("Project manifest field must be a non-empty string: tombstone_id.")
     return value
 
 
@@ -1410,3 +1731,23 @@ def _file_size(path: Path) -> int | None:
 
 def _invalid_manifest(message: str) -> AppError:
     return AppError("SYNC_MANIFEST_INVALID", message)
+
+
+def _tombstone_id(tombstone: object) -> str:
+    value = _attr(tombstone, "tombstone_id", default=None)
+    if isinstance(value, str):
+        return value
+    return _attr(tombstone, "id")
+
+
+def _tombstone_prior_metadata(tombstone: object) -> Any:
+    value = _attr(tombstone, "prior_metadata", default=None)
+    if value is not None:
+        return value
+    return _attr(tombstone, "prior_metadata_json", default=None)
+
+
+def _attr(source: object, name: str, *, default: Any = ...) -> Any:
+    if default is ...:
+        return getattr(source, name)
+    return getattr(source, name, default)

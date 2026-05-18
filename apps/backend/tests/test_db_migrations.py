@@ -148,6 +148,58 @@ def test_sync_entity_revisions_migration_creates_table_columns_and_indexes() -> 
     assert project_entity_index_columns == ["project_id", "entity_type", "entity_id"]
 
 
+def test_sync_delete_tombstones_migration_creates_table_columns_and_indexes() -> None:
+    settings = get_settings()
+    ensure_data_dirs(settings)
+
+    reconfigure_engine(settings)
+    run_migrations(settings)
+
+    with sqlite3.connect(settings.database_path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info('sync_delete_tombstones')")
+        }
+        indexes = {
+            row[1]
+            for row in connection.execute("PRAGMA index_list('sync_delete_tombstones')")
+        }
+        group_target_index_columns = [
+            row[2]
+            for row in connection.execute(
+                "PRAGMA index_info('uq_sync_delete_tombstones_group_target')"
+            )
+        ]
+
+    assert "sync_delete_tombstones" in tables
+    assert {
+        "id",
+        "sync_group_id",
+        "project_id",
+        "target_type",
+        "target_id",
+        "author_device_id",
+        "deleted_at",
+        "prior_metadata_json",
+        "created_at",
+        "updated_at",
+    } <= columns
+    assert {
+        "uq_sync_delete_tombstones_group_target",
+        "ix_sync_delete_tombstones_project_id",
+        "ix_sync_delete_tombstones_target",
+        "ix_sync_delete_tombstones_author_device_id",
+        "ix_sync_delete_tombstones_deleted_at",
+    } <= indexes
+    assert group_target_index_columns == ["sync_group_id", "target_type", "target_id"]
+
+
 def test_hash_storage_migration_backfills_existing_files(tmp_path: Path) -> None:
     settings = get_settings()
     ensure_data_dirs(settings)

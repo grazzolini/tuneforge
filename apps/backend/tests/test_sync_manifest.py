@@ -24,11 +24,13 @@ from app.models import (
     LyricsTranscript,
     Project,
     SongSection,
+    SyncDeleteTombstone,
     SyncEntityRevision,
 )
 from app.services.paths import project_root
 from app.services.sync_identity import source_hash_to_project_id
 from app.services.sync_revisions import CURRENT_REVISION_STATE
+from app.services.sync_trust import get_or_create_local_identity
 from app.utils.hashing import file_sha256
 
 ManifestService = Callable[..., Any]
@@ -55,6 +57,20 @@ class ManifestProjectFixture:
     artifact_hashes: dict[str, str]
     artifact_sizes: dict[str, int]
     external_source_path: Path
+
+
+@dataclass(frozen=True)
+class FakeSyncDeleteTombstone:
+    id: str
+    sync_group_id: str
+    project_id: str
+    target_type: str
+    target_id: str
+    author_device_id: str
+    deleted_at: datetime
+    prior_metadata: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
 
 
 def _sync_manifest_services() -> tuple[ManifestService, ManifestService]:
@@ -102,22 +118,26 @@ def _plain_manifest(value: Any) -> dict[str, Any]:
         project = manifest["project"]
         artifacts = manifest.get("artifacts")
         entity_revisions = manifest.get("entity_revisions", [])
+        delete_tombstones = manifest.get("delete_tombstones", [])
     else:
         project = {
             key: child
             for key, child in manifest.items()
-            if key not in {"artifacts", "entity_revisions"}
+            if key not in {"artifacts", "entity_revisions", "delete_tombstones"}
         }
         artifacts = manifest.get("artifacts")
         entity_revisions = manifest.get("entity_revisions", [])
+        delete_tombstones = manifest.get("delete_tombstones", [])
 
     assert isinstance(project, dict)
     assert isinstance(artifacts, list)
     assert isinstance(entity_revisions, list)
+    assert isinstance(delete_tombstones, list)
     result: dict[str, Any] = {
         "project": project,
         "artifacts": artifacts,
         "entity_revisions": entity_revisions,
+        "delete_tombstones": delete_tombstones,
     }
     if "schema_version" in manifest:
         result["schema_version"] = manifest["schema_version"]
@@ -330,6 +350,30 @@ def _add_entity_revision(
             created_at=timestamp,
             updated_at=updated_at or timestamp,
         )
+    )
+
+
+def _fake_delete_tombstone(
+    *,
+    tombstone_id: str,
+    project_id: str,
+    target_type: str,
+    target_id: str,
+    sync_group_id: str = "sync_group_alpha",
+    prior_metadata: dict[str, Any] | None = None,
+) -> FakeSyncDeleteTombstone:
+    timestamp = datetime(2026, 1, 2, tzinfo=UTC)
+    return FakeSyncDeleteTombstone(
+        id=tombstone_id,
+        sync_group_id=sync_group_id,
+        project_id=project_id,
+        target_type=target_type,
+        target_id=target_id,
+        author_device_id="device_alpha",
+        deleted_at=timestamp,
+        prior_metadata=prior_metadata or {},
+        created_at=timestamp,
+        updated_at=timestamp,
     )
 
 
@@ -654,6 +698,63 @@ def test_export_project_manifest_includes_entity_revisions_without_local_paths(
         {"start_seconds": 0.0, "end_seconds": 1.0, "label": "Am"}
     ]
     assert chord_revision["payload"]["metadata"] == {"reviewed": True}
+
+
+def test_export_project_manifest_includes_delete_tombstones_without_local_paths(
+    client: object,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = importlib.import_module("app.services.sync_manifest")
+    export_manifest, _ = _sync_manifest_services()
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        tombstones = [
+            _fake_delete_tombstone(
+                tombstone_id="tomb_art_deleted",
+                project_id=fixture.project_id,
+                target_type="artifact",
+                target_id="art_deleted",
+                prior_metadata={
+                    "type": "preview_mix",
+                    "path": str(tmp_path / "local-preview.wav"),
+                    "relative_path": "previews/mix.wav",
+                },
+            ),
+            _fake_delete_tombstone(
+                tombstone_id="tomb_revision_deleted",
+                project_id=fixture.project_id,
+                target_type="entity_revision",
+                target_id="rev_deleted",
+                prior_metadata={"entity_type": "section", "source_path": str(tmp_path / "tab.txt")},
+            ),
+        ]
+        monkeypatch.setattr(module, "_list_project_delete_tombstones", lambda *args, **kwargs: tombstones)
+
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+
+    _assert_no_absolute_local_paths(manifest, (tmp_path, fixture.root))
+    _assert_no_local_path_keys(manifest)
+
+    delete_tombstones = manifest["delete_tombstones"]
+    assert [tombstone["tombstone_id"] for tombstone in delete_tombstones] == [
+        "tomb_art_deleted",
+        "tomb_revision_deleted",
+    ]
+    artifact_tombstone = delete_tombstones[0]
+    assert artifact_tombstone["sync_group_id"] == "sync_group_alpha"
+    assert artifact_tombstone["project_id"] == fixture.project_id
+    assert artifact_tombstone["target_type"] == "artifact"
+    assert artifact_tombstone["target_id"] == "art_deleted"
+    assert artifact_tombstone["author_device_id"] == "device_alpha"
+    assert artifact_tombstone["prior_metadata"] == {
+        "type": "preview_mix",
+        "relative_path": "previews/mix.wav",
+    }
+    assert "deleted_at" in artifact_tombstone
+    assert "created_at" in artifact_tombstone
+    assert "updated_at" in artifact_tombstone
 
 
 @pytest.mark.parametrize("unportable_path", ["outside_project_root", "project_root_directory"])
@@ -1005,6 +1106,198 @@ def test_import_staged_project_manifest_rejects_non_sync_safe_revision_payload(
 
     assert exc.value.code == "SYNC_MANIFEST_INVALID"
     assert "sync-safe" in exc.value.message
+
+
+@pytest.mark.parametrize(
+    ("target_type", "target_id_key"),
+    [
+        ("project", "project"),
+        ("artifact", "artifact"),
+        ("entity_revision", "entity_revision"),
+    ],
+)
+def test_import_staged_project_manifest_rejects_locally_tombstoned_targets(
+    client: object,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    target_type: str,
+    target_id_key: str,
+) -> None:
+    module = importlib.import_module("app.services.sync_manifest")
+    export_manifest, import_manifest = _sync_manifest_services()
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        _add_project_entity_revisions(session, fixture)
+        sync_group_id = get_or_create_local_identity(session).sync_group_id
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+        target_ids = {
+            "project": fixture.project_id,
+            "artifact": "art_vocals",
+            "entity_revision": "rev_chords_current",
+        }
+        tombstone = _fake_delete_tombstone(
+            tombstone_id=f"tomb_{target_type}",
+            project_id=fixture.project_id,
+            target_type=target_type,
+            target_id=target_ids[target_id_key],
+            sync_group_id=sync_group_id,
+        )
+        monkeypatch.setattr(
+            module,
+            "_list_project_delete_tombstones",
+            lambda *args, **kwargs: [tombstone],
+        )
+        _delete_live_project(session, fixture)
+
+        with pytest.raises(AppError) as exc:
+            import_manifest(session, manifest=manifest, staging_root=tmp_path / "unused-staging")
+
+    assert exc.value.code == "SYNC_MANIFEST_LOCAL_TOMBSTONE_CONFLICT"
+    assert exc.value.status_code == 409
+    assert exc.value.details == {
+        "tombstone_id": f"tomb_{target_type}",
+        "project_id": fixture.project_id,
+        "target_type": target_type,
+        "target_id": target_ids[target_id_key],
+    }
+
+
+def test_import_staged_project_manifest_persists_delete_tombstones(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    export_manifest, import_manifest = _sync_manifest_services()
+    staging_root = tmp_path / "staging"
+    timestamp = "2026-01-02T00:00:00+00:00"
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        sync_group_id = get_or_create_local_identity(session).sync_group_id
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+        manifest["delete_tombstones"] = [
+            {
+                "tombstone_id": "tomb_deleted_mix",
+                "sync_group_id": sync_group_id,
+                "project_id": fixture.project_id,
+                "target_type": "artifact",
+                "target_id": "art_deleted_mix",
+                "author_device_id": "device_alpha",
+                "deleted_at": timestamp,
+                "prior_metadata": {
+                    "type": "preview_mix",
+                    "relative_path": "previews/deleted-mix.wav",
+                },
+                "created_at": timestamp,
+                "updated_at": timestamp,
+            }
+        ]
+        _stage_manifest_files(manifest, staging_root=staging_root, source_root=fixture.root)
+        _delete_live_project(session, fixture)
+
+        import_manifest(session, manifest=manifest, staging_root=staging_root)
+        session.commit()
+
+        tombstone = session.get(SyncDeleteTombstone, "tomb_deleted_mix")
+        assert tombstone is not None
+        assert tombstone.sync_group_id == sync_group_id
+        assert tombstone.project_id == fixture.project_id
+        assert tombstone.target_type == "artifact"
+        assert tombstone.target_id == "art_deleted_mix"
+        assert tombstone.author_device_id == "device_alpha"
+        assert tombstone.prior_metadata_json == {
+            "type": "preview_mix",
+            "relative_path": "previews/deleted-mix.wav",
+        }
+
+
+def test_import_staged_project_manifest_rejects_out_of_group_delete_tombstones(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    export_manifest, import_manifest = _sync_manifest_services()
+    timestamp = "2026-01-02T00:00:00+00:00"
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        get_or_create_local_identity(session)
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+        manifest["delete_tombstones"] = [
+            {
+                "tombstone_id": "tomb_wrong_group",
+                "sync_group_id": "sync_group_other",
+                "project_id": fixture.project_id,
+                "target_type": "artifact",
+                "target_id": "art_deleted_mix",
+                "author_device_id": "device_alpha",
+                "deleted_at": timestamp,
+                "prior_metadata": {},
+                "created_at": timestamp,
+                "updated_at": timestamp,
+            }
+        ]
+
+        with pytest.raises(AppError) as exc:
+            import_manifest(session, manifest=manifest, staging_root=None)
+
+    assert exc.value.code == "SYNC_MANIFEST_TOMBSTONE_SYNC_GROUP_MISMATCH"
+    assert exc.value.details == {
+        "tombstone_id": "tomb_wrong_group",
+        "sync_group_id": "sync_group_other",
+    }
+
+
+def test_import_staged_project_manifest_applies_delete_tombstones_to_existing_project(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    export_manifest, import_manifest = _sync_manifest_services()
+    timestamp = "2026-01-02T00:00:00+00:00"
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        sync_group_id = get_or_create_local_identity(session).sync_group_id
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+        deleted_path = fixture.root / "previews" / "deleted-mix.wav"
+        deleted_hash, deleted_size = _write_bytes(deleted_path, b"deleted mix")
+        session.add(
+            Artifact(
+                id="art_deleted_mix",
+                project_id=fixture.project_id,
+                type="preview_mix",
+                format="wav",
+                path=str(deleted_path),
+                content_sha256=deleted_hash,
+                size_bytes=deleted_size,
+                generated_by="preview",
+                can_delete=True,
+                can_regenerate=True,
+                metadata_json={"source_artifact_id": "art_source_audio"},
+            )
+        )
+        session.flush()
+        manifest["delete_tombstones"] = [
+            {
+                "tombstone_id": "tomb_existing_deleted_mix",
+                "sync_group_id": sync_group_id,
+                "project_id": fixture.project_id,
+                "target_type": "artifact",
+                "target_id": "art_deleted_mix",
+                "author_device_id": "device_alpha",
+                "deleted_at": timestamp,
+                "prior_metadata": {"type": "preview_mix"},
+                "created_at": timestamp,
+                "updated_at": timestamp,
+            }
+        ]
+
+        imported_project = import_manifest(session, manifest=manifest, staging_root=None)
+        session.commit()
+
+        assert imported_project.id == fixture.project_id
+        assert session.get(Artifact, "art_deleted_mix") is None
+        assert not deleted_path.exists()
+        assert session.get(SyncDeleteTombstone, "tomb_existing_deleted_mix") is not None
 
 
 def test_import_staged_project_manifest_imports_content_addressed_staging(

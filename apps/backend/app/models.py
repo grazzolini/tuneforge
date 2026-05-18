@@ -3,7 +3,18 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -177,6 +188,36 @@ class SyncEntityRevision(Base):
     )
 
     project: Mapped[Project] = relationship(back_populates="sync_entity_revisions")
+
+
+class SyncDeleteTombstone(Base):
+    __tablename__ = "sync_delete_tombstones"
+    __table_args__ = (
+        Index(
+            "uq_sync_delete_tombstones_group_target",
+            "sync_group_id",
+            "target_type",
+            "target_id",
+            unique=True,
+        ),
+        Index("ix_sync_delete_tombstones_project_id", "project_id"),
+        Index("ix_sync_delete_tombstones_target", "target_type", "target_id"),
+        Index("ix_sync_delete_tombstones_author_device_id", "author_device_id"),
+        Index("ix_sync_delete_tombstones_deleted_at", "deleted_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    sync_group_id: Mapped[str] = mapped_column(String(80))
+    project_id: Mapped[str] = mapped_column(String(PROJECT_ID_LENGTH))
+    target_type: Mapped[str] = mapped_column(String(64))
+    target_id: Mapped[str] = mapped_column(String(80))
+    author_device_id: Mapped[str] = mapped_column(String(96))
+    deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    prior_metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON(), default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
 
 
 class AnalysisResult(Base):

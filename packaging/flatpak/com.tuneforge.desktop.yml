@@ -4,6 +4,7 @@ runtime-version: "50"
 sdk: org.gnome.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.node22
+  - org.freedesktop.Sdk.Extension.llvm20
   - org.freedesktop.Sdk.Extension.rust-stable
 command: tuneforge
 finish-args:
@@ -149,12 +150,13 @@ modules:
   - name: tuneforge
     buildsystem: simple
     build-options:
-      append-path: /app/bin:/usr/lib/sdk/node22/bin:/usr/lib/sdk/rust-stable/bin
+      append-path: /app/bin:/usr/lib/sdk/node22/bin:/usr/lib/sdk/llvm20/bin:/usr/lib/sdk/rust-stable/bin
       env:
         CARGO_HOME: /run/build/tuneforge/cargo-home
         CARGO_NET_OFFLINE: "true"
         HUSKY: "0"
         LD_LIBRARY_PATH: /app/lib/tuneforge/backend/python/lib
+        LIBCLANG_PATH: /usr/lib/sdk/llvm20/lib
         PYTHONPATH: /app/lib/tuneforge/backend/site-packages
         TUNEFORGE_BUNDLED_BACKEND_ROOT: /app/lib/tuneforge/backend
         TUNEFORGE_VERSION_FILE: /run/build/tuneforge/version.json
@@ -167,6 +169,9 @@ modules:
         path: ../../pnpm-workspace.yaml
       - type: file
         path: ../../LICENSE
+      - type: file
+        path: ../../scripts/build-info.mjs
+        dest: scripts
       - type: file
         path: ../../apps/desktop/package.json
         dest: apps/desktop

@@ -287,6 +287,87 @@ def test_reconciliation_apply_applies_trusted_delete_tombstone(
     assert not artifact_path.exists()
 
 
+def test_reconciliation_apply_does_not_recreate_deleted_project_placeholder(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    identity = _ensure_identity_and_peer("peer-apply-project-delete")
+    project_id = "proj_apply_deleted_project"
+    source_path = tmp_path / "deleted-project.wav"
+    source_path.write_bytes(b"deleted project source")
+    content_sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    _add_project_artifact(project_id, source_path, content_sha256)
+    stale_at = datetime(2026, 1, 1, tzinfo=UTC)
+    deleted_at = datetime(2026, 1, 2, tzinfo=UTC)
+    with SessionLocal() as session:
+        project = session.get(Project, project_id)
+        assert project is not None
+        project.created_at = stale_at
+        project.updated_at = stale_at
+        session.commit()
+    remote_project = _remote_project(project_id, content_sha256)
+    remote_project["created_at"] = stale_at.isoformat()
+    remote_project["updated_at"] = stale_at.isoformat()
+    stale_manifest = _project_manifest(
+        project_id,
+        content_sha256,
+        source_path.stat().st_size,
+        peer_device_id="peer-apply-project-delete",
+    )
+    stale_manifest["project"]["created_at"] = stale_at.isoformat()
+    stale_manifest["project"]["updated_at"] = stale_at.isoformat()
+
+    response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": {
+                "projects": [remote_project],
+                "artifacts": [],
+                "entity_revisions": [],
+                "delete_tombstones": [
+                    {
+                        "tombstone_id": "tomb_apply_project",
+                        "sync_group_id": identity.sync_group_id,
+                        "project_id": project_id,
+                        "target_type": "project",
+                        "target_id": project_id,
+                        "author_device_id": "peer-apply-project-delete",
+                        "deleted_at": deleted_at.isoformat(),
+                        "prior_metadata": {},
+                        "created_at": deleted_at.isoformat(),
+                        "updated_at": deleted_at.isoformat(),
+                    }
+                ],
+            },
+            "project_manifests": [stale_manifest],
+            "peer_inventory": [],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["failed_actions"] == 0
+    assert any(
+        result["action"]["action_type"] == "apply_delete_tombstone"
+        and result["action"]["item_type"] == "project"
+        and result["status"] == "applied"
+        for result in payload["results"]
+    )
+    assert any(
+        result["action"]["action_type"] == "upsert_project_status"
+        and result["action"]["item_type"] == "project"
+        and result["status"] == "skipped"
+        for result in payload["results"]
+    )
+
+    with SessionLocal() as session:
+        assert session.get(Project, project_id) is None
+        tombstone = session.get(SyncDeleteTombstone, "tomb_apply_project")
+        assert tombstone is not None
+        assert tombstone.target_type == "project"
+        assert tombstone.target_id == project_id
+
+
 def _ensure_identity_and_peer(peer_device_id: str) -> Any:
     now = datetime.now(UTC)
     with SessionLocal() as session:

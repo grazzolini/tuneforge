@@ -1,15 +1,24 @@
 from __future__ import annotations
 
+import shutil
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
-from app.models import Project, SyncDeleteTombstone
+from app.models import Artifact, Project, SyncDeleteTombstone, SyncEntityRevision
+from app.services.artifacts import register_artifact
+from app.services.paths import project_root
 from app.services.sync_manifest import (
+    _coerce_project_manifest,
+    _hydrate_current_entity_revisions,
+    _normalize_revision_state,
+    _safe_relative_path,
     hydrate_project_analysis_result_from_artifact,
     import_staged_project_manifest,
 )
@@ -29,8 +38,10 @@ from app.services.sync_reconciliation import (
     SyncReconciliationPlan,
     plan_sync_reconciliation,
 )
+from app.services.sync_revisions import revision_payload_sha256
 from app.services.sync_staging import cleanup_staged_artifacts, require_staged_artifact
 from app.services.sync_tombstones import apply_delete_tombstone
+from app.utils.hashing import file_sha256
 
 APPLY_STATUS_APPLIED = "applied"
 APPLY_STATUS_SATISFIED = "satisfied"
@@ -127,18 +138,9 @@ def _apply_action(
     if action.action_type == ACTION_UPSERT_PROJECT_STATUS:
         return _upsert_project_status(session, action, context)
     if action.action_type == ACTION_IMPORT_ARTIFACT_MANIFEST:
-        return _result(
-            action,
-            APPLY_STATUS_SKIPPED,
-            "Standalone artifact manifest import is not available through existing sync services.",
-        )
+        return _import_artifact_manifest(session, action, context)
     if action.action_type == ACTION_IMPORT_ENTITY_REVISION:
-        return _result(
-            action,
-            APPLY_STATUS_SKIPPED,
-            "Standalone entity revision import is not available through existing sync services.",
-            details={"supported_path": "Include the revision in a staged project manifest."},
-        )
+        return _import_entity_revision(session, action, context)
     if action.action_type == ACTION_RECORD_CONFLICT:
         return _result(
             action,
@@ -217,6 +219,168 @@ def _import_project_manifest(
     )
 
 
+def _import_artifact_manifest(
+    session: Session,
+    action: SyncReconciliationAction,
+    context: _ApplyContext,
+) -> SyncReconciliationApplyActionResult:
+    project_id = action.project_id
+    if project_id is None:
+        return _result(action, APPLY_STATUS_SKIPPED, "Artifact import action does not include a project_id.")
+    project = session.get(Project, project_id)
+    if project is None:
+        return _result(action, APPLY_STATUS_SKIPPED, "Project must exist before importing an artifact manifest.")
+    manifest = context.project_manifests_by_id.get(project_id)
+    if manifest is None:
+        return _result(action, APPLY_STATUS_SKIPPED, "Project manifest is not present in the apply request.")
+    project_manifest = _coerce_project_manifest(manifest)
+    artifact_manifest = next(
+        (
+            artifact
+            for artifact in project_manifest.artifacts
+            if artifact.artifact_id == action.item_id
+        ),
+        None,
+    )
+    if artifact_manifest is None:
+        return _result(action, APPLY_STATUS_SKIPPED, "Artifact manifest is not present in the project manifest.")
+    if artifact_manifest.project_id != project_id:
+        return _result(action, APPLY_STATUS_FAILED, "Artifact manifest belongs to a different project.")
+
+    existing_artifact = session.get(Artifact, artifact_manifest.artifact_id)
+    if existing_artifact is not None:
+        if (
+            existing_artifact.project_id != project_id
+            or existing_artifact.content_sha256 != artifact_manifest.content_sha256
+            or existing_artifact.size_bytes != artifact_manifest.size_bytes
+        ):
+            return _result(action, APPLY_STATUS_FAILED, "Artifact manifest conflicts with a local artifact.")
+        existing_path = Path(existing_artifact.path)
+        if (
+            existing_path.exists()
+            and existing_path.stat().st_size == artifact_manifest.size_bytes
+            and file_sha256(existing_path) == artifact_manifest.content_sha256
+        ):
+            return _result(action, APPLY_STATUS_SATISFIED, "Artifact manifest is already imported locally.")
+        destination_path = existing_path
+    else:
+        destination_path = project_root(project_id) / _safe_relative_path(artifact_manifest.relative_path)
+        if destination_path.exists():
+            return _result(action, APPLY_STATUS_FAILED, "Artifact destination already exists locally.")
+
+    try:
+        staged_artifact = require_staged_artifact(
+            session,
+            content_sha256=artifact_manifest.content_sha256,
+            size_bytes=artifact_manifest.size_bytes,
+        )
+    except AppError as exc:
+        return _result(
+            action,
+            APPLY_STATUS_SKIPPED,
+            "Artifact manifest import is waiting for staged artifact content.",
+            details={"error_code": exc.code, "error_details": exc.details},
+        )
+
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(staged_artifact.resolved_path, destination_path)
+    if existing_artifact is None:
+        imported_artifact = register_artifact(
+            session,
+            project_id=project_id,
+            artifact_type=artifact_manifest.type,
+            artifact_format=artifact_manifest.format,
+            path=destination_path,
+            artifact_id=artifact_manifest.artifact_id,
+            metadata=artifact_manifest.metadata,
+            cache_key=artifact_manifest.cache_key,
+            generated_by=artifact_manifest.generated_by,
+            can_delete=artifact_manifest.can_delete,
+            can_regenerate=artifact_manifest.can_regenerate,
+            created_at=artifact_manifest.created_at,
+        )
+    else:
+        existing_artifact.path = str(destination_path)
+        existing_artifact.metadata_json = deepcopy(artifact_manifest.metadata)
+        existing_artifact.cache_key = artifact_manifest.cache_key
+        existing_artifact.generated_by = artifact_manifest.generated_by
+        existing_artifact.can_delete = artifact_manifest.can_delete
+        existing_artifact.can_regenerate = artifact_manifest.can_regenerate
+        imported_artifact = existing_artifact
+    if (
+        imported_artifact.content_sha256 != artifact_manifest.content_sha256
+        or imported_artifact.size_bytes != artifact_manifest.size_bytes
+    ):
+        return _result(action, APPLY_STATUS_FAILED, "Copied artifact bytes do not match the manifest.")
+    if artifact_manifest.type == "analysis_json":
+        hydrate_project_analysis_result_from_artifact(session, project_id)
+    session.flush()
+    return _result(
+        action,
+        APPLY_STATUS_APPLIED,
+        "Artifact manifest was imported into the existing project.",
+        details={"artifact_id": artifact_manifest.artifact_id, "project_id": project_id},
+    )
+
+
+def _import_entity_revision(
+    session: Session,
+    action: SyncReconciliationAction,
+    context: _ApplyContext,
+) -> SyncReconciliationApplyActionResult:
+    project_id = action.project_id
+    if project_id is None:
+        return _result(action, APPLY_STATUS_SKIPPED, "Entity revision action does not include a project_id.")
+    project = session.get(Project, project_id)
+    if project is None:
+        return _result(action, APPLY_STATUS_SKIPPED, "Project must exist before importing an entity revision.")
+    manifest = context.project_manifests_by_id.get(project_id)
+    if manifest is None:
+        return _result(action, APPLY_STATUS_SKIPPED, "Project manifest is not present in the apply request.")
+    project_manifest = _coerce_project_manifest(manifest)
+    revision = next(
+        (
+            candidate
+            for candidate in project_manifest.entity_revisions
+            if candidate.revision_id == action.item_id
+        ),
+        None,
+    )
+    if revision is None:
+        return _result(action, APPLY_STATUS_SKIPPED, "Entity revision is not present in the project manifest.")
+    existing_revision = session.get(SyncEntityRevision, revision.revision_id)
+    if existing_revision is not None:
+        if revision_payload_sha256(existing_revision.payload_json or {}) == revision.content_sha256:
+            return _result(action, APPLY_STATUS_SATISFIED, "Entity revision is already imported locally.")
+        return _result(action, APPLY_STATUS_FAILED, "Entity revision conflicts with a local revision.")
+
+    row = SyncEntityRevision(
+        id=revision.revision_id,
+        project_id=revision.project_id,
+        entity_type=revision.entity_type,
+        entity_id=revision.entity_id,
+        revision_type=revision.revision_type,
+        base_revision_id=revision.base_revision_id,
+        author_device_id=revision.author_device_id,
+        source_artifact_id=revision.source_artifact_id,
+        content_sha256=revision.content_sha256,
+        state=_normalize_revision_state(revision.state),
+        metadata_json=deepcopy(revision.metadata),
+        payload_json=deepcopy(revision.payload),
+        created_at=revision.created_at,
+        updated_at=revision.updated_at,
+    )
+    session.add(row)
+    _hydrate_current_entity_revisions(session, project, [revision])
+    session.flush()
+    return _result(
+        action,
+        APPLY_STATUS_APPLIED,
+        "Entity revision was imported into the existing project.",
+        details={"revision_id": revision.revision_id, "project_id": project_id},
+    )
+
+
 def _apply_delete_tombstone_action(
     session: Session,
     action: SyncReconciliationAction,
@@ -257,6 +421,14 @@ def _upsert_project_status(
             action,
             APPLY_STATUS_SKIPPED,
             "Project status action does not include a project_status.",
+        )
+
+    create_placeholder = _bool_field(action.details, "create_placeholder", default=True)
+    if session.get(Project, project_id) is None and not create_placeholder:
+        return _result(
+            action,
+            APPLY_STATUS_SKIPPED,
+            "Project status action does not create a deleted placeholder.",
         )
 
     manifest_or_metadata = context.project_manifests_by_id.get(project_id)

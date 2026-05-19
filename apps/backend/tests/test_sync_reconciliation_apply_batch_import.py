@@ -832,6 +832,447 @@ def test_issue119_remote_placeholder_stays_locked_until_cross_peer_bytes_import(
         assert project.sync_required_artifact_ids == []
 
 
+def test_issue120_three_peer_import_uses_staged_bytes_from_non_advertising_peer(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    _ensure_identity_and_peers(
+        "peer-issue120-manifest",
+        "peer-issue120-bytes",
+        "peer-issue120-offline",
+    )
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(
+            session,
+            tmp_path,
+            slug="issue120-three-peer",
+            source_frames=120,
+        )
+        manifest = _jsonable_manifest(export_project_manifest(session, project_id=fixture.project_id))
+        _delete_live_project(session, fixture)
+        session.commit()
+
+    peer_inventory = [
+        {
+            "device_id": "peer-issue120-manifest",
+            "available_content_sha256": _manifest_content_hashes([manifest]),
+        }
+    ]
+    first_response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": _empty_remote_library(),
+            "project_manifests": [manifest],
+            "peer_inventory": peer_inventory,
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert first_response.status_code == 200
+    first_payload = first_response.json()
+    assert first_payload["summary"]["failed_actions"] == 0
+    assert first_payload["summary"]["skipped_actions"] > 0
+    project_item = _plan_item(first_payload["plan"]["items"], "project", fixture.project_id)
+    assert project_item["status"] == "remote_available"
+    assert project_item["chosen_provider_device_id"] == "peer-issue120-manifest"
+    assert any(
+        result["action"]["action_type"] == "import_project_manifest"
+        and result["status"] == "skipped"
+        and result["details"]["missing_artifacts"]
+        for result in first_payload["results"]
+    )
+
+    with SessionLocal() as session:
+        placeholder = session.get(Project, fixture.project_id)
+        assert placeholder is not None
+        assert placeholder.sync_status == "remote_available"
+        assert placeholder.sync_provider_device_ids == ["peer-issue120-manifest"]
+        assert session.scalar(
+            select(func.count())
+            .select_from(Artifact)
+            .where(Artifact.project_id == fixture.project_id)
+        ) == 0
+
+    locked_response = client.patch(
+        f"/api/v1/projects/{fixture.project_id}",
+        json={"display_name": "Still Waiting For Bytes"},
+    )
+    assert locked_response.status_code == 409
+    assert locked_response.json()["error"]["code"] == "PROJECT_SYNC_LOCKED"
+
+    with SessionLocal() as session:
+        _stage_manifest_content(
+            session,
+            manifest,
+            tmp_path=tmp_path,
+            artifact_bytes=fixture.artifact_bytes,
+            provider_device_id="peer-issue120-bytes",
+        )
+        session.commit()
+
+    second_response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": _empty_remote_library(),
+            "project_manifests": [manifest],
+            "peer_inventory": peer_inventory,
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert second_response.status_code == 200
+    second_payload = second_response.json()
+    assert second_payload["summary"]["failed_actions"] == 0
+    fetch_results = [
+        result
+        for result in second_payload["results"]
+        if result["action"]["action_type"] == "fetch_artifact_content"
+    ]
+    assert fetch_results
+    assert {result["status"] for result in fetch_results} == {"satisfied"}
+    assert {
+        result["action"]["provider_device_id"] for result in fetch_results
+    } == {"peer-issue120-manifest"}
+    assert {result["details"]["provider_device_id"] for result in fetch_results} == {
+        "peer-issue120-bytes"
+    }
+    assert any(
+        result["action"]["action_type"] == "import_project_manifest"
+        and result["status"] == "applied"
+        for result in second_payload["results"]
+    )
+
+    unlocked_response = client.patch(
+        f"/api/v1/projects/{fixture.project_id}",
+        json={"display_name": "Editable After Three Peer Import"},
+    )
+    assert unlocked_response.status_code == 200
+    assert unlocked_response.json()["project"]["display_name"] == (
+        "Editable After Three Peer Import"
+    )
+
+    with SessionLocal() as session:
+        project = session.get(Project, fixture.project_id)
+        assert project is not None
+        assert project.sync_status == "local"
+        assert project.sync_status_reason is None
+        assert project.sync_provider_device_ids == []
+        assert project.sync_required_artifact_ids == []
+        assert "peer-issue120-offline" not in project.sync_provider_device_ids
+
+        imported_artifacts = {
+            artifact.id: artifact
+            for artifact in session.scalars(
+                select(Artifact).where(Artifact.project_id == fixture.project_id)
+            )
+        }
+        assert set(imported_artifacts) == {
+            fixture.source_artifact_id,
+            fixture.stem_artifact_id,
+        }
+        for artifact_id, expected_hash in fixture.artifact_hashes.items():
+            artifact = imported_artifacts[artifact_id]
+            assert artifact.content_sha256 == expected_hash
+            assert Path(artifact.path).exists()
+            assert file_sha256(Path(artifact.path)) == expected_hash
+
+
+def test_issue120_stale_inventory_cannot_import_without_verified_staged_size(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    _ensure_identity_and_peers(
+        "peer-issue120-stale-inventory",
+        "peer-issue120-size-provider",
+    )
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(
+            session,
+            tmp_path,
+            slug="issue120-stale-inventory",
+            source_frames=124,
+        )
+        manifest = _jsonable_manifest(export_project_manifest(session, project_id=fixture.project_id))
+        stale_size_manifest = json.loads(json.dumps(manifest))
+        stale_source_artifact = _artifact_by_id(stale_size_manifest, fixture.source_artifact_id)
+        stale_source_artifact["size_bytes"] += 1
+        _delete_live_project(session, fixture)
+        session.commit()
+
+    stale_inventory = [
+        {
+            "device_id": "peer-issue120-stale-inventory",
+            "available_content_sha256": _manifest_content_hashes([stale_size_manifest]),
+        }
+    ]
+    missing_bytes_response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": _empty_remote_library(),
+            "project_manifests": [stale_size_manifest],
+            "peer_inventory": stale_inventory,
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert missing_bytes_response.status_code == 200
+    missing_bytes_payload = missing_bytes_response.json()
+    assert missing_bytes_payload["summary"]["failed_actions"] == 0
+    assert any(
+        result["action"]["action_type"] == "import_project_manifest"
+        and result["status"] == "skipped"
+        and {
+            artifact["artifact_id"]
+            for artifact in result["details"]["missing_artifacts"]
+        }
+        == {fixture.source_artifact_id, fixture.stem_artifact_id}
+        for result in missing_bytes_payload["results"]
+    )
+
+    with SessionLocal() as session:
+        project = session.get(Project, fixture.project_id)
+        assert project is not None
+        assert project.sync_status == "remote_available"
+        assert session.scalar(
+            select(func.count())
+            .select_from(Artifact)
+            .where(Artifact.project_id == fixture.project_id)
+        ) == 0
+
+        _stage_manifest_content(
+            session,
+            manifest,
+            tmp_path=tmp_path,
+            artifact_bytes=fixture.artifact_bytes,
+            provider_device_id="peer-issue120-size-provider",
+        )
+        session.commit()
+
+    mismatched_size_response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": _empty_remote_library(),
+            "project_manifests": [stale_size_manifest],
+            "peer_inventory": stale_inventory,
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert mismatched_size_response.status_code == 200
+    mismatched_size_payload = mismatched_size_response.json()
+    assert mismatched_size_payload["summary"]["failed_actions"] == 0
+    import_skips = [
+        result
+        for result in mismatched_size_payload["results"]
+        if result["action"]["action_type"] == "import_project_manifest"
+        and result["status"] == "skipped"
+    ]
+    assert len(import_skips) == 1
+    assert import_skips[0]["details"]["missing_artifacts"] == [
+        {
+            "artifact_id": fixture.source_artifact_id,
+            "content_sha256": fixture.artifact_hashes[fixture.source_artifact_id],
+            "error_code": "SYNC_STAGING_RECORD_SIZE_MISMATCH",
+        }
+    ]
+
+    with SessionLocal() as session:
+        project = session.get(Project, fixture.project_id)
+        assert project is not None
+        assert project.sync_status == "remote_available"
+        assert session.scalar(
+            select(func.count())
+            .select_from(Artifact)
+            .where(Artifact.project_id == fixture.project_id)
+        ) == 0
+
+    correct_manifest_response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": _empty_remote_library(),
+            "project_manifests": [manifest],
+            "peer_inventory": stale_inventory,
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert correct_manifest_response.status_code == 200
+    assert correct_manifest_response.json()["summary"]["failed_actions"] == 0
+
+    with SessionLocal() as session:
+        project = session.get(Project, fixture.project_id)
+        assert project is not None
+        assert project.sync_status == "local"
+        assert project.sync_required_artifact_ids == []
+        assert project.sync_provider_device_ids == []
+        assert {
+            artifact.id
+            for artifact in session.scalars(
+                select(Artifact).where(Artifact.project_id == fixture.project_id)
+            )
+        } == {fixture.source_artifact_id, fixture.stem_artifact_id}
+
+
+def test_issue120_existing_project_imports_late_manifest_artifacts(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    _ensure_identity_and_peers("peer-issue120-late-artifact")
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(
+            session,
+            tmp_path,
+            slug="issue120-late-artifact",
+            source_frames=128,
+        )
+        manifest = _jsonable_manifest(export_project_manifest(session, project_id=fixture.project_id))
+        late_artifact_path = project_root(fixture.project_id) / fixture.stem_relative_path
+        late_artifact = session.get(Artifact, fixture.stem_artifact_id)
+        assert late_artifact is not None
+        session.delete(late_artifact)
+        late_artifact_path.unlink()
+        _stage_manifest_content(
+            session,
+            manifest,
+            tmp_path=tmp_path,
+            artifact_bytes=fixture.artifact_bytes,
+            provider_device_id="peer-issue120-late-artifact",
+        )
+        session.commit()
+
+    response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": _empty_remote_library(),
+            "project_manifests": [manifest],
+            "peer_inventory": [
+                {
+                    "device_id": "peer-issue120-late-artifact",
+                    "available_content_sha256": _manifest_content_hashes([manifest]),
+                }
+            ],
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["failed_actions"] == 0
+    assert any(
+        result["action"]["action_type"] == "import_artifact_manifest"
+        and result["action"]["project_id"] == fixture.project_id
+        and result["action"]["item_id"] == fixture.stem_artifact_id
+        and result["status"] == "applied"
+        for result in payload["results"]
+    )
+
+    with SessionLocal() as session:
+        project = session.get(Project, fixture.project_id)
+        assert project is not None
+        assert project.sync_status == "local"
+        restored_artifact = session.get(Artifact, fixture.stem_artifact_id)
+        assert restored_artifact is not None
+        assert Path(restored_artifact.path).exists()
+        assert restored_artifact.content_sha256 == fixture.artifact_hashes[fixture.stem_artifact_id]
+
+
+def test_issue120_remote_tombstone_from_trusted_peer_wins_over_stale_manifest(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    identity = _ensure_identity_and_peers(
+        "peer-issue120-stale-manifest",
+        "peer-issue120-tombstone",
+    )
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(
+            session,
+            tmp_path,
+            slug="issue120-tombstone",
+            source_frames=128,
+        )
+        stale_manifest = _jsonable_manifest(
+            export_project_manifest(session, project_id=fixture.project_id)
+        )
+        deleted_artifact_path = project_root(fixture.project_id) / fixture.stem_relative_path
+        deleted_artifact = session.get(Artifact, fixture.stem_artifact_id)
+        assert deleted_artifact is not None
+        session.delete(deleted_artifact)
+        deleted_artifact_path.unlink()
+        session.commit()
+
+    tombstone_time = datetime(2026, 1, 2, tzinfo=UTC).isoformat()
+    tombstone = {
+        "tombstone_id": "tomb_issue120_remote_deleted_stem",
+        "sync_group_id": identity["sync_group_id"],
+        "project_id": fixture.project_id,
+        "target_type": "artifact",
+        "target_id": fixture.stem_artifact_id,
+        "author_device_id": "peer-issue120-tombstone",
+        "deleted_at": tombstone_time,
+        "prior_metadata": {"artifact_id": fixture.stem_artifact_id, "type": "vocals"},
+        "created_at": tombstone_time,
+        "updated_at": tombstone_time,
+    }
+    remote_library = _empty_remote_library()
+    remote_library["delete_tombstones"] = [tombstone]
+
+    response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": remote_library,
+            "project_manifests": [stale_manifest],
+            "peer_inventory": [
+                {
+                    "device_id": "peer-issue120-stale-manifest",
+                    "available_content_sha256": _manifest_content_hashes([stale_manifest]),
+                }
+            ],
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["failed_actions"] == 0
+    assert (
+        _plan_item(payload["plan"]["items"], "artifact", fixture.stem_artifact_id)["status"]
+        == "deleted"
+    )
+    assert all(
+        result["action"]["action_type"] != "import_project_manifest"
+        for result in payload["results"]
+    )
+    assert any(
+        result["action"]["action_type"] == "apply_delete_tombstone"
+        and result["action"]["item_id"] == fixture.stem_artifact_id
+        and result["status"] == "applied"
+        for result in payload["results"]
+    )
+
+    editable_response = client.patch(
+        f"/api/v1/projects/{fixture.project_id}",
+        json={"display_name": "Tombstone Still Editable"},
+    )
+    assert editable_response.status_code == 200
+    assert editable_response.json()["project"]["display_name"] == "Tombstone Still Editable"
+
+    with SessionLocal() as session:
+        project = session.get(Project, fixture.project_id)
+        assert project is not None
+        assert project.sync_status == "local"
+        assert session.get(Artifact, fixture.source_artifact_id) is not None
+        assert session.get(Artifact, fixture.stem_artifact_id) is None
+        assert not deleted_artifact_path.exists()
+        persisted_tombstone = session.get(SyncDeleteTombstone, tombstone["tombstone_id"])
+        assert persisted_tombstone is not None
+        assert persisted_tombstone.author_device_id == "peer-issue120-tombstone"
+
+
 def _ensure_identity_and_peers(*peer_device_ids: str) -> dict[str, str]:
     now = datetime.now(UTC)
     with SessionLocal() as session:
@@ -1101,6 +1542,13 @@ def _revision_by_id(manifest: dict[str, Any], revision_id: str) -> dict[str, Any
         if revision["revision_id"] == revision_id:
             return revision
     raise AssertionError(f"Missing revision in manifest: {revision_id}")
+
+
+def _artifact_by_id(manifest: dict[str, Any], artifact_id: str) -> dict[str, Any]:
+    for artifact in manifest["artifacts"]:
+        if artifact["artifact_id"] == artifact_id:
+            return artifact
+    raise AssertionError(f"Missing artifact in manifest: {artifact_id}")
 
 
 def _plan_item(items: list[dict[str, Any]], item_type: str, item_id: str) -> dict[str, Any]:

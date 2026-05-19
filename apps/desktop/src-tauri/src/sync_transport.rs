@@ -1279,7 +1279,7 @@ mod desktop {
                 }
             };
 
-        for entry in planned_fetch_artifact_entries(&plan, manifests) {
+        for entry in planned_fetch_artifact_entries(&plan, manifests, peer_device_id) {
             match request_and_stage_artifact(client, connection, peer_device_id, &entry.artifact) {
                 Ok(result) => received_artifacts.push(result),
                 Err(error) => {
@@ -1603,8 +1603,9 @@ mod desktop {
     fn planned_fetch_artifact_entries(
         plan: &Value,
         manifests: &[Value],
+        provider_device_id: &str,
     ) -> Vec<ManifestArtifactEntry> {
-        let requested = planned_fetch_keys(plan);
+        let requested = planned_fetch_keys(plan, provider_device_id);
         manifest_artifact_entries(manifests)
             .into_iter()
             .filter(|entry| {
@@ -1617,13 +1618,18 @@ mod desktop {
             .collect()
     }
 
-    fn planned_fetch_keys(plan: &Value) -> HashSet<(String, String, String)> {
+    fn planned_fetch_keys(
+        plan: &Value,
+        provider_device_id: &str,
+    ) -> HashSet<(String, String, String)> {
         plan.get("actions")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
             .filter(|action| {
                 action.get("action_type").and_then(Value::as_str) == Some("fetch_artifact_content")
+                    && action.get("provider_device_id").and_then(Value::as_str)
+                        == Some(provider_device_id)
             })
             .filter_map(|action| {
                 Some((
@@ -2606,11 +2612,54 @@ mod desktop {
                 }]
             });
 
-            let entries = planned_fetch_artifact_entries(&plan, &manifests);
+            let entries = planned_fetch_artifact_entries(&plan, &manifests, "dev_peer");
 
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0].artifact.artifact_id, "art_two");
             assert_eq!(entries[0].manifest_project_id, "proj_two");
+        }
+
+        #[test]
+        fn planned_fetch_artifact_entries_requires_matching_provider_device_id() {
+            let manifests = vec![json!({
+                "project": { "project_id": "proj_one" },
+                "artifacts": [{
+                    "artifact_id": "art_one",
+                    "project_id": "proj_one",
+                    "content_sha256": "hash_a",
+                    "size_bytes": 10
+                }, {
+                    "artifact_id": "art_two",
+                    "project_id": "proj_one",
+                    "content_sha256": "hash_b",
+                    "size_bytes": 20
+                }]
+            })];
+            let plan = json!({
+                "actions": [{
+                    "action_type": "fetch_artifact_content",
+                    "item_type": "artifact",
+                    "item_id": "art_one",
+                    "project_id": "proj_one",
+                    "content_sha256": "hash_a",
+                    "provider_device_id": "dev_other_peer",
+                    "priority": 20
+                }, {
+                    "action_type": "fetch_artifact_content",
+                    "item_type": "artifact",
+                    "item_id": "art_two",
+                    "project_id": "proj_one",
+                    "content_sha256": "hash_b",
+                    "provider_device_id": "dev_selected_peer",
+                    "priority": 20
+                }]
+            });
+
+            let entries = planned_fetch_artifact_entries(&plan, &manifests, "dev_selected_peer");
+
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].artifact.artifact_id, "art_two");
+            assert_eq!(entries[0].artifact.content_sha256, "hash_b");
         }
 
         #[test]
@@ -2635,7 +2684,7 @@ mod desktop {
                 }]
             });
 
-            assert!(planned_fetch_artifact_entries(&plan, &manifests).is_empty());
+            assert!(planned_fetch_artifact_entries(&plan, &manifests, "dev_peer").is_empty());
         }
 
         #[test]

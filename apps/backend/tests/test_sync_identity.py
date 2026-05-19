@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from app.db import SessionLocal
-from app.models import Artifact, Project
+from app.models import Artifact, Project, SyncDeleteTombstone
 from app.services.paths import project_root
 from app.services.sync_identity import (
     project_id_to_storage_key,
@@ -244,6 +245,48 @@ def test_sync_metadata_exposes_sync_safe_project_and_artifact_metadata(
     external_artifact = artifacts["art_external"]
     assert external_artifact["relative_path"] is None
     assert external_artifact["metadata"] == {"transpose": {"semitones": -1}}
+
+
+def test_sync_metadata_omits_deleted_projects_but_keeps_tombstones(
+    client,
+    sample_audio_file: Path,
+) -> None:
+    source_hash = file_sha256(sample_audio_file)
+    assert source_hash is not None
+    project_id = source_hash_to_project_id(source_hash)
+
+    with SessionLocal() as session:
+        project = Project(
+            id=project_id,
+            display_name="Deleted Sync Fixture",
+            source_sha256=source_hash,
+            source_path=str(sample_audio_file),
+            imported_path=str(sample_audio_file),
+            sync_status="deleted",
+        )
+        session.add(project)
+        session.add(
+            SyncDeleteTombstone(
+                id="tomb_deleted_sync_project",
+                sync_group_id="group-a",
+                project_id=project_id,
+                target_type="project",
+                target_id=project_id,
+                author_device_id="peer-a",
+                deleted_at=datetime(2026, 1, 1, tzinfo=UTC),
+                prior_metadata_json={"display_name": "Deleted Sync Fixture"},
+            )
+        )
+        session.commit()
+
+    response = client.get("/api/v1/sync/metadata")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["projects"] == []
+    assert [tombstone["tombstone_id"] for tombstone in payload["delete_tombstones"]] == [
+        "tomb_deleted_sync_project"
+    ]
 
 
 def test_sync_preflight_does_not_recover_missing_hash_from_source_path(

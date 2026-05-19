@@ -39,7 +39,7 @@ from app.services.sync_reconciliation import (
     SyncReconciliationPlan,
     plan_sync_reconciliation,
 )
-from app.services.sync_revisions import revision_payload_sha256
+from app.services.sync_revisions import revision_payload_sha256, sanitize_revision_payload
 
 
 @pytest.fixture()
@@ -323,6 +323,96 @@ def test_entity_revision_ancestry_imports_descendants_and_conflicts_siblings(
         "rev_a_remote_grandchild"
     )
     assert _action(plan, ACTION_RECORD_CONFLICT, ITEM_ENTITY_REVISION, "rev_remote_sibling") is not None
+
+
+def test_existing_project_manifest_scoped_revision_does_not_create_standalone_conflict(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    _add_identity_and_peers(db_session)
+    source_hash, source_size = _write_file(tmp_path / "legacy-hash-source.wav", b"source")
+    project_id = source_hash_to_project_id(source_hash)
+    _add_project(db_session, project_id, source_sha256=source_hash)
+    _add_artifact(
+        db_session,
+        artifact_id=f"art_source_{project_id}",
+        project_id=project_id,
+        path=tmp_path / "legacy-hash-source.wav",
+        content_sha256=source_hash,
+        size_bytes=source_size,
+        artifact_type="source_audio",
+    )
+    dirty_payload = {
+        "revision_id": "rev_legacy_hash",
+        "timeline": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "C"}],
+        "source_path": str(tmp_path / "local-only.wav"),
+    }
+    safe_payload = sanitize_revision_payload(dirty_payload)
+    legacy_hash = revision_payload_sha256(dirty_payload)
+    canonical_hash = revision_payload_sha256(safe_payload)
+    now = datetime.now(UTC)
+    db_session.add(
+        SyncEntityRevision(
+            id="rev_legacy_hash",
+            project_id=project_id,
+            entity_type="chords",
+            entity_id=project_id,
+            revision_type="manual",
+            base_revision_id=None,
+            source_artifact_id=f"art_source_{project_id}",
+            content_sha256=legacy_hash,
+            author_device_id="dev-local",
+            state="current",
+            metadata_json={},
+            payload_json=dirty_payload,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    db_session.commit()
+
+    manifest = _project_manifest(
+        project_id,
+        source_hash,
+        source_size_bytes=source_size,
+        extra_revisions=[
+            {
+                "revision_id": "rev_legacy_hash",
+                "project_id": project_id,
+                "entity_type": "chords",
+                "entity_id": project_id,
+                "revision_type": "manual",
+                "base_revision_id": None,
+                "author_device_id": "peer-a",
+                "source_artifact_id": f"art_source_{project_id}",
+                "content_sha256": canonical_hash,
+                "state": "current",
+                "metadata": {},
+                "payload": safe_payload,
+                "created_at": now,
+                "updated_at": now,
+            }
+        ],
+    )
+
+    plan = plan_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {},
+            "project_manifests": [manifest],
+            "peer_inventory": [
+                {"device_id": "peer-a", "available_content_hashes": [source_hash]}
+            ],
+        },
+    )
+
+    assert all(
+        item.item_id != "rev_legacy_hash"
+        for item in plan.items
+        if item.item_type == ITEM_ENTITY_REVISION
+    )
+    assert plan.summary.total_conflicts == 0
+    assert _action(plan, ACTION_RECORD_CONFLICT, ITEM_ENTITY_REVISION, "rev_legacy_hash") is None
 
 
 @pytest.mark.parametrize(
@@ -983,7 +1073,6 @@ def test_missing_project_manifest_rejects_invalid_embedded_entity_revisions(
 @pytest.mark.parametrize(
     ("case", "expected_reason"),
     [
-        ("payload_hash_mismatch", "Entity revision manifest content_sha256 must match payload."),
         ("unsafe_metadata", "Entity revision manifest metadata and payload must be sync-safe."),
         ("unsafe_payload", "Entity revision manifest metadata and payload must be sync-safe."),
     ],

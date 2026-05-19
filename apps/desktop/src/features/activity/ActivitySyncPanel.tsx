@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
   type SyncPairingPayloadSchema,
+  type SyncTransportProjectResult,
   type SyncTransportRunStatus,
   type SyncTrustedPeerSchema,
 } from "../../lib/api";
@@ -135,6 +136,51 @@ function syncStatusText(status: SyncTransportRunStatus | null | undefined, peers
   return status.message ?? `${statusLabel(status.status)} for ${peerName}.`;
 }
 
+function syncResultKey(status: SyncTransportRunStatus | null | undefined) {
+  if (!status) {
+    return null;
+  }
+  return JSON.stringify({
+    peer: status.peer_device_id,
+    remote: status.remote_device_id,
+    status: status.status,
+    message: status.message,
+    projects: status.project_results.map((result) => [
+      result.project_id,
+      result.status,
+      result.message ?? null,
+    ]),
+    receivedArtifacts: status.received_artifacts.length,
+    remoteManifests: status.remote_manifest_count,
+    localManifests: status.local_manifest_count,
+  });
+}
+
+function syncProjectResultText(result: SyncTransportProjectResult) {
+  return result.message?.trim() || `${statusLabel(result.status)}.`;
+}
+
+function syncProjectResultList(status: SyncTransportRunStatus | null | undefined) {
+  const results = status?.project_results ?? [];
+  if (!results.length) {
+    return null;
+  }
+  return (
+    <ul className="activity-sync-project-results" aria-label="Last sync project results">
+      {results.map((result, index) => (
+        <li
+          className={`activity-sync-project-result activity-sync-project-result--${statusClassName(result.status)}`}
+          key={`${result.project_id}-${result.status}-${index}`}
+        >
+          <span className="activity-sync-project-result__status">{statusLabel(result.status)}</span>
+          <span className="activity-sync-project-result__project">{result.project_id}</span>
+          <span className="activity-sync-project-result__message">{syncProjectResultText(result)}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function endpointList(endpointHints: string[]) {
   if (!endpointHints.length) {
     return <span>No listener endpoints announced.</span>;
@@ -157,6 +203,8 @@ export function ActivitySyncPanel() {
   const [pairingMessage, setPairingMessage] = useState<string | null>(null);
   const [pairingError, setPairingError] = useState<string | null>(null);
   const [lastSyncMessage, setLastSyncMessage] = useState<string | null>(null);
+  const [lastSyncResult, setLastSyncResult] = useState<SyncTransportRunStatus | null>(null);
+  const [hiddenListenerSyncKey, setHiddenListenerSyncKey] = useState<string | null>(null);
 
   const identityQuery = useQuery({
     queryKey: ["sync", "identity"],
@@ -178,7 +226,16 @@ export function ActivitySyncPanel() {
   const endpointHints = listenerQuery.data?.endpoint_hints ?? [];
   const listenerActive = listenerQuery.data?.active ?? false;
   const listenerStatus = listenerQuery.isError ? "unavailable" : listenerQuery.data?.status ?? "checking";
-  const lastSyncStatus = listenerQuery.data?.last_status ?? syncStatusText(listenerQuery.data?.last_sync, peersById);
+  const listenerSyncResult = listenerQuery.data?.last_sync ?? null;
+  const listenerSyncKey = useMemo(() => syncResultKey(listenerSyncResult), [listenerSyncResult]);
+  const showListenerSyncResult = listenerSyncResult !== null && listenerSyncKey !== hiddenListenerSyncKey;
+  const lastSyncStatus = listenerSyncResult
+    ? syncStatusText(listenerSyncResult, peersById)
+    : listenerQuery.data?.last_status ?? syncStatusText(listenerSyncResult, peersById);
+  const visibleSyncResult = showListenerSyncResult ? listenerSyncResult : lastSyncResult ?? listenerSyncResult;
+  const displayedLastSyncMessage = !showListenerSyncResult
+    ? lastSyncMessage ?? lastSyncStatus
+    : lastSyncStatus;
 
   const refreshSyncQueries = async () => {
     await Promise.all([
@@ -191,6 +248,8 @@ export function ActivitySyncPanel() {
     mutationFn: () => api.startSyncListener(),
     onSuccess: async () => {
       setLastSyncMessage("Sync listener started.");
+      setLastSyncResult(null);
+      setHiddenListenerSyncKey(null);
       await refreshSyncQueries();
     },
   });
@@ -198,6 +257,8 @@ export function ActivitySyncPanel() {
     mutationFn: () => api.stopSyncListener(),
     onSuccess: async () => {
       setLastSyncMessage("Sync listener stopped.");
+      setLastSyncResult(null);
+      setHiddenListenerSyncKey(null);
       await refreshSyncQueries();
     },
   });
@@ -271,6 +332,8 @@ export function ActivitySyncPanel() {
     mutationFn: (deviceId: string) => api.revokeSyncTrustedPeer(deviceId),
     onSuccess: async (response) => {
       setLastSyncMessage(`Revoked ${peerLabel(response.trusted_peer)}.`);
+      setLastSyncResult(null);
+      setHiddenListenerSyncKey(null);
       await refreshSyncQueries();
     },
   });
@@ -278,10 +341,14 @@ export function ActivitySyncPanel() {
     mutationFn: (deviceId: string) => api.syncTrustedPeerNow(deviceId),
     onSuccess: async (status) => {
       setLastSyncMessage(syncStatusText(status, peersById));
+      setLastSyncResult(status);
+      setHiddenListenerSyncKey(listenerSyncKey);
       await refreshSyncQueries();
     },
     onError: () => {
       setLastSyncMessage("Sync now failed.");
+      setLastSyncResult(null);
+      setHiddenListenerSyncKey(null);
     },
   });
 
@@ -362,7 +429,10 @@ export function ActivitySyncPanel() {
             </div>
             <div>
               <dt>Last Sync</dt>
-              <dd>{lastSyncMessage ?? lastSyncStatus}</dd>
+              <dd className="activity-sync-last-sync">
+                <span>{displayedLastSyncMessage}</span>
+                {syncProjectResultList(visibleSyncResult)}
+              </dd>
             </div>
             {lastListenerUpdatedAt ? (
               <div>

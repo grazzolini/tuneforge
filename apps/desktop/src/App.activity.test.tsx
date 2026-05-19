@@ -18,6 +18,7 @@ import {
   resetAppTestHarness,
   setJobs,
   setProjects,
+  setSyncTransportStatus,
   setSyncTrustedPeers,
 } from "./test/appTestHarness";
 
@@ -194,7 +195,144 @@ describe("Desktop app activity", () => {
     await user.click(within(peerRow as HTMLElement).getByRole("button", { name: "Sync Now" }));
 
     await waitFor(() => expect(mockSyncTrustedPeerNow).toHaveBeenCalledWith("device_peer_1"));
-    expect(await screen.findAllByText("Manifest exchange completed.")).not.toHaveLength(0);
+    expect(await screen.findAllByText("Manifest exchange completed with 4 project results.")).not.toHaveLength(0);
+
+    const projectResults = await screen.findByRole("list", { name: "Last sync project results" });
+    const resultRows = within(projectResults).getAllByRole("listitem");
+    expect(resultRows).toHaveLength(4);
+    expect(within(resultRows[0]).getByText("Applied")).toBeInTheDocument();
+    expect(within(resultRows[0]).getByText("proj_imported")).toBeInTheDocument();
+    expect(within(resultRows[0]).getByText("Reconciliation apply: 3 applied, 1 satisfied, 0 skipped, 0 failed.")).toBeInTheDocument();
+    expect(within(resultRows[1]).getByText("Skipped")).toBeInTheDocument();
+    expect(within(resultRows[1]).getByText("proj_up_to_date")).toBeInTheDocument();
+    expect(within(resultRows[2]).getByText("Conflicted")).toBeInTheDocument();
+    expect(within(resultRows[2]).getByText("Local lyrics conflict with the trusted peer revision.")).toBeInTheDocument();
+    expect(within(resultRows[3]).getByText("Failed")).toBeInTheDocument();
+    expect(within(resultRows[3]).getByText("proj_missing_audio")).toBeInTheDocument();
+    expect(within(resultRows[3]).getByText("Peer did not provide the required source audio.")).toBeInTheDocument();
+  });
+
+  it("shows listener-side sync project results from native status", async () => {
+    const user = userEvent.setup();
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: ["tcp://192.168.1.57:48625"],
+      last_status: "Sync session completed without structured details.",
+      last_sync: {
+        peer_device_id: "device_peer_1",
+        remote_device_id: "device_peer_1",
+        status: "completed_with_errors",
+        message:
+          "Exchanged 0 local and 2 remote manifest(s); imported 0 project(s), skipped 0 project(s), failed 2 project(s), received 16 artifact(s).",
+        project_results: [
+          {
+            project_id: "proj_conflicted",
+            status: "conflicted",
+            message: "Entity revision manifest content_sha256 must match payload.",
+          },
+        ],
+        manifest_errors: [],
+        received_artifacts: [],
+        served_artifact_requests: 0,
+        local_manifest_count: 0,
+        remote_manifest_count: 2,
+      },
+    });
+
+    await openSyncTab(user);
+
+    expect(
+      await screen.findByText(
+        "Exchanged 0 local and 2 remote manifest(s); imported 0 project(s), skipped 0 project(s), failed 2 project(s), received 16 artifact(s).",
+      ),
+    ).toBeInTheDocument();
+    const projectResults = await screen.findByRole("list", { name: "Last sync project results" });
+    const resultRows = within(projectResults).getAllByRole("listitem");
+    expect(resultRows).toHaveLength(1);
+    expect(within(resultRows[0]).getByText("Conflicted")).toBeInTheDocument();
+    expect(within(resultRows[0]).getByText("proj_conflicted")).toBeInTheDocument();
+    expect(
+      within(resultRows[0]).getByText("Entity revision manifest content_sha256 must match payload."),
+    ).toBeInTheDocument();
+  });
+
+  it("shows newer listener sync results after a prior sync now result", async () => {
+    const user = userEvent.setup();
+    setSyncTrustedPeers([
+      {
+        device_id: "device_peer_1",
+        sync_group_id: "sync_group_local",
+        display_name: "Laptop Rig",
+        public_key: "pub_peer_1",
+        endpoint_hints: ["tcp://192.168.1.57:48625"],
+        trusted_at: "2026-04-18T13:16:00.000Z",
+      },
+    ]);
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: ["tcp://192.168.1.57:48625"],
+      last_sync: {
+        peer_device_id: "device_peer_1",
+        remote_device_id: "device_peer_1",
+        status: "completed",
+        message: "Listener import completed before sync now.",
+        project_results: [
+          {
+            project_id: "proj_listener_old",
+            status: "imported",
+            message: "Old listener result.",
+          },
+        ],
+        manifest_errors: [],
+        received_artifacts: [],
+        served_artifact_requests: 0,
+        local_manifest_count: 0,
+        remote_manifest_count: 1,
+      },
+    });
+    await openSyncTab(user);
+
+    const peers = await screen.findByRole("list", { name: "Trusted sync peers" });
+    const peerRow = within(peers).getByText("Laptop Rig").closest("li");
+    expect(peerRow).not.toBeNull();
+    await user.click(within(peerRow as HTMLElement).getByRole("button", { name: "Sync Now" }));
+
+    expect(await screen.findAllByText("Manifest exchange completed with 4 project results.")).not.toHaveLength(0);
+    expect(screen.getByText("proj_imported")).toBeInTheDocument();
+
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: ["tcp://192.168.1.57:48625"],
+      last_sync: {
+        peer_device_id: "device_peer_1",
+        remote_device_id: "device_peer_1",
+        status: "completed",
+        message: "Listener import completed after sync now.",
+        project_results: [
+          {
+            project_id: "proj_listener_new",
+            status: "imported",
+            message: "New listener result.",
+          },
+        ],
+        manifest_errors: [],
+        received_artifacts: [],
+        served_artifact_requests: 0,
+        local_manifest_count: 0,
+        remote_manifest_count: 1,
+      },
+    });
+    fireEvent.change(screen.getByLabelText("Peer offer or response payload"), {
+      target: { value: JSON.stringify(pairingPayload({ device_id: "device_peer_2" })) },
+    });
+    await user.click(screen.getByRole("button", { name: "Answer Offer" }));
+
+    expect(await screen.findByText("Listener import completed after sync now.")).toBeInTheDocument();
+    expect(screen.getByText("proj_listener_new")).toBeInTheDocument();
+    expect(screen.queryByText("proj_imported")).not.toBeInTheDocument();
   });
 
   it("shows project links and pending queue positions in queue order", async () => {

@@ -9,7 +9,10 @@ from sqlalchemy.orm import Session
 
 from app.errors import AppError
 from app.models import Project, SyncDeleteTombstone
-from app.services.sync_manifest import import_staged_project_manifest
+from app.services.sync_manifest import (
+    hydrate_project_analysis_result_from_artifact,
+    import_staged_project_manifest,
+)
 from app.services.sync_project_status import update_project_sync_status
 from app.services.sync_reconciliation import (
     ACTION_APPLY_DELETE_TOMBSTONE,
@@ -21,11 +24,12 @@ from app.services.sync_reconciliation import (
     ACTION_RECORD_CONFLICT,
     ACTION_UPSERT_PROJECT_STATUS,
     ITEM_ENTITY_REVISION,
+    ITEM_PROJECT,
     SyncReconciliationAction,
     SyncReconciliationPlan,
     plan_sync_reconciliation,
 )
-from app.services.sync_staging import require_staged_artifact
+from app.services.sync_staging import cleanup_staged_artifacts, require_staged_artifact
 from app.services.sync_tombstones import apply_delete_tombstone
 
 APPLY_STATUS_APPLIED = "applied"
@@ -73,9 +77,16 @@ def apply_sync_reconciliation(
     session: Session,
     request: object | Mapping[str, Any],
 ) -> SyncReconciliationApplyResult:
-    plan = plan_sync_reconciliation(session, request)
     context = _apply_context(request)
+    plan = _with_staged_manifest_import_actions(
+        session,
+        plan_sync_reconciliation(session, request),
+        context,
+    )
     results = [_apply_action_in_savepoint(session, action, context) for action in plan.actions]
+    results.extend(_hydrate_imported_project_analysis(session, context, results))
+    if context.use_content_addressed_staging:
+        _cleanup_imported_content_addressed_staging(session, context)
     return SyncReconciliationApplyResult(
         summary=_summarize_apply_results(plan, results),
         plan=plan,
@@ -96,7 +107,7 @@ def _apply_action_in_savepoint(
             action=action,
             status=APPLY_STATUS_FAILED,
             reason=exc.message,
-            details={"error_code": exc.code, "error_details": exc.details},
+            details=_error_details(action, exc),
         )
 
 
@@ -317,6 +328,117 @@ def _missing_content_addressed_artifacts(
     return missing
 
 
+def _cleanup_imported_content_addressed_staging(
+    session: Session,
+    context: _ApplyContext,
+) -> None:
+    imported_hashes: set[str] = set()
+    pending_hashes: set[str] = set()
+    imported_references: list[dict[str, Any]] = []
+    for project_id, manifest in context.project_manifests_by_id.items():
+        artifact_hashes = _manifest_artifact_hashes(manifest)
+        if _project_is_imported(session, project_id):
+            imported_hashes.update(artifact_hashes)
+            imported_references.extend(_manifest_artifact_references(manifest))
+        else:
+            pending_hashes.update(artifact_hashes)
+
+    cleanup_hashes = imported_hashes - pending_hashes
+    cleanup_references = [
+        reference
+        for reference in imported_references
+        if reference["content_sha256"] in cleanup_hashes
+    ]
+    if cleanup_hashes or cleanup_references:
+        cleanup_staged_artifacts(
+            session,
+            content_sha256s=cleanup_hashes,
+            references=cleanup_references,
+        )
+
+
+def _hydrate_imported_project_analysis(
+    session: Session,
+    context: _ApplyContext,
+    results: list[SyncReconciliationApplyActionResult],
+) -> list[SyncReconciliationApplyActionResult]:
+    repair_results: list[SyncReconciliationApplyActionResult] = []
+    imported_project_ids = {
+        result.action.project_id or result.action.item_id
+        for result in results
+        if result.action.action_type == ACTION_IMPORT_PROJECT_MANIFEST
+        and result.status == APPLY_STATUS_APPLIED
+    }
+    for project_id, manifest in context.project_manifests_by_id.items():
+        if project_id in imported_project_ids:
+            continue
+        if not _project_is_imported(session, project_id) or not _manifest_has_analysis_artifact(manifest):
+            continue
+        action = SyncReconciliationAction(
+            action_type=ACTION_NOOP,
+            item_type=ITEM_PROJECT,
+            item_id=project_id,
+            project_id=project_id,
+            content_sha256=_manifest_source_sha256(manifest),
+            reason="Repair imported project analysis from a synced analysis artifact.",
+            priority=30,
+            details={"source": "analysis_json", "repair": "analysis_result"},
+        )
+        try:
+            with session.begin_nested():
+                hydrate_project_analysis_result_from_artifact(session, project_id)
+            repair_results.append(
+                _result(
+                    action,
+                    APPLY_STATUS_SATISFIED,
+                    "Project analysis result is hydrated from the synced analysis artifact.",
+                )
+            )
+        except AppError as exc:
+            repair_results.append(
+                SyncReconciliationApplyActionResult(
+                    action=action,
+                    status=APPLY_STATUS_FAILED,
+                    reason=exc.message,
+                    details=_error_details(action, exc),
+                )
+            )
+    return repair_results
+
+
+def _manifest_has_analysis_artifact(manifest: object) -> bool:
+    return any(
+        _string_field(artifact, "type") == "analysis_json"
+        for artifact in _list_field(manifest, "artifacts")
+    )
+
+
+def _manifest_artifact_hashes(manifest: object) -> set[str]:
+    return {
+        content_sha256
+        for artifact in _list_field(manifest, "artifacts")
+        if (content_sha256 := _string_field(artifact, "content_sha256")) is not None
+    }
+
+
+def _manifest_artifact_references(manifest: object) -> list[dict[str, Any]]:
+    references: list[dict[str, Any]] = []
+    for artifact in _list_field(manifest, "artifacts"):
+        content_sha256 = _string_field(artifact, "content_sha256")
+        project_id = _string_field(artifact, "project_id")
+        artifact_id = _string_field(artifact, "artifact_id", "id")
+        if content_sha256 is None or project_id is None or artifact_id is None:
+            continue
+        references.append(
+            {
+                "content_sha256": content_sha256,
+                "project_id": project_id,
+                "artifact_id": artifact_id,
+            }
+        )
+    return references
+
+
 def _tombstone_for_action(
     session: Session,
     action: SyncReconciliationAction,
@@ -412,6 +534,112 @@ def _apply_context(request: object | Mapping[str, Any]) -> _ApplyContext:
     )
 
 
+def _with_staged_manifest_import_actions(
+    session: Session,
+    plan: SyncReconciliationPlan,
+    context: _ApplyContext,
+) -> SyncReconciliationPlan:
+    staged_import_actions = _staged_manifest_import_actions(session, plan, context)
+    if not staged_import_actions:
+        return plan
+
+    actions = [*plan.actions, *staged_import_actions]
+    summary = type(plan.summary)(
+        status_counts=plan.summary.status_counts,
+        total_items=plan.summary.total_items,
+        total_actions=len(actions),
+        total_conflicts=plan.summary.total_conflicts,
+    )
+    return SyncReconciliationPlan(summary=summary, items=plan.items, actions=actions)
+
+
+def _staged_manifest_import_actions(
+    session: Session,
+    plan: SyncReconciliationPlan,
+    context: _ApplyContext,
+) -> list[SyncReconciliationAction]:
+    planned_import_project_ids = {
+        action.project_id or action.item_id
+        for action in plan.actions
+        if action.action_type == ACTION_IMPORT_PROJECT_MANIFEST and action.item_type == ITEM_PROJECT
+    }
+    priority = _project_manifest_import_priority(plan)
+    actions: list[SyncReconciliationAction] = []
+    for project_id in sorted(context.project_manifests_by_id):
+        if project_id in planned_import_project_ids:
+            continue
+        if _project_has_blocking_apply_action(plan, project_id):
+            continue
+        if _project_is_imported(session, project_id):
+            continue
+        manifest = context.project_manifests_by_id[project_id]
+        actions.append(
+            SyncReconciliationAction(
+                action_type=ACTION_IMPORT_PROJECT_MANIFEST,
+                item_type=ITEM_PROJECT,
+                item_id=project_id,
+                project_id=project_id,
+                content_sha256=_manifest_source_sha256(manifest),
+                provider_device_id=None,
+                reason="Import project manifest using artifact content that is already staged locally.",
+                priority=priority,
+                details={
+                    "source": "sync_staged_artifacts",
+                    "staged_content_required": True,
+                },
+            )
+        )
+    return actions
+
+
+def _project_has_blocking_apply_action(plan: SyncReconciliationPlan, project_id: str) -> bool:
+    for action in plan.actions:
+        if action.project_id != project_id and action.item_id != project_id:
+            continue
+        if action.action_type == ACTION_RECORD_CONFLICT:
+            return True
+        if action.action_type == ACTION_APPLY_DELETE_TOMBSTONE and action.item_type == ITEM_PROJECT:
+            return True
+        if (
+            action.action_type == ACTION_UPSERT_PROJECT_STATUS
+            and _string_from_mapping(action.details, "project_status") in {"conflicted", "deleted"}
+        ):
+            return True
+    return False
+
+
+def _project_is_imported(session: Session, project_id: str) -> bool:
+    project = session.get(Project, project_id)
+    if project is None:
+        return False
+    source_path = (project.source_path or "").strip()
+    imported_path = (project.imported_path or "").strip()
+    return bool(
+        source_path
+        and imported_path
+        and not source_path.startswith("sync-placeholder:")
+        and not imported_path.startswith("sync-placeholder:")
+    )
+
+
+def _project_manifest_import_priority(plan: SyncReconciliationPlan) -> int:
+    for action in plan.actions:
+        if action.action_type == ACTION_IMPORT_PROJECT_MANIFEST:
+            return action.priority
+    return 30
+
+
+def _manifest_source_sha256(manifest: object) -> str | None:
+    project = _field(manifest, "project", default=manifest)
+    project_source_sha256 = _string_field(project, "source_sha256")
+    if project_source_sha256 is not None:
+        return project_source_sha256
+    for artifact in _list_field(manifest, "artifacts"):
+        if _string_field(artifact, "type") == "source_audio":
+            return _string_field(artifact, "content_sha256")
+    return None
+
+
 def _project_id_from_manifest(manifest: object) -> str | None:
     project = _field(manifest, "project", default=manifest)
     return _string_field(project, "project_id", "id")
@@ -442,6 +670,17 @@ def _result(
         reason=reason,
         details=details or {},
     )
+
+
+def _error_details(action: SyncReconciliationAction, exc: AppError) -> dict[str, Any]:
+    return {
+        "action_type": action.action_type,
+        "item_type": action.item_type,
+        "item_id": action.item_id,
+        "project_id": action.project_id,
+        "error_code": exc.code,
+        "error_details": exc.details,
+    }
 
 
 def _field(source: object, name: str, *, default: object = _MISSING) -> Any:

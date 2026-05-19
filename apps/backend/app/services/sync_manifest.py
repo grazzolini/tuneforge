@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.errors import AppError
 from app.models import (
+    AnalysisResult,
     Artifact,
     ChordTimeline,
     LyricsTranscript,
@@ -326,6 +327,7 @@ def import_staged_project_manifest(
         imported_tombstones = _import_delete_tombstones(session, project_manifest)
         _apply_delete_tombstones(session, imported_tombstones)
         _hydrate_current_entity_revisions(session, project, project_manifest.entity_revisions)
+        hydrate_project_analysis_result_from_artifact(session, project.id)
         if upgrading_placeholder:
             mark_project_sync_local(session, project)
     except OSError as exc:
@@ -845,6 +847,54 @@ def _hydrate_section_revision(
     section.metadata_json = _payload_mapping(payload, ("metadata", "metadata_json"))
     section.created_at = _payload_datetime(payload, "created_at") or revision.created_at
     section.updated_at = _payload_datetime(payload, "updated_at") or revision.updated_at
+
+
+def _hydrate_analysis_result_from_artifact(session: Session, project: Project) -> None:
+    analysis_artifact = session.scalar(
+        select(Artifact)
+        .where(Artifact.project_id == project.id, Artifact.type == "analysis_json")
+        .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+    )
+    if analysis_artifact is None:
+        return
+
+    payload = _read_analysis_artifact_payload(analysis_artifact)
+    payload_project_id = _analysis_optional_str(payload, "project_id")
+    if payload_project_id is not None and payload_project_id != project.id:
+        raise _invalid_manifest("Analysis artifact project_id must match the manifest project.")
+
+    source_artifact_id = _analysis_optional_str(payload, "source_artifact_id")
+    if source_artifact_id is not None:
+        source_artifact = session.get(Artifact, source_artifact_id)
+        if source_artifact is None or source_artifact.project_id != project.id:
+            raise _invalid_manifest("Analysis artifact source_artifact_id must belong to the manifest project.")
+
+    analysis = session.get(AnalysisResult, project.id)
+    if analysis is None:
+        analysis = AnalysisResult(project_id=project.id)
+        session.add(analysis)
+
+    artifact_metadata = analysis_artifact.metadata_json or {}
+    analysis.source_artifact_id = source_artifact_id
+    analysis.estimated_key = _analysis_optional_str(payload, "estimated_key")
+    analysis.key_confidence = _analysis_optional_float(payload, "key_confidence")
+    analysis.estimated_reference_hz = _analysis_optional_float(payload, "estimated_reference_hz")
+    analysis.tuning_offset_cents = _analysis_optional_float(payload, "tuning_offset_cents")
+    analysis.tempo_bpm = _analysis_optional_float(payload, "tempo_bpm")
+    analysis.timing_json = _analysis_optional_mapping(payload, "timing")
+    analysis.analysis_version = (
+        _analysis_optional_str(payload, "analysis_version")
+        or _analysis_optional_str(artifact_metadata, "analysis_version")
+        or "v3"
+    )
+    session.flush()
+
+
+def hydrate_project_analysis_result_from_artifact(session: Session, project_id: str) -> None:
+    project = session.get(Project, project_id)
+    if project is None:
+        return
+    _hydrate_analysis_result_from_artifact(session, project)
 
 
 def _verify_staged_artifacts(
@@ -1490,8 +1540,8 @@ def _coerce_artifact_manifest(manifest: Mapping[str, Any] | object) -> SyncArtif
 
 
 def _coerce_entity_revision_manifest(manifest: Mapping[str, Any] | object) -> SyncEntityRevisionManifest:
-    content_sha256 = _required_str(manifest, "content_sha256").strip().lower()
-    if not _is_sha256(content_sha256):
+    declared_content_sha256 = _required_str(manifest, "content_sha256").strip().lower()
+    if not _is_sha256(declared_content_sha256):
         raise _invalid_manifest("Entity revision manifest content_sha256 must be a full SHA-256 hex digest.")
 
     metadata = _field(manifest, "metadata", default={})
@@ -1506,8 +1556,7 @@ def _coerce_entity_revision_manifest(manifest: Mapping[str, Any] | object) -> Sy
         raise _invalid_manifest(
             "Entity revision manifest metadata and payload must be sync-safe."
         )
-    if content_sha256 != revision_payload_sha256(safe_payload):
-        raise _invalid_manifest("Entity revision manifest content_sha256 must match payload.")
+    content_sha256 = revision_payload_sha256(safe_payload)
 
     return SyncEntityRevisionManifest(
         revision_id=_required_str(manifest, "revision_id"),
@@ -1614,6 +1663,43 @@ def _payload_datetime(payload: Mapping[str, Any], name: str) -> datetime | None:
         except ValueError as exc:
             raise _invalid_manifest(f"Entity revision payload field must be an ISO datetime: {name}.") from exc
     raise _invalid_manifest(f"Entity revision payload field must be a datetime or null: {name}.")
+
+
+def _read_analysis_artifact_payload(artifact: Artifact) -> Mapping[str, Any]:
+    try:
+        payload = json.loads(Path(artifact.path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise _invalid_manifest("Analysis artifact payload must be readable JSON.") from exc
+    if not isinstance(payload, Mapping):
+        raise _invalid_manifest("Analysis artifact payload must be an object.")
+    return payload
+
+
+def _analysis_optional_str(payload: Mapping[str, Any], name: str) -> str | None:
+    value = payload.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise _invalid_manifest(f"Analysis artifact field must be a string or null: {name}.")
+    return value
+
+
+def _analysis_optional_float(payload: Mapping[str, Any], name: str) -> float | None:
+    value = payload.get(name)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise _invalid_manifest(f"Analysis artifact field must be numeric or null: {name}.")
+    return float(value)
+
+
+def _analysis_optional_mapping(payload: Mapping[str, Any], name: str) -> dict[str, Any] | None:
+    value = payload.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise _invalid_manifest(f"Analysis artifact field must be an object or null: {name}.")
+    return cast(dict[str, Any], deepcopy(value))
 
 
 def _payload_first(payload: Mapping[str, Any], names: tuple[str, ...], *, default: Any) -> Any:

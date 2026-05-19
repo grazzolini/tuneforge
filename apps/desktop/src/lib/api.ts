@@ -75,11 +75,34 @@ export type ProjectSyncSummary = {
 };
 export type SyncTransportRunStatus = {
   peer_device_id?: string | null;
+  remote_device_id?: string | null;
   status: string;
   message?: string | null;
   started_at?: string | null;
   completed_at?: string | null;
   error?: string | null;
+  project_results: SyncTransportProjectResult[];
+  manifest_errors: SyncTransportManifestError[];
+  received_artifacts: SyncTransportTransferResult[];
+  served_artifact_requests?: number | null;
+  local_manifest_count?: number | null;
+  remote_manifest_count?: number | null;
+};
+export type SyncTransportProjectResult = {
+  project_id: string;
+  status: string;
+  message?: string | null;
+};
+export type SyncTransportManifestError = {
+  project_id: string;
+  message: string;
+};
+export type SyncTransportTransferResult = {
+  artifact_id: string;
+  content_sha256?: string | null;
+  size_bytes?: number | null;
+  status: string;
+  message?: string | null;
 };
 export type SyncTransportStatus = {
   active: boolean;
@@ -172,6 +195,21 @@ function numberField(record: Record<string, unknown> | null, keys: string[]) {
     }
   }
   return null;
+}
+
+function recordArrayField(record: Record<string, unknown> | null, keys: string[]) {
+  if (!record) {
+    return [];
+  }
+  for (const key of keys) {
+    const value = record[key];
+    if (Array.isArray(value)) {
+      return value
+        .map((item) => asRecord(item))
+        .filter((item): item is Record<string, unknown> => item !== null);
+    }
+  }
+  return [];
 }
 
 function normalizeProjectSyncState(value: string | null) {
@@ -269,41 +307,106 @@ async function invokeDesktopNative<T>(command: string, args?: Record<string, unk
   return invoke<T>(command, args);
 }
 
+function normalizeTransportStatusToken(value: string) {
+  return value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
+
+function normalizeSyncProjectResult(
+  value: unknown,
+  fallbackStatus = "failed",
+  fallbackMessage: string | null = null,
+): SyncTransportProjectResult | null {
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+  return {
+    project_id: firstStringField([record], ["project_id", "projectId", "id"]) ?? "unknown",
+    status: normalizeTransportStatusToken(
+      firstStringField([record], ["status", "state", "result"]) ?? fallbackStatus,
+    ),
+    message: firstStringField([record], ["message", "error", "reason"]) ?? fallbackMessage,
+  };
+}
+
+function normalizeSyncManifestError(value: unknown): SyncTransportManifestError | null {
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+  const message = firstStringField([record], ["message", "error", "reason"]);
+  if (!message) {
+    return null;
+  }
+  return {
+    project_id: firstStringField([record], ["project_id", "projectId", "id"]) ?? "unknown",
+    message,
+  };
+}
+
+function normalizeSyncTransferResult(value: unknown): SyncTransportTransferResult | null {
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+  return {
+    artifact_id: firstStringField([record], ["artifact_id", "artifactId", "id"]) ?? "unknown",
+    content_sha256: firstStringField([record], ["content_sha256", "contentSha256"]),
+    size_bytes: numberField(record, ["size_bytes", "sizeBytes"]),
+    status: normalizeTransportStatusToken(
+      firstStringField([record], ["status", "state", "result"]) ?? "completed",
+    ),
+    message: firstStringField([record], ["message", "error", "reason"]),
+  };
+}
+
+const SYNC_PROJECT_RESULT_PROBLEM_STATES = new Set(["completed_with_errors", "conflicted", "error", "failed"]);
+
 function normalizeSyncRunStatus(value: unknown): SyncTransportRunStatus | null {
   const record = asRecord(value);
   if (!record) {
     return null;
   }
-  const manifestErrorCount = Array.isArray(record.manifest_errors)
-    ? record.manifest_errors.length
-    : Array.isArray(record.manifestErrors)
-      ? record.manifestErrors.length
-      : 0;
-  const importedProjectCount = Array.isArray(record.imported_projects)
-    ? record.imported_projects.length
-    : Array.isArray(record.importedProjects)
-      ? record.importedProjects.length
-      : 0;
-  const receivedArtifactCount = Array.isArray(record.received_artifacts)
-    ? record.received_artifacts.length
-    : Array.isArray(record.receivedArtifacts)
-      ? record.receivedArtifacts.length
-      : 0;
+  const manifestErrors = recordArrayField(record, ["manifest_errors", "manifestErrors"])
+    .map((item) => normalizeSyncManifestError(item))
+    .filter((item): item is SyncTransportManifestError => item !== null);
+  const importedProjectResults = recordArrayField(record, ["project_results", "projectResults", "imported_projects", "importedProjects"])
+    .map((item) => normalizeSyncProjectResult(item))
+    .filter((item): item is SyncTransportProjectResult => item !== null);
+  const manifestErrorProjectResults = manifestErrors.map((error) => ({
+    project_id: error.project_id,
+    status: "failed",
+    message: error.message,
+  }));
+  const projectResults = [...importedProjectResults, ...manifestErrorProjectResults];
+  const receivedArtifacts = recordArrayField(record, ["received_artifacts", "receivedArtifacts", "artifacts"])
+    .map((item) => normalizeSyncTransferResult(item))
+    .filter((item): item is SyncTransportTransferResult => item !== null);
   const localManifestCount = numberField(record, ["local_manifest_count", "localManifestCount"]);
   const remoteManifestCount = numberField(record, ["remote_manifest_count", "remoteManifestCount"]);
+  const hasProjectProblems = projectResults.some((result) =>
+    SYNC_PROJECT_RESULT_PROBLEM_STATES.has(result.status),
+  );
   const status = firstStringField([record], ["status", "state"]) ??
-    (manifestErrorCount > 0 ? "completed_with_errors" : "completed");
+    (manifestErrors.length > 0 || hasProjectProblems ? "completed_with_errors" : "completed");
   const summary =
     localManifestCount !== null || remoteManifestCount !== null
-      ? `Exchanged ${localManifestCount ?? 0} local and ${remoteManifestCount ?? 0} remote manifest(s); imported ${importedProjectCount} project(s), received ${receivedArtifactCount} artifact(s).`
+      ? `Exchanged ${localManifestCount ?? 0} local and ${remoteManifestCount ?? 0} remote manifest(s); processed ${projectResults.length} project(s), received ${receivedArtifacts.length} artifact(s).`
       : null;
   return {
     peer_device_id: firstStringField([record], ["peer_device_id", "peerDeviceId", "device_id", "deviceId"]),
+    remote_device_id: firstStringField([record], ["remote_device_id", "remoteDeviceId"]),
     status,
     message: firstStringField([record], ["message", "status_message", "statusMessage"]) ?? summary,
     started_at: firstStringField([record], ["started_at", "startedAt"]),
     completed_at: firstStringField([record], ["completed_at", "completedAt"]),
     error: firstStringField([record], ["error", "last_error", "lastError"]),
+    project_results: projectResults,
+    manifest_errors: manifestErrors,
+    received_artifacts: receivedArtifacts,
+    served_artifact_requests: numberField(record, ["served_artifact_requests", "servedArtifactRequests"]),
+    local_manifest_count: localManifestCount,
+    remote_manifest_count: remoteManifestCount,
   };
 }
 

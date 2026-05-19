@@ -76,6 +76,12 @@ This document is an engineering notice and distribution checklist, not legal adv
 - **Source:** <https://github.com/tauri-apps/tauri>
 - **Notes:** The Rust crate inventory is primarily MIT / Apache-2.0 / BSD / ISC / Zlib family. It also includes MPL-2.0 and Unicode-3.0 notice obligations. Crates with LGPL-2.1-or-later as one license option, such as `r-efi`, also provide MIT or Apache-2.0 alternatives in the resolved metadata.
 
+### TuneForge LAN sync transport Rust crates
+
+- **License:** Apache-2.0 / MIT for `snow`, `base64`, `rand`, `sha2`, and the RustCrypto AEAD/hash stack; BSD-3-Clause for `ed25519-dalek` and `curve25519-dalek`; MIT / BSD-3-Clause for `if-addrs`.
+- **Source:** <https://github.com/mcginty/snow>, <https://github.com/dalek-cryptography/curve25519-dalek>, <https://github.com/RustCrypto>, <https://github.com/rust-random/rand>, <https://github.com/marshallpierce/rust-base64>, and <https://github.com/messense/if-addrs>.
+- **Notes:** Used by the desktop-only same-LAN sync transport for Noise encrypted sessions, trusted Ed25519 peer identity verification, SHA-256 artifact verification, random session nonces, and local interface endpoint hints. The FastAPI backend remains loopback-only.
+
 ### cpal
 
 - **License:** Apache-2.0 / MIT (dual)

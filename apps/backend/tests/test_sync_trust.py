@@ -48,6 +48,7 @@ SIGNED_PAIRING_OFFER_FIELDS = (
 class SyncTrustServices:
     get_or_create_local_identity: SyncTrustService
     create_pairing_offer: SyncTrustService
+    answer_pairing_offer: SyncTrustService
     trust_peer: SyncTrustService
     list_trusted_peers: SyncTrustService
     revoke_trusted_peer: SyncTrustService
@@ -92,6 +93,7 @@ def sync_trust_services() -> SyncTrustServices:
             "get_or_create_local_sync_identity",
         ),
         create_pairing_offer=_require_callable(module, "create_pairing_offer"),
+        answer_pairing_offer=_require_callable(module, "answer_pairing_offer"),
         trust_peer=_require_callable(module, "trust_peer", "trust_peer_from_pairing_payload"),
         list_trusted_peers=_require_callable(module, "list_trusted_peers"),
         revoke_trusted_peer=_require_callable(module, "revoke_trusted_peer"),
@@ -161,6 +163,49 @@ def test_trusting_valid_peer_persists_pairwise_trust(
     assert trusted_peer.get("revoked_at") is None
     assert listed_peer["device_id"] == peer_offer["device_id"]
     assert listed_peer.get("revoked_at") is None
+
+
+def test_answer_pairing_offer_trusts_remote_and_returns_local_response(
+    db_session: Session,
+    sync_trust_services: SyncTrustServices,
+) -> None:
+    identity = _local_identity(sync_trust_services, db_session)
+    template_offer = _pairing_payload(_pairing_offer(sync_trust_services, db_session))
+    remote_offer = _remote_pairing_offer(
+        sync_trust_services,
+        sync_group_id=identity["sync_group_id"],
+        public_key_like=identity["public_key"],
+        template_offer=template_offer,
+        pairing_offer_id="pair_remote_offer_1",
+    )
+
+    answer = _plain_mapping(
+        sync_trust_services.answer_pairing_offer(
+            db_session,
+            remote_offer,
+            endpoint_hints=["tuneforge-sync+tcp://192.168.1.42:48625?device_id=device_local&v=1"],
+        )
+    )
+    response_payload = _unwrap_mapping(answer, "payload")
+    trusted_peer = _unwrap_mapping(answer, "trusted_peer")
+
+    assert trusted_peer["device_id"] == remote_offer["device_id"]
+    assert trusted_peer["public_key"] == remote_offer["public_key"]
+    assert response_payload["device_id"] == identity["device_id"]
+    assert response_payload["public_key"] == identity["public_key"]
+    assert response_payload["pairing_offer_id"] == remote_offer["pairing_offer_id"]
+    assert response_payload["pairing_secret"] == remote_offer["pairing_secret"]
+    assert response_payload["expires_at"] == remote_offer["expires_at"]
+    assert response_payload["endpoint_hints"] == [
+        "tuneforge-sync+tcp://192.168.1.42:48625?device_id=device_local&v=1"
+    ]
+    _verify_pairing_payload_signature(identity["public_key"], response_payload)
+
+    listed_peer = _peer_by_device_id(
+        _plain_list(sync_trust_services.list_trusted_peers(db_session)),
+        remote_offer["device_id"],
+    )
+    assert listed_peer["device_id"] == remote_offer["device_id"]
 
 
 def test_self_pairing_is_rejected(
@@ -363,6 +408,50 @@ def test_trusted_peer_routes_create_list_and_revoke(client, sync_trust_services:
     assert revoked_peer["revoked_at"] is not None
 
 
+def test_pairing_response_route_answers_remote_offer(client, sync_trust_services: SyncTrustServices) -> None:
+    identity = _unwrap_mapping(client.get("/api/v1/sync/identity").json(), "identity")
+    template_offer = _pairing_payload(
+        _unwrap_mapping(client.post("/api/v1/sync/pairing/offers", json={}).json(), "pairing_offer")
+    )
+    remote_offer = _remote_pairing_offer(
+        sync_trust_services,
+        sync_group_id=identity["sync_group_id"],
+        public_key_like=identity["public_key"],
+        template_offer=template_offer,
+        pairing_offer_id="pair_remote_route_offer",
+    )
+
+    response = client.post(
+        "/api/v1/sync/pairing/responses",
+        json={
+            "offer": remote_offer,
+            "endpoint_hints": ["tuneforge-sync+tcp://192.168.1.42:48625?device_id=device_local&v=1"],
+            "adopt_sync_group": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    pairing_response = _unwrap_mapping(payload, "pairing_response")
+    trusted_peer = _unwrap_mapping(payload, "trusted_peer")
+    assert trusted_peer["device_id"] == remote_offer["device_id"]
+    assert pairing_response["device_id"] == identity["device_id"]
+    assert pairing_response["pairing_offer_id"] == remote_offer["pairing_offer_id"]
+    assert pairing_response["pairing_secret"] == remote_offer["pairing_secret"]
+    assert pairing_response["endpoint_hints"] == [
+        "tuneforge-sync+tcp://192.168.1.42:48625?device_id=device_local&v=1"
+    ]
+    _verify_pairing_payload_signature(
+        identity["public_key"],
+        {**pairing_response, "expires_at": _parse_datetime(pairing_response["expires_at"]).isoformat()},
+    )
+
+    list_response = client.get("/api/v1/sync/trusted-peers")
+    assert list_response.status_code == 200
+    peers = _unwrap_list(list_response.json(), "trusted_peers")
+    assert _peer_by_device_id(peers, remote_offer["device_id"])["public_key"] == remote_offer["public_key"]
+
+
 def _require_callable(module: Any, *names: str) -> SyncTrustService:
     for name in names:
         value = getattr(module, name, None)
@@ -492,6 +581,13 @@ def _sign_pairing_payload(private_key_bytes: bytes, payload: dict[str, Any]) -> 
     signed_payload = {field_name: payload[field_name] for field_name in SIGNED_PAIRING_OFFER_FIELDS}
     message = json.dumps(signed_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return crypto.sign_payload(private_key_bytes, message)
+
+
+def _verify_pairing_payload_signature(public_key: str, payload: dict[str, Any]) -> None:
+    crypto = importlib.import_module("app.services.sync_crypto")
+    signed_payload = {field_name: payload[field_name] for field_name in SIGNED_PAIRING_OFFER_FIELDS}
+    message = json.dumps(signed_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    crypto.verify_payload_signature(crypto.decode_key(public_key), message, payload["signature"])
 
 
 def _b64encode(raw: bytes) -> str:

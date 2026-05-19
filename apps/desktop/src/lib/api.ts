@@ -54,6 +54,17 @@ export type TabImportResponse = components["schemas"]["TabImportResponse"];
 export type TabImportSchema = components["schemas"]["TabImportSchema"];
 export type TabSuggestionGroupSchema = components["schemas"]["TabSuggestionGroupSchema"];
 export type TabSuggestionSchema = components["schemas"]["TabSuggestionSchema"];
+export type SyncLocalIdentitySchema = components["schemas"]["SyncLocalIdentitySchema"];
+export type SyncLocalIdentityResponse = components["schemas"]["SyncLocalIdentityResponse"];
+export type SyncPairingOfferRequest = components["schemas"]["SyncPairingOfferRequest"];
+export type SyncPairingOfferResponse = components["schemas"]["SyncPairingOfferResponse"];
+export type SyncPairingPayloadSchema = components["schemas"]["SyncPairingPayloadSchema"];
+export type SyncPairingAnswerRequest = components["schemas"]["SyncPairingAnswerRequest"];
+export type SyncPairingAnswerResponse = components["schemas"]["SyncPairingAnswerResponse"];
+export type SyncTrustedPeerCreateRequest = components["schemas"]["SyncTrustedPeerCreateRequest"];
+export type SyncTrustedPeerResponse = components["schemas"]["SyncTrustedPeerResponse"];
+export type SyncTrustedPeerSchema = components["schemas"]["SyncTrustedPeerSchema"];
+export type SyncTrustedPeersResponse = components["schemas"]["SyncTrustedPeersResponse"];
 export type RuntimeCapabilities = MobileCapabilities | null;
 export type ProjectSyncSummary = {
   state: string;
@@ -61,6 +72,23 @@ export type ProjectSyncSummary = {
   isLocal: boolean;
   isLocked: boolean;
   lockReason: string | null;
+};
+export type SyncTransportRunStatus = {
+  peer_device_id?: string | null;
+  status: string;
+  message?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  error?: string | null;
+};
+export type SyncTransportStatus = {
+  active: boolean;
+  status: string;
+  endpoint_hints: string[];
+  last_status?: string | null;
+  last_error?: string | null;
+  last_sync?: SyncTransportRunStatus | null;
+  updated_at?: string | null;
 };
 
 const LOCAL_SYNC_STATES = new Set(["local", "noop", "identical_content"]);
@@ -115,6 +143,32 @@ function firstBooleanField(records: Array<Record<string, unknown> | null>, keys:
       if (typeof value === "boolean") {
         return value;
       }
+    }
+  }
+  return null;
+}
+
+function stringArrayField(record: Record<string, unknown> | null, keys: string[]) {
+  if (!record) {
+    return [];
+  }
+  for (const key of keys) {
+    const value = record[key];
+    if (Array.isArray(value)) {
+      return value.filter((item): item is string => typeof item === "string" && Boolean(item.trim()));
+    }
+  }
+  return [];
+}
+
+function numberField(record: Record<string, unknown> | null, keys: string[]) {
+  if (!record) {
+    return null;
+  }
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
     }
   }
   return null;
@@ -200,6 +254,122 @@ export function getProjectSyncSummary(project: ProjectSchema | null | undefined)
   };
 }
 
+function unsupportedRuntimeError(feature: string) {
+  return new ApiError({
+    code: "UNSUPPORTED_RUNTIME",
+    message: `${feature} requires the desktop native runtime.`,
+    details: {},
+  });
+}
+
+async function invokeDesktopNative<T>(command: string, args?: Record<string, unknown>) {
+  if (!isTauriRuntime()) {
+    throw unsupportedRuntimeError("Native sync transport");
+  }
+  return invoke<T>(command, args);
+}
+
+function normalizeSyncRunStatus(value: unknown): SyncTransportRunStatus | null {
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+  const manifestErrorCount = Array.isArray(record.manifest_errors)
+    ? record.manifest_errors.length
+    : Array.isArray(record.manifestErrors)
+      ? record.manifestErrors.length
+      : 0;
+  const importedProjectCount = Array.isArray(record.imported_projects)
+    ? record.imported_projects.length
+    : Array.isArray(record.importedProjects)
+      ? record.importedProjects.length
+      : 0;
+  const receivedArtifactCount = Array.isArray(record.received_artifacts)
+    ? record.received_artifacts.length
+    : Array.isArray(record.receivedArtifacts)
+      ? record.receivedArtifacts.length
+      : 0;
+  const localManifestCount = numberField(record, ["local_manifest_count", "localManifestCount"]);
+  const remoteManifestCount = numberField(record, ["remote_manifest_count", "remoteManifestCount"]);
+  const status = firstStringField([record], ["status", "state"]) ??
+    (manifestErrorCount > 0 ? "completed_with_errors" : "completed");
+  const summary =
+    localManifestCount !== null || remoteManifestCount !== null
+      ? `Exchanged ${localManifestCount ?? 0} local and ${remoteManifestCount ?? 0} remote manifest(s); imported ${importedProjectCount} project(s), received ${receivedArtifactCount} artifact(s).`
+      : null;
+  return {
+    peer_device_id: firstStringField([record], ["peer_device_id", "peerDeviceId", "device_id", "deviceId"]),
+    status,
+    message: firstStringField([record], ["message", "status_message", "statusMessage"]) ?? summary,
+    started_at: firstStringField([record], ["started_at", "startedAt"]),
+    completed_at: firstStringField([record], ["completed_at", "completedAt"]),
+    error: firstStringField([record], ["error", "last_error", "lastError"]),
+  };
+}
+
+function normalizeSyncTransportStatus(value: unknown): SyncTransportStatus {
+  const record = asRecord(value);
+  if (!record) {
+    return {
+      active: false,
+      status: "unavailable",
+      endpoint_hints: [],
+      last_error: "Native sync transport returned an invalid status.",
+    };
+  }
+
+  const active = firstBooleanField([record], ["active", "running", "listening", "is_listening", "isListening"]) ?? false;
+  const status = firstStringField([record], ["status", "state", "listener_status", "listenerStatus"]) ??
+    (active ? "listening" : "stopped");
+  return {
+    active,
+    status,
+    endpoint_hints: stringArrayField(record, ["endpoint_hints", "endpointHints", "endpoints"]),
+    last_status: firstStringField([record], ["last_status", "lastStatus"]),
+    last_error: firstStringField([record], ["last_error", "lastError", "error"]),
+    last_sync: normalizeSyncRunStatus(record.last_sync ?? record.lastSync ?? null),
+    updated_at: firstStringField([record], ["updated_at", "updatedAt"]),
+  };
+}
+
+async function getSyncTransportStatus() {
+  return normalizeSyncTransportStatus(await invokeDesktopNative<unknown>("sync_transport_status"));
+}
+
+async function startSyncListener() {
+  return normalizeSyncTransportStatus(await invokeDesktopNative<unknown>("sync_transport_start_listener", { payload: {} }));
+}
+
+async function stopSyncListener() {
+  return normalizeSyncTransportStatus(await invokeDesktopNative<unknown>("sync_transport_stop_listener"));
+}
+
+async function syncTrustedPeerNow(deviceId: string) {
+  const result = normalizeSyncRunStatus(
+    await invokeDesktopNative<unknown>("sync_transport_sync_now", { payload: { peerDeviceId: deviceId } }),
+  );
+  if (!result) {
+    throw new Error("Native sync transport returned an invalid sync result.");
+  }
+  return result;
+}
+
+async function createNativeSyncPairingOffer(body: SyncPairingOfferRequest): Promise<SyncPairingOfferResponse> {
+  const nativeResponse = asRecord(
+    await invokeDesktopNative<unknown>("sync_transport_create_pairing_offer", {
+      payload: { ttlSeconds: body.ttl_seconds },
+    }),
+  );
+  const pairingOffer = asRecord(nativeResponse?.pairingOffer) ?? asRecord(nativeResponse?.pairing_offer);
+  if (!pairingOffer) {
+    throw new Error("Native sync transport returned an invalid pairing offer.");
+  }
+  if (asRecord(pairingOffer.pairing_offer)) {
+    return pairingOffer as SyncPairingOfferResponse;
+  }
+  return { pairing_offer: pairingOffer as SyncPairingOfferResponse["pairing_offer"] };
+}
+
 export type TuneForgeClient = {
   getMobileCapabilities: () => Promise<RuntimeCapabilities>;
   getHealth: () => Promise<HealthResponse>;
@@ -235,6 +405,16 @@ export type TuneForgeClient = {
   listJobs: () => Promise<components["schemas"]["JobsResponse"]>;
   getJob: (jobId: string) => Promise<components["schemas"]["JobResponse"]>;
   cancelJob: (jobId: string) => Promise<components["schemas"]["JobResponse"]>;
+  getSyncIdentity: () => Promise<SyncLocalIdentityResponse>;
+  createSyncPairingOffer: (body: SyncPairingOfferRequest) => Promise<SyncPairingOfferResponse>;
+  answerSyncPairingOffer: (body: SyncPairingAnswerRequest) => Promise<SyncPairingAnswerResponse>;
+  listSyncTrustedPeers: () => Promise<SyncTrustedPeersResponse>;
+  trustSyncPeer: (body: SyncTrustedPeerCreateRequest) => Promise<SyncTrustedPeerResponse>;
+  revokeSyncTrustedPeer: (deviceId: string) => Promise<SyncTrustedPeerResponse>;
+  getSyncTransportStatus: () => Promise<SyncTransportStatus>;
+  startSyncListener: () => Promise<SyncTransportStatus>;
+  stopSyncListener: () => Promise<SyncTransportStatus>;
+  syncTrustedPeerNow: (deviceId: string) => Promise<SyncTransportRunStatus>;
   streamArtifactUrl: (artifactId: string) => string;
 };
 
@@ -439,6 +619,26 @@ function createHttpTuneForgeClient(): TuneForgeClient {
     getJob: (jobId: string) => unwrap(client.GET("/api/v1/jobs/{job_id}", { params: { path: { job_id: jobId } } })),
     cancelJob: (jobId: string) =>
       unwrap(client.POST("/api/v1/jobs/{job_id}/cancel", { params: { path: { job_id: jobId } } })),
+    getSyncIdentity: () => unwrap(client.GET("/api/v1/sync/identity")),
+    createSyncPairingOffer: (body: SyncPairingOfferRequest) =>
+      isTauriRuntime()
+        ? createNativeSyncPairingOffer(body)
+        : unwrap(client.POST("/api/v1/sync/pairing/offers", { body })),
+    answerSyncPairingOffer: (body: SyncPairingAnswerRequest) =>
+      unwrap(client.POST("/api/v1/sync/pairing/responses", { body })),
+    listSyncTrustedPeers: () => unwrap(client.GET("/api/v1/sync/trusted-peers")),
+    trustSyncPeer: (body: SyncTrustedPeerCreateRequest) =>
+      unwrap(client.POST("/api/v1/sync/trusted-peers", { body })),
+    revokeSyncTrustedPeer: (deviceId: string) =>
+      unwrap(
+        client.DELETE("/api/v1/sync/trusted-peers/{device_id}", {
+          params: { path: { device_id: deviceId } },
+        }),
+      ),
+    getSyncTransportStatus,
+    startSyncListener,
+    stopSyncListener,
+    syncTrustedPeerNow,
     streamArtifactUrl: (artifactId: string) => `${getApiBaseUrl()}/api/v1/artifacts/${artifactId}/stream`,
   };
 }
@@ -508,6 +708,36 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     listJobs: () => invokeMobile("mobile_list_jobs"),
     getJob: (jobId: string) => invokeMobile("mobile_get_job", { jobId }),
     cancelJob: (jobId: string) => invokeMobile("mobile_cancel_job", { jobId }),
+    getSyncIdentity: async () => {
+      throw unsupportedRuntimeError("Sync identity");
+    },
+    createSyncPairingOffer: async () => {
+      throw unsupportedRuntimeError("Sync pairing");
+    },
+    answerSyncPairingOffer: async () => {
+      throw unsupportedRuntimeError("Sync pairing");
+    },
+    listSyncTrustedPeers: async () => {
+      throw unsupportedRuntimeError("Trusted sync peers");
+    },
+    trustSyncPeer: async () => {
+      throw unsupportedRuntimeError("Sync pairing");
+    },
+    revokeSyncTrustedPeer: async () => {
+      throw unsupportedRuntimeError("Trusted sync peers");
+    },
+    getSyncTransportStatus: async () => {
+      throw unsupportedRuntimeError("Native sync transport");
+    },
+    startSyncListener: async () => {
+      throw unsupportedRuntimeError("Native sync transport");
+    },
+    stopSyncListener: async () => {
+      throw unsupportedRuntimeError("Native sync transport");
+    },
+    syncTrustedPeerNow: async () => {
+      throw unsupportedRuntimeError("Native sync transport");
+    },
     streamArtifactUrl: (artifactId: string) => {
       const artifactPath = mobileArtifactPaths.get(artifactId);
       return artifactPath ? convertFileSrc(artifactPath) : "";
@@ -587,5 +817,15 @@ export const api: TuneForgeClient = {
   listJobs: () => activeClient.listJobs(),
   getJob: (jobId: string) => activeClient.getJob(jobId),
   cancelJob: (jobId: string) => activeClient.cancelJob(jobId),
+  getSyncIdentity: () => activeClient.getSyncIdentity(),
+  createSyncPairingOffer: (body: SyncPairingOfferRequest) => activeClient.createSyncPairingOffer(body),
+  answerSyncPairingOffer: (body: SyncPairingAnswerRequest) => activeClient.answerSyncPairingOffer(body),
+  listSyncTrustedPeers: () => activeClient.listSyncTrustedPeers(),
+  trustSyncPeer: (body: SyncTrustedPeerCreateRequest) => activeClient.trustSyncPeer(body),
+  revokeSyncTrustedPeer: (deviceId: string) => activeClient.revokeSyncTrustedPeer(deviceId),
+  getSyncTransportStatus: () => activeClient.getSyncTransportStatus(),
+  startSyncListener: () => activeClient.startSyncListener(),
+  stopSyncListener: () => activeClient.stopSyncListener(),
+  syncTrustedPeerNow: (deviceId: string) => activeClient.syncTrustedPeerNow(deviceId),
   streamArtifactUrl: (artifactId: string) => activeClient.streamArtifactUrl(artifactId),
 };

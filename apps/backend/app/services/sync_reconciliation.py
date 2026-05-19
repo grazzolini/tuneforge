@@ -4,7 +4,7 @@ import json
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -220,7 +220,28 @@ def plan_sync_reconciliation(
         else:
             ignored_remote_tombstones.append((tombstone, reason))
 
-    effective_tombstones = _effective_tombstone_targets(local.tombstones, valid_remote_tombstones)
+    fresh_remote_tombstones: list[_RemoteTombstone] = []
+    for tombstone in valid_remote_tombstones:
+        if _project_tombstone_is_older_than_live_project(
+            target_type=tombstone.target_type,
+            project_id=tombstone.project_id,
+            deleted_at=tombstone.deleted_at,
+            local_projects=local.projects,
+            remote_projects=remote.projects,
+        ):
+            ignored_remote_tombstones.append(
+                (tombstone, "Project delete tombstone is older than a live project manifest.")
+            )
+        else:
+            fresh_remote_tombstones.append(tombstone)
+    valid_remote_tombstones = fresh_remote_tombstones
+
+    effective_tombstones = _effective_tombstone_targets(
+        local.tombstones,
+        valid_remote_tombstones,
+        local_projects=local.projects,
+        remote_projects=remote.projects,
+    )
 
     for tombstone, reason in sorted(ignored_remote_tombstones, key=lambda item: _remote_tombstone_sort_key(item[0])):
         _upsert_item(
@@ -270,12 +291,16 @@ def plan_sync_reconciliation(
             actions=actions,
         )
 
+    planned_project_ids = _planned_project_ids(actions)
     for artifact in sorted(remote.artifacts.values(), key=lambda artifact: (artifact.project_id, artifact.artifact_id)):
-        planned_project_ids = _planned_project_ids(actions)
         if (
             artifact.project_id in remote.project_manifests_by_id
             and artifact.artifact_id in remote.manifest_artifact_ids_by_project.get(artifact.project_id, frozenset())
             and not _is_deleted(ITEM_ARTIFACT, artifact.artifact_id, artifact.project_id, effective_tombstones)
+            and (
+                artifact.project_id in planned_project_ids
+                or not _has_imported_local_project(local, artifact.project_id)
+            )
         ):
             continue
         _plan_artifact(
@@ -292,6 +317,15 @@ def plan_sync_reconciliation(
     planned_revision_ids = set(local.entity_revisions)
     planned_remote_revisions_by_id: dict[str, _RemoteEntityRevision] = {}
     for revision in _sorted_remote_entity_revisions(remote.entity_revisions.values()):
+        local_revision = local.entity_revisions.get(revision.revision_id)
+        if (
+            revision.project_id in remote.project_manifests_by_id
+            and revision.revision_id in remote.manifest_revision_ids_by_project.get(revision.project_id, frozenset())
+            and local_revision is not None
+            and local_revision.project_id == revision.project_id
+            and _local_revision_content_sha256(local_revision) == revision.content_sha256
+        ):
+            continue
         if (
             revision.project_id in remote.project_manifests_by_id
             and revision.revision_id in remote.manifest_revision_ids_by_project.get(revision.project_id, frozenset())
@@ -300,6 +334,10 @@ def plan_sync_reconciliation(
                 revision.revision_id,
                 revision.project_id,
                 effective_tombstones,
+            )
+            and (
+                revision.project_id in planned_project_ids
+                or not _has_imported_local_project(local, revision.project_id)
             )
         ):
             continue
@@ -721,6 +759,7 @@ def _plan_project(
         return
 
     local_project = local.projects.get(project.project_id)
+    manifest = remote.project_manifests_by_id.get(project.project_id)
     if local_project is not None:
         if (
             project.source_sha256 is not None
@@ -756,7 +795,6 @@ def _plan_project(
             )
             return
 
-    manifest = remote.project_manifests_by_id.get(project.project_id)
     if manifest is None:
         reason = "Project manifest is required before import."
         _upsert_item(
@@ -1318,6 +1356,21 @@ def _plan_entity_revision(
     local_revision = local.entity_revisions.get(revision.revision_id)
     if local_revision is not None:
         local_content_sha256 = _local_revision_content_sha256(local_revision)
+        if local_revision.project_id != revision.project_id:
+            _record_conflict(
+                items_by_key,
+                actions,
+                item_type=ITEM_ENTITY_REVISION,
+                item_id=revision.revision_id,
+                project_id=revision.project_id,
+                content_sha256=revision.content_sha256,
+                reason="Remote entity revision ID is already used by a different local project.",
+                details={
+                    "local_project_id": local_revision.project_id,
+                    "remote_project_id": revision.project_id,
+                },
+            )
+            return False
         if local_content_sha256 == revision.content_sha256:
             _upsert_item(
                 items_by_key,
@@ -1515,11 +1568,17 @@ def _project_manifest_import_error(
     except AppError as exc:
         return exc.message, dict(exc.details)
 
-    artifact_conflicts = [
-        artifact.artifact_id
-        for artifact in manifest_artifacts
-        if artifact.artifact_id in local.artifacts
-    ]
+    artifact_conflicts = []
+    for artifact in manifest_artifacts:
+        local_artifact = local.artifacts.get(artifact.artifact_id)
+        if local_artifact is None:
+            continue
+        if (
+            local_artifact.project_id != project.project_id
+            or artifact.content_sha256 is None
+            or _normalize_sha256(local_artifact.content_sha256) != artifact.content_sha256
+        ):
+            artifact_conflicts.append(artifact.artifact_id)
     if artifact_conflicts:
         return (
             "A synced artifact conflicts with an existing local artifact.",
@@ -1534,11 +1593,16 @@ def _project_manifest_import_error(
             {"revision_ids": duplicate_revision_ids},
         )
 
-    revision_conflicts = [
-        revision.revision_id
-        for revision in manifest_revisions
-        if revision.revision_id in local.entity_revisions
-    ]
+    revision_conflicts = []
+    for revision in manifest_revisions:
+        local_revision = local.entity_revisions.get(revision.revision_id)
+        if local_revision is None:
+            continue
+        if _local_revision_content_sha256(local_revision) != revision.content_sha256:
+            revision_conflicts.append(revision.revision_id)
+            continue
+        if local_revision.project_id != project.project_id:
+            revision_conflicts.append(revision.revision_id)
     if revision_conflicts:
         return (
             "A synced entity revision conflicts with an existing local revision.",
@@ -1828,18 +1892,70 @@ def _duplicates(values: Iterable[str]) -> list[str]:
 def _effective_tombstone_targets(
     local_tombstones: Iterable[SyncDeleteTombstone],
     remote_tombstones: Iterable[_RemoteTombstone],
+    *,
+    local_projects: Mapping[str, Project],
+    remote_projects: Mapping[str, _RemoteProject],
 ) -> frozenset[tuple[str, str]]:
     targets: set[tuple[str, str]] = set()
     for local_tombstone in local_tombstones:
         target_type = _normalize_target_type(local_tombstone.target_type)
+        if _project_tombstone_is_older_than_live_project(
+            target_type=target_type,
+            project_id=local_tombstone.project_id,
+            deleted_at=local_tombstone.deleted_at,
+            local_projects=local_projects,
+            remote_projects=remote_projects,
+        ):
+            continue
         targets.add((target_type, local_tombstone.target_id))
         if target_type == ITEM_PROJECT:
             targets.add((ITEM_PROJECT, local_tombstone.project_id))
     for remote_tombstone in remote_tombstones:
+        if _project_tombstone_is_older_than_live_project(
+            target_type=remote_tombstone.target_type,
+            project_id=remote_tombstone.project_id,
+            deleted_at=remote_tombstone.deleted_at,
+            local_projects=local_projects,
+            remote_projects=remote_projects,
+        ):
+            continue
         targets.add((remote_tombstone.target_type, remote_tombstone.target_id))
         if remote_tombstone.target_type == ITEM_PROJECT:
             targets.add((ITEM_PROJECT, remote_tombstone.project_id))
     return frozenset(targets)
+
+
+def _project_tombstone_is_older_than_live_project(
+    *,
+    target_type: str,
+    project_id: str,
+    deleted_at: object,
+    local_projects: Mapping[str, Project],
+    remote_projects: Mapping[str, _RemoteProject],
+) -> bool:
+    if target_type != ITEM_PROJECT:
+        return False
+
+    tombstone_deleted_at = _coerce_datetime(deleted_at)
+    if tombstone_deleted_at is None:
+        return False
+
+    local_project = local_projects.get(project_id)
+    if local_project is not None and local_project.sync_status != PROJECT_SYNC_STATUS_DELETED:
+        local_updated_at = _coerce_datetime(local_project.updated_at)
+        if local_updated_at is not None and local_updated_at > tombstone_deleted_at:
+            return True
+
+    remote_project = remote_projects.get(project_id)
+    if remote_project is None:
+        return False
+    remote_status = _str_field(remote_project.raw, "sync_status", "sync_state")
+    if remote_status == PROJECT_SYNC_STATUS_DELETED:
+        return False
+    remote_updated_at = _coerce_datetime(
+        _first_field(remote_project.raw, "updated_at", "created_at", default=None)
+    )
+    return remote_updated_at is not None and remote_updated_at > tombstone_deleted_at
 
 
 def _is_deleted(
@@ -2421,6 +2537,22 @@ def _sortable_datetime(value: object) -> str:
     if value is None:
         return ""
     return str(value)
+
+
+def _coerce_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _stable_json(value: Mapping[str, Any]) -> str:

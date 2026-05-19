@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -574,6 +575,94 @@ def test_project_list_can_filter_by_search_term(
     projects = response.json()["projects"]
     assert len(projects) == 1
     assert projects[0]["display_name"] == "Choir Warmup"
+
+
+def test_project_list_hides_deleted_sync_placeholders(client, tmp_path: Path):
+    with SessionLocal() as session:
+        session.add_all(
+            [
+                Project(
+                    id="proj_visible_local",
+                    display_name="Visible Project",
+                    source_sha256="a" * 64,
+                    source_path=str(tmp_path / "visible-source.wav"),
+                    imported_path=str(tmp_path / "visible-imported.wav"),
+                    sync_status="local",
+                ),
+                Project(
+                    id="proj_hidden_deleted",
+                    display_name="Hidden Deleted Project",
+                    source_sha256="b" * 64,
+                    source_path="sync-placeholder:proj_hidden_deleted",
+                    imported_path="sync-placeholder:proj_hidden_deleted",
+                    sync_status="deleted",
+                    sync_status_reason="Project is covered by a sync delete tombstone.",
+                ),
+            ]
+        )
+        session.commit()
+
+    response = client.get("/api/v1/projects")
+
+    assert response.status_code == 200
+    projects = response.json()["projects"]
+    assert [project["id"] for project in projects] == ["proj_visible_local"]
+
+
+def test_import_project_replaces_deleted_sync_placeholder(
+    client,
+    sample_audio_file: Path,
+) -> None:
+    source_hash = file_sha256(sample_audio_file)
+    assert source_hash is not None
+    project_id = source_hash_to_project_id(source_hash)
+
+    with SessionLocal() as session:
+        session.add(
+            Project(
+                id=project_id,
+                display_name="Deleted Placeholder",
+                source_sha256=source_hash,
+                source_path=f"sync-placeholder:{project_id}",
+                imported_path=f"sync-placeholder:{project_id}",
+                sync_status="deleted",
+                sync_status_reason="Project is covered by a sync delete tombstone.",
+            )
+        )
+        session.add(
+            SyncDeleteTombstone(
+                id="tomb_reimport_project",
+                sync_group_id="group-a",
+                project_id=project_id,
+                target_type=PROJECT_TARGET_TYPE,
+                target_id=project_id,
+                author_device_id="peer-a",
+                deleted_at=datetime(2026, 1, 1, tzinfo=UTC),
+                prior_metadata_json={"display_name": "Deleted Placeholder"},
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/api/v1/projects/import",
+        json={
+            "source_path": str(sample_audio_file),
+            "copy_into_project": True,
+            "display_name": "Reimported Project",
+        },
+    )
+
+    assert response.status_code == 200
+    project = response.json()["project"]
+    assert project["id"] == project_id
+    assert project["display_name"] == "Reimported Project"
+    assert project["sync_status"] == "local"
+
+    with SessionLocal() as session:
+        assert session.get(SyncDeleteTombstone, "tomb_reimport_project") is None
+        persisted_project = session.get(Project, project_id)
+        assert persisted_project is not None
+        assert persisted_project.sync_status == "local"
 
 
 def test_retune_request_rejects_invalid_payload(client, sample_audio_file: Path):

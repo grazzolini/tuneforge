@@ -156,6 +156,127 @@ def test_artifact_classification_uses_verified_bytes_and_trusted_provider_choice
     assert _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, "art_duplicate_content") is not None
 
 
+def test_issue120_three_peer_group_uses_online_trusted_provider_deterministically(
+    db_session: Session,
+) -> None:
+    _add_identity_and_peers(db_session)
+    now = datetime.now(UTC)
+    db_session.add(
+        SyncTrustedPeer(
+            device_id="peer-c",
+            sync_group_id="group-a",
+            display_name="Peer C",
+            public_key="pub-peer-c",
+            endpoint_hints_json=[],
+            trusted_at=now,
+            revoked_at=None,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    project = _add_project(db_session, "proj_issue120_three_peer", source_sha256=_sha("issue120 source"))
+    online_hash = _sha("issue120 online artifact")
+    untrusted_only_hash = _sha("issue120 untrusted artifact")
+    db_session.commit()
+
+    base_request = {
+        "remote_library": {
+            "projects": [{"project_id": project.id, "source_sha256": project.source_sha256}],
+            "artifacts": [
+                _artifact_manifest(project.id, "art_issue120_online", online_hash, 64),
+                _artifact_manifest(project.id, "art_issue120_untrusted_only", untrusted_only_hash, 64),
+            ],
+        },
+    }
+
+    all_online_plan = plan_sync_reconciliation(
+        db_session,
+        {
+            **base_request,
+            "peer_inventory": [
+                {"device_id": "peer-c", "available_content_hashes": [online_hash]},
+                {"device_id": "peer-b", "available_content_hashes": [online_hash]},
+                {"device_id": "peer-a", "available_content_hashes": [online_hash]},
+                {"device_id": "peer-revoked", "available_content_hashes": [online_hash, untrusted_only_hash]},
+                {"device_id": "peer-untrusted", "available_content_hashes": [online_hash, untrusted_only_hash]},
+            ],
+        },
+    )
+
+    all_online_item = _item(all_online_plan, ITEM_ARTIFACT, "art_issue120_online")
+    assert all_online_item.status == "remote_available"
+    assert all_online_item.chosen_provider_device_id == "peer-a"
+    all_online_fetch = _action(
+        all_online_plan,
+        ACTION_FETCH_ARTIFACT_CONTENT,
+        ITEM_ARTIFACT,
+        "art_issue120_online",
+    )
+    assert all_online_fetch is not None
+    assert all_online_fetch.provider_device_id == "peer-a"
+    all_online_import = _action(
+        all_online_plan,
+        ACTION_IMPORT_ARTIFACT_MANIFEST,
+        ITEM_ARTIFACT,
+        "art_issue120_online",
+    )
+    assert all_online_import is not None
+    assert all_online_import.provider_device_id == "peer-a"
+
+    first_provider_absent_plan = plan_sync_reconciliation(
+        db_session,
+        {
+            **base_request,
+            "peer_inventory": [
+                {"device_id": "peer-c", "available_content_hashes": [online_hash]},
+                {"device_id": "peer-b", "available_content_hashes": [online_hash]},
+                {"device_id": "peer-revoked", "available_content_hashes": [online_hash, untrusted_only_hash]},
+                {"device_id": "peer-untrusted", "available_content_hashes": [online_hash, untrusted_only_hash]},
+            ],
+        },
+    )
+
+    switched_item = _item(first_provider_absent_plan, ITEM_ARTIFACT, "art_issue120_online")
+    assert switched_item.status == "remote_available"
+    assert switched_item.chosen_provider_device_id == "peer-b"
+    switched_fetch = _action(
+        first_provider_absent_plan,
+        ACTION_FETCH_ARTIFACT_CONTENT,
+        ITEM_ARTIFACT,
+        "art_issue120_online",
+    )
+    assert switched_fetch is not None
+    assert switched_fetch.provider_device_id == "peer-b"
+    switched_import = _action(
+        first_provider_absent_plan,
+        ACTION_IMPORT_ARTIFACT_MANIFEST,
+        ITEM_ARTIFACT,
+        "art_issue120_online",
+    )
+    assert switched_import is not None
+    assert switched_import.provider_device_id == "peer-b"
+    untrusted_only = _item(first_provider_absent_plan, ITEM_ARTIFACT, "art_issue120_untrusted_only")
+    assert untrusted_only.status == "missing_provider"
+    assert (
+        _action(
+            first_provider_absent_plan,
+            ACTION_FETCH_ARTIFACT_CONTENT,
+            ITEM_ARTIFACT,
+            "art_issue120_untrusted_only",
+        )
+        is None
+    )
+    assert (
+        _action(
+            first_provider_absent_plan,
+            ACTION_IMPORT_ARTIFACT_MANIFEST,
+            ITEM_ARTIFACT,
+            "art_issue120_untrusted_only",
+        )
+        is None
+    )
+
+
 def test_valid_tombstones_apply_first_and_untrusted_tombstones_are_noop(
     db_session: Session,
     tmp_path: Path,
@@ -204,6 +325,9 @@ def test_valid_tombstones_apply_first_and_untrusted_tombstones_are_noop(
         target_id="art_revoked",
         author_device_id="peer-revoked",
     )
+    stale_deleted_project_manifest = _project_manifest("proj_deleted_remote", deleted_project_source)
+    stale_deleted_project_manifest["project"]["created_at"] = datetime(2026, 1, 1, tzinfo=UTC)
+    stale_deleted_project_manifest["project"]["updated_at"] = datetime(2026, 1, 1, tzinfo=UTC)
     request = {
         "remote_library": {
             "projects": [
@@ -221,9 +345,7 @@ def test_valid_tombstones_apply_first_and_untrusted_tombstones_are_noop(
                 deleted_project_tombstone,
             ],
         },
-        "project_manifests": [
-            _project_manifest("proj_deleted_remote", deleted_project_source),
-        ],
+        "project_manifests": [stale_deleted_project_manifest],
         "peer_inventory": [{"device_id": "peer-a", "available_content_hashes": [import_hash]}],
     }
 
@@ -245,6 +367,97 @@ def test_valid_tombstones_apply_first_and_untrusted_tombstones_are_noop(
     )
     assert _action(plan, ACTION_APPLY_DELETE_TOMBSTONE, ITEM_ARTIFACT, "art_wrong_group") is None
     assert _action(plan, ACTION_APPLY_DELETE_TOMBSTONE, ITEM_ARTIFACT, "art_revoked") is None
+
+
+def test_newer_project_manifest_wins_over_older_local_project_tombstone(
+    db_session: Session,
+) -> None:
+    _add_identity_and_peers(db_session)
+    source_hash = _sha("reimported source")
+    project_id = source_hash_to_project_id(source_hash)
+    deleted_at = datetime(2026, 1, 1, tzinfo=UTC)
+    reimported_at = datetime(2026, 1, 2, tzinfo=UTC)
+    db_session.add(
+        SyncDeleteTombstone(
+            id="tomb_old_local_project",
+            sync_group_id="group-a",
+            project_id=project_id,
+            target_type=ITEM_PROJECT,
+            target_id=project_id,
+            author_device_id="peer-a",
+            deleted_at=deleted_at,
+            created_at=deleted_at,
+            updated_at=deleted_at,
+            prior_metadata_json={"display_name": "Old Project"},
+        )
+    )
+    db_session.flush()
+    manifest = _project_manifest(project_id, source_hash)
+    manifest["project"]["created_at"] = reimported_at
+    manifest["project"]["updated_at"] = reimported_at
+
+    plan = plan_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {
+                "projects": [],
+                "artifacts": [],
+                "entity_revisions": [],
+                "delete_tombstones": [],
+            },
+            "project_manifests": [manifest],
+            "peer_inventory": [{"device_id": "peer-a", "available_content_hashes": [source_hash]}],
+        },
+    )
+
+    project_item = _item(plan, ITEM_PROJECT, project_id)
+    assert project_item.status == "remote_available"
+    assert _action(plan, ACTION_APPLY_DELETE_TOMBSTONE, ITEM_PROJECT, project_id) is None
+    assert _action(plan, ACTION_IMPORT_PROJECT_MANIFEST, ITEM_PROJECT, project_id) is not None
+
+
+def test_older_remote_project_tombstone_does_not_delete_newer_local_project(
+    db_session: Session,
+) -> None:
+    _add_identity_and_peers(db_session)
+    source_hash = _sha("local reimported source")
+    project_id = source_hash_to_project_id(source_hash)
+    project = _add_project(db_session, project_id, source_sha256=source_hash)
+    project.updated_at = datetime(2026, 1, 2, tzinfo=UTC)
+    deleted_at = datetime(2026, 1, 1, tzinfo=UTC)
+    db_session.flush()
+
+    plan = plan_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {
+                "projects": [],
+                "artifacts": [],
+                "entity_revisions": [],
+                "delete_tombstones": [
+                    {
+                        "tombstone_id": "tomb_old_remote_project",
+                        "sync_group_id": "group-a",
+                        "project_id": project_id,
+                        "target_type": ITEM_PROJECT,
+                        "target_id": project_id,
+                        "author_device_id": "peer-a",
+                        "deleted_at": deleted_at,
+                        "prior_metadata": {},
+                        "created_at": deleted_at,
+                        "updated_at": deleted_at,
+                    }
+                ],
+            },
+            "project_manifests": [],
+            "peer_inventory": [],
+        },
+    )
+
+    tombstone_item = _item(plan, ITEM_DELETE_TOMBSTONE, "tomb_old_remote_project")
+    assert tombstone_item.status == "noop"
+    assert "older than a live project" in tombstone_item.reason
+    assert _action(plan, ACTION_APPLY_DELETE_TOMBSTONE, ITEM_PROJECT, project_id) is None
 
 
 def test_entity_revision_ancestry_imports_descendants_and_conflicts_siblings(

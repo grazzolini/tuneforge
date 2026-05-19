@@ -72,7 +72,13 @@ class SyncMetadataResult:
 
 
 def get_sync_metadata(session: Session) -> SyncMetadataResult:
-    projects = list(session.scalars(select(Project).order_by(Project.created_at.asc(), Project.id.asc())))
+    projects = list(
+        session.scalars(
+            select(Project)
+            .where(Project.sync_status != "deleted")
+            .order_by(Project.created_at.asc(), Project.id.asc())
+        )
+    )
     artifacts = list(
         session.scalars(
             select(Artifact).order_by(

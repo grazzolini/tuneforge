@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.errors import AppError
-from app.models import Artifact, Project, SyncEntityRevision
+from app.models import Artifact, Project, SyncDeleteTombstone, SyncEntityRevision
 from app.services.artifacts import register_artifact
 from app.services.metadata import extract_audio_metadata, normalize_audio_to_wav
 from app.services.paths import ensure_project_dirs, project_root, project_source_dir
@@ -18,6 +18,7 @@ from app.services.sync_identity import source_hash_to_project_id
 from app.services.sync_project_status import require_project_sync_editable
 from app.services.sync_revisions import record_project_metadata_revision
 from app.services.sync_tombstones import (
+    PROJECT_TARGET_TYPE,
     record_artifact_delete_tombstone,
     record_entity_revision_delete_tombstone,
     record_project_delete_tombstone,
@@ -41,7 +42,7 @@ def _validate_import_path(source_path: Path) -> None:
 
 
 def list_projects(session: Session, *, search: str | None = None) -> list[Project]:
-    stmt = select(Project)
+    stmt = select(Project).where(Project.sync_status != "deleted")
     normalized_search = (search or "").strip().lower()
     if normalized_search:
         like_term = f"%{normalized_search}%"
@@ -95,6 +96,48 @@ def _find_existing_source_project(
     )
 
 
+def _discard_deleted_project_placeholder(
+    session: Session,
+    *,
+    project_id: str,
+    source_sha256: str,
+) -> None:
+    placeholders = list(
+        session.scalars(
+            select(Project)
+            .where(Project.sync_status == "deleted")
+            .where(or_(Project.id == project_id, Project.source_sha256 == source_sha256))
+            .order_by(Project.created_at.asc(), Project.id.asc())
+        )
+    )
+    if not placeholders:
+        return
+
+    for project in placeholders:
+        root = project_root(project.id)
+        session.delete(project)
+        if root.exists():
+            shutil.rmtree(root, ignore_errors=True)
+    session.flush()
+
+
+def _clear_project_delete_tombstones_for_reimport(session: Session, *, project_id: str) -> None:
+    tombstones = list(
+        session.scalars(
+            select(SyncDeleteTombstone).where(
+                SyncDeleteTombstone.target_type == PROJECT_TARGET_TYPE,
+                SyncDeleteTombstone.target_id == project_id,
+            )
+        )
+    )
+    if not tombstones:
+        return
+
+    for tombstone in tombstones:
+        session.delete(tombstone)
+    session.flush()
+
+
 def import_project(
     session: Session,
     *,
@@ -114,6 +157,11 @@ def import_project(
         )
 
     project_id = source_hash_to_project_id(source_sha256)
+    _discard_deleted_project_placeholder(
+        session,
+        project_id=project_id,
+        source_sha256=source_sha256,
+    )
     existing_project = _find_existing_source_project(
         session,
         project_id=project_id,
@@ -121,6 +169,7 @@ def import_project(
     )
     if existing_project is not None:
         raise _duplicate_project_source_error(existing_project.id, existing_project.display_name)
+    _clear_project_delete_tombstones_for_reimport(session, project_id=project_id)
 
     metadata = extract_audio_metadata(resolved_source)
     source_dir = project_source_dir(project_id)

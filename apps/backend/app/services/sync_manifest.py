@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
@@ -241,13 +241,22 @@ def import_staged_project_manifest(
     project: Project | None = None
     upgrading_placeholder = False
     if existing_project is not None:
-        if existing_project.id == project_manifest.project_id and project_manifest.delete_tombstones:
-            imported_tombstones = _import_delete_tombstones(session, project_manifest)
-            _apply_delete_tombstones(session, imported_tombstones)
-            return existing_project
         if _can_upgrade_project_placeholder(existing_project, project_manifest):
             project = existing_project
             upgrading_placeholder = True
+        elif existing_project.id == project_manifest.project_id:
+            root = project_root(project_manifest.project_id).resolve(strict=False)
+            staged_root = (
+                None if staging_root is None else Path(staging_root).expanduser().resolve(strict=False)
+            )
+            return _merge_staged_project_manifest(
+                session,
+                project=existing_project,
+                manifest=project_manifest,
+                staging_root=staged_root,
+                project_root_path=root,
+                use_content_addressed_staging=use_content_addressed_staging,
+            )
         else:
             raise _duplicate_project_source_error(existing_project.id, existing_project.display_name)
     _reject_manifest_artifact_conflicts(session, project_manifest)
@@ -351,6 +360,154 @@ def import_staged_project_manifest(
         raise
 
     return project
+
+
+def _merge_staged_project_manifest(
+    session: Session,
+    *,
+    project: Project,
+    manifest: SyncProjectManifest,
+    staging_root: Path | None,
+    project_root_path: Path,
+    use_content_addressed_staging: bool,
+) -> Project:
+    _validate_existing_project_matches_manifest(project, manifest)
+    _reject_existing_manifest_item_conflicts(session, manifest)
+
+    missing_artifacts = [
+        artifact
+        for artifact in manifest.artifacts
+        if session.get(Artifact, artifact.artifact_id) is None
+    ]
+    missing_revisions = [
+        revision
+        for revision in manifest.entity_revisions
+        if session.get(SyncEntityRevision, revision.revision_id) is None
+    ]
+    merge_manifest = replace(
+        manifest,
+        artifacts=missing_artifacts,
+        entity_revisions=missing_revisions,
+    )
+    verified_artifacts = (
+        []
+        if not missing_artifacts
+        else _verify_staged_artifacts(
+            session,
+            merge_manifest,
+            staging_root=staging_root,
+            project_root_path=project_root_path,
+            use_content_addressed_staging=use_content_addressed_staging,
+        )
+    )
+
+    ensure_project_dirs(project.id)
+    copied_paths: list[Path] = []
+    try:
+        for verified_artifact in verified_artifacts:
+            verified_artifact.destination_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(verified_artifact.staged_path, verified_artifact.destination_path)
+            copied_paths.append(verified_artifact.destination_path)
+        for verified_artifact in verified_artifacts:
+            imported_artifact = register_artifact(
+                session,
+                project_id=project.id,
+                artifact_type=verified_artifact.manifest.type,
+                artifact_format=verified_artifact.manifest.format,
+                path=verified_artifact.destination_path,
+                artifact_id=verified_artifact.manifest.artifact_id,
+                metadata=verified_artifact.manifest.metadata,
+                cache_key=verified_artifact.manifest.cache_key,
+                generated_by=verified_artifact.manifest.generated_by,
+                can_delete=verified_artifact.manifest.can_delete,
+                can_regenerate=verified_artifact.manifest.can_regenerate,
+                created_at=verified_artifact.manifest.created_at,
+            )
+            if (
+                imported_artifact.content_sha256 != verified_artifact.manifest.content_sha256
+                or imported_artifact.size_bytes != verified_artifact.manifest.size_bytes
+            ):
+                raise AppError(
+                    "SYNC_MANIFEST_IMPORTED_FILE_MISMATCH",
+                    "A copied artifact file does not match its manifest.",
+                    details={"artifact_id": verified_artifact.manifest.artifact_id},
+                )
+        _import_entity_revisions(session, merge_manifest)
+        imported_tombstones = _import_delete_tombstones(session, manifest)
+        _apply_delete_tombstones(session, imported_tombstones)
+        _hydrate_current_entity_revisions(session, project, missing_revisions)
+        hydrate_project_analysis_result_from_artifact(session, project.id)
+    except OSError as exc:
+        _cleanup_copied_artifacts(copied_paths, project_root_path)
+        raise AppError(
+            "SYNC_MANIFEST_COPY_FAILED",
+            "A staged artifact could not be copied into the local project store.",
+        ) from exc
+    except AppError:
+        _cleanup_copied_artifacts(copied_paths, project_root_path)
+        raise
+    except IntegrityError as exc:
+        _cleanup_copied_artifacts(copied_paths, project_root_path)
+        raise AppError(
+            "SYNC_MANIFEST_ARTIFACT_CONFLICT",
+            "A synced artifact conflicts with an existing local artifact.",
+            status_code=status.HTTP_409_CONFLICT,
+        ) from exc
+    except Exception:
+        _cleanup_copied_artifacts(copied_paths, project_root_path)
+        raise
+
+    session.flush()
+    return project
+
+
+def _validate_existing_project_matches_manifest(
+    project: Project,
+    manifest: SyncProjectManifest,
+) -> None:
+    if project.id != manifest.project_id or project.source_sha256 != manifest.source_sha256:
+        raise AppError(
+            "SYNC_MANIFEST_PROJECT_CONFLICT",
+            "A synced project manifest conflicts with an existing local project.",
+            status_code=status.HTTP_409_CONFLICT,
+            details={"project_id": manifest.project_id},
+        )
+
+
+def _reject_existing_manifest_item_conflicts(
+    session: Session,
+    manifest: SyncProjectManifest,
+) -> None:
+    for artifact in manifest.artifacts:
+        existing_artifact = session.get(Artifact, artifact.artifact_id)
+        if existing_artifact is None:
+            continue
+        if (
+            existing_artifact.project_id != manifest.project_id
+            or existing_artifact.content_sha256 != artifact.content_sha256
+            or existing_artifact.size_bytes != artifact.size_bytes
+        ):
+            raise AppError(
+                "SYNC_MANIFEST_ARTIFACT_CONFLICT",
+                "A synced artifact conflicts with an existing local artifact.",
+                status_code=status.HTTP_409_CONFLICT,
+                details={"artifact_id": artifact.artifact_id},
+            )
+
+    for revision in manifest.entity_revisions:
+        existing_revision = session.get(SyncEntityRevision, revision.revision_id)
+        if existing_revision is None:
+            continue
+        if (
+            existing_revision.project_id != manifest.project_id
+            or revision_payload_sha256(existing_revision.payload_json or {}) != revision.content_sha256
+        ):
+            raise AppError(
+                "SYNC_MANIFEST_ENTITY_REVISION_CONFLICT",
+                "A synced entity revision conflicts with an existing local revision.",
+                status_code=status.HTTP_409_CONFLICT,
+                details={"revision_id": revision.revision_id},
+            )
 
 
 def _list_project_entity_revisions(

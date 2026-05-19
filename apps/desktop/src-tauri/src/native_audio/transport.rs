@@ -19,13 +19,11 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use symphonia::core::{
-    audio::SampleBuffer,
-    codecs::{Decoder, DecoderOptions, CODEC_TYPE_NULL},
+    codecs::audio::{AudioDecoder, AudioDecoderOptions},
     errors::Error as SymphoniaError,
-    formats::{FormatOptions, FormatReader, SeekMode, SeekTo},
+    formats::{probe::Hint, FormatOptions, FormatReader, SeekMode, SeekTo, TrackType},
     io::MediaSourceStream,
     meta::MetadataOptions,
-    probe::Hint,
     units::Time,
 };
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1956,10 +1954,9 @@ impl WavStreamDecoder {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 struct SymphoniaStreamDecoder {
     format: Box<dyn FormatReader>,
-    decoder: Box<dyn Decoder>,
+    decoder: Box<dyn AudioDecoder>,
     track_id: u32,
-    sample_buffer: Option<SampleBuffer<f32>>,
-    sample_buffer_spec: Option<(u32, usize)>,
+    sample_buffer: Vec<f32>,
     target_sample_rate: u32,
     target_channels: usize,
     playback_rate: f64,
@@ -1981,36 +1978,37 @@ impl SymphoniaStreamDecoder {
         if let Some(extension) = path.extension().and_then(|value| value.to_str()) {
             hint.with_extension(extension);
         }
-        let probed = symphonia::default::get_probe()
-            .format(
+        let format = symphonia::default::get_probe()
+            .probe(
                 &hint,
                 mss,
-                &FormatOptions::default(),
-                &MetadataOptions::default(),
+                FormatOptions::default(),
+                MetadataOptions::default(),
             )
             .map_err(|error| format!("Native playback could not probe media: {error}"))?;
-        let format = probed.format;
-        let track = format
-            .default_track()
-            .or_else(|| {
-                format
-                    .tracks()
-                    .iter()
-                    .find(|track| track.codec_params.codec != CODEC_TYPE_NULL)
-            })
-            .ok_or_else(|| "Native playback source does not contain an audio track.".to_string())?;
-        let track_id = track.id;
-        let codec_params = track.codec_params.clone();
+        let (track_id, codec_params) = {
+            let track = format.default_track(TrackType::Audio).ok_or_else(|| {
+                "Native playback source does not contain an audio track.".to_string()
+            })?;
+            let codec_params = track
+                .codec_params
+                .as_ref()
+                .and_then(|params| params.audio())
+                .cloned()
+                .ok_or_else(|| {
+                    "Native playback source does not contain a decodable audio track.".to_string()
+                })?;
+            (track.id, codec_params)
+        };
         let decoder = symphonia::default::get_codecs()
-            .make(&codec_params, &DecoderOptions::default())
+            .make_audio_decoder(&codec_params, &AudioDecoderOptions::default())
             .map_err(|error| format!("Native playback codec is unsupported: {error}"))?;
 
         let mut stream = Self {
             format,
             decoder,
             track_id,
-            sample_buffer: None,
-            sample_buffer_spec: None,
+            sample_buffer: Vec::new(),
             target_sample_rate,
             target_channels,
             playback_rate,
@@ -2028,7 +2026,8 @@ impl SymphoniaStreamDecoder {
     fn next_chunk(&mut self) -> Result<Option<Vec<f32>>, String> {
         loop {
             let packet = match self.format.next_packet() {
-                Ok(packet) => packet,
+                Ok(Some(packet)) => packet,
+                Ok(None) => return Ok(None),
                 Err(SymphoniaError::IoError(error))
                     if error.kind() == std::io::ErrorKind::UnexpectedEof =>
                 {
@@ -2044,7 +2043,7 @@ impl SymphoniaStreamDecoder {
                 }
             };
 
-            if packet.track_id() != self.track_id {
+            if packet.track_id != self.track_id {
                 continue;
             }
 
@@ -2064,31 +2063,15 @@ impl SymphoniaStreamDecoder {
                     return Err(format!("Native playback decode failed: {error}"));
                 }
             };
-            let spec = *decoded.spec();
-            let duration = decoded.capacity() as u64;
-            let spec_key = (spec.rate, spec.channels.count());
-            let needs_buffer = self
-                .sample_buffer
-                .as_ref()
-                .map(|buffer| {
-                    self.sample_buffer_spec != Some(spec_key)
-                        || buffer.capacity() < duration as usize * spec.channels.count()
-                })
-                .unwrap_or(true);
-            if needs_buffer {
-                self.sample_buffer = Some(SampleBuffer::<f32>::new(duration, spec));
-                self.sample_buffer_spec = Some(spec_key);
-            }
-            let buffer = self
-                .sample_buffer
-                .as_mut()
-                .ok_or_else(|| "Native playback sample buffer is unavailable.".to_string())?;
-            buffer.copy_interleaved_ref(decoded);
+            let spec = decoded.spec().clone();
+            self.sample_buffer
+                .resize(decoded.samples_interleaved(), 0.0);
+            decoded.copy_to_slice_interleaved::<f32, _>(&mut self.sample_buffer);
 
             return prepare_stream_chunk(
-                buffer.samples(),
-                spec.channels.count() as u32,
-                spec.rate,
+                &self.sample_buffer,
+                spec.channels().count() as u32,
+                spec.rate(),
                 self.target_sample_rate,
                 self.target_channels,
                 self.playback_rate,
@@ -2099,18 +2082,20 @@ impl SymphoniaStreamDecoder {
     }
 
     fn seek(&mut self, position_seconds: f64) -> Result<(), String> {
+        let time = Time::try_from_secs_f64(position_seconds.max(0.0)).ok_or_else(|| {
+            "Native playback source cannot seek to the requested position.".to_string()
+        })?;
         match self.format.seek(
             SeekMode::Accurate,
             SeekTo::Time {
-                time: Time::from(position_seconds.max(0.0)),
+                time,
                 track_id: Some(self.track_id),
             },
         ) {
             Ok(_) => {
                 self.decoder.reset();
                 self.stretch.reset();
-                self.sample_buffer = None;
-                self.sample_buffer_spec = None;
+                self.sample_buffer.clear();
                 Ok(())
             }
             Err(_) => {
@@ -2269,7 +2254,9 @@ mod tests {
             capabilities(),
         );
 
-        let snapshot = state.seek(AudioSeekRequest { time_seconds: -10.0 });
+        let snapshot = state.seek(AudioSeekRequest {
+            time_seconds: -10.0,
+        });
 
         assert_eq!(snapshot.position_seconds, 0.0);
     }

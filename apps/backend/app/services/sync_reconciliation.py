@@ -274,8 +274,8 @@ def plan_sync_reconciliation(
         planned_project_ids = _planned_project_ids(actions)
         if (
             artifact.project_id in remote.project_manifests_by_id
-            and not _has_imported_local_project(local, artifact.project_id)
             and artifact.artifact_id in remote.manifest_artifact_ids_by_project.get(artifact.project_id, frozenset())
+            and not _is_deleted(ITEM_ARTIFACT, artifact.artifact_id, artifact.project_id, effective_tombstones)
         ):
             continue
         _plan_artifact(
@@ -294,8 +294,13 @@ def plan_sync_reconciliation(
     for revision in _sorted_remote_entity_revisions(remote.entity_revisions.values()):
         if (
             revision.project_id in remote.project_manifests_by_id
-            and not _has_imported_local_project(local, revision.project_id)
             and revision.revision_id in remote.manifest_revision_ids_by_project.get(revision.project_id, frozenset())
+            and not _is_deleted(
+                ITEM_ENTITY_REVISION,
+                revision.revision_id,
+                revision.project_id,
+                effective_tombstones,
+            )
         ):
             continue
         if _plan_entity_revision(
@@ -1312,7 +1317,8 @@ def _plan_entity_revision(
 
     local_revision = local.entity_revisions.get(revision.revision_id)
     if local_revision is not None:
-        if _normalize_sha256(local_revision.content_sha256) == revision.content_sha256:
+        local_content_sha256 = _local_revision_content_sha256(local_revision)
+        if local_content_sha256 == revision.content_sha256:
             _upsert_item(
                 items_by_key,
                 SyncReconciliationItem(
@@ -1336,7 +1342,8 @@ def _plan_entity_revision(
             content_sha256=revision.content_sha256,
             reason="Local and remote entity revisions share an ID but have different content hashes.",
             details={
-                "local_content_sha256": local_revision.content_sha256,
+                "local_content_sha256": local_content_sha256,
+                "stored_local_content_sha256": local_revision.content_sha256,
                 "remote_content_sha256": revision.content_sha256,
             },
         )
@@ -1420,7 +1427,8 @@ def _plan_entity_revision(
             details={
                 "base_revision_id": revision.base_revision_id,
                 "local_revision_id": divergent_revision.id,
-                "local_content_sha256": divergent_revision.content_sha256,
+                "local_content_sha256": _local_revision_content_sha256(divergent_revision),
+                "stored_local_content_sha256": divergent_revision.content_sha256,
                 "remote_content_sha256": revision.content_sha256,
             },
         )
@@ -2214,10 +2222,17 @@ def _divergent_local_revision(
             continue
         if local_revision.base_revision_id != remote_revision.base_revision_id:
             continue
-        if _normalize_sha256(local_revision.content_sha256) == remote_revision.content_sha256:
+        if _local_revision_content_sha256(local_revision) == remote_revision.content_sha256:
             continue
         return local_revision
     return None
+
+
+def _local_revision_content_sha256(revision: SyncEntityRevision) -> str | None:
+    payload = revision.payload_json
+    if isinstance(payload, Mapping):
+        return revision_payload_sha256(sanitize_revision_payload(payload))
+    return _normalize_sha256(revision.content_sha256)
 
 
 def _upsert_item(

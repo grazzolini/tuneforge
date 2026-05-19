@@ -43,6 +43,7 @@ pub struct SyncTransportStatus {
     pub failed_sessions: u64,
     pub last_status: Option<String>,
     pub last_error: Option<String>,
+    pub last_sync: Option<SyncTransportSyncResult>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -75,7 +76,12 @@ pub struct SyncTransportProjectResult {
 pub struct SyncTransportSyncResult {
     pub peer_device_id: String,
     pub remote_device_id: String,
+    pub status: String,
+    pub message: String,
     pub imported_projects: Vec<SyncTransportProjectResult>,
+    pub imported_project_count: usize,
+    pub skipped_project_count: usize,
+    pub failed_project_count: usize,
     pub received_artifacts: Vec<SyncTransportTransferResult>,
     pub served_artifact_requests: u64,
     pub remote_manifest_count: usize,
@@ -109,7 +115,7 @@ mod desktop {
     use sha2::{Digest, Sha256};
     use snow::{params::NoiseParams, Builder};
     use std::{
-        collections::HashMap,
+        collections::{HashMap, HashSet},
         env,
         fs::{self, File},
         io::{self, BufRead, BufReader, Read, Write},
@@ -126,6 +132,7 @@ mod desktop {
     use tauri::State;
 
     const DEFAULT_BIND_HOST: &str = "0.0.0.0";
+    const DEFAULT_LISTENER_PORT: u16 = 47619;
     const ENDPOINT_SCHEME: &str = "tuneforge-sync+tcp://";
     const PAIRING_PROTOCOL_VERSION: &str = "tuneforge-sync-v1";
     const TRANSPORT_PROTOCOL_VERSION: &str = "tuneforge-sync-transport-v1";
@@ -182,9 +189,10 @@ mod desktop {
                 .filter(|value| !value.is_empty())
                 .unwrap_or(DEFAULT_BIND_HOST)
                 .to_string();
-            let port = payload.port.unwrap_or(0);
-            let listener = TcpListener::bind((bind_host.as_str(), port))
-                .map_err(|error| format!("Could not bind sync transport listener: {error}"))?;
+            let port = payload.port.unwrap_or(DEFAULT_LISTENER_PORT);
+            let listener = TcpListener::bind((bind_host.as_str(), port)).map_err(|error| {
+                format!("Could not bind sync transport listener on {bind_host}:{port}: {error}")
+            })?;
             listener
                 .set_nonblocking(true)
                 .map_err(|error| format!("Could not configure sync transport listener: {error}"))?;
@@ -216,6 +224,7 @@ mod desktop {
             update_status(&self.shared_status, |status| {
                 status.last_status = Some("Sync transport listener started.".to_string());
                 status.last_error = None;
+                status.last_sync = None;
             });
 
             Ok(self.status())
@@ -271,6 +280,7 @@ mod desktop {
                 failed_sessions: shared.failed_sessions,
                 last_status: shared.last_status,
                 last_error: shared.last_error,
+                last_sync: shared.last_sync,
             }
         }
 
@@ -297,6 +307,24 @@ mod desktop {
         }
 
         fn sync_now(
+            &self,
+            payload: SyncTransportSyncNowRequest,
+        ) -> Result<SyncTransportSyncResult, String> {
+            let result = self.run_sync_now(payload);
+            update_status(&self.shared_status, |status| match &result {
+                Ok(sync_result) => {
+                    status.last_status = Some(sync_result.message.clone());
+                    status.last_sync = Some(sync_result.clone());
+                    status.last_error = None;
+                }
+                Err(error) => {
+                    status.last_error = Some(error.clone());
+                }
+            });
+            result
+        }
+
+        fn run_sync_now(
             &self,
             payload: SyncTransportSyncNowRequest,
         ) -> Result<SyncTransportSyncResult, String> {
@@ -366,6 +394,7 @@ mod desktop {
                 imported_projects = imported.imported_projects;
                 received_artifacts = imported.received_artifacts;
             }
+            let import_counts = import_outcome_counts(&imported_projects);
             connection.send_message(&ProtocolMessage::PhaseDone {
                 phase: "initiator_import".to_string(),
             })?;
@@ -374,16 +403,28 @@ mod desktop {
                 &mut connection,
                 &local_offer.project_manifests,
             )?;
+            let manifest_errors =
+                sync_manifest_errors(&local_offer.manifest_errors, &remote_offer.manifest_errors);
 
             Ok(SyncTransportSyncResult {
                 peer_device_id: payload.peer_device_id,
                 remote_device_id: session.remote_device_id,
+                status: sync_result_status(&manifest_errors, import_counts.failed),
+                message: sync_result_message(
+                    local_manifest_count,
+                    remote_offer.project_manifests.len(),
+                    received_artifacts.len(),
+                    import_counts,
+                ),
                 imported_projects,
+                imported_project_count: import_counts.imported,
+                skipped_project_count: import_counts.skipped,
+                failed_project_count: import_counts.failed,
                 received_artifacts,
                 served_artifact_requests,
                 remote_manifest_count: remote_offer.project_manifests.len(),
                 local_manifest_count,
-                manifest_errors: remote_offer.manifest_errors,
+                manifest_errors,
             })
         }
     }
@@ -432,6 +473,11 @@ mod desktop {
         thread: Option<JoinHandle<()>>,
     }
 
+    struct IncomingSessionResult {
+        message: String,
+        sync_result: SyncTransportSyncResult,
+    }
+
     #[derive(Clone, Default)]
     struct SharedStatus {
         active_sessions: usize,
@@ -439,6 +485,7 @@ mod desktop {
         failed_sessions: u64,
         last_status: Option<String>,
         last_error: Option<String>,
+        last_sync: Option<SyncTransportSyncResult>,
     }
 
     fn accept_loop(
@@ -457,6 +504,7 @@ mod desktop {
                         status.last_status =
                             Some(format!("Accepted sync peer session from {address}."));
                         status.last_error = None;
+                        status.last_sync = None;
                     });
                     thread::spawn(move || {
                         handle_incoming_session(base_url, stream, shared_status);
@@ -489,8 +537,9 @@ mod desktop {
         update_status(&shared_status, |status| {
             status.active_sessions = status.active_sessions.saturating_sub(1);
             match result {
-                Ok(summary) => {
-                    status.last_status = Some(summary);
+                Ok(result) => {
+                    status.last_status = Some(result.message);
+                    status.last_sync = Some(result.sync_result);
                     status.last_error = None;
                 }
                 Err(error) => {
@@ -501,7 +550,10 @@ mod desktop {
         });
     }
 
-    fn serve_incoming_session(base_url: String, stream: TcpStream) -> Result<String, String> {
+    fn serve_incoming_session(
+        base_url: String,
+        stream: TcpStream,
+    ) -> Result<IncomingSessionResult, String> {
         configure_stream(&stream)?;
         let client = BackendClient::new(&base_url)?;
         let mut connection = SecurePeerConnection::connect_responder(stream)?;
@@ -534,17 +586,47 @@ mod desktop {
             &remote_offer.metadata,
             &remote_offer.project_manifests,
         );
+        let import_counts = import_outcome_counts(&imported.imported_projects);
         connection.send_message(&ProtocolMessage::PhaseDone {
             phase: "responder_import".to_string(),
         })?;
 
-        Ok(format!(
-            "Sync session with {} completed: served {} artifact request(s), imported {} project manifest(s), offered {} local manifest(s).",
+        let message = format!(
+            "Sync session with {} completed: served {} artifact request(s), imported {} project(s), skipped {} project(s), failed {} project(s), offered {} local manifest(s).",
             session.remote_device_id,
             served_artifact_requests,
-            imported.imported_projects.len(),
+            import_counts.imported,
+            import_counts.skipped,
+            import_counts.failed,
             local_manifest_count
-        ))
+        );
+        let manifest_errors =
+            sync_manifest_errors(&local_offer.manifest_errors, &remote_offer.manifest_errors);
+        let sync_result = SyncTransportSyncResult {
+            peer_device_id: session.remote_device_id.clone(),
+            remote_device_id: session.remote_device_id,
+            status: sync_result_status(&manifest_errors, import_counts.failed),
+            message: sync_result_message(
+                local_manifest_count,
+                remote_offer.project_manifests.len(),
+                imported.received_artifacts.len(),
+                import_counts,
+            ),
+            imported_projects: imported.imported_projects,
+            imported_project_count: import_counts.imported,
+            skipped_project_count: import_counts.skipped,
+            failed_project_count: import_counts.failed,
+            received_artifacts: imported.received_artifacts,
+            served_artifact_requests,
+            remote_manifest_count: remote_offer.project_manifests.len(),
+            local_manifest_count,
+            manifest_errors,
+        };
+
+        Ok(IncomingSessionResult {
+            message,
+            sync_result,
+        })
     }
 
     fn update_status(
@@ -830,6 +912,9 @@ mod desktop {
     }
 
     fn configure_stream(stream: &TcpStream) -> Result<(), String> {
+        stream.set_nonblocking(false).map_err(|error| {
+            format!("Could not configure sync transport blocking mode: {error}")
+        })?;
         stream
             .set_read_timeout(Some(READ_TIMEOUT))
             .map_err(|error| format!("Could not set sync transport read timeout: {error}"))?;
@@ -1162,6 +1247,13 @@ mod desktop {
         received_artifacts: Vec<SyncTransportTransferResult>,
     }
 
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    struct ImportOutcomeCounts {
+        imported: usize,
+        skipped: usize,
+        failed: usize,
+    }
+
     fn import_remote_manifests(
         client: &BackendClient,
         connection: &mut SecurePeerConnection,
@@ -1169,47 +1261,46 @@ mod desktop {
         remote_metadata: &Value,
         manifests: &[Value],
     ) -> ImportRemoteResult {
-        let mut imported_projects = Vec::new();
         let mut received_artifacts = Vec::new();
+        let mut transfer_failures = HashMap::new();
 
-        for manifest in manifests {
-            let project_id = manifest_project_id(manifest);
-            let artifacts = manifest_artifacts(manifest);
-            let mut project_failed = None;
-            for artifact in &artifacts {
-                match request_and_stage_artifact(client, connection, peer_device_id, artifact) {
-                    Ok(result) => received_artifacts.push(result),
-                    Err(error) => {
-                        project_failed = Some(error);
-                        break;
-                    }
+        let plan =
+            match plan_remote_manifest_batch(client, peer_device_id, remote_metadata, manifests) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    return ImportRemoteResult {
+                        imported_projects: apply_failure_results(
+                            manifests,
+                            &transfer_failures,
+                            &format!("Could not plan remote sync reconciliation batch: {error}"),
+                        ),
+                        received_artifacts,
+                    };
+                }
+            };
+
+        for entry in planned_fetch_artifact_entries(&plan, manifests) {
+            match request_and_stage_artifact(client, connection, peer_device_id, &entry.artifact) {
+                Ok(result) => received_artifacts.push(result),
+                Err(error) => {
+                    transfer_failures
+                        .entry(entry.manifest_project_id)
+                        .or_insert(error);
                 }
             }
-
-            if let Some(error) = project_failed {
-                imported_projects.push(SyncTransportProjectResult {
-                    project_id,
-                    status: "failed".to_string(),
-                    message: Some(error),
-                });
-                continue;
-            }
-
-            match apply_remote_manifest(
-                client,
-                peer_device_id,
-                remote_metadata,
-                manifest,
-                &artifacts,
-            ) {
-                Ok(result) => imported_projects.push(result),
-                Err(error) => imported_projects.push(SyncTransportProjectResult {
-                    project_id,
-                    status: "failed".to_string(),
-                    message: Some(error.to_string()),
-                }),
-            }
         }
+
+        let available_content_sha256 = available_content_sha256(&received_artifacts);
+        let imported_projects = match apply_remote_manifest_batch(
+            client,
+            peer_device_id,
+            remote_metadata,
+            manifests,
+            &available_content_sha256,
+        ) {
+            Ok(results) => merge_transfer_failures(results, &transfer_failures),
+            Err(error) => apply_failure_results(manifests, &transfer_failures, &error.to_string()),
+        };
 
         ImportRemoteResult {
             imported_projects,
@@ -1217,60 +1308,387 @@ mod desktop {
         }
     }
 
-    fn apply_remote_manifest(
+    fn plan_remote_manifest_batch(
         client: &BackendClient,
         peer_device_id: &str,
         remote_metadata: &Value,
-        manifest: &Value,
-        artifacts: &[RemoteArtifact],
-    ) -> Result<SyncTransportProjectResult, BackendError> {
-        let project_id = manifest_project_id(manifest);
-        let available_content_sha256: Vec<String> = artifacts
-            .iter()
-            .map(|artifact| artifact.content_sha256.clone())
-            .collect();
-        let body = json!({
+        manifests: &[Value],
+    ) -> Result<Value, BackendError> {
+        let advertised_content_sha256 = manifest_content_sha256(manifests);
+        let body = reconciliation_plan_body(
+            peer_device_id,
+            remote_metadata,
+            manifests,
+            &advertised_content_sha256,
+        );
+        client.post_json_value("/api/v1/sync/reconciliation/plan", &body)
+    }
+
+    fn apply_remote_manifest_batch(
+        client: &BackendClient,
+        peer_device_id: &str,
+        remote_metadata: &Value,
+        manifests: &[Value],
+        available_content_sha256: &[String],
+    ) -> Result<Vec<SyncTransportProjectResult>, BackendError> {
+        let body = reconciliation_apply_body(
+            peer_device_id,
+            remote_metadata,
+            manifests,
+            available_content_sha256,
+        );
+        let response = client.post_json_value("/api/v1/sync/reconciliation/apply", &body)?;
+        Ok(map_batch_apply_response(manifests, &response))
+    }
+
+    fn reconciliation_plan_body(
+        peer_device_id: &str,
+        remote_metadata: &Value,
+        manifests: &[Value],
+        available_content_sha256: &[String],
+    ) -> Value {
+        json!({
             "remote_library": remote_metadata,
-            "project_manifests": [manifest],
+            "project_manifests": manifests,
+            "peer_inventory": [{
+                "device_id": peer_device_id,
+                "available_content_sha256": available_content_sha256,
+                "metadata": { "transport": "tuneforge-sync+tcp" },
+            }],
+        })
+    }
+
+    fn reconciliation_apply_body(
+        peer_device_id: &str,
+        remote_metadata: &Value,
+        manifests: &[Value],
+        available_content_sha256: &[String],
+    ) -> Value {
+        json!({
+            "remote_library": remote_metadata,
+            "project_manifests": manifests,
             "peer_inventory": [{
                 "device_id": peer_device_id,
                 "available_content_sha256": available_content_sha256,
                 "metadata": { "transport": "tuneforge-sync+tcp" },
             }],
             "use_content_addressed_staging": true,
-        });
-        let response = client.post_json_value("/api/v1/sync/reconciliation/apply", &body)?;
-        let summary = response.get("summary").unwrap_or(&Value::Null);
-        let failed_actions = summary
-            .get("failed_actions")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        let applied_actions = summary
-            .get("applied_actions")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        let satisfied_actions = summary
-            .get("satisfied_actions")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        let skipped_actions = summary
-            .get("skipped_actions")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        let status = if failed_actions > 0 {
-            "failed"
-        } else if applied_actions > 0 || satisfied_actions > 0 {
-            "applied"
-        } else {
-            "skipped"
-        };
-        Ok(SyncTransportProjectResult {
-            project_id,
-            status: status.to_string(),
-            message: Some(format!(
-                "Reconciliation apply: {applied_actions} applied, {satisfied_actions} satisfied, {skipped_actions} skipped, {failed_actions} failed."
-            )),
         })
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct ProjectApplyOutcome {
+        applied_actions: u64,
+        satisfied_actions: u64,
+        skipped_actions: u64,
+        failed_actions: u64,
+        conflicted_actions: u64,
+        imported_project_manifest: bool,
+        first_reason: Option<String>,
+    }
+
+    impl ProjectApplyOutcome {
+        fn record(&mut self, status: &str, action: &Value, reason: Option<&str>) {
+            let action_type = action.get("action_type").and_then(Value::as_str);
+            if action_type == Some("record_conflict")
+                || action_project_status(action) == Some("conflicted")
+            {
+                self.conflicted_actions = self.conflicted_actions.saturating_add(1);
+            }
+            match status {
+                "applied" => {
+                    self.applied_actions = self.applied_actions.saturating_add(1);
+                    if action_type == Some("import_project_manifest") {
+                        self.imported_project_manifest = true;
+                    }
+                }
+                "satisfied" => self.satisfied_actions = self.satisfied_actions.saturating_add(1),
+                "skipped" => self.skipped_actions = self.skipped_actions.saturating_add(1),
+                "failed" => self.failed_actions = self.failed_actions.saturating_add(1),
+                _ => self.skipped_actions = self.skipped_actions.saturating_add(1),
+            }
+            if self.first_reason.is_none() {
+                self.first_reason = reason.map(str::to_string);
+            }
+        }
+
+        fn status(&self) -> &'static str {
+            if self.failed_actions > 0 {
+                "failed"
+            } else if self.conflicted_actions > 0 {
+                "conflicted"
+            } else if self.imported_project_manifest {
+                "imported"
+            } else {
+                "skipped"
+            }
+        }
+
+        fn message(&self) -> String {
+            let mut message = format!(
+                "Reconciliation apply: {} applied, {} satisfied, {} skipped, {} failed, {} conflicted action(s).",
+                self.applied_actions,
+                self.satisfied_actions,
+                self.skipped_actions,
+                self.failed_actions,
+                self.conflicted_actions,
+            );
+            if let Some(reason) = &self.first_reason {
+                message.push(' ');
+                message.push_str(reason);
+            }
+            message
+        }
+    }
+
+    fn map_batch_apply_response(
+        manifests: &[Value],
+        response: &Value,
+    ) -> Vec<SyncTransportProjectResult> {
+        let mut outcomes: HashMap<String, ProjectApplyOutcome> = manifests
+            .iter()
+            .map(|manifest| {
+                (
+                    manifest_project_id(manifest),
+                    ProjectApplyOutcome::default(),
+                )
+            })
+            .collect();
+
+        for result in response
+            .get("results")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let action = result.get("action").unwrap_or(&Value::Null);
+            let Some(project_id) = apply_result_project_id(action) else {
+                continue;
+            };
+            let Some(outcome) = outcomes.get_mut(project_id) else {
+                continue;
+            };
+            let status = result
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("skipped");
+            let reason = result
+                .get("reason")
+                .and_then(Value::as_str)
+                .or_else(|| action.get("reason").and_then(Value::as_str));
+            let reason =
+                if action.get("action_type").and_then(Value::as_str) == Some("record_conflict") {
+                    action.get("reason").and_then(Value::as_str).or(reason)
+                } else {
+                    reason
+                };
+            outcome.record(status, action, reason);
+        }
+
+        manifests
+            .iter()
+            .map(|manifest| {
+                let project_id = manifest_project_id(manifest);
+                let outcome = outcomes.remove(&project_id).unwrap_or_default();
+                let message = if outcome.applied_actions == 0
+                    && outcome.satisfied_actions == 0
+                    && outcome.skipped_actions == 0
+                    && outcome.failed_actions == 0
+                    && outcome.conflicted_actions == 0
+                {
+                    "Reconciliation apply: no import actions were needed for this project."
+                        .to_string()
+                } else {
+                    outcome.message()
+                };
+                SyncTransportProjectResult {
+                    project_id,
+                    status: outcome.status().to_string(),
+                    message: Some(message),
+                }
+            })
+            .collect()
+    }
+
+    fn apply_result_project_id(action: &Value) -> Option<&str> {
+        action
+            .get("project_id")
+            .and_then(Value::as_str)
+            .or_else(|| match action.get("item_type").and_then(Value::as_str) {
+                Some("project") => action.get("item_id").and_then(Value::as_str),
+                _ => None,
+            })
+    }
+
+    fn action_project_status(action: &Value) -> Option<&str> {
+        action
+            .get("details")
+            .and_then(|details| details.get("project_status"))
+            .and_then(Value::as_str)
+    }
+
+    fn merge_transfer_failures(
+        mut results: Vec<SyncTransportProjectResult>,
+        transfer_failures: &HashMap<String, String>,
+    ) -> Vec<SyncTransportProjectResult> {
+        for result in &mut results {
+            if let Some(error) = transfer_failures.get(&result.project_id) {
+                result.status = "failed".to_string();
+                result.message = Some(format!(
+                    "Could not stage all remote artifact content before import: {error}"
+                ));
+            }
+        }
+        results
+    }
+
+    fn apply_failure_results(
+        manifests: &[Value],
+        transfer_failures: &HashMap<String, String>,
+        apply_error: &str,
+    ) -> Vec<SyncTransportProjectResult> {
+        manifests
+            .iter()
+            .map(|manifest| {
+                let project_id = manifest_project_id(manifest);
+                let message = transfer_failures.get(&project_id).map_or_else(
+                    || format!("Could not apply remote sync reconciliation batch: {apply_error}"),
+                    |error| {
+                        format!(
+                            "Could not stage all remote artifact content before import: {error}"
+                        )
+                    },
+                );
+                SyncTransportProjectResult {
+                    project_id,
+                    status: "failed".to_string(),
+                    message: Some(message),
+                }
+            })
+            .collect()
+    }
+
+    fn available_content_sha256(received_artifacts: &[SyncTransportTransferResult]) -> Vec<String> {
+        let mut seen = HashSet::new();
+        let mut values: Vec<String> = received_artifacts
+            .iter()
+            .filter_map(|artifact| {
+                if seen.insert(artifact.content_sha256.clone()) {
+                    Some(artifact.content_sha256.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        values.sort();
+        values
+    }
+
+    fn manifest_content_sha256(manifests: &[Value]) -> Vec<String> {
+        let mut seen = HashSet::new();
+        let mut values: Vec<String> = manifest_artifact_entries(manifests)
+            .into_iter()
+            .filter_map(|entry| {
+                if seen.insert(entry.artifact.content_sha256.clone()) {
+                    Some(entry.artifact.content_sha256)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        values.sort();
+        values
+    }
+
+    fn planned_fetch_artifact_entries(
+        plan: &Value,
+        manifests: &[Value],
+    ) -> Vec<ManifestArtifactEntry> {
+        let requested = planned_fetch_keys(plan);
+        manifest_artifact_entries(manifests)
+            .into_iter()
+            .filter(|entry| {
+                requested.contains(&(
+                    entry.artifact.artifact_id.clone(),
+                    entry.artifact.project_id.clone(),
+                    entry.artifact.content_sha256.clone(),
+                ))
+            })
+            .collect()
+    }
+
+    fn planned_fetch_keys(plan: &Value) -> HashSet<(String, String, String)> {
+        plan.get("actions")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|action| {
+                action.get("action_type").and_then(Value::as_str) == Some("fetch_artifact_content")
+            })
+            .filter_map(|action| {
+                Some((
+                    action.get("item_id")?.as_str()?.to_string(),
+                    action.get("project_id")?.as_str()?.to_string(),
+                    action.get("content_sha256")?.as_str()?.to_string(),
+                ))
+            })
+            .collect()
+    }
+
+    fn import_outcome_counts(results: &[SyncTransportProjectResult]) -> ImportOutcomeCounts {
+        let mut counts = ImportOutcomeCounts::default();
+        for result in results {
+            match result.status.as_str() {
+                "imported" => counts.imported += 1,
+                "failed" | "conflicted" => counts.failed += 1,
+                _ => counts.skipped += 1,
+            }
+        }
+        counts
+    }
+
+    fn sync_result_status(
+        manifest_errors: &[SyncTransportManifestError],
+        failed_project_count: usize,
+    ) -> String {
+        if failed_project_count > 0 || !manifest_errors.is_empty() {
+            "completed_with_errors"
+        } else {
+            "completed"
+        }
+        .to_string()
+    }
+
+    fn sync_manifest_errors(
+        local_errors: &[SyncTransportManifestError],
+        remote_errors: &[SyncTransportManifestError],
+    ) -> Vec<SyncTransportManifestError> {
+        let mut errors = Vec::with_capacity(local_errors.len() + remote_errors.len());
+        errors.extend(local_errors.iter().map(|error| SyncTransportManifestError {
+            project_id: error.project_id.clone(),
+            message: format!("Local manifest export failed: {}", error.message),
+        }));
+        errors.extend(
+            remote_errors
+                .iter()
+                .map(|error| SyncTransportManifestError {
+                    project_id: error.project_id.clone(),
+                    message: format!("Peer manifest export failed: {}", error.message),
+                }),
+        );
+        errors
+    }
+
+    fn sync_result_message(
+        local_manifest_count: usize,
+        remote_manifest_count: usize,
+        received_artifact_count: usize,
+        import_counts: ImportOutcomeCounts,
+    ) -> String {
+        format!(
+            "Exchanged {local_manifest_count} local and {remote_manifest_count} remote manifest(s); imported {} project(s), skipped {} project(s), failed {} project(s), received {received_artifact_count} artifact(s).",
+            import_counts.imported, import_counts.skipped, import_counts.failed
+        )
     }
 
     #[derive(Clone, Debug)]
@@ -1279,6 +1697,12 @@ mod desktop {
         project_id: String,
         content_sha256: String,
         size_bytes: u64,
+    }
+
+    #[derive(Clone, Debug)]
+    struct ManifestArtifactEntry {
+        manifest_project_id: String,
+        artifact: RemoteArtifact,
     }
 
     fn manifest_project_id(manifest: &Value) -> String {
@@ -1314,26 +1738,27 @@ mod desktop {
             .unwrap_or_default()
     }
 
+    fn manifest_artifact_entries(manifests: &[Value]) -> Vec<ManifestArtifactEntry> {
+        manifests
+            .iter()
+            .flat_map(|manifest| {
+                let manifest_project_id = manifest_project_id(manifest);
+                manifest_artifacts(manifest)
+                    .into_iter()
+                    .map(move |artifact| ManifestArtifactEntry {
+                        manifest_project_id: manifest_project_id.clone(),
+                        artifact,
+                    })
+            })
+            .collect()
+    }
+
     fn request_and_stage_artifact(
         client: &BackendClient,
         connection: &mut SecurePeerConnection,
         peer_device_id: &str,
         artifact: &RemoteArtifact,
     ) -> Result<SyncTransportTransferResult, String> {
-        let staging_path = format!(
-            "/api/v1/sync/artifacts/staging/{}",
-            percent_encode_path_segment(&artifact.content_sha256)
-        );
-        if client.get_json_value(&staging_path).is_ok() {
-            return Ok(SyncTransportTransferResult {
-                artifact_id: artifact.artifact_id.clone(),
-                content_sha256: artifact.content_sha256.clone(),
-                size_bytes: artifact.size_bytes,
-                status: "already_staged".to_string(),
-                message: None,
-            });
-        }
-
         connection.send_message(&ProtocolMessage::ArtifactRequest {
             artifact_id: artifact.artifact_id.clone(),
             content_sha256: artifact.content_sha256.clone(),
@@ -1451,7 +1876,11 @@ mod desktop {
     fn temp_artifact_path(content_sha256: &str) -> PathBuf {
         env::temp_dir()
             .join("tuneforge-sync-transport")
-            .join(format!("{}-{content_sha256}", process::id()))
+            .join(format!(
+                "{}-{}-{content_sha256}",
+                process::id(),
+                random_nonce()
+            ))
     }
 
     fn serve_artifact_requests_until_done(
@@ -2060,6 +2489,337 @@ mod desktop {
         }
 
         #[test]
+        fn reconciliation_apply_body_batches_every_manifest_with_one_peer_inventory() {
+            let manifests = vec![
+                json!({ "project": { "project_id": "proj_one" }, "artifacts": [] }),
+                json!({ "project": { "project_id": "proj_two" }, "artifacts": [] }),
+            ];
+            let remote_metadata = json!({ "projects": [] });
+            let available = vec!["hash_a".to_string(), "hash_b".to_string()];
+
+            let body =
+                reconciliation_apply_body("dev_peer", &remote_metadata, &manifests, &available);
+
+            assert_eq!(
+                body.get("project_manifests")
+                    .and_then(Value::as_array)
+                    .map(Vec::len),
+                Some(2)
+            );
+            assert_eq!(
+                body.get("peer_inventory")
+                    .and_then(Value::as_array)
+                    .and_then(|entries| entries.first())
+                    .and_then(|entry| entry.get("device_id"))
+                    .and_then(Value::as_str),
+                Some("dev_peer")
+            );
+            assert_eq!(
+                body.get("peer_inventory")
+                    .and_then(Value::as_array)
+                    .and_then(|entries| entries.first())
+                    .and_then(|entry| entry.get("available_content_sha256")),
+                Some(&json!(["hash_a", "hash_b"]))
+            );
+        }
+
+        #[test]
+        fn reconciliation_plan_body_advertises_manifest_artifact_hashes() {
+            let manifests = vec![
+                json!({
+                    "project": { "project_id": "proj_one" },
+                    "artifacts": [{
+                        "artifact_id": "art_one",
+                        "project_id": "proj_one",
+                        "content_sha256": "hash_b",
+                        "size_bytes": 20
+                    }]
+                }),
+                json!({
+                    "project": { "project_id": "proj_two" },
+                    "artifacts": [{
+                        "artifact_id": "art_two",
+                        "project_id": "proj_two",
+                        "content_sha256": "hash_a",
+                        "size_bytes": 10
+                    }, {
+                        "artifact_id": "art_two_duplicate_hash",
+                        "project_id": "proj_two",
+                        "content_sha256": "hash_b",
+                        "size_bytes": 20
+                    }]
+                }),
+            ];
+            let remote_metadata = json!({ "projects": [] });
+            let available = manifest_content_sha256(&manifests);
+
+            let body =
+                reconciliation_plan_body("dev_peer", &remote_metadata, &manifests, &available);
+
+            assert_eq!(
+                body.get("peer_inventory")
+                    .and_then(Value::as_array)
+                    .and_then(|entries| entries.first())
+                    .and_then(|entry| entry.get("available_content_sha256")),
+                Some(&json!(["hash_a", "hash_b"]))
+            );
+            assert!(body.get("use_content_addressed_staging").is_none());
+        }
+
+        #[test]
+        fn planned_fetch_artifact_entries_uses_backend_fetch_actions() {
+            let manifests = vec![
+                json!({
+                    "project": { "project_id": "proj_one" },
+                    "artifacts": [{
+                        "artifact_id": "art_one",
+                        "project_id": "proj_one",
+                        "content_sha256": "hash_a",
+                        "size_bytes": 10
+                    }]
+                }),
+                json!({
+                    "project": { "project_id": "proj_two" },
+                    "artifacts": [{
+                        "artifact_id": "art_two",
+                        "project_id": "proj_two",
+                        "content_sha256": "hash_b",
+                        "size_bytes": 20
+                    }]
+                }),
+            ];
+            let plan = json!({
+                "actions": [{
+                    "action_type": "fetch_artifact_content",
+                    "item_type": "artifact",
+                    "item_id": "art_two",
+                    "project_id": "proj_two",
+                    "content_sha256": "hash_b",
+                    "provider_device_id": "dev_peer",
+                    "priority": 20
+                }, {
+                    "action_type": "import_project_manifest",
+                    "item_type": "project",
+                    "item_id": "proj_one",
+                    "project_id": "proj_one",
+                    "priority": 30
+                }]
+            });
+
+            let entries = planned_fetch_artifact_entries(&plan, &manifests);
+
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].artifact.artifact_id, "art_two");
+            assert_eq!(entries[0].manifest_project_id, "proj_two");
+        }
+
+        #[test]
+        fn planned_fetch_artifact_entries_is_empty_when_plan_needs_no_content() {
+            let manifests = vec![json!({
+                "project": { "project_id": "proj_one" },
+                "artifacts": [{
+                    "artifact_id": "art_one",
+                    "project_id": "proj_one",
+                    "content_sha256": "hash_a",
+                    "size_bytes": 10
+                }]
+            })];
+            let plan = json!({
+                "actions": [{
+                    "action_type": "noop",
+                    "item_type": "artifact",
+                    "item_id": "art_one",
+                    "project_id": "proj_one",
+                    "content_sha256": "hash_a",
+                    "priority": 10
+                }]
+            });
+
+            assert!(planned_fetch_artifact_entries(&plan, &manifests).is_empty());
+        }
+
+        #[test]
+        fn batch_apply_response_maps_projects_to_imported_skipped_and_failed() {
+            let manifests = vec![
+                json!({ "project": { "project_id": "proj_imported" }, "artifacts": [] }),
+                json!({ "project": { "project_id": "proj_skipped" }, "artifacts": [] }),
+                json!({ "project": { "project_id": "proj_conflicted" }, "artifacts": [] }),
+                json!({ "project": { "project_id": "proj_failed" }, "artifacts": [] }),
+            ];
+            let response = json!({
+                "results": [
+                    {
+                        "action": {
+                            "action_type": "fetch_artifact_content",
+                            "item_type": "artifact",
+                            "item_id": "art_imported",
+                            "project_id": "proj_imported"
+                        },
+                        "status": "satisfied",
+                        "reason": "Required artifact content is staged."
+                    },
+                    {
+                        "action": {
+                            "action_type": "import_project_manifest",
+                            "item_type": "project",
+                            "item_id": "proj_imported",
+                            "project_id": "proj_imported"
+                        },
+                        "status": "applied",
+                        "reason": "Project manifest was imported."
+                    },
+                    {
+                        "action": {
+                            "action_type": "record_conflict",
+                            "item_type": "project",
+                            "item_id": "proj_conflicted",
+                            "project_id": "proj_conflicted",
+                            "reason": "Local and remote project data diverged."
+                        },
+                        "status": "skipped",
+                        "reason": "Conflict persistence is not available through existing sync services."
+                    },
+                    {
+                        "action": {
+                            "action_type": "upsert_project_status",
+                            "item_type": "project",
+                            "item_id": "proj_conflicted",
+                            "project_id": "proj_conflicted",
+                            "details": {
+                                "project_status": "conflicted"
+                            }
+                        },
+                        "status": "applied",
+                        "reason": "Marked project conflicted."
+                    },
+                    {
+                        "action": {
+                            "action_type": "import_project_manifest",
+                            "item_type": "project",
+                            "item_id": "proj_failed",
+                            "project_id": "proj_failed"
+                        },
+                        "status": "failed",
+                        "reason": "Project manifest import failed."
+                    }
+                ]
+            });
+
+            let results = map_batch_apply_response(&manifests, &response);
+
+            assert_eq!(results.len(), 4);
+            assert_eq!(results[0].project_id, "proj_imported");
+            assert_eq!(results[0].status, "imported");
+            assert_eq!(results[1].project_id, "proj_skipped");
+            assert_eq!(results[1].status, "skipped");
+            assert_eq!(results[2].project_id, "proj_conflicted");
+            assert_eq!(results[2].status, "conflicted");
+            assert_eq!(
+                results[2].message.as_deref(),
+                Some(
+                    "Reconciliation apply: 1 applied, 0 satisfied, 1 skipped, 0 failed, 2 conflicted action(s). Local and remote project data diverged."
+                )
+            );
+            assert_eq!(results[3].project_id, "proj_failed");
+            assert_eq!(results[3].status, "failed");
+
+            let counts = import_outcome_counts(&results);
+            assert_eq!(
+                counts,
+                ImportOutcomeCounts {
+                    imported: 1,
+                    skipped: 1,
+                    failed: 2,
+                }
+            );
+        }
+
+        #[test]
+        fn sync_result_summary_distinguishes_import_skips_and_failures() {
+            let counts = ImportOutcomeCounts {
+                imported: 2,
+                skipped: 1,
+                failed: 1,
+            };
+
+            assert_eq!(
+                sync_result_status(&[], counts.failed),
+                "completed_with_errors"
+            );
+            assert_eq!(
+                sync_result_message(4, 5, 6, counts),
+                "Exchanged 4 local and 5 remote manifest(s); imported 2 project(s), skipped 1 project(s), failed 1 project(s), received 6 artifact(s)."
+            );
+        }
+
+        #[test]
+        fn sync_manifest_errors_include_local_and_peer_export_failures() {
+            let local_errors = vec![SyncTransportManifestError {
+                project_id: "proj_local".to_string(),
+                message: "local failure".to_string(),
+            }];
+            let remote_errors = vec![SyncTransportManifestError {
+                project_id: "proj_peer".to_string(),
+                message: "peer failure".to_string(),
+            }];
+
+            let errors = sync_manifest_errors(&local_errors, &remote_errors);
+
+            assert_eq!(errors.len(), 2);
+            assert_eq!(errors[0].project_id, "proj_local");
+            assert_eq!(
+                errors[0].message,
+                "Local manifest export failed: local failure"
+            );
+            assert_eq!(errors[1].project_id, "proj_peer");
+            assert_eq!(
+                errors[1].message,
+                "Peer manifest export failed: peer failure"
+            );
+            assert_eq!(sync_result_status(&errors, 0), "completed_with_errors");
+        }
+
+        #[test]
+        fn temp_artifact_path_is_unique_per_transfer() {
+            let first = temp_artifact_path("hash_same");
+            let second = temp_artifact_path("hash_same");
+
+            assert_ne!(first, second);
+        }
+
+        #[test]
+        fn available_content_sha256_deduplicates_received_and_already_staged_artifacts() {
+            let received_artifacts = vec![
+                SyncTransportTransferResult {
+                    artifact_id: "art_one".to_string(),
+                    content_sha256: "hash_b".to_string(),
+                    size_bytes: 10,
+                    status: "received".to_string(),
+                    message: None,
+                },
+                SyncTransportTransferResult {
+                    artifact_id: "art_two".to_string(),
+                    content_sha256: "hash_a".to_string(),
+                    size_bytes: 20,
+                    status: "already_staged".to_string(),
+                    message: None,
+                },
+                SyncTransportTransferResult {
+                    artifact_id: "art_three".to_string(),
+                    content_sha256: "hash_b".to_string(),
+                    size_bytes: 10,
+                    status: "already_staged".to_string(),
+                    message: None,
+                },
+            ];
+
+            assert_eq!(
+                available_content_sha256(&received_artifacts),
+                vec!["hash_a".to_string(), "hash_b".to_string()]
+            );
+        }
+
+        #[test]
         fn percent_decode_preserves_plain_base64url_device_ids() {
             assert_eq!(
                 percent_decode("dev_ed25519_abc-DEF_123"),
@@ -2147,6 +2907,7 @@ mod android_stub {
             failed_sessions: 0,
             last_status: None,
             last_error: Some("Sync transport is only available on desktop.".to_string()),
+            last_sync: None,
         }
     }
 

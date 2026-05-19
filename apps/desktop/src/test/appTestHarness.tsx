@@ -8,6 +8,7 @@ import type {
   SyncPairingAnswerResponse,
   SyncPairingOfferRequest,
   SyncPairingOfferResponse,
+  SyncTransportRunStatus,
   SyncTrustedPeerSchema,
   SyncTrustedPeerCreateRequest,
   SyncTrustedPeerResponse,
@@ -1323,21 +1324,63 @@ const {
       }),
     };
   });
-  const mockSyncTrustedPeerNow = vi.fn(async (deviceId: string) => {
+  const mockSyncTrustedPeerNow = vi.fn(async (deviceId: string): Promise<SyncTransportRunStatus> => {
+    const syncResult: SyncTransportRunStatus = {
+      peer_device_id: deviceId,
+      remote_device_id: deviceId,
+      status: "completed_with_errors",
+      message: "Manifest exchange completed with 4 project results.",
+      started_at: createdAt,
+      completed_at: createdAt,
+      error: null,
+      project_results: [
+        {
+          project_id: "proj_imported",
+          status: "applied",
+          message: "Reconciliation apply: 3 applied, 1 satisfied, 0 skipped, 0 failed.",
+        },
+        {
+          project_id: "proj_up_to_date",
+          status: "skipped",
+          message: "Reconciliation apply: 0 applied, 0 satisfied, 2 skipped, 0 failed.",
+        },
+        {
+          project_id: "proj_conflict",
+          status: "conflicted",
+          message: "Local lyrics conflict with the trusted peer revision.",
+        },
+        {
+          project_id: "proj_missing_audio",
+          status: "failed",
+          message: "Peer did not provide the required source audio.",
+        },
+      ],
+      manifest_errors: [
+        {
+          project_id: "proj_missing_audio",
+          message: "Peer did not provide the required source audio.",
+        },
+      ],
+      received_artifacts: [
+        {
+          artifact_id: "art_imported_source",
+          content_sha256: "sha256-imported-source",
+          size_bytes: 4096,
+          status: "received",
+          message: "Received source audio.",
+        },
+      ],
+      served_artifact_requests: 1,
+      local_manifest_count: 2,
+      remote_manifest_count: 4,
+    };
     state.syncTransportStatus = {
       ...state.syncTransportStatus,
-      last_sync: {
-        peer_device_id: deviceId,
-        status: "completed",
-        message: "Manifest exchange completed.",
-        started_at: createdAt,
-        completed_at: createdAt,
-        error: null,
-      },
+      last_sync: syncResult,
       last_error: null,
       updated_at: createdAt,
     };
-    return clone(state.syncTransportStatus.last_sync);
+    return clone(syncResult);
   });
   const mockCreateChords = vi.fn(async (projectId: string, body?: Record<string, unknown>) => {
     state.chordsByProject[projectId] = makeChordTimeline(projectId);

@@ -16,6 +16,8 @@ import {
   mockCreatePreview,
   mockCreateStems,
   mockCreateTabImport,
+  mockDeleteProject,
+  mockCreateExport,
   mockUpdateLyrics,
   mockUpdateProject,
   renderApp,
@@ -23,6 +25,7 @@ import {
   setProjectAnalysis,
   setProjectChords,
   setProjectLyrics,
+  setProjects,
 } from "./test/appTestHarness";
 
 describe("Desktop app project analysis mix", () => {
@@ -125,6 +128,73 @@ describe("Desktop app project analysis mix", () => {
     await user.click(screen.getByRole("button", { name: "Analyze Track" }));
 
     expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123");
+  });
+
+  it("shows sync lock reason and disables project mutation controls for locked projects", async () => {
+    const user = userEvent.setup();
+    setProjects([
+      {
+        id: "proj_123",
+        display_name: "Demo Song",
+        source_key_override: null,
+        source_path: "/tmp/demo.wav",
+        imported_path: "/tmp/app/demo-song.wav",
+        duration_seconds: 182,
+        sample_rate: 44100,
+        channels: 2,
+        created_at: "2026-04-18T13:16:00.000Z",
+        updated_at: "2026-04-18T13:16:00.000Z",
+        sync_status: "remote_available",
+        sync_editable: false,
+        sync_status_reason: "Download source audio before editing.",
+      },
+    ]);
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    expect(screen.getByText("Remote Available")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Download source audio before editing.");
+
+    const renameButton = screen.getByRole("button", { name: "Rename" });
+    expect(renameButton).toBeDisabled();
+    fireEvent.click(renameButton);
+    expect(mockUpdateProject).not.toHaveBeenCalled();
+
+    await openStudioPanel(user);
+    const analyzeButton = screen.getByRole("button", { name: "Analyze Track" });
+    expect(analyzeButton).toBeDisabled();
+    fireEvent.click(analyzeButton);
+    expect(mockAnalyzeProject).not.toHaveBeenCalled();
+
+    expect(screen.getByRole("button", { name: "Refresh Chords" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Refresh Lyrics" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Generate Stems" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Create Mix" })).toBeDisabled();
+
+    await openAnalysisPanel(user);
+    const sourceKeyButton = screen.getByRole("button", { name: "Project Source Key" });
+    expect(sourceKeyButton).toBeDisabled();
+    fireEvent.click(sourceKeyButton);
+    expect(screen.queryByRole("listbox", { name: "Project Source Key options" })).not.toBeInTheDocument();
+
+    const exportButton = screen.getByRole("button", { name: "Export Selected Audio" });
+    expect(exportButton).toBeDisabled();
+    fireEvent.click(exportButton);
+    expect(mockCreateExport).not.toHaveBeenCalled();
+
+    const deleteProjectButton = screen.getByRole("button", { name: "Delete Project" });
+    expect(deleteProjectButton).toBeDisabled();
+    fireEvent.click(deleteProjectButton);
+    expect(mockDeleteProject).not.toHaveBeenCalled();
+
+    await openPlaybackWorkspace(user);
+    expect(screen.getByRole("button", { name: "Edit Lyrics" })).toBeDisabled();
+    const importTabButton = screen.getByRole("button", { name: "Import Tab" });
+    expect(importTabButton).toBeDisabled();
+    fireEvent.click(importTabButton);
+    expect(mockCreateTabImport).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "Import tab suggestions" })).not.toBeInTheDocument();
   });
 
   it("surfaces detected tempo in the analysis panel", async () => {

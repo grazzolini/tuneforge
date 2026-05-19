@@ -97,6 +97,55 @@ describe("Desktop app library", () => {
     expect(within(openLink).queryByText(/\[Sa-dxgZt4rY\]\.webm/i)).not.toBeInTheDocument();
   });
 
+  it("shows non-local sync status on library rows and treats missing sync fields as local", async () => {
+    const updatedAt = "2026-04-21T02:59:00.000000";
+
+    setProjects([
+      {
+        id: "proj_remote",
+        display_name: "Remote Demo",
+        source_path: "/tmp/remote-demo.wav",
+        imported_path: "/tmp/projects/remote-demo.wav",
+        duration_seconds: 219,
+        sample_rate: 44100,
+        channels: 2,
+        created_at: updatedAt,
+        updated_at: updatedAt,
+        sync_status: "remote_available",
+        sync_editable: false,
+        sync_status_reason: "Download source audio before editing.",
+      },
+      {
+        id: "proj_local",
+        display_name: "Legacy Local",
+        source_path: "/tmp/legacy-local.wav",
+        imported_path: "/tmp/projects/legacy-local.wav",
+        duration_seconds: 95,
+        sample_rate: 44100,
+        channels: 2,
+        created_at: updatedAt,
+        updated_at: updatedAt,
+      },
+    ]);
+
+    renderApp(["/"]);
+
+    const remoteCard = (await screen.findByRole("heading", { name: "Remote Demo", level: 2 })).closest(
+      "article",
+    );
+    const localCard = screen.getByRole("heading", { name: "Legacy Local", level: 2 }).closest("article");
+    expect(remoteCard).not.toBeNull();
+    expect(localCard).not.toBeNull();
+
+    expect(within(remoteCard as HTMLElement).getByText("Remote Available")).toBeInTheDocument();
+    expect(
+      within(remoteCard as HTMLElement).getByLabelText(
+        "Sync status: Remote Available. Download source audio before editing.",
+      ),
+    ).toBeInTheDocument();
+    expect(within(localCard as HTMLElement).queryByText("Local")).not.toBeInTheDocument();
+  });
+
   it("imports track from library and opens project", async () => {
     const user = userEvent.setup();
     mockOpen.mockResolvedValue("/tmp/new-song.mp4");

@@ -15,6 +15,7 @@ from app.services.artifacts import register_artifact
 from app.services.metadata import extract_audio_metadata, normalize_audio_to_wav
 from app.services.paths import ensure_project_dirs, project_root, project_source_dir
 from app.services.sync_identity import source_hash_to_project_id
+from app.services.sync_project_status import require_project_sync_editable
 from app.services.sync_revisions import record_project_metadata_revision
 from app.services.sync_tombstones import (
     record_artifact_delete_tombstone,
@@ -22,6 +23,10 @@ from app.services.sync_tombstones import (
     record_project_delete_tombstone,
 )
 from app.utils.hashing import file_sha256
+
+
+def ensure_project_mutable(project: Project) -> None:
+    require_project_sync_editable(project)
 
 
 def _validate_import_path(source_path: Path) -> None:
@@ -56,6 +61,12 @@ def get_project(session: Session, project_id: str) -> Project:
     project = session.get(Project, project_id)
     if not project:
         raise AppError("PROJECT_NOT_FOUND", "Project not found.", status_code=status.HTTP_404_NOT_FOUND)
+    return project
+
+
+def get_mutable_project(session: Session, project_id: str) -> Project:
+    project = get_project(session, project_id)
+    ensure_project_mutable(project)
     return project
 
 
@@ -161,7 +172,7 @@ def import_project(
 
 
 def delete_project(session: Session, project_id: str) -> None:
-    project = get_project(session, project_id)
+    project = get_mutable_project(session, project_id)
     root = project_root(project.id)
     record_project_delete_tombstone(session, project)
     for artifact in list(session.scalars(select(Artifact).where(Artifact.project_id == project.id))):
@@ -177,7 +188,7 @@ def delete_project(session: Session, project_id: str) -> None:
 
 
 def update_project(session: Session, project_id: str, *, updates: dict[str, str | None]) -> Project:
-    project = get_project(session, project_id)
+    project = get_mutable_project(session, project_id)
     metadata_changed = False
     if "display_name" in updates:
         display_name = updates["display_name"]

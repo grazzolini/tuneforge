@@ -41,6 +41,7 @@ ACTION_IMPORT_PROJECT_MANIFEST = "import_project_manifest"
 ACTION_IMPORT_ENTITY_REVISION = "import_entity_revision"
 ACTION_FETCH_ARTIFACT_CONTENT = "fetch_artifact_content"
 ACTION_IMPORT_ARTIFACT_MANIFEST = "import_artifact_manifest"
+ACTION_UPSERT_PROJECT_STATUS = "upsert_project_status"
 ACTION_RECORD_CONFLICT = "record_conflict"
 ACTION_NOOP = "noop"
 
@@ -48,6 +49,23 @@ ITEM_PROJECT = "project"
 ITEM_ARTIFACT = "artifact"
 ITEM_ENTITY_REVISION = "entity_revision"
 ITEM_DELETE_TOMBSTONE = "delete_tombstone"
+
+PROJECT_SYNC_STATUS_LOCAL = "local"
+PROJECT_SYNC_STATUS_SYNCING = "syncing"
+PROJECT_SYNC_STATUS_REMOTE_AVAILABLE = "remote_available"
+PROJECT_SYNC_STATUS_DOWNLOADING = "downloading"
+PROJECT_SYNC_STATUS_MISSING = "missing"
+PROJECT_SYNC_STATUS_DELETED = "deleted"
+PROJECT_SYNC_STATUS_CONFLICTED = "conflicted"
+PROJECT_SYNC_STATUSES = (
+    PROJECT_SYNC_STATUS_LOCAL,
+    PROJECT_SYNC_STATUS_SYNCING,
+    PROJECT_SYNC_STATUS_REMOTE_AVAILABLE,
+    PROJECT_SYNC_STATUS_DOWNLOADING,
+    PROJECT_SYNC_STATUS_MISSING,
+    PROJECT_SYNC_STATUS_DELETED,
+    PROJECT_SYNC_STATUS_CONFLICTED,
+)
 
 _STATUS_PRECEDENCE = {
     "noop": 0,
@@ -62,6 +80,7 @@ _STATUS_PRECEDENCE = {
 _ACTION_PRIORITY = {
     ACTION_APPLY_DELETE_TOMBSTONE: 0,
     ACTION_RECORD_CONFLICT: 10,
+    ACTION_UPSERT_PROJECT_STATUS: 15,
     ACTION_FETCH_ARTIFACT_CONTENT: 20,
     ACTION_IMPORT_PROJECT_MANIFEST: 30,
     ACTION_IMPORT_ARTIFACT_MANIFEST: 40,
@@ -255,7 +274,7 @@ def plan_sync_reconciliation(
         planned_project_ids = _planned_project_ids(actions)
         if (
             artifact.project_id in remote.project_manifests_by_id
-            and artifact.project_id not in local.projects
+            and not _has_imported_local_project(local, artifact.project_id)
             and artifact.artifact_id in remote.manifest_artifact_ids_by_project.get(artifact.project_id, frozenset())
         ):
             continue
@@ -275,7 +294,7 @@ def plan_sync_reconciliation(
     for revision in _sorted_remote_entity_revisions(remote.entity_revisions.values()):
         if (
             revision.project_id in remote.project_manifests_by_id
-            and revision.project_id not in local.projects
+            and not _has_imported_local_project(local, revision.project_id)
             and revision.revision_id in remote.manifest_revision_ids_by_project.get(revision.project_id, frozenset())
         ):
             continue
@@ -372,6 +391,22 @@ def _load_local_state(session: Session) -> _LocalState:
             for key, rows in revisions_by_entity.items()
         },
         tombstones=tombstones,
+    )
+
+
+def _has_imported_local_project(local: _LocalState, project_id: str) -> bool:
+    project = local.projects.get(project_id)
+    return project is not None and not _is_sync_project_placeholder(project)
+
+
+def _is_sync_project_placeholder(project: Project) -> bool:
+    source_path = (project.source_path or "").strip()
+    imported_path = (project.imported_path or "").strip()
+    return (
+        not source_path
+        or not imported_path
+        or source_path.startswith("sync-placeholder:")
+        or imported_path.startswith("sync-placeholder:")
     )
 
 
@@ -659,6 +694,7 @@ def _plan_project(
     actions: list[SyncReconciliationAction],
 ) -> None:
     if _is_deleted(ITEM_PROJECT, project.project_id, project.project_id, effective_tombstones):
+        reason = "Project is covered by a sync delete tombstone."
         _upsert_item(
             items_by_key,
             SyncReconciliationItem(
@@ -667,8 +703,15 @@ def _plan_project(
                 project_id=project.project_id,
                 status="deleted",
                 action_type=ACTION_APPLY_DELETE_TOMBSTONE,
-                reason="Project is covered by a sync delete tombstone.",
+                reason=reason,
             ),
+        )
+        _append_project_status_action(
+            actions,
+            project,
+            project_status=PROJECT_SYNC_STATUS_DELETED,
+            reason=reason,
+            content_sha256=project.source_sha256,
         )
         return
 
@@ -693,22 +736,24 @@ def _plan_project(
                 },
             )
             return
-        _upsert_item(
-            items_by_key,
-            SyncReconciliationItem(
-                item_type=ITEM_PROJECT,
-                item_id=project.project_id,
-                project_id=project.project_id,
-                status="noop",
-                action_type=ACTION_NOOP,
-                content_sha256=project.source_sha256,
-                reason="Project already exists locally.",
-            ),
-        )
-        return
+        if not _is_sync_project_placeholder(local_project):
+            _upsert_item(
+                items_by_key,
+                SyncReconciliationItem(
+                    item_type=ITEM_PROJECT,
+                    item_id=project.project_id,
+                    project_id=project.project_id,
+                    status="noop",
+                    action_type=ACTION_NOOP,
+                    content_sha256=project.source_sha256,
+                    reason="Project already exists locally.",
+                ),
+            )
+            return
 
     manifest = remote.project_manifests_by_id.get(project.project_id)
     if manifest is None:
+        reason = "Project manifest is required before import."
         _upsert_item(
             items_by_key,
             SyncReconciliationItem(
@@ -717,8 +762,15 @@ def _plan_project(
                 project_id=project.project_id,
                 status="missing_provider",
                 content_sha256=project.source_sha256,
-                reason="Project manifest is required before import.",
+                reason=reason,
             ),
+        )
+        _append_project_status_action(
+            actions,
+            project,
+            project_status=PROJECT_SYNC_STATUS_MISSING,
+            reason=reason,
+            content_sha256=project.source_sha256,
         )
         return
 
@@ -735,11 +787,20 @@ def _plan_project(
             reason=source_error,
             details=source_details,
         )
+        _append_project_status_action(
+            actions,
+            project,
+            project_status=PROJECT_SYNC_STATUS_CONFLICTED,
+            reason=source_error,
+            content_sha256=project.source_sha256,
+            status_details=source_details,
+        )
         return
 
     assert source_artifact is not None
     source_hash = source_artifact.content_sha256
     if source_hash is None:
+        reason = "Project manifest does not identify required source content."
         _upsert_item(
             items_by_key,
             SyncReconciliationItem(
@@ -747,11 +808,19 @@ def _plan_project(
                 item_id=project.project_id,
                 project_id=project.project_id,
                 status="missing_provider",
-                reason="Project manifest does not identify required source content.",
+                reason=reason,
             ),
+        )
+        _append_project_status_action(
+            actions,
+            project,
+            project_status=PROJECT_SYNC_STATUS_MISSING,
+            reason=reason,
+            content_sha256=project.source_sha256,
         )
         return
     if project.source_sha256 is None:
+        reason = "Project manifest does not include source SHA-256 identity metadata."
         _upsert_item(
             items_by_key,
             SyncReconciliationItem(
@@ -759,13 +828,22 @@ def _plan_project(
                 item_id=project.project_id,
                 project_id=project.project_id,
                 status="missing_provider",
-                reason="Project manifest does not include source SHA-256 identity metadata.",
+                reason=reason,
             ),
+        )
+        _append_project_status_action(
+            actions,
+            project,
+            project_status=PROJECT_SYNC_STATUS_MISSING,
+            reason=reason,
+            content_sha256=source_hash,
         )
         return
     try:
         expected_project_id = source_hash_to_project_id(project.source_sha256)
     except ValueError:
+        details: dict[str, Any] = {"source_sha256": project.source_sha256}
+        reason = "Project manifest source_sha256 must be a full SHA-256 hex digest."
         _record_conflict(
             items_by_key,
             actions,
@@ -773,11 +851,24 @@ def _plan_project(
             item_id=project.project_id,
             project_id=project.project_id,
             content_sha256=project.source_sha256,
-            reason="Project manifest source_sha256 must be a full SHA-256 hex digest.",
-            details={"source_sha256": project.source_sha256},
+            reason=reason,
+            details=details,
+        )
+        _append_project_status_action(
+            actions,
+            project,
+            project_status=PROJECT_SYNC_STATUS_CONFLICTED,
+            reason=reason,
+            content_sha256=project.source_sha256,
+            status_details=details,
         )
         return
     if project.project_id != expected_project_id:
+        details = {
+            "expected_project_id": expected_project_id,
+            "source_sha256": project.source_sha256,
+        }
+        reason = "Project manifest project_id must be derived from source_sha256."
         _record_conflict(
             items_by_key,
             actions,
@@ -785,11 +876,16 @@ def _plan_project(
             item_id=project.project_id,
             project_id=project.project_id,
             content_sha256=project.source_sha256,
-            reason="Project manifest project_id must be derived from source_sha256.",
-            details={
-                "expected_project_id": expected_project_id,
-                "source_sha256": project.source_sha256,
-            },
+            reason=reason,
+            details=details,
+        )
+        _append_project_status_action(
+            actions,
+            project,
+            project_status=PROJECT_SYNC_STATUS_CONFLICTED,
+            reason=reason,
+            content_sha256=project.source_sha256,
+            status_details=details,
         )
         return
 
@@ -814,6 +910,14 @@ def _plan_project(
             reason=reason,
             details=details,
         )
+        _append_project_status_action(
+            actions,
+            project,
+            project_status=PROJECT_SYNC_STATUS_CONFLICTED,
+            reason=reason,
+            content_sha256=project.source_sha256,
+            status_details=details,
+        )
         return
 
     missing_hash_artifact_ids = [
@@ -822,6 +926,8 @@ def _plan_project(
         if artifact.content_sha256 is None
     ]
     if missing_hash_artifact_ids:
+        reason = "Project manifest contains artifacts without content SHA-256 metadata."
+        details = {"artifact_ids": sorted(missing_hash_artifact_ids)}
         _upsert_item(
             items_by_key,
             SyncReconciliationItem(
@@ -830,9 +936,17 @@ def _plan_project(
                 project_id=project.project_id,
                 status="missing_provider",
                 content_sha256=source_hash,
-                reason="Project manifest contains artifacts without content SHA-256 metadata.",
-                details={"artifact_ids": sorted(missing_hash_artifact_ids)},
+                reason=reason,
+                details=details,
             ),
+        )
+        _append_project_status_action(
+            actions,
+            project,
+            project_status=PROJECT_SYNC_STATUS_MISSING,
+            reason=reason,
+            content_sha256=source_hash,
+            status_details=details,
         )
         return
 
@@ -843,6 +957,8 @@ def _plan_project(
         if local_artifact is None and provider_device_id is None
     ]
     if missing_provider_artifacts:
+        reason = "No local bytes or trusted provider are available for every project manifest artifact."
+        details = {"artifact_ids": sorted(missing_provider_artifacts)}
         _upsert_item(
             items_by_key,
             SyncReconciliationItem(
@@ -851,9 +967,17 @@ def _plan_project(
                 project_id=project.project_id,
                 status="missing_provider",
                 content_sha256=source_hash,
-                reason="No local bytes or trusted provider are available for every project manifest artifact.",
-                details={"artifact_ids": sorted(missing_provider_artifacts)},
+                reason=reason,
+                details=details,
             ),
+        )
+        _append_project_status_action(
+            actions,
+            project,
+            project_status=PROJECT_SYNC_STATUS_MISSING,
+            reason=reason,
+            content_sha256=source_hash,
+            status_details=details,
         )
         return
 
@@ -901,6 +1025,11 @@ def _plan_project(
         return
 
     chosen_provider_device_id = sorted(artifact_providers.values())[0]
+    reason = "Every project manifest artifact is local or advertised by a trusted peer."
+    details = {
+        "artifact_providers": artifact_providers,
+        "manifest_artifact_count": len(manifest_artifacts),
+    }
     _upsert_item(
         items_by_key,
         SyncReconciliationItem(
@@ -911,12 +1040,18 @@ def _plan_project(
             action_type=ACTION_IMPORT_PROJECT_MANIFEST,
             content_sha256=source_hash,
             chosen_provider_device_id=chosen_provider_device_id,
-            reason="Every project manifest artifact is local or advertised by a trusted peer.",
-            details={
-                "artifact_providers": artifact_providers,
-                "manifest_artifact_count": len(manifest_artifacts),
-            },
+            reason=reason,
+            details=details,
         ),
+    )
+    _append_project_status_action(
+        actions,
+        project,
+        project_status=PROJECT_SYNC_STATUS_REMOTE_AVAILABLE,
+        reason=reason,
+        content_sha256=source_hash,
+        provider_device_id=chosen_provider_device_id,
+        status_details=details,
     )
     for artifact, local_artifact, provider_device_id in available_artifacts:
         if local_artifact is not None or provider_device_id is None or artifact.content_sha256 is None:
@@ -987,7 +1122,10 @@ def _plan_artifact(
         )
         return
 
-    if artifact.project_id not in local.projects and artifact.project_id not in planned_project_ids:
+    if (
+        not _has_imported_local_project(local, artifact.project_id)
+        and artifact.project_id not in planned_project_ids
+    ):
         _upsert_item(
             items_by_key,
             SyncReconciliationItem(
@@ -1204,7 +1342,7 @@ def _plan_entity_revision(
         )
         return False
 
-    if revision.project_id not in local.projects:
+    if not _has_imported_local_project(local, revision.project_id):
         _upsert_item(
             items_by_key,
             SyncReconciliationItem(
@@ -1742,6 +1880,56 @@ def _record_conflict(
             details=details,
         )
     )
+
+
+def _append_project_status_action(
+    actions: list[SyncReconciliationAction],
+    project: _RemoteProject,
+    *,
+    project_status: str,
+    reason: str,
+    content_sha256: str | None,
+    provider_device_id: str | None = None,
+    status_details: dict[str, Any] | None = None,
+) -> None:
+    actions.append(
+        _action(
+            ACTION_UPSERT_PROJECT_STATUS,
+            item_type=ITEM_PROJECT,
+            item_id=project.project_id,
+            project_id=project.project_id,
+            content_sha256=content_sha256,
+            provider_device_id=provider_device_id,
+            reason=reason,
+            details={
+                "project_status": project_status,
+                "edit_locked": project_status != PROJECT_SYNC_STATUS_LOCAL,
+                "create_placeholder": project_status != PROJECT_SYNC_STATUS_DELETED,
+                "lock_reason": reason,
+                "remote_metadata": _remote_project_metadata(project),
+                "status_details": status_details or {},
+            },
+        )
+    )
+
+
+def _remote_project_metadata(project: _RemoteProject) -> dict[str, Any]:
+    metadata: dict[str, Any] = {"project_id": project.project_id}
+    for name in (
+        "display_name",
+        "source_key_override",
+        "duration_seconds",
+        "sample_rate",
+        "channels",
+        "created_at",
+        "updated_at",
+    ):
+        value = _first_field(project.raw, name, default=None)
+        if value is not None:
+            metadata[name] = value
+    if project.source_sha256 is not None:
+        metadata["source_sha256"] = project.source_sha256
+    return metadata
 
 
 def _coerce_remote_project(raw: object) -> _RemoteProject | None:

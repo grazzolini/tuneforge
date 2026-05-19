@@ -8,6 +8,7 @@ export function ProcessingPanel() {
     canGenerateLyrics,
     canGenerateStems,
     chordMutation,
+    handleAnalyzeAction,
     handleChordAction,
     handleLyricsAction,
     handleStemAction,
@@ -21,16 +22,23 @@ export function ProcessingPanel() {
     isStemRunning,
     lyricsMutation,
     mobileGenerationMessage,
+    projectEditLocked,
+    projectSyncLockReason,
     selectedPrimaryArtifactId,
     showSupportingCopy,
     stemMutation,
   } = useProjectViewModelContext();
 
-  const analyzeDisabled = analyzeMutation.isPending || isAnalysisRunning || !canAnalyze;
+  const analyzeDisabled = projectEditLocked || analyzeMutation.isPending || isAnalysisRunning || !canAnalyze;
   const lyricsDisabled = lyricsMutation.isPending || isLyricsRunning || !canGenerateLyrics;
   const chordsDisabled = chordMutation.isPending || isChordRunning || !canGenerateChords;
   const stemsDisabled =
-    stemMutation.isPending || isStemRunning || !selectedPrimaryArtifactId || !canGenerateStems;
+    projectEditLocked ||
+    stemMutation.isPending ||
+    isStemRunning ||
+    !selectedPrimaryArtifactId ||
+    !canGenerateStems;
+  const editLockTitle = projectSyncLockReason ?? undefined;
 
   return (
     <div className="panel processing-panel">
@@ -51,7 +59,8 @@ export function ProcessingPanel() {
         <button
           className="button button--small"
           disabled={analyzeDisabled}
-          onClick={() => analyzeMutation.mutate()}
+          onClick={handleAnalyzeAction}
+          title={editLockTitle}
           type="button"
         >
           {analyzeMutation.isPending || isAnalysisRunning ? "Analyzing..." : "Analyze Track"}
@@ -60,6 +69,7 @@ export function ProcessingPanel() {
           className="button button--small"
           disabled={chordsDisabled}
           onClick={() => void handleChordAction()}
+          title={editLockTitle}
           type="button"
         >
           {chordMutation.isPending || isChordRunning
@@ -72,6 +82,7 @@ export function ProcessingPanel() {
           className="button button--small"
           disabled={lyricsDisabled}
           onClick={() => void handleLyricsAction()}
+          title={editLockTitle}
           type="button"
         >
           {lyricsMutation.isPending || isLyricsRunning
@@ -84,6 +95,7 @@ export function ProcessingPanel() {
           className="button button--small"
           disabled={stemsDisabled}
           onClick={() => void handleStemAction()}
+          title={editLockTitle}
           type="button"
         >
           {stemMutation.isPending || isStemRunning

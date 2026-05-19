@@ -407,6 +407,41 @@ a {
   flex-wrap: wrap;
 }
 
+.sync-status-badge {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  border: 1px solid color-mix(in srgb, var(--chip-active-border) 34%, var(--chip-border));
+  border-radius: 999px;
+  padding: 0.22rem 0.5rem;
+  background: color-mix(in srgb, var(--chip-active-bg) 78%, transparent);
+  color: color-mix(in srgb, var(--chip-active-border) 78%, var(--text));
+  font-size: 0.68rem;
+  font-weight: 800;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.sync-status-badge--conflicted,
+.sync-status-badge--missing,
+.sync-status-badge--missing_local_bytes,
+.sync-status-badge--missing_provider {
+  border-color: color-mix(in srgb, var(--color-state-warning) 54%, var(--chip-border));
+  color: color-mix(in srgb, var(--color-state-warning) 72%, var(--text));
+}
+
+.sync-status-badge--deleted {
+  border-color: color-mix(in srgb, var(--danger) 54%, var(--chip-border));
+  color: color-mix(in srgb, var(--danger) 76%, var(--text));
+}
+
+.project-sync-lock-reason {
+  margin: 0;
+  max-width: 48rem;
+  color: var(--muted);
+}
+
 .title-input,
 .search-field__input,
 .controls input,

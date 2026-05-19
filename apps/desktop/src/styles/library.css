@@ -109,6 +109,13 @@
   min-width: 0;
 }
 
+.project-card__title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
 .project-card__title-block h2 {
   margin: 0;
   font-size: 1rem;

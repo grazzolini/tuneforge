@@ -32,7 +32,9 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
     lowerTargetPreview,
     lowerTargetShiftOptions,
     previewMutation,
+    projectEditLocked,
     projectQuery,
+    projectSyncLockReason,
     referenceHz,
     retuneMode,
     selectedPrimaryStemArtifacts,
@@ -65,6 +67,7 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
     tuningSummary,
   } = useProjectViewModelContext();
   const { launchMetronome } = useMetronome();
+  const editLockTitle = projectSyncLockReason ?? undefined;
   const tempoBpm = analysisQuery.data?.tempo_bpm;
   const canOpenMetronome = typeof tempoBpm === "number" && Number.isFinite(tempoBpm);
   const estimatedReferenceHz = analysisQuery.data?.estimated_reference_hz;
@@ -135,9 +138,11 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
                   key={modeOption.value}
                   className="button button--small mix-builder__mode-button"
                   aria-pressed={retuneMode === modeOption.value}
+                  disabled={projectEditLocked}
                   onClick={() =>
                     setRetuneMode(modeOption.value as "off" | "reference" | "cents")
                   }
+                  title={editLockTitle}
                   type="button"
                 >
                   {modeOption.label}
@@ -150,6 +155,7 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
                 <span>Target Reference Hz</span>
                 <input
                   aria-label="Target Reference Hz"
+                  disabled={projectEditLocked}
                   value={referenceHz}
                   onChange={(event) => setReferenceHz(event.target.value)}
                   type="number"
@@ -163,6 +169,7 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
                 <span>Cents Offset</span>
                 <input
                   aria-label="Cents Offset"
+                  disabled={projectEditLocked}
                   value={centsOffset}
                   onChange={(event) => setCentsOffset(event.target.value)}
                   type="number"
@@ -215,6 +222,7 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
             <TargetKeySelector
               currentKey={targetKey}
               currentMeta={targetSelectionSummary}
+              disabled={projectEditLocked}
               enharmonicDisplayMode={enharmonicDisplayMode}
               headingLabel="Target Selection"
               higherButtonLabel="Raise target key"
@@ -252,7 +260,8 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
           <button
             className="button button--primary"
             onClick={() => previewMutation.mutate()}
-            disabled={previewMutation.isPending || !hasTransformChange}
+            disabled={projectEditLocked || previewMutation.isPending || !hasTransformChange}
+            title={editLockTitle}
             type="button"
           >
             {previewMutation.isPending ? "Queueing..." : "Create Mix"}
@@ -352,11 +361,15 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
                   aria-label="Project Source Key"
                   aria-expanded={sourceKeySelectorOpen}
                   aria-haspopup="listbox"
-                  disabled={sourceKeyOverrideMutation.isPending}
+                  disabled={projectEditLocked || sourceKeyOverrideMutation.isPending}
                   onClick={() => {
+                    if (projectEditLocked) {
+                      return;
+                    }
                     setTargetSelectorOpen(false);
                     setSourceKeySelectorOpen((current) => !current);
                   }}
+                  title={editLockTitle}
                   type="button"
                 >
                   <span className="source-key-selector__current">
@@ -397,8 +410,11 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
                           className={`source-key-selector__option${
                             isSelected ? " source-key-selector__option--selected" : ""
                           }`}
-                          disabled={sourceKeyOverrideMutation.isPending}
+                          disabled={projectEditLocked || sourceKeyOverrideMutation.isPending}
                           onClick={() => {
+                            if (projectEditLocked) {
+                              return;
+                            }
                             sourceKeyOverrideMutation.mutate(
                               option.value === "auto" ? null : option.value,
                             );
@@ -445,7 +461,8 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
         <button
           className="button"
           onClick={() => exportMutation.mutate()}
-          disabled={exportMutation.isPending}
+          disabled={projectEditLocked || exportMutation.isPending}
+          title={editLockTitle}
           type="button"
         >
           {exportMutation.isPending ? "Queueing..." : "Export Selected Audio"}
@@ -508,7 +525,8 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
           <button
             className="button button--ghost button--small"
             onClick={handleDeleteProject}
-            disabled={deleteMutation.isPending}
+            disabled={projectEditLocked || deleteMutation.isPending}
+            title={editLockTitle}
             type="button"
           >
             Delete Project
@@ -517,6 +535,7 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
             className="button button--ghost button--small"
             onClick={handleDeleteAllMixes}
             disabled={!canDeleteAnyMixes || isDeleteMixDisabled}
+            title={editLockTitle}
             type="button"
           >
             {isDeleteArtifactsPending ? "Deleting..." : "Delete All Mixes"}
@@ -525,6 +544,7 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
             className="button button--ghost button--small"
             onClick={handleDeleteAllStems}
             disabled={!canDeleteAnyStems || isDeleteStemDisabled}
+            title={editLockTitle}
             type="button"
           >
             {deleteStemMutation.isPending ? "Deleting..." : "Delete All Stems"}
@@ -534,6 +554,7 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
               className="button button--ghost button--small"
               onClick={handleDeleteSelectedPrimaryStems}
               disabled={!selectedPrimaryStemArtifacts.length || isDeleteStemDisabled}
+              title={editLockTitle}
               type="button"
             >
               {deleteStemMutation.isPending ? "Deleting..." : selectedPrimaryStemDeleteLabel}

@@ -2,7 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { confirm, save } from "@tauri-apps/plugin-dialog";
-import { api, type ArtifactSchema, type ProjectSchema } from "../../../lib/api";
+import {
+  api,
+  getProjectSyncSummary,
+  type ArtifactSchema,
+  type ProjectSchema,
+} from "../../../lib/api";
 import { usePreferences } from "../../../lib/preferences";
 import {
   normalizeAnalysisTimingGrid,
@@ -275,11 +280,26 @@ export function useProjectViewModel() {
     queryFn: async () => api.getMobileCapabilities(),
     staleTime: Infinity,
   });
+  const projectSyncSummary = useMemo(
+    () => getProjectSyncSummary(projectQuery.data),
+    [projectQuery.data],
+  );
+  const projectEditLocked = projectSyncSummary.isLocked;
+  const projectSyncLockReason = projectSyncSummary.lockReason;
+
+  function assertProjectEditable() {
+    if (projectEditLocked) {
+      throw new Error(projectSyncLockReason ?? "This project is locked for editing.");
+    }
+  }
 
   useActiveJobPolling(projectId, jobsQuery.data);
 
   const analyzeMutation = useMutation({
-    mutationFn: () => api.analyzeProject(projectId),
+    mutationFn: () => {
+      assertProjectEditable();
+      return api.analyzeProject(projectId);
+    },
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["jobs"] }),
@@ -292,7 +312,10 @@ export function useProjectViewModel() {
   });
 
   const renameMutation = useMutation({
-    mutationFn: async () => api.updateProject(projectId, { display_name: draftName }),
+    mutationFn: async () => {
+      assertProjectEditable();
+      return api.updateProject(projectId, { display_name: draftName });
+    },
     onSuccess: async () => {
       setIsRenaming(false);
       await Promise.all([
@@ -303,8 +326,10 @@ export function useProjectViewModel() {
   });
 
   const sourceKeyOverrideMutation = useMutation({
-    mutationFn: async (sourceKeyOverride: string | null) =>
-      api.updateProject(projectId, { source_key_override: sourceKeyOverride }),
+    mutationFn: async (sourceKeyOverride: string | null) => {
+      assertProjectEditable();
+      return api.updateProject(projectId, { source_key_override: sourceKeyOverride });
+    },
     onMutate: async (sourceKeyOverride) => {
       await Promise.all([
         queryClient.cancelQueries({ queryKey: ["project", projectId] }),
@@ -343,6 +368,7 @@ export function useProjectViewModel() {
 
   const chordMutation = useMutation({
     mutationFn: async (overwriteUserEdits: boolean) => {
+      assertProjectEditable();
       const backendSelection = await chordBackendForAction();
       return api.createChords(projectId, {
         ...backendSelection,
@@ -359,7 +385,10 @@ export function useProjectViewModel() {
   });
 
   const lyricsMutation = useMutation({
-    mutationFn: async (force: boolean) => api.createLyrics(projectId, { force }),
+    mutationFn: async (force: boolean) => {
+      assertProjectEditable();
+      return api.createLyrics(projectId, { force });
+    },
     onSuccess: async () => {
       setIsEditingLyrics(false);
       await Promise.all([
@@ -370,10 +399,12 @@ export function useProjectViewModel() {
   });
 
   const lyricsSaveMutation = useMutation({
-    mutationFn: async () =>
-      api.updateLyrics(projectId, {
+    mutationFn: async () => {
+      assertProjectEditable();
+      return api.updateLyrics(projectId, {
         segments: lyricsDraft.map((text) => ({ text })),
-      }),
+      });
+    },
     onSuccess: async () => {
       setIsEditingLyrics(false);
       await queryClient.invalidateQueries({ queryKey: ["lyrics", projectId] });
@@ -381,7 +412,10 @@ export function useProjectViewModel() {
   });
 
   const tabImportMutation = useMutation({
-    mutationFn: async (rawText: string) => api.createTabImport(projectId, { raw_text: rawText }),
+    mutationFn: async (rawText: string) => {
+      assertProjectEditable();
+      return api.createTabImport(projectId, { raw_text: rawText });
+    },
     onSuccess: (response) => {
       const firstSuggestion =
         response.tab_import.groups?.flatMap((group) => group.suggestions ?? [])[0] ?? null;
@@ -392,6 +426,7 @@ export function useProjectViewModel() {
 
   const tabImportApplyMutation = useMutation({
     mutationFn: async () => {
+      assertProjectEditable();
       const tabImportId = tabImportMutation.data?.tab_import.id;
       if (!tabImportId) {
         throw new Error("Create tab suggestions first.");
@@ -417,6 +452,7 @@ export function useProjectViewModel() {
 
   const previewMutation = useMutation({
     mutationFn: async () => {
+      assertProjectEditable();
       if (retuneMode === "off" && transposeSemitones === 0) {
         throw new Error("Choose a tuning or key change first.");
       }
@@ -449,6 +485,7 @@ export function useProjectViewModel() {
 
   const stemMutation = useMutation({
     mutationFn: async (overwriteChordEdits: boolean) => {
+      assertProjectEditable();
       if (!selectedPrimaryArtifactId) {
         throw new Error("Select source audio or practice mix first.");
       }
@@ -474,6 +511,7 @@ export function useProjectViewModel() {
 
   const exportMutation = useMutation({
     mutationFn: async () => {
+      assertProjectEditable();
       const exportArtifact =
         selectedArtifact ??
         primaryArtifacts.find((artifact) => artifact.type === "preview_mix") ??
@@ -503,7 +541,10 @@ export function useProjectViewModel() {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: () => api.deleteProject(projectId),
+    mutationFn: () => {
+      assertProjectEditable();
+      return api.deleteProject(projectId);
+    },
     onSuccess: async () => {
       dismissSession();
       clearProjectPlaybackState(projectId);
@@ -514,6 +555,7 @@ export function useProjectViewModel() {
 
   const deleteArtifactsMutation = useMutation({
     mutationFn: async (request: DeleteArtifactsRequest) => {
+      assertProjectEditable();
       for (const artifactId of Array.from(new Set(request.artifactIds))) {
         await api.deleteArtifact(projectId, artifactId);
       }
@@ -694,14 +736,18 @@ export function useProjectViewModel() {
         ? "Emulator lyrics actions are enabled for flow testing; stem generation is unavailable on this device."
         : "Side-load a Whisper model to enable local lyrics. Stem generation is unavailable on this device."
     : null;
-  const canAnalyze = !isMobileRuntime || mobileCapabilities?.analysisAvailable === true;
+  const canAnalyze =
+    !projectEditLocked && (!isMobileRuntime || mobileCapabilities?.analysisAvailable === true);
   const canGenerateLyrics =
-    !isMobileRuntime ||
-    mobileCapabilities?.whisperAvailable === true ||
-    mobileGenerationTestingAvailable;
+    !projectEditLocked &&
+    (!isMobileRuntime ||
+      mobileCapabilities?.whisperAvailable === true ||
+      mobileGenerationTestingAvailable);
   const canGenerateStems =
-    !isMobileRuntime || mobileCapabilities?.stemSeparationAvailable === true;
-  const canGenerateChords = !isMobileRuntime || mobileCapabilities?.basicChordsAvailable === true;
+    !projectEditLocked &&
+    (!isMobileRuntime || mobileCapabilities?.stemSeparationAvailable === true);
+  const canGenerateChords =
+    !projectEditLocked && (!isMobileRuntime || mobileCapabilities?.basicChordsAvailable === true);
   const currentKeyValue = sourceKeyOverride ? serializeKey(sourceKeyOverride) : "auto";
   const hasVisibleStems = visibleStemArtifacts.length > 0;
   const stemErrorMessage =
@@ -714,12 +760,14 @@ export function useProjectViewModel() {
   const canDeleteSelectedStem = isStemArtifact(selectedArtifact);
   const isDeleteArtifactsPending = deleteArtifactsMutation.isPending;
   const isDeleteStemDisabled =
+    projectEditLocked ||
     isDeleteArtifactsPending ||
     isPlaying ||
     isChordRunning ||
     isAnyStemJobRunning ||
     isAnyExportJobRunning;
   const isDeleteMixDisabled =
+    projectEditLocked ||
     isDeleteArtifactsPending ||
     isPlaying ||
     isChordRunning ||
@@ -951,7 +999,17 @@ export function useProjectViewModel() {
     handleSetPlaybackDisplayMode("combined");
   }
 
+  function handleAnalyzeAction() {
+    if (projectEditLocked) {
+      return;
+    }
+    analyzeMutation.mutate();
+  }
+
   async function handleChordAction() {
+    if (projectEditLocked) {
+      return;
+    }
     if (!canGenerateChords) {
       return;
     }
@@ -983,6 +1041,9 @@ export function useProjectViewModel() {
   }
 
   function handleOpenTabImport() {
+    if (projectEditLocked) {
+      return;
+    }
     setIsTabImportOpen(true);
   }
 
@@ -994,6 +1055,9 @@ export function useProjectViewModel() {
   }
 
   function handleCreateTabImportProposal() {
+    if (projectEditLocked) {
+      return;
+    }
     if (!tabImportDraft.trim()) {
       return;
     }
@@ -1001,6 +1065,9 @@ export function useProjectViewModel() {
   }
 
   function handleToggleTabSuggestion(suggestionId: string) {
+    if (projectEditLocked) {
+      return;
+    }
     setAcceptedTabSuggestionIds((current) =>
       current.includes(suggestionId)
         ? current.filter((id) => id !== suggestionId)
@@ -1010,11 +1077,17 @@ export function useProjectViewModel() {
   }
 
   function handleAcceptTabSuggestionGroup(suggestionIds: string[]) {
+    if (projectEditLocked) {
+      return;
+    }
     setAcceptedTabSuggestionIds((current) => Array.from(new Set([...current, ...suggestionIds])));
     setSelectedTabSuggestionId(suggestionIds[0] ?? null);
   }
 
   function handleRejectTabSuggestionGroup(suggestionIds: string[]) {
+    if (projectEditLocked) {
+      return;
+    }
     const ids = new Set(suggestionIds);
     setAcceptedTabSuggestionIds((current) => current.filter((id) => !ids.has(id)));
     if (selectedTabSuggestionId && ids.has(selectedTabSuggestionId)) {
@@ -1023,6 +1096,9 @@ export function useProjectViewModel() {
   }
 
   function handleApplyTabSuggestions() {
+    if (projectEditLocked) {
+      return;
+    }
     if (!acceptedTabSuggestionIds.length) {
       return;
     }
@@ -1139,6 +1215,9 @@ export function useProjectViewModel() {
   }
 
   async function handleLyricsAction() {
+    if (projectEditLocked) {
+      return;
+    }
     if (!canGenerateLyrics) {
       return;
     }
@@ -1164,6 +1243,9 @@ export function useProjectViewModel() {
   }
 
   async function handleStemAction() {
+    if (projectEditLocked) {
+      return;
+    }
     if (!selectedPrimaryArtifactId) {
       return;
     }
@@ -1252,6 +1334,9 @@ export function useProjectViewModel() {
   }
 
   async function handleDeleteProject() {
+    if (projectEditLocked) {
+      return;
+    }
     const approved = await confirm(
       "Delete this project and all of its mixes, stems, and exports?",
       {
@@ -1269,6 +1354,7 @@ export function useProjectViewModel() {
 
   async function handleDeleteMix(artifact = selectedArtifact) {
     if (
+      projectEditLocked ||
       !artifact ||
       artifact.type !== "preview_mix" ||
       artifact.can_delete === false ||
@@ -1306,7 +1392,13 @@ export function useProjectViewModel() {
   }
 
   async function handleDeleteStem(artifact = selectedArtifact) {
-    if (!artifact || !isStemArtifact(artifact) || artifact.can_delete === false || isDeleteStemDisabled) {
+    if (
+      projectEditLocked ||
+      !artifact ||
+      !isStemArtifact(artifact) ||
+      artifact.can_delete === false ||
+      isDeleteStemDisabled
+    ) {
       return;
     }
     const approved = await confirm(
@@ -1331,7 +1423,7 @@ export function useProjectViewModel() {
   }
 
   async function handleDeleteAllMixes() {
-    if (!canDeleteAnyMixes || isDeleteMixDisabled) {
+    if (projectEditLocked || !canDeleteAnyMixes || isDeleteMixDisabled) {
       return;
     }
     const approved = await confirm(
@@ -1367,7 +1459,7 @@ export function useProjectViewModel() {
   }
 
   async function handleDeleteAllStems() {
-    if (!canDeleteAnyStems || isDeleteStemDisabled) {
+    if (projectEditLocked || !canDeleteAnyStems || isDeleteStemDisabled) {
       return;
     }
     const approved = await confirm(
@@ -1392,7 +1484,12 @@ export function useProjectViewModel() {
   }
 
   async function handleDeleteSelectedPrimaryStems() {
-    if (!selectedPrimaryStemDeleteLabel || !selectedPrimaryStemArtifacts.length || isDeleteStemDisabled) {
+    if (
+      projectEditLocked ||
+      !selectedPrimaryStemDeleteLabel ||
+      !selectedPrimaryStemArtifacts.length ||
+      isDeleteStemDisabled
+    ) {
       return;
     }
     const approved = await confirm(
@@ -1421,6 +1518,18 @@ export function useProjectViewModel() {
       setDraftName(projectQuery.data?.display_name ?? "");
     }
   }, [isRenaming, projectQuery.data?.display_name]);
+
+  useEffect(() => {
+    if (!projectEditLocked) {
+      return;
+    }
+
+    setIsRenaming(false);
+    setIsEditingLyrics(false);
+    setIsTabImportOpen(false);
+    setSourceKeySelectorOpen(false);
+    setTargetSelectorOpen(false);
+  }, [projectEditLocked]);
 
   useEffect(() => {
     if (!isEditingLyrics) {
@@ -2015,6 +2124,7 @@ export function useProjectViewModel() {
     enharmonicDisplayMode,
     exportMutation,
     acceptedTabSuggestionIds,
+    handleAnalyzeAction,
     handleDeleteMix,
     handleDeleteStem,
     handleDeleteAllMixes,
@@ -2109,7 +2219,10 @@ export function useProjectViewModel() {
     canUsePrecount,
     previewArtifacts,
     previewMutation,
+    projectEditLocked,
     projectQuery,
+    projectSyncLockReason,
+    projectSyncSummary,
     referenceHz,
     renameMutation,
     retuneMode,

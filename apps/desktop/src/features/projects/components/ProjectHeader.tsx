@@ -6,12 +6,17 @@ export function ProjectHeader() {
     activeWorkspace,
     draftName,
     isRenaming,
+    projectEditLocked,
     projectQuery,
+    projectSyncLockReason,
+    projectSyncSummary,
     renameMutation,
     setDraftName,
     setIsRenaming,
     showSupportingCopy,
   } = useProjectViewModelContext();
+  const showSyncStatus = !projectSyncSummary.isLocal || projectSyncSummary.isLocked;
+  const syncReason = projectSyncLockReason ? ` ${projectSyncLockReason}` : "";
 
   return (
     <div
@@ -28,6 +33,7 @@ export function ProjectHeader() {
             <input
               aria-label="Project name"
               className="title-input"
+              disabled={projectEditLocked || renameMutation.isPending}
               value={draftName}
               onChange={(event) => setDraftName(event.target.value)}
             />
@@ -36,7 +42,7 @@ export function ProjectHeader() {
                 className="button button--primary button--small"
                 type="button"
                 onClick={() => renameMutation.mutate()}
-                disabled={renameMutation.isPending || !draftName.trim()}
+                disabled={projectEditLocked || renameMutation.isPending || !draftName.trim()}
               >
                 {renameMutation.isPending ? "Saving..." : "Save"}
               </button>
@@ -56,15 +62,30 @@ export function ProjectHeader() {
         ) : (
           <div className="title-row">
             <h1>{projectQuery.data?.display_name ?? "Project"}</h1>
+            {showSyncStatus ? (
+              <span
+                aria-label={`Sync status: ${projectSyncSummary.label}.${syncReason}`}
+                className={`sync-status-badge sync-status-badge--${projectSyncSummary.state}`}
+                title={projectSyncLockReason ?? undefined}
+              >
+                {projectSyncSummary.label}
+              </span>
+            ) : null}
             <button
               className="button button--ghost button--small"
               type="button"
               onClick={() => setIsRenaming(true)}
+              disabled={projectEditLocked}
             >
               Rename
             </button>
           </div>
         )}
+        {projectSyncLockReason ? (
+          <p className="project-sync-lock-reason" role="status">
+            {projectSyncLockReason}
+          </p>
+        ) : null}
         {showSupportingCopy && activeWorkspace === "project" ? (
           <p className="screen__subtitle">
             Move between project tools and playback workspace without losing transport context.

@@ -18,6 +18,15 @@ SUPPORTED_STEM_MODELS = {
 }
 SIX_STEM_MODEL_ALIASES = {"6_stems", "six_stems", "htdemucs_6s"}
 TWO_STEM_MODEL_ALIASES = {"2_stems", "two_stems", "two_stem", "htdemucs_ft"}
+SyncProjectStatus = Literal[
+    "local",
+    "syncing",
+    "remote_available",
+    "downloading",
+    "missing",
+    "deleted",
+    "conflicted",
+]
 
 
 def _validate_chord_backend_fields(backend: str | None, backend_fallback_from: str | None) -> None:
@@ -65,6 +74,12 @@ class ProjectSchema(BaseModel):
     duration_seconds: float | None
     sample_rate: int | None
     channels: int | None
+    sync_status: SyncProjectStatus = "local"
+    sync_status_reason: str | None = None
+    sync_editable: bool = True
+    sync_required_artifact_ids: list[str] = Field(default_factory=list)
+    sync_provider_device_ids: list[str] = Field(default_factory=list)
+    sync_conflict_count: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -319,6 +334,58 @@ class SyncProjectManifestResponse(BaseModel):
     project_manifest: SyncProjectManifestSchema
 
 
+class SyncProjectStatusProjectMetadataSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    project_id: str
+    display_name: str
+    source_key_override: str | None = None
+    source_sha256: str | None = None
+    duration_seconds: float | None = None
+    sample_rate: int | None = None
+    channels: int | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class SyncProjectStatusUpdateRequest(BaseModel):
+    sync_status: SyncProjectStatus
+    sync_status_reason: str | None = None
+    sync_required_artifact_ids: list[str] | None = None
+    sync_provider_device_ids: list[str] | None = None
+    sync_conflict_count: int | None = Field(default=None, ge=0)
+    manifest: SyncProjectManifestSchema | None = None
+    project: SyncProjectStatusProjectMetadataSchema | None = None
+
+    @field_validator("sync_status_reason")
+    @classmethod
+    def validate_sync_status_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("sync_required_artifact_ids", "sync_provider_device_ids")
+    @classmethod
+    def validate_sync_id_list(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        normalized = [item.strip() for item in value]
+        if any(not item for item in normalized):
+            raise ValueError("Sync ID lists cannot contain empty values.")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_status_metadata(self) -> SyncProjectStatusUpdateRequest:
+        if self.manifest is not None and self.project is not None:
+            raise ValueError("Provide either manifest or project metadata, not both.")
+        return self
+
+
+class SyncProjectStatusUpdateResponse(BaseModel):
+    project: ProjectSchema
+
+
 class SyncArtifactStagingRequest(BaseModel):
     source_path: str = Field(min_length=1)
     content_sha256: str = Field(min_length=64, max_length=64)
@@ -365,6 +432,7 @@ SyncReconciliationActionType = Literal[
     "import_entity_revision",
     "fetch_artifact_content",
     "import_artifact_manifest",
+    "upsert_project_status",
     "record_conflict",
     "noop",
 ]

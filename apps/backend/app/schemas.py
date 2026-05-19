@@ -504,6 +504,97 @@ class SyncReconciliationPlanResponse(BaseModel):
     actions: list[SyncReconciliationActionSchema]
 
 
+SyncReconciliationApplyActionStatus = Literal["applied", "satisfied", "skipped", "failed"]
+
+
+class SyncReconciliationApplyRequest(SyncReconciliationPlanRequest):
+    staging_root: str | None = Field(default=None, min_length=1)
+    use_content_addressed_staging: bool = True
+
+
+class SyncReconciliationApplySummarySchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    planned_actions: int
+    applied_actions: int
+    satisfied_actions: int
+    skipped_actions: int
+    failed_actions: int
+
+
+class SyncReconciliationApplyActionResultSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    action: SyncReconciliationActionSchema
+    status: SyncReconciliationApplyActionStatus
+    reason: str | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class SyncReconciliationApplyResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    summary: SyncReconciliationApplySummarySchema
+    plan: SyncReconciliationPlanResponse
+    results: list[SyncReconciliationApplyActionResultSchema]
+
+
+class SyncTransportHandshakeChallengeSchema(BaseModel):
+    protocol_version: str = Field(min_length=1)
+    challenge_type: Literal["transport_handshake"]
+    session_id: str = Field(min_length=16, max_length=128)
+    challenge_nonce: str = Field(min_length=16, max_length=512)
+    requester_device_id: str = Field(min_length=1, max_length=128)
+    responder_device_id: str = Field(min_length=1, max_length=128)
+    issued_at: datetime
+    expires_at: datetime
+
+    @field_validator(
+        "protocol_version",
+        "session_id",
+        "challenge_nonce",
+        "requester_device_id",
+        "responder_device_id",
+    )
+    @classmethod
+    def validate_canonical_string(cls, value: str) -> str:
+        if value != value.strip() or not value:
+            raise ValueError("Transport handshake challenge fields must be canonical strings.")
+        return value
+
+    @model_validator(mode="after")
+    def validate_time_window(self) -> SyncTransportHandshakeChallengeSchema:
+        if self.issued_at >= self.expires_at:
+            raise ValueError("Transport handshake issued_at must be before expires_at.")
+        return self
+
+
+class SyncTransportHandshakeSignRequest(BaseModel):
+    peer_device_id: str = Field(min_length=1, max_length=128)
+    challenge: SyncTransportHandshakeChallengeSchema
+
+    @field_validator("peer_device_id")
+    @classmethod
+    def validate_peer_device_id(cls, value: str) -> str:
+        if value != value.strip() or not value:
+            raise ValueError("peer_device_id must be canonical.")
+        return value
+
+
+class SyncTransportHandshakeSignatureResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    protocol_version: str
+    challenge_type: Literal["transport_handshake"]
+    local_device_id: str
+    peer_device_id: str
+    public_key: str
+    challenge: SyncTransportHandshakeChallengeSchema
+    canonical_challenge_json: str
+    signature: str
+    signed_at: datetime
+
+
 class SyncLocalIdentitySchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -590,6 +681,20 @@ class SyncPairingOfferResponse(BaseModel):
     pairing_offer: SyncPairingOfferSchema
 
 
+class SyncPairingAnswerRequest(BaseModel):
+    offer: SyncPairingPayloadSchema
+    endpoint_hints: list[str] = Field(default_factory=list)
+    adopt_sync_group: bool = False
+
+    @field_validator("endpoint_hints")
+    @classmethod
+    def validate_endpoint_hints(cls, value: list[str]) -> list[str]:
+        normalized = [hint.strip() for hint in value]
+        if any(not hint for hint in normalized):
+            raise ValueError("Endpoint hints cannot be empty.")
+        return normalized
+
+
 class SyncTrustedPeerSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -631,6 +736,11 @@ class SyncTrustedPeerCreateRequest(BaseModel):
 
 
 class SyncTrustedPeerResponse(BaseModel):
+    trusted_peer: SyncTrustedPeerSchema
+
+
+class SyncPairingAnswerResponse(BaseModel):
+    pairing_response: SyncPairingPayloadSchema
     trusted_peer: SyncTrustedPeerSchema
 
 

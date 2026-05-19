@@ -485,6 +485,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sync/reconciliation/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sync Reconciliation Apply */
+        post: operations["sync_reconciliation_apply_api_v1_sync_reconciliation_apply_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sync/transport/handshake/sign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sync Transport Handshake Sign */
+        post: operations["sync_transport_handshake_sign_api_v1_sync_transport_handshake_sign_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sync/identity": {
         parameters: {
             query?: never;
@@ -514,6 +548,23 @@ export interface paths {
         put?: never;
         /** Sync Pairing Offer Create */
         post: operations["sync_pairing_offer_create_api_v1_sync_pairing_offers_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sync/pairing/responses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sync Pairing Offer Answer */
+        post: operations["sync_pairing_offer_answer_api_v1_sync_pairing_responses_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1420,6 +1471,22 @@ export interface components {
             /** Delete Tombstones */
             delete_tombstones?: components["schemas"]["SyncDeleteTombstoneSchema"][];
         };
+        /** SyncPairingAnswerRequest */
+        SyncPairingAnswerRequest: {
+            offer: components["schemas"]["SyncPairingPayloadSchema"];
+            /** Endpoint Hints */
+            endpoint_hints?: string[];
+            /**
+             * Adopt Sync Group
+             * @default false
+             */
+            adopt_sync_group: boolean;
+        };
+        /** SyncPairingAnswerResponse */
+        SyncPairingAnswerResponse: {
+            pairing_response: components["schemas"]["SyncPairingPayloadSchema"];
+            trusted_peer: components["schemas"]["SyncTrustedPeerSchema"];
+        };
         /** SyncPairingOfferRequest */
         SyncPairingOfferRequest: {
             /** Endpoint Hints */
@@ -1749,6 +1816,56 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** SyncReconciliationApplyActionResultSchema */
+        SyncReconciliationApplyActionResultSchema: {
+            action: components["schemas"]["SyncReconciliationActionSchema"];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "applied" | "satisfied" | "skipped" | "failed";
+            /** Reason */
+            reason?: string | null;
+            /** Details */
+            details?: {
+                [key: string]: unknown;
+            };
+        };
+        /** SyncReconciliationApplyRequest */
+        SyncReconciliationApplyRequest: {
+            remote_library: components["schemas"]["SyncReconciliationRemoteLibrarySchema"];
+            /** Project Manifests */
+            project_manifests?: components["schemas"]["SyncProjectManifestSchema"][];
+            /** Peer Inventory */
+            peer_inventory: components["schemas"]["SyncPeerInventoryEntrySchema"][];
+            /** Staging Root */
+            staging_root?: string | null;
+            /**
+             * Use Content Addressed Staging
+             * @default true
+             */
+            use_content_addressed_staging: boolean;
+        };
+        /** SyncReconciliationApplyResponse */
+        SyncReconciliationApplyResponse: {
+            summary: components["schemas"]["SyncReconciliationApplySummarySchema"];
+            plan: components["schemas"]["SyncReconciliationPlanResponse"];
+            /** Results */
+            results: components["schemas"]["SyncReconciliationApplyActionResultSchema"][];
+        };
+        /** SyncReconciliationApplySummarySchema */
+        SyncReconciliationApplySummarySchema: {
+            /** Planned Actions */
+            planned_actions: number;
+            /** Applied Actions */
+            applied_actions: number;
+            /** Satisfied Actions */
+            satisfied_actions: number;
+            /** Skipped Actions */
+            skipped_actions: number;
+            /** Failed Actions */
+            failed_actions: number;
+        };
         /** SyncReconciliationItemSchema */
         SyncReconciliationItemSchema: {
             /** Item Type */
@@ -1844,6 +1961,66 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /** SyncTransportHandshakeChallengeSchema */
+        SyncTransportHandshakeChallengeSchema: {
+            /** Protocol Version */
+            protocol_version: string;
+            /**
+             * Challenge Type
+             * @constant
+             */
+            challenge_type: "transport_handshake";
+            /** Session Id */
+            session_id: string;
+            /** Challenge Nonce */
+            challenge_nonce: string;
+            /** Requester Device Id */
+            requester_device_id: string;
+            /** Responder Device Id */
+            responder_device_id: string;
+            /**
+             * Issued At
+             * Format: date-time
+             */
+            issued_at: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+        };
+        /** SyncTransportHandshakeSignRequest */
+        SyncTransportHandshakeSignRequest: {
+            /** Peer Device Id */
+            peer_device_id: string;
+            challenge: components["schemas"]["SyncTransportHandshakeChallengeSchema"];
+        };
+        /** SyncTransportHandshakeSignatureResponse */
+        SyncTransportHandshakeSignatureResponse: {
+            /** Protocol Version */
+            protocol_version: string;
+            /**
+             * Challenge Type
+             * @constant
+             */
+            challenge_type: "transport_handshake";
+            /** Local Device Id */
+            local_device_id: string;
+            /** Peer Device Id */
+            peer_device_id: string;
+            /** Public Key */
+            public_key: string;
+            challenge: components["schemas"]["SyncTransportHandshakeChallengeSchema"];
+            /** Canonical Challenge Json */
+            canonical_challenge_json: string;
+            /** Signature */
+            signature: string;
+            /**
+             * Signed At
+             * Format: date-time
+             */
+            signed_at: string;
         };
         /** SyncTrustedPeerCreateRequest */
         SyncTrustedPeerCreateRequest: {
@@ -3046,6 +3223,72 @@ export interface operations {
             };
         };
     };
+    sync_reconciliation_apply_api_v1_sync_reconciliation_apply_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncReconciliationApplyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncReconciliationApplyResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_transport_handshake_sign_api_v1_sync_transport_handshake_sign_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncTransportHandshakeSignRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncTransportHandshakeSignatureResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     sync_local_identity_api_v1_sync_identity_get: {
         parameters: {
             query?: never;
@@ -3119,6 +3362,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SyncPairingOfferResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_pairing_offer_answer_api_v1_sync_pairing_responses_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncPairingAnswerRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncPairingAnswerResponse"];
                 };
             };
             /** @description Validation Error */

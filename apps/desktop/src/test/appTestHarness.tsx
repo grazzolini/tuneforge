@@ -3,6 +3,15 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { vi } from "vitest";
 import App from "../App";
+import type {
+  SyncPairingAnswerRequest,
+  SyncPairingAnswerResponse,
+  SyncPairingOfferRequest,
+  SyncPairingOfferResponse,
+  SyncTrustedPeerSchema,
+  SyncTrustedPeerCreateRequest,
+  SyncTrustedPeerResponse,
+} from "../lib/api";
 
 const {
   resetMockApiState,
@@ -13,6 +22,8 @@ const {
   setChordBackends,
   setStemModels,
   setJobs,
+  setSyncTransportStatus,
+  setSyncTrustedPeers,
   setDeferredPreviewCompletion,
   flushPendingPreview,
   mockOpen,
@@ -30,6 +41,16 @@ const {
   mockListArtifacts,
   mockListJobs,
   mockCancelJob,
+  mockGetSyncIdentity,
+  mockGetSyncTransportStatus,
+  mockStartSyncListener,
+  mockStopSyncListener,
+  mockCreateSyncPairingOffer,
+  mockAnswerSyncPairingOffer,
+  mockListSyncTrustedPeers,
+  mockTrustSyncPeer,
+  mockRevokeSyncTrustedPeer,
+  mockSyncTrustedPeerNow,
   mockCreateChords,
   mockCreateLyrics,
   mockCreateTabImport,
@@ -130,6 +151,9 @@ const {
     stemModels: Array<Record<string, unknown>>;
     pendingPreviewArtifactsByProject: Record<string, Array<Record<string, unknown>>>;
     jobs: Array<Record<string, unknown>>;
+    syncIdentity: Record<string, unknown>;
+    syncTransportStatus: Record<string, unknown>;
+    syncTrustedPeers: Array<Record<string, unknown>>;
     snapshotFiles: Record<string, string>;
     systemInputVolume: {
       supported: boolean;
@@ -396,6 +420,17 @@ const {
     state.jobs = jobs.map((job, index) => normalizeMockJob(job, index));
   }
 
+  function setSyncTransportStatus(nextStatus: Record<string, unknown>) {
+    state.syncTransportStatus = {
+      ...state.syncTransportStatus,
+      ...clone(nextStatus),
+    };
+  }
+
+  function setSyncTrustedPeers(peers: Array<Record<string, unknown>>) {
+    state.syncTrustedPeers = clone(peers);
+  }
+
   function setDeferredPreviewCompletion(value: boolean) {
     state.deferPreviewCompletion = value;
   }
@@ -502,6 +537,23 @@ const {
           updated_at: createdAt,
         },
       ],
+      syncIdentity: {
+        device_id: "device_local",
+        sync_group_id: "sync_group_local",
+        display_name: "Studio Mac",
+        public_key: "pub_local",
+        created_at: createdAt,
+        updated_at: createdAt,
+      },
+      syncTransportStatus: {
+        active: false,
+        status: "stopped",
+        endpoint_hints: [],
+        last_error: null,
+        last_sync: null,
+        updated_at: createdAt,
+      },
+      syncTrustedPeers: [],
       snapshotFiles: {},
       systemInputVolume: {
         supported: true,
@@ -1146,6 +1198,147 @@ const {
     state.jobs = state.jobs.map((job, index) => (index === jobIndex ? cancelledJob : job));
     return { job: clone(cancelledJob) };
   });
+  function normalizeSyncPeer(peer: Record<string, unknown>): SyncTrustedPeerSchema {
+    return {
+      device_id: String(peer.device_id ?? "device_peer"),
+      sync_group_id: String(peer.sync_group_id ?? "sync_group_local"),
+      display_name: typeof peer.display_name === "string" ? peer.display_name : null,
+      public_key: String(peer.public_key ?? "pub_peer"),
+      endpoint_hints: Array.isArray(peer.endpoint_hints)
+        ? peer.endpoint_hints.filter((hint): hint is string => typeof hint === "string")
+        : [],
+      trusted_at: typeof peer.trusted_at === "string" ? peer.trusted_at : createdAt,
+      revoked_at: typeof peer.revoked_at === "string" ? peer.revoked_at : null,
+      updated_at: typeof peer.updated_at === "string" ? peer.updated_at : createdAt,
+    };
+  }
+  const mockGetSyncIdentity = vi.fn(async () => ({ identity: clone(state.syncIdentity) }));
+  const mockGetSyncTransportStatus = vi.fn(async () => clone(state.syncTransportStatus));
+  const mockStartSyncListener = vi.fn(async () => {
+    state.syncTransportStatus = {
+      ...state.syncTransportStatus,
+      active: true,
+      status: "listening",
+      endpoint_hints: ["tcp://192.168.1.42:48625"],
+      last_error: null,
+      updated_at: createdAt,
+    };
+    return clone(state.syncTransportStatus);
+  });
+  const mockStopSyncListener = vi.fn(async () => {
+    state.syncTransportStatus = {
+      ...state.syncTransportStatus,
+      active: false,
+      status: "stopped",
+      endpoint_hints: [],
+      updated_at: createdAt,
+    };
+    return clone(state.syncTransportStatus);
+  });
+  const mockCreateSyncPairingOffer = vi.fn(async (
+    body: SyncPairingOfferRequest,
+  ): Promise<SyncPairingOfferResponse> => ({
+    pairing_offer: {
+      payload: {
+        sync_group_id: String(state.syncIdentity.sync_group_id),
+        device_id: String(state.syncIdentity.device_id),
+        display_name: typeof state.syncIdentity.display_name === "string" ? state.syncIdentity.display_name : null,
+        public_key: String(state.syncIdentity.public_key),
+        endpoint_hints: clone(body.endpoint_hints ?? []),
+        protocol_version: "tuneforge-sync-v1",
+        pairing_offer_id: "pair_offer_1",
+        pairing_secret: "pair_secret_1",
+        expires_at: "2026-04-18T13:26:00.000Z",
+        signature: "pair_signature_1",
+      },
+      expires_at: "2026-04-18T13:26:00.000Z",
+      ttl_seconds: body.ttl_seconds,
+    },
+  }));
+  const mockAnswerSyncPairingOffer = vi.fn(async (
+    body: SyncPairingAnswerRequest,
+  ): Promise<SyncPairingAnswerResponse> => {
+    const peer = normalizeSyncPeer({
+      device_id: body.offer.device_id,
+      sync_group_id: body.offer.sync_group_id,
+      display_name: body.offer.display_name,
+      public_key: body.offer.public_key,
+      endpoint_hints: body.offer.endpoint_hints,
+      trusted_at: createdAt,
+      updated_at: createdAt,
+    });
+    state.syncTrustedPeers = [
+      peer,
+      ...state.syncTrustedPeers.filter((existingPeer) => existingPeer.device_id !== peer.device_id),
+    ];
+    return {
+      pairing_response: {
+        sync_group_id: String(state.syncIdentity.sync_group_id),
+        device_id: String(state.syncIdentity.device_id),
+        display_name: typeof state.syncIdentity.display_name === "string" ? state.syncIdentity.display_name : null,
+        public_key: String(state.syncIdentity.public_key),
+        endpoint_hints: clone(body.endpoint_hints ?? []),
+        protocol_version: "tuneforge-sync-v1",
+        pairing_offer_id: body.offer.pairing_offer_id,
+        pairing_secret: body.offer.pairing_secret,
+        expires_at: body.offer.expires_at,
+        signature: "pair_response_signature_1",
+      },
+      trusted_peer: clone(peer),
+    };
+  });
+  const mockListSyncTrustedPeers = vi.fn(async () => ({
+    trusted_peers: clone(state.syncTrustedPeers.map((peer) => normalizeSyncPeer(peer))),
+  }));
+  const mockTrustSyncPeer = vi.fn(async (
+    body: SyncTrustedPeerCreateRequest,
+  ): Promise<SyncTrustedPeerResponse> => {
+    const peer = normalizeSyncPeer({
+      device_id: body.payload.device_id,
+      sync_group_id: body.payload.sync_group_id,
+      display_name: body.payload.display_name,
+      public_key: body.payload.public_key,
+      endpoint_hints: body.payload.endpoint_hints,
+      trusted_at: createdAt,
+      updated_at: createdAt,
+    });
+    state.syncTrustedPeers = [
+      peer,
+      ...state.syncTrustedPeers.filter((existingPeer) => existingPeer.device_id !== peer.device_id),
+    ];
+    return { trusted_peer: clone(peer) };
+  });
+  const mockRevokeSyncTrustedPeer = vi.fn(async (deviceId: string) => {
+    const peer = normalizeSyncPeer(
+      state.syncTrustedPeers.find((trustedPeer) => trustedPeer.device_id === deviceId) ?? {
+        device_id: deviceId,
+      },
+    );
+    state.syncTrustedPeers = state.syncTrustedPeers.filter((trustedPeer) => trustedPeer.device_id !== deviceId);
+    return {
+      trusted_peer: clone({
+        ...peer,
+        revoked_at: createdAt,
+        updated_at: createdAt,
+      }),
+    };
+  });
+  const mockSyncTrustedPeerNow = vi.fn(async (deviceId: string) => {
+    state.syncTransportStatus = {
+      ...state.syncTransportStatus,
+      last_sync: {
+        peer_device_id: deviceId,
+        status: "completed",
+        message: "Manifest exchange completed.",
+        started_at: createdAt,
+        completed_at: createdAt,
+        error: null,
+      },
+      last_error: null,
+      updated_at: createdAt,
+    };
+    return clone(state.syncTransportStatus.last_sync);
+  });
   const mockCreateChords = vi.fn(async (projectId: string, body?: Record<string, unknown>) => {
     state.chordsByProject[projectId] = makeChordTimeline(projectId);
     const job = makeMockJob({
@@ -1646,6 +1839,8 @@ const {
     setChordBackends,
     setStemModels,
     setJobs,
+    setSyncTransportStatus,
+    setSyncTrustedPeers,
     setDeferredPreviewCompletion,
     flushPendingPreview,
     mockOpen,
@@ -1663,6 +1858,16 @@ const {
     mockListArtifacts,
     mockListJobs,
     mockCancelJob,
+    mockGetSyncIdentity,
+    mockGetSyncTransportStatus,
+    mockStartSyncListener,
+    mockStopSyncListener,
+    mockCreateSyncPairingOffer,
+    mockAnswerSyncPairingOffer,
+    mockListSyncTrustedPeers,
+    mockTrustSyncPeer,
+    mockRevokeSyncTrustedPeer,
+    mockSyncTrustedPeerNow,
     mockCreateChords,
     mockCreateLyrics,
     mockCreateTabImport,
@@ -1701,6 +1906,8 @@ export {
   setChordBackends,
   setStemModels,
   setJobs,
+  setSyncTransportStatus,
+  setSyncTrustedPeers,
   setDeferredPreviewCompletion,
   flushPendingPreview,
   mockOpen,
@@ -1718,6 +1925,16 @@ export {
   mockListArtifacts,
   mockListJobs,
   mockCancelJob,
+  mockGetSyncIdentity,
+  mockGetSyncTransportStatus,
+  mockStartSyncListener,
+  mockStopSyncListener,
+  mockCreateSyncPairingOffer,
+  mockAnswerSyncPairingOffer,
+  mockListSyncTrustedPeers,
+  mockTrustSyncPeer,
+  mockRevokeSyncTrustedPeer,
+  mockSyncTrustedPeerNow,
   mockCreateChords,
   mockCreateLyrics,
   mockCreateTabImport,
@@ -1770,6 +1987,16 @@ vi.mock("../lib/api", async (importOriginal) => {
       listArtifacts: mockListArtifacts,
       listJobs: mockListJobs,
       cancelJob: mockCancelJob,
+      getSyncIdentity: mockGetSyncIdentity,
+      getSyncTransportStatus: mockGetSyncTransportStatus,
+      startSyncListener: mockStartSyncListener,
+      stopSyncListener: mockStopSyncListener,
+      createSyncPairingOffer: mockCreateSyncPairingOffer,
+      answerSyncPairingOffer: mockAnswerSyncPairingOffer,
+      listSyncTrustedPeers: mockListSyncTrustedPeers,
+      trustSyncPeer: mockTrustSyncPeer,
+      revokeSyncTrustedPeer: mockRevokeSyncTrustedPeer,
+      syncTrustedPeerNow: mockSyncTrustedPeerNow,
       createChords: mockCreateChords,
       createLyrics: mockCreateLyrics,
       createTabImport: mockCreateTabImport,
@@ -2075,6 +2302,16 @@ export function resetAppTestHarness() {
   mockListArtifacts.mockClear();
   mockListJobs.mockClear();
   mockCancelJob.mockClear();
+  mockGetSyncIdentity.mockClear();
+  mockGetSyncTransportStatus.mockClear();
+  mockStartSyncListener.mockClear();
+  mockStopSyncListener.mockClear();
+  mockCreateSyncPairingOffer.mockClear();
+  mockAnswerSyncPairingOffer.mockClear();
+  mockListSyncTrustedPeers.mockClear();
+  mockTrustSyncPeer.mockClear();
+  mockRevokeSyncTrustedPeer.mockClear();
+  mockSyncTrustedPeerNow.mockClear();
   mockCreateChords.mockClear();
   mockCreateLyrics.mockClear();
   mockCreateTabImport.mockClear();

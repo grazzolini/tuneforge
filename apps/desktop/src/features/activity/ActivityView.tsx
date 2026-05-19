@@ -1,13 +1,20 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, type JobSchema, type ProjectSchema } from "../../lib/api";
 import { formatLocalDateTime, normalizeApiDateTime, parseApiDateTime } from "../../lib/datetime";
 import { formatJobStatusSummary } from "../projects/projectViewUtils";
+import { ActivitySyncPanel } from "./ActivitySyncPanel";
 
 const CANCELABLE_JOB_STATUSES = new Set(["pending", "running"]);
 const TERMINAL_JOB_STATUSES = new Set(["completed", "failed", "cancelled"]);
 const ACTIVE_JOB_REFETCH_MS = 1500;
+const ACTIVITY_TABS = [
+  { id: "jobs", label: "Jobs" },
+  { id: "sync", label: "Sync" },
+] as const;
+
+type ActivityTab = (typeof ACTIVITY_TABS)[number]["id"];
 
 type DisplayJob = {
   job: JobSchema;
@@ -206,6 +213,7 @@ function JobRow({
 }
 
 export function ActivityView() {
+  const [activeTab, setActiveTab] = useState<ActivityTab>("jobs");
   const queryClient = useQueryClient();
   const jobsQuery = useQuery({
     queryKey: ["jobs"],
@@ -250,76 +258,93 @@ export function ActivityView() {
         <div className="screen__title-block">
           <p className="eyebrow">Activity</p>
           <h1>Activity</h1>
-          <p className="screen__subtitle">Review the local processing queue across every project.</p>
+          <p className="screen__subtitle">Review local processing and sync lab activity.</p>
         </div>
       </div>
 
       <div className="project-workspace-tabs" role="tablist" aria-label="Activity">
-        <button
-          aria-selected="true"
-          className="project-workspace-tabs__button project-workspace-tabs__button--active"
-          role="tab"
-          type="button"
-        >
-          Jobs
-        </button>
+        {ACTIVITY_TABS.map((tab) => (
+          <button
+            aria-controls={`activity-${tab.id}-panel`}
+            aria-selected={activeTab === tab.id}
+            className={`project-workspace-tabs__button${
+              activeTab === tab.id ? " project-workspace-tabs__button--active" : ""
+            }`}
+            id={`activity-tab-${tab.id}`}
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            role="tab"
+            type="button"
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
-      <section aria-labelledby="activity-jobs-heading" className="panel activity-jobs-panel">
-        <div className="panel-heading activity-jobs-panel__heading">
-          <div>
-            <h2 id="activity-jobs-heading">Jobs</h2>
-            <p className="subpanel__copy">
-              {activeJobCount
-                ? `${activeJobCount} active job${activeJobCount === 1 ? "" : "s"} in the queue.`
-                : "No pending or running jobs."}
-            </p>
+      {activeTab === "jobs" ? (
+        <section
+          aria-labelledby="activity-jobs-heading"
+          className="panel activity-jobs-panel"
+          id="activity-jobs-panel"
+          role="tabpanel"
+        >
+          <div className="panel-heading activity-jobs-panel__heading">
+            <div>
+              <h2 id="activity-jobs-heading">Jobs</h2>
+              <p className="subpanel__copy">
+                {activeJobCount
+                  ? `${activeJobCount} active job${activeJobCount === 1 ? "" : "s"} in the queue.`
+                  : "No pending or running jobs."}
+              </p>
+            </div>
           </div>
-        </div>
 
-        {isLoading ? (
-          <div className="activity-jobs-panel__state" role="status">
-            Loading jobs...
-          </div>
-        ) : null}
+          {isLoading ? (
+            <div className="activity-jobs-panel__state" role="status">
+              Loading jobs...
+            </div>
+          ) : null}
 
-        {isError ? (
-          <div className="activity-jobs-panel__state activity-jobs-panel__state--error" role="alert">
-            Could not load the activity queue.
-          </div>
-        ) : null}
+          {isError ? (
+            <div className="activity-jobs-panel__state activity-jobs-panel__state--error" role="alert">
+              Could not load the activity queue.
+            </div>
+          ) : null}
 
-        {cancelJobMutation.isError ? (
-          <div className="activity-jobs-panel__state activity-jobs-panel__state--error" role="alert">
-            Could not cancel the job.
-          </div>
-        ) : null}
+          {cancelJobMutation.isError ? (
+            <div className="activity-jobs-panel__state activity-jobs-panel__state--error" role="alert">
+              Could not cancel the job.
+            </div>
+          ) : null}
 
-        {showJobList ? (
-          <ul aria-label="Job queue" className="activity-job-list">
-            {displayJobs.map((displayJob) => (
-              <JobRow
-                key={displayJob.job.id}
-                displayJob={displayJob}
-                isCancelling={
-                  cancelJobMutation.isPending && cancelJobMutation.variables === displayJob.job.id
-                }
-                onCancel={(jobId) => cancelJobMutation.mutate(jobId)}
-                project={
-                  displayJob.job.project_id ? projectsById.get(displayJob.job.project_id) ?? null : null
-                }
-              />
-            ))}
-          </ul>
-        ) : null}
+          {showJobList ? (
+            <ul aria-label="Job queue" className="activity-job-list">
+              {displayJobs.map((displayJob) => (
+                <JobRow
+                  key={displayJob.job.id}
+                  displayJob={displayJob}
+                  isCancelling={
+                    cancelJobMutation.isPending && cancelJobMutation.variables === displayJob.job.id
+                  }
+                  onCancel={(jobId) => cancelJobMutation.mutate(jobId)}
+                  project={
+                    displayJob.job.project_id ? projectsById.get(displayJob.job.project_id) ?? null : null
+                  }
+                />
+              ))}
+            </ul>
+          ) : null}
 
-        {showEmptyState ? (
-          <div className="activity-jobs-panel__empty">
-            <h3>No jobs yet</h3>
-            <p>Import or process a track to populate the queue.</p>
-          </div>
-        ) : null}
-      </section>
+          {showEmptyState ? (
+            <div className="activity-jobs-panel__empty">
+              <h3>No jobs yet</h3>
+              <p>Import or process a track to populate the queue.</p>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {activeTab === "sync" ? <ActivitySyncPanel /> : null}
     </section>
   );
 }

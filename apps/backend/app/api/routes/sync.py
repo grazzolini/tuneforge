@@ -14,6 +14,8 @@ from app.schemas import (
     SyncLocalIdentitySchema,
     SyncLocalIdentityUpdateRequest,
     SyncMetadataResponse,
+    SyncPairingAnswerRequest,
+    SyncPairingAnswerResponse,
     SyncPairingOfferRequest,
     SyncPairingOfferResponse,
     SyncPairingOfferSchema,
@@ -23,9 +25,13 @@ from app.schemas import (
     SyncProjectStagedImportRequest,
     SyncProjectStatusUpdateRequest,
     SyncProjectStatusUpdateResponse,
+    SyncReconciliationApplyRequest,
+    SyncReconciliationApplyResponse,
     SyncReconciliationPlanRequest,
     SyncReconciliationPlanResponse,
     SyncStagedArtifactSchema,
+    SyncTransportHandshakeSignatureResponse,
+    SyncTransportHandshakeSignRequest,
     SyncTrustedPeerCreateRequest,
     SyncTrustedPeerResponse,
     SyncTrustedPeerSchema,
@@ -35,6 +41,7 @@ from app.services.sync_identity import run_sync_preflight
 from app.services.sync_metadata import get_sync_metadata
 from app.services.sync_project_status import update_project_sync_status
 from app.services.sync_trust import (
+    answer_pairing_offer,
     create_pairing_offer,
     get_or_create_local_identity,
     list_trusted_peers,
@@ -83,6 +90,18 @@ def plan_sync_reconciliation(session: Session, payload: SyncReconciliationPlanRe
     return service_plan_sync_reconciliation(session, payload)
 
 
+def apply_sync_reconciliation(session: Session, payload: SyncReconciliationApplyRequest) -> Any:
+    from app.services.sync_reconciliation_apply import apply_sync_reconciliation as service_apply_sync_reconciliation
+
+    return service_apply_sync_reconciliation(session, payload)
+
+
+def sign_transport_handshake_challenge(session: Session, payload: SyncTransportHandshakeSignRequest) -> Any:
+    from app.services.sync_transport import sign_transport_handshake_challenge as service_sign_challenge
+
+    return service_sign_challenge(session, payload)
+
+
 @router.get("/preflight", response_model=SyncPreflightResponse)
 def sync_preflight(session: Session = Depends(get_db)) -> SyncPreflightResponse:
     return SyncPreflightResponse.model_validate(run_sync_preflight(session))
@@ -100,6 +119,24 @@ def sync_reconciliation_plan(
 ) -> SyncReconciliationPlanResponse:
     plan = plan_sync_reconciliation(session, payload)
     return SyncReconciliationPlanResponse.model_validate(plan)
+
+
+@router.post("/reconciliation/apply", response_model=SyncReconciliationApplyResponse)
+def sync_reconciliation_apply(
+    payload: SyncReconciliationApplyRequest,
+    session: Session = Depends(get_db),
+) -> SyncReconciliationApplyResponse:
+    result = apply_sync_reconciliation(session, payload)
+    return SyncReconciliationApplyResponse.model_validate(result)
+
+
+@router.post("/transport/handshake/sign", response_model=SyncTransportHandshakeSignatureResponse)
+def sync_transport_handshake_sign(
+    payload: SyncTransportHandshakeSignRequest,
+    session: Session = Depends(get_db),
+) -> SyncTransportHandshakeSignatureResponse:
+    signature = sign_transport_handshake_challenge(session, payload)
+    return SyncTransportHandshakeSignatureResponse.model_validate(signature)
 
 
 @router.get("/identity", response_model=SyncLocalIdentityResponse)
@@ -135,6 +172,28 @@ def sync_pairing_offer_create(
                 "ttl_seconds": payload.ttl_seconds,
             }
         )
+    )
+
+
+@router.post("/pairing/responses", response_model=SyncPairingAnswerResponse)
+def sync_pairing_offer_answer(
+    payload: SyncPairingAnswerRequest,
+    session: Session = Depends(get_db),
+) -> SyncPairingAnswerResponse:
+    pairing_answer = answer_pairing_offer(
+        session,
+        offer=payload.offer.model_dump(mode="python"),
+        endpoint_hints=payload.endpoint_hints,
+        adopt_sync_group=payload.adopt_sync_group,
+    )
+    return SyncPairingAnswerResponse(
+        pairing_response=SyncPairingOfferSchema.model_validate(
+            {
+                "payload": pairing_answer.payload,
+                "expires_at": pairing_answer.payload["expires_at"],
+            }
+        ).payload,
+        trusted_peer=SyncTrustedPeerSchema.model_validate(pairing_answer.trusted_peer),
     )
 
 

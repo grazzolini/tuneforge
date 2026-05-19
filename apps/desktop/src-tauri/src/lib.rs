@@ -18,6 +18,7 @@ use tauri::{Manager, State};
 
 mod mobile_backend;
 mod native_audio;
+mod sync_transport;
 mod system_media;
 
 struct BackendRuntime {
@@ -335,8 +336,10 @@ pub fn run() {
             } else {
                 spawn_packaged_backend(app.handle())?
             };
+            let sync_transport = sync_transport::SyncTransportState::new(runtime.base_url.clone());
             app.manage(runtime);
             app.manage(native_audio::NativeAudioState::new());
+            app.manage(sync_transport);
             app.manage(system_media::SystemMediaState::new(app.handle().clone()));
             #[cfg(target_os = "linux")]
             install_linux_media_permission_handler(app.handle())?;
@@ -366,6 +369,11 @@ pub fn run() {
             system_media::system_media_update_state,
             system_media::system_media_clear_state,
             system_media::system_media_set_idle_inhibition,
+            sync_transport::sync_transport_start_listener,
+            sync_transport::sync_transport_stop_listener,
+            sync_transport::sync_transport_status,
+            sync_transport::sync_transport_create_pairing_offer,
+            sync_transport::sync_transport_sync_now,
             mobile_backend::mobile_capabilities,
             mobile_backend::mobile_get_health,
             mobile_backend::mobile_list_projects,
@@ -396,6 +404,8 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {
+            let sync_transport = app_handle.state::<sync_transport::SyncTransportState>();
+            sync_transport.shutdown();
             let runtime = app_handle.state::<BackendRuntime>();
             runtime.shutdown();
         }

@@ -77,7 +77,10 @@ pnpm sync:backend:legacy-nvidia -- --advanced-chords
 pnpm sync:backend:default -- --advanced-chords
 ```
 
-This profile is an opt-in local override for Linux `x86_64`. The committed lockfile and the default macOS / Linux setup stay unchanged. When the override is active, use the repository commands (`pnpm dev:backend`, `pnpm test`, `pnpm lint`) so the backend keeps using the overridden `.venv` instead of asking `uv` to resync it.
+This profile is an opt-in local override for Linux `x86_64`. The committed lockfile and the default macOS / Linux
+setup stay unchanged. When the override is active, use the repository commands (`pnpm dev:backend`, `pnpm test`,
+`pnpm lint`, `pnpm contracts:generate`) so the backend keeps using the overridden `.venv` instead of asking `uv` to
+resync it.
 
 Both backend sync helpers recreate `.venv` from scratch before installing packages. That avoids stale mixed CUDA stacks after switching between the default and legacy NVIDIA profiles, while still letting `uv` reuse its shared cache for faster reinstalls.
 

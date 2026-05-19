@@ -116,6 +116,9 @@ pnpm sync:backend:default -- --advanced-chords
 
 Both backend sync helpers recreate `apps/backend/.venv` from scratch to avoid stale mixed CUDA stacks when switching profiles. `uv` still reuses its shared cache, so after the first install, switching is usually much faster than a cold download. It is intended for cards like the GTX 1050 Ti. macOS, CI, and the default Linux setup remain unchanged.
 
+When the legacy marker is active, use the root `pnpm` scripts for backend work. They preserve the local Torch
+override; running raw `uv run` inside `apps/backend` can resync the default Torch stack and leave CUDA libraries mixed.
+
 ## Development
 
 Two terminals:

@@ -68,4 +68,18 @@ uv pip install \
   "torch==2.6.0" \
   "torchaudio==2.6.0"
 
+.venv/bin/python - <<'PY'
+import sys
+
+import torch
+
+if not torch.__version__.startswith("2.6.0"):
+    raise SystemExit(f"Expected torch 2.6.0 for the legacy NVIDIA profile, found {torch.__version__}.")
+
+if torch.version.cuda != "12.6":
+    raise SystemExit(f"Expected CUDA 12.6 for the legacy NVIDIA profile, found {torch.version.cuda}.")
+
+sys.stdout.write(f"Verified legacy NVIDIA Torch profile: torch {torch.__version__}, CUDA {torch.version.cuda}\n")
+PY
+
 touch "${marker_file}"

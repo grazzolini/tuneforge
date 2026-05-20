@@ -83,6 +83,12 @@ const {
   resolveDeferredSystemMediaControlListen,
 } = vi.hoisted(() => {
   const createdAt = "2026-04-18T13:16:00.000Z";
+  const irohTransportId = "tuneforge-sync+iroh";
+  const tcpTransportId = "tuneforge-sync+tcp";
+  const syncEndpointHints = [
+    `${irohTransportId}://device_peer_1`,
+    `${tcpTransportId}://192.168.1.42:48625`,
+  ];
   type NativeAudioInputFrame = {
     deviceId: string | null;
     sampleRate: number;
@@ -1241,7 +1247,7 @@ const {
       ...state.syncTransportStatus,
       active: true,
       status: "listening",
-      endpoint_hints: ["tcp://192.168.1.42:48625"],
+      endpoint_hints: clone(syncEndpointHints),
       last_error: null,
       updated_at: createdAt,
     };
@@ -1349,6 +1355,8 @@ const {
     const syncResult: SyncTransportRunStatus = {
       peer_device_id: deviceId,
       remote_device_id: deviceId,
+      selected_transport: irohTransportId,
+      attempted_transports: [irohTransportId, tcpTransportId],
       status: "completed_with_errors",
       message: "Manifest exchange completed with 4 project results.",
       started_at: createdAt,

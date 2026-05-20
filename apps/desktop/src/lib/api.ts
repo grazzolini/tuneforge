@@ -34,6 +34,8 @@ export type LyricsSegmentSchema = components["schemas"]["LyricsSegmentSchema"];
 export type LyricsWordSchema = components["schemas"]["LyricsWordSchema"];
 export type ArtifactSchema = components["schemas"]["ArtifactSchema"];
 export type JobSchema = components["schemas"]["JobSchema"];
+export type JobsResponse = components["schemas"]["JobsResponse"];
+export type ListJobsParams = NonNullable<paths["/api/v1/jobs"]["get"]["parameters"]["query"]>;
 export type PreviewRequest = components["schemas"]["PreviewRequest"];
 export type RetuneRequest = components["schemas"]["RetuneRequest"];
 export type ExportRequest = components["schemas"]["ExportRequest"];
@@ -1110,7 +1112,7 @@ export type TuneForgeClient = {
   listArtifacts: (projectId: string) => Promise<components["schemas"]["ArtifactsResponse"]>;
   deleteArtifact: (projectId: string, artifactId: string) => Promise<components["schemas"]["DeleteResponse"]>;
   createExport: (projectId: string, body: ExportRequest) => Promise<components["schemas"]["JobResponse"]>;
-  listJobs: () => Promise<components["schemas"]["JobsResponse"]>;
+  listJobs: (params?: ListJobsParams) => Promise<JobsResponse>;
   getJob: (jobId: string) => Promise<components["schemas"]["JobResponse"]>;
   cancelJob: (jobId: string) => Promise<components["schemas"]["JobResponse"]>;
   getSyncIdentity: () => Promise<SyncLocalIdentityResponse>;
@@ -1323,7 +1325,8 @@ function createHttpTuneForgeClient(): TuneForgeClient {
       ),
     createExport: (projectId: string, body: ExportRequest) =>
       unwrap(client.POST("/api/v1/projects/{project_id}/export", { params: { path: { project_id: projectId } }, body })),
-    listJobs: () => unwrap(client.GET("/api/v1/jobs")),
+    listJobs: (params?: ListJobsParams) =>
+      unwrap(client.GET("/api/v1/jobs", params ? { params: { query: params } } : undefined)),
     getJob: (jobId: string) => unwrap(client.GET("/api/v1/jobs/{job_id}", { params: { path: { job_id: jobId } } })),
     cancelJob: (jobId: string) =>
       unwrap(client.POST("/api/v1/jobs/{job_id}/cancel", { params: { path: { job_id: jobId } } })),
@@ -1413,7 +1416,7 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
       invokeMobile("mobile_delete_artifact", { projectId, artifactId }),
     createExport: (projectId: string, body: ExportRequest) =>
       invokeMobile("mobile_submit_export", { projectId, payload: body }),
-    listJobs: () => invokeMobile("mobile_list_jobs"),
+    listJobs: (params?: ListJobsParams) => invokeMobile("mobile_list_jobs", { params: params ?? null }),
     getJob: (jobId: string) => invokeMobile("mobile_get_job", { jobId }),
     cancelJob: (jobId: string) => invokeMobile("mobile_cancel_job", { jobId }),
     getSyncIdentity: async () => {
@@ -1522,7 +1525,7 @@ export const api: TuneForgeClient = {
   listArtifacts: (projectId: string) => activeClient.listArtifacts(projectId),
   deleteArtifact: (projectId: string, artifactId: string) => activeClient.deleteArtifact(projectId, artifactId),
   createExport: (projectId: string, body: ExportRequest) => activeClient.createExport(projectId, body),
-  listJobs: () => activeClient.listJobs(),
+  listJobs: (params?: ListJobsParams) => activeClient.listJobs(params),
   getJob: (jobId: string) => activeClient.getJob(jobId),
   cancelJob: (jobId: string) => activeClient.cancelJob(jobId),
   getSyncIdentity: () => activeClient.getSyncIdentity(),

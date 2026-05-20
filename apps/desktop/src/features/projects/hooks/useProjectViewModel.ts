@@ -272,8 +272,9 @@ export function useProjectViewModel() {
     enabled: Boolean(projectId),
   });
   const jobsQuery = useQuery({
-    queryKey: ["jobs"],
-    queryFn: async () => (await api.listJobs()).jobs,
+    queryKey: ["jobs", { projectId }],
+    queryFn: async () => (await api.listJobs({ project_id: projectId })).jobs,
+    enabled: Boolean(projectId),
   });
   const mobileCapabilitiesQuery = useQuery({
     queryKey: ["mobile-capabilities"],
@@ -579,10 +580,7 @@ export function useProjectViewModel() {
     },
   });
 
-  const projectJobs = useMemo(
-    () => jobsQuery.data?.filter((job) => job.project_id === projectId) ?? [],
-    [jobsQuery.data, projectId],
-  );
+  const projectJobs = useMemo(() => jobsQuery.data ?? [], [jobsQuery.data]);
   const analyzeJob = projectJobs.find((job) => job.type === "analyze");
   const chordJob = projectJobs.find((job) => job.type === "chords");
   const lyricsJob = projectJobs.find((job) => job.type === "lyrics");

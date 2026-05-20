@@ -8,15 +8,24 @@ LIST_RESPONSE_CONTRACTS = {
     ("/api/v1/projects", "get"): ("ProjectsResponse", "projects", True),
     ("/api/v1/projects/{project_id}/sections", "get"): ("SongSectionsResponse", "sections", False),
     ("/api/v1/projects/{project_id}/artifacts", "get"): ("ArtifactsResponse", "artifacts", True),
-    ("/api/v1/jobs", "get"): ("JobsResponse", "jobs", True),
     ("/api/v1/sync/trusted-peers", "get"): ("SyncTrustedPeersResponse", "trusted_peers", True),
+}
+PAGINATED_LIST_RESPONSE_CONTRACTS = {
+    ("/api/v1/jobs", "get"): ("JobsResponse", "jobs"),
 }
 
 
 def test_list_routes_keep_concrete_openapi_response_refs() -> None:
     openapi = app.openapi()
 
-    for (path, method), (schema_name, _list_field, _field_required) in LIST_RESPONSE_CONTRACTS.items():
+    response_contracts = {
+        **LIST_RESPONSE_CONTRACTS,
+        **{
+            route: (schema_name, list_field, True)
+            for route, (schema_name, list_field) in PAGINATED_LIST_RESPONSE_CONTRACTS.items()
+        },
+    }
+    for (path, method), (schema_name, _list_field, _field_required) in response_contracts.items():
         response_schema = openapi["paths"][path][method]["responses"]["200"]["content"]["application/json"]["schema"]
 
         assert response_schema == {"$ref": f"#/components/schemas/{schema_name}"}
@@ -38,3 +47,16 @@ def test_existing_list_response_components_do_not_add_pagination_metadata() -> N
         else:
             assert "required" not in component_schema
         assert pagination_fields.isdisjoint(component_schema["properties"])
+
+
+def test_paginated_list_response_components_include_pagination_metadata() -> None:
+    openapi = app.openapi()
+    components = openapi["components"]["schemas"]
+    pagination_fields = {"total", "limit", "offset", "has_more"}
+
+    for schema_name, list_field in PAGINATED_LIST_RESPONSE_CONTRACTS.values():
+        component_schema = components[schema_name]
+
+        assert set(component_schema["properties"]) == {list_field, *pagination_fields}
+        assert component_schema["properties"][list_field]["type"] == "array"
+        assert set(component_schema["required"]) == {list_field, *pagination_fields}

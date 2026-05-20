@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { vi } from "vitest";
 import App from "../App";
 import type {
+  ListJobsParams,
   SyncPairingAnswerRequest,
   SyncPairingAnswerResponse,
   SyncPairingOfferRequest,
@@ -13,6 +14,8 @@ import type {
   SyncTrustedPeerCreateRequest,
   SyncTrustedPeerResponse,
 } from "../lib/api";
+
+const DEFAULT_JOBS_LIMIT = 50;
 
 const {
   resetMockApiState,
@@ -1177,9 +1180,27 @@ const {
     ),
   );
   const mockListArtifacts = vi.fn(async (projectId: string) => ({ artifacts: clone(state.artifactsByProject[projectId] ?? []) }));
-  const mockListJobs = vi.fn(async () => ({
-    jobs: clone(state.jobs.map((job, index) => normalizeMockJob(job, index))),
-  }));
+  const mockListJobs = vi.fn(async (params?: ListJobsParams) => {
+    const normalizedJobs = state.jobs.map((job, index) => normalizeMockJob(job, index));
+    const statusFilters = Array.isArray(params?.status) ? params.status : [];
+    const filteredJobs = normalizedJobs.filter((job) => {
+      const statusMatches =
+        statusFilters.length === 0 || statusFilters.includes(String(job.status));
+      const projectMatches =
+        params?.project_id == null || job.project_id === params.project_id;
+      return statusMatches && projectMatches;
+    });
+    const offset = params?.offset ?? 0;
+    const limit = params?.limit ?? DEFAULT_JOBS_LIMIT;
+    const jobs = filteredJobs.slice(offset, offset + limit);
+    return {
+      jobs: clone(jobs),
+      total: filteredJobs.length,
+      limit,
+      offset,
+      has_more: offset + jobs.length < filteredJobs.length,
+    };
+  });
   const mockCancelJob = vi.fn(async (jobId: string) => {
     const jobIndex = state.jobs.findIndex((job) => job.id === jobId);
     if (jobIndex === -1) {

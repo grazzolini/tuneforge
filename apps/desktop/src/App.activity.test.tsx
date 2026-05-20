@@ -95,6 +95,52 @@ describe("Desktop app activity", () => {
     expect(mockListProjects).toHaveBeenCalled();
   });
 
+  it("requests active and terminal job pages separately", async () => {
+    renderApp(["/activity"]);
+
+    expect(await screen.findByRole("heading", { level: 2, name: "Jobs" })).toBeInTheDocument();
+
+    await waitFor(() => expect(mockListJobs).toHaveBeenCalledTimes(2));
+    expect(mockListJobs).toHaveBeenCalledWith({
+      status: ["running", "pending"],
+      limit: 200,
+      offset: 0,
+    });
+    expect(mockListJobs).toHaveBeenCalledWith({
+      status: ["completed", "failed", "cancelled"],
+      limit: 50,
+      offset: 0,
+    });
+    expect(mockListJobs.mock.calls.some(([params]) => params === undefined)).toBe(false);
+  });
+
+  it("automatically loads additional active job pages", async () => {
+    setJobs(
+      Array.from({ length: 205 }, (_, index) => {
+        const jobNumber = index + 1;
+        return job({
+          id: `job_active_${String(jobNumber).padStart(3, "0")}`,
+          type: `active_${String(jobNumber).padStart(3, "0")}`,
+          status: "running",
+          progress: 25,
+          started_at: `2026-04-18T13:${String(index % 60).padStart(2, "0")}:00.000Z`,
+          created_at: `2026-04-18T13:${String(index % 60).padStart(2, "0")}:00.000Z`,
+          updated_at: `2026-04-18T13:${String(index % 60).padStart(2, "0")}:00.000Z`,
+        });
+      }),
+    );
+
+    renderApp(["/activity"]);
+
+    expect(await screen.findByRole("article", { name: "active_001 running job" })).toBeInTheDocument();
+    expect(await screen.findByRole("article", { name: "active_205 running job" })).toBeInTheDocument();
+    expect(mockListJobs).toHaveBeenCalledWith({
+      status: ["running", "pending"],
+      limit: 200,
+      offset: 200,
+    });
+  });
+
   it("switches between Activity Jobs and Sync tabs", async () => {
     const user = userEvent.setup();
     renderApp(["/activity"]);
@@ -830,6 +876,41 @@ describe("Desktop app activity", () => {
     expect(within(rows[1]).getByText("built-in / source")).toBeInTheDocument();
     expect(within(rows[2]).getByText("Queue #2")).toBeInTheDocument();
     expect(within(rows[2]).getByText("No project")).toBeInTheDocument();
+  });
+
+  it("loads additional terminal history pages on request", async () => {
+    const user = userEvent.setup();
+    setJobs(
+      Array.from({ length: 55 }, (_, index) => {
+        const jobNumber = index + 1;
+        return job({
+          id: `job_history_${String(jobNumber).padStart(3, "0")}`,
+          type: `history_${String(jobNumber).padStart(3, "0")}`,
+          status: "completed",
+          progress: 100,
+          completed_at: `2026-04-18T13:${String(59 - index).padStart(2, "0")}:00.000Z`,
+          created_at: "2026-04-18T13:00:00.000Z",
+          updated_at: `2026-04-18T13:${String(59 - index).padStart(2, "0")}:00.000Z`,
+        });
+      }),
+    );
+
+    renderApp(["/activity"]);
+
+    expect(await screen.findByRole("article", { name: "history_001 completed job" })).toBeInTheDocument();
+    expect(screen.queryByRole("article", { name: "history_055 completed job" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Load more history" }));
+
+    expect(await screen.findByRole("article", { name: "history_055 completed job" })).toBeInTheDocument();
+    expect(mockListJobs).toHaveBeenCalledWith({
+      status: ["completed", "failed", "cancelled"],
+      limit: 50,
+      offset: 50,
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Load more history" })).not.toBeInTheDocument(),
+    );
   });
 
   it("cancels pending jobs and refreshes the queue", async () => {

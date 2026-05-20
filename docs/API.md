@@ -54,12 +54,12 @@ If a sort key can be `null`, the endpoint must also document where null values a
 
 ### Pagination Endpoint Audit
 
-This audit captures the current list-like API surface. Until endpoint-specific pagination lands, the individual
-endpoint sections later in this document describe the current unpaginated behavior.
+This audit captures the current list-like API surface. Individual endpoint sections later in this document
+describe current pagination behavior, pending pagination decisions, or explicit unpaginated exceptions.
 
 | Endpoint or payload | List field | Pagination decision |
 | --- | --- | --- |
-| `GET /api/v1/jobs` | `jobs` | Planned paginated growable list. It also needs project-name search and explicit sort controls. Desktop Activity and project job-history consumers should lazy-load this list. |
+| `GET /api/v1/jobs` | `jobs` | Paginated growable list with `status` and `project_id` filters. Default ordering is active-first and deterministic. |
 | `GET /api/v1/projects` | `projects` | Planned paginated growable list while preserving global `search`. Desktop Library consumers should lazy-load this list. |
 | `GET /api/v1/projects/{project_id}/artifacts` | `artifacts` | Planned paginated project child list with project-scoped totals and stable newest-first ordering. Desktop project views should lazy-load this list. |
 | `GET /api/v1/projects/{project_id}/sections` | `sections` | Review with project child lists. Paginate if sections are treated as growable; otherwise document the bounded song-structure exception. |
@@ -686,7 +686,21 @@ Response: `JobResponse`.
 
 `GET /api/v1/jobs`
 
-Returns all jobs ordered by most recently updated.
+Returns a paginated list of jobs.
+
+Query parameters:
+
+- `limit` - page size, default `50`, minimum `1`, maximum `200`.
+- `offset` - zero-based row offset, default `0`, minimum `0`.
+- `status` - optional repeatable status filter, for example `?status=pending&status=running`.
+- `project_id` - optional project ID filter.
+
+Default ordering:
+
+- running jobs first, ordered by `started_at` when present, otherwise `created_at`, ascending, then `id` ascending.
+- pending jobs next, ordered by `created_at` ascending, then `id` ascending.
+- terminal jobs (`completed`, `cancelled`, `failed`) next, ordered by `completed_at` when present, otherwise `updated_at`, descending, then `id` descending.
+- unknown statuses last, ordered by `updated_at` descending, then `id` descending.
 
 Response: `JobsResponse`.
 

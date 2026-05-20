@@ -46,6 +46,11 @@
   list-style: none;
 }
 
+.activity-jobs-panel__load-more {
+  display: flex;
+  justify-content: center;
+}
+
 .activity-job-row__article {
   display: grid;
   gap: 0.8rem;

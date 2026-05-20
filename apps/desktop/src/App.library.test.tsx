@@ -48,9 +48,45 @@ describe("Desktop app library", () => {
     expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
     await user.type(screen.getByLabelText("Search projects"), "choir");
 
-    await waitFor(() => expect(mockListProjects).toHaveBeenLastCalledWith("choir"));
+    await waitFor(() =>
+      expect(mockListProjects).toHaveBeenLastCalledWith({ search: "choir", limit: 50, offset: 0 }),
+    );
     expect(screen.getByText("Choir Warmup")).toBeInTheDocument();
     expect(screen.queryByText("Bass Drill")).not.toBeInTheDocument();
+  });
+
+  it("loads additional project pages on request", async () => {
+    const user = userEvent.setup();
+    setProjects(
+      Array.from({ length: 55 }, (_, index) => {
+        const projectNumber = index + 1;
+        return {
+          id: `proj_${String(projectNumber).padStart(3, "0")}`,
+          display_name: `Project ${projectNumber}`,
+          source_path: `/tmp/project-${projectNumber}.wav`,
+          imported_path: `/tmp/projects/project-${projectNumber}.wav`,
+          duration_seconds: 120,
+          sample_rate: 44100,
+          channels: 2,
+          created_at: "2026-04-18T13:16:00.000Z",
+          updated_at: "2026-04-18T13:16:00.000Z",
+        };
+      }),
+    );
+
+    renderApp(["/"]);
+
+    expect(await screen.findByText("50 of 55 projects loaded")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Project 1", level: 2 })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Project 55", level: 2 })).not.toBeInTheDocument();
+    expect(mockListProjects).toHaveBeenCalledWith({ limit: 50, offset: 0 });
+
+    await user.click(screen.getByRole("button", { name: "Load more projects" }));
+
+    expect(await screen.findByRole("heading", { name: "Project 55", level: 2 })).toBeInTheDocument();
+    expect(screen.getByText("55 projects ready")).toBeInTheDocument();
+    expect(mockListProjects).toHaveBeenCalledWith({ limit: 50, offset: 50 });
+    expect(screen.queryByRole("button", { name: "Load more projects" })).not.toBeInTheDocument();
   });
 
   it("renders project cards with local timestamps and without filename subtitles", async () => {

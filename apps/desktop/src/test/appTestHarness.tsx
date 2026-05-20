@@ -5,6 +5,7 @@ import { vi } from "vitest";
 import App from "../App";
 import type {
   ListJobsParams,
+  ListProjectsParams,
   SyncPairingAnswerRequest,
   SyncPairingAnswerResponse,
   SyncPairingOfferRequest,
@@ -15,6 +16,7 @@ import type {
   SyncTrustedPeerResponse,
 } from "../lib/api";
 
+const DEFAULT_PROJECTS_LIMIT = 50;
 const DEFAULT_JOBS_LIMIT = 50;
 
 const {
@@ -1055,8 +1057,8 @@ const {
   const mockGetMobileCapabilities = vi.fn(async (): Promise<unknown> => null);
   const mockListChordBackends = vi.fn(async () => ({ backends: clone(state.chordBackends) }));
   const mockListStemModels = vi.fn(async () => ({ models: clone(state.stemModels) }));
-  const mockListProjects = vi.fn(async (search?: string) => {
-    const normalizedSearch = search?.trim().toLowerCase();
+  const mockListProjects = vi.fn(async (params?: ListProjectsParams) => {
+    const normalizedSearch = params?.search?.trim().toLowerCase();
     const filteredProjects = normalizedSearch
       ? state.projects.filter((project) => {
           const displayName = String(project.display_name ?? "").toLowerCase();
@@ -1069,7 +1071,16 @@ const {
           );
         })
       : state.projects;
-    return { projects: clone(filteredProjects) };
+    const offset = params?.offset ?? 0;
+    const limit = params?.limit ?? DEFAULT_PROJECTS_LIMIT;
+    const projects = filteredProjects.slice(offset, offset + limit);
+    return {
+      projects: clone(projects),
+      total: filteredProjects.length,
+      limit,
+      offset,
+      has_more: offset + projects.length < filteredProjects.length,
+    };
   });
   const mockImportProject = vi.fn(async (body: {
     source_path: string;

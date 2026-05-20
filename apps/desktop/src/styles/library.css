@@ -41,6 +41,11 @@
   grid-template-columns: 1fr;
 }
 
+.library-load-more {
+  display: flex;
+  justify-content: center;
+}
+
 .project-library-table__header,
 .project-card__link {
   display: grid;

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from fastapi import status
 from sqlalchemy import func, or_, select
@@ -25,6 +27,12 @@ from app.services.sync_tombstones import (
 from app.utils.hashing import file_sha256
 
 
+@dataclass(frozen=True, slots=True)
+class ListedProjects:
+    projects: list[Project]
+    total: int
+
+
 def ensure_project_mutable(project: Project) -> None:
     require_project_sync_editable(project)
 
@@ -40,12 +48,18 @@ def _validate_import_path(source_path: Path) -> None:
         )
 
 
-def list_projects(session: Session, *, search: str | None = None) -> list[Project]:
-    stmt = select(Project).where(Project.sync_status != "deleted")
+def list_projects(
+    session: Session,
+    *,
+    limit: int,
+    offset: int,
+    search: str | None = None,
+) -> ListedProjects:
+    filters: list[Any] = [Project.sync_status != "deleted"]
     normalized_search = (search or "").strip().lower()
     if normalized_search:
         like_term = f"%{normalized_search}%"
-        stmt = stmt.where(
+        filters.append(
             or_(
                 func.lower(Project.display_name).like(like_term),
                 func.lower(Project.source_path).like(like_term),
@@ -53,8 +67,17 @@ def list_projects(session: Session, *, search: str | None = None) -> list[Projec
             )
         )
 
-    stmt = stmt.order_by(Project.updated_at.desc())
-    return list(session.scalars(stmt))
+    total_statement = select(func.count()).select_from(Project).where(*filters)
+    projects_statement = (
+        select(Project)
+        .where(*filters)
+        .order_by(Project.updated_at.desc(), Project.id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    total = session.scalar(total_statement) or 0
+    projects = list(session.scalars(projects_statement))
+    return ListedProjects(projects=projects, total=total)
 
 
 def get_project(session: Session, project_id: str) -> Project:

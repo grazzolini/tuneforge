@@ -35,6 +35,7 @@ export type LyricsWordSchema = components["schemas"]["LyricsWordSchema"];
 export type ArtifactSchema = components["schemas"]["ArtifactSchema"];
 export type JobSchema = components["schemas"]["JobSchema"];
 export type JobsResponse = components["schemas"]["JobsResponse"];
+export type ListProjectsParams = NonNullable<paths["/api/v1/projects"]["get"]["parameters"]["query"]>;
 export type ListJobsParams = NonNullable<paths["/api/v1/jobs"]["get"]["parameters"]["query"]>;
 export type PreviewRequest = components["schemas"]["PreviewRequest"];
 export type RetuneRequest = components["schemas"]["RetuneRequest"];
@@ -1112,7 +1113,7 @@ async function createNativeSyncPairingOffer(body: SyncPairingOfferRequest): Prom
 export type TuneForgeClient = {
   getMobileCapabilities: () => Promise<RuntimeCapabilities>;
   getHealth: () => Promise<HealthResponse>;
-  listProjects: (search?: string) => Promise<components["schemas"]["ProjectsResponse"]>;
+  listProjects: (params?: ListProjectsParams) => Promise<components["schemas"]["ProjectsResponse"]>;
   importProject: (body: components["schemas"]["ProjectImportRequest"]) => Promise<components["schemas"]["ProjectResponse"]>;
   getProject: (projectId: string) => Promise<components["schemas"]["ProjectResponse"]>;
   updateProject: (projectId: string, body: ProjectUpdateRequest) => Promise<components["schemas"]["ProjectResponse"]>;
@@ -1285,12 +1286,8 @@ function createHttpTuneForgeClient(): TuneForgeClient {
   return {
     getMobileCapabilities: async () => null,
     getHealth: () => unwrap(client.GET("/api/v1/health")),
-    listProjects: (search?: string) =>
-      unwrap(
-        client.GET("/api/v1/projects", {
-          params: search ? ({ query: { search } } as never) : undefined,
-        }),
-      ),
+    listProjects: (params?: ListProjectsParams) =>
+      unwrap(client.GET("/api/v1/projects", params ? { params: { query: params } } : undefined)),
     importProject: (body: components["schemas"]["ProjectImportRequest"]) =>
       unwrap(client.POST("/api/v1/projects/import", { body })),
     getProject: (projectId: string) => unwrap(client.GET("/api/v1/projects/{project_id}", { params: { path: { project_id: projectId } } })),
@@ -1387,7 +1384,8 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
   return {
     getMobileCapabilities: async () => capabilities,
     getHealth: () => invokeMobile("mobile_get_health"),
-    listProjects: (search?: string) => invokeMobile("mobile_list_projects", { search }),
+    listProjects: (params?: ListProjectsParams) =>
+      invokeMobile("mobile_list_projects", { params: params ?? null }),
     importProject: (body: components["schemas"]["ProjectImportRequest"]) =>
       invokeMobile("mobile_import_project", { payload: body }),
     getProject: (projectId: string) => invokeMobile("mobile_get_project", { projectId }),
@@ -1528,7 +1526,7 @@ export function getApiBaseUrl() {
 export const api: TuneForgeClient = {
   getMobileCapabilities: () => activeClient.getMobileCapabilities(),
   getHealth: () => activeClient.getHealth(),
-  listProjects: (search?: string) => activeClient.listProjects(search),
+  listProjects: (params?: ListProjectsParams) => activeClient.listProjects(params),
   importProject: (body) => activeClient.importProject(body),
   getProject: (projectId: string) => activeClient.getProject(projectId),
   updateProject: (projectId: string, body: ProjectUpdateRequest) => activeClient.updateProject(projectId, body),

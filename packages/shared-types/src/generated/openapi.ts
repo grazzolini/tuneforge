@@ -1222,6 +1222,14 @@ export interface components {
         ProjectsResponse: {
             /** Projects */
             projects: components["schemas"]["ProjectSchema"][];
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Has More */
+            has_more: boolean;
         };
         /** RetuneRequest */
         RetuneRequest: {
@@ -2349,6 +2357,10 @@ export interface operations {
             query?: {
                 /** @description Filter projects by display name or path. */
                 search?: string | null;
+                /** @description Maximum number of items to return. */
+                limit?: number;
+                /** @description Number of items to skip before returning results. */
+                offset?: number;
             };
             header?: never;
             path?: never;

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, type JobSchema, type ProjectSchema } from "../../lib/api";
 import { formatLocalDateTime, normalizeApiDateTime, parseApiDateTime } from "../../lib/datetime";
@@ -15,6 +15,8 @@ const TERMINAL_JOBS_PAGE_SIZE = 50;
 const ACTIVE_JOB_REFETCH_MS = 1500;
 const ACTIVE_JOBS_QUERY_KEY = ["jobs", "activity", "active"] as const;
 const TERMINAL_JOBS_QUERY_KEY = ["jobs", "activity", "terminal"] as const;
+const ACTIVITY_PROJECTS_QUERY_KEY = ["projects", "activity"] as const;
+const ACTIVITY_PROJECT_STALE_MS = 5 * 60 * 1000;
 const ACTIVITY_TABS = [
   { id: "jobs", label: "Jobs" },
   { id: "sync", label: "Sync" },
@@ -103,10 +105,6 @@ function formatJobDetails(job: JobSchema) {
 
 function progressValue(job: JobSchema) {
   return Math.max(0, Math.min(100, Math.round(job.progress)));
-}
-
-function projectById(projects: ProjectSchema[] | undefined) {
-  return new Map((projects ?? []).map((project) => [project.id, project]));
 }
 
 function hasActiveJob(jobs: JobSchema[] | undefined) {
@@ -268,18 +266,6 @@ export function ActivityView() {
     getNextPageParam: (lastPage) =>
       lastPage.has_more ? lastPage.offset + lastPage.jobs.length : undefined,
   });
-  const projectsQuery = useQuery({
-    queryKey: ["projects", "activity"],
-    queryFn: async () => (await api.listProjects()).projects,
-  });
-  const cancelJobMutation = useMutation({
-    mutationFn: (jobId: string) => api.cancelJob(jobId),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
-    },
-  });
-
-  const projectsById = useMemo(() => projectById(projectsQuery.data), [projectsQuery.data]);
   const activeJobs = useMemo(
     () => activeJobsData?.pages.flatMap((page) => page.jobs) ?? EMPTY_JOBS,
     [activeJobsData],
@@ -289,11 +275,47 @@ export function ActivityView() {
     [terminalJobsQuery.data],
   );
   const jobs = useMemo(() => uniqueJobs([...activeJobs, ...terminalJobs]), [activeJobs, terminalJobs]);
+  const jobProjectIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          jobs
+            .map((job) => job.project_id)
+            .filter((projectId): projectId is string => Boolean(projectId)),
+        ),
+      ).sort(),
+    [jobs],
+  );
+  const projectQueries = useQueries({
+    queries: jobProjectIds.map((projectId) => ({
+      queryKey: [...ACTIVITY_PROJECTS_QUERY_KEY, "detail", projectId],
+      staleTime: ACTIVITY_PROJECT_STALE_MS,
+      queryFn: async () => {
+        try {
+          const response = await api.getProject(projectId);
+          return response.project;
+        } catch {
+          return null;
+        }
+      },
+    })),
+  });
+  const cancelJobMutation = useMutation({
+    mutationFn: (jobId: string) => api.cancelJob(jobId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    },
+  });
+
+  const projectsById = useMemo(
+    () => new Map(jobProjectIds.map((projectId, index) => [projectId, projectQueries[index]?.data ?? null])),
+    [jobProjectIds, projectQueries],
+  );
   const displayJobs = useMemo(() => orderJobsForQueue(jobs), [jobs]);
   const activeJobCount = displayJobs.filter(({ job }) => CANCELABLE_JOB_STATUSES.has(job.status)).length;
   const shouldPollJobs = hasActiveJob(activeJobs);
-  const isLoading = isActiveJobsLoading || terminalJobsQuery.isLoading || projectsQuery.isLoading;
-  const isError = isActiveJobsError || terminalJobsQuery.isError || projectsQuery.isError;
+  const isLoading = isActiveJobsLoading || terminalJobsQuery.isLoading;
+  const isError = isActiveJobsError || terminalJobsQuery.isError;
   const showJobList = !isLoading && !isError && displayJobs.length > 0;
   const showEmptyState = !isLoading && !isError && displayJobs.length === 0;
 
@@ -301,10 +323,7 @@ export function ActivityView() {
     if (!shouldPollJobs) return;
 
     const interval = window.setInterval(async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ACTIVE_JOBS_QUERY_KEY }),
-        queryClient.invalidateQueries({ queryKey: ["projects", "activity"] }),
-      ]);
+      await queryClient.invalidateQueries({ queryKey: ACTIVE_JOBS_QUERY_KEY });
     }, ACTIVE_JOB_REFETCH_MS);
 
     return () => window.clearInterval(interval);

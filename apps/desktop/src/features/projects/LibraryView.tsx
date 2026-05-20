@@ -1,5 +1,5 @@
 import { startTransition, useDeferredValue, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Music2, Upload } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
@@ -9,6 +9,7 @@ import { usePreferences } from "../../lib/preferences";
 import { useChordBackendActionSelection } from "./hooks/useChordBackendActionSelection";
 
 const MAX_IMPORT_SELECTION = 25;
+const LIBRARY_PROJECTS_PAGE_SIZE = 50;
 
 function formatDuration(durationSeconds: number | null | undefined) {
   if (!durationSeconds) return "Unknown length";
@@ -247,9 +248,17 @@ export function LibraryView() {
   const deferredSearch = useDeferredValue(searchDraft.trim());
   const showSubtitle = informationDensity !== "minimal";
 
-  const projectsQuery = useQuery({
+  const projectsQuery = useInfiniteQuery({
     queryKey: ["projects", deferredSearch],
-    queryFn: async () => (await api.listProjects(deferredSearch || undefined)).projects,
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) =>
+      api.listProjects({
+        ...(deferredSearch ? { search: deferredSearch } : {}),
+        limit: LIBRARY_PROJECTS_PAGE_SIZE,
+        offset: pageParam,
+      }),
+    getNextPageParam: (lastPage) =>
+      lastPage.has_more ? lastPage.offset + lastPage.projects.length : undefined,
   });
 
   const importMutation = useMutation({
@@ -353,7 +362,11 @@ export function LibraryView() {
     },
   });
 
-  const resultCount = projectsQuery.data?.length ?? 0;
+  const projectPages = projectsQuery.data?.pages ?? [];
+  const projects = projectPages.flatMap((page) => page.projects);
+  const loadedProjectCount = projects.length;
+  const totalProjectCount = projectPages[0]?.total ?? 0;
+  const hasLoadedAllProjects = loadedProjectCount >= totalProjectCount;
 
   return (
     <section className="screen">
@@ -410,16 +423,21 @@ export function LibraryView() {
         </label>
         <div className="library-toolbar__summary" aria-live="polite">
           {deferredSearch ? (
-            resultCount ? (
+            totalProjectCount ? (
               <span>
-                {resultCount} match{resultCount === 1 ? "" : "es"} for "{deferredSearch}"
+                {hasLoadedAllProjects
+                  ? `${totalProjectCount} match${totalProjectCount === 1 ? "" : "es"}`
+                  : `${loadedProjectCount} of ${totalProjectCount} matches loaded`}{" "}
+                for "{deferredSearch}"
               </span>
             ) : (
               <span>No matches for "{deferredSearch}"</span>
             )
           ) : (
             <span>
-              {resultCount} project{resultCount === 1 ? "" : "s"} ready
+              {hasLoadedAllProjects
+                ? `${totalProjectCount} project${totalProjectCount === 1 ? "" : "s"} ready`
+                : `${loadedProjectCount} of ${totalProjectCount} projects loaded`}
             </span>
           )}
         </div>
@@ -431,7 +449,7 @@ export function LibraryView() {
       ) : null}
 
       <div className="project-grid project-library-table">
-        {projectsQuery.data?.length ? (
+        {projects.length ? (
           <>
             <div className="project-library-table__header" aria-hidden="true">
               <span />
@@ -439,9 +457,9 @@ export function LibraryView() {
               <span>Updated</span>
               <span>Format / Duration</span>
             </div>
-            {projectsQuery.data.map((project) => <ProjectCard key={project.id} project={project} />)}
+            {projects.map((project) => <ProjectCard key={project.id} project={project} />)}
           </>
-        ) : (
+        ) : !projectsQuery.isLoading && !projectsQuery.isError ? (
           <div className="panel panel--empty">
             <h2>{deferredSearch ? "No matching projects" : "No projects yet"}</h2>
             <p>
@@ -450,8 +468,20 @@ export function LibraryView() {
                 : "Import a track to create the first playback-ready project."}
             </p>
           </div>
-        )}
+        ) : null}
       </div>
+      {projectsQuery.hasNextPage ? (
+        <div className="library-load-more">
+          <button
+            className="button button--ghost"
+            disabled={projectsQuery.isFetchingNextPage}
+            onClick={() => projectsQuery.fetchNextPage()}
+            type="button"
+          >
+            {projectsQuery.isFetchingNextPage ? "Loading projects..." : "Load more projects"}
+          </button>
+        </div>
+      ) : null}
     </section>
   );
 }

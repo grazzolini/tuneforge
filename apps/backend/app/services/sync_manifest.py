@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -177,6 +177,16 @@ def export_project_manifest(session: Session, project_id: str) -> SyncProjectMan
     )
     entity_revisions = _list_project_entity_revisions(session, project_id=project.id)
     delete_tombstones = _list_project_delete_tombstones(session, project_id=project.id)
+    live_targets = _live_target_updated_at(project, artifacts, entity_revisions)
+    exported_tombstones = [
+        _export_delete_tombstone_manifest(tombstone)
+        for tombstone in delete_tombstones
+    ]
+    project_resurrection_window = _project_resurrection_window_for_live_targets(
+        project_updated_at=project.updated_at,
+        tombstones=exported_tombstones,
+        project_id=project.id,
+    )
 
     manifest = SyncProjectManifest(
         schema_version=SYNC_PROJECT_MANIFEST_SCHEMA_VERSION,
@@ -198,8 +208,13 @@ def export_project_manifest(session: Session, project_id: str) -> SyncProjectMan
         ],
         artifacts=[_export_artifact_manifest(artifact) for artifact in artifacts],
         delete_tombstones=[
-            _export_delete_tombstone_manifest(tombstone)
-            for tombstone in delete_tombstones
+            tombstone
+            for tombstone in exported_tombstones
+            if not _live_target_supersedes_tombstone(
+                tombstone,
+                live_targets,
+                project_resurrection_window=project_resurrection_window,
+            )
         ],
     )
     _validate_source_artifact_present(manifest)
@@ -335,6 +350,11 @@ def import_staged_project_manifest(
         _import_entity_revisions(session, project_manifest)
         imported_tombstones = _import_delete_tombstones(session, project_manifest)
         _apply_delete_tombstones(session, imported_tombstones)
+        _retire_manifest_superseded_local_tombstones(
+            session,
+            project_manifest,
+            sync_group_id=local_sync_group_id,
+        )
         _hydrate_current_entity_revisions(session, project, project_manifest.entity_revisions)
         hydrate_project_analysis_result_from_artifact(session, project.id)
         if upgrading_placeholder:
@@ -435,6 +455,11 @@ def _merge_staged_project_manifest(
         _import_entity_revisions(session, merge_manifest)
         imported_tombstones = _import_delete_tombstones(session, manifest)
         _apply_delete_tombstones(session, imported_tombstones)
+        _retire_manifest_superseded_local_tombstones(
+            session,
+            manifest,
+            sync_group_id=get_or_create_local_identity(session).sync_group_id,
+        )
         _hydrate_current_entity_revisions(session, project, missing_revisions)
         hydrate_project_analysis_result_from_artifact(session, project.id)
     except OSError as exc:
@@ -500,7 +525,7 @@ def _reject_existing_manifest_item_conflicts(
             continue
         if (
             existing_revision.project_id != manifest.project_id
-            or revision_payload_sha256(existing_revision.payload_json or {}) != revision.content_sha256
+            or _local_revision_content_sha256(existing_revision) != revision.content_sha256
         ):
             raise AppError(
                 "SYNC_MANIFEST_ENTITY_REVISION_CONFLICT",
@@ -546,6 +571,44 @@ def _list_project_delete_tombstones(
             )
         )
     )
+
+
+def _live_target_updated_at(
+    project: Project,
+    artifacts: Iterable[Artifact],
+    entity_revisions: Iterable[SyncEntityRevision],
+) -> dict[tuple[str, str], datetime]:
+    targets = {("project", project.id): project.updated_at}
+    targets.update({("artifact", artifact.id): artifact.created_at for artifact in artifacts})
+    targets.update({
+        ("entity_revision", revision.id): revision.updated_at for revision in entity_revisions
+    })
+    return targets
+
+
+def _live_target_supersedes_tombstone(
+    tombstone: SyncDeleteTombstoneManifest,
+    live_targets: dict[tuple[str, str], datetime],
+    *,
+    project_resurrection_window: tuple[datetime, datetime] | None = None,
+) -> bool:
+    target_updated_at = live_targets.get((tombstone.target_type, tombstone.target_id))
+    if target_updated_at is None:
+        return False
+    tombstone_deleted_at = _as_utc(tombstone.deleted_at)
+    if _as_utc(target_updated_at) > tombstone_deleted_at:
+        return True
+    return _tombstone_is_inside_project_resurrection_window(
+        tombstone_deleted_at,
+        project_resurrection_window,
+    )
+
+
+def _local_revision_content_sha256(revision: SyncEntityRevision) -> str | None:
+    payload = revision.payload_json
+    if isinstance(payload, Mapping):
+        return revision_payload_sha256(sanitize_revision_payload(payload))
+    return None
 
 
 def _export_artifact_manifest(artifact: Artifact) -> SyncArtifactManifest:
@@ -1445,17 +1508,144 @@ def _local_tombstone_conflicts(
     tombstones = _list_project_delete_tombstones(session, project_id=manifest.project_id)
     if not tombstones:
         return []
+    exported_tombstones = [_export_delete_tombstone_manifest(row) for row in tombstones]
+    project_resurrection_window = _project_resurrection_window_for_live_targets(
+        project_updated_at=manifest.updated_at,
+        tombstones=exported_tombstones,
+        project_id=manifest.project_id,
+    )
 
     live_targets = _manifest_live_targets(manifest)
     conflicts: list[SyncDeleteTombstoneManifest] = []
-    for row in tombstones:
-        tombstone = _export_delete_tombstone_manifest(row)
+    for tombstone in exported_tombstones:
         if tombstone.sync_group_id != sync_group_id:
             continue
         target = (_normalize_tombstone_target_type(tombstone.target_type), tombstone.target_id)
         if target in live_targets:
+            if _manifest_target_supersedes_tombstone(
+                manifest,
+                tombstone,
+                project_resurrection_window=project_resurrection_window,
+            ):
+                continue
             conflicts.append(tombstone)
     return conflicts
+
+
+def _retire_manifest_superseded_local_tombstones(
+    session: Session,
+    manifest: SyncProjectManifest,
+    *,
+    sync_group_id: str,
+) -> None:
+    tombstones = _list_project_delete_tombstones(session, project_id=manifest.project_id)
+    exported_tombstones = {
+        row.id: _export_delete_tombstone_manifest(row)
+        for row in tombstones
+    }
+    project_resurrection_window = _project_resurrection_window_for_live_targets(
+        project_updated_at=manifest.updated_at,
+        tombstones=exported_tombstones.values(),
+        project_id=manifest.project_id,
+    )
+    for row in tombstones:
+        tombstone = exported_tombstones[row.id]
+        if tombstone.sync_group_id != sync_group_id:
+            continue
+        if _manifest_target_supersedes_tombstone(
+            manifest,
+            tombstone,
+            project_resurrection_window=project_resurrection_window,
+        ):
+            session.delete(row)
+    session.flush()
+
+
+def _manifest_target_supersedes_tombstone(
+    manifest: SyncProjectManifest,
+    tombstone: SyncDeleteTombstoneManifest,
+    *,
+    project_resurrection_window: tuple[datetime, datetime] | None = None,
+) -> bool:
+    target_type = _normalize_tombstone_target_type(tombstone.target_type)
+    target_updated_at = _manifest_target_updated_at(
+        manifest,
+        target_type=target_type,
+        target_id=tombstone.target_id,
+    )
+    if target_updated_at is None:
+        return False
+    tombstone_deleted_at = _as_utc(tombstone.deleted_at)
+    if _as_utc(target_updated_at) > tombstone_deleted_at:
+        return True
+    return _tombstone_is_inside_project_resurrection_window(
+        tombstone_deleted_at,
+        project_resurrection_window,
+    )
+
+
+def _manifest_target_updated_at(
+    manifest: SyncProjectManifest,
+    *,
+    target_type: str,
+    target_id: str,
+) -> datetime | None:
+    if target_type == "project" and target_id == manifest.project_id:
+        return manifest.updated_at
+    if target_type == "artifact":
+        return next(
+            (
+                artifact.created_at
+                for artifact in manifest.artifacts
+                if artifact.artifact_id == target_id
+            ),
+            None,
+        )
+    if target_type == "entity_revision":
+        return next(
+            (
+                revision.updated_at
+                for revision in manifest.entity_revisions
+                if revision.revision_id == target_id
+            ),
+            None,
+        )
+    return None
+
+
+def _project_resurrection_window_for_live_targets(
+    *,
+    project_updated_at: datetime,
+    tombstones: Iterable[SyncDeleteTombstoneManifest],
+    project_id: str,
+) -> tuple[datetime, datetime] | None:
+    project_updated = _as_utc(project_updated_at)
+    superseded_project_deletes = [
+        _as_utc(tombstone.deleted_at)
+        for tombstone in tombstones
+        if _normalize_tombstone_target_type(tombstone.target_type) == "project"
+        and tombstone.target_id == project_id
+        and project_updated > _as_utc(tombstone.deleted_at)
+    ]
+    if not superseded_project_deletes:
+        return None
+    return max(superseded_project_deletes), project_updated
+
+
+def _tombstone_is_inside_project_resurrection_window(
+    tombstone_deleted_at: datetime,
+    project_resurrection_window: tuple[datetime, datetime] | None,
+) -> bool:
+    if project_resurrection_window is None:
+        return False
+    project_deleted_at, project_updated_at = project_resurrection_window
+    return project_deleted_at <= tombstone_deleted_at < project_updated_at
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _manifest_live_targets(manifest: SyncProjectManifest) -> set[tuple[str, str]]:

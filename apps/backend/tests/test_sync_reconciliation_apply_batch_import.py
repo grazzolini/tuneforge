@@ -5,7 +5,7 @@ import json
 import shutil
 import wave
 from dataclasses import asdict, dataclass, is_dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +26,7 @@ from app.models import (
     SyncTrustedPeer,
 )
 from app.services.paths import project_root
+from app.services.projects import delete_project
 from app.services.sync_identity import source_hash_to_project_id
 from app.services.sync_manifest import export_project_manifest, import_staged_project_manifest
 from app.services.sync_revisions import CURRENT_REVISION_STATE, revision_payload_sha256, sanitize_revision_payload
@@ -134,6 +135,112 @@ def test_issue119_apply_imports_fresh_multi_project_receiver(
                 assert file_sha256(copied_path) == fixture.artifact_hashes[artifact_id]
                 assert artifact.content_sha256 == fixture.artifact_hashes[artifact_id]
                 assert artifact.size_bytes == fixture.artifact_sizes[artifact_id]
+
+
+def test_issue163_project_scoped_apply_ignores_unselected_remote_projects_and_reports_timing(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    _ensure_identity_and_peers("peer-issue163-scoped")
+
+    with SessionLocal() as session:
+        selected = _create_project_with_artifacts(
+            session,
+            tmp_path,
+            slug="scoped-selected",
+            source_frames=80,
+        )
+        unselected = _create_project_with_artifacts(
+            session,
+            tmp_path,
+            slug="scoped-unselected",
+            source_frames=112,
+        )
+        selected_manifest = _jsonable_manifest(
+            export_project_manifest(session, project_id=selected.project_id)
+        )
+        unselected_manifest = _jsonable_manifest(
+            export_project_manifest(session, project_id=unselected.project_id)
+        )
+        _stage_manifest_content(
+            session,
+            selected_manifest,
+            tmp_path=tmp_path,
+            artifact_bytes=selected.artifact_bytes,
+            provider_device_id="peer-issue163-scoped",
+        )
+        _delete_live_project(session, selected)
+        _delete_live_project(session, unselected)
+        session.commit()
+
+    response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": {
+                "projects": [
+                    selected_manifest["project"],
+                    unselected_manifest["project"],
+                ],
+                "artifacts": [],
+                "entity_revisions": [],
+                "delete_tombstones": [],
+            },
+            "project_manifests": [selected_manifest],
+            "peer_inventory": [
+                {
+                    "device_id": "peer-issue163-scoped",
+                    "available_content_sha256": _manifest_content_hashes([selected_manifest]),
+                }
+            ],
+            "project_ids": [selected.project_id],
+            "use_content_addressed_staging": True,
+            "include_timing_evidence": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    summary = payload["summary"]
+    assert summary["failed_actions"] == 0
+    assert summary["skipped_actions"] == 0
+    assert summary["applied_actions"] >= 1
+
+    planned_project_ids = {
+        item["project_id"]
+        for item in payload["plan"]["items"]
+        if item["project_id"] is not None
+    }
+    result_project_ids = {
+        result["action"]["project_id"] or result["action"]["item_id"]
+        for result in payload["results"]
+    }
+    assert selected.project_id in planned_project_ids
+    assert selected.project_id in result_project_ids
+    assert unselected.project_id not in planned_project_ids
+    assert unselected.project_id not in result_project_ids
+
+    timing_evidence = payload["timing_evidence"]
+    phases = {entry["phase"] for entry in timing_evidence}
+    assert {"plan", "apply", "action", "staging_cleanup"} <= phases
+    assert all(entry["duration_ms"] >= 0 for entry in timing_evidence)
+    assert sum(1 for entry in timing_evidence if entry["phase"] == "action") == summary["planned_actions"]
+    assert any(
+        entry["phase"] == "action"
+        and entry["action_type"] == "import_project_manifest"
+        and entry["project_id"] == selected.project_id
+        and entry["status"] == "applied"
+        for entry in timing_evidence
+    )
+
+    with SessionLocal() as session:
+        project = session.get(Project, selected.project_id)
+        assert project is not None
+        assert project.sync_status == "local"
+        assert project.sync_status_reason is None
+        assert project.sync_required_artifact_ids == []
+        assert project.sync_provider_device_ids == []
+        assert project.sync_conflict_count == 0
+        assert session.get(Project, unselected.project_id) is None
 
 
 def test_issue119_apply_hydrates_analysis_from_synced_analysis_artifact(
@@ -476,6 +583,310 @@ def test_issue119_revision_manifest_hash_matches_sanitized_payload_and_round_tri
         ]
 
 
+def test_issue163_retry_merges_missing_artifacts_with_existing_canonical_revision(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    _ensure_identity_and_peers("peer-issue163-retry")
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path, slug="retry", source_frames=72)
+        dirty_payload = {
+            "project_id": fixture.project_id,
+            "timeline": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "C"}],
+            "source_path": str(tmp_path / "local-only.wav"),
+        }
+        session.add(
+            SyncEntityRevision(
+                id="rev_issue163_retry_chords",
+                project_id=fixture.project_id,
+                entity_type="chords",
+                entity_id=fixture.project_id,
+                revision_type="generated",
+                base_revision_id=None,
+                author_device_id="peer-issue163-retry",
+                source_artifact_id=fixture.source_artifact_id,
+                content_sha256=revision_payload_sha256(dirty_payload),
+                state=CURRENT_REVISION_STATE,
+                metadata_json={},
+                payload_json=dirty_payload,
+                created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+            )
+        )
+        session.commit()
+        manifest = _jsonable_manifest(export_project_manifest(session, project_id=fixture.project_id))
+        exported_revision = _revision_by_id(manifest, "rev_issue163_retry_chords")
+        assert exported_revision["payload"] == sanitize_revision_payload(dirty_payload)
+        assert exported_revision["content_sha256"] != revision_payload_sha256(dirty_payload)
+
+        _stage_manifest_content(
+            session,
+            manifest,
+            tmp_path=tmp_path,
+            artifact_bytes=fixture.artifact_bytes,
+            provider_device_id="peer-issue163-retry",
+        )
+        stem = session.get(Artifact, fixture.stem_artifact_id)
+        assert stem is not None
+        Path(stem.path).unlink()
+        session.delete(stem)
+        session.commit()
+
+    response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": _empty_remote_library(),
+            "project_manifests": [manifest],
+            "peer_inventory": [
+                {
+                    "device_id": "peer-issue163-retry",
+                    "available_content_sha256": _manifest_content_hashes([manifest]),
+                }
+            ],
+            "project_ids": [fixture.project_id],
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["failed_actions"] == 0
+    assert payload["summary"]["applied_actions"] >= 1
+    assert all(
+        result["action"]["action_type"] != "record_conflict"
+        for result in payload["results"]
+    )
+    with SessionLocal() as session:
+        assert session.get(Artifact, fixture.stem_artifact_id) is not None
+        revision = session.get(SyncEntityRevision, "rev_issue163_retry_chords")
+        assert revision is not None
+        assert revision.content_sha256 == revision_payload_sha256(dirty_payload)
+
+
+def test_issue163_retry_rejects_existing_revision_without_canonical_payload(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    _ensure_identity_and_peers("peer-issue163-bad-payload")
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path, slug="bad-payload", source_frames=74)
+        payload = {
+            "project_id": fixture.project_id,
+            "timeline": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "C"}],
+        }
+        content_sha256 = revision_payload_sha256(payload)
+        manifest = _jsonable_manifest(export_project_manifest(session, project_id=fixture.project_id))
+        remote_revision = {
+            "revision_id": "rev_issue163_bad_payload_chords",
+            "project_id": fixture.project_id,
+            "entity_type": "chords",
+            "entity_id": fixture.project_id,
+            "revision_type": "generated",
+            "base_revision_id": None,
+            "author_device_id": "peer-issue163-bad-payload",
+            "source_artifact_id": fixture.source_artifact_id,
+            "content_sha256": content_sha256,
+            "state": CURRENT_REVISION_STATE,
+            "metadata": {},
+            "payload": payload,
+            "created_at": datetime(2026, 1, 1, tzinfo=UTC).isoformat(),
+            "updated_at": datetime(2026, 1, 1, tzinfo=UTC).isoformat(),
+        }
+        session.add(
+            SyncEntityRevision(
+                id="rev_issue163_bad_payload_chords",
+                project_id=fixture.project_id,
+                entity_type="chords",
+                entity_id=fixture.project_id,
+                revision_type="generated",
+                base_revision_id=None,
+                author_device_id="peer-issue163-bad-payload",
+                source_artifact_id=fixture.source_artifact_id,
+                content_sha256=content_sha256,
+                state=CURRENT_REVISION_STATE,
+                metadata_json={},
+                payload_json=None,
+                created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": {
+                **_empty_remote_library(),
+                "projects": [manifest["project"]],
+                "entity_revisions": [remote_revision],
+            },
+            "project_manifests": [],
+            "peer_inventory": [],
+            "project_ids": [fixture.project_id],
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    revision_item = _plan_item(
+        payload["plan"]["items"],
+        "entity_revision",
+        "rev_issue163_bad_payload_chords",
+    )
+    assert revision_item["status"] == "conflicted"
+    assert revision_item["reason"] == "Local and remote entity revisions share an ID but have different content hashes."
+    assert revision_item["details"]["remote_content_sha256"] == content_sha256
+    assert revision_item["details"]["local_content_sha256"] is None
+
+
+def test_issue163_existing_project_embedded_revision_drift_is_not_reported_as_conflict(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    _ensure_identity_and_peers("peer-issue163-existing")
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path, slug="existing", source_frames=76)
+        manifest = _jsonable_manifest(export_project_manifest(session, project_id=fixture.project_id))
+        local_payload = {"project_id": fixture.project_id, "timeline": [{"label": "C"}]}
+        remote_payload = {"project_id": fixture.project_id, "timeline": [{"label": "G"}]}
+        session.add(
+            SyncEntityRevision(
+                id="rev_issue163_existing_drift",
+                project_id=fixture.project_id,
+                entity_type="chords",
+                entity_id=fixture.project_id,
+                revision_type="generated",
+                base_revision_id=None,
+                author_device_id="peer-issue163-existing",
+                source_artifact_id=fixture.source_artifact_id,
+                content_sha256=revision_payload_sha256(local_payload),
+                state=CURRENT_REVISION_STATE,
+                metadata_json={},
+                payload_json=local_payload,
+                created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+            )
+        )
+        session.commit()
+        manifest["entity_revisions"].append(
+            {
+                "revision_id": "rev_issue163_existing_drift",
+                "project_id": fixture.project_id,
+                "entity_type": "chords",
+                "entity_id": fixture.project_id,
+                "revision_type": "generated",
+                "base_revision_id": None,
+                "author_device_id": "peer-issue163-existing",
+                "source_artifact_id": fixture.source_artifact_id,
+                "content_sha256": revision_payload_sha256(remote_payload),
+                "state": CURRENT_REVISION_STATE,
+                "metadata": {},
+                "payload": remote_payload,
+                "created_at": datetime(2026, 1, 1, tzinfo=UTC).isoformat(),
+                "updated_at": datetime(2026, 1, 1, tzinfo=UTC).isoformat(),
+            }
+        )
+
+    response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": _empty_remote_library(),
+            "project_manifests": [manifest],
+            "peer_inventory": [
+                {
+                    "device_id": "peer-issue163-existing",
+                    "available_content_sha256": _manifest_content_hashes([manifest]),
+                }
+            ],
+            "project_ids": [fixture.project_id],
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["failed_actions"] == 0
+    assert payload["plan"]["summary"]["total_conflicts"] == 0
+    assert all(
+        item["item_type"] != "entity_revision"
+        or item["item_id"] != "rev_issue163_existing_drift"
+        for item in payload["plan"]["items"]
+    )
+    assert all(
+        result["action"]["action_type"] != "record_conflict"
+        for result in payload["results"]
+    )
+
+
+def test_issue163_newer_manifest_reimports_project_after_local_project_tombstone(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    _ensure_identity_and_peers("peer-issue163-reimport")
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path, slug="reimport", source_frames=78)
+        manifest = _jsonable_manifest(export_project_manifest(session, project_id=fixture.project_id))
+        delete_project(session, fixture.project_id)
+        tombstone = session.scalar(
+            select(SyncDeleteTombstone).where(
+                SyncDeleteTombstone.project_id == fixture.project_id,
+                SyncDeleteTombstone.target_type == "project",
+            )
+        )
+        assert tombstone is not None
+        resurrected_at = tombstone.deleted_at.replace(microsecond=0) + timedelta(seconds=1)
+        manifest["project"]["created_at"] = resurrected_at.isoformat()
+        manifest["project"]["updated_at"] = resurrected_at.isoformat()
+        _stage_manifest_content(
+            session,
+            manifest,
+            tmp_path=tmp_path,
+            artifact_bytes=fixture.artifact_bytes,
+            provider_device_id="peer-issue163-reimport",
+        )
+        session.commit()
+
+    response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": _empty_remote_library(),
+            "project_manifests": [manifest],
+            "peer_inventory": [
+                {
+                    "device_id": "peer-issue163-reimport",
+                    "available_content_sha256": _manifest_content_hashes([manifest]),
+                }
+            ],
+            "project_ids": [fixture.project_id],
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["failed_actions"] == 0
+    assert payload["summary"]["applied_actions"] >= 1
+    project_item = _plan_item(payload["plan"]["items"], "project", fixture.project_id)
+    assert project_item["status"] == "remote_available"
+    with SessionLocal() as session:
+        project = session.get(Project, fixture.project_id)
+        assert project is not None
+        assert project.sync_status == "local"
+        assert session.get(Artifact, fixture.source_artifact_id) is not None
+        assert session.get(Artifact, fixture.stem_artifact_id) is not None
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(SyncDeleteTombstone)
+                .where(SyncDeleteTombstone.project_id == fixture.project_id)
+            )
+            == 0
+        )
+        exported_manifest = export_project_manifest(session, project_id=fixture.project_id)
+        assert exported_manifest.delete_tombstones == []
+
+
 def test_issue119_project_manifest_import_canonicalizes_revision_payload_hash(
     client: TestClient,
     tmp_path: Path,
@@ -609,7 +1020,7 @@ def test_issue119_reconnect_stale_manifest_does_not_resurrect_tombstoned_targets
         session.delete(session.get(Artifact, "art_issue119_deleted_mix"))
         session.delete(session.get(SyncEntityRevision, "rev_issue119_deleted_chords"))
         deleted_path.unlink()
-        now = datetime(2026, 1, 2, tzinfo=UTC)
+        now = datetime.now(UTC) + timedelta(seconds=1)
         session.add_all(
             [
                 SyncDeleteTombstone(

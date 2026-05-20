@@ -289,6 +289,87 @@ def test_sync_metadata_omits_deleted_projects_but_keeps_tombstones(
     ]
 
 
+def test_sync_metadata_omits_tombstones_superseded_by_live_targets(
+    client,
+    sample_audio_file: Path,
+) -> None:
+    source_hash = file_sha256(sample_audio_file)
+    assert source_hash is not None
+    project_id = source_hash_to_project_id(source_hash)
+    deleted_at = datetime(2026, 1, 1, tzinfo=UTC)
+    live_at = datetime(2026, 1, 2, tzinfo=UTC)
+
+    with SessionLocal() as session:
+        project = Project(
+            id=project_id,
+            display_name="Reimported Sync Fixture",
+            source_sha256=source_hash,
+            source_path=str(sample_audio_file),
+            imported_path=str(sample_audio_file),
+            created_at=live_at,
+            updated_at=live_at,
+        )
+        session.add(project)
+        session.add(
+            Artifact(
+                id="art_live_source",
+                project_id=project_id,
+                type="source_audio",
+                format="wav",
+                path=str(sample_audio_file),
+                content_sha256=source_hash,
+                size_bytes=sample_audio_file.stat().st_size,
+                generated_by="import",
+                can_delete=False,
+                can_regenerate=False,
+                created_at=live_at,
+            )
+        )
+        session.add_all(
+            [
+                SyncDeleteTombstone(
+                    id="tomb_superseded_project",
+                    sync_group_id="group-a",
+                    project_id=project_id,
+                    target_type="project",
+                    target_id=project_id,
+                    author_device_id="peer-a",
+                    deleted_at=deleted_at,
+                    prior_metadata_json={"display_name": "Deleted Sync Fixture"},
+                ),
+                SyncDeleteTombstone(
+                    id="tomb_superseded_artifact",
+                    sync_group_id="group-a",
+                    project_id=project_id,
+                    target_type="artifact",
+                    target_id="art_live_source",
+                    author_device_id="peer-a",
+                    deleted_at=deleted_at,
+                    prior_metadata_json={"type": "source_audio"},
+                ),
+                SyncDeleteTombstone(
+                    id="tomb_deleted_artifact",
+                    sync_group_id="group-a",
+                    project_id=project_id,
+                    target_type="artifact",
+                    target_id="art_deleted",
+                    author_device_id="peer-a",
+                    deleted_at=deleted_at,
+                    prior_metadata_json={"type": "preview_mix"},
+                ),
+            ]
+        )
+        session.commit()
+
+    response = client.get("/api/v1/sync/metadata")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [tombstone["tombstone_id"] for tombstone in payload["delete_tombstones"]] == [
+        "tomb_deleted_artifact"
+    ]
+
+
 def test_sync_preflight_does_not_recover_missing_hash_from_source_path(
     client,
     sample_audio_file: Path,

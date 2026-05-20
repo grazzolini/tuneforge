@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
+  mergeSyncProjectResults,
   type SyncPairingPayloadSchema,
   type SyncTransportProjectResult,
   type SyncTransportRunStatus,
@@ -140,28 +141,161 @@ function syncResultKey(status: SyncTransportRunStatus | null | undefined) {
   if (!status) {
     return null;
   }
+  const projectResults = mergeSyncProjectResults(status.project_results, status.manifest_errors);
   return JSON.stringify({
+    run: status.run_id,
+    session: status.session_id,
     peer: status.peer_device_id,
     remote: status.remote_device_id,
+    started: status.started_at,
+    completed: status.completed_at,
+    durationSeconds: status.duration_seconds,
+    durationMs: status.duration_ms,
     status: status.status,
     message: status.message,
-    projects: status.project_results.map((result) => [
+    projects: projectResults.map((result) => [
       result.project_id,
       result.status,
       result.message ?? null,
+      result.completed_at ?? null,
+      result.is_final ?? null,
+      result.counters ?? null,
     ]),
     receivedArtifacts: status.received_artifacts.length,
     remoteManifests: status.remote_manifest_count,
     localManifests: status.local_manifest_count,
+    importedProjects: status.imported_project_count,
+    appliedProjects: status.applied_project_count,
+    deletedProjects: status.deleted_project_count,
+    skippedProjects: status.skipped_project_count,
+    failedProjects: status.failed_project_count,
   });
 }
 
+function formatSyncDuration(seconds: number | null | undefined) {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) {
+    return null;
+  }
+  if (seconds < 1) {
+    return `${Math.max(1, Math.round(seconds * 1000))} ms`;
+  }
+  if (seconds < 60) {
+    return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.round(seconds % 60).toString().padStart(2, "0");
+  return `${minutes}:${remainingSeconds}`;
+}
+
+function syncRunDurationSeconds(status: SyncTransportRunStatus) {
+  if (typeof status.duration_seconds === "number") {
+    return status.duration_seconds;
+  }
+  if (typeof status.duration_ms === "number") {
+    return status.duration_ms / 1000;
+  }
+  if (status.started_at && status.completed_at) {
+    const startedAt = new Date(normalizeApiDateTime(status.started_at)).getTime();
+    const completedAt = new Date(normalizeApiDateTime(status.completed_at)).getTime();
+    if (Number.isFinite(startedAt) && Number.isFinite(completedAt) && completedAt >= startedAt) {
+      return (completedAt - startedAt) / 1000;
+    }
+  }
+  return null;
+}
+
+function syncRunProjectCounterText(status: SyncTransportRunStatus) {
+  const counters: string[] = [];
+  if (typeof status.imported_project_count === "number") {
+    counters.push(`${status.imported_project_count} imported`);
+  }
+  if (typeof status.applied_project_count === "number") {
+    counters.push(`${status.applied_project_count} applied`);
+  }
+  if (typeof status.deleted_project_count === "number") {
+    counters.push(`${status.deleted_project_count} deleted`);
+  }
+  if (typeof status.skipped_project_count === "number") {
+    counters.push(`${status.skipped_project_count} skipped`);
+  }
+  if (typeof status.failed_project_count === "number") {
+    counters.push(`${status.failed_project_count} failed`);
+  }
+  return counters.length ? counters.join(", ") : null;
+}
+
+function syncRunSummaryText(status: SyncTransportRunStatus | null | undefined) {
+  if (!status) {
+    return null;
+  }
+  const parts: string[] = [];
+  if (status.run_id) {
+    parts.push(`Run ${status.run_id}`);
+  } else if (status.session_id) {
+    parts.push(`Session ${status.session_id}`);
+  }
+  const completedAt = formatTimestamp(status.completed_at);
+  if (completedAt) {
+    parts.push(`Completed ${completedAt}`);
+  }
+  const duration = formatSyncDuration(syncRunDurationSeconds(status));
+  if (duration) {
+    parts.push(`Duration ${duration}`);
+  }
+  const counters = syncRunProjectCounterText(status);
+  if (counters) {
+    parts.push(counters);
+  }
+  return parts.length ? parts.join(" | ") : null;
+}
+
+function projectCounterValue(result: SyncTransportProjectResult, key: keyof SyncTransportProjectResult) {
+  const value = result[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function syncProjectCounterText(result: SyncTransportProjectResult) {
+  const directCounters: Array<[string, number | null]> = [
+    ["imported", projectCounterValue(result, "imported_count")],
+    ["applied", projectCounterValue(result, "applied_count")],
+    ["deleted", projectCounterValue(result, "deleted_count")],
+    ["satisfied", projectCounterValue(result, "satisfied_count")],
+    ["skipped", projectCounterValue(result, "skipped_count")],
+    ["failed", projectCounterValue(result, "failed_count")],
+    ["received", projectCounterValue(result, "received_artifact_count")],
+    ["reused", projectCounterValue(result, "reused_artifact_count")],
+  ];
+  const counters = directCounters.filter((entry): entry is [string, number] => entry[1] !== null);
+  if (!counters.length && result.counters) {
+    Object.entries(result.counters)
+      .filter(([key]) => key.endsWith("_count"))
+      .sort(([left], [right]) => left.localeCompare(right))
+      .forEach(([key, value]) => {
+        counters.push([key.replace(/_count$/, "").replace(/_/g, " "), value]);
+      });
+  }
+  return counters.length
+    ? `${counters.map(([label, value]) => `${value} ${label}`).join(", ")}.`
+    : null;
+}
+
 function syncProjectResultText(result: SyncTransportProjectResult) {
-  return result.message?.trim() || `${statusLabel(result.status)}.`;
+  return result.message?.trim() || syncProjectCounterText(result) || `${statusLabel(result.status)}.`;
+}
+
+function syncProjectIdLabel(projectId: string) {
+  const normalized = projectId.trim();
+  if (normalized.length <= 30) {
+    return normalized;
+  }
+  if (normalized.startsWith("proj_sha256_")) {
+    return `${normalized.slice(0, 19)}...${normalized.slice(-8)}`;
+  }
+  return `${normalized.slice(0, 18)}...${normalized.slice(-8)}`;
 }
 
 function syncProjectResultList(status: SyncTransportRunStatus | null | undefined) {
-  const results = status?.project_results ?? [];
+  const results = status ? mergeSyncProjectResults(status.project_results, status.manifest_errors) : [];
   if (!results.length) {
     return null;
   }
@@ -173,7 +307,9 @@ function syncProjectResultList(status: SyncTransportRunStatus | null | undefined
           key={`${result.project_id}-${result.status}-${index}`}
         >
           <span className="activity-sync-project-result__status">{statusLabel(result.status)}</span>
-          <span className="activity-sync-project-result__project">{result.project_id}</span>
+          <span className="activity-sync-project-result__project" title={result.project_id}>
+            {syncProjectIdLabel(result.project_id)}
+          </span>
           <span className="activity-sync-project-result__message">{syncProjectResultText(result)}</span>
         </li>
       ))}
@@ -236,6 +372,7 @@ export function ActivitySyncPanel() {
   const displayedLastSyncMessage = !showListenerSyncResult
     ? lastSyncMessage ?? lastSyncStatus
     : lastSyncStatus;
+  const visibleSyncSummary = syncRunSummaryText(visibleSyncResult);
 
   const refreshSyncQueries = async () => {
     await Promise.all([
@@ -431,6 +568,7 @@ export function ActivitySyncPanel() {
               <dt>Last Sync</dt>
               <dd className="activity-sync-last-sync">
                 <span>{displayedLastSyncMessage}</span>
+                {visibleSyncSummary ? <small>{visibleSyncSummary}</small> : null}
                 {syncProjectResultList(visibleSyncResult)}
               </dd>
             </div>

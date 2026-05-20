@@ -505,11 +505,29 @@ class SyncReconciliationPlanResponse(BaseModel):
 
 
 SyncReconciliationApplyActionStatus = Literal["applied", "satisfied", "skipped", "failed"]
+SyncReconciliationTimingPhase = Literal["plan", "apply", "action", "staging_cleanup"]
 
 
 class SyncReconciliationApplyRequest(SyncReconciliationPlanRequest):
     staging_root: str | None = Field(default=None, min_length=1)
     use_content_addressed_staging: bool = True
+    project_ids: list[str] = Field(default_factory=list)
+    include_timing_evidence: bool = False
+
+    @field_validator("project_ids")
+    @classmethod
+    def validate_project_ids(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for project_id in value:
+            cleaned = project_id.strip()
+            if not cleaned:
+                raise ValueError("Project IDs cannot contain empty values.")
+            if cleaned in seen:
+                continue
+            normalized.append(cleaned)
+            seen.add(cleaned)
+        return normalized
 
 
 class SyncReconciliationApplySummarySchema(BaseModel):
@@ -531,12 +549,26 @@ class SyncReconciliationApplyActionResultSchema(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class SyncReconciliationTimingEvidenceSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    phase: SyncReconciliationTimingPhase
+    duration_ms: float = Field(ge=0)
+    action_type: SyncReconciliationActionType | None = None
+    item_type: str | None = None
+    item_id: str | None = None
+    project_id: str | None = None
+    status: SyncReconciliationApplyActionStatus | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
 class SyncReconciliationApplyResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     summary: SyncReconciliationApplySummarySchema
     plan: SyncReconciliationPlanResponse
     results: list[SyncReconciliationApplyActionResultSchema]
+    timing_evidence: list[SyncReconciliationTimingEvidenceSchema] = Field(default_factory=list)
 
 
 class SyncTransportHandshakeChallengeSchema(BaseModel):

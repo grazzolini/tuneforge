@@ -8,7 +8,7 @@ import shutil
 import wave
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import asdict, dataclass, is_dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -361,8 +361,9 @@ def _fake_delete_tombstone(
     target_id: str,
     sync_group_id: str = "sync_group_alpha",
     prior_metadata: dict[str, Any] | None = None,
+    deleted_at: datetime | None = None,
 ) -> FakeSyncDeleteTombstone:
-    timestamp = datetime(2026, 1, 2, tzinfo=UTC)
+    timestamp = deleted_at or datetime(2026, 1, 2, tzinfo=UTC)
     return FakeSyncDeleteTombstone(
         id=tombstone_id,
         sync_group_id=sync_group_id,
@@ -711,6 +712,14 @@ def test_export_project_manifest_includes_delete_tombstones_without_local_paths(
     with SessionLocal() as session:
         fixture = _create_project_with_artifacts(session, tmp_path)
         tombstones = [
+            _fake_delete_tombstone(
+                tombstone_id="tomb_art_live_source",
+                project_id=fixture.project_id,
+                target_type="artifact",
+                target_id="art_source_audio",
+                prior_metadata={"type": "source_audio"},
+                deleted_at=datetime(2020, 1, 1, tzinfo=UTC),
+            ),
             _fake_delete_tombstone(
                 tombstone_id="tomb_art_deleted",
                 project_id=fixture.project_id,
@@ -1197,6 +1206,7 @@ def test_import_staged_project_manifest_rejects_locally_tombstoned_targets(
             target_type=target_type,
             target_id=target_ids[target_id_key],
             sync_group_id=sync_group_id,
+            deleted_at=manifest["project"]["updated_at"] + timedelta(seconds=1),
         )
         monkeypatch.setattr(
             module,

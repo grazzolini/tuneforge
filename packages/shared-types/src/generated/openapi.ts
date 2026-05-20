@@ -701,12 +701,12 @@ export interface components {
              * Include Tempo
              * @default false
              */
-            include_tempo: boolean;
+            include_tempo?: boolean;
             /**
              * Force
              * @default false
              */
-            force: boolean;
+            force?: boolean;
         };
         /** AnalysisResponse */
         AnalysisResponse: {
@@ -851,19 +851,19 @@ export interface components {
              * Backend
              * @default default
              */
-            backend: string;
+            backend?: string;
             /** Backend Fallback From */
             backend_fallback_from?: string | null;
             /**
              * Force
              * @default false
              */
-            force: boolean;
+            force?: boolean;
             /**
              * Overwrite User Edits
              * @default false
              */
-            overwrite_user_edits: boolean;
+            overwrite_user_edits?: boolean;
         };
         /** ChordResponse */
         ChordResponse: {
@@ -881,12 +881,12 @@ export interface components {
              * Has User Edits
              * @default false
              */
-            has_user_edits: boolean;
+            has_user_edits?: boolean;
             /**
              * Source Kind
              * @default generated
              */
-            source_kind: string;
+            source_kind?: string;
             /** Metadata */
             metadata?: {
                 [key: string]: unknown;
@@ -949,12 +949,12 @@ export interface components {
              * Mixdown Mode
              * @default copy
              */
-            mixdown_mode: string;
+            mixdown_mode?: string;
             /**
              * Output Format
              * @default wav
              */
-            output_format: string;
+            output_format?: string;
             /** Destination Path */
             destination_path?: string | null;
         };
@@ -1047,7 +1047,7 @@ export interface components {
              * Force
              * @default false
              */
-            force: boolean;
+            force?: boolean;
         };
         /** LyricsResponse */
         LyricsResponse: {
@@ -1075,7 +1075,7 @@ export interface components {
              * Has User Edits
              * @default false
              */
-            has_user_edits: boolean;
+            has_user_edits?: boolean;
             /** Created At */
             created_at?: string | null;
             /** Updated At */
@@ -1116,7 +1116,7 @@ export interface components {
              * Output Format
              * @default wav
              */
-            output_format: string;
+            output_format?: string;
         };
         /** PreviewRetuneRequest */
         PreviewRetuneRequest: {
@@ -1138,7 +1138,7 @@ export interface components {
              * Copy Into Project
              * @default true
              */
-            copy_into_project: boolean;
+            copy_into_project?: boolean;
             /** Display Name */
             display_name?: string | null;
             /** Chord Backend */
@@ -1175,14 +1175,14 @@ export interface components {
              * @default local
              * @enum {string}
              */
-            sync_status: "local" | "syncing" | "remote_available" | "downloading" | "missing" | "deleted" | "conflicted";
+            sync_status?: "local" | "syncing" | "remote_available" | "downloading" | "missing" | "deleted" | "conflicted";
             /** Sync Status Reason */
             sync_status_reason?: string | null;
             /**
              * Sync Editable
              * @default true
              */
-            sync_editable: boolean;
+            sync_editable?: boolean;
             /** Sync Required Artifact Ids */
             sync_required_artifact_ids?: string[];
             /** Sync Provider Device Ids */
@@ -1191,7 +1191,7 @@ export interface components {
              * Sync Conflict Count
              * @default 0
              */
-            sync_conflict_count: number;
+            sync_conflict_count?: number;
             /**
              * Created At
              * Format: date-time
@@ -1225,12 +1225,12 @@ export interface components {
              * Preview Only
              * @default true
              */
-            preview_only: boolean;
+            preview_only?: boolean;
             /**
              * Output Format
              * @default wav
              */
-            output_format: string;
+            output_format?: string;
         };
         /** SongSectionSchema */
         SongSectionSchema: {
@@ -1300,33 +1300,33 @@ export interface components {
              * Mode
              * @default stems
              */
-            mode: string;
+            mode?: string;
             /** Stem Model */
             stem_model?: string | null;
             /**
              * Output Format
              * @default wav
              */
-            output_format: string;
+            output_format?: string;
             /**
              * Force
              * @default false
              */
-            force: boolean;
+            force?: boolean;
             /** Source Artifact Id */
             source_artifact_id?: string | null;
             /**
              * Chord Backend
              * @default default
              */
-            chord_backend: string;
+            chord_backend?: string;
             /** Chord Backend Fallback From */
             chord_backend_fallback_from?: string | null;
             /**
              * Overwrite Chord Edits
              * @default false
              */
-            overwrite_chord_edits: boolean;
+            overwrite_chord_edits?: boolean;
         };
         /** SyncArtifactStagingRequest */
         SyncArtifactStagingRequest: {
@@ -1480,7 +1480,7 @@ export interface components {
              * Adopt Sync Group
              * @default false
              */
-            adopt_sync_group: boolean;
+            adopt_sync_group?: boolean;
         };
         /** SyncPairingAnswerResponse */
         SyncPairingAnswerResponse: {
@@ -1495,7 +1495,7 @@ export interface components {
              * Ttl Seconds
              * @default 600
              */
-            ttl_seconds: number;
+            ttl_seconds?: number;
         };
         /** SyncPairingOfferResponse */
         SyncPairingOfferResponse: {
@@ -1844,7 +1844,14 @@ export interface components {
              * Use Content Addressed Staging
              * @default true
              */
-            use_content_addressed_staging: boolean;
+            use_content_addressed_staging?: boolean;
+            /** Project Ids */
+            project_ids?: string[];
+            /**
+             * Include Timing Evidence
+             * @default false
+             */
+            include_timing_evidence?: boolean;
         };
         /** SyncReconciliationApplyResponse */
         SyncReconciliationApplyResponse: {
@@ -1852,6 +1859,8 @@ export interface components {
             plan: components["schemas"]["SyncReconciliationPlanResponse"];
             /** Results */
             results: components["schemas"]["SyncReconciliationApplyActionResultSchema"][];
+            /** Timing Evidence */
+            timing_evidence?: components["schemas"]["SyncReconciliationTimingEvidenceSchema"][];
         };
         /** SyncReconciliationApplySummarySchema */
         SyncReconciliationApplySummarySchema: {
@@ -1930,6 +1939,30 @@ export interface components {
             /** Status Counts */
             status_counts?: {
                 [key: string]: number;
+            };
+        };
+        /** SyncReconciliationTimingEvidenceSchema */
+        SyncReconciliationTimingEvidenceSchema: {
+            /**
+             * Phase
+             * @enum {string}
+             */
+            phase: "plan" | "apply" | "action" | "staging_cleanup";
+            /** Duration Ms */
+            duration_ms: number;
+            /** Action Type */
+            action_type?: ("apply_delete_tombstone" | "import_project_manifest" | "import_entity_revision" | "fetch_artifact_content" | "import_artifact_manifest" | "upsert_project_status" | "record_conflict" | "noop") | null;
+            /** Item Type */
+            item_type?: string | null;
+            /** Item Id */
+            item_id?: string | null;
+            /** Project Id */
+            project_id?: string | null;
+            /** Status */
+            status?: ("applied" | "satisfied" | "skipped" | "failed") | null;
+            /** Details */
+            details?: {
+                [key: string]: unknown;
             };
         };
         /** SyncStagedArtifactSchema */
@@ -2029,7 +2062,7 @@ export interface components {
              * Adopt Sync Group
              * @default false
              */
-            adopt_sync_group: boolean;
+            adopt_sync_group?: boolean;
         };
         /** SyncTrustedPeerResponse */
         SyncTrustedPeerResponse: {
@@ -2137,7 +2170,7 @@ export interface components {
              * Status
              * @default pending
              */
-            status: string;
+            status?: string;
             /** Title */
             title: string;
             /** Current Text */
@@ -2165,12 +2198,12 @@ export interface components {
              * Preview Only
              * @default true
              */
-            preview_only: boolean;
+            preview_only?: boolean;
             /**
              * Output Format
              * @default wav
              */
-            output_format: string;
+            output_format?: string;
         };
         /** ValidationError */
         ValidationError: {

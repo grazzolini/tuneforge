@@ -641,6 +641,18 @@ def test_import_project_replaces_deleted_sync_placeholder(
                 prior_metadata_json={"display_name": "Deleted Placeholder"},
             )
         )
+        session.add(
+            SyncDeleteTombstone(
+                id="tomb_reimport_artifact",
+                sync_group_id="group-a",
+                project_id=project_id,
+                target_type=ARTIFACT_TARGET_TYPE,
+                target_id="art_reimport_artifact",
+                author_device_id="peer-a",
+                deleted_at=datetime(2026, 1, 1, tzinfo=UTC),
+                prior_metadata_json={"type": "source_audio"},
+            )
+        )
         session.commit()
 
     response = client.post(
@@ -660,6 +672,7 @@ def test_import_project_replaces_deleted_sync_placeholder(
 
     with SessionLocal() as session:
         assert session.get(SyncDeleteTombstone, "tomb_reimport_project") is None
+        assert session.get(SyncDeleteTombstone, "tomb_reimport_artifact") is None
         persisted_project = session.get(Project, project_id)
         assert persisted_project is not None
         assert persisted_project.sync_status == "local"

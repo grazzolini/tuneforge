@@ -63,6 +63,28 @@ pub struct SyncTransportTransferResult {
     pub message: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncTransportTransferCounts {
+    pub requested: usize,
+    pub received: usize,
+    pub already_staged: usize,
+    pub failed: usize,
+    pub received_bytes: u64,
+    pub already_staged_bytes: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncTransportTimingEvidence {
+    pub phase: String,
+    pub project_id: Option<String>,
+    pub artifact_id: Option<String>,
+    pub started_at: String,
+    pub completed_at: String,
+    pub duration_ms: u64,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncTransportProjectResult {
@@ -74,19 +96,26 @@ pub struct SyncTransportProjectResult {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncTransportSyncResult {
+    pub run_id: String,
     pub peer_device_id: String,
     pub remote_device_id: String,
     pub status: String,
     pub message: String,
+    pub started_at: String,
+    pub completed_at: String,
+    pub duration_ms: u64,
+    pub project_results: Vec<SyncTransportProjectResult>,
     pub imported_projects: Vec<SyncTransportProjectResult>,
     pub imported_project_count: usize,
     pub skipped_project_count: usize,
     pub failed_project_count: usize,
     pub received_artifacts: Vec<SyncTransportTransferResult>,
+    pub transfer_counts: SyncTransportTransferCounts,
     pub served_artifact_requests: u64,
     pub remote_manifest_count: usize,
     pub local_manifest_count: usize,
     pub manifest_errors: Vec<SyncTransportManifestError>,
+    pub timings: Vec<SyncTransportTimingEvidence>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -101,7 +130,8 @@ mod desktop {
     use super::{
         SyncTransportManifestError, SyncTransportPairingOffer, SyncTransportPairingOfferRequest,
         SyncTransportProjectResult, SyncTransportStartListenerRequest, SyncTransportStatus,
-        SyncTransportSyncNowRequest, SyncTransportSyncResult, SyncTransportTransferResult,
+        SyncTransportSyncNowRequest, SyncTransportSyncResult, SyncTransportTimingEvidence,
+        SyncTransportTransferCounts, SyncTransportTransferResult,
     };
     use base64::{
         engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
@@ -127,7 +157,7 @@ mod desktop {
             Arc, Mutex,
         },
         thread::{self, JoinHandle},
-        time::Duration,
+        time::{Duration, Instant},
     };
     use tauri::State;
 
@@ -328,6 +358,10 @@ mod desktop {
             &self,
             payload: SyncTransportSyncNowRequest,
         ) -> Result<SyncTransportSyncResult, String> {
+            let run_id = sync_run_id();
+            let run_started_at = Utc::now();
+            let run_started_instant = Instant::now();
+            let mut timings = Vec::new();
             let client = BackendClient::new(&self.base_url)?;
             let peer = client
                 .trusted_peer(&payload.peer_device_id)
@@ -349,24 +383,31 @@ mod desktop {
                     )
                 })?;
             let endpoint = parse_endpoint_hint(&endpoint_hint, Some(&payload.peer_device_id))?;
+            let timer = SyncPhaseTimer::start("peer_connect");
             let stream = TcpStream::connect_timeout(&endpoint, Duration::from_secs(10)).map_err(
                 |error| format!("Could not connect to sync peer at {endpoint}: {error}"),
             )?;
             configure_stream(&stream)?;
+            timings.push(timer.finish());
 
+            let timer = SyncPhaseTimer::start("peer_authentication");
             let mut connection = SecurePeerConnection::connect_initiator(stream)?;
             let session = authenticate_session(
                 &mut connection,
                 &client,
                 Some(payload.peer_device_id.clone()),
             )?;
+            timings.push(timer.finish());
 
+            let timer = SyncPhaseTimer::start("local_manifest_export");
             let local_offer = load_local_manifest_offer(
                 &client,
                 payload.project_ids.as_deref(),
                 payload.export_local,
             );
+            timings.push(timer.finish());
             let local_manifest_count = local_offer.project_manifests.len();
+            let timer = SyncPhaseTimer::start("manifest_exchange");
             connection.send_message(&ProtocolMessage::ManifestOffer(local_offer.clone()))?;
             let remote_offer = match connection.read_message()? {
                 ProtocolMessage::ManifestOffer(offer) => offer,
@@ -380,6 +421,7 @@ mod desktop {
                     ));
                 }
             };
+            timings.push(timer.finish());
 
             let mut imported_projects = Vec::new();
             let mut received_artifacts = Vec::new();
@@ -390,6 +432,7 @@ mod desktop {
                     &session.remote_device_id,
                     &remote_offer.metadata,
                     &remote_offer.project_manifests,
+                    &mut timings,
                 );
                 imported_projects = imported.imported_projects;
                 received_artifacts = imported.received_artifacts;
@@ -398,33 +441,46 @@ mod desktop {
             connection.send_message(&ProtocolMessage::PhaseDone {
                 phase: "initiator_import".to_string(),
             })?;
+            let timer = SyncPhaseTimer::start("serve_artifact_requests");
             let served_artifact_requests = serve_artifact_requests_until_done(
                 &client,
                 &mut connection,
                 &local_offer.project_manifests,
             )?;
+            timings.push(timer.finish());
             let manifest_errors =
                 sync_manifest_errors(&local_offer.manifest_errors, &remote_offer.manifest_errors);
+            let completed_at = Utc::now();
+            let duration_ms = duration_millis(run_started_instant.elapsed());
+            let transfer_counts = transfer_counts(&received_artifacts);
+            let project_results = imported_projects.clone();
 
             Ok(SyncTransportSyncResult {
+                run_id,
                 peer_device_id: payload.peer_device_id,
                 remote_device_id: session.remote_device_id,
                 status: sync_result_status(&manifest_errors, import_counts.failed),
                 message: sync_result_message(
                     local_manifest_count,
                     remote_offer.project_manifests.len(),
-                    received_artifacts.len(),
+                    &transfer_counts,
                     import_counts,
                 ),
+                started_at: run_started_at.to_rfc3339(),
+                completed_at: completed_at.to_rfc3339(),
+                duration_ms,
+                project_results,
                 imported_projects,
                 imported_project_count: import_counts.imported,
                 skipped_project_count: import_counts.skipped,
                 failed_project_count: import_counts.failed,
                 received_artifacts,
+                transfer_counts,
                 served_artifact_requests,
                 remote_manifest_count: remote_offer.project_manifests.len(),
                 local_manifest_count,
                 manifest_errors,
+                timings,
             })
         }
     }
@@ -554,10 +610,17 @@ mod desktop {
         base_url: String,
         stream: TcpStream,
     ) -> Result<IncomingSessionResult, String> {
+        let run_id = sync_run_id();
+        let run_started_at = Utc::now();
+        let run_started_instant = Instant::now();
+        let mut timings = Vec::new();
         configure_stream(&stream)?;
         let client = BackendClient::new(&base_url)?;
+        let timer = SyncPhaseTimer::start("peer_authentication");
         let mut connection = SecurePeerConnection::connect_responder(stream)?;
         let session = authenticate_session(&mut connection, &client, None)?;
+        timings.push(timer.finish());
+        let timer = SyncPhaseTimer::start("manifest_exchange");
         let remote_offer = match connection.read_message()? {
             ProtocolMessage::ManifestOffer(offer) => offer,
             ProtocolMessage::Error(error) => {
@@ -570,21 +633,27 @@ mod desktop {
                 ));
             }
         };
+        timings.push(timer.finish());
+        let timer = SyncPhaseTimer::start("local_manifest_export");
         let local_offer = load_local_manifest_offer(&client, None, true);
+        timings.push(timer.finish());
         let local_manifest_count = local_offer.project_manifests.len();
         connection.send_message(&ProtocolMessage::ManifestOffer(local_offer.clone()))?;
 
+        let timer = SyncPhaseTimer::start("serve_artifact_requests");
         let served_artifact_requests = serve_artifact_requests_until_done(
             &client,
             &mut connection,
             &local_offer.project_manifests,
         )?;
+        timings.push(timer.finish());
         let imported = import_remote_manifests(
             &client,
             &mut connection,
             &session.remote_device_id,
             &remote_offer.metadata,
             &remote_offer.project_manifests,
+            &mut timings,
         );
         let import_counts = import_outcome_counts(&imported.imported_projects);
         connection.send_message(&ProtocolMessage::PhaseDone {
@@ -602,25 +671,36 @@ mod desktop {
         );
         let manifest_errors =
             sync_manifest_errors(&local_offer.manifest_errors, &remote_offer.manifest_errors);
+        let completed_at = Utc::now();
+        let duration_ms = duration_millis(run_started_instant.elapsed());
+        let transfer_counts = transfer_counts(&imported.received_artifacts);
+        let project_results = imported.imported_projects.clone();
         let sync_result = SyncTransportSyncResult {
+            run_id,
             peer_device_id: session.remote_device_id.clone(),
             remote_device_id: session.remote_device_id,
             status: sync_result_status(&manifest_errors, import_counts.failed),
             message: sync_result_message(
                 local_manifest_count,
                 remote_offer.project_manifests.len(),
-                imported.received_artifacts.len(),
+                &transfer_counts,
                 import_counts,
             ),
+            started_at: run_started_at.to_rfc3339(),
+            completed_at: completed_at.to_rfc3339(),
+            duration_ms,
+            project_results,
             imported_projects: imported.imported_projects,
             imported_project_count: import_counts.imported,
             skipped_project_count: import_counts.skipped,
             failed_project_count: import_counts.failed,
             received_artifacts: imported.received_artifacts,
+            transfer_counts,
             served_artifact_requests,
             remote_manifest_count: remote_offer.project_manifests.len(),
             local_manifest_count,
             manifest_errors,
+            timings,
         };
 
         Ok(IncomingSessionResult {
@@ -636,6 +716,62 @@ mod desktop {
         if let Ok(mut status) = shared_status.lock() {
             update(&mut status);
         }
+    }
+
+    struct SyncPhaseTimer {
+        phase: String,
+        project_id: Option<String>,
+        artifact_id: Option<String>,
+        started_at: DateTime<Utc>,
+        started_instant: Instant,
+    }
+
+    impl SyncPhaseTimer {
+        fn start(phase: impl Into<String>) -> Self {
+            Self::start_scoped(phase, None, None)
+        }
+
+        fn start_project(phase: impl Into<String>, project_id: &str) -> Self {
+            Self::start_scoped(phase, Some(project_id.to_string()), None)
+        }
+
+        fn start_artifact(phase: impl Into<String>, artifact: &RemoteArtifact) -> Self {
+            Self::start_scoped(
+                phase,
+                Some(artifact.project_id.clone()),
+                Some(artifact.artifact_id.clone()),
+            )
+        }
+
+        fn start_scoped(
+            phase: impl Into<String>,
+            project_id: Option<String>,
+            artifact_id: Option<String>,
+        ) -> Self {
+            Self {
+                phase: phase.into(),
+                project_id,
+                artifact_id,
+                started_at: Utc::now(),
+                started_instant: Instant::now(),
+            }
+        }
+
+        fn finish(self) -> SyncTransportTimingEvidence {
+            let completed_at = Utc::now();
+            SyncTransportTimingEvidence {
+                phase: self.phase,
+                project_id: self.project_id,
+                artifact_id: self.artifact_id,
+                started_at: self.started_at.to_rfc3339(),
+                completed_at: completed_at.to_rfc3339(),
+                duration_ms: duration_millis(self.started_instant.elapsed()),
+            }
+        }
+    }
+
+    fn duration_millis(duration: Duration) -> u64 {
+        duration.as_millis().min(u128::from(u64::MAX)) as u64
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1182,6 +1318,10 @@ mod desktop {
         URL_SAFE_NO_PAD.encode(bytes)
     }
 
+    fn sync_run_id() -> String {
+        format!("sync_{}", random_nonce())
+    }
+
     fn load_local_manifest_offer(
         client: &BackendClient,
         project_ids: Option<&[String]>,
@@ -1260,18 +1400,23 @@ mod desktop {
         peer_device_id: &str,
         remote_metadata: &Value,
         manifests: &[Value],
+        timings: &mut Vec<SyncTransportTimingEvidence>,
     ) -> ImportRemoteResult {
         let mut received_artifacts = Vec::new();
-        let mut transfer_failures = HashMap::new();
 
+        let timer = SyncPhaseTimer::start("reconciliation_plan");
         let plan =
             match plan_remote_manifest_batch(client, peer_device_id, remote_metadata, manifests) {
-                Ok(plan) => plan,
+                Ok(plan) => {
+                    timings.push(timer.finish());
+                    plan
+                }
                 Err(error) => {
+                    timings.push(timer.finish());
                     return ImportRemoteResult {
                         imported_projects: apply_failure_results(
                             manifests,
-                            &transfer_failures,
+                            &HashMap::new(),
                             &format!("Could not plan remote sync reconciliation batch: {error}"),
                         ),
                         received_artifacts,
@@ -1279,32 +1424,147 @@ mod desktop {
                 }
             };
 
-        for entry in planned_fetch_artifact_entries(&plan, manifests, peer_device_id) {
-            match request_and_stage_artifact(client, connection, peer_device_id, &entry.artifact) {
-                Ok(result) => received_artifacts.push(result),
-                Err(error) => {
-                    transfer_failures
-                        .entry(entry.manifest_project_id)
-                        .or_insert(error);
-                }
-            }
+        let mut imported_projects = Vec::with_capacity(manifests.len());
+        let manifest_project_ids: HashSet<String> =
+            manifests.iter().map(manifest_project_id).collect();
+        for manifest in manifests {
+            let project_result = import_remote_manifest_project(
+                client,
+                connection,
+                peer_device_id,
+                remote_metadata,
+                manifest,
+                &plan,
+                &mut received_artifacts,
+                timings,
+            );
+            imported_projects.push(project_result);
         }
-
-        let available_content_sha256 = available_content_sha256(&received_artifacts);
-        let imported_projects = match apply_remote_manifest_batch(
-            client,
-            peer_device_id,
-            remote_metadata,
-            manifests,
-            &available_content_sha256,
-        ) {
-            Ok(results) => merge_transfer_failures(results, &transfer_failures),
-            Err(error) => apply_failure_results(manifests, &transfer_failures, &error.to_string()),
-        };
+        for project_id in planned_delete_project_ids(&plan)
+            .into_iter()
+            .filter(|project_id| !manifest_project_ids.contains(project_id))
+        {
+            imported_projects.push(apply_remote_tombstone_project(
+                client,
+                peer_device_id,
+                remote_metadata,
+                &project_id,
+                timings,
+            ));
+        }
 
         ImportRemoteResult {
             imported_projects,
             received_artifacts,
+        }
+    }
+
+    fn apply_remote_tombstone_project(
+        client: &BackendClient,
+        peer_device_id: &str,
+        remote_metadata: &Value,
+        project_id: &str,
+        timings: &mut Vec<SyncTransportTimingEvidence>,
+    ) -> SyncTransportProjectResult {
+        let remote_metadata = remote_metadata_for_project(remote_metadata, project_id);
+        let body = reconciliation_apply_body_with_project_ids(
+            peer_device_id,
+            &remote_metadata,
+            &[],
+            &[],
+            &[project_id.to_string()],
+        );
+        let timer = SyncPhaseTimer::start_project("reconciliation_apply", project_id);
+        let response = client.post_json_value("/api/v1/sync/reconciliation/apply", &body);
+        timings.push(timer.finish());
+        match response {
+            Ok(response) => map_project_apply_response(&[project_id.to_string()], &response)
+                .pop()
+                .unwrap_or_else(|| {
+                    failed_project_result(
+                        project_id,
+                        "Backend apply response did not include this project.",
+                    )
+                }),
+            Err(error) => failed_project_result(project_id, &error.to_string()),
+        }
+    }
+
+    fn import_remote_manifest_project(
+        client: &BackendClient,
+        connection: &mut SecurePeerConnection,
+        peer_device_id: &str,
+        remote_metadata: &Value,
+        manifest: &Value,
+        plan: &Value,
+        received_artifacts: &mut Vec<SyncTransportTransferResult>,
+        timings: &mut Vec<SyncTransportTimingEvidence>,
+    ) -> SyncTransportProjectResult {
+        let project_id = manifest_project_id(manifest);
+        let mut project_transfers = Vec::new();
+        let mut transfer_failure = None;
+
+        for entry in
+            planned_fetch_artifact_entries(plan, std::slice::from_ref(manifest), peer_device_id)
+        {
+            match request_or_use_staged_artifact(
+                client,
+                connection,
+                peer_device_id,
+                &entry.artifact,
+                timings,
+            ) {
+                Ok(result) => {
+                    project_transfers.push(result.clone());
+                    received_artifacts.push(result);
+                }
+                Err(error) => {
+                    let failed = failed_transfer_result(&entry.artifact, &error);
+                    project_transfers.push(failed.clone());
+                    received_artifacts.push(failed);
+                    transfer_failure.get_or_insert((entry.manifest_project_id, error));
+                }
+            }
+        }
+
+        let transfer_failures = transfer_failure
+            .as_ref()
+            .map(|(project_id, error)| HashMap::from([(project_id.clone(), error.clone())]))
+            .unwrap_or_default();
+        if !transfer_failures.is_empty() {
+            return apply_failure_results(
+                std::slice::from_ref(manifest),
+                &transfer_failures,
+                "Could not stage all remote artifact content before import.",
+            )
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| {
+                failed_project_result(
+                    &project_id,
+                    "Could not stage all remote artifact content before import.",
+                )
+            });
+        }
+
+        let available_content_sha256 = available_content_sha256(&project_transfers);
+        match apply_remote_manifest_project(
+            client,
+            peer_device_id,
+            remote_metadata,
+            manifest,
+            &available_content_sha256,
+            timings,
+        ) {
+            Ok(result) => result,
+            Err(error) => apply_failure_results(
+                std::slice::from_ref(manifest),
+                &HashMap::new(),
+                &error.to_string(),
+            )
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| failed_project_result(&project_id, &error.to_string())),
         }
     }
 
@@ -1324,21 +1584,34 @@ mod desktop {
         client.post_json_value("/api/v1/sync/reconciliation/plan", &body)
     }
 
-    fn apply_remote_manifest_batch(
+    fn apply_remote_manifest_project(
         client: &BackendClient,
         peer_device_id: &str,
         remote_metadata: &Value,
-        manifests: &[Value],
+        manifest: &Value,
         available_content_sha256: &[String],
-    ) -> Result<Vec<SyncTransportProjectResult>, BackendError> {
+        timings: &mut Vec<SyncTransportTimingEvidence>,
+    ) -> Result<SyncTransportProjectResult, BackendError> {
+        let project_id = manifest_project_id(manifest);
+        let manifests = vec![manifest.clone()];
+        let remote_metadata = remote_metadata_for_project(remote_metadata, &project_id);
         let body = reconciliation_apply_body(
             peer_device_id,
-            remote_metadata,
-            manifests,
+            &remote_metadata,
+            &manifests,
             available_content_sha256,
         );
-        let response = client.post_json_value("/api/v1/sync/reconciliation/apply", &body)?;
-        Ok(map_batch_apply_response(manifests, &response))
+        let timer = SyncPhaseTimer::start_project("reconciliation_apply", &project_id);
+        let response = client.post_json_value("/api/v1/sync/reconciliation/apply", &body);
+        timings.push(timer.finish());
+        let response = response?;
+        let mut results = map_batch_apply_response(&manifests, &response);
+        Ok(results.pop().unwrap_or_else(|| {
+            failed_project_result(
+                &project_id,
+                "Backend apply response did not include this project.",
+            )
+        }))
     }
 
     fn reconciliation_plan_body(
@@ -1364,6 +1637,23 @@ mod desktop {
         manifests: &[Value],
         available_content_sha256: &[String],
     ) -> Value {
+        let project_ids: Vec<String> = manifests.iter().map(manifest_project_id).collect();
+        reconciliation_apply_body_with_project_ids(
+            peer_device_id,
+            remote_metadata,
+            manifests,
+            available_content_sha256,
+            &project_ids,
+        )
+    }
+
+    fn reconciliation_apply_body_with_project_ids(
+        peer_device_id: &str,
+        remote_metadata: &Value,
+        manifests: &[Value],
+        available_content_sha256: &[String],
+        project_ids: &[String],
+    ) -> Value {
         json!({
             "remote_library": remote_metadata,
             "project_manifests": manifests,
@@ -1372,8 +1662,85 @@ mod desktop {
                 "available_content_sha256": available_content_sha256,
                 "metadata": { "transport": "tuneforge-sync+tcp" },
             }],
+            "project_ids": project_ids,
             "use_content_addressed_staging": true,
+            "include_timing_evidence": true,
         })
+    }
+
+    fn remote_metadata_for_project(remote_metadata: &Value, project_id: &str) -> Value {
+        let mut metadata = remote_metadata
+            .as_object()
+            .cloned()
+            .unwrap_or_else(serde_json::Map::new);
+        metadata.insert(
+            "projects".to_string(),
+            filtered_project_array(remote_metadata, "projects", project_id),
+        );
+        metadata.insert(
+            "artifacts".to_string(),
+            filtered_project_array(remote_metadata, "artifacts", project_id),
+        );
+        metadata.insert(
+            "entity_revisions".to_string(),
+            filtered_project_array(remote_metadata, "entity_revisions", project_id),
+        );
+        metadata.insert(
+            "delete_tombstones".to_string(),
+            filtered_project_array(remote_metadata, "delete_tombstones", project_id),
+        );
+        Value::Object(metadata)
+    }
+
+    fn filtered_project_array(metadata: &Value, key: &str, project_id: &str) -> Value {
+        let values = metadata
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|item| value_project_id(item) == Some(project_id))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        Value::Array(values)
+    }
+
+    fn value_project_id(value: &Value) -> Option<&str> {
+        value
+            .get("project_id")
+            .and_then(Value::as_str)
+            .or_else(|| value.get("projectId").and_then(Value::as_str))
+            .or_else(|| {
+                value
+                    .get("project")
+                    .and_then(|project| project.get("project_id"))
+                    .and_then(Value::as_str)
+            })
+    }
+
+    fn planned_delete_project_ids(plan: &Value) -> Vec<String> {
+        let mut seen = HashSet::new();
+        let mut project_ids: Vec<String> = plan
+            .get("actions")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|action| {
+                action.get("action_type").and_then(Value::as_str) == Some("apply_delete_tombstone")
+            })
+            .filter_map(|action| {
+                action
+                    .get("project_id")
+                    .and_then(Value::as_str)
+                    .or_else(|| action.get("item_id").and_then(Value::as_str))
+                    .map(str::to_string)
+            })
+            .filter(|project_id| seen.insert(project_id.clone()))
+            .collect();
+        project_ids.sort();
+        project_ids
     }
 
     #[derive(Clone, Debug, Default)]
@@ -1384,7 +1751,9 @@ mod desktop {
         failed_actions: u64,
         conflicted_actions: u64,
         imported_project_manifest: bool,
-        first_reason: Option<String>,
+        applied_delete_tombstone: bool,
+        selected_reason: Option<String>,
+        selected_reason_priority: u8,
     }
 
     impl ProjectApplyOutcome {
@@ -1401,14 +1770,21 @@ mod desktop {
                     if action_type == Some("import_project_manifest") {
                         self.imported_project_manifest = true;
                     }
+                    if action_type == Some("apply_delete_tombstone") {
+                        self.applied_delete_tombstone = true;
+                    }
                 }
                 "satisfied" => self.satisfied_actions = self.satisfied_actions.saturating_add(1),
                 "skipped" => self.skipped_actions = self.skipped_actions.saturating_add(1),
                 "failed" => self.failed_actions = self.failed_actions.saturating_add(1),
                 _ => self.skipped_actions = self.skipped_actions.saturating_add(1),
             }
-            if self.first_reason.is_none() {
-                self.first_reason = reason.map(str::to_string);
+            if let Some(reason) = reason {
+                let priority = action_reason_priority(status, action);
+                if self.selected_reason.is_none() || priority >= self.selected_reason_priority {
+                    self.selected_reason = Some(reason.to_string());
+                    self.selected_reason_priority = priority;
+                }
             }
         }
 
@@ -1417,6 +1793,8 @@ mod desktop {
                 "failed"
             } else if self.conflicted_actions > 0 {
                 "conflicted"
+            } else if self.applied_delete_tombstone {
+                "deleted"
             } else if self.imported_project_manifest {
                 "imported"
             } else {
@@ -1433,11 +1811,30 @@ mod desktop {
                 self.failed_actions,
                 self.conflicted_actions,
             );
-            if let Some(reason) = &self.first_reason {
+            if let Some(reason) = &self.selected_reason {
                 message.push(' ');
                 message.push_str(reason);
             }
             message
+        }
+    }
+
+    fn action_reason_priority(status: &str, action: &Value) -> u8 {
+        let action_type = action.get("action_type").and_then(Value::as_str);
+        if status == "failed" {
+            return 50;
+        }
+        if action_type == Some("record_conflict") {
+            return 45;
+        }
+        if action_project_status(action) == Some("conflicted") {
+            return 40;
+        }
+        match status {
+            "applied" => 30,
+            "satisfied" => 20,
+            "skipped" => 10,
+            _ => 0,
         }
     }
 
@@ -1487,27 +1884,82 @@ mod desktop {
 
         manifests
             .iter()
-            .map(|manifest| {
-                let project_id = manifest_project_id(manifest);
-                let outcome = outcomes.remove(&project_id).unwrap_or_default();
-                let message = if outcome.applied_actions == 0
-                    && outcome.satisfied_actions == 0
-                    && outcome.skipped_actions == 0
-                    && outcome.failed_actions == 0
-                    && outcome.conflicted_actions == 0
-                {
-                    "Reconciliation apply: no import actions were needed for this project."
-                        .to_string()
-                } else {
-                    outcome.message()
-                };
-                SyncTransportProjectResult {
-                    project_id,
-                    status: outcome.status().to_string(),
-                    message: Some(message),
-                }
+            .map(|manifest| manifest_project_id(manifest))
+            .map(|project_id| {
+                let outcome = outcomes.remove(&project_id);
+                outcome_to_project_result(project_id, outcome)
             })
             .collect()
+    }
+
+    fn map_project_apply_response(
+        project_ids: &[String],
+        response: &Value,
+    ) -> Vec<SyncTransportProjectResult> {
+        let mut outcomes: HashMap<String, ProjectApplyOutcome> = project_ids
+            .iter()
+            .map(|project_id| (project_id.clone(), ProjectApplyOutcome::default()))
+            .collect();
+
+        for result in response
+            .get("results")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let action = result.get("action").unwrap_or(&Value::Null);
+            let Some(project_id) = apply_result_project_id(action) else {
+                continue;
+            };
+            let Some(outcome) = outcomes.get_mut(project_id) else {
+                continue;
+            };
+            let status = result
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("skipped");
+            let reason = result
+                .get("reason")
+                .and_then(Value::as_str)
+                .or_else(|| action.get("reason").and_then(Value::as_str));
+            let reason =
+                if action.get("action_type").and_then(Value::as_str) == Some("record_conflict") {
+                    action.get("reason").and_then(Value::as_str).or(reason)
+                } else {
+                    reason
+                };
+            outcome.record(status, action, reason);
+        }
+
+        project_ids
+            .iter()
+            .map(|project_id| {
+                let outcome = outcomes.remove(project_id);
+                outcome_to_project_result(project_id.clone(), outcome)
+            })
+            .collect()
+    }
+
+    fn outcome_to_project_result(
+        project_id: String,
+        outcome: Option<ProjectApplyOutcome>,
+    ) -> SyncTransportProjectResult {
+        let outcome = outcome.unwrap_or_default();
+        let message = if outcome.applied_actions == 0
+            && outcome.satisfied_actions == 0
+            && outcome.skipped_actions == 0
+            && outcome.failed_actions == 0
+            && outcome.conflicted_actions == 0
+        {
+            "Reconciliation apply: no import actions were needed for this project.".to_string()
+        } else {
+            outcome.message()
+        };
+        SyncTransportProjectResult {
+            project_id,
+            status: outcome.status().to_string(),
+            message: Some(message),
+        }
     }
 
     fn apply_result_project_id(action: &Value) -> Option<&str> {
@@ -1525,21 +1977,6 @@ mod desktop {
             .get("details")
             .and_then(|details| details.get("project_status"))
             .and_then(Value::as_str)
-    }
-
-    fn merge_transfer_failures(
-        mut results: Vec<SyncTransportProjectResult>,
-        transfer_failures: &HashMap<String, String>,
-    ) -> Vec<SyncTransportProjectResult> {
-        for result in &mut results {
-            if let Some(error) = transfer_failures.get(&result.project_id) {
-                result.status = "failed".to_string();
-                result.message = Some(format!(
-                    "Could not stage all remote artifact content before import: {error}"
-                ));
-            }
-        }
-        results
     }
 
     fn apply_failure_results(
@@ -1568,10 +2005,19 @@ mod desktop {
             .collect()
     }
 
+    fn failed_project_result(project_id: &str, message: &str) -> SyncTransportProjectResult {
+        SyncTransportProjectResult {
+            project_id: project_id.to_string(),
+            status: "failed".to_string(),
+            message: Some(message.to_string()),
+        }
+    }
+
     fn available_content_sha256(received_artifacts: &[SyncTransportTransferResult]) -> Vec<String> {
         let mut seen = HashSet::new();
         let mut values: Vec<String> = received_artifacts
             .iter()
+            .filter(|artifact| matches!(artifact.status.as_str(), "received" | "already_staged"))
             .filter_map(|artifact| {
                 if seen.insert(artifact.content_sha256.clone()) {
                     Some(artifact.content_sha256.clone())
@@ -1582,6 +2028,32 @@ mod desktop {
             .collect();
         values.sort();
         values
+    }
+
+    fn transfer_counts(
+        transfer_results: &[SyncTransportTransferResult],
+    ) -> SyncTransportTransferCounts {
+        let mut counts = SyncTransportTransferCounts {
+            requested: transfer_results.len(),
+            ..SyncTransportTransferCounts::default()
+        };
+        for result in transfer_results {
+            match result.status.as_str() {
+                "received" => {
+                    counts.received = counts.received.saturating_add(1);
+                    counts.received_bytes = counts.received_bytes.saturating_add(result.size_bytes);
+                }
+                "already_staged" => {
+                    counts.already_staged = counts.already_staged.saturating_add(1);
+                    counts.already_staged_bytes = counts
+                        .already_staged_bytes
+                        .saturating_add(result.size_bytes);
+                }
+                "failed" => counts.failed = counts.failed.saturating_add(1),
+                _ => {}
+            }
+        }
+        counts
     }
 
     fn manifest_content_sha256(manifests: &[Value]) -> Vec<String> {
@@ -1688,12 +2160,17 @@ mod desktop {
     fn sync_result_message(
         local_manifest_count: usize,
         remote_manifest_count: usize,
-        received_artifact_count: usize,
+        transfer_counts: &SyncTransportTransferCounts,
         import_counts: ImportOutcomeCounts,
     ) -> String {
         format!(
-            "Exchanged {local_manifest_count} local and {remote_manifest_count} remote manifest(s); imported {} project(s), skipped {} project(s), failed {} project(s), received {received_artifact_count} artifact(s).",
-            import_counts.imported, import_counts.skipped, import_counts.failed
+            "Exchanged {local_manifest_count} local and {remote_manifest_count} remote manifest(s); imported {} project(s), skipped {} project(s), failed {} project(s), received {} artifact(s), reused {} staged artifact(s), failed {} transfer(s).",
+            import_counts.imported,
+            import_counts.skipped,
+            import_counts.failed,
+            transfer_counts.received,
+            transfer_counts.already_staged,
+            transfer_counts.failed
         )
     }
 
@@ -1759,12 +2236,65 @@ mod desktop {
             .collect()
     }
 
+    fn request_or_use_staged_artifact(
+        client: &BackendClient,
+        connection: &mut SecurePeerConnection,
+        peer_device_id: &str,
+        artifact: &RemoteArtifact,
+        timings: &mut Vec<SyncTransportTimingEvidence>,
+    ) -> Result<SyncTransportTransferResult, String> {
+        let timer = SyncPhaseTimer::start_artifact("artifact_staging_check", artifact);
+        let staged = already_staged_artifact_result(client, artifact);
+        timings.push(timer.finish());
+        if let Some(result) = staged? {
+            return Ok(result);
+        }
+        request_and_stage_artifact(client, connection, peer_device_id, artifact, timings)
+    }
+
+    fn already_staged_artifact_result(
+        client: &BackendClient,
+        artifact: &RemoteArtifact,
+    ) -> Result<Option<SyncTransportTransferResult>, String> {
+        let path = format!(
+            "/api/v1/sync/artifacts/staging/{}",
+            percent_encode_path_segment(&artifact.content_sha256)
+        );
+        match client.get_json_value(&path) {
+            Ok(staged) => {
+                let staged_size_bytes = staged.get("size_bytes").and_then(Value::as_u64);
+                if staged_size_bytes != Some(artifact.size_bytes) {
+                    return Err(
+                        "Existing staged sync artifact did not match the requested size."
+                            .to_string(),
+                    );
+                }
+                Ok(Some(SyncTransportTransferResult {
+                    artifact_id: artifact.artifact_id.clone(),
+                    content_sha256: artifact.content_sha256.clone(),
+                    size_bytes: artifact.size_bytes,
+                    status: "already_staged".to_string(),
+                    message: Some(
+                        "Artifact content was already staged and verified locally.".to_string(),
+                    ),
+                }))
+            }
+            Err(error) if error.status == Some(404) => Ok(None),
+            Err(error) => Err(format!(
+                "Could not inspect staged sync artifact {}: {error}",
+                artifact.content_sha256
+            )),
+        }
+    }
+
     fn request_and_stage_artifact(
         client: &BackendClient,
         connection: &mut SecurePeerConnection,
         peer_device_id: &str,
         artifact: &RemoteArtifact,
+        timings: &mut Vec<SyncTransportTimingEvidence>,
     ) -> Result<SyncTransportTransferResult, String> {
+        let timer = SyncPhaseTimer::start_artifact("artifact_transfer", artifact);
         connection.send_message(&ProtocolMessage::ArtifactRequest {
             artifact_id: artifact.artifact_id.clone(),
             content_sha256: artifact.content_sha256.clone(),
@@ -1849,9 +2379,12 @@ mod desktop {
                 }
             }
         };
+        timings.push(timer.finish());
 
         if let Err(error) = receive_result {
+            let cleanup_timer = SyncPhaseTimer::start_artifact("artifact_cleanup", artifact);
             let _ = fs::remove_file(&temp_path);
+            timings.push(cleanup_timer.finish());
             return Err(error);
         }
 
@@ -1866,8 +2399,12 @@ mod desktop {
                 "project_id": artifact.project_id,
             },
         });
+        let timer = SyncPhaseTimer::start_artifact("artifact_staging", artifact);
         let stage_result = client.post_json_value("/api/v1/sync/artifacts/staging", &body);
+        timings.push(timer.finish());
+        let cleanup_timer = SyncPhaseTimer::start_artifact("artifact_cleanup", artifact);
         let _ = fs::remove_file(&temp_path);
+        timings.push(cleanup_timer.finish());
         stage_result.map_err(|error| format!("Could not stage received sync artifact: {error}"))?;
 
         Ok(SyncTransportTransferResult {
@@ -1877,6 +2414,19 @@ mod desktop {
             status: "received".to_string(),
             message: None,
         })
+    }
+
+    fn failed_transfer_result(
+        artifact: &RemoteArtifact,
+        message: &str,
+    ) -> SyncTransportTransferResult {
+        SyncTransportTransferResult {
+            artifact_id: artifact.artifact_id.clone(),
+            content_sha256: artifact.content_sha256.clone(),
+            size_bytes: artifact.size_bytes,
+            status: "failed".to_string(),
+            message: Some(message.to_string()),
+        }
     }
 
     fn temp_artifact_path(content_sha256: &str) -> PathBuf {
@@ -2527,6 +3077,30 @@ mod desktop {
                     .and_then(|entry| entry.get("available_content_sha256")),
                 Some(&json!(["hash_a", "hash_b"]))
             );
+            assert_eq!(
+                body.get("project_ids"),
+                Some(&json!(["proj_one", "proj_two"]))
+            );
+            assert_eq!(body.get("include_timing_evidence"), Some(&json!(true)));
+        }
+
+        #[test]
+        fn reconciliation_apply_body_can_scope_delete_only_project_without_manifest() {
+            let body = reconciliation_apply_body_with_project_ids(
+                "dev_peer",
+                &json!({ "delete_tombstones": [{ "project_id": "proj_deleted" }] }),
+                &[],
+                &[],
+                &["proj_deleted".to_string()],
+            );
+
+            assert_eq!(
+                body.get("project_manifests")
+                    .and_then(Value::as_array)
+                    .map(Vec::len),
+                Some(0)
+            );
+            assert_eq!(body.get("project_ids"), Some(&json!(["proj_deleted"])));
         }
 
         #[test]
@@ -2790,14 +3364,22 @@ mod desktop {
                 skipped: 1,
                 failed: 1,
             };
+            let transfer_counts = SyncTransportTransferCounts {
+                requested: 8,
+                received: 6,
+                already_staged: 1,
+                failed: 1,
+                received_bytes: 120,
+                already_staged_bytes: 20,
+            };
 
             assert_eq!(
                 sync_result_status(&[], counts.failed),
                 "completed_with_errors"
             );
             assert_eq!(
-                sync_result_message(4, 5, 6, counts),
-                "Exchanged 4 local and 5 remote manifest(s); imported 2 project(s), skipped 1 project(s), failed 1 project(s), received 6 artifact(s)."
+                sync_result_message(4, 5, &transfer_counts, counts),
+                "Exchanged 4 local and 5 remote manifest(s); imported 2 project(s), skipped 1 project(s), failed 1 project(s), received 6 artifact(s), reused 1 staged artifact(s), failed 1 transfer(s)."
             );
         }
 
@@ -2860,11 +3442,205 @@ mod desktop {
                     status: "already_staged".to_string(),
                     message: None,
                 },
+                SyncTransportTransferResult {
+                    artifact_id: "art_failed".to_string(),
+                    content_sha256: "hash_c".to_string(),
+                    size_bytes: 30,
+                    status: "failed".to_string(),
+                    message: Some("transfer failed".to_string()),
+                },
             ];
 
             assert_eq!(
                 available_content_sha256(&received_artifacts),
                 vec!["hash_a".to_string(), "hash_b".to_string()]
+            );
+        }
+
+        #[test]
+        fn transfer_counts_summarizes_received_reused_and_failed_transfers() {
+            let counts = transfer_counts(&[
+                SyncTransportTransferResult {
+                    artifact_id: "art_one".to_string(),
+                    content_sha256: "hash_a".to_string(),
+                    size_bytes: 10,
+                    status: "received".to_string(),
+                    message: None,
+                },
+                SyncTransportTransferResult {
+                    artifact_id: "art_two".to_string(),
+                    content_sha256: "hash_b".to_string(),
+                    size_bytes: 20,
+                    status: "already_staged".to_string(),
+                    message: None,
+                },
+                SyncTransportTransferResult {
+                    artifact_id: "art_three".to_string(),
+                    content_sha256: "hash_c".to_string(),
+                    size_bytes: 30,
+                    status: "failed".to_string(),
+                    message: Some("transfer failed".to_string()),
+                },
+            ]);
+
+            assert_eq!(counts.requested, 3);
+            assert_eq!(counts.received, 1);
+            assert_eq!(counts.already_staged, 1);
+            assert_eq!(counts.failed, 1);
+            assert_eq!(counts.received_bytes, 10);
+            assert_eq!(counts.already_staged_bytes, 20);
+        }
+
+        #[test]
+        fn remote_metadata_for_project_filters_full_offer_to_one_project() {
+            let metadata = json!({
+                "projects": [
+                    { "project_id": "proj_one", "display_name": "One" },
+                    { "project_id": "proj_two", "display_name": "Two" }
+                ],
+                "artifacts": [
+                    { "artifact_id": "art_one", "project_id": "proj_one" },
+                    { "artifact_id": "art_two", "project_id": "proj_two" }
+                ],
+                "entity_revisions": [
+                    { "revision_id": "rev_one", "project_id": "proj_one" },
+                    { "revision_id": "rev_two", "project_id": "proj_two" }
+                ],
+                "delete_tombstones": [
+                    { "tombstone_id": "del_one", "project_id": "proj_one" },
+                    { "tombstone_id": "del_two", "project_id": "proj_two" }
+                ]
+            });
+            let filtered = remote_metadata_for_project(&metadata, "proj_two");
+
+            assert_eq!(
+                filtered
+                    .get("projects")
+                    .and_then(Value::as_array)
+                    .and_then(|projects| projects.first())
+                    .and_then(|project| project.get("project_id"))
+                    .and_then(Value::as_str),
+                Some("proj_two")
+            );
+            assert_eq!(
+                filtered
+                    .get("projects")
+                    .and_then(Value::as_array)
+                    .map(Vec::len),
+                Some(1)
+            );
+            assert_eq!(
+                filtered
+                    .get("artifacts")
+                    .and_then(Value::as_array)
+                    .map(Vec::len),
+                Some(1)
+            );
+            assert_eq!(
+                filtered
+                    .get("delete_tombstones")
+                    .and_then(Value::as_array)
+                    .map(Vec::len),
+                Some(1)
+            );
+        }
+
+        #[test]
+        fn planned_delete_project_ids_reads_tombstone_apply_actions() {
+            let plan = json!({
+                "actions": [
+                    {
+                        "action_type": "apply_delete_tombstone",
+                        "project_id": "proj_deleted",
+                        "item_id": "proj_deleted"
+                    },
+                    {
+                        "action_type": "apply_delete_tombstone",
+                        "project_id": "proj_deleted",
+                        "item_id": "art_deleted"
+                    },
+                    {
+                        "action_type": "import_project_manifest",
+                        "project_id": "proj_live",
+                        "item_id": "proj_live"
+                    }
+                ]
+            });
+
+            assert_eq!(
+                planned_delete_project_ids(&plan),
+                vec!["proj_deleted".to_string()]
+            );
+        }
+
+        #[test]
+        fn project_apply_response_maps_delete_tombstone_to_deleted_result() {
+            let results = map_project_apply_response(
+                &["proj_deleted".to_string()],
+                &json!({
+                    "results": [{
+                        "action": {
+                            "action_type": "apply_delete_tombstone",
+                            "item_type": "project",
+                            "item_id": "proj_deleted",
+                            "project_id": "proj_deleted"
+                        },
+                        "status": "applied",
+                        "reason": "Delete tombstone was applied through the sync tombstone service."
+                    }]
+                }),
+            );
+
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].project_id, "proj_deleted");
+            assert_eq!(results[0].status, "deleted");
+            assert_eq!(
+                results[0].message.as_deref(),
+                Some(
+                    "Reconciliation apply: 1 applied, 0 satisfied, 0 skipped, 0 failed, 0 conflicted action(s). Delete tombstone was applied through the sync tombstone service."
+                )
+            );
+        }
+
+        #[test]
+        fn batch_apply_response_uses_final_failure_reason_over_earlier_skip() {
+            let manifests = vec![json!({
+                "project": { "project_id": "proj_failed" },
+                "artifacts": []
+            })];
+            let response = json!({
+                "results": [
+                    {
+                        "action": {
+                            "action_type": "fetch_artifact_content",
+                            "item_type": "artifact",
+                            "item_id": "art_missing",
+                            "project_id": "proj_failed"
+                        },
+                        "status": "skipped",
+                        "reason": "Required artifact content is not staged locally."
+                    },
+                    {
+                        "action": {
+                            "action_type": "import_project_manifest",
+                            "item_type": "project",
+                            "item_id": "proj_failed",
+                            "project_id": "proj_failed"
+                        },
+                        "status": "failed",
+                        "reason": "Project manifest import failed after staging completed."
+                    }
+                ]
+            });
+
+            let results = map_batch_apply_response(&manifests, &response);
+
+            assert_eq!(results[0].status, "failed");
+            assert_eq!(
+                results[0].message.as_deref(),
+                Some(
+                    "Reconciliation apply: 0 applied, 0 satisfied, 1 skipped, 1 failed, 0 conflicted action(s). Project manifest import failed after staging completed."
+                )
             );
         }
 

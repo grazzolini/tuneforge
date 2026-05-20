@@ -5,12 +5,12 @@ from app.main import app
 LIST_RESPONSE_CONTRACTS = {
     ("/api/v1/chord-backends", "get"): ("ChordBackendsResponse", "backends", True),
     ("/api/v1/stem-models", "get"): ("StemModelsResponse", "models", True),
-    ("/api/v1/projects", "get"): ("ProjectsResponse", "projects", True),
     ("/api/v1/projects/{project_id}/sections", "get"): ("SongSectionsResponse", "sections", False),
     ("/api/v1/projects/{project_id}/artifacts", "get"): ("ArtifactsResponse", "artifacts", True),
     ("/api/v1/sync/trusted-peers", "get"): ("SyncTrustedPeersResponse", "trusted_peers", True),
 }
 PAGINATED_LIST_RESPONSE_CONTRACTS = {
+    ("/api/v1/projects", "get"): ("ProjectsResponse", "projects"),
     ("/api/v1/jobs", "get"): ("JobsResponse", "jobs"),
 }
 

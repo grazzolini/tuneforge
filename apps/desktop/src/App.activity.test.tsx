@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeSyncTransportStatus, type JobSchema, type ProjectSchema } from "./lib/api";
 import {
   mockCancelJob,
+  mockGetProject,
   mockGetSyncIdentity,
   mockGetSyncTransportStatus,
   mockAnswerSyncPairingOffer,
@@ -100,7 +101,7 @@ describe("Desktop app activity", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "Activity" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Jobs" })).toHaveAttribute("aria-selected", "true");
     expect(mockListJobs).toHaveBeenCalled();
-    expect(mockListProjects).toHaveBeenCalled();
+    await waitFor(() => expect(mockGetProject).toHaveBeenCalledWith("proj_123"));
   });
 
   it("requests active and terminal job pages separately", async () => {
@@ -120,6 +121,62 @@ describe("Desktop app activity", () => {
       offset: 0,
     });
     expect(mockListJobs.mock.calls.some(([params]) => params === undefined)).toBe(false);
+  });
+
+  it("resolves job project names from project details outside the first project page", async () => {
+    const deepProjectId = "proj_055";
+    setProjects(
+      Array.from({ length: 55 }, (_, index) => {
+        const projectNumber = index + 1;
+        const projectId = `proj_${String(projectNumber).padStart(3, "0")}`;
+        return project({
+          id: projectId,
+          display_name: projectId === deepProjectId ? "Deep Catalog Song" : `Catalog Song ${projectNumber}`,
+        });
+      }),
+    );
+    setJobs([
+      job({
+        id: "job_deep_project",
+        project_id: deepProjectId,
+        type: "lyrics",
+        status: "completed",
+        progress: 100,
+      }),
+    ]);
+
+    renderApp(["/activity"]);
+
+    const row = await screen.findByRole("article", { name: "lyrics completed job" });
+    expect(within(row).getByRole("link", { name: "Open Deep Catalog Song project" })).toHaveAttribute(
+      "href",
+      `/projects/${deepProjectId}`,
+    );
+    await waitFor(() => expect(mockGetProject).toHaveBeenCalledWith(deepProjectId));
+    expect(mockListProjects).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the project ID when a job project no longer exists", async () => {
+    setProjects([project({ id: "proj_123", display_name: "Demo Song" })]);
+    setJobs([
+      job({
+        id: "job_deleted_project",
+        project_id: "proj_deleted",
+        type: "preview",
+        status: "completed",
+        progress: 100,
+      }),
+    ]);
+
+    renderApp(["/activity"]);
+
+    const row = await screen.findByRole("article", { name: "preview completed job" });
+    expect(within(row).getByRole("link", { name: "Open proj_deleted project" })).toHaveAttribute(
+      "href",
+      "/projects/proj_deleted",
+    );
+    await waitFor(() => expect(mockGetProject).toHaveBeenCalledWith("proj_deleted"));
+    expect(mockListProjects).not.toHaveBeenCalled();
   });
 
   it("automatically loads additional active job pages", async () => {
@@ -993,6 +1050,63 @@ describe("Desktop app activity", () => {
     );
   });
 
+  it("keeps loaded history visible while new project details are loading", async () => {
+    const user = userEvent.setup();
+    let resolveSlowProject: () => void = () => {
+      throw new Error("Slow project lookup did not start.");
+    };
+    const defaultGetProjectImplementation = mockGetProject.getMockImplementation();
+    mockGetProject.mockImplementation(
+      async (projectId: string) =>
+        new Promise((resolve) => {
+          if (projectId === "proj_slow_history") {
+            resolveSlowProject = () =>
+              resolve({ project: project({ id: projectId, display_name: "Slow History Project" }) as ProjectSchema });
+            return;
+          }
+          resolve({ project: project({ id: projectId }) as ProjectSchema });
+        }),
+    );
+    try {
+      setJobs(
+        Array.from({ length: 51 }, (_, index) => {
+          const jobNumber = index + 1;
+          return job({
+            id: `job_history_${String(jobNumber).padStart(3, "0")}`,
+            project_id: jobNumber === 51 ? "proj_slow_history" : null,
+            type: `history_${String(jobNumber).padStart(3, "0")}`,
+            status: "completed",
+            progress: 100,
+            completed_at: `2026-04-18T13:${String(59 - index).padStart(2, "0")}:00.000Z`,
+            created_at: "2026-04-18T13:00:00.000Z",
+            updated_at: `2026-04-18T13:${String(59 - index).padStart(2, "0")}:00.000Z`,
+          });
+        }),
+      );
+
+      renderApp(["/activity"]);
+
+      expect(await screen.findByRole("article", { name: "history_001 completed job" })).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Load more history" }));
+
+      const loadedRow = await screen.findByRole("article", { name: "history_051 completed job" });
+      expect(within(loadedRow).getByRole("link", { name: "Open proj_slow_history project" })).toHaveAttribute(
+        "href",
+        "/projects/proj_slow_history",
+      );
+      expect(screen.queryByText("Loading jobs...")).not.toBeInTheDocument();
+
+      resolveSlowProject();
+      expect(
+        await within(loadedRow).findByRole("link", { name: "Open Slow History Project project" }),
+      ).toHaveAttribute("href", "/projects/proj_slow_history");
+    } finally {
+      if (defaultGetProjectImplementation) {
+        mockGetProject.mockImplementation(defaultGetProjectImplementation);
+      }
+    }
+  });
+
   it("cancels pending jobs and refreshes the queue", async () => {
     const user = userEvent.setup();
     setJobs([
@@ -1059,8 +1173,18 @@ describe("Desktop app activity", () => {
       renderApp(["/activity"]);
 
       expect(await screen.findByRole("article", { name: "stems running job" })).toBeInTheDocument();
+      await waitFor(() => expect(mockGetProject).toHaveBeenCalledWith("proj_123"));
       expect(intervalHandlers).toHaveLength(1);
       const initialListJobsCalls = mockListJobs.mock.calls.length;
+      const initialGetProjectCalls = mockGetProject.mock.calls.length;
+
+      await act(async () => {
+        await intervalHandlers[0]?.();
+      });
+
+      await waitFor(() => expect(mockListJobs.mock.calls.length).toBeGreaterThan(initialListJobsCalls));
+      expect(mockGetProject).toHaveBeenCalledTimes(initialGetProjectCalls);
+      const listJobsCallsAfterActivePoll = mockListJobs.mock.calls.length;
 
       setJobs([
         job({
@@ -1080,9 +1204,10 @@ describe("Desktop app activity", () => {
         await intervalHandlers[0]?.();
       });
 
-      await waitFor(() => expect(mockListJobs.mock.calls.length).toBeGreaterThan(initialListJobsCalls));
+      await waitFor(() => expect(mockListJobs.mock.calls.length).toBeGreaterThan(listJobsCallsAfterActivePoll));
       const completedRow = await screen.findByRole("article", { name: "stems completed job" });
       expect(within(completedRow).queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+      expect(mockGetProject).toHaveBeenCalledTimes(initialGetProjectCalls);
       expect(clearIntervalSpy).toHaveBeenCalledWith(1500);
     } finally {
       setIntervalSpy.mockRestore();

@@ -60,7 +60,7 @@ describe current pagination behavior, pending pagination decisions, or explicit 
 | Endpoint or payload | List field | Pagination decision |
 | --- | --- | --- |
 | `GET /api/v1/jobs` | `jobs` | Paginated growable list with `status` and `project_id` filters. Default ordering is active-first and deterministic. |
-| `GET /api/v1/projects` | `projects` | Planned paginated growable list while preserving global `search`. Desktop Library consumers should lazy-load this list. |
+| `GET /api/v1/projects` | `projects` | Paginated growable list. `search` filters the full matching collection before pagination. Default ordering is `updated_at DESC, id DESC`. Desktop Library consumers should lazy-load this list. |
 | `GET /api/v1/projects/{project_id}/artifacts` | `artifacts` | Planned paginated project child list with project-scoped totals and stable newest-first ordering. Desktop project views should lazy-load this list. |
 | `GET /api/v1/projects/{project_id}/sections` | `sections` | Review with project child lists. Paginate if sections are treated as growable; otherwise document the bounded song-structure exception. |
 | `GET /api/v1/sync/trusted-peers` | `trusted_peers` | Review as either a paginated user-managed sync collection or an explicit bounded exception. |
@@ -461,9 +461,13 @@ If the same source track has already been imported, the endpoint returns HTTP `4
 
 Optional query:
 
-- `search`
+- `search` - filters projects by display name or path before pagination.
+- `limit` - page size, default `50`, minimum `1`, maximum `200`.
+- `offset` - zero-based row offset, default `0`, minimum `0`.
 
-Response: `ProjectsResponse`.
+Default ordering is deterministic newest-first: `updated_at DESC, id DESC`.
+
+Response: `ProjectsResponse` with `projects`, `total`, `limit`, `offset`, and `has_more`.
 
 ### Get project
 

@@ -73,6 +73,19 @@ pub struct ProjectResponse {
 #[derive(Serialize)]
 pub struct ProjectsResponse {
     projects: Vec<ProjectSchema>,
+    total: usize,
+    limit: usize,
+    offset: usize,
+    has_more: bool,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub struct ListProjectsParams {
+    search: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -225,7 +238,7 @@ macro_rules! mobile_stub {
 #[cfg(not(target_os = "android"))]
 mobile_stub!(mobile_get_health, HealthResponse, app: AppHandle);
 #[cfg(not(target_os = "android"))]
-mobile_stub!(mobile_list_projects, ProjectsResponse, app: AppHandle, search: Option<String>);
+mobile_stub!(mobile_list_projects, ProjectsResponse, app: AppHandle, params: Option<ListProjectsParams>);
 #[cfg(not(target_os = "android"))]
 mobile_stub!(mobile_import_project, ProjectResponse, app: AppHandle, payload: ProjectImportRequest);
 #[cfg(not(target_os = "android"))]
@@ -297,6 +310,8 @@ mod android {
     const WHISPER_MODEL_DIR: &str = "models/whisper";
     const WHISPER_MODEL_MISSING: &str =
         "Side-load a Whisper ggml model into app storage at models/whisper/ggml-base.bin or models/whisper/ggml-tiny.bin to enable local lyrics.";
+    const DEFAULT_PROJECTS_LIMIT: usize = 50;
+    const MAX_PROJECTS_LIMIT: usize = 200;
     const DEFAULT_JOBS_LIMIT: usize = 50;
     const MAX_JOBS_LIMIT: usize = 200;
 
@@ -393,6 +408,27 @@ mod android {
 
     fn now_iso() -> String {
         Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+    }
+
+    fn normalized_projects_limit(value: Option<i64>) -> Result<usize, String> {
+        let limit = value.unwrap_or(DEFAULT_PROJECTS_LIMIT as i64);
+        if limit < 1 {
+            return Err("Project list limit must be at least 1.".to_string());
+        }
+        if limit > MAX_PROJECTS_LIMIT as i64 {
+            return Err(format!(
+                "Project list limit must be less than or equal to {MAX_PROJECTS_LIMIT}."
+            ));
+        }
+        Ok(limit as usize)
+    }
+
+    fn normalized_projects_offset(value: Option<i64>) -> Result<usize, String> {
+        let offset = value.unwrap_or(0);
+        if offset < 0 {
+            return Err("Project list offset must be at least 0.".to_string());
+        }
+        Ok(offset as usize)
     }
 
     fn normalized_jobs_limit(value: Option<i64>) -> Result<usize, String> {
@@ -1701,28 +1737,71 @@ mod android {
     #[tauri::command]
     pub fn mobile_list_projects(
         app: AppHandle,
-        search: Option<String>,
+        params: Option<ListProjectsParams>,
     ) -> Result<ProjectsResponse, String> {
+        let params = params.unwrap_or_default();
+        let limit = normalized_projects_limit(params.limit)?;
+        let offset = normalized_projects_offset(params.offset)?;
         let connection = db(&app)?;
-        let mut statement = connection
-            .prepare("SELECT id, display_name, source_key_override, source_path, imported_path, duration_seconds, sample_rate, channels, created_at, updated_at FROM projects ORDER BY updated_at DESC")
-            .map_err(|error| error.to_string())?;
-        let needle = search.unwrap_or_default().to_ascii_lowercase();
-        let rows = statement
-            .query_map([], row_project)
-            .map_err(|error| error.to_string())?;
-        let mut projects = Vec::new();
-        for row in rows {
-            let project = row.map_err(|error| error.to_string())?;
-            if needle.is_empty()
-                || project.display_name.to_ascii_lowercase().contains(&needle)
-                || project.source_path.to_ascii_lowercase().contains(&needle)
-                || project.imported_path.to_ascii_lowercase().contains(&needle)
-            {
-                projects.push(project);
+        let needle = params
+            .search
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        let limit = limit as i64;
+        let offset = offset as i64;
+        let (projects, total) = if needle.is_empty() {
+            let total = connection
+                .query_row("SELECT COUNT(*) FROM projects", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map_err(|error| error.to_string())?;
+            let mut statement = connection
+                .prepare(
+                    "SELECT id, display_name, source_key_override, source_path, imported_path, duration_seconds, sample_rate, channels, created_at, updated_at FROM projects ORDER BY updated_at DESC, id DESC LIMIT ?1 OFFSET ?2",
+                )
+                .map_err(|error| error.to_string())?;
+            let rows = statement
+                .query_map(params![limit, offset], row_project)
+                .map_err(|error| error.to_string())?;
+            let mut projects = Vec::new();
+            for row in rows {
+                projects.push(row.map_err(|error| error.to_string())?);
             }
-        }
-        Ok(ProjectsResponse { projects })
+            (projects, total as usize)
+        } else {
+            let like_term = format!("%{needle}%");
+            let total = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM projects WHERE lower(display_name) LIKE ?1 OR lower(source_path) LIKE ?1 OR lower(imported_path) LIKE ?1",
+                    params![&like_term],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|error| error.to_string())?;
+            let mut statement = connection
+                .prepare(
+                    "SELECT id, display_name, source_key_override, source_path, imported_path, duration_seconds, sample_rate, channels, created_at, updated_at FROM projects WHERE lower(display_name) LIKE ?1 OR lower(source_path) LIKE ?1 OR lower(imported_path) LIKE ?1 ORDER BY updated_at DESC, id DESC LIMIT ?2 OFFSET ?3",
+                )
+                .map_err(|error| error.to_string())?;
+            let rows = statement
+                .query_map(params![&like_term, limit, offset], row_project)
+                .map_err(|error| error.to_string())?;
+            let mut projects = Vec::new();
+            for row in rows {
+                projects.push(row.map_err(|error| error.to_string())?);
+            }
+            (projects, total as usize)
+        };
+        let limit = limit as usize;
+        let offset = offset as usize;
+        let has_more = offset.saturating_add(projects.len()) < total;
+        Ok(ProjectsResponse {
+            projects,
+            total,
+            limit,
+            offset,
+            has_more,
+        })
     }
 
     #[tauri::command]

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -46,6 +46,28 @@ def _wait_for_project_job(client, project_id: str, predicate, *, timeout: float 
                 return job
         time.sleep(0.1)
     raise AssertionError(f"Timed out waiting for matching job in project {project_id}")
+
+
+def _insert_project_rows(
+    tmp_path: Path,
+    rows: list[tuple[str, str, datetime, str]],
+) -> None:
+    with SessionLocal() as session:
+        for index, row in enumerate(rows, start=1):
+            project_id, display_name, updated_at, sync_status = row
+            session.add(
+                Project(
+                    id=project_id,
+                    display_name=display_name,
+                    source_sha256=f"{index:064x}",
+                    source_path=str(tmp_path / f"{project_id}-source.wav"),
+                    imported_path=str(tmp_path / f"{project_id}-imported.wav"),
+                    sync_status=sync_status,
+                    created_at=updated_at,
+                    updated_at=updated_at,
+                )
+            )
+        session.commit()
 
 
 def test_import_project_persists_metadata_and_source_artifact(client, sample_audio_file: Path):
@@ -572,9 +594,157 @@ def test_project_list_can_filter_by_search_term(
     response = client.get("/api/v1/projects", params={"search": "choir"})
 
     assert response.status_code == 200
-    projects = response.json()["projects"]
+    payload = response.json()
+    projects = payload["projects"]
     assert len(projects) == 1
     assert projects[0]["display_name"] == "Choir Warmup"
+    assert payload["total"] == 1
+    assert payload["limit"] == 50
+    assert payload["offset"] == 0
+    assert payload["has_more"] is False
+
+
+def test_project_list_returns_empty_pagination_metadata(client):
+    response = client.get("/api/v1/projects")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["projects"] == []
+    assert payload["total"] == 0
+    assert payload["limit"] == 50
+    assert payload["offset"] == 0
+    assert payload["has_more"] is False
+
+
+def test_project_list_returns_empty_search_pagination_metadata(client, tmp_path: Path):
+    _insert_project_rows(
+        tmp_path,
+        [
+            ("proj_search_empty", "Visible Song", datetime(2026, 1, 1, tzinfo=UTC), "local"),
+        ],
+    )
+
+    response = client.get("/api/v1/projects", params={"search": "missing"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["projects"] == []
+    assert payload["total"] == 0
+    assert payload["limit"] == 50
+    assert payload["offset"] == 0
+    assert payload["has_more"] is False
+
+
+def test_project_list_exact_page_size_has_no_more_results(client, tmp_path: Path):
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    _insert_project_rows(
+        tmp_path,
+        [
+            (f"proj_exact_{index}", f"Exact Song {index}", base_time + timedelta(minutes=index), "local")
+            for index in range(3)
+        ],
+    )
+
+    response = client.get("/api/v1/projects", params={"limit": 3})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [project["id"] for project in payload["projects"]] == [
+        "proj_exact_2",
+        "proj_exact_1",
+        "proj_exact_0",
+    ]
+    assert payload["total"] == 3
+    assert payload["limit"] == 3
+    assert payload["offset"] == 0
+    assert payload["has_more"] is False
+
+
+def test_project_list_returns_pagination_metadata_and_page_boundaries(client, tmp_path: Path):
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    _insert_project_rows(
+        tmp_path,
+        [
+            (f"proj_page_{index}", f"Page Song {index}", base_time + timedelta(minutes=index), "local")
+            for index in range(5)
+        ],
+    )
+
+    middle_page = client.get("/api/v1/projects", params={"limit": 2, "offset": 2})
+
+    assert middle_page.status_code == 200
+    middle_payload = middle_page.json()
+    assert [project["id"] for project in middle_payload["projects"]] == ["proj_page_2", "proj_page_1"]
+    assert middle_payload["total"] == 5
+    assert middle_payload["limit"] == 2
+    assert middle_payload["offset"] == 2
+    assert middle_payload["has_more"] is True
+
+    last_page = client.get("/api/v1/projects", params={"limit": 2, "offset": 4})
+
+    assert last_page.status_code == 200
+    last_payload = last_page.json()
+    assert [project["id"] for project in last_payload["projects"]] == ["proj_page_0"]
+    assert last_payload["total"] == 5
+    assert last_payload["limit"] == 2
+    assert last_payload["offset"] == 4
+    assert last_payload["has_more"] is False
+
+
+def test_project_list_search_applies_before_pagination(client, tmp_path: Path):
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    _insert_project_rows(
+        tmp_path,
+        [
+            ("proj_recent_2", "Recent Song 2", base_time + timedelta(minutes=4), "local"),
+            ("proj_recent_1", "Recent Song 1", base_time + timedelta(minutes=3), "local"),
+            ("proj_recent_0", "Recent Song 0", base_time + timedelta(minutes=2), "local"),
+            ("proj_needle", "Deep Needle Match", base_time + timedelta(minutes=1), "local"),
+        ],
+    )
+
+    response = client.get("/api/v1/projects", params={"search": "needle", "limit": 1, "offset": 0})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [project["id"] for project in payload["projects"]] == ["proj_needle"]
+    assert payload["total"] == 1
+    assert payload["has_more"] is False
+
+
+def test_project_list_uses_project_id_as_updated_at_tie_breaker(client, tmp_path: Path):
+    tied_time = datetime(2026, 1, 1, tzinfo=UTC)
+    _insert_project_rows(
+        tmp_path,
+        [
+            ("proj_tie_a", "Tie A", tied_time, "local"),
+            ("proj_tie_c", "Tie C", tied_time, "local"),
+            ("proj_tie_b", "Tie B", tied_time, "local"),
+        ],
+    )
+
+    response = client.get("/api/v1/projects", params={"limit": 3})
+
+    assert response.status_code == 200
+    assert [project["id"] for project in response.json()["projects"]] == [
+        "proj_tie_c",
+        "proj_tie_b",
+        "proj_tie_a",
+    ]
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"limit": 0},
+        {"limit": 201},
+        {"offset": -1},
+    ],
+)
+def test_project_list_rejects_invalid_pagination_params(client, params: dict[str, int]):
+    response = client.get("/api/v1/projects", params=params)
+
+    assert response.status_code == 422
 
 
 def test_project_list_hides_deleted_sync_placeholders(client, tmp_path: Path):
@@ -605,8 +775,11 @@ def test_project_list_hides_deleted_sync_placeholders(client, tmp_path: Path):
     response = client.get("/api/v1/projects")
 
     assert response.status_code == 200
-    projects = response.json()["projects"]
+    payload = response.json()
+    projects = payload["projects"]
     assert [project["id"] for project in projects] == ["proj_visible_local"]
+    assert payload["total"] == 1
+    assert payload["has_more"] is False
 
 
 def test_import_project_replaces_deleted_sync_placeholder(

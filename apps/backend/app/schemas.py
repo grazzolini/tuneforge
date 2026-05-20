@@ -147,6 +147,10 @@ class ProjectResponse(BaseModel):
 
 class ProjectsResponse(BaseModel):
     projects: list[ProjectSchema]
+    total: int
+    limit: int
+    offset: int
+    has_more: bool
 
 
 class DeleteResponse(BaseModel):

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.pagination import PaginationQuery, pagination_metadata
 from app.dependencies import get_db, get_job_runner
 from app.errors import AppError
 from app.models import AnalysisResult, Artifact, ChordTimeline, LyricsTranscript
@@ -157,11 +158,24 @@ def create_project(
 
 @router.get("", response_model=ProjectsResponse)
 def projects(
+    pagination: PaginationQuery,
     search: str | None = Query(default=None, description="Filter projects by display name or path."),
     session: Session = Depends(get_db),
 ) -> ProjectsResponse:
-    projects_payload = [ProjectSchema.model_validate(project) for project in list_projects(session, search=search)]
-    return ProjectsResponse(projects=projects_payload)
+    listed_projects = list_projects(
+        session,
+        limit=pagination.limit,
+        offset=pagination.offset,
+        search=search,
+    )
+    projects_payload = [ProjectSchema.model_validate(project) for project in listed_projects.projects]
+    metadata = pagination_metadata(
+        total=listed_projects.total,
+        limit=pagination.limit,
+        offset=pagination.offset,
+        number_of_returned_items=len(projects_payload),
+    )
+    return ProjectsResponse(projects=projects_payload, **metadata)
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)

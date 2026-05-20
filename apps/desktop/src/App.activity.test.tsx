@@ -257,6 +257,57 @@ describe("Desktop app activity", () => {
     ).toBeInTheDocument();
   });
 
+  it("hides stale listener sync details after sync now fails", async () => {
+    const user = userEvent.setup();
+    setSyncTrustedPeers([
+      {
+        device_id: "device_peer_1",
+        sync_group_id: "sync_group_local",
+        display_name: "Laptop Rig",
+        public_key: "pub_peer_1",
+        endpoint_hints: ["tcp://192.168.1.57:48625"],
+        trusted_at: "2026-04-18T13:16:00.000Z",
+      },
+    ]);
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: ["tcp://192.168.1.57:48625"],
+      last_sync: {
+        peer_device_id: "device_peer_1",
+        remote_device_id: "device_peer_1",
+        status: "completed",
+        message: "Listener import completed before failed sync now.",
+        project_results: [
+          {
+            project_id: "proj_listener_previous",
+            status: "imported",
+            message: "Previous listener result.",
+          },
+        ],
+        manifest_errors: [],
+        received_artifacts: [],
+      },
+    });
+    mockSyncTrustedPeerNow.mockRejectedValueOnce(new Error("Peer unavailable."));
+
+    await openSyncTab(user);
+
+    expect(await screen.findByText("Listener import completed before failed sync now.")).toBeInTheDocument();
+    expect(screen.getByText("proj_listener_previous")).toBeInTheDocument();
+
+    const peers = await screen.findByRole("list", { name: "Trusted sync peers" });
+    const peerRow = within(peers).getByText("Laptop Rig").closest("li");
+    expect(peerRow).not.toBeNull();
+    await user.click(within(peerRow as HTMLElement).getByRole("button", { name: "Sync Now" }));
+
+    await waitFor(() => expect(mockSyncTrustedPeerNow).toHaveBeenCalledWith("device_peer_1"));
+    expect(await screen.findAllByText("Sync now failed.")).not.toHaveLength(0);
+    expect(screen.queryByText("Listener import completed before failed sync now.")).not.toBeInTheDocument();
+    expect(screen.queryByText("proj_listener_previous")).not.toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Last sync project results" })).not.toBeInTheDocument();
+  });
+
   it("normalizes sync run identity, timing, counters, and final project rows", () => {
     const normalized = normalizeSyncTransportStatus({
       running: true,
@@ -269,7 +320,7 @@ describe("Desktop app activity", () => {
         remoteDeviceId: "device_peer_1",
         status: "completed_with_errors",
         message: "Retry completed after staged bytes were reused.",
-        startedAt: "2026-04-18T13:16:00.000Z",
+        startedAt: "2026-04-18 13:16:00",
         completedAt: "2026-04-18T13:16:01.250Z",
         durationMs: 1250,
         timing: {
@@ -277,6 +328,19 @@ describe("Desktop app activity", () => {
           transferMs: 25,
           applyMs: 30,
         },
+        phaseTimings: [
+          {
+            phase: "artifact_transfer",
+            artifactId: "art_retry_source",
+            startedAt: "2026-04-18T13:16:00.150Z",
+            completedAt: "2026-04-18T13:16:00.650Z",
+            durationMs: 500,
+          },
+        ],
+        totalReceivedBytes: 3_000_000,
+        totalServedBytes: 1_000_000,
+        timeToFirstArtifactMs: 650,
+        throughputBytesPerSecond: 3_200_000,
         importedProjectCount: 1,
         skippedProjectCount: 1,
         failedProjectCount: 0,
@@ -318,7 +382,18 @@ describe("Desktop app activity", () => {
             message: "Peer manifest export failed: stale tombstone warning.",
           },
         ],
-        receivedArtifacts: [],
+        receivedArtifacts: [
+          {
+            artifactId: "art_retry_source",
+            contentSha256: "sha256-retry-source",
+            sizeBytes: 1_000_000,
+            status: "received",
+            startedAt: "2026-04-18T13:16:00.150Z",
+            completedAt: "2026-04-18T13:16:00.650Z",
+            durationMs: 500,
+            throughputBytesPerSecond: 2_000_000,
+          },
+        ],
       },
     });
 
@@ -326,7 +401,12 @@ describe("Desktop app activity", () => {
       run_id: "sync_run_retry_2",
       session_id: "sync_session_retry_2",
       status: "completed",
+      started_at: "2026-04-18T13:16:00.000Z",
       duration_ms: 1250,
+      total_received_bytes: 3_000_000,
+      total_served_bytes: 1_000_000,
+      time_to_first_artifact_ms: 650,
+      throughput_bytes_per_second: 3_200_000,
       imported_project_count: 1,
       skipped_project_count: 1,
       failed_project_count: 0,
@@ -336,6 +416,22 @@ describe("Desktop app activity", () => {
       transferMs: 25,
       applyMs: 30,
     });
+    expect(normalized.last_sync?.phase_timings).toEqual([
+      expect.objectContaining({
+        phase: "artifact_transfer",
+        artifact_id: "art_retry_source",
+        duration_ms: 500,
+      }),
+    ]);
+    expect(normalized.last_sync?.received_artifacts).toEqual([
+      expect.objectContaining({
+        artifact_id: "art_retry_source",
+        started_at: "2026-04-18T13:16:00.150Z",
+        completed_at: "2026-04-18T13:16:00.650Z",
+        duration_ms: 500,
+        throughput_bytes_per_second: 2_000_000,
+      }),
+    ]);
     expect(normalized.last_sync?.project_results).toHaveLength(2);
     expect(normalized.last_sync?.project_results[0]).toMatchObject({
       project_id: "proj_retry",
@@ -350,6 +446,60 @@ describe("Desktop app activity", () => {
       status: "deleted",
       deleted_count: 1,
     });
+  });
+
+  it("infers sync TTFA only when native omits the metric", () => {
+    const explicitNull = normalizeSyncTransportStatus({
+      active: true,
+      status: "listening",
+      last_sync: {
+        started_at: "2026-04-18T13:16:00.000Z",
+        time_to_first_artifact_ms: null,
+        received_artifacts: [
+          {
+            artifact_id: "art_received_source",
+            status: "received",
+            completed_at: "2026-04-18T13:16:00.500Z",
+          },
+        ],
+      },
+    });
+
+    expect(explicitNull.last_sync?.time_to_first_artifact_ms).toBeNull();
+
+    const legacyPayload = normalizeSyncTransportStatus({
+      active: true,
+      status: "listening",
+      last_sync: {
+        started_at: "2026-04-18T13:16:00.000Z",
+        received_artifacts: [
+          {
+            artifact_id: "art_already_staged",
+            status: "already_staged",
+            completed_at: "2026-04-18T13:16:00.200Z",
+          },
+          {
+            artifact_id: "art_received_source",
+            status: "received",
+            completed_at: "2026-04-18T13:16:00.800Z",
+          },
+        ],
+        phase_timings: [
+          {
+            phase: "artifact_transfer",
+            artifact_id: "art_already_staged",
+            completed_at: "2026-04-18T13:16:00.200Z",
+          },
+          {
+            phase: "artifact_transfer",
+            artifact_id: "art_received_source",
+            completed_at: "2026-04-18T13:16:00.800Z",
+          },
+        ],
+      },
+    });
+
+    expect(legacyPayload.last_sync?.time_to_first_artifact_ms).toBe(800);
   });
 
   it("keeps newer successful sync rows when stale failures arrive later in the payload", () => {
@@ -443,6 +593,10 @@ describe("Desktop app activity", () => {
         started_at: "2026-04-18T13:16:00.000Z",
         completed_at: "2026-04-18T13:16:01.400Z",
         duration_ms: 1400,
+        time_to_first_artifact_ms: 450,
+        total_received_bytes: 3_000_000,
+        total_served_bytes: 1_000_000,
+        throughput_bytes_per_second: 2_500_000,
         imported_project_count: 1,
         skipped_project_count: 1,
         failed_project_count: 0,
@@ -481,7 +635,16 @@ describe("Desktop app activity", () => {
             message: "Peer manifest export failed: stale tombstone warning.",
           },
         ],
-        received_artifacts: [],
+        received_artifacts: [
+          {
+            artifact_id: "art_retry_source",
+            content_sha256: "sha256-retry-source",
+            size_bytes: 1_000_000,
+            status: "received",
+            duration_ms: 500,
+            throughput_bytes_per_second: 2_000_000,
+          },
+        ],
       },
     });
 
@@ -491,6 +654,9 @@ describe("Desktop app activity", () => {
     expect(screen.getByText(/Run sync_run_retry_2/)).toBeInTheDocument();
     expect(screen.getByText(/Duration 1\.4 s/)).toBeInTheDocument();
     expect(screen.getByText(/1 imported, 1 skipped, 0 failed/)).toBeInTheDocument();
+    expect(screen.getByText(/TTFA 450 ms/)).toBeInTheDocument();
+    expect(screen.getByText(/4\.0 MB total/)).toBeInTheDocument();
+    expect(screen.getByText(/2\.5 MB\/s/)).toBeInTheDocument();
 
     const projectResults = await screen.findByRole("list", { name: "Last sync project results" });
     const resultRows = within(projectResults).getAllByRole("listitem");
@@ -503,6 +669,12 @@ describe("Desktop app activity", () => {
     expect(within(resultRows[1]).getByText("Delete tombstone caught up.")).toBeInTheDocument();
     expect(screen.queryByText("Old ffprobe failure.")).not.toBeInTheDocument();
     expect(screen.queryByText(/stale tombstone warning/)).not.toBeInTheDocument();
+
+    const artifactTransfers = await screen.findByRole("list", { name: "Last sync artifact transfers" });
+    const transferRows = within(artifactTransfers).getAllByRole("listitem");
+    expect(transferRows).toHaveLength(1);
+    expect(within(transferRows[0]).getByText("art_retry_source")).toBeInTheDocument();
+    expect(within(transferRows[0]).getByText("500 ms / 2.0 MB/s")).toBeInTheDocument();
   });
 
   it("shows newer listener sync results after a prior sync now result", async () => {

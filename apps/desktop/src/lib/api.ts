@@ -1,6 +1,7 @@
 import createClient from "openapi-fetch";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { components, MobileCapabilities, paths } from "@tuneforge/shared-types";
+import { normalizeApiDateTime } from "./datetime";
 
 const DEFAULT_API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8765";
 let apiBaseUrl = DEFAULT_API_BASE_URL;
@@ -74,6 +75,15 @@ export type ProjectSyncSummary = {
   lockReason: string | null;
 };
 export type SyncTransportMetricMap = Record<string, number>;
+export type SyncTransportPhaseTiming = {
+  phase?: string | null;
+  project_id?: string | null;
+  artifact_id?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  duration_ms?: number | null;
+  throughput_bytes_per_second?: number | null;
+};
 export type SyncTransportTiming = Record<string, unknown> | Record<string, unknown>[];
 export type SyncTransportRunStatus = {
   run_id?: string | null;
@@ -88,7 +98,12 @@ export type SyncTransportRunStatus = {
   duration_seconds?: number | null;
   duration_ms?: number | null;
   timing?: SyncTransportTiming | null;
+  phase_timings?: SyncTransportPhaseTiming[];
   transfer_counts?: SyncTransportMetricMap;
+  total_received_bytes?: number | null;
+  total_served_bytes?: number | null;
+  time_to_first_artifact_ms?: number | null;
+  throughput_bytes_per_second?: number | null;
   error?: string | null;
   project_results: SyncTransportProjectResult[];
   manifest_errors: SyncTransportManifestError[];
@@ -137,6 +152,10 @@ export type SyncTransportTransferResult = {
   size_bytes?: number | null;
   status: string;
   message?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  duration_ms?: number | null;
+  throughput_bytes_per_second?: number | null;
 };
 export type SyncTransportStatus = {
   active: boolean;
@@ -231,6 +250,29 @@ function numberField(record: Record<string, unknown> | null, keys: string[]) {
   return null;
 }
 
+function nullableNumberField(record: Record<string, unknown> | null, keys: string[]) {
+  let present = false;
+  if (!record) {
+    return { present, value: null };
+  }
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) {
+      continue;
+    }
+    present = true;
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return { present, value };
+    }
+  }
+  return { present, value: null };
+}
+
+function dateTimeField(record: Record<string, unknown> | null, keys: string[]) {
+  const value = firstStringField([record], keys);
+  return value ? normalizeApiDateTime(value) : null;
+}
+
 function recordField(record: Record<string, unknown> | null, keys: string[]) {
   if (!record) {
     return null;
@@ -264,6 +306,30 @@ function recordOrRecordArrayField(record: Record<string, unknown> | null, keys: 
   return null;
 }
 
+function recordArrayOrObjectValuesField(record: Record<string, unknown> | null, keys: string[]) {
+  if (!record) {
+    return [];
+  }
+  for (const key of keys) {
+    const value = record[key];
+    if (Array.isArray(value)) {
+      return value
+        .map((item) => asRecord(item))
+        .filter((item): item is Record<string, unknown> => item !== null);
+    }
+    const valueRecord = asRecord(value);
+    if (valueRecord) {
+      const records = Object.values(valueRecord)
+        .map((item) => asRecord(item))
+        .filter((item): item is Record<string, unknown> => item !== null);
+      if (records.length) {
+        return records;
+      }
+    }
+  }
+  return [];
+}
+
 function recordArrayField(record: Record<string, unknown> | null, keys: string[]) {
   if (!record) {
     return [];
@@ -295,6 +361,7 @@ function numericMetricsFromRecord(record: Record<string, unknown> | null) {
     const metricKey = normalizeMetricKey(key);
     const looksLikeMetric =
       /(?:_count|_bytes|_ms|_seconds)$/.test(metricKey) ||
+      /_per_second$/.test(metricKey) ||
       metricKey.startsWith("count_");
     if (looksLikeMetric && typeof value === "number" && Number.isFinite(value)) {
       metrics[metricKey] = value;
@@ -321,6 +388,80 @@ function timingField(record: Record<string, unknown>) {
     "phase_timings",
     "phaseTimings",
   ]);
+}
+
+function durationMsFromDateTimes(startedAt: string | null | undefined, completedAt: string | null | undefined) {
+  if (!startedAt || !completedAt) {
+    return null;
+  }
+  const startedTimestamp = Date.parse(normalizeApiDateTime(startedAt));
+  const completedTimestamp = Date.parse(normalizeApiDateTime(completedAt));
+  if (!Number.isFinite(startedTimestamp) || !Number.isFinite(completedTimestamp)) {
+    return null;
+  }
+  const durationMs = completedTimestamp - startedTimestamp;
+  return durationMs >= 0 ? durationMs : null;
+}
+
+function throughputFromBytesAndDuration(bytes: number | null | undefined, durationMs: number | null | undefined) {
+  if (
+    typeof bytes !== "number" ||
+    !Number.isFinite(bytes) ||
+    bytes < 0 ||
+    typeof durationMs !== "number" ||
+    !Number.isFinite(durationMs) ||
+    durationMs <= 0
+  ) {
+    return null;
+  }
+  return (bytes * 1000) / durationMs;
+}
+
+function normalizeSyncPhaseTiming(value: unknown): SyncTransportPhaseTiming | null {
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+  const startedAt = dateTimeField(record, ["started_at", "startedAt", "start_time", "startTime"]);
+  const completedAt = dateTimeField(record, [
+    "completed_at",
+    "completedAt",
+    "finished_at",
+    "finishedAt",
+    "end_time",
+    "endTime",
+  ]);
+  const durationMs =
+    numberField(record, ["duration_ms", "durationMs", "elapsed_ms", "elapsedMs"]) ??
+    durationMsFromDateTimes(startedAt, completedAt);
+  const timing: SyncTransportPhaseTiming = {
+    phase: firstStringField([record], ["phase", "stage", "name"]),
+    project_id: firstStringField([record], ["project_id", "projectId"]),
+    artifact_id: firstStringField([record], ["artifact_id", "artifactId"]),
+    started_at: startedAt,
+    completed_at: completedAt,
+    duration_ms: durationMs,
+    throughput_bytes_per_second: numberField(record, [
+      "throughput_bytes_per_second",
+      "throughputBytesPerSecond",
+      "bytes_per_second",
+      "bytesPerSecond",
+    ]),
+  };
+  const hasTimingValue = Object.values(timing).some((item) => item !== null && item !== undefined);
+  return hasTimingValue ? timing : null;
+}
+
+function phaseTimingField(record: Record<string, unknown>) {
+  return recordArrayOrObjectValuesField(record, [
+    "phase_timings",
+    "phaseTimings",
+    "timings",
+    "timing_metrics",
+    "timingMetrics",
+  ])
+    .map((item) => normalizeSyncPhaseTiming(item))
+    .filter((item): item is SyncTransportPhaseTiming => item !== null);
 }
 
 function normalizeProjectSyncState(value: string | null) {
@@ -461,7 +602,7 @@ function syncResultTime(value: string | null | undefined) {
   if (!value) {
     return null;
   }
-  const timestamp = Date.parse(value);
+  const timestamp = Date.parse(normalizeApiDateTime(value));
   return Number.isFinite(timestamp) ? timestamp : null;
 }
 
@@ -555,8 +696,8 @@ function normalizeSyncProjectResult(
     action: firstStringField([record], ["action", "operation"]),
     message: firstStringField([record], ["message", "error", "reason"]) ?? fallbackMessage,
     is_final: firstBooleanField([record], ["is_final", "isFinal", "final"]),
-    started_at: firstStringField([record], ["started_at", "startedAt"]),
-    completed_at: firstStringField([record], ["completed_at", "completedAt", "finished_at", "finishedAt"]),
+    started_at: dateTimeField(record, ["started_at", "startedAt"]),
+    completed_at: dateTimeField(record, ["completed_at", "completedAt", "finished_at", "finishedAt"]),
     duration_seconds: numberField(record, ["duration_seconds", "durationSeconds", "elapsed_seconds", "elapsedSeconds"]),
     duration_ms: numberField(record, ["duration_ms", "durationMs", "elapsed_ms", "elapsedMs"]),
     timing: timingField(record),
@@ -592,6 +733,11 @@ function normalizeSyncTransferResult(value: unknown): SyncTransportTransferResul
   if (!record) {
     return null;
   }
+  const startedAt = dateTimeField(record, ["started_at", "startedAt"]);
+  const completedAt = dateTimeField(record, ["completed_at", "completedAt", "finished_at", "finishedAt"]);
+  const durationMs =
+    numberField(record, ["duration_ms", "durationMs", "elapsed_ms", "elapsedMs"]) ??
+    durationMsFromDateTimes(startedAt, completedAt);
   return {
     artifact_id: firstStringField([record], ["artifact_id", "artifactId", "id"]) ?? "unknown",
     content_sha256: firstStringField([record], ["content_sha256", "contentSha256"]),
@@ -600,7 +746,113 @@ function normalizeSyncTransferResult(value: unknown): SyncTransportTransferResul
       firstStringField([record], ["status", "state", "result"]) ?? "completed",
     ),
     message: firstStringField([record], ["message", "error", "reason"]),
+    started_at: startedAt,
+    completed_at: completedAt,
+    duration_ms: durationMs,
+    throughput_bytes_per_second: numberField(record, [
+      "throughput_bytes_per_second",
+      "throughputBytesPerSecond",
+      "bytes_per_second",
+      "bytesPerSecond",
+    ]) ?? throughputFromBytesAndDuration(numberField(record, ["size_bytes", "sizeBytes"]), durationMs),
   };
+}
+
+function normalizedPhaseName(value: string | null | undefined) {
+  return value?.trim().toLowerCase().replace(/[\s-]+/g, "_") ?? "";
+}
+
+function transferTimingForArtifact(
+  artifact: SyncTransportTransferResult,
+  phaseTimings: SyncTransportPhaseTiming[],
+) {
+  const artifactTimings = phaseTimings.filter((timing) => timing.artifact_id === artifact.artifact_id);
+  if (!artifactTimings.length) {
+    return null;
+  }
+  return artifactTimings.find((timing) => normalizedPhaseName(timing.phase).includes("transfer")) ??
+    artifactTimings.find((timing) => normalizedPhaseName(timing.phase).includes("staging_check")) ??
+    artifactTimings[0];
+}
+
+function enrichSyncTransferResult(
+  artifact: SyncTransportTransferResult,
+  phaseTimings: SyncTransportPhaseTiming[],
+) {
+  const timing = transferTimingForArtifact(artifact, phaseTimings);
+  if (!timing) {
+    return artifact;
+  }
+  const startedAt = artifact.started_at ?? timing.started_at ?? null;
+  const completedAt = artifact.completed_at ?? timing.completed_at ?? null;
+  const durationMs =
+    artifact.duration_ms ??
+    timing.duration_ms ??
+    durationMsFromDateTimes(startedAt, completedAt);
+  const timingIsTransfer = normalizedPhaseName(timing.phase).includes("transfer");
+  return {
+    ...artifact,
+    started_at: startedAt,
+    completed_at: completedAt,
+    duration_ms: durationMs,
+    throughput_bytes_per_second:
+      artifact.throughput_bytes_per_second ??
+      timing.throughput_bytes_per_second ??
+      (timingIsTransfer ? throughputFromBytesAndDuration(artifact.size_bytes, durationMs) : null),
+  };
+}
+
+function sumArtifactBytes(artifacts: SyncTransportTransferResult[]) {
+  let total = 0;
+  let hasBytes = false;
+  artifacts.forEach((artifact) => {
+    if (
+      artifact.status !== "failed" &&
+      typeof artifact.size_bytes === "number" &&
+      Number.isFinite(artifact.size_bytes) &&
+      artifact.size_bytes >= 0
+    ) {
+      total += artifact.size_bytes;
+      hasBytes = true;
+    }
+  });
+  return hasBytes ? total : null;
+}
+
+function firstArtifactCompletedOffsetMs(
+  runStartedAt: string | null,
+  artifacts: SyncTransportTransferResult[],
+  phaseTimings: SyncTransportPhaseTiming[],
+) {
+  if (!runStartedAt) {
+    return null;
+  }
+  const runStartedTimestamp = Date.parse(normalizeApiDateTime(runStartedAt));
+  if (!Number.isFinite(runStartedTimestamp)) {
+    return null;
+  }
+  const ignoredArtifactIds = new Set(
+    artifacts
+      .filter((artifact) => artifact.status === "failed" || artifact.status === "already_staged")
+      .map((artifact) => artifact.artifact_id),
+  );
+  const artifactCompletedTimestamps = [
+    ...artifacts
+      .filter((artifact) => !ignoredArtifactIds.has(artifact.artifact_id))
+      .map((artifact) => syncResultTime(artifact.completed_at)),
+    ...phaseTimings
+      .filter(
+        (timing) =>
+          timing.artifact_id &&
+          !ignoredArtifactIds.has(timing.artifact_id) &&
+          normalizedPhaseName(timing.phase).includes("transfer"),
+      )
+      .map((timing) => syncResultTime(timing.completed_at)),
+  ].filter((timestamp): timestamp is number => timestamp !== null && timestamp >= runStartedTimestamp);
+  if (!artifactCompletedTimestamps.length) {
+    return null;
+  }
+  return Math.min(...artifactCompletedTimestamps) - runStartedTimestamp;
 }
 
 export function normalizeSyncRunStatus(value: unknown): SyncTransportRunStatus | null {
@@ -610,8 +862,9 @@ export function normalizeSyncRunStatus(value: unknown): SyncTransportRunStatus |
   }
   const runId = firstStringField([record], ["run_id", "runId", "sync_run_id", "syncRunId", "id"]);
   const sessionId = firstStringField([record], ["session_id", "sessionId", "sync_session_id", "syncSessionId"]);
-  const runStartedAt = firstStringField([record], ["started_at", "startedAt"]);
-  const runCompletedAt = firstStringField([record], ["completed_at", "completedAt", "finished_at", "finishedAt"]);
+  const runStartedAt = dateTimeField(record, ["started_at", "startedAt"]);
+  const runCompletedAt = dateTimeField(record, ["completed_at", "completedAt", "finished_at", "finishedAt"]);
+  const phaseTimings = phaseTimingField(record);
   const manifestErrors = recordArrayField(record, ["manifest_errors", "manifestErrors"])
     .map((item) => normalizeSyncManifestError(item))
     .filter((item): item is SyncTransportManifestError => item !== null);
@@ -643,7 +896,8 @@ export function normalizeSyncRunStatus(value: unknown): SyncTransportRunStatus |
   const projectResults = mergeSyncProjectResults(importedProjectResults, manifestErrors);
   const receivedArtifacts = recordArrayField(record, ["received_artifacts", "receivedArtifacts", "artifacts"])
     .map((item) => normalizeSyncTransferResult(item))
-    .filter((item): item is SyncTransportTransferResult => item !== null);
+    .filter((item): item is SyncTransportTransferResult => item !== null)
+    .map((item) => enrichSyncTransferResult(item, phaseTimings));
   const localManifestCount = numberField(record, ["local_manifest_count", "localManifestCount"]);
   const remoteManifestCount = numberField(record, ["remote_manifest_count", "remoteManifestCount"]);
   const importedProjectCount = numberField(record, ["imported_project_count", "importedProjectCount"]);
@@ -652,7 +906,55 @@ export function normalizeSyncRunStatus(value: unknown): SyncTransportRunStatus |
   const skippedProjectCount = numberField(record, ["skipped_project_count", "skippedProjectCount"]);
   const failedProjectCount = numberField(record, ["failed_project_count", "failedProjectCount"]);
   const totalProjectCount = numberField(record, ["total_project_count", "totalProjectCount", "project_count", "projectCount"]);
-  const transferCounts = numericMetricsFromRecord(recordField(record, ["transfer_counts", "transferCounts"]));
+  const transferCountRecord = recordField(record, ["transfer_counts", "transferCounts"]);
+  const transferCounts = numericMetricsFromRecord(transferCountRecord);
+  const durationMs =
+    numberField(record, ["duration_ms", "durationMs", "elapsed_ms", "elapsedMs"]) ??
+    durationMsFromDateTimes(runStartedAt, runCompletedAt);
+  const durationSeconds =
+    numberField(record, ["duration_seconds", "durationSeconds", "elapsed_seconds", "elapsedSeconds"]) ??
+    (durationMs === null ? null : durationMs / 1000);
+  const totalReceivedBytes =
+    numberField(record, ["total_received_bytes", "totalReceivedBytes", "received_bytes", "receivedBytes"]) ??
+    numberField(transferCountRecord, ["total_received_bytes", "totalReceivedBytes", "received_bytes", "receivedBytes"]) ??
+    sumArtifactBytes(receivedArtifacts);
+  const totalServedBytes =
+    numberField(record, ["total_served_bytes", "totalServedBytes", "served_bytes", "servedBytes", "sent_bytes", "sentBytes"]) ??
+    numberField(transferCountRecord, [
+      "total_served_bytes",
+      "totalServedBytes",
+      "served_bytes",
+      "servedBytes",
+      "sent_bytes",
+      "sentBytes",
+    ]);
+  const totalTransferBytes =
+    totalReceivedBytes === null && totalServedBytes === null
+      ? null
+      : (totalReceivedBytes ?? 0) + (totalServedBytes ?? 0);
+  const throughputBytesPerSecond =
+    numberField(record, [
+      "throughput_bytes_per_second",
+      "throughputBytesPerSecond",
+      "bytes_per_second",
+      "bytesPerSecond",
+    ]) ??
+    numberField(transferCountRecord, [
+      "throughput_bytes_per_second",
+      "throughputBytesPerSecond",
+      "bytes_per_second",
+      "bytesPerSecond",
+    ]) ??
+    throughputFromBytesAndDuration(totalTransferBytes, durationMs);
+  const explicitTimeToFirstArtifactMs = nullableNumberField(record, [
+    "time_to_first_artifact_ms",
+    "timeToFirstArtifactMs",
+    "ttfa_ms",
+    "ttfaMs",
+  ]);
+  const timeToFirstArtifactMs = explicitTimeToFirstArtifactMs.present
+    ? explicitTimeToFirstArtifactMs.value
+    : firstArtifactCompletedOffsetMs(runStartedAt, receivedArtifacts, phaseTimings);
   const hasProjectProblems = projectResults.some((result) =>
     SYNC_PROJECT_RESULT_PROBLEM_STATES.has(result.status),
   );
@@ -688,10 +990,15 @@ export function normalizeSyncRunStatus(value: unknown): SyncTransportRunStatus |
     message: firstStringField([record], ["message", "status_message", "statusMessage"]) ?? summary,
     started_at: runStartedAt,
     completed_at: runCompletedAt,
-    duration_seconds: numberField(record, ["duration_seconds", "durationSeconds", "elapsed_seconds", "elapsedSeconds"]),
-    duration_ms: numberField(record, ["duration_ms", "durationMs", "elapsed_ms", "elapsedMs"]),
+    duration_seconds: durationSeconds,
+    duration_ms: durationMs,
     timing: timingField(record),
+    phase_timings: phaseTimings,
     transfer_counts: transferCounts,
+    total_received_bytes: totalReceivedBytes,
+    total_served_bytes: totalServedBytes,
+    time_to_first_artifact_ms: timeToFirstArtifactMs,
+    throughput_bytes_per_second: throughputBytesPerSecond,
     error: explicitError,
     project_results: projectResults,
     manifest_errors: manifestErrors,

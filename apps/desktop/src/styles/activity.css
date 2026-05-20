@@ -339,6 +339,36 @@
   color: var(--muted);
 }
 
+.activity-sync-transfer-results {
+  display: grid;
+  gap: 0.28rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.activity-sync-transfer-result {
+  display: flex;
+  gap: 0.45rem;
+  align-items: baseline;
+  justify-content: space-between;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.activity-sync-transfer-result__artifact {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.activity-sync-transfer-result__metrics {
+  flex: 0 0 auto;
+  color: var(--text);
+  font-weight: 760;
+  white-space: nowrap;
+}
+
 .activity-sync-field {
   display: grid;
   gap: 0.45rem;

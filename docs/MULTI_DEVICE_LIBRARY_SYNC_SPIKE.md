@@ -387,6 +387,58 @@ Costs:
 
 These mechanisms should be evaluated as discovery and pairing aids, not as the core product protocol.
 
+## Transport Bake-Off For #118
+
+#118 should compare candidate transport and blob layers without moving library truth out of TuneForge's semantic manifests. The transport can discover peers, authenticate sessions, move bytes, expose progress, resume work, and report evidence. It must not become the owner of projects, revisions, conflicts, tombstones, or app state. `project_manifest`, `artifact_manifest`, `entity_revision`, `delete_tombstone`, and SHA-256 verification remain the source of truth across all options.
+
+No exact measured bake-off numbers are present in this document yet. The current desktop custom baseline now records enough evidence to run manual before/after comparisons, but the table below should stay empty or `TBD` until someone captures real runs on named devices and datasets.
+
+The default recommendation is to keep the custom LAN baseline as the control and run an Iroh follow-up spike unless research finds a blocker. Current research did not show a blocker: Iroh is Rust-native, dual MIT/Apache-2.0 licensed, provides encrypted QUIC peer connections with direct and relay paths, and `iroh-blobs` provides content-addressed verified streaming, range requests, and resumable blob downloads. The main Iroh risk is integration work: Tauri desktop and Android lifecycle, storage, relay policy, and keeping Iroh BLAKE3 blob IDs separate from TuneForge's SHA-256 sync contract.
+
+Research notes as of 2026-05-20:
+
+- [Iroh documentation](https://docs.iroh.computer/what-is-iroh) describes Rust-native encrypted QUIC connections, peer discovery, NAT traversal, relay fallback, and composable protocols such as `iroh-blobs`; the [Iroh repository](https://github.com/n0-computer/iroh) is dual licensed MIT/Apache-2.0.
+- [`iroh-blobs`](https://docs.iroh.computer/protocols/blobs) is content-addressed with BLAKE3 and supports verified streaming, range requests, and resumable downloads. TuneForge can use those as transport internals only; SHA-256 remains the manifest contract.
+- [Ouisync developer docs](https://ouisync.net/developers/) describe a Rust peer-to-peer sync library with Kotlin and Dart/Flutter bindings and MPL-2.0 licensing. It is mobile-relevant, but it is a managed repository/file sync substrate rather than TuneForge semantics.
+- [Syncthing docs](https://docs.syncthing.net/v2.0.0/users/syncing.html) describe block exchange and file-conflict behavior, and its [specs](https://docs.syncthing.net/v2.0.0/specs/index.html) cover local/global discovery and relay protocols, but it is MPL-2.0, Go-based, folder-oriented, and the [official Syncthing Android app has been discontinued](https://forum.syncthing.net/t/discontinuing-syncthing-android/23002). A Syncthing-managed bundle is therefore a desktop comparison/reference, not the primary product boundary.
+
+### Baseline Evidence Fields
+
+The current custom desktop transport records run-level and phase-level evidence that should be copied into bake-off notes before testing another candidate against the same dataset:
+
+| Evidence area | Recorded fields | How to use it |
+| --- | --- | --- |
+| Run identity and before/after timing | `runId`, `peerDeviceId`, `remoteDeviceId`, `startedAt`, `completedAt`, `durationMs`, `status`, `message` | Tie every manual measurement to one sync run and compare start/end wall-clock duration across candidates. |
+| Manifest exchange | `localManifestCount`, `remoteManifestCount`, `manifestErrors` | Confirm each candidate compared the same manifest set and did not hide export/import errors. |
+| Project import outcome | `importedProjectCount`, `skippedProjectCount`, `failedProjectCount`, `projectResults`, `importedProjects` | Compare semantic results, not only transfer speed. A faster transport that imports fewer projects failed the bake-off. |
+| Artifact transfer outcome | `receivedArtifacts[]`, `transferCounts.requested`, `transferCounts.received`, `transferCounts.alreadyStaged`, `transferCounts.failed`, `transferCounts.receivedBytes`, `transferCounts.alreadyStagedBytes` | Separate cold transfers from reused staged content and quantify bytes moved versus bytes already present. |
+| Artifact-level verification | `receivedArtifacts[].artifactId`, `contentSha256`, `sizeBytes`, `status`, `message` | Prove received bytes match the semantic artifact SHA-256 before import. |
+| Transport phase timing evidence | `phaseTimings[]` / `phase_timings[]` entries with `phase`, `projectId`, `artifactId`, `startedAt`, `completedAt`, and `durationMs` | Compare discovery/handshake, manifest exchange, staging checks, transfers, staging, reconciliation, cleanup, and serving phases. |
+| Backend reconciliation timing | `include_timing_evidence=true` on apply requests; response `timing_evidence[]` with `phase`, `duration_ms`, `action_type`, `item_type`, `item_id`, `project_id`, `status`, and `details` | Separate transport time from backend plan/apply/action/staging-cleanup time. |
+| Resumability evidence | `alreadyStaged`, `alreadyStagedBytes`, artifact statuses `already_staged`, `received`, or `failed` | The custom baseline currently proves full verified staged-content reuse on rerun; it does not prove mid-artifact byte-range resume. |
+
+### Candidate Comparison
+
+| Candidate | Performance | Resumability | Lifecycle | Packaging | Licensing | Mobile feasibility | Semantic-manifest fit | Recommendation |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Custom LAN baseline | Measure with current `durationMs`, `transferCounts`, `receivedBytes`, and `phaseTimings` / `phase_timings`; same-LAN TCP/Noise is a useful lower-complexity control but not a WAN or relay benchmark. | Reuses fully verified content-addressed staging via `already_staged`; no proven mid-artifact byte-range resume. | Simple Tauri-owned listener/session lifecycle; easy to pause, stop, and surface in existing Activity UI. | Already in the Tauri/Rust desktop shell with limited dependency surface; desktop-only today. | Current Rust crates are already tracked in notices; no new managed sync runtime. | Android stubs exist, but mobile lifecycle, background networking, and permissions are not solved. | Excellent because it already exchanges TuneForge manifests, inventories, tombstones, and staged artifacts. | Keep as the control implementation for every bake-off run. |
+| Iroh | Needs measured runs, but QUIC, direct paths, relay fallback, and blob transfer are a strong match for large artifacts. | `iroh-blobs` supports verified streaming, range requests, and resumable downloads; spike must prove this against WAV stems and interrupted transfers. | Requires endpoint/router lifecycle, relay policy, local-only/offline behavior, and status integration inside Tauri. | Rust crates fit the shell; Android build, storage backend, and binary size need proof. | Dual MIT/Apache-2.0 is the cleanest candidate against project policy. | Iroh targets mobile, but TuneForge should integrate from Rust/Tauri rather than relying on immature non-Rust bindings. | Strong if Iroh blob IDs remain transport-local and TuneForge SHA-256 manifests stay authoritative. | Preferred follow-up spike unless lifecycle, package size, relay policy, or mobile build research finds a blocker. |
+| Ouisync | Needs measured runs; likely useful for repository sync comparison, but performance must be tested with manifest bundles and large WAV artifacts. | Managed repository sync may reduce custom resume work, but TuneForge must verify how partial content, conflicts, and retries surface to the app. | More substrate-owned lifecycle and access-control behavior to reconcile with TuneForge pairing and trust. | Rust library with mobile-relevant bindings, but repository storage and service shape add integration surface. | MPL-2.0 requires explicit policy and notice review before runtime adoption. | Stronger mobile story than Syncthing-managed bundle because Kotlin and Dart/Flutter bindings exist. | Medium: can carry a TuneForge sync bundle, but its repository/conflict model must not replace entity revisions or tombstones. | Spike only if Iroh has a blocker or if managed repository sync becomes the main risk to compare. |
+| Syncthing-managed sync bundle | Mature block exchange makes it a useful reference; measure only a sync-safe bundle, never the app data directory or SQLite. | Strong block-level reuse and temporary-file behavior, but semantics are file-level and conflict files are not TuneForge conflicts. | Harder: bundled or external daemon, REST/admin surface, background process supervision, upgrades, and user configuration. | Go binary/service packaging is heavier than Rust crates and may vary by desktop platform. | MPL-2.0 requires explicit policy and notice review before bundling. | Weak for primary mobile sync because the official Android wrapper was discontinued; forks or Termux are not a product baseline. | Medium-low: acceptable only if it transports manifests/blobs and TuneForge still imports through services. | Use as desktop-focused comparison and design reference, not the default implementation. |
+
+### Manual Measurement Template
+
+Fill this table with real evidence from the fields above. Do not enter estimated throughput or invented durations.
+
+| Date | Candidate | Scenario | Devices and network | Dataset | Before/control evidence | After/result evidence | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| TBD | Custom LAN baseline | Cold import | OS, CPU, storage, Wi-Fi/Ethernet, direct or relay path | Project count, artifact count, total bytes, largest artifact bytes, WAV/stem mix | `runId`, `startedAt`, local/remote manifest counts, staged bytes before run | `completedAt`, `durationMs`, transfer counts, import counts, manifest errors, `phaseTimings` / `phase_timings`, backend timing evidence | Control row for comparison. |
+| TBD | Iroh | Same scenario as control | Same device pair and network where possible | Same dataset | Same baseline fields plus Iroh transport/blob identifiers used internally | Same result fields; include range/resume evidence for interrupted transfer rerun | Prefer if it matches semantics and improves lifecycle or resumability without policy blockers. |
+| TBD | Ouisync | Same scenario as control | Same device pair and network where possible | Same dataset | Same baseline fields plus repository state before run | Same result fields; note repository conflicts, retries, and import verification | Use to test managed repository tradeoffs. |
+| TBD | Syncthing-managed bundle | Same scenario as control | Same device pair and network where possible | Same sync bundle only | Bundle index/block state and TuneForge manifest counts | TuneForge import result after bundle arrival, plus Syncthing status evidence | Desktop/reference only unless mobile packaging risk changes. |
+
+The interrupted lyrics-job convergence edge case tracked by #163 is a sync v2 follow-up and does not block #118. Completed lyrics revisions and artifacts should still sync as durable library state, but interrupted runnable jobs are not part of the v1 sync truth and should not determine the transport bake-off outcome.
+
 ## Recommended Direction
 
 Build a TuneForge-owned semantic sync layer with a swappable transport/blob layer. The sync layer should operate above backend persistence and below UI workflows. It should treat Linux desktop, macOS desktop, and mobile as peers in the same trusted sync group.
@@ -421,7 +473,7 @@ Recommended spike sequence:
 7. Edit-locking for syncing projects until minimum usable data is verified.
 8. Linux-to-macOS desktop sync on the same LAN.
 9. Three-peer desktop sync behavior.
-10. Transport bake-off: custom LAN baseline, Iroh, Ouisync, and possibly a Syncthing-managed sync bundle.
+10. Transport bake-off: keep the custom LAN baseline as the control, prefer an Iroh follow-up spike, and compare Ouisync plus a Syncthing-managed sync bundle if the evidence or blockers justify it.
 11. Mobile library sync and WAV playback/battery validation.
 
 ## Security Model

@@ -6,6 +6,7 @@ import {
   type SyncPairingPayloadSchema,
   type SyncTransportProjectResult,
   type SyncTransportRunStatus,
+  type SyncTransportTransferResult,
   type SyncTrustedPeerSchema,
 } from "../../lib/api";
 import { formatLocalDateTime, normalizeApiDateTime } from "../../lib/datetime";
@@ -151,6 +152,10 @@ function syncResultKey(status: SyncTransportRunStatus | null | undefined) {
     completed: status.completed_at,
     durationSeconds: status.duration_seconds,
     durationMs: status.duration_ms,
+    timeToFirstArtifactMs: status.time_to_first_artifact_ms,
+    totalReceivedBytes: status.total_received_bytes,
+    totalServedBytes: status.total_served_bytes,
+    throughputBytesPerSecond: status.throughput_bytes_per_second,
     status: status.status,
     message: status.message,
     projects: projectResults.map((result) => [
@@ -161,7 +166,15 @@ function syncResultKey(status: SyncTransportRunStatus | null | undefined) {
       result.is_final ?? null,
       result.counters ?? null,
     ]),
-    receivedArtifacts: status.received_artifacts.length,
+    receivedArtifacts: status.received_artifacts.map((artifact) => [
+      artifact.artifact_id,
+      artifact.status,
+      artifact.size_bytes ?? null,
+      artifact.started_at ?? null,
+      artifact.completed_at ?? null,
+      artifact.duration_ms ?? null,
+      artifact.throughput_bytes_per_second ?? null,
+    ]),
     remoteManifests: status.remote_manifest_count,
     localManifests: status.local_manifest_count,
     importedProjects: status.imported_project_count,
@@ -185,6 +198,36 @@ function formatSyncDuration(seconds: number | null | undefined) {
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = Math.round(seconds % 60).toString().padStart(2, "0");
   return `${minutes}:${remainingSeconds}`;
+}
+
+function formatDurationMs(milliseconds: number | null | undefined) {
+  if (typeof milliseconds !== "number" || !Number.isFinite(milliseconds) || milliseconds < 0) {
+    return null;
+  }
+  if (milliseconds < 1000) {
+    return `${Math.round(milliseconds)} ms`;
+  }
+  return formatSyncDuration(milliseconds / 1000);
+}
+
+function formatByteCount(bytes: number | null | undefined) {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) {
+    return null;
+  }
+  if (bytes < 1000) {
+    return `${Math.round(bytes)} B`;
+  }
+  if (bytes < 1_000_000) {
+    const kilobytes = bytes / 1000;
+    return `${kilobytes < 10 ? kilobytes.toFixed(1) : Math.round(kilobytes)} KB`;
+  }
+  const megabytes = bytes / 1_000_000;
+  return `${megabytes < 10 ? megabytes.toFixed(1) : Math.round(megabytes)} MB`;
+}
+
+function formatThroughput(bytesPerSecond: number | null | undefined) {
+  const formatted = formatByteCount(bytesPerSecond);
+  return formatted ? `${formatted}/s` : null;
 }
 
 function syncRunDurationSeconds(status: SyncTransportRunStatus) {
@@ -224,6 +267,15 @@ function syncRunProjectCounterText(status: SyncTransportRunStatus) {
   return counters.length ? counters.join(", ") : null;
 }
 
+function syncRunTotalTransferBytes(status: SyncTransportRunStatus) {
+  const receivedBytes = typeof status.total_received_bytes === "number" ? status.total_received_bytes : null;
+  const servedBytes = typeof status.total_served_bytes === "number" ? status.total_served_bytes : null;
+  if (receivedBytes === null && servedBytes === null) {
+    return null;
+  }
+  return (receivedBytes ?? 0) + (servedBytes ?? 0);
+}
+
 function syncRunSummaryText(status: SyncTransportRunStatus | null | undefined) {
   if (!status) {
     return null;
@@ -245,6 +297,18 @@ function syncRunSummaryText(status: SyncTransportRunStatus | null | undefined) {
   const counters = syncRunProjectCounterText(status);
   if (counters) {
     parts.push(counters);
+  }
+  const timeToFirstArtifact = formatDurationMs(status.time_to_first_artifact_ms);
+  if (timeToFirstArtifact) {
+    parts.push(`TTFA ${timeToFirstArtifact}`);
+  }
+  const totalTransferBytes = formatByteCount(syncRunTotalTransferBytes(status));
+  if (totalTransferBytes) {
+    parts.push(`${totalTransferBytes} total`);
+  }
+  const throughput = formatThroughput(status.throughput_bytes_per_second);
+  if (throughput) {
+    parts.push(throughput);
   }
   return parts.length ? parts.join(" | ") : null;
 }
@@ -294,6 +358,19 @@ function syncProjectIdLabel(projectId: string) {
   return `${normalized.slice(0, 18)}...${normalized.slice(-8)}`;
 }
 
+function syncTransferMetricText(artifact: SyncTransportTransferResult) {
+  const parts: string[] = [];
+  const duration = formatDurationMs(artifact.duration_ms);
+  if (duration) {
+    parts.push(duration);
+  }
+  const throughput = formatThroughput(artifact.throughput_bytes_per_second);
+  if (throughput) {
+    parts.push(throughput);
+  }
+  return parts.length ? parts.join(" / ") : null;
+}
+
 function syncProjectResultList(status: SyncTransportRunStatus | null | undefined) {
   const results = status ? mergeSyncProjectResults(status.project_results, status.manifest_errors) : [];
   if (!results.length) {
@@ -311,6 +388,27 @@ function syncProjectResultList(status: SyncTransportRunStatus | null | undefined
             {syncProjectIdLabel(result.project_id)}
           </span>
           <span className="activity-sync-project-result__message">{syncProjectResultText(result)}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function syncTransferResultList(status: SyncTransportRunStatus | null | undefined) {
+  const results = status?.received_artifacts
+    .map((artifact) => [artifact, syncTransferMetricText(artifact)] as const)
+    .filter((entry): entry is readonly [SyncTransportTransferResult, string] => entry[1] !== null) ?? [];
+  if (!results.length) {
+    return null;
+  }
+  return (
+    <ul className="activity-sync-transfer-results" aria-label="Last sync artifact transfers">
+      {results.map(([artifact, metrics], index) => (
+        <li className="activity-sync-transfer-result" key={`${artifact.artifact_id}-${index}`}>
+          <span className="activity-sync-transfer-result__artifact" title={artifact.artifact_id}>
+            {syncProjectIdLabel(artifact.artifact_id)}
+          </span>
+          <span className="activity-sync-transfer-result__metrics">{metrics}</span>
         </li>
       ))}
     </ul>
@@ -368,7 +466,7 @@ export function ActivitySyncPanel() {
   const lastSyncStatus = listenerSyncResult
     ? syncStatusText(listenerSyncResult, peersById)
     : listenerQuery.data?.last_status ?? syncStatusText(listenerSyncResult, peersById);
-  const visibleSyncResult = showListenerSyncResult ? listenerSyncResult : lastSyncResult ?? listenerSyncResult;
+  const visibleSyncResult = showListenerSyncResult ? listenerSyncResult : lastSyncResult;
   const displayedLastSyncMessage = !showListenerSyncResult
     ? lastSyncMessage ?? lastSyncStatus
     : lastSyncStatus;
@@ -485,7 +583,7 @@ export function ActivitySyncPanel() {
     onError: () => {
       setLastSyncMessage("Sync now failed.");
       setLastSyncResult(null);
-      setHiddenListenerSyncKey(null);
+      setHiddenListenerSyncKey(listenerSyncKey);
     },
   });
 
@@ -570,6 +668,7 @@ export function ActivitySyncPanel() {
                 <span>{displayedLastSyncMessage}</span>
                 {visibleSyncSummary ? <small>{visibleSyncSummary}</small> : null}
                 {syncProjectResultList(visibleSyncResult)}
+                {syncTransferResultList(visibleSyncResult)}
               </dd>
             </div>
             {lastListenerUpdatedAt ? (

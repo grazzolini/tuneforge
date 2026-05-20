@@ -59,6 +59,10 @@ pub struct SyncTransportTransferResult {
     pub artifact_id: String,
     pub content_sha256: String,
     pub size_bytes: u64,
+    pub started_at: String,
+    pub completed_at: String,
+    pub duration_ms: u64,
+    pub throughput_bytes_per_second: f64,
     pub status: String,
     pub message: Option<String>,
 }
@@ -112,10 +116,14 @@ pub struct SyncTransportSyncResult {
     pub received_artifacts: Vec<SyncTransportTransferResult>,
     pub transfer_counts: SyncTransportTransferCounts,
     pub served_artifact_requests: u64,
+    pub total_received_bytes: u64,
+    pub total_served_bytes: u64,
+    pub time_to_first_artifact_ms: Option<u64>,
+    pub throughput_bytes_per_second: f64,
     pub remote_manifest_count: usize,
     pub local_manifest_count: usize,
     pub manifest_errors: Vec<SyncTransportManifestError>,
-    pub timings: Vec<SyncTransportTimingEvidence>,
+    pub phase_timings: Vec<SyncTransportTimingEvidence>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -165,7 +173,7 @@ mod desktop {
     const DEFAULT_LISTENER_PORT: u16 = 47619;
     const ENDPOINT_SCHEME: &str = "tuneforge-sync+tcp://";
     const PAIRING_PROTOCOL_VERSION: &str = "tuneforge-sync-v1";
-    const TRANSPORT_PROTOCOL_VERSION: &str = "tuneforge-sync-transport-v1";
+    const TRANSPORT_PROTOCOL_VERSION: &str = "tuneforge-sync-transport-v2";
     const TRANSPORT_HANDSHAKE_CHALLENGE_TYPE: &str = "transport_handshake";
     const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
     const READ_TIMEOUT: Duration = Duration::from_secs(45);
@@ -173,7 +181,9 @@ mod desktop {
     const ACCEPT_SLEEP: Duration = Duration::from_millis(100);
     const MAX_RAW_FRAME: usize = 65_535;
     const ENCRYPTED_PAYLOAD_CHUNK: usize = 32 * 1024;
-    const ARTIFACT_CHUNK_SIZE: usize = 24 * 1024;
+    const ARTIFACT_CHUNK_SIZE: usize = 32 * 1024;
+    const ENCRYPTED_FRAME_MESSAGE_CHUNK: u8 = 1;
+    const ENCRYPTED_FRAME_ARTIFACT_CHUNK: u8 = 2;
     const PAIRING_OFFER_TTL_SECONDS: u32 = 600;
     const TRANSPORT_HANDSHAKE_TTL_SECONDS: i64 = 60;
     const HTTP_TIMEOUT: Duration = Duration::from_secs(45);
@@ -362,6 +372,7 @@ mod desktop {
             let run_started_at = Utc::now();
             let run_started_instant = Instant::now();
             let mut timings = Vec::new();
+            let mut metrics = SyncRunMetrics::start(run_started_instant);
             let client = BackendClient::new(&self.base_url)?;
             let peer = client
                 .trusted_peer(&payload.peer_device_id)
@@ -432,6 +443,7 @@ mod desktop {
                     &session.remote_device_id,
                     &remote_offer.metadata,
                     &remote_offer.project_manifests,
+                    &mut metrics,
                     &mut timings,
                 );
                 imported_projects = imported.imported_projects;
@@ -446,6 +458,7 @@ mod desktop {
                 &client,
                 &mut connection,
                 &local_offer.project_manifests,
+                &mut metrics,
             )?;
             timings.push(timer.finish());
             let manifest_errors =
@@ -477,10 +490,15 @@ mod desktop {
                 received_artifacts,
                 transfer_counts,
                 served_artifact_requests,
+                total_received_bytes: metrics.total_received_bytes,
+                total_served_bytes: metrics.total_served_bytes,
+                time_to_first_artifact_ms: metrics.time_to_first_artifact_ms(),
+                throughput_bytes_per_second: metrics
+                    .throughput_bytes_per_second(run_started_instant.elapsed()),
                 remote_manifest_count: remote_offer.project_manifests.len(),
                 local_manifest_count,
                 manifest_errors,
-                timings,
+                phase_timings: timings,
             })
         }
     }
@@ -614,6 +632,7 @@ mod desktop {
         let run_started_at = Utc::now();
         let run_started_instant = Instant::now();
         let mut timings = Vec::new();
+        let mut metrics = SyncRunMetrics::start(run_started_instant);
         configure_stream(&stream)?;
         let client = BackendClient::new(&base_url)?;
         let timer = SyncPhaseTimer::start("peer_authentication");
@@ -645,6 +664,7 @@ mod desktop {
             &client,
             &mut connection,
             &local_offer.project_manifests,
+            &mut metrics,
         )?;
         timings.push(timer.finish());
         let imported = import_remote_manifests(
@@ -653,6 +673,7 @@ mod desktop {
             &session.remote_device_id,
             &remote_offer.metadata,
             &remote_offer.project_manifests,
+            &mut metrics,
             &mut timings,
         );
         let import_counts = import_outcome_counts(&imported.imported_projects);
@@ -697,10 +718,15 @@ mod desktop {
             received_artifacts: imported.received_artifacts,
             transfer_counts,
             served_artifact_requests,
+            total_received_bytes: metrics.total_received_bytes,
+            total_served_bytes: metrics.total_served_bytes,
+            time_to_first_artifact_ms: metrics.time_to_first_artifact_ms(),
+            throughput_bytes_per_second: metrics
+                .throughput_bytes_per_second(run_started_instant.elapsed()),
             remote_manifest_count: remote_offer.project_manifests.len(),
             local_manifest_count,
             manifest_errors,
-            timings,
+            phase_timings: timings,
         };
 
         Ok(IncomingSessionResult {
@@ -774,6 +800,98 @@ mod desktop {
         duration.as_millis().min(u128::from(u64::MAX)) as u64
     }
 
+    fn throughput_bytes_per_second(bytes: u64, duration: Duration) -> f64 {
+        if bytes == 0 {
+            return 0.0;
+        }
+        let seconds = duration.as_secs_f64();
+        if seconds <= 0.0 {
+            0.0
+        } else {
+            bytes as f64 / seconds
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct SyncRunMetrics {
+        started_instant: Instant,
+        total_received_bytes: u64,
+        total_served_bytes: u64,
+        first_artifact_at: Option<Duration>,
+    }
+
+    impl SyncRunMetrics {
+        fn start(started_instant: Instant) -> Self {
+            Self {
+                started_instant,
+                total_received_bytes: 0,
+                total_served_bytes: 0,
+                first_artifact_at: None,
+            }
+        }
+
+        fn record_received_artifact_bytes(&mut self, bytes: u64) {
+            self.total_received_bytes = self.total_received_bytes.saturating_add(bytes);
+            self.record_first_artifact_bytes(bytes);
+        }
+
+        fn record_served_artifact_bytes(&mut self, bytes: u64) {
+            self.total_served_bytes = self.total_served_bytes.saturating_add(bytes);
+            self.record_first_artifact_bytes(bytes);
+        }
+
+        fn record_first_artifact_bytes(&mut self, bytes: u64) {
+            if bytes > 0 && self.first_artifact_at.is_none() {
+                self.first_artifact_at = Some(self.started_instant.elapsed());
+            }
+        }
+
+        fn time_to_first_artifact_ms(&self) -> Option<u64> {
+            self.first_artifact_at.map(duration_millis)
+        }
+
+        fn throughput_bytes_per_second(&self, duration: Duration) -> f64 {
+            throughput_bytes_per_second(
+                self.total_received_bytes
+                    .saturating_add(self.total_served_bytes),
+                duration,
+            )
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct TransferTiming {
+        started_at: String,
+        completed_at: String,
+        duration_ms: u64,
+        throughput_bytes_per_second: f64,
+    }
+
+    struct TransferTimer {
+        started_at: DateTime<Utc>,
+        started_instant: Instant,
+    }
+
+    impl TransferTimer {
+        fn start() -> Self {
+            Self {
+                started_at: Utc::now(),
+                started_instant: Instant::now(),
+            }
+        }
+
+        fn finish(self, bytes: u64) -> TransferTiming {
+            let completed_at = Utc::now();
+            let duration = self.started_instant.elapsed();
+            TransferTiming {
+                started_at: self.started_at.to_rfc3339(),
+                completed_at: completed_at.to_rfc3339(),
+                duration_ms: duration_millis(duration),
+                throughput_bytes_per_second: throughput_bytes_per_second(bytes, duration),
+            }
+        }
+    }
+
     #[derive(Clone, Debug, Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct ManifestOffer {
@@ -804,9 +922,6 @@ mod desktop {
             content_sha256: String,
             size_bytes: u64,
         },
-        ArtifactChunk {
-            data: String,
-        },
         ArtifactEnd {
             content_sha256: String,
             size_bytes: u64,
@@ -829,7 +944,6 @@ mod desktop {
                 Self::ManifestOffer(_) => "manifest_offer",
                 Self::ArtifactRequest { .. } => "artifact_request",
                 Self::ArtifactStart { .. } => "artifact_start",
-                Self::ArtifactChunk { .. } => "artifact_chunk",
                 Self::ArtifactEnd { .. } => "artifact_end",
                 Self::Status { .. } => "status",
                 Self::PhaseDone { .. } => "phase_done",
@@ -852,6 +966,16 @@ mod desktop {
         chunk_index: u32,
         chunk_count: u32,
         data: String,
+    }
+
+    enum EncryptedFrame {
+        MessageChunk(EncryptedChunk),
+        ArtifactChunk(Vec<u8>),
+    }
+
+    enum ArtifactTransferFrame {
+        Chunk(Vec<u8>),
+        Message(ProtocolMessage),
     }
 
     struct SecurePeerConnection {
@@ -949,7 +1073,36 @@ mod desktop {
         }
 
         fn read_message(&mut self) -> Result<ProtocolMessage, String> {
-            let first = self.read_encrypted_chunk()?;
+            let first = match self.read_encrypted_frame()? {
+                EncryptedFrame::MessageChunk(chunk) => chunk,
+                EncryptedFrame::ArtifactChunk(_) => {
+                    return Err(
+                        "Received artifact bytes while waiting for a sync transport message."
+                            .to_string(),
+                    );
+                }
+            };
+            self.read_message_from_first_chunk(first)
+        }
+
+        fn send_artifact_chunk(&mut self, chunk: &[u8]) -> Result<(), String> {
+            let plaintext = encode_artifact_chunk_frame(chunk);
+            self.send_encrypted_plaintext(&plaintext)
+        }
+
+        fn read_artifact_transfer_frame(&mut self) -> Result<ArtifactTransferFrame, String> {
+            match self.read_encrypted_frame()? {
+                EncryptedFrame::ArtifactChunk(chunk) => Ok(ArtifactTransferFrame::Chunk(chunk)),
+                EncryptedFrame::MessageChunk(chunk) => self
+                    .read_message_from_first_chunk(chunk)
+                    .map(ArtifactTransferFrame::Message),
+            }
+        }
+
+        fn read_message_from_first_chunk(
+            &mut self,
+            first: EncryptedChunk,
+        ) -> Result<ProtocolMessage, String> {
             if first.chunk_count == 0 {
                 return Err("Encrypted sync transport message has no chunks.".to_string());
             }
@@ -960,7 +1113,15 @@ mod desktop {
             let message_id = first.message_id;
             chunks.push(decode_standard_base64(&first.data)?);
             for expected_index in 1..first.chunk_count {
-                let next = self.read_encrypted_chunk()?;
+                let next = match self.read_encrypted_frame()? {
+                    EncryptedFrame::MessageChunk(chunk) => chunk,
+                    EncryptedFrame::ArtifactChunk(_) => {
+                        return Err(
+                            "Received artifact bytes inside a chunked sync transport message."
+                                .to_string(),
+                        );
+                    }
+                };
                 if next.message_id != message_id || next.chunk_index != expected_index {
                     return Err("Encrypted sync transport chunks arrived out of order.".to_string());
                 }
@@ -975,25 +1136,64 @@ mod desktop {
         }
 
         fn send_encrypted_chunk(&mut self, chunk: &EncryptedChunk) -> Result<(), String> {
-            let plaintext = serde_json::to_vec(chunk)
-                .map_err(|error| format!("Could not encode encrypted chunk: {error}"))?;
+            let plaintext = encode_message_chunk_frame(chunk)?;
+            self.send_encrypted_plaintext(&plaintext)
+        }
+
+        fn send_encrypted_plaintext(&mut self, plaintext: &[u8]) -> Result<(), String> {
             let mut ciphertext = vec![0_u8; plaintext.len() + 1024];
             let written = self
                 .noise
-                .write_message(&plaintext, &mut ciphertext)
+                .write_message(plaintext, &mut ciphertext)
                 .map_err(|error| format!("Noise transport write failed: {error}"))?;
             write_raw_frame(&mut self.stream, &ciphertext[..written])
         }
 
-        fn read_encrypted_chunk(&mut self) -> Result<EncryptedChunk, String> {
+        fn read_encrypted_frame(&mut self) -> Result<EncryptedFrame, String> {
             let ciphertext = read_raw_frame(&mut self.stream)?;
             let mut plaintext = vec![0_u8; MAX_RAW_FRAME];
             let read = self
                 .noise
                 .read_message(&ciphertext, &mut plaintext)
                 .map_err(|error| format!("Noise transport read failed: {error}"))?;
-            serde_json::from_slice(&plaintext[..read])
-                .map_err(|error| format!("Could not decode encrypted chunk: {error}"))
+            decode_encrypted_frame_plaintext(&plaintext[..read])
+        }
+    }
+
+    fn encode_message_chunk_frame(chunk: &EncryptedChunk) -> Result<Vec<u8>, String> {
+        let payload = serde_json::to_vec(chunk)
+            .map_err(|error| format!("Could not encode encrypted chunk: {error}"))?;
+        let mut plaintext = Vec::with_capacity(payload.len() + 1);
+        plaintext.push(ENCRYPTED_FRAME_MESSAGE_CHUNK);
+        plaintext.extend_from_slice(&payload);
+        Ok(plaintext)
+    }
+
+    fn encode_artifact_chunk_frame(chunk: &[u8]) -> Vec<u8> {
+        let mut plaintext = Vec::with_capacity(chunk.len() + 1);
+        plaintext.push(ENCRYPTED_FRAME_ARTIFACT_CHUNK);
+        plaintext.extend_from_slice(chunk);
+        plaintext
+    }
+
+    fn decode_encrypted_frame_plaintext(plaintext: &[u8]) -> Result<EncryptedFrame, String> {
+        let Some((&frame_type, payload)) = plaintext.split_first() else {
+            return Err("Encrypted sync transport frame is empty.".to_string());
+        };
+        match frame_type {
+            ENCRYPTED_FRAME_MESSAGE_CHUNK => {
+                let chunk = serde_json::from_slice(payload)
+                    .map_err(|error| format!("Could not decode encrypted chunk: {error}"))?;
+                Ok(EncryptedFrame::MessageChunk(chunk))
+            }
+            ENCRYPTED_FRAME_ARTIFACT_CHUNK => Ok(EncryptedFrame::ArtifactChunk(payload.to_vec())),
+            // v2 peers reject v1 during auth, but this keeps the error path readable.
+            b'{' => {
+                let chunk = serde_json::from_slice(plaintext)
+                    .map_err(|error| format!("Could not decode encrypted chunk: {error}"))?;
+                Ok(EncryptedFrame::MessageChunk(chunk))
+            }
+            _ => Err("Encrypted sync transport frame has an unsupported type.".to_string()),
         }
     }
 
@@ -1400,6 +1600,7 @@ mod desktop {
         peer_device_id: &str,
         remote_metadata: &Value,
         manifests: &[Value],
+        metrics: &mut SyncRunMetrics,
         timings: &mut Vec<SyncTransportTimingEvidence>,
     ) -> ImportRemoteResult {
         let mut received_artifacts = Vec::new();
@@ -1436,6 +1637,7 @@ mod desktop {
                 manifest,
                 &plan,
                 &mut received_artifacts,
+                metrics,
                 timings,
             );
             imported_projects.push(project_result);
@@ -1498,6 +1700,7 @@ mod desktop {
         manifest: &Value,
         plan: &Value,
         received_artifacts: &mut Vec<SyncTransportTransferResult>,
+        metrics: &mut SyncRunMetrics,
         timings: &mut Vec<SyncTransportTimingEvidence>,
     ) -> SyncTransportProjectResult {
         let project_id = manifest_project_id(manifest);
@@ -1512,6 +1715,7 @@ mod desktop {
                 connection,
                 peer_device_id,
                 &entry.artifact,
+                metrics,
                 timings,
             ) {
                 Ok(result) => {
@@ -1519,10 +1723,9 @@ mod desktop {
                     received_artifacts.push(result);
                 }
                 Err(error) => {
-                    let failed = failed_transfer_result(&entry.artifact, &error);
-                    project_transfers.push(failed.clone());
-                    received_artifacts.push(failed);
-                    transfer_failure.get_or_insert((entry.manifest_project_id, error));
+                    project_transfers.push(error.result.clone());
+                    received_artifacts.push(error.result);
+                    transfer_failure.get_or_insert((entry.manifest_project_id, error.message));
                 }
             }
         }
@@ -2241,21 +2444,42 @@ mod desktop {
         connection: &mut SecurePeerConnection,
         peer_device_id: &str,
         artifact: &RemoteArtifact,
+        metrics: &mut SyncRunMetrics,
         timings: &mut Vec<SyncTransportTimingEvidence>,
-    ) -> Result<SyncTransportTransferResult, String> {
+    ) -> Result<SyncTransportTransferResult, TransferFailure> {
+        let transfer_timer = TransferTimer::start();
         let timer = SyncPhaseTimer::start_artifact("artifact_staging_check", artifact);
         let staged = already_staged_artifact_result(client, artifact);
         timings.push(timer.finish());
-        if let Some(result) = staged? {
-            return Ok(result);
+        match staged {
+            Ok(true) => {
+                return Ok(transfer_result(
+                    artifact,
+                    "already_staged",
+                    Some("Artifact content was already staged and verified locally.".to_string()),
+                    transfer_timer.finish(0),
+                ));
+            }
+            Ok(false) => {}
+            Err(error) => {
+                return Err(transfer_failure(artifact, transfer_timer.finish(0), error));
+            }
         }
-        request_and_stage_artifact(client, connection, peer_device_id, artifact, timings)
+        request_and_stage_artifact(
+            client,
+            connection,
+            peer_device_id,
+            artifact,
+            transfer_timer,
+            metrics,
+            timings,
+        )
     }
 
     fn already_staged_artifact_result(
         client: &BackendClient,
         artifact: &RemoteArtifact,
-    ) -> Result<Option<SyncTransportTransferResult>, String> {
+    ) -> Result<bool, String> {
         let path = format!(
             "/api/v1/sync/artifacts/staging/{}",
             percent_encode_path_segment(&artifact.content_sha256)
@@ -2269,17 +2493,9 @@ mod desktop {
                             .to_string(),
                     );
                 }
-                Ok(Some(SyncTransportTransferResult {
-                    artifact_id: artifact.artifact_id.clone(),
-                    content_sha256: artifact.content_sha256.clone(),
-                    size_bytes: artifact.size_bytes,
-                    status: "already_staged".to_string(),
-                    message: Some(
-                        "Artifact content was already staged and verified locally.".to_string(),
-                    ),
-                }))
+                Ok(true)
             }
-            Err(error) if error.status == Some(404) => Ok(None),
+            Err(error) if error.status == Some(404) => Ok(false),
             Err(error) => Err(format!(
                 "Could not inspect staged sync artifact {}: {error}",
                 artifact.content_sha256
@@ -2292,52 +2508,90 @@ mod desktop {
         connection: &mut SecurePeerConnection,
         peer_device_id: &str,
         artifact: &RemoteArtifact,
+        transfer_timer: TransferTimer,
+        metrics: &mut SyncRunMetrics,
         timings: &mut Vec<SyncTransportTimingEvidence>,
-    ) -> Result<SyncTransportTransferResult, String> {
+    ) -> Result<SyncTransportTransferResult, TransferFailure> {
         let timer = SyncPhaseTimer::start_artifact("artifact_transfer", artifact);
-        connection.send_message(&ProtocolMessage::ArtifactRequest {
+        if let Err(error) = connection.send_message(&ProtocolMessage::ArtifactRequest {
             artifact_id: artifact.artifact_id.clone(),
             content_sha256: artifact.content_sha256.clone(),
             size_bytes: artifact.size_bytes,
-        })?;
+        }) {
+            timings.push(timer.finish());
+            return Err(transfer_failure(artifact, transfer_timer.finish(0), error));
+        }
 
-        match connection.read_message()? {
-            ProtocolMessage::ArtifactStart {
+        match connection.read_message() {
+            Ok(ProtocolMessage::ArtifactStart {
                 artifact_id,
                 content_sha256,
                 size_bytes,
-            } => {
+            }) => {
                 if artifact_id != artifact.artifact_id
                     || content_sha256 != artifact.content_sha256
                     || size_bytes != artifact.size_bytes
                 {
-                    return Err(
-                        "Sync peer artifact response did not match the request.".to_string()
-                    );
+                    timings.push(timer.finish());
+                    return Err(transfer_failure(
+                        artifact,
+                        transfer_timer.finish(0),
+                        "Sync peer artifact response did not match the request.".to_string(),
+                    ));
                 }
             }
-            ProtocolMessage::Error(error) => return Err(error.message),
-            other => {
-                return Err(format!(
-                    "Sync peer sent unexpected artifact response: {}",
-                    other.kind()
+            Ok(ProtocolMessage::Error(error)) => {
+                timings.push(timer.finish());
+                return Err(transfer_failure(
+                    artifact,
+                    transfer_timer.finish(0),
+                    error.message,
                 ));
+            }
+            Ok(other) => {
+                timings.push(timer.finish());
+                return Err(transfer_failure(
+                    artifact,
+                    transfer_timer.finish(0),
+                    format!(
+                        "Sync peer sent unexpected artifact response: {}",
+                        other.kind()
+                    ),
+                ));
+            }
+            Err(error) => {
+                timings.push(timer.finish());
+                return Err(transfer_failure(artifact, transfer_timer.finish(0), error));
             }
         }
 
         let temp_path = temp_artifact_path(&artifact.content_sha256);
         if let Some(parent) = temp_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|error| format!("Could not create sync artifact temp dir: {error}"))?;
+            if let Err(error) = fs::create_dir_all(parent) {
+                timings.push(timer.finish());
+                return Err(transfer_failure(
+                    artifact,
+                    transfer_timer.finish(0),
+                    format!("Could not create sync artifact temp dir: {error}"),
+                ));
+            }
         }
-        let mut file = File::create(&temp_path)
-            .map_err(|error| format!("Could not create sync artifact temp file: {error}"))?;
+        let mut file = match File::create(&temp_path) {
+            Ok(file) => file,
+            Err(error) => {
+                timings.push(timer.finish());
+                return Err(transfer_failure(
+                    artifact,
+                    transfer_timer.finish(0),
+                    format!("Could not create sync artifact temp file: {error}"),
+                ));
+            }
+        };
         let mut hasher = Sha256::new();
         let mut size_bytes = 0_u64;
         let receive_result = loop {
-            match connection.read_message()? {
-                ProtocolMessage::ArtifactChunk { data } => {
-                    let chunk = decode_standard_base64(&data)?;
+            match connection.read_artifact_transfer_frame() {
+                Ok(ArtifactTransferFrame::Chunk(chunk)) => {
                     let next_size_bytes = size_bytes.saturating_add(chunk.len() as u64);
                     if next_size_bytes > artifact.size_bytes {
                         break Err(
@@ -2345,18 +2599,23 @@ mod desktop {
                         );
                     }
                     size_bytes = next_size_bytes;
+                    metrics.record_received_artifact_bytes(chunk.len() as u64);
                     hasher.update(&chunk);
-                    file.write_all(&chunk).map_err(|error| {
-                        format!("Could not write received sync artifact bytes: {error}")
-                    })?;
+                    if let Err(error) = file.write_all(&chunk) {
+                        break Err(format!(
+                            "Could not write received sync artifact bytes: {error}"
+                        ));
+                    }
                 }
-                ProtocolMessage::ArtifactEnd {
+                Ok(ArtifactTransferFrame::Message(ProtocolMessage::ArtifactEnd {
                     content_sha256,
                     size_bytes: peer_size_bytes,
-                } => {
-                    file.flush().map_err(|error| {
-                        format!("Could not flush received sync artifact bytes: {error}")
-                    })?;
+                })) => {
+                    if let Err(error) = file.flush() {
+                        break Err(format!(
+                            "Could not flush received sync artifact bytes: {error}"
+                        ));
+                    }
                     let actual_sha256 = hex_digest(hasher.finalize().as_slice());
                     if content_sha256 != artifact.content_sha256
                         || actual_sha256 != artifact.content_sha256
@@ -2370,22 +2629,26 @@ mod desktop {
                     }
                     break Ok(());
                 }
-                ProtocolMessage::Error(error) => break Err(error.message),
-                other => {
+                Ok(ArtifactTransferFrame::Message(ProtocolMessage::Error(error))) => {
+                    break Err(error.message);
+                }
+                Ok(ArtifactTransferFrame::Message(other)) => {
                     break Err(format!(
                         "Sync peer sent unexpected artifact transfer message: {}",
                         other.kind()
                     ));
                 }
+                Err(error) => break Err(error),
             }
         };
+        let transfer_timing = transfer_timer.finish(size_bytes);
         timings.push(timer.finish());
 
         if let Err(error) = receive_result {
             let cleanup_timer = SyncPhaseTimer::start_artifact("artifact_cleanup", artifact);
             let _ = fs::remove_file(&temp_path);
             timings.push(cleanup_timer.finish());
-            return Err(error);
+            return Err(transfer_failure(artifact, transfer_timing, error));
         }
 
         let body = json!({
@@ -2405,27 +2668,50 @@ mod desktop {
         let cleanup_timer = SyncPhaseTimer::start_artifact("artifact_cleanup", artifact);
         let _ = fs::remove_file(&temp_path);
         timings.push(cleanup_timer.finish());
-        stage_result.map_err(|error| format!("Could not stage received sync artifact: {error}"))?;
+        if let Err(error) = stage_result {
+            return Err(transfer_failure(
+                artifact,
+                transfer_timing,
+                format!("Could not stage received sync artifact: {error}"),
+            ));
+        }
 
-        Ok(SyncTransportTransferResult {
-            artifact_id: artifact.artifact_id.clone(),
-            content_sha256: artifact.content_sha256.clone(),
-            size_bytes: artifact.size_bytes,
-            status: "received".to_string(),
-            message: None,
-        })
+        Ok(transfer_result(artifact, "received", None, transfer_timing))
     }
 
-    fn failed_transfer_result(
+    #[derive(Clone, Debug)]
+    struct TransferFailure {
+        message: String,
+        result: SyncTransportTransferResult,
+    }
+
+    fn transfer_result(
         artifact: &RemoteArtifact,
-        message: &str,
+        status: &str,
+        message: Option<String>,
+        timing: TransferTiming,
     ) -> SyncTransportTransferResult {
         SyncTransportTransferResult {
             artifact_id: artifact.artifact_id.clone(),
             content_sha256: artifact.content_sha256.clone(),
             size_bytes: artifact.size_bytes,
-            status: "failed".to_string(),
-            message: Some(message.to_string()),
+            started_at: timing.started_at,
+            completed_at: timing.completed_at,
+            duration_ms: timing.duration_ms,
+            throughput_bytes_per_second: timing.throughput_bytes_per_second,
+            status: status.to_string(),
+            message,
+        }
+    }
+
+    fn transfer_failure(
+        artifact: &RemoteArtifact,
+        timing: TransferTiming,
+        message: String,
+    ) -> TransferFailure {
+        TransferFailure {
+            result: transfer_result(artifact, "failed", Some(message.clone()), timing),
+            message,
         }
     }
 
@@ -2443,6 +2729,7 @@ mod desktop {
         client: &BackendClient,
         connection: &mut SecurePeerConnection,
         offered_manifests: &[Value],
+        metrics: &mut SyncRunMetrics,
     ) -> Result<u64, String> {
         let offered_artifacts = offered_artifacts_by_id(offered_manifests);
         let mut served = 0_u64;
@@ -2466,7 +2753,7 @@ mod desktop {
                                     "Sync peer request for artifact {artifact_id} does not match the offered manifest."
                                 ));
                             }
-                            send_artifact_response(client, connection, artifact)
+                            send_artifact_response(client, connection, artifact, metrics)
                         });
                     if let Err(error) = result {
                         let _ = connection.send_message(&ProtocolMessage::Error(ProtocolError {
@@ -2494,6 +2781,7 @@ mod desktop {
         client: &BackendClient,
         connection: &mut SecurePeerConnection,
         artifact: &RemoteArtifact,
+        metrics: &mut SyncRunMetrics,
     ) -> Result<(), String> {
         let path = format!(
             "/api/v1/artifacts/{}/stream",
@@ -2523,9 +2811,8 @@ mod desktop {
             }
             actual_size = actual_size.saturating_add(read as u64);
             hasher.update(&buffer[..read]);
-            connection.send_message(&ProtocolMessage::ArtifactChunk {
-                data: STANDARD.encode(&buffer[..read]),
-            })?;
+            connection.send_artifact_chunk(&buffer[..read])?;
+            metrics.record_served_artifact_bytes(read as u64);
         }
 
         let actual_sha256 = hex_digest(hasher.finalize().as_slice());
@@ -2977,6 +3264,25 @@ mod desktop {
     mod tests {
         use super::*;
 
+        fn test_transfer_result(
+            artifact_id: &str,
+            content_sha256: &str,
+            size_bytes: u64,
+            status: &str,
+        ) -> SyncTransportTransferResult {
+            SyncTransportTransferResult {
+                artifact_id: artifact_id.to_string(),
+                content_sha256: content_sha256.to_string(),
+                size_bytes,
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                completed_at: "2026-01-01T00:00:01Z".to_string(),
+                duration_ms: 1_000,
+                throughput_bytes_per_second: size_bytes as f64,
+                status: status.to_string(),
+                message: None,
+            }
+        }
+
         #[test]
         fn endpoint_hint_rejects_unexpected_device_id() {
             let hint = format!("{ENDPOINT_SCHEME}127.0.0.1:3000?device_id=dev_one&v=1");
@@ -3019,6 +3325,21 @@ mod desktop {
                 challenge.get("challenge_nonce").and_then(Value::as_str),
                 Some("remote.noise_hash")
             );
+        }
+
+        #[test]
+        fn artifact_chunks_encode_as_binary_frames_without_json_base64_payloads() {
+            let frame = encode_artifact_chunk_frame(b"binary\0payload");
+
+            assert_eq!(frame.first().copied(), Some(ENCRYPTED_FRAME_ARTIFACT_CHUNK));
+            assert_eq!(&frame[1..], b"binary\0payload");
+            assert!(serde_json::from_slice::<Value>(&frame).is_err());
+            match decode_encrypted_frame_plaintext(&frame).expect("decode artifact frame") {
+                EncryptedFrame::ArtifactChunk(chunk) => {
+                    assert_eq!(chunk, b"binary\0payload");
+                }
+                EncryptedFrame::MessageChunk(_) => panic!("expected binary artifact frame"),
+            }
         }
 
         #[test]
@@ -3384,6 +3705,67 @@ mod desktop {
         }
 
         #[test]
+        fn sync_result_serializes_phase_timings_and_transport_metrics() {
+            let result = SyncTransportSyncResult {
+                run_id: "sync_test".to_string(),
+                peer_device_id: "dev_peer".to_string(),
+                remote_device_id: "dev_remote".to_string(),
+                status: "completed".to_string(),
+                message: "done".to_string(),
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                completed_at: "2026-01-01T00:00:02Z".to_string(),
+                duration_ms: 2_000,
+                project_results: Vec::new(),
+                imported_projects: Vec::new(),
+                imported_project_count: 0,
+                skipped_project_count: 0,
+                failed_project_count: 0,
+                received_artifacts: Vec::new(),
+                transfer_counts: SyncTransportTransferCounts::default(),
+                served_artifact_requests: 1,
+                total_received_bytes: 30,
+                total_served_bytes: 70,
+                time_to_first_artifact_ms: Some(250),
+                throughput_bytes_per_second: 50.0,
+                remote_manifest_count: 0,
+                local_manifest_count: 0,
+                manifest_errors: Vec::new(),
+                phase_timings: vec![SyncTransportTimingEvidence {
+                    phase: "artifact_transfer".to_string(),
+                    project_id: Some("proj_one".to_string()),
+                    artifact_id: Some("art_one".to_string()),
+                    started_at: "2026-01-01T00:00:00Z".to_string(),
+                    completed_at: "2026-01-01T00:00:01Z".to_string(),
+                    duration_ms: 1_000,
+                }],
+            };
+
+            let value = serde_json::to_value(result).expect("serialize sync result");
+
+            assert!(value.get("phaseTimings").is_some());
+            assert!(value.get("timings").is_none());
+            assert_eq!(value.get("totalReceivedBytes"), Some(&json!(30)));
+            assert_eq!(value.get("totalServedBytes"), Some(&json!(70)));
+            assert_eq!(value.get("timeToFirstArtifactMs"), Some(&json!(250)));
+            assert_eq!(value.get("throughputBytesPerSecond"), Some(&json!(50.0)));
+        }
+
+        #[test]
+        fn transfer_result_serializes_timing_and_throughput() {
+            let result = test_transfer_result("art_one", "hash_a", 10, "received");
+
+            let value = serde_json::to_value(result).expect("serialize transfer result");
+
+            assert_eq!(value.get("startedAt"), Some(&json!("2026-01-01T00:00:00Z")));
+            assert_eq!(
+                value.get("completedAt"),
+                Some(&json!("2026-01-01T00:00:01Z"))
+            );
+            assert_eq!(value.get("durationMs"), Some(&json!(1_000)));
+            assert_eq!(value.get("throughputBytesPerSecond"), Some(&json!(10.0)));
+        }
+
+        #[test]
         fn sync_manifest_errors_include_local_and_peer_export_failures() {
             let local_errors = vec![SyncTransportManifestError {
                 project_id: "proj_local".to_string(),
@@ -3421,33 +3803,12 @@ mod desktop {
         #[test]
         fn available_content_sha256_deduplicates_received_and_already_staged_artifacts() {
             let received_artifacts = vec![
+                test_transfer_result("art_one", "hash_b", 10, "received"),
+                test_transfer_result("art_two", "hash_a", 20, "already_staged"),
+                test_transfer_result("art_three", "hash_b", 10, "already_staged"),
                 SyncTransportTransferResult {
-                    artifact_id: "art_one".to_string(),
-                    content_sha256: "hash_b".to_string(),
-                    size_bytes: 10,
-                    status: "received".to_string(),
-                    message: None,
-                },
-                SyncTransportTransferResult {
-                    artifact_id: "art_two".to_string(),
-                    content_sha256: "hash_a".to_string(),
-                    size_bytes: 20,
-                    status: "already_staged".to_string(),
-                    message: None,
-                },
-                SyncTransportTransferResult {
-                    artifact_id: "art_three".to_string(),
-                    content_sha256: "hash_b".to_string(),
-                    size_bytes: 10,
-                    status: "already_staged".to_string(),
-                    message: None,
-                },
-                SyncTransportTransferResult {
-                    artifact_id: "art_failed".to_string(),
-                    content_sha256: "hash_c".to_string(),
-                    size_bytes: 30,
-                    status: "failed".to_string(),
                     message: Some("transfer failed".to_string()),
+                    ..test_transfer_result("art_failed", "hash_c", 30, "failed")
                 },
             ];
 
@@ -3460,26 +3821,11 @@ mod desktop {
         #[test]
         fn transfer_counts_summarizes_received_reused_and_failed_transfers() {
             let counts = transfer_counts(&[
+                test_transfer_result("art_one", "hash_a", 10, "received"),
+                test_transfer_result("art_two", "hash_b", 20, "already_staged"),
                 SyncTransportTransferResult {
-                    artifact_id: "art_one".to_string(),
-                    content_sha256: "hash_a".to_string(),
-                    size_bytes: 10,
-                    status: "received".to_string(),
-                    message: None,
-                },
-                SyncTransportTransferResult {
-                    artifact_id: "art_two".to_string(),
-                    content_sha256: "hash_b".to_string(),
-                    size_bytes: 20,
-                    status: "already_staged".to_string(),
-                    message: None,
-                },
-                SyncTransportTransferResult {
-                    artifact_id: "art_three".to_string(),
-                    content_sha256: "hash_c".to_string(),
-                    size_bytes: 30,
-                    status: "failed".to_string(),
                     message: Some("transfer failed".to_string()),
+                    ..test_transfer_result("art_three", "hash_c", 30, "failed")
                 },
             ]);
 

@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Artifact, Project, SyncDeleteTombstone
+from app.models import Artifact, Project, SyncDeleteTombstone, SyncEntityRevision
 from app.services.paths import project_root
 
 LOCAL_METADATA_PATH_KEYS = {
@@ -88,7 +88,30 @@ def get_sync_metadata(session: Session) -> SyncMetadataResult:
             )
         )
     )
-    delete_tombstones = _list_delete_tombstones(session)
+    entity_revisions = list(
+        session.scalars(
+            select(SyncEntityRevision).order_by(
+                SyncEntityRevision.project_id.asc(),
+                SyncEntityRevision.updated_at.asc(),
+                SyncEntityRevision.id.asc(),
+            )
+        )
+    )
+    live_targets = _live_target_updated_at(projects, artifacts, entity_revisions)
+    all_delete_tombstones = _list_delete_tombstones(session)
+    project_resurrection_windows = _project_resurrection_windows_for_live_targets(
+        projects,
+        all_delete_tombstones,
+    )
+    delete_tombstones = [
+        tombstone
+        for tombstone in all_delete_tombstones
+        if not _live_target_supersedes_tombstone(
+            tombstone,
+            live_targets,
+            project_resurrection_windows=project_resurrection_windows,
+        )
+    ]
 
     return SyncMetadataResult(
         projects=[_project_metadata(project) for project in projects],
@@ -173,6 +196,74 @@ def _list_delete_tombstones(session: Session) -> list[SyncDeleteTombstone]:
             )
         )
     )
+
+
+def _live_target_updated_at(
+    projects: list[Project],
+    artifacts: list[Artifact],
+    entity_revisions: list[SyncEntityRevision],
+) -> dict[tuple[str, str], datetime]:
+    targets = {("project", project.id): project.updated_at for project in projects}
+    targets.update({("artifact", artifact.id): artifact.created_at for artifact in artifacts})
+    targets.update({
+        ("entity_revision", revision.id): revision.updated_at for revision in entity_revisions
+    })
+    return targets
+
+
+def _live_target_supersedes_tombstone(
+    tombstone: SyncDeleteTombstone,
+    live_targets: dict[tuple[str, str], datetime],
+    *,
+    project_resurrection_windows: dict[str, tuple[datetime, datetime]],
+) -> bool:
+    target_updated_at = live_targets.get((tombstone.target_type, tombstone.target_id))
+    if target_updated_at is None:
+        return False
+    tombstone_deleted_at = _as_utc(tombstone.deleted_at)
+    if _as_utc(target_updated_at) > tombstone_deleted_at:
+        return True
+    return _tombstone_is_inside_project_resurrection_window(
+        tombstone_deleted_at,
+        project_resurrection_windows.get(tombstone.project_id),
+    )
+
+
+def _project_resurrection_windows_for_live_targets(
+    projects: list[Project],
+    tombstones: list[SyncDeleteTombstone],
+) -> dict[str, tuple[datetime, datetime]]:
+    project_updated_at = {project.id: _as_utc(project.updated_at) for project in projects}
+    windows: dict[str, tuple[datetime, datetime]] = {}
+    for tombstone in tombstones:
+        if tombstone.target_type != "project" or tombstone.target_id != tombstone.project_id:
+            continue
+        live_updated_at = project_updated_at.get(tombstone.project_id)
+        if live_updated_at is None:
+            continue
+        tombstone_deleted_at = _as_utc(tombstone.deleted_at)
+        if live_updated_at <= tombstone_deleted_at:
+            continue
+        existing = windows.get(tombstone.project_id)
+        if existing is None or tombstone_deleted_at > existing[0]:
+            windows[tombstone.project_id] = (tombstone_deleted_at, live_updated_at)
+    return windows
+
+
+def _tombstone_is_inside_project_resurrection_window(
+    tombstone_deleted_at: datetime,
+    project_resurrection_window: tuple[datetime, datetime] | None,
+) -> bool:
+    if project_resurrection_window is None:
+        return False
+    project_deleted_at, project_updated_at = project_resurrection_window
+    return project_deleted_at <= tombstone_deleted_at < project_updated_at
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _project_relative_artifact_path(artifact: Artifact) -> str | None:

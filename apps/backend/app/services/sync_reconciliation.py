@@ -221,16 +221,27 @@ def plan_sync_reconciliation(
             ignored_remote_tombstones.append((tombstone, reason))
 
     fresh_remote_tombstones: list[_RemoteTombstone] = []
+    remote_project_resurrection_windows = _project_resurrection_windows_for_tombstones(
+        valid_remote_tombstones,
+        local=local,
+        remote=remote,
+        include_remote=False,
+    )
     for tombstone in valid_remote_tombstones:
-        if _project_tombstone_is_older_than_live_project(
-            target_type=tombstone.target_type,
-            project_id=tombstone.project_id,
-            deleted_at=tombstone.deleted_at,
-            local_projects=local.projects,
-            remote_projects=remote.projects,
+        if _tombstone_is_older_than_live_target(
+            tombstone,
+            local=local,
+            remote=remote,
+            include_remote=False,
+            project_resurrection_window=remote_project_resurrection_windows.get(tombstone.project_id),
         ):
+            reason = (
+                "Project delete tombstone is older than a live project."
+                if tombstone.target_type == ITEM_PROJECT
+                else "Delete tombstone is older than a live sync target."
+            )
             ignored_remote_tombstones.append(
-                (tombstone, "Project delete tombstone is older than a live project manifest.")
+                (tombstone, reason)
             )
         else:
             fresh_remote_tombstones.append(tombstone)
@@ -239,8 +250,8 @@ def plan_sync_reconciliation(
     effective_tombstones = _effective_tombstone_targets(
         local.tombstones,
         valid_remote_tombstones,
-        local_projects=local.projects,
-        remote_projects=remote.projects,
+        local=local,
+        remote=remote,
     )
 
     for tombstone, reason in sorted(ignored_remote_tombstones, key=lambda item: _remote_tombstone_sort_key(item[0])):
@@ -324,6 +335,19 @@ def plan_sync_reconciliation(
             and local_revision is not None
             and local_revision.project_id == revision.project_id
             and _local_revision_content_sha256(local_revision) == revision.content_sha256
+        ):
+            continue
+        if (
+            revision.project_id in remote.project_manifests_by_id
+            and revision.revision_id in remote.manifest_revision_ids_by_project.get(revision.project_id, frozenset())
+            and revision.project_id not in planned_project_ids
+            and _has_imported_local_project(local, revision.project_id)
+            and not _is_deleted(
+                ITEM_ENTITY_REVISION,
+                revision.revision_id,
+                revision.project_id,
+                effective_tombstones,
+            )
         ):
             continue
         if (
@@ -443,6 +467,8 @@ def _has_imported_local_project(local: _LocalState, project_id: str) -> bool:
 
 
 def _is_sync_project_placeholder(project: Project) -> bool:
+    if project.sync_status != PROJECT_SYNC_STATUS_LOCAL:
+        return True
     source_path = (project.source_path or "").strip()
     imported_path = (project.imported_path or "").strip()
     return (
@@ -1893,30 +1919,50 @@ def _effective_tombstone_targets(
     local_tombstones: Iterable[SyncDeleteTombstone],
     remote_tombstones: Iterable[_RemoteTombstone],
     *,
-    local_projects: Mapping[str, Project],
-    remote_projects: Mapping[str, _RemoteProject],
+    local: _LocalState,
+    remote: _RemoteRequest,
 ) -> frozenset[tuple[str, str]]:
     targets: set[tuple[str, str]] = set()
+    local_tombstones = tuple(local_tombstones)
+    remote_tombstones = tuple(remote_tombstones)
+    local_project_resurrection_windows = _project_resurrection_windows_for_tombstones(
+        local_tombstones,
+        local=local,
+        remote=remote,
+        include_remote=True,
+    )
+    remote_project_resurrection_windows = _project_resurrection_windows_for_tombstones(
+        remote_tombstones,
+        local=local,
+        remote=remote,
+        include_remote=False,
+    )
     for local_tombstone in local_tombstones:
         target_type = _normalize_target_type(local_tombstone.target_type)
-        if _project_tombstone_is_older_than_live_project(
+        if _tombstone_fields_are_older_than_live_target(
             target_type=target_type,
+            target_id=local_tombstone.target_id,
             project_id=local_tombstone.project_id,
             deleted_at=local_tombstone.deleted_at,
-            local_projects=local_projects,
-            remote_projects=remote_projects,
+            local=local,
+            remote=remote,
+            include_remote=True,
+            project_resurrection_window=local_project_resurrection_windows.get(local_tombstone.project_id),
         ):
             continue
         targets.add((target_type, local_tombstone.target_id))
         if target_type == ITEM_PROJECT:
             targets.add((ITEM_PROJECT, local_tombstone.project_id))
     for remote_tombstone in remote_tombstones:
-        if _project_tombstone_is_older_than_live_project(
+        if _tombstone_fields_are_older_than_live_target(
             target_type=remote_tombstone.target_type,
+            target_id=remote_tombstone.target_id,
             project_id=remote_tombstone.project_id,
             deleted_at=remote_tombstone.deleted_at,
-            local_projects=local_projects,
-            remote_projects=remote_projects,
+            local=local,
+            remote=remote,
+            include_remote=False,
+            project_resurrection_window=remote_project_resurrection_windows.get(remote_tombstone.project_id),
         ):
             continue
         targets.add((remote_tombstone.target_type, remote_tombstone.target_id))
@@ -1925,37 +1971,201 @@ def _effective_tombstone_targets(
     return frozenset(targets)
 
 
-def _project_tombstone_is_older_than_live_project(
+def _tombstone_is_older_than_live_target(
+    tombstone: object,
+    *,
+    local: _LocalState,
+    remote: _RemoteRequest,
+    include_remote: bool,
+    project_resurrection_window: tuple[datetime, datetime] | None = None,
+) -> bool:
+    target_type = _normalize_target_type(_str_field(tombstone, "target_type", default="") or "")
+    target_id = _str_field(tombstone, "target_id")
+    project_id = _str_field(tombstone, "project_id")
+    if target_id is None or project_id is None:
+        return False
+    return _tombstone_fields_are_older_than_live_target(
+        target_type=target_type,
+        target_id=target_id,
+        project_id=project_id,
+        deleted_at=_first_field(tombstone, "deleted_at", default=None),
+        local=local,
+        remote=remote,
+        include_remote=include_remote,
+        project_resurrection_window=project_resurrection_window,
+    )
+
+
+def _tombstone_fields_are_older_than_live_target(
     *,
     target_type: str,
+    target_id: str,
     project_id: str,
     deleted_at: object,
-    local_projects: Mapping[str, Project],
-    remote_projects: Mapping[str, _RemoteProject],
+    local: _LocalState,
+    remote: _RemoteRequest,
+    include_remote: bool,
+    project_resurrection_window: tuple[datetime, datetime] | None = None,
 ) -> bool:
-    if target_type != ITEM_PROJECT:
-        return False
-
     tombstone_deleted_at = _coerce_datetime(deleted_at)
     if tombstone_deleted_at is None:
         return False
 
-    local_project = local_projects.get(project_id)
+    live_updated_at = _local_live_target_updated_at(
+        local,
+        target_type=target_type,
+        target_id=target_id,
+        project_id=project_id,
+    )
+    if live_updated_at is not None and live_updated_at > tombstone_deleted_at:
+        return True
+    if live_updated_at is not None and _tombstone_is_inside_project_resurrection_window(
+        tombstone_deleted_at,
+        project_resurrection_window,
+    ):
+        return True
+
+    if include_remote:
+        remote_updated_at = _remote_live_target_updated_at(
+            remote,
+            target_type=target_type,
+            target_id=target_id,
+            project_id=project_id,
+        )
+        if remote_updated_at is not None and remote_updated_at > tombstone_deleted_at:
+            return True
+        return remote_updated_at is not None and _tombstone_is_inside_project_resurrection_window(
+            tombstone_deleted_at,
+            project_resurrection_window,
+        )
+    return False
+
+
+def _local_live_target_updated_at(
+    local: _LocalState,
+    *,
+    target_type: str,
+    target_id: str,
+    project_id: str,
+) -> datetime | None:
+    if target_type == ITEM_PROJECT:
+        local_project = local.projects.get(project_id)
+        if target_id != project_id:
+            return None
+        if local_project is None or local_project.sync_status == PROJECT_SYNC_STATUS_DELETED:
+            return None
+        return _coerce_datetime(local_project.updated_at)
+    if target_type == ITEM_ARTIFACT:
+        local_artifact = local.artifacts.get(target_id)
+        if local_artifact is None or local_artifact.project_id != project_id:
+            return None
+        return _coerce_datetime(local_artifact.created_at)
+    if target_type == ITEM_ENTITY_REVISION:
+        local_revision = local.entity_revisions.get(target_id)
+        if local_revision is None or local_revision.project_id != project_id:
+            return None
+        return _coerce_datetime(local_revision.updated_at)
+    return None
+
+
+def _remote_live_target_updated_at(
+    remote: _RemoteRequest,
+    *,
+    target_type: str,
+    target_id: str,
+    project_id: str,
+) -> datetime | None:
+    if target_type == ITEM_PROJECT:
+        if target_id != project_id:
+            return None
+        remote_project = remote.projects.get(project_id)
+        if remote_project is None:
+            return None
+        remote_status = _str_field(remote_project.raw, "sync_status", "sync_state")
+        if remote_status == PROJECT_SYNC_STATUS_DELETED:
+            return None
+        return _coerce_datetime(
+            _first_field(remote_project.raw, "updated_at", "created_at", default=None)
+        )
+    if target_type == ITEM_ARTIFACT:
+        remote_artifact = remote.artifacts.get(target_id)
+        if remote_artifact is None or remote_artifact.project_id != project_id:
+            return None
+        return _coerce_datetime(_first_field(remote_artifact.raw, "created_at", default=None))
+    if target_type == ITEM_ENTITY_REVISION:
+        remote_revision = remote.entity_revisions.get(target_id)
+        if remote_revision is None or remote_revision.project_id != project_id:
+            return None
+        return _coerce_datetime(
+            _first_field(remote_revision.raw, "updated_at", "created_at", default=None)
+        )
+    return None
+
+
+def _project_resurrection_windows_for_tombstones(
+    tombstones: Iterable[object],
+    *,
+    local: _LocalState,
+    remote: _RemoteRequest,
+    include_remote: bool,
+) -> dict[str, tuple[datetime, datetime]]:
+    windows: dict[str, tuple[datetime, datetime]] = {}
+    for tombstone in tombstones:
+        target_type = _normalize_target_type(_str_field(tombstone, "target_type", default="") or "")
+        project_id = _str_field(tombstone, "project_id")
+        target_id = _str_field(tombstone, "target_id")
+        if target_type != ITEM_PROJECT or project_id is None or target_id != project_id:
+            continue
+        tombstone_deleted_at = _coerce_datetime(_first_field(tombstone, "deleted_at", default=None))
+        if tombstone_deleted_at is None:
+            continue
+        live_project_updated_at = _live_project_updated_at(
+            project_id,
+            local=local,
+            remote=remote,
+            include_remote=include_remote,
+        )
+        if live_project_updated_at is None or live_project_updated_at <= tombstone_deleted_at:
+            continue
+        existing = windows.get(project_id)
+        if existing is None or tombstone_deleted_at > existing[0]:
+            windows[project_id] = (tombstone_deleted_at, live_project_updated_at)
+    return windows
+
+
+def _live_project_updated_at(
+    project_id: str,
+    *,
+    local: _LocalState,
+    remote: _RemoteRequest,
+    include_remote: bool,
+) -> datetime | None:
+    candidates: list[datetime] = []
+    local_project = local.projects.get(project_id)
     if local_project is not None and local_project.sync_status != PROJECT_SYNC_STATUS_DELETED:
         local_updated_at = _coerce_datetime(local_project.updated_at)
-        if local_updated_at is not None and local_updated_at > tombstone_deleted_at:
-            return True
+        if local_updated_at is not None:
+            candidates.append(local_updated_at)
+    if include_remote:
+        remote_updated_at = _remote_live_target_updated_at(
+            remote,
+            target_type=ITEM_PROJECT,
+            target_id=project_id,
+            project_id=project_id,
+        )
+        if remote_updated_at is not None:
+            candidates.append(remote_updated_at)
+    return max(candidates) if candidates else None
 
-    remote_project = remote_projects.get(project_id)
-    if remote_project is None:
+
+def _tombstone_is_inside_project_resurrection_window(
+    tombstone_deleted_at: datetime,
+    project_resurrection_window: tuple[datetime, datetime] | None,
+) -> bool:
+    if project_resurrection_window is None:
         return False
-    remote_status = _str_field(remote_project.raw, "sync_status", "sync_state")
-    if remote_status == PROJECT_SYNC_STATUS_DELETED:
-        return False
-    remote_updated_at = _coerce_datetime(
-        _first_field(remote_project.raw, "updated_at", "created_at", default=None)
-    )
-    return remote_updated_at is not None and remote_updated_at > tombstone_deleted_at
+    project_deleted_at, project_updated_at = project_resurrection_window
+    return project_deleted_at <= tombstone_deleted_at < project_updated_at
 
 
 def _is_deleted(
@@ -2348,7 +2558,7 @@ def _local_revision_content_sha256(revision: SyncEntityRevision) -> str | None:
     payload = revision.payload_json
     if isinstance(payload, Mapping):
         return revision_payload_sha256(sanitize_revision_payload(payload))
-    return _normalize_sha256(revision.content_sha256)
+    return None
 
 
 def _upsert_item(

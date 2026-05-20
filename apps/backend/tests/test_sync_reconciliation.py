@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -1088,6 +1088,8 @@ def test_missing_project_manifest_rejects_tombstoned_contained_targets(
     _add_identity_and_peers(db_session)
     source_hash = _sha("tombstoned contained target source")
     project_id = source_hash_to_project_id(source_hash)
+    stale_manifest = _project_manifest(project_id, source_hash)
+    tombstone_time = datetime.now(UTC) + timedelta(seconds=1)
     db_session.add(
         SyncDeleteTombstone(
             id="tomb_contained_artifact",
@@ -1096,10 +1098,10 @@ def test_missing_project_manifest_rejects_tombstoned_contained_targets(
             target_type=ITEM_ARTIFACT,
             target_id=f"art_source_{project_id}",
             author_device_id="dev-local",
-            deleted_at=datetime.now(UTC),
+            deleted_at=tombstone_time,
             prior_metadata_json={},
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
+            created_at=tombstone_time,
+            updated_at=tombstone_time,
         )
     )
     db_session.commit()
@@ -1108,7 +1110,7 @@ def test_missing_project_manifest_rejects_tombstoned_contained_targets(
         "remote_library": {
             "projects": [{"project_id": project_id, "source_sha256": source_hash}],
         },
-        "project_manifests": [_project_manifest(project_id, source_hash)],
+        "project_manifests": [stale_manifest],
         "peer_inventory": [{"device_id": "peer-a", "available_content_hashes": [source_hash]}],
     }
 

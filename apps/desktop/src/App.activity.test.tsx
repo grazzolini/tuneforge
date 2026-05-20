@@ -1,7 +1,7 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { JobSchema, ProjectSchema } from "./lib/api";
+import { normalizeSyncTransportStatus, type JobSchema, type ProjectSchema } from "./lib/api";
 import {
   mockCancelJob,
   mockGetSyncIdentity,
@@ -255,6 +255,254 @@ describe("Desktop app activity", () => {
     expect(
       within(resultRows[0]).getByText("Entity revision manifest content_sha256 must match payload."),
     ).toBeInTheDocument();
+  });
+
+  it("normalizes sync run identity, timing, counters, and final project rows", () => {
+    const normalized = normalizeSyncTransportStatus({
+      running: true,
+      state: "listening",
+      endpointHints: ["tcp://192.168.1.57:48625"],
+      lastSync: {
+        runId: "sync_run_retry_2",
+        sessionId: "sync_session_retry_2",
+        peerDeviceId: "device_peer_1",
+        remoteDeviceId: "device_peer_1",
+        status: "completed_with_errors",
+        message: "Retry completed after staged bytes were reused.",
+        startedAt: "2026-04-18T13:16:00.000Z",
+        completedAt: "2026-04-18T13:16:01.250Z",
+        durationMs: 1250,
+        timing: {
+          planningMs: 10,
+          transferMs: 25,
+          applyMs: 30,
+        },
+        importedProjectCount: 1,
+        skippedProjectCount: 1,
+        failedProjectCount: 0,
+        projectResults: [
+          {
+            projectId: "proj_retry",
+            status: "failed",
+            message: "Old ffprobe failure.",
+            isFinal: true,
+            completedAt: "2026-04-18T13:15:00.000Z",
+            failedCount: 1,
+          },
+          {
+            projectId: "proj_retry",
+            status: "applied",
+            message: "Retry imported the project.",
+            isFinal: true,
+            completedAt: "2026-04-18T13:16:01.000Z",
+            appliedCount: 3,
+            satisfiedCount: 1,
+            skippedCount: 0,
+            failedCount: 0,
+          },
+          {
+            projectId: "proj_deleted",
+            status: "deleted",
+            message: "Delete tombstone caught up.",
+            isFinal: true,
+            deletedCount: 1,
+          },
+        ],
+        manifestErrors: [
+          {
+            projectId: "proj_retry",
+            message: "Local manifest export failed: Old ffprobe failure.",
+          },
+          {
+            projectId: "proj_deleted",
+            message: "Peer manifest export failed: stale tombstone warning.",
+          },
+        ],
+        receivedArtifacts: [],
+      },
+    });
+
+    expect(normalized.last_sync).toMatchObject({
+      run_id: "sync_run_retry_2",
+      session_id: "sync_session_retry_2",
+      status: "completed",
+      duration_ms: 1250,
+      imported_project_count: 1,
+      skipped_project_count: 1,
+      failed_project_count: 0,
+    });
+    expect(normalized.last_sync?.timing).toEqual({
+      planningMs: 10,
+      transferMs: 25,
+      applyMs: 30,
+    });
+    expect(normalized.last_sync?.project_results).toHaveLength(2);
+    expect(normalized.last_sync?.project_results[0]).toMatchObject({
+      project_id: "proj_retry",
+      status: "applied",
+      applied_count: 3,
+      satisfied_count: 1,
+      skipped_count: 0,
+      failed_count: 0,
+    });
+    expect(normalized.last_sync?.project_results[1]).toMatchObject({
+      project_id: "proj_deleted",
+      status: "deleted",
+      deleted_count: 1,
+    });
+  });
+
+  it("keeps newer successful sync rows when stale failures arrive later in the payload", () => {
+    const normalized = normalizeSyncTransportStatus({
+      active: true,
+      status: "listening",
+      last_sync: {
+        run_id: "sync_retry_latest",
+        peer_device_id: "device_peer_1",
+        remote_device_id: "device_peer_1",
+        completed_at: "2026-04-18T13:16:02.000Z",
+        project_results: [
+          {
+            project_id: "proj_retry",
+            status: "applied",
+            message: "Retry imported the project.",
+            is_final: true,
+            completed_at: "2026-04-18T13:16:01.000Z",
+          },
+          {
+            project_id: "proj_retry",
+            status: "failed",
+            message: "Old ffprobe failure.",
+            is_final: true,
+            run_id: "sync_retry_old",
+            completed_at: "2026-04-18T13:15:00.000Z",
+          },
+        ],
+        manifest_errors: [],
+        received_artifacts: [],
+      },
+    });
+
+    expect(normalized.last_sync?.project_results).toEqual([
+      expect.objectContaining({
+        project_id: "proj_retry",
+        status: "applied",
+        message: "Retry imported the project.",
+      }),
+    ]);
+  });
+
+  it("keeps manifest errors as project rows only when no final project result exists", () => {
+    const normalized = normalizeSyncTransportStatus({
+      active: true,
+      status: "listening",
+      last_sync: {
+        peer_device_id: "device_peer_1",
+        remote_device_id: "device_peer_1",
+        project_results: [
+          {
+            project_id: "proj_staging",
+            status: "staging",
+            message: "Receiving project artifacts.",
+            is_final: false,
+          },
+        ],
+        manifest_errors: [
+          {
+            project_id: "proj_staging",
+            message: "Peer manifest export failed before apply.",
+          },
+        ],
+        received_artifacts: [],
+      },
+    });
+
+    expect(normalized.last_sync?.status).toBe("completed_with_errors");
+    expect(normalized.last_sync?.project_results).toEqual([
+      expect.objectContaining({
+        project_id: "proj_staging",
+        status: "failed",
+        message: "Peer manifest export failed before apply.",
+      }),
+    ]);
+  });
+
+  it("shows final retry and delete catch-up rows without obsolete failures", async () => {
+    const user = userEvent.setup();
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: ["tcp://192.168.1.57:48625"],
+      last_sync: {
+        run_id: "sync_run_retry_2",
+        session_id: "sync_session_retry_2",
+        peer_device_id: "device_peer_1",
+        remote_device_id: "device_peer_1",
+        status: "completed",
+        message: "Retry completed after staged bytes were reused.",
+        started_at: "2026-04-18T13:16:00.000Z",
+        completed_at: "2026-04-18T13:16:01.400Z",
+        duration_ms: 1400,
+        imported_project_count: 1,
+        skipped_project_count: 1,
+        failed_project_count: 0,
+        project_results: [
+          {
+            project_id: "proj_retry",
+            status: "failed",
+            message: "Old ffprobe failure.",
+            is_final: true,
+          },
+          {
+            project_id: "proj_retry",
+            status: "applied",
+            message: "Retry imported the project.",
+            is_final: true,
+            applied_count: 3,
+            satisfied_count: 1,
+            skipped_count: 0,
+            failed_count: 0,
+          },
+          {
+            project_id: "proj_deleted",
+            status: "deleted",
+            message: "Delete tombstone caught up.",
+            is_final: true,
+            deleted_count: 1,
+          },
+        ],
+        manifest_errors: [
+          {
+            project_id: "proj_retry",
+            message: "Local manifest export failed: Old ffprobe failure.",
+          },
+          {
+            project_id: "proj_deleted",
+            message: "Peer manifest export failed: stale tombstone warning.",
+          },
+        ],
+        received_artifacts: [],
+      },
+    });
+
+    await openSyncTab(user);
+
+    expect(await screen.findByText("Retry completed after staged bytes were reused.")).toBeInTheDocument();
+    expect(screen.getByText(/Run sync_run_retry_2/)).toBeInTheDocument();
+    expect(screen.getByText(/Duration 1\.4 s/)).toBeInTheDocument();
+    expect(screen.getByText(/1 imported, 1 skipped, 0 failed/)).toBeInTheDocument();
+
+    const projectResults = await screen.findByRole("list", { name: "Last sync project results" });
+    const resultRows = within(projectResults).getAllByRole("listitem");
+    expect(resultRows).toHaveLength(2);
+    expect(within(resultRows[0]).getByText("Applied")).toBeInTheDocument();
+    expect(within(resultRows[0]).getByText("proj_retry")).toBeInTheDocument();
+    expect(within(resultRows[0]).getByText("Retry imported the project.")).toBeInTheDocument();
+    expect(within(resultRows[1]).getByText("Deleted")).toBeInTheDocument();
+    expect(within(resultRows[1]).getByText("proj_deleted")).toBeInTheDocument();
+    expect(within(resultRows[1]).getByText("Delete tombstone caught up.")).toBeInTheDocument();
+    expect(screen.queryByText("Old ffprobe failure.")).not.toBeInTheDocument();
+    expect(screen.queryByText(/stale tombstone warning/)).not.toBeInTheDocument();
   });
 
   it("shows newer listener sync results after a prior sync now result", async () => {

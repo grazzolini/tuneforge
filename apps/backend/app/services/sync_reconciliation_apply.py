@@ -6,6 +6,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -38,7 +39,7 @@ from app.services.sync_reconciliation import (
     SyncReconciliationPlan,
     plan_sync_reconciliation,
 )
-from app.services.sync_revisions import revision_payload_sha256
+from app.services.sync_revisions import revision_payload_sha256, sanitize_revision_payload
 from app.services.sync_staging import cleanup_staged_artifacts, require_staged_artifact
 from app.services.sync_tombstones import apply_delete_tombstone
 from app.utils.hashing import file_sha256
@@ -47,6 +48,11 @@ APPLY_STATUS_APPLIED = "applied"
 APPLY_STATUS_SATISFIED = "satisfied"
 APPLY_STATUS_SKIPPED = "skipped"
 APPLY_STATUS_FAILED = "failed"
+
+TIMING_PHASE_PLAN = "plan"
+TIMING_PHASE_APPLY = "apply"
+TIMING_PHASE_ACTION = "action"
+TIMING_PHASE_STAGING_CLEANUP = "staging_cleanup"
 
 _MISSING = object()
 
@@ -69,10 +75,23 @@ class SyncReconciliationApplyActionResult:
 
 
 @dataclass(frozen=True)
+class SyncReconciliationTimingEvidence:
+    phase: str
+    duration_ms: float
+    action_type: str | None = None
+    item_type: str | None = None
+    item_id: str | None = None
+    project_id: str | None = None
+    status: str | None = None
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class SyncReconciliationApplyResult:
     summary: SyncReconciliationApplySummary
     plan: SyncReconciliationPlan
     results: list[SyncReconciliationApplyActionResult]
+    timing_evidence: list[SyncReconciliationTimingEvidence] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -80,8 +99,10 @@ class _ApplyContext:
     project_manifests_by_id: dict[str, object]
     tombstones_by_id: dict[str, object]
     tombstones_by_target: dict[tuple[str, str], object]
+    scoped_project_ids: frozenset[str]
     staging_root: str | None
     use_content_addressed_staging: bool
+    include_timing_evidence: bool
 
 
 def apply_sync_reconciliation(
@@ -89,19 +110,62 @@ def apply_sync_reconciliation(
     request: object | Mapping[str, Any],
 ) -> SyncReconciliationApplyResult:
     context = _apply_context(request)
+    timing_evidence: list[SyncReconciliationTimingEvidence] = []
+
+    plan_started_at = _timing_start(context)
+    plan_request = _scoped_plan_request(request, context)
     plan = _with_staged_manifest_import_actions(
         session,
-        plan_sync_reconciliation(session, request),
+        plan_sync_reconciliation(session, plan_request),
         context,
     )
-    results = [_apply_action_in_savepoint(session, action, context) for action in plan.actions]
+    _record_timing(
+        timing_evidence,
+        phase=TIMING_PHASE_PLAN,
+        started_at=plan_started_at,
+        details={
+            "planned_actions": len(plan.actions),
+            "scoped_project_count": len(context.scoped_project_ids),
+        },
+    )
+
+    apply_started_at = _timing_start(context)
+    results: list[SyncReconciliationApplyActionResult] = []
+    for action in plan.actions:
+        action_started_at = _timing_start(context)
+        result = _apply_action_in_savepoint(session, action, context)
+        results.append(result)
+        _record_action_timing(timing_evidence, action, result, action_started_at)
+
     results.extend(_hydrate_imported_project_analysis(session, context, results))
     if context.use_content_addressed_staging:
-        _cleanup_imported_content_addressed_staging(session, context)
+        cleanup_started_at = _timing_start(context)
+        cleanup_details = _cleanup_imported_content_addressed_staging(session, context)
+        _record_timing(
+            timing_evidence,
+            phase=TIMING_PHASE_STAGING_CLEANUP,
+            started_at=cleanup_started_at,
+            details=cleanup_details,
+        )
+    summary = _summarize_apply_results(plan, results)
+    _record_timing(
+        timing_evidence,
+        phase=TIMING_PHASE_APPLY,
+        started_at=apply_started_at,
+        details={
+            "planned_actions": summary.planned_actions,
+            "applied_actions": summary.applied_actions,
+            "satisfied_actions": summary.satisfied_actions,
+            "skipped_actions": summary.skipped_actions,
+            "failed_actions": summary.failed_actions,
+            "result_count": len(results),
+        },
+    )
     return SyncReconciliationApplyResult(
-        summary=_summarize_apply_results(plan, results),
+        summary=summary,
         plan=plan,
         results=results,
+        timing_evidence=timing_evidence,
     )
 
 
@@ -350,7 +414,7 @@ def _import_entity_revision(
         return _result(action, APPLY_STATUS_SKIPPED, "Entity revision is not present in the project manifest.")
     existing_revision = session.get(SyncEntityRevision, revision.revision_id)
     if existing_revision is not None:
-        if revision_payload_sha256(existing_revision.payload_json or {}) == revision.content_sha256:
+        if _local_revision_content_sha256(existing_revision) == revision.content_sha256:
             return _result(action, APPLY_STATUS_SATISFIED, "Entity revision is already imported locally.")
         return _result(action, APPLY_STATUS_FAILED, "Entity revision conflicts with a local revision.")
 
@@ -503,7 +567,7 @@ def _missing_content_addressed_artifacts(
 def _cleanup_imported_content_addressed_staging(
     session: Session,
     context: _ApplyContext,
-) -> None:
+) -> dict[str, Any]:
     imported_hashes: set[str] = set()
     pending_hashes: set[str] = set()
     imported_references: list[dict[str, Any]] = []
@@ -527,6 +591,12 @@ def _cleanup_imported_content_addressed_staging(
             content_sha256s=cleanup_hashes,
             references=cleanup_references,
         )
+    return {
+        "imported_content_sha256_count": len(imported_hashes),
+        "pending_content_sha256_count": len(pending_hashes),
+        "cleaned_content_sha256_count": len(cleanup_hashes),
+        "cleaned_reference_count": len(cleanup_references),
+    }
 
 
 def _hydrate_imported_project_analysis(
@@ -680,6 +750,12 @@ def _apply_context(request: object | Mapping[str, Any]) -> _ApplyContext:
         )
         if project_id is not None
     }
+    explicit_project_ids = _normalized_string_set(_list_field(request, "project_ids"))
+    scoped_project_ids = (
+        frozenset(explicit_project_ids)
+        if explicit_project_ids
+        else frozenset(project_manifests_by_id)
+    )
 
     remote_library = _field(request, "remote_library", default={})
     tombstones = [
@@ -689,6 +765,9 @@ def _apply_context(request: object | Mapping[str, Any]) -> _ApplyContext:
     tombstones_by_id: dict[str, object] = {}
     tombstones_by_target: dict[tuple[str, str], object] = {}
     for tombstone in tombstones:
+        tombstone_project_id = _string_field(tombstone, "project_id")
+        if scoped_project_ids and tombstone_project_id not in scoped_project_ids:
+            continue
         tombstone_id = _string_field(tombstone, "tombstone_id", "id")
         target_type = _normalize_target_type(_string_field(tombstone, "target_type") or "")
         target_id = _string_field(tombstone, "target_id")
@@ -701,9 +780,62 @@ def _apply_context(request: object | Mapping[str, Any]) -> _ApplyContext:
         project_manifests_by_id=project_manifests_by_id,
         tombstones_by_id=tombstones_by_id,
         tombstones_by_target=tombstones_by_target,
+        scoped_project_ids=scoped_project_ids,
         staging_root=_string_field(request, "staging_root"),
         use_content_addressed_staging=_bool_field(request, "use_content_addressed_staging", default=True),
+        include_timing_evidence=_bool_field(request, "include_timing_evidence", default=False),
     )
+
+
+def _scoped_plan_request(
+    request: object | Mapping[str, Any],
+    context: _ApplyContext,
+) -> object | Mapping[str, Any]:
+    if not context.scoped_project_ids:
+        return request
+
+    payload = _object_mapping(request)
+    payload["project_manifests"] = [
+        manifest
+        for manifest in _list_field(request, "project_manifests")
+        if _project_id_from_manifest(manifest) in context.scoped_project_ids
+    ]
+    payload["remote_library"] = _scoped_remote_library(
+        _field(request, "remote_library", default={}),
+        context.scoped_project_ids,
+    )
+    return payload
+
+
+def _scoped_remote_library(
+    remote_library: object,
+    scoped_project_ids: frozenset[str],
+) -> dict[str, Any]:
+    scoped = _object_mapping(remote_library)
+    scoped["projects"] = [
+        project
+        for project in _list_field(remote_library, "projects")
+        if _string_field(project, "project_id", "id") in scoped_project_ids
+    ]
+    scoped["artifacts"] = [
+        artifact
+        for artifact in _list_field(remote_library, "artifacts")
+        if _string_field(artifact, "project_id") in scoped_project_ids
+    ]
+    scoped["entity_revisions"] = [
+        revision
+        for revision in _list_field(remote_library, "entity_revisions", "revisions")
+        if _string_field(revision, "project_id") in scoped_project_ids
+    ]
+    scoped_tombstones = [
+        tombstone
+        for tombstone in _list_field(remote_library, "delete_tombstones", "tombstones")
+        if _string_field(tombstone, "project_id") in scoped_project_ids
+    ]
+    scoped["delete_tombstones"] = scoped_tombstones
+    if "tombstones" in scoped:
+        scoped["tombstones"] = scoped_tombstones
+    return scoped
 
 
 def _with_staged_manifest_import_actions(
@@ -844,6 +976,56 @@ def _result(
     )
 
 
+def _timing_start(context: _ApplyContext) -> float | None:
+    return perf_counter() if context.include_timing_evidence else None
+
+
+def _record_action_timing(
+    timing_evidence: list[SyncReconciliationTimingEvidence],
+    action: SyncReconciliationAction,
+    result: SyncReconciliationApplyActionResult,
+    started_at: float | None,
+) -> None:
+    _record_timing(
+        timing_evidence,
+        phase=TIMING_PHASE_ACTION,
+        started_at=started_at,
+        action_type=action.action_type,
+        item_type=action.item_type,
+        item_id=action.item_id,
+        project_id=action.project_id,
+        status=result.status,
+    )
+
+
+def _record_timing(
+    timing_evidence: list[SyncReconciliationTimingEvidence],
+    *,
+    phase: str,
+    started_at: float | None,
+    action_type: str | None = None,
+    item_type: str | None = None,
+    item_id: str | None = None,
+    project_id: str | None = None,
+    status: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    if started_at is None:
+        return
+    timing_evidence.append(
+        SyncReconciliationTimingEvidence(
+            phase=phase,
+            duration_ms=round((perf_counter() - started_at) * 1000, 3),
+            action_type=action_type,
+            item_type=item_type,
+            item_id=item_id,
+            project_id=project_id,
+            status=status,
+            details=details or {},
+        )
+    )
+
+
 def _error_details(action: SyncReconciliationAction, exc: AppError) -> dict[str, Any]:
     return {
         "action_type": action.action_type,
@@ -870,6 +1052,16 @@ def _field(source: object, name: str, *, default: object = _MISSING) -> Any:
     return value
 
 
+def _object_mapping(source: object) -> dict[str, Any]:
+    if isinstance(source, Mapping):
+        return dict(source)
+    model_dump = getattr(source, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump(mode="python")
+        return dict(dumped) if isinstance(dumped, Mapping) else {}
+    return {}
+
+
 def _list_field(source: object, *names: str) -> list[Any]:
     for name in names:
         value = _field(source, name, default=None)
@@ -891,6 +1083,14 @@ def _string_field(source: object, *names: str) -> str | None:
             if normalized:
                 return normalized
     return None
+
+
+def _normalized_string_set(values: list[Any]) -> set[str]:
+    return {
+        normalized
+        for value in values
+        if isinstance(value, str) and (normalized := value.strip())
+    }
 
 
 def _required_string(source: object, *names: str) -> str:
@@ -956,6 +1156,13 @@ def _normalize_target_type(value: str) -> str:
     if normalized in {"revision", "entity", "sync_entity_revision"}:
         return ITEM_ENTITY_REVISION
     return normalized
+
+
+def _local_revision_content_sha256(revision: SyncEntityRevision) -> str | None:
+    payload = revision.payload_json
+    if isinstance(payload, Mapping):
+        return revision_payload_sha256(sanitize_revision_payload(payload))
+    return None
 
 
 def _utcnow() -> datetime:

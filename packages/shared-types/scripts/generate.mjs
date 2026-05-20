@@ -49,6 +49,6 @@ if (existsSync(legacyNvidiaMarker)) {
 
 execFileSync(
   "pnpm",
-  ["exec", "openapi-typescript", openApiJson, "-o", generatedPath],
+  ["exec", "openapi-typescript", openApiJson, "-o", generatedPath, "--default-non-nullable", "false"],
   { stdio: "inherit", cwd: packageRoot },
 );

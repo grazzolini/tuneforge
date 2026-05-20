@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,12 +20,18 @@ ARTIFACT_TARGET_TYPE = "artifact"
 ENTITY_REVISION_TARGET_TYPE = "entity_revision"
 
 
-def record_project_delete_tombstone(session: Session, project: Project) -> SyncDeleteTombstone:
+def record_project_delete_tombstone(
+    session: Session,
+    project: Project,
+    *,
+    deleted_at: datetime | None = None,
+) -> SyncDeleteTombstone:
     return _record_delete_tombstone(
         session,
         project_id=project.id,
         target_type=PROJECT_TARGET_TYPE,
         target_id=project.id,
+        deleted_at=deleted_at,
         prior_metadata={
             "project_id": project.id,
             "display_name": project.display_name,
@@ -38,12 +45,18 @@ def record_project_delete_tombstone(session: Session, project: Project) -> SyncD
     )
 
 
-def record_artifact_delete_tombstone(session: Session, artifact: Artifact) -> SyncDeleteTombstone:
+def record_artifact_delete_tombstone(
+    session: Session,
+    artifact: Artifact,
+    *,
+    deleted_at: datetime | None = None,
+) -> SyncDeleteTombstone:
     return _record_delete_tombstone(
         session,
         project_id=artifact.project_id,
         target_type=ARTIFACT_TARGET_TYPE,
         target_id=artifact.id,
+        deleted_at=deleted_at,
         prior_metadata={
             "artifact_id": artifact.id,
             "project_id": artifact.project_id,
@@ -64,12 +77,15 @@ def record_artifact_delete_tombstone(session: Session, artifact: Artifact) -> Sy
 def record_entity_revision_delete_tombstone(
     session: Session,
     revision: SyncEntityRevision,
+    *,
+    deleted_at: datetime | None = None,
 ) -> SyncDeleteTombstone:
     return _record_delete_tombstone(
         session,
         project_id=revision.project_id,
         target_type=ENTITY_REVISION_TARGET_TYPE,
         target_id=revision.id,
+        deleted_at=deleted_at,
         prior_metadata={
             "revision_id": revision.id,
             "project_id": revision.project_id,
@@ -125,6 +141,7 @@ def _record_delete_tombstone(
     project_id: str,
     target_type: str,
     target_id: str,
+    deleted_at: datetime | None = None,
     prior_metadata: Mapping[str, Any],
 ) -> SyncDeleteTombstone:
     identity = get_or_create_local_identity(session)
@@ -135,11 +152,12 @@ def _record_delete_tombstone(
             SyncDeleteTombstone.target_id == target_id,
         )
     )
-    now = utcnow()
+    now = deleted_at or utcnow()
     sanitized_metadata = sanitize_revision_payload(prior_metadata)
     if existing is not None:
         existing.project_id = project_id
         existing.author_device_id = identity.device_id
+        existing.deleted_at = now
         existing.prior_metadata_json = sanitized_metadata
         existing.updated_at = now
         session.flush()

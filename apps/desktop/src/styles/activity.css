@@ -288,7 +288,7 @@
 
 .activity-sync-project-result {
   display: grid;
-  grid-template-columns: auto minmax(6rem, 0.32fr) minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 0.45rem;
   align-items: start;
   border: 1px solid color-mix(in srgb, var(--divider) 78%, transparent);
@@ -314,10 +314,12 @@
 .activity-sync-project-result__project {
   color: var(--text);
   font-weight: 760;
+  min-width: 0;
   overflow-wrap: anywhere;
 }
 
 .activity-sync-project-result__message {
+  grid-column: 1 / -1;
   min-width: 0;
   overflow-wrap: anywhere;
 }

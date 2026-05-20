@@ -14,6 +14,65 @@ This document summarizes the current route surface. The generated OpenAPI schema
 - Timestamps: ISO 8601 strings in API responses.
 - Errors use a structured `error` object with `code`, `message`, and `details`.
 
+### Pagination Contract
+
+Endpoints that expose growable collections use offset pagination. Endpoint-specific follow-ups should add this
+contract without renaming the existing list field, so generated OpenAPI clients keep a predictable response shape.
+
+Request query parameters:
+
+- `limit` - page size, default `50`, minimum `1`, maximum `200`.
+- `offset` - zero-based row offset, default `0`, minimum `0`.
+
+Existing search and filter parameters apply to the full matching collection before `total`, `limit`, and `offset`
+are applied.
+
+Response fields:
+
+- the existing list field, such as `projects`, `jobs`, or `artifacts`.
+- `total` - count after search and filters, before pagination.
+- `limit` - the effective limit used for this response.
+- `offset` - the effective offset used for this response.
+- `has_more` - `true` when `offset + <returned count> < total`.
+
+Example:
+
+```json
+{
+  "projects": [],
+  "total": 125,
+  "limit": 50,
+  "offset": 0,
+  "has_more": true
+}
+```
+
+Paginated endpoints must document their default sort. Sorting must be deterministic across repeated requests:
+timestamp, status, search-rank, or other non-unique sort keys need a stable tie-breaker, normally the entity's
+immutable ID. For example, newest-first pages should sort by `updated_at DESC, id DESC` instead of timestamp alone.
+If a sort key can be `null`, the endpoint must also document where null values appear.
+
+### Pagination Endpoint Audit
+
+This audit captures the current list-like API surface. Until endpoint-specific pagination lands, the individual
+endpoint sections later in this document describe the current unpaginated behavior.
+
+| Endpoint or payload | List field | Pagination decision |
+| --- | --- | --- |
+| `GET /api/v1/jobs` | `jobs` | Planned paginated growable list. It also needs project-name search and explicit sort controls. Desktop Activity and project job-history consumers should lazy-load this list. |
+| `GET /api/v1/projects` | `projects` | Planned paginated growable list while preserving global `search`. Desktop Library consumers should lazy-load this list. |
+| `GET /api/v1/projects/{project_id}/artifacts` | `artifacts` | Planned paginated project child list with project-scoped totals and stable newest-first ordering. Desktop project views should lazy-load this list. |
+| `GET /api/v1/projects/{project_id}/sections` | `sections` | Review with project child lists. Paginate if sections are treated as growable; otherwise document the bounded song-structure exception. |
+| `GET /api/v1/sync/trusted-peers` | `trusted_peers` | Review as either a paginated user-managed sync collection or an explicit bounded exception. |
+| `GET /api/v1/chord-backends` | `backends` | Explicit unpaginated exception: small static capability list, bounded by bundled/local backend implementations. |
+| `GET /api/v1/stem-models` | `models` | Explicit unpaginated exception: small static capability list, bounded by supported local stem models. |
+| `GET /api/v1/sync/metadata` | `projects`, `artifacts`, `delete_tombstones` | Explicit unpaginated sync snapshot exception. The payload is a complete sync inventory used by native sync and reconciliation, not an interactive scroll list. If scale requires chunking, it should be a sync protocol change rather than this generic pagination contract. |
+| `GET /api/v1/sync/preflight` | `projects`, `duplicate_groups`, `manual_cleanup_guidance` | Explicit unpaginated diagnostic exception. The response is a complete local-library health report. |
+| `GET /api/v1/sync/projects/{project_id}/manifest` | `entity_revisions`, `artifacts`, `delete_tombstones` | Explicit unpaginated manifest exception. The response is an atomic project export unit. |
+| `POST /api/v1/sync/reconciliation/plan` | `items`, `actions` | Explicit unpaginated planning exception. The response is a complete computed plan for the supplied sync inventory. |
+| `POST /api/v1/sync/reconciliation/apply` | `plan.items`, `plan.actions`, `results`, `timing_evidence` | Explicit unpaginated apply exception. Partial pages would make apply summaries and results incomplete. |
+| Project document payloads, including analysis timing, chords, lyrics, tab imports, and tab apply results | nested content arrays | Explicit unpaginated document exceptions unless a future endpoint exposes them as standalone growable collections. These arrays are part of a single project document or edit result, not top-level list browsing. |
+
 Example error response:
 
 ```json

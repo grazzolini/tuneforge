@@ -30,6 +30,29 @@ function statusClassName(value: string | null | undefined) {
   return (value?.trim().toLowerCase() || "unknown").replace(/[^a-z0-9_-]+/g, "_");
 }
 
+function transportLabel(value: string | null | undefined) {
+  const raw = value?.trim().toLowerCase();
+  let normalized = raw;
+  if (raw?.startsWith("tuneforge-sync+iroh")) {
+    normalized = "iroh";
+  } else if (raw?.startsWith("tuneforge-sync+tcp")) {
+    normalized = "tcp";
+  }
+  if (!normalized) {
+    return null;
+  }
+  if (normalized === "iroh") {
+    return "Iroh";
+  }
+  if (normalized === "tcp") {
+    return "TCP";
+  }
+  if (normalized === "auto") {
+    return "Auto";
+  }
+  return statusLabel(normalized);
+}
+
 function formatTimestamp(value: string | null | undefined) {
   if (!value) {
     return null;
@@ -152,6 +175,9 @@ function syncResultKey(status: SyncTransportRunStatus | null | undefined) {
     completed: status.completed_at,
     durationSeconds: status.duration_seconds,
     durationMs: status.duration_ms,
+    selectedTransport: status.selected_transport,
+    fallbackReason: status.fallback_reason,
+    attemptedTransports: status.attempted_transports,
     timeToFirstArtifactMs: status.time_to_first_artifact_ms,
     totalReceivedBytes: status.total_received_bytes,
     totalServedBytes: status.total_served_bytes,
@@ -293,6 +319,13 @@ function syncRunSummaryText(status: SyncTransportRunStatus | null | undefined) {
   const duration = formatSyncDuration(syncRunDurationSeconds(status));
   if (duration) {
     parts.push(`Duration ${duration}`);
+  }
+  const selectedTransport = transportLabel(status.selected_transport);
+  if (selectedTransport) {
+    parts.push(`Transport ${selectedTransport}`);
+  }
+  if (status.fallback_reason) {
+    parts.push(`Fallback: ${status.fallback_reason}`);
   }
   const counters = syncRunProjectCounterText(status);
   if (counters) {

@@ -8,6 +8,7 @@ import {
   mockGetSyncTransportStatus,
   mockAnswerSyncPairingOffer,
   mockListSyncTrustedPeers,
+  getMockInvoke,
   mockStartSyncListener,
   mockStopSyncListener,
   mockSyncTrustedPeerNow,
@@ -21,6 +22,13 @@ import {
   setSyncTransportStatus,
   setSyncTrustedPeers,
 } from "./test/appTestHarness";
+
+const irohTransportId = "tuneforge-sync+iroh";
+const tcpTransportId = "tuneforge-sync+tcp";
+const irohEndpointHint = `${irohTransportId}://device_peer_1`;
+const tcpEndpointHint = `${tcpTransportId}://192.168.1.57:48625`;
+const listenerTcpEndpointHint = `${tcpTransportId}://192.168.1.42:48625`;
+const syncEndpointHints = [irohEndpointHint, tcpEndpointHint];
 
 function project(overrides: Partial<ProjectSchema>): Record<string, unknown> {
   return {
@@ -58,7 +66,7 @@ function pairingPayload(overrides: Record<string, unknown> = {}): Record<string,
     device_id: "device_peer_1",
     display_name: "Laptop Rig",
     public_key: "pub_peer_1",
-    endpoint_hints: ["tcp://192.168.1.57:48625"],
+    endpoint_hints: syncEndpointHints,
     protocol_version: "tuneforge-sync-v1",
     pairing_offer_id: "pair_offer_peer_1",
     pairing_secret: "pair_secret_peer_1",
@@ -170,7 +178,10 @@ describe("Desktop app activity", () => {
 
     await waitFor(() =>
       expect(mockAnswerSyncPairingOffer).toHaveBeenCalledWith({
-        offer: expect.objectContaining({ device_id: "device_peer_1" }),
+        offer: expect.objectContaining({
+          device_id: "device_peer_1",
+          endpoint_hints: syncEndpointHints,
+        }),
         endpoint_hints: [],
         adopt_sync_group: false,
       }),
@@ -196,7 +207,10 @@ describe("Desktop app activity", () => {
 
     await waitFor(() =>
       expect(mockTrustSyncPeer).toHaveBeenCalledWith({
-        payload: expect.objectContaining({ device_id: "device_peer_1" }),
+        payload: expect.objectContaining({
+          device_id: "device_peer_1",
+          endpoint_hints: syncEndpointHints,
+        }),
         adopt_sync_group: false,
       }),
     );
@@ -213,6 +227,8 @@ describe("Desktop app activity", () => {
 
     await waitFor(() => expect(mockStartSyncListener).toHaveBeenCalled());
     expect(await screen.findByText("Listening")).toBeInTheDocument();
+    expect(screen.getByText(irohEndpointHint)).toBeInTheDocument();
+    expect(screen.getByText(listenerTcpEndpointHint)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Stop Listener" }));
 
@@ -228,7 +244,7 @@ describe("Desktop app activity", () => {
         sync_group_id: "sync_group_local",
         display_name: "Laptop Rig",
         public_key: "pub_peer_1",
-        endpoint_hints: ["tcp://192.168.1.57:48625"],
+        endpoint_hints: syncEndpointHints,
         trusted_at: "2026-04-18T13:16:00.000Z",
       },
     ]);
@@ -237,11 +253,13 @@ describe("Desktop app activity", () => {
     const peers = await screen.findByRole("list", { name: "Trusted sync peers" });
     const peerRow = within(peers).getByText("Laptop Rig").closest("li");
     expect(peerRow).not.toBeNull();
+    expect(within(peerRow as HTMLElement).getByText(syncEndpointHints.join(", "))).toBeInTheDocument();
 
     await user.click(within(peerRow as HTMLElement).getByRole("button", { name: "Sync Now" }));
 
     await waitFor(() => expect(mockSyncTrustedPeerNow).toHaveBeenCalledWith("device_peer_1"));
     expect(await screen.findAllByText("Manifest exchange completed with 4 project results.")).not.toHaveLength(0);
+    expect(screen.getByText(/Transport Iroh/)).toBeInTheDocument();
 
     const projectResults = await screen.findByRole("list", { name: "Last sync project results" });
     const resultRows = within(projectResults).getAllByRole("listitem");
@@ -263,11 +281,12 @@ describe("Desktop app activity", () => {
     setSyncTransportStatus({
       active: true,
       status: "listening",
-      endpoint_hints: ["tcp://192.168.1.57:48625"],
+      endpoint_hints: syncEndpointHints,
       last_status: "Sync session completed without structured details.",
       last_sync: {
         peer_device_id: "device_peer_1",
         remote_device_id: "device_peer_1",
+        selected_transport: irohTransportId,
         status: "completed_with_errors",
         message:
           "Exchanged 0 local and 2 remote manifest(s); imported 0 project(s), skipped 0 project(s), failed 2 project(s), received 16 artifact(s).",
@@ -293,6 +312,7 @@ describe("Desktop app activity", () => {
         "Exchanged 0 local and 2 remote manifest(s); imported 0 project(s), skipped 0 project(s), failed 2 project(s), received 16 artifact(s).",
       ),
     ).toBeInTheDocument();
+    expect(screen.getByText(/Transport Iroh/)).toBeInTheDocument();
     const projectResults = await screen.findByRole("list", { name: "Last sync project results" });
     const resultRows = within(projectResults).getAllByRole("listitem");
     expect(resultRows).toHaveLength(1);
@@ -311,17 +331,20 @@ describe("Desktop app activity", () => {
         sync_group_id: "sync_group_local",
         display_name: "Laptop Rig",
         public_key: "pub_peer_1",
-        endpoint_hints: ["tcp://192.168.1.57:48625"],
+        endpoint_hints: syncEndpointHints,
         trusted_at: "2026-04-18T13:16:00.000Z",
       },
     ]);
     setSyncTransportStatus({
       active: true,
       status: "listening",
-      endpoint_hints: ["tcp://192.168.1.57:48625"],
+      endpoint_hints: syncEndpointHints,
       last_sync: {
         peer_device_id: "device_peer_1",
         remote_device_id: "device_peer_1",
+        selected_transport: tcpTransportId,
+        fallback_reason: "Iroh endpoint was unavailable; used TCP.",
+        attempted_transports: [irohTransportId, tcpTransportId],
         status: "completed",
         message: "Listener import completed before failed sync now.",
         project_results: [
@@ -358,12 +381,15 @@ describe("Desktop app activity", () => {
     const normalized = normalizeSyncTransportStatus({
       running: true,
       state: "listening",
-      endpointHints: ["tcp://192.168.1.57:48625"],
+      endpointHints: syncEndpointHints,
       lastSync: {
         runId: "sync_run_retry_2",
         sessionId: "sync_session_retry_2",
         peerDeviceId: "device_peer_1",
         remoteDeviceId: "device_peer_1",
+        selectedTransport: tcpTransportId,
+        fallbackReason: "Iroh endpoint was unavailable; used TCP.",
+        attemptedTransports: [irohTransportId, tcpTransportId],
         status: "completed_with_errors",
         message: "Retry completed after staged bytes were reused.",
         startedAt: "2026-04-18 13:16:00",
@@ -409,6 +435,7 @@ describe("Desktop app activity", () => {
             satisfiedCount: 1,
             skippedCount: 0,
             failedCount: 0,
+            reusedArtifactCount: 2,
           },
           {
             projectId: "proj_deleted",
@@ -439,6 +466,13 @@ describe("Desktop app activity", () => {
             durationMs: 500,
             throughputBytesPerSecond: 2_000_000,
           },
+          {
+            artifactId: "art_reused_source",
+            contentSha256: "sha256-reused-source",
+            sizeBytes: 500_000,
+            status: "already_staged",
+            completedAt: "2026-04-18T13:16:00.100Z",
+          },
         ],
       },
     });
@@ -446,6 +480,9 @@ describe("Desktop app activity", () => {
     expect(normalized.last_sync).toMatchObject({
       run_id: "sync_run_retry_2",
       session_id: "sync_session_retry_2",
+      selected_transport: "tcp",
+      fallback_reason: "Iroh endpoint was unavailable; used TCP.",
+      attempted_transports: ["iroh", "tcp"],
       status: "completed",
       started_at: "2026-04-18T13:16:00.000Z",
       duration_ms: 1250,
@@ -457,6 +494,7 @@ describe("Desktop app activity", () => {
       skipped_project_count: 1,
       failed_project_count: 0,
     });
+    expect(normalized.endpoint_hints).toEqual(syncEndpointHints);
     expect(normalized.last_sync?.timing).toEqual({
       planningMs: 10,
       transferMs: 25,
@@ -477,6 +515,11 @@ describe("Desktop app activity", () => {
         duration_ms: 500,
         throughput_bytes_per_second: 2_000_000,
       }),
+      expect.objectContaining({
+        artifact_id: "art_reused_source",
+        status: "already_staged",
+        completed_at: "2026-04-18T13:16:00.100Z",
+      }),
     ]);
     expect(normalized.last_sync?.project_results).toHaveLength(2);
     expect(normalized.last_sync?.project_results[0]).toMatchObject({
@@ -486,12 +529,44 @@ describe("Desktop app activity", () => {
       satisfied_count: 1,
       skipped_count: 0,
       failed_count: 0,
+      reused_artifact_count: 2,
     });
     expect(normalized.last_sync?.project_results[1]).toMatchObject({
       project_id: "proj_deleted",
       status: "deleted",
       deleted_count: 1,
     });
+  });
+
+  it("requests auto transport for native sync now runs and normalizes native Iroh IDs", async () => {
+    const actualApi = await vi.importActual<typeof import("./lib/api")>("./lib/api");
+    type TauriInternals = {
+      invoke: (command: string, args?: Record<string, unknown>, options?: unknown) => Promise<unknown>;
+    };
+    const nativeInvoke = getMockInvoke();
+    nativeInvoke.mockResolvedValueOnce({
+      status: "completed",
+      selectedTransport: irohTransportId,
+      fallbackReason: null,
+      attemptedTransports: [irohTransportId],
+      projectResults: [],
+      manifestErrors: [],
+      receivedArtifacts: [],
+    });
+    (window as Window & { __TAURI_INTERNALS__?: TauriInternals }).__TAURI_INTERNALS__ = {
+      invoke: async (command, args) => nativeInvoke(command, args),
+    };
+
+    await expect(actualApi.api.syncTrustedPeerNow("device_peer_1")).resolves.toMatchObject({
+      selected_transport: "iroh",
+      fallback_reason: null,
+      attempted_transports: ["iroh"],
+      status: "completed",
+    });
+    expect(nativeInvoke).toHaveBeenCalledWith(
+      "sync_transport_sync_now",
+      { payload: { peerDeviceId: "device_peer_1", preferredTransport: "auto" } },
+    );
   });
 
   it("infers sync TTFA only when native omits the metric", () => {
@@ -628,12 +703,15 @@ describe("Desktop app activity", () => {
     setSyncTransportStatus({
       active: true,
       status: "listening",
-      endpoint_hints: ["tcp://192.168.1.57:48625"],
+      endpoint_hints: syncEndpointHints,
       last_sync: {
         run_id: "sync_run_retry_2",
         session_id: "sync_session_retry_2",
         peer_device_id: "device_peer_1",
         remote_device_id: "device_peer_1",
+        selected_transport: tcpTransportId,
+        fallback_reason: "Iroh endpoint was unavailable; used TCP.",
+        attempted_transports: [irohTransportId, tcpTransportId],
         status: "completed",
         message: "Retry completed after staged bytes were reused.",
         started_at: "2026-04-18T13:16:00.000Z",
@@ -699,6 +777,8 @@ describe("Desktop app activity", () => {
     expect(await screen.findByText("Retry completed after staged bytes were reused.")).toBeInTheDocument();
     expect(screen.getByText(/Run sync_run_retry_2/)).toBeInTheDocument();
     expect(screen.getByText(/Duration 1\.4 s/)).toBeInTheDocument();
+    expect(screen.getByText(/Transport TCP/)).toBeInTheDocument();
+    expect(screen.getByText(/Fallback: Iroh endpoint was unavailable; used TCP\./)).toBeInTheDocument();
     expect(screen.getByText(/1 imported, 1 skipped, 0 failed/)).toBeInTheDocument();
     expect(screen.getByText(/TTFA 450 ms/)).toBeInTheDocument();
     expect(screen.getByText(/4\.0 MB total/)).toBeInTheDocument();
@@ -731,14 +811,14 @@ describe("Desktop app activity", () => {
         sync_group_id: "sync_group_local",
         display_name: "Laptop Rig",
         public_key: "pub_peer_1",
-        endpoint_hints: ["tcp://192.168.1.57:48625"],
+        endpoint_hints: syncEndpointHints,
         trusted_at: "2026-04-18T13:16:00.000Z",
       },
     ]);
     setSyncTransportStatus({
       active: true,
       status: "listening",
-      endpoint_hints: ["tcp://192.168.1.57:48625"],
+      endpoint_hints: syncEndpointHints,
       last_sync: {
         peer_device_id: "device_peer_1",
         remote_device_id: "device_peer_1",
@@ -771,7 +851,7 @@ describe("Desktop app activity", () => {
     setSyncTransportStatus({
       active: true,
       status: "listening",
-      endpoint_hints: ["tcp://192.168.1.57:48625"],
+      endpoint_hints: syncEndpointHints,
       last_sync: {
         peer_device_id: "device_peer_1",
         remote_device_id: "device_peer_1",

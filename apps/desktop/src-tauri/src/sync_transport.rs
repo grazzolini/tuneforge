@@ -17,6 +17,7 @@ pub struct SyncTransportStartListenerRequest {
 pub struct SyncTransportSyncNowRequest {
     pub peer_device_id: String,
     pub endpoint_hint: Option<String>,
+    pub preferred_transport: Option<String>,
     pub project_ids: Option<Vec<String>>,
     #[serde(default = "default_true")]
     pub export_local: bool,
@@ -105,6 +106,9 @@ pub struct SyncTransportSyncResult {
     pub remote_device_id: String,
     pub status: String,
     pub message: String,
+    pub selected_transport: String,
+    pub fallback_reason: Option<String>,
+    pub attempted_transports: Vec<String>,
     pub started_at: String,
     pub completed_at: String,
     pub duration_ms: u64,
@@ -147,6 +151,11 @@ mod desktop {
     };
     use chrono::{DateTime, Utc};
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    use iroh::{
+        endpoint::{presets, RecvStream, SendStream},
+        Endpoint, EndpointAddr, EndpointId, SecretKey,
+    };
+    use iroh_blobs::store::fs::FsStore;
     use rand::{rngs::OsRng, RngCore};
     use serde::{Deserialize, Serialize};
     use serde_json::{json, Value};
@@ -158,8 +167,9 @@ mod desktop {
         fs::{self, File},
         io::{self, BufRead, BufReader, Read, Write},
         net::{IpAddr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
-        path::PathBuf,
+        path::{Path, PathBuf},
         process,
+        str::FromStr,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc, Mutex,
@@ -171,13 +181,18 @@ mod desktop {
 
     const DEFAULT_BIND_HOST: &str = "0.0.0.0";
     const DEFAULT_LISTENER_PORT: u16 = 47619;
+    const TCP_TRANSPORT_ID: &str = "tuneforge-sync+tcp";
+    const IROH_TRANSPORT_ID: &str = "tuneforge-sync+iroh";
     const ENDPOINT_SCHEME: &str = "tuneforge-sync+tcp://";
+    const IROH_ENDPOINT_SCHEME: &str = "tuneforge-sync+iroh://";
+    const IROH_ALPN: &[u8] = b"tuneforge-sync/iroh/v1";
     const PAIRING_PROTOCOL_VERSION: &str = "tuneforge-sync-v1";
     const TRANSPORT_PROTOCOL_VERSION: &str = "tuneforge-sync-transport-v2";
     const TRANSPORT_HANDSHAKE_CHALLENGE_TYPE: &str = "transport_handshake";
     const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
     const READ_TIMEOUT: Duration = Duration::from_secs(45);
     const WRITE_TIMEOUT: Duration = Duration::from_secs(45);
+    const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
     const ACCEPT_SLEEP: Duration = Duration::from_millis(100);
     const MAX_RAW_FRAME: usize = 65_535;
     const ENCRYPTED_PAYLOAD_CHUNK: usize = 32 * 1024;
@@ -239,20 +254,47 @@ mod desktop {
             let bind_addr = listener
                 .local_addr()
                 .map_err(|error| format!("Could not inspect sync transport listener: {error}"))?;
-            let endpoint_hints = endpoint_hints_for_port(bind_addr.port(), &identity.device_id);
+            let tcp_endpoint_hints = endpoint_hints_for_port(bind_addr.port(), &identity.device_id);
+            let iroh_transport = match create_iroh_transport(&identity.device_id) {
+                Ok(transport) => Some(transport),
+                Err(error) => {
+                    update_status(&self.shared_status, |status| {
+                        status.last_status = Some(format!(
+                            "Iroh sync transport unavailable; starting TCP listener only: {error}"
+                        ));
+                    });
+                    None
+                }
+            };
+            let mut endpoint_hints = iroh_transport
+                .as_ref()
+                .map(|transport| iroh_endpoint_hints(transport, &identity.device_id))
+                .unwrap_or_default();
+            endpoint_hints.extend(tcp_endpoint_hints);
             let stop = Arc::new(AtomicBool::new(false));
-            let thread_stop = Arc::clone(&stop);
+            let tcp_stop = Arc::clone(&stop);
             let base_url = self.base_url.clone();
             let shared_status = Arc::clone(&self.shared_status);
-            let thread = thread::spawn(move || {
-                accept_loop(listener, base_url, thread_stop, shared_status);
+            let tcp_thread = thread::spawn(move || {
+                accept_loop(listener, base_url, tcp_stop, shared_status);
+            });
+            let iroh_thread = iroh_transport.as_ref().map(|transport| {
+                let transport = transport.clone();
+                let base_url = self.base_url.clone();
+                let shared_status = Arc::clone(&self.shared_status);
+                let iroh_stop = Arc::clone(&stop);
+                thread::spawn(move || {
+                    iroh_accept_loop(transport, base_url, iroh_stop, shared_status);
+                })
             });
 
             let handle = ListenerHandle {
                 bind_addr,
                 endpoint_hints,
+                iroh_transport,
                 stop,
-                thread: Some(thread),
+                tcp_thread: Some(tcp_thread),
+                iroh_thread,
             };
             {
                 let mut guard = self
@@ -281,10 +323,18 @@ mod desktop {
 
             if let Some(mut listener) = listener {
                 listener.stop.store(true, Ordering::SeqCst);
-                if let Some(thread) = listener.thread.take() {
+                if let Some(iroh_transport) = listener.iroh_transport.take() {
+                    iroh_transport.close();
+                }
+                if let Some(thread) = listener.tcp_thread.take() {
                     thread
                         .join()
                         .map_err(|_| "Sync transport listener thread panicked.".to_string())?;
+                }
+                if let Some(thread) = listener.iroh_thread.take() {
+                    thread
+                        .join()
+                        .map_err(|_| "Iroh sync transport listener thread panicked.".to_string())?;
                 }
                 update_status(&self.shared_status, |status| {
                     status.last_status = Some("Sync transport listener stopped.".to_string());
@@ -383,26 +433,28 @@ mod desktop {
                         payload.peer_device_id
                     )
                 })?;
-            let endpoint_hint = payload
-                .endpoint_hint
-                .clone()
-                .or_else(|| first_tcp_endpoint_hint(&peer.endpoint_hints))
-                .ok_or_else(|| {
-                    format!(
-                        "Trusted sync peer {} does not have a TuneForge TCP endpoint hint.",
-                        payload.peer_device_id
-                    )
-                })?;
-            let endpoint = parse_endpoint_hint(&endpoint_hint, Some(&payload.peer_device_id))?;
-            let timer = SyncPhaseTimer::start("peer_connect");
-            let stream = TcpStream::connect_timeout(&endpoint, Duration::from_secs(10)).map_err(
-                |error| format!("Could not connect to sync peer at {endpoint}: {error}"),
+            let preferred_transport = payload
+                .preferred_transport
+                .as_deref()
+                .and_then(normalized_transport_id);
+            let local_iroh = self.local_iroh_transport();
+            let transport_selection = select_sync_transport(
+                preferred_transport,
+                payload.endpoint_hint.as_deref(),
+                &peer.endpoint_hints,
+                &payload.peer_device_id,
+                local_iroh.is_some(),
             )?;
-            configure_stream(&stream)?;
+            let mut transport_selection = transport_selection;
+            let timer = SyncPhaseTimer::start("peer_connect");
+            let mut connection = connect_selected_transport(
+                &mut transport_selection,
+                local_iroh,
+                &payload.peer_device_id,
+            )?;
             timings.push(timer.finish());
 
             let timer = SyncPhaseTimer::start("peer_authentication");
-            let mut connection = SecurePeerConnection::connect_initiator(stream)?;
             let session = authenticate_session(
                 &mut connection,
                 &client,
@@ -437,12 +489,14 @@ mod desktop {
             let mut imported_projects = Vec::new();
             let mut received_artifacts = Vec::new();
             if payload.import_remote {
+                let transport_id = connection.transport_id();
                 let imported = import_remote_manifests(
                     &client,
                     &mut connection,
                     &session.remote_device_id,
                     &remote_offer.metadata,
                     &remote_offer.project_manifests,
+                    transport_id,
                     &mut metrics,
                     &mut timings,
                 );
@@ -467,6 +521,11 @@ mod desktop {
             let duration_ms = duration_millis(run_started_instant.elapsed());
             let transfer_counts = transfer_counts(&received_artifacts);
             let project_results = imported_projects.clone();
+            let TransportEvidence {
+                selected_transport,
+                fallback_reason,
+                attempted_transports,
+            } = transport_selection.evidence();
 
             Ok(SyncTransportSyncResult {
                 run_id,
@@ -479,6 +538,9 @@ mod desktop {
                     &transfer_counts,
                     import_counts,
                 ),
+                selected_transport,
+                fallback_reason,
+                attempted_transports,
                 started_at: run_started_at.to_rfc3339(),
                 completed_at: completed_at.to_rfc3339(),
                 duration_ms,
@@ -499,6 +561,14 @@ mod desktop {
                 local_manifest_count,
                 manifest_errors,
                 phase_timings: timings,
+            })
+        }
+
+        fn local_iroh_transport(&self) -> Option<IrohTransport> {
+            self.listener.lock().ok().and_then(|guard| {
+                guard
+                    .as_ref()
+                    .and_then(|handle| handle.iroh_transport.clone())
             })
         }
     }
@@ -543,8 +613,10 @@ mod desktop {
     struct ListenerHandle {
         bind_addr: SocketAddr,
         endpoint_hints: Vec<String>,
+        iroh_transport: Option<IrohTransport>,
         stop: Arc<AtomicBool>,
-        thread: Option<JoinHandle<()>>,
+        tcp_thread: Option<JoinHandle<()>>,
+        iroh_thread: Option<JoinHandle<()>>,
     }
 
     struct IncomingSessionResult {
@@ -560,6 +632,446 @@ mod desktop {
         last_status: Option<String>,
         last_error: Option<String>,
         last_sync: Option<SyncTransportSyncResult>,
+    }
+
+    #[derive(Clone)]
+    struct IrohTransport {
+        endpoint: Endpoint,
+        blob_store: IrohBlobStore,
+    }
+
+    impl IrohTransport {
+        fn close(&self) {
+            let endpoint = self.endpoint.clone();
+            let blob_store = self.blob_store.clone();
+            tauri::async_runtime::block_on(async move {
+                endpoint.close().await;
+                let _ = blob_store.store.shutdown().await;
+            });
+        }
+    }
+
+    #[derive(Clone)]
+    struct IrohBlobStore {
+        store: FsStore,
+    }
+
+    impl IrohBlobStore {
+        fn add_path(&self, path: &Path) -> Result<String, String> {
+            let store = self.store.clone();
+            let path = path.to_path_buf();
+            tauri::async_runtime::block_on(async move {
+                let tag = store.blobs().add_path(path).await.map_err(|error| {
+                    format!("Could not import artifact into iroh-blobs store: {error}")
+                })?;
+                store.sync_db().await.map_err(|error| {
+                    format!("Could not sync iroh-blobs store metadata: {error}")
+                })?;
+                Ok(tag.hash.to_string())
+            })
+        }
+    }
+
+    fn create_iroh_transport(device_id: &str) -> Result<IrohTransport, String> {
+        let data_dir = sync_transport_data_dir()?;
+        let iroh_dir = data_dir.join("iroh");
+        fs::create_dir_all(&iroh_dir)
+            .map_err(|error| format!("Could not create Iroh transport data directory: {error}"))?;
+        let secret_key = load_or_create_iroh_secret_key(&iroh_dir)?;
+        let blobs_dir = iroh_dir.join("blobs");
+        let blob_store = tauri::async_runtime::block_on(FsStore::load(&blobs_dir))
+            .map_err(|error| format!("Could not open disk-backed iroh-blobs store: {error}"))?;
+        let endpoint = tauri::async_runtime::block_on(async move {
+            // Minimal only installs the crypto provider; the empty builder defaults keep
+            // address lookup empty and RelayMode disabled for local-direct operation.
+            Endpoint::builder(presets::Minimal)
+                .secret_key(secret_key)
+                .alpns(vec![IROH_ALPN.to_vec()])
+                .bind()
+                .await
+        })
+        .map_err(|error| format!("Could not start local-direct Iroh endpoint: {error}"))?;
+
+        let transport = IrohTransport {
+            endpoint,
+            blob_store: IrohBlobStore { store: blob_store },
+        };
+        if iroh_endpoint_hints(&transport, device_id).is_empty() {
+            return Err("Local Iroh endpoint did not expose a direct address.".to_string());
+        }
+        Ok(transport)
+    }
+
+    fn sync_transport_data_dir() -> Result<PathBuf, String> {
+        if let Ok(path) = env::var("TUNEFORGE_SYNC_TRANSPORT_DATA_DIR") {
+            let trimmed = path.trim();
+            if !trimmed.is_empty() {
+                return Ok(PathBuf::from(trimmed));
+            }
+        }
+        platform_app_data_dir().map(|path| path.join("sync-transport"))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn platform_app_data_dir() -> Result<PathBuf, String> {
+        home_dir()
+            .map(|home| {
+                home.join("Library")
+                    .join("Application Support")
+                    .join("com.tuneforge.desktop")
+            })
+            .ok_or_else(|| {
+                "Could not resolve the home directory for Iroh transport state.".to_string()
+            })
+    }
+
+    #[cfg(target_os = "windows")]
+    fn platform_app_data_dir() -> Result<PathBuf, String> {
+        env::var("APPDATA")
+            .map(|path| PathBuf::from(path).join("com.tuneforge.desktop"))
+            .map_err(|_| "Could not resolve APPDATA for Iroh transport state.".to_string())
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    fn platform_app_data_dir() -> Result<PathBuf, String> {
+        if let Ok(path) = env::var("XDG_DATA_HOME") {
+            let trimmed = path.trim();
+            if !trimmed.is_empty() {
+                return Ok(PathBuf::from(trimmed).join("com.tuneforge.desktop"));
+            }
+        }
+        home_dir()
+            .map(|home| {
+                home.join(".local")
+                    .join("share")
+                    .join("com.tuneforge.desktop")
+            })
+            .ok_or_else(|| {
+                "Could not resolve the home directory for Iroh transport state.".to_string()
+            })
+    }
+
+    fn home_dir() -> Option<PathBuf> {
+        env::var("HOME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    }
+
+    fn load_or_create_iroh_secret_key(iroh_dir: &Path) -> Result<SecretKey, String> {
+        let key_path = iroh_dir.join("endpoint.key");
+        match fs::read_to_string(&key_path) {
+            Ok(value) => {
+                let bytes = decode_urlsafe_key(value.trim())?;
+                let bytes: [u8; 32] = bytes.try_into().map_err(|_| {
+                    "Persisted Iroh endpoint key must decode to 32 bytes.".to_string()
+                })?;
+                Ok(SecretKey::from_bytes(&bytes))
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let secret_key = SecretKey::generate();
+                let encoded = URL_SAFE_NO_PAD.encode(secret_key.to_bytes());
+                fs::write(&key_path, encoded)
+                    .map_err(|error| format!("Could not persist Iroh endpoint key: {error}"))?;
+                set_owner_only_file_permissions(&key_path);
+                Ok(secret_key)
+            }
+            Err(error) => Err(format!(
+                "Could not read persisted Iroh endpoint key: {error}"
+            )),
+        }
+    }
+
+    #[cfg(unix)]
+    fn set_owner_only_file_permissions(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+
+    #[cfg(not(unix))]
+    fn set_owner_only_file_permissions(_path: &Path) {}
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum TransportKind {
+        Tcp,
+        Iroh,
+        Other(String),
+    }
+
+    impl TransportKind {
+        fn from_id(transport_id: &str) -> Self {
+            match transport_id.trim().to_ascii_lowercase().as_str() {
+                TCP_TRANSPORT_ID | "tcp" => Self::Tcp,
+                IROH_TRANSPORT_ID | "iroh" => Self::Iroh,
+                _ => Self::Other(transport_id.to_string()),
+            }
+        }
+
+        fn id(&self) -> &str {
+            match self {
+                Self::Tcp => TCP_TRANSPORT_ID,
+                Self::Iroh => IROH_TRANSPORT_ID,
+                Self::Other(transport_id) => transport_id,
+            }
+        }
+
+        fn endpoint_scheme(&self) -> Option<&'static str> {
+            match self {
+                Self::Tcp => Some(ENDPOINT_SCHEME),
+                Self::Iroh => Some(IROH_ENDPOINT_SCHEME),
+                Self::Other(_) => None,
+            }
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct TransportSelection {
+        selected: TransportKind,
+        endpoint_hint: Option<String>,
+        tcp_fallback_endpoint_hint: Option<String>,
+        fallback_reason: Option<String>,
+        attempted_transports: Vec<TransportKind>,
+    }
+
+    impl TransportSelection {
+        fn single(selected: TransportKind) -> Self {
+            Self {
+                selected: selected.clone(),
+                endpoint_hint: None,
+                tcp_fallback_endpoint_hint: None,
+                fallback_reason: None,
+                attempted_transports: vec![selected],
+            }
+        }
+
+        fn tcp(endpoint_hint: Option<String>, fallback_reason: Option<String>) -> Self {
+            Self {
+                selected: TransportKind::Tcp,
+                endpoint_hint,
+                tcp_fallback_endpoint_hint: None,
+                fallback_reason,
+                attempted_transports: vec![TransportKind::Tcp],
+            }
+        }
+
+        fn iroh(endpoint_hint: String, tcp_fallback_endpoint_hint: Option<String>) -> Self {
+            Self {
+                selected: TransportKind::Iroh,
+                endpoint_hint: Some(endpoint_hint),
+                tcp_fallback_endpoint_hint,
+                fallback_reason: None,
+                attempted_transports: vec![TransportKind::Iroh],
+            }
+        }
+
+        fn tcp_fallback(
+            endpoint_hint: String,
+            preferred_transport: TransportKind,
+            fallback_reason: String,
+        ) -> Self {
+            Self {
+                selected: TransportKind::Tcp,
+                endpoint_hint: Some(endpoint_hint),
+                tcp_fallback_endpoint_hint: None,
+                fallback_reason: Some(fallback_reason),
+                attempted_transports: vec![preferred_transport, TransportKind::Tcp],
+            }
+        }
+
+        fn record_iroh_connect_fallback(&mut self, reason: String) -> Result<(), String> {
+            let Some(endpoint_hint) = self.tcp_fallback_endpoint_hint.clone() else {
+                return Err(reason);
+            };
+            self.selected = TransportKind::Tcp;
+            self.endpoint_hint = Some(endpoint_hint);
+            self.tcp_fallback_endpoint_hint = None;
+            self.fallback_reason = Some(reason);
+            self.attempted_transports = vec![TransportKind::Iroh, TransportKind::Tcp];
+            Ok(())
+        }
+
+        fn endpoint_hint(&self) -> Option<&str> {
+            self.endpoint_hint.as_deref()
+        }
+
+        fn evidence(&self) -> TransportEvidence {
+            TransportEvidence {
+                selected_transport: self.selected.id().to_string(),
+                fallback_reason: self.fallback_reason.clone(),
+                attempted_transports: self
+                    .attempted_transports
+                    .iter()
+                    .map(|transport| transport.id().to_string())
+                    .collect(),
+            }
+        }
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct TransportEvidence {
+        selected_transport: String,
+        fallback_reason: Option<String>,
+        attempted_transports: Vec<String>,
+    }
+
+    fn select_sync_transport(
+        preferred_transport: Option<&str>,
+        endpoint_hint: Option<&str>,
+        peer_endpoint_hints: &[String],
+        peer_device_id: &str,
+        local_iroh_available: bool,
+    ) -> Result<TransportSelection, String> {
+        let tcp_endpoint_hint =
+            first_transport_endpoint_hint(&TransportKind::Tcp, endpoint_hint, peer_endpoint_hints);
+        let iroh_endpoint_hint =
+            first_transport_endpoint_hint(&TransportKind::Iroh, endpoint_hint, peer_endpoint_hints);
+
+        match preferred_transport.map(TransportKind::from_id) {
+            Some(TransportKind::Tcp) => tcp_endpoint_hint
+                .map(|hint| TransportSelection::tcp(Some(hint), None))
+                .ok_or_else(|| {
+                    format!(
+                        "Trusted sync peer {peer_device_id} does not have a TuneForge TCP endpoint hint."
+                    )
+                }),
+            Some(TransportKind::Iroh) => select_iroh_transport(
+                iroh_endpoint_hint,
+                tcp_endpoint_hint,
+                peer_device_id,
+                local_iroh_available,
+                true,
+            ),
+            None => {
+                if local_iroh_available {
+                    if let Some(iroh_endpoint_hint) = iroh_endpoint_hint {
+                        return Ok(TransportSelection::iroh(
+                            iroh_endpoint_hint,
+                            tcp_endpoint_hint,
+                        ));
+                    }
+                    let fallback_reason = format!(
+                        "Trusted sync peer {peer_device_id} does not have a TuneForge Iroh endpoint hint; using {TCP_TRANSPORT_ID}."
+                    );
+                    tcp_endpoint_hint
+                        .map(|hint| {
+                            let mut selection =
+                                TransportSelection::tcp(Some(hint), Some(fallback_reason));
+                            selection.attempted_transports =
+                                vec![TransportKind::Iroh, TransportKind::Tcp];
+                            selection
+                        })
+                        .ok_or_else(|| {
+                            format!(
+                                "Trusted sync peer {peer_device_id} does not have a TuneForge Iroh or TCP endpoint hint."
+                            )
+                        })
+                } else {
+                    let fallback_reason = format!(
+                        "Iroh sync transport is not available locally; using {TCP_TRANSPORT_ID}."
+                    );
+                    tcp_endpoint_hint
+                        .map(|hint| {
+                            let mut selection =
+                                TransportSelection::tcp(Some(hint), Some(fallback_reason));
+                            selection.attempted_transports =
+                                vec![TransportKind::Iroh, TransportKind::Tcp];
+                            selection
+                        })
+                        .ok_or_else(|| {
+                            format!(
+                                "Trusted sync peer {peer_device_id} does not have a TuneForge TCP endpoint hint."
+                            )
+                        })
+                }
+            }
+            Some(preferred_transport) => {
+                let fallback_reason = format!(
+                    "Preferred sync transport {} is not available in this build; using {}.",
+                    preferred_transport.id(),
+                    TCP_TRANSPORT_ID
+                );
+                tcp_endpoint_hint
+                    .map(|hint| {
+                        TransportSelection::tcp_fallback(
+                            hint,
+                            preferred_transport,
+                            fallback_reason,
+                        )
+                    })
+                    .ok_or_else(|| {
+                        format!(
+                            "Trusted sync peer {peer_device_id} does not have a TuneForge TCP endpoint hint."
+                        )
+                    })
+            }
+        }
+    }
+
+    fn select_iroh_transport(
+        iroh_endpoint_hint: Option<String>,
+        tcp_endpoint_hint: Option<String>,
+        peer_device_id: &str,
+        local_iroh_available: bool,
+        explicit_preference: bool,
+    ) -> Result<TransportSelection, String> {
+        if local_iroh_available {
+            if let Some(iroh_endpoint_hint) = iroh_endpoint_hint {
+                return Ok(TransportSelection::iroh(
+                    iroh_endpoint_hint,
+                    tcp_endpoint_hint,
+                ));
+            }
+            let fallback_reason = if explicit_preference {
+                format!(
+                    "Preferred sync transport {IROH_TRANSPORT_ID} has no trusted endpoint hint; using {TCP_TRANSPORT_ID}."
+                )
+            } else {
+                format!(
+                    "Trusted sync peer {peer_device_id} does not have a TuneForge Iroh endpoint hint; using {TCP_TRANSPORT_ID}."
+                )
+            };
+            return tcp_endpoint_hint
+                .map(|hint| {
+                    TransportSelection::tcp_fallback(
+                        hint,
+                        TransportKind::Iroh,
+                        fallback_reason,
+                    )
+                })
+                .ok_or_else(|| {
+                    format!(
+                        "Trusted sync peer {peer_device_id} does not have a TuneForge Iroh or TCP endpoint hint."
+                    )
+                });
+        }
+
+        let fallback_reason = if explicit_preference {
+            format!(
+                "Preferred sync transport {IROH_TRANSPORT_ID} is not available locally; using {TCP_TRANSPORT_ID}."
+            )
+        } else {
+            format!("Iroh sync transport is not available locally; using {TCP_TRANSPORT_ID}.")
+        };
+        tcp_endpoint_hint
+            .map(|hint| {
+                TransportSelection::tcp_fallback(hint, TransportKind::Iroh, fallback_reason)
+            })
+            .ok_or_else(|| {
+                format!(
+                    "Trusted sync peer {peer_device_id} does not have a TuneForge TCP endpoint hint."
+                )
+            })
+    }
+
+    fn normalized_transport_id(value: &str) -> Option<&str> {
+        let value = value.trim();
+        if value.is_empty() || value.eq_ignore_ascii_case("auto") {
+            None
+        } else {
+            Some(value)
+        }
     }
 
     fn accept_loop(
@@ -580,8 +1092,20 @@ mod desktop {
                         status.last_error = None;
                         status.last_sync = None;
                     });
-                    thread::spawn(move || {
-                        handle_incoming_session(base_url, stream, shared_status);
+                    thread::spawn(move || match TcpPeerStream::new(stream) {
+                        Ok(stream) => handle_incoming_session(
+                            base_url,
+                            TransportKind::Tcp,
+                            Box::new(stream),
+                            None,
+                            shared_status,
+                        ),
+                        Err(error) => {
+                            update_status(&shared_status, |status| {
+                                status.failed_sessions += 1;
+                                status.last_error = Some(error);
+                            });
+                        }
                     });
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -599,15 +1123,165 @@ mod desktop {
         }
     }
 
+    fn iroh_accept_loop(
+        transport: IrohTransport,
+        base_url: String,
+        stop: Arc<AtomicBool>,
+        shared_status: Arc<Mutex<SharedStatus>>,
+    ) {
+        tauri::async_runtime::block_on(async move {
+            while !stop.load(Ordering::SeqCst) {
+                match tokio::time::timeout(ACCEPT_SLEEP, transport.endpoint.accept()).await {
+                    Ok(Some(incoming)) => {
+                        let base_url = base_url.clone();
+                        let shared_status = Arc::clone(&shared_status);
+                        let blob_store = transport.blob_store.clone();
+                        update_status(&shared_status, |status| {
+                            status.accepted_sessions += 1;
+                            status.last_status =
+                                Some("Accepted Iroh sync peer session.".to_string());
+                            status.last_error = None;
+                            status.last_sync = None;
+                        });
+                        tauri::async_runtime::spawn(async move {
+                            let stream = match incoming.await {
+                                Ok(connection) => match connection.accept_bi().await {
+                                    Ok((send, recv)) => {
+                                        Ok(Box::new(IrohPeerStream::new(send, recv))
+                                            as Box<dyn PeerStream>)
+                                    }
+                                    Err(error) => {
+                                        Err(format!("Could not accept Iroh sync stream: {error}"))
+                                    }
+                                },
+                                Err(error) => {
+                                    Err(format!("Could not accept Iroh sync connection: {error}"))
+                                }
+                            };
+                            match stream {
+                                Ok(stream) => {
+                                    let session_status = Arc::clone(&shared_status);
+                                    let error_status = Arc::clone(&shared_status);
+                                    let join = tauri::async_runtime::spawn_blocking(move || {
+                                        handle_incoming_session(
+                                            base_url,
+                                            TransportKind::Iroh,
+                                            stream,
+                                            Some(blob_store),
+                                            session_status,
+                                        );
+                                    });
+                                    if let Err(error) = join.await {
+                                        update_status(&error_status, |status| {
+                                            status.failed_sessions += 1;
+                                            status.last_error = Some(format!(
+                                                "Iroh sync session task failed: {error}"
+                                            ));
+                                        });
+                                    }
+                                }
+                                Err(error) => {
+                                    update_status(&shared_status, |status| {
+                                        status.failed_sessions += 1;
+                                        status.last_error = Some(error);
+                                    });
+                                }
+                            }
+                        });
+                    }
+                    Ok(None) => break,
+                    Err(_) => {}
+                }
+            }
+        });
+    }
+
+    fn connect_selected_transport(
+        selection: &mut TransportSelection,
+        local_iroh: Option<IrohTransport>,
+        peer_device_id: &str,
+    ) -> Result<SecurePeerConnection, String> {
+        match selection.selected {
+            TransportKind::Tcp => connect_tcp_peer_connection(
+                selection.endpoint_hint().ok_or_else(|| {
+                    "Selected sync transport did not include a TCP endpoint hint.".to_string()
+                })?,
+                peer_device_id,
+            ),
+            TransportKind::Iroh => {
+                let Some(transport) = local_iroh else {
+                    return Err("Selected Iroh sync transport is not running locally.".to_string());
+                };
+                let hint = selection.endpoint_hint().ok_or_else(|| {
+                    "Selected sync transport did not include an Iroh endpoint hint.".to_string()
+                })?;
+                match connect_iroh_peer_connection(&transport, hint, peer_device_id) {
+                    Ok(connection) => Ok(connection),
+                    Err(error) => {
+                        selection.record_iroh_connect_fallback(format!(
+                            "Iroh sync transport was unavailable ({error}); using {TCP_TRANSPORT_ID}."
+                        ))?;
+                        connect_tcp_peer_connection(
+                            selection.endpoint_hint().ok_or_else(|| {
+                                "Iroh fallback did not include a TCP endpoint hint.".to_string()
+                            })?,
+                            peer_device_id,
+                        )
+                    }
+                }
+            }
+            TransportKind::Other(_) => Err("Selected sync transport is unsupported.".to_string()),
+        }
+    }
+
+    fn connect_tcp_peer_connection(
+        endpoint_hint: &str,
+        peer_device_id: &str,
+    ) -> Result<SecurePeerConnection, String> {
+        let endpoint = parse_endpoint_hint(endpoint_hint, Some(peer_device_id))?;
+        let stream = TcpStream::connect_timeout(&endpoint, CONNECT_TIMEOUT)
+            .map_err(|error| format!("Could not connect to sync peer at {endpoint}: {error}"))?;
+        let stream = TcpPeerStream::new(stream)?;
+        SecurePeerConnection::connect_initiator(Box::new(stream), TransportKind::Tcp, None)
+    }
+
+    fn connect_iroh_peer_connection(
+        transport: &IrohTransport,
+        endpoint_hint: &str,
+        peer_device_id: &str,
+    ) -> Result<SecurePeerConnection, String> {
+        let endpoint_addr = parse_iroh_endpoint_hint(endpoint_hint, Some(peer_device_id))?;
+        let endpoint = transport.endpoint.clone();
+        let blob_store = transport.blob_store.clone();
+        let (send, recv) = tauri::async_runtime::block_on(async move {
+            let connection =
+                tokio::time::timeout(CONNECT_TIMEOUT, endpoint.connect(endpoint_addr, IROH_ALPN))
+                    .await
+                    .map_err(|_| "Timed out connecting to Iroh sync peer.".to_string())?
+                    .map_err(|error| format!("Could not connect to Iroh sync peer: {error}"))?;
+            tokio::time::timeout(CONNECT_TIMEOUT, connection.open_bi())
+                .await
+                .map_err(|_| "Timed out opening Iroh sync stream.".to_string())?
+                .map_err(|error| format!("Could not open Iroh sync stream: {error}"))
+        })?;
+        SecurePeerConnection::connect_initiator(
+            Box::new(IrohPeerStream::new(send, recv)),
+            TransportKind::Iroh,
+            Some(blob_store),
+        )
+    }
+
     fn handle_incoming_session(
         base_url: String,
-        stream: TcpStream,
+        transport: TransportKind,
+        stream: Box<dyn PeerStream>,
+        blob_store: Option<IrohBlobStore>,
         shared_status: Arc<Mutex<SharedStatus>>,
     ) {
         update_status(&shared_status, |status| {
             status.active_sessions += 1;
         });
-        let result = serve_incoming_session(base_url, stream);
+        let result = serve_incoming_session(base_url, transport, stream, blob_store);
         update_status(&shared_status, |status| {
             status.active_sessions = status.active_sessions.saturating_sub(1);
             match result {
@@ -626,17 +1300,19 @@ mod desktop {
 
     fn serve_incoming_session(
         base_url: String,
-        stream: TcpStream,
+        transport: TransportKind,
+        stream: Box<dyn PeerStream>,
+        blob_store: Option<IrohBlobStore>,
     ) -> Result<IncomingSessionResult, String> {
         let run_id = sync_run_id();
         let run_started_at = Utc::now();
         let run_started_instant = Instant::now();
         let mut timings = Vec::new();
         let mut metrics = SyncRunMetrics::start(run_started_instant);
-        configure_stream(&stream)?;
         let client = BackendClient::new(&base_url)?;
         let timer = SyncPhaseTimer::start("peer_authentication");
-        let mut connection = SecurePeerConnection::connect_responder(stream)?;
+        let mut connection =
+            SecurePeerConnection::connect_responder(stream, transport, blob_store)?;
         let session = authenticate_session(&mut connection, &client, None)?;
         timings.push(timer.finish());
         let timer = SyncPhaseTimer::start("manifest_exchange");
@@ -667,12 +1343,14 @@ mod desktop {
             &mut metrics,
         )?;
         timings.push(timer.finish());
+        let transport_id = connection.transport_id();
         let imported = import_remote_manifests(
             &client,
             &mut connection,
             &session.remote_device_id,
             &remote_offer.metadata,
             &remote_offer.project_manifests,
+            transport_id,
             &mut metrics,
             &mut timings,
         );
@@ -696,6 +1374,11 @@ mod desktop {
         let duration_ms = duration_millis(run_started_instant.elapsed());
         let transfer_counts = transfer_counts(&imported.received_artifacts);
         let project_results = imported.imported_projects.clone();
+        let TransportEvidence {
+            selected_transport,
+            fallback_reason,
+            attempted_transports,
+        } = TransportSelection::single(connection.transport()).evidence();
         let sync_result = SyncTransportSyncResult {
             run_id,
             peer_device_id: session.remote_device_id.clone(),
@@ -707,6 +1390,9 @@ mod desktop {
                 &transfer_counts,
                 import_counts,
             ),
+            selected_transport,
+            fallback_reason,
+            attempted_transports,
             started_at: run_started_at.to_rfc3339(),
             completed_at: completed_at.to_rfc3339(),
             duration_ms,
@@ -978,23 +1664,99 @@ mod desktop {
         Message(ProtocolMessage),
     }
 
-    struct SecurePeerConnection {
+    trait PeerStream: Send {
+        fn read_exact(&mut self, buffer: &mut [u8]) -> io::Result<()>;
+        fn write_all(&mut self, buffer: &[u8]) -> io::Result<()>;
+    }
+
+    struct TcpPeerStream {
         stream: TcpStream,
+    }
+
+    impl TcpPeerStream {
+        fn new(stream: TcpStream) -> Result<Self, String> {
+            configure_stream(&stream)?;
+            Ok(Self { stream })
+        }
+    }
+
+    impl PeerStream for TcpPeerStream {
+        fn read_exact(&mut self, buffer: &mut [u8]) -> io::Result<()> {
+            self.stream.read_exact(buffer)
+        }
+
+        fn write_all(&mut self, buffer: &[u8]) -> io::Result<()> {
+            self.stream.write_all(buffer)
+        }
+    }
+
+    struct IrohPeerStream {
+        send: SendStream,
+        recv: RecvStream,
+    }
+
+    impl IrohPeerStream {
+        fn new(send: SendStream, recv: RecvStream) -> Self {
+            Self { send, recv }
+        }
+    }
+
+    impl PeerStream for IrohPeerStream {
+        fn read_exact(&mut self, buffer: &mut [u8]) -> io::Result<()> {
+            match tauri::async_runtime::block_on(tokio::time::timeout(
+                READ_TIMEOUT,
+                self.recv.read_exact(buffer),
+            )) {
+                Ok(Ok(_)) => Ok(()),
+                Ok(Err(error)) => Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    error.to_string(),
+                )),
+                Err(_) => Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Timed out reading from Iroh sync stream.",
+                )),
+            }
+        }
+
+        fn write_all(&mut self, buffer: &[u8]) -> io::Result<()> {
+            match tauri::async_runtime::block_on(tokio::time::timeout(
+                WRITE_TIMEOUT,
+                self.send.write_all(buffer),
+            )) {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(error)) => Err(io::Error::new(io::ErrorKind::Other, error.to_string())),
+                Err(_) => Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Timed out writing to Iroh sync stream.",
+                )),
+            }
+        }
+    }
+
+    struct SecurePeerConnection {
+        stream: Box<dyn PeerStream>,
         noise: snow::TransportState,
         handshake_hash: String,
         next_message_id: u64,
+        transport: TransportKind,
+        blob_store: Option<IrohBlobStore>,
     }
 
     impl SecurePeerConnection {
-        fn connect_initiator(mut stream: TcpStream) -> Result<Self, String> {
+        fn connect_initiator(
+            mut stream: Box<dyn PeerStream>,
+            transport: TransportKind,
+            blob_store: Option<IrohBlobStore>,
+        ) -> Result<Self, String> {
             let mut handshake = build_noise_handshake(true)?;
             let mut buffer = vec![0_u8; MAX_RAW_FRAME];
             let written = handshake
                 .write_message(&[], &mut buffer)
                 .map_err(|error| format!("Noise handshake write failed: {error}"))?;
-            write_raw_frame(&mut stream, &buffer[..written])?;
+            write_raw_frame(stream.as_mut(), &buffer[..written])?;
 
-            let message = read_raw_frame(&mut stream)?;
+            let message = read_raw_frame(stream.as_mut())?;
             handshake
                 .read_message(&message, &mut buffer)
                 .map_err(|error| format!("Noise handshake read failed: {error}"))?;
@@ -1002,7 +1764,7 @@ mod desktop {
             let written = handshake
                 .write_message(&[], &mut buffer)
                 .map_err(|error| format!("Noise handshake write failed: {error}"))?;
-            write_raw_frame(&mut stream, &buffer[..written])?;
+            write_raw_frame(stream.as_mut(), &buffer[..written])?;
             let handshake_hash = URL_SAFE_NO_PAD.encode(handshake.get_handshake_hash());
             let noise = handshake
                 .into_transport_mode()
@@ -1012,14 +1774,20 @@ mod desktop {
                 noise,
                 handshake_hash,
                 next_message_id: 1,
+                transport,
+                blob_store,
             })
         }
 
-        fn connect_responder(mut stream: TcpStream) -> Result<Self, String> {
+        fn connect_responder(
+            mut stream: Box<dyn PeerStream>,
+            transport: TransportKind,
+            blob_store: Option<IrohBlobStore>,
+        ) -> Result<Self, String> {
             let mut handshake = build_noise_handshake(false)?;
             let mut buffer = vec![0_u8; MAX_RAW_FRAME];
 
-            let message = read_raw_frame(&mut stream)?;
+            let message = read_raw_frame(stream.as_mut())?;
             handshake
                 .read_message(&message, &mut buffer)
                 .map_err(|error| format!("Noise handshake read failed: {error}"))?;
@@ -1027,9 +1795,9 @@ mod desktop {
             let written = handshake
                 .write_message(&[], &mut buffer)
                 .map_err(|error| format!("Noise handshake write failed: {error}"))?;
-            write_raw_frame(&mut stream, &buffer[..written])?;
+            write_raw_frame(stream.as_mut(), &buffer[..written])?;
 
-            let message = read_raw_frame(&mut stream)?;
+            let message = read_raw_frame(stream.as_mut())?;
             handshake
                 .read_message(&message, &mut buffer)
                 .map_err(|error| format!("Noise handshake read failed: {error}"))?;
@@ -1042,7 +1810,27 @@ mod desktop {
                 noise,
                 handshake_hash,
                 next_message_id: 1,
+                transport,
+                blob_store,
             })
+        }
+
+        fn transport(&self) -> TransportKind {
+            self.transport.clone()
+        }
+
+        fn transport_id(&self) -> &'static str {
+            match self.transport {
+                TransportKind::Tcp => TCP_TRANSPORT_ID,
+                TransportKind::Iroh => IROH_TRANSPORT_ID,
+                TransportKind::Other(_) => TCP_TRANSPORT_ID,
+            }
+        }
+
+        fn record_transport_blob_identity(&self, path: &Path) -> Option<String> {
+            self.blob_store
+                .as_ref()
+                .and_then(|store| store.add_path(path).ok())
         }
 
         fn send_message(&mut self, message: &ProtocolMessage) -> Result<(), String> {
@@ -1146,11 +1934,11 @@ mod desktop {
                 .noise
                 .write_message(plaintext, &mut ciphertext)
                 .map_err(|error| format!("Noise transport write failed: {error}"))?;
-            write_raw_frame(&mut self.stream, &ciphertext[..written])
+            write_raw_frame(self.stream.as_mut(), &ciphertext[..written])
         }
 
         fn read_encrypted_frame(&mut self) -> Result<EncryptedFrame, String> {
-            let ciphertext = read_raw_frame(&mut self.stream)?;
+            let ciphertext = read_raw_frame(self.stream.as_mut())?;
             let mut plaintext = vec![0_u8; MAX_RAW_FRAME];
             let read = self
                 .noise
@@ -1220,7 +2008,7 @@ mod desktop {
         }
     }
 
-    fn write_raw_frame(stream: &mut TcpStream, payload: &[u8]) -> Result<(), String> {
+    fn write_raw_frame(stream: &mut dyn PeerStream, payload: &[u8]) -> Result<(), String> {
         if payload.len() > MAX_RAW_FRAME {
             return Err("Sync transport frame is too large.".to_string());
         }
@@ -1231,7 +2019,7 @@ mod desktop {
             .map_err(|error| format!("Could not write sync transport frame: {error}"))
     }
 
-    fn read_raw_frame(stream: &mut TcpStream) -> Result<Vec<u8>, String> {
+    fn read_raw_frame(stream: &mut dyn PeerStream) -> Result<Vec<u8>, String> {
         let mut length = [0_u8; 4];
         stream
             .read_exact(&mut length)
@@ -1600,30 +2388,36 @@ mod desktop {
         peer_device_id: &str,
         remote_metadata: &Value,
         manifests: &[Value],
+        transport_id: &str,
         metrics: &mut SyncRunMetrics,
         timings: &mut Vec<SyncTransportTimingEvidence>,
     ) -> ImportRemoteResult {
         let mut received_artifacts = Vec::new();
 
         let timer = SyncPhaseTimer::start("reconciliation_plan");
-        let plan =
-            match plan_remote_manifest_batch(client, peer_device_id, remote_metadata, manifests) {
-                Ok(plan) => {
-                    timings.push(timer.finish());
-                    plan
-                }
-                Err(error) => {
-                    timings.push(timer.finish());
-                    return ImportRemoteResult {
-                        imported_projects: apply_failure_results(
-                            manifests,
-                            &HashMap::new(),
-                            &format!("Could not plan remote sync reconciliation batch: {error}"),
-                        ),
-                        received_artifacts,
-                    };
-                }
-            };
+        let plan = match plan_remote_manifest_batch(
+            client,
+            peer_device_id,
+            remote_metadata,
+            manifests,
+            transport_id,
+        ) {
+            Ok(plan) => {
+                timings.push(timer.finish());
+                plan
+            }
+            Err(error) => {
+                timings.push(timer.finish());
+                return ImportRemoteResult {
+                    imported_projects: apply_failure_results(
+                        manifests,
+                        &HashMap::new(),
+                        &format!("Could not plan remote sync reconciliation batch: {error}"),
+                    ),
+                    received_artifacts,
+                };
+            }
+        };
 
         let mut imported_projects = Vec::with_capacity(manifests.len());
         let manifest_project_ids: HashSet<String> =
@@ -1636,6 +2430,7 @@ mod desktop {
                 remote_metadata,
                 manifest,
                 &plan,
+                transport_id,
                 &mut received_artifacts,
                 metrics,
                 timings,
@@ -1651,6 +2446,7 @@ mod desktop {
                 peer_device_id,
                 remote_metadata,
                 &project_id,
+                transport_id,
                 timings,
             ));
         }
@@ -1666,6 +2462,7 @@ mod desktop {
         peer_device_id: &str,
         remote_metadata: &Value,
         project_id: &str,
+        transport_id: &str,
         timings: &mut Vec<SyncTransportTimingEvidence>,
     ) -> SyncTransportProjectResult {
         let remote_metadata = remote_metadata_for_project(remote_metadata, project_id);
@@ -1675,6 +2472,7 @@ mod desktop {
             &[],
             &[],
             &[project_id.to_string()],
+            transport_id,
         );
         let timer = SyncPhaseTimer::start_project("reconciliation_apply", project_id);
         let response = client.post_json_value("/api/v1/sync/reconciliation/apply", &body);
@@ -1699,6 +2497,7 @@ mod desktop {
         remote_metadata: &Value,
         manifest: &Value,
         plan: &Value,
+        transport_id: &str,
         received_artifacts: &mut Vec<SyncTransportTransferResult>,
         metrics: &mut SyncRunMetrics,
         timings: &mut Vec<SyncTransportTimingEvidence>,
@@ -1757,6 +2556,7 @@ mod desktop {
             remote_metadata,
             manifest,
             &available_content_sha256,
+            transport_id,
             timings,
         ) {
             Ok(result) => result,
@@ -1776,6 +2576,7 @@ mod desktop {
         peer_device_id: &str,
         remote_metadata: &Value,
         manifests: &[Value],
+        transport_id: &str,
     ) -> Result<Value, BackendError> {
         let advertised_content_sha256 = manifest_content_sha256(manifests);
         let body = reconciliation_plan_body(
@@ -1783,6 +2584,7 @@ mod desktop {
             remote_metadata,
             manifests,
             &advertised_content_sha256,
+            transport_id,
         );
         client.post_json_value("/api/v1/sync/reconciliation/plan", &body)
     }
@@ -1793,6 +2595,7 @@ mod desktop {
         remote_metadata: &Value,
         manifest: &Value,
         available_content_sha256: &[String],
+        transport_id: &str,
         timings: &mut Vec<SyncTransportTimingEvidence>,
     ) -> Result<SyncTransportProjectResult, BackendError> {
         let project_id = manifest_project_id(manifest);
@@ -1803,6 +2606,7 @@ mod desktop {
             &remote_metadata,
             &manifests,
             available_content_sha256,
+            transport_id,
         );
         let timer = SyncPhaseTimer::start_project("reconciliation_apply", &project_id);
         let response = client.post_json_value("/api/v1/sync/reconciliation/apply", &body);
@@ -1822,6 +2626,7 @@ mod desktop {
         remote_metadata: &Value,
         manifests: &[Value],
         available_content_sha256: &[String],
+        transport_id: &str,
     ) -> Value {
         json!({
             "remote_library": remote_metadata,
@@ -1829,7 +2634,7 @@ mod desktop {
             "peer_inventory": [{
                 "device_id": peer_device_id,
                 "available_content_sha256": available_content_sha256,
-                "metadata": { "transport": "tuneforge-sync+tcp" },
+                "metadata": { "transport": transport_id },
             }],
         })
     }
@@ -1839,6 +2644,7 @@ mod desktop {
         remote_metadata: &Value,
         manifests: &[Value],
         available_content_sha256: &[String],
+        transport_id: &str,
     ) -> Value {
         let project_ids: Vec<String> = manifests.iter().map(manifest_project_id).collect();
         reconciliation_apply_body_with_project_ids(
@@ -1847,6 +2653,7 @@ mod desktop {
             manifests,
             available_content_sha256,
             &project_ids,
+            transport_id,
         )
     }
 
@@ -1856,6 +2663,7 @@ mod desktop {
         manifests: &[Value],
         available_content_sha256: &[String],
         project_ids: &[String],
+        transport_id: &str,
     ) -> Value {
         json!({
             "remote_library": remote_metadata,
@@ -1863,7 +2671,7 @@ mod desktop {
             "peer_inventory": [{
                 "device_id": peer_device_id,
                 "available_content_sha256": available_content_sha256,
-                "metadata": { "transport": "tuneforge-sync+tcp" },
+                "metadata": { "transport": transport_id },
             }],
             "project_ids": project_ids,
             "use_content_addressed_staging": true,
@@ -2651,15 +3459,20 @@ mod desktop {
             return Err(transfer_failure(artifact, transfer_timing, error));
         }
 
+        // Prototype scope: bytes still move over the TuneForge stream frames. The
+        // disk-backed iroh-blobs store records a transport-local BLAKE3 identity
+        // only after TuneForge SHA-256/size verification succeeds.
+        let transport_local_blob_hash = connection.record_transport_blob_identity(&temp_path);
         let body = json!({
             "source_path": temp_path.to_string_lossy(),
             "content_sha256": artifact.content_sha256,
             "size_bytes": artifact.size_bytes,
             "provider_device_id": peer_device_id,
             "metadata": {
-                "source": "tuneforge-sync+tcp",
+                "source": connection.transport_id(),
                 "artifact_id": artifact.artifact_id,
                 "project_id": artifact.project_id,
+                "iroh_blob_hash": transport_local_blob_hash,
             },
         });
         let timer = SyncPhaseTimer::start_artifact("artifact_staging", artifact);
@@ -3140,11 +3953,85 @@ mod desktop {
             .collect()
     }
 
-    fn first_tcp_endpoint_hint(endpoint_hints: &[String]) -> Option<String> {
+    fn iroh_endpoint_hints(transport: &IrohTransport, device_id: &str) -> Vec<String> {
+        iroh_endpoint_hints_from_addr(&transport.endpoint.addr(), device_id)
+    }
+
+    fn iroh_endpoint_hints_from_addr(addr: &EndpointAddr, device_id: &str) -> Vec<String> {
+        let mut direct_addrs: Vec<SocketAddr> = addr.ip_addrs().copied().collect();
+        direct_addrs.sort();
+        direct_addrs.dedup();
+        if direct_addrs.is_empty() {
+            return Vec::new();
+        }
+
+        let mut query = format!("device_id={}&v=1", percent_encode_query_value(device_id));
+        for direct_addr in direct_addrs {
+            query.push_str("&addr=");
+            query.push_str(&percent_encode_query_value(&direct_addr.to_string()));
+        }
+        vec![format!(
+            "{IROH_ENDPOINT_SCHEME}{}?{query}",
+            percent_encode_query_value(&addr.id.to_string())
+        )]
+    }
+
+    fn first_transport_endpoint_hint(
+        transport: &TransportKind,
+        endpoint_hint: Option<&str>,
+        peer_endpoint_hints: &[String],
+    ) -> Option<String> {
+        endpoint_hint
+            .filter(|hint| {
+                transport
+                    .endpoint_scheme()
+                    .is_some_and(|scheme| hint.starts_with(scheme))
+            })
+            .map(str::to_string)
+            .or_else(|| first_endpoint_hint_for_transport(transport, peer_endpoint_hints))
+    }
+
+    fn first_endpoint_hint_for_transport(
+        transport: &TransportKind,
+        endpoint_hints: &[String],
+    ) -> Option<String> {
+        let endpoint_scheme = transport.endpoint_scheme()?;
         endpoint_hints
             .iter()
-            .find(|hint| hint.starts_with(ENDPOINT_SCHEME))
+            .find(|hint| hint.starts_with(endpoint_scheme))
             .cloned()
+    }
+
+    fn parse_iroh_endpoint_hint(
+        endpoint_hint: &str,
+        expected_device_id: Option<&str>,
+    ) -> Result<EndpointAddr, String> {
+        let rest = endpoint_hint
+            .strip_prefix(IROH_ENDPOINT_SCHEME)
+            .ok_or_else(|| "Endpoint hint is not a TuneForge Iroh URI.".to_string())?;
+        let (authority, query) = rest.split_once('?').unwrap_or((rest, ""));
+        if let Some(expected_device_id) = expected_device_id {
+            if let Some(device_id) = query_parameter(query, "device_id") {
+                if device_id != expected_device_id {
+                    return Err(
+                        "Iroh endpoint hint device_id does not match the trusted peer.".to_string(),
+                    );
+                }
+            }
+        }
+        let endpoint_id = EndpointId::from_str(&percent_decode(authority))
+            .map_err(|error| format!("Iroh endpoint id is invalid: {error}"))?;
+        let mut endpoint_addr = EndpointAddr::new(endpoint_id);
+        for direct_addr in query_parameters(query, "addr") {
+            let direct_addr = direct_addr
+                .parse::<SocketAddr>()
+                .map_err(|error| format!("Iroh endpoint direct address is invalid: {error}"))?;
+            endpoint_addr = endpoint_addr.with_ip_addr(direct_addr);
+        }
+        if endpoint_addr.ip_addrs().next().is_none() {
+            return Err("Iroh endpoint hint did not include a direct address.".to_string());
+        }
+        Ok(endpoint_addr)
     }
 
     fn parse_endpoint_hint(
@@ -3178,10 +4065,17 @@ mod desktop {
     }
 
     fn query_parameter(query: &str, key: &str) -> Option<String> {
-        query.split('&').find_map(|part| {
-            let (part_key, value) = part.split_once('=')?;
-            (part_key == key).then(|| percent_decode(value))
-        })
+        query_parameters(query, key).into_iter().next()
+    }
+
+    fn query_parameters(query: &str, key: &str) -> Vec<String> {
+        query
+            .split('&')
+            .filter_map(|part| {
+                let (part_key, value) = part.split_once('=')?;
+                (part_key == key).then(|| percent_decode(value))
+            })
+            .collect()
     }
 
     fn decode_public_key(public_key: &str) -> Result<[u8; 32], String> {
@@ -3300,6 +4194,175 @@ mod desktop {
         }
 
         #[test]
+        fn iroh_endpoint_hint_round_trips_direct_addresses_and_device_id() {
+            let endpoint_id = SecretKey::generate().public();
+            let endpoint_addr = EndpointAddr::new(endpoint_id)
+                .with_ip_addr("127.0.0.1:47620".parse().expect("direct addr"));
+            let hints = iroh_endpoint_hints_from_addr(&endpoint_addr, "dev_one");
+
+            assert_eq!(hints.len(), 1);
+            assert!(hints[0].starts_with(IROH_ENDPOINT_SCHEME));
+
+            let parsed =
+                parse_iroh_endpoint_hint(&hints[0], Some("dev_one")).expect("parse iroh hint");
+            assert_eq!(parsed.id, endpoint_id);
+            assert_eq!(
+                parsed.ip_addrs().copied().collect::<Vec<_>>(),
+                vec!["127.0.0.1:47620".parse::<SocketAddr>().expect("addr")]
+            );
+            assert!(parse_iroh_endpoint_hint(&hints[0], Some("dev_two"))
+                .expect_err("reject mismatched device")
+                .contains("device_id"));
+        }
+
+        #[test]
+        fn endpoint_hint_advertisement_orders_iroh_before_tcp() {
+            let endpoint_id = SecretKey::generate().public();
+            let endpoint_addr = EndpointAddr::new(endpoint_id)
+                .with_ip_addr("127.0.0.1:47620".parse().expect("direct addr"));
+            let mut hints = iroh_endpoint_hints_from_addr(&endpoint_addr, "dev_one");
+            hints.extend(endpoint_hints_for_port(47619, "dev_one"));
+
+            assert!(hints[0].starts_with(IROH_ENDPOINT_SCHEME));
+            assert!(hints
+                .iter()
+                .skip(1)
+                .any(|hint| hint.starts_with(ENDPOINT_SCHEME)));
+        }
+
+        #[test]
+        fn sync_now_request_missing_preferred_transport_selects_tcp_default() {
+            let request: SyncTransportSyncNowRequest = serde_json::from_value(json!({
+                "peerDeviceId": "dev_peer"
+            }))
+            .expect("deserialize sync now request");
+            let endpoint_hints = vec![format!(
+                "{ENDPOINT_SCHEME}127.0.0.1:47619?device_id=dev_peer&v=1"
+            )];
+
+            let default_selection = select_sync_transport(
+                request
+                    .preferred_transport
+                    .as_deref()
+                    .and_then(normalized_transport_id),
+                request.endpoint_hint.as_deref(),
+                &endpoint_hints,
+                &request.peer_device_id,
+                false,
+            )
+            .expect("select default transport");
+            let explicit_tcp_selection = select_sync_transport(
+                Some(TCP_TRANSPORT_ID),
+                request.endpoint_hint.as_deref(),
+                &endpoint_hints,
+                &request.peer_device_id,
+                false,
+            )
+            .expect("select explicit TCP transport");
+
+            assert_eq!(request.preferred_transport, None);
+            assert_eq!(
+                default_selection.endpoint_hint(),
+                Some(endpoint_hints[0].as_str())
+            );
+            assert_eq!(
+                default_selection.evidence(),
+                TransportEvidence {
+                    selected_transport: TCP_TRANSPORT_ID.to_string(),
+                    fallback_reason: Some(format!(
+                        "Iroh sync transport is not available locally; using {TCP_TRANSPORT_ID}."
+                    )),
+                    attempted_transports: vec![
+                        IROH_TRANSPORT_ID.to_string(),
+                        TCP_TRANSPORT_ID.to_string()
+                    ],
+                }
+            );
+            assert_eq!(
+                explicit_tcp_selection.evidence(),
+                TransportEvidence {
+                    selected_transport: TCP_TRANSPORT_ID.to_string(),
+                    fallback_reason: None,
+                    attempted_transports: vec![TCP_TRANSPORT_ID.to_string()],
+                }
+            );
+        }
+
+        #[test]
+        fn auto_transport_prefers_iroh_when_local_endpoint_and_peer_hint_exist() {
+            let request: SyncTransportSyncNowRequest = serde_json::from_value(json!({
+                "peerDeviceId": "dev_peer",
+                "preferredTransport": "auto"
+            }))
+            .expect("deserialize sync now request");
+            let endpoint_hints = vec![
+                format!("{ENDPOINT_SCHEME}127.0.0.1:47619?device_id=dev_peer&v=1"),
+                format!(
+                    "{IROH_ENDPOINT_SCHEME}iroh_peer?device_id=dev_peer&v=1&addr=127.0.0.1%3A47620"
+                ),
+            ];
+
+            let selection = select_sync_transport(
+                request
+                    .preferred_transport
+                    .as_deref()
+                    .and_then(normalized_transport_id),
+                request.endpoint_hint.as_deref(),
+                &endpoint_hints,
+                &request.peer_device_id,
+                true,
+            )
+            .expect("select iroh");
+
+            assert_eq!(request.preferred_transport.as_deref(), Some("auto"));
+            assert_eq!(
+                selection.evidence(),
+                TransportEvidence {
+                    selected_transport: IROH_TRANSPORT_ID.to_string(),
+                    fallback_reason: None,
+                    attempted_transports: vec![IROH_TRANSPORT_ID.to_string()],
+                }
+            );
+            assert_eq!(
+                selection.tcp_fallback_endpoint_hint,
+                Some(endpoint_hints[0].clone())
+            );
+        }
+
+        #[test]
+        fn preferred_iroh_falls_back_to_tcp_when_local_endpoint_is_unavailable() {
+            let endpoint_hints = vec![
+                format!(
+                    "{IROH_ENDPOINT_SCHEME}iroh_peer?device_id=dev_peer&v=1&addr=127.0.0.1%3A47620"
+                ),
+                format!("{ENDPOINT_SCHEME}127.0.0.1:47619?device_id=dev_peer&v=1"),
+            ];
+
+            let selection = select_sync_transport(
+                Some(IROH_TRANSPORT_ID),
+                None,
+                &endpoint_hints,
+                "dev_peer",
+                false,
+            )
+            .expect("select tcp fallback");
+
+            assert_eq!(
+                selection.evidence(),
+                TransportEvidence {
+                    selected_transport: TCP_TRANSPORT_ID.to_string(),
+                    fallback_reason: Some(format!(
+                        "Preferred sync transport {IROH_TRANSPORT_ID} is not available locally; using {TCP_TRANSPORT_ID}."
+                    )),
+                    attempted_transports: vec![
+                        IROH_TRANSPORT_ID.to_string(),
+                        TCP_TRANSPORT_ID.to_string()
+                    ],
+                }
+            );
+        }
+
+        #[test]
         fn transport_handshake_challenge_binds_nonces_and_noise_hash() {
             let challenge = transport_handshake_challenge(
                 "dev_requester",
@@ -3374,8 +4437,13 @@ mod desktop {
             let remote_metadata = json!({ "projects": [] });
             let available = vec!["hash_a".to_string(), "hash_b".to_string()];
 
-            let body =
-                reconciliation_apply_body("dev_peer", &remote_metadata, &manifests, &available);
+            let body = reconciliation_apply_body(
+                "dev_peer",
+                &remote_metadata,
+                &manifests,
+                &available,
+                TCP_TRANSPORT_ID,
+            );
 
             assert_eq!(
                 body.get("project_manifests")
@@ -3413,6 +4481,7 @@ mod desktop {
                 &[],
                 &[],
                 &["proj_deleted".to_string()],
+                TCP_TRANSPORT_ID,
             );
 
             assert_eq!(
@@ -3454,8 +4523,13 @@ mod desktop {
             let remote_metadata = json!({ "projects": [] });
             let available = manifest_content_sha256(&manifests);
 
-            let body =
-                reconciliation_plan_body("dev_peer", &remote_metadata, &manifests, &available);
+            let body = reconciliation_plan_body(
+                "dev_peer",
+                &remote_metadata,
+                &manifests,
+                &available,
+                TCP_TRANSPORT_ID,
+            );
 
             assert_eq!(
                 body.get("peer_inventory")
@@ -3712,6 +4786,9 @@ mod desktop {
                 remote_device_id: "dev_remote".to_string(),
                 status: "completed".to_string(),
                 message: "done".to_string(),
+                selected_transport: TCP_TRANSPORT_ID.to_string(),
+                fallback_reason: None,
+                attempted_transports: vec![TCP_TRANSPORT_ID.to_string()],
                 started_at: "2026-01-01T00:00:00Z".to_string(),
                 completed_at: "2026-01-01T00:00:02Z".to_string(),
                 duration_ms: 2_000,
@@ -3744,10 +4821,74 @@ mod desktop {
 
             assert!(value.get("phaseTimings").is_some());
             assert!(value.get("timings").is_none());
+            assert_eq!(
+                value.get("selectedTransport"),
+                Some(&json!(TCP_TRANSPORT_ID))
+            );
+            assert_eq!(value.get("fallbackReason"), Some(&Value::Null));
+            assert_eq!(
+                value.get("attemptedTransports"),
+                Some(&json!([TCP_TRANSPORT_ID]))
+            );
             assert_eq!(value.get("totalReceivedBytes"), Some(&json!(30)));
             assert_eq!(value.get("totalServedBytes"), Some(&json!(70)));
             assert_eq!(value.get("timeToFirstArtifactMs"), Some(&json!(250)));
             assert_eq!(value.get("throughputBytesPerSecond"), Some(&json!(50.0)));
+        }
+
+        #[test]
+        fn sync_result_serializes_iroh_transport_evidence() {
+            let result = SyncTransportSyncResult {
+                run_id: "sync_iroh".to_string(),
+                peer_device_id: "dev_peer".to_string(),
+                remote_device_id: "dev_remote".to_string(),
+                status: "completed".to_string(),
+                message: "done".to_string(),
+                selected_transport: IROH_TRANSPORT_ID.to_string(),
+                fallback_reason: Some(format!(
+                    "Iroh sync transport was unavailable (direct path failed); using {TCP_TRANSPORT_ID}."
+                )),
+                attempted_transports: vec![
+                    IROH_TRANSPORT_ID.to_string(),
+                    TCP_TRANSPORT_ID.to_string(),
+                ],
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                completed_at: "2026-01-01T00:00:02Z".to_string(),
+                duration_ms: 2_000,
+                project_results: Vec::new(),
+                imported_projects: Vec::new(),
+                imported_project_count: 0,
+                skipped_project_count: 0,
+                failed_project_count: 0,
+                received_artifacts: Vec::new(),
+                transfer_counts: SyncTransportTransferCounts::default(),
+                served_artifact_requests: 0,
+                total_received_bytes: 0,
+                total_served_bytes: 0,
+                time_to_first_artifact_ms: None,
+                throughput_bytes_per_second: 0.0,
+                remote_manifest_count: 0,
+                local_manifest_count: 0,
+                manifest_errors: Vec::new(),
+                phase_timings: Vec::new(),
+            };
+
+            let value = serde_json::to_value(result).expect("serialize sync result");
+
+            assert_eq!(
+                value.get("selectedTransport"),
+                Some(&json!(IROH_TRANSPORT_ID))
+            );
+            assert_eq!(
+                value.get("attemptedTransports"),
+                Some(&json!([IROH_TRANSPORT_ID, TCP_TRANSPORT_ID]))
+            );
+            assert_eq!(
+                value.get("fallbackReason"),
+                Some(&json!(format!(
+                    "Iroh sync transport was unavailable (direct path failed); using {TCP_TRANSPORT_ID}."
+                )))
+            );
         }
 
         #[test]

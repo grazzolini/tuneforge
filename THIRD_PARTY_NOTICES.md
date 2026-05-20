@@ -82,6 +82,12 @@ This document is an engineering notice and distribution checklist, not legal adv
 - **Source:** <https://github.com/mcginty/snow>, <https://github.com/dalek-cryptography/curve25519-dalek>, <https://github.com/RustCrypto>, <https://github.com/rust-random/rand>, <https://github.com/marshallpierce/rust-base64>, and <https://github.com/messense/if-addrs>.
 - **Notes:** Used by the desktop-only same-LAN sync transport for Noise encrypted sessions, trusted Ed25519 peer identity verification, SHA-256 artifact verification, random session nonces, and local interface endpoint hints. The FastAPI backend remains loopback-only.
 
+### Iroh / iroh-blobs prototype sync transport Rust crates
+
+- **License:** MIT OR Apache-2.0
+- **Source:** <https://github.com/n0-computer/iroh> and <https://docs.rs/iroh-blobs/latest/iroh_blobs/>
+- **Notes:** Evaluated for desktop-native prototype transport code. The prototype uses Iroh QUIC endpoints for peer connections and records transport-local BLAKE3/blob identity after TuneForge semantic manifests and SHA-256 artifact verification succeed. It does not yet use full `iroh-blobs` verified streaming or range-oriented blob transfer before staged import.
+
 ### cpal
 
 - **License:** Apache-2.0 / MIT (dual)

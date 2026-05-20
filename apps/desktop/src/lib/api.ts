@@ -93,6 +93,9 @@ export type SyncTransportRunStatus = {
   peer_device_id?: string | null;
   remote_device_id?: string | null;
   direction?: string | null;
+  selected_transport?: string | null;
+  fallback_reason?: string | null;
+  attempted_transports?: string[];
   status: string;
   message?: string | null;
   started_at?: string | null;
@@ -565,6 +568,23 @@ function normalizeTransportStatusToken(value: string) {
   return value.trim().toLowerCase().replace(/[\s-]+/g, "_");
 }
 
+function normalizeSyncTransportToken(value: string | null) {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  if (normalized === "iroh" || normalized.startsWith("tuneforge-sync+iroh")) {
+    return "iroh";
+  }
+  if (normalized === "tcp" || normalized.startsWith("tuneforge-sync+tcp")) {
+    return "tcp";
+  }
+  if (normalized === "auto") {
+    return "auto";
+  }
+  return normalizeTransportStatusToken(normalized).replace(/\+/g, "_");
+}
+
 const SYNC_PROJECT_RESULT_PROGRESS_STATES = new Set([
   "applying",
   "downloading",
@@ -988,6 +1008,13 @@ export function normalizeSyncRunStatus(value: unknown): SyncTransportRunStatus |
     peer_device_id: firstStringField([record], ["peer_device_id", "peerDeviceId", "device_id", "deviceId"]),
     remote_device_id: firstStringField([record], ["remote_device_id", "remoteDeviceId"]),
     direction: firstStringField([record], ["direction", "role"]),
+    selected_transport: normalizeSyncTransportToken(
+      firstStringField([record], ["selected_transport", "selectedTransport"]),
+    ),
+    fallback_reason: firstStringField([record], ["fallback_reason", "fallbackReason"]),
+    attempted_transports: stringArrayField(record, ["attempted_transports", "attemptedTransports"])
+      .map((transport) => normalizeSyncTransportToken(transport))
+      .filter((transport): transport is string => transport !== null),
     status,
     message: firstStringField([record], ["message", "status_message", "statusMessage"]) ?? summary,
     started_at: runStartedAt,
@@ -1056,7 +1083,9 @@ async function stopSyncListener() {
 
 async function syncTrustedPeerNow(deviceId: string) {
   const result = normalizeSyncRunStatus(
-    await invokeDesktopNative<unknown>("sync_transport_sync_now", { payload: { peerDeviceId: deviceId } }),
+    await invokeDesktopNative<unknown>("sync_transport_sync_now", {
+      payload: { peerDeviceId: deviceId, preferredTransport: "auto" },
+    }),
   );
   if (!result) {
     throw new Error("Native sync transport returned an invalid sync result.");

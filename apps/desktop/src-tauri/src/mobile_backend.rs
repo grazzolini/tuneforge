@@ -125,6 +125,20 @@ pub struct JobResponse {
 #[derive(Serialize)]
 pub struct JobsResponse {
     jobs: Vec<JobSchema>,
+    total: usize,
+    limit: usize,
+    offset: usize,
+    has_more: bool,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub struct ListJobsParams {
+    status: Option<Vec<String>>,
+    project_id: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -249,7 +263,7 @@ mobile_stub!(mobile_delete_artifact, DeleteResponse, app: AppHandle, project_id:
 #[cfg(not(target_os = "android"))]
 mobile_stub!(mobile_submit_export, JobResponse, app: AppHandle, project_id: String, payload: EmptyPayload);
 #[cfg(not(target_os = "android"))]
-mobile_stub!(mobile_list_jobs, JobsResponse, app: AppHandle);
+mobile_stub!(mobile_list_jobs, JobsResponse, app: AppHandle, params: Option<ListJobsParams>);
 #[cfg(not(target_os = "android"))]
 mobile_stub!(mobile_get_job, JobResponse, app: AppHandle, job_id: String);
 #[cfg(not(target_os = "android"))]
@@ -283,6 +297,8 @@ mod android {
     const WHISPER_MODEL_DIR: &str = "models/whisper";
     const WHISPER_MODEL_MISSING: &str =
         "Side-load a Whisper ggml model into app storage at models/whisper/ggml-base.bin or models/whisper/ggml-tiny.bin to enable local lyrics.";
+    const DEFAULT_JOBS_LIMIT: usize = 50;
+    const MAX_JOBS_LIMIT: usize = 200;
 
     #[derive(Clone)]
     struct WhisperModel {
@@ -377,6 +393,27 @@ mod android {
 
     fn now_iso() -> String {
         Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+    }
+
+    fn normalized_jobs_limit(value: Option<i64>) -> Result<usize, String> {
+        let limit = value.unwrap_or(DEFAULT_JOBS_LIMIT as i64);
+        if limit < 1 {
+            return Err("Job list limit must be at least 1.".to_string());
+        }
+        if limit > MAX_JOBS_LIMIT as i64 {
+            return Err(format!(
+                "Job list limit must be less than or equal to {MAX_JOBS_LIMIT}."
+            ));
+        }
+        Ok(limit as usize)
+    }
+
+    fn normalized_jobs_offset(value: Option<i64>) -> Result<usize, String> {
+        let offset = value.unwrap_or(0);
+        if offset < 0 {
+            return Err("Job list offset must be at least 0.".to_string());
+        }
+        Ok(offset as usize)
     }
 
     fn new_id(prefix: &str) -> String {
@@ -2148,19 +2185,67 @@ mod android {
     }
 
     #[tauri::command]
-    pub fn mobile_list_jobs(app: AppHandle) -> Result<JobsResponse, String> {
+    pub fn mobile_list_jobs(
+        app: AppHandle,
+        params: Option<ListJobsParams>,
+    ) -> Result<JobsResponse, String> {
+        let params = params.unwrap_or_default();
+        let limit = normalized_jobs_limit(params.limit)?;
+        let offset = normalized_jobs_offset(params.offset)?;
+        let status_filters = params.status.unwrap_or_default();
         let connection = db(&app)?;
         let mut statement = connection
-            .prepare("SELECT id, project_id, type, status, progress, source_artifact_id, error_message, runtime_device, started_at, completed_at, duration_seconds, created_at, updated_at FROM jobs ORDER BY created_at DESC")
+            .prepare(
+                r#"
+                SELECT id, project_id, type, status, progress, source_artifact_id, error_message, runtime_device, started_at, completed_at, duration_seconds, created_at, updated_at
+                FROM jobs
+                ORDER BY
+                    CASE
+                        WHEN status = 'running' THEN 0
+                        WHEN status = 'pending' THEN 1
+                        WHEN status IN ('completed', 'cancelled', 'failed') THEN 2
+                        ELSE 3
+                    END ASC,
+                    CASE WHEN status = 'running' THEN COALESCE(started_at, created_at) END ASC,
+                    CASE WHEN status = 'running' THEN id END ASC,
+                    CASE WHEN status = 'pending' THEN created_at END ASC,
+                    CASE WHEN status = 'pending' THEN id END ASC,
+                    CASE WHEN status IN ('completed', 'cancelled', 'failed') THEN COALESCE(completed_at, updated_at) END DESC,
+                    CASE WHEN status IN ('completed', 'cancelled', 'failed') THEN id END DESC,
+                    updated_at DESC,
+                    id DESC
+                "#,
+            )
             .map_err(|error| error.to_string())?;
         let rows = statement
             .query_map([], row_job)
             .map_err(|error| error.to_string())?;
         let mut jobs = Vec::new();
         for row in rows {
-            jobs.push(row.map_err(|error| error.to_string())?);
+            let job = row.map_err(|error| error.to_string())?;
+            let status_matches = status_filters.is_empty()
+                || status_filters.iter().any(|status| status == &job.status);
+            let project_matches = params.project_id.as_ref().map_or(true, |project_id| {
+                job.project_id.as_deref() == Some(project_id.as_str())
+            });
+            if status_matches && project_matches {
+                jobs.push(job);
+            }
         }
-        Ok(JobsResponse { jobs })
+        let total = jobs.len();
+        let jobs = jobs
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect::<Vec<_>>();
+        let has_more = offset.saturating_add(jobs.len()) < total;
+        Ok(JobsResponse {
+            jobs,
+            total,
+            limit,
+            offset,
+            has_more,
+        })
     }
 
     #[tauri::command]

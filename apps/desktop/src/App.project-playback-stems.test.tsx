@@ -534,10 +534,10 @@ describe("Desktop app project playback stems", () => {
       flushPendingPreview("proj_123");
       const [{ artifacts }, { jobs }] = await Promise.all([
         mockListArtifacts("proj_123"),
-        mockListJobs(),
+        mockListJobs({ project_id: "proj_123" }),
       ]);
       queryClient.setQueryData(["artifacts", "proj_123"], artifacts);
-      queryClient.setQueryData(["jobs"], jobs);
+      queryClient.setQueryData(["jobs", { projectId: "proj_123" }], jobs);
     });
 
     expect(await screen.findByRole("heading", { name: "Practice Mix" })).toBeInTheDocument();

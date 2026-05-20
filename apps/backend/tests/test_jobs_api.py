@@ -1,0 +1,198 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
+
+from app.db import SessionLocal
+from app.models import Job, Project
+
+_BASE_TIME = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def _timestamp(minutes: int) -> datetime:
+    return _BASE_TIME + timedelta(minutes=minutes)
+
+
+def _add_project(session: Session, project_id: str) -> None:
+    session.add(
+        Project(
+            id=project_id,
+            display_name=project_id,
+            source_path=f"/tmp/{project_id}.wav",
+            imported_path=f"/tmp/tuneforge/{project_id}.wav",
+        )
+    )
+
+
+def _add_job(
+    session: Session,
+    job_id: str,
+    status: str,
+    *,
+    project_id: str | None = None,
+    created_at: datetime | None = None,
+    started_at: datetime | None = None,
+    completed_at: datetime | None = None,
+    updated_at: datetime | None = None,
+) -> None:
+    effective_created_at = created_at or _timestamp(0)
+    session.add(
+        Job(
+            id=job_id,
+            project_id=project_id,
+            type="test",
+            status=status,
+            progress=0,
+            error_message=None,
+            runtime_device=None,
+            payload_json={},
+            result_artifact_ids_json=[],
+            cancel_requested=False,
+            created_at=effective_created_at,
+            started_at=started_at,
+            completed_at=completed_at,
+            duration_seconds=None,
+            updated_at=updated_at or completed_at or started_at or effective_created_at,
+        )
+    )
+
+
+def test_list_jobs_returns_pagination_metadata(client: TestClient) -> None:
+    with SessionLocal() as session:
+        _add_job(session, "job_a", "pending", created_at=_timestamp(1))
+        _add_job(session, "job_b", "pending", created_at=_timestamp(2))
+        _add_job(session, "job_c", "pending", created_at=_timestamp(3))
+        session.commit()
+
+    response = client.get("/api/v1/jobs", params={"limit": "2"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [job["id"] for job in payload["jobs"]] == ["job_a", "job_b"]
+    assert payload["total"] == 3
+    assert payload["limit"] == 2
+    assert payload["offset"] == 0
+    assert payload["has_more"] is True
+
+
+def test_list_jobs_orders_active_before_terminal_then_unknown(client: TestClient) -> None:
+    with SessionLocal() as session:
+        _add_job(session, "job_pending", "pending", created_at=_timestamp(1))
+        _add_job(
+            session,
+            "job_running_started",
+            "running",
+            created_at=_timestamp(0),
+            started_at=_timestamp(10),
+            updated_at=_timestamp(10),
+        )
+        _add_job(session, "job_running_fallback", "running", created_at=_timestamp(5))
+        _add_job(
+            session,
+            "job_terminal",
+            "failed",
+            created_at=_timestamp(2),
+            completed_at=_timestamp(30),
+            updated_at=_timestamp(30),
+        )
+        _add_job(session, "job_unknown", "paused", created_at=_timestamp(4), updated_at=_timestamp(100))
+        session.commit()
+
+    response = client.get("/api/v1/jobs")
+
+    assert response.status_code == 200
+    assert [job["id"] for job in response.json()["jobs"]] == [
+        "job_running_fallback",
+        "job_running_started",
+        "job_pending",
+        "job_terminal",
+        "job_unknown",
+    ]
+
+
+def test_list_jobs_accepts_repeatable_status_filter(client: TestClient) -> None:
+    with SessionLocal() as session:
+        _add_job(session, "job_pending", "pending", created_at=_timestamp(1))
+        _add_job(session, "job_running", "running", started_at=_timestamp(2))
+        _add_job(session, "job_completed", "completed", completed_at=_timestamp(3))
+        session.commit()
+
+    response = client.get(
+        "/api/v1/jobs",
+        params=[("status", "pending"), ("status", "running")],
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [job["id"] for job in payload["jobs"]] == ["job_running", "job_pending"]
+    assert payload["total"] == 2
+
+
+def test_list_jobs_filters_by_project_id(client: TestClient) -> None:
+    with SessionLocal() as session:
+        _add_project(session, "project_a")
+        _add_project(session, "project_b")
+        _add_job(session, "job_project_a_1", "pending", project_id="project_a", created_at=_timestamp(1))
+        _add_job(session, "job_project_a_2", "pending", project_id="project_a", created_at=_timestamp(2))
+        _add_job(session, "job_project_b", "pending", project_id="project_b", created_at=_timestamp(3))
+        _add_job(session, "job_global", "pending", project_id=None, created_at=_timestamp(4))
+        session.commit()
+
+    response = client.get("/api/v1/jobs", params={"project_id": "project_a"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [job["id"] for job in payload["jobs"]] == ["job_project_a_1", "job_project_a_2"]
+    assert payload["total"] == 2
+
+
+def test_list_jobs_keeps_terminal_pages_stable(client: TestClient) -> None:
+    with SessionLocal() as session:
+        _add_job(
+            session,
+            "job_a",
+            "completed",
+            completed_at=_timestamp(10),
+            updated_at=_timestamp(99),
+        )
+        _add_job(
+            session,
+            "job_b",
+            "completed",
+            completed_at=None,
+            updated_at=_timestamp(30),
+        )
+        _add_job(
+            session,
+            "job_c",
+            "cancelled",
+            completed_at=_timestamp(30),
+            updated_at=_timestamp(30),
+        )
+        _add_job(
+            session,
+            "job_d",
+            "failed",
+            completed_at=_timestamp(30),
+            updated_at=_timestamp(30),
+        )
+        session.commit()
+
+    first_page = client.get("/api/v1/jobs", params={"limit": "2"}).json()
+    second_page = client.get("/api/v1/jobs", params={"limit": "2", "offset": "2"}).json()
+
+    assert [job["id"] for job in first_page["jobs"]] == ["job_d", "job_c"]
+    assert first_page["has_more"] is True
+    assert [job["id"] for job in second_page["jobs"]] == ["job_b", "job_a"]
+    assert second_page["has_more"] is False
+
+
+@pytest.mark.parametrize("params", [{"limit": "0"}, {"offset": "-1"}])
+def test_list_jobs_rejects_invalid_pagination_query(client: TestClient, params: dict[str, str]) -> None:
+    response = client.get("/api/v1/jobs", params=params)
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "INVALID_REQUEST"

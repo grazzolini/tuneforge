@@ -1073,6 +1073,10 @@ class JobResponse(BaseModel):
 
 class JobsResponse(BaseModel):
     jobs: list[JobSchema]
+    total: int
+    limit: int
+    offset: int
+    has_more: bool
 
 
 class ArtifactSchema(BaseModel):

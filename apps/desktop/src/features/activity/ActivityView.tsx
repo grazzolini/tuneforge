@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, type JobSchema, type ProjectSchema } from "../../lib/api";
 import { formatLocalDateTime, normalizeApiDateTime, parseApiDateTime } from "../../lib/datetime";
@@ -7,8 +7,14 @@ import { formatJobStatusSummary } from "../projects/projectViewUtils";
 import { ActivitySyncPanel } from "./ActivitySyncPanel";
 
 const CANCELABLE_JOB_STATUSES = new Set(["pending", "running"]);
-const TERMINAL_JOB_STATUSES = new Set(["completed", "failed", "cancelled"]);
+const ACTIVE_JOB_STATUSES = ["running", "pending"] as const;
+const TERMINAL_JOB_STATUS_VALUES = ["completed", "failed", "cancelled"] as const;
+const TERMINAL_JOB_STATUSES = new Set<string>(TERMINAL_JOB_STATUS_VALUES);
+const ACTIVE_JOBS_LIMIT = 200;
+const TERMINAL_JOBS_PAGE_SIZE = 50;
 const ACTIVE_JOB_REFETCH_MS = 1500;
+const ACTIVE_JOBS_QUERY_KEY = ["jobs", "activity", "active"] as const;
+const TERMINAL_JOBS_QUERY_KEY = ["jobs", "activity", "terminal"] as const;
 const ACTIVITY_TABS = [
   { id: "jobs", label: "Jobs" },
   { id: "sync", label: "Sync" },
@@ -20,6 +26,8 @@ type DisplayJob = {
   job: JobSchema;
   queuePosition: number | null;
 };
+
+const EMPTY_JOBS: JobSchema[] = [];
 
 function timestampMs(value: string | null | undefined) {
   if (!value) return 0;
@@ -103,6 +111,17 @@ function projectById(projects: ProjectSchema[] | undefined) {
 
 function hasActiveJob(jobs: JobSchema[] | undefined) {
   return jobs?.some((job) => CANCELABLE_JOB_STATUSES.has(job.status)) ?? false;
+}
+
+function uniqueJobs(jobs: JobSchema[]) {
+  const seen = new Set<string>();
+  return jobs.filter((job) => {
+    if (seen.has(job.id)) {
+      return false;
+    }
+    seen.add(job.id);
+    return true;
+  });
 }
 
 function JobProjectLink({
@@ -214,10 +233,40 @@ function JobRow({
 
 export function ActivityView() {
   const [activeTab, setActiveTab] = useState<ActivityTab>("jobs");
+  const previousActiveJobIds = useRef<Set<string>>(new Set());
   const queryClient = useQueryClient();
-  const jobsQuery = useQuery({
-    queryKey: ["jobs"],
-    queryFn: async () => (await api.listJobs()).jobs,
+  const activeJobsQuery = useInfiniteQuery({
+    queryKey: ACTIVE_JOBS_QUERY_KEY,
+    initialPageParam: 0,
+    queryFn: async ({ pageParam }) =>
+      api.listJobs({
+        status: [...ACTIVE_JOB_STATUSES],
+        limit: ACTIVE_JOBS_LIMIT,
+        offset: pageParam,
+      }),
+    getNextPageParam: (lastPage) =>
+      lastPage.has_more ? lastPage.offset + lastPage.jobs.length : undefined,
+  });
+  const {
+    data: activeJobsData,
+    fetchNextPage: fetchNextActiveJobsPage,
+    hasNextPage: hasNextActiveJobsPage,
+    isError: isActiveJobsError,
+    isFetchingNextPage: isFetchingNextActiveJobsPage,
+    isLoading: isActiveJobsLoading,
+    isSuccess: isActiveJobsSuccess,
+  } = activeJobsQuery;
+  const terminalJobsQuery = useInfiniteQuery({
+    queryKey: TERMINAL_JOBS_QUERY_KEY,
+    initialPageParam: 0,
+    queryFn: async ({ pageParam }) =>
+      api.listJobs({
+        status: [...TERMINAL_JOB_STATUS_VALUES],
+        limit: TERMINAL_JOBS_PAGE_SIZE,
+        offset: pageParam,
+      }),
+    getNextPageParam: (lastPage) =>
+      lastPage.has_more ? lastPage.offset + lastPage.jobs.length : undefined,
   });
   const projectsQuery = useQuery({
     queryKey: ["projects", "activity"],
@@ -231,11 +280,20 @@ export function ActivityView() {
   });
 
   const projectsById = useMemo(() => projectById(projectsQuery.data), [projectsQuery.data]);
-  const displayJobs = useMemo(() => orderJobsForQueue(jobsQuery.data ?? []), [jobsQuery.data]);
+  const activeJobs = useMemo(
+    () => activeJobsData?.pages.flatMap((page) => page.jobs) ?? EMPTY_JOBS,
+    [activeJobsData],
+  );
+  const terminalJobs = useMemo(
+    () => terminalJobsQuery.data?.pages.flatMap((page) => page.jobs) ?? [],
+    [terminalJobsQuery.data],
+  );
+  const jobs = useMemo(() => uniqueJobs([...activeJobs, ...terminalJobs]), [activeJobs, terminalJobs]);
+  const displayJobs = useMemo(() => orderJobsForQueue(jobs), [jobs]);
   const activeJobCount = displayJobs.filter(({ job }) => CANCELABLE_JOB_STATUSES.has(job.status)).length;
-  const shouldPollJobs = hasActiveJob(jobsQuery.data);
-  const isLoading = jobsQuery.isLoading || projectsQuery.isLoading;
-  const isError = jobsQuery.isError || projectsQuery.isError;
+  const shouldPollJobs = hasActiveJob(activeJobs);
+  const isLoading = isActiveJobsLoading || terminalJobsQuery.isLoading || projectsQuery.isLoading;
+  const isError = isActiveJobsError || terminalJobsQuery.isError || projectsQuery.isError;
   const showJobList = !isLoading && !isError && displayJobs.length > 0;
   const showEmptyState = !isLoading && !isError && displayJobs.length === 0;
 
@@ -244,13 +302,33 @@ export function ActivityView() {
 
     const interval = window.setInterval(async () => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
+        queryClient.invalidateQueries({ queryKey: ACTIVE_JOBS_QUERY_KEY }),
         queryClient.invalidateQueries({ queryKey: ["projects", "activity"] }),
       ]);
     }, ACTIVE_JOB_REFETCH_MS);
 
     return () => window.clearInterval(interval);
   }, [queryClient, shouldPollJobs]);
+
+  useEffect(() => {
+    if (!hasNextActiveJobsPage || isFetchingNextActiveJobsPage) return;
+
+    fetchNextActiveJobsPage();
+  }, [fetchNextActiveJobsPage, hasNextActiveJobsPage, isFetchingNextActiveJobsPage]);
+
+  useEffect(() => {
+    if (!isActiveJobsSuccess) return;
+
+    const currentActiveJobIds = new Set(activeJobs.map((job) => job.id));
+    const activeJobLeftQueue = [...previousActiveJobIds.current].some(
+      (jobId) => !currentActiveJobIds.has(jobId),
+    );
+    previousActiveJobIds.current = currentActiveJobIds;
+
+    if (activeJobLeftQueue) {
+      queryClient.invalidateQueries({ queryKey: TERMINAL_JOBS_QUERY_KEY });
+    }
+  }, [activeJobs, isActiveJobsSuccess, queryClient]);
 
   return (
     <section className="screen activity-screen">
@@ -333,6 +411,19 @@ export function ActivityView() {
                 />
               ))}
             </ul>
+          ) : null}
+
+          {terminalJobsQuery.hasNextPage ? (
+            <div className="activity-jobs-panel__load-more">
+              <button
+                className="button button--ghost"
+                disabled={terminalJobsQuery.isFetchingNextPage}
+                onClick={() => terminalJobsQuery.fetchNextPage()}
+                type="button"
+              >
+                {terminalJobsQuery.isFetchingNextPage ? "Loading history..." : "Load more history"}
+              </button>
+            </div>
           ) : null}
 
           {showEmptyState ? (

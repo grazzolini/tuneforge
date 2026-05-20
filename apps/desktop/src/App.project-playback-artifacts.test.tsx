@@ -114,6 +114,40 @@ describe("Desktop app project playback artifacts", () => {
     },
   );
 
+  it("loads project-scoped jobs so global pagination cannot hide project failures", async () => {
+    setJobs([
+      ...Array.from({ length: 60 }, (_, index) => ({
+        id: `job_other_running_${index}`,
+        project_id: `proj_other_${index}`,
+        type: "stems",
+        status: "running",
+        progress: 50,
+        source_artifact_id: null,
+        error_message: null,
+        created_at: "2026-04-18T13:00:00.000Z",
+        updated_at: "2026-04-18T13:00:00.000Z",
+      })),
+      {
+        id: "job_selected_failed",
+        project_id: "proj_123",
+        type: "stems",
+        status: "failed",
+        progress: 15,
+        source_artifact_id: "art_source",
+        error_message: "Selected project stems failed.",
+        created_at: "2026-04-18T13:16:00.000Z",
+        updated_at: "2026-04-18T13:16:00.000Z",
+      },
+    ]);
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await waitFor(() => expect(mockListJobs).toHaveBeenCalledWith({ project_id: "proj_123" }));
+    const stemError = await screen.findByRole("group", { name: "Stem error" });
+    expect(within(stemError).getByText("Selected project stems failed.")).toBeInTheDocument();
+  });
+
   it("deletes a visible stem from the sources rail", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);
@@ -312,6 +346,10 @@ describe("Desktop app project playback artifacts", () => {
           updated_at: "2026-04-18T13:16:00.000Z",
         },
       ],
+      total: 1,
+      limit: 50,
+      offset: 0,
+      has_more: false,
     });
 
     renderApp(["/projects/proj_123"]);
@@ -349,6 +387,10 @@ describe("Desktop app project playback artifacts", () => {
           updated_at: "2026-04-18T13:16:00.000Z",
         },
       ],
+      total: 1,
+      limit: 50,
+      offset: 0,
+      has_more: false,
     });
 
     renderApp(["/projects/proj_123"]);

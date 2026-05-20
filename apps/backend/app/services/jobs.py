@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import queue
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from subprocess import Popen
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.errors import AppError, JobCancelledError
@@ -34,7 +34,73 @@ class JobExecutionResult:
     runtime_device: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ListedJobs:
+    jobs: list[Job]
+    total: int
+
+
 JobHandler = Callable[["JobExecutionContext", Session, Job], JobExecutionResult]
+
+_TERMINAL_JOB_STATUSES = ("completed", "cancelled", "failed")
+
+
+def _job_ordering() -> tuple[Any, ...]:
+    status_rank = case(
+        (Job.status == "running", 0),
+        (Job.status == "pending", 1),
+        (Job.status.in_(_TERMINAL_JOB_STATUSES), 2),
+        else_=3,
+    )
+    running_timestamp = case(
+        (Job.status == "running", func.coalesce(Job.started_at, Job.created_at)),
+        else_=None,
+    )
+    running_id = case((Job.status == "running", Job.id), else_=None)
+    pending_created_at = case((Job.status == "pending", Job.created_at), else_=None)
+    pending_id = case((Job.status == "pending", Job.id), else_=None)
+    terminal_timestamp = case(
+        (Job.status.in_(_TERMINAL_JOB_STATUSES), func.coalesce(Job.completed_at, Job.updated_at)),
+        else_=None,
+    )
+    terminal_id = case((Job.status.in_(_TERMINAL_JOB_STATUSES), Job.id), else_=None)
+    return (
+        status_rank.asc(),
+        running_timestamp.asc(),
+        running_id.asc(),
+        pending_created_at.asc(),
+        pending_id.asc(),
+        terminal_timestamp.desc(),
+        terminal_id.desc(),
+        Job.updated_at.desc(),
+        Job.id.desc(),
+    )
+
+
+def list_jobs(
+    session: Session,
+    *,
+    limit: int,
+    offset: int,
+    statuses: Sequence[str] | None = None,
+    project_id: str | None = None,
+) -> ListedJobs:
+    filters: list[Any] = []
+    status_filters = tuple(statuses or ())
+    if status_filters:
+        filters.append(Job.status.in_(status_filters))
+    if project_id is not None:
+        filters.append(Job.project_id == project_id)
+
+    total_statement = select(func.count()).select_from(Job)
+    jobs_statement = select(Job)
+    if filters:
+        total_statement = total_statement.where(*filters)
+        jobs_statement = jobs_statement.where(*filters)
+
+    total = session.scalar(total_statement) or 0
+    jobs = list(session.scalars(jobs_statement.order_by(*_job_ordering()).limit(limit).offset(offset)))
+    return ListedJobs(jobs=jobs, total=total)
 
 
 def _as_utc_datetime(value: datetime) -> datetime:

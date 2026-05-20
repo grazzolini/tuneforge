@@ -1035,6 +1035,14 @@ export interface components {
         JobsResponse: {
             /** Jobs */
             jobs: components["schemas"]["JobSchema"][];
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Has More */
+            has_more: boolean;
         };
         /** LyricsEditSegmentSchema */
         LyricsEditSegmentSchema: {
@@ -3072,7 +3080,16 @@ export interface operations {
     };
     list_jobs_api_v1_jobs_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Filter jobs by status. May be repeated. */
+                status?: string[] | null;
+                /** @description Filter jobs by project ID. */
+                project_id?: string | null;
+                /** @description Maximum number of items to return. */
+                limit?: number;
+                /** @description Number of items to skip before returning results. */
+                offset?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3086,6 +3103,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JobsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

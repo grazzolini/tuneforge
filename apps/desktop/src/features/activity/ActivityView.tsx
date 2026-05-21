@@ -3,6 +3,7 @@ import { useInfiniteQuery, useMutation, useQueries, useQueryClient } from "@tans
 import { Link } from "react-router-dom";
 import { api, type JobSchema, type ProjectSchema } from "../../lib/api";
 import { formatLocalDateTime, normalizeApiDateTime, parseApiDateTime } from "../../lib/datetime";
+import { useLazyLoadSentinel } from "../../lib/useLazyLoadSentinel";
 import { formatJobStatusSummary } from "../projects/projectViewUtils";
 import { ActivitySyncPanel } from "./ActivitySyncPanel";
 
@@ -266,13 +267,23 @@ export function ActivityView() {
     getNextPageParam: (lastPage) =>
       lastPage.has_more ? lastPage.offset + lastPage.jobs.length : undefined,
   });
+  const {
+    data: terminalJobsData,
+    fetchNextPage: fetchNextTerminalJobsPage,
+    hasNextPage: hasNextTerminalJobsPage,
+    isError: isTerminalJobsError,
+    isFetchNextPageError: isFetchNextTerminalJobsPageError,
+    isFetching: isFetchingTerminalJobs,
+    isFetchingNextPage: isFetchingNextTerminalJobsPage,
+    isLoading: isTerminalJobsLoading,
+  } = terminalJobsQuery;
   const activeJobs = useMemo(
     () => activeJobsData?.pages.flatMap((page) => page.jobs) ?? EMPTY_JOBS,
     [activeJobsData],
   );
   const terminalJobs = useMemo(
-    () => terminalJobsQuery.data?.pages.flatMap((page) => page.jobs) ?? [],
-    [terminalJobsQuery.data],
+    () => terminalJobsData?.pages.flatMap((page) => page.jobs) ?? EMPTY_JOBS,
+    [terminalJobsData],
   );
   const jobs = useMemo(() => uniqueJobs([...activeJobs, ...terminalJobs]), [activeJobs, terminalJobs]);
   const jobProjectIds = useMemo(
@@ -314,10 +325,22 @@ export function ActivityView() {
   const displayJobs = useMemo(() => orderJobsForQueue(jobs), [jobs]);
   const activeJobCount = displayJobs.filter(({ job }) => CANCELABLE_JOB_STATUSES.has(job.status)).length;
   const shouldPollJobs = hasActiveJob(activeJobs);
-  const isLoading = isActiveJobsLoading || terminalJobsQuery.isLoading;
-  const isError = isActiveJobsError || terminalJobsQuery.isError;
+  const isLoading = isActiveJobsLoading || isTerminalJobsLoading;
+  const isError = isActiveJobsError || isTerminalJobsError;
   const showJobList = !isLoading && !isError && displayJobs.length > 0;
   const showEmptyState = !isLoading && !isError && displayJobs.length === 0;
+  const { loadNextPage: loadNextTerminalJobsPage, sentinelRef: terminalHistorySentinelRef } =
+    useLazyLoadSentinel({
+      enabled:
+        activeTab === "jobs" &&
+        !isFetchingTerminalJobs &&
+        !isTerminalJobsError &&
+        !isFetchNextTerminalJobsPageError,
+      fetchNextPage: fetchNextTerminalJobsPage,
+      hasNextPage: hasNextTerminalJobsPage,
+      isFetchingNextPage: isFetchingNextTerminalJobsPage,
+      rootMargin: "160px 0px",
+    });
 
   useEffect(() => {
     if (!shouldPollJobs) return;
@@ -432,15 +455,15 @@ export function ActivityView() {
             </ul>
           ) : null}
 
-          {terminalJobsQuery.hasNextPage ? (
-            <div className="activity-jobs-panel__load-more">
+          {hasNextTerminalJobsPage ? (
+            <div className="activity-jobs-panel__load-more" ref={terminalHistorySentinelRef}>
               <button
                 className="button button--ghost"
-                disabled={terminalJobsQuery.isFetchingNextPage}
-                onClick={() => terminalJobsQuery.fetchNextPage()}
+                disabled={isFetchingNextTerminalJobsPage}
+                onClick={loadNextTerminalJobsPage}
                 type="button"
               >
-                {terminalJobsQuery.isFetchingNextPage ? "Loading history..." : "Load more history"}
+                {isFetchingNextTerminalJobsPage ? "Loading history..." : "Load more history"}
               </button>
             </div>
           ) : null}

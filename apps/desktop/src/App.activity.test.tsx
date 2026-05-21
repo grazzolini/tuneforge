@@ -22,6 +22,7 @@ import {
   setProjects,
   setSyncTransportStatus,
   setSyncTrustedPeers,
+  triggerMockIntersectionObserver,
 } from "./test/appTestHarness";
 
 const irohTransportId = "tuneforge-sync+iroh";
@@ -59,6 +60,21 @@ function job(overrides: Partial<JobSchema>): Record<string, unknown> {
     updated_at: "2026-04-18T13:16:00.000Z",
     ...overrides,
   };
+}
+
+function terminalHistoryJobs(count: number) {
+  return Array.from({ length: count }, (_, index) => {
+    const jobNumber = index + 1;
+    return job({
+      id: `job_history_${String(jobNumber).padStart(3, "0")}`,
+      type: `history_${String(jobNumber).padStart(3, "0")}`,
+      status: "completed",
+      progress: 100,
+      completed_at: `2026-04-18T13:${String(59 - index).padStart(2, "0")}:00.000Z`,
+      created_at: "2026-04-18T13:00:00.000Z",
+      updated_at: `2026-04-18T13:${String(59 - index).padStart(2, "0")}:00.000Z`,
+    });
+  });
 }
 
 function pairingPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -1017,20 +1033,7 @@ describe("Desktop app activity", () => {
 
   it("loads additional terminal history pages on request", async () => {
     const user = userEvent.setup();
-    setJobs(
-      Array.from({ length: 55 }, (_, index) => {
-        const jobNumber = index + 1;
-        return job({
-          id: `job_history_${String(jobNumber).padStart(3, "0")}`,
-          type: `history_${String(jobNumber).padStart(3, "0")}`,
-          status: "completed",
-          progress: 100,
-          completed_at: `2026-04-18T13:${String(59 - index).padStart(2, "0")}:00.000Z`,
-          created_at: "2026-04-18T13:00:00.000Z",
-          updated_at: `2026-04-18T13:${String(59 - index).padStart(2, "0")}:00.000Z`,
-        });
-      }),
-    );
+    setJobs(terminalHistoryJobs(55));
 
     renderApp(["/activity"]);
 
@@ -1048,6 +1051,171 @@ describe("Desktop app activity", () => {
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Load more history" })).not.toBeInTheDocument(),
     );
+  });
+
+  it("loads additional terminal history pages when the history sentinel intersects", async () => {
+    setJobs(terminalHistoryJobs(55));
+
+    renderApp(["/activity"]);
+
+    expect(await screen.findByRole("article", { name: "history_001 completed job" })).toBeInTheDocument();
+    expect(screen.queryByRole("article", { name: "history_055 completed job" })).not.toBeInTheDocument();
+
+    act(() => {
+      triggerMockIntersectionObserver();
+    });
+
+    expect(await screen.findByRole("article", { name: "history_055 completed job" })).toBeInTheDocument();
+    expect(mockListJobs).toHaveBeenCalledWith({
+      status: ["completed", "failed", "cancelled"],
+      limit: 50,
+      offset: 50,
+    });
+  });
+
+  it("rebinds the history sentinel after returning to the Jobs tab", async () => {
+    const user = userEvent.setup();
+    setJobs(terminalHistoryJobs(55));
+
+    renderApp(["/activity"]);
+
+    expect(await screen.findByRole("article", { name: "history_001 completed job" })).toBeInTheDocument();
+    expect(screen.queryByRole("article", { name: "history_055 completed job" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Sync" }));
+    expect(await screen.findByRole("heading", { level: 2, name: "Sync" })).toBeInTheDocument();
+
+    act(() => {
+      triggerMockIntersectionObserver();
+    });
+
+    expect(mockListJobs.mock.calls.filter(([params]) => params?.offset === 50)).toHaveLength(0);
+
+    await user.click(screen.getByRole("tab", { name: "Jobs" }));
+    expect(await screen.findByRole("heading", { level: 2, name: "Jobs" })).toBeInTheDocument();
+
+    act(() => {
+      triggerMockIntersectionObserver();
+    });
+
+    expect(await screen.findByRole("article", { name: "history_055 completed job" })).toBeInTheDocument();
+    expect(mockListJobs).toHaveBeenCalledWith({
+      status: ["completed", "failed", "cancelled"],
+      limit: 50,
+      offset: 50,
+    });
+  });
+
+  it("keeps failed terminal history page loads on manual retry only", async () => {
+    const user = userEvent.setup();
+    const defaultListJobsImplementation = mockListJobs.getMockImplementation();
+    if (!defaultListJobsImplementation) {
+      throw new Error("Expected list jobs mock implementation.");
+    }
+    let rejectNextHistoryPage = true;
+    const getHistoryPageRequestCount = () =>
+      mockListJobs.mock.calls.filter(([params]) => params?.offset === 50).length;
+    mockListJobs.mockImplementation(async (params) => {
+      if (params?.offset === 50 && rejectNextHistoryPage) {
+        rejectNextHistoryPage = false;
+        throw new Error("History page failed.");
+      }
+
+      return defaultListJobsImplementation(params);
+    });
+    setJobs(terminalHistoryJobs(55));
+
+    renderApp(["/activity"]);
+
+    expect(await screen.findByRole("article", { name: "history_001 completed job" })).toBeInTheDocument();
+    expect(screen.queryByRole("article", { name: "history_055 completed job" })).not.toBeInTheDocument();
+
+    act(() => {
+      triggerMockIntersectionObserver();
+    });
+
+    await waitFor(() => expect(getHistoryPageRequestCount()).toBe(1));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Load more history" })).toBeEnabled(),
+    );
+
+    act(() => {
+      triggerMockIntersectionObserver();
+      triggerMockIntersectionObserver();
+    });
+
+    expect(getHistoryPageRequestCount()).toBe(1);
+
+    await user.click(screen.getByRole("button", { name: "Load more history" }));
+
+    expect(await screen.findByRole("article", { name: "history_055 completed job" })).toBeInTheDocument();
+    expect(getHistoryPageRequestCount()).toBe(2);
+  });
+
+  it("waits for terminal history refetch to settle before sentinel page loads", async () => {
+    const defaultListJobsImplementation = mockListJobs.getMockImplementation();
+    if (!defaultListJobsImplementation) {
+      throw new Error("Expected list jobs mock implementation.");
+    }
+    let terminalFirstPageRequests = 0;
+    let resolveTerminalRefetch: () => void = () => {
+      throw new Error("Terminal history refetch did not start.");
+    };
+    const getHistoryPageRequestCount = () =>
+      mockListJobs.mock.calls.filter(([params]) => params?.offset === 50).length;
+    mockListJobs.mockImplementation(async (params) => {
+      const isTerminalFirstPage =
+        params?.offset === 0 &&
+        Array.isArray(params.status) &&
+        params.status.includes("completed") &&
+        params.status.includes("failed") &&
+        params.status.includes("cancelled");
+      if (isTerminalFirstPage) {
+        terminalFirstPageRequests += 1;
+      }
+
+      if (isTerminalFirstPage && terminalFirstPageRequests === 2) {
+        return new Promise((resolve) => {
+          resolveTerminalRefetch = () => {
+            resolve(defaultListJobsImplementation(params));
+          };
+        });
+      }
+
+      return defaultListJobsImplementation(params);
+    });
+    setJobs(terminalHistoryJobs(55));
+
+    const { queryClient } = renderApp(["/activity"]);
+
+    expect(await screen.findByRole("article", { name: "history_001 completed job" })).toBeInTheDocument();
+    expect(screen.queryByRole("article", { name: "history_055 completed job" })).not.toBeInTheDocument();
+
+    act(() => {
+      void queryClient.invalidateQueries({ queryKey: ["jobs", "activity", "terminal"] });
+    });
+
+    await waitFor(() => expect(terminalFirstPageRequests).toBe(2));
+
+    act(() => {
+      triggerMockIntersectionObserver();
+    });
+
+    expect(getHistoryPageRequestCount()).toBe(0);
+
+    await act(async () => {
+      resolveTerminalRefetch();
+    });
+    await waitFor(() =>
+      expect(queryClient.isFetching({ queryKey: ["jobs", "activity", "terminal"] })).toBe(0),
+    );
+
+    act(() => {
+      triggerMockIntersectionObserver();
+    });
+
+    expect(await screen.findByRole("article", { name: "history_055 completed job" })).toBeInTheDocument();
+    expect(getHistoryPageRequestCount()).toBe(1);
   });
 
   it("keeps loaded history visible while new project details are loading", async () => {

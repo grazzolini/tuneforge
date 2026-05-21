@@ -2141,6 +2141,80 @@ export function queryByAriaKeyLabel(container: HTMLElement, label: string) {
   return within(container).queryByText((_, element) => hasAriaKeyLabel(element, label));
 }
 
+type MockIntersectionObserverCallback = (
+  entries: IntersectionObserverEntry[],
+  observer: IntersectionObserver,
+) => void;
+
+const mockIntersectionObservers: MockIntersectionObserver[] = [];
+
+function normalizeMockRootMargin(rootMargin: string | undefined) {
+  const value = rootMargin?.trim() || "0px";
+  const parts = value.split(/\s+/);
+  if (parts.length > 4 || parts.some((part) => !/^-?(?:\d+|\d*\.\d+)(px|%)$/.test(part))) {
+    throw new SyntaxError("Failed to construct 'IntersectionObserver': rootMargin must be specified in pixels or percent.");
+  }
+  return value;
+}
+
+class MockIntersectionObserver implements IntersectionObserver {
+  readonly root: Element | Document | null = null;
+  readonly rootMargin: string;
+  readonly scrollMargin = "";
+  readonly thresholds: ReadonlyArray<number> = [];
+  readonly observedElements = new Set<Element>();
+
+  constructor(
+    private readonly callback: MockIntersectionObserverCallback,
+    options?: IntersectionObserverInit,
+  ) {
+    this.rootMargin = normalizeMockRootMargin(options?.rootMargin);
+    mockIntersectionObservers.push(this);
+  }
+
+  disconnect() {
+    this.observedElements.clear();
+  }
+
+  observe(target: Element) {
+    this.observedElements.add(target);
+  }
+
+  takeRecords() {
+    return [];
+  }
+
+  unobserve(target: Element) {
+    this.observedElements.delete(target);
+  }
+
+  trigger(isIntersecting = true) {
+    const entries = Array.from(this.observedElements, (target) => ({
+      boundingClientRect: {} as DOMRectReadOnly,
+      intersectionRatio: isIntersecting ? 1 : 0,
+      intersectionRect: {} as DOMRectReadOnly,
+      isIntersecting,
+      rootBounds: null,
+      target,
+      time: 0,
+    }));
+    if (entries.length) {
+      this.callback(entries as IntersectionObserverEntry[], this);
+    }
+  }
+}
+
+function installMockIntersectionObserver() {
+  mockIntersectionObservers.length = 0;
+  vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
+}
+
+export function triggerMockIntersectionObserver(isIntersecting = true) {
+  for (const observer of mockIntersectionObservers) {
+    observer.trigger(isIntersecting);
+  }
+}
+
 export function installMatchMediaMock(initialMatches = false) {
   const listeners = new Set<(event: MediaQueryListEvent) => void>();
   let matches = initialMatches;
@@ -2419,4 +2493,5 @@ export function resetAppTestHarness() {
   setMockAudioSourceStartError(null);
   getMockMediaDevices().reset();
   installMatchMediaMock(false);
+  installMockIntersectionObserver();
 }

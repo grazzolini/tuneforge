@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
@@ -11,7 +11,30 @@ import {
   renderApp,
   setChordBackends,
   setProjects,
+  triggerMockIntersectionObserver,
 } from "./test/appTestHarness";
+
+function makeLibraryProject(projectNumber: number) {
+  return {
+    id: `proj_${String(projectNumber).padStart(3, "0")}`,
+    display_name: `Project ${projectNumber}`,
+    source_path: `/tmp/project-${projectNumber}.wav`,
+    imported_path: `/tmp/projects/project-${projectNumber}.wav`,
+    duration_seconds: 120,
+    sample_rate: 44100,
+    channels: 2,
+    created_at: "2026-04-18T13:16:00.000Z",
+    updated_at: "2026-04-18T13:16:00.000Z",
+  };
+}
+
+function setLibraryProjects(count: number) {
+  setProjects(Array.from({ length: count }, (_, index) => makeLibraryProject(index + 1)));
+}
+
+function getProjectHeadingCount(name: string) {
+  return screen.queryAllByRole("heading", { name, level: 2 }).length;
+}
 
 describe("Desktop app library", () => {
   beforeEach(resetAppTestHarness);
@@ -55,24 +78,8 @@ describe("Desktop app library", () => {
     expect(screen.queryByText("Bass Drill")).not.toBeInTheDocument();
   });
 
-  it("loads additional project pages on request", async () => {
-    const user = userEvent.setup();
-    setProjects(
-      Array.from({ length: 55 }, (_, index) => {
-        const projectNumber = index + 1;
-        return {
-          id: `proj_${String(projectNumber).padStart(3, "0")}`,
-          display_name: `Project ${projectNumber}`,
-          source_path: `/tmp/project-${projectNumber}.wav`,
-          imported_path: `/tmp/projects/project-${projectNumber}.wav`,
-          duration_seconds: 120,
-          sample_rate: 44100,
-          channels: 2,
-          created_at: "2026-04-18T13:16:00.000Z",
-          updated_at: "2026-04-18T13:16:00.000Z",
-        };
-      }),
-    );
+  it("loads additional project pages when the scroll sentinel enters view", async () => {
+    setLibraryProjects(55);
 
     renderApp(["/"]);
 
@@ -80,13 +87,165 @@ describe("Desktop app library", () => {
     expect(screen.getByRole("heading", { name: "Project 1", level: 2 })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Project 55", level: 2 })).not.toBeInTheDocument();
     expect(mockListProjects).toHaveBeenCalledWith({ limit: 50, offset: 0 });
+    expect(screen.getByText("More projects load as you scroll.")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Load more projects" }));
+    act(() => {
+      triggerMockIntersectionObserver();
+    });
 
     expect(await screen.findByRole("heading", { name: "Project 55", level: 2 })).toBeInTheDocument();
     expect(screen.getByText("55 projects ready")).toBeInTheDocument();
+    expect(screen.getByText("All projects loaded.")).toBeInTheDocument();
     expect(mockListProjects).toHaveBeenCalledWith({ limit: 50, offset: 50 });
     expect(screen.queryByRole("button", { name: "Load more projects" })).not.toBeInTheDocument();
+  });
+
+  it("ignores repeated next-page triggers while a page request is already in flight", async () => {
+    let resolveNextPage!: () => void;
+    mockListProjects
+      .mockImplementationOnce(async (params) => ({
+        projects: Array.from({ length: 50 }, (_, index) => makeLibraryProject(index + 1)),
+        total: 55,
+        limit: params?.limit ?? 50,
+        offset: params?.offset ?? 0,
+        has_more: true,
+      }))
+      .mockImplementationOnce(
+        async (params) =>
+          new Promise((resolve) => {
+            resolveNextPage = () =>
+              resolve({
+                projects: Array.from({ length: 5 }, (_, index) => makeLibraryProject(51 + index)),
+                total: 55,
+                limit: params?.limit ?? 50,
+                offset: params?.offset ?? 0,
+                has_more: false,
+              });
+          }),
+      );
+
+    renderApp(["/"]);
+
+    expect(await screen.findByText("50 of 55 projects loaded")).toBeInTheDocument();
+    const loadMoreButton = screen.getByRole("button", { name: "Load more projects" });
+
+    act(() => {
+      triggerMockIntersectionObserver();
+      triggerMockIntersectionObserver();
+      fireEvent.click(loadMoreButton);
+    });
+
+    await waitFor(() =>
+      expect(mockListProjects.mock.calls.filter(([params]) => params?.offset === 50)).toHaveLength(1),
+    );
+
+    act(() => {
+      resolveNextPage();
+    });
+
+    expect(await screen.findByRole("heading", { name: "Project 55", level: 2 })).toBeInTheDocument();
+  });
+
+  it("searches across all projects after multiple pages have been loaded", async () => {
+    const user = userEvent.setup();
+    setLibraryProjects(55);
+
+    renderApp(["/"]);
+
+    expect(await screen.findByText("50 of 55 projects loaded")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Load more projects" }));
+    expect(await screen.findByRole("heading", { name: "Project 55", level: 2 })).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Search projects"), "project 55");
+
+    await waitFor(() =>
+      expect(mockListProjects).toHaveBeenLastCalledWith({
+        search: "project 55",
+        limit: 50,
+        offset: 0,
+      }),
+    );
+    expect(await screen.findByText('1 match for "project 55"')).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Project 55", level: 2 })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Project 1", level: 2 })).not.toBeInTheDocument();
+  });
+
+  it("refreshes loaded library pages after batch import without duplicate rows", async () => {
+    const user = userEvent.setup();
+    setLibraryProjects(55);
+    mockOpen.mockResolvedValue(["/tmp/new-alpha.wav", "/tmp/new-beta.wav"]);
+
+    renderApp(["/"]);
+
+    expect(await screen.findByText("50 of 55 projects loaded")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Load more projects" }));
+    expect(await screen.findByRole("heading", { name: "Project 55", level: 2 })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Import Track(s)" }));
+
+    expect(await screen.findByText("57 projects ready")).toBeInTheDocument();
+    const summary = screen.getByRole("status");
+    expect(within(summary).getByText("2 tracks imported, 0 duplicates skipped, 0 failed.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "New Alpha", level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "New Beta", level: 2 })).toBeInTheDocument();
+    expect(getProjectHeadingCount("Project 49")).toBe(1);
+    expect(getProjectHeadingCount("Project 50")).toBe(1);
+    expect(getProjectHeadingCount("Project 55")).toBe(1);
+  });
+
+  it("shows a refetch error after import invalidation fails while keeping loaded rows visible", async () => {
+    const user = userEvent.setup();
+    setLibraryProjects(1);
+    mockOpen.mockResolvedValue(["/tmp/new-alpha.wav", "/tmp/new-beta.wav"]);
+    mockListProjects.mockImplementationOnce(async (params) => ({
+      projects: [makeLibraryProject(1)],
+      total: 1,
+      limit: params?.limit ?? 50,
+      offset: params?.offset ?? 0,
+      has_more: false,
+    }));
+    mockListProjects.mockRejectedValueOnce(new Error("Refresh failed"));
+
+    renderApp(["/"]);
+
+    expect(await screen.findByRole("heading", { name: "Project 1", level: 2 })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Import Track(s)" }));
+
+    const refetchError = await screen.findByText("Could not refresh projects. Showing saved results.");
+    expect(refetchError.closest('[role="alert"]')).not.toBeNull();
+    expect(screen.getByRole("heading", { name: "Project 1", level: 2 })).toBeInTheDocument();
+  });
+
+  it("shows library loading, empty, failure, and final-page states", async () => {
+    let resolveProjects!: () => void;
+    mockListProjects.mockImplementationOnce(
+      async (params) =>
+        new Promise((resolve) => {
+          resolveProjects = () =>
+            resolve({
+              projects: [],
+              total: 0,
+              limit: params?.limit ?? 50,
+              offset: params?.offset ?? 0,
+              has_more: false,
+            });
+        }),
+    );
+
+    const { unmount } = renderApp(["/"]);
+
+    expect(await screen.findByText("Loading projects...")).toBeInTheDocument();
+    resolveProjects();
+    expect(await screen.findByRole("heading", { name: "No projects yet" })).toBeInTheDocument();
+    expect(screen.getByText("0 projects ready")).toBeInTheDocument();
+
+    unmount();
+    mockListProjects.mockRejectedValueOnce(new Error("Library unavailable"));
+    renderApp(["/"]);
+
+    const alert = await screen.findByRole("alert");
+    expect(within(alert).getByText("Could not load projects.")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "No projects yet" })).not.toBeInTheDocument();
   });
 
   it("renders project cards with local timestamps and without filename subtitles", async () => {

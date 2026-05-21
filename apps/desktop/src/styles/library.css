@@ -43,7 +43,12 @@
 
 .library-load-more {
   display: flex;
+  min-height: 3rem;
+  align-items: center;
   justify-content: center;
+  gap: 0.75rem;
+  color: var(--muted);
+  font-size: 0.9rem;
 }
 
 .project-library-table__header,

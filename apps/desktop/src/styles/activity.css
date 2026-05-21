@@ -11,6 +11,14 @@
   align-items: center;
 }
 
+.activity-jobs-panel__heading .search-field {
+  width: min(20rem, 100%);
+}
+
+.activity-jobs-panel__heading .search-field__input {
+  min-height: 3.2rem;
+}
+
 .activity-jobs-panel__state,
 .activity-jobs-panel__empty {
   border: 1px solid color-mix(in srgb, var(--divider) 78%, transparent);

@@ -16,11 +16,11 @@ def _timestamp(minutes: int) -> datetime:
     return _BASE_TIME + timedelta(minutes=minutes)
 
 
-def _add_project(session: Session, project_id: str) -> None:
+def _add_project(session: Session, project_id: str, *, display_name: str | None = None) -> None:
     session.add(
         Project(
             id=project_id,
-            display_name=project_id,
+            display_name=display_name or project_id,
             source_path=f"/tmp/{project_id}.wav",
             imported_path=f"/tmp/tuneforge/{project_id}.wav",
         )
@@ -147,6 +147,126 @@ def test_list_jobs_filters_by_project_id(client: TestClient) -> None:
     payload = response.json()
     assert [job["id"] for job in payload["jobs"]] == ["job_project_a_1", "job_project_a_2"]
     assert payload["total"] == 2
+
+
+def test_list_jobs_search_applies_before_pagination(client: TestClient) -> None:
+    with SessionLocal() as session:
+        _add_project(session, "project_early", display_name="Earlier Song")
+        _add_project(session, "project_target", display_name="Deep Needle Match")
+        _add_job(session, "job_early_1", "pending", project_id="project_early", created_at=_timestamp(1))
+        _add_job(session, "job_early_2", "pending", project_id="project_early", created_at=_timestamp(2))
+        _add_job(session, "job_target", "pending", project_id="project_target", created_at=_timestamp(3))
+        session.commit()
+
+    response = client.get("/api/v1/jobs", params={"search": "  NEEDLE  ", "limit": "1"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [job["id"] for job in payload["jobs"]] == ["job_target"]
+    assert payload["total"] == 1
+    assert payload["has_more"] is False
+
+
+def test_list_jobs_search_combines_with_status_and_project_filters(client: TestClient) -> None:
+    with SessionLocal() as session:
+        _add_project(session, "project_a", display_name="Practice Alpha")
+        _add_project(session, "project_b", display_name="Practice Alpha")
+        _add_job(session, "job_a_pending", "pending", project_id="project_a", created_at=_timestamp(1))
+        _add_job(
+            session,
+            "job_a_completed",
+            "completed",
+            project_id="project_a",
+            completed_at=_timestamp(2),
+        )
+        _add_job(
+            session,
+            "job_b_completed",
+            "completed",
+            project_id="project_b",
+            completed_at=_timestamp(3),
+        )
+        session.commit()
+
+    response = client.get(
+        "/api/v1/jobs",
+        params=[("search", "alpha"), ("status", "completed"), ("project_id", "project_a")],
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [job["id"] for job in payload["jobs"]] == ["job_a_completed"]
+    assert payload["total"] == 1
+
+
+def test_list_jobs_search_excludes_no_project_jobs(client: TestClient) -> None:
+    with SessionLocal() as session:
+        _add_project(session, "project_match", display_name="Global Match")
+        _add_job(session, "job_project", "pending", project_id="project_match", created_at=_timestamp(1))
+        _add_job(session, "job_no_project", "pending", project_id=None, created_at=_timestamp(2))
+        session.commit()
+
+    search_response = client.get("/api/v1/jobs", params={"search": "match"})
+    no_search_response = client.get("/api/v1/jobs")
+
+    assert search_response.status_code == 200
+    assert [job["id"] for job in search_response.json()["jobs"]] == ["job_project"]
+    assert search_response.json()["total"] == 1
+    assert no_search_response.status_code == 200
+    assert [job["id"] for job in no_search_response.json()["jobs"]] == ["job_project", "job_no_project"]
+    assert no_search_response.json()["total"] == 2
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_job_id"),
+    [
+        ("%", "job_percent"),
+        ("_", "job_underscore"),
+    ],
+)
+def test_list_jobs_search_treats_like_metacharacters_as_literals(
+    client: TestClient,
+    query: str,
+    expected_job_id: str,
+) -> None:
+    with SessionLocal() as session:
+        _add_project(session, "project_percent", display_name="Mix 100%")
+        _add_project(session, "project_underscore", display_name="rough_mix")
+        _add_project(session, "project_plain", display_name="Plain Song")
+        _add_job(session, "job_percent", "pending", project_id="project_percent", created_at=_timestamp(1))
+        _add_job(
+            session,
+            "job_underscore",
+            "pending",
+            project_id="project_underscore",
+            created_at=_timestamp(2),
+        )
+        _add_job(session, "job_plain", "pending", project_id="project_plain", created_at=_timestamp(3))
+        _add_job(session, "job_no_project", "pending", project_id=None, created_at=_timestamp(4))
+        session.commit()
+
+    response = client.get("/api/v1/jobs", params={"search": query})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [job["id"] for job in payload["jobs"]] == [expected_job_id]
+    assert payload["total"] == 1
+
+
+def test_list_jobs_empty_search_preserves_existing_behavior(client: TestClient) -> None:
+    with SessionLocal() as session:
+        _add_project(session, "project_a", display_name="Project A")
+        _add_job(session, "job_project", "pending", project_id="project_a", created_at=_timestamp(1))
+        _add_job(session, "job_no_project", "pending", project_id=None, created_at=_timestamp(2))
+        session.commit()
+
+    no_search_payload = client.get("/api/v1/jobs").json()
+    empty_search_payload = client.get("/api/v1/jobs", params={"search": "   "}).json()
+
+    assert [job["id"] for job in empty_search_payload["jobs"]] == [
+        job["id"] for job in no_search_payload["jobs"]
+    ]
+    assert empty_search_payload["total"] == no_search_payload["total"]
 
 
 def test_list_jobs_keeps_terminal_pages_stable(client: TestClient) -> None:

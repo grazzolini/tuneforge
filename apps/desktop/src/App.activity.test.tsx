@@ -139,6 +139,71 @@ describe("Desktop app activity", () => {
     expect(mockListJobs.mock.calls.some(([params]) => params === undefined)).toBe(false);
   });
 
+  it("searches activity jobs by project name", async () => {
+    setProjects([
+      project({ id: "proj_choir", display_name: "Choir Practice" }),
+      project({ id: "proj_drums", display_name: "Drum Study" }),
+    ]);
+    setJobs([
+      job({
+        id: "job_choir_active",
+        project_id: "proj_choir",
+        type: "stems",
+        status: "running",
+        progress: 50,
+      }),
+      job({
+        id: "job_choir_history",
+        project_id: "proj_choir",
+        type: "lyrics",
+        status: "completed",
+        progress: 100,
+      }),
+      job({
+        id: "job_drums",
+        project_id: "proj_drums",
+        type: "analyze",
+        status: "completed",
+        progress: 100,
+      }),
+      job({
+        id: "job_no_project",
+        project_id: null,
+        type: "export",
+        status: "completed",
+        progress: 100,
+      }),
+    ]);
+
+    renderApp(["/activity"]);
+
+    expect(await screen.findByRole("article", { name: "stems running job" })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Search jobs by project"), {
+      target: { value: " choir " },
+    });
+
+    await waitFor(() =>
+      expect(mockListJobs).toHaveBeenCalledWith({
+        status: ["running", "pending"],
+        search: "choir",
+        limit: 200,
+        offset: 0,
+      }),
+    );
+    expect(mockListJobs).toHaveBeenCalledWith({
+      status: ["completed", "failed", "cancelled"],
+      search: "choir",
+      limit: 50,
+      offset: 0,
+    });
+    expect(await screen.findByRole("article", { name: "lyrics completed job" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("article", { name: "analyze completed job" })).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByRole("article", { name: "export completed job" })).not.toBeInTheDocument();
+  });
+
   it("resolves job project names from project details outside the first project page", async () => {
     const deepProjectId = "proj_055";
     setProjects(

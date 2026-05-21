@@ -1200,12 +1200,19 @@ const {
   const mockListJobs = vi.fn(async (params?: ListJobsParams) => {
     const normalizedJobs = state.jobs.map((job, index) => normalizeMockJob(job, index));
     const statusFilters = Array.isArray(params?.status) ? params.status : [];
+    const normalizedSearch = params?.search?.trim().toLowerCase();
     const filteredJobs = normalizedJobs.filter((job) => {
       const statusMatches =
         statusFilters.length === 0 || statusFilters.includes(String(job.status));
       const projectMatches =
         params?.project_id == null || job.project_id === params.project_id;
-      return statusMatches && projectMatches;
+      const searchMatches = normalizedSearch
+        ? state.projects.some((project) => {
+            const displayName = String(project.display_name ?? "").toLowerCase();
+            return project.id === job.project_id && displayName.includes(normalizedSearch);
+          })
+        : true;
+      return statusMatches && projectMatches && searchMatches;
     });
     const offset = params?.offset ?? 0;
     const limit = params?.limit ?? DEFAULT_JOBS_LIMIT;

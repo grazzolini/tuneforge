@@ -18,6 +18,7 @@ def list_jobs(
     pagination: PaginationQuery,
     status: list[str] | None = Query(default=None, description="Filter jobs by status. May be repeated."),
     project_id: str | None = Query(default=None, description="Filter jobs by project ID."),
+    search: str | None = Query(default=None, description="Filter jobs by project display name."),
     session: Session = Depends(get_db),
 ) -> JobsResponse:
     listed_jobs = list_jobs_service(
@@ -26,6 +27,7 @@ def list_jobs(
         offset=pagination.offset,
         statuses=status,
         project_id=project_id,
+        search=search,
     )
     jobs = [JobSchema.model_validate(job) for job in listed_jobs.jobs]
     metadata = pagination_metadata(

@@ -59,7 +59,7 @@ describe current pagination behavior or explicit unpaginated exceptions.
 
 | Endpoint or payload | List field | Pagination decision |
 | --- | --- | --- |
-| `GET /api/v1/jobs` | `jobs` | Paginated growable list with `status` and `project_id` filters. Default ordering is active-first and deterministic. |
+| `GET /api/v1/jobs` | `jobs` | Paginated growable list with `status`, `project_id`, and project-name `search` filters. Default ordering is active-first and deterministic. |
 | `GET /api/v1/projects` | `projects` | Paginated growable list. `search` filters the full matching collection before pagination. Default ordering is `updated_at DESC, id DESC`. Desktop Library consumers should lazy-load this list. |
 | `GET /api/v1/projects/{project_id}/artifacts` | `artifacts` | Explicit unpaginated bounded project inventory exception: source audio, generated stems, practice mixes, exports, and cache artifacts. Ordered by `created_at DESC`; no pagination. |
 | `GET /api/v1/projects/{project_id}/sections` | `sections` | Explicit unpaginated project document/song-structure exception. Sections are bounded by the song arrangement and must stay complete for editing and playback. |
@@ -723,6 +723,8 @@ Query parameters:
 - `offset` - zero-based row offset, default `0`, minimum `0`.
 - `status` - optional repeatable status filter, for example `?status=pending&status=running`.
 - `project_id` - optional project ID filter.
+- `search` - optional project display name filter. Search is applied before pagination and composes with
+  `status` and `project_id` filters.
 
 Default ordering:
 

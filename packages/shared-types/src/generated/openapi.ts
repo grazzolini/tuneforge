@@ -3097,6 +3097,8 @@ export interface operations {
                 status?: string[] | null;
                 /** @description Filter jobs by project ID. */
                 project_id?: string | null;
+                /** @description Filter jobs by project display name. */
+                search?: string | null;
                 /** @description Maximum number of items to return. */
                 limit?: number;
                 /** @description Number of items to skip before returning results. */

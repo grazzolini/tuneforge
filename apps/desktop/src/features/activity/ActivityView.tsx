@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, type JobSchema, type ProjectSchema } from "../../lib/api";
@@ -232,14 +232,25 @@ function JobRow({
 
 export function ActivityView() {
   const [activeTab, setActiveTab] = useState<ActivityTab>("jobs");
+  const [searchDraft, setSearchDraft] = useState("");
+  const deferredSearch = useDeferredValue(searchDraft.trim());
   const previousActiveJobIds = useRef<Set<string>>(new Set());
   const queryClient = useQueryClient();
+  const activeJobsQueryKey = useMemo(
+    () => [...ACTIVE_JOBS_QUERY_KEY, deferredSearch] as const,
+    [deferredSearch],
+  );
+  const terminalJobsQueryKey = useMemo(
+    () => [...TERMINAL_JOBS_QUERY_KEY, deferredSearch] as const,
+    [deferredSearch],
+  );
   const activeJobsQuery = useInfiniteQuery({
-    queryKey: ACTIVE_JOBS_QUERY_KEY,
+    queryKey: activeJobsQueryKey,
     initialPageParam: 0,
     queryFn: async ({ pageParam }) =>
       api.listJobs({
         status: [...ACTIVE_JOB_STATUSES],
+        ...(deferredSearch ? { search: deferredSearch } : {}),
         limit: ACTIVE_JOBS_LIMIT,
         offset: pageParam,
       }),
@@ -256,11 +267,12 @@ export function ActivityView() {
     isSuccess: isActiveJobsSuccess,
   } = activeJobsQuery;
   const terminalJobsQuery = useInfiniteQuery({
-    queryKey: TERMINAL_JOBS_QUERY_KEY,
+    queryKey: terminalJobsQueryKey,
     initialPageParam: 0,
     queryFn: async ({ pageParam }) =>
       api.listJobs({
         status: [...TERMINAL_JOB_STATUS_VALUES],
+        ...(deferredSearch ? { search: deferredSearch } : {}),
         limit: TERMINAL_JOBS_PAGE_SIZE,
         offset: pageParam,
       }),
@@ -346,11 +358,11 @@ export function ActivityView() {
     if (!shouldPollJobs) return;
 
     const interval = window.setInterval(async () => {
-      await queryClient.invalidateQueries({ queryKey: ACTIVE_JOBS_QUERY_KEY });
+      await queryClient.invalidateQueries({ queryKey: activeJobsQueryKey });
     }, ACTIVE_JOB_REFETCH_MS);
 
     return () => window.clearInterval(interval);
-  }, [queryClient, shouldPollJobs]);
+  }, [activeJobsQueryKey, queryClient, shouldPollJobs]);
 
   useEffect(() => {
     if (!hasNextActiveJobsPage || isFetchingNextActiveJobsPage) return;
@@ -368,9 +380,9 @@ export function ActivityView() {
     previousActiveJobIds.current = currentActiveJobIds;
 
     if (activeJobLeftQueue) {
-      queryClient.invalidateQueries({ queryKey: TERMINAL_JOBS_QUERY_KEY });
+      queryClient.invalidateQueries({ queryKey: terminalJobsQueryKey });
     }
-  }, [activeJobs, isActiveJobsSuccess, queryClient]);
+  }, [activeJobs, isActiveJobsSuccess, queryClient, terminalJobsQueryKey]);
 
   return (
     <section className="screen activity-screen">
@@ -417,6 +429,17 @@ export function ActivityView() {
                   : "No pending or running jobs."}
               </p>
             </div>
+            <label className="search-field">
+              <span className="search-field__label">Search jobs</span>
+              <input
+                aria-label="Search jobs by project"
+                className="search-field__input"
+                placeholder="Search project names"
+                type="search"
+                value={searchDraft}
+                onChange={(event) => setSearchDraft(event.target.value)}
+              />
+            </label>
           </div>
 
           {isLoading ? (
@@ -470,8 +493,12 @@ export function ActivityView() {
 
           {showEmptyState ? (
             <div className="activity-jobs-panel__empty">
-              <h3>No jobs yet</h3>
-              <p>Import or process a track to populate the queue.</p>
+              <h3>{deferredSearch ? "No matching jobs" : "No jobs yet"}</h3>
+              <p>
+                {deferredSearch
+                  ? "Try a different project name or clear the search."
+                  : "Import or process a track to populate the queue."}
+              </p>
             </div>
           ) : null}
         </section>

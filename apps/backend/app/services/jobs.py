@@ -12,7 +12,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.errors import AppError, JobCancelledError
-from app.models import Artifact, ChordTimeline, Job, utcnow
+from app.models import Artifact, ChordTimeline, Job, Project, utcnow
 from app.services.analysis import analyze_project
 from app.services.chord_backends import resolve_chord_backend
 from app.services.chords import detect_project_chords, project_chord_detection_source
@@ -84,6 +84,7 @@ def list_jobs(
     offset: int,
     statuses: Sequence[str] | None = None,
     project_id: str | None = None,
+    search: str | None = None,
 ) -> ListedJobs:
     filters: list[Any] = []
     status_filters = tuple(statuses or ())
@@ -91,9 +92,16 @@ def list_jobs(
         filters.append(Job.status.in_(status_filters))
     if project_id is not None:
         filters.append(Job.project_id == project_id)
+    normalized_search = (search or "").strip().lower()
+    search_projects = bool(normalized_search)
+    if search_projects:
+        filters.append(func.lower(Project.display_name).contains(normalized_search, autoescape=True))
 
     total_statement = select(func.count()).select_from(Job)
     jobs_statement = select(Job)
+    if search_projects:
+        total_statement = total_statement.join(Project, Project.id == Job.project_id)
+        jobs_statement = jobs_statement.join(Project, Project.id == Job.project_id)
     if filters:
         total_statement = total_statement.where(*filters)
         jobs_statement = jobs_statement.where(*filters)

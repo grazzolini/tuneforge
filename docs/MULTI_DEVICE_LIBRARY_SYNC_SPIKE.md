@@ -332,43 +332,45 @@ See "Ouisync Rejection Finding" for evidence. Ouisync may remain a reference for
 
 ### Managed Syncthing Sync Bundle
 
-TuneForge manages or guides a Syncthing-style folder containing only sync-safe data: group manifests, project manifests, revision records, tombstones, and content-addressed blobs. It must not sync the raw app data directory or SQLite database.
+TuneForge manages or guides a Syncthing-style folder containing only sync-safe data: group manifests, project manifests, revision records, tombstones, and content-addressed blobs. It must never sync the raw app data directory, SQLite database, absolute local source paths, settings, caches, logs, model files, or other machine-local state.
 
 Benefits:
 
 - Syncthing has proven concepts for device identity, TLS, block exchange, local discovery, resumable file sync, and multi-device folder clusters.
 - Strong mental model for desktop users who already trust Syncthing.
+- Existing external Syncthing setups can provide reference evidence without making Syncthing the product boundary.
 - Existing REST and status concepts are useful for UX inspiration.
-- Desktop-to-desktop sync across Linux and macOS is close to Syncthing's core strength.
+- Folder sync between trusted desktop installs is close to Syncthing's core strength.
 
 Costs:
 
 - Syncthing is file/folder sync, not TuneForge project semantics.
 - Raw folder sync does not solve SQLite path rewriting, edit locking, user-edit conflicts, rebuild semantics, or group delete tombstone interpretation.
 - The sync bundle would still need TuneForge manifests and staged imports.
-- Runtime distribution, licensing, packaging, and lifecycle management need explicit review.
-- Mobile packaging and lifecycle management may be harder than desktop packaging, especially because the official Syncthing Android wrapper has been discontinued.
+- Runtime distribution, daemon supervision, source-compliance, licensing, packaging, upgrades, and lifecycle management need explicit review before any bundled-runtime decision.
+- Mobile packaging and lifecycle management may be harder than desktop packaging, especially because the official Syncthing Android wrapper has been discontinued. This is a real product risk, but it should not block desktop reference measurement.
 
-This option is worth evaluating as a desktop-focused comparison, but it should not become "sync the TuneForge data directory with Syncthing."
+This option is worth evaluating as a desktop-focused comparison and power-user reference, but it should not become "sync the TuneForge data directory with Syncthing." A fast Syncthing run is useful evidence only if TuneForge still owns manifests, tombstones, conflict policy, SHA-256 verification, path rewriting, and service-level import.
 
 ### External Syncthing Integration
 
-TuneForge detects or documents an existing Syncthing setup and exposes import/status affordances around a user-managed sync bundle.
+TuneForge detects or documents an existing Syncthing setup and exposes import/status affordances around a user-managed sync bundle. For this spike, using an existing external setup is acceptable evidence and a useful reference path. It is not a product dependency, not a required user setup, and not a reason to loosen TuneForge's sync-safe bundle boundary.
 
 Benefits:
 
 - Minimal protocol work.
-- Useful for advanced users who already sync folders between Linux and macOS.
+- Useful for advanced users who already sync folders between trusted devices.
 - Can provide a bridge while native sync matures.
+- Provides a practical reference for block reuse, temp/conflict files, stale files, and arrival timing without building a daemon supervisor first.
 
 Costs:
 
 - Weak product UX for mobile and non-technical users.
-- Hard to guarantee that only library data syncs.
+- Hard to guarantee that only library data syncs unless TuneForge owns the bundle contents and rejects unsafe paths.
 - Still does not solve database portability, path rewriting, edit locking, delete semantics, or semantic conflicts unless the synced folder is a TuneForge sync bundle.
-- External setup varies across macOS, Linux, Android, and other platforms.
+- External setup varies across platforms.
 
-This is better as an advanced compatibility path than the primary product strategy.
+This is better as an advanced compatibility/reference path than the primary product strategy. If exposed later, it must only point at a TuneForge sync bundle, never at the app data directory.
 
 ### Platform Discovery And Pairing Helpers
 
@@ -394,7 +396,7 @@ The transport bake-off should compare candidate transport and blob layers withou
 
 Manual Iroh prototype bake-off numbers are now captured below for the Mac/Linux dataset and one Mac VM fallback run. Keep adding only observed values from real runs; leave unknown fields blank or `TBD`.
 
-The default recommendation is to keep the custom LAN baseline as the control and run an Iroh follow-up spike unless research finds a blocker. Current research did not show a prototype blocker: Iroh is Rust-native, dual MIT/Apache-2.0 licensed, provides encrypted QUIC peer connections with direct and relay paths, and `iroh-blobs` provides content-addressed verified streaming, range requests, and resumable blob downloads. The main Iroh risks are integration work, Tauri desktop and Android lifecycle, storage, relay policy, package size, and dependency maturity. The current latest `iroh-blobs` line is suitable for prototype evidence only because docs.rs marks it as not production quality.
+The default recommendation is to keep the custom LAN baseline as the control, keep Iroh active as the strongest TuneForge-owned transport candidate, and use Syncthing only as a managed-folder reference. Current research did not show a prototype blocker for Iroh: it is Rust-native, dual MIT/Apache-2.0 licensed, provides encrypted QUIC peer connections with direct and relay paths, and `iroh-blobs` provides content-addressed verified streaming, range requests, and resumable blob downloads. The main Iroh risks are integration work, Tauri desktop and Android lifecycle, storage, relay policy, package size, and dependency maturity. The current latest `iroh-blobs` line is suitable for prototype evidence only because docs.rs marks it as not production quality.
 
 Research notes as of 2026-05-20:
 
@@ -402,7 +404,7 @@ Research notes as of 2026-05-20:
 - [`iroh-blobs`](https://docs.iroh.computer/protocols/blobs) is content-addressed with BLAKE3 and supports verified streaming, range requests, and resumable downloads. TuneForge can use those as transport internals only; SHA-256 remains the manifest contract.
 - The [latest `iroh-blobs` docs.rs page](https://docs.rs/iroh-blobs/latest/iroh_blobs/) was `0.101.0` on 2026-05-20, listed MIT OR Apache-2.0 licensing, and explicitly warned that the current line is not yet production quality. Treat it as prototype-suitable, not production-ready, until a later dependency review proves otherwise.
 - [Ouisync developer docs](https://ouisync.net/developers/) describe a Rust peer-to-peer sync library with Kotlin and Dart/Flutter bindings and MPL-2.0 licensing. It is mobile-relevant, but it is a managed repository/file sync substrate rather than TuneForge semantics.
-- [Syncthing docs](https://docs.syncthing.net/v2.0.0/users/syncing.html) describe block exchange and file-conflict behavior, and its [specs](https://docs.syncthing.net/v2.0.0/specs/index.html) cover local/global discovery and relay protocols, but it is MPL-2.0, Go-based, folder-oriented, and the [official Syncthing Android app has been discontinued](https://forum.syncthing.net/t/discontinuing-syncthing-android/23002). A Syncthing-managed bundle is therefore a desktop comparison/reference, not the primary product boundary.
+- [Syncthing docs](https://docs.syncthing.net/v2.0.0/users/syncing.html) describe block exchange and file-conflict behavior, and its [specs](https://docs.syncthing.net/v2.0.0/specs/index.html) cover local/global discovery and relay protocols, but it is MPL-2.0, Go-based, folder-oriented, and the [official Syncthing Android app has been discontinued](https://forum.syncthing.net/t/discontinuing-syncthing-android/23002). A Syncthing-managed bundle is therefore a desktop comparison/reference, not the primary product boundary. Bundling or supervising the daemon would require packaging, notice, and source-compliance review first.
 
 ### Phase 2 Iroh Prototype
 
@@ -457,7 +459,23 @@ Semantic boundaries remain useful if Ouisync is ever reconsidered:
 - Received files must still be staged and imported through TuneForge services with SHA-256 verification, path rewriting, revision checks, and tombstone reconciliation before a project becomes editable.
 - Ouisync must never sync raw app data directories, SQLite databases, preferences, logs, model caches, or local settings.
 
-Current decision: do not merge Ouisync code, do not add an Ouisync feature flag, and do not ask users to configure external Ouisync for TuneForge sync. Keep Iroh and TCP active; keep Syncthing as a later reference if needed.
+Current decision: do not merge Ouisync code, do not add an Ouisync feature flag, and do not ask users to configure external Ouisync for TuneForge sync. Keep Iroh and TCP active; use Syncthing only as a sync-safe bundle reference and power-user comparison.
+
+### Manual Syncthing Bundle Evidence
+
+External Syncthing can be used as sync-safe bundle evidence if an existing setup is available. It should only move TuneForge sync bundles: manifests, tombstones, entity revisions, and content-addressed blobs. Do not place raw app data directories, SQLite files, absolute local paths, settings, caches, logs, model files, or generated runtime state in the Syncthing folder.
+
+Operational manual commands belong in [SYNCTHING.md](./SYNCTHING.md), not in this spike report.
+
+Expected Syncthing speed is not the key question. The bake-off should emphasize whether a folder-sync tool preserves TuneForge's product semantics: safe bundle boundaries, no raw database sync, no path leaks, service-level import, conflict visibility, stale file handling, and delete/tombstone behavior.
+
+| Product question | Acceptable evidence |
+| --- | --- |
+| Bundle boundary | Synced contents stay limited to sync-safe manifests, tombstones, entity revisions, and content-addressed blobs. Unsafe app data, SQLite, settings, caches, logs, model files, absolute paths, and symlinks are rejected before import. |
+| Semantic ownership | TuneForge imports through services with SHA-256 verification, staging, path rewriting, revision reconciliation, and tombstone handling. |
+| Folder-sync behavior | Conflict, temporary, partial, and stale files are visible to TuneForge and ignored or rejected before they affect local library state. |
+| Reuse behavior | Unchanged synced content can be reused without changing project semantics or bypassing TuneForge verification. |
+| Delete behavior | Tombstones remain authoritative, and stale folder contents do not resurrect deleted library state. |
 
 ### Baseline Evidence Fields
 
@@ -481,7 +499,7 @@ The current custom desktop transport records run-level and phase-level evidence 
 | Custom LAN baseline | Mac/Linux TCP on latest main `f74b65e` completed 1050 MB in 6:40-6:41 at 2.6 MB/s with TTFA about 1.4-1.5 s. The Mac VM fallback run completed 1050 MB in 2:58 at 5.9 MB/s with TTFA 32 s. | Reuses fully verified content-addressed staging via `already_staged`; no proven mid-artifact byte-range resume. | Simple Tauri-owned listener/session lifecycle; easy to pause, stop, and surface in existing Activity UI. | Already in the Tauri/Rust desktop shell with limited dependency surface; desktop-only today. | Current Rust crates are already tracked in notices; no new managed sync runtime. | Android stubs exist, but mobile lifecycle, background networking, and permissions are not solved. | Excellent because it already exchanges TuneForge manifests, inventories, tombstones, and staged artifacts. | Keep as the control implementation for every bake-off run. |
 | Iroh | Mac/Linux cold sync completed 1050 MB in 6:25 at 2.7 MB/s with TTFA 1.4 s, importing 4 projects and receiving 32 artifacts. Repeated sync completed in 11 s with 0 B transferred and 4 skipped projects. | Interrupted retry reused completed staged content: 305 MB in 1:57 at 2.6 MB/s, 1 imported, 4 skipped, 6 received artifacts, 2 reused staged artifacts, 0 failed transfers. True mid-artifact `iroh-blobs` byte-range resume is not implemented or proven. | Requires endpoint/router lifecycle, relay-disabled local-direct default behavior, stable UDP port binding, stale endpoint-hint refresh, offline behavior, and status integration inside Tauri. | Rust crates fit the shell; Android build, storage backend, and binary size need proof. | Dual MIT/Apache-2.0 is the cleanest candidate against project policy. | Iroh targets mobile, but TuneForge should integrate from Rust/Tauri rather than relying on immature non-Rust bindings. | Strong if Iroh endpoint IDs, BLAKE3 blob IDs, relay metadata, and endpoint state remain transport-local while TuneForge SHA-256 manifests stay authoritative. | The prototype proves Iroh works end-to-end and is comparable to TCP on Mac/Linux for this dataset; keep it prototype-gated until production-readiness risks are closed. |
 | Ouisync | Rejected. The only completed import used `rsync`, not Ouisync propagation. | Repeated service import skipped existing projects after manual copy; repository retry behavior was not proven. | Rejected: external repository/share-token/mount lifecycle would leak into TuneForge UX, and permanent duplicate artifacts are unacceptable. | No crates.io package; source integration conflicted with the current dependency graph; upstream toolchain requirement is higher than the current shell baseline. | MPL-2.0 needs explicit notice/policy review before runtime adoption. | Not pursued. | Medium technically after files arrive, but TuneForge still owns manifests, trust, staging, SHA-256, revisions, and tombstones. | Do not merge Ouisync code or expose a prototype flag. |
-| Syncthing-managed sync bundle | Mature block exchange makes it a useful reference; measure only a sync-safe bundle, never the app data directory or SQLite. | Strong block-level reuse and temporary-file behavior, but semantics are file-level and conflict files are not TuneForge conflicts. | Harder: bundled or external daemon, REST/admin surface, background process supervision, upgrades, and user configuration. | Go binary/service packaging is heavier than Rust crates and may vary by desktop platform. | MPL-2.0 requires explicit policy and notice review before bundling. | Weak for primary mobile sync because the official Android wrapper was discontinued; forks or Termux are not a product baseline. | Medium-low: acceptable only if it transports manifests/blobs and TuneForge still imports through services. | Use as desktop-focused comparison and design reference, not the default implementation. |
+| Syncthing-managed sync bundle | Can move a sync-safe bundle through user-managed folder sync. Speed is secondary to preserving the bundle boundary. | May reuse unchanged files at the folder layer, but conflict, temporary, and stale-file behavior still need product-level handling. Syncthing conflicts are file conflicts, not TuneForge conflicts. | External setup can serve as reference evidence; bundled daemon lifecycle, REST/admin surface, supervision, upgrades, and user configuration remain product risks. | Go binary/service packaging is heavier than Rust crates and may vary by desktop platform. | MPL-2.0 requires explicit policy, notice, and source-compliance review before bundling. | Deferred for this comparison. Official Android app discontinuation is a risk, but it should not block desktop reference measurement. | Medium: acceptable only if it transports manifests/blobs and TuneForge still imports through services. Moving bundle files does not make Syncthing the semantic layer. | Use as desktop-focused comparison and power-user/reference path, not the default implementation or required user setup. |
 
 ### Manual Measurement Template
 
@@ -495,7 +513,6 @@ Fill this table with real evidence from the fields above. Do not enter estimated
 | 2026-05-20 | Iroh | Repeated Sync Now | Mac/Linux | Same staged dataset | Previous Iroh cold sync completed | Completed in 11 s, transferred 0 B, skipped 4 projects | Proves completed verified content is reused. |
 | 2026-05-20 | Iroh | Interrupted run and retry | Mac/Linux | 305 MB retry subset | Serving Mac failed cleanly with `Could not write sync transport frame: connection lost` | Retry stayed on Iroh and completed in 1:57 at 2.6 MB/s; imported 1 project, skipped 4, received 6 artifacts, reused 2 staged artifacts, 0 failed transfers | Proves verified staged-content reuse after interruption; true mid-artifact byte-range resume is not implemented or proven. |
 | 2026-05-20 | Iroh | Stale endpoint hint fallback | Linux-to-Mac after Linux listener restart | 227 MB, 1 project, 8 artifacts | Stored Linux Iroh hint pointed at a previous UDP port | Fallback to TCP completed in 1:37 at 2.3 MB/s with TTFA 19 s; imported 1 project and skipped 5 | Follow-up: stable Iroh UDP port and endpoint-hint refresh. |
-| TBD | Syncthing-managed bundle | Same scenario as control | Same device pair and network where possible | Same sync bundle only | Bundle index/block state and TuneForge manifest counts | TuneForge import result after bundle arrival, plus Syncthing status evidence | Desktop/reference only unless mobile packaging risk changes. |
 
 The interrupted lyrics-job convergence edge case is a sync v2 follow-up and does not block the transport bake-off. Completed lyrics revisions and artifacts should still sync as durable library state, but interrupted runnable jobs are not part of the v1 sync truth and should not determine the transport bake-off outcome.
 
@@ -533,7 +550,7 @@ Recommended spike sequence:
 7. Edit-locking for syncing projects until minimum usable data is verified.
 8. Linux-to-macOS desktop sync on the same LAN.
 9. Three-peer desktop sync behavior.
-10. Transport bake-off: keep the custom LAN baseline as the control, continue the Iroh follow-up path, and keep Syncthing as a later managed-folder reference if needed. Ouisync is rejected for the current transport path.
+10. Transport bake-off: keep the custom LAN baseline as the control, keep Iroh active, and use an external Syncthing setup only as a sync-safe bundle reference. Ouisync is rejected for the current transport path.
 11. Mobile library sync and WAV playback/battery validation.
 
 ## Security Model
@@ -703,7 +720,7 @@ For the eventual implementation spike, validate in this order:
 11. Conflict tests for edited lyrics/chords/sections, project rename conflicts, concurrent rebuilds, delete-vs-update races, and divergent generated artifacts.
 12. Artifact availability tests for local artifacts, remote artifacts, missing providers, deleted artifacts, and transfer state.
 13. Frontend tests for Settings pairing UI, migration/preflight status, duplicate import failure, library status, project sync status, artifact availability, conflict surfacing, edit disabling, group delete warnings, and accessible status updates.
-14. Transport bake-off tests comparing custom LAN baseline, Iroh, and possibly a Syncthing-managed sync bundle. Ouisync has been rejected for this path.
+14. Transport bake-off tests comparing custom LAN baseline, Iroh, and a Syncthing-managed sync bundle reference if an existing external setup is available. Ouisync has been rejected for this path.
 15. Mobile WAV validation:
     - WAV source/stem playback works from synced desktop artifacts.
     - Battery and CPU usage are measured against AAC/M4A or another compressed baseline.

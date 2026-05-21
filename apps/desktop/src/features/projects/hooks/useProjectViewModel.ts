@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { confirm, save } from "@tauri-apps/plugin-dialog";
 import {
   api,
   getProjectSyncSummary,
   type ArtifactSchema,
+  type JobSchema,
   type ProjectSchema,
 } from "../../../lib/api";
 import { usePreferences } from "../../../lib/preferences";
@@ -82,12 +83,28 @@ import {
 } from "../playbackTempo";
 
 type PlaybackDisplayModeSource = "default" | "stored" | "user";
+const ACTIVE_PROJECT_JOB_STATUSES = ["running", "pending"] as const;
+const TERMINAL_PROJECT_JOB_STATUSES = ["completed", "failed", "cancelled"] as const;
+const ACTIVE_PROJECT_JOBS_LIMIT = 200;
+const PROJECT_HISTORY_JOBS_PAGE_SIZE = 50;
+const EMPTY_JOBS: JobSchema[] = [];
+
 type DeleteArtifactsRequest = {
   artifactIds: string[];
   nextSelectedArtifactId?: string | null;
   nextSelectedPrimaryArtifactId?: string | null;
   stemArtifactIds?: string[];
 };
+
+function getNextJobsPageOffset(lastPage: { has_more: boolean; offset: number; jobs: JobSchema[] }) {
+  return lastPage.has_more ? lastPage.offset + lastPage.jobs.length : undefined;
+}
+
+function uniqueJobsById(jobs: JobSchema[]) {
+  const jobsById = new Map<string, JobSchema>();
+  jobs.forEach((job) => jobsById.set(job.id, job));
+  return Array.from(jobsById.values());
+}
 
 function resolveDefaultPlaybackDisplayMode(
   defaultMode: DefaultPlaybackDisplayMode,
@@ -271,10 +288,31 @@ export function useProjectViewModel() {
     queryFn: async () => (await api.listArtifacts(projectId)).artifacts,
     enabled: Boolean(projectId),
   });
-  const jobsQuery = useQuery({
-    queryKey: ["jobs", { projectId }],
-    queryFn: async () => (await api.listJobs({ project_id: projectId })).jobs,
+  const activeProjectJobsQuery = useInfiniteQuery({
+    queryKey: ["jobs", { projectId, scope: "project", status: "active" }],
+    initialPageParam: 0,
+    queryFn: async ({ pageParam }) =>
+      api.listJobs({
+        project_id: projectId,
+        status: [...ACTIVE_PROJECT_JOB_STATUSES],
+        limit: ACTIVE_PROJECT_JOBS_LIMIT,
+        offset: pageParam,
+      }),
     enabled: Boolean(projectId),
+    getNextPageParam: getNextJobsPageOffset,
+  });
+  const terminalProjectJobsQuery = useInfiniteQuery({
+    queryKey: ["jobs", { projectId, scope: "project", status: "terminal" }],
+    initialPageParam: 0,
+    queryFn: async ({ pageParam }) =>
+      api.listJobs({
+        project_id: projectId,
+        status: [...TERMINAL_PROJECT_JOB_STATUSES],
+        limit: PROJECT_HISTORY_JOBS_PAGE_SIZE,
+        offset: pageParam,
+      }),
+    enabled: Boolean(projectId),
+    getNextPageParam: getNextJobsPageOffset,
   });
   const mobileCapabilitiesQuery = useQuery({
     queryKey: ["mobile-capabilities"],
@@ -293,8 +331,6 @@ export function useProjectViewModel() {
       throw new Error(projectSyncLockReason ?? "This project is locked for editing.");
     }
   }
-
-  useActiveJobPolling(projectId, jobsQuery.data);
 
   const analyzeMutation = useMutation({
     mutationFn: () => {
@@ -580,7 +616,26 @@ export function useProjectViewModel() {
     },
   });
 
-  const projectJobs = useMemo(() => jobsQuery.data ?? [], [jobsQuery.data]);
+  const activeProjectJobs = useMemo(
+    () => activeProjectJobsQuery.data?.pages.flatMap((page) => page.jobs) ?? EMPTY_JOBS,
+    [activeProjectJobsQuery.data],
+  );
+  const terminalProjectJobs = useMemo(
+    () => terminalProjectJobsQuery.data?.pages.flatMap((page) => page.jobs) ?? EMPTY_JOBS,
+    [terminalProjectJobsQuery.data],
+  );
+  const projectJobs = useMemo(
+    () => uniqueJobsById([...activeProjectJobs, ...terminalProjectJobs]),
+    [activeProjectJobs, terminalProjectJobs],
+  );
+  const isProjectJobsLoading =
+    activeProjectJobsQuery.isLoading || terminalProjectJobsQuery.isLoading;
+  const isProjectJobsError = activeProjectJobsQuery.isError || terminalProjectJobsQuery.isError;
+  const isProjectJobsLoaded =
+    activeProjectJobsQuery.isSuccess && terminalProjectJobsQuery.isSuccess;
+
+  useActiveJobPolling(projectId, projectJobs);
+
   const analyzeJob = projectJobs.find((job) => job.type === "analyze");
   const chordJob = projectJobs.find((job) => job.type === "chords");
   const lyricsJob = projectJobs.find((job) => job.type === "lyrics");
@@ -1748,7 +1803,7 @@ export function useProjectViewModel() {
   }, [visibleStemArtifacts]);
 
   useEffect(() => {
-    if (hydratedProjectId !== projectId || !jobsQuery.data) {
+    if (hydratedProjectId !== projectId || !isProjectJobsLoaded) {
       return;
     }
 
@@ -1757,7 +1812,7 @@ export function useProjectViewModel() {
       const next = current.filter((jobId) => activeStemJobIds.has(jobId));
       return next.length === current.length ? current : next;
     });
-  }, [hydratedProjectId, jobsQuery.data, projectId, stemJobs]);
+  }, [hydratedProjectId, isProjectJobsLoaded, projectId, stemJobs]);
 
   useEffect(() => {
     if (!loopStatusMessage || typeof window === "undefined") {
@@ -2164,6 +2219,7 @@ export function useProjectViewModel() {
     hasTimedLyricsTranscript,
     hasTransformChange,
     hasVisibleStems,
+    hasNextProjectHistoryJobsPage: terminalProjectJobsQuery.hasNextPage,
     higherCapoPreview,
     higherCapoShiftOptions,
     higherTargetPreview,
@@ -2178,6 +2234,10 @@ export function useProjectViewModel() {
     isLyricsRunning,
     isMobileRuntime,
     isPlaying,
+    isFetchingNextProjectHistoryJobsPage: terminalProjectJobsQuery.isFetchingNextPage,
+    isFetchNextProjectHistoryJobsPageError: terminalProjectJobsQuery.isFetchNextPageError,
+    isProjectJobsError,
+    isProjectJobsLoading,
     loopRange,
     loopAlignmentMode,
     loopAlignmentModeOverride,
@@ -2188,6 +2248,7 @@ export function useProjectViewModel() {
     isStemPlayback,
     isStemRunning,
     latestPreviewArtifact,
+    loadNextProjectHistoryJobsPage: terminalProjectJobsQuery.fetchNextPage,
     lowerCapoPreview,
     lowerCapoShiftOptions,
     lowerTargetPreview,

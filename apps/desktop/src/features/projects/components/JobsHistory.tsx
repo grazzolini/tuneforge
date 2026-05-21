@@ -4,63 +4,108 @@ import { artifactLabel, artifactSummary, formatArtifactTimestamp, formatJobStatu
 export function JobsHistory() {
   const {
     displayArtifacts,
+    hasNextProjectHistoryJobsPage,
     informationDensity,
+    isFetchNextProjectHistoryJobsPageError,
+    isFetchingNextProjectHistoryJobsPage,
+    isProjectJobsError,
+    isProjectJobsLoading,
+    loadNextProjectHistoryJobsPage,
     showSupportingCopy,
     visibleJobs,
   } = useProjectViewModelContext();
+  const hasJobs = visibleJobs.length > 0;
+  const showNoJobs = !isProjectJobsLoading && !isProjectJobsError && !hasJobs;
 
   return (
     <div className="panel jobs-history">
       <div className="panel-heading">
         <div>
-      <h2>Jobs and History</h2>
-      {showSupportingCopy ? (
-        <p className="subpanel__copy">
-          Raw artifacts and job logs stay available without crowding playback.
-        </p>
-      ) : null}
+          <h2>Jobs and History</h2>
+          {showSupportingCopy ? (
+            <p className="subpanel__copy">
+              Raw artifacts and job logs stay available without crowding playback.
+            </p>
+          ) : null}
         </div>
       </div>
 
       <details className="details-block details-block--flush">
         <summary>Show raw artifacts and processing history</summary>
         <div className="details-stack">
-      <ul className="artifact-list">
-        {displayArtifacts.length ? (
-          displayArtifacts.map((artifact) => (
-            <li key={artifact.id}>
-              <span>{artifactLabel(artifact)}</span>
-              <small>{artifact.format.toUpperCase()}</small>
-              <small>{formatArtifactTimestamp(artifact.created_at)}</small>
-              {informationDensity === "detailed" && artifactSummary(artifact) ? (
-                <small>{artifactSummary(artifact)}</small>
-              ) : null}
-            </li>
-          ))
-        ) : (
-          <li>No artifacts yet.</li>
-        )}
-      </ul>
+          <ul className="artifact-list">
+            {displayArtifacts.length ? (
+              displayArtifacts.map((artifact) => (
+                <li key={artifact.id}>
+                  <span>{artifactLabel(artifact)}</span>
+                  <small>{artifact.format.toUpperCase()}</small>
+                  <small>{formatArtifactTimestamp(artifact.created_at)}</small>
+                  {informationDensity === "detailed" && artifactSummary(artifact) ? (
+                    <small>{artifactSummary(artifact)}</small>
+                  ) : null}
+                </li>
+              ))
+            ) : (
+              <li>No artifacts yet.</li>
+            )}
+          </ul>
 
-      <ul className="job-list">
-        {visibleJobs.length ? (
-          visibleJobs.map((job) => (
-            <li key={job.id}>
-              <div>
-                <strong>{job.type}</strong>
-                <span>{formatJobStatusSummary(job)}</span>
-              </div>
-              <progress max={100} value={job.progress} />
-              <small>{formatArtifactTimestamp(job.completed_at ?? job.updated_at)}</small>
-              {job.error_message ? (
-                <small className="inline-error">{job.error_message}</small>
-              ) : null}
-            </li>
-          ))
-        ) : (
-          <li>No jobs yet.</li>
-        )}
-      </ul>
+          <div className="job-history-list">
+            {isProjectJobsLoading ? (
+              <p className="job-history-list__state" role="status">
+                Loading job history...
+              </p>
+            ) : null}
+
+            {isProjectJobsError ? (
+              <p className="job-history-list__state inline-error" role="alert">
+                Could not load job history.
+              </p>
+            ) : null}
+
+            <ul
+              aria-busy={isProjectJobsLoading || isFetchingNextProjectHistoryJobsPage}
+              aria-label="Project job history"
+              className="job-list"
+            >
+              {hasJobs
+                ? visibleJobs.map((job) => (
+                    <li key={job.id}>
+                      <div>
+                        <strong>{job.type}</strong>
+                        <span>{formatJobStatusSummary(job)}</span>
+                      </div>
+                      <progress max={100} value={job.progress} />
+                      <small>{formatArtifactTimestamp(job.completed_at ?? job.updated_at)}</small>
+                      {job.error_message ? (
+                        <small className="inline-error">{job.error_message}</small>
+                      ) : null}
+                    </li>
+                  ))
+                : null}
+            </ul>
+
+            {showNoJobs ? <p className="job-history-list__state">No jobs yet.</p> : null}
+
+            {isFetchNextProjectHistoryJobsPageError ? (
+              <p className="job-history-list__state inline-error" role="alert">
+                Could not load more history.
+              </p>
+            ) : null}
+
+            {hasNextProjectHistoryJobsPage ? (
+              <button
+                className="button button--ghost button--small job-history-list__load-more"
+                disabled={isFetchingNextProjectHistoryJobsPage}
+                onClick={() => {
+                  void loadNextProjectHistoryJobsPage();
+                }}
+                type="button"
+              >
+                {isFetchingNextProjectHistoryJobsPage ? "Loading history..." : "Load more history"}
+              </button>
+            ) : null}
+          </div>
         </div>
       </details>
     </div>

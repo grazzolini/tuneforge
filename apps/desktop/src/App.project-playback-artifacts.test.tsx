@@ -25,6 +25,54 @@ import {
   selectFirstStemInAnalysis,
 } from "./test/projectTestActions";
 
+const PROJECT_JOB_HISTORY_PAGE_SIZE = 50;
+const TERMINAL_JOB_STATUSES = ["completed", "failed", "cancelled"] as const;
+
+function getJobsHistoryDetails() {
+  const jobHistory = screen.getByText("Show raw artifacts and processing history").closest("details");
+  expect(jobHistory).not.toBeNull();
+  return jobHistory as HTMLElement;
+}
+
+async function expectProjectJobsRequested(projectId: string) {
+  await waitFor(() =>
+    expect(mockListJobs.mock.calls.some(([params]) => params?.project_id === projectId)).toBe(true),
+  );
+}
+
+async function expectProjectTerminalJobsPageRequested(offset: number) {
+  await waitFor(() => {
+    const hasMatchingCall = mockListJobs.mock.calls.some(([params]) => {
+      const status = params?.status;
+      return (
+        params?.project_id === "proj_123" &&
+        params.limit === PROJECT_JOB_HISTORY_PAGE_SIZE &&
+        params.offset === offset &&
+        Array.isArray(status) &&
+        status.length === TERMINAL_JOB_STATUSES.length &&
+        TERMINAL_JOB_STATUSES.every((terminalStatus) => status.includes(terminalStatus))
+      );
+    });
+
+    expect(hasMatchingCall).toBe(true);
+  });
+}
+
+function terminalJob(index: number, overrides: Record<string, unknown> = {}) {
+  return {
+    id: `job_terminal_${index}`,
+    project_id: "proj_123",
+    type: "export",
+    status: "completed",
+    progress: 100,
+    source_artifact_id: null,
+    error_message: null,
+    created_at: `2026-04-18T13:${String(index % 60).padStart(2, "0")}:00.000Z`,
+    updated_at: `2026-04-18T13:${String(index % 60).padStart(2, "0")}:00.000Z`,
+    ...overrides,
+  };
+}
+
 describe("Desktop app project playback artifacts", () => {
   beforeEach(resetAppTestHarness);
 
@@ -143,9 +191,88 @@ describe("Desktop app project playback artifacts", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    await waitFor(() => expect(mockListJobs).toHaveBeenCalledWith({ project_id: "proj_123" }));
+    await expectProjectJobsRequested("proj_123");
     const stemError = await screen.findByRole("group", { name: "Stem error" });
     expect(within(stemError).getByText("Selected project stems failed.")).toBeInTheDocument();
+  });
+
+  it("loads later project terminal job pages with scoped filters", async () => {
+    const user = userEvent.setup();
+    setJobs([
+      ...Array.from({ length: PROJECT_JOB_HISTORY_PAGE_SIZE }, (_, index) =>
+        terminalJob(index, { id: `job_initial_terminal_${index}` }),
+      ),
+      terminalJob(PROJECT_JOB_HISTORY_PAGE_SIZE, {
+        id: "job_terminal_second_page",
+        status: "failed",
+        error_message: "Second terminal jobs page failed export.",
+      }),
+      {
+        id: "job_other_project_terminal",
+        project_id: "proj_other",
+        type: "export",
+        status: "failed",
+        progress: 100,
+        source_artifact_id: null,
+        error_message: "Other project failure must stay hidden.",
+        created_at: "2026-04-18T13:59:00.000Z",
+        updated_at: "2026-04-18T13:59:00.000Z",
+      },
+    ]);
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openAnalysisPanel(user);
+    await user.click(screen.getByText("Show raw artifacts and processing history"));
+
+    const jobHistory = getJobsHistoryDetails();
+    await expectProjectTerminalJobsPageRequested(0);
+    expect(within(jobHistory).queryByText("Second terminal jobs page failed export.")).not.toBeInTheDocument();
+
+    await user.click(within(jobHistory).getByRole("button", { name: /load more/i }));
+
+    await expectProjectTerminalJobsPageRequested(PROJECT_JOB_HISTORY_PAGE_SIZE);
+    expect(await within(jobHistory).findByText("Second terminal jobs page failed export.")).toBeInTheDocument();
+    expect(within(jobHistory).queryByText("Other project failure must stay hidden.")).not.toBeInTheDocument();
+  });
+
+  it("keeps loaded project job history visible when the next page fails", async () => {
+    const user = userEvent.setup();
+    setJobs([
+      terminalJob(0, {
+        id: "job_terminal_loaded_first",
+        status: "failed",
+        error_message: "Loaded terminal history stays visible.",
+      }),
+      ...Array.from({ length: PROJECT_JOB_HISTORY_PAGE_SIZE - 1 }, (_, index) =>
+        terminalJob(index + 1, { id: `job_terminal_loaded_${index + 1}` }),
+      ),
+      terminalJob(PROJECT_JOB_HISTORY_PAGE_SIZE, {
+        id: "job_terminal_unloaded_after_failure",
+        status: "failed",
+        error_message: "Unloaded terminal history stays hidden.",
+      }),
+    ]);
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openAnalysisPanel(user);
+    await user.click(screen.getByText("Show raw artifacts and processing history"));
+
+    const jobHistory = getJobsHistoryDetails();
+    await expectProjectTerminalJobsPageRequested(0);
+    expect(within(jobHistory).getByText("Loaded terminal history stays visible.")).toBeInTheDocument();
+
+    mockListJobs.mockClear();
+    mockListJobs.mockRejectedValueOnce(new Error("Project job history page failed."));
+    await user.click(within(jobHistory).getByRole("button", { name: /load more/i }));
+
+    await expectProjectTerminalJobsPageRequested(PROJECT_JOB_HISTORY_PAGE_SIZE);
+    expect(within(jobHistory).getByText("Loaded terminal history stays visible.")).toBeInTheDocument();
+    expect(within(jobHistory).queryByText("Unloaded terminal history stays hidden.")).not.toBeInTheDocument();
+    expect(await within(jobHistory).findByText("Could not load more history.")).toBeInTheDocument();
   });
 
   it("deletes a visible stem from the sources rail", async () => {

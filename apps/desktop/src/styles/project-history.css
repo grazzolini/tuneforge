@@ -35,6 +35,20 @@
   gap: 0.8rem;
 }
 
+.job-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.job-history-list__state {
+  margin: 0;
+}
+
+.job-history-list__load-more {
+  align-self: flex-start;
+}
+
 .artifact-list li,
 .job-list li {
   display: flex;
@@ -55,4 +69,3 @@
   justify-content: space-between;
   gap: 1rem;
 }
-

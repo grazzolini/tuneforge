@@ -25,6 +25,12 @@ PROJECT_CHILD_DOCUMENT_RESPONSE_CONTRACTS = {
     ("/api/v1/projects/{project_id}/tabs/{tab_import_id}", "get"): "TabImportResponse",
     ("/api/v1/projects/{project_id}/tabs/{tab_import_id}/accept", "post"): "TabImportApplyResponse",
 }
+SYNC_DOCUMENT_RESPONSE_CONTRACTS = {
+    ("/api/v1/sync/preflight", "get"): "SyncPreflightResponse",
+    ("/api/v1/sync/metadata", "get"): "SyncMetadataResponse",
+    ("/api/v1/sync/reconciliation/plan", "post"): "SyncReconciliationPlanResponse",
+    ("/api/v1/sync/reconciliation/apply", "post"): "SyncReconciliationApplyResponse",
+}
 PROJECT_CHILD_DOCUMENT_ARRAY_FIELDS = {
     "AnalysisTimingSchema": ("beats", "bars"),
     "ChordResponse": ("source_segments", "timeline"),
@@ -43,13 +49,93 @@ PROJECT_CHILD_DOCUMENT_REFS = {
         "chords": "ChordResponse",
     },
 }
-UNPAGINATED_ROUTE_CONTRACTS = {
-    ("/api/v1/chord-backends", "get"),
-    ("/api/v1/stem-models", "get"),
-    ("/api/v1/projects/{project_id}/sections", "get"),
-    ("/api/v1/projects/{project_id}/artifacts", "get"),
-    *PROJECT_CHILD_DOCUMENT_RESPONSE_CONTRACTS.keys(),
+PAGINATED_RESPONSE_CONTRACTS = {
+    route: schema_name
+    for route, (schema_name, _list_field) in PAGINATED_LIST_RESPONSE_CONTRACTS.items()
 }
+EXPLICIT_UNPAGINATED_RESPONSE_CONTRACTS = {
+    **{
+        route: schema_name
+        for route, (schema_name, _list_field, _required) in LIST_RESPONSE_CONTRACTS.items()
+    },
+    **PROJECT_CHILD_DOCUMENT_RESPONSE_CONTRACTS,
+    **SYNC_DOCUMENT_RESPONSE_CONTRACTS,
+}
+CLASSIFIED_ARRAY_RESPONSE_ROUTE_KEYS = {
+    *PAGINATED_RESPONSE_CONTRACTS,
+    *EXPLICIT_UNPAGINATED_RESPONSE_CONTRACTS,
+}
+UNPAGINATED_ROUTE_CONTRACTS = set(EXPLICIT_UNPAGINATED_RESPONSE_CONTRACTS)
+HTTP_METHODS = {"get", "post", "put", "patch", "delete"}
+RAW_ARRAY_RESPONSE_FIELD = "<response>"
+INLINE_RESPONSE_SCHEMA_NAME = "<inline response>"
+
+
+def _component_schema_name(ref: str) -> str:
+    return ref.rsplit("/", 1)[-1]
+
+
+def _operation_200_json_response_schema(operation: dict[str, Any]) -> dict[str, Any] | None:
+    response_schema = (
+        operation.get("responses", {})
+        .get("200", {})
+        .get("content", {})
+        .get("application/json", {})
+        .get("schema", {})
+    )
+
+    return response_schema or None
+
+
+def _top_level_array_property_names(component_schema: dict[str, Any]) -> tuple[str, ...]:
+    if component_schema.get("type") == "array":
+        return (RAW_ARRAY_RESPONSE_FIELD,)
+
+    properties = component_schema.get("properties", {})
+
+    return tuple(
+        property_name
+        for property_name, property_schema in properties.items()
+        if property_schema.get("type") == "array"
+    )
+
+
+def _response_schema_array_detail(
+    response_schema: dict[str, Any],
+    components: dict[str, Any],
+) -> tuple[str, tuple[str, ...]] | None:
+    if "$ref" in response_schema:
+        schema_name = _component_schema_name(response_schema["$ref"])
+        schema = components[schema_name]
+    else:
+        schema_name = INLINE_RESPONSE_SCHEMA_NAME
+        schema = response_schema
+
+    array_fields = _top_level_array_property_names(schema)
+    if not array_fields:
+        return None
+
+    return (schema_name, array_fields)
+
+
+def _response_components_with_top_level_arrays(
+    openapi: dict[str, Any],
+) -> dict[tuple[str, str], tuple[str, tuple[str, ...]]]:
+    components = openapi["components"]["schemas"]
+    response_components = {}
+
+    for path, path_item in openapi["paths"].items():
+        for method, operation in path_item.items():
+            if method not in HTTP_METHODS:
+                continue
+            response_schema = _operation_200_json_response_schema(operation)
+            if response_schema is None:
+                continue
+            array_detail = _response_schema_array_detail(response_schema, components)
+            if array_detail is not None:
+                response_components[(path, method)] = array_detail
+
+    return response_components
 
 
 def _property_refs(property_schema: dict[str, Any]) -> set[str]:
@@ -65,25 +151,31 @@ def _operation_query_parameter_names(openapi: dict[str, Any], path: str, method:
     return {parameter["name"] for parameter in parameters if parameter["in"] == "query"}
 
 
-def test_list_routes_keep_concrete_openapi_response_refs() -> None:
+def test_classified_routes_keep_concrete_openapi_response_refs() -> None:
     openapi = app.openapi()
 
     response_contracts = {
-        **LIST_RESPONSE_CONTRACTS,
-        **{
-            route: (schema_name, list_field, True)
-            for route, (schema_name, list_field) in PAGINATED_LIST_RESPONSE_CONTRACTS.items()
-        },
-        **{
-            route: (schema_name, "", True)
-            for route, schema_name in PROJECT_CHILD_DOCUMENT_RESPONSE_CONTRACTS.items()
-        },
+        **PAGINATED_RESPONSE_CONTRACTS,
+        **EXPLICIT_UNPAGINATED_RESPONSE_CONTRACTS,
     }
-    for (path, method), (schema_name, _list_field, _field_required) in response_contracts.items():
+    for (path, method), schema_name in response_contracts.items():
         content = openapi["paths"][path][method]["responses"]["200"]["content"]
         response_schema = content["application/json"]["schema"]
 
         assert response_schema == {"$ref": f"#/components/schemas/{schema_name}"}
+
+
+def test_top_level_array_response_components_are_classified_for_pagination() -> None:
+    openapi = app.openapi()
+
+    response_components = _response_components_with_top_level_arrays(openapi)
+    unclassified_response_components = {
+        route: {"schema": schema_name, "array_fields": array_fields}
+        for route, (schema_name, array_fields) in response_components.items()
+        if route not in CLASSIFIED_ARRAY_RESPONSE_ROUTE_KEYS
+    }
+
+    assert unclassified_response_components == {}
 
 
 def test_existing_list_response_components_do_not_add_pagination_metadata() -> None:

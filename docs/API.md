@@ -55,7 +55,7 @@ If a sort key can be `null`, the endpoint must also document where null values a
 ### Pagination Endpoint Audit
 
 This audit captures the current list-like API surface. Individual endpoint sections later in this document
-describe current pagination behavior, pending pagination decisions, or explicit unpaginated exceptions.
+describe current pagination behavior or explicit unpaginated exceptions.
 
 | Endpoint or payload | List field | Pagination decision |
 | --- | --- | --- |
@@ -63,7 +63,7 @@ describe current pagination behavior, pending pagination decisions, or explicit 
 | `GET /api/v1/projects` | `projects` | Paginated growable list. `search` filters the full matching collection before pagination. Default ordering is `updated_at DESC, id DESC`. Desktop Library consumers should lazy-load this list. |
 | `GET /api/v1/projects/{project_id}/artifacts` | `artifacts` | Explicit unpaginated bounded project inventory exception: source audio, generated stems, practice mixes, exports, and cache artifacts. Ordered by `created_at DESC`; no pagination. |
 | `GET /api/v1/projects/{project_id}/sections` | `sections` | Explicit unpaginated project document/song-structure exception. Sections are bounded by the song arrangement and must stay complete for editing and playback. |
-| `GET /api/v1/sync/trusted-peers` | `trusted_peers` | Review as either a paginated user-managed sync collection or an explicit bounded exception. |
+| `GET /api/v1/sync/trusted-peers` | `trusted_peers` | Explicit unpaginated active manual trust-list exception. Active peers only; bounded by user-paired devices and returned complete for sync UI. Deterministic ordering is `display_name` case-insensitive, then `device_id`. |
 | `GET /api/v1/chord-backends` | `backends` | Explicit unpaginated exception: small static capability list, bounded by bundled/local backend implementations. |
 | `GET /api/v1/stem-models` | `models` | Explicit unpaginated exception: small static capability list, bounded by supported local stem models. |
 | `GET /api/v1/sync/metadata` | `projects`, `artifacts`, `delete_tombstones` | Explicit unpaginated sync snapshot exception. The payload is a complete sync inventory used by native sync and reconciliation, not an interactive scroll list. If scale requires chunking, it should be a sync protocol change rather than this generic pagination contract. |

@@ -1,4 +1,4 @@
-import { startTransition, useCallback, useDeferredValue, useEffect, useRef, useState } from "react";
+import { startTransition, useDeferredValue, useState } from "react";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Music2, Upload } from "lucide-react";
@@ -6,6 +6,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { api, getProjectSyncSummary, type ProjectSchema } from "../../lib/api";
 import { formatLocalDateTime, normalizeApiDateTime } from "../../lib/datetime";
 import { usePreferences } from "../../lib/preferences";
+import { useLazyLoadSentinel } from "../../lib/useLazyLoadSentinel";
 import { useChordBackendActionSelection } from "./hooks/useChordBackendActionSelection";
 
 const MAX_IMPORT_SELECTION = 25;
@@ -245,8 +246,6 @@ export function LibraryView() {
   const { chordBackendForAction } = useChordBackendActionSelection();
   const [searchDraft, setSearchDraft] = useState("");
   const [importNotice, setImportNotice] = useState<ImportNotice | null>(null);
-  const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
-  const fetchNextPageInFlightRef = useRef(false);
   const deferredSearch = useDeferredValue(searchDraft.trim());
   const showSubtitle = informationDensity !== "minimal";
 
@@ -386,52 +385,14 @@ export function LibraryView() {
   const showEmptyState = !showInitialLoading && !isProjectsError && !projects.length;
   const showPaginationStatus = showList && !showInitialLoading && !showInitialError;
   const showRefetchError = isRefetchError && !isFetchNextPageError && projects.length > 0;
-
-  const fetchNextProjectPage = useCallback(() => {
-    if (fetchNextPageInFlightRef.current || isFetchingNextPage || !hasNextPage) {
-      return;
-    }
-
-    fetchNextPageInFlightRef.current = true;
-    void fetchNextPage({ cancelRefetch: false }).finally(() => {
-      fetchNextPageInFlightRef.current = false;
+  const { loadNextPage: fetchNextProjectPage, sentinelRef: loadMoreSentinelRef } =
+    useLazyLoadSentinel({
+      enabled: showPaginationStatus && !isFetching && !isProjectsError,
+      fetchNextPage,
+      hasNextPage,
+      isFetchingNextPage,
+      rootMargin: "320px 0px",
     });
-  }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
-
-  useEffect(() => {
-    const sentinel = loadMoreSentinelRef.current;
-    if (
-      !sentinel ||
-      !hasNextPage ||
-      isFetching ||
-      isFetchingNextPage ||
-      isProjectsError ||
-      typeof IntersectionObserver === "undefined"
-    ) {
-      return;
-    }
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const [entry] = entries;
-        if (!entry?.isIntersecting || isFetching || isFetchingNextPage) {
-          return;
-        }
-
-        fetchNextProjectPage();
-      },
-      { rootMargin: "320px 0px" },
-    );
-
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [
-    fetchNextProjectPage,
-    hasNextPage,
-    isFetching,
-    isFetchingNextPage,
-    isProjectsError,
-  ]);
 
   return (
     <section className="screen">

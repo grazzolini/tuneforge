@@ -1,4 +1,4 @@
-import { startTransition, useDeferredValue, useState } from "react";
+import { startTransition, useCallback, useDeferredValue, useEffect, useRef, useState } from "react";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Music2, Upload } from "lucide-react";
@@ -245,6 +245,8 @@ export function LibraryView() {
   const { chordBackendForAction } = useChordBackendActionSelection();
   const [searchDraft, setSearchDraft] = useState("");
   const [importNotice, setImportNotice] = useState<ImportNotice | null>(null);
+  const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
+  const fetchNextPageInFlightRef = useRef(false);
   const deferredSearch = useDeferredValue(searchDraft.trim());
   const showSubtitle = informationDensity !== "minimal";
 
@@ -260,6 +262,17 @@ export function LibraryView() {
     getNextPageParam: (lastPage) =>
       lastPage.has_more ? lastPage.offset + lastPage.projects.length : undefined,
   });
+  const {
+    data: projectsData,
+    fetchNextPage,
+    hasNextPage,
+    isError: isProjectsError,
+    isFetchNextPageError,
+    isFetching,
+    isFetchingNextPage,
+    isLoading: isProjectsLoading,
+    isRefetchError,
+  } = projectsQuery;
 
   const importMutation = useMutation({
     mutationFn: async () => {
@@ -362,11 +375,63 @@ export function LibraryView() {
     },
   });
 
-  const projectPages = projectsQuery.data?.pages ?? [];
+  const projectPages = projectsData?.pages ?? [];
   const projects = projectPages.flatMap((page) => page.projects);
   const loadedProjectCount = projects.length;
   const totalProjectCount = projectPages[0]?.total ?? 0;
   const hasLoadedAllProjects = loadedProjectCount >= totalProjectCount;
+  const showInitialLoading = isProjectsLoading;
+  const showInitialError = isProjectsError && !projects.length;
+  const showList = projects.length > 0;
+  const showEmptyState = !showInitialLoading && !isProjectsError && !projects.length;
+  const showPaginationStatus = showList && !showInitialLoading && !showInitialError;
+  const showRefetchError = isRefetchError && !isFetchNextPageError && projects.length > 0;
+
+  const fetchNextProjectPage = useCallback(() => {
+    if (fetchNextPageInFlightRef.current || isFetchingNextPage || !hasNextPage) {
+      return;
+    }
+
+    fetchNextPageInFlightRef.current = true;
+    void fetchNextPage({ cancelRefetch: false }).finally(() => {
+      fetchNextPageInFlightRef.current = false;
+    });
+  }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
+
+  useEffect(() => {
+    const sentinel = loadMoreSentinelRef.current;
+    if (
+      !sentinel ||
+      !hasNextPage ||
+      isFetching ||
+      isFetchingNextPage ||
+      isProjectsError ||
+      typeof IntersectionObserver === "undefined"
+    ) {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const [entry] = entries;
+        if (!entry?.isIntersecting || isFetching || isFetchingNextPage) {
+          return;
+        }
+
+        fetchNextProjectPage();
+      },
+      { rootMargin: "320px 0px" },
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [
+    fetchNextProjectPage,
+    hasNextPage,
+    isFetching,
+    isFetchingNextPage,
+    isProjectsError,
+  ]);
 
   return (
     <section className="screen">
@@ -443,13 +508,24 @@ export function LibraryView() {
         </div>
       </div>
 
-      {projectsQuery.isLoading ? <div className="panel">Loading projects...</div> : null}
-      {projectsQuery.isError ? (
-        <div className="panel panel--error">Could not load projects.</div>
+      {showInitialLoading ? (
+        <div className="panel" role="status">
+          Loading projects...
+        </div>
+      ) : null}
+      {showInitialError ? (
+        <div className="panel panel--error" role="alert">
+          Could not load projects.
+        </div>
+      ) : null}
+      {showRefetchError ? (
+        <div className="panel panel--error" role="alert">
+          Could not refresh projects. Showing saved results.
+        </div>
       ) : null}
 
       <div className="project-grid project-library-table">
-        {projects.length ? (
+        {showList ? (
           <>
             <div className="project-library-table__header" aria-hidden="true">
               <span />
@@ -459,7 +535,7 @@ export function LibraryView() {
             </div>
             {projects.map((project) => <ProjectCard key={project.id} project={project} />)}
           </>
-        ) : !projectsQuery.isLoading && !projectsQuery.isError ? (
+        ) : showEmptyState ? (
           <div className="panel panel--empty">
             <h2>{deferredSearch ? "No matching projects" : "No projects yet"}</h2>
             <p>
@@ -470,16 +546,42 @@ export function LibraryView() {
           </div>
         ) : null}
       </div>
-      {projectsQuery.hasNextPage ? (
-        <div className="library-load-more">
-          <button
-            className="button button--ghost"
-            disabled={projectsQuery.isFetchingNextPage}
-            onClick={() => projectsQuery.fetchNextPage()}
-            type="button"
-          >
-            {projectsQuery.isFetchingNextPage ? "Loading projects..." : "Load more projects"}
-          </button>
+
+      {showPaginationStatus ? (
+        <div
+          aria-live="polite"
+          className="library-load-more"
+          ref={loadMoreSentinelRef}
+        >
+          {isFetchNextPageError ? (
+            <>
+              <span role="alert">Could not load more projects.</span>
+              <button
+                className="button button--ghost"
+                disabled={isFetchingNextPage}
+                onClick={fetchNextProjectPage}
+                type="button"
+              >
+                Try again
+              </button>
+            </>
+          ) : isFetchingNextPage ? (
+            <span>Loading more projects...</span>
+          ) : hasNextPage ? (
+            <>
+              <span>More projects load as you scroll.</span>
+              <button
+                className="button button--ghost"
+                disabled={isFetchingNextPage}
+                onClick={fetchNextProjectPage}
+                type="button"
+              >
+                Load more projects
+              </button>
+            </>
+          ) : (
+            <span>All projects loaded.</span>
+          )}
         </div>
       ) : null}
     </section>

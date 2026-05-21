@@ -12,6 +12,7 @@ Tuneforge is a local-first desktop app for musicians learning songs: stem separa
 - **Backend**: `apps/backend` — FastAPI + SQLAlchemy 2 + Pydantic v2, Python 3.11, managed with `uv`. SQLite persistence, single-process job runner, audio engines (Demucs, FFmpeg, librosa-style analysis).
 - **Desktop**: `apps/desktop` — Tauri 2 (Rust) shell + React/Vite/TypeScript frontend, Vitest + Testing Library.
 - **Shared types**: `packages/shared-types` — TypeScript types generated from the backend OpenAPI schema. **Always regenerate after backend route/schema changes.**
+- **Documentation**: `docs/` — source of truth for architecture, API, mobile strategy, and references.
 
 ## Hard Rules
 
@@ -31,23 +32,23 @@ These are non-negotiable. If a task seems to require breaking one, stop and ask.
 ```
 apps/
   backend/                FastAPI service
-    app/
-      api/routes/         HTTP handlers (thin)
-      services/           orchestration, persistence, caching
-      engines/            pure compute: analysis, chords, stems, transform
-      models.py           SQLAlchemy ORM
-      schemas.py          Pydantic request/response
-      errors.py           AppError + handlers
-      config.py           env-driven Settings
-    alembic/versions/     migrations (auto-run on startup)
-    tests/                pytest suite
-  desktop/
-    src/                  React frontend (Vitest)
-    src-tauri/            Rust shell (cargo)
+  desktop/                Tauri shell + React frontend
 packages/
   shared-types/           generated TS contracts
+docs/                     architecture/spec/API docs
 scripts/                  packaging helpers
 ```
+
+## Folder-Scoped Agent Guidance
+
+More specific AGENTS.md files exist in:
+
+- `apps/backend/AGENTS.md`
+- `apps/desktop/AGENTS.md`
+- `packages/shared-types/AGENTS.md`
+- `docs/AGENTS.md`
+
+When editing inside those directories, follow the nested file first.
 
 ## Workflow Expectations
 
@@ -56,59 +57,27 @@ When asked to implement a change:
 1. **Read before writing.** Inspect the surrounding files in the relevant layer. Match existing patterns.
 2. **Plan briefly.** For multi-step work, write a short plan or todo list before editing.
 3. **Edit narrowly.** Don't reformat unrelated code, don't add docstrings/comments to code you didn't touch, don't introduce new abstractions for one-time operations.
-4. **Run the gates locally.** From the workspace root:
-   ```sh
-   pnpm lint
-   pnpm typecheck
-   pnpm test
-   ```
-   And for the backend:
-   ```sh
-   cd apps/backend && uv run --python 3.11 pytest
-   ```
+4. **Run the relevant gates locally** for the files you touched. Prefer targeted checks first, then broader gates when cross-cutting changes are made.
 5. **Regenerate contracts if backend HTTP surface changed:**
    ```sh
    pnpm contracts:generate
    ```
-   Commit the resulting `packages/shared-types/src/generated/openapi.ts`. CI fails on drift.
-6. **Verify Tauri compiles** if you touched anything in `apps/desktop/src-tauri/`:
-   ```sh
-   cd apps/desktop/src-tauri && cargo check
-   ```
-7. **Update docs only when behavior changes.** Don't create new markdown files to describe what you did. The PR description is the right place for that.
+   Commit the resulting generated files. CI fails on drift.
+6. **Update docs when behavior or workflow changes.** Keep docs in `docs/` aligned with implementation and avoid adding one-off markdown status notes.
 
-## Code Conventions
+## Cross-Workspace Gates (run from repo root)
 
-### Python (backend)
+```sh
+pnpm lint
+pnpm typecheck
+pnpm test
+```
 
-- Python 3.11. Use `uv run --python 3.11 ...` for everything; do not invoke a globally installed Python.
-- Type hints on all new function signatures. `mypy app` must pass.
-- `ruff check .` must pass. Fix lints, do not silence them.
-- Pydantic v2 syntax (`model_config`, `Field(...)`, `model_validate`).
-- SQLAlchemy 2 declarative + `Mapped[...]` style.
-- Raise `AppError` (see `app/errors.py`) for user-facing failures, not bare `HTTPException`.
-- Never call into engines from routes — go through a service.
-- New env-driven settings go in `app/config.py` and must be documented in [apps/backend/README.md](apps/backend/README.md#configuration).
-- Database schema changes require an Alembic revision in `apps/backend/alembic/versions/` (next sequential prefix, e.g. `0003_*.py`).
+## Code Conventions (Global)
 
-### TypeScript / React (desktop)
-
-- Strict TypeScript. No `any` unless justified in a comment, and only at boundaries.
-- Use the generated types from `@tuneforge/shared-types` — never hand-write a type that mirrors a backend schema.
-- Functional components + hooks. No class components.
-- Co-locate component-specific state and effects; lift only when shared.
-- Existing React Hook exhaustive-deps warnings in `apps/desktop/src/features/projects/playback.tsx` are intentional and pre-existing — don't "fix" them as a drive-by.
-
-### Rust (Tauri shell)
-
-- Keep `apps/desktop/src-tauri/src/main.rs` minimal. The shell exists to launch the bundled backend and host the WebView; business logic stays in the Python backend.
-- Don't add Tauri capabilities without a concrete need. Current capabilities live in `apps/desktop/src-tauri/capabilities/default.json`.
-
-### Tests
-
-- Add tests for new behavior. Backend uses pytest with synthetic audio fixtures (sine waves, chord progressions) — prefer those over committing real audio files.
-- Frontend uses Vitest + Testing Library. Test user-visible behavior, not implementation details.
-- Don't commit copyrighted audio under any circumstances.
+- Use existing formatters/linters; do not introduce ad hoc style changes.
+- Prefer small, reviewable diffs over broad rewrites.
+- Add tests for new behavior; update existing tests when behavior intentionally changes.
 
 ## Generated Artifacts
 
@@ -131,13 +100,11 @@ The following files are generated. **Do not edit by hand.**
 
 ## Commit and PR Hygiene
 
-- **Conventional Commits required.** Format: `<type>(<optional scope>): <subject>`. Allowed types: `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `revert`. Subject is imperative (`add ...`, not `Added`/`Adds`). Header ≤ 100 chars. The `commit-msg` Husky hook and a CI job (`commitlint`) enforce this on every commit and on the PR title.
+- **Conventional Commits required.** Format: `<type>(<optional scope>): <subject>`. Allowed types: `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `revert`. Subject is imperative (`add ...`, not `Added`/`Adds`). Header ≤ 100 chars.
 - Reference issues with `Fixes #123` / `Refs #123` in the body or footer.
-- One concern per commit and per PR. If a refactor and a feature are tangled, split them into separate PRs.
-- **Prefer one commit per PR.** A repository ruleset enforces squash merges and linear history on `main`, so any extra commits in a PR get folded into one at merge time anyway. The PR title becomes the squash commit message, so it must also pass commitlint. Recommended workflow: amend the existing commit and push with `git push --force-with-lease` rather than stacking fix-up commits.
+- One concern per commit and per PR.
+- **Prefer one commit per PR.**
 - Fill in the PR template. Be honest in the test plan — list the commands you actually ran.
-- Mark a PR as draft if any required gate fails locally.
-- Never use `--no-verify` and never `force-push` to `main` or to someone else's branch.
 
 ## When to Stop and Ask
 
@@ -148,25 +115,3 @@ Pause and surface the question to the human instead of guessing when:
 - A migration would be destructive (drop column, drop table, irreversible data shape change).
 - Existing tests would need to be deleted or weakened to make the change pass.
 - The user's request conflicts with anything in this file.
-
-## Quick Reference
-
-```sh
-# Install
-pnpm setup:dev
-
-# Develop
-pnpm dev                  # backend + desktop together
-pnpm dev:backend
-pnpm dev:desktop
-
-# Gate before opening a PR
-pnpm lint
-pnpm typecheck
-pnpm test
-cd apps/backend && uv run --python 3.11 pytest
-cd apps/desktop/src-tauri && cargo check
-
-# After backend HTTP changes
-pnpm contracts:generate
-```

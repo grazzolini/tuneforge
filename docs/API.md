@@ -29,7 +29,7 @@ are applied.
 
 Response fields:
 
-- the existing list field, such as `projects`, `jobs`, or `artifacts`.
+- the existing list field, such as `projects` or `jobs`.
 - `total` - count after search and filters, before pagination.
 - `limit` - the effective limit used for this response.
 - `offset` - the effective offset used for this response.
@@ -61,8 +61,8 @@ describe current pagination behavior, pending pagination decisions, or explicit 
 | --- | --- | --- |
 | `GET /api/v1/jobs` | `jobs` | Paginated growable list with `status` and `project_id` filters. Default ordering is active-first and deterministic. |
 | `GET /api/v1/projects` | `projects` | Paginated growable list. `search` filters the full matching collection before pagination. Default ordering is `updated_at DESC, id DESC`. Desktop Library consumers should lazy-load this list. |
-| `GET /api/v1/projects/{project_id}/artifacts` | `artifacts` | Planned paginated project child list with project-scoped totals and stable newest-first ordering. Desktop project views should lazy-load this list. |
-| `GET /api/v1/projects/{project_id}/sections` | `sections` | Review with project child lists. Paginate if sections are treated as growable; otherwise document the bounded song-structure exception. |
+| `GET /api/v1/projects/{project_id}/artifacts` | `artifacts` | Explicit unpaginated bounded project inventory exception: source audio, generated stems, practice mixes, exports, and cache artifacts. Ordered by `created_at DESC`; no pagination. |
+| `GET /api/v1/projects/{project_id}/sections` | `sections` | Explicit unpaginated project document/song-structure exception. Sections are bounded by the song arrangement and must stay complete for editing and playback. |
 | `GET /api/v1/sync/trusted-peers` | `trusted_peers` | Review as either a paginated user-managed sync collection or an explicit bounded exception. |
 | `GET /api/v1/chord-backends` | `backends` | Explicit unpaginated exception: small static capability list, bounded by bundled/local backend implementations. |
 | `GET /api/v1/stem-models` | `models` | Explicit unpaginated exception: small static capability list, bounded by supported local stem models. |
@@ -71,7 +71,7 @@ describe current pagination behavior, pending pagination decisions, or explicit 
 | `GET /api/v1/sync/projects/{project_id}/manifest` | `entity_revisions`, `artifacts`, `delete_tombstones` | Explicit unpaginated manifest exception. The response is an atomic project export unit. |
 | `POST /api/v1/sync/reconciliation/plan` | `items`, `actions` | Explicit unpaginated planning exception. The response is a complete computed plan for the supplied sync inventory. |
 | `POST /api/v1/sync/reconciliation/apply` | `plan.items`, `plan.actions`, `results`, `timing_evidence` | Explicit unpaginated apply exception. Partial pages would make apply summaries and results incomplete. |
-| Project document payloads, including analysis timing, chords, lyrics, tab imports, and tab apply results | nested content arrays | Explicit unpaginated document exceptions unless a future endpoint exposes them as standalone growable collections. These arrays are part of a single project document or edit result, not top-level list browsing. |
+| Project document payloads, including analysis timing, chords, lyrics, tab imports, and tab apply results | nested content arrays and result arrays | Explicit unpaginated document exceptions unless a future endpoint exposes them as standalone growable collections. These arrays are part of a single project document or edit result, not top-level list browsing. |
 
 Example error response:
 
@@ -517,6 +517,9 @@ Returns the stored analysis result, or `null` if no result exists.
 
 Analysis includes key, key confidence, reference tuning, tuning offset, tempo, analysis version, source artifact, and creation time.
 
+Analysis is an unpaginated project document payload. Its timing data is returned with the analysis document so playback
+and editing consumers do not need lazy-loaded fragments.
+
 ## Chords
 
 ### Generate chords
@@ -540,6 +543,9 @@ Response: `JobResponse`.
 
 Returns source segments, current timeline segments, backend, source artifact, source kind, user-edit state, metadata, and timestamps. If no chord timeline exists, the response contains an empty timeline.
 
+Chord timelines are unpaginated project document payloads. The source and current timelines stay complete so playback
+and editing consumers share one coherent chord document.
+
 ## Lyrics
 
 ### Generate lyrics
@@ -560,6 +566,9 @@ Response: `JobResponse`.
 
 Returns source transcript segments, current edited segments, backend, source artifact, model/device metadata, language, user-edit state, and timestamps. If no lyrics exist, the response contains empty segment lists.
 
+Lyrics segments are unpaginated project document payloads. Source and edited segments stay complete so lyric editing
+and playback highlighting do not depend on lazy-loaded fragments.
+
 ### Update lyrics
 
 `PUT /api/v1/projects/{project_id}/lyrics`
@@ -575,6 +584,19 @@ Each segment currently accepts:
 - `text`
 
 Response: `LyricsResponse`.
+
+## Sections
+
+### List project sections
+
+`GET /api/v1/projects/{project_id}/sections`
+
+Returns the complete song-structure section list for the project.
+
+Sections are an unpaginated project document payload. They are bounded by the arrangement and stay complete so editing,
+playback navigation, and tab-import apply results use one shared song-structure view.
+
+Response: `SongSectionsResponse`.
 
 ## Transforms and Previews
 
@@ -653,7 +675,10 @@ Response: `JobResponse`.
 
 `GET /api/v1/projects/{project_id}/artifacts`
 
-Returns artifacts for a project ordered by newest first.
+Returns the bounded project inventory for source audio, generated stems, practice mixes, exports, and cache artifacts.
+Results are ordered by `created_at DESC`.
+
+Project artifacts are not paginated. They are project-scoped inventory, not a library-level growable browsing list.
 
 Response: `ArtifactsResponse`.
 

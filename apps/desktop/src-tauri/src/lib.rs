@@ -397,7 +397,21 @@ pub fn run() {
             mobile_backend::mobile_submit_export,
             mobile_backend::mobile_list_jobs,
             mobile_backend::mobile_get_job,
-            mobile_backend::mobile_cancel_job
+            mobile_backend::mobile_cancel_job,
+            mobile_backend::mobile_get_sync_identity,
+            mobile_backend::mobile_create_sync_pairing_offer,
+            mobile_backend::mobile_answer_sync_pairing_offer,
+            mobile_backend::mobile_list_sync_trusted_peers,
+            mobile_backend::mobile_trust_sync_peer,
+            mobile_backend::mobile_revoke_sync_trusted_peer,
+            mobile_backend::mobile_get_sync_metadata,
+            mobile_backend::mobile_get_sync_project_manifest,
+            mobile_backend::mobile_update_sync_project_status,
+            mobile_backend::mobile_stage_sync_artifact,
+            mobile_backend::mobile_get_sync_staged_artifact,
+            mobile_backend::mobile_import_sync_project,
+            mobile_backend::mobile_plan_sync_reconciliation,
+            mobile_backend::mobile_apply_sync_reconciliation
         ])
         .build(tauri::generate_context!())
         .expect("error while building tuneforge");

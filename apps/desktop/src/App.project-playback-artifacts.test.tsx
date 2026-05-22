@@ -59,6 +59,8 @@ async function expectProjectTerminalJobsPageRequested(offset: number) {
 }
 
 function terminalJob(index: number, overrides: Record<string, unknown> = {}) {
+  const minute = 59 - (index % 60);
+  const timestamp = `2026-04-18T13:${String(minute).padStart(2, "0")}:00.000Z`;
   return {
     id: `job_terminal_${index}`,
     project_id: "proj_123",
@@ -67,8 +69,9 @@ function terminalJob(index: number, overrides: Record<string, unknown> = {}) {
     progress: 100,
     source_artifact_id: null,
     error_message: null,
-    created_at: `2026-04-18T13:${String(index % 60).padStart(2, "0")}:00.000Z`,
-    updated_at: `2026-04-18T13:${String(index % 60).padStart(2, "0")}:00.000Z`,
+    completed_at: timestamp,
+    created_at: timestamp,
+    updated_at: timestamp,
     ...overrides,
   };
 }

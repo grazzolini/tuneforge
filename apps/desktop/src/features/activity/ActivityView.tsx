@@ -247,13 +247,17 @@ export function ActivityView() {
   const activeJobsQuery = useInfiniteQuery({
     queryKey: activeJobsQueryKey,
     initialPageParam: 0,
-    queryFn: async ({ pageParam }) =>
-      api.listJobs({
+    queryFn: async ({ pageParam }) => {
+      const params = {
         status: [...ACTIVE_JOB_STATUSES],
+        sort_by: "activity" as const,
         ...(deferredSearch ? { search: deferredSearch } : {}),
         limit: ACTIVE_JOBS_LIMIT,
         offset: pageParam,
-      }),
+      };
+
+      return api.listJobs(params);
+    },
     getNextPageParam: (lastPage) =>
       lastPage.has_more ? lastPage.offset + lastPage.jobs.length : undefined,
   });
@@ -269,13 +273,17 @@ export function ActivityView() {
   const terminalJobsQuery = useInfiniteQuery({
     queryKey: terminalJobsQueryKey,
     initialPageParam: 0,
-    queryFn: async ({ pageParam }) =>
-      api.listJobs({
+    queryFn: async ({ pageParam }) => {
+      const params = {
         status: [...TERMINAL_JOB_STATUS_VALUES],
+        sort_by: "activity" as const,
         ...(deferredSearch ? { search: deferredSearch } : {}),
         limit: TERMINAL_JOBS_PAGE_SIZE,
         offset: pageParam,
-      }),
+      };
+
+      return api.listJobs(params);
+    },
     getNextPageParam: (lastPage) =>
       lastPage.has_more ? lastPage.offset + lastPage.jobs.length : undefined,
   });

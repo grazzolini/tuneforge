@@ -47,10 +47,11 @@ Example:
 }
 ```
 
-Paginated endpoints must document their default sort. Sorting must be deterministic across repeated requests:
-timestamp, status, search-rank, or other non-unique sort keys need a stable tie-breaker, normally the entity's
-immutable ID. For example, newest-first pages should sort by `updated_at DESC, id DESC` instead of timestamp alone.
-If a sort key can be `null`, the endpoint must also document where null values appear.
+Paginated endpoints must document their default sort and any supported client-selected sort keys. Sorting must be
+deterministic across repeated requests: timestamp, status, search-rank, or other non-unique sort keys need a stable
+tie-breaker, normally the entity's immutable ID. For example, newest-first pages should sort by
+`updated_at DESC, id DESC` instead of timestamp alone. If a sort key can be `null`, the endpoint must also document
+where null values appear.
 
 ### Pagination Endpoint Audit
 
@@ -59,7 +60,7 @@ describe current pagination behavior or explicit unpaginated exceptions.
 
 | Endpoint or payload | List field | Pagination decision |
 | --- | --- | --- |
-| `GET /api/v1/jobs` | `jobs` | Paginated growable list with `status`, `project_id`, and project-name `search` filters. Default ordering is active-first and deterministic. |
+| `GET /api/v1/jobs` | `jobs` | Paginated growable list with `status`, `project_id`, and project-name `search` filters plus `sort_by`/`sort_order`. Default ordering is active-first and deterministic. |
 | `GET /api/v1/projects` | `projects` | Paginated growable list. `search` filters the full matching collection before pagination. Default ordering is `updated_at DESC, id DESC`. Desktop Library consumers should lazy-load this list. |
 | `GET /api/v1/projects/{project_id}/artifacts` | `artifacts` | Explicit unpaginated bounded project inventory exception: source audio, generated stems, practice mixes, exports, and cache artifacts. Ordered by `created_at DESC`; no pagination. |
 | `GET /api/v1/projects/{project_id}/sections` | `sections` | Explicit unpaginated project document/song-structure exception. Sections are bounded by the song arrangement and must stay complete for editing and playback. |
@@ -725,13 +726,32 @@ Query parameters:
 - `project_id` - optional project ID filter.
 - `search` - optional project display name filter. Search is applied before pagination and composes with
   `status` and `project_id` filters.
+- `sort_by` - optional sort key. Supported values are `activity` (default), `created_at`, `started_at`,
+  `updated_at`, and `status`.
+- `sort_order` - optional `asc` or `desc` direction for non-activity sorts. Omit this when `sort_by` is
+  `activity` or omitted; `sort_order` with activity sorting returns `422 INVALID_REQUEST`.
 
-Default ordering:
+Filters and search are applied before sorting, `total`, and pagination. Pagination is applied after sorting.
+
+Default activity ordering:
 
 - running jobs first, ordered by `started_at` when present, otherwise `created_at`, ascending, then `id` ascending.
 - pending jobs next, ordered by `created_at` ascending, then `id` ascending.
 - terminal jobs (`completed`, `cancelled`, `failed`) next, ordered by `completed_at` when present, otherwise `updated_at`, descending, then `id` descending.
 - unknown statuses last, ordered by `updated_at` descending, then `id` descending.
+
+Timestamp ordering:
+
+- `created_at`, `started_at`, and `updated_at` default to `desc`; use `sort_order=asc` for oldest-first.
+- `null` timestamp values are always last for both `asc` and `desc`.
+- Timestamp ties use `id` ascending as the deterministic tie-breaker.
+
+Status ordering:
+
+- `sort_by=status` defaults to `asc`.
+- `asc` groups jobs as `running`, `pending`, `completed`, `cancelled`, `failed`, then unknown statuses.
+- `desc` reverses those groups.
+- Jobs inside each status group use the same deterministic tie-breakers as activity ordering for that group.
 
 Response: `JobsResponse`.
 

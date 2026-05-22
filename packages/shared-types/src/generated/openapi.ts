@@ -3099,6 +3099,10 @@ export interface operations {
                 project_id?: string | null;
                 /** @description Filter jobs by project display name. */
                 search?: string | null;
+                /** @description Sort jobs by activity, timestamp, or status. */
+                sort_by?: "activity" | "created_at" | "started_at" | "updated_at" | "status";
+                /** @description Sort direction. Not valid with activity sort. */
+                sort_order?: ("asc" | "desc") | null;
                 /** @description Maximum number of items to return. */
                 limit?: number;
                 /** @description Number of items to skip before returning results. */

@@ -113,6 +113,206 @@ def test_list_jobs_orders_active_before_terminal_then_unknown(client: TestClient
     ]
 
 
+@pytest.mark.parametrize(
+    ("sort_by", "field_name"),
+    [
+        ("created_at", "created_at"),
+        ("updated_at", "updated_at"),
+    ],
+)
+def test_list_jobs_sorts_timestamp_fields_descending_by_default(
+    client: TestClient,
+    sort_by: str,
+    field_name: str,
+) -> None:
+    with SessionLocal() as session:
+        _add_job(session, "job_old", "running", **{field_name: _timestamp(1)})
+        _add_job(session, "job_same_a", "pending", **{field_name: _timestamp(10)})
+        _add_job(session, "job_same_b", "completed", **{field_name: _timestamp(10)})
+        _add_job(session, "job_new", "failed", **{field_name: _timestamp(30)})
+        session.commit()
+
+    response = client.get("/api/v1/jobs", params={"sort_by": sort_by})
+
+    assert response.status_code == 200
+    assert [job["id"] for job in response.json()["jobs"]] == [
+        "job_new",
+        "job_same_a",
+        "job_same_b",
+        "job_old",
+    ]
+
+
+def test_list_jobs_sorts_started_at_with_nulls_last_and_stable_tiebreaker(client: TestClient) -> None:
+    with SessionLocal() as session:
+        _add_job(session, "job_unstarted", "pending", created_at=_timestamp(30))
+        _add_job(session, "job_started_a", "running", started_at=_timestamp(10))
+        _add_job(session, "job_started_b", "completed", started_at=_timestamp(10))
+        _add_job(session, "job_started_late", "failed", started_at=_timestamp(20))
+        session.commit()
+
+    descending_response = client.get("/api/v1/jobs", params={"sort_by": "started_at"})
+    ascending_response = client.get(
+        "/api/v1/jobs",
+        params={"sort_by": "started_at", "sort_order": "asc"},
+    )
+
+    assert descending_response.status_code == 200
+    assert [job["id"] for job in descending_response.json()["jobs"]] == [
+        "job_started_late",
+        "job_started_a",
+        "job_started_b",
+        "job_unstarted",
+    ]
+    assert ascending_response.status_code == 200
+    assert [job["id"] for job in ascending_response.json()["jobs"]] == [
+        "job_started_a",
+        "job_started_b",
+        "job_started_late",
+        "job_unstarted",
+    ]
+
+
+def test_list_jobs_sorts_status_groups_ascending_and_descending(client: TestClient) -> None:
+    with SessionLocal() as session:
+        _add_job(session, "job_running", "running", started_at=_timestamp(10))
+        _add_job(session, "job_pending", "pending", created_at=_timestamp(20))
+        _add_job(session, "job_completed", "completed", completed_at=_timestamp(30))
+        _add_job(session, "job_cancelled", "cancelled", completed_at=_timestamp(40))
+        _add_job(session, "job_failed", "failed", completed_at=_timestamp(50))
+        _add_job(session, "job_unknown", "paused", updated_at=_timestamp(60))
+        session.commit()
+
+    ascending_response = client.get("/api/v1/jobs", params={"sort_by": "status"})
+    descending_response = client.get(
+        "/api/v1/jobs",
+        params={"sort_by": "status", "sort_order": "desc"},
+    )
+
+    assert ascending_response.status_code == 200
+    assert [job["id"] for job in ascending_response.json()["jobs"]] == [
+        "job_running",
+        "job_pending",
+        "job_completed",
+        "job_cancelled",
+        "job_failed",
+        "job_unknown",
+    ]
+    assert descending_response.status_code == 200
+    assert [job["id"] for job in descending_response.json()["jobs"]] == [
+        "job_unknown",
+        "job_failed",
+        "job_cancelled",
+        "job_completed",
+        "job_pending",
+        "job_running",
+    ]
+
+
+def test_list_jobs_status_sort_uses_activity_tiebreakers_within_groups(client: TestClient) -> None:
+    with SessionLocal() as session:
+        _add_job(session, "job_pending_b", "pending", created_at=_timestamp(10))
+        _add_job(session, "job_pending_a", "pending", created_at=_timestamp(10))
+        _add_job(session, "job_running_late", "running", started_at=_timestamp(20))
+        _add_job(session, "job_running_early", "running", started_at=_timestamp(5))
+        session.commit()
+
+    response = client.get("/api/v1/jobs", params={"sort_by": "status"})
+
+    assert response.status_code == 200
+    assert [job["id"] for job in response.json()["jobs"]] == [
+        "job_running_early",
+        "job_running_late",
+        "job_pending_a",
+        "job_pending_b",
+    ]
+
+
+def test_list_jobs_sorting_composes_with_filters_search_and_pagination(client: TestClient) -> None:
+    with SessionLocal() as session:
+        _add_project(session, "project_a", display_name="Needle Song")
+        _add_project(session, "project_b", display_name="Needle Song")
+        _add_project(session, "project_c", display_name="Other Song")
+        _add_job(
+            session,
+            "job_match_old",
+            "completed",
+            project_id="project_a",
+            updated_at=_timestamp(10),
+        )
+        _add_job(
+            session,
+            "job_match_middle",
+            "completed",
+            project_id="project_a",
+            updated_at=_timestamp(20),
+        )
+        _add_job(
+            session,
+            "job_match_new",
+            "completed",
+            project_id="project_a",
+            updated_at=_timestamp(30),
+        )
+        _add_job(
+            session,
+            "job_status_excluded",
+            "pending",
+            project_id="project_a",
+            updated_at=_timestamp(40),
+        )
+        _add_job(
+            session,
+            "job_project_excluded",
+            "completed",
+            project_id="project_b",
+            updated_at=_timestamp(50),
+        )
+        _add_job(
+            session,
+            "job_search_excluded",
+            "completed",
+            project_id="project_c",
+            updated_at=_timestamp(60),
+        )
+        session.commit()
+
+    response = client.get(
+        "/api/v1/jobs",
+        params=[
+            ("search", "needle"),
+            ("status", "completed"),
+            ("project_id", "project_a"),
+            ("sort_by", "updated_at"),
+            ("limit", "2"),
+            ("offset", "1"),
+        ],
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [job["id"] for job in payload["jobs"]] == ["job_match_middle", "job_match_old"]
+    assert payload["total"] == 3
+    assert payload["has_more"] is False
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"sort_by": "activity", "sort_order": "asc"},
+        {"sort_order": "desc"},
+    ],
+)
+def test_list_jobs_rejects_sort_order_with_activity_sort(
+    client: TestClient,
+    params: dict[str, str],
+) -> None:
+    response = client.get("/api/v1/jobs", params=params)
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "INVALID_REQUEST"
+
+
 def test_list_jobs_accepts_repeatable_status_filter(client: TestClient) -> None:
     with SessionLocal() as session:
         _add_job(session, "job_pending", "pending", created_at=_timestamp(1))

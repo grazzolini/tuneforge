@@ -5,13 +5,15 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from app.engines.analysis import analyze_track
+import app.engines.analysis as analysis_engine
+from app.engines.analysis import AnalysisTimingPayload, analyze_track
 from app.engines.audio_features import (
     ANALYSIS_HOP_LENGTH,
     ANALYSIS_SAMPLE_RATE,
+    HarmonicFeatures,
     _dynamic_beat_track,
 )
-from app.engines.chords import detect_chord_timeline
+from app.engines.chords import ChordSegment, detect_chord_timeline
 
 SAMPLE_RATE = 44_100
 NOTE_FREQUENCIES = {
@@ -261,6 +263,180 @@ def test_analysis_ignores_weak_offbeat_subdivisions_for_slow_pulses(tmp_path: Pa
     assert 0.85 <= median_beat_interval <= 1.15
 
 
+def test_analysis_infers_downbeat_offset_from_chord_changes_and_accents(monkeypatch):
+    beat_times = 0.25 + np.arange(16, dtype=np.float64) * 0.5
+    features = _synthetic_timing_features(
+        beat_times,
+        accent_indices={1, 5, 9, 13},
+    )
+    chord_timeline = _synthetic_chord_timeline(
+        beat_times,
+        downbeat_offset=1,
+        duration_seconds=features.duration_seconds,
+    )
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_offset_downbeat.wav"))
+
+    timing = analysis["timing"]
+    assert timing is not None
+    assert timing["source"] == "detected"
+    assert [beat["beat_in_bar"] for beat in timing["beats"][:10]] == [
+        4,
+        1,
+        2,
+        3,
+        4,
+        1,
+        2,
+        3,
+        4,
+        1,
+    ]
+    assert [beat["bar_index"] for beat in timing["beats"][:10]] == [
+        0,
+        1,
+        1,
+        1,
+        1,
+        2,
+        2,
+        2,
+        2,
+        3,
+    ]
+    assert timing["bars"][0] == {
+        "index": 0,
+        "start_seconds": timing["beats"][0]["seconds"],
+        "end_seconds": timing["beats"][1]["seconds"],
+    }
+    assert timing["bars"][1] == {
+        "index": 1,
+        "start_seconds": timing["beats"][1]["seconds"],
+        "end_seconds": timing["beats"][5]["seconds"],
+    }
+    assert timing["bars"][2] == {
+        "index": 2,
+        "start_seconds": timing["beats"][5]["seconds"],
+        "end_seconds": timing["beats"][9]["seconds"],
+    }
+    _assert_beats_map_to_bar_spans(timing)
+
+
+def test_analysis_infers_pickup_bar_for_two_beat_downbeat_offset(monkeypatch):
+    beat_times = 0.25 + np.arange(16, dtype=np.float64) * 0.5
+    features = _synthetic_timing_features(
+        beat_times,
+        accent_indices={2, 6, 10, 14},
+    )
+    chord_timeline = _synthetic_chord_timeline(
+        beat_times,
+        downbeat_offset=2,
+        duration_seconds=features.duration_seconds,
+    )
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_two_beat_pickup.wav"))
+
+    timing = analysis["timing"]
+    assert timing is not None
+    assert timing["source"] == "detected"
+    assert [beat["beat_in_bar"] for beat in timing["beats"][:10]] == [
+        3,
+        4,
+        1,
+        2,
+        3,
+        4,
+        1,
+        2,
+        3,
+        4,
+    ]
+    assert [beat["bar_index"] for beat in timing["beats"][:10]] == [
+        0,
+        0,
+        1,
+        1,
+        1,
+        1,
+        2,
+        2,
+        2,
+        2,
+    ]
+    assert timing["bars"][0] == {
+        "index": 0,
+        "start_seconds": timing["beats"][0]["seconds"],
+        "end_seconds": timing["beats"][2]["seconds"],
+    }
+    assert timing["bars"][1] == {
+        "index": 1,
+        "start_seconds": timing["beats"][2]["seconds"],
+        "end_seconds": timing["beats"][6]["seconds"],
+    }
+    _assert_beats_map_to_bar_spans(timing)
+
+
+def test_analysis_keeps_ambiguous_downbeat_alignment(monkeypatch):
+    beat_times = 0.25 + np.arange(12, dtype=np.float64) * 0.5
+    features = _synthetic_timing_features(beat_times, accent_indices=set())
+    chord_timeline = [
+        _synthetic_chord_segment(
+            0.0,
+            features.duration_seconds,
+            label="C",
+            pitch_class=0,
+        )
+    ]
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_ambiguous_downbeat.wav"))
+
+    timing = analysis["timing"]
+    assert timing is not None
+    assert timing["source"] == "detected"
+    assert [beat["beat_in_bar"] for beat in timing["beats"][:8]] == [1, 2, 3, 4, 1, 2, 3, 4]
+    assert [beat["bar_index"] for beat in timing["beats"][:8]] == [0, 0, 0, 0, 1, 1, 1, 1]
+    assert timing["bars"][0] == {
+        "index": 0,
+        "start_seconds": timing["beats"][0]["seconds"],
+        "end_seconds": timing["beats"][4]["seconds"],
+    }
+    _assert_beats_map_to_bar_spans(timing)
+
+
+def test_analysis_timing_payload_keeps_consumer_fields(monkeypatch):
+    beat_times = 0.25 + np.arange(8, dtype=np.float64) * 0.5
+    features = _synthetic_timing_features(beat_times, accent_indices=set())
+    chord_timeline = [
+        _synthetic_chord_segment(
+            0.0,
+            features.duration_seconds,
+            label="C",
+            pitch_class=0,
+        )
+    ]
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_timing_payload.wav"))
+
+    timing = analysis["timing"]
+    assert timing is not None
+    assert set(timing) == {"beats_per_bar", "source", "beats", "bars"}
+    assert timing["beats_per_bar"] == 4
+    assert timing["source"] == "detected"
+    assert timing["beats"]
+    assert timing["bars"]
+    assert set(timing["beats"][0]) == {"index", "seconds", "bar_index", "beat_in_bar"}
+    assert set(timing["bars"][0]) == {"index", "start_seconds", "end_seconds"}
+    assert isinstance(timing["beats"][0]["seconds"], float)
+    assert isinstance(timing["beats"][0]["bar_index"], int)
+    assert isinstance(timing["beats"][0]["beat_in_bar"], int)
+    assert isinstance(timing["bars"][0]["start_seconds"], float)
+    _assert_beats_map_to_bar_spans(timing)
+
+
 def test_analysis_keeps_common_borrowed_chords_in_major_context(tmp_path: Path):
     path = _render_chord_file(
         tmp_path,
@@ -335,6 +511,134 @@ def _mean_nearest_beat_error(beat_seconds: np.ndarray, expected_pulses: np.ndarr
     return float(
         np.mean([np.min(np.abs(beat_seconds - pulse_time)) for pulse_time in expected_pulses])
     )
+
+
+def _assert_beats_map_to_bar_spans(timing: AnalysisTimingPayload) -> None:
+    assert [bar["index"] for bar in timing["bars"]] == list(range(len(timing["bars"])))
+    for beat in timing["beats"]:
+        assert beat["bar_index"] >= 0
+        assert beat["bar_index"] < len(timing["bars"])
+        bar = timing["bars"][beat["bar_index"]]
+        assert bar["index"] == beat["bar_index"]
+        assert bar["start_seconds"] <= beat["seconds"]
+        if beat["bar_index"] == timing["bars"][-1]["index"]:
+            assert beat["seconds"] <= bar["end_seconds"]
+        else:
+            assert beat["seconds"] < bar["end_seconds"]
+
+
+def _patch_synthetic_analysis(
+    monkeypatch,
+    features: HarmonicFeatures,
+    chord_timeline: list[ChordSegment],
+) -> None:
+    monkeypatch.setattr(analysis_engine, "extract_harmonic_features", lambda _path: features)
+    monkeypatch.setattr(
+        analysis_engine,
+        "detect_chords_from_features",
+        lambda _features: chord_timeline,
+    )
+
+
+def _synthetic_timing_features(
+    beat_times: np.ndarray,
+    *,
+    accent_indices: set[int],
+) -> HarmonicFeatures:
+    duration_seconds = float(beat_times[-1] + 0.6)
+    frame_seconds = ANALYSIS_HOP_LENGTH / ANALYSIS_SAMPLE_RATE
+    frame_count = int(np.ceil(duration_seconds / frame_seconds)) + 1
+    times = np.arange(frame_count, dtype=np.float64) * frame_seconds
+    beat_frames = np.asarray(
+        [int(np.argmin(np.abs(times - seconds))) for seconds in beat_times],
+        dtype=np.int64,
+    )
+    rms = np.full(frame_count, 0.12, dtype=np.float32)
+    for index, beat_frame in enumerate(beat_frames.tolist()):
+        start_frame = max(0, beat_frame - 1)
+        end_frame = min(frame_count, beat_frame + 2)
+        rms[start_frame:end_frame] = 0.85 if index in accent_indices else 0.28
+
+    timeline = np.linspace(
+        0.0,
+        duration_seconds,
+        int(ANALYSIS_SAMPLE_RATE * duration_seconds),
+        endpoint=False,
+    )
+    accent_times = (
+        beat_times[sorted(accent_indices)] if accent_indices else np.zeros(0, dtype=np.float64)
+    )
+    percussive_signal = (
+        _pulse_train_at_times(timeline, beat_times, amplitude=0.18)
+        + _pulse_train_at_times(timeline, accent_times, amplitude=0.48)
+    ).astype(np.float32)
+    chroma = np.zeros((12, frame_count), dtype=np.float32)
+
+    return HarmonicFeatures(
+        signal=percussive_signal,
+        harmonic_signal=np.zeros_like(percussive_signal),
+        percussive_signal=percussive_signal,
+        sample_rate=ANALYSIS_SAMPLE_RATE,
+        hop_length=ANALYSIS_HOP_LENGTH,
+        duration_seconds=duration_seconds,
+        chroma_cqt=chroma,
+        chroma_cens=chroma,
+        rms=rms,
+        times=times,
+        active_frame_mask=np.ones(frame_count, dtype=bool),
+        beat_frames=beat_frames,
+        tempo_bpm=120.0,
+        estimated_reference_hz=None,
+        tuning_offset_cents=None,
+        tuning_bins=None,
+    )
+
+
+def _synthetic_chord_timeline(
+    beat_times: np.ndarray,
+    *,
+    downbeat_offset: int,
+    duration_seconds: float,
+) -> list[ChordSegment]:
+    downbeat_times = beat_times[downbeat_offset::4]
+    boundaries = [0.0, *downbeat_times.tolist(), duration_seconds]
+    chords = [
+        ("G", 7),
+        ("C", 0),
+        ("F", 5),
+        ("G", 7),
+        ("C", 0),
+        ("F", 5),
+    ]
+    return [
+        _synthetic_chord_segment(
+            float(start_seconds),
+            float(end_seconds),
+            label=chords[index % len(chords)][0],
+            pitch_class=chords[index % len(chords)][1],
+        )
+        for index, (start_seconds, end_seconds) in enumerate(
+            zip(boundaries[:-1], boundaries[1:], strict=True)
+        )
+        if end_seconds > start_seconds
+    ]
+
+
+def _synthetic_chord_segment(
+    start_seconds: float,
+    end_seconds: float,
+    *,
+    label: str,
+    pitch_class: int,
+) -> ChordSegment:
+    return {
+        "start_seconds": round(start_seconds, 6),
+        "end_seconds": round(end_seconds, 6),
+        "label": label,
+        "confidence": 0.95,
+        "pitch_class": pitch_class,
+        "quality": "major",
+    }
 
 
 def _render_chord_file(

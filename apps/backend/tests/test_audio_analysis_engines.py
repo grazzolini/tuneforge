@@ -6,6 +6,11 @@ import numpy as np
 import soundfile as sf
 
 from app.engines.analysis import analyze_track
+from app.engines.audio_features import (
+    ANALYSIS_HOP_LENGTH,
+    ANALYSIS_SAMPLE_RATE,
+    _dynamic_beat_track,
+)
 from app.engines.chords import detect_chord_timeline
 
 SAMPLE_RATE = 44_100
@@ -185,6 +190,77 @@ def test_analysis_uses_harmonic_features_for_key_tuning_and_tempo(tmp_path: Path
     assert rhythmic["timing"]["beats"][0]["beat_in_bar"] == 1
 
 
+def test_analysis_tracks_accelerating_pulses_closer_than_static_tempo(tmp_path: Path):
+    path, expected_pulses = _render_dynamic_pulse_file(
+        tmp_path,
+        start_bpm=80.0,
+        end_bpm=150.0,
+    )
+
+    _assert_dynamic_timing_closer_than_static(path, expected_pulses)
+
+
+def test_analysis_tracks_decelerating_pulses_closer_than_static_tempo(tmp_path: Path):
+    path, expected_pulses = _render_dynamic_pulse_file(
+        tmp_path,
+        start_bpm=150.0,
+        end_bpm=80.0,
+    )
+
+    _assert_dynamic_timing_closer_than_static(path, expected_pulses)
+
+
+def test_dynamic_beat_tracking_keeps_slow_constant_pulses_single_time():
+    duration_seconds = 10.0
+    timeline = np.linspace(
+        0,
+        duration_seconds,
+        int(ANALYSIS_SAMPLE_RATE * duration_seconds),
+        endpoint=False,
+    )
+    pulse_times = np.arange(0.0, duration_seconds, 1.0, dtype=np.float64)
+    signal = _pulse_train_at_times(timeline, pulse_times, amplitude=0.8).astype(np.float32)
+
+    _tempo_raw, beat_frames = _dynamic_beat_track(signal)
+
+    assert beat_frames.size >= 6
+    beat_seconds = beat_frames.astype(np.float64) * (ANALYSIS_HOP_LENGTH / ANALYSIS_SAMPLE_RATE)
+    median_beat_interval = float(np.median(np.diff(beat_seconds)))
+    assert 0.85 <= median_beat_interval <= 1.15
+
+
+def test_analysis_ignores_weak_offbeat_subdivisions_for_slow_pulses(tmp_path: Path):
+    duration_seconds = 10.0
+    timeline = np.linspace(
+        0,
+        duration_seconds,
+        int(ANALYSIS_SAMPLE_RATE * duration_seconds),
+        endpoint=False,
+    )
+    main_pulses = np.arange(0.0, duration_seconds, 1.0, dtype=np.float64)
+    offbeat_pulses = main_pulses + 0.5
+    offbeat_pulses = offbeat_pulses[offbeat_pulses < duration_seconds]
+    signal = (
+        _pulse_train_at_times(timeline, main_pulses, amplitude=0.8)
+        + _pulse_train_at_times(timeline, offbeat_pulses, amplitude=0.03)
+    ).astype(np.float32)
+
+    output_path = tmp_path / "slow_pulses_with_weak_offbeats.wav"
+    sf.write(output_path, signal, ANALYSIS_SAMPLE_RATE)
+
+    analysis = analyze_track(output_path)
+
+    assert analysis["timing"] is not None
+    assert analysis["timing"]["source"] == "detected"
+    beat_seconds = np.asarray(
+        [beat["seconds"] for beat in analysis["timing"]["beats"]],
+        dtype=np.float64,
+    )
+    assert beat_seconds.size >= 6
+    median_beat_interval = float(np.median(np.diff(beat_seconds)))
+    assert 0.85 <= median_beat_interval <= 1.15
+
+
 def test_analysis_keeps_common_borrowed_chords_in_major_context(tmp_path: Path):
     path = _render_chord_file(
         tmp_path,
@@ -207,6 +283,58 @@ def test_analysis_keeps_common_borrowed_chords_in_major_context(tmp_path: Path):
 
 def _labels(path: Path) -> list[str]:
     return [segment["label"] for segment in detect_chord_timeline(path) if segment["label"] != "N.C."]
+
+
+def _assert_dynamic_timing_closer_than_static(path: Path, expected_pulses: np.ndarray) -> None:
+    analysis = analyze_track(path)
+    assert analysis["tempo_bpm"] is not None
+    assert analysis["tempo_bpm"] > 0.0
+    assert analysis["timing"] is not None
+    assert analysis["timing"]["source"] in {"detected", "tempo_fallback"}
+
+    beat_seconds = np.asarray(
+        [beat["seconds"] for beat in analysis["timing"]["beats"]],
+        dtype=np.float64,
+    )
+    assert beat_seconds.size >= 8
+    assert np.all(np.diff(beat_seconds) > 0.0)
+
+    comparison_pulses = expected_pulses[
+        (expected_pulses >= beat_seconds[0] - 0.12)
+        & (expected_pulses <= beat_seconds[-1] + 0.12)
+    ]
+    assert comparison_pulses.size >= 8
+
+    static_beats = _static_tempo_grid(
+        tempo_bpm=analysis["tempo_bpm"],
+        duration_seconds=float(expected_pulses[-1]),
+        start_seconds=float(beat_seconds[0]),
+    )
+    observed_error = _mean_nearest_beat_error(beat_seconds, comparison_pulses)
+    static_error = _mean_nearest_beat_error(static_beats, comparison_pulses)
+
+    assert observed_error + 0.02 < static_error
+
+
+def _static_tempo_grid(
+    *,
+    tempo_bpm: float,
+    duration_seconds: float,
+    start_seconds: float,
+) -> np.ndarray:
+    beat_interval = 60.0 / tempo_bpm
+    return np.arange(
+        start_seconds,
+        duration_seconds + beat_interval * 0.5,
+        beat_interval,
+        dtype=np.float64,
+    )
+
+
+def _mean_nearest_beat_error(beat_seconds: np.ndarray, expected_pulses: np.ndarray) -> float:
+    return float(
+        np.mean([np.min(np.abs(beat_seconds - pulse_time)) for pulse_time in expected_pulses])
+    )
 
 
 def _render_chord_file(
@@ -257,6 +385,57 @@ def _render_chord_file(
     return output_path
 
 
+def _render_dynamic_pulse_file(
+    tmp_path: Path,
+    *,
+    start_bpm: float,
+    end_bpm: float,
+    duration_seconds: float = 10.0,
+) -> tuple[Path, np.ndarray]:
+    timeline = np.linspace(
+        0,
+        duration_seconds,
+        int(SAMPLE_RATE * duration_seconds),
+        endpoint=False,
+    )
+    expected_pulses = _dynamic_pulse_times(
+        start_bpm=start_bpm,
+        end_bpm=end_bpm,
+        duration_seconds=duration_seconds,
+    )
+
+    signal = np.zeros_like(timeline)
+    for note in ("C", "E", "G"):
+        frequency = NOTE_FREQUENCIES[note]
+        signal += 0.035 * np.sin(2 * np.pi * frequency * timeline)
+        signal += 0.012 * np.sin(2 * np.pi * frequency * 2.0 * timeline)
+    signal += _pulse_train_at_times(timeline, expected_pulses, amplitude=0.5)
+
+    peak = float(np.max(np.abs(signal)))
+    if peak > 0.0:
+        signal = 0.85 * signal / peak
+
+    output_path = tmp_path / f"dynamic_tempo_{int(start_bpm)}_{int(end_bpm)}.wav"
+    sf.write(output_path, signal.astype(np.float32), SAMPLE_RATE)
+    return output_path, expected_pulses
+
+
+def _dynamic_pulse_times(
+    *,
+    start_bpm: float,
+    end_bpm: float,
+    duration_seconds: float,
+) -> np.ndarray:
+    pulse_times: list[float] = []
+    current_seconds = 0.0
+    while current_seconds <= duration_seconds:
+        pulse_times.append(current_seconds)
+        progress = min(1.0, current_seconds / duration_seconds)
+        bpm = start_bpm + (end_bpm - start_bpm) * progress
+        current_seconds += 60.0 / bpm
+    return np.asarray(pulse_times, dtype=np.float64)
+
+
 def _root_note(label: str, notes: list[str]) -> str:
     for note in NOTE_FREQUENCIES:
         if label.startswith(note):
@@ -270,4 +449,17 @@ def _pulse_train(timeline: np.ndarray, bpm: float) -> np.ndarray:
     for start in np.arange(0.0, float(timeline[-1]) + interval, interval):
         distance = np.abs(timeline - start)
         pulse += 0.18 * np.exp(-((distance / 0.012) ** 2))
+    return pulse
+
+
+def _pulse_train_at_times(
+    timeline: np.ndarray,
+    pulse_times: np.ndarray,
+    *,
+    amplitude: float = 0.18,
+) -> np.ndarray:
+    pulse = np.zeros_like(timeline)
+    for start in pulse_times:
+        distance = np.abs(timeline - start)
+        pulse += amplitude * np.exp(-((distance / 0.012) ** 2))
     return pulse

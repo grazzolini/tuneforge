@@ -10,6 +10,10 @@ import soundfile as sf
 
 ANALYSIS_SAMPLE_RATE = 22_050
 ANALYSIS_HOP_LENGTH = 512
+MIN_DETECTED_BEATS = 4
+WEAK_DETECTED_BEATS = 8
+MIN_BEAT_INTERVAL_SECONDS = 0.25
+MAX_BEAT_INTERVAL_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -230,20 +234,37 @@ def _estimate_tempo_and_beats(
 ) -> tuple[float | None, np.ndarray]:
     if fallback_signal.size < ANALYSIS_SAMPLE_RATE:
         return None, np.zeros(0, dtype=np.int64)
-    tempo_raw, beat_frames = _beat_track(
-        percussive_signal
-        if float(np.max(np.abs(percussive_signal), initial=0.0)) > 1e-5
-        else fallback_signal
+
+    primary_signal = percussive_signal if _has_analysis_energy(percussive_signal) else fallback_signal
+
+    static_tempo_raw, static_beat_frames = _beat_track(primary_signal)
+    if _beat_track_is_weak(static_beat_frames) and primary_signal is not fallback_signal:
+        static_tempo_raw, static_beat_frames = _beat_track(fallback_signal)
+
+    dynamic_tempo_raw, dynamic_beat_frames = _dynamic_beat_track(primary_signal)
+    if _beat_track_is_weak(dynamic_beat_frames) and primary_signal is not fallback_signal:
+        fallback_dynamic_tempo_raw, fallback_dynamic_beat_frames = _dynamic_beat_track(fallback_signal)
+        if _beat_track_quality(fallback_dynamic_beat_frames) >= _beat_track_quality(dynamic_beat_frames):
+            dynamic_tempo_raw = fallback_dynamic_tempo_raw
+            dynamic_beat_frames = fallback_dynamic_beat_frames
+
+    tempo_raw, beat_frames = _select_beat_track(
+        static_tempo_raw,
+        static_beat_frames,
+        dynamic_tempo_raw,
+        dynamic_beat_frames,
     )
-    if beat_frames.size < 8 and percussive_signal is not fallback_signal:
-        tempo_raw, beat_frames = _beat_track(fallback_signal)
 
     tempo = _tempo_value(tempo_raw)
-    if beat_frames.size < 8 or tempo is None:
+    if _beat_track_is_weak(beat_frames) or tempo is None:
         tempo_bpm = _onset_tempo(fallback_signal)
     else:
         tempo_bpm = round(_normalize_tempo(tempo), 2)
     return tempo_bpm, np.asarray(beat_frames, dtype=np.int64)
+
+
+def _has_analysis_energy(signal: np.ndarray) -> bool:
+    return signal.size >= ANALYSIS_SAMPLE_RATE and float(np.max(np.abs(signal), initial=0.0)) > 1e-5
 
 
 def _beat_track(signal: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -260,7 +281,210 @@ def _beat_track(signal: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
             )
         except Exception:
             return np.zeros(1, dtype=np.float64), np.zeros(0, dtype=np.int64)
-    return np.asarray(tempo_raw, dtype=np.float64), np.asarray(beat_frames, dtype=np.int64)
+    return np.asarray(tempo_raw, dtype=np.float64), _clean_beat_frames(beat_frames)
+
+
+def _dynamic_beat_track(signal: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    if signal.size < ANALYSIS_SAMPLE_RATE:
+        return np.zeros(1, dtype=np.float64), np.zeros(0, dtype=np.int64)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=FutureWarning)
+        warnings.filterwarnings("ignore", category=UserWarning)
+        try:
+            onset_envelope = librosa.onset.onset_strength(
+                y=signal,
+                sr=ANALYSIS_SAMPLE_RATE,
+                hop_length=ANALYSIS_HOP_LENGTH,
+            )
+            if not _has_onset_energy(onset_envelope, minimum_count=MIN_DETECTED_BEATS):
+                return np.zeros(1, dtype=np.float64), np.zeros(0, dtype=np.int64)
+            tempo_dynamic = librosa.feature.tempo(
+                onset_envelope=onset_envelope,
+                sr=ANALYSIS_SAMPLE_RATE,
+                hop_length=ANALYSIS_HOP_LENGTH,
+                aggregate=None,
+                std_bpm=4.0,
+            )
+            tempo_dynamic = _sanitize_dynamic_tempo(tempo_dynamic, onset_envelope.size)
+            if tempo_dynamic.size == 0:
+                return np.zeros(1, dtype=np.float64), np.zeros(0, dtype=np.int64)
+            tempo_raw, beat_frames = librosa.beat.beat_track(
+                onset_envelope=onset_envelope,
+                sr=ANALYSIS_SAMPLE_RATE,
+                hop_length=ANALYSIS_HOP_LENGTH,
+                bpm=tempo_dynamic,
+                trim=False,
+            )
+            beat_frames = _fill_skipped_onset_beats(beat_frames, onset_envelope)
+        except Exception:
+            return np.zeros(1, dtype=np.float64), np.zeros(0, dtype=np.int64)
+
+    tempo_values = np.asarray(tempo_raw, dtype=np.float64).reshape(-1)
+    if tempo_values.size == 0:
+        tempo_values = tempo_dynamic
+    return tempo_values, _clean_beat_frames(beat_frames)
+
+
+def _sanitize_dynamic_tempo(tempo_raw: np.ndarray, frame_count: int) -> np.ndarray:
+    tempo_values = np.asarray(tempo_raw, dtype=np.float64).reshape(-1)
+    if tempo_values.size == 0:
+        return np.zeros(0, dtype=np.float64)
+    valid = np.isfinite(tempo_values) & (tempo_values > 0.0)
+    if not bool(valid.any()):
+        return np.zeros(0, dtype=np.float64)
+    fill_value = float(np.median(tempo_values[valid]))
+    tempo_values = np.where(valid, tempo_values, fill_value).astype(np.float64)
+    if tempo_values.size == frame_count:
+        return tempo_values.astype(np.float64)
+    return _match_frame_count(tempo_values.astype(np.float32), frame_count).astype(np.float64)
+
+
+def _select_beat_track(
+    static_tempo_raw: np.ndarray,
+    static_beat_frames: np.ndarray,
+    dynamic_tempo_raw: np.ndarray,
+    dynamic_beat_frames: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    dynamic_quality = _beat_track_quality(dynamic_beat_frames)
+    if dynamic_quality <= 0.0:
+        return static_tempo_raw, static_beat_frames
+
+    static_quality = _beat_track_quality(static_beat_frames)
+    if static_quality <= 0.0:
+        return dynamic_tempo_raw, dynamic_beat_frames
+
+    if (
+        static_beat_frames.size >= WEAK_DETECTED_BEATS
+        and dynamic_beat_frames.size < max(MIN_DETECTED_BEATS, int(static_beat_frames.size * 0.75))
+    ):
+        return static_tempo_raw, static_beat_frames
+
+    static_interval_cv = _beat_interval_cv(static_beat_frames)
+    dynamic_interval_cv = _beat_interval_cv(dynamic_beat_frames)
+    if dynamic_interval_cv > static_interval_cv + 0.25 and dynamic_beat_frames.size <= static_beat_frames.size:
+        return static_tempo_raw, static_beat_frames
+
+    if dynamic_quality + 0.05 < static_quality:
+        return static_tempo_raw, static_beat_frames
+    return dynamic_tempo_raw, dynamic_beat_frames
+
+
+def _beat_track_is_weak(beat_frames: np.ndarray) -> bool:
+    return beat_frames.size < WEAK_DETECTED_BEATS or _beat_track_quality(beat_frames) <= 0.0
+
+
+def _beat_track_quality(beat_frames: np.ndarray) -> float:
+    cleaned_frames = _clean_beat_frames(beat_frames)
+    if cleaned_frames.size < MIN_DETECTED_BEATS:
+        return 0.0
+
+    intervals = _beat_intervals_seconds(cleaned_frames)
+    if intervals.size == 0:
+        return 0.0
+    plausible = (intervals >= MIN_BEAT_INTERVAL_SECONDS) & (intervals <= MAX_BEAT_INTERVAL_SECONDS)
+    plausible_ratio = float(np.count_nonzero(plausible) / intervals.size)
+    if plausible_ratio < 0.75:
+        return 0.0
+
+    count_score = min(float(cleaned_frames.size) / WEAK_DETECTED_BEATS, 2.0)
+    stability_score = max(0.0, 1.0 - min(_beat_interval_cv(cleaned_frames), 1.0) * 0.35)
+    return count_score * plausible_ratio * stability_score
+
+
+def _fill_skipped_onset_beats(beat_frames: np.ndarray, onset_envelope: np.ndarray) -> np.ndarray:
+    cleaned_frames = _clean_beat_frames(beat_frames)
+    if cleaned_frames.size < 2 or onset_envelope.size == 0:
+        return cleaned_frames
+
+    peak = float(np.max(onset_envelope, initial=0.0))
+    if peak <= 0.0:
+        return cleaned_frames
+    insertion_threshold = _onset_insertion_threshold(onset_envelope, peak)
+
+    added_frames: list[int] = []
+    for previous_frame, next_frame in zip(cleaned_frames[:-1], cleaned_frames[1:], strict=True):
+        interval = int(next_frame - previous_frame)
+        if interval * (ANALYSIS_HOP_LENGTH / ANALYSIS_SAMPLE_RATE) < 0.7:
+            continue
+
+        midpoint = int(previous_frame + interval // 2)
+        search_radius = max(1, int(round(interval * 0.15)))
+        candidate_frame, candidate_strength = _strongest_onset_near(
+            onset_envelope,
+            midpoint,
+            search_radius,
+        )
+        previous_strength = _onset_strength_near(onset_envelope, int(previous_frame), search_radius)
+        next_strength = _onset_strength_near(onset_envelope, int(next_frame), search_radius)
+        reference_strength = max(previous_strength, next_strength, peak)
+        if candidate_strength >= max(reference_strength * 0.1, insertion_threshold):
+            added_frames.append(candidate_frame)
+
+    if not added_frames:
+        return cleaned_frames
+    return _clean_beat_frames(np.concatenate([cleaned_frames, np.asarray(added_frames, dtype=np.int64)]))
+
+
+def _onset_insertion_threshold(onset_envelope: np.ndarray, peak: float) -> float:
+    active_onsets = onset_envelope[np.isfinite(onset_envelope) & (onset_envelope > 0.0)]
+    if active_onsets.size == 0:
+        return peak
+    return max(peak * 0.1, float(np.percentile(active_onsets, 75.0)) * 1.5)
+
+
+def _strongest_onset_near(
+    onset_envelope: np.ndarray,
+    frame: int,
+    radius: int,
+) -> tuple[int, float]:
+    start = max(0, frame - radius)
+    end = min(onset_envelope.size, frame + radius + 1)
+    if start >= end:
+        return frame, 0.0
+    local = onset_envelope[start:end]
+    local_index = int(np.argmax(local))
+    candidate_frame = start + local_index
+    return candidate_frame, float(local[local_index])
+
+
+def _onset_strength_near(onset_envelope: np.ndarray, frame: int, radius: int) -> float:
+    return _strongest_onset_near(onset_envelope, frame, radius)[1]
+
+
+def _beat_interval_cv(beat_frames: np.ndarray) -> float:
+    intervals = _beat_intervals_seconds(beat_frames)
+    if intervals.size == 0:
+        return 1.0
+    median_interval = float(np.median(intervals))
+    if median_interval <= 0.0:
+        return 1.0
+    return float(np.median(np.abs(intervals - median_interval)) / median_interval)
+
+
+def _beat_intervals_seconds(beat_frames: np.ndarray) -> np.ndarray:
+    cleaned_frames = _clean_beat_frames(beat_frames)
+    if cleaned_frames.size < 2:
+        return np.zeros(0, dtype=np.float64)
+    intervals = np.diff(cleaned_frames).astype(np.float64) * (ANALYSIS_HOP_LENGTH / ANALYSIS_SAMPLE_RATE)
+    return intervals[np.isfinite(intervals)]
+
+
+def _clean_beat_frames(beat_frames: np.ndarray) -> np.ndarray:
+    frames = np.asarray(beat_frames)
+    if frames.size == 0:
+        return np.zeros(0, dtype=np.int64)
+    finite_frames = frames[np.isfinite(frames)]
+    if finite_frames.size == 0:
+        return np.zeros(0, dtype=np.int64)
+    nonnegative_frames = finite_frames[finite_frames >= 0]
+    if nonnegative_frames.size == 0:
+        return np.zeros(0, dtype=np.int64)
+    return np.unique(nonnegative_frames.astype(np.int64))
+
+
+def _has_onset_energy(onset_envelope: np.ndarray, *, minimum_count: int) -> bool:
+    peak = float(np.max(onset_envelope, initial=0.0))
+    return peak > 0.0 and int(np.count_nonzero(onset_envelope > peak * 0.3)) >= minimum_count
 
 
 def _onset_tempo(signal: np.ndarray) -> float | None:
@@ -273,8 +497,7 @@ def _onset_tempo(signal: np.ndarray) -> float | None:
                 sr=ANALYSIS_SAMPLE_RATE,
                 hop_length=ANALYSIS_HOP_LENGTH,
             )
-            peak = float(np.max(onset_envelope, initial=0.0))
-            if peak <= 0.0 or int(np.count_nonzero(onset_envelope > peak * 0.3)) < 12:
+            if not _has_onset_energy(onset_envelope, minimum_count=12):
                 return None
             tempo_raw = librosa.feature.tempo(
                 onset_envelope=onset_envelope,
@@ -290,7 +513,9 @@ def _onset_tempo(signal: np.ndarray) -> float | None:
 
 
 def _tempo_value(tempo_raw: float | np.ndarray) -> float | None:
-    tempo = float(np.asarray(tempo_raw).reshape(-1)[0]) if np.asarray(tempo_raw).size else 0.0
+    tempo_values = np.asarray(tempo_raw, dtype=np.float64).reshape(-1)
+    tempo_values = tempo_values[np.isfinite(tempo_values) & (tempo_values > 0.0)]
+    tempo = float(np.median(tempo_values)) if tempo_values.size else 0.0
     if not np.isfinite(tempo) or tempo <= 0.0:
         return None
     return tempo

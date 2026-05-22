@@ -437,6 +437,8 @@ def _validate_export_sync_metadata_path(path: Path, relative_path: Path) -> None
     if parts[0] == ".stfolder":
         if len(parts) == 1 and (path.is_dir() or path.is_file()):
             return
+        if len(parts) == 2 and path.is_file():
+            return
     raise _unsafe_export_root(
         "Existing sync bundle Syncthing metadata entry is invalid.",
         path=path,

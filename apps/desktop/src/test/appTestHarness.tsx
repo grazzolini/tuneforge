@@ -19,6 +19,14 @@ import type {
 const DEFAULT_PROJECTS_LIMIT = 50;
 const DEFAULT_JOBS_LIMIT = 50;
 
+type MockListJobsParams = ListJobsParams & {
+  sort_by?: string | null;
+  sort_order?: string | null;
+};
+type JobSortOrder = "asc" | "desc";
+type TimestampJobSortField = "created_at" | "started_at" | "updated_at";
+type MockJobSortBy = "activity" | "status" | TimestampJobSortField;
+
 const {
   resetMockApiState,
   setProjects,
@@ -430,6 +438,181 @@ const {
 
   function setJobs(jobs: Array<Record<string, unknown>>) {
     state.jobs = jobs.map((job, index) => normalizeMockJob(job, index));
+  }
+
+  function jobStringValue(job: Record<string, unknown>, field: string) {
+    const value = job[field];
+    return typeof value === "string" && value ? value : null;
+  }
+
+  function jobTimestampMs(job: Record<string, unknown>, field: string) {
+    const value = jobStringValue(job, field);
+    if (!value) return null;
+
+    const timestamp = Date.parse(value);
+    return Number.isNaN(timestamp) ? null : timestamp;
+  }
+
+  function firstJobTimestampMs(job: Record<string, unknown>, fields: string[]) {
+    for (const field of fields) {
+      const timestamp = jobTimestampMs(job, field);
+      if (timestamp !== null) {
+        return timestamp;
+      }
+    }
+
+    return null;
+  }
+
+  function compareJobIds(left: Record<string, unknown>, right: Record<string, unknown>) {
+    return (jobStringValue(left, "id") ?? "").localeCompare(jobStringValue(right, "id") ?? "");
+  }
+
+  function compareJobIdsDescending(left: Record<string, unknown>, right: Record<string, unknown>) {
+    return compareJobIds(right, left);
+  }
+
+  function compareTimestampMs(
+    leftTimestamp: number | null,
+    rightTimestamp: number | null,
+    sortOrder: JobSortOrder,
+  ) {
+    if (leftTimestamp === null && rightTimestamp === null) return 0;
+    if (leftTimestamp === null) return 1;
+    if (rightTimestamp === null) return -1;
+    if (leftTimestamp === rightTimestamp) return 0;
+
+    return sortOrder === "asc" ? leftTimestamp - rightTimestamp : rightTimestamp - leftTimestamp;
+  }
+
+  function compareJobTimestampField(
+    left: Record<string, unknown>,
+    right: Record<string, unknown>,
+    field: TimestampJobSortField,
+    sortOrder: JobSortOrder,
+  ) {
+    const timestampComparison = compareTimestampMs(
+      jobTimestampMs(left, field),
+      jobTimestampMs(right, field),
+      sortOrder,
+    );
+    return timestampComparison || compareJobIds(left, right);
+  }
+
+  function mockJobStatus(job: Record<string, unknown>) {
+    return jobStringValue(job, "status") ?? "unknown";
+  }
+
+  function mockActivitySortGroup(job: Record<string, unknown>) {
+    const status = mockJobStatus(job);
+    if (status === "running") return 0;
+    if (status === "pending") return 1;
+    if (isTerminalJobStatus(status)) return 2;
+    return 3;
+  }
+
+  function compareActivityJobs(left: Record<string, unknown>, right: Record<string, unknown>) {
+    const leftGroup = mockActivitySortGroup(left);
+    const rightGroup = mockActivitySortGroup(right);
+
+    if (leftGroup !== rightGroup) {
+      return leftGroup - rightGroup;
+    }
+
+    if (leftGroup === 0) {
+      const timestampComparison = compareTimestampMs(
+        firstJobTimestampMs(left, ["started_at", "created_at"]),
+        firstJobTimestampMs(right, ["started_at", "created_at"]),
+        "asc",
+      );
+      return timestampComparison || compareJobIds(left, right);
+    }
+
+    if (leftGroup === 1) {
+      return compareJobTimestampField(left, right, "created_at", "asc");
+    }
+
+    if (leftGroup === 2) {
+      const timestampComparison = compareTimestampMs(
+        firstJobTimestampMs(left, ["completed_at", "updated_at"]),
+        firstJobTimestampMs(right, ["completed_at", "updated_at"]),
+        "desc",
+      );
+      return timestampComparison || compareJobIdsDescending(left, right);
+    }
+
+    const timestampComparison = compareTimestampMs(
+      jobTimestampMs(left, "updated_at"),
+      jobTimestampMs(right, "updated_at"),
+      "desc",
+    );
+    return timestampComparison || compareJobIdsDescending(left, right);
+  }
+
+  function statusSortGroup(job: Record<string, unknown>) {
+    switch (mockJobStatus(job)) {
+      case "running":
+        return 0;
+      case "pending":
+        return 1;
+      case "completed":
+        return 2;
+      case "cancelled":
+        return 3;
+      case "failed":
+        return 4;
+      default:
+        return 5;
+    }
+  }
+
+  function compareStatusJobs(
+    left: Record<string, unknown>,
+    right: Record<string, unknown>,
+    sortOrder: JobSortOrder,
+  ) {
+    const leftGroup = statusSortGroup(left);
+    const rightGroup = statusSortGroup(right);
+
+    if (leftGroup !== rightGroup) {
+      return sortOrder === "desc" ? rightGroup - leftGroup : leftGroup - rightGroup;
+    }
+
+    return compareActivityJobs(left, right);
+  }
+
+  function isTimestampJobSortField(value: string): value is TimestampJobSortField {
+    return value === "created_at" || value === "started_at" || value === "updated_at";
+  }
+
+  function normalizeJobSortBy(value: string | null | undefined): MockJobSortBy {
+    if (value === "status" || value === "activity") {
+      return value;
+    }
+
+    if (value && isTimestampJobSortField(value)) {
+      return value;
+    }
+
+    return "activity";
+  }
+
+  function sortJobsForParams(jobs: Array<Record<string, unknown>>, params?: MockListJobsParams) {
+    const sortBy = normalizeJobSortBy(params?.sort_by);
+    const sortOrder: JobSortOrder = params?.sort_order === "asc" ? "asc" : "desc";
+
+    return [...jobs].sort((left, right) => {
+      if (sortBy === "activity") {
+        return compareActivityJobs(left, right);
+      }
+
+      if (sortBy === "status") {
+        const statusSortOrder: JobSortOrder = params?.sort_order === "desc" ? "desc" : "asc";
+        return compareStatusJobs(left, right, statusSortOrder);
+      }
+
+      return compareJobTimestampField(left, right, sortBy, sortOrder);
+    });
   }
 
   function setSyncTransportStatus(nextStatus: Record<string, unknown>) {
@@ -1197,7 +1380,7 @@ const {
     ),
   );
   const mockListArtifacts = vi.fn(async (projectId: string) => ({ artifacts: clone(state.artifactsByProject[projectId] ?? []) }));
-  const mockListJobs = vi.fn(async (params?: ListJobsParams) => {
+  const mockListJobs = vi.fn(async (params?: MockListJobsParams) => {
     const normalizedJobs = state.jobs.map((job, index) => normalizeMockJob(job, index));
     const statusFilters = Array.isArray(params?.status) ? params.status : [];
     const normalizedSearch = params?.search?.trim().toLowerCase();
@@ -1214,15 +1397,16 @@ const {
         : true;
       return statusMatches && projectMatches && searchMatches;
     });
+    const sortedJobs = sortJobsForParams(filteredJobs, params);
     const offset = params?.offset ?? 0;
     const limit = params?.limit ?? DEFAULT_JOBS_LIMIT;
-    const jobs = filteredJobs.slice(offset, offset + limit);
+    const jobs = sortedJobs.slice(offset, offset + limit);
     return {
       jobs: clone(jobs),
-      total: filteredJobs.length,
+      total: sortedJobs.length,
       limit,
       offset,
-      has_more: offset + jobs.length < filteredJobs.length,
+      has_more: offset + jobs.length < sortedJobs.length,
     };
   });
   const mockCancelJob = vi.fn(async (jobId: string) => {

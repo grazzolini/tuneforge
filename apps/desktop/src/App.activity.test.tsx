@@ -128,11 +128,13 @@ describe("Desktop app activity", () => {
     await waitFor(() => expect(mockListJobs).toHaveBeenCalledTimes(2));
     expect(mockListJobs).toHaveBeenCalledWith({
       status: ["running", "pending"],
+      sort_by: "activity",
       limit: 200,
       offset: 0,
     });
     expect(mockListJobs).toHaveBeenCalledWith({
       status: ["completed", "failed", "cancelled"],
+      sort_by: "activity",
       limit: 50,
       offset: 0,
     });
@@ -186,6 +188,7 @@ describe("Desktop app activity", () => {
     await waitFor(() =>
       expect(mockListJobs).toHaveBeenCalledWith({
         status: ["running", "pending"],
+        sort_by: "activity",
         search: "choir",
         limit: 200,
         offset: 0,
@@ -193,6 +196,7 @@ describe("Desktop app activity", () => {
     );
     expect(mockListJobs).toHaveBeenCalledWith({
       status: ["completed", "failed", "cancelled"],
+      sort_by: "activity",
       search: "choir",
       limit: 50,
       offset: 0,
@@ -282,6 +286,7 @@ describe("Desktop app activity", () => {
     expect(await screen.findByRole("article", { name: "active_205 running job" })).toBeInTheDocument();
     expect(mockListJobs).toHaveBeenCalledWith({
       status: ["running", "pending"],
+      sort_by: "activity",
       limit: 200,
       offset: 200,
     });
@@ -1110,12 +1115,71 @@ describe("Desktop app activity", () => {
     expect(await screen.findByRole("article", { name: "history_055 completed job" })).toBeInTheDocument();
     expect(mockListJobs).toHaveBeenCalledWith({
       status: ["completed", "failed", "cancelled"],
+      sort_by: "activity",
       limit: 50,
       offset: 50,
     });
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Load more history" })).not.toBeInTheDocument(),
     );
+  });
+
+  it("paginates terminal history after activity sorting", async () => {
+    const user = userEvent.setup();
+    setJobs([
+      ...Array.from({ length: 50 }, (_, index) => {
+        const jobNumber = index + 1;
+        const timestamp = `2026-04-18T12:${String(50 - jobNumber).padStart(2, "0")}:00.000Z`;
+        return job({
+          id: `job_history_old_${String(jobNumber).padStart(3, "0")}`,
+          type: `history_old_${String(jobNumber).padStart(3, "0")}`,
+          status: "completed",
+          progress: 100,
+          completed_at: timestamp,
+          created_at: "2026-04-18T12:00:00.000Z",
+          updated_at: timestamp,
+        });
+      }),
+      job({
+        id: "job_history_tie_a",
+        type: "history_tie_a",
+        status: "completed",
+        progress: 100,
+        completed_at: "2026-04-18T13:59:00.000Z",
+        created_at: "2026-04-18T13:00:00.000Z",
+        updated_at: "2026-04-18T13:59:00.000Z",
+      }),
+      job({
+        id: "job_history_tie_b",
+        type: "history_tie_b",
+        status: "completed",
+        progress: 100,
+        completed_at: "2026-04-18T13:59:00.000Z",
+        created_at: "2026-04-18T13:00:00.000Z",
+        updated_at: "2026-04-18T13:59:00.000Z",
+      }),
+    ]);
+
+    renderApp(["/activity"]);
+
+    expect(await screen.findByRole("article", { name: "history_tie_b completed job" })).toBeInTheDocument();
+    const queue = await screen.findByRole("list", { name: "Job queue" });
+    const rows = within(queue).getAllByRole("article");
+    expect(rows.slice(0, 2).map((row) => row.getAttribute("aria-label"))).toEqual([
+      "history_tie_b completed job",
+      "history_tie_a completed job",
+    ]);
+    expect(screen.queryByRole("article", { name: "history_old_050 completed job" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Load more history" }));
+
+    expect(await screen.findByRole("article", { name: "history_old_050 completed job" })).toBeInTheDocument();
+    expect(mockListJobs).toHaveBeenCalledWith({
+      status: ["completed", "failed", "cancelled"],
+      sort_by: "activity",
+      limit: 50,
+      offset: 50,
+    });
   });
 
   it("loads additional terminal history pages when the history sentinel intersects", async () => {
@@ -1133,6 +1197,7 @@ describe("Desktop app activity", () => {
     expect(await screen.findByRole("article", { name: "history_055 completed job" })).toBeInTheDocument();
     expect(mockListJobs).toHaveBeenCalledWith({
       status: ["completed", "failed", "cancelled"],
+      sort_by: "activity",
       limit: 50,
       offset: 50,
     });
@@ -1166,6 +1231,7 @@ describe("Desktop app activity", () => {
     expect(await screen.findByRole("article", { name: "history_055 completed job" })).toBeInTheDocument();
     expect(mockListJobs).toHaveBeenCalledWith({
       status: ["completed", "failed", "cancelled"],
+      sort_by: "activity",
       limit: 50,
       offset: 50,
     });

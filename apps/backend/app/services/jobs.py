@@ -6,7 +6,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from subprocess import Popen
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -41,17 +41,14 @@ class ListedJobs:
 
 
 JobHandler = Callable[["JobExecutionContext", Session, Job], JobExecutionResult]
+JobSortBy = Literal["activity", "created_at", "started_at", "updated_at", "status"]
+JobSortOrder = Literal["asc", "desc"]
+JobTimestampSortBy = Literal["created_at", "started_at", "updated_at"]
 
 _TERMINAL_JOB_STATUSES = ("completed", "cancelled", "failed")
 
 
-def _job_ordering() -> tuple[Any, ...]:
-    status_rank = case(
-        (Job.status == "running", 0),
-        (Job.status == "pending", 1),
-        (Job.status.in_(_TERMINAL_JOB_STATUSES), 2),
-        else_=3,
-    )
+def _job_activity_tie_breakers() -> tuple[Any, ...]:
     running_timestamp = case(
         (Job.status == "running", func.coalesce(Job.started_at, Job.created_at)),
         else_=None,
@@ -65,7 +62,6 @@ def _job_ordering() -> tuple[Any, ...]:
     )
     terminal_id = case((Job.status.in_(_TERMINAL_JOB_STATUSES), Job.id), else_=None)
     return (
-        status_rank.asc(),
         running_timestamp.asc(),
         running_id.asc(),
         pending_created_at.asc(),
@@ -77,6 +73,60 @@ def _job_ordering() -> tuple[Any, ...]:
     )
 
 
+def _job_ordering() -> tuple[Any, ...]:
+    status_rank = case(
+        (Job.status == "running", 0),
+        (Job.status == "pending", 1),
+        (Job.status.in_(_TERMINAL_JOB_STATUSES), 2),
+        else_=3,
+    )
+    return (status_rank.asc(), *_job_activity_tie_breakers())
+
+
+def _job_timestamp_ordering(sort_by: JobTimestampSortBy, sort_order: JobSortOrder | None) -> tuple[Any, ...]:
+    timestamp_column: Any
+    if sort_by == "created_at":
+        timestamp_column = Job.created_at
+    elif sort_by == "started_at":
+        timestamp_column = Job.started_at
+    else:
+        timestamp_column = Job.updated_at
+    direction = sort_order or "desc"
+    timestamp_ordering = timestamp_column.asc() if direction == "asc" else timestamp_column.desc()
+    return (timestamp_column.is_(None).asc(), timestamp_ordering, Job.id.asc())
+
+
+def _job_status_ordering(sort_order: JobSortOrder | None) -> tuple[Any, ...]:
+    status_rank = case(
+        (Job.status == "running", 0),
+        (Job.status == "pending", 1),
+        (Job.status == "completed", 2),
+        (Job.status == "cancelled", 3),
+        (Job.status == "failed", 4),
+        else_=5,
+    )
+    status_ordering = status_rank.desc() if sort_order == "desc" else status_rank.asc()
+    return (status_ordering, *_job_activity_tie_breakers())
+
+
+def _list_jobs_ordering(sort_by: JobSortBy, sort_order: JobSortOrder | None) -> tuple[Any, ...]:
+    if sort_by == "activity":
+        if sort_order is not None:
+            raise AppError(
+                "INVALID_REQUEST",
+                "sort_order is not valid when sort_by is activity.",
+                status_code=422,
+            )
+        return _job_ordering()
+    if sort_by == "status":
+        return _job_status_ordering(sort_order)
+    if sort_by == "created_at":
+        return _job_timestamp_ordering("created_at", sort_order)
+    if sort_by == "started_at":
+        return _job_timestamp_ordering("started_at", sort_order)
+    return _job_timestamp_ordering("updated_at", sort_order)
+
+
 def list_jobs(
     session: Session,
     *,
@@ -85,6 +135,8 @@ def list_jobs(
     statuses: Sequence[str] | None = None,
     project_id: str | None = None,
     search: str | None = None,
+    sort_by: JobSortBy = "activity",
+    sort_order: JobSortOrder | None = None,
 ) -> ListedJobs:
     filters: list[Any] = []
     status_filters = tuple(statuses or ())
@@ -107,7 +159,11 @@ def list_jobs(
         jobs_statement = jobs_statement.where(*filters)
 
     total = session.scalar(total_statement) or 0
-    jobs = list(session.scalars(jobs_statement.order_by(*_job_ordering()).limit(limit).offset(offset)))
+    jobs = list(
+        session.scalars(
+            jobs_statement.order_by(*_list_jobs_ordering(sort_by, sort_order)).limit(limit).offset(offset)
+        )
+    )
     return ListedJobs(jobs=jobs, total=total)
 
 

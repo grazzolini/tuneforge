@@ -8,6 +8,7 @@ from app.dependencies import get_db, get_job_runner
 from app.errors import AppError
 from app.models import Job
 from app.schemas import JobResponse, JobSchema, JobsResponse
+from app.services.jobs import JobSortBy, JobSortOrder
 from app.services.jobs import list_jobs as list_jobs_service
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -19,6 +20,8 @@ def list_jobs(
     status: list[str] | None = Query(default=None, description="Filter jobs by status. May be repeated."),
     project_id: str | None = Query(default=None, description="Filter jobs by project ID."),
     search: str | None = Query(default=None, description="Filter jobs by project display name."),
+    sort_by: JobSortBy = Query(default="activity", description="Sort jobs by activity, timestamp, or status."),
+    sort_order: JobSortOrder | None = Query(default=None, description="Sort direction. Not valid with activity sort."),
     session: Session = Depends(get_db),
 ) -> JobsResponse:
     listed_jobs = list_jobs_service(
@@ -28,6 +31,8 @@ def list_jobs(
         statuses=status,
         project_id=project_id,
         search=search,
+        sort_by=sort_by,
+        sort_order=sort_order,
     )
     jobs = [JobSchema.model_validate(job) for job in listed_jobs.jobs]
     metadata = pagination_metadata(

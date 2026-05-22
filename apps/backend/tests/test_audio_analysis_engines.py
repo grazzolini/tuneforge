@@ -6,7 +6,7 @@ import numpy as np
 import soundfile as sf
 
 import app.engines.analysis as analysis_engine
-from app.engines.analysis import AnalysisTimingPayload, analyze_track
+from app.engines.analysis import AnalysisTimingBeatPayload, AnalysisTimingPayload, analyze_track
 from app.engines.audio_features import (
     ANALYSIS_HOP_LENGTH,
     ANALYSIS_SAMPLE_RATE,
@@ -406,6 +406,140 @@ def test_analysis_keeps_ambiguous_downbeat_alignment(monkeypatch):
     _assert_beats_map_to_bar_spans(timing)
 
 
+def test_analysis_keeps_phase_after_short_mid_song_half_beat_burst(monkeypatch):
+    stable_beat_times = 0.25 + np.arange(24, dtype=np.float64) * 0.5
+    beat_times = np.concatenate(
+        [
+            stable_beat_times[:8],
+            np.asarray([4.0], dtype=np.float64),
+            stable_beat_times[8:],
+        ]
+    )
+    features = _synthetic_timing_features(beat_times, accent_indices=set())
+    chord_timeline = [
+        _synthetic_chord_segment(
+            0.0,
+            features.duration_seconds,
+            label="C",
+            pitch_class=0,
+        )
+    ]
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_mid_song_half_beat_burst.wav"))
+
+    timing = _assert_detected_sorted_timing(analysis["timing"])
+    assert [_beat_near(timing, seconds)["beat_in_bar"] for seconds in stable_beat_times[8:12]] == [
+        1,
+        2,
+        3,
+        4,
+    ]
+    assert _beat_near(timing, stable_beat_times[12])["beat_in_bar"] == 1
+    assert abs(timing["bars"][2]["start_seconds"] - stable_beat_times[8]) <= 0.035
+
+
+def test_analysis_recovers_early_fast_start_burst_without_shifting_downbeat_offset(
+    monkeypatch,
+):
+    stable_beat_times = 0.25 + np.arange(24, dtype=np.float64) * 0.5
+    beat_times = np.concatenate(
+        [
+            stable_beat_times[:1],
+            np.asarray([0.5], dtype=np.float64),
+            stable_beat_times[1:],
+        ]
+    )
+    accent_times = stable_beat_times[1::4]
+    accent_indices = {
+        int(np.argmin(np.abs(beat_times - seconds))) for seconds in accent_times.tolist()
+    }
+    features = _synthetic_timing_features(beat_times, accent_indices=accent_indices)
+    chord_timeline = _synthetic_chord_timeline(
+        stable_beat_times,
+        downbeat_offset=1,
+        duration_seconds=features.duration_seconds,
+    )
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_fast_start_recovery.wav"))
+
+    timing = _assert_detected_sorted_timing(analysis["timing"])
+    assert _beat_near(timing, stable_beat_times[0])["beat_in_bar"] == 4
+    assert [_beat_near(timing, seconds)["beat_in_bar"] for seconds in accent_times[:4]] == [
+        1,
+        1,
+        1,
+        1,
+    ]
+    assert abs(timing["bars"][0]["end_seconds"] - stable_beat_times[1]) <= 0.035
+
+
+def test_analysis_preserves_sustained_local_tempo_change(monkeypatch):
+    beat_times = np.concatenate(
+        [
+            0.25 + np.arange(8, dtype=np.float64) * 0.5,
+            4.0 + np.arange(12, dtype=np.float64) * 0.25,
+            7.25 + np.arange(8, dtype=np.float64) * 0.5,
+        ]
+    )
+    features = _synthetic_timing_features(beat_times, accent_indices=set())
+    chord_timeline = [
+        _synthetic_chord_segment(
+            0.0,
+            features.duration_seconds,
+            label="C",
+            pitch_class=0,
+        )
+    ]
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_sustained_local_tempo_change.wav"))
+
+    timing = _assert_detected_sorted_timing(analysis["timing"])
+    assert len(timing["beats"]) == beat_times.size
+    local_tempo_beats = [_beat_near(timing, seconds) for seconds in beat_times[8:12]]
+    assert [beat["beat_in_bar"] for beat in local_tempo_beats] == [1, 2, 3, 4]
+    assert max(np.diff([beat["seconds"] for beat in local_tempo_beats])) < 0.35
+
+
+def test_analysis_preserves_one_bar_double_time_phrase(monkeypatch):
+    beat_times = np.concatenate(
+        [
+            0.25 + np.arange(8, dtype=np.float64) * 0.5,
+            4.0 + np.arange(8, dtype=np.float64) * 0.25,
+            6.25 + np.arange(9, dtype=np.float64) * 0.5,
+        ]
+    )
+    features = _synthetic_timing_features(beat_times, accent_indices=set())
+    chord_timeline = [
+        _synthetic_chord_segment(
+            0.0,
+            features.duration_seconds,
+            label="C",
+            pitch_class=0,
+        )
+    ]
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_one_bar_double_time_phrase.wav"))
+
+    timing = _assert_detected_sorted_timing(analysis["timing"])
+    assert len(timing["beats"]) == beat_times.size
+    double_time_beats = [_beat_near(timing, seconds) for seconds in beat_times[8:16]]
+    assert [beat["beat_in_bar"] for beat in double_time_beats] == [
+        1,
+        2,
+        3,
+        4,
+        1,
+        2,
+        3,
+        4,
+    ]
+    assert max(np.diff([beat["seconds"] for beat in double_time_beats])) < 0.35
+
+
 def test_analysis_timing_payload_keeps_consumer_fields(monkeypatch):
     beat_times = 0.25 + np.arange(8, dtype=np.float64) * 0.5
     features = _synthetic_timing_features(beat_times, accent_indices=set())
@@ -511,6 +645,28 @@ def _mean_nearest_beat_error(beat_seconds: np.ndarray, expected_pulses: np.ndarr
     return float(
         np.mean([np.min(np.abs(beat_seconds - pulse_time)) for pulse_time in expected_pulses])
     )
+
+
+def _assert_detected_sorted_timing(
+    timing: AnalysisTimingPayload | None,
+) -> AnalysisTimingPayload:
+    assert timing is not None
+    assert timing["source"] == "detected"
+    beat_seconds = [beat["seconds"] for beat in timing["beats"]]
+    assert beat_seconds == sorted(beat_seconds)
+    _assert_beats_map_to_bar_spans(timing)
+    return timing
+
+
+def _beat_near(
+    timing: AnalysisTimingPayload,
+    seconds: float,
+    *,
+    tolerance_seconds: float = 0.035,
+) -> AnalysisTimingBeatPayload:
+    beat = min(timing["beats"], key=lambda candidate: abs(candidate["seconds"] - seconds))
+    assert abs(beat["seconds"] - seconds) <= tolerance_seconds
+    return beat
 
 
 def _assert_beats_map_to_bar_spans(timing: AnalysisTimingPayload) -> None:

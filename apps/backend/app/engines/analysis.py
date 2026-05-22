@@ -18,6 +18,15 @@ DOWNBEAT_ACCENT_WEIGHT = 0.42
 DOWNBEAT_MIN_SCORE = 0.32
 DOWNBEAT_MIN_SCORE_MARGIN = 0.1
 DOWNBEAT_MIN_ZERO_MARGIN = 0.14
+BEAT_PHASE_SHORT_INTERVAL_RATIO = 0.68
+BEAT_PHASE_PAUSE_GAP_RATIO = 1.8
+BEAT_PHASE_MIN_BURST_INTERVALS = 2
+BEAT_PHASE_MAX_BURST_INTERVALS = 12
+BEAT_PHASE_LOCAL_CONTEXT_INTERVALS = BEAT_PHASE_MAX_BURST_INTERVALS
+BEAT_PHASE_BOOKEND_MIN_RATIO = 0.72
+BEAT_PHASE_MAX_BURST_GRID_STEPS = BEATS_PER_BAR
+BEAT_PHASE_MIN_LOCAL_TEMPO_INTERVALS = BEATS_PER_BAR + 2
+BEAT_PHASE_LOCAL_TEMPO_MAX_DEVIATION_RATIO = 0.2
 
 MAJOR_PROFILE = np.array(
     [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88],
@@ -148,7 +157,9 @@ def _detected_beat_times(features: HarmonicFeatures) -> np.ndarray:
     if beat_frames.size == 0:
         return np.zeros(0, dtype=np.float64)
     beat_times = features.times[beat_frames].astype(np.float64)
-    return _clean_beat_times(beat_times, features.duration_seconds)
+    return _stabilize_detected_beat_phase(
+        _clean_beat_times(beat_times, features.duration_seconds)
+    )
 
 
 def _fallback_beat_times(tempo_bpm: float | None, duration_seconds: float) -> np.ndarray:
@@ -174,6 +185,221 @@ def _clean_beat_times(beat_times: np.ndarray, duration_seconds: float) -> np.nda
         if not deduped or seconds - deduped[-1] >= 0.05:
             deduped.append(seconds)
     return np.asarray(deduped, dtype=np.float64)
+
+
+def _stabilize_detected_beat_phase(beat_times: np.ndarray) -> np.ndarray:
+    if beat_times.size < BEAT_PHASE_MIN_BURST_INTERVALS + 3:
+        return beat_times
+
+    intervals = np.diff(beat_times.astype(np.float64))
+    if intervals.size < BEAT_PHASE_MIN_BURST_INTERVALS + 2:
+        return beat_times
+
+    local_references = _local_beat_interval_references(intervals)
+    has_reference = np.isfinite(local_references) & (local_references > 0.0)
+    short_intervals = (
+        has_reference & (intervals <= local_references * BEAT_PHASE_SHORT_INTERVAL_RATIO)
+    )
+    pause_gaps = has_reference & (intervals > local_references * BEAT_PHASE_PAUSE_GAP_RATIO)
+
+    keep = np.ones(beat_times.size, dtype=np.bool_)
+    index = 0
+    while index < intervals.size:
+        if not short_intervals[index]:
+            index += 1
+            continue
+
+        run_start = index
+        while index + 1 < intervals.size and short_intervals[index + 1]:
+            index += 1
+        run_end = index
+        _keep_projected_phase_candidates(
+            beat_times,
+            intervals,
+            short_intervals,
+            pause_gaps,
+            local_references,
+            run_start,
+            run_end,
+            keep,
+        )
+        index += 1
+
+    if bool(np.all(keep)):
+        return beat_times
+    return beat_times[keep]
+
+
+def _local_beat_interval_references(intervals: np.ndarray) -> np.ndarray:
+    references = np.zeros(intervals.size, dtype=np.float64)
+    for index in range(intervals.size):
+        start = max(0, index - BEAT_PHASE_LOCAL_CONTEXT_INTERVALS)
+        end = min(intervals.size, index + BEAT_PHASE_LOCAL_CONTEXT_INTERVALS + 1)
+        references[index] = _upper_half_median(intervals[start:end])
+    return references
+
+
+def _upper_half_median(values: np.ndarray) -> float:
+    clean_values = values[np.isfinite(values) & (values > 0.0)]
+    if clean_values.size == 0:
+        return 0.0
+    ordered_values = np.sort(clean_values.astype(np.float64))
+    return float(np.median(ordered_values[ordered_values.size // 2 :]))
+
+
+def _keep_projected_phase_candidates(
+    beat_times: np.ndarray,
+    intervals: np.ndarray,
+    short_intervals: np.ndarray,
+    pause_gaps: np.ndarray,
+    local_references: np.ndarray,
+    run_start: int,
+    run_end: int,
+    keep: np.ndarray,
+) -> None:
+    run_interval_count = run_end - run_start + 1
+    if not (
+        BEAT_PHASE_MIN_BURST_INTERVALS
+        <= run_interval_count
+        <= BEAT_PHASE_MAX_BURST_INTERVALS
+    ):
+        return
+
+    before_interval = run_start - 1
+    after_interval = run_end + 1
+    if after_interval >= intervals.size:
+        return
+
+    reference = _beat_phase_burst_reference(
+        intervals,
+        short_intervals,
+        pause_gaps,
+        local_references,
+        run_start,
+        run_end,
+    )
+    if reference <= 0.0:
+        return
+    if before_interval >= 0:
+        if not _is_stable_phase_bookend(
+            intervals[before_interval],
+            pause_gaps[before_interval],
+            reference,
+        ):
+            return
+    if not _is_stable_phase_bookend(
+        intervals[after_interval],
+        pause_gaps[after_interval],
+        reference,
+    ):
+        return
+
+    candidate_indices = np.arange(run_start + 1, run_end + 2)
+    expected_step_count = _projected_grid_step_count(
+        beat_times,
+        candidate_indices,
+        anchor_seconds=float(beat_times[run_start]),
+        reference_seconds=reference,
+    )
+    if (
+        expected_step_count >= BEATS_PER_BAR
+        and _is_consistent_local_tempo_phrase(intervals, run_start, run_end)
+    ):
+        return
+    if expected_step_count > BEAT_PHASE_MAX_BURST_GRID_STEPS:
+        return
+
+    grid_indices = _closest_projected_grid_indices(
+        beat_times,
+        candidate_indices,
+        anchor_seconds=float(beat_times[run_start]),
+        reference_seconds=reference,
+        expected_step_count=expected_step_count,
+    )
+    if len(grid_indices) >= candidate_indices.size:
+        return
+
+    keep[candidate_indices] = False
+    keep[list(grid_indices)] = True
+
+
+def _beat_phase_burst_reference(
+    intervals: np.ndarray,
+    short_intervals: np.ndarray,
+    pause_gaps: np.ndarray,
+    local_references: np.ndarray,
+    run_start: int,
+    run_end: int,
+) -> float:
+    start = max(0, run_start - BEAT_PHASE_LOCAL_CONTEXT_INTERVALS)
+    end = min(intervals.size, run_end + BEAT_PHASE_LOCAL_CONTEXT_INTERVALS + 1)
+    context_mask = ~(short_intervals[start:end] | pause_gaps[start:end])
+    context_intervals = intervals[start:end][context_mask]
+    reference = _upper_half_median(context_intervals)
+    if reference > 0.0:
+        return reference
+    return _upper_half_median(local_references[run_start : run_end + 1])
+
+
+def _is_stable_phase_bookend(interval: float, is_pause_gap: bool, reference: float) -> bool:
+    if is_pause_gap or not np.isfinite(interval) or interval <= 0.0:
+        return False
+    return (
+        interval >= reference * BEAT_PHASE_BOOKEND_MIN_RATIO
+        and interval <= reference * BEAT_PHASE_PAUSE_GAP_RATIO
+    )
+
+
+def _is_consistent_local_tempo_phrase(
+    intervals: np.ndarray,
+    run_start: int,
+    run_end: int,
+) -> bool:
+    run_intervals = intervals[run_start : run_end + 1]
+    if run_intervals.size < BEAT_PHASE_MIN_LOCAL_TEMPO_INTERVALS:
+        return False
+    if not bool(np.all(np.isfinite(run_intervals) & (run_intervals > 0.0))):
+        return False
+
+    local_interval = float(np.median(run_intervals.astype(np.float64)))
+    if local_interval <= 0.0:
+        return False
+    max_deviation = float(np.max(np.abs(run_intervals - local_interval)))
+    return max_deviation <= local_interval * BEAT_PHASE_LOCAL_TEMPO_MAX_DEVIATION_RATIO
+
+
+def _closest_projected_grid_indices(
+    beat_times: np.ndarray,
+    candidate_indices: np.ndarray,
+    anchor_seconds: float,
+    reference_seconds: float,
+    expected_step_count: int,
+) -> set[int]:
+    if expected_step_count >= candidate_indices.size:
+        return set(candidate_indices.tolist())
+
+    candidate_seconds = beat_times[candidate_indices]
+    grid_indices: set[int] = set()
+    for step in range(1, expected_step_count + 1):
+        target_seconds = anchor_seconds + reference_seconds * step
+        distances = np.abs(candidate_seconds - target_seconds)
+        for candidate_position in np.argsort(distances).tolist():
+            candidate_index = int(candidate_indices[candidate_position])
+            if candidate_index in grid_indices:
+                continue
+            grid_indices.add(candidate_index)
+            break
+    return grid_indices
+
+
+def _projected_grid_step_count(
+    beat_times: np.ndarray,
+    candidate_indices: np.ndarray,
+    anchor_seconds: float,
+    reference_seconds: float,
+) -> int:
+    last_candidate_delta = float(beat_times[candidate_indices[-1]] - anchor_seconds)
+    return max(1, int(round(last_candidate_delta / reference_seconds)))
 
 
 def _timing_beat_bar_index(index: int, downbeat_offset: int) -> int:

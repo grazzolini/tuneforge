@@ -9,6 +9,15 @@ from app.engines.audio_features import HarmonicFeatures, active_chroma_mean, ext
 from app.engines.chords import ChordSegment, detect_chords_from_features
 
 BEATS_PER_BAR = 4
+MIN_DOWNBEAT_INFERENCE_BEATS = BEATS_PER_BAR * 2
+DOWNBEAT_PROXIMITY_BEAT_FRACTION = 0.28
+MIN_DOWNBEAT_PROXIMITY_SECONDS = 0.08
+MAX_DOWNBEAT_PROXIMITY_SECONDS = 0.22
+DOWNBEAT_CHORD_WEIGHT = 0.58
+DOWNBEAT_ACCENT_WEIGHT = 0.42
+DOWNBEAT_MIN_SCORE = 0.32
+DOWNBEAT_MIN_SCORE_MARGIN = 0.1
+DOWNBEAT_MIN_ZERO_MARGIN = 0.14
 
 MAJOR_PROFILE = np.array(
     [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88],
@@ -89,11 +98,14 @@ def analyze_track(source_path: Path) -> AnalysisPayload:
         "estimated_reference_hz": features.estimated_reference_hz,
         "tuning_offset_cents": features.tuning_offset_cents,
         "tempo_bpm": features.tempo_bpm,
-        "timing": _build_timing_payload(features),
+        "timing": _build_timing_payload(features, chord_timeline),
     }
 
 
-def _build_timing_payload(features: HarmonicFeatures) -> AnalysisTimingPayload | None:
+def _build_timing_payload(
+    features: HarmonicFeatures,
+    chord_timeline: list[ChordSegment],
+) -> AnalysisTimingPayload | None:
     if features.duration_seconds <= 0.0:
         return None
 
@@ -105,12 +117,15 @@ def _build_timing_payload(features: HarmonicFeatures) -> AnalysisTimingPayload |
     if beat_times.size < 2:
         return None
 
+    downbeat_offset = (
+        _infer_downbeat_offset(features, beat_times, chord_timeline) if source == "detected" else 0
+    )
     beats: list[AnalysisTimingBeatPayload] = [
         {
             "index": index,
             "seconds": round(float(seconds), 6),
-            "bar_index": index // BEATS_PER_BAR,
-            "beat_in_bar": (index % BEATS_PER_BAR) + 1,
+            "bar_index": _timing_beat_bar_index(index, downbeat_offset),
+            "beat_in_bar": ((index - downbeat_offset) % BEATS_PER_BAR) + 1,
         }
         for index, seconds in enumerate(beat_times.tolist())
     ]
@@ -161,24 +176,233 @@ def _clean_beat_times(beat_times: np.ndarray, duration_seconds: float) -> np.nda
     return np.asarray(deduped, dtype=np.float64)
 
 
+def _timing_beat_bar_index(index: int, downbeat_offset: int) -> int:
+    if downbeat_offset <= 0:
+        return index // BEATS_PER_BAR
+    if index < downbeat_offset:
+        return 0
+    return 1 + ((index - downbeat_offset) // BEATS_PER_BAR)
+
+
+def _infer_downbeat_offset(
+    features: HarmonicFeatures,
+    beat_times: np.ndarray,
+    chord_timeline: list[ChordSegment],
+) -> int:
+    if beat_times.size < MIN_DOWNBEAT_INFERENCE_BEATS:
+        return 0
+
+    beat_interval = _median_beat_interval(beat_times)
+    if beat_interval <= 0.0:
+        return 0
+
+    proximity_seconds = _downbeat_proximity_seconds(beat_interval)
+    chord_scores = _downbeat_chord_scores(beat_times, chord_timeline, proximity_seconds)
+    accent_scores = _downbeat_accent_scores(features, beat_times, beat_interval)
+    scores = DOWNBEAT_CHORD_WEIGHT * chord_scores + DOWNBEAT_ACCENT_WEIGHT * accent_scores
+
+    best_offset = int(np.argmax(scores))
+    if best_offset == 0:
+        return 0
+
+    best_score = float(scores[best_offset])
+    second_score = float(np.max(np.delete(scores, best_offset)))
+    if best_score < DOWNBEAT_MIN_SCORE:
+        return 0
+    if best_score - second_score < DOWNBEAT_MIN_SCORE_MARGIN:
+        return 0
+    if best_score - float(scores[0]) < DOWNBEAT_MIN_ZERO_MARGIN:
+        return 0
+    return best_offset
+
+
+def _median_beat_interval(beat_times: np.ndarray) -> float:
+    intervals = np.diff(beat_times.astype(np.float64))
+    intervals = intervals[np.isfinite(intervals) & (intervals > 0.0)]
+    if intervals.size == 0:
+        return 0.0
+    return float(np.median(intervals))
+
+
+def _downbeat_proximity_seconds(beat_interval: float) -> float:
+    return float(
+        np.clip(
+            beat_interval * DOWNBEAT_PROXIMITY_BEAT_FRACTION,
+            MIN_DOWNBEAT_PROXIMITY_SECONDS,
+            MAX_DOWNBEAT_PROXIMITY_SECONDS,
+        )
+    )
+
+
+def _downbeat_chord_scores(
+    beat_times: np.ndarray,
+    chord_timeline: list[ChordSegment],
+    proximity_seconds: float,
+) -> np.ndarray:
+    scores = np.zeros(BEATS_PER_BAR, dtype=np.float32)
+    change_starts = _usable_chord_change_starts(beat_times, chord_timeline, proximity_seconds)
+    if not change_starts:
+        return scores
+
+    for start_seconds in change_starts:
+        distances = np.abs(beat_times - start_seconds)
+        nearest_index = int(np.argmin(distances))
+        distance = float(distances[nearest_index])
+        if distance > proximity_seconds:
+            continue
+        offset = nearest_index % BEATS_PER_BAR
+        scores[offset] += np.float32(1.0 - distance / proximity_seconds)
+
+    return (scores / max(len(change_starts), 3)).astype(np.float32)
+
+
+def _usable_chord_change_starts(
+    beat_times: np.ndarray,
+    chord_timeline: list[ChordSegment],
+    proximity_seconds: float,
+) -> list[float]:
+    if not chord_timeline:
+        return []
+
+    first_beat_seconds = float(beat_times[0])
+    initial_ignore_seconds = max(first_beat_seconds + proximity_seconds, proximity_seconds)
+    starts: list[float] = []
+    for index, segment in enumerate(chord_timeline):
+        start_seconds = float(segment["start_seconds"])
+        if not np.isfinite(start_seconds):
+            continue
+        if index == 0 and start_seconds <= initial_ignore_seconds:
+            continue
+        if start_seconds <= initial_ignore_seconds:
+            continue
+        starts.append(start_seconds)
+    return starts
+
+
+def _downbeat_accent_scores(
+    features: HarmonicFeatures,
+    beat_times: np.ndarray,
+    beat_interval: float,
+) -> np.ndarray:
+    scores = np.zeros(BEATS_PER_BAR, dtype=np.float32)
+    strengths = _beat_accent_strengths(features, beat_times, beat_interval)
+    if strengths.size < MIN_DOWNBEAT_INFERENCE_BEATS:
+        return scores
+
+    beat_positions = np.arange(strengths.size) % BEATS_PER_BAR
+    for offset in range(BEATS_PER_BAR):
+        candidate_strengths = strengths[beat_positions == offset]
+        other_strengths = strengths[beat_positions != offset]
+        if candidate_strengths.size < 2 or other_strengths.size == 0:
+            continue
+        candidate_mean = float(np.mean(candidate_strengths))
+        other_mean = float(np.mean(other_strengths))
+        if candidate_mean <= other_mean:
+            continue
+        scores[offset] = np.float32((candidate_mean - other_mean) / max(candidate_mean, 1e-6))
+    return scores
+
+
+def _beat_accent_strengths(
+    features: HarmonicFeatures,
+    beat_times: np.ndarray,
+    beat_interval: float,
+) -> np.ndarray:
+    rms_strengths = _rms_strengths_near_beats(features, beat_times, beat_interval)
+    percussive_strengths = _percussive_strengths_near_beats(features, beat_times, beat_interval)
+    if rms_strengths.size == 0:
+        return percussive_strengths
+    if percussive_strengths.size == 0:
+        return rms_strengths
+    return (0.5 * rms_strengths + 0.5 * percussive_strengths).astype(np.float32)
+
+
+def _rms_strengths_near_beats(
+    features: HarmonicFeatures,
+    beat_times: np.ndarray,
+    beat_interval: float,
+) -> np.ndarray:
+    if features.rms.size == 0 or features.times.size == 0:
+        return np.zeros(0, dtype=np.float32)
+
+    radius_seconds = float(np.clip(beat_interval * 0.18, 0.04, 0.12))
+    radius_frames = max(1, int(round(radius_seconds * features.sample_rate / features.hop_length)))
+    strengths: list[float] = []
+    for seconds in beat_times.tolist():
+        frame = int(np.searchsorted(features.times, float(seconds), side="left"))
+        frame = max(0, min(frame, features.rms.size - 1))
+        start_frame = max(0, frame - radius_frames)
+        end_frame = min(features.rms.size, frame + radius_frames + 1)
+        strengths.append(float(np.max(features.rms[start_frame:end_frame], initial=0.0)))
+    return _normalize_positive_values(np.asarray(strengths, dtype=np.float32))
+
+
+def _percussive_strengths_near_beats(
+    features: HarmonicFeatures,
+    beat_times: np.ndarray,
+    beat_interval: float,
+) -> np.ndarray:
+    if features.percussive_signal.size == 0 or features.sample_rate <= 0:
+        return np.zeros(0, dtype=np.float32)
+
+    radius_samples = max(1, int(round(np.clip(beat_interval * 0.16, 0.035, 0.11) * features.sample_rate)))
+    strengths: list[float] = []
+    for seconds in beat_times.tolist():
+        center_sample = int(round(float(seconds) * features.sample_rate))
+        start_sample = max(0, center_sample - radius_samples)
+        end_sample = min(features.percussive_signal.size, center_sample + radius_samples + 1)
+        if end_sample <= start_sample:
+            strengths.append(0.0)
+            continue
+        window = features.percussive_signal[start_sample:end_sample]
+        strengths.append(float(np.sqrt(np.mean(np.square(window.astype(np.float32))))))
+    return _normalize_positive_values(np.asarray(strengths, dtype=np.float32))
+
+
+def _normalize_positive_values(values: np.ndarray) -> np.ndarray:
+    if values.size == 0:
+        return np.zeros(0, dtype=np.float32)
+    clean_values = np.nan_to_num(values.astype(np.float32), copy=False)
+    positives = clean_values[clean_values > 0.0]
+    if positives.size == 0:
+        return np.zeros(clean_values.size, dtype=np.float32)
+    reference = max(float(np.percentile(positives, 90.0)), float(np.max(positives)) * 0.25, 1e-6)
+    return np.clip(clean_values / reference, 0.0, 1.0).astype(np.float32)
+
+
 def _timing_bars(
     beats: list[AnalysisTimingBeatPayload],
     duration_seconds: float,
 ) -> list[AnalysisTimingBarPayload]:
     bars: list[AnalysisTimingBarPayload] = []
-    for beat_index in range(0, len(beats), BEATS_PER_BAR):
-        start_seconds = beats[beat_index]["seconds"]
-        next_bar_index = beat_index + BEATS_PER_BAR
+    downbeats = [beat for beat in beats if beat["beat_in_bar"] == 1]
+    if not downbeats:
+        return bars
+
+    if beats[0]["beat_in_bar"] != 1:
+        pickup_start_seconds = beats[0]["seconds"]
+        pickup_end_seconds = downbeats[0]["seconds"]
+        if pickup_end_seconds > pickup_start_seconds:
+            bars.append(
+                {
+                    "index": 0,
+                    "start_seconds": round(float(pickup_start_seconds), 6),
+                    "end_seconds": round(float(pickup_end_seconds), 6),
+                }
+            )
+
+    for downbeat_index, beat in enumerate(downbeats):
+        start_seconds = beat["seconds"]
         end_seconds = (
-            beats[next_bar_index]["seconds"]
-            if next_bar_index < len(beats)
+            downbeats[downbeat_index + 1]["seconds"]
+            if downbeat_index + 1 < len(downbeats)
             else max(duration_seconds, start_seconds)
         )
         if end_seconds <= start_seconds:
             continue
         bars.append(
             {
-                "index": beat_index // BEATS_PER_BAR,
+                "index": beat["bar_index"],
                 "start_seconds": round(float(start_seconds), 6),
                 "end_seconds": round(float(end_seconds), 6),
             }

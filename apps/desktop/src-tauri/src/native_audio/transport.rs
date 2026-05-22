@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::{
-    collections::VecDeque,
     fs::File,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -61,7 +61,6 @@ const PREBUFFER_TARGET_SECONDS: f64 = 0.12;
 const PREBUFFER_TIMEOUT: Duration = Duration::from_millis(1500);
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const PREBUFFER_POLL_INTERVAL: Duration = Duration::from_millis(5);
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 const SUSTAINED_UNDERRUN_ERROR_SECONDS: f64 = 0.5;
 const AUDIBLE_GAIN_FLOOR: f32 = 0.0001;
 
@@ -196,19 +195,16 @@ struct PlaybackLane {
     last_worker_error: Option<String>,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct StreamingLane {
     ring: Arc<Mutex<RingBuffer>>,
     capacity_samples: usize,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct RingBuffer {
     samples: VecDeque<f32>,
     capacity_samples: usize,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl RingBuffer {
     fn new(capacity_samples: usize) -> Self {
         Self {
@@ -255,7 +251,6 @@ impl RingBuffer {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RingReadStatus {
     Full,
@@ -264,7 +259,6 @@ enum RingReadStatus {
     LockMiss,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl RingReadStatus {
     fn is_underrun(self) -> bool {
         !matches!(self, Self::Full)
@@ -287,14 +281,12 @@ struct WorkerError {
     message: String,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NativePlaybackFallbackCause {
     PrebufferTimeout,
     SustainedUnderrun,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl NativePlaybackFallbackCause {
     fn message(self) -> &'static str {
         match self {
@@ -344,31 +336,21 @@ struct PlaybackShared {
     click: ClickState,
     ended_pending: bool,
     error_pending: Option<String>,
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     buffering: bool,
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     sustained_underrun_frames: usize,
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     underrun_error_pending: bool,
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fallback_cause: Option<NativePlaybackFallbackCause>,
 }
 
 impl PlaybackShared {
     fn snapshot(&self) -> AudioSnapshot {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let fallback_reason = self
             .fallback_reason
             .clone()
             .or_else(|| self.fallback_cause.map(|cause| cause.message().to_string()));
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        let fallback_reason = self.fallback_reason.clone();
 
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let native_playback_supported =
             self.native_playback_supported && self.fallback_cause.is_none();
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        let native_playback_supported = self.native_playback_supported;
 
         AudioSnapshot {
             session_id: self.session_id.clone(),
@@ -485,6 +467,7 @@ impl TransportState {
         let playback_rate = normalize_playback_rate(request.playback_rate);
         let mut native_playback_supported = capabilities.native_playback_supported;
         let mut fallback_reason = capabilities.fallback_reason.map(str::to_string);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let mut next_runtime = None;
 
         self.stop_runtime();

@@ -284,6 +284,7 @@ def test_sync_metadata_omits_deleted_projects_but_keeps_tombstones(
     assert response.status_code == 200
     payload = response.json()
     assert payload["projects"] == []
+    assert payload["artifacts"] == []
     assert [tombstone["tombstone_id"] for tombstone in payload["delete_tombstones"]] == [
         "tomb_deleted_sync_project"
     ]

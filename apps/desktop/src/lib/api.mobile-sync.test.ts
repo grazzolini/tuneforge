@@ -1,0 +1,162 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { MobileCapabilities } from "@tuneforge/shared-types";
+import type {
+  ListJobsParams,
+  SyncPairingAnswerRequest,
+  SyncPairingOfferRequest,
+  SyncPairingPayloadSchema,
+  SyncTrustedPeerCreateRequest,
+} from "./api";
+
+const { mockConvertFileSrc, mockInvoke } = vi.hoisted(() => ({
+  mockConvertFileSrc: vi.fn((path: string) => path),
+  mockInvoke: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({
+  convertFileSrc: mockConvertFileSrc,
+  invoke: mockInvoke,
+}));
+
+const mobileCapabilities: MobileCapabilities = {
+  platform: "android",
+  mediaBackend: "android_media_codec",
+  isEmulator: false,
+  gpuBackend: null,
+  analysisAvailable: true,
+  basicChordsAvailable: true,
+  whisperAvailable: false,
+  stemSeparationAvailable: false,
+  generationTestingAvailable: false,
+  maxRecommendedModel: null,
+  cpuFallbackAllowed: false,
+};
+
+const pairingPayload: SyncPairingPayloadSchema = {
+  sync_group_id: "sync_group_1",
+  device_id: "device_peer_1",
+  display_name: "Phone",
+  public_key: "public-key",
+  endpoint_hints: ["tuneforge-sync+iroh://device_peer_1"],
+  protocol_version: "1",
+  pairing_offer_id: "pairing_offer_1",
+  pairing_secret: "pairing-secret",
+  expires_at: "2026-05-22T12:00:00.000Z",
+  signature: "signature",
+};
+
+const pairingOfferRequest: SyncPairingOfferRequest = {
+  endpoint_hints: ["tuneforge-sync+iroh://device_local"],
+  ttl_seconds: 300,
+};
+
+const pairingAnswerRequest: SyncPairingAnswerRequest = {
+  offer: pairingPayload,
+  endpoint_hints: ["tuneforge-sync+tcp://127.0.0.1:48625"],
+  adopt_sync_group: true,
+};
+
+const trustedPeerRequest: SyncTrustedPeerCreateRequest = {
+  payload: pairingPayload,
+  adopt_sync_group: false,
+};
+
+type TauriWindow = Window & {
+  __TAURI_INTERNALS__?: {
+    invoke: (command: string, args?: Record<string, unknown>, options?: unknown) => Promise<unknown>;
+  };
+};
+
+async function loadMobileApi() {
+  const apiModule = await import("./api");
+  await apiModule.initializeApi();
+  mockInvoke.mockClear();
+  return apiModule.api;
+}
+
+describe("mobile sync API adapter", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    mockConvertFileSrc.mockClear();
+    mockInvoke.mockReset();
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "mobile_capabilities") {
+        return mobileCapabilities;
+      }
+      return {};
+    });
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: (command: string, args?: Record<string, unknown>, options?: unknown) =>
+          mockInvoke(command, args, options),
+      },
+    });
+  });
+
+  afterEach(() => {
+    delete (window as TauriWindow).__TAURI_INTERNALS__;
+    vi.resetModules();
+  });
+
+  it("routes mobile sync pairing and trusted-peer methods to mobile commands", async () => {
+    const api = await loadMobileApi();
+
+    await api.getSyncIdentity();
+    await api.createSyncPairingOffer(pairingOfferRequest);
+    await api.answerSyncPairingOffer(pairingAnswerRequest);
+    await api.listSyncTrustedPeers();
+    await api.trustSyncPeer(trustedPeerRequest);
+    await api.revokeSyncTrustedPeer("device_peer_1");
+
+    expect(mockInvoke).toHaveBeenNthCalledWith(1, "mobile_get_sync_identity", undefined);
+    expect(mockInvoke).toHaveBeenNthCalledWith(2, "mobile_create_sync_pairing_offer", {
+      payload: pairingOfferRequest,
+    });
+    expect(mockInvoke).toHaveBeenNthCalledWith(3, "mobile_answer_sync_pairing_offer", {
+      payload: pairingAnswerRequest,
+    });
+    expect(mockInvoke).toHaveBeenNthCalledWith(4, "mobile_list_sync_trusted_peers", undefined);
+    expect(mockInvoke).toHaveBeenNthCalledWith(5, "mobile_trust_sync_peer", {
+      payload: trustedPeerRequest,
+    });
+    expect(mockInvoke).toHaveBeenNthCalledWith(6, "mobile_revoke_sync_trusted_peer", {
+      deviceId: "device_peer_1",
+    });
+  });
+
+  it("routes latest jobs query params to the mobile jobs command", async () => {
+    const api = await loadMobileApi();
+    const params: ListJobsParams = {
+      status: ["completed"],
+      search: "needle",
+      sort_by: "updated_at",
+      sort_order: "asc",
+      limit: 10,
+      offset: 5,
+    };
+
+    await api.listJobs(params);
+
+    expect(mockInvoke).toHaveBeenCalledWith("mobile_list_jobs", { params });
+  });
+
+  it("keeps desktop native sync transport methods unsupported on mobile", async () => {
+    const api = await loadMobileApi();
+
+    await expect(api.getSyncTransportStatus()).rejects.toMatchObject({
+      code: "UNSUPPORTED_RUNTIME",
+    });
+    await expect(api.startSyncListener()).rejects.toMatchObject({
+      code: "UNSUPPORTED_RUNTIME",
+    });
+    await expect(api.stopSyncListener()).rejects.toMatchObject({
+      code: "UNSUPPORTED_RUNTIME",
+    });
+    await expect(api.syncTrustedPeerNow("device_peer_1")).rejects.toMatchObject({
+      code: "UNSUPPORTED_RUNTIME",
+    });
+
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+});

@@ -1446,24 +1446,16 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     listJobs: (params?: ListJobsParams) => invokeMobile("mobile_list_jobs", { params: params ?? null }),
     getJob: (jobId: string) => invokeMobile("mobile_get_job", { jobId }),
     cancelJob: (jobId: string) => invokeMobile("mobile_cancel_job", { jobId }),
-    getSyncIdentity: async () => {
-      throw unsupportedRuntimeError("Sync identity");
-    },
-    createSyncPairingOffer: async () => {
-      throw unsupportedRuntimeError("Sync pairing");
-    },
-    answerSyncPairingOffer: async () => {
-      throw unsupportedRuntimeError("Sync pairing");
-    },
-    listSyncTrustedPeers: async () => {
-      throw unsupportedRuntimeError("Trusted sync peers");
-    },
-    trustSyncPeer: async () => {
-      throw unsupportedRuntimeError("Sync pairing");
-    },
-    revokeSyncTrustedPeer: async () => {
-      throw unsupportedRuntimeError("Trusted sync peers");
-    },
+    getSyncIdentity: () => invokeMobile("mobile_get_sync_identity"),
+    createSyncPairingOffer: (body: SyncPairingOfferRequest) =>
+      invokeMobile("mobile_create_sync_pairing_offer", { payload: body }),
+    answerSyncPairingOffer: (body: SyncPairingAnswerRequest) =>
+      invokeMobile("mobile_answer_sync_pairing_offer", { payload: body }),
+    listSyncTrustedPeers: () => invokeMobile("mobile_list_sync_trusted_peers"),
+    trustSyncPeer: (body: SyncTrustedPeerCreateRequest) =>
+      invokeMobile("mobile_trust_sync_peer", { payload: body }),
+    revokeSyncTrustedPeer: (deviceId: string) =>
+      invokeMobile("mobile_revoke_sync_trusted_peer", { deviceId }),
     getSyncTransportStatus: async () => {
       throw unsupportedRuntimeError("Native sync transport");
     },

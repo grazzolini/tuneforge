@@ -50,6 +50,10 @@ objc2-foundation = "0.3.2"
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_system_properties = "0.1.5"
+base64 = "0.22.1"
+ed25519-dalek = "2.2.0"
 ndk-sys = { version = "0.6.0", features = ["media"] }
+rand = "0.8.6"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
+sha2 = "0.10.9"
 whisper-rs = "0.16.0"

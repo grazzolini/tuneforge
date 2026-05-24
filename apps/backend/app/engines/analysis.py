@@ -27,6 +27,24 @@ BEAT_PHASE_BOOKEND_MIN_RATIO = 0.72
 BEAT_PHASE_MAX_BURST_GRID_STEPS = BEATS_PER_BAR
 BEAT_PHASE_MIN_LOCAL_TEMPO_INTERVALS = BEATS_PER_BAR + 2
 BEAT_PHASE_LOCAL_TEMPO_MAX_DEVIATION_RATIO = 0.2
+SPARSE_BRIDGE_ACTIVE_COVERAGE_RATIO = 0.35
+SPARSE_BRIDGE_SILENT_COVERAGE_RATIO = 0.18
+SPARSE_BRIDGE_STABLE_CONTEXT_INTERVALS = BEATS_PER_BAR * 2
+SPARSE_BRIDGE_MIN_STABLE_INTERVALS = BEATS_PER_BAR
+SPARSE_BRIDGE_STABLE_DEVIATION_RATIO = 0.18
+SPARSE_BRIDGE_MIN_GRID_STEPS = BEATS_PER_BAR
+SPARSE_BRIDGE_CANDIDATE_TOLERANCE_RATIO = 0.12
+SPARSE_BRIDGE_MIN_CANDIDATE_TOLERANCE_SECONDS = 0.03
+SPARSE_BRIDGE_MAX_CANDIDATE_TOLERANCE_SECONDS = 0.07
+SPARSE_BRIDGE_RELOCK_TOLERANCE_RATIO = 0.3
+SPARSE_BRIDGE_MIN_RELOCK_TOLERANCE_SECONDS = 0.08
+SPARSE_BRIDGE_MAX_RELOCK_TOLERANCE_SECONDS = 0.24
+SPARSE_BRIDGE_RELOCK_LOOKAHEAD_CANDIDATES = BEATS_PER_BAR * 2
+SPARSE_BRIDGE_MUSICAL_CANDIDATE_STRENGTH_RATIO = 0.45
+SPARSE_BRIDGE_MUSICAL_MIN_CONTEXT_STRENGTH_RATIO = 0.2
+SPARSE_BRIDGE_MUSICAL_LOCAL_STRENGTH_RATIO = 0.65
+SPARSE_BRIDGE_MIN_MUSICAL_CANDIDATE_FRACTION = 0.5
+SPARSE_BRIDGE_RELOCK_CANDIDATE_STRENGTH_RATIO = 0.35
 
 MAJOR_PROFILE = np.array(
     [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88],
@@ -85,6 +103,9 @@ class AnalysisPayload(TypedDict):
     tuning_offset_cents: float | None
     tempo_bpm: float | None
     timing: AnalysisTimingPayload | None
+
+
+SparseBridgeRelockCandidate = tuple[int, float, int, float, float]
 
 
 def analyze_track(source_path: Path) -> AnalysisPayload:
@@ -157,9 +178,10 @@ def _detected_beat_times(features: HarmonicFeatures) -> np.ndarray:
     if beat_frames.size == 0:
         return np.zeros(0, dtype=np.float64)
     beat_times = features.times[beat_frames].astype(np.float64)
-    return _stabilize_detected_beat_phase(
+    stabilized_times = _stabilize_detected_beat_phase(
         _clean_beat_times(beat_times, features.duration_seconds)
     )
+    return _bridge_sparse_beat_gaps(stabilized_times, features)
 
 
 def _fallback_beat_times(tempo_bpm: float | None, duration_seconds: float) -> np.ndarray:
@@ -228,6 +250,755 @@ def _stabilize_detected_beat_phase(beat_times: np.ndarray) -> np.ndarray:
     if bool(np.all(keep)):
         return beat_times
     return beat_times[keep]
+
+
+def _bridge_sparse_beat_gaps(
+    beat_times: np.ndarray,
+    features: HarmonicFeatures,
+) -> np.ndarray:
+    if beat_times.size < SPARSE_BRIDGE_MIN_STABLE_INTERVALS + 2:
+        return beat_times
+    if features.duration_seconds <= 0.0:
+        return beat_times
+
+    intervals = np.diff(beat_times.astype(np.float64))
+    sparse_intervals = np.asarray(
+        [
+            _is_sparse_audio_region(
+                features,
+                float(beat_times[index]),
+                float(beat_times[index + 1]),
+            )
+            for index in range(intervals.size)
+        ],
+        dtype=np.bool_,
+    )
+    if not bool(np.any(sparse_intervals)):
+        return beat_times
+
+    bridged_times: list[float] = []
+    changed = False
+    index = 0
+    while index < beat_times.size:
+        bridged_times.append(float(beat_times[index]))
+        if index >= intervals.size or not sparse_intervals[index]:
+            index += 1
+            continue
+
+        run_start = index
+        run_end = index
+        while run_end + 1 < intervals.size and sparse_intervals[run_end + 1]:
+            run_end += 1
+
+        bridge = _sparse_gap_bridge_replacement(
+            beat_times,
+            intervals,
+            features,
+            run_start,
+            run_end,
+        )
+        if bridge is None:
+            index += 1
+            continue
+
+        replacement, consumed_index = bridge
+        original = beat_times[run_start + 1 : consumed_index + 1]
+        changed = changed or not _same_beat_times(original, replacement)
+        bridged_times.extend(replacement.tolist())
+        index = consumed_index + 1
+
+    if not changed:
+        return beat_times
+    return _clean_beat_times(
+        np.asarray(bridged_times, dtype=np.float64),
+        features.duration_seconds,
+    )
+
+
+def _sparse_gap_bridge_replacement(
+    beat_times: np.ndarray,
+    intervals: np.ndarray,
+    features: HarmonicFeatures,
+    run_start: int,
+    run_end: int,
+) -> tuple[np.ndarray, int] | None:
+    if run_end + 1 >= intervals.size:
+        return None
+
+    reference = _stable_bridge_interval_reference(intervals, run_start)
+    if reference <= 0.0:
+        return None
+
+    anchor_seconds = float(beat_times[run_start])
+    context_strength = _sparse_bridge_context_beat_strength(
+        features,
+        beat_times,
+        run_start,
+        reference,
+    )
+    if _has_musical_sparse_bridge_candidates(
+        features,
+        beat_times,
+        run_start,
+        run_end,
+        reference_seconds=reference,
+        context_strength=context_strength,
+    ):
+        return beat_times[run_start + 1 : run_end + 2], run_end + 1
+
+    relock_candidate = _sparse_bridge_relock_candidate(
+        beat_times,
+        features,
+        run_end,
+        anchor_seconds=anchor_seconds,
+        reference_seconds=reference,
+        context_strength=context_strength,
+    )
+    if relock_candidate is None:
+        return None
+    resume_index, resume_seconds, expected_step_count = relock_candidate
+
+    coverage = _active_frame_coverage(features, anchor_seconds, resume_seconds)
+    if (
+        coverage > SPARSE_BRIDGE_SILENT_COVERAGE_RATIO
+        and _is_consistent_local_tempo_phrase(intervals, run_start, run_end)
+    ):
+        return None
+
+    candidate_indices = np.arange(run_start + 1, resume_index + 1)
+    return _projected_sparse_gap_times(
+        beat_times,
+        candidate_indices,
+        anchor_seconds=anchor_seconds,
+        reference_seconds=reference,
+        expected_step_count=expected_step_count,
+        resume_candidate_seconds=resume_seconds,
+        candidate_tolerance_seconds=_sparse_bridge_candidate_tolerance(reference),
+        candidate_strength_ratios=_sparse_bridge_candidate_strength_ratios(
+            features,
+            beat_times[candidate_indices],
+            reference,
+            context_strength,
+        ),
+    ), resume_index
+
+
+def _sparse_bridge_relock_candidate(
+    beat_times: np.ndarray,
+    features: HarmonicFeatures,
+    run_end: int,
+    *,
+    anchor_seconds: float,
+    reference_seconds: float,
+    context_strength: float,
+) -> tuple[int, float, int] | None:
+    first_candidate_index = run_end + 1
+    candidates: list[SparseBridgeRelockCandidate] = []
+    for candidate_index in range(
+        first_candidate_index,
+        min(
+            beat_times.size,
+            first_candidate_index + SPARSE_BRIDGE_RELOCK_LOOKAHEAD_CANDIDATES,
+        ),
+    ):
+        candidate = _sparse_bridge_projected_relock_candidate(
+            beat_times,
+            candidate_index,
+            anchor_seconds=anchor_seconds,
+            reference_seconds=reference_seconds,
+            features=features,
+            context_strength=context_strength,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+    if not candidates:
+        return None
+
+    for position, candidate in enumerate(candidates[1:], start=1):
+        if _should_prefer_later_sparse_relock_candidate(
+            features,
+            reference_seconds,
+            earlier_candidates=candidates[:position],
+            later_candidate=candidate,
+        ):
+            return candidate[:3]
+
+    first_candidate = candidates[0]
+    if _is_valid_sparse_bridge_relock_candidate(
+        reference_seconds,
+        first_candidate[2],
+        first_candidate[3],
+    ) and _is_active_sparse_bridge_relock_candidate(
+        features,
+        reference_seconds,
+        first_candidate,
+    ):
+        return first_candidate[:3]
+    return None
+
+
+def _is_valid_sparse_bridge_relock_candidate(
+    reference_seconds: float,
+    expected_step_count: int,
+    grid_error_seconds: float,
+) -> bool:
+    return expected_step_count >= SPARSE_BRIDGE_MIN_GRID_STEPS and (
+        _is_aligned_sparse_bridge_relock_candidate(
+            reference_seconds,
+            grid_error_seconds,
+        )
+    )
+
+
+def _is_aligned_sparse_bridge_relock_candidate(
+    reference_seconds: float,
+    grid_error_seconds: float,
+) -> bool:
+    return grid_error_seconds <= _sparse_bridge_relock_tolerance(reference_seconds)
+
+
+def _should_prefer_later_sparse_relock_candidate(
+    features: HarmonicFeatures,
+    reference_seconds: float,
+    *,
+    earlier_candidates: list[SparseBridgeRelockCandidate],
+    later_candidate: SparseBridgeRelockCandidate,
+) -> bool:
+    if not _is_valid_sparse_bridge_relock_candidate(
+        reference_seconds,
+        later_candidate[2],
+        later_candidate[3],
+    ):
+        return False
+    if not _is_active_sparse_bridge_relock_candidate(
+        features,
+        reference_seconds,
+        later_candidate,
+    ):
+        return False
+    if not all(
+        _is_skippable_sparse_bridge_relock_candidate(
+            features,
+            reference_seconds,
+            earlier_candidate,
+            later_candidate,
+        )
+        for earlier_candidate in earlier_candidates
+    ):
+        return False
+
+    return True
+
+
+def _is_active_sparse_bridge_relock_candidate(
+    features: HarmonicFeatures,
+    reference_seconds: float,
+    candidate: SparseBridgeRelockCandidate,
+) -> bool:
+    return (
+        candidate[4] >= SPARSE_BRIDGE_RELOCK_CANDIDATE_STRENGTH_RATIO
+        and _sparse_bridge_relock_candidate_active_coverage(
+            features,
+            reference_seconds,
+            candidate,
+        )
+        > SPARSE_BRIDGE_ACTIVE_COVERAGE_RATIO
+    )
+
+
+def _is_skippable_sparse_bridge_relock_candidate(
+    features: HarmonicFeatures,
+    reference_seconds: float,
+    earlier_candidate: SparseBridgeRelockCandidate,
+    later_candidate: SparseBridgeRelockCandidate,
+) -> bool:
+    if _is_active_sparse_bridge_relock_candidate(
+        features,
+        reference_seconds,
+        earlier_candidate,
+    ):
+        return False
+
+    candidate_tolerance_seconds = _sparse_bridge_candidate_tolerance(reference_seconds)
+    relock_tolerance_seconds = _sparse_bridge_relock_tolerance(reference_seconds)
+    earlier_is_weak = (
+        earlier_candidate[4] < SPARSE_BRIDGE_RELOCK_CANDIDATE_STRENGTH_RATIO
+    )
+    earlier_is_too_early = earlier_candidate[2] < SPARSE_BRIDGE_MIN_GRID_STEPS
+    earlier_is_outside_relock = earlier_candidate[3] > relock_tolerance_seconds
+    earlier_is_off_grid = earlier_candidate[3] > candidate_tolerance_seconds
+    same_projected_step = earlier_candidate[2] == later_candidate[2]
+    return (
+        earlier_is_weak
+        or earlier_is_too_early
+        or earlier_is_outside_relock
+        or earlier_is_off_grid
+        or same_projected_step
+    )
+
+
+def _sparse_bridge_relock_candidate_active_coverage(
+    features: HarmonicFeatures,
+    reference_seconds: float,
+    candidate: SparseBridgeRelockCandidate,
+) -> float:
+    candidate_tolerance_seconds = _sparse_bridge_candidate_tolerance(reference_seconds)
+    return _active_frame_coverage(
+        features,
+        candidate[1] - candidate_tolerance_seconds,
+        candidate[1] + candidate_tolerance_seconds,
+    )
+
+
+def _sparse_bridge_projected_relock_candidate(
+    beat_times: np.ndarray,
+    candidate_index: int,
+    *,
+    anchor_seconds: float,
+    reference_seconds: float,
+    features: HarmonicFeatures,
+    context_strength: float,
+) -> SparseBridgeRelockCandidate | None:
+    if candidate_index >= beat_times.size:
+        return None
+
+    candidate_seconds = float(beat_times[candidate_index])
+    span_seconds = candidate_seconds - anchor_seconds
+    if span_seconds <= 0.0:
+        return None
+
+    expected_step_count = max(1, int(round(span_seconds / reference_seconds)))
+
+    expected_seconds = anchor_seconds + reference_seconds * expected_step_count
+    grid_error = abs(candidate_seconds - expected_seconds)
+    strength_ratio = _sparse_bridge_candidate_strength_ratio(
+        features,
+        candidate_seconds,
+        reference_seconds,
+        context_strength,
+    )
+    return (
+        candidate_index,
+        candidate_seconds,
+        expected_step_count,
+        grid_error,
+        strength_ratio,
+    )
+
+
+def _stable_bridge_interval_reference(intervals: np.ndarray, anchor_index: int) -> float:
+    start = max(0, anchor_index - SPARSE_BRIDGE_STABLE_CONTEXT_INTERVALS)
+    context = intervals[start:anchor_index]
+    context = context[np.isfinite(context) & (context > 0.0)]
+    max_context_size = min(context.size, SPARSE_BRIDGE_STABLE_CONTEXT_INTERVALS)
+    for context_size in range(
+        max_context_size,
+        SPARSE_BRIDGE_MIN_STABLE_INTERVALS - 1,
+        -1,
+    ):
+        candidate = context[-context_size:]
+        reference = float(np.median(candidate.astype(np.float64)))
+        if reference <= 0.0:
+            continue
+        max_deviation = float(np.max(np.abs(candidate - reference)))
+        if max_deviation <= reference * SPARSE_BRIDGE_STABLE_DEVIATION_RATIO:
+            return reference
+    return 0.0
+
+
+def _projected_sparse_gap_times(
+    beat_times: np.ndarray,
+    candidate_indices: np.ndarray,
+    *,
+    anchor_seconds: float,
+    reference_seconds: float,
+    expected_step_count: int,
+    resume_candidate_seconds: float,
+    candidate_tolerance_seconds: float,
+    candidate_strength_ratios: np.ndarray,
+) -> np.ndarray:
+    candidate_seconds = beat_times[candidate_indices]
+    projected_times: list[float] = []
+    used_candidate_positions: set[int] = set()
+    for step in range(1, expected_step_count + 1):
+        target_seconds = anchor_seconds + reference_seconds * step
+        if step == expected_step_count:
+            projected_times.append(resume_candidate_seconds)
+            continue
+        nearest_position = _nearest_unused_candidate_position(
+            candidate_seconds,
+            candidate_strength_ratios,
+            used_candidate_positions,
+            target_seconds,
+            candidate_tolerance_seconds,
+        )
+        if nearest_position is None:
+            projected_times.append(target_seconds)
+            continue
+        used_candidate_positions.add(nearest_position)
+        projected_times.append(float(candidate_seconds[nearest_position]))
+    return np.asarray(projected_times, dtype=np.float64)
+
+
+def _nearest_unused_candidate_position(
+    candidate_seconds: np.ndarray,
+    candidate_strength_ratios: np.ndarray,
+    used_candidate_positions: set[int],
+    target_seconds: float,
+    tolerance_seconds: float,
+) -> int | None:
+    distances = np.abs(candidate_seconds - target_seconds)
+    for candidate_position in np.argsort(distances).tolist():
+        if candidate_position in used_candidate_positions:
+            continue
+        if (
+            float(candidate_strength_ratios[candidate_position])
+            < SPARSE_BRIDGE_RELOCK_CANDIDATE_STRENGTH_RATIO
+        ):
+            continue
+        if float(distances[candidate_position]) > tolerance_seconds:
+            return None
+        return int(candidate_position)
+    return None
+
+
+def _is_sparse_audio_region(
+    features: HarmonicFeatures,
+    start_seconds: float,
+    end_seconds: float,
+) -> bool:
+    return (
+        _active_frame_coverage(features, start_seconds, end_seconds)
+        <= SPARSE_BRIDGE_ACTIVE_COVERAGE_RATIO
+    )
+
+
+def _active_frame_coverage(
+    features: HarmonicFeatures,
+    start_seconds: float,
+    end_seconds: float,
+) -> float:
+    if end_seconds <= start_seconds:
+        return 1.0
+    frame_count = min(features.times.size, features.active_frame_mask.size)
+    if frame_count == 0:
+        return 1.0
+
+    times = features.times[:frame_count]
+    active_frames = features.active_frame_mask[:frame_count]
+    start_index = int(np.searchsorted(times, start_seconds, side="left"))
+    end_index = int(np.searchsorted(times, end_seconds, side="right"))
+    if end_index <= start_index:
+        return 1.0
+    return float(np.mean(active_frames[start_index:end_index]))
+
+
+def _sparse_bridge_relock_tolerance(reference_seconds: float) -> float:
+    return float(
+        np.clip(
+            reference_seconds * SPARSE_BRIDGE_RELOCK_TOLERANCE_RATIO,
+            SPARSE_BRIDGE_MIN_RELOCK_TOLERANCE_SECONDS,
+            SPARSE_BRIDGE_MAX_RELOCK_TOLERANCE_SECONDS,
+        )
+    )
+
+
+def _sparse_bridge_candidate_tolerance(reference_seconds: float) -> float:
+    return float(
+        np.clip(
+            reference_seconds * SPARSE_BRIDGE_CANDIDATE_TOLERANCE_RATIO,
+            SPARSE_BRIDGE_MIN_CANDIDATE_TOLERANCE_SECONDS,
+            SPARSE_BRIDGE_MAX_CANDIDATE_TOLERANCE_SECONDS,
+        )
+    )
+
+
+def _has_musical_sparse_bridge_candidates(
+    features: HarmonicFeatures,
+    beat_times: np.ndarray,
+    run_start: int,
+    run_end: int,
+    *,
+    reference_seconds: float,
+    context_strength: float,
+) -> bool:
+    if context_strength <= 0.0:
+        return False
+
+    candidate_indices = _sparse_bridge_musical_candidate_indices(
+        features,
+        beat_times,
+        run_start,
+        run_end,
+        reference_seconds,
+        context_strength,
+    )
+    if candidate_indices.size < BEATS_PER_BAR:
+        return False
+
+    candidate_times = beat_times[candidate_indices]
+    if candidate_times.size >= 2:
+        local_interval = float(np.median(np.diff(candidate_times.astype(np.float64))))
+        if local_interval < reference_seconds * BEAT_PHASE_BOOKEND_MIN_RATIO:
+            return False
+
+    strength_ratios = _sparse_bridge_candidate_strength_ratios(
+        features,
+        candidate_times,
+        reference_seconds,
+        context_strength,
+    )
+    strong_candidates = (
+        strength_ratios >= SPARSE_BRIDGE_MUSICAL_CANDIDATE_STRENGTH_RATIO
+    )
+    if _has_supported_sparse_musical_candidate_set(strong_candidates):
+        return True
+
+    strengths = _sparse_bridge_candidate_strengths(
+        features,
+        candidate_times,
+        reference_seconds,
+    )
+    local_strength = _positive_median(strengths)
+    if (
+        local_strength
+        < context_strength * SPARSE_BRIDGE_MUSICAL_MIN_CONTEXT_STRENGTH_RATIO
+    ):
+        return False
+
+    active_candidates = (
+        _sparse_bridge_candidate_active_coverages(
+            features,
+            candidate_times,
+            reference_seconds,
+        )
+        > SPARSE_BRIDGE_ACTIVE_COVERAGE_RATIO
+    )
+    locally_supported_candidates = (
+        (
+            strengths
+            >= context_strength * SPARSE_BRIDGE_MUSICAL_MIN_CONTEXT_STRENGTH_RATIO
+        )
+        & (strengths >= local_strength * SPARSE_BRIDGE_MUSICAL_LOCAL_STRENGTH_RATIO)
+    )
+    return _has_supported_sparse_musical_candidate_set(
+        active_candidates & locally_supported_candidates
+    )
+
+
+def _sparse_bridge_musical_candidate_indices(
+    features: HarmonicFeatures,
+    beat_times: np.ndarray,
+    run_start: int,
+    run_end: int,
+    reference_seconds: float,
+    context_strength: float,
+) -> np.ndarray:
+    candidate_indices = np.arange(run_start + 1, run_end + 2)
+    if candidate_indices.size <= 1:
+        return candidate_indices
+    candidate_times = beat_times[candidate_indices]
+    if _sparse_bridge_endpoint_looks_like_relock(
+        features,
+        candidate_times,
+        reference_seconds,
+        context_strength,
+    ):
+        return candidate_indices[:-1]
+    return candidate_indices
+
+
+def _sparse_bridge_endpoint_looks_like_relock(
+    features: HarmonicFeatures,
+    candidate_times: np.ndarray,
+    reference_seconds: float,
+    context_strength: float,
+) -> bool:
+    if context_strength <= 0.0:
+        return False
+
+    candidate_intervals = np.diff(candidate_times.astype(np.float64))
+    if _sparse_bridge_intervals_are_phrase_like(
+        candidate_intervals,
+        reference_seconds,
+    ):
+        return False
+
+    strengths = _sparse_bridge_candidate_strengths(
+        features,
+        candidate_times,
+        reference_seconds,
+    )
+    previous_strength = _positive_median(strengths[:-1])
+    endpoint_strength = float(strengths[-1])
+    if previous_strength <= 0.0:
+        return False
+
+    previous_is_context_weak = (
+        previous_strength
+        < context_strength * SPARSE_BRIDGE_MUSICAL_CANDIDATE_STRENGTH_RATIO
+    )
+    endpoint_is_context_strong = (
+        endpoint_strength
+        >= context_strength * SPARSE_BRIDGE_MUSICAL_CANDIDATE_STRENGTH_RATIO
+    )
+    endpoint_is_local_jump = (
+        endpoint_strength
+        > previous_strength / SPARSE_BRIDGE_MUSICAL_LOCAL_STRENGTH_RATIO
+    )
+    if not (
+        previous_is_context_weak
+        and endpoint_is_context_strong
+        and endpoint_is_local_jump
+    ):
+        return False
+
+    return True
+
+
+def _sparse_bridge_intervals_are_phrase_like(
+    intervals: np.ndarray,
+    reference_seconds: float,
+) -> bool:
+    if intervals.size == 0:
+        return False
+    if not bool(np.all(np.isfinite(intervals) & (intervals > 0.0))):
+        return False
+    return bool(
+        np.all(intervals >= reference_seconds * BEAT_PHASE_BOOKEND_MIN_RATIO)
+        and np.all(intervals <= reference_seconds * BEAT_PHASE_PAUSE_GAP_RATIO)
+    )
+
+
+def _has_supported_sparse_musical_candidate_set(candidates: np.ndarray) -> bool:
+    return (
+        int(np.count_nonzero(candidates)) >= BEATS_PER_BAR
+        and float(np.mean(candidates)) >= SPARSE_BRIDGE_MIN_MUSICAL_CANDIDATE_FRACTION
+    )
+
+
+def _sparse_bridge_context_beat_strength(
+    features: HarmonicFeatures,
+    beat_times: np.ndarray,
+    anchor_index: int,
+    reference_seconds: float,
+) -> float:
+    start = max(0, anchor_index - SPARSE_BRIDGE_STABLE_CONTEXT_INTERVALS + 1)
+    context_times = beat_times[start : anchor_index + 1]
+    if context_times.size == 0:
+        return 0.0
+    strengths = _sparse_bridge_candidate_strengths(
+        features,
+        context_times,
+        reference_seconds,
+    )
+    strengths = strengths[np.isfinite(strengths) & (strengths > 0.0)]
+    if strengths.size == 0:
+        return 0.0
+    return float(np.median(strengths.astype(np.float64)))
+
+
+def _sparse_bridge_candidate_strength_ratio(
+    features: HarmonicFeatures,
+    candidate_seconds: float,
+    reference_seconds: float,
+    context_strength: float,
+) -> float:
+    return float(
+        _sparse_bridge_candidate_strength_ratios(
+            features,
+            np.asarray([candidate_seconds], dtype=np.float64),
+            reference_seconds,
+            context_strength,
+        )[0]
+    )
+
+
+def _sparse_bridge_candidate_strength_ratios(
+    features: HarmonicFeatures,
+    candidate_times: np.ndarray,
+    reference_seconds: float,
+    context_strength: float,
+) -> np.ndarray:
+    strengths = _sparse_bridge_candidate_strengths(
+        features,
+        candidate_times,
+        reference_seconds,
+    )
+    if context_strength <= 0.0:
+        return np.ones(candidate_times.size, dtype=np.float64)
+    return strengths / context_strength
+
+
+def _sparse_bridge_candidate_active_coverages(
+    features: HarmonicFeatures,
+    candidate_times: np.ndarray,
+    reference_seconds: float,
+) -> np.ndarray:
+    candidate_tolerance_seconds = _sparse_bridge_candidate_tolerance(reference_seconds)
+    return np.asarray(
+        [
+            _active_frame_coverage(
+                features,
+                float(candidate_seconds) - candidate_tolerance_seconds,
+                float(candidate_seconds) + candidate_tolerance_seconds,
+            )
+            for candidate_seconds in candidate_times.tolist()
+        ],
+        dtype=np.float64,
+    )
+
+
+def _sparse_bridge_candidate_strengths(
+    features: HarmonicFeatures,
+    candidate_times: np.ndarray,
+    reference_seconds: float,
+) -> np.ndarray:
+    return np.asarray(
+        [
+            _rms_peak(
+                features,
+                float(candidate_seconds)
+                - _sparse_bridge_candidate_tolerance(reference_seconds),
+                float(candidate_seconds)
+                + _sparse_bridge_candidate_tolerance(reference_seconds),
+            )
+            for candidate_seconds in candidate_times.tolist()
+        ],
+        dtype=np.float64,
+    )
+
+
+def _rms_peak(
+    features: HarmonicFeatures,
+    start_seconds: float,
+    end_seconds: float,
+) -> float:
+    if end_seconds <= start_seconds:
+        return 0.0
+    frame_count = min(features.times.size, features.rms.size)
+    if frame_count == 0:
+        return 0.0
+
+    times = features.times[:frame_count]
+    start_index = int(np.searchsorted(times, start_seconds, side="left"))
+    end_index = int(np.searchsorted(times, end_seconds, side="right"))
+    if end_index <= start_index:
+        return 0.0
+    return float(np.max(features.rms[:frame_count][start_index:end_index]))
+
+
+def _positive_median(values: np.ndarray) -> float:
+    positive_values = values[np.isfinite(values) & (values > 0.0)]
+    if positive_values.size == 0:
+        return 0.0
+    return float(np.median(positive_values.astype(np.float64)))
+
+
+def _same_beat_times(left: np.ndarray, right: np.ndarray) -> bool:
+    return left.size == right.size and bool(
+        np.allclose(left, right, atol=1e-9, rtol=0.0)
+    )
 
 
 def _local_beat_interval_references(intervals: np.ndarray) -> np.ndarray:

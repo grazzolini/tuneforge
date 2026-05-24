@@ -439,6 +439,421 @@ def test_analysis_keeps_phase_after_short_mid_song_half_beat_burst(monkeypatch):
     assert abs(timing["bars"][2]["start_seconds"] - stable_beat_times[8]) <= 0.035
 
 
+def test_analysis_bridges_sparse_silent_mid_song_gap_without_downbeat_shift(
+    monkeypatch,
+):
+    stable_beat_times = 0.25 + np.arange(24, dtype=np.float64) * 0.5
+    weak_gap_noise_time = 5.38
+    detected_beat_times = np.concatenate(
+        [
+            stable_beat_times[:9],
+            np.asarray([weak_gap_noise_time], dtype=np.float64),
+            stable_beat_times[12:],
+        ]
+    )
+    features = _synthetic_timing_features(
+        detected_beat_times,
+        accent_indices=set(),
+        inactive_ranges=((4.55, 6.05),),
+        weak_indices={9},
+    )
+    chord_timeline = [
+        _synthetic_chord_segment(
+            0.0,
+            features.duration_seconds,
+            label="C",
+            pitch_class=0,
+        )
+    ]
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_sparse_silent_gap.wav"))
+
+    timing = _assert_detected_sorted_timing(analysis["timing"])
+    bridged_gap_beats = [_beat_near(timing, seconds) for seconds in stable_beat_times[8:13]]
+    assert [beat["beat_in_bar"] for beat in bridged_gap_beats] == [1, 2, 3, 4, 1]
+    assert [beat["bar_index"] for beat in bridged_gap_beats] == [2, 2, 2, 2, 3]
+    assert abs(timing["bars"][2]["start_seconds"] - stable_beat_times[8]) <= 0.035
+    assert abs(timing["bars"][3]["start_seconds"] - stable_beat_times[12]) <= 0.035
+    assert all(
+        abs(beat["seconds"] - weak_gap_noise_time) > 0.08 for beat in timing["beats"]
+    )
+
+
+def test_analysis_bridges_silent_gap_past_weak_transient_cluster(monkeypatch):
+    stable_beat_times = 0.25 + np.arange(28, dtype=np.float64) * 0.5
+    weak_gap_noise_times = np.asarray(
+        [5.34, 5.49, 5.63, 6.04, 6.42],
+        dtype=np.float64,
+    )
+    detected_beat_times = np.concatenate(
+        [
+            stable_beat_times[:9],
+            weak_gap_noise_times,
+            stable_beat_times[14:],
+        ]
+    )
+    weak_indices = set(
+        range(stable_beat_times[:9].size, stable_beat_times[:9].size + 5)
+    )
+    features = _synthetic_timing_features(
+        detected_beat_times,
+        accent_indices=set(),
+        inactive_ranges=((4.55, 7.05),),
+        weak_indices=weak_indices,
+        weak_active_indices=weak_indices,
+    )
+    cluster_mask = (
+        (features.times >= weak_gap_noise_times[0])
+        & (features.times <= weak_gap_noise_times[1])
+    )
+    assert float(np.mean(features.active_frame_mask[cluster_mask])) > (
+        analysis_engine.SPARSE_BRIDGE_ACTIVE_COVERAGE_RATIO
+    )
+    chord_timeline = [
+        _synthetic_chord_segment(
+            0.0,
+            features.duration_seconds,
+            label="C",
+            pitch_class=0,
+        )
+    ]
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_sparse_silent_gap_cluster.wav"))
+
+    timing = _assert_detected_sorted_timing(analysis["timing"])
+    for seconds in stable_beat_times[8:15]:
+        _beat_near(timing, seconds)
+    assert all(
+        abs(beat["seconds"] - noise_seconds) > 0.06
+        for noise_seconds in weak_gap_noise_times.tolist()
+        for beat in timing["beats"]
+    )
+    assert abs(timing["bars"][3]["start_seconds"] - stable_beat_times[12]) <= 0.035
+
+
+def test_analysis_bridges_silent_gap_with_three_blips_before_loud_resume(
+    monkeypatch,
+):
+    stable_beat_times = 0.25 + np.arange(28, dtype=np.float64) * 0.5
+    weak_gap_noise_times = np.asarray([5.34, 5.49, 5.64], dtype=np.float64)
+    detected_beat_times = np.concatenate(
+        [
+            stable_beat_times[:9],
+            weak_gap_noise_times,
+            stable_beat_times[14:],
+        ]
+    )
+    weak_indices = set(
+        range(stable_beat_times[:9].size, stable_beat_times[:9].size + 3)
+    )
+    features = _synthetic_timing_features(
+        detected_beat_times,
+        accent_indices={stable_beat_times[:9].size + weak_gap_noise_times.size},
+        inactive_ranges=((4.35, 7.05),),
+        weak_indices=weak_indices,
+        weak_active_indices=weak_indices,
+        weak_rms=0.04,
+    )
+    gap_mask = (
+        (features.times >= weak_gap_noise_times[0])
+        & (features.times <= weak_gap_noise_times[-1])
+    )
+    assert float(np.mean(features.active_frame_mask[gap_mask])) > (
+        analysis_engine.SPARSE_BRIDGE_ACTIVE_COVERAGE_RATIO
+    )
+    chord_timeline = [
+        _synthetic_chord_segment(
+            0.0,
+            features.duration_seconds,
+            label="C",
+            pitch_class=0,
+        )
+    ]
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_sparse_three_blips_loud_resume.wav"))
+
+    timing = _assert_detected_sorted_timing(analysis["timing"])
+    for seconds in stable_beat_times[8:15]:
+        _beat_near(timing, seconds)
+    assert all(
+        abs(beat["seconds"] - noise_seconds) > 0.06
+        for noise_seconds in weak_gap_noise_times.tolist()
+        for beat in timing["beats"]
+    )
+    _beat_near(timing, stable_beat_times[14])
+    assert abs(timing["bars"][3]["start_seconds"] - stable_beat_times[12]) <= 0.035
+
+
+def test_analysis_bridges_silent_gap_with_four_weak_active_blips(monkeypatch):
+    stable_beat_times = 0.25 + np.arange(30, dtype=np.float64) * 0.5
+    weak_gap_noise_times = np.asarray([5.07, 5.50, 5.93, 6.36], dtype=np.float64)
+    detected_beat_times = np.concatenate(
+        [
+            stable_beat_times[:9],
+            weak_gap_noise_times,
+            stable_beat_times[14:],
+        ]
+    )
+    weak_indices = set(
+        range(stable_beat_times[:9].size, stable_beat_times[:9].size + 4)
+    )
+    features = _synthetic_timing_features(
+        detected_beat_times,
+        accent_indices={stable_beat_times[:9].size + weak_gap_noise_times.size},
+        inactive_ranges=((4.35, 7.05),),
+        weak_indices=weak_indices,
+        weak_active_indices=weak_indices,
+        weak_rms=0.04,
+    )
+    context_strength = analysis_engine._sparse_bridge_context_beat_strength(
+        features,
+        features.times[features.beat_frames].astype(np.float64),
+        8,
+        0.5,
+    )
+    weak_strengths = analysis_engine._sparse_bridge_candidate_strengths(
+        features,
+        weak_gap_noise_times,
+        0.5,
+    )
+    weak_strength_ratio = float(np.median(weak_strengths)) / context_strength
+    assert 0.12 < weak_strength_ratio < (
+        analysis_engine.SPARSE_BRIDGE_MUSICAL_MIN_CONTEXT_STRENGTH_RATIO
+    )
+    weak_active_coverages = analysis_engine._sparse_bridge_candidate_active_coverages(
+        features,
+        weak_gap_noise_times,
+        0.5,
+    )
+    assert bool(np.all(weak_active_coverages > analysis_engine.SPARSE_BRIDGE_ACTIVE_COVERAGE_RATIO))
+    chord_timeline = [
+        _synthetic_chord_segment(
+            0.0,
+            features.duration_seconds,
+            label="C",
+            pitch_class=0,
+        )
+    ]
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_sparse_four_weak_blips.wav"))
+
+    timing = _assert_detected_sorted_timing(analysis["timing"])
+    for seconds in stable_beat_times[8:15]:
+        _beat_near(timing, seconds)
+    assert all(
+        abs(beat["seconds"] - noise_seconds) > 0.06
+        for noise_seconds in weak_gap_noise_times.tolist()
+        for beat in timing["beats"]
+    )
+    _beat_near(timing, stable_beat_times[14])
+    assert abs(timing["bars"][3]["start_seconds"] - stable_beat_times[12]) <= 0.035
+
+
+def test_analysis_preserves_sparse_gap_relock_onset_over_weak_noise(
+    monkeypatch,
+):
+    stable_beat_times = 0.25 + np.arange(9, dtype=np.float64) * 0.5
+    weak_relock_noise_time = 6.24
+    resume_time = 6.33
+    post_resume_times = resume_time + np.arange(1, 12, dtype=np.float64) * 0.5
+    detected_beat_times = np.concatenate(
+        [
+            stable_beat_times,
+            np.asarray([weak_relock_noise_time, resume_time], dtype=np.float64),
+            post_resume_times,
+        ]
+    )
+    features = _synthetic_timing_features(
+        detected_beat_times,
+        accent_indices=set(),
+        inactive_ranges=((4.55, 6.27),),
+        weak_indices={stable_beat_times.size},
+    )
+    weak_to_resume_mask = (
+        (features.times >= weak_relock_noise_time) & (features.times <= resume_time)
+    )
+    weak_to_resume_coverage = float(
+        np.mean(features.active_frame_mask[weak_to_resume_mask])
+    )
+    assert weak_to_resume_coverage > analysis_engine.SPARSE_BRIDGE_ACTIVE_COVERAGE_RATIO
+    chord_timeline = [
+        _synthetic_chord_segment(
+            0.0,
+            features.duration_seconds,
+            label="C",
+            pitch_class=0,
+        )
+    ]
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_sparse_relock_noise.wav"))
+
+    timing = _assert_detected_sorted_timing(analysis["timing"])
+    for seconds in (4.75, 5.25, 5.75, resume_time):
+        _beat_near(timing, seconds)
+    assert all(
+        abs(beat["seconds"] - weak_relock_noise_time) > 0.04
+        for beat in timing["beats"]
+    )
+
+
+def test_analysis_skips_off_grid_weak_sparse_relock_noise(monkeypatch):
+    stable_beat_times = 0.25 + np.arange(9, dtype=np.float64) * 0.5
+    weak_relock_noise_time = 6.07
+    resume_time = 6.25
+    post_resume_times = resume_time + np.arange(1, 12, dtype=np.float64) * 0.5
+    detected_beat_times = np.concatenate(
+        [
+            stable_beat_times,
+            np.asarray([weak_relock_noise_time, resume_time], dtype=np.float64),
+            post_resume_times,
+        ]
+    )
+    assert abs(weak_relock_noise_time - resume_time) > (
+        analysis_engine.SPARSE_BRIDGE_RELOCK_TOLERANCE_RATIO * 0.5
+    )
+    features = _synthetic_timing_features(
+        detected_beat_times,
+        accent_indices=set(),
+        inactive_ranges=((4.55, 6.10),),
+        weak_indices={stable_beat_times.size},
+    )
+    weak_to_resume_mask = (
+        (features.times >= weak_relock_noise_time) & (features.times <= resume_time)
+    )
+    weak_to_resume_coverage = float(
+        np.mean(features.active_frame_mask[weak_to_resume_mask])
+    )
+    assert weak_to_resume_coverage > analysis_engine.SPARSE_BRIDGE_ACTIVE_COVERAGE_RATIO
+    chord_timeline = [
+        _synthetic_chord_segment(
+            0.0,
+            features.duration_seconds,
+            label="C",
+            pitch_class=0,
+        )
+    ]
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_sparse_off_grid_relock_noise.wav"))
+
+    timing = _assert_detected_sorted_timing(analysis["timing"])
+    for seconds in (4.75, 5.25, 5.75, resume_time):
+        _beat_near(timing, seconds)
+    assert all(
+        abs(beat["seconds"] - weak_relock_noise_time) > 0.04
+        for beat in timing["beats"]
+    )
+
+
+def test_analysis_skips_off_grid_min_step_noise_before_later_relock(monkeypatch):
+    stable_beat_times = 0.25 + np.arange(9, dtype=np.float64) * 0.5
+    weak_relock_noise_time = 6.05
+    resume_time = 6.75
+    post_resume_times = resume_time + np.arange(1, 12, dtype=np.float64) * 0.5
+    detected_beat_times = np.concatenate(
+        [
+            stable_beat_times,
+            np.asarray([weak_relock_noise_time, resume_time], dtype=np.float64),
+            post_resume_times,
+        ]
+    )
+    weak_step_count = int(
+        round((weak_relock_noise_time - stable_beat_times[-1]) / 0.5)
+    )
+    resume_step_count = int(round((resume_time - stable_beat_times[-1]) / 0.5))
+    assert weak_step_count == analysis_engine.SPARSE_BRIDGE_MIN_GRID_STEPS
+    assert resume_step_count == analysis_engine.SPARSE_BRIDGE_MIN_GRID_STEPS + 1
+    features = _synthetic_timing_features(
+        detected_beat_times,
+        accent_indices=set(),
+        inactive_ranges=((4.55, 6.13),),
+        weak_indices={stable_beat_times.size},
+    )
+    weak_to_resume_mask = (
+        (features.times >= weak_relock_noise_time) & (features.times <= resume_time)
+    )
+    weak_to_resume_coverage = float(
+        np.mean(features.active_frame_mask[weak_to_resume_mask])
+    )
+    assert weak_to_resume_coverage > analysis_engine.SPARSE_BRIDGE_ACTIVE_COVERAGE_RATIO
+    chord_timeline = [
+        _synthetic_chord_segment(
+            0.0,
+            features.duration_seconds,
+            label="C",
+            pitch_class=0,
+        )
+    ]
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_sparse_later_relock.wav"))
+
+    timing = _assert_detected_sorted_timing(analysis["timing"])
+    for seconds in (4.75, 5.25, 5.75, 6.25, resume_time):
+        _beat_near(timing, seconds)
+    assert all(
+        abs(beat["seconds"] - weak_relock_noise_time) > 0.04
+        for beat in timing["beats"]
+    )
+
+
+def test_analysis_skips_too_early_weak_sparse_relock_noise(monkeypatch):
+    stable_beat_times = 0.25 + np.arange(9, dtype=np.float64) * 0.5
+    weak_relock_noise_time = 5.90
+    resume_time = 6.25
+    post_resume_times = resume_time + np.arange(1, 12, dtype=np.float64) * 0.5
+    detected_beat_times = np.concatenate(
+        [
+            stable_beat_times,
+            np.asarray([weak_relock_noise_time, resume_time], dtype=np.float64),
+            post_resume_times,
+        ]
+    )
+    weak_step_count = int(
+        round((weak_relock_noise_time - stable_beat_times[-1]) / 0.5)
+    )
+    resume_step_count = int(round((resume_time - stable_beat_times[-1]) / 0.5))
+    assert weak_step_count < analysis_engine.SPARSE_BRIDGE_MIN_GRID_STEPS
+    assert resume_step_count == analysis_engine.SPARSE_BRIDGE_MIN_GRID_STEPS
+    features = _synthetic_timing_features(
+        detected_beat_times,
+        accent_indices=set(),
+        inactive_ranges=((4.55, 5.93),),
+        weak_indices={stable_beat_times.size},
+    )
+    weak_to_resume_mask = (
+        (features.times >= weak_relock_noise_time) & (features.times <= resume_time)
+    )
+    weak_to_resume_coverage = float(
+        np.mean(features.active_frame_mask[weak_to_resume_mask])
+    )
+    assert weak_to_resume_coverage > analysis_engine.SPARSE_BRIDGE_ACTIVE_COVERAGE_RATIO
+    chord_timeline = [
+        _synthetic_chord_segment(
+            0.0,
+            features.duration_seconds,
+            label="C",
+            pitch_class=0,
+        )
+    ]
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_sparse_too_early_relock_noise.wav"))
+
+    timing = _assert_detected_sorted_timing(analysis["timing"])
+    for seconds in (4.75, 5.25, 5.75, resume_time):
+        _beat_near(timing, seconds)
+    assert all(
+        abs(beat["seconds"] - weak_relock_noise_time) > 0.04
+        for beat in timing["beats"]
+    )
+
+
 def test_analysis_recovers_early_fast_start_burst_without_shifting_downbeat_offset(
     monkeypatch,
 ):
@@ -501,6 +916,298 @@ def test_analysis_preserves_sustained_local_tempo_change(monkeypatch):
     local_tempo_beats = [_beat_near(timing, seconds) for seconds in beat_times[8:12]]
     assert [beat["beat_in_bar"] for beat in local_tempo_beats] == [1, 2, 3, 4]
     assert max(np.diff([beat["seconds"] for beat in local_tempo_beats])) < 0.35
+
+
+def test_analysis_preserves_active_slow_tempo_phrase_when_gap_bridge_enabled(
+    monkeypatch,
+):
+    slow_interval_seconds = 0.625
+    slow_phrase_times = 4.375 + np.arange(8, dtype=np.float64) * slow_interval_seconds
+    beat_times = np.concatenate(
+        [
+            0.25 + np.arange(8, dtype=np.float64) * 0.5,
+            slow_phrase_times,
+            9.25 + np.arange(8, dtype=np.float64) * 0.5,
+        ]
+    )
+    active_edge_seconds = 0.08
+    sparse_phrase_inactive_ranges = tuple(
+        (
+            float(beat_times[index] + active_edge_seconds),
+            float(beat_times[index + 1] - active_edge_seconds),
+        )
+        for index in range(7, 15)
+    )
+    features = _synthetic_timing_features(
+        beat_times,
+        accent_indices=set(),
+        inactive_ranges=sparse_phrase_inactive_ranges,
+    )
+    phrase_mask = (features.times >= beat_times[7]) & (features.times <= beat_times[15])
+    phrase_coverage = float(np.mean(features.active_frame_mask[phrase_mask]))
+    assert 0.18 < phrase_coverage <= 0.35
+    chord_timeline = [
+        _synthetic_chord_segment(
+            0.0,
+            features.duration_seconds,
+            label="C",
+            pitch_class=0,
+        )
+    ]
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_active_slow_tempo_phrase.wav"))
+
+    timing = _assert_detected_sorted_timing(analysis["timing"])
+    assert len(timing["beats"]) == beat_times.size
+    slow_tempo_beats = [_beat_near(timing, seconds) for seconds in beat_times[8:16]]
+    assert [beat["beat_in_bar"] for beat in slow_tempo_beats] == [
+        1,
+        2,
+        3,
+        4,
+        1,
+        2,
+        3,
+        4,
+    ]
+    slow_tempo_intervals = np.diff([beat["seconds"] for beat in slow_tempo_beats])
+    assert min(slow_tempo_intervals) >= 0.60
+    assert max(slow_tempo_intervals) <= 0.65
+
+
+def test_analysis_preserves_sparse_active_musical_phrase_with_rubato(monkeypatch):
+    sparse_phrase_times = np.asarray(
+        [4.31, 4.94, 5.46, 6.19, 6.76, 7.51, 8.04, 8.68],
+        dtype=np.float64,
+    )
+    beat_times = np.concatenate(
+        [
+            0.25 + np.arange(8, dtype=np.float64) * 0.5,
+            sparse_phrase_times,
+            9.25 + np.arange(8, dtype=np.float64) * 0.5,
+        ]
+    )
+    active_edge_seconds = 0.08
+    sparse_phrase_inactive_ranges = tuple(
+        (
+            float(beat_times[index] + active_edge_seconds),
+            float(beat_times[index + 1] - active_edge_seconds),
+        )
+        for index in range(7, 15)
+    )
+    features = _synthetic_timing_features(
+        beat_times,
+        accent_indices=set(),
+        inactive_ranges=sparse_phrase_inactive_ranges,
+    )
+    phrase_mask = (features.times >= beat_times[7]) & (features.times <= beat_times[15])
+    phrase_coverage = float(np.mean(features.active_frame_mask[phrase_mask]))
+    assert phrase_coverage <= analysis_engine.SPARSE_BRIDGE_ACTIVE_COVERAGE_RATIO
+    chord_timeline = [
+        _synthetic_chord_segment(
+            0.0,
+            features.duration_seconds,
+            label="C",
+            pitch_class=0,
+        )
+    ]
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_sparse_active_rubato_phrase.wav"))
+
+    timing = _assert_detected_sorted_timing(analysis["timing"])
+    assert len(timing["beats"]) == beat_times.size
+    for seconds in sparse_phrase_times.tolist():
+        _beat_near(timing, seconds)
+    phrase_intervals = np.diff(
+        [_beat_near(timing, seconds)["seconds"] for seconds in sparse_phrase_times]
+    )
+    assert max(phrase_intervals) - min(phrase_intervals) > 0.15
+
+
+def test_analysis_preserves_one_bar_sparse_phrase_when_endpoint_is_phrase_beat(
+    monkeypatch,
+):
+    sparse_phrase_times = np.asarray([4.31, 4.94, 5.46, 6.19], dtype=np.float64)
+    beat_times = np.concatenate(
+        [
+            0.25 + np.arange(8, dtype=np.float64) * 0.5,
+            sparse_phrase_times,
+            6.75 + np.arange(8, dtype=np.float64) * 0.5,
+        ]
+    )
+    active_edge_seconds = 0.08
+    sparse_phrase_inactive_ranges = tuple(
+        (
+            float(beat_times[index] + active_edge_seconds),
+            float(beat_times[index + 1] - active_edge_seconds),
+        )
+        for index in range(7, 11)
+    )
+    features = _synthetic_timing_features(
+        beat_times,
+        accent_indices=set(),
+        inactive_ranges=sparse_phrase_inactive_ranges,
+    )
+    phrase_mask = (features.times >= beat_times[7]) & (features.times <= beat_times[11])
+    assert float(np.mean(features.active_frame_mask[phrase_mask])) <= (
+        analysis_engine.SPARSE_BRIDGE_ACTIVE_COVERAGE_RATIO
+    )
+    chord_timeline = [
+        _synthetic_chord_segment(
+            0.0,
+            features.duration_seconds,
+            label="C",
+            pitch_class=0,
+        )
+    ]
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_one_bar_sparse_active_phrase.wav"))
+
+    timing = _assert_detected_sorted_timing(analysis["timing"])
+    assert len(timing["beats"]) == beat_times.size
+    for seconds in sparse_phrase_times.tolist():
+        _beat_near(timing, seconds)
+    phrase_intervals = np.diff(
+        [_beat_near(timing, seconds)["seconds"] for seconds in sparse_phrase_times]
+    )
+    assert max(phrase_intervals) - min(phrase_intervals) > 0.15
+
+
+def test_analysis_preserves_one_bar_sparse_phrase_with_accented_endpoint(
+    monkeypatch,
+):
+    sparse_phrase_times = np.asarray([4.31, 4.94, 5.46, 6.02], dtype=np.float64)
+    beat_times = np.concatenate(
+        [
+            0.25 + np.arange(8, dtype=np.float64) * 0.5,
+            sparse_phrase_times,
+            6.75 + np.arange(8, dtype=np.float64) * 0.5,
+        ]
+    )
+    accented_endpoint_index = 11
+    loud_indices = set(range(8)) | {accented_endpoint_index}
+    active_edge_seconds = 0.08
+    sparse_phrase_inactive_ranges = tuple(
+        (
+            float(beat_times[index] + active_edge_seconds),
+            float(beat_times[index + 1] - active_edge_seconds),
+        )
+        for index in range(7, 11)
+    )
+    features = _synthetic_timing_features(
+        beat_times,
+        accent_indices=loud_indices,
+        inactive_ranges=sparse_phrase_inactive_ranges,
+    )
+    context_strength = analysis_engine._sparse_bridge_context_beat_strength(
+        features,
+        beat_times,
+        7,
+        0.5,
+    )
+    phrase_strengths = analysis_engine._sparse_bridge_candidate_strengths(
+        features,
+        sparse_phrase_times,
+        0.5,
+    )
+    assert float(np.median(phrase_strengths[:-1])) < (
+        context_strength * analysis_engine.SPARSE_BRIDGE_MUSICAL_CANDIDATE_STRENGTH_RATIO
+    )
+    assert phrase_strengths[-1] >= (
+        context_strength * analysis_engine.SPARSE_BRIDGE_MUSICAL_CANDIDATE_STRENGTH_RATIO
+    )
+    chord_timeline = [
+        _synthetic_chord_segment(
+            0.0,
+            features.duration_seconds,
+            label="C",
+            pitch_class=0,
+        )
+    ]
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_one_bar_sparse_accented_endpoint.wav"))
+
+    timing = _assert_detected_sorted_timing(analysis["timing"])
+    assert len(timing["beats"]) == beat_times.size
+    for seconds in sparse_phrase_times.tolist():
+        _beat_near(timing, seconds)
+    phrase_intervals = np.diff(
+        [_beat_near(timing, seconds)["seconds"] for seconds in sparse_phrase_times]
+    )
+    assert max(phrase_intervals) - min(phrase_intervals) > 0.08
+
+
+def test_analysis_preserves_quiet_sparse_musical_phrase_after_loud_context(
+    monkeypatch,
+):
+    sparse_phrase_times = np.asarray(
+        [4.31, 4.94, 5.46, 6.19, 6.76, 7.51, 8.04, 8.68],
+        dtype=np.float64,
+    )
+    loud_resume_times = 9.25 + np.arange(8, dtype=np.float64) * 0.5
+    beat_times = np.concatenate(
+        [
+            0.25 + np.arange(8, dtype=np.float64) * 0.5,
+            sparse_phrase_times,
+            loud_resume_times,
+        ]
+    )
+    loud_indices = set(range(8)) | set(range(16, beat_times.size))
+    active_edge_seconds = 0.08
+    sparse_phrase_inactive_ranges = tuple(
+        (
+            float(beat_times[index] + active_edge_seconds),
+            float(beat_times[index + 1] - active_edge_seconds),
+        )
+        for index in range(7, 15)
+    )
+    features = _synthetic_timing_features(
+        beat_times,
+        accent_indices=loud_indices,
+        inactive_ranges=sparse_phrase_inactive_ranges,
+    )
+    context_strength = analysis_engine._sparse_bridge_context_beat_strength(
+        features,
+        beat_times,
+        7,
+        0.5,
+    )
+    phrase_strengths = analysis_engine._sparse_bridge_candidate_strengths(
+        features,
+        sparse_phrase_times,
+        0.5,
+    )
+    assert float(np.median(phrase_strengths)) < (
+        context_strength * analysis_engine.SPARSE_BRIDGE_MUSICAL_CANDIDATE_STRENGTH_RATIO
+    )
+    phrase_mask = (features.times >= beat_times[7]) & (features.times <= beat_times[15])
+    assert float(np.mean(features.active_frame_mask[phrase_mask])) <= (
+        analysis_engine.SPARSE_BRIDGE_ACTIVE_COVERAGE_RATIO
+    )
+    chord_timeline = [
+        _synthetic_chord_segment(
+            0.0,
+            features.duration_seconds,
+            label="C",
+            pitch_class=0,
+        )
+    ]
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_quiet_sparse_active_rubato_phrase.wav"))
+
+    timing = _assert_detected_sorted_timing(analysis["timing"])
+    assert len(timing["beats"]) == beat_times.size
+    for seconds in sparse_phrase_times.tolist():
+        _beat_near(timing, seconds)
+    phrase_intervals = np.diff(
+        [_beat_near(timing, seconds)["seconds"] for seconds in sparse_phrase_times]
+    )
+    assert max(phrase_intervals) - min(phrase_intervals) > 0.15
 
 
 def test_analysis_preserves_one_bar_double_time_phrase(monkeypatch):
@@ -700,7 +1407,13 @@ def _synthetic_timing_features(
     beat_times: np.ndarray,
     *,
     accent_indices: set[int],
+    inactive_ranges: tuple[tuple[float, float], ...] = (),
+    weak_indices: set[int] | None = None,
+    weak_active_indices: set[int] | None = None,
+    weak_rms: float = 0.01,
 ) -> HarmonicFeatures:
+    weak_indices = set() if weak_indices is None else weak_indices
+    weak_active_indices = set() if weak_active_indices is None else weak_active_indices
     duration_seconds = float(beat_times[-1] + 0.6)
     frame_seconds = ANALYSIS_HOP_LENGTH / ANALYSIS_SAMPLE_RATE
     frame_count = int(np.ceil(duration_seconds / frame_seconds)) + 1
@@ -713,7 +1426,21 @@ def _synthetic_timing_features(
     for index, beat_frame in enumerate(beat_frames.tolist()):
         start_frame = max(0, beat_frame - 1)
         end_frame = min(frame_count, beat_frame + 2)
-        rms[start_frame:end_frame] = 0.85 if index in accent_indices else 0.28
+        if index in weak_indices:
+            rms[start_frame:end_frame] = weak_rms
+        else:
+            rms[start_frame:end_frame] = 0.85 if index in accent_indices else 0.28
+    active_frame_mask = np.ones(frame_count, dtype=bool)
+    for start_seconds, end_seconds in inactive_ranges:
+        inactive = (times >= start_seconds) & (times <= end_seconds)
+        rms[inactive] = 0.001
+        active_frame_mask[inactive] = False
+    for index in weak_active_indices:
+        beat_frame = int(beat_frames[index])
+        start_frame = max(0, beat_frame - 1)
+        end_frame = min(frame_count, beat_frame + 2)
+        rms[start_frame:end_frame] = weak_rms
+        active_frame_mask[start_frame:end_frame] = True
 
     timeline = np.linspace(
         0.0,
@@ -724,8 +1451,14 @@ def _synthetic_timing_features(
     accent_times = (
         beat_times[sorted(accent_indices)] if accent_indices else np.zeros(0, dtype=np.float64)
     )
+    weak_times = beat_times[sorted(weak_indices)] if weak_indices else np.zeros(0, dtype=np.float64)
+    strong_indices = [
+        index for index in range(beat_times.size) if index not in weak_indices
+    ]
+    strong_times = beat_times[strong_indices]
     percussive_signal = (
-        _pulse_train_at_times(timeline, beat_times, amplitude=0.18)
+        _pulse_train_at_times(timeline, strong_times, amplitude=0.18)
+        + _pulse_train_at_times(timeline, weak_times, amplitude=0.02)
         + _pulse_train_at_times(timeline, accent_times, amplitude=0.48)
     ).astype(np.float32)
     chroma = np.zeros((12, frame_count), dtype=np.float32)
@@ -741,7 +1474,7 @@ def _synthetic_timing_features(
         chroma_cens=chroma,
         rms=rms,
         times=times,
-        active_frame_mask=np.ones(frame_count, dtype=bool),
+        active_frame_mask=active_frame_mask,
         beat_frames=beat_frames,
         tempo_bpm=120.0,
         estimated_reference_hz=None,

@@ -4,6 +4,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { vi } from "vitest";
 import App from "../App";
 import type {
+  BulkJobRequest,
+  BulkJobsResponse,
   ListJobsParams,
   ListProjectsParams,
   SyncPairingAnswerRequest,
@@ -55,6 +57,7 @@ const {
   mockListArtifacts,
   mockListJobs,
   mockCancelJob,
+  mockBulkJobs,
   mockGetSyncIdentity,
   mockGetSyncTransportStatus,
   mockStartSyncListener,
@@ -1428,6 +1431,44 @@ const {
     state.jobs = state.jobs.map((job, index) => (index === jobIndex ? cancelledJob : job));
     return { job: clone(cancelledJob) };
   });
+  const mockBulkJobs = vi.fn(async (body: BulkJobRequest): Promise<BulkJobsResponse> => {
+    const activeStatuses = new Set(["pending", "running"]);
+    const jobs: Array<Record<string, unknown>> = [];
+    const skipped: NonNullable<BulkJobsResponse["skipped"]> = [];
+
+    state.projects.forEach((project) => {
+      const projectId = String(project.id);
+      const projectName = String(project.display_name ?? projectId);
+      const hasActiveDuplicate = state.jobs.some(
+        (job) =>
+          job.project_id === projectId &&
+          job.type === body.job_type &&
+          typeof job.status === "string" &&
+          activeStatuses.has(job.status),
+      );
+      if (hasActiveDuplicate) {
+        skipped.push({ project_id: projectId, project_name: projectName, reason: "active_job" });
+        return;
+      }
+
+      const queuedJob = makeMockJob({
+        project_id: projectId,
+        type: body.job_type,
+        status: "pending",
+        progress: 0,
+        created_at: createdAt,
+        updated_at: createdAt,
+      });
+      jobs.push(queuedJob);
+    });
+
+    state.jobs = [...jobs, ...state.jobs];
+    return {
+      created_jobs: clone(jobs) as NonNullable<BulkJobsResponse["created_jobs"]>,
+      total_projects: state.projects.length,
+      skipped,
+    };
+  });
   function normalizeSyncPeer(peer: Record<string, unknown>): SyncTrustedPeerSchema {
     return {
       device_id: String(peer.device_id ?? "device_peer"),
@@ -2132,6 +2173,7 @@ const {
     mockListArtifacts,
     mockListJobs,
     mockCancelJob,
+    mockBulkJobs,
     mockGetSyncIdentity,
     mockGetSyncTransportStatus,
     mockStartSyncListener,
@@ -2199,6 +2241,7 @@ export {
   mockListArtifacts,
   mockListJobs,
   mockCancelJob,
+  mockBulkJobs,
   mockGetSyncIdentity,
   mockGetSyncTransportStatus,
   mockStartSyncListener,
@@ -2261,6 +2304,7 @@ vi.mock("../lib/api", async (importOriginal) => {
       listArtifacts: mockListArtifacts,
       listJobs: mockListJobs,
       cancelJob: mockCancelJob,
+      bulkJobs: mockBulkJobs,
       getSyncIdentity: mockGetSyncIdentity,
       getSyncTransportStatus: mockGetSyncTransportStatus,
       startSyncListener: mockStartSyncListener,
@@ -2650,6 +2694,7 @@ export function resetAppTestHarness() {
   mockListArtifacts.mockClear();
   mockListJobs.mockClear();
   mockCancelJob.mockClear();
+  mockBulkJobs.mockClear();
   mockGetSyncIdentity.mockClear();
   mockGetSyncTransportStatus.mockClear();
   mockStartSyncListener.mockClear();

@@ -383,6 +383,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/jobs/bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Bulk Jobs */
+        post: operations["create_bulk_jobs_api_v1_jobs_bulk_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/jobs/{job_id}": {
         parameters: {
             query?: never;
@@ -802,6 +819,42 @@ export interface components {
         ArtifactsResponse: {
             /** Artifacts */
             artifacts: components["schemas"]["ArtifactSchema"][];
+        };
+        /** BulkJobRequest */
+        BulkJobRequest: {
+            /**
+             * Job Type
+             * @description Project job type to enqueue for every project.
+             * @enum {string}
+             */
+            job_type: "analyze" | "chords" | "lyrics" | "stems";
+            /** Chord Backend */
+            chord_backend?: string | null;
+            /** Chord Backend Fallback From */
+            chord_backend_fallback_from?: string | null;
+            /** Stem Model */
+            stem_model?: string | null;
+        };
+        /** BulkJobSkippedProjectSchema */
+        BulkJobSkippedProjectSchema: {
+            /** Project Id */
+            project_id: string;
+            /** Project Name */
+            project_name: string;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "active_job" | "locked" | "creation_failed" | "no_existing_stems";
+        };
+        /** BulkJobsResponse */
+        BulkJobsResponse: {
+            /** Created Jobs */
+            created_jobs: components["schemas"]["JobSchema"][];
+            /** Total Projects */
+            total_projects: number;
+            /** Skipped */
+            skipped: components["schemas"]["BulkJobSkippedProjectSchema"][];
         };
         /** ChordBackendCapabilitiesSchema */
         ChordBackendCapabilitiesSchema: {
@@ -3121,6 +3174,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JobsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_bulk_jobs_api_v1_jobs_bulk_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkJobRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkJobsResponse"];
                 };
             };
             /** @description Validation Error */

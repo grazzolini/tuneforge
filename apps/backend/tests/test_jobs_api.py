@@ -4,10 +4,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
-from app.models import Job, Project
+from app.models import Artifact, Job, Project
 
 _BASE_TIME = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -16,13 +17,22 @@ def _timestamp(minutes: int) -> datetime:
     return _BASE_TIME + timedelta(minutes=minutes)
 
 
-def _add_project(session: Session, project_id: str, *, display_name: str | None = None) -> None:
+def _add_project(
+    session: Session,
+    project_id: str,
+    *,
+    display_name: str | None = None,
+    sync_status: str = "local",
+    sync_status_reason: str | None = None,
+) -> None:
     session.add(
         Project(
             id=project_id,
             display_name=display_name or project_id,
             source_path=f"/tmp/{project_id}.wav",
             imported_path=f"/tmp/tuneforge/{project_id}.wav",
+            sync_status=sync_status,
+            sync_status_reason=sync_status_reason,
         )
     )
 
@@ -33,6 +43,7 @@ def _add_job(
     status: str,
     *,
     project_id: str | None = None,
+    job_type: str = "test",
     created_at: datetime | None = None,
     started_at: datetime | None = None,
     completed_at: datetime | None = None,
@@ -43,7 +54,7 @@ def _add_job(
         Job(
             id=job_id,
             project_id=project_id,
-            type="test",
+            type=job_type,
             status=status,
             progress=0,
             error_message=None,
@@ -58,6 +69,209 @@ def _add_job(
             updated_at=updated_at or completed_at or started_at or effective_created_at,
         )
     )
+
+
+def _add_artifact(
+    session: Session,
+    artifact_id: str,
+    project_id: str,
+    artifact_type: str,
+    *,
+    metadata: dict[str, str] | None = None,
+) -> None:
+    session.add(
+        Artifact(
+            id=artifact_id,
+            project_id=project_id,
+            type=artifact_type,
+            format="wav",
+            path=f"/tmp/{artifact_id}.wav",
+            metadata_json=metadata or {},
+            generated_by="test",
+            can_delete=True,
+            can_regenerate=True,
+        )
+    )
+
+
+def _capture_enqueued_jobs(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    enqueued: list[str] = []
+    monkeypatch.setattr(client.app.state.job_runner, "enqueue", enqueued.append)
+    return enqueued
+
+
+def test_bulk_jobs_creates_jobs_for_editable_projects(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    enqueued = _capture_enqueued_jobs(client, monkeypatch)
+    with SessionLocal() as session:
+        _add_project(session, "project_a")
+        _add_project(session, "project_b")
+        session.commit()
+
+    response = client.post(
+        "/api/v1/jobs/bulk",
+        json={"job_type": "chords", "chord_backend": "tuneforge-fast"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    created_jobs = payload["created_jobs"]
+    assert payload["total_projects"] == 2
+    assert payload["skipped"] == []
+    assert {job["project_id"] for job in created_jobs} == {"project_a", "project_b"}
+    assert {job["type"] for job in created_jobs} == {"chords"}
+    assert {job["status"] for job in created_jobs} == {"pending"}
+    assert set(enqueued) == {job["id"] for job in created_jobs}
+
+    with SessionLocal() as session:
+        jobs = list(session.scalars(select(Job).where(Job.type == "chords")))
+        assert {job.project_id for job in jobs} == {"project_a", "project_b"}
+        assert all(job.payload_json["force"] is True for job in jobs)
+        assert all(job.payload_json["overwrite_user_edits"] is True for job in jobs)
+        assert all(job.payload_json["chord_backend"] == "tuneforge-fast" for job in jobs)
+
+
+def test_bulk_lyrics_refreshes_existing_transcripts(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    enqueued = _capture_enqueued_jobs(client, monkeypatch)
+    with SessionLocal() as session:
+        _add_project(session, "project_a")
+        session.commit()
+
+    response = client.post("/api/v1/jobs/bulk", json={"job_type": "lyrics"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [job["project_id"] for job in payload["created_jobs"]] == ["project_a"]
+    assert set(enqueued) == {payload["created_jobs"][0]["id"]}
+    with SessionLocal() as session:
+        job = session.scalar(select(Job).where(Job.type == "lyrics"))
+        assert job is not None
+        assert job.payload_json["force"] is True
+
+
+def test_bulk_stems_refreshes_only_sources_with_existing_stems(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    enqueued = _capture_enqueued_jobs(client, monkeypatch)
+    with SessionLocal() as session:
+        _add_project(session, "project_with_stems")
+        _add_project(session, "project_without_stems", display_name="No Stems Song")
+        _add_artifact(session, "source_existing", "project_with_stems", "source_audio")
+        _add_artifact(session, "mix_existing", "project_with_stems", "preview_mix")
+        _add_artifact(session, "mix_without_stems", "project_with_stems", "preview_mix")
+        _add_artifact(session, "source_without", "project_without_stems", "source_audio")
+        _add_artifact(
+            session,
+            "stem_source_existing",
+            "project_with_stems",
+            "vocal_stem",
+            metadata={"source_artifact_id": "source_existing", "stem_model": "htdemucs_6s"},
+        )
+        _add_artifact(
+            session,
+            "stem_mix_existing",
+            "project_with_stems",
+            "vocal_stem",
+            metadata={"source_artifact_id": "mix_existing", "stem_model": "htdemucs_6s"},
+        )
+        session.commit()
+
+    response = client.post(
+        "/api/v1/jobs/bulk",
+        json={
+            "job_type": "stems",
+            "chord_backend": "tuneforge-fast",
+            "chord_backend_fallback_from": "crema-advanced",
+            "stem_model": "htdemucs_ft",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total_projects"] == 2
+    assert payload["skipped"] == [
+        {
+            "project_id": "project_without_stems",
+            "project_name": "No Stems Song",
+            "reason": "no_existing_stems",
+        }
+    ]
+    assert [job["project_id"] for job in payload["created_jobs"]] == [
+        "project_with_stems",
+        "project_with_stems",
+    ]
+    assert set(enqueued) == {job["id"] for job in payload["created_jobs"]}
+    with SessionLocal() as session:
+        jobs = list(session.scalars(select(Job).where(Job.type == "stems").order_by(Job.created_at.asc())))
+        assert {job.payload_json["source_artifact_id"] for job in jobs} == {"source_existing", "mix_existing"}
+        assert all(job.payload_json["force"] is True for job in jobs)
+        assert all(job.payload_json["chord_backend"] == "tuneforge-fast" for job in jobs)
+        assert all(job.payload_json["chord_backend_fallback_from"] == "crema-advanced" for job in jobs)
+        assert all(job.payload_json["stem_model"] == "htdemucs_ft" for job in jobs)
+
+
+def test_bulk_jobs_skips_active_duplicate_project_type(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    enqueued = _capture_enqueued_jobs(client, monkeypatch)
+    with SessionLocal() as session:
+        _add_project(session, "project_a", display_name="Active Song")
+        _add_project(session, "project_b")
+        _add_job(session, "job_existing", "pending", project_id="project_a", job_type="lyrics")
+        session.commit()
+
+    response = client.post("/api/v1/jobs/bulk", json={"job_type": "lyrics"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total_projects"] == 2
+    assert payload["skipped"] == [
+        {"project_id": "project_a", "project_name": "Active Song", "reason": "active_job"}
+    ]
+    assert [job["project_id"] for job in payload["created_jobs"]] == ["project_b"]
+    assert set(enqueued) == {payload["created_jobs"][0]["id"]}
+
+
+def test_bulk_jobs_skips_locked_project(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    enqueued = _capture_enqueued_jobs(client, monkeypatch)
+    with SessionLocal() as session:
+        _add_project(session, "project_editable")
+        _add_project(
+            session,
+            "project_locked",
+            display_name="Locked Song",
+            sync_status="remote_available",
+            sync_status_reason="Available from peer.",
+        )
+        session.commit()
+
+    response = client.post("/api/v1/jobs/bulk", json={"job_type": "analyze"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total_projects"] == 2
+    assert payload["skipped"] == [
+        {"project_id": "project_locked", "project_name": "Locked Song", "reason": "locked"}
+    ]
+    assert [job["project_id"] for job in payload["created_jobs"]] == ["project_editable"]
+    assert set(enqueued) == {payload["created_jobs"][0]["id"]}
+
+
+def test_bulk_jobs_rejects_unsupported_job_type(client: TestClient) -> None:
+    response = client.post("/api/v1/jobs/bulk", json={"job_type": "preview"})
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "INVALID_REQUEST"
 
 
 def test_list_jobs_returns_pagination_metadata(client: TestClient) -> None:

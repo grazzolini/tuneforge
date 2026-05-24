@@ -6,19 +6,21 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from subprocess import Popen
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.errors import AppError, JobCancelledError
 from app.models import Artifact, ChordTimeline, Job, Project, utcnow
+from app.schemas import AnalysisRequest, BulkJobRequest, ChordRequest, LyricsGenerateRequest, StemRequest
 from app.services.analysis import analyze_project
 from app.services.chord_backends import resolve_chord_backend
 from app.services.chords import detect_project_chords, project_chord_detection_source
 from app.services.lyrics import generate_project_lyrics
 from app.services.projects import get_mutable_project, get_project
-from app.services.stems import generate_stems
+from app.services.stem_models import STEM_ARTIFACT_TYPES, TWO_STEMS_MODEL_ID, resolve_stem_model
+from app.services.stems import generate_stems, resolve_stem_source_artifact
 from app.services.transformations import (
     build_preview_plan,
     build_single_transform_plan,
@@ -44,8 +46,27 @@ JobHandler = Callable[["JobExecutionContext", Session, Job], JobExecutionResult]
 JobSortBy = Literal["activity", "created_at", "started_at", "updated_at", "status"]
 JobSortOrder = Literal["asc", "desc"]
 JobTimestampSortBy = Literal["created_at", "started_at", "updated_at"]
+BulkActivityJobType = Literal["analyze", "chords", "lyrics", "stems"]
+BulkActivityJobSkipReason = Literal["active_job", "locked", "creation_failed", "no_existing_stems"]
+ProjectActivityJobPayload = AnalysisRequest | ChordRequest | LyricsGenerateRequest | StemRequest
 
+_ACTIVE_JOB_STATUSES = ("pending", "running")
+_BULK_ACTIVITY_JOB_TYPES = frozenset({"analyze", "chords", "lyrics", "stems"})
 _TERMINAL_JOB_STATUSES = ("completed", "cancelled", "failed")
+
+
+@dataclass(frozen=True, slots=True)
+class BulkActivityJobSkippedProject:
+    project_id: str
+    project_name: str
+    reason: BulkActivityJobSkipReason
+
+
+@dataclass(frozen=True, slots=True)
+class BulkActivityJobCreationResult:
+    jobs: list[Job]
+    total_projects: int
+    skipped: list[BulkActivityJobSkippedProject]
 
 
 def _job_activity_tie_breakers() -> tuple[Any, ...]:
@@ -165,6 +186,250 @@ def list_jobs(
         )
     )
     return ListedJobs(jobs=jobs, total=total)
+
+
+def validate_bulk_activity_job_type(job_type: str) -> BulkActivityJobType:
+    if job_type not in _BULK_ACTIVITY_JOB_TYPES:
+        raise AppError(
+            "INVALID_REQUEST",
+            "Unsupported bulk job type.",
+            status_code=422,
+            details={"supported_job_types": sorted(_BULK_ACTIVITY_JOB_TYPES)},
+        )
+    return cast(BulkActivityJobType, job_type)
+
+
+def create_project_activity_job(
+    session: Session,
+    runner: InProcessJobRunner,
+    *,
+    project_id: str,
+    job_type: BulkActivityJobType,
+    payload: ProjectActivityJobPayload,
+) -> Job:
+    project = get_mutable_project(session, project_id)
+    job = _create_project_activity_job(session, runner, project=project, job_type=job_type, payload=payload)
+    session.commit()
+    session.refresh(job)
+    runner.enqueue(job.id)
+    return job
+
+
+def create_bulk_activity_jobs(
+    session: Session,
+    runner: InProcessJobRunner,
+    *,
+    payload: BulkJobRequest,
+) -> BulkActivityJobCreationResult:
+    validated_job_type = validate_bulk_activity_job_type(payload.job_type)
+    projects = list(
+        session.scalars(
+            select(Project)
+            .where(Project.sync_status != "deleted")
+            .order_by(Project.updated_at.desc(), Project.id.desc())
+        )
+    )
+    created_jobs: list[Job] = []
+    skipped: list[BulkActivityJobSkippedProject] = []
+    for project in projects:
+        if _has_active_project_job(session, project_id=project.id, job_type=validated_job_type):
+            skipped.append(
+                BulkActivityJobSkippedProject(
+                    project_id=project.id,
+                    project_name=project.display_name,
+                    reason="active_job",
+                )
+            )
+            continue
+        if not project.sync_editable:
+            skipped.append(
+                BulkActivityJobSkippedProject(
+                    project_id=project.id,
+                    project_name=project.display_name,
+                    reason="locked",
+                )
+            )
+            continue
+        try:
+            project_jobs: list[Job] = []
+            for job_payload in _bulk_activity_job_payloads(
+                session,
+                project=project,
+                request=payload,
+                job_type=validated_job_type,
+            ):
+                job = _create_project_activity_job(
+                    session,
+                    runner,
+                    project=project,
+                    job_type=validated_job_type,
+                    payload=job_payload,
+                )
+                session.flush()
+                project_jobs.append(job)
+            session.commit()
+            for job in project_jobs:
+                session.refresh(job)
+            created_jobs.extend(project_jobs)
+        except AppError as exc:
+            session.rollback()
+            if exc.code == "PROJECT_SYNC_LOCKED":
+                reason: BulkActivityJobSkipReason = "locked"
+            elif exc.code == "NO_EXISTING_STEMS":
+                reason = "no_existing_stems"
+            else:
+                reason = "creation_failed"
+            skipped.append(
+                BulkActivityJobSkippedProject(
+                    project_id=project.id,
+                    project_name=project.display_name,
+                    reason=reason,
+                )
+            )
+
+    for job in created_jobs:
+        runner.enqueue(job.id)
+
+    return BulkActivityJobCreationResult(
+        jobs=created_jobs,
+        total_projects=len(projects),
+        skipped=skipped,
+    )
+
+
+def _has_active_project_job(session: Session, *, project_id: str, job_type: BulkActivityJobType) -> bool:
+    return (
+        session.scalar(
+            select(Job.id)
+            .where(
+                Job.project_id == project_id,
+                Job.type == job_type,
+                Job.status.in_(_ACTIVE_JOB_STATUSES),
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def _bulk_activity_job_payloads(
+    session: Session,
+    *,
+    project: Project,
+    request: BulkJobRequest,
+    job_type: BulkActivityJobType,
+) -> list[ProjectActivityJobPayload]:
+    if job_type == "stems":
+        source_artifact_ids = _existing_stem_source_artifact_ids(session, project_id=project.id)
+        if not source_artifact_ids:
+            raise AppError("NO_EXISTING_STEMS", "Project has no existing stems to refresh.")
+        return [
+            StemRequest(
+                mode="stems",
+                output_format="wav",
+                force=True,
+                source_artifact_id=source_artifact_id,
+                stem_model=request.stem_model,
+                chord_backend=request.chord_backend or "default",
+                chord_backend_fallback_from=request.chord_backend_fallback_from,
+                overwrite_chord_edits=False,
+            )
+            for source_artifact_id in source_artifact_ids
+        ]
+    return [_default_bulk_activity_job_payload(job_type, request=request)]
+
+
+def _default_bulk_activity_job_payload(
+    job_type: BulkActivityJobType,
+    *,
+    request: BulkJobRequest,
+) -> ProjectActivityJobPayload:
+    if job_type == "analyze":
+        return AnalysisRequest(include_tempo=False, force=True)
+    if job_type == "chords":
+        return ChordRequest(
+            backend=request.chord_backend or "default",
+            backend_fallback_from=request.chord_backend_fallback_from,
+            force=True,
+            overwrite_user_edits=True,
+        )
+    if job_type == "lyrics":
+        return LyricsGenerateRequest(force=True)
+    raise AppError("INVALID_REQUEST", "Job payload does not match job type.", status_code=422)
+
+
+def _existing_stem_source_artifact_ids(session: Session, *, project_id: str) -> list[str]:
+    seen: set[str] = set()
+    source_artifact_ids: list[str] = []
+    stmt = (
+        select(Artifact)
+        .where(
+            Artifact.project_id == project_id,
+            Artifact.type.in_(tuple(STEM_ARTIFACT_TYPES)),
+        )
+        .order_by(Artifact.created_at.asc(), Artifact.id.asc())
+    )
+    for artifact in session.scalars(stmt):
+        source_artifact_id = artifact.metadata_json.get("source_artifact_id")
+        if not isinstance(source_artifact_id, str) or source_artifact_id in seen:
+            continue
+        seen.add(source_artifact_id)
+        source_artifact_ids.append(source_artifact_id)
+    return source_artifact_ids
+
+
+def _create_project_activity_job(
+    session: Session,
+    runner: InProcessJobRunner,
+    *,
+    project: Project,
+    job_type: BulkActivityJobType,
+    payload: ProjectActivityJobPayload,
+) -> Job:
+    job_payload = _project_activity_job_payload(session, project=project, job_type=job_type, payload=payload)
+    return runner.create_job(
+        session,
+        project_id=project.id,
+        job_type=job_type,
+        payload=job_payload,
+    )
+
+
+def _project_activity_job_payload(
+    session: Session,
+    *,
+    project: Project,
+    job_type: BulkActivityJobType,
+    payload: ProjectActivityJobPayload,
+) -> dict[str, Any]:
+    if job_type == "analyze" and isinstance(payload, AnalysisRequest):
+        return payload.model_dump()
+    if job_type == "chords" and isinstance(payload, ChordRequest):
+        selected_backend = resolve_chord_backend(payload.backend, require_available=True)
+        job_payload = payload.model_dump()
+        job_payload["chord_backend"] = selected_backend.id
+        job_payload["chord_source"] = project_chord_detection_source(project, backend=selected_backend.id)
+        return job_payload
+    if job_type == "lyrics" and isinstance(payload, LyricsGenerateRequest):
+        return payload.model_dump()
+    if job_type == "stems" and isinstance(payload, StemRequest):
+        source_artifact = resolve_stem_source_artifact(
+            session,
+            project=project,
+            source_artifact_id=payload.source_artifact_id,
+        )
+        selected_chord_backend = resolve_chord_backend(payload.chord_backend, require_available=False)
+        requested_stem_model = payload.stem_model
+        if payload.mode == "two_stem" and requested_stem_model in {None, "default"}:
+            requested_stem_model = TWO_STEMS_MODEL_ID
+        selected_stem_model = resolve_stem_model(requested_stem_model, require_available=False)
+        job_payload = payload.model_dump()
+        job_payload["chord_backend"] = selected_chord_backend.id
+        job_payload["stem_model"] = selected_stem_model.id
+        job_payload["stem_model_label"] = selected_stem_model.label
+        job_payload["source_artifact_id"] = source_artifact.id
+        return job_payload
+    raise AppError("INVALID_REQUEST", "Job payload does not match job type.", status_code=422)
 
 
 def _as_utc_datetime(value: datetime) -> datetime:

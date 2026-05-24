@@ -43,7 +43,7 @@ from app.schemas import (
 )
 from app.services.artifacts import delete_project_artifact
 from app.services.chord_backends import FAST_CHORD_BACKEND_ID, ChordDetectionBackend, resolve_chord_backend
-from app.services.chords import project_chord_detection_source
+from app.services.jobs import create_project_activity_job
 from app.services.lyrics import update_project_lyrics
 from app.services.projects import (
     delete_project,
@@ -53,7 +53,7 @@ from app.services.projects import (
     list_projects,
     update_project,
 )
-from app.services.stem_models import TWO_STEMS_MODEL_ID, resolve_stem_model
+from app.services.stem_models import resolve_stem_model
 from app.services.stems import resolve_stem_source_artifact
 from app.services.tabs import (
     apply_tab_suggestions,
@@ -210,16 +210,13 @@ def project_analyze(
     session: Session = Depends(get_db),
     runner=Depends(get_job_runner),
 ) -> JobResponse:
-    get_mutable_project(session, project_id)
-    job = runner.create_job(
+    job = create_project_activity_job(
         session,
+        runner,
         project_id=project_id,
         job_type="analyze",
-        payload=payload.model_dump(),
+        payload=payload,
     )
-    session.commit()
-    session.refresh(job)
-    runner.enqueue(job.id)
     return JobResponse(job=JobSchema.model_validate(job))
 
 
@@ -237,20 +234,13 @@ def project_chords(
     session: Session = Depends(get_db),
     runner=Depends(get_job_runner),
 ) -> JobResponse:
-    project = get_mutable_project(session, project_id)
-    selected_backend = resolve_chord_backend(payload.backend, require_available=True)
-    job_payload = payload.model_dump()
-    job_payload["chord_backend"] = selected_backend.id
-    job_payload["chord_source"] = project_chord_detection_source(project, backend=selected_backend.id)
-    job = runner.create_job(
+    job = create_project_activity_job(
         session,
+        runner,
         project_id=project_id,
         job_type="chords",
-        payload=job_payload,
+        payload=payload,
     )
-    session.commit()
-    session.refresh(job)
-    runner.enqueue(job.id)
     return JobResponse(job=JobSchema.model_validate(job))
 
 
@@ -270,16 +260,13 @@ def project_lyrics(
     session: Session = Depends(get_db),
     runner=Depends(get_job_runner),
 ) -> JobResponse:
-    get_mutable_project(session, project_id)
-    job = runner.create_job(
+    job = create_project_activity_job(
         session,
+        runner,
         project_id=project_id,
         job_type="lyrics",
-        payload=payload.model_dump(),
+        payload=payload,
     )
-    session.commit()
-    session.refresh(job)
-    runner.enqueue(job.id)
     return JobResponse(job=JobSchema.model_validate(job))
 
 
@@ -435,31 +422,13 @@ def project_stems(
     session: Session = Depends(get_db),
     runner=Depends(get_job_runner),
 ) -> JobResponse:
-    project = get_mutable_project(session, project_id)
-    source_artifact = resolve_stem_source_artifact(
+    job = create_project_activity_job(
         session,
-        project=project,
-        source_artifact_id=payload.source_artifact_id,
-    )
-    job_payload = payload.model_dump()
-    selected_chord_backend = resolve_chord_backend(payload.chord_backend, require_available=False)
-    requested_stem_model = payload.stem_model
-    if payload.mode == "two_stem" and requested_stem_model in {None, "default"}:
-        requested_stem_model = TWO_STEMS_MODEL_ID
-    selected_stem_model = resolve_stem_model(requested_stem_model, require_available=False)
-    job_payload["chord_backend"] = selected_chord_backend.id
-    job_payload["stem_model"] = selected_stem_model.id
-    job_payload["stem_model_label"] = selected_stem_model.label
-    job_payload["source_artifact_id"] = source_artifact.id
-    job = runner.create_job(
-        session,
+        runner,
         project_id=project_id,
         job_type="stems",
-        payload=job_payload,
+        payload=payload,
     )
-    session.commit()
-    session.refresh(job)
-    runner.enqueue(job.id)
     return JobResponse(job=JobSchema.model_validate(job))
 
 

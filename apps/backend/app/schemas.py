@@ -1075,6 +1075,36 @@ class JobResponse(BaseModel):
     job: JobSchema
 
 
+BulkJobType = Literal["analyze", "chords", "lyrics", "stems"]
+BulkJobSkipReason = Literal["active_job", "locked", "creation_failed", "no_existing_stems"]
+
+
+class BulkJobRequest(BaseModel):
+    job_type: BulkJobType = Field(description="Project job type to enqueue for every project.")
+    chord_backend: str | None = None
+    chord_backend_fallback_from: str | None = None
+    stem_model: str | None = None
+
+    @model_validator(mode="after")
+    def validate_bulk_job_request(self) -> BulkJobRequest:
+        _validate_chord_backend_fields(self.chord_backend, self.chord_backend_fallback_from)
+        if self.stem_model is not None and self.stem_model not in SUPPORTED_STEM_MODELS:
+            raise ValueError("Unsupported stem model.")
+        return self
+
+
+class BulkJobSkippedProjectSchema(BaseModel):
+    project_id: str
+    project_name: str
+    reason: BulkJobSkipReason
+
+
+class BulkJobsResponse(BaseModel):
+    created_jobs: list[JobSchema]
+    total_projects: int
+    skipped: list[BulkJobSkippedProjectSchema]
+
+
 class JobsResponse(BaseModel):
     jobs: list[JobSchema]
     total: int

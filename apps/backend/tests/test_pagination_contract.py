@@ -31,6 +31,9 @@ SYNC_DOCUMENT_RESPONSE_CONTRACTS = {
     ("/api/v1/sync/reconciliation/plan", "post"): "SyncReconciliationPlanResponse",
     ("/api/v1/sync/reconciliation/apply", "post"): "SyncReconciliationApplyResponse",
 }
+JOB_ACTION_DOCUMENT_RESPONSE_CONTRACTS = {
+    ("/api/v1/jobs/bulk", "post"): "BulkJobsResponse",
+}
 PROJECT_CHILD_DOCUMENT_ARRAY_FIELDS = {
     "AnalysisTimingSchema": ("beats", "bars"),
     "ChordResponse": ("source_segments", "timeline"),
@@ -60,6 +63,7 @@ EXPLICIT_UNPAGINATED_RESPONSE_CONTRACTS = {
     },
     **PROJECT_CHILD_DOCUMENT_RESPONSE_CONTRACTS,
     **SYNC_DOCUMENT_RESPONSE_CONTRACTS,
+    **JOB_ACTION_DOCUMENT_RESPONSE_CONTRACTS,
 }
 CLASSIFIED_ARRAY_RESPONSE_ROUTE_KEYS = {
     *PAGINATED_RESPONSE_CONTRACTS,

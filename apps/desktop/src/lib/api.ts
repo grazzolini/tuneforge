@@ -35,6 +35,9 @@ export type LyricsWordSchema = components["schemas"]["LyricsWordSchema"];
 export type ArtifactSchema = components["schemas"]["ArtifactSchema"];
 export type JobSchema = components["schemas"]["JobSchema"];
 export type JobsResponse = components["schemas"]["JobsResponse"];
+export type BulkJobType = components["schemas"]["BulkJobRequest"]["job_type"];
+export type BulkJobRequest = components["schemas"]["BulkJobRequest"];
+export type BulkJobsResponse = components["schemas"]["BulkJobsResponse"];
 export type ListProjectsParams = NonNullable<paths["/api/v1/projects"]["get"]["parameters"]["query"]>;
 export type ListJobsParams = NonNullable<paths["/api/v1/jobs"]["get"]["parameters"]["query"]>;
 export type PreviewRequest = components["schemas"]["PreviewRequest"];
@@ -1145,6 +1148,7 @@ export type TuneForgeClient = {
   listJobs: (params?: ListJobsParams) => Promise<JobsResponse>;
   getJob: (jobId: string) => Promise<components["schemas"]["JobResponse"]>;
   cancelJob: (jobId: string) => Promise<components["schemas"]["JobResponse"]>;
+  bulkJobs: (body: BulkJobRequest) => Promise<BulkJobsResponse>;
   getSyncIdentity: () => Promise<SyncLocalIdentityResponse>;
   createSyncPairingOffer: (body: SyncPairingOfferRequest) => Promise<SyncPairingOfferResponse>;
   answerSyncPairingOffer: (body: SyncPairingAnswerRequest) => Promise<SyncPairingAnswerResponse>;
@@ -1356,6 +1360,7 @@ function createHttpTuneForgeClient(): TuneForgeClient {
     getJob: (jobId: string) => unwrap(client.GET("/api/v1/jobs/{job_id}", { params: { path: { job_id: jobId } } })),
     cancelJob: (jobId: string) =>
       unwrap(client.POST("/api/v1/jobs/{job_id}/cancel", { params: { path: { job_id: jobId } } })),
+    bulkJobs: (body: BulkJobRequest) => unwrap(client.POST("/api/v1/jobs/bulk", { body })),
     getSyncIdentity: () => unwrap(client.GET("/api/v1/sync/identity")),
     createSyncPairingOffer: (body: SyncPairingOfferRequest) =>
       isTauriRuntime()
@@ -1446,6 +1451,9 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     listJobs: (params?: ListJobsParams) => invokeMobile("mobile_list_jobs", { params: params ?? null }),
     getJob: (jobId: string) => invokeMobile("mobile_get_job", { jobId }),
     cancelJob: (jobId: string) => invokeMobile("mobile_cancel_job", { jobId }),
+    bulkJobs: async () => {
+      throw unsupportedRuntimeError("Bulk jobs");
+    },
     getSyncIdentity: () => invokeMobile("mobile_get_sync_identity"),
     createSyncPairingOffer: (body: SyncPairingOfferRequest) =>
       invokeMobile("mobile_create_sync_pairing_offer", { payload: body }),
@@ -1547,6 +1555,7 @@ export const api: TuneForgeClient = {
   listJobs: (params?: ListJobsParams) => activeClient.listJobs(params),
   getJob: (jobId: string) => activeClient.getJob(jobId),
   cancelJob: (jobId: string) => activeClient.cancelJob(jobId),
+  bulkJobs: (body: BulkJobRequest) => activeClient.bulkJobs(body),
   getSyncIdentity: () => activeClient.getSyncIdentity(),
   createSyncPairingOffer: (body: SyncPairingOfferRequest) => activeClient.createSyncPairingOffer(body),
   answerSyncPairingOffer: (body: SyncPairingAnswerRequest) => activeClient.answerSyncPairingOffer(body),

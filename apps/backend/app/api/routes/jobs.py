@@ -7,9 +7,22 @@ from app.api.pagination import PaginationQuery, pagination_metadata
 from app.dependencies import get_db, get_job_runner
 from app.errors import AppError
 from app.models import Job
-from app.schemas import JobResponse, JobSchema, JobsResponse
-from app.services.jobs import JobSortBy, JobSortOrder
-from app.services.jobs import list_jobs as list_jobs_service
+from app.schemas import (
+    BulkJobRequest,
+    BulkJobSkippedProjectSchema,
+    BulkJobsResponse,
+    JobResponse,
+    JobSchema,
+    JobsResponse,
+)
+from app.services.jobs import (
+    JobSortBy,
+    JobSortOrder,
+    create_bulk_activity_jobs,
+)
+from app.services.jobs import (
+    list_jobs as list_jobs_service,
+)
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -42,6 +55,27 @@ def list_jobs(
         number_of_returned_items=len(jobs),
     )
     return JobsResponse(jobs=jobs, **metadata)
+
+
+@router.post("/bulk", response_model=BulkJobsResponse)
+def create_bulk_jobs(
+    payload: BulkJobRequest,
+    session: Session = Depends(get_db),
+    runner=Depends(get_job_runner),
+) -> BulkJobsResponse:
+    result = create_bulk_activity_jobs(session, runner, payload=payload)
+    return BulkJobsResponse(
+        created_jobs=[JobSchema.model_validate(job) for job in result.jobs],
+        total_projects=result.total_projects,
+        skipped=[
+            BulkJobSkippedProjectSchema(
+                project_id=skipped.project_id,
+                project_name=skipped.project_name,
+                reason=skipped.reason,
+            )
+            for skipped in result.skipped
+        ],
+    )
 
 
 @router.get("/{job_id}", response_model=JobResponse)

@@ -1,9 +1,13 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
+import { Activity, Layers, Mic, RefreshCw } from "lucide-react";
 import { Link } from "react-router-dom";
-import { api, type JobSchema, type ProjectSchema } from "../../lib/api";
+import { confirm } from "@tauri-apps/plugin-dialog";
+import { api, type BulkJobRequest, type BulkJobsResponse, type JobSchema, type ProjectSchema } from "../../lib/api";
 import { formatLocalDateTime, normalizeApiDateTime, parseApiDateTime } from "../../lib/datetime";
 import { useLazyLoadSentinel } from "../../lib/useLazyLoadSentinel";
+import { usePreferences } from "../../lib/preferences";
+import { useChordBackendActionSelection } from "../projects/hooks/useChordBackendActionSelection";
 import { formatJobStatusSummary } from "../projects/projectViewUtils";
 import { ActivitySyncPanel } from "./ActivitySyncPanel";
 
@@ -22,8 +26,52 @@ const ACTIVITY_TABS = [
   { id: "jobs", label: "Jobs" },
   { id: "sync", label: "Sync" },
 ] as const;
+const BULK_JOB_ACTIONS = [
+  {
+    jobType: "analyze",
+    label: "Analyze all projects",
+    pendingLabel: "Queueing analyze jobs...",
+    resultLabel: "Analyze jobs",
+    confirmTitle: "Analyze all projects",
+    confirmBody: "Re-analyze every project? This may take time and may use CPU/GPU heavily.",
+    okLabel: "Analyze all",
+    icon: Activity,
+  },
+  {
+    jobType: "chords",
+    label: "Refresh chords for all projects",
+    pendingLabel: "Queueing chord jobs...",
+    resultLabel: "Chord jobs",
+    confirmTitle: "Refresh chords for all projects",
+    confirmBody: "Refresh chords for every project with your default chord backend? Existing chord timelines and tab suggestions may be replaced. This may take time and may use CPU/GPU heavily.",
+    okLabel: "Refresh chords",
+    icon: RefreshCw,
+  },
+  {
+    jobType: "lyrics",
+    label: "Refresh lyrics for all projects",
+    pendingLabel: "Queueing lyrics jobs...",
+    resultLabel: "Lyrics jobs",
+    confirmTitle: "Refresh lyrics for all projects",
+    confirmBody: "Refresh lyrics for every project? Existing transcripts and imported tab suggestions may be replaced. This may take time and may use CPU/GPU heavily.",
+    okLabel: "Refresh lyrics",
+    icon: Mic,
+  },
+  {
+    jobType: "stems",
+    label: "Refresh existing stems",
+    pendingLabel: "Queueing stem jobs...",
+    resultLabel: "Stem jobs",
+    confirmTitle: "Refresh existing stems",
+    confirmBody: "Refresh only source tracks and practice mixes that already have stems, using your default stem model. This may take time and may use CPU/GPU heavily.",
+    okLabel: "Refresh stems",
+    icon: Layers,
+  },
+] as const;
 
 type ActivityTab = (typeof ACTIVITY_TABS)[number]["id"];
+type BulkJobAction = (typeof BULK_JOB_ACTIONS)[number];
+type BulkJobSkippedProject = BulkJobsResponse["skipped"][number];
 
 type DisplayJob = {
   job: JobSchema;
@@ -110,6 +158,65 @@ function progressValue(job: JobSchema) {
 
 function hasActiveJob(jobs: JobSchema[] | undefined) {
   return jobs?.some((job) => CANCELABLE_JOB_STATUSES.has(job.status)) ?? false;
+}
+
+function bulkJobsSummary(action: BulkJobAction, response: BulkJobsResponse) {
+  return `${action.resultLabel}: ${response.created_jobs?.length ?? 0} queued, ${response.skipped?.length ?? 0} skipped.`;
+}
+
+function bulkJobSkipReasonLabel(reason: BulkJobSkippedProject["reason"]) {
+  switch (reason) {
+    case "active_job":
+      return "Already active";
+    case "locked":
+      return "Locked by sync";
+    case "no_existing_stems":
+      return "No existing stems";
+    case "creation_failed":
+      return "Could not queue";
+    default:
+      return "Skipped";
+  }
+}
+
+function bulkJobSkippedProjectLabel(project: BulkJobSkippedProject) {
+  return project.project_name ? `${project.project_name} (${project.project_id})` : project.project_id;
+}
+
+function groupedBulkJobSkips(skipped: BulkJobSkippedProject[] | undefined) {
+  const groups: Array<{ reason: BulkJobSkippedProject["reason"]; projects: BulkJobSkippedProject[] }> = [];
+  const groupByReason = new Map<BulkJobSkippedProject["reason"], BulkJobSkippedProject[]>();
+  for (const skippedProject of skipped ?? []) {
+    const existingGroup = groupByReason.get(skippedProject.reason);
+    if (existingGroup) {
+      existingGroup.push(skippedProject);
+      continue;
+    }
+    const projects = [skippedProject];
+    groupByReason.set(skippedProject.reason, projects);
+    groups.push({ reason: skippedProject.reason, projects });
+  }
+  return groups;
+}
+
+function BulkJobSkipDetails({ response }: { response: BulkJobsResponse }) {
+  const skipGroups = groupedBulkJobSkips(response.skipped);
+  if (!skipGroups.length) {
+    return null;
+  }
+
+  return (
+    <div aria-label="Skipped projects" className="activity-bulk-skip-details">
+      <ul>
+        {skipGroups.map((group) => (
+          <li key={group.reason}>
+            <strong>{bulkJobSkipReasonLabel(group.reason)}:</strong>{" "}
+            <span>{group.projects.map(bulkJobSkippedProjectLabel).join(", ")}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 function uniqueJobs(jobs: JobSchema[]) {
@@ -233,9 +340,15 @@ function JobRow({
 export function ActivityView() {
   const [activeTab, setActiveTab] = useState<ActivityTab>("jobs");
   const [searchDraft, setSearchDraft] = useState("");
+  const [bulkJobResult, setBulkJobResult] = useState<{
+    action: BulkJobAction;
+    response: BulkJobsResponse;
+  } | null>(null);
   const deferredSearch = useDeferredValue(searchDraft.trim());
   const previousActiveJobIds = useRef<Set<string>>(new Set());
   const queryClient = useQueryClient();
+  const { defaultStemModel } = usePreferences();
+  const { chordBackendForAction } = useChordBackendActionSelection();
   const activeJobsQueryKey = useMemo(
     () => [...ACTIVE_JOBS_QUERY_KEY, deferredSearch] as const,
     [deferredSearch],
@@ -337,6 +450,29 @@ export function ActivityView() {
       await queryClient.invalidateQueries({ queryKey: ["jobs"] });
     },
   });
+  const bulkJobsMutation = useMutation({
+    mutationFn: async (action: BulkJobAction) => {
+      const request: BulkJobRequest = { job_type: action.jobType };
+      if (action.jobType === "chords" || action.jobType === "stems") {
+        const backendSelection = await chordBackendForAction();
+        request.chord_backend = backendSelection.backend;
+        if (backendSelection.backend_fallback_from) {
+          request.chord_backend_fallback_from = backendSelection.backend_fallback_from;
+        }
+      }
+      if (action.jobType === "stems") {
+        request.stem_model = defaultStemModel;
+      }
+      return api.bulkJobs(request);
+    },
+    onMutate: () => {
+      setBulkJobResult(null);
+    },
+    onSuccess: async (response, action) => {
+      setBulkJobResult({ action, response });
+      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    },
+  });
 
   const projectsById = useMemo(
     () => new Map(jobProjectIds.map((projectId, index) => [projectId, projectQueries[index]?.data ?? null])),
@@ -392,6 +528,21 @@ export function ActivityView() {
     }
   }, [activeJobs, isActiveJobsSuccess, queryClient, terminalJobsQueryKey]);
 
+  async function handleBulkJobAction(action: BulkJobAction) {
+    bulkJobsMutation.reset();
+    setBulkJobResult(null);
+    const approved = await confirm(action.confirmBody, {
+      title: action.confirmTitle,
+      kind: "warning",
+      okLabel: action.okLabel,
+      cancelLabel: "Cancel",
+    });
+    if (!approved) {
+      return;
+    }
+    bulkJobsMutation.mutate(action);
+  }
+
   return (
     <section className="screen activity-screen">
       <div className="screen__header">
@@ -437,18 +588,62 @@ export function ActivityView() {
                   : "No pending or running jobs."}
               </p>
             </div>
-            <label className="search-field">
-              <span className="search-field__label">Search jobs</span>
-              <input
-                aria-label="Search jobs by project"
-                className="search-field__input"
-                placeholder="Search project names"
-                type="search"
-                value={searchDraft}
-                onChange={(event) => setSearchDraft(event.target.value)}
-              />
-            </label>
+            <div className="activity-jobs-panel__heading-actions">
+              <label className="search-field">
+                <span className="search-field__label">Search jobs</span>
+                <input
+                  aria-label="Search jobs by project"
+                  className="search-field__input"
+                  placeholder="Search project names"
+                  type="search"
+                  value={searchDraft}
+                  onChange={(event) => setSearchDraft(event.target.value)}
+                />
+              </label>
+            </div>
           </div>
+          <div aria-label="Bulk job actions" className="activity-bulk-actions" role="group">
+            {BULK_JOB_ACTIONS.map((action) => {
+              const Icon = action.icon;
+              const isPending = bulkJobsMutation.isPending &&
+                bulkJobsMutation.variables?.jobType === action.jobType;
+              return (
+                <button
+                  className="button button--ghost button--small activity-bulk-actions__button"
+                  disabled={bulkJobsMutation.isPending}
+                  key={action.jobType}
+                  onClick={() => {
+                    void handleBulkJobAction(action);
+                  }}
+                  type="button"
+                >
+                  <Icon aria-hidden="true" size={16} />
+                  <span>{isPending ? "Queueing..." : action.label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {bulkJobsMutation.isPending ? (
+            <div className="activity-jobs-panel__state" role="status">
+              {bulkJobsMutation.variables?.pendingLabel ?? "Queueing bulk jobs..."}
+            </div>
+          ) : null}
+
+          {bulkJobResult ? (
+            <div className="activity-jobs-panel__state activity-jobs-panel__state--success" role="status">
+              {bulkJobsSummary(bulkJobResult.action, bulkJobResult.response)}
+              <BulkJobSkipDetails response={bulkJobResult.response} />
+            </div>
+          ) : null}
+
+          {bulkJobsMutation.isError ? (
+            <div className="activity-jobs-panel__state activity-jobs-panel__state--error" role="alert">
+              {bulkJobsMutation.error instanceof Error
+                ? bulkJobsMutation.error.message
+                : "Could not queue bulk jobs."}
+            </div>
+          ) : null}
 
           {isLoading ? (
             <div className="activity-jobs-panel__state" role="status">

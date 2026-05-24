@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeSyncTransportStatus, type JobSchema, type ProjectSchema } from "./lib/api";
 import {
   mockCancelJob,
+  mockConfirm,
   mockGetProject,
   mockGetSyncIdentity,
   mockGetSyncTransportStatus,
@@ -15,10 +16,12 @@ import {
   mockSyncTrustedPeerNow,
   mockTrustSyncPeer,
   mockListJobs,
+  mockBulkJobs,
   mockListProjects,
   renderApp,
   resetAppTestHarness,
   setJobs,
+  setChordBackends,
   setProjects,
   setSyncTransportStatus,
   setSyncTrustedPeers,
@@ -1440,6 +1443,218 @@ describe("Desktop app activity", () => {
     await waitFor(() => expect(mockCancelJob).toHaveBeenCalledWith("job_pending"));
     await waitFor(() => expect(mockListJobs.mock.calls.length).toBeGreaterThan(initialListJobsCalls));
     expect(await screen.findByRole("article", { name: "analyze cancelled job" })).toBeInTheDocument();
+  });
+
+  it("requires confirmation before starting a bulk job action", async () => {
+    const user = userEvent.setup();
+    let approveConfirm: ((value: boolean) => void) | null = null;
+    mockConfirm.mockImplementationOnce(
+      () =>
+        new Promise<boolean>((resolve) => {
+          approveConfirm = resolve;
+        }),
+    );
+
+    renderApp(["/activity"]);
+
+    expect(await screen.findByRole("heading", { level: 2, name: "Jobs" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Analyze all projects" }));
+
+    expect(mockConfirm).toHaveBeenCalledWith(
+      expect.stringContaining("may use CPU/GPU heavily"),
+      expect.objectContaining({
+        title: "Analyze all projects",
+        okLabel: "Analyze all",
+        cancelLabel: "Cancel",
+      }),
+    );
+    expect(mockBulkJobs).not.toHaveBeenCalled();
+
+    await act(async () => {
+      approveConfirm?.(true);
+    });
+
+    await waitFor(() => expect(mockBulkJobs).toHaveBeenCalledWith({ job_type: "analyze" }));
+  });
+
+  it("does not enqueue a bulk job action when confirmation is cancelled", async () => {
+    const user = userEvent.setup();
+    mockConfirm.mockResolvedValueOnce(false);
+
+    renderApp(["/activity"]);
+
+    expect(await screen.findByRole("heading", { level: 2, name: "Jobs" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Refresh chords for all projects" }));
+
+    await waitFor(() => expect(mockConfirm).toHaveBeenCalled());
+    expect(mockBulkJobs).not.toHaveBeenCalled();
+  });
+
+  it("shows a bulk job success summary and refreshes jobs", async () => {
+    const user = userEvent.setup();
+    setProjects([
+      project({ id: "proj_bulk_1", display_name: "Bulk Song 1" }),
+      project({ id: "proj_bulk_2", display_name: "Bulk Song 2" }),
+      project({ id: "proj_bulk_3", display_name: "Bulk Song 3" }),
+    ]);
+    setJobs([]);
+
+    renderApp(["/activity"]);
+
+    expect(await screen.findByRole("heading", { level: 2, name: "Jobs" })).toBeInTheDocument();
+    await waitFor(() => expect(mockListJobs).toHaveBeenCalledTimes(2));
+    const initialListJobsCalls = mockListJobs.mock.calls.length;
+
+    await user.click(screen.getByRole("button", { name: "Refresh lyrics for all projects" }));
+
+    await waitFor(() => expect(mockBulkJobs).toHaveBeenCalledWith({ job_type: "lyrics" }));
+    expect(await screen.findByText("Lyrics jobs: 3 queued, 0 skipped.")).toBeInTheDocument();
+    await waitFor(() => expect(mockListJobs.mock.calls.length).toBeGreaterThan(initialListJobsCalls));
+  });
+
+  it("shows grouped skip details for partial bulk job success", async () => {
+    const user = userEvent.setup();
+    setProjects([
+      project({ id: "proj_bulk_skip", display_name: "Busy Song" }),
+      project({ id: "proj_bulk_queue", display_name: "Queued Song" }),
+    ]);
+    setJobs([
+      job({
+        id: "job_active_bulk_lyrics",
+        project_id: "proj_bulk_skip",
+        type: "lyrics",
+        status: "running",
+        progress: 40,
+      }),
+    ]);
+
+    renderApp(["/activity"]);
+
+    expect(await screen.findByRole("heading", { level: 2, name: "Jobs" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Refresh lyrics for all projects" }));
+
+    expect(await screen.findByText("Lyrics jobs: 1 queued, 1 skipped.")).toBeInTheDocument();
+    const skippedProjects = screen.getByLabelText("Skipped projects");
+    expect(within(skippedProjects).getByText("Already active:")).toBeInTheDocument();
+    expect(within(skippedProjects).getByText("Busy Song (proj_bulk_skip)")).toBeInTheDocument();
+  });
+
+  it("shows skip details when every bulk job project is skipped", async () => {
+    const user = userEvent.setup();
+    setProjects([
+      project({ id: "proj_bulk_skip_a", display_name: "Busy Song A" }),
+      project({ id: "proj_bulk_skip_b", display_name: "Busy Song B" }),
+    ]);
+    setJobs([
+      job({
+        id: "job_active_bulk_lyrics_a",
+        project_id: "proj_bulk_skip_a",
+        type: "lyrics",
+        status: "pending",
+        progress: 0,
+      }),
+      job({
+        id: "job_active_bulk_lyrics_b",
+        project_id: "proj_bulk_skip_b",
+        type: "lyrics",
+        status: "running",
+        progress: 30,
+      }),
+    ]);
+
+    renderApp(["/activity"]);
+
+    expect(await screen.findByRole("heading", { level: 2, name: "Jobs" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Refresh lyrics for all projects" }));
+
+    expect(await screen.findByText("Lyrics jobs: 0 queued, 2 skipped.")).toBeInTheDocument();
+    const skippedProjects = screen.getByLabelText("Skipped projects");
+    expect(within(skippedProjects).getByText("Already active:")).toBeInTheDocument();
+    expect(within(skippedProjects).getByText(/Busy Song A \(proj_bulk_skip_a\)/)).toBeInTheDocument();
+    expect(within(skippedProjects).getByText(/Busy Song B \(proj_bulk_skip_b\)/)).toBeInTheDocument();
+  });
+
+  it("uses default chord backend and stem model preferences for bulk refresh actions", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({
+        defaultChordBackend: "crema-advanced",
+        defaultStemModel: "htdemucs_ft",
+      }),
+    );
+
+    renderApp(["/activity"]);
+
+    expect(await screen.findByRole("heading", { level: 2, name: "Jobs" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Refresh chords for all projects" }));
+    await waitFor(() =>
+      expect(mockBulkJobs).toHaveBeenCalledWith({
+        job_type: "chords",
+        chord_backend: "crema-advanced",
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Refresh existing stems" }));
+    await waitFor(() =>
+      expect(mockBulkJobs).toHaveBeenCalledWith({
+        job_type: "stems",
+        chord_backend: "crema-advanced",
+        stem_model: "htdemucs_ft",
+      }),
+    );
+  });
+
+  it("uses chord backend fallback preferences for bulk stem refresh", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({
+        defaultChordBackend: "crema-advanced",
+        defaultStemModel: "htdemucs_ft",
+      }),
+    );
+    setChordBackends([
+      { id: "tuneforge-fast", available: true },
+      { id: "crema-advanced", available: false },
+    ]);
+
+    renderApp(["/activity"]);
+
+    expect(await screen.findByRole("heading", { level: 2, name: "Jobs" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Refresh existing stems" }));
+
+    await waitFor(() =>
+      expect(mockBulkJobs).toHaveBeenCalledWith({
+        job_type: "stems",
+        chord_backend: "tuneforge-fast",
+        chord_backend_fallback_from: "crema-advanced",
+        stem_model: "htdemucs_ft",
+      }),
+    );
+  });
+
+  it("shows bulk job errors without clearing the existing list", async () => {
+    const user = userEvent.setup();
+    setJobs([
+      job({
+        id: "job_existing",
+        type: "preview",
+        status: "completed",
+        progress: 100,
+        completed_at: "2026-04-18T13:20:00.000Z",
+      }),
+    ]);
+    mockBulkJobs.mockRejectedValueOnce(new Error("Bulk enqueue failed."));
+
+    renderApp(["/activity"]);
+
+    expect(await screen.findByRole("article", { name: "preview completed job" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Refresh existing stems" }));
+
+    expect(await screen.findByText("Bulk enqueue failed.")).toBeInTheDocument();
+    expect(screen.getByRole("article", { name: "preview completed job" })).toBeInTheDocument();
   });
 
   it("refreshes active jobs until they reach a terminal status", async () => {

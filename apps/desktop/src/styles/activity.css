@@ -443,6 +443,14 @@
   font-weight: 700;
 }
 
+.activity-sync-field__header {
+  display: flex;
+  gap: 0.65rem;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+}
+
 .activity-sync-field textarea {
   min-height: 8rem;
   resize: vertical;
@@ -454,6 +462,8 @@
   font: inherit;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   line-height: 1.45;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .activity-sync-field textarea:focus-visible,

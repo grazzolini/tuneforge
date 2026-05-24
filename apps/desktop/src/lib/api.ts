@@ -1464,18 +1464,10 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
       invokeMobile("mobile_trust_sync_peer", { payload: body }),
     revokeSyncTrustedPeer: (deviceId: string) =>
       invokeMobile("mobile_revoke_sync_trusted_peer", { deviceId }),
-    getSyncTransportStatus: async () => {
-      throw unsupportedRuntimeError("Native sync transport");
-    },
-    startSyncListener: async () => {
-      throw unsupportedRuntimeError("Native sync transport");
-    },
-    stopSyncListener: async () => {
-      throw unsupportedRuntimeError("Native sync transport");
-    },
-    syncTrustedPeerNow: async () => {
-      throw unsupportedRuntimeError("Native sync transport");
-    },
+    getSyncTransportStatus,
+    startSyncListener,
+    stopSyncListener,
+    syncTrustedPeerNow,
     streamArtifactUrl: (artifactId: string) => {
       const artifactPath = mobileArtifactPaths.get(artifactId);
       return artifactPath ? convertFileSrc(artifactPath) : "";

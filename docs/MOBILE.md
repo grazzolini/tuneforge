@@ -91,6 +91,40 @@ the tracked TuneForge icon instead of Tauri's default icon.
 The Android scripts run through `scripts/android-arm64-env.sh` so Cargo uses the rustup toolchain and
 the Android NDK `aarch64-linux-android24-clang` compiler.
 
+`pnpm --filter @tuneforge/desktop android:prepare` updates the generated Android target before a
+build. It keeps these manifest permissions present:
+
+- `android.permission.INTERNET` for same-LAN TCP/QUIC/UDP sync sockets.
+- `android.permission.RECORD_AUDIO` and `android.permission.MODIFY_AUDIO_SETTINGS` for mobile audio
+  flows.
+
+These are package-level permissions only. They do not change the local-only product rule, and they
+must not be used to add cloud, telemetry, account, or remote-processing behavior. Do not add
+Android nearby-device, Bluetooth, location, or Wi-Fi multicast permissions until a concrete local
+discovery implementation requires them.
+
+## Mobile Sync Validation
+
+Real mobile sync validation must use an initialized Android target, a debug or release APK built
+through the package scripts above, and a physical Android device when collecting CPU and battery
+evidence. Record the selected transport path in the notes for each run:
+
+- `tuneforge-sync+tcp`
+- `tuneforge-sync+iroh`
+- fallback path and fallback reason, if any
+
+The default Android/desktop listener uses TCP port `47619` and a stable adjacent Iroh UDP
+port `47620`; custom listener ports use `tcp_port + 1` for Iroh.
+
+Also record whether Android reports sync transport support. If `sync_transport_status.supported` is
+`false`, the APK is still using the Android stub and cannot satisfy real transport validation; only
+pairing/storage/playback checks can proceed.
+
+For accepted mobile sync evidence, sync at least one desktop project to Android, play the synced WAV
+source and synced WAV stem artifacts from app-local storage, and compare battery, CPU, storage, and
+transfer costs against AAC/M4A or another compressed baseline. Mobile sync remains library sync
+only; remote processing stays out of scope.
+
 ## Stem Separation Spike
 
 Stem separation remains unavailable on mobile in this experiment. The lowest-risk next spike is an

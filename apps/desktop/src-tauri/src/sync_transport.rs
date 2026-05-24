@@ -137,671 +137,44 @@ pub struct SyncTransportManifestError {
     pub message: String,
 }
 
-#[cfg(not(target_os = "android"))]
-mod desktop {
-    use super::{
-        SyncTransportManifestError, SyncTransportPairingOffer, SyncTransportPairingOfferRequest,
-        SyncTransportProjectResult, SyncTransportStartListenerRequest, SyncTransportStatus,
-        SyncTransportSyncNowRequest, SyncTransportSyncResult, SyncTransportTimingEvidence,
-        SyncTransportTransferCounts, SyncTransportTransferResult,
-    };
+mod sync_core {
+    use super::SyncTransportManifestError;
     use base64::{
         engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
         Engine as _,
     };
     use chrono::{DateTime, Utc};
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-    use iroh::{
-        endpoint::{presets, RecvStream, SendStream},
-        Endpoint, EndpointAddr, EndpointId, SecretKey,
-    };
-    use iroh_blobs::store::fs::FsStore;
     use rand::{rngs::OsRng, RngCore};
     use serde::{Deserialize, Serialize};
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
-    use snow::{params::NoiseParams, Builder};
-    use std::{
-        collections::{HashMap, HashSet},
-        env,
-        fs::{self, File},
-        io::{self, BufRead, BufReader, Read, Write},
-        net::{IpAddr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
-        path::{Path, PathBuf},
-        process,
-        str::FromStr,
-        sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc, Mutex,
-        },
-        thread::{self, JoinHandle},
-        time::{Duration, Instant},
-    };
-    use tauri::State;
+    use std::{io, path::Path, sync::Arc};
 
-    const DEFAULT_BIND_HOST: &str = "0.0.0.0";
-    const DEFAULT_LISTENER_PORT: u16 = 47619;
-    const TCP_TRANSPORT_ID: &str = "tuneforge-sync+tcp";
-    const IROH_TRANSPORT_ID: &str = "tuneforge-sync+iroh";
-    const ENDPOINT_SCHEME: &str = "tuneforge-sync+tcp://";
-    const IROH_ENDPOINT_SCHEME: &str = "tuneforge-sync+iroh://";
-    const IROH_ALPN: &[u8] = b"tuneforge-sync/iroh/v1";
-    const PAIRING_PROTOCOL_VERSION: &str = "tuneforge-sync-v1";
-    const TRANSPORT_PROTOCOL_VERSION: &str = "tuneforge-sync-transport-v2";
-    const TRANSPORT_HANDSHAKE_CHALLENGE_TYPE: &str = "transport_handshake";
-    const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
-    const READ_TIMEOUT: Duration = Duration::from_secs(45);
-    const WRITE_TIMEOUT: Duration = Duration::from_secs(45);
-    const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-    const ACCEPT_SLEEP: Duration = Duration::from_millis(100);
-    const MAX_RAW_FRAME: usize = 65_535;
-    const ENCRYPTED_PAYLOAD_CHUNK: usize = 32 * 1024;
-    const ARTIFACT_CHUNK_SIZE: usize = 32 * 1024;
-    const ENCRYPTED_FRAME_MESSAGE_CHUNK: u8 = 1;
-    const ENCRYPTED_FRAME_ARTIFACT_CHUNK: u8 = 2;
-    const PAIRING_OFFER_TTL_SECONDS: u32 = 600;
+    pub(crate) const TCP_TRANSPORT_ID: &str = "tuneforge-sync+tcp";
+    pub(crate) const IROH_TRANSPORT_ID: &str = "tuneforge-sync+iroh";
+    pub(crate) const ENDPOINT_SCHEME: &str = "tuneforge-sync+tcp://";
+    pub(crate) const IROH_ENDPOINT_SCHEME: &str = "tuneforge-sync+iroh://";
+    pub(crate) const PAIRING_PROTOCOL_VERSION: &str = "tuneforge-sync-v1";
+    pub(crate) const TRANSPORT_PROTOCOL_VERSION: &str = "tuneforge-sync-transport-v2";
+    pub(crate) const TRANSPORT_HANDSHAKE_CHALLENGE_TYPE: &str = "transport_handshake";
+    pub(crate) const MAX_RAW_FRAME: usize = 65_535;
+    pub(crate) const ENCRYPTED_PAYLOAD_CHUNK: usize = 32 * 1024;
+    pub(crate) const ARTIFACT_CHUNK_SIZE: usize = 32 * 1024;
+    pub(crate) const PAIRING_OFFER_TTL_SECONDS: u32 = 600;
     const TRANSPORT_HANDSHAKE_TTL_SECONDS: i64 = 60;
-    const HTTP_TIMEOUT: Duration = Duration::from_secs(45);
-
-    #[derive(Clone)]
-    pub struct SyncTransportState {
-        base_url: String,
-        listener: Arc<Mutex<Option<ListenerHandle>>>,
-        shared_status: Arc<Mutex<SharedStatus>>,
-    }
-
-    impl SyncTransportState {
-        pub fn new(base_url: String) -> Self {
-            Self {
-                base_url,
-                listener: Arc::new(Mutex::new(None)),
-                shared_status: Arc::new(Mutex::new(SharedStatus::default())),
-            }
-        }
-
-        fn start_listener(
-            &self,
-            payload: SyncTransportStartListenerRequest,
-        ) -> Result<SyncTransportStatus, String> {
-            {
-                let guard = self
-                    .listener
-                    .lock()
-                    .map_err(|_| "Sync transport listener state is unavailable.".to_string())?;
-                if guard.is_some() {
-                    return Ok(self.status());
-                }
-            }
-
-            let client = BackendClient::new(&self.base_url)?;
-            let identity = client
-                .local_identity()
-                .map_err(|error| format!("Could not load local sync identity: {error}"))?;
-            let bind_host = payload
-                .bind_host
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .unwrap_or(DEFAULT_BIND_HOST)
-                .to_string();
-            let port = payload.port.unwrap_or(DEFAULT_LISTENER_PORT);
-            let listener = TcpListener::bind((bind_host.as_str(), port)).map_err(|error| {
-                format!("Could not bind sync transport listener on {bind_host}:{port}: {error}")
-            })?;
-            listener
-                .set_nonblocking(true)
-                .map_err(|error| format!("Could not configure sync transport listener: {error}"))?;
-            let bind_addr = listener
-                .local_addr()
-                .map_err(|error| format!("Could not inspect sync transport listener: {error}"))?;
-            let tcp_endpoint_hints = endpoint_hints_for_port(bind_addr.port(), &identity.device_id);
-            let iroh_transport = match create_iroh_transport(&identity.device_id) {
-                Ok(transport) => Some(transport),
-                Err(error) => {
-                    update_status(&self.shared_status, |status| {
-                        status.last_status = Some(format!(
-                            "Iroh sync transport unavailable; starting TCP listener only: {error}"
-                        ));
-                    });
-                    None
-                }
-            };
-            let mut endpoint_hints = iroh_transport
-                .as_ref()
-                .map(|transport| iroh_endpoint_hints(transport, &identity.device_id))
-                .unwrap_or_default();
-            endpoint_hints.extend(tcp_endpoint_hints);
-            let stop = Arc::new(AtomicBool::new(false));
-            let tcp_stop = Arc::clone(&stop);
-            let base_url = self.base_url.clone();
-            let shared_status = Arc::clone(&self.shared_status);
-            let tcp_thread = thread::spawn(move || {
-                accept_loop(listener, base_url, tcp_stop, shared_status);
-            });
-            let iroh_thread = iroh_transport.as_ref().map(|transport| {
-                let transport = transport.clone();
-                let base_url = self.base_url.clone();
-                let shared_status = Arc::clone(&self.shared_status);
-                let iroh_stop = Arc::clone(&stop);
-                thread::spawn(move || {
-                    iroh_accept_loop(transport, base_url, iroh_stop, shared_status);
-                })
-            });
-
-            let handle = ListenerHandle {
-                bind_addr,
-                endpoint_hints,
-                iroh_transport,
-                stop,
-                tcp_thread: Some(tcp_thread),
-                iroh_thread,
-            };
-            {
-                let mut guard = self
-                    .listener
-                    .lock()
-                    .map_err(|_| "Sync transport listener state is unavailable.".to_string())?;
-                *guard = Some(handle);
-            }
-            update_status(&self.shared_status, |status| {
-                status.last_status = Some("Sync transport listener started.".to_string());
-                status.last_error = None;
-                status.last_sync = None;
-            });
-
-            Ok(self.status())
-        }
-
-        fn stop_listener(&self) -> Result<SyncTransportStatus, String> {
-            let listener = {
-                let mut guard = self
-                    .listener
-                    .lock()
-                    .map_err(|_| "Sync transport listener state is unavailable.".to_string())?;
-                guard.take()
-            };
-
-            if let Some(mut listener) = listener {
-                listener.stop.store(true, Ordering::SeqCst);
-                if let Some(iroh_transport) = listener.iroh_transport.take() {
-                    iroh_transport.close();
-                }
-                if let Some(thread) = listener.tcp_thread.take() {
-                    thread
-                        .join()
-                        .map_err(|_| "Sync transport listener thread panicked.".to_string())?;
-                }
-                if let Some(thread) = listener.iroh_thread.take() {
-                    thread
-                        .join()
-                        .map_err(|_| "Iroh sync transport listener thread panicked.".to_string())?;
-                }
-                update_status(&self.shared_status, |status| {
-                    status.last_status = Some("Sync transport listener stopped.".to_string());
-                });
-            }
-
-            Ok(self.status())
-        }
-
-        pub fn shutdown(&self) {
-            let _ = self.stop_listener();
-        }
-
-        fn status(&self) -> SyncTransportStatus {
-            let shared = self
-                .shared_status
-                .lock()
-                .map(|status| status.clone())
-                .unwrap_or_default();
-            let listener = self.listener.lock().ok();
-            let listener = listener.as_ref().and_then(|guard| guard.as_ref());
-
-            SyncTransportStatus {
-                supported: true,
-                running: listener.is_some(),
-                bind_host: listener.map(|handle| handle.bind_addr.ip().to_string()),
-                port: listener.map(|handle| handle.bind_addr.port()),
-                endpoint_hints: listener
-                    .map(|handle| handle.endpoint_hints.clone())
-                    .unwrap_or_default(),
-                active_sessions: shared.active_sessions,
-                accepted_sessions: shared.accepted_sessions,
-                failed_sessions: shared.failed_sessions,
-                last_status: shared.last_status,
-                last_error: shared.last_error,
-                last_sync: shared.last_sync,
-            }
-        }
-
-        fn create_pairing_offer(
-            &self,
-            payload: SyncTransportPairingOfferRequest,
-        ) -> Result<SyncTransportPairingOffer, String> {
-            let status = self.status();
-            if !status.running || status.endpoint_hints.is_empty() {
-                return Err(
-                    "Start the sync transport listener before creating a LAN pairing offer."
-                        .to_string(),
-                );
-            }
-            let ttl_seconds = payload.ttl_seconds.unwrap_or(PAIRING_OFFER_TTL_SECONDS);
-            let client = BackendClient::new(&self.base_url)?;
-            let pairing_offer = client
-                .create_pairing_offer(status.endpoint_hints.clone(), ttl_seconds)
-                .map_err(|error| format!("Could not create sync pairing offer: {error}"))?;
-            Ok(SyncTransportPairingOffer {
-                endpoint_hints: status.endpoint_hints,
-                pairing_offer,
-            })
-        }
-
-        fn sync_now(
-            &self,
-            payload: SyncTransportSyncNowRequest,
-        ) -> Result<SyncTransportSyncResult, String> {
-            let result = self.run_sync_now(payload);
-            update_status(&self.shared_status, |status| match &result {
-                Ok(sync_result) => {
-                    status.last_status = Some(sync_result.message.clone());
-                    status.last_sync = Some(sync_result.clone());
-                    status.last_error = None;
-                }
-                Err(error) => {
-                    status.last_error = Some(error.clone());
-                }
-            });
-            result
-        }
-
-        fn run_sync_now(
-            &self,
-            payload: SyncTransportSyncNowRequest,
-        ) -> Result<SyncTransportSyncResult, String> {
-            let run_id = sync_run_id();
-            let run_started_at = Utc::now();
-            let run_started_instant = Instant::now();
-            let mut timings = Vec::new();
-            let mut metrics = SyncRunMetrics::start(run_started_instant);
-            let client = BackendClient::new(&self.base_url)?;
-            let peer = client
-                .trusted_peer(&payload.peer_device_id)
-                .map_err(|error| format!("Could not load trusted sync peer: {error}"))?
-                .ok_or_else(|| {
-                    format!(
-                        "Trusted sync peer {} is not known or has been revoked.",
-                        payload.peer_device_id
-                    )
-                })?;
-            let preferred_transport = payload
-                .preferred_transport
-                .as_deref()
-                .and_then(normalized_transport_id);
-            let local_iroh = self.local_iroh_transport();
-            let transport_selection = select_sync_transport(
-                preferred_transport,
-                payload.endpoint_hint.as_deref(),
-                &peer.endpoint_hints,
-                &payload.peer_device_id,
-                local_iroh.is_some(),
-            )?;
-            let mut transport_selection = transport_selection;
-            let timer = SyncPhaseTimer::start("peer_connect");
-            let mut connection = connect_selected_transport(
-                &mut transport_selection,
-                local_iroh,
-                &payload.peer_device_id,
-            )?;
-            timings.push(timer.finish());
-
-            let timer = SyncPhaseTimer::start("peer_authentication");
-            let session = authenticate_session(
-                &mut connection,
-                &client,
-                Some(payload.peer_device_id.clone()),
-            )?;
-            timings.push(timer.finish());
-
-            let timer = SyncPhaseTimer::start("local_manifest_export");
-            let local_offer = load_local_manifest_offer(
-                &client,
-                payload.project_ids.as_deref(),
-                payload.export_local,
-            );
-            timings.push(timer.finish());
-            let local_manifest_count = local_offer.project_manifests.len();
-            let timer = SyncPhaseTimer::start("manifest_exchange");
-            connection.send_message(&ProtocolMessage::ManifestOffer(local_offer.clone()))?;
-            let remote_offer = match connection.read_message()? {
-                ProtocolMessage::ManifestOffer(offer) => offer,
-                ProtocolMessage::Error(error) => {
-                    return Err(format!("Sync peer returned an error: {}", error.message));
-                }
-                other => {
-                    return Err(format!(
-                        "Sync peer sent unexpected message during manifest exchange: {}",
-                        other.kind()
-                    ));
-                }
-            };
-            timings.push(timer.finish());
-
-            let mut imported_projects = Vec::new();
-            let mut received_artifacts = Vec::new();
-            if payload.import_remote {
-                let transport_id = connection.transport_id();
-                let imported = import_remote_manifests(
-                    &client,
-                    &mut connection,
-                    &session.remote_device_id,
-                    &remote_offer.metadata,
-                    &remote_offer.project_manifests,
-                    transport_id,
-                    &mut metrics,
-                    &mut timings,
-                );
-                imported_projects = imported.imported_projects;
-                received_artifacts = imported.received_artifacts;
-            }
-            let import_counts = import_outcome_counts(&imported_projects);
-            connection.send_message(&ProtocolMessage::PhaseDone {
-                phase: "initiator_import".to_string(),
-            })?;
-            let timer = SyncPhaseTimer::start("serve_artifact_requests");
-            let served_artifact_requests = serve_artifact_requests_until_done(
-                &client,
-                &mut connection,
-                &local_offer.project_manifests,
-                &mut metrics,
-            )?;
-            timings.push(timer.finish());
-            let manifest_errors =
-                sync_manifest_errors(&local_offer.manifest_errors, &remote_offer.manifest_errors);
-            let completed_at = Utc::now();
-            let duration_ms = duration_millis(run_started_instant.elapsed());
-            let transfer_counts = transfer_counts(&received_artifacts);
-            let project_results = imported_projects.clone();
-            let TransportEvidence {
-                selected_transport,
-                fallback_reason,
-                attempted_transports,
-            } = transport_selection.evidence();
-
-            Ok(SyncTransportSyncResult {
-                run_id,
-                peer_device_id: payload.peer_device_id,
-                remote_device_id: session.remote_device_id,
-                status: sync_result_status(&manifest_errors, import_counts.failed),
-                message: sync_result_message(
-                    local_manifest_count,
-                    remote_offer.project_manifests.len(),
-                    &transfer_counts,
-                    import_counts,
-                ),
-                selected_transport,
-                fallback_reason,
-                attempted_transports,
-                started_at: run_started_at.to_rfc3339(),
-                completed_at: completed_at.to_rfc3339(),
-                duration_ms,
-                project_results,
-                imported_projects,
-                imported_project_count: import_counts.imported,
-                skipped_project_count: import_counts.skipped,
-                failed_project_count: import_counts.failed,
-                received_artifacts,
-                transfer_counts,
-                served_artifact_requests,
-                total_received_bytes: metrics.total_received_bytes,
-                total_served_bytes: metrics.total_served_bytes,
-                time_to_first_artifact_ms: metrics.time_to_first_artifact_ms(),
-                throughput_bytes_per_second: metrics
-                    .throughput_bytes_per_second(run_started_instant.elapsed()),
-                remote_manifest_count: remote_offer.project_manifests.len(),
-                local_manifest_count,
-                manifest_errors,
-                phase_timings: timings,
-            })
-        }
-
-        fn local_iroh_transport(&self) -> Option<IrohTransport> {
-            self.listener.lock().ok().and_then(|guard| {
-                guard
-                    .as_ref()
-                    .and_then(|handle| handle.iroh_transport.clone())
-            })
-        }
-    }
-
-    pub fn sync_transport_start_listener(
-        state: State<'_, SyncTransportState>,
-        payload: SyncTransportStartListenerRequest,
-    ) -> Result<SyncTransportStatus, String> {
-        state.start_listener(payload)
-    }
-
-    pub fn sync_transport_stop_listener(
-        state: State<'_, SyncTransportState>,
-    ) -> Result<SyncTransportStatus, String> {
-        state.stop_listener()
-    }
-
-    pub fn sync_transport_status(state: State<'_, SyncTransportState>) -> SyncTransportStatus {
-        state.status()
-    }
-
-    pub async fn sync_transport_create_pairing_offer(
-        state: State<'_, SyncTransportState>,
-        payload: SyncTransportPairingOfferRequest,
-    ) -> Result<SyncTransportPairingOffer, String> {
-        let state = state.inner().clone();
-        tauri::async_runtime::spawn_blocking(move || state.create_pairing_offer(payload))
-            .await
-            .map_err(|error| format!("Sync transport pairing task failed: {error}"))?
-    }
-
-    pub async fn sync_transport_sync_now(
-        state: State<'_, SyncTransportState>,
-        payload: SyncTransportSyncNowRequest,
-    ) -> Result<SyncTransportSyncResult, String> {
-        let state = state.inner().clone();
-        tauri::async_runtime::spawn_blocking(move || state.sync_now(payload))
-            .await
-            .map_err(|error| format!("Sync transport task failed: {error}"))?
-    }
-
-    struct ListenerHandle {
-        bind_addr: SocketAddr,
-        endpoint_hints: Vec<String>,
-        iroh_transport: Option<IrohTransport>,
-        stop: Arc<AtomicBool>,
-        tcp_thread: Option<JoinHandle<()>>,
-        iroh_thread: Option<JoinHandle<()>>,
-    }
-
-    struct IncomingSessionResult {
-        message: String,
-        sync_result: SyncTransportSyncResult,
-    }
-
-    #[derive(Clone, Default)]
-    struct SharedStatus {
-        active_sessions: usize,
-        accepted_sessions: u64,
-        failed_sessions: u64,
-        last_status: Option<String>,
-        last_error: Option<String>,
-        last_sync: Option<SyncTransportSyncResult>,
-    }
-
-    #[derive(Clone)]
-    struct IrohTransport {
-        endpoint: Endpoint,
-        blob_store: IrohBlobStore,
-    }
-
-    impl IrohTransport {
-        fn close(&self) {
-            let endpoint = self.endpoint.clone();
-            let blob_store = self.blob_store.clone();
-            tauri::async_runtime::block_on(async move {
-                endpoint.close().await;
-                let _ = blob_store.store.shutdown().await;
-            });
-        }
-    }
-
-    #[derive(Clone)]
-    struct IrohBlobStore {
-        store: FsStore,
-    }
-
-    impl IrohBlobStore {
-        fn add_path(&self, path: &Path) -> Result<String, String> {
-            let store = self.store.clone();
-            let path = path.to_path_buf();
-            tauri::async_runtime::block_on(async move {
-                let tag = store.blobs().add_path(path).await.map_err(|error| {
-                    format!("Could not import artifact into iroh-blobs store: {error}")
-                })?;
-                store.sync_db().await.map_err(|error| {
-                    format!("Could not sync iroh-blobs store metadata: {error}")
-                })?;
-                Ok(tag.hash.to_string())
-            })
-        }
-    }
-
-    fn create_iroh_transport(device_id: &str) -> Result<IrohTransport, String> {
-        let data_dir = sync_transport_data_dir()?;
-        let iroh_dir = data_dir.join("iroh");
-        fs::create_dir_all(&iroh_dir)
-            .map_err(|error| format!("Could not create Iroh transport data directory: {error}"))?;
-        let secret_key = load_or_create_iroh_secret_key(&iroh_dir)?;
-        let blobs_dir = iroh_dir.join("blobs");
-        let blob_store = tauri::async_runtime::block_on(FsStore::load(&blobs_dir))
-            .map_err(|error| format!("Could not open disk-backed iroh-blobs store: {error}"))?;
-        let endpoint = tauri::async_runtime::block_on(async move {
-            // Minimal only installs the crypto provider; the empty builder defaults keep
-            // address lookup empty and RelayMode disabled for local-direct operation.
-            Endpoint::builder(presets::Minimal)
-                .secret_key(secret_key)
-                .alpns(vec![IROH_ALPN.to_vec()])
-                .bind()
-                .await
-        })
-        .map_err(|error| format!("Could not start local-direct Iroh endpoint: {error}"))?;
-
-        let transport = IrohTransport {
-            endpoint,
-            blob_store: IrohBlobStore { store: blob_store },
-        };
-        if iroh_endpoint_hints(&transport, device_id).is_empty() {
-            return Err("Local Iroh endpoint did not expose a direct address.".to_string());
-        }
-        Ok(transport)
-    }
-
-    fn sync_transport_data_dir() -> Result<PathBuf, String> {
-        if let Ok(path) = env::var("TUNEFORGE_SYNC_TRANSPORT_DATA_DIR") {
-            let trimmed = path.trim();
-            if !trimmed.is_empty() {
-                return Ok(PathBuf::from(trimmed));
-            }
-        }
-        platform_app_data_dir().map(|path| path.join("sync-transport"))
-    }
-
-    #[cfg(target_os = "macos")]
-    fn platform_app_data_dir() -> Result<PathBuf, String> {
-        home_dir()
-            .map(|home| {
-                home.join("Library")
-                    .join("Application Support")
-                    .join("com.tuneforge.desktop")
-            })
-            .ok_or_else(|| {
-                "Could not resolve the home directory for Iroh transport state.".to_string()
-            })
-    }
-
-    #[cfg(target_os = "windows")]
-    fn platform_app_data_dir() -> Result<PathBuf, String> {
-        env::var("APPDATA")
-            .map(|path| PathBuf::from(path).join("com.tuneforge.desktop"))
-            .map_err(|_| "Could not resolve APPDATA for Iroh transport state.".to_string())
-    }
-
-    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-    fn platform_app_data_dir() -> Result<PathBuf, String> {
-        if let Ok(path) = env::var("XDG_DATA_HOME") {
-            let trimmed = path.trim();
-            if !trimmed.is_empty() {
-                return Ok(PathBuf::from(trimmed).join("com.tuneforge.desktop"));
-            }
-        }
-        home_dir()
-            .map(|home| {
-                home.join(".local")
-                    .join("share")
-                    .join("com.tuneforge.desktop")
-            })
-            .ok_or_else(|| {
-                "Could not resolve the home directory for Iroh transport state.".to_string()
-            })
-    }
-
-    fn home_dir() -> Option<PathBuf> {
-        env::var("HOME")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-    }
-
-    fn load_or_create_iroh_secret_key(iroh_dir: &Path) -> Result<SecretKey, String> {
-        let key_path = iroh_dir.join("endpoint.key");
-        match fs::read_to_string(&key_path) {
-            Ok(value) => {
-                let bytes = decode_urlsafe_key(value.trim())?;
-                let bytes: [u8; 32] = bytes.try_into().map_err(|_| {
-                    "Persisted Iroh endpoint key must decode to 32 bytes.".to_string()
-                })?;
-                Ok(SecretKey::from_bytes(&bytes))
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                let secret_key = SecretKey::generate();
-                let encoded = URL_SAFE_NO_PAD.encode(secret_key.to_bytes());
-                fs::write(&key_path, encoded)
-                    .map_err(|error| format!("Could not persist Iroh endpoint key: {error}"))?;
-                set_owner_only_file_permissions(&key_path);
-                Ok(secret_key)
-            }
-            Err(error) => Err(format!(
-                "Could not read persisted Iroh endpoint key: {error}"
-            )),
-        }
-    }
-
-    #[cfg(unix)]
-    fn set_owner_only_file_permissions(path: &Path) {
-        use std::os::unix::fs::PermissionsExt;
-
-        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
-    }
-
-    #[cfg(not(unix))]
-    fn set_owner_only_file_permissions(_path: &Path) {}
+    pub(crate) const ENCRYPTED_FRAME_MESSAGE_CHUNK: u8 = 1;
+    pub(crate) const ENCRYPTED_FRAME_ARTIFACT_CHUNK: u8 = 2;
 
     #[derive(Clone, Debug, Eq, PartialEq)]
-    enum TransportKind {
+    pub(crate) enum TransportKind {
         Tcp,
         Iroh,
         Other(String),
     }
 
     impl TransportKind {
-        fn from_id(transport_id: &str) -> Self {
+        pub(crate) fn from_id(transport_id: &str) -> Self {
             match transport_id.trim().to_ascii_lowercase().as_str() {
                 TCP_TRANSPORT_ID | "tcp" => Self::Tcp,
                 IROH_TRANSPORT_ID | "iroh" => Self::Iroh,
@@ -809,7 +182,7 @@ mod desktop {
             }
         }
 
-        fn id(&self) -> &str {
+        pub(crate) fn id(&self) -> &str {
             match self {
                 Self::Tcp => TCP_TRANSPORT_ID,
                 Self::Iroh => IROH_TRANSPORT_ID,
@@ -827,16 +200,16 @@ mod desktop {
     }
 
     #[derive(Clone, Debug)]
-    struct TransportSelection {
-        selected: TransportKind,
+    pub(crate) struct TransportSelection {
+        pub(crate) selected: TransportKind,
         endpoint_hint: Option<String>,
-        tcp_fallback_endpoint_hint: Option<String>,
+        pub(crate) tcp_fallback_endpoint_hint: Option<String>,
         fallback_reason: Option<String>,
         attempted_transports: Vec<TransportKind>,
     }
 
     impl TransportSelection {
-        fn single(selected: TransportKind) -> Self {
+        pub(crate) fn single(selected: TransportKind) -> Self {
             Self {
                 selected: selected.clone(),
                 endpoint_hint: None,
@@ -880,7 +253,10 @@ mod desktop {
             }
         }
 
-        fn record_iroh_connect_fallback(&mut self, reason: String) -> Result<(), String> {
+        pub(crate) fn record_iroh_connect_fallback(
+            &mut self,
+            reason: String,
+        ) -> Result<(), String> {
             let Some(endpoint_hint) = self.tcp_fallback_endpoint_hint.clone() else {
                 return Err(reason);
             };
@@ -892,11 +268,11 @@ mod desktop {
             Ok(())
         }
 
-        fn endpoint_hint(&self) -> Option<&str> {
+        pub(crate) fn endpoint_hint(&self) -> Option<&str> {
             self.endpoint_hint.as_deref()
         }
 
-        fn evidence(&self) -> TransportEvidence {
+        pub(crate) fn evidence(&self) -> TransportEvidence {
             TransportEvidence {
                 selected_transport: self.selected.id().to_string(),
                 fallback_reason: self.fallback_reason.clone(),
@@ -910,13 +286,13 @@ mod desktop {
     }
 
     #[derive(Clone, Debug, Eq, PartialEq)]
-    struct TransportEvidence {
-        selected_transport: String,
-        fallback_reason: Option<String>,
-        attempted_transports: Vec<String>,
+    pub(crate) struct TransportEvidence {
+        pub(crate) selected_transport: String,
+        pub(crate) fallback_reason: Option<String>,
+        pub(crate) attempted_transports: Vec<String>,
     }
 
-    fn select_sync_transport(
+    pub(crate) fn select_sync_transport(
         preferred_transport: Option<&str>,
         endpoint_hint: Option<&str>,
         peer_endpoint_hints: &[String],
@@ -1065,7 +441,7 @@ mod desktop {
             })
     }
 
-    fn normalized_transport_id(value: &str) -> Option<&str> {
+    pub(crate) fn normalized_transport_id(value: &str) -> Option<&str> {
         let value = value.trim();
         if value.is_empty() || value.eq_ignore_ascii_case("auto") {
             None
@@ -1074,16 +450,1339 @@ mod desktop {
         }
     }
 
+    fn first_transport_endpoint_hint(
+        transport: &TransportKind,
+        endpoint_hint: Option<&str>,
+        peer_endpoint_hints: &[String],
+    ) -> Option<String> {
+        endpoint_hint
+            .filter(|hint| {
+                transport
+                    .endpoint_scheme()
+                    .is_some_and(|scheme| hint.starts_with(scheme))
+            })
+            .map(str::to_string)
+            .or_else(|| first_endpoint_hint_for_transport(transport, peer_endpoint_hints))
+    }
+
+    fn first_endpoint_hint_for_transport(
+        transport: &TransportKind,
+        endpoint_hints: &[String],
+    ) -> Option<String> {
+        let endpoint_scheme = transport.endpoint_scheme()?;
+        endpoint_hints
+            .iter()
+            .find(|hint| hint.starts_with(endpoint_scheme))
+            .cloned()
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub(crate) struct ManifestOffer {
+        pub(crate) metadata: Value,
+        pub(crate) project_manifests: Vec<Value>,
+        pub(crate) manifest_errors: Vec<SyncTransportManifestError>,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    pub(crate) enum ProtocolMessage {
+        AuthChallenge {
+            protocol_version: String,
+            device_id: String,
+            session_nonce: String,
+        },
+        AuthProof {
+            handshake_signature: Value,
+        },
+        ManifestOffer(ManifestOffer),
+        ArtifactRequest {
+            artifact_id: String,
+            content_sha256: String,
+            size_bytes: u64,
+        },
+        ArtifactStart {
+            artifact_id: String,
+            content_sha256: String,
+            size_bytes: u64,
+        },
+        ArtifactEnd {
+            content_sha256: String,
+            size_bytes: u64,
+        },
+        Status {
+            phase: String,
+            message: String,
+        },
+        PhaseDone {
+            phase: String,
+        },
+        Error(ProtocolError),
+    }
+
+    impl ProtocolMessage {
+        pub(crate) fn kind(&self) -> &'static str {
+            match self {
+                Self::AuthChallenge { .. } => "auth_challenge",
+                Self::AuthProof { .. } => "auth_proof",
+                Self::ManifestOffer(_) => "manifest_offer",
+                Self::ArtifactRequest { .. } => "artifact_request",
+                Self::ArtifactStart { .. } => "artifact_start",
+                Self::ArtifactEnd { .. } => "artifact_end",
+                Self::Status { .. } => "status",
+                Self::PhaseDone { .. } => "phase_done",
+                Self::Error(_) => "error",
+            }
+        }
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub(crate) struct ProtocolError {
+        pub(crate) code: String,
+        pub(crate) message: String,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub(crate) struct EncryptedChunk {
+        pub(crate) message_id: u64,
+        pub(crate) chunk_index: u32,
+        pub(crate) chunk_count: u32,
+        pub(crate) data: String,
+    }
+
+    pub(crate) enum EncryptedFrame {
+        MessageChunk(EncryptedChunk),
+        ArtifactChunk(Vec<u8>),
+    }
+
+    pub(crate) enum ArtifactTransferFrame {
+        Chunk(Vec<u8>),
+        Message(ProtocolMessage),
+    }
+
+    pub(crate) trait PeerStream: Send {
+        fn read_exact(&mut self, buffer: &mut [u8]) -> io::Result<()>;
+        fn write_all(&mut self, buffer: &[u8]) -> io::Result<()>;
+    }
+
+    pub(crate) trait ProtocolConnection {
+        fn send_message(&mut self, message: &ProtocolMessage) -> Result<(), String>;
+        fn read_message(&mut self) -> Result<ProtocolMessage, String>;
+        fn handshake_hash(&self) -> &str;
+    }
+
+    pub(crate) trait TransportBlobRecorder: Send + Sync {
+        fn record_path_identity(&self, path: &Path) -> Result<String, String>;
+    }
+
+    pub(crate) type TransportBlobRecorderRef = Arc<dyn TransportBlobRecorder>;
+
+    pub(crate) fn encode_message_chunk_frame(chunk: &EncryptedChunk) -> Result<Vec<u8>, String> {
+        let payload = serde_json::to_vec(chunk)
+            .map_err(|error| format!("Could not encode encrypted chunk: {error}"))?;
+        let mut plaintext = Vec::with_capacity(payload.len() + 1);
+        plaintext.push(ENCRYPTED_FRAME_MESSAGE_CHUNK);
+        plaintext.extend_from_slice(&payload);
+        Ok(plaintext)
+    }
+
+    pub(crate) fn encode_artifact_chunk_frame(chunk: &[u8]) -> Vec<u8> {
+        let mut plaintext = Vec::with_capacity(chunk.len() + 1);
+        plaintext.push(ENCRYPTED_FRAME_ARTIFACT_CHUNK);
+        plaintext.extend_from_slice(chunk);
+        plaintext
+    }
+
+    pub(crate) fn decode_encrypted_frame_plaintext(
+        plaintext: &[u8],
+    ) -> Result<EncryptedFrame, String> {
+        let Some((&frame_type, payload)) = plaintext.split_first() else {
+            return Err("Encrypted sync transport frame is empty.".to_string());
+        };
+        match frame_type {
+            ENCRYPTED_FRAME_MESSAGE_CHUNK => {
+                let chunk = serde_json::from_slice(payload)
+                    .map_err(|error| format!("Could not decode encrypted chunk: {error}"))?;
+                Ok(EncryptedFrame::MessageChunk(chunk))
+            }
+            ENCRYPTED_FRAME_ARTIFACT_CHUNK => Ok(EncryptedFrame::ArtifactChunk(payload.to_vec())),
+            // v2 peers reject v1 during auth, but this keeps the error path readable.
+            b'{' => {
+                let chunk = serde_json::from_slice(plaintext)
+                    .map_err(|error| format!("Could not decode encrypted chunk: {error}"))?;
+                Ok(EncryptedFrame::MessageChunk(chunk))
+            }
+            _ => Err("Encrypted sync transport frame has an unsupported type.".to_string()),
+        }
+    }
+
+    pub(crate) fn write_raw_frame(
+        stream: &mut dyn PeerStream,
+        payload: &[u8],
+    ) -> Result<(), String> {
+        if payload.len() > MAX_RAW_FRAME {
+            return Err("Sync transport frame is too large.".to_string());
+        }
+        let length = (payload.len() as u32).to_be_bytes();
+        stream
+            .write_all(&length)
+            .and_then(|_| stream.write_all(payload))
+            .map_err(|error| format!("Could not write sync transport frame: {error}"))
+    }
+
+    pub(crate) fn read_raw_frame(stream: &mut dyn PeerStream) -> Result<Vec<u8>, String> {
+        let mut length = [0_u8; 4];
+        stream
+            .read_exact(&mut length)
+            .map_err(|error| format!("Could not read sync transport frame length: {error}"))?;
+        let length = u32::from_be_bytes(length) as usize;
+        if length > MAX_RAW_FRAME {
+            return Err("Sync transport frame exceeds the maximum frame size.".to_string());
+        }
+        let mut payload = vec![0_u8; length];
+        stream
+            .read_exact(&mut payload)
+            .map_err(|error| format!("Could not read sync transport frame: {error}"))?;
+        Ok(payload)
+    }
+
+    pub(crate) fn decode_standard_base64(value: &str) -> Result<Vec<u8>, String> {
+        STANDARD
+            .decode(value)
+            .map_err(|error| format!("Value must be base64: {error}"))
+    }
+
+    pub(crate) fn encode_standard_base64(bytes: &[u8]) -> String {
+        STANDARD.encode(bytes)
+    }
+
+    #[derive(Debug)]
+    pub(crate) struct AuthenticatedSession {
+        pub(crate) remote_device_id: String,
+    }
+
+    #[derive(Clone, Debug, Deserialize)]
+    pub(crate) struct SyncLocalIdentity {
+        pub(crate) device_id: String,
+    }
+
+    #[derive(Clone, Debug, Deserialize)]
+    pub(crate) struct SyncTrustedPeer {
+        pub(crate) device_id: String,
+        pub(crate) public_key: String,
+        pub(crate) endpoint_hints: Vec<String>,
+        pub(crate) revoked_at: Option<String>,
+    }
+
+    pub(crate) trait SyncTransportAuthBackend {
+        fn local_identity(&self) -> Result<SyncLocalIdentity, String>;
+        fn trusted_peer(&self, device_id: &str) -> Result<Option<SyncTrustedPeer>, String>;
+        fn sign_transport_handshake(
+            &self,
+            peer_device_id: &str,
+            challenge: &Value,
+        ) -> Result<Value, String>;
+    }
+
+    pub(crate) fn authenticate_session(
+        connection: &mut impl ProtocolConnection,
+        client: &impl SyncTransportAuthBackend,
+        expected_peer_device_id: Option<String>,
+    ) -> Result<AuthenticatedSession, String> {
+        let identity = client
+            .local_identity()
+            .map_err(|error| format!("Could not load local sync identity: {error}"))?;
+        let local_nonce = random_nonce();
+        connection.send_message(&ProtocolMessage::AuthChallenge {
+            protocol_version: TRANSPORT_PROTOCOL_VERSION.to_string(),
+            device_id: identity.device_id.clone(),
+            session_nonce: local_nonce.clone(),
+        })?;
+        let (remote_device_id, remote_nonce) = match connection.read_message()? {
+            ProtocolMessage::AuthChallenge {
+                protocol_version,
+                device_id,
+                session_nonce,
+            } => {
+                if protocol_version != TRANSPORT_PROTOCOL_VERSION {
+                    return Err(format!(
+                        "Sync peer uses unsupported transport protocol version {protocol_version}."
+                    ));
+                }
+                (device_id, session_nonce)
+            }
+            ProtocolMessage::Error(error) => {
+                return Err(format!(
+                    "Sync peer returned an auth error: {}",
+                    error.message
+                ));
+            }
+            other => {
+                return Err(format!(
+                    "Sync peer sent unexpected auth message: {}",
+                    other.kind()
+                ));
+            }
+        };
+        if let Some(expected_peer_device_id) = expected_peer_device_id.as_deref() {
+            if remote_device_id != expected_peer_device_id {
+                return Err(format!(
+                    "Sync peer identity mismatch: expected {expected_peer_device_id}, got {remote_device_id}."
+                ));
+            }
+        }
+        let trusted_peer = client
+            .trusted_peer(&remote_device_id)
+            .map_err(|error| format!("Could not verify trusted sync peer: {error}"))?
+            .ok_or_else(|| format!("Sync peer {remote_device_id} is not trusted."))?;
+
+        let local_challenge = transport_handshake_challenge(
+            &remote_device_id,
+            &identity.device_id,
+            &remote_nonce,
+            &local_nonce,
+            connection.handshake_hash(),
+        );
+        let local_signature = client
+            .sign_transport_handshake(&remote_device_id, &local_challenge)
+            .map_err(|error| format!("Could not sign sync transport handshake: {error}"))?;
+        connection.send_message(&ProtocolMessage::AuthProof {
+            handshake_signature: local_signature,
+        })?;
+
+        let remote_signature = match connection.read_message()? {
+            ProtocolMessage::AuthProof {
+                handshake_signature,
+            } => handshake_signature,
+            ProtocolMessage::Error(error) => {
+                return Err(format!(
+                    "Sync peer returned an auth error: {}",
+                    error.message
+                ));
+            }
+            other => {
+                return Err(format!(
+                    "Sync peer sent unexpected auth proof message: {}",
+                    other.kind()
+                ));
+            }
+        };
+        verify_transport_handshake_signature(
+            &remote_signature,
+            &trusted_peer,
+            &identity.device_id,
+            &remote_device_id,
+            &local_nonce,
+            &remote_nonce,
+            connection.handshake_hash(),
+        )?;
+
+        Ok(AuthenticatedSession { remote_device_id })
+    }
+
+    pub(crate) fn transport_handshake_challenge(
+        requester_device_id: &str,
+        responder_device_id: &str,
+        session_id: &str,
+        challenge_nonce: &str,
+        handshake_hash: &str,
+    ) -> Value {
+        let issued_at = Utc::now();
+        let expires_at = issued_at + chrono::Duration::seconds(TRANSPORT_HANDSHAKE_TTL_SECONDS);
+        json!({
+            "protocol_version": PAIRING_PROTOCOL_VERSION,
+            "challenge_type": TRANSPORT_HANDSHAKE_CHALLENGE_TYPE,
+            "session_id": session_id,
+            "challenge_nonce": bound_noise_nonce(challenge_nonce, handshake_hash),
+            "requester_device_id": requester_device_id,
+            "responder_device_id": responder_device_id,
+            "issued_at": issued_at.to_rfc3339(),
+            "expires_at": expires_at.to_rfc3339(),
+        })
+    }
+
+    fn verify_transport_handshake_signature(
+        signature_value: &Value,
+        trusted_peer: &SyncTrustedPeer,
+        local_device_id: &str,
+        remote_device_id: &str,
+        local_nonce: &str,
+        remote_nonce: &str,
+        handshake_hash: &str,
+    ) -> Result<(), String> {
+        let proof: TransportHandshakeSignature = serde_json::from_value(signature_value.clone())
+            .map_err(|error| {
+                format!("Sync peer transport handshake proof is malformed: {error}")
+            })?;
+        if proof.protocol_version != PAIRING_PROTOCOL_VERSION {
+            return Err(format!(
+                "Sync peer transport proof uses unsupported pairing protocol version {}.",
+                proof.protocol_version
+            ));
+        }
+        if proof.challenge_type != TRANSPORT_HANDSHAKE_CHALLENGE_TYPE {
+            return Err("Sync peer transport proof has an unsupported challenge type.".to_string());
+        }
+        if proof.local_device_id != trusted_peer.device_id
+            || proof.local_device_id != remote_device_id
+            || proof.peer_device_id != local_device_id
+        {
+            return Err(
+                "Sync peer transport proof device IDs do not match this session.".to_string(),
+            );
+        }
+        if proof.public_key != trusted_peer.public_key {
+            return Err(
+                "Sync peer transport proof public key does not match trusted peer.".to_string(),
+            );
+        }
+        let expected_device_id = derive_device_id(&proof.public_key)?;
+        if expected_device_id != proof.local_device_id {
+            return Err(
+                "Sync peer transport proof device_id does not match its public key.".to_string(),
+            );
+        }
+        let signed_challenge: Value = serde_json::from_str(&proof.canonical_challenge_json)
+            .map_err(|error| format!("Sync peer transport proof challenge is invalid: {error}"))?;
+        validate_transport_challenge(
+            &signed_challenge,
+            local_device_id,
+            remote_device_id,
+            local_nonce,
+            remote_nonce,
+            handshake_hash,
+        )?;
+
+        let public_key_bytes = decode_public_key(&proof.public_key)?;
+        let verifying_key = VerifyingKey::from_bytes(&public_key_bytes)
+            .map_err(|error| format!("Sync peer public key is invalid: {error}"))?;
+        let signature_bytes = decode_urlsafe_key(&proof.signature)?;
+        let signature = Signature::from_slice(&signature_bytes)
+            .map_err(|error| format!("Sync peer transport proof signature is invalid: {error}"))?;
+        verifying_key
+            .verify(proof.canonical_challenge_json.as_bytes(), &signature)
+            .map_err(|_| "Sync peer transport proof signature verification failed.".to_string())
+    }
+
+    #[derive(Clone, Debug, Deserialize)]
+    struct TransportHandshakeSignature {
+        protocol_version: String,
+        challenge_type: String,
+        local_device_id: String,
+        peer_device_id: String,
+        public_key: String,
+        #[allow(dead_code)]
+        challenge: Value,
+        canonical_challenge_json: String,
+        signature: String,
+        #[allow(dead_code)]
+        signed_at: String,
+    }
+
+    fn validate_transport_challenge(
+        challenge: &Value,
+        local_device_id: &str,
+        remote_device_id: &str,
+        local_nonce: &str,
+        remote_nonce: &str,
+        handshake_hash: &str,
+    ) -> Result<(), String> {
+        expect_json_string(challenge, "protocol_version", PAIRING_PROTOCOL_VERSION)?;
+        expect_json_string(
+            challenge,
+            "challenge_type",
+            TRANSPORT_HANDSHAKE_CHALLENGE_TYPE,
+        )?;
+        expect_json_string(challenge, "requester_device_id", local_device_id)?;
+        expect_json_string(challenge, "responder_device_id", remote_device_id)?;
+        expect_json_string(challenge, "session_id", local_nonce)?;
+        expect_json_string(
+            challenge,
+            "challenge_nonce",
+            &bound_noise_nonce(remote_nonce, handshake_hash),
+        )?;
+        let expires_at = json_string(challenge, "expires_at")
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.with_timezone(&Utc))
+            .ok_or_else(|| "Sync peer transport proof expiration is invalid.".to_string())?;
+        if expires_at <= Utc::now() {
+            return Err("Sync peer transport proof has expired.".to_string());
+        }
+        Ok(())
+    }
+
+    fn bound_noise_nonce(nonce: &str, handshake_hash: &str) -> String {
+        format!("{nonce}.{handshake_hash}")
+    }
+
+    fn expect_json_string(value: &Value, field: &str, expected: &str) -> Result<(), String> {
+        match json_string(value, field) {
+            Some(actual) if actual == expected => Ok(()),
+            _ => Err(format!(
+                "Sync transport challenge {field} did not match this session."
+            )),
+        }
+    }
+
+    fn json_string<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
+        value.get(field).and_then(Value::as_str)
+    }
+
+    pub(crate) fn random_nonce() -> String {
+        let mut bytes = [0_u8; 24];
+        OsRng.fill_bytes(&mut bytes);
+        URL_SAFE_NO_PAD.encode(bytes)
+    }
+
+    pub(crate) fn sync_run_id() -> String {
+        format!("sync_{}", random_nonce())
+    }
+
+    pub(crate) fn parse_endpoint_hint(
+        endpoint_hint: &str,
+        expected_device_id: Option<&str>,
+    ) -> Result<std::net::SocketAddr, String> {
+        let rest = endpoint_hint
+            .strip_prefix(ENDPOINT_SCHEME)
+            .ok_or_else(|| "Endpoint hint is not a TuneForge TCP URI.".to_string())?;
+        let (authority, query) = rest.split_once('?').unwrap_or((rest, ""));
+        if let Some(expected_device_id) = expected_device_id {
+            if let Some(device_id) = query_parameter(query, "device_id") {
+                if device_id != expected_device_id {
+                    return Err(
+                        "Endpoint hint device_id does not match the trusted peer.".to_string()
+                    );
+                }
+            }
+        }
+        let socket_text = if authority.starts_with('[') {
+            authority.to_string()
+        } else {
+            authority.to_string()
+        };
+        let mut addresses = std::net::ToSocketAddrs::to_socket_addrs(&socket_text)
+            .map_err(|error| format!("Could not resolve sync endpoint hint: {error}"))?;
+        addresses
+            .next()
+            .ok_or_else(|| "Sync endpoint hint did not resolve to a socket address.".to_string())
+    }
+
+    pub(crate) fn query_parameter(query: &str, key: &str) -> Option<String> {
+        query_parameters(query, key).into_iter().next()
+    }
+
+    pub(crate) fn query_parameters(query: &str, key: &str) -> Vec<String> {
+        query
+            .split('&')
+            .filter_map(|part| {
+                let (part_key, value) = part.split_once('=')?;
+                (part_key == key).then(|| percent_decode(value))
+            })
+            .collect()
+    }
+
+    pub(crate) fn decode_public_key(public_key: &str) -> Result<[u8; 32], String> {
+        let decoded =
+            decode_urlsafe_key(public_key.strip_prefix("ed25519:").unwrap_or(public_key))?;
+        decoded
+            .try_into()
+            .map_err(|_| "Ed25519 public key must be 32 bytes.".to_string())
+    }
+
+    pub(crate) fn derive_device_id(public_key: &str) -> Result<String, String> {
+        let public_key = decode_public_key(public_key)?;
+        let digest = Sha256::digest(public_key);
+        Ok(format!("dev_ed25519_{}", URL_SAFE_NO_PAD.encode(digest)))
+    }
+
+    pub(crate) fn decode_urlsafe_key(value: &str) -> Result<Vec<u8>, String> {
+        URL_SAFE_NO_PAD
+            .decode(value.trim().trim_end_matches('='))
+            .map_err(|error| format!("Value must be URL-safe base64: {error}"))
+    }
+
+    pub(crate) fn encode_urlsafe_key(bytes: impl AsRef<[u8]>) -> String {
+        URL_SAFE_NO_PAD.encode(bytes)
+    }
+
+    pub(crate) fn hex_digest(bytes: &[u8]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut output = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            output.push(HEX[(byte >> 4) as usize] as char);
+            output.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        output
+    }
+
+    pub(crate) fn percent_encode_path_segment(value: &str) -> String {
+        percent_encode(value)
+    }
+
+    pub(crate) fn percent_encode_query_value(value: &str) -> String {
+        percent_encode(value)
+    }
+
+    fn percent_encode(value: &str) -> String {
+        let mut encoded = String::new();
+        for byte in value.bytes() {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+                encoded.push(byte as char);
+            } else {
+                encoded.push_str(&format!("%{byte:02X}"));
+            }
+        }
+        encoded
+    }
+
+    pub(crate) fn percent_decode(value: &str) -> String {
+        let mut bytes = Vec::with_capacity(value.len());
+        let raw = value.as_bytes();
+        let mut index = 0;
+        while index < raw.len() {
+            if raw[index] == b'%' && index + 2 < raw.len() {
+                if let Ok(hex) = std::str::from_utf8(&raw[index + 1..index + 3]) {
+                    if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                        bytes.push(byte);
+                        index += 3;
+                        continue;
+                    }
+                }
+            }
+            bytes.push(raw[index]);
+            index += 1;
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+}
+
+mod desktop {
+    use super::{
+        sync_core::*, SyncTransportManifestError, SyncTransportPairingOffer,
+        SyncTransportPairingOfferRequest, SyncTransportProjectResult,
+        SyncTransportStartListenerRequest, SyncTransportStatus, SyncTransportSyncNowRequest,
+        SyncTransportSyncResult, SyncTransportTimingEvidence, SyncTransportTransferCounts,
+        SyncTransportTransferResult,
+    };
+    use chrono::{DateTime, Utc};
+    use iroh::{
+        endpoint::{presets, BindOpts, RecvStream, SendStream},
+        Endpoint, EndpointAddr, EndpointId, SecretKey,
+    };
+    use iroh_blobs::store::fs::FsStore;
+    use serde::Deserialize;
+    use serde_json::{json, Value};
+    use sha2::{Digest, Sha256};
+    use snow::{params::NoiseParams, Builder};
+    #[cfg(not(target_os = "android"))]
+    use std::io::{BufRead, BufReader};
+    use std::{
+        collections::{HashMap, HashSet},
+        env,
+        fs::{self, File},
+        io::{self, Read, Write},
+        net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream},
+        path::{Path, PathBuf},
+        process,
+        str::FromStr,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            mpsc, Arc, Mutex,
+        },
+        thread::{self, JoinHandle},
+        time::{Duration, Instant},
+    };
+    #[cfg(target_os = "android")]
+    use tauri::Manager;
+    use tauri::{AppHandle, State};
+
+    const DEFAULT_BIND_HOST: &str = "0.0.0.0";
+    const DEFAULT_LISTENER_PORT: u16 = 47619;
+    const IROH_LISTENER_PORT_OFFSET: u16 = 1;
+    const IROH_ALPN: &[u8] = b"tuneforge-sync/iroh/v1";
+    const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
+    const READ_TIMEOUT: Duration = Duration::from_secs(45);
+    const WRITE_TIMEOUT: Duration = Duration::from_secs(45);
+    const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+    const ACCEPT_SLEEP: Duration = Duration::from_millis(100);
+    #[cfg(not(target_os = "android"))]
+    const HTTP_TIMEOUT: Duration = Duration::from_secs(45);
+
+    #[derive(Clone)]
+    pub struct SyncTransportState {
+        backend: BackendAccess,
+        listener: Arc<Mutex<Option<ListenerHandle>>>,
+        shared_status: Arc<Mutex<SharedStatus>>,
+    }
+
+    impl SyncTransportState {
+        pub fn new(base_url: String, app: AppHandle) -> Self {
+            Self {
+                backend: BackendAccess { base_url, app },
+                listener: Arc::new(Mutex::new(None)),
+                shared_status: Arc::new(Mutex::new(SharedStatus::default())),
+            }
+        }
+
+        fn start_listener(
+            &self,
+            payload: SyncTransportStartListenerRequest,
+        ) -> Result<SyncTransportStatus, String> {
+            {
+                let guard = self
+                    .listener
+                    .lock()
+                    .map_err(|_| "Sync transport listener state is unavailable.".to_string())?;
+                if guard.is_some() {
+                    return Ok(self.status());
+                }
+            }
+
+            let client = BackendClient::new(&self.backend)?;
+            let identity = client
+                .local_identity()
+                .map_err(|error| format!("Could not load local sync identity: {error}"))?;
+            let bind_host = payload
+                .bind_host
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(DEFAULT_BIND_HOST)
+                .to_string();
+            let port = payload.port.unwrap_or(DEFAULT_LISTENER_PORT);
+            let listener = TcpListener::bind((bind_host.as_str(), port)).map_err(|error| {
+                format!("Could not bind sync transport listener on {bind_host}:{port}: {error}")
+            })?;
+            listener
+                .set_nonblocking(true)
+                .map_err(|error| format!("Could not configure sync transport listener: {error}"))?;
+            let bind_addr = listener
+                .local_addr()
+                .map_err(|error| format!("Could not inspect sync transport listener: {error}"))?;
+            let tcp_endpoint_hints = endpoint_hints_for_port(bind_addr.port(), &identity.device_id);
+            let iroh_transport = match create_iroh_transport(
+                &self.backend,
+                &identity.device_id,
+                bind_addr.port(),
+            ) {
+                Ok(transport) => Some(transport),
+                Err(error) => {
+                    update_status(&self.shared_status, |status| {
+                        status.last_status = Some(format!(
+                            "Iroh sync transport unavailable; starting TCP listener only: {error}"
+                        ));
+                    });
+                    None
+                }
+            };
+            let mut endpoint_hints = iroh_transport
+                .as_ref()
+                .map(|transport| iroh_endpoint_hints(transport, &identity.device_id))
+                .unwrap_or_default();
+            endpoint_hints.extend(tcp_endpoint_hints);
+            let stop = Arc::new(AtomicBool::new(false));
+            let tcp_stop = Arc::clone(&stop);
+            let backend = self.backend.clone();
+            let shared_status = Arc::clone(&self.shared_status);
+            let tcp_thread = thread::spawn(move || {
+                accept_loop(listener, backend, tcp_stop, shared_status);
+            });
+            let iroh_thread = iroh_transport.as_ref().map(|transport| {
+                let transport = transport.clone();
+                let backend = self.backend.clone();
+                let shared_status = Arc::clone(&self.shared_status);
+                let iroh_stop = Arc::clone(&stop);
+                thread::spawn(move || {
+                    iroh_accept_loop(transport, backend, iroh_stop, shared_status);
+                })
+            });
+
+            let handle = ListenerHandle {
+                bind_addr,
+                endpoint_hints,
+                iroh_transport,
+                stop,
+                tcp_thread: Some(tcp_thread),
+                iroh_thread,
+            };
+            {
+                let mut guard = self
+                    .listener
+                    .lock()
+                    .map_err(|_| "Sync transport listener state is unavailable.".to_string())?;
+                *guard = Some(handle);
+            }
+            update_status(&self.shared_status, |status| {
+                status.last_status = Some("Sync transport listener started.".to_string());
+                status.last_error = None;
+                status.last_sync = None;
+            });
+
+            Ok(self.status())
+        }
+
+        fn stop_listener(&self) -> Result<SyncTransportStatus, String> {
+            let listener = {
+                let mut guard = self
+                    .listener
+                    .lock()
+                    .map_err(|_| "Sync transport listener state is unavailable.".to_string())?;
+                guard.take()
+            };
+
+            if let Some(mut listener) = listener {
+                listener.stop.store(true, Ordering::SeqCst);
+                if let Some(iroh_transport) = listener.iroh_transport.take() {
+                    iroh_transport.close();
+                }
+                if let Some(thread) = listener.tcp_thread.take() {
+                    thread
+                        .join()
+                        .map_err(|_| "Sync transport listener thread panicked.".to_string())?;
+                }
+                if let Some(thread) = listener.iroh_thread.take() {
+                    thread
+                        .join()
+                        .map_err(|_| "Iroh sync transport listener thread panicked.".to_string())?;
+                }
+                update_status(&self.shared_status, |status| {
+                    status.last_status = Some("Sync transport listener stopped.".to_string());
+                });
+            }
+
+            Ok(self.status())
+        }
+
+        pub fn shutdown(&self) {
+            let _ = self.stop_listener();
+        }
+
+        fn status(&self) -> SyncTransportStatus {
+            let shared = self
+                .shared_status
+                .lock()
+                .map(|status| status.clone())
+                .unwrap_or_default();
+            let listener = self.listener.lock().ok();
+            let listener = listener.as_ref().and_then(|guard| guard.as_ref());
+
+            SyncTransportStatus {
+                supported: true,
+                running: listener.is_some(),
+                bind_host: listener.map(|handle| handle.bind_addr.ip().to_string()),
+                port: listener.map(|handle| handle.bind_addr.port()),
+                endpoint_hints: listener
+                    .map(|handle| handle.endpoint_hints.clone())
+                    .unwrap_or_default(),
+                active_sessions: shared.active_sessions,
+                accepted_sessions: shared.accepted_sessions,
+                failed_sessions: shared.failed_sessions,
+                last_status: shared.last_status,
+                last_error: shared.last_error,
+                last_sync: shared.last_sync,
+            }
+        }
+
+        fn create_pairing_offer(
+            &self,
+            payload: SyncTransportPairingOfferRequest,
+        ) -> Result<SyncTransportPairingOffer, String> {
+            let status = self.status();
+            if !status.running || status.endpoint_hints.is_empty() {
+                return Err(
+                    "Start the sync transport listener before creating a LAN pairing offer."
+                        .to_string(),
+                );
+            }
+            let ttl_seconds = payload.ttl_seconds.unwrap_or(PAIRING_OFFER_TTL_SECONDS);
+            let client = BackendClient::new(&self.backend)?;
+            let pairing_offer = client
+                .create_pairing_offer(status.endpoint_hints.clone(), ttl_seconds)
+                .map_err(|error| format!("Could not create sync pairing offer: {error}"))?;
+            Ok(SyncTransportPairingOffer {
+                endpoint_hints: status.endpoint_hints,
+                pairing_offer,
+            })
+        }
+
+        fn sync_now(
+            &self,
+            payload: SyncTransportSyncNowRequest,
+        ) -> Result<SyncTransportSyncResult, String> {
+            let result = self.run_sync_now(payload);
+            update_status(&self.shared_status, |status| match &result {
+                Ok(sync_result) => {
+                    status.last_status = Some(sync_result.message.clone());
+                    status.last_sync = Some(sync_result.clone());
+                    status.last_error = None;
+                }
+                Err(error) => {
+                    status.last_error = Some(error.clone());
+                }
+            });
+            result
+        }
+
+        fn run_sync_now(
+            &self,
+            payload: SyncTransportSyncNowRequest,
+        ) -> Result<SyncTransportSyncResult, String> {
+            let run_id = sync_run_id();
+            let run_started_at = Utc::now();
+            let run_started_instant = Instant::now();
+            let mut timings = Vec::new();
+            let mut metrics = SyncRunMetrics::start(run_started_instant);
+            let client = BackendClient::new(&self.backend)?;
+            let peer = client
+                .trusted_peer(&payload.peer_device_id)
+                .map_err(|error| format!("Could not load trusted sync peer: {error}"))?
+                .ok_or_else(|| {
+                    format!(
+                        "Trusted sync peer {} is not known or has been revoked.",
+                        payload.peer_device_id
+                    )
+                })?;
+            let preferred_transport = payload
+                .preferred_transport
+                .as_deref()
+                .and_then(normalized_transport_id);
+            let local_iroh = self.local_iroh_transport();
+            let transport_selection = select_sync_transport(
+                preferred_transport,
+                payload.endpoint_hint.as_deref(),
+                &peer.endpoint_hints,
+                &payload.peer_device_id,
+                local_iroh.is_some(),
+            )?;
+            let mut transport_selection = transport_selection;
+            let timer = SyncPhaseTimer::start("peer_connect");
+            let mut connection = connect_selected_transport(
+                &mut transport_selection,
+                local_iroh,
+                &payload.peer_device_id,
+            )?;
+            timings.push(timer.finish());
+
+            let timer = SyncPhaseTimer::start("peer_authentication");
+            let session = authenticate_session(
+                &mut connection,
+                &client,
+                Some(payload.peer_device_id.clone()),
+            )?;
+            timings.push(timer.finish());
+
+            let timer = SyncPhaseTimer::start("local_manifest_export");
+            let local_offer = load_local_manifest_offer(
+                &client,
+                payload.project_ids.as_deref(),
+                payload.export_local,
+            );
+            timings.push(timer.finish());
+            let local_manifest_count = local_offer.project_manifests.len();
+            let timer = SyncPhaseTimer::start("manifest_exchange");
+            connection.send_message(&ProtocolMessage::ManifestOffer(local_offer.clone()))?;
+            let remote_offer = match connection.read_message()? {
+                ProtocolMessage::ManifestOffer(offer) => offer,
+                ProtocolMessage::Error(error) => {
+                    return Err(format!("Sync peer returned an error: {}", error.message));
+                }
+                other => {
+                    return Err(format!(
+                        "Sync peer sent unexpected message during manifest exchange: {}",
+                        other.kind()
+                    ));
+                }
+            };
+            timings.push(timer.finish());
+
+            let mut prepared_remote_import = None;
+            let mut received_artifacts = Vec::new();
+            if payload.import_remote {
+                let transport_id = connection.transport_id();
+                let prepared = stage_remote_manifest_artifacts(
+                    &client,
+                    &mut connection,
+                    &session.remote_device_id,
+                    &remote_offer.metadata,
+                    &remote_offer.project_manifests,
+                    transport_id,
+                    &mut metrics,
+                    &mut timings,
+                );
+                received_artifacts = prepared.received_artifacts.clone();
+                prepared_remote_import = Some(prepared);
+            }
+            if let Err(error) = connection.send_message(&ProtocolMessage::PhaseDone {
+                phase: "initiator_import".to_string(),
+            }) {
+                finish_staged_remote_import_for_failure(prepared_remote_import);
+                return Err(error);
+            }
+            let timer = SyncPhaseTimer::start("serve_artifact_requests");
+            let served_artifact_requests = match serve_artifact_requests_until_done(
+                &client,
+                &mut connection,
+                &local_offer.project_manifests,
+                &mut metrics,
+            ) {
+                Ok(served_artifact_requests) => served_artifact_requests,
+                Err(error) => {
+                    finish_staged_remote_import_for_failure(prepared_remote_import);
+                    return Err(error);
+                }
+            };
+            timings.push(timer.finish());
+            let imported_projects = prepared_remote_import
+                .map(|prepared| finish_staged_remote_import(prepared, &mut timings))
+                .unwrap_or_default();
+            let import_counts = import_outcome_counts(&imported_projects);
+            let manifest_errors =
+                sync_manifest_errors(&local_offer.manifest_errors, &remote_offer.manifest_errors);
+            let completed_at = Utc::now();
+            let duration_ms = duration_millis(run_started_instant.elapsed());
+            let transfer_counts = transfer_counts(&received_artifacts);
+            let project_results = imported_projects.clone();
+            let TransportEvidence {
+                selected_transport,
+                fallback_reason,
+                attempted_transports,
+            } = transport_selection.evidence();
+
+            Ok(SyncTransportSyncResult {
+                run_id,
+                peer_device_id: payload.peer_device_id,
+                remote_device_id: session.remote_device_id,
+                status: sync_result_status(&manifest_errors, import_counts.failed),
+                message: sync_result_message(
+                    local_manifest_count,
+                    remote_offer.project_manifests.len(),
+                    &transfer_counts,
+                    import_counts,
+                ),
+                selected_transport,
+                fallback_reason,
+                attempted_transports,
+                started_at: run_started_at.to_rfc3339(),
+                completed_at: completed_at.to_rfc3339(),
+                duration_ms,
+                project_results,
+                imported_projects,
+                imported_project_count: import_counts.imported,
+                skipped_project_count: import_counts.skipped,
+                failed_project_count: import_counts.failed,
+                received_artifacts,
+                transfer_counts,
+                served_artifact_requests,
+                total_received_bytes: metrics.total_received_bytes,
+                total_served_bytes: metrics.total_served_bytes,
+                time_to_first_artifact_ms: metrics.time_to_first_artifact_ms(),
+                throughput_bytes_per_second: metrics
+                    .throughput_bytes_per_second(run_started_instant.elapsed()),
+                remote_manifest_count: remote_offer.project_manifests.len(),
+                local_manifest_count,
+                manifest_errors,
+                phase_timings: timings,
+            })
+        }
+
+        fn local_iroh_transport(&self) -> Option<IrohTransport> {
+            self.listener.lock().ok().and_then(|guard| {
+                guard
+                    .as_ref()
+                    .and_then(|handle| handle.iroh_transport.clone())
+            })
+        }
+    }
+
+    #[derive(Clone)]
+    struct BackendAccess {
+        base_url: String,
+        #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+        app: AppHandle,
+    }
+
+    pub fn sync_transport_start_listener(
+        state: State<'_, SyncTransportState>,
+        payload: SyncTransportStartListenerRequest,
+    ) -> Result<SyncTransportStatus, String> {
+        state.start_listener(payload)
+    }
+
+    pub fn sync_transport_stop_listener(
+        state: State<'_, SyncTransportState>,
+    ) -> Result<SyncTransportStatus, String> {
+        state.stop_listener()
+    }
+
+    pub fn sync_transport_status(state: State<'_, SyncTransportState>) -> SyncTransportStatus {
+        state.status()
+    }
+
+    pub async fn sync_transport_create_pairing_offer(
+        state: State<'_, SyncTransportState>,
+        payload: SyncTransportPairingOfferRequest,
+    ) -> Result<SyncTransportPairingOffer, String> {
+        let state = state.inner().clone();
+        tauri::async_runtime::spawn_blocking(move || state.create_pairing_offer(payload))
+            .await
+            .map_err(|error| format!("Sync transport pairing task failed: {error}"))?
+    }
+
+    pub async fn sync_transport_sync_now(
+        state: State<'_, SyncTransportState>,
+        payload: SyncTransportSyncNowRequest,
+    ) -> Result<SyncTransportSyncResult, String> {
+        let state = state.inner().clone();
+        tauri::async_runtime::spawn_blocking(move || state.sync_now(payload))
+            .await
+            .map_err(|error| format!("Sync transport task failed: {error}"))?
+    }
+
+    struct ListenerHandle {
+        bind_addr: SocketAddr,
+        endpoint_hints: Vec<String>,
+        iroh_transport: Option<IrohTransport>,
+        stop: Arc<AtomicBool>,
+        tcp_thread: Option<JoinHandle<()>>,
+        iroh_thread: Option<JoinHandle<()>>,
+    }
+
+    struct IncomingSessionResult {
+        message: String,
+        sync_result: SyncTransportSyncResult,
+    }
+
+    #[derive(Clone, Default)]
+    struct SharedStatus {
+        active_sessions: usize,
+        accepted_sessions: u64,
+        failed_sessions: u64,
+        last_status: Option<String>,
+        last_error: Option<String>,
+        last_sync: Option<SyncTransportSyncResult>,
+    }
+
+    #[derive(Clone)]
+    struct IrohTransport {
+        endpoint: Endpoint,
+        blob_store: IrohBlobStore,
+    }
+
+    impl IrohTransport {
+        fn close(&self) {
+            let endpoint = self.endpoint.clone();
+            let blob_store = self.blob_store.clone();
+            tauri::async_runtime::block_on(async move {
+                endpoint.close().await;
+                let _ = blob_store.store.shutdown().await;
+            });
+        }
+    }
+
+    #[derive(Clone)]
+    struct IrohBlobStore {
+        store: FsStore,
+    }
+
+    impl IrohBlobStore {
+        fn add_path(&self, path: &Path) -> Result<String, String> {
+            let store = self.store.clone();
+            let path = path.to_path_buf();
+            tauri::async_runtime::block_on(async move {
+                let tag = store.blobs().add_path(path).await.map_err(|error| {
+                    format!("Could not import artifact into iroh-blobs store: {error}")
+                })?;
+                store.sync_db().await.map_err(|error| {
+                    format!("Could not sync iroh-blobs store metadata: {error}")
+                })?;
+                Ok(tag.hash.to_string())
+            })
+        }
+    }
+
+    impl TransportBlobRecorder for IrohBlobStore {
+        fn record_path_identity(&self, path: &Path) -> Result<String, String> {
+            self.add_path(path)
+        }
+    }
+
+    fn create_iroh_transport(
+        backend: &BackendAccess,
+        device_id: &str,
+        tcp_listener_port: u16,
+    ) -> Result<IrohTransport, String> {
+        let iroh_port = iroh_listener_port(tcp_listener_port)?;
+        let data_dir = sync_transport_data_dir(backend)?;
+        let iroh_dir = data_dir.join("iroh");
+        fs::create_dir_all(&iroh_dir)
+            .map_err(|error| format!("Could not create Iroh transport data directory: {error}"))?;
+        let secret_key = load_or_create_iroh_secret_key(&iroh_dir)?;
+        let blobs_dir = iroh_dir.join("blobs");
+        let blob_store = tauri::async_runtime::block_on(FsStore::load(&blobs_dir))
+            .map_err(|error| format!("Could not open disk-backed iroh-blobs store: {error}"))?;
+        let endpoint = tauri::async_runtime::block_on(async move {
+            // Minimal only installs the crypto provider; explicit IP binds keep relay
+            // disabled and make direct endpoint hints stable across listener restarts.
+            Endpoint::builder(presets::Minimal)
+                .clear_ip_transports()
+                .bind_addr((Ipv4Addr::UNSPECIFIED, iroh_port))
+                .map_err(|error| format!("Could not configure Iroh IPv4 bind: {error}"))?
+                .bind_addr_with_opts(
+                    (Ipv6Addr::UNSPECIFIED, iroh_port),
+                    BindOpts::default().set_is_required(false),
+                )
+                .map_err(|error| format!("Could not configure Iroh IPv6 bind: {error}"))?
+                .secret_key(secret_key)
+                .alpns(vec![IROH_ALPN.to_vec()])
+                .bind()
+                .await
+                .map_err(|error| {
+                    format!(
+                        "Could not start local-direct Iroh endpoint on UDP port {iroh_port}: {error}"
+                    )
+                })
+        })?;
+
+        let transport = IrohTransport {
+            endpoint,
+            blob_store: IrohBlobStore { store: blob_store },
+        };
+        if iroh_endpoint_hints(&transport, device_id).is_empty() {
+            return Err("Local Iroh endpoint did not expose a direct address.".to_string());
+        }
+        Ok(transport)
+    }
+
+    fn iroh_listener_port(tcp_listener_port: u16) -> Result<u16, String> {
+        tcp_listener_port
+            .checked_add(IROH_LISTENER_PORT_OFFSET)
+            .ok_or_else(|| {
+                format!(
+                    "Cannot derive stable Iroh UDP port from TCP sync port {tcp_listener_port}."
+                )
+            })
+    }
+
+    fn sync_transport_data_dir(_backend: &BackendAccess) -> Result<PathBuf, String> {
+        if let Ok(path) = env::var("TUNEFORGE_SYNC_TRANSPORT_DATA_DIR") {
+            let trimmed = path.trim();
+            if !trimmed.is_empty() {
+                return Ok(PathBuf::from(trimmed));
+            }
+        }
+        #[cfg(target_os = "android")]
+        {
+            return _backend
+                .app
+                .path()
+                .app_data_dir()
+                .map(|path| path.join("sync-transport"))
+                .map_err(|error| {
+                    format!("Could not resolve Android sync transport data directory: {error}")
+                });
+        }
+        #[cfg(not(target_os = "android"))]
+        platform_app_data_dir().map(|path| path.join("sync-transport"))
+    }
+
+    #[cfg(all(not(target_os = "android"), target_os = "macos"))]
+    fn platform_app_data_dir() -> Result<PathBuf, String> {
+        home_dir()
+            .map(|home| {
+                home.join("Library")
+                    .join("Application Support")
+                    .join("com.tuneforge.desktop")
+            })
+            .ok_or_else(|| {
+                "Could not resolve the home directory for Iroh transport state.".to_string()
+            })
+    }
+
+    #[cfg(all(not(target_os = "android"), target_os = "windows"))]
+    fn platform_app_data_dir() -> Result<PathBuf, String> {
+        env::var("APPDATA")
+            .map(|path| PathBuf::from(path).join("com.tuneforge.desktop"))
+            .map_err(|_| "Could not resolve APPDATA for Iroh transport state.".to_string())
+    }
+
+    #[cfg(all(
+        not(target_os = "android"),
+        not(target_os = "macos"),
+        not(target_os = "windows")
+    ))]
+    fn platform_app_data_dir() -> Result<PathBuf, String> {
+        if let Ok(path) = env::var("XDG_DATA_HOME") {
+            let trimmed = path.trim();
+            if !trimmed.is_empty() {
+                return Ok(PathBuf::from(trimmed).join("com.tuneforge.desktop"));
+            }
+        }
+        home_dir()
+            .map(|home| {
+                home.join(".local")
+                    .join("share")
+                    .join("com.tuneforge.desktop")
+            })
+            .ok_or_else(|| {
+                "Could not resolve the home directory for Iroh transport state.".to_string()
+            })
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn home_dir() -> Option<PathBuf> {
+        env::var("HOME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    }
+
+    fn load_or_create_iroh_secret_key(iroh_dir: &Path) -> Result<SecretKey, String> {
+        let key_path = iroh_dir.join("endpoint.key");
+        match fs::read_to_string(&key_path) {
+            Ok(value) => {
+                let bytes = decode_urlsafe_key(value.trim())?;
+                let bytes: [u8; 32] = bytes.try_into().map_err(|_| {
+                    "Persisted Iroh endpoint key must decode to 32 bytes.".to_string()
+                })?;
+                Ok(SecretKey::from_bytes(&bytes))
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let secret_key = SecretKey::generate();
+                let encoded = encode_urlsafe_key(secret_key.to_bytes());
+                fs::write(&key_path, encoded)
+                    .map_err(|error| format!("Could not persist Iroh endpoint key: {error}"))?;
+                set_owner_only_file_permissions(&key_path);
+                Ok(secret_key)
+            }
+            Err(error) => Err(format!(
+                "Could not read persisted Iroh endpoint key: {error}"
+            )),
+        }
+    }
+
+    #[cfg(unix)]
+    fn set_owner_only_file_permissions(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+
+    #[cfg(not(unix))]
+    fn set_owner_only_file_permissions(_path: &Path) {}
+
     fn accept_loop(
         listener: TcpListener,
-        base_url: String,
+        backend: BackendAccess,
         stop: Arc<AtomicBool>,
         shared_status: Arc<Mutex<SharedStatus>>,
     ) {
         while !stop.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((stream, address)) => {
-                    let base_url = base_url.clone();
+                    let backend = backend.clone();
                     let shared_status = Arc::clone(&shared_status);
                     update_status(&shared_status, |status| {
                         status.accepted_sessions += 1;
@@ -1094,7 +1793,7 @@ mod desktop {
                     });
                     thread::spawn(move || match TcpPeerStream::new(stream) {
                         Ok(stream) => handle_incoming_session(
-                            base_url,
+                            backend,
                             TransportKind::Tcp,
                             Box::new(stream),
                             None,
@@ -1125,7 +1824,7 @@ mod desktop {
 
     fn iroh_accept_loop(
         transport: IrohTransport,
-        base_url: String,
+        backend: BackendAccess,
         stop: Arc<AtomicBool>,
         shared_status: Arc<Mutex<SharedStatus>>,
     ) {
@@ -1133,7 +1832,7 @@ mod desktop {
             while !stop.load(Ordering::SeqCst) {
                 match tokio::time::timeout(ACCEPT_SLEEP, transport.endpoint.accept()).await {
                     Ok(Some(incoming)) => {
-                        let base_url = base_url.clone();
+                        let backend = backend.clone();
                         let shared_status = Arc::clone(&shared_status);
                         let blob_store = transport.blob_store.clone();
                         update_status(&shared_status, |status| {
@@ -1164,10 +1863,10 @@ mod desktop {
                                     let error_status = Arc::clone(&shared_status);
                                     let join = tauri::async_runtime::spawn_blocking(move || {
                                         handle_incoming_session(
-                                            base_url,
+                                            backend,
                                             TransportKind::Iroh,
                                             stream,
-                                            Some(blob_store),
+                                            Some(Arc::new(blob_store) as TransportBlobRecorderRef),
                                             session_status,
                                         );
                                     });
@@ -1212,25 +1911,36 @@ mod desktop {
                 let Some(transport) = local_iroh else {
                     return Err("Selected Iroh sync transport is not running locally.".to_string());
                 };
-                let hint = selection.endpoint_hint().ok_or_else(|| {
-                    "Selected sync transport did not include an Iroh endpoint hint.".to_string()
-                })?;
-                match connect_iroh_peer_connection(&transport, hint, peer_device_id) {
-                    Ok(connection) => Ok(connection),
-                    Err(error) => {
-                        selection.record_iroh_connect_fallback(format!(
-                            "Iroh sync transport was unavailable ({error}); using {TCP_TRANSPORT_ID}."
-                        ))?;
-                        connect_tcp_peer_connection(
-                            selection.endpoint_hint().ok_or_else(|| {
-                                "Iroh fallback did not include a TCP endpoint hint.".to_string()
-                            })?,
-                            peer_device_id,
-                        )
-                    }
-                }
+                connect_iroh_selection_with_fallback(selection, peer_device_id, |endpoint_addr| {
+                    connect_iroh_peer_connection(&transport, endpoint_addr)
+                })
             }
             TransportKind::Other(_) => Err("Selected sync transport is unsupported.".to_string()),
+        }
+    }
+
+    fn connect_iroh_selection_with_fallback(
+        selection: &mut TransportSelection,
+        peer_device_id: &str,
+        connect_iroh_endpoint: impl FnOnce(EndpointAddr) -> Result<SecurePeerConnection, String>,
+    ) -> Result<SecurePeerConnection, String> {
+        let hint = selection.endpoint_hint().ok_or_else(|| {
+            "Selected sync transport did not include an Iroh endpoint hint.".to_string()
+        })?;
+        let endpoint_addr = parse_iroh_endpoint_hint(hint, Some(peer_device_id))?;
+        match connect_iroh_endpoint(endpoint_addr) {
+            Ok(connection) => Ok(connection),
+            Err(error) => {
+                selection.record_iroh_connect_fallback(format!(
+                    "Iroh sync transport was unavailable ({error}); using {TCP_TRANSPORT_ID}."
+                ))?;
+                connect_tcp_peer_connection(
+                    selection.endpoint_hint().ok_or_else(|| {
+                        "Iroh fallback did not include a TCP endpoint hint.".to_string()
+                    })?,
+                    peer_device_id,
+                )
+            }
         }
     }
 
@@ -1247,10 +1957,8 @@ mod desktop {
 
     fn connect_iroh_peer_connection(
         transport: &IrohTransport,
-        endpoint_hint: &str,
-        peer_device_id: &str,
+        endpoint_addr: EndpointAddr,
     ) -> Result<SecurePeerConnection, String> {
-        let endpoint_addr = parse_iroh_endpoint_hint(endpoint_hint, Some(peer_device_id))?;
         let endpoint = transport.endpoint.clone();
         let blob_store = transport.blob_store.clone();
         let (send, recv) = tauri::async_runtime::block_on(async move {
@@ -1267,21 +1975,21 @@ mod desktop {
         SecurePeerConnection::connect_initiator(
             Box::new(IrohPeerStream::new(send, recv)),
             TransportKind::Iroh,
-            Some(blob_store),
+            Some(Arc::new(blob_store) as TransportBlobRecorderRef),
         )
     }
 
     fn handle_incoming_session(
-        base_url: String,
+        backend: BackendAccess,
         transport: TransportKind,
         stream: Box<dyn PeerStream>,
-        blob_store: Option<IrohBlobStore>,
+        blob_store: Option<TransportBlobRecorderRef>,
         shared_status: Arc<Mutex<SharedStatus>>,
     ) {
         update_status(&shared_status, |status| {
             status.active_sessions += 1;
         });
-        let result = serve_incoming_session(base_url, transport, stream, blob_store);
+        let result = serve_incoming_session(backend, transport, stream, blob_store);
         update_status(&shared_status, |status| {
             status.active_sessions = status.active_sessions.saturating_sub(1);
             match result {
@@ -1299,17 +2007,17 @@ mod desktop {
     }
 
     fn serve_incoming_session(
-        base_url: String,
+        backend: BackendAccess,
         transport: TransportKind,
         stream: Box<dyn PeerStream>,
-        blob_store: Option<IrohBlobStore>,
+        blob_store: Option<TransportBlobRecorderRef>,
     ) -> Result<IncomingSessionResult, String> {
         let run_id = sync_run_id();
         let run_started_at = Utc::now();
         let run_started_instant = Instant::now();
         let mut timings = Vec::new();
         let mut metrics = SyncRunMetrics::start(run_started_instant);
-        let client = BackendClient::new(&base_url)?;
+        let client = BackendClient::new(&backend)?;
         let timer = SyncPhaseTimer::start("peer_authentication");
         let mut connection =
             SecurePeerConnection::connect_responder(stream, transport, blob_store)?;
@@ -1344,7 +2052,7 @@ mod desktop {
         )?;
         timings.push(timer.finish());
         let transport_id = connection.transport_id();
-        let imported = import_remote_manifests(
+        let prepared_remote_import = stage_remote_manifest_artifacts(
             &client,
             &mut connection,
             &session.remote_device_id,
@@ -1354,10 +2062,15 @@ mod desktop {
             &mut metrics,
             &mut timings,
         );
-        let import_counts = import_outcome_counts(&imported.imported_projects);
-        connection.send_message(&ProtocolMessage::PhaseDone {
+        if let Err(error) = connection.send_message(&ProtocolMessage::PhaseDone {
             phase: "responder_import".to_string(),
-        })?;
+        }) {
+            finish_staged_remote_import_for_failure(Some(prepared_remote_import));
+            return Err(error);
+        }
+        let received_artifacts = prepared_remote_import.received_artifacts.clone();
+        let imported_projects = finish_staged_remote_import(prepared_remote_import, &mut timings);
+        let import_counts = import_outcome_counts(&imported_projects);
 
         let message = format!(
             "Sync session with {} completed: served {} artifact request(s), imported {} project(s), skipped {} project(s), failed {} project(s), offered {} local manifest(s).",
@@ -1372,8 +2085,8 @@ mod desktop {
             sync_manifest_errors(&local_offer.manifest_errors, &remote_offer.manifest_errors);
         let completed_at = Utc::now();
         let duration_ms = duration_millis(run_started_instant.elapsed());
-        let transfer_counts = transfer_counts(&imported.received_artifacts);
-        let project_results = imported.imported_projects.clone();
+        let transfer_counts = transfer_counts(&received_artifacts);
+        let project_results = imported_projects.clone();
         let TransportEvidence {
             selected_transport,
             fallback_reason,
@@ -1397,11 +2110,11 @@ mod desktop {
             completed_at: completed_at.to_rfc3339(),
             duration_ms,
             project_results,
-            imported_projects: imported.imported_projects,
+            imported_projects,
             imported_project_count: import_counts.imported,
             skipped_project_count: import_counts.skipped,
             failed_project_count: import_counts.failed,
-            received_artifacts: imported.received_artifacts,
+            received_artifacts,
             transfer_counts,
             served_artifact_requests,
             total_received_bytes: metrics.total_received_bytes,
@@ -1578,97 +2291,6 @@ mod desktop {
         }
     }
 
-    #[derive(Clone, Debug, Serialize, Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct ManifestOffer {
-        metadata: Value,
-        project_manifests: Vec<Value>,
-        manifest_errors: Vec<SyncTransportManifestError>,
-    }
-
-    #[derive(Debug, Serialize, Deserialize)]
-    #[serde(tag = "type", rename_all = "snake_case")]
-    enum ProtocolMessage {
-        AuthChallenge {
-            protocol_version: String,
-            device_id: String,
-            session_nonce: String,
-        },
-        AuthProof {
-            handshake_signature: Value,
-        },
-        ManifestOffer(ManifestOffer),
-        ArtifactRequest {
-            artifact_id: String,
-            content_sha256: String,
-            size_bytes: u64,
-        },
-        ArtifactStart {
-            artifact_id: String,
-            content_sha256: String,
-            size_bytes: u64,
-        },
-        ArtifactEnd {
-            content_sha256: String,
-            size_bytes: u64,
-        },
-        Status {
-            phase: String,
-            message: String,
-        },
-        PhaseDone {
-            phase: String,
-        },
-        Error(ProtocolError),
-    }
-
-    impl ProtocolMessage {
-        fn kind(&self) -> &'static str {
-            match self {
-                Self::AuthChallenge { .. } => "auth_challenge",
-                Self::AuthProof { .. } => "auth_proof",
-                Self::ManifestOffer(_) => "manifest_offer",
-                Self::ArtifactRequest { .. } => "artifact_request",
-                Self::ArtifactStart { .. } => "artifact_start",
-                Self::ArtifactEnd { .. } => "artifact_end",
-                Self::Status { .. } => "status",
-                Self::PhaseDone { .. } => "phase_done",
-                Self::Error(_) => "error",
-            }
-        }
-    }
-
-    #[derive(Clone, Debug, Serialize, Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct ProtocolError {
-        code: String,
-        message: String,
-    }
-
-    #[derive(Debug, Serialize, Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct EncryptedChunk {
-        message_id: u64,
-        chunk_index: u32,
-        chunk_count: u32,
-        data: String,
-    }
-
-    enum EncryptedFrame {
-        MessageChunk(EncryptedChunk),
-        ArtifactChunk(Vec<u8>),
-    }
-
-    enum ArtifactTransferFrame {
-        Chunk(Vec<u8>),
-        Message(ProtocolMessage),
-    }
-
-    trait PeerStream: Send {
-        fn read_exact(&mut self, buffer: &mut [u8]) -> io::Result<()>;
-        fn write_all(&mut self, buffer: &[u8]) -> io::Result<()>;
-    }
-
     struct TcpPeerStream {
         stream: TcpStream,
     }
@@ -1740,14 +2362,14 @@ mod desktop {
         handshake_hash: String,
         next_message_id: u64,
         transport: TransportKind,
-        blob_store: Option<IrohBlobStore>,
+        blob_store: Option<TransportBlobRecorderRef>,
     }
 
     impl SecurePeerConnection {
         fn connect_initiator(
             mut stream: Box<dyn PeerStream>,
             transport: TransportKind,
-            blob_store: Option<IrohBlobStore>,
+            blob_store: Option<TransportBlobRecorderRef>,
         ) -> Result<Self, String> {
             let mut handshake = build_noise_handshake(true)?;
             let mut buffer = vec![0_u8; MAX_RAW_FRAME];
@@ -1765,7 +2387,7 @@ mod desktop {
                 .write_message(&[], &mut buffer)
                 .map_err(|error| format!("Noise handshake write failed: {error}"))?;
             write_raw_frame(stream.as_mut(), &buffer[..written])?;
-            let handshake_hash = URL_SAFE_NO_PAD.encode(handshake.get_handshake_hash());
+            let handshake_hash = encode_urlsafe_key(handshake.get_handshake_hash());
             let noise = handshake
                 .into_transport_mode()
                 .map_err(|error| format!("Noise transport setup failed: {error}"))?;
@@ -1782,7 +2404,7 @@ mod desktop {
         fn connect_responder(
             mut stream: Box<dyn PeerStream>,
             transport: TransportKind,
-            blob_store: Option<IrohBlobStore>,
+            blob_store: Option<TransportBlobRecorderRef>,
         ) -> Result<Self, String> {
             let mut handshake = build_noise_handshake(false)?;
             let mut buffer = vec![0_u8; MAX_RAW_FRAME];
@@ -1801,7 +2423,7 @@ mod desktop {
             handshake
                 .read_message(&message, &mut buffer)
                 .map_err(|error| format!("Noise handshake read failed: {error}"))?;
-            let handshake_hash = URL_SAFE_NO_PAD.encode(handshake.get_handshake_hash());
+            let handshake_hash = encode_urlsafe_key(handshake.get_handshake_hash());
             let noise = handshake
                 .into_transport_mode()
                 .map_err(|error| format!("Noise transport setup failed: {error}"))?;
@@ -1830,7 +2452,7 @@ mod desktop {
         fn record_transport_blob_identity(&self, path: &Path) -> Option<String> {
             self.blob_store
                 .as_ref()
-                .and_then(|store| store.add_path(path).ok())
+                .and_then(|store| store.record_path_identity(path).ok())
         }
 
         fn send_message(&mut self, message: &ProtocolMessage) -> Result<(), String> {
@@ -1844,7 +2466,7 @@ mod desktop {
                     message_id,
                     chunk_index: index as u32,
                     chunk_count,
-                    data: STANDARD.encode(chunk),
+                    data: encode_standard_base64(chunk),
                 };
                 self.send_encrypted_chunk(&envelope)?;
             }
@@ -1948,40 +2570,17 @@ mod desktop {
         }
     }
 
-    fn encode_message_chunk_frame(chunk: &EncryptedChunk) -> Result<Vec<u8>, String> {
-        let payload = serde_json::to_vec(chunk)
-            .map_err(|error| format!("Could not encode encrypted chunk: {error}"))?;
-        let mut plaintext = Vec::with_capacity(payload.len() + 1);
-        plaintext.push(ENCRYPTED_FRAME_MESSAGE_CHUNK);
-        plaintext.extend_from_slice(&payload);
-        Ok(plaintext)
-    }
+    impl ProtocolConnection for SecurePeerConnection {
+        fn send_message(&mut self, message: &ProtocolMessage) -> Result<(), String> {
+            SecurePeerConnection::send_message(self, message)
+        }
 
-    fn encode_artifact_chunk_frame(chunk: &[u8]) -> Vec<u8> {
-        let mut plaintext = Vec::with_capacity(chunk.len() + 1);
-        plaintext.push(ENCRYPTED_FRAME_ARTIFACT_CHUNK);
-        plaintext.extend_from_slice(chunk);
-        plaintext
-    }
+        fn read_message(&mut self) -> Result<ProtocolMessage, String> {
+            SecurePeerConnection::read_message(self)
+        }
 
-    fn decode_encrypted_frame_plaintext(plaintext: &[u8]) -> Result<EncryptedFrame, String> {
-        let Some((&frame_type, payload)) = plaintext.split_first() else {
-            return Err("Encrypted sync transport frame is empty.".to_string());
-        };
-        match frame_type {
-            ENCRYPTED_FRAME_MESSAGE_CHUNK => {
-                let chunk = serde_json::from_slice(payload)
-                    .map_err(|error| format!("Could not decode encrypted chunk: {error}"))?;
-                Ok(EncryptedFrame::MessageChunk(chunk))
-            }
-            ENCRYPTED_FRAME_ARTIFACT_CHUNK => Ok(EncryptedFrame::ArtifactChunk(payload.to_vec())),
-            // v2 peers reject v1 during auth, but this keeps the error path readable.
-            b'{' => {
-                let chunk = serde_json::from_slice(plaintext)
-                    .map_err(|error| format!("Could not decode encrypted chunk: {error}"))?;
-                Ok(EncryptedFrame::MessageChunk(chunk))
-            }
-            _ => Err("Encrypted sync transport frame has an unsupported type.".to_string()),
+        fn handshake_hash(&self) -> &str {
+            &self.handshake_hash
         }
     }
 
@@ -2008,33 +2607,6 @@ mod desktop {
         }
     }
 
-    fn write_raw_frame(stream: &mut dyn PeerStream, payload: &[u8]) -> Result<(), String> {
-        if payload.len() > MAX_RAW_FRAME {
-            return Err("Sync transport frame is too large.".to_string());
-        }
-        let length = (payload.len() as u32).to_be_bytes();
-        stream
-            .write_all(&length)
-            .and_then(|_| stream.write_all(payload))
-            .map_err(|error| format!("Could not write sync transport frame: {error}"))
-    }
-
-    fn read_raw_frame(stream: &mut dyn PeerStream) -> Result<Vec<u8>, String> {
-        let mut length = [0_u8; 4];
-        stream
-            .read_exact(&mut length)
-            .map_err(|error| format!("Could not read sync transport frame length: {error}"))?;
-        let length = u32::from_be_bytes(length) as usize;
-        if length > MAX_RAW_FRAME {
-            return Err("Sync transport frame exceeds the maximum frame size.".to_string());
-        }
-        let mut payload = vec![0_u8; length];
-        stream
-            .read_exact(&mut payload)
-            .map_err(|error| format!("Could not read sync transport frame: {error}"))?;
-        Ok(payload)
-    }
-
     fn configure_stream(stream: &TcpStream) -> Result<(), String> {
         stream.set_nonblocking(false).map_err(|error| {
             format!("Could not configure sync transport blocking mode: {error}")
@@ -2049,265 +2621,6 @@ mod desktop {
             .set_nodelay(true)
             .map_err(|error| format!("Could not configure sync transport socket: {error}"))?;
         Ok(())
-    }
-
-    #[derive(Debug)]
-    struct AuthenticatedSession {
-        remote_device_id: String,
-    }
-
-    fn authenticate_session(
-        connection: &mut SecurePeerConnection,
-        client: &BackendClient,
-        expected_peer_device_id: Option<String>,
-    ) -> Result<AuthenticatedSession, String> {
-        let identity = client
-            .local_identity()
-            .map_err(|error| format!("Could not load local sync identity: {error}"))?;
-        let local_nonce = random_nonce();
-        connection.send_message(&ProtocolMessage::AuthChallenge {
-            protocol_version: TRANSPORT_PROTOCOL_VERSION.to_string(),
-            device_id: identity.device_id.clone(),
-            session_nonce: local_nonce.clone(),
-        })?;
-        let (remote_device_id, remote_nonce) = match connection.read_message()? {
-            ProtocolMessage::AuthChallenge {
-                protocol_version,
-                device_id,
-                session_nonce,
-            } => {
-                if protocol_version != TRANSPORT_PROTOCOL_VERSION {
-                    return Err(format!(
-                        "Sync peer uses unsupported transport protocol version {protocol_version}."
-                    ));
-                }
-                (device_id, session_nonce)
-            }
-            ProtocolMessage::Error(error) => {
-                return Err(format!(
-                    "Sync peer returned an auth error: {}",
-                    error.message
-                ));
-            }
-            other => {
-                return Err(format!(
-                    "Sync peer sent unexpected auth message: {}",
-                    other.kind()
-                ));
-            }
-        };
-        if let Some(expected_peer_device_id) = expected_peer_device_id.as_deref() {
-            if remote_device_id != expected_peer_device_id {
-                return Err(format!(
-                    "Sync peer identity mismatch: expected {expected_peer_device_id}, got {remote_device_id}."
-                ));
-            }
-        }
-        let trusted_peer = client
-            .trusted_peer(&remote_device_id)
-            .map_err(|error| format!("Could not verify trusted sync peer: {error}"))?
-            .ok_or_else(|| format!("Sync peer {remote_device_id} is not trusted."))?;
-
-        let local_challenge = transport_handshake_challenge(
-            &remote_device_id,
-            &identity.device_id,
-            &remote_nonce,
-            &local_nonce,
-            &connection.handshake_hash,
-        );
-        let local_signature = client
-            .sign_transport_handshake(&remote_device_id, &local_challenge)
-            .map_err(|error| format!("Could not sign sync transport handshake: {error}"))?;
-        connection.send_message(&ProtocolMessage::AuthProof {
-            handshake_signature: local_signature,
-        })?;
-
-        let remote_signature = match connection.read_message()? {
-            ProtocolMessage::AuthProof {
-                handshake_signature,
-            } => handshake_signature,
-            ProtocolMessage::Error(error) => {
-                return Err(format!(
-                    "Sync peer returned an auth error: {}",
-                    error.message
-                ));
-            }
-            other => {
-                return Err(format!(
-                    "Sync peer sent unexpected auth proof message: {}",
-                    other.kind()
-                ));
-            }
-        };
-        verify_transport_handshake_signature(
-            &remote_signature,
-            &trusted_peer,
-            &identity.device_id,
-            &remote_device_id,
-            &local_nonce,
-            &remote_nonce,
-            &connection.handshake_hash,
-        )?;
-
-        Ok(AuthenticatedSession { remote_device_id })
-    }
-
-    fn transport_handshake_challenge(
-        requester_device_id: &str,
-        responder_device_id: &str,
-        session_id: &str,
-        challenge_nonce: &str,
-        handshake_hash: &str,
-    ) -> Value {
-        let issued_at = Utc::now();
-        let expires_at = issued_at + chrono::Duration::seconds(TRANSPORT_HANDSHAKE_TTL_SECONDS);
-        json!({
-            "protocol_version": PAIRING_PROTOCOL_VERSION,
-            "challenge_type": TRANSPORT_HANDSHAKE_CHALLENGE_TYPE,
-            "session_id": session_id,
-            "challenge_nonce": bound_noise_nonce(challenge_nonce, handshake_hash),
-            "requester_device_id": requester_device_id,
-            "responder_device_id": responder_device_id,
-            "issued_at": issued_at.to_rfc3339(),
-            "expires_at": expires_at.to_rfc3339(),
-        })
-    }
-
-    fn verify_transport_handshake_signature(
-        signature_value: &Value,
-        trusted_peer: &SyncTrustedPeer,
-        local_device_id: &str,
-        remote_device_id: &str,
-        local_nonce: &str,
-        remote_nonce: &str,
-        handshake_hash: &str,
-    ) -> Result<(), String> {
-        let proof: TransportHandshakeSignature = serde_json::from_value(signature_value.clone())
-            .map_err(|error| {
-                format!("Sync peer transport handshake proof is malformed: {error}")
-            })?;
-        if proof.protocol_version != PAIRING_PROTOCOL_VERSION {
-            return Err(format!(
-                "Sync peer transport proof uses unsupported pairing protocol version {}.",
-                proof.protocol_version
-            ));
-        }
-        if proof.challenge_type != TRANSPORT_HANDSHAKE_CHALLENGE_TYPE {
-            return Err("Sync peer transport proof has an unsupported challenge type.".to_string());
-        }
-        if proof.local_device_id != trusted_peer.device_id
-            || proof.local_device_id != remote_device_id
-            || proof.peer_device_id != local_device_id
-        {
-            return Err(
-                "Sync peer transport proof device IDs do not match this session.".to_string(),
-            );
-        }
-        if proof.public_key != trusted_peer.public_key {
-            return Err(
-                "Sync peer transport proof public key does not match trusted peer.".to_string(),
-            );
-        }
-        let expected_device_id = derive_device_id(&proof.public_key)?;
-        if expected_device_id != proof.local_device_id {
-            return Err(
-                "Sync peer transport proof device_id does not match its public key.".to_string(),
-            );
-        }
-        let signed_challenge: Value = serde_json::from_str(&proof.canonical_challenge_json)
-            .map_err(|error| format!("Sync peer transport proof challenge is invalid: {error}"))?;
-        validate_transport_challenge(
-            &signed_challenge,
-            local_device_id,
-            remote_device_id,
-            local_nonce,
-            remote_nonce,
-            handshake_hash,
-        )?;
-
-        let public_key_bytes = decode_public_key(&proof.public_key)?;
-        let verifying_key = VerifyingKey::from_bytes(&public_key_bytes)
-            .map_err(|error| format!("Sync peer public key is invalid: {error}"))?;
-        let signature_bytes = decode_urlsafe_key(&proof.signature)?;
-        let signature = Signature::from_slice(&signature_bytes)
-            .map_err(|error| format!("Sync peer transport proof signature is invalid: {error}"))?;
-        verifying_key
-            .verify(proof.canonical_challenge_json.as_bytes(), &signature)
-            .map_err(|_| "Sync peer transport proof signature verification failed.".to_string())
-    }
-
-    #[derive(Clone, Debug, Deserialize)]
-    struct TransportHandshakeSignature {
-        protocol_version: String,
-        challenge_type: String,
-        local_device_id: String,
-        peer_device_id: String,
-        public_key: String,
-        #[allow(dead_code)]
-        challenge: Value,
-        canonical_challenge_json: String,
-        signature: String,
-        #[allow(dead_code)]
-        signed_at: String,
-    }
-
-    fn validate_transport_challenge(
-        challenge: &Value,
-        local_device_id: &str,
-        remote_device_id: &str,
-        local_nonce: &str,
-        remote_nonce: &str,
-        handshake_hash: &str,
-    ) -> Result<(), String> {
-        expect_json_string(challenge, "protocol_version", PAIRING_PROTOCOL_VERSION)?;
-        expect_json_string(
-            challenge,
-            "challenge_type",
-            TRANSPORT_HANDSHAKE_CHALLENGE_TYPE,
-        )?;
-        expect_json_string(challenge, "requester_device_id", local_device_id)?;
-        expect_json_string(challenge, "responder_device_id", remote_device_id)?;
-        expect_json_string(challenge, "session_id", local_nonce)?;
-        expect_json_string(
-            challenge,
-            "challenge_nonce",
-            &bound_noise_nonce(remote_nonce, handshake_hash),
-        )?;
-        let expires_at = json_string(challenge, "expires_at")
-            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-            .map(|value| value.with_timezone(&Utc))
-            .ok_or_else(|| "Sync peer transport proof expiration is invalid.".to_string())?;
-        if expires_at <= Utc::now() {
-            return Err("Sync peer transport proof has expired.".to_string());
-        }
-        Ok(())
-    }
-
-    fn bound_noise_nonce(nonce: &str, handshake_hash: &str) -> String {
-        format!("{nonce}.{handshake_hash}")
-    }
-
-    fn expect_json_string(value: &Value, field: &str, expected: &str) -> Result<(), String> {
-        match json_string(value, field) {
-            Some(actual) if actual == expected => Ok(()),
-            _ => Err(format!(
-                "Sync transport challenge {field} did not match this session."
-            )),
-        }
-    }
-
-    fn json_string<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
-        value.get(field).and_then(Value::as_str)
-    }
-
-    fn random_nonce() -> String {
-        let mut bytes = [0_u8; 24];
-        OsRng.fill_bytes(&mut bytes);
-        URL_SAFE_NO_PAD.encode(bytes)
-    }
-
-    fn sync_run_id() -> String {
-        format!("sync_{}", random_nonce())
     }
 
     fn load_local_manifest_offer(
@@ -2370,9 +2683,36 @@ mod desktop {
             .unwrap_or_default()
     }
 
-    struct ImportRemoteResult {
-        imported_projects: Vec<SyncTransportProjectResult>,
+    struct StagedRemoteImport {
+        manifests: Vec<Value>,
+        plan_error: Option<String>,
+        apply_worker: Option<RemoteApplyWorker>,
         received_artifacts: Vec<SyncTransportTransferResult>,
+    }
+
+    #[derive(Clone, Debug)]
+    struct StagedRemoteProject {
+        manifest: Value,
+        available_content_sha256: Vec<String>,
+        transfer_failure: Option<String>,
+    }
+
+    enum RemoteApplyTask {
+        Project(StagedRemoteProject),
+        Tombstone(String),
+    }
+
+    // Apply work stays off the transport thread so peers keep serving artifact requests.
+    struct RemoteApplyWorker {
+        sender: Option<mpsc::Sender<RemoteApplyTask>>,
+        handle: JoinHandle<RemoteApplyWorkerResult>,
+        queued_project_ids: Vec<String>,
+        enqueue_failures: Vec<SyncTransportProjectResult>,
+    }
+
+    struct RemoteApplyWorkerResult {
+        project_results: Vec<SyncTransportProjectResult>,
+        timings: Vec<SyncTransportTimingEvidence>,
     }
 
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -2382,7 +2722,7 @@ mod desktop {
         failed: usize,
     }
 
-    fn import_remote_manifests(
+    fn stage_remote_manifest_artifacts(
         client: &BackendClient,
         connection: &mut SecurePeerConnection,
         peer_device_id: &str,
@@ -2391,7 +2731,7 @@ mod desktop {
         transport_id: &str,
         metrics: &mut SyncRunMetrics,
         timings: &mut Vec<SyncTransportTimingEvidence>,
-    ) -> ImportRemoteResult {
+    ) -> StagedRemoteImport {
         let mut received_artifacts = Vec::new();
 
         let timer = SyncPhaseTimer::start("reconciliation_plan");
@@ -2408,52 +2748,181 @@ mod desktop {
             }
             Err(error) => {
                 timings.push(timer.finish());
-                return ImportRemoteResult {
-                    imported_projects: apply_failure_results(
-                        manifests,
-                        &HashMap::new(),
-                        &format!("Could not plan remote sync reconciliation batch: {error}"),
-                    ),
+                return StagedRemoteImport {
+                    manifests: manifests.to_vec(),
+                    plan_error: Some(format!(
+                        "Could not plan remote sync reconciliation batch: {error}"
+                    )),
+                    apply_worker: None,
                     received_artifacts,
                 };
             }
         };
 
-        let mut imported_projects = Vec::with_capacity(manifests.len());
+        let mut apply_worker =
+            RemoteApplyWorker::start(client, peer_device_id, remote_metadata, transport_id);
+        stage_remote_manifest_projects(
+            manifests,
+            |manifest| {
+                stage_remote_manifest_project_artifacts(
+                    client,
+                    connection,
+                    peer_device_id,
+                    manifest,
+                    &plan,
+                    &mut received_artifacts,
+                    metrics,
+                    timings,
+                )
+            },
+            |staged| apply_worker.enqueue_project(staged),
+        );
         let manifest_project_ids: HashSet<String> =
             manifests.iter().map(manifest_project_id).collect();
-        for manifest in manifests {
-            let project_result = import_remote_manifest_project(
-                client,
-                connection,
-                peer_device_id,
-                remote_metadata,
-                manifest,
-                &plan,
-                transport_id,
-                &mut received_artifacts,
-                metrics,
-                timings,
-            );
-            imported_projects.push(project_result);
-        }
         for project_id in planned_delete_project_ids(&plan)
             .into_iter()
-            .filter(|project_id| !manifest_project_ids.contains(project_id))
+            .filter(|project_id| !manifest_project_ids.contains(project_id.as_str()))
         {
-            imported_projects.push(apply_remote_tombstone_project(
-                client,
-                peer_device_id,
-                remote_metadata,
-                &project_id,
-                transport_id,
-                timings,
-            ));
+            apply_worker.enqueue_tombstone(project_id);
         }
 
-        ImportRemoteResult {
-            imported_projects,
+        StagedRemoteImport {
+            manifests: manifests.to_vec(),
+            plan_error: None,
+            apply_worker: Some(apply_worker),
             received_artifacts,
+        }
+    }
+
+    fn stage_remote_manifest_projects(
+        manifests: &[Value],
+        mut stage_project: impl FnMut(&Value) -> StagedRemoteProject,
+        mut enqueue_project: impl FnMut(StagedRemoteProject),
+    ) {
+        for manifest in manifests {
+            let staged = stage_project(manifest);
+            enqueue_project(staged);
+        }
+    }
+
+    fn finish_staged_remote_import(
+        staged: StagedRemoteImport,
+        timings: &mut Vec<SyncTransportTimingEvidence>,
+    ) -> Vec<SyncTransportProjectResult> {
+        if let Some(error) = &staged.plan_error {
+            return apply_failure_results(&staged.manifests, &HashMap::new(), error);
+        }
+
+        if let Some(apply_worker) = staged.apply_worker {
+            return apply_worker.finish(timings);
+        }
+
+        Vec::new()
+    }
+
+    fn finish_staged_remote_import_for_failure(staged: Option<StagedRemoteImport>) {
+        if let Some(staged) = staged {
+            let mut timings = Vec::new();
+            let _ = finish_staged_remote_import(staged, &mut timings);
+        }
+    }
+
+    impl RemoteApplyWorker {
+        fn start(
+            client: &BackendClient,
+            peer_device_id: &str,
+            remote_metadata: &Value,
+            transport_id: &str,
+        ) -> Self {
+            let (sender, receiver) = mpsc::channel();
+            let client = client.clone();
+            let peer_device_id = peer_device_id.to_string();
+            let remote_metadata = remote_metadata.clone();
+            let transport_id = transport_id.to_string();
+            let handle = thread::spawn(move || {
+                let mut result = RemoteApplyWorkerResult {
+                    project_results: Vec::new(),
+                    timings: Vec::new(),
+                };
+                while let Ok(task) = receiver.recv() {
+                    let project_result = match task {
+                        RemoteApplyTask::Project(project) => apply_staged_remote_manifest_project(
+                            &client,
+                            &peer_device_id,
+                            &remote_metadata,
+                            &project,
+                            &transport_id,
+                            &mut result.timings,
+                        ),
+                        RemoteApplyTask::Tombstone(project_id) => apply_remote_tombstone_project(
+                            &client,
+                            &peer_device_id,
+                            &remote_metadata,
+                            &project_id,
+                            &transport_id,
+                            &mut result.timings,
+                        ),
+                    };
+                    result.project_results.push(project_result);
+                }
+                result
+            });
+
+            Self {
+                sender: Some(sender),
+                handle,
+                queued_project_ids: Vec::new(),
+                enqueue_failures: Vec::new(),
+            }
+        }
+
+        fn enqueue_project(&mut self, project: StagedRemoteProject) {
+            let project_id = manifest_project_id(&project.manifest);
+            self.enqueue(project_id, RemoteApplyTask::Project(project));
+        }
+
+        fn enqueue_tombstone(&mut self, project_id: String) {
+            self.enqueue(project_id.clone(), RemoteApplyTask::Tombstone(project_id));
+        }
+
+        fn enqueue(&mut self, project_id: String, task: RemoteApplyTask) {
+            let send_result = self
+                .sender
+                .as_ref()
+                .ok_or_else(|| "Remote sync import worker is closed.".to_string())
+                .and_then(|sender| {
+                    sender
+                        .send(task)
+                        .map_err(|_| "Remote sync import worker stopped.".to_string())
+                });
+            match send_result {
+                Ok(()) => self.queued_project_ids.push(project_id),
+                Err(error) => self
+                    .enqueue_failures
+                    .push(failed_project_result(&project_id, &error)),
+            }
+        }
+
+        fn finish(
+            mut self,
+            timings: &mut Vec<SyncTransportTimingEvidence>,
+        ) -> Vec<SyncTransportProjectResult> {
+            self.sender.take();
+            match self.handle.join() {
+                Ok(mut result) => {
+                    timings.append(&mut result.timings);
+                    result.project_results.extend(self.enqueue_failures);
+                    result.project_results
+                }
+                Err(_) => self
+                    .queued_project_ids
+                    .iter()
+                    .map(|project_id| {
+                        failed_project_result(project_id, "Remote sync import worker panicked.")
+                    })
+                    .chain(self.enqueue_failures)
+                    .collect(),
+            }
         }
     }
 
@@ -2490,19 +2959,16 @@ mod desktop {
         }
     }
 
-    fn import_remote_manifest_project(
+    fn stage_remote_manifest_project_artifacts(
         client: &BackendClient,
         connection: &mut SecurePeerConnection,
         peer_device_id: &str,
-        remote_metadata: &Value,
         manifest: &Value,
         plan: &Value,
-        transport_id: &str,
         received_artifacts: &mut Vec<SyncTransportTransferResult>,
         metrics: &mut SyncRunMetrics,
         timings: &mut Vec<SyncTransportTimingEvidence>,
-    ) -> SyncTransportProjectResult {
-        let project_id = manifest_project_id(manifest);
+    ) -> StagedRemoteProject {
         let mut project_transfers = Vec::new();
         let mut transfer_failure = None;
 
@@ -2524,18 +2990,31 @@ mod desktop {
                 Err(error) => {
                     project_transfers.push(error.result.clone());
                     received_artifacts.push(error.result);
-                    transfer_failure.get_or_insert((entry.manifest_project_id, error.message));
+                    transfer_failure.get_or_insert(error.message);
                 }
             }
         }
 
-        let transfer_failures = transfer_failure
-            .as_ref()
-            .map(|(project_id, error)| HashMap::from([(project_id.clone(), error.clone())]))
-            .unwrap_or_default();
-        if !transfer_failures.is_empty() {
+        StagedRemoteProject {
+            manifest: manifest.clone(),
+            available_content_sha256: available_content_sha256(&project_transfers),
+            transfer_failure,
+        }
+    }
+
+    fn apply_staged_remote_manifest_project(
+        client: &BackendClient,
+        peer_device_id: &str,
+        remote_metadata: &Value,
+        staged: &StagedRemoteProject,
+        transport_id: &str,
+        timings: &mut Vec<SyncTransportTimingEvidence>,
+    ) -> SyncTransportProjectResult {
+        let project_id = manifest_project_id(&staged.manifest);
+        if let Some(error) = &staged.transfer_failure {
+            let transfer_failures = HashMap::from([(project_id.clone(), error.clone())]);
             return apply_failure_results(
-                std::slice::from_ref(manifest),
+                std::slice::from_ref(&staged.manifest),
                 &transfer_failures,
                 "Could not stage all remote artifact content before import.",
             )
@@ -2549,19 +3028,18 @@ mod desktop {
             });
         }
 
-        let available_content_sha256 = available_content_sha256(&project_transfers);
         match apply_remote_manifest_project(
             client,
             peer_device_id,
             remote_metadata,
-            manifest,
-            &available_content_sha256,
+            &staged.manifest,
+            &staged.available_content_sha256,
             transport_id,
             timings,
         ) {
             Ok(result) => result,
             Err(error) => apply_failure_results(
-                std::slice::from_ref(manifest),
+                std::slice::from_ref(&staged.manifest),
                 &HashMap::new(),
                 &error.to_string(),
             )
@@ -3195,7 +3673,6 @@ mod desktop {
 
     #[derive(Clone, Debug)]
     struct ManifestArtifactEntry {
-        manifest_project_id: String,
         artifact: RemoteArtifact,
     }
 
@@ -3236,13 +3713,9 @@ mod desktop {
         manifests
             .iter()
             .flat_map(|manifest| {
-                let manifest_project_id = manifest_project_id(manifest);
                 manifest_artifacts(manifest)
                     .into_iter()
-                    .map(move |artifact| ManifestArtifactEntry {
-                        manifest_project_id: manifest_project_id.clone(),
-                        artifact,
-                    })
+                    .map(|artifact| ManifestArtifactEntry { artifact })
             })
             .collect()
     }
@@ -3373,7 +3846,7 @@ mod desktop {
             }
         }
 
-        let temp_path = temp_artifact_path(&artifact.content_sha256);
+        let temp_path = client.temp_artifact_path(&artifact.content_sha256);
         if let Some(parent) = temp_path.parent() {
             if let Err(error) = fs::create_dir_all(parent) {
                 timings.push(timer.finish());
@@ -3528,14 +4001,12 @@ mod desktop {
         }
     }
 
-    fn temp_artifact_path(content_sha256: &str) -> PathBuf {
-        env::temp_dir()
-            .join("tuneforge-sync-transport")
-            .join(format!(
-                "{}-{}-{content_sha256}",
-                process::id(),
-                random_nonce()
-            ))
+    fn temp_artifact_path_in(root: PathBuf, content_sha256: &str) -> PathBuf {
+        root.join("tuneforge-sync-transport").join(format!(
+            "{}-{}-{content_sha256}",
+            process::id(),
+            random_nonce()
+        ))
     }
 
     fn serve_artifact_requests_until_done(
@@ -3654,64 +4125,101 @@ mod desktop {
     }
 
     #[derive(Clone, Debug, Deserialize)]
-    struct SyncLocalIdentity {
-        device_id: String,
-    }
-
-    #[derive(Clone, Debug, Deserialize)]
     struct SyncTrustedPeersResponse {
         trusted_peers: Vec<SyncTrustedPeer>,
     }
 
-    #[derive(Clone, Debug, Deserialize)]
-    struct SyncTrustedPeer {
-        device_id: String,
-        public_key: String,
-        endpoint_hints: Vec<String>,
-        revoked_at: Option<String>,
-    }
-
-    #[derive(Debug)]
+    #[derive(Clone)]
     struct BackendClient {
+        #[cfg(not(target_os = "android"))]
         host: String,
+        #[cfg(not(target_os = "android"))]
         port: u16,
+        #[cfg(target_os = "android")]
+        app: AppHandle,
     }
 
     impl BackendClient {
-        fn new(base_url: &str) -> Result<Self, String> {
-            let without_scheme = base_url.strip_prefix("http://").ok_or_else(|| {
-                "Sync transport only supports loopback http:// backends.".to_string()
-            })?;
-            let authority = without_scheme.split('/').next().unwrap_or(without_scheme);
-            let (host, port) = match authority.rsplit_once(':') {
-                Some((host, port)) => {
-                    let port = port
-                        .parse::<u16>()
-                        .map_err(|_| format!("Backend base URL has an invalid port: {base_url}"))?;
-                    (host.to_string(), port)
+        fn new(access: &BackendAccess) -> Result<Self, String> {
+            #[cfg(target_os = "android")]
+            {
+                if access.base_url != "mobile://embedded" {
+                    return Err(
+                        "Android sync transport requires the embedded mobile backend.".to_string(),
+                    );
                 }
-                None => (authority.to_string(), 80),
-            };
-            if host != "127.0.0.1" && host != "localhost" && host != "[::1]" && host != "::1" {
-                return Err(
-                    "Sync transport refuses to proxy a non-loopback backend over LAN.".to_string(),
-                );
+                return Ok(Self {
+                    app: access.app.clone(),
+                });
             }
-            Ok(Self { host, port })
+
+            #[cfg(not(target_os = "android"))]
+            {
+                let base_url = &access.base_url;
+                let without_scheme = base_url.strip_prefix("http://").ok_or_else(|| {
+                    "Sync transport only supports loopback http:// backends.".to_string()
+                })?;
+                let authority = without_scheme.split('/').next().unwrap_or(without_scheme);
+                let (host, port) = match authority.rsplit_once(':') {
+                    Some((host, port)) => {
+                        let port = port.parse::<u16>().map_err(|_| {
+                            format!("Backend base URL has an invalid port: {base_url}")
+                        })?;
+                        (host.to_string(), port)
+                    }
+                    None => (authority.to_string(), 80),
+                };
+                if host != "127.0.0.1" && host != "localhost" && host != "[::1]" && host != "::1" {
+                    return Err(
+                        "Sync transport refuses to proxy a non-loopback backend over LAN."
+                            .to_string(),
+                    );
+                }
+                Ok(Self { host, port })
+            }
         }
 
         fn local_identity(&self) -> Result<SyncLocalIdentity, BackendError> {
+            #[cfg(target_os = "android")]
+            {
+                let value = crate::mobile_backend::mobile_sync_transport_local_identity_value(
+                    self.app.clone(),
+                )
+                .map_err(BackendError::local)?;
+                return serde_json::from_value::<SyncLocalIdentityResponse>(value)
+                    .map(|response| response.identity)
+                    .map_err(|error| BackendError::local(error.to_string()));
+            }
+
+            #[cfg(not(target_os = "android"))]
             self.get_json::<SyncLocalIdentityResponse>("/api/v1/sync/identity")
                 .map(|response| response.identity)
         }
 
         fn trusted_peer(&self, device_id: &str) -> Result<Option<SyncTrustedPeer>, BackendError> {
-            let response =
-                self.get_json::<SyncTrustedPeersResponse>("/api/v1/sync/trusted-peers")?;
-            Ok(response
-                .trusted_peers
-                .into_iter()
-                .find(|peer| peer.device_id == device_id && peer.revoked_at.is_none()))
+            #[cfg(target_os = "android")]
+            {
+                let response = crate::mobile_backend::mobile_sync_transport_trusted_peers_value(
+                    self.app.clone(),
+                )
+                .map_err(BackendError::local)?;
+                let response = serde_json::from_value::<SyncTrustedPeersResponse>(response)
+                    .map_err(|error| BackendError::local(error.to_string()))?;
+                return Ok(response
+                    .trusted_peers
+                    .into_iter()
+                    .find(|peer| peer.device_id == device_id && peer.revoked_at.is_none()));
+            }
+
+            #[cfg(not(target_os = "android"))]
+            {
+                let response =
+                    self.get_json::<SyncTrustedPeersResponse>("/api/v1/sync/trusted-peers")?;
+                Ok(response
+                    .trusted_peers
+                    .into_iter()
+                    .find(|peer| peer.device_id == device_id && peer.revoked_at.is_none()))
+            }
         }
 
         fn create_pairing_offer(
@@ -3719,11 +4227,24 @@ mod desktop {
             endpoint_hints: Vec<String>,
             ttl_seconds: u32,
         ) -> Result<Value, BackendError> {
-            let body = json!({
-                "endpoint_hints": endpoint_hints,
-                "ttl_seconds": ttl_seconds,
-            });
-            self.post_json_value("/api/v1/sync/pairing/offers", &body)
+            #[cfg(target_os = "android")]
+            {
+                return crate::mobile_backend::mobile_sync_transport_create_pairing_offer_value(
+                    self.app.clone(),
+                    endpoint_hints,
+                    i64::from(ttl_seconds),
+                )
+                .map_err(BackendError::local);
+            }
+
+            #[cfg(not(target_os = "android"))]
+            {
+                let body = json!({
+                    "endpoint_hints": endpoint_hints,
+                    "ttl_seconds": ttl_seconds,
+                });
+                self.post_json_value("/api/v1/sync/pairing/offers", &body)
+            }
         }
 
         fn sign_transport_handshake(
@@ -3731,26 +4252,124 @@ mod desktop {
             peer_device_id: &str,
             challenge: &Value,
         ) -> Result<Value, BackendError> {
-            let body = json!({
-                "peer_device_id": peer_device_id,
-                "challenge": challenge,
-            });
-            self.post_json_value("/api/v1/sync/transport/handshake/sign", &body)
+            #[cfg(target_os = "android")]
+            {
+                return crate::mobile_backend::mobile_sign_transport_handshake(
+                    self.app.clone(),
+                    peer_device_id.to_string(),
+                    challenge.clone(),
+                )
+                .map_err(BackendError::local);
+            }
+
+            #[cfg(not(target_os = "android"))]
+            {
+                let body = json!({
+                    "peer_device_id": peer_device_id,
+                    "challenge": challenge,
+                });
+                self.post_json_value("/api/v1/sync/transport/handshake/sign", &body)
+            }
         }
 
+        fn temp_artifact_path(&self, content_sha256: &str) -> PathBuf {
+            #[cfg(target_os = "android")]
+            {
+                if let Ok(path) = self.app.path().app_cache_dir() {
+                    return temp_artifact_path_in(path, content_sha256);
+                }
+                if let Ok(path) = self.app.path().app_data_dir() {
+                    return temp_artifact_path_in(path, content_sha256);
+                }
+            }
+
+            temp_artifact_path_in(env::temp_dir(), content_sha256)
+        }
+
+        #[cfg(not(target_os = "android"))]
         fn get_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T, BackendError> {
             let value = self.request_json_value("GET", path, None)?;
             serde_json::from_value(value).map_err(|error| BackendError::local(error.to_string()))
         }
 
         fn get_json_value(&self, path: &str) -> Result<Value, BackendError> {
+            #[cfg(target_os = "android")]
+            {
+                if path == "/api/v1/sync/metadata" {
+                    return crate::mobile_backend::mobile_sync_transport_metadata_value(
+                        self.app.clone(),
+                    )
+                    .map_err(BackendError::local);
+                }
+                if let Some(project_id) = path
+                    .strip_prefix("/api/v1/sync/projects/")
+                    .and_then(|value| value.strip_suffix("/manifest"))
+                {
+                    return crate::mobile_backend::mobile_sync_transport_project_manifest_value(
+                        self.app.clone(),
+                        percent_decode(project_id),
+                    )
+                    .map_err(BackendError::local);
+                }
+                if let Some(content_sha256) = path.strip_prefix("/api/v1/sync/artifacts/staging/") {
+                    return crate::mobile_backend::mobile_sync_transport_staged_artifact_value(
+                        self.app.clone(),
+                        percent_decode(content_sha256),
+                    )
+                    .map_err(|error| {
+                        if error.contains("not been staged") {
+                            BackendError {
+                                status: Some(404),
+                                message: error,
+                            }
+                        } else {
+                            BackendError::local(error)
+                        }
+                    });
+                }
+                return Err(BackendError::local(format!(
+                    "Android mobile backend does not implement GET {path}."
+                )));
+            }
+
+            #[cfg(not(target_os = "android"))]
             self.request_json_value("GET", path, None)
         }
 
         fn post_json_value(&self, path: &str, body: &Value) -> Result<Value, BackendError> {
+            #[cfg(target_os = "android")]
+            {
+                return match path {
+                    "/api/v1/sync/artifacts/staging" => {
+                        crate::mobile_backend::mobile_sync_transport_stage_artifact_value(
+                            self.app.clone(),
+                            body.clone(),
+                        )
+                    }
+                    "/api/v1/sync/reconciliation/plan" => {
+                        crate::mobile_backend::mobile_sync_transport_reconciliation_plan_value(
+                            self.app.clone(),
+                            body.clone(),
+                        )
+                    }
+                    "/api/v1/sync/reconciliation/apply" => {
+                        crate::mobile_backend::mobile_sync_transport_reconciliation_apply_value(
+                            self.app.clone(),
+                            body.clone(),
+                        )
+                    }
+                    _ => Err(format!(
+                        "Android mobile backend does not implement POST {path}."
+                    )),
+                }
+                .map_err(BackendError::local);
+            }
+
+            #[cfg(not(target_os = "android"))]
             self.request_json_value("POST", path, Some(body))
         }
 
+        #[cfg(not(target_os = "android"))]
         fn request_json_value(
             &self,
             method: &str,
@@ -3771,9 +4390,35 @@ mod desktop {
         }
 
         fn get_body(&self, path: &str) -> Result<BackendBody, BackendError> {
+            #[cfg(target_os = "android")]
+            {
+                let artifact_id = path
+                    .strip_prefix("/api/v1/artifacts/")
+                    .and_then(|value| value.strip_suffix("/stream"))
+                    .ok_or_else(|| {
+                        BackendError::local(format!(
+                            "Android mobile backend does not implement body stream {path}."
+                        ))
+                    })?;
+                let artifact = crate::mobile_backend::mobile_sync_transport_artifact_file(
+                    self.app.clone(),
+                    &percent_decode(artifact_id),
+                )
+                .map_err(BackendError::local)?;
+                let file = File::open(&artifact.path).map_err(|error| {
+                    BackendError::local(format!("Could not open mobile artifact file: {error}"))
+                })?;
+                return Ok(BackendBody {
+                    reader: Box::new(file),
+                    remaining: Some(artifact.size_bytes),
+                });
+            }
+
+            #[cfg(not(target_os = "android"))]
             self.request_body("GET", path, None)
         }
 
+        #[cfg(not(target_os = "android"))]
         fn request_body(
             &self,
             method: &str,
@@ -3842,14 +4487,33 @@ mod desktop {
                 });
             }
             Ok(BackendBody {
-                reader,
+                reader: Box::new(reader),
                 remaining: content_length,
             })
         }
     }
 
+    impl SyncTransportAuthBackend for BackendClient {
+        fn local_identity(&self) -> Result<SyncLocalIdentity, String> {
+            BackendClient::local_identity(self).map_err(|error| error.to_string())
+        }
+
+        fn trusted_peer(&self, device_id: &str) -> Result<Option<SyncTrustedPeer>, String> {
+            BackendClient::trusted_peer(self, device_id).map_err(|error| error.to_string())
+        }
+
+        fn sign_transport_handshake(
+            &self,
+            peer_device_id: &str,
+            challenge: &Value,
+        ) -> Result<Value, String> {
+            BackendClient::sign_transport_handshake(self, peer_device_id, challenge)
+                .map_err(|error| error.to_string())
+        }
+    }
+
     struct BackendBody {
-        reader: BufReader<TcpStream>,
+        reader: Box<dyn Read + Send>,
         remaining: Option<u64>,
     }
 
@@ -3894,6 +4558,7 @@ mod desktop {
         }
     }
 
+    #[cfg(not(target_os = "android"))]
     fn parse_status_code(status_line: &str) -> Result<u16, BackendError> {
         status_line
             .split_whitespace()
@@ -3904,6 +4569,7 @@ mod desktop {
             })
     }
 
+    #[cfg(not(target_os = "android"))]
     fn backend_error_message(status: u16, body: &str) -> String {
         serde_json::from_str::<Value>(body)
             .ok()
@@ -3976,32 +4642,6 @@ mod desktop {
         )]
     }
 
-    fn first_transport_endpoint_hint(
-        transport: &TransportKind,
-        endpoint_hint: Option<&str>,
-        peer_endpoint_hints: &[String],
-    ) -> Option<String> {
-        endpoint_hint
-            .filter(|hint| {
-                transport
-                    .endpoint_scheme()
-                    .is_some_and(|scheme| hint.starts_with(scheme))
-            })
-            .map(str::to_string)
-            .or_else(|| first_endpoint_hint_for_transport(transport, peer_endpoint_hints))
-    }
-
-    fn first_endpoint_hint_for_transport(
-        transport: &TransportKind,
-        endpoint_hints: &[String],
-    ) -> Option<String> {
-        let endpoint_scheme = transport.endpoint_scheme()?;
-        endpoint_hints
-            .iter()
-            .find(|hint| hint.starts_with(endpoint_scheme))
-            .cloned()
-    }
-
     fn parse_iroh_endpoint_hint(
         endpoint_hint: &str,
         expected_device_id: Option<&str>,
@@ -4032,126 +4672,6 @@ mod desktop {
             return Err("Iroh endpoint hint did not include a direct address.".to_string());
         }
         Ok(endpoint_addr)
-    }
-
-    fn parse_endpoint_hint(
-        endpoint_hint: &str,
-        expected_device_id: Option<&str>,
-    ) -> Result<SocketAddr, String> {
-        let rest = endpoint_hint
-            .strip_prefix(ENDPOINT_SCHEME)
-            .ok_or_else(|| "Endpoint hint is not a TuneForge TCP URI.".to_string())?;
-        let (authority, query) = rest.split_once('?').unwrap_or((rest, ""));
-        if let Some(expected_device_id) = expected_device_id {
-            if let Some(device_id) = query_parameter(query, "device_id") {
-                if device_id != expected_device_id {
-                    return Err(
-                        "Endpoint hint device_id does not match the trusted peer.".to_string()
-                    );
-                }
-            }
-        }
-        let socket_text = if authority.starts_with('[') {
-            authority.to_string()
-        } else {
-            authority.to_string()
-        };
-        let mut addresses = socket_text
-            .to_socket_addrs()
-            .map_err(|error| format!("Could not resolve sync endpoint hint: {error}"))?;
-        addresses
-            .next()
-            .ok_or_else(|| "Sync endpoint hint did not resolve to a socket address.".to_string())
-    }
-
-    fn query_parameter(query: &str, key: &str) -> Option<String> {
-        query_parameters(query, key).into_iter().next()
-    }
-
-    fn query_parameters(query: &str, key: &str) -> Vec<String> {
-        query
-            .split('&')
-            .filter_map(|part| {
-                let (part_key, value) = part.split_once('=')?;
-                (part_key == key).then(|| percent_decode(value))
-            })
-            .collect()
-    }
-
-    fn decode_public_key(public_key: &str) -> Result<[u8; 32], String> {
-        let decoded =
-            decode_urlsafe_key(public_key.strip_prefix("ed25519:").unwrap_or(public_key))?;
-        decoded
-            .try_into()
-            .map_err(|_| "Ed25519 public key must be 32 bytes.".to_string())
-    }
-
-    fn derive_device_id(public_key: &str) -> Result<String, String> {
-        let public_key = decode_public_key(public_key)?;
-        let digest = Sha256::digest(public_key);
-        Ok(format!("dev_ed25519_{}", URL_SAFE_NO_PAD.encode(digest)))
-    }
-
-    fn decode_urlsafe_key(value: &str) -> Result<Vec<u8>, String> {
-        URL_SAFE_NO_PAD
-            .decode(value.trim().trim_end_matches('='))
-            .map_err(|error| format!("Value must be URL-safe base64: {error}"))
-    }
-
-    fn decode_standard_base64(value: &str) -> Result<Vec<u8>, String> {
-        STANDARD
-            .decode(value)
-            .map_err(|error| format!("Value must be base64: {error}"))
-    }
-
-    fn hex_digest(bytes: &[u8]) -> String {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let mut output = String::with_capacity(bytes.len() * 2);
-        for byte in bytes {
-            output.push(HEX[(byte >> 4) as usize] as char);
-            output.push(HEX[(byte & 0x0f) as usize] as char);
-        }
-        output
-    }
-
-    fn percent_encode_path_segment(value: &str) -> String {
-        percent_encode(value)
-    }
-
-    fn percent_encode_query_value(value: &str) -> String {
-        percent_encode(value)
-    }
-
-    fn percent_encode(value: &str) -> String {
-        let mut encoded = String::new();
-        for byte in value.bytes() {
-            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-                encoded.push(byte as char);
-            } else {
-                encoded.push_str(&format!("%{byte:02X}"));
-            }
-        }
-        encoded
-    }
-
-    fn percent_decode(value: &str) -> String {
-        let mut bytes = Vec::with_capacity(value.len());
-        let raw = value.as_bytes();
-        let mut index = 0;
-        while index < raw.len() {
-            if raw[index] == b'%' && index + 2 < raw.len() {
-                if let Ok(hex) = std::str::from_utf8(&raw[index + 1..index + 3]) {
-                    if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                        bytes.push(byte);
-                        index += 3;
-                        continue;
-                    }
-                }
-            }
-            bytes.push(raw[index]);
-            index += 1;
-        }
-        String::from_utf8_lossy(&bytes).into_owned()
     }
 
     #[cfg(test)]
@@ -4213,6 +4733,60 @@ mod desktop {
             assert!(parse_iroh_endpoint_hint(&hints[0], Some("dev_two"))
                 .expect_err("reject mismatched device")
                 .contains("device_id"));
+        }
+
+        #[test]
+        fn iroh_listener_port_is_stable_adjacent_to_tcp_port() {
+            assert_eq!(iroh_listener_port(47619).expect("iroh port"), 47620);
+        }
+
+        #[test]
+        fn iroh_listener_port_rejects_overflow() {
+            assert!(iroh_listener_port(u16::MAX).is_err());
+        }
+
+        #[test]
+        fn mismatched_iroh_device_id_does_not_fall_back_to_tcp() {
+            let endpoint_id = SecretKey::generate().public();
+            let endpoint_addr = EndpointAddr::new(endpoint_id)
+                .with_ip_addr("127.0.0.1:47620".parse().expect("direct addr"));
+            let iroh_hint = iroh_endpoint_hints_from_addr(&endpoint_addr, "dev_other")
+                .into_iter()
+                .next()
+                .expect("iroh hint");
+            let tcp_hint = format!("{ENDPOINT_SCHEME}127.0.0.1:notaport?device_id=dev_peer&v=1");
+            let endpoint_hints = vec![iroh_hint, tcp_hint.clone()];
+            let mut selection = select_sync_transport(
+                Some(IROH_TRANSPORT_ID),
+                None,
+                &endpoint_hints,
+                "dev_peer",
+                true,
+            )
+            .expect("select iroh");
+
+            let result = connect_iroh_selection_with_fallback(
+                &mut selection,
+                "dev_peer",
+                |_| -> Result<SecurePeerConnection, String> {
+                    panic!("mismatched Iroh endpoint should not connect")
+                },
+            );
+
+            let error = match result {
+                Ok(_) => panic!("accepted mismatched iroh endpoint"),
+                Err(error) => error,
+            };
+            assert!(error.contains("device_id"));
+            assert_eq!(
+                selection.evidence(),
+                TransportEvidence {
+                    selected_transport: IROH_TRANSPORT_ID.to_string(),
+                    fallback_reason: None,
+                    attempted_transports: vec![IROH_TRANSPORT_ID.to_string()],
+                }
+            );
+            assert_eq!(selection.tcp_fallback_endpoint_hint, Some(tcp_hint));
         }
 
         #[test]
@@ -4429,6 +5003,42 @@ mod desktop {
         }
 
         #[test]
+        fn remote_project_apply_is_queued_after_each_project_stages() {
+            let manifests = vec![
+                json!({ "project": { "project_id": "proj_one" }, "artifacts": [] }),
+                json!({ "project": { "project_id": "proj_two" }, "artifacts": [] }),
+            ];
+            let events = std::cell::RefCell::new(Vec::new());
+
+            stage_remote_manifest_projects(
+                &manifests,
+                |manifest| {
+                    let project_id = manifest_project_id(manifest);
+                    events.borrow_mut().push(format!("stage:{project_id}"));
+                    StagedRemoteProject {
+                        manifest: manifest.clone(),
+                        available_content_sha256: Vec::new(),
+                        transfer_failure: None,
+                    }
+                },
+                |project| {
+                    let project_id = manifest_project_id(&project.manifest);
+                    events.borrow_mut().push(format!("apply:{project_id}"));
+                },
+            );
+
+            assert_eq!(
+                events.into_inner(),
+                vec![
+                    "stage:proj_one".to_string(),
+                    "apply:proj_one".to_string(),
+                    "stage:proj_two".to_string(),
+                    "apply:proj_two".to_string(),
+                ]
+            );
+        }
+
+        #[test]
         fn reconciliation_apply_body_batches_every_manifest_with_one_peer_inventory() {
             let manifests = vec![
                 json!({ "project": { "project_id": "proj_one" }, "artifacts": [] }),
@@ -4585,7 +5195,7 @@ mod desktop {
 
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0].artifact.artifact_id, "art_two");
-            assert_eq!(entries[0].manifest_project_id, "proj_two");
+            assert_eq!(entries[0].artifact.project_id, "proj_two");
         }
 
         #[test]
@@ -4935,8 +5545,8 @@ mod desktop {
 
         #[test]
         fn temp_artifact_path_is_unique_per_transfer() {
-            let first = temp_artifact_path("hash_same");
-            let second = temp_artifact_path("hash_same");
+            let first = temp_artifact_path_in(env::temp_dir(), "hash_same");
+            let second = temp_artifact_path_in(env::temp_dir(), "hash_same");
 
             assert_ne!(first, second);
         }
@@ -5141,10 +5751,8 @@ mod desktop {
     }
 }
 
-#[cfg(not(target_os = "android"))]
 pub use desktop::SyncTransportState;
 
-#[cfg(not(target_os = "android"))]
 #[tauri::command]
 pub fn sync_transport_start_listener(
     state: tauri::State<'_, desktop::SyncTransportState>,
@@ -5153,7 +5761,6 @@ pub fn sync_transport_start_listener(
     desktop::sync_transport_start_listener(state, payload)
 }
 
-#[cfg(not(target_os = "android"))]
 #[tauri::command]
 pub fn sync_transport_stop_listener(
     state: tauri::State<'_, desktop::SyncTransportState>,
@@ -5161,7 +5768,6 @@ pub fn sync_transport_stop_listener(
     desktop::sync_transport_stop_listener(state)
 }
 
-#[cfg(not(target_os = "android"))]
 #[tauri::command]
 pub fn sync_transport_status(
     state: tauri::State<'_, desktop::SyncTransportState>,
@@ -5169,7 +5775,6 @@ pub fn sync_transport_status(
     desktop::sync_transport_status(state)
 }
 
-#[cfg(not(target_os = "android"))]
 #[tauri::command]
 pub async fn sync_transport_create_pairing_offer(
     state: tauri::State<'_, desktop::SyncTransportState>,
@@ -5178,125 +5783,10 @@ pub async fn sync_transport_create_pairing_offer(
     desktop::sync_transport_create_pairing_offer(state, payload).await
 }
 
-#[cfg(not(target_os = "android"))]
 #[tauri::command]
 pub async fn sync_transport_sync_now(
     state: tauri::State<'_, desktop::SyncTransportState>,
     payload: SyncTransportSyncNowRequest,
 ) -> Result<SyncTransportSyncResult, String> {
     desktop::sync_transport_sync_now(state, payload).await
-}
-
-#[cfg(target_os = "android")]
-mod android_stub {
-    use super::{
-        SyncTransportPairingOffer, SyncTransportPairingOfferRequest,
-        SyncTransportStartListenerRequest, SyncTransportStatus, SyncTransportSyncNowRequest,
-        SyncTransportSyncResult,
-    };
-    use tauri::State;
-
-    #[derive(Clone, Default)]
-    pub struct SyncTransportState;
-
-    impl SyncTransportState {
-        pub fn new(_base_url: String) -> Self {
-            Self
-        }
-
-        pub fn shutdown(&self) {}
-    }
-
-    fn unsupported_status() -> SyncTransportStatus {
-        SyncTransportStatus {
-            supported: false,
-            running: false,
-            bind_host: None,
-            port: None,
-            endpoint_hints: Vec::new(),
-            active_sessions: 0,
-            accepted_sessions: 0,
-            failed_sessions: 0,
-            last_status: None,
-            last_error: Some("Sync transport is only available on desktop.".to_string()),
-            last_sync: None,
-        }
-    }
-
-    pub fn sync_transport_start_listener(
-        _state: State<'_, SyncTransportState>,
-        _payload: SyncTransportStartListenerRequest,
-    ) -> Result<SyncTransportStatus, String> {
-        Err("Sync transport is only available on desktop.".to_string())
-    }
-
-    pub fn sync_transport_stop_listener(
-        _state: State<'_, SyncTransportState>,
-    ) -> Result<SyncTransportStatus, String> {
-        Err("Sync transport is only available on desktop.".to_string())
-    }
-
-    pub fn sync_transport_status(_state: State<'_, SyncTransportState>) -> SyncTransportStatus {
-        unsupported_status()
-    }
-
-    pub async fn sync_transport_create_pairing_offer(
-        _state: State<'_, SyncTransportState>,
-        _payload: SyncTransportPairingOfferRequest,
-    ) -> Result<SyncTransportPairingOffer, String> {
-        Err("Sync transport is only available on desktop.".to_string())
-    }
-
-    pub async fn sync_transport_sync_now(
-        _state: State<'_, SyncTransportState>,
-        _payload: SyncTransportSyncNowRequest,
-    ) -> Result<SyncTransportSyncResult, String> {
-        Err("Sync transport is only available on desktop.".to_string())
-    }
-}
-
-#[cfg(target_os = "android")]
-pub use android_stub::SyncTransportState;
-
-#[cfg(target_os = "android")]
-#[tauri::command]
-pub fn sync_transport_start_listener(
-    state: tauri::State<'_, android_stub::SyncTransportState>,
-    payload: SyncTransportStartListenerRequest,
-) -> Result<SyncTransportStatus, String> {
-    android_stub::sync_transport_start_listener(state, payload)
-}
-
-#[cfg(target_os = "android")]
-#[tauri::command]
-pub fn sync_transport_stop_listener(
-    state: tauri::State<'_, android_stub::SyncTransportState>,
-) -> Result<SyncTransportStatus, String> {
-    android_stub::sync_transport_stop_listener(state)
-}
-
-#[cfg(target_os = "android")]
-#[tauri::command]
-pub fn sync_transport_status(
-    state: tauri::State<'_, android_stub::SyncTransportState>,
-) -> SyncTransportStatus {
-    android_stub::sync_transport_status(state)
-}
-
-#[cfg(target_os = "android")]
-#[tauri::command]
-pub async fn sync_transport_create_pairing_offer(
-    state: tauri::State<'_, android_stub::SyncTransportState>,
-    payload: SyncTransportPairingOfferRequest,
-) -> Result<SyncTransportPairingOffer, String> {
-    android_stub::sync_transport_create_pairing_offer(state, payload).await
-}
-
-#[cfg(target_os = "android")]
-#[tauri::command]
-pub async fn sync_transport_sync_now(
-    state: tauri::State<'_, android_stub::SyncTransportState>,
-    payload: SyncTransportSyncNowRequest,
-) -> Result<SyncTransportSyncResult, String> {
-    android_stub::sync_transport_sync_now(state, payload).await
 }

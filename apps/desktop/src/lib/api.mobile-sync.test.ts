@@ -141,22 +141,19 @@ describe("mobile sync API adapter", () => {
     expect(mockInvoke).toHaveBeenCalledWith("mobile_list_jobs", { params });
   });
 
-  it("keeps desktop native sync transport methods unsupported on mobile", async () => {
+  it("routes mobile sync transport methods to native transport commands", async () => {
     const api = await loadMobileApi();
 
-    await expect(api.getSyncTransportStatus()).rejects.toMatchObject({
-      code: "UNSUPPORTED_RUNTIME",
-    });
-    await expect(api.startSyncListener()).rejects.toMatchObject({
-      code: "UNSUPPORTED_RUNTIME",
-    });
-    await expect(api.stopSyncListener()).rejects.toMatchObject({
-      code: "UNSUPPORTED_RUNTIME",
-    });
-    await expect(api.syncTrustedPeerNow("device_peer_1")).rejects.toMatchObject({
-      code: "UNSUPPORTED_RUNTIME",
-    });
+    await api.getSyncTransportStatus();
+    await api.startSyncListener();
+    await api.stopSyncListener();
+    await api.syncTrustedPeerNow("device_peer_1");
 
-    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(mockInvoke).toHaveBeenNthCalledWith(1, "sync_transport_status", undefined);
+    expect(mockInvoke).toHaveBeenNthCalledWith(2, "sync_transport_start_listener", { payload: {} });
+    expect(mockInvoke).toHaveBeenNthCalledWith(3, "sync_transport_stop_listener", undefined);
+    expect(mockInvoke).toHaveBeenNthCalledWith(4, "sync_transport_sync_now", {
+      payload: { peerDeviceId: "device_peer_1", preferredTransport: "auto" },
+    });
   });
 });

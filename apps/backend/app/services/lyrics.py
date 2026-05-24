@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from copy import deepcopy
 from difflib import SequenceMatcher
 from pathlib import Path
+from subprocess import Popen
 from typing import Any, cast
 
 from fastapi import status
@@ -12,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.engines.lyrics import transcribe_project_lyrics
-from app.errors import AppError
+from app.errors import AppError, JobCancelledError
 from app.models import Artifact, LyricsTranscript, Project
 from app.schemas import LyricsEditSegmentSchema
 from app.services.paths import project_analysis_dir
@@ -20,6 +22,11 @@ from app.services.sync_revisions import record_lyrics_revision
 from app.services.tab_state import clear_project_tab_state
 
 WORD_RE = re.compile(r"\S+")
+
+
+def _ensure_not_cancelled(should_cancel: Callable[[], bool] | None) -> None:
+    if should_cancel and should_cancel():
+        raise JobCancelledError()
 
 
 def _source_artifact(project: Project) -> Artifact | None:
@@ -52,7 +59,16 @@ def _write_lyrics_snapshot(
     lyrics_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def generate_project_lyrics(session: Session, *, project: Project, force: bool = False) -> LyricsTranscript:
+def generate_project_lyrics(
+    session: Session,
+    *,
+    project: Project,
+    force: bool = False,
+    should_cancel: Callable[[], bool] | None = None,
+    register_process: Callable[[Popen[str]], None] | None = None,
+    unregister_process: Callable[[], None] | None = None,
+) -> LyricsTranscript:
+    _ensure_not_cancelled(should_cancel)
     existing = session.get(LyricsTranscript, project.id)
     if existing is not None and existing.segments_json and not force:
         return existing
@@ -62,11 +78,16 @@ def generate_project_lyrics(session: Session, *, project: Project, force: bool =
         model_name=get_settings().lyrics_model,
         requested_device=get_settings().lyrics_device,
         download_root=get_settings().lyrics_cache_dir,
+        should_cancel=should_cancel,
+        register_process=register_process,
+        unregister_process=unregister_process,
     )
     source_artifact = _source_artifact(project)
+    _ensure_not_cancelled(should_cancel)
     if force:
         clear_project_tab_state(session, project_id=project.id)
 
+    _ensure_not_cancelled(should_cancel)
     if existing is None:
         existing = LyricsTranscript(project_id=project.id)
         session.add(existing)
@@ -83,8 +104,10 @@ def generate_project_lyrics(session: Session, *, project: Project, force: bool =
     existing.has_user_edits = False
     session.flush()
     session.refresh(existing)
+    _ensure_not_cancelled(should_cancel)
     record_lyrics_revision(session, lyrics=existing, revision_type="generated")
 
+    _ensure_not_cancelled(should_cancel)
     _write_lyrics_snapshot(project_id=project.id, lyrics=existing)
     return existing
 

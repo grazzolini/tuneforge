@@ -167,6 +167,8 @@ def _run_demucs_worker(
                 unregister_process()
 
         if process.returncode != 0:
+            if should_cancel and should_cancel():
+                raise JobCancelledError()
             raise AppError(
                 "PROCESSING_FAILED",
                 "Demucs failed to separate the track.",

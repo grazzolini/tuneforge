@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
+from threading import Event
 
+from app.db import SessionLocal
 from app.engines.lyrics import LyricsTranscription
 from app.errors import AppError
+from app.models import LyricsTranscript
+from app.services.paths import project_analysis_dir
 
 from .conftest import wait_for_job
 
@@ -28,6 +33,58 @@ def test_import_queues_lyrics_generation(client, sample_audio_file: Path):
     assert payload["segments"][0]["text"] == "Test lyric"
     assert payload["source_segments"][0]["text"] == "Test lyric"
     assert payload["has_user_edits"] is False
+
+
+def test_running_lyrics_cancel_does_not_persist_transcript_or_snapshot(
+    client,
+    monkeypatch,
+    sample_audio_file: Path,
+):
+    started = Event()
+
+    def fake_transcription(*_args, should_cancel=None, **_kwargs):
+        started.set()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if should_cancel and should_cancel():
+                return LyricsTranscription(
+                    backend="openai-whisper",
+                    requested_device="cpu",
+                    device="cpu",
+                    model="turbo",
+                    language="en",
+                    segments=[
+                        {
+                            "start_seconds": 0.0,
+                            "end_seconds": 1.0,
+                            "text": "Should not persist",
+                        }
+                    ],
+                )
+            time.sleep(0.01)
+        raise AssertionError("lyrics cancellation was not observed")
+
+    monkeypatch.setattr("app.services.lyrics.transcribe_project_lyrics", fake_transcription)
+
+    project = client.post(
+        "/api/v1/projects/import",
+        json={"source_path": str(sample_audio_file), "copy_into_project": True},
+    ).json()["project"]
+
+    jobs = client.get("/api/v1/jobs").json()["jobs"]
+    lyrics_job = next(job for job in jobs if job["project_id"] == project["id"] and job["type"] == "lyrics")
+    assert started.wait(timeout=2.0)
+
+    response = client.post(f"/api/v1/jobs/{lyrics_job['id']}/cancel")
+    assert response.status_code == 200
+    assert wait_for_job(client, lyrics_job["id"])["status"] == "cancelled"
+
+    payload = client.get(f"/api/v1/projects/{project['id']}/lyrics").json()
+    assert payload["backend"] is None
+    assert payload["segments"] == []
+    with SessionLocal() as session:
+        assert session.get(LyricsTranscript, project["id"]) is None
+    assert not (project_analysis_dir(project["id"]) / "lyrics.json").exists()
 
 
 def test_lyrics_job_persists_transcript_and_update_preserves_timings(

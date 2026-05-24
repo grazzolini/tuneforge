@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -8,13 +10,26 @@ from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
 from app.db import SessionLocal
-from app.errors import AppError
+from app.errors import AppError, JobCancelledError
 from app.models import Job
 from app.services.artifacts import register_artifact
-from app.services.projects import get_project
+from app.services.projects import get_project, import_project
 from app.utils.ids import new_id
 
 from .conftest import wait_for_job
+
+
+def _create_project_without_import_jobs(source_path: Path) -> str:
+    with SessionLocal() as session:
+        project = import_project(
+            session,
+            source_path=str(source_path),
+            copy_into_project=True,
+            display_name=None,
+        )
+        project_id = project.id
+        session.commit()
+    return project_id
 
 
 def test_default_stem_generation_creates_six_stem_artifacts(client, sample_stereo_audio_file: Path, monkeypatch):
@@ -736,6 +751,268 @@ def test_stem_generation_reports_missing_dependency(client, sample_stereo_audio_
     final_job = wait_for_job(client, stem_job["id"])
     assert final_job["status"] == "failed"
     assert final_job["error_message"] == "Demucs is required for stem separation."
+
+
+def test_running_stem_cancel_after_subprocess_exit_marks_job_cancelled(
+    client,
+    sample_stereo_audio_file: Path,
+    monkeypatch,
+):
+    project_id = _create_project_without_import_jobs(sample_stereo_audio_file)
+    worker_sleeping = threading.Event()
+    terminated = threading.Event()
+    terminate_calls: list[str] = []
+    original_sleep = time.sleep
+
+    class FakeDemucsProcess:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.returncode: int | None = None
+            self.stdout = None
+            self.stderr = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def terminate(self) -> None:
+            terminate_calls.append(threading.current_thread().name)
+            self.returncode = -15
+            terminated.set()
+
+        def kill(self) -> None:
+            self.returncode = -9
+            terminated.set()
+
+        def wait(self, timeout=None) -> int | None:
+            terminated.wait(timeout)
+            return self.returncode
+
+        def communicate(self) -> tuple[str, str]:
+            return "", "terminated"
+
+    def fake_sleep(seconds: float) -> None:
+        if threading.current_thread().name == "tuneforge-job-runner" and seconds == 0.25:
+            worker_sleeping.set()
+            terminated.wait(timeout=5)
+            return
+        original_sleep(seconds)
+
+    monkeypatch.setattr("app.engines.stems.importlib.util.find_spec", lambda _name: object())
+    monkeypatch.setattr("app.engines.stems.subprocess.Popen", FakeDemucsProcess)
+    monkeypatch.setattr("app.engines.stems.time.sleep", fake_sleep)
+
+    stem_job = client.post(
+        f"/api/v1/projects/{project_id}/stems",
+        json={"mode": "two_stem", "stem_model": "htdemucs_ft", "output_format": "wav", "force": False},
+    ).json()["job"]
+
+    assert worker_sleeping.wait(timeout=5)
+    cancel_response = client.post(f"/api/v1/jobs/{stem_job['id']}/cancel")
+    assert cancel_response.status_code == 200
+    assert terminated.wait(timeout=5)
+
+    final_job = wait_for_job(client, stem_job["id"])
+    assert final_job["status"] == "cancelled"
+    assert final_job["error_message"] is None
+    assert terminate_calls
+
+
+def test_demucs_nonzero_exit_after_cancel_raises_job_cancelled(tmp_path: Path, monkeypatch):
+    source_path = tmp_path / "source.wav"
+    source_path.write_bytes(b"fake audio")
+    poll_count = 0
+    cancel_checks = 0
+
+    class FakeDemucsProcess:
+        returncode: int | None = None
+
+        def poll(self) -> int | None:
+            nonlocal poll_count
+            poll_count += 1
+            if poll_count == 1:
+                return None
+            self.returncode = -15
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.returncode = -15
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+        def wait(self, timeout=None) -> int | None:
+            return self.returncode
+
+        def communicate(self) -> tuple[str, str]:
+            return "", "terminated"
+
+    def should_cancel() -> bool:
+        nonlocal cancel_checks
+        cancel_checks += 1
+        return cancel_checks > 1
+
+    monkeypatch.setattr("app.engines.stems.importlib.util.find_spec", lambda _name: object())
+    monkeypatch.setattr("app.engines.stems.subprocess.Popen", lambda *_args, **_kwargs: FakeDemucsProcess())
+    monkeypatch.setattr("app.engines.stems.time.sleep", lambda _seconds: None)
+
+    from app.engines.stems import separate_two_stems
+
+    with pytest.raises(JobCancelledError):
+        separate_two_stems(
+            source_path,
+            tmp_path / "vocals.wav",
+            tmp_path / "instrumental.wav",
+            model="htdemucs_ft",
+            should_cancel=should_cancel,
+        )
+
+
+def test_cancelled_stem_generation_removes_temp_outputs_without_artifact_rows(
+    client,
+    sample_stereo_audio_file: Path,
+    monkeypatch,
+):
+    project_id = _create_project_without_import_jobs(sample_stereo_audio_file)
+    monkeypatch.setenv("TUNEFORGE_STEM_MODEL", "htdemucs_ft")
+    get_settings.cache_clear()
+    ready_to_cancel = threading.Event()
+    allow_return = threading.Event()
+    temp_paths: list[Path] = []
+
+    def fake_separate_two_stems(
+        source_path: Path,
+        vocal_path: Path,
+        instrumental_path: Path,
+        *,
+        model: str,
+        device: str,
+        model_repo=None,
+        on_progress=None,
+        should_cancel=None,
+        register_process=None,
+        unregister_process=None,
+    ):
+        signal, sample_rate = sf.read(source_path, always_2d=True)
+        vocal_path.parent.mkdir(parents=True, exist_ok=True)
+        instrumental_path.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(vocal_path, signal * 0.7, sample_rate)
+        sf.write(instrumental_path, signal * 0.3, sample_rate)
+        temp_paths.extend([vocal_path, instrumental_path])
+        ready_to_cancel.set()
+        if not allow_return.wait(timeout=5):
+            raise AssertionError("Timed out waiting to release fake stem separation.")
+        return {"engine": "demucs", "model": model, "requested_device": device, "device": "cpu"}
+
+    monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
+
+    stem_job = client.post(
+        f"/api/v1/projects/{project_id}/stems",
+        json={"mode": "two_stem", "stem_model": "htdemucs_ft", "output_format": "wav", "force": False},
+    ).json()["job"]
+
+    assert ready_to_cancel.wait(timeout=5)
+    cancel_response = client.post(f"/api/v1/jobs/{stem_job['id']}/cancel")
+    assert cancel_response.status_code == 200
+    allow_return.set()
+
+    final_job = wait_for_job(client, stem_job["id"])
+    assert final_job["status"] == "cancelled"
+    assert final_job["error_message"] is None
+    assert temp_paths
+    assert all(not path.exists() for path in temp_paths)
+
+    artifacts = client.get(f"/api/v1/projects/{project_id}/artifacts").json()["artifacts"]
+    assert not [artifact for artifact in artifacts if artifact["type"].endswith("_stem")]
+
+
+def test_cancelled_forced_stem_rebuild_preserves_existing_artifacts(
+    client,
+    sample_stereo_audio_file: Path,
+    monkeypatch,
+):
+    project_id = _create_project_without_import_jobs(sample_stereo_audio_file)
+    monkeypatch.setenv("TUNEFORGE_STEM_MODEL", "htdemucs_ft")
+    get_settings.cache_clear()
+    ready_to_cancel = threading.Event()
+    allow_return = threading.Event()
+    temp_paths: list[Path] = []
+    separation_count = 0
+
+    def fake_separate_two_stems(
+        source_path: Path,
+        vocal_path: Path,
+        instrumental_path: Path,
+        *,
+        model: str,
+        device: str,
+        model_repo=None,
+        on_progress=None,
+        should_cancel=None,
+        register_process=None,
+        unregister_process=None,
+    ):
+        nonlocal separation_count
+        separation_count += 1
+        signal, sample_rate = sf.read(source_path, always_2d=True)
+        vocal_path.parent.mkdir(parents=True, exist_ok=True)
+        instrumental_path.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(vocal_path, signal * 0.7, sample_rate)
+        sf.write(instrumental_path, signal * 0.3, sample_rate)
+        if separation_count == 2:
+            temp_paths.extend([vocal_path, instrumental_path])
+            ready_to_cancel.set()
+            if not allow_return.wait(timeout=5):
+                raise AssertionError("Timed out waiting to release fake stem separation.")
+        return {"engine": "demucs", "model": model, "requested_device": device, "device": "cpu"}
+
+    monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
+
+    initial_job = client.post(
+        f"/api/v1/projects/{project_id}/stems",
+        json={"mode": "two_stem", "stem_model": "htdemucs_ft", "output_format": "wav", "force": False},
+    ).json()["job"]
+    assert wait_for_job(client, initial_job["id"])["status"] == "completed"
+
+    artifacts_before = client.get(f"/api/v1/projects/{project_id}/artifacts").json()["artifacts"]
+    existing_stems = {
+        artifact["type"]: artifact
+        for artifact in artifacts_before
+        if artifact["metadata"].get("stem_model") == "htdemucs_ft"
+    }
+    assert set(existing_stems) == {"vocal_stem", "instrumental_stem"}
+    previous_rows = {
+        artifact_type: (artifact["id"], Path(artifact["path"]))
+        for artifact_type, artifact in existing_stems.items()
+    }
+    assert all(path.exists() for _artifact_id, path in previous_rows.values())
+
+    rebuild_job = client.post(
+        f"/api/v1/projects/{project_id}/stems",
+        json={"mode": "two_stem", "stem_model": "htdemucs_ft", "output_format": "wav", "force": True},
+    ).json()["job"]
+    assert ready_to_cancel.wait(timeout=5)
+    cancel_response = client.post(f"/api/v1/jobs/{rebuild_job['id']}/cancel")
+    assert cancel_response.status_code == 200
+    allow_return.set()
+
+    final_job = wait_for_job(client, rebuild_job["id"])
+    assert final_job["status"] == "cancelled"
+    assert final_job["error_message"] is None
+    assert temp_paths
+    assert all(not path.exists() for path in temp_paths)
+
+    artifacts_after = client.get(f"/api/v1/projects/{project_id}/artifacts").json()["artifacts"]
+    rebuilt_stems = {
+        artifact["type"]: artifact
+        for artifact in artifacts_after
+        if artifact["metadata"].get("stem_model") == "htdemucs_ft"
+    }
+    assert set(rebuilt_stems) == {"vocal_stem", "instrumental_stem"}
+    assert {
+        artifact_type: (artifact["id"], Path(artifact["path"]))
+        for artifact_type, artifact in rebuilt_stems.items()
+    } == previous_rows
+    assert all(path.exists() for _artifact_id, path in previous_rows.values())
+    assert not [artifact for artifact in artifacts_after if Path(artifact["path"]) in temp_paths]
 
 
 def test_deleting_practice_mix_removes_its_stems_only(client, sample_stereo_audio_file: Path, monkeypatch):

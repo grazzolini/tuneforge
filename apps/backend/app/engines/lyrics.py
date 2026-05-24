@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
+import subprocess
+import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
 from fastapi import status
 
-from app.errors import AppError
+from app.errors import AppError, JobCancelledError
 from app.utils.torch_runtime import choose_torch_device, with_mps_fallback_env
+
+LYRICS_WORKER_CANCEL_TIMEOUT_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -20,6 +26,29 @@ class LyricsTranscription:
     model: str
     language: str | None
     segments: list[dict[str, Any]]
+
+
+def lyrics_transcription_to_payload(transcription: LyricsTranscription) -> dict[str, Any]:
+    return {
+        "backend": transcription.backend,
+        "requested_device": transcription.requested_device,
+        "device": transcription.device,
+        "model": transcription.model,
+        "language": transcription.language,
+        "segments": transcription.segments,
+    }
+
+
+def lyrics_transcription_from_payload(payload: dict[str, Any]) -> LyricsTranscription:
+    language = payload.get("language")
+    return LyricsTranscription(
+        backend=str(payload.get("backend", "openai-whisper")),
+        requested_device=str(payload.get("requested_device", "auto")),
+        device=str(payload.get("device", "cpu")),
+        model=str(payload.get("model", "")),
+        language=language if isinstance(language, str) else None,
+        segments=cast(list[dict[str, Any]], payload.get("segments", [])),
+    )
 
 
 def _require_dependency(module_name: str, message: str) -> None:
@@ -179,7 +208,7 @@ def _transcribe_with_device(
     )
 
 
-def transcribe_project_lyrics(
+def transcribe_project_lyrics_in_process(
     source_path: Path,
     *,
     model_name: str,
@@ -224,3 +253,126 @@ def transcribe_project_lyrics(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         details={"errors": errors},
     )
+
+
+def _worker_payload_from_stdout(stdout: str) -> dict[str, Any] | None:
+    for line in reversed(stdout.splitlines()):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def _terminate_cancelled_worker(process: subprocess.Popen[str]) -> None:
+    process.terminate()
+    try:
+        process.wait(timeout=LYRICS_WORKER_CANCEL_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        try:
+            process.wait(timeout=LYRICS_WORKER_CANCEL_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def _raise_worker_failure(
+    payload: dict[str, Any] | None,
+    *,
+    stdout: str,
+    stderr: str,
+) -> None:
+    error = payload.get("error") if payload else None
+    if isinstance(error, dict):
+        code = str(error.get("code", "PROCESSING_FAILED"))
+        message = str(error.get("message", "Lyrics generation failed."))
+        status_code = error.get("status_code")
+        details = error.get("details")
+        raise AppError(
+            code,
+            message,
+            status_code=status_code if isinstance(status_code, int) else status.HTTP_500_INTERNAL_SERVER_ERROR,
+            details=details if isinstance(details, dict) else {},
+        )
+
+    raise AppError(
+        "PROCESSING_FAILED",
+        "Lyrics generation failed.",
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        details={"stdout": stdout.strip(), "stderr": stderr.strip()},
+    )
+
+
+def transcribe_project_lyrics(
+    source_path: Path,
+    *,
+    model_name: str,
+    requested_device: str,
+    download_root: Path,
+    should_cancel: Callable[[], bool] | None = None,
+    register_process: Callable[[subprocess.Popen[str]], None] | None = None,
+    unregister_process: Callable[[], None] | None = None,
+) -> LyricsTranscription:
+    if should_cancel and should_cancel():
+        raise JobCancelledError()
+
+    command = [
+        sys.executable,
+        "-m",
+        "app.engines.lyrics_worker",
+        "--source",
+        str(source_path),
+        "--model",
+        model_name,
+        "--requested-device",
+        requested_device,
+        "--download-root",
+        str(download_root),
+    ]
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=with_mps_fallback_env(os.environ),
+    )
+    if register_process:
+        register_process(process)
+
+    try:
+        while process.poll() is None:
+            if should_cancel and should_cancel():
+                _terminate_cancelled_worker(process)
+                raise JobCancelledError()
+            try:
+                process.wait(timeout=0.25)
+            except subprocess.TimeoutExpired:
+                pass
+
+        stdout, stderr = process.communicate()
+        if should_cancel and should_cancel():
+            raise JobCancelledError()
+
+        payload = _worker_payload_from_stdout(stdout)
+        if process.returncode != 0:
+            _raise_worker_failure(payload, stdout=stdout, stderr=stderr)
+
+        transcription_payload = payload.get("transcription") if payload else None
+        if not isinstance(transcription_payload, dict):
+            raise AppError(
+                "PROCESSING_FAILED",
+                "Lyrics generation failed.",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                details={"stdout": stdout.strip(), "stderr": stderr.strip()},
+            )
+        return lyrics_transcription_from_payload(transcription_payload)
+    finally:
+        if unregister_process:
+            unregister_process()
+        if process.poll() is None:
+            process.kill()

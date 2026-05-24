@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.engines.stems import separate_sources, separate_two_stems
-from app.errors import AppError
+from app.errors import AppError, JobCancelledError
 from app.models import Artifact, Project
 from app.services.artifacts import refresh_artifact_file_metadata, register_artifact
 from app.services.paths import project_stems_dir
@@ -279,6 +279,16 @@ def _replace_stem_outputs(temp_plan: list[StemOutputPlan], final_plan: list[Stem
         temp_output.path.replace(final_output.path)
 
 
+def _ensure_not_cancelled(should_cancel: Callable[[], bool] | None) -> None:
+    if should_cancel and should_cancel():
+        raise JobCancelledError()
+
+
+def _cleanup_stem_outputs(plan: list[StemOutputPlan]) -> None:
+    for output in plan:
+        _cleanup_artifact_path(output.path)
+
+
 def generate_stems(
     session: Session,
     *,
@@ -331,7 +341,13 @@ def generate_stems(
             register_process=register_process,
             unregister_process=unregister_process,
         )
+        _ensure_not_cancelled(should_cancel)
         _replace_stem_outputs(temp_plan, plan)
+        try:
+            _ensure_not_cancelled(should_cancel)
+        except JobCancelledError:
+            _cleanup_stem_outputs(plan)
+            raise
 
     existing_artifacts = _stem_artifacts_for_source(
         session,

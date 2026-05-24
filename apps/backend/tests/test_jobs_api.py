@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import threading
+import time
 from datetime import UTC, datetime, timedelta
+from subprocess import TimeoutExpired
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,7 +11,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
+from app.errors import AppError
 from app.models import Artifact, Job, Project
+from app.services.jobs import InProcessJobRunner, JobExecutionContext, JobExecutionResult
 
 _BASE_TIME = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -730,3 +735,145 @@ def test_list_jobs_rejects_invalid_pagination_query(client: TestClient, params: 
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "INVALID_REQUEST"
+
+
+def test_cancelled_pending_job_does_not_execute(client: TestClient) -> None:
+    runner = InProcessJobRunner(SessionLocal)
+    handler_called = False
+
+    def handler(_context: JobExecutionContext, _session: Session, _job: Job) -> JobExecutionResult:
+        nonlocal handler_called
+        handler_called = True
+        return JobExecutionResult(artifact_ids=[])
+
+    runner._handlers["test"] = handler
+    with SessionLocal() as session:
+        job = runner.create_job(session, project_id=None, job_type="test", payload={})
+        job_id = job.id
+        session.commit()
+
+    runner.cancel(job_id)
+    runner._execute_job(job_id)
+
+    assert handler_called is False
+    with SessionLocal() as session:
+        job = session.get(Job, job_id)
+        assert job is not None
+        assert job.cancel_requested is True
+        assert job.status == "cancelled"
+        assert job.started_at is None
+        assert job.completed_at is not None
+
+
+def test_cancel_requested_before_handler_start_finishes_cancelled(client: TestClient) -> None:
+    runner = InProcessJobRunner(SessionLocal)
+    handler_called = False
+
+    def handler(_context: JobExecutionContext, _session: Session, _job: Job) -> JobExecutionResult:
+        nonlocal handler_called
+        handler_called = True
+        return JobExecutionResult(artifact_ids=[])
+
+    runner._handlers["test"] = handler
+    with SessionLocal() as session:
+        job = runner.create_job(session, project_id=None, job_type="test", payload={})
+        job.cancel_requested = True
+        job_id = job.id
+        session.commit()
+
+    runner._execute_job(job_id)
+
+    assert handler_called is False
+    with SessionLocal() as session:
+        job = session.get(Job, job_id)
+        assert job is not None
+        assert job.cancel_requested is True
+        assert job.status == "cancelled"
+        assert job.started_at is not None
+        assert job.completed_at is not None
+        assert job.duration_seconds is not None
+        assert job.duration_seconds >= 0
+
+
+def test_running_cancelled_job_finishes_cancelled_when_handler_reports_failure(client: TestClient) -> None:
+    runner = InProcessJobRunner(SessionLocal)
+    handler_started = threading.Event()
+
+    def handler(context: JobExecutionContext, _session: Session, _job: Job) -> JobExecutionResult:
+        handler_started.set()
+        while not context.should_cancel():
+            time.sleep(0.01)
+        raise AppError("PROCESSING_FAILED", "Subprocess exited after cancellation.")
+
+    runner._handlers["test"] = handler
+    with SessionLocal() as session:
+        job = runner.create_job(session, project_id=None, job_type="test", payload={})
+        job_id = job.id
+        session.commit()
+
+    thread = threading.Thread(target=runner._execute_job, args=(job_id,))
+    thread.start()
+    assert handler_started.wait(timeout=2)
+
+    runner.cancel(job_id)
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    with SessionLocal() as session:
+        job = session.get(Job, job_id)
+        assert job is not None
+        assert job.cancel_requested is True
+        assert job.status == "cancelled"
+        assert job.error_message is None
+        assert job.started_at is not None
+        assert job.completed_at is not None
+        assert job.duration_seconds is not None
+        assert job.duration_seconds >= 0
+
+
+class _IgnoringTerminationProcess:
+    def __init__(self) -> None:
+        self.terminate_calls = 0
+        self.kill_calls = 0
+        self.wait_timeouts: list[float | None] = []
+
+    def poll(self) -> int | None:
+        if self.kill_calls:
+            return -9
+        return None
+
+    def terminate(self) -> None:
+        self.terminate_calls += 1
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.wait_timeouts.append(timeout)
+        if self.kill_calls:
+            return -9
+        raise TimeoutExpired(cmd="fake-process", timeout=timeout)
+
+
+def test_cancel_kills_registered_process_after_termination_grace(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.services.jobs._PROCESS_TERMINATION_GRACE_SECONDS", 0.0)
+    runner = InProcessJobRunner(SessionLocal)
+    with SessionLocal() as session:
+        _add_job(session, "job_running", "running", started_at=_timestamp(1))
+        session.commit()
+
+    process = _IgnoringTerminationProcess()
+    runner.register_process("job_running", process)
+
+    runner.cancel("job_running")
+
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+    assert process.wait_timeouts == [0.0, 0.0]
+    with SessionLocal() as session:
+        job = session.get(Job, "job_running")
+        assert job is not None
+        assert job.cancel_requested is True

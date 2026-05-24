@@ -442,7 +442,7 @@ Evidence captured for the Iroh prototype must come from real runs. Leave fields 
 - Interrupted Iroh run failed cleanly on the serving Mac with `Could not write sync transport frame: connection lost`. Retry stayed on Iroh and completed 305 MB in 1:57 at 2.6 MB/s, imported 1 project, skipped 4, received 6 artifacts, reused 2 staged artifacts, and had 0 failed transfers.
 - Linux-to-Mac sync after a Linux listener restart fell back to TCP with fallback reason `Timed out connecting to Iroh sync peer`. The stored Linux Iroh endpoint hint still pointed at the previous UDP port, while TCP continued to work on its stable port.
 
-The Iroh prototype evidence supports using Iroh for end-to-end transport on this dataset: Iroh works end-to-end and is comparable to TCP on Mac/Linux. Completed verified staged content is reused after interruption. True mid-artifact `iroh-blobs` byte-range resume is not implemented or proven by these runs, so do not claim byte-range resume support yet. Before Iroh becomes a comfortable default transport, bind direct Iroh to a stable UDP port, preferably adjacent to the TCP sync port, and refresh stale endpoint hints on pairing or successful fallback sync.
+The Iroh prototype evidence supports using Iroh for end-to-end transport on this dataset: Iroh works end-to-end and is comparable to TCP on Mac/Linux. Completed verified staged content is reused after interruption. True mid-artifact `iroh-blobs` byte-range resume is not implemented or proven by these runs, so do not claim byte-range resume support yet. Direct Iroh now binds to a stable UDP port adjacent to the TCP sync port so endpoint hints survive listener restarts; stale endpoint hints should still be refreshed on pairing or successful fallback sync.
 
 ### Ouisync Rejection Finding
 
@@ -722,6 +722,8 @@ For the eventual implementation spike, validate in this order:
 13. Frontend tests for Settings pairing UI, migration/preflight status, duplicate import failure, library status, project sync status, artifact availability, conflict surfacing, edit disabling, group delete warnings, and accessible status updates.
 14. Transport bake-off tests comparing custom LAN baseline, Iroh, and a Syncthing-managed sync bundle reference if an existing external setup is available. Ouisync has been rejected for this path.
 15. Mobile WAV validation:
+    - Validation notes identify the transport path used, selected fallback, and any Android
+      transport gaps.
     - WAV source/stem playback works from synced desktop artifacts.
     - Battery and CPU usage are measured against AAC/M4A or another compressed baseline.
     - Storage and transfer costs are visible in the sync UI.

@@ -9,6 +9,7 @@ import {
   mockGetSyncIdentity,
   mockGetSyncTransportStatus,
   mockAnswerSyncPairingOffer,
+  mockCreateSyncPairingOffer,
   mockListSyncTrustedPeers,
   getMockInvoke,
   mockStartSyncListener,
@@ -339,6 +340,87 @@ describe("Desktop app activity", () => {
     expect((screen.getByLabelText("Pairing response") as HTMLTextAreaElement).value).toContain(
       '"device_id": "device_local"',
     );
+  });
+
+  it("creates a local pairing offer from the header without copying it", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    await openSyncTab(user);
+
+    await user.click(screen.getByRole("button", { name: "Start Listener" }));
+    expect(await screen.findByText("Listening")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Create Pairing Offer" }));
+
+    await waitFor(() => expect(mockCreateSyncPairingOffer).toHaveBeenCalled());
+    expect(writeText).not.toHaveBeenCalled();
+    expect(await screen.findByText(/Pairing offer ready\./)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy Pairing Offer" })).toBeInTheDocument();
+    expect((screen.getByLabelText("Local pairing offer") as HTMLTextAreaElement).value).toContain(
+      '"signature": "pair_signature_1"',
+    );
+  });
+
+  it("falls back to the visible pairing text when clipboard write rejects", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockRejectedValue(new Error("Clipboard denied."));
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: execCommand,
+    });
+    await openSyncTab(user);
+
+    await user.click(screen.getByRole("button", { name: "Start Listener" }));
+    expect(await screen.findByText("Listening")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Create Pairing Offer" }));
+
+    const output = (await screen.findByLabelText("Local pairing offer")) as HTMLTextAreaElement;
+    const focus = vi.spyOn(output, "focus");
+    const select = vi.spyOn(output, "select");
+    await user.click(screen.getByRole("button", { name: "Copy Pairing Offer" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText).toHaveBeenLastCalledWith(
+      expect.stringContaining('"signature": "pair_signature_1"'),
+    );
+    expect(focus).toHaveBeenCalled();
+    expect(select).toHaveBeenCalled();
+    expect(execCommand).toHaveBeenCalledWith("copy");
+    expect(screen.getByText("Pairing offer copied.")).toBeInTheDocument();
+  });
+
+  it("copies the visible pairing response without creating a new offer", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const payload = pairingPayload();
+    await openSyncTab(user);
+
+    fireEvent.change(screen.getByLabelText("Peer offer or response payload"), {
+      target: { value: JSON.stringify(payload) },
+    });
+    await user.click(screen.getByRole("button", { name: "Answer Offer" }));
+
+    expect(await screen.findByLabelText("Pairing response")).toBeInTheDocument();
+    mockCreateSyncPairingOffer.mockClear();
+    await user.click(screen.getByRole("button", { name: "Copy Pairing Response" }));
+
+    expect(mockCreateSyncPairingOffer).not.toHaveBeenCalled();
+    expect(writeText).toHaveBeenLastCalledWith(
+      expect.stringContaining('"signature": "pair_response_signature_1"'),
+    );
+    expect(screen.getByText("Pairing response copied.")).toBeInTheDocument();
   });
 
   it("trusts a peer from a pasted pairing response", async () => {

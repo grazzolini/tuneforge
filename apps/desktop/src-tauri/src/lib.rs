@@ -336,7 +336,10 @@ pub fn run() {
             } else {
                 spawn_packaged_backend(app.handle())?
             };
-            let sync_transport = sync_transport::SyncTransportState::new(runtime.base_url.clone());
+            let sync_transport = sync_transport::SyncTransportState::new(
+                runtime.base_url.clone(),
+                app.handle().clone(),
+            );
             app.manage(runtime);
             app.manage(native_audio::NativeAudioState::new());
             app.manage(sync_transport);

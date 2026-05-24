@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
@@ -133,12 +133,21 @@ function parsePairingPayload(rawValue: string): SyncPairingPayloadSchema {
   };
 }
 
-async function copyToClipboard(value: string) {
-  if (!navigator.clipboard?.writeText) {
-    return false;
+async function copyToClipboard(value: string, source?: HTMLTextAreaElement | null) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch {
+      // Fall back to the visible text area below.
+    }
   }
-  await navigator.clipboard.writeText(value);
-  return true;
+  if (source && typeof document.execCommand === "function") {
+    source.focus();
+    source.select();
+    return document.execCommand("copy");
+  }
+  return false;
 }
 
 function peerLabel(peer: SyncTrustedPeerSchema) {
@@ -472,6 +481,7 @@ export function ActivitySyncPanel() {
   const [lastSyncMessage, setLastSyncMessage] = useState<string | null>(null);
   const [lastSyncResult, setLastSyncResult] = useState<SyncTransportRunStatus | null>(null);
   const [hiddenListenerSyncKey, setHiddenListenerSyncKey] = useState<string | null>(null);
+  const pairingOutputRef = useRef<HTMLTextAreaElement | null>(null);
 
   const identityQuery = useQuery({
     queryKey: ["sync", "identity"],
@@ -542,16 +552,7 @@ export function ActivitySyncPanel() {
       setPairingOfferText(nextOfferText);
       setPairingOfferLabel("Local pairing offer");
       setPairingError(null);
-      try {
-        const copied = await copyToClipboard(nextOfferText);
-        setPairingMessage(
-          copied
-            ? `Pairing offer copied.${expiresAt ? ` Expires ${expiresAt}.` : ""}`
-            : `Pairing offer ready.${expiresAt ? ` Expires ${expiresAt}.` : ""}`,
-        );
-      } catch {
-        setPairingMessage(`Pairing offer ready.${expiresAt ? ` Expires ${expiresAt}.` : ""}`);
-      }
+      setPairingMessage(`Pairing offer ready.${expiresAt ? ` Expires ${expiresAt}.` : ""}`);
     },
   });
   const answerPairingOfferMutation = useMutation({
@@ -571,7 +572,9 @@ export function ActivitySyncPanel() {
         const copied = await copyToClipboard(nextResponseText);
         setPairingMessage(
           copied
-            ? `Trusted ${peerLabel(response.trusted_peer)}. Pairing response copied.`
+            ? `Trusted ${peerLabel(
+                response.trusted_peer,
+              )}. Pairing response copied. Paste it on the offering device and choose Trust Response.`
             : `Trusted ${peerLabel(response.trusted_peer)}. Pairing response ready.`,
         );
       } catch {
@@ -593,7 +596,9 @@ export function ActivitySyncPanel() {
       await refreshSyncQueries();
     },
     onError: () => {
-      setPairingError("Could not trust the pairing payload.");
+      setPairingError(
+        "Could not trust the pairing response. If this is a peer offer, choose Answer Offer.",
+      );
     },
   });
   const revokePeerMutation = useMutation({
@@ -637,6 +642,25 @@ export function ActivitySyncPanel() {
       answerPairingOfferMutation.mutate(parsePairingPayload(pairingPayloadDraft));
     } catch (error) {
       setPairingError(error instanceof Error ? error.message : "Pairing payload is invalid.");
+    }
+  }
+
+  async function handleCopyVisiblePairingPayload() {
+    setPairingError(null);
+    const label = pairingOfferLabel === "Pairing response" ? "Pairing response" : "Pairing offer";
+    if (!pairingOfferText.trim()) {
+      setPairingError(`No ${label.toLowerCase()} to copy.`);
+      return;
+    }
+    try {
+      const copied = await copyToClipboard(pairingOfferText, pairingOutputRef.current);
+      setPairingMessage(
+        copied
+          ? `${label} copied.`
+          : `${label} ready. Select the text from the box if clipboard access is unavailable.`,
+      );
+    } catch {
+      setPairingMessage(`${label} ready. Select the text from the box if clipboard access is unavailable.`);
     }
   }
 
@@ -745,18 +769,38 @@ export function ActivitySyncPanel() {
               className="button button--ghost button--small"
               disabled={!listenerActive || createPairingOfferMutation.isPending}
               onClick={() => createPairingOfferMutation.mutate()}
-              title={listenerActive ? undefined : "Start the listener before creating a pairing offer."}
+              title={
+                listenerActive
+                  ? "Creates a fresh local pairing offer."
+                  : "Start the listener before creating a pairing offer."
+              }
               type="button"
             >
-              {createPairingOfferMutation.isPending ? "Creating..." : "Copy Pairing Offer"}
+              {createPairingOfferMutation.isPending ? "Creating..." : "Create Pairing Offer"}
             </button>
           </div>
 
           {pairingOfferText ? (
-            <label className="activity-sync-field">
-              <span>{pairingOfferLabel}</span>
-              <textarea readOnly value={pairingOfferText} />
-            </label>
+            <div className="activity-sync-field">
+              <div className="activity-sync-field__header">
+                <label htmlFor="activity-sync-pairing-output">{pairingOfferLabel}</label>
+                <button
+                  className="button button--ghost button--small"
+                  onClick={handleCopyVisiblePairingPayload}
+                  type="button"
+                >
+                  {pairingOfferLabel === "Pairing response" ? "Copy Pairing Response" : "Copy Pairing Offer"}
+                </button>
+              </div>
+              <textarea
+                aria-label={pairingOfferLabel}
+                id="activity-sync-pairing-output"
+                onFocus={(event) => event.currentTarget.select()}
+                readOnly
+                ref={pairingOutputRef}
+                value={pairingOfferText}
+              />
+            </div>
           ) : null}
 
           <label className="activity-sync-field">

@@ -13,21 +13,32 @@ fi
 
 ensure_permission() {
   local permission="$1"
-  if grep -q "$permission" "$MANIFEST"; then
+  if grep -Fq "android:name=\"$permission\"" "$MANIFEST"; then
     return
   fi
 
   local temp_file
   temp_file="$(mktemp)"
   awk -v permission="$permission" '
-    { print }
-    /android.permission.INTERNET/ {
+    !inserted && /^[[:space:]]*<application([[:space:]>]|$)/ {
       print "    <uses-permission android:name=\"" permission "\" />"
+      inserted = 1
     }
-  ' "$MANIFEST" > "$temp_file"
+    { print }
+    END {
+      if (!inserted) {
+        exit 42
+      }
+    }
+  ' "$MANIFEST" > "$temp_file" || {
+    rm -f "$temp_file"
+    echo "Could not add Android permission $permission to $MANIFEST" >&2
+    exit 1
+  }
   mv "$temp_file" "$MANIFEST"
 }
 
+ensure_permission "android.permission.INTERNET"
 ensure_permission "android.permission.RECORD_AUDIO"
 ensure_permission "android.permission.MODIFY_AUDIO_SETTINGS"
 

@@ -9,6 +9,12 @@ const PROJECT_ID_PREFIX: &str = "proj_sha256_";
 const SYNC_PROJECT_MANIFEST_SCHEMA_VERSION: &str = "1";
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 const SYNC_PAIRING_PROTOCOL_VERSION: &str = "tuneforge-sync-v1";
+#[cfg(any(test, target_os = "android"))]
+const TRANSPORT_HANDSHAKE_CHALLENGE_TYPE: &str = "transport_handshake";
+#[cfg(any(test, target_os = "android"))]
+const TRANSPORT_HANDSHAKE_MAX_TTL_SECONDS: i64 = 300;
+#[cfg(any(test, target_os = "android"))]
+const TRANSPORT_HANDSHAKE_CLOCK_SKEW_SECONDS: i64 = 30;
 #[cfg(not(target_os = "android"))]
 const MOBILE_UNAVAILABLE: &str = "Mobile embedded backend is only available in Android builds.";
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
@@ -733,6 +739,96 @@ fn safe_sync_relative_path_parts(relative_path: &str) -> Result<Vec<String>, Str
 }
 
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn validate_manifest_source_audio_artifact(
+    artifact: &SyncProjectManifestArtifactSchema,
+    project_id: &str,
+) -> Result<(), String> {
+    if artifact.project_id != project_id {
+        return Err(
+            "Project manifest source_audio artifact belongs to a different project.".to_string(),
+        );
+    }
+    if artifact.r#type != "source_audio" {
+        return Err("Project manifest source_audio artifact has the wrong type.".to_string());
+    }
+    normalize_sha256(&artifact.content_sha256, "content_sha256")?;
+    safe_sync_relative_path_parts(&artifact.relative_path)?;
+    if !artifact.format.trim().eq_ignore_ascii_case("wav") {
+        return Err("Project manifest source_audio artifact must use wav format.".to_string());
+    }
+    if !artifact
+        .relative_path
+        .to_ascii_lowercase()
+        .ends_with(".wav")
+    {
+        return Err("Project manifest source_audio relative_path must end in .wav.".to_string());
+    }
+    Ok(())
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn source_audio_artifact_for_project<'a>(
+    artifacts: &'a [SyncProjectManifestArtifactSchema],
+    project_id: &str,
+) -> Result<&'a SyncProjectManifestArtifactSchema, String> {
+    let mut artifacts = artifacts
+        .iter()
+        .filter(|artifact| artifact.project_id == project_id && artifact.r#type == "source_audio");
+    let Some(artifact) = artifacts.next() else {
+        return Err(
+            "Project manifest requires exactly one source_audio artifact for the project."
+                .to_string(),
+        );
+    };
+    if artifacts.next().is_some() {
+        return Err(
+            "Project manifest requires exactly one source_audio artifact for the project."
+                .to_string(),
+        );
+    }
+    validate_manifest_source_audio_artifact(artifact, project_id)?;
+    Ok(artifact)
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn manifest_source_audio_artifact(
+    manifest: &SyncProjectManifestSchema,
+) -> Result<&SyncProjectManifestArtifactSchema, String> {
+    source_audio_artifact_for_project(&manifest.artifacts, &manifest.project.project_id)
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn validate_sync_project_manifest_identity(
+    manifest: &SyncProjectManifestSchema,
+) -> Result<(), String> {
+    if manifest.schema_version != SYNC_PROJECT_MANIFEST_SCHEMA_VERSION {
+        return Err("Project manifest schema_version is not supported.".to_string());
+    }
+    let source_sha256 = normalize_sha256(&manifest.project.source_sha256, "source_sha256")?;
+    let expected_project_id = source_hash_to_project_id(&source_sha256)?;
+    if manifest.project.project_id != expected_project_id {
+        return Err("Project manifest project_id must be derived from source_sha256.".to_string());
+    }
+    for artifact in &manifest.artifacts {
+        if artifact.project_id != manifest.project.project_id {
+            return Err("Project manifest artifact belongs to a different project.".to_string());
+        }
+        normalize_sha256(&artifact.content_sha256, "content_sha256")?;
+        safe_sync_relative_path_parts(&artifact.relative_path)?;
+    }
+    manifest_source_audio_artifact(manifest)?;
+    for revision in &manifest.entity_revisions {
+        if revision.project_id != manifest.project.project_id {
+            return Err(
+                "Project manifest entity revision belongs to a different project.".to_string(),
+            );
+        }
+        normalize_sha256(&revision.content_sha256, "content_sha256")?;
+    }
+    Ok(())
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 fn sync_staging_relative_path(content_sha256: &str) -> Result<String, String> {
     let normalized = normalize_sha256(content_sha256, "content_sha256")?;
     Ok(format!("sha256/{}/{}", &normalized[..2], normalized))
@@ -1312,6 +1408,194 @@ fn validate_remote_tombstone_identity(
     Err("Remote delete tombstone author_device_id is not an active trusted peer.".to_string())
 }
 
+#[cfg(any(test, target_os = "android"))]
+fn validate_transport_trusted_peer(
+    trusted_peer: Option<&SyncTrustedPeerSchema>,
+    local_sync_group_id: &str,
+) -> Result<(), String> {
+    let trusted_peer =
+        trusted_peer.ok_or_else(|| "Trusted peer is not an active trusted peer.".to_string())?;
+    if trusted_peer.revoked_at.is_some() {
+        return Err("Trusted peer is not an active trusted peer.".to_string());
+    }
+    if trusted_peer.sync_group_id != local_sync_group_id {
+        return Err("Trusted peer belongs to a different sync group.".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(any(test, target_os = "android"))]
+fn canonical_transport_handshake_challenge(
+    challenge: &Value,
+    local_device_id: &str,
+    peer_device_id: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<std::collections::BTreeMap<String, Value>, String> {
+    let protocol_version = transport_challenge_string(challenge, "protocol_version", 1, None)?;
+    if protocol_version != SYNC_PAIRING_PROTOCOL_VERSION {
+        return Err(
+            "Transport handshake challenge uses an unsupported protocol version.".to_string(),
+        );
+    }
+
+    let challenge_type = transport_challenge_string(challenge, "challenge_type", 1, None)?;
+    if challenge_type != TRANSPORT_HANDSHAKE_CHALLENGE_TYPE {
+        return Err("Transport handshake challenge_type is not supported.".to_string());
+    }
+
+    let requester_device_id =
+        transport_challenge_string(challenge, "requester_device_id", 1, Some(128))?;
+    if requester_device_id != peer_device_id {
+        return Err(
+            "Transport handshake requester_device_id must match the trusted peer.".to_string(),
+        );
+    }
+
+    let responder_device_id =
+        transport_challenge_string(challenge, "responder_device_id", 1, Some(128))?;
+    if responder_device_id != local_device_id {
+        return Err(
+            "Transport handshake responder_device_id must match the local device.".to_string(),
+        );
+    }
+
+    let session_id = transport_challenge_string(challenge, "session_id", 16, Some(128))?;
+    let challenge_nonce = transport_challenge_string(challenge, "challenge_nonce", 16, Some(512))?;
+    let issued_at = transport_challenge_datetime(challenge, "issued_at")?;
+    let expires_at = transport_challenge_datetime(challenge, "expires_at")?;
+    validate_transport_challenge_window(issued_at, expires_at, now)?;
+
+    let mut canonical = std::collections::BTreeMap::new();
+    canonical.insert(
+        "challenge_nonce".to_string(),
+        Value::String(challenge_nonce.to_string()),
+    );
+    canonical.insert(
+        "challenge_type".to_string(),
+        Value::String(TRANSPORT_HANDSHAKE_CHALLENGE_TYPE.to_string()),
+    );
+    canonical.insert(
+        "expires_at".to_string(),
+        Value::String(transport_handshake_iso(expires_at)),
+    );
+    canonical.insert(
+        "issued_at".to_string(),
+        Value::String(transport_handshake_iso(issued_at)),
+    );
+    canonical.insert(
+        "protocol_version".to_string(),
+        Value::String(SYNC_PAIRING_PROTOCOL_VERSION.to_string()),
+    );
+    canonical.insert(
+        "requester_device_id".to_string(),
+        Value::String(requester_device_id.to_string()),
+    );
+    canonical.insert(
+        "responder_device_id".to_string(),
+        Value::String(responder_device_id.to_string()),
+    );
+    canonical.insert(
+        "session_id".to_string(),
+        Value::String(session_id.to_string()),
+    );
+    Ok(canonical)
+}
+
+#[cfg(any(test, target_os = "android"))]
+fn transport_handshake_challenge_json(
+    challenge: &std::collections::BTreeMap<String, Value>,
+) -> Result<String, String> {
+    serde_json::to_string(challenge).map_err(|error| error.to_string())
+}
+
+#[cfg(any(test, target_os = "android"))]
+fn transport_handshake_proof_value(
+    local_device_id: &str,
+    peer_device_id: &str,
+    public_key: &str,
+    challenge: std::collections::BTreeMap<String, Value>,
+    canonical_challenge_json: String,
+    signature: String,
+    signed_at: chrono::DateTime<chrono::Utc>,
+) -> Value {
+    serde_json::json!({
+        "protocol_version": SYNC_PAIRING_PROTOCOL_VERSION,
+        "challenge_type": TRANSPORT_HANDSHAKE_CHALLENGE_TYPE,
+        "local_device_id": local_device_id,
+        "peer_device_id": peer_device_id,
+        "public_key": public_key,
+        "challenge": challenge,
+        "canonical_challenge_json": canonical_challenge_json,
+        "signature": signature,
+        "signed_at": transport_handshake_iso(signed_at),
+    })
+}
+
+#[cfg(any(test, target_os = "android"))]
+fn transport_challenge_string<'a>(
+    challenge: &'a Value,
+    field: &str,
+    min_length: usize,
+    max_length: Option<usize>,
+) -> Result<&'a str, String> {
+    let value = challenge
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("Transport handshake {field} must be a string."))?;
+    if value != value.trim() || value.len() < min_length {
+        return Err(format!("Transport handshake {field} must be canonical."));
+    }
+    if max_length.is_some_and(|max_length| value.len() > max_length) {
+        return Err(format!("Transport handshake {field} is too long."));
+    }
+    Ok(value)
+}
+
+#[cfg(any(test, target_os = "android"))]
+fn transport_challenge_datetime(
+    challenge: &Value,
+    field: &str,
+) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    let value = challenge
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("Transport handshake {field} must be an ISO-8601 timestamp."))?;
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|parsed| parsed.with_timezone(&chrono::Utc))
+        .map_err(|_| format!("Transport handshake {field} must be an ISO-8601 timestamp."))
+}
+
+#[cfg(any(test, target_os = "android"))]
+fn validate_transport_challenge_window(
+    issued_at: chrono::DateTime<chrono::Utc>,
+    expires_at: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(), String> {
+    if issued_at >= expires_at {
+        return Err("Transport handshake issued_at must be before expires_at.".to_string());
+    }
+    if expires_at <= now {
+        return Err("Transport handshake challenge has expired.".to_string());
+    }
+    if issued_at > now + chrono::Duration::seconds(TRANSPORT_HANDSHAKE_CLOCK_SKEW_SECONDS) {
+        return Err("Transport handshake issued_at is too far in the future.".to_string());
+    }
+    if expires_at - issued_at > chrono::Duration::seconds(TRANSPORT_HANDSHAKE_MAX_TTL_SECONDS) {
+        return Err("Transport handshake challenge lifetime is too long.".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(any(test, target_os = "android"))]
+fn transport_handshake_iso(value: chrono::DateTime<chrono::Utc>) -> String {
+    let micros = value.timestamp_subsec_micros();
+    if micros == 0 {
+        value.format("%Y-%m-%dT%H:%M:%S+00:00").to_string()
+    } else {
+        value.format("%Y-%m-%dT%H:%M:%S%.6f+00:00").to_string()
+    }
+}
+
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 fn sanitize_sync_manifest_value(value: &Value) -> Value {
     sanitize_sync_manifest_value_optional(value).unwrap_or(Value::Null)
@@ -1531,6 +1815,12 @@ mod android {
     const ACTION_UPSERT_PROJECT_STATUS: &str = "upsert_project_status";
     const ACTION_RECORD_CONFLICT: &str = "record_conflict";
     const ACTION_NOOP: &str = "noop";
+
+    #[derive(Clone, Debug)]
+    pub struct MobileSyncTransportArtifactFile {
+        pub path: PathBuf,
+        pub size_bytes: u64,
+    }
 
     const MOBILE_CORE_SCHEMA_SQL: &str = r#"
         CREATE TABLE IF NOT EXISTS projects (
@@ -2205,11 +2495,15 @@ mod android {
         private_key: &str,
         payload: &SyncPairingPayloadSchema,
     ) -> Result<String, String> {
+        let message = signed_pairing_payload_json(payload)?;
+        sign_canonical_payload(private_key, &message)
+    }
+
+    fn sign_canonical_payload(private_key: &str, message: &str) -> Result<String, String> {
         let private_key_bytes: [u8; 32] = decode_key(private_key)?
             .try_into()
             .map_err(|_| "Local private key is invalid.".to_string())?;
         let signing_key = SigningKey::from_bytes(&private_key_bytes);
-        let message = signed_pairing_payload_json(payload)?;
         let signature = signing_key.sign(message.as_bytes());
         Ok(encode_key(&signature.to_bytes()))
     }
@@ -2335,10 +2629,10 @@ mod android {
         get_trusted_peer(connection, &payload.device_id)
     }
 
-    fn get_trusted_peer(
+    fn find_trusted_peer(
         connection: &Connection,
         device_id: &str,
-    ) -> Result<SyncTrustedPeerSchema, String> {
+    ) -> Result<Option<SyncTrustedPeerSchema>, String> {
         connection
             .query_row(
                 "SELECT device_id, sync_group_id, display_name, public_key, endpoint_hints_json, trusted_at, revoked_at, updated_at FROM sync_trusted_peers WHERE device_id = ?1",
@@ -2346,7 +2640,14 @@ mod android {
                 row_trusted_peer,
             )
             .optional()
-            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())
+    }
+
+    fn get_trusted_peer(
+        connection: &Connection,
+        device_id: &str,
+    ) -> Result<SyncTrustedPeerSchema, String> {
+        find_trusted_peer(connection, device_id)?
             .ok_or_else(|| "Trusted peer is unknown.".to_string())
     }
 
@@ -2962,14 +3263,7 @@ mod android {
             .into_iter()
             .map(|artifact| manifest_artifact_from_artifact(root, artifact))
             .collect::<Result<Vec<_>, _>>()?;
-        if !artifacts.iter().any(|artifact| {
-            artifact.r#type == "source_audio" && artifact.content_sha256 == source_sha256
-        }) {
-            return Err(
-                "Project manifest requires a source_audio artifact matching source_sha256."
-                    .to_string(),
-            );
-        }
+        source_audio_artifact_for_project(&artifacts, project_id)?;
         Ok(SyncProjectManifestSchema {
             schema_version: SYNC_PROJECT_MANIFEST_SCHEMA_VERSION.to_string(),
             exported_at: now_iso(),
@@ -3505,42 +3799,7 @@ mod android {
     fn validate_project_manifest_identity(
         manifest: &SyncProjectManifestSchema,
     ) -> Result<(), String> {
-        if manifest.schema_version != SYNC_PROJECT_MANIFEST_SCHEMA_VERSION {
-            return Err("Project manifest schema_version is not supported.".to_string());
-        }
-        let source_sha256 = normalize_sha256(&manifest.project.source_sha256, "source_sha256")?;
-        let expected_project_id = source_hash_to_project_id(&source_sha256)?;
-        if manifest.project.project_id != expected_project_id {
-            return Err(
-                "Project manifest project_id must be derived from source_sha256.".to_string(),
-            );
-        }
-        if !manifest.artifacts.iter().any(|artifact| {
-            artifact.project_id == manifest.project.project_id
-                && artifact.r#type == "source_audio"
-                && artifact.content_sha256 == source_sha256
-        }) {
-            return Err(
-                "Project manifest requires a source_audio artifact matching source_sha256."
-                    .to_string(),
-            );
-        }
-        for artifact in &manifest.artifacts {
-            if artifact.project_id != manifest.project.project_id {
-                return Err("Project manifest artifact belongs to a different project.".to_string());
-            }
-            normalize_sha256(&artifact.content_sha256, "content_sha256")?;
-            safe_relative_path(&artifact.relative_path)?;
-        }
-        for revision in &manifest.entity_revisions {
-            if revision.project_id != manifest.project.project_id {
-                return Err(
-                    "Project manifest entity revision belongs to a different project.".to_string(),
-                );
-            }
-            normalize_sha256(&revision.content_sha256, "content_sha256")?;
-        }
-        Ok(())
+        validate_sync_project_manifest_identity(manifest)
     }
 
     fn import_entity_revisions(
@@ -3761,12 +4020,7 @@ mod android {
         let project_root = project_root_path(root, &project_id)?;
         let timestamp = now_iso();
         let existing_project = get_project_schema(connection, &project_id).ok();
-        let source_artifact = payload
-            .manifest
-            .artifacts
-            .iter()
-            .find(|artifact| artifact.r#type == "source_audio")
-            .ok_or_else(|| "Project manifest source_audio artifact is missing.".to_string())?;
+        let source_artifact = manifest_source_audio_artifact(&payload.manifest)?;
         let source_path = project_root.join(safe_relative_path(&source_artifact.relative_path)?);
 
         let mut prepared_artifacts = Vec::new();
@@ -5814,6 +6068,47 @@ mod android {
         })
     }
 
+    pub fn mobile_sign_transport_handshake(
+        app: AppHandle,
+        peer_device_id: String,
+        challenge: Value,
+    ) -> Result<Value, String> {
+        if peer_device_id != peer_device_id.trim() || peer_device_id.is_empty() {
+            return Err("peer_device_id must be canonical.".to_string());
+        }
+        if peer_device_id.len() > 128 {
+            return Err("peer_device_id is too long.".to_string());
+        }
+        let connection = db(&app)?;
+        let identity = local_identity(&connection)?;
+        let trusted_peer = find_trusted_peer(&connection, &peer_device_id)?;
+        validate_transport_trusted_peer(trusted_peer.as_ref(), &identity.sync_group_id)?;
+        let canonical_challenge = canonical_transport_handshake_challenge(
+            &challenge,
+            &identity.device_id,
+            &peer_device_id,
+            Utc::now(),
+        )?;
+        let canonical_challenge_json = transport_handshake_challenge_json(&canonical_challenge)?;
+        let private_key: String = connection
+            .query_row(
+                "SELECT private_key FROM sync_local_identities WHERE id = ?1",
+                params![LOCAL_IDENTITY_ID],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        let signature = sign_canonical_payload(&private_key, &canonical_challenge_json)?;
+        Ok(transport_handshake_proof_value(
+            &identity.device_id,
+            &peer_device_id,
+            &identity.public_key,
+            canonical_challenge,
+            canonical_challenge_json,
+            signature,
+            Utc::now(),
+        ))
+    }
+
     #[tauri::command]
     pub fn mobile_create_sync_pairing_offer(
         app: AppHandle,
@@ -6122,6 +6417,122 @@ mod android {
         let connection = db(&app)?;
         let root = app_data_root(&app)?;
         get_staged_artifact(&connection, &root, &content_sha256, None)
+    }
+
+    fn sync_transport_value<T: Serialize>(value: T) -> Result<Value, String> {
+        serde_json::to_value(value).map_err(|error| error.to_string())
+    }
+
+    pub fn mobile_sync_transport_local_identity_value(app: AppHandle) -> Result<Value, String> {
+        sync_transport_value(mobile_get_sync_identity(app)?)
+    }
+
+    pub fn mobile_sync_transport_trusted_peers_value(app: AppHandle) -> Result<Value, String> {
+        sync_transport_value(mobile_list_sync_trusted_peers(app)?)
+    }
+
+    pub fn mobile_sync_transport_create_pairing_offer_value(
+        app: AppHandle,
+        endpoint_hints: Vec<String>,
+        ttl_seconds: i64,
+    ) -> Result<Value, String> {
+        sync_transport_value(mobile_create_sync_pairing_offer(
+            app,
+            Some(SyncPairingOfferRequest {
+                endpoint_hints,
+                ttl_seconds: Some(ttl_seconds),
+            }),
+        )?)
+    }
+
+    pub fn mobile_sync_transport_metadata_value(app: AppHandle) -> Result<Value, String> {
+        sync_transport_value(mobile_get_sync_metadata(app)?)
+    }
+
+    pub fn mobile_sync_transport_project_manifest_value(
+        app: AppHandle,
+        project_id: String,
+    ) -> Result<Value, String> {
+        sync_transport_value(mobile_get_sync_project_manifest(app, project_id)?)
+    }
+
+    pub fn mobile_sync_transport_staged_artifact_value(
+        app: AppHandle,
+        content_sha256: String,
+    ) -> Result<Value, String> {
+        sync_transport_value(mobile_get_sync_staged_artifact(app, content_sha256)?)
+    }
+
+    pub fn mobile_sync_transport_stage_artifact_value(
+        app: AppHandle,
+        body: Value,
+    ) -> Result<Value, String> {
+        let payload = serde_json::from_value::<SyncArtifactStagingRequest>(body)
+            .map_err(|error| error.to_string())?;
+        sync_transport_value(mobile_stage_sync_artifact(app, payload)?)
+    }
+
+    pub fn mobile_sync_transport_reconciliation_plan_value(
+        app: AppHandle,
+        body: Value,
+    ) -> Result<Value, String> {
+        let payload = serde_json::from_value::<SyncReconciliationPlanRequest>(body)
+            .map_err(|error| error.to_string())?;
+        sync_transport_value(mobile_plan_sync_reconciliation(app, payload)?)
+    }
+
+    pub fn mobile_sync_transport_reconciliation_apply_value(
+        app: AppHandle,
+        body: Value,
+    ) -> Result<Value, String> {
+        let payload = serde_json::from_value::<SyncReconciliationApplyRequest>(body)
+            .map_err(|error| error.to_string())?;
+        sync_transport_value(mobile_apply_sync_reconciliation(app, payload)?)
+    }
+
+    pub fn mobile_sync_transport_artifact_file(
+        app: AppHandle,
+        artifact_id: &str,
+    ) -> Result<MobileSyncTransportArtifactFile, String> {
+        if artifact_id.trim().is_empty() || artifact_id != artifact_id.trim() {
+            return Err("artifact_id must be canonical.".to_string());
+        }
+        let connection = db(&app)?;
+        let root = app_data_root(&app)?;
+        let artifact = connection
+            .query_row(
+                &format!("SELECT {ARTIFACT_COLUMNS} FROM artifacts WHERE id = ?1"),
+                params![artifact_id],
+                row_artifact,
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Artifact is unknown.".to_string())?;
+        if artifact.size_bytes < 0 {
+            return Err("Artifact size_bytes must be non-negative.".to_string());
+        }
+        let relative_path = relative_artifact_path(&root, &artifact).ok_or_else(|| {
+            "Project artifact path is outside the mobile app data root.".to_string()
+        })?;
+        safe_relative_path(&relative_path)?;
+        let content_sha256 = artifact
+            .content_sha256
+            .as_deref()
+            .ok_or_else(|| "Project artifact is missing content SHA-256 metadata.".to_string())
+            .and_then(|value| normalize_sha256(value, "content_sha256"))?;
+        let path = PathBuf::from(&artifact.path);
+        let metadata = fs::metadata(&path)
+            .map_err(|_| "Project artifact file is missing or unreadable.".to_string())?;
+        if metadata.len() as i64 != artifact.size_bytes {
+            return Err("Project artifact file size does not match its metadata.".to_string());
+        }
+        if file_sha256(&path)? != content_sha256 {
+            return Err("Project artifact file SHA-256 does not match its metadata.".to_string());
+        }
+        Ok(MobileSyncTransportArtifactFile {
+            path,
+            size_bytes: artifact.size_bytes as u64,
+        })
     }
 
     #[tauri::command]
@@ -6973,6 +7384,7 @@ pub use android::*;
 #[cfg(test)]
 mod mobile_backend_tests {
     use super::*;
+    use chrono::{TimeZone, Utc};
     use serde_json::json;
 
     fn mobile_test_job(
@@ -7074,6 +7486,57 @@ mod mobile_backend_tests {
             created_at: "2026-05-22T12:00:00.000Z".to_string(),
             updated_at: "2026-05-22T12:00:00.000Z".to_string(),
         }
+    }
+
+    #[test]
+    fn mobile_manifest_accepts_distinct_source_hash_and_wav_artifact_hash() {
+        let source_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let wav_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let project_id = source_hash_to_project_id(source_sha256).unwrap();
+        let mut manifest = mobile_test_manifest(&project_id, source_sha256);
+        manifest.artifacts[0].content_sha256 = wav_sha256.to_string();
+
+        validate_sync_project_manifest_identity(&manifest).unwrap();
+
+        let source_artifact = manifest_source_audio_artifact(&manifest).unwrap();
+        assert_eq!(source_artifact.content_sha256, wav_sha256);
+        assert_ne!(
+            source_artifact.content_sha256,
+            manifest.project.source_sha256
+        );
+    }
+
+    #[test]
+    fn mobile_manifest_rejects_missing_or_malformed_source_audio() {
+        let source_sha256 = "abababababababababababababababababababababababababababababababab";
+        let project_id = source_hash_to_project_id(source_sha256).unwrap();
+        let manifest = mobile_test_manifest(&project_id, source_sha256);
+
+        let mut missing_source = manifest.clone();
+        missing_source.artifacts.clear();
+        assert!(validate_sync_project_manifest_identity(&missing_source)
+            .unwrap_err()
+            .contains("exactly one source_audio artifact"));
+
+        let mut duplicate_source = manifest.clone();
+        duplicate_source
+            .artifacts
+            .push(duplicate_source.artifacts[0].clone());
+        assert!(validate_sync_project_manifest_identity(&duplicate_source)
+            .unwrap_err()
+            .contains("exactly one source_audio artifact"));
+
+        let mut bad_format = manifest.clone();
+        bad_format.artifacts[0].format = "m4a".to_string();
+        assert!(validate_sync_project_manifest_identity(&bad_format)
+            .unwrap_err()
+            .contains("wav format"));
+
+        let mut bad_path = manifest;
+        bad_path.artifacts[0].relative_path = "source/source.m4a".to_string();
+        assert!(validate_sync_project_manifest_identity(&bad_path)
+            .unwrap_err()
+            .contains("end in .wav"));
     }
 
     #[test]
@@ -7518,6 +7981,97 @@ mod mobile_backend_tests {
         )
         .unwrap_err()
         .contains("active trusted peer"));
+    }
+
+    #[test]
+    fn mobile_transport_handshake_signing_uses_canonical_proof_shape() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 5, 22, 12, 0, 1)
+            .single()
+            .unwrap();
+        let challenge = json!({
+            "protocol_version": SYNC_PAIRING_PROTOCOL_VERSION,
+            "challenge_type": "transport_handshake",
+            "session_id": "session-transport-0001",
+            "challenge_nonce": "nonce-transport-0000000000000001",
+            "requester_device_id": "dev_peer",
+            "responder_device_id": "dev_local",
+            "issued_at": "2026-05-22T12:00:00+00:00",
+            "expires_at": "2026-05-22T12:01:00+00:00",
+            "ignored": "not signed",
+        });
+
+        let canonical =
+            canonical_transport_handshake_challenge(&challenge, "dev_local", "dev_peer", now)
+                .unwrap();
+        let canonical_json = transport_handshake_challenge_json(&canonical).unwrap();
+        let proof = transport_handshake_proof_value(
+            "dev_local",
+            "dev_peer",
+            "public-key",
+            canonical,
+            canonical_json.clone(),
+            "signature".to_string(),
+            now,
+        );
+
+        assert_eq!(
+            canonical_json,
+            r#"{"challenge_nonce":"nonce-transport-0000000000000001","challenge_type":"transport_handshake","expires_at":"2026-05-22T12:01:00+00:00","issued_at":"2026-05-22T12:00:00+00:00","protocol_version":"tuneforge-sync-v1","requester_device_id":"dev_peer","responder_device_id":"dev_local","session_id":"session-transport-0001"}"#
+        );
+        assert_eq!(proof["protocol_version"], SYNC_PAIRING_PROTOCOL_VERSION);
+        assert_eq!(proof["challenge_type"], "transport_handshake");
+        assert_eq!(proof["local_device_id"], "dev_local");
+        assert_eq!(proof["peer_device_id"], "dev_peer");
+        assert_eq!(proof["public_key"], "public-key");
+        assert_eq!(proof["canonical_challenge_json"], canonical_json);
+        assert_eq!(proof["signature"], "signature");
+        assert_eq!(proof["signed_at"], "2026-05-22T12:00:01+00:00");
+        assert!(proof["challenge"].get("ignored").is_none());
+    }
+
+    #[test]
+    fn mobile_transport_handshake_rejects_unknown_peer_and_foreign_challenge() {
+        assert!(validate_transport_trusted_peer(None, "sync_group_a")
+            .unwrap_err()
+            .contains("active trusted peer"));
+
+        let revoked_peer = SyncTrustedPeerSchema {
+            device_id: "dev_peer".to_string(),
+            sync_group_id: "sync_group_a".to_string(),
+            display_name: Some("Peer".to_string()),
+            public_key: "public-key".to_string(),
+            endpoint_hints: Vec::new(),
+            trusted_at: "2026-05-22T12:00:00+00:00".to_string(),
+            revoked_at: Some("2026-05-22T12:00:00+00:00".to_string()),
+            updated_at: Some("2026-05-22T12:00:00+00:00".to_string()),
+        };
+        assert!(
+            validate_transport_trusted_peer(Some(&revoked_peer), "sync_group_a")
+                .unwrap_err()
+                .contains("active trusted peer")
+        );
+
+        let now = Utc
+            .with_ymd_and_hms(2026, 5, 22, 12, 0, 1)
+            .single()
+            .unwrap();
+        let challenge = json!({
+            "protocol_version": SYNC_PAIRING_PROTOCOL_VERSION,
+            "challenge_type": "transport_handshake",
+            "session_id": "session-transport-0001",
+            "challenge_nonce": "nonce-transport-0000000000000001",
+            "requester_device_id": "dev_peer",
+            "responder_device_id": "dev_foreign",
+            "issued_at": "2026-05-22T12:00:00+00:00",
+            "expires_at": "2026-05-22T12:01:00+00:00",
+        });
+
+        assert!(
+            canonical_transport_handshake_challenge(&challenge, "dev_local", "dev_peer", now,)
+                .unwrap_err()
+                .contains("local device")
+        );
     }
 
     #[test]

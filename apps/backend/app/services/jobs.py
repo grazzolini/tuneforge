@@ -5,7 +5,7 @@ import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from subprocess import Popen
+from subprocess import Popen, TimeoutExpired
 from typing import Any, Literal, cast
 
 from sqlalchemy import case, func, select
@@ -53,6 +53,7 @@ ProjectActivityJobPayload = AnalysisRequest | ChordRequest | LyricsGenerateReque
 _ACTIVE_JOB_STATUSES = ("pending", "running")
 _BULK_ACTIVITY_JOB_TYPES = frozenset({"analyze", "chords", "lyrics", "stems"})
 _TERMINAL_JOB_STATUSES = ("completed", "cancelled", "failed")
+_PROCESS_TERMINATION_GRACE_SECONDS = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -544,10 +545,7 @@ class InProcessJobRunner:
                 job.progress = 0
                 job.completed_at = utcnow()
             session.commit()
-            with self._lock:
-                process = self._active_processes.get(job_id)
-                if process and process.poll() is None:
-                    process.terminate()
+            self._terminate_registered_process(job_id)
             session.refresh(job)
             return job
 
@@ -592,6 +590,22 @@ class InProcessJobRunner:
         with self._lock:
             self._active_processes.pop(job_id, None)
 
+    def _terminate_registered_process(self, job_id: str) -> None:
+        with self._lock:
+            process = self._active_processes.get(job_id)
+        if process is None or process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=_PROCESS_TERMINATION_GRACE_SECONDS)
+        except TimeoutExpired:
+            if process.poll() is None:
+                process.kill()
+            try:
+                process.wait(timeout=_PROCESS_TERMINATION_GRACE_SECONDS)
+            except TimeoutExpired:
+                pass
+
     def _worker(self) -> None:
         while not self._stop_event.is_set():
             job_id = self._queue.get()
@@ -633,6 +647,7 @@ class InProcessJobRunner:
                     raise AppError("PROCESSING_FAILED", f"Unsupported job type: {job.type}")
                 if job.project_id is not None:
                     get_mutable_project(session, job.project_id)
+                context.ensure_not_cancelled()
                 result = handler(context, session, job)
                 job.status = "completed"
                 job.progress = 100
@@ -643,9 +658,15 @@ class InProcessJobRunner:
         except JobCancelledError:
             self.update_job(job_id, status="cancelled", error_message=None)
         except AppError as exc:
-            self.update_job(job_id, status="failed", error_message=exc.message)
+            if self.is_cancel_requested(job_id):
+                self.update_job(job_id, status="cancelled", error_message=None)
+            else:
+                self.update_job(job_id, status="failed", error_message=exc.message)
         except Exception as exc:  # pragma: no cover - defensive fallback
-            self.update_job(job_id, status="failed", error_message=str(exc))
+            if self.is_cancel_requested(job_id):
+                self.update_job(job_id, status="cancelled", error_message=None)
+            else:
+                self.update_job(job_id, status="failed", error_message=str(exc))
 
     def _handle_analyze(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")
@@ -710,7 +731,14 @@ class InProcessJobRunner:
     def _handle_lyrics(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")
         context.set_progress(15)
-        lyrics = generate_project_lyrics(session, project=project, force=bool(job.payload_json.get("force", False)))
+        lyrics = generate_project_lyrics(
+            session,
+            project=project,
+            force=bool(job.payload_json.get("force", False)),
+            should_cancel=context.should_cancel,
+            register_process=context.register_process,
+            unregister_process=context.unregister_process,
+        )
         context.set_progress(90)
         return JobExecutionResult(artifact_ids=[], runtime_device=lyrics.device)
 

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from app.engines.lyrics import (
     LyricsTranscription,
@@ -9,7 +12,9 @@ from app.engines.lyrics import (
     resolve_whisper_device_candidates,
     resolve_whisper_model_candidates,
     transcribe_project_lyrics,
+    transcribe_project_lyrics_in_process,
 )
+from app.errors import JobCancelledError
 
 
 def make_fake_torch(*, has_mps: bool, has_cuda: bool):
@@ -156,7 +161,7 @@ def test_transcribe_project_lyrics_falls_back_to_cpu(monkeypatch):
 
     monkeypatch.setattr("app.engines.lyrics._transcribe_with_device", fake_transcribe_with_device)
 
-    result = transcribe_project_lyrics(
+    result = transcribe_project_lyrics_in_process(
         Path("/tmp/fake.wav"),
         model_name="turbo",
         requested_device="auto",
@@ -205,7 +210,7 @@ def test_transcribe_project_lyrics_retries_smaller_model_on_cuda_oom(monkeypatch
 
     monkeypatch.setattr("app.engines.lyrics._transcribe_with_device", fake_transcribe_with_device)
 
-    result = transcribe_project_lyrics(
+    result = transcribe_project_lyrics_in_process(
         Path("/tmp/fake.wav"),
         model_name="turbo",
         requested_device="auto",
@@ -216,3 +221,67 @@ def test_transcribe_project_lyrics_retries_smaller_model_on_cuda_oom(monkeypatch
     assert result.device == "cuda"
     assert result.model == "small"
     assert result.requested_device == "auto"
+
+
+def test_transcribe_project_lyrics_cancels_subprocess(monkeypatch):
+    class FakeProcess:
+        returncode: int | None = None
+
+        def __init__(self) -> None:
+            self.terminated = False
+            self.killed = False
+            self.wait_timeouts: list[float | None] = []
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def kill(self) -> None:
+            self.killed = True
+            self.returncode = -9
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.wait_timeouts.append(timeout)
+            if self.killed:
+                self.returncode = -9
+                return self.returncode
+            raise subprocess.TimeoutExpired(cmd="lyrics-worker", timeout=timeout or 0)
+
+        def communicate(self) -> tuple[str, str]:
+            return "", ""
+
+    process = FakeProcess()
+    commands: list[list[str]] = []
+
+    def fake_popen(command: list[str], **_kwargs: object) -> FakeProcess:
+        commands.append(command)
+        return process
+
+    registered: list[object] = []
+    unregistered: list[bool] = []
+    cancel_checks = iter([False, True])
+
+    def should_cancel() -> bool:
+        return next(cancel_checks, True)
+
+    monkeypatch.setattr("app.engines.lyrics.subprocess.Popen", fake_popen)
+
+    with pytest.raises(JobCancelledError):
+        transcribe_project_lyrics(
+            Path("/tmp/fake.wav"),
+            model_name="turbo",
+            requested_device="auto",
+            download_root=Path("/tmp/lyrics-cache"),
+            should_cancel=should_cancel,
+            register_process=registered.append,
+            unregister_process=lambda: unregistered.append(True),
+        )
+
+    assert commands[0][1:3] == ["-m", "app.engines.lyrics_worker"]
+    assert process.terminated is True
+    assert process.killed is True
+    assert process.wait_timeouts == [2.0, 2.0]
+    assert registered == [process]
+    assert unregistered == [True]

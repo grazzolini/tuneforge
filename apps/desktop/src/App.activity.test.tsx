@@ -1,11 +1,19 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { normalizeSyncTransportStatus, type JobSchema, type ProjectSchema } from "./lib/api";
+import type { MobileCapabilities } from "@tuneforge/shared-types";
+import {
+  normalizeSyncTransportStatus,
+  type JobSchema,
+  type ProjectSchema,
+  type SyncPairingPayloadSchema,
+} from "./lib/api";
+import { encodePairingCode, pairingFingerprint } from "./features/activity/syncPairingCode";
 import {
   mockCancelJob,
   mockConfirm,
   mockGetProject,
+  mockGetMobileCapabilities,
   mockGetSyncIdentity,
   mockGetSyncTransportStatus,
   mockAnswerSyncPairingOffer,
@@ -14,6 +22,7 @@ import {
   getMockInvoke,
   mockStartSyncListener,
   mockStopSyncListener,
+  mockScanPairingQrCode,
   mockSyncTrustedPeerNow,
   mockTrustSyncPeer,
   mockListJobs,
@@ -35,6 +44,20 @@ const irohEndpointHint = `${irohTransportId}://device_peer_1`;
 const tcpEndpointHint = `${tcpTransportId}://192.168.1.57:48625`;
 const listenerTcpEndpointHint = `${tcpTransportId}://192.168.1.42:48625`;
 const syncEndpointHints = [irohEndpointHint, tcpEndpointHint];
+const listenerEndpointHints = [irohEndpointHint, listenerTcpEndpointHint];
+const androidCapabilities: MobileCapabilities = {
+  platform: "android",
+  mediaBackend: "android_media_codec",
+  isEmulator: false,
+  gpuBackend: null,
+  analysisAvailable: true,
+  basicChordsAvailable: true,
+  whisperAvailable: false,
+  stemSeparationAvailable: false,
+  generationTestingAvailable: false,
+  maxRecommendedModel: null,
+  cpuFallbackAllowed: false,
+};
 
 function project(overrides: Partial<ProjectSchema>): Record<string, unknown> {
   return {
@@ -81,7 +104,7 @@ function terminalHistoryJobs(count: number) {
   });
 }
 
-function pairingPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function pairingPayload(overrides: Partial<SyncPairingPayloadSchema> = {}): SyncPairingPayloadSchema {
   return {
     sync_group_id: "sync_group_local",
     device_id: "device_peer_1",
@@ -91,7 +114,7 @@ function pairingPayload(overrides: Record<string, unknown> = {}): Record<string,
     protocol_version: "tuneforge-sync-v1",
     pairing_offer_id: "pair_offer_peer_1",
     pairing_secret: "pair_secret_peer_1",
-    expires_at: "2026-04-18T13:26:00.000Z",
+    expires_at: "2099-04-18T13:26:00.000Z",
     signature: "pair_signature_peer_1",
     ...overrides,
   };
@@ -316,11 +339,14 @@ describe("Desktop app activity", () => {
   it("answers a peer pairing offer", async () => {
     const user = userEvent.setup();
     const payload = pairingPayload();
+    const compactCode = encodePairingCode(payload);
     await openSyncTab(user);
 
-    fireEvent.change(screen.getByLabelText("Peer offer or response payload"), {
-      target: { value: JSON.stringify(payload) },
+    fireEvent.change(screen.getByLabelText("Peer pairing code"), {
+      target: { value: compactCode },
     });
+    expect(screen.getByLabelText("Peer pairing confirmation")).toHaveTextContent("Laptop Rig");
+    expect(screen.getByLabelText("Peer pairing confirmation")).toHaveTextContent(pairingFingerprint(payload));
     await user.click(screen.getByRole("button", { name: "Answer Offer" }));
 
     await waitFor(() =>
@@ -335,11 +361,13 @@ describe("Desktop app activity", () => {
     );
     expect(await screen.findByText("Laptop Rig")).toBeInTheDocument();
     expect(
-      screen.getByText(/Trusted Laptop Rig\. Pairing response (ready|copied)\./),
+      screen.getByText("Trusted Laptop Rig. Pairing response ready for the offering device."),
     ).toBeInTheDocument();
-    expect((screen.getByLabelText("Pairing response") as HTMLTextAreaElement).value).toContain(
-      '"device_id": "device_local"',
-    );
+    expect(screen.getByText("answer received")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Pairing response QR code" })).toBeInTheDocument();
+    const responseCode = (screen.getByLabelText("Pairing response code") as HTMLTextAreaElement).value;
+    expect(responseCode).toMatch(/^TFPAIR1\./);
+    expect(responseCode).not.toContain('"device_id"');
   });
 
   it("creates a local pairing offer from the header without copying it", async () => {
@@ -355,13 +383,20 @@ describe("Desktop app activity", () => {
     expect(await screen.findByText("Listening")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Create Pairing Offer" }));
 
-    await waitFor(() => expect(mockCreateSyncPairingOffer).toHaveBeenCalled());
-    expect(writeText).not.toHaveBeenCalled();
-    expect(await screen.findByText(/Pairing offer ready\./)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Copy Pairing Offer" })).toBeInTheDocument();
-    expect((screen.getByLabelText("Local pairing offer") as HTMLTextAreaElement).value).toContain(
-      '"signature": "pair_signature_1"',
+    await waitFor(() =>
+      expect(mockCreateSyncPairingOffer).toHaveBeenCalledWith({
+        endpoint_hints: listenerEndpointHints,
+        ttl_seconds: 600,
+      }),
     );
+    expect(writeText).not.toHaveBeenCalled();
+    expect(await screen.findByText(/Pairing offer waiting\./)).toBeInTheDocument();
+    expect(screen.getByText("waiting")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy Pairing Code" })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Pairing offer QR code" })).toBeInTheDocument();
+    const offerCode = (screen.getByLabelText("Local pairing code") as HTMLTextAreaElement).value;
+    expect(offerCode).toMatch(/^TFPAIR1\./);
+    expect(offerCode).not.toContain('"signature"');
   });
 
   it("falls back to the visible pairing text when clipboard write rejects", async () => {
@@ -382,19 +417,17 @@ describe("Desktop app activity", () => {
     expect(await screen.findByText("Listening")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Create Pairing Offer" }));
 
-    const output = (await screen.findByLabelText("Local pairing offer")) as HTMLTextAreaElement;
+    const output = (await screen.findByLabelText("Local pairing code")) as HTMLTextAreaElement;
     const focus = vi.spyOn(output, "focus");
     const select = vi.spyOn(output, "select");
-    await user.click(screen.getByRole("button", { name: "Copy Pairing Offer" }));
+    await user.click(screen.getByRole("button", { name: "Copy Pairing Code" }));
 
     await waitFor(() => expect(writeText).toHaveBeenCalled());
-    expect(writeText).toHaveBeenLastCalledWith(
-      expect.stringContaining('"signature": "pair_signature_1"'),
-    );
+    expect(writeText).toHaveBeenLastCalledWith(expect.stringMatching(/^TFPAIR1\./));
     expect(focus).toHaveBeenCalled();
     expect(select).toHaveBeenCalled();
     expect(execCommand).toHaveBeenCalledWith("copy");
-    expect(screen.getByText("Pairing offer copied.")).toBeInTheDocument();
+    expect(screen.getByText("Pairing offer code copied.")).toBeInTheDocument();
   });
 
   it("copies the visible pairing response without creating a new offer", async () => {
@@ -407,20 +440,18 @@ describe("Desktop app activity", () => {
     const payload = pairingPayload();
     await openSyncTab(user);
 
-    fireEvent.change(screen.getByLabelText("Peer offer or response payload"), {
-      target: { value: JSON.stringify(payload) },
+    fireEvent.change(screen.getByLabelText("Peer pairing code"), {
+      target: { value: encodePairingCode(payload) },
     });
     await user.click(screen.getByRole("button", { name: "Answer Offer" }));
 
-    expect(await screen.findByLabelText("Pairing response")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Pairing response code")).toBeInTheDocument();
     mockCreateSyncPairingOffer.mockClear();
-    await user.click(screen.getByRole("button", { name: "Copy Pairing Response" }));
+    await user.click(screen.getByRole("button", { name: "Copy Response Code" }));
 
     expect(mockCreateSyncPairingOffer).not.toHaveBeenCalled();
-    expect(writeText).toHaveBeenLastCalledWith(
-      expect.stringContaining('"signature": "pair_response_signature_1"'),
-    );
-    expect(screen.getByText("Pairing response copied.")).toBeInTheDocument();
+    expect(writeText).toHaveBeenLastCalledWith(expect.stringMatching(/^TFPAIR1\./));
+    expect(screen.getByText("Pairing response code copied.")).toBeInTheDocument();
   });
 
   it("trusts a peer from a pasted pairing response", async () => {
@@ -428,9 +459,11 @@ describe("Desktop app activity", () => {
     const payload = pairingPayload();
     await openSyncTab(user);
 
-    fireEvent.change(screen.getByLabelText("Peer offer or response payload"), {
-      target: { value: JSON.stringify(payload) },
+    fireEvent.change(screen.getByLabelText("Peer pairing code"), {
+      target: { value: encodePairingCode(payload) },
     });
+    expect(screen.getByLabelText("Peer pairing confirmation")).toHaveTextContent("Laptop Rig");
+    expect(screen.getByLabelText("Peer pairing confirmation")).toHaveTextContent(pairingFingerprint(payload));
     await user.click(screen.getByRole("button", { name: "Trust Response" }));
 
     await waitFor(() =>
@@ -443,7 +476,94 @@ describe("Desktop app activity", () => {
       }),
     );
     expect(await screen.findByText("Laptop Rig")).toBeInTheDocument();
-    expect(screen.getByText("Trusted Laptop Rig.")).toBeInTheDocument();
+    expect(screen.getByText(`Trusted Laptop Rig. Fingerprint ${pairingFingerprint(payload)}.`)).toBeInTheDocument();
+  });
+
+  it("keeps raw pairing JSON in Advanced and can answer from raw JSON", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const payload = pairingPayload();
+    await openSyncTab(user);
+
+    await user.click(screen.getByRole("button", { name: "Start Listener" }));
+    expect(await screen.findByText("Listening")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Create Pairing Offer" }));
+    expect(await screen.findByLabelText("Local pairing code")).toBeInTheDocument();
+
+    await user.click(screen.getByText("Advanced"));
+    expect((screen.getByLabelText("Local pairing offer raw JSON") as HTMLTextAreaElement).value).toContain(
+      '"signature": "pair_signature_1"',
+    );
+    await user.click(screen.getByRole("button", { name: "Copy Raw Offer" }));
+    expect(writeText).toHaveBeenLastCalledWith(expect.stringContaining('"signature": "pair_signature_1"'));
+
+    fireEvent.change(screen.getByLabelText("Peer pairing code"), {
+      target: { value: encodePairingCode(pairingPayload({ device_id: "stale_device" })) },
+    });
+    expect(screen.getByLabelText("Peer pairing confirmation")).toHaveTextContent("stale_device");
+    fireEvent.change(screen.getByLabelText("Pasted raw JSON payload"), {
+      target: { value: JSON.stringify(payload) },
+    });
+    expect(screen.getByLabelText("Peer pairing code")).toHaveValue("");
+    expect(screen.getByLabelText("Peer pairing confirmation")).toHaveTextContent(pairingFingerprint(payload));
+    expect(screen.getByLabelText(/Adopt peer sync group for third-device join/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Answer Offer" }));
+
+    await waitFor(() =>
+      expect(mockAnswerSyncPairingOffer).toHaveBeenCalledWith({
+        offer: expect.objectContaining({ device_id: "device_peer_1" }),
+        endpoint_hints: listenerEndpointHints,
+        adopt_sync_group: false,
+      }),
+    );
+  });
+
+  it("hides QR scanning on desktop", async () => {
+    const user = userEvent.setup();
+    await openSyncTab(user);
+
+    expect(screen.queryByRole("button", { name: "Scan QR" })).not.toBeInTheDocument();
+    expect(screen.queryByText("QR scanning is available on Android devices.")).not.toBeInTheDocument();
+  });
+
+  it("scans compact pairing codes on Android", async () => {
+    const user = userEvent.setup();
+    const payload = pairingPayload();
+    const compactCode = encodePairingCode(payload);
+    mockGetMobileCapabilities.mockResolvedValue(androidCapabilities);
+    mockScanPairingQrCode.mockResolvedValue(compactCode);
+    await openSyncTab(user);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Scan QR" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Scan QR" }));
+
+    await waitFor(() => expect(mockScanPairingQrCode).toHaveBeenCalled());
+    expect(screen.getByLabelText("Peer pairing code")).toHaveValue(compactCode);
+    expect(screen.getByText("QR code scanned. Confirm peer name and fingerprint before continuing.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Peer pairing confirmation")).toHaveTextContent("Laptop Rig");
+  });
+
+  it("blocks invalid and expired pairing inputs", async () => {
+    const user = userEvent.setup();
+    await openSyncTab(user);
+
+    fireEvent.change(screen.getByLabelText("Peer pairing code"), {
+      target: { value: "not-json" },
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Pairing payload must be valid JSON.");
+    expect(screen.getByRole("button", { name: "Answer Offer" })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Peer pairing code"), {
+      target: { value: encodePairingCode(pairingPayload({ expires_at: "2020-01-01T00:00:00.000Z" })) },
+    });
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Pairing payload expired."));
+    expect(screen.getByRole("button", { name: "Trust Response" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Answer Offer" }));
+    expect(mockAnswerSyncPairingOffer).not.toHaveBeenCalled();
   });
 
   it("starts and stops the native sync listener", async () => {
@@ -1099,8 +1219,8 @@ describe("Desktop app activity", () => {
         remote_manifest_count: 1,
       },
     });
-    fireEvent.change(screen.getByLabelText("Peer offer or response payload"), {
-      target: { value: JSON.stringify(pairingPayload({ device_id: "device_peer_2" })) },
+    fireEvent.change(screen.getByLabelText("Peer pairing code"), {
+      target: { value: encodePairingCode(pairingPayload({ device_id: "device_peer_2" })) },
     });
     await user.click(screen.getByRole("button", { name: "Answer Offer" }));
 

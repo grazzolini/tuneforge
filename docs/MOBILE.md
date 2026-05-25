@@ -99,11 +99,14 @@ build. It keeps these manifest permissions present:
 - `android.permission.INTERNET` for same-LAN TCP/QUIC/UDP sync sockets.
 - `android.permission.RECORD_AUDIO` and `android.permission.MODIFY_AUDIO_SETTINGS` for mobile audio
   flows.
+- `android.permission.CAMERA` for the Android-only QR pairing scanner.
 
 These are package-level permissions only. They do not change the local-only product rule, and they
 must not be used to add cloud, telemetry, account, or remote-processing behavior. Do not add
 Android nearby-device, Bluetooth, location, or Wi-Fi multicast permissions until a concrete local
 discovery implementation requires them.
+The barcode scanner capability is scoped to `android` in the mobile capability file. Keep scanner
+permissions out of other platform capabilities unless a separate scanner flow is designed.
 
 ## Mobile Sync Validation
 
@@ -126,6 +129,11 @@ For accepted mobile sync evidence, sync at least one desktop project to Android,
 source and synced WAV stem artifacts from app-local storage, and compare battery, CPU, storage, and
 transfer costs against AAC/M4A or another compressed baseline. Mobile sync remains library sync
 only; remote processing stays out of scope.
+
+For QR pairing validation, grant the camera permission, scan a pairing QR code with the Android
+build, and record whether the scan produced the expected pairing payload before trusting the peer.
+If the camera permission is denied or the scanner is unavailable, record that blocker and do not
+count QR pairing as validated.
 
 ## Stem Separation Spike
 

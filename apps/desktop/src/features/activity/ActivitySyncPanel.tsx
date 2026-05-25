@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { QRCodeSVG } from "qrcode.react";
 import {
   api,
   mergeSyncProjectResults,
@@ -10,8 +11,24 @@ import {
   type SyncTrustedPeerSchema,
 } from "../../lib/api";
 import { formatLocalDateTime, normalizeApiDateTime } from "../../lib/datetime";
+import { scanPairingQrCode } from "../../lib/pairingQrScanner";
+import {
+  decodePairingCode,
+  encodePairingCode,
+  pairingCodeIsExpired,
+  pairingFingerprint,
+} from "./syncPairingCode";
 
 const PAIRING_OFFER_TTL_SECONDS = 600;
+
+type PairingOutputKind = "offer" | "response";
+type PairingOutput = {
+  kind: PairingOutputKind;
+  code: string;
+  rawJson: string;
+  payload: SyncPairingPayloadSchema;
+  state: "waiting" | "answer received";
+};
 
 function statusLabel(value: string | null | undefined) {
   const normalized = value?.trim();
@@ -69,70 +86,6 @@ function formatTimestamp(value: string | null | undefined) {
   });
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null ? value as Record<string, unknown> : null;
-}
-
-function requiredPairingString(
-  payloadRecord: Record<string, unknown>,
-  fieldName: keyof SyncPairingPayloadSchema,
-): string {
-  const value = payloadRecord[fieldName];
-  if (typeof value !== "string" || !value.trim()) {
-    throw new Error(`Pairing payload is missing ${fieldName}.`);
-  }
-  return value;
-}
-
-function pairingEndpointHints(value: unknown): string[] {
-  if (value === undefined) {
-    return [];
-  }
-  if (
-    !Array.isArray(value) ||
-    !value.every((hint): hint is string => typeof hint === "string" && Boolean(hint.trim()))
-  ) {
-    throw new Error("Pairing payload endpoint_hints must be a list of strings.");
-  }
-  return value;
-}
-
-function parsePairingPayload(rawValue: string): SyncPairingPayloadSchema {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(rawValue);
-  } catch {
-    throw new Error("Pairing payload must be valid JSON.");
-  }
-
-  const parsedRecord = asRecord(parsed);
-  const payloadRecord = asRecord(parsedRecord?.payload) ?? parsedRecord;
-  if (!payloadRecord) {
-    throw new Error("Pairing payload must be a JSON object.");
-  }
-  const displayName = payloadRecord.display_name;
-  if (displayName !== undefined && displayName !== null && typeof displayName !== "string") {
-    throw new Error("Pairing payload display_name must be a string.");
-  }
-  const expiresAt = requiredPairingString(payloadRecord, "expires_at");
-  if (Number.isNaN(new Date(expiresAt).getTime())) {
-    throw new Error("Pairing payload expires_at must be a valid date.");
-  }
-
-  return {
-    sync_group_id: requiredPairingString(payloadRecord, "sync_group_id"),
-    device_id: requiredPairingString(payloadRecord, "device_id"),
-    display_name: displayName ?? null,
-    public_key: requiredPairingString(payloadRecord, "public_key"),
-    endpoint_hints: pairingEndpointHints(payloadRecord.endpoint_hints),
-    protocol_version: requiredPairingString(payloadRecord, "protocol_version"),
-    pairing_offer_id: requiredPairingString(payloadRecord, "pairing_offer_id"),
-    pairing_secret: requiredPairingString(payloadRecord, "pairing_secret"),
-    expires_at: expiresAt,
-    signature: requiredPairingString(payloadRecord, "signature"),
-  };
-}
-
 async function copyToClipboard(value: string, source?: HTMLTextAreaElement | null) {
   if (navigator.clipboard?.writeText) {
     try {
@@ -156,6 +109,28 @@ function peerLabel(peer: SyncTrustedPeerSchema) {
 
 function peerEndpointSummary(peer: SyncTrustedPeerSchema) {
   return peer.endpoint_hints?.length ? peer.endpoint_hints.join(", ") : "No endpoint hints";
+}
+
+function pairingPayloadLabel(payload: SyncPairingPayloadSchema) {
+  return payload.display_name?.trim() || payload.device_id;
+}
+
+function pairingOutputForPayload(kind: PairingOutputKind, payload: SyncPairingPayloadSchema): PairingOutput {
+  return {
+    kind,
+    code: encodePairingCode(payload),
+    rawJson: JSON.stringify(payload, null, 2),
+    payload,
+    state: kind === "offer" ? "waiting" : "answer received",
+  };
+}
+
+function parsePairingInput(value: string) {
+  const payload = decodePairingCode(value);
+  if (pairingCodeIsExpired(payload)) {
+    throw new Error("Pairing payload expired.");
+  }
+  return payload;
 }
 
 function syncStatusText(status: SyncTransportRunStatus | null | undefined, peersById: Map<string, SyncTrustedPeerSchema>) {
@@ -472,16 +447,17 @@ function endpointList(endpointHints: string[]) {
 
 export function ActivitySyncPanel() {
   const queryClient = useQueryClient();
-  const [pairingPayloadDraft, setPairingPayloadDraft] = useState("");
-  const [pairingOfferText, setPairingOfferText] = useState("");
-  const [pairingOfferLabel, setPairingOfferLabel] = useState("Local pairing offer");
+  const [pairingCodeDraft, setPairingCodeDraft] = useState("");
+  const [rawPairingPayloadDraft, setRawPairingPayloadDraft] = useState("");
+  const [pairingOutput, setPairingOutput] = useState<PairingOutput | null>(null);
   const [adoptSyncGroup, setAdoptSyncGroup] = useState(false);
   const [pairingMessage, setPairingMessage] = useState<string | null>(null);
   const [pairingError, setPairingError] = useState<string | null>(null);
   const [lastSyncMessage, setLastSyncMessage] = useState<string | null>(null);
   const [lastSyncResult, setLastSyncResult] = useState<SyncTransportRunStatus | null>(null);
   const [hiddenListenerSyncKey, setHiddenListenerSyncKey] = useState<string | null>(null);
-  const pairingOutputRef = useRef<HTMLTextAreaElement | null>(null);
+  const pairingCodeOutputRef = useRef<HTMLTextAreaElement | null>(null);
+  const rawPairingOutputRef = useRef<HTMLTextAreaElement | null>(null);
 
   const identityQuery = useQuery({
     queryKey: ["sync", "identity"],
@@ -494,6 +470,10 @@ export function ActivitySyncPanel() {
   const peersQuery = useQuery({
     queryKey: ["sync", "trusted-peers"],
     queryFn: async () => (await api.listSyncTrustedPeers()).trusted_peers,
+  });
+  const mobileCapabilitiesQuery = useQuery({
+    queryKey: ["runtime", "mobile-capabilities"],
+    queryFn: () => api.getMobileCapabilities(),
   });
 
   const peersById = useMemo(
@@ -514,6 +494,21 @@ export function ActivitySyncPanel() {
     ? lastSyncMessage ?? lastSyncStatus
     : lastSyncStatus;
   const visibleSyncSummary = syncRunSummaryText(visibleSyncResult);
+  const pairingInputValue = pairingCodeDraft.trim() || rawPairingPayloadDraft.trim();
+  const decodedPairingInput = useMemo(() => {
+    if (!pairingInputValue) {
+      return { error: null, payload: null };
+    }
+    try {
+      return { error: null, payload: parsePairingInput(pairingInputValue) };
+    } catch (error) {
+      return {
+        error: error instanceof Error ? error.message : "Pairing payload is invalid.",
+        payload: null,
+      };
+    }
+  }, [pairingInputValue]);
+  const qrScanSupported = mobileCapabilitiesQuery.data?.platform === "android";
 
   const refreshSyncQueries = async () => {
     await Promise.all([
@@ -547,12 +542,10 @@ export function ActivitySyncPanel() {
         ttl_seconds: PAIRING_OFFER_TTL_SECONDS,
       }),
     onSuccess: async (response) => {
-      const nextOfferText = JSON.stringify(response.pairing_offer.payload, null, 2);
       const expiresAt = formatTimestamp(response.pairing_offer.expires_at);
-      setPairingOfferText(nextOfferText);
-      setPairingOfferLabel("Local pairing offer");
+      setPairingOutput(pairingOutputForPayload("offer", response.pairing_offer.payload));
       setPairingError(null);
-      setPairingMessage(`Pairing offer ready.${expiresAt ? ` Expires ${expiresAt}.` : ""}`);
+      setPairingMessage(`Pairing offer waiting.${expiresAt ? ` Expires ${expiresAt}.` : ""}`);
     },
   });
   const answerPairingOfferMutation = useMutation({
@@ -563,23 +556,13 @@ export function ActivitySyncPanel() {
         adopt_sync_group: adoptSyncGroup,
       }),
     onSuccess: async (response) => {
-      const nextResponseText = JSON.stringify(response.pairing_response, null, 2);
-      setPairingPayloadDraft("");
-      setPairingOfferText(nextResponseText);
-      setPairingOfferLabel("Pairing response");
+      setPairingCodeDraft("");
+      setRawPairingPayloadDraft("");
+      setPairingOutput(pairingOutputForPayload("response", response.pairing_response));
       setPairingError(null);
-      try {
-        const copied = await copyToClipboard(nextResponseText);
-        setPairingMessage(
-          copied
-            ? `Trusted ${peerLabel(
-                response.trusted_peer,
-              )}. Pairing response copied. Paste it on the offering device and choose Trust Response.`
-            : `Trusted ${peerLabel(response.trusted_peer)}. Pairing response ready.`,
-        );
-      } catch {
-        setPairingMessage(`Trusted ${peerLabel(response.trusted_peer)}. Pairing response ready.`);
-      }
+      setPairingMessage(
+        `Trusted ${peerLabel(response.trusted_peer)}. Pairing response ready for the offering device.`,
+      );
       await refreshSyncQueries();
     },
     onError: () => {
@@ -589,10 +572,11 @@ export function ActivitySyncPanel() {
   const trustPeerMutation = useMutation({
     mutationFn: (payload: SyncPairingPayloadSchema) =>
       api.trustSyncPeer({ payload, adopt_sync_group: adoptSyncGroup }),
-    onSuccess: async (response) => {
-      setPairingPayloadDraft("");
+    onSuccess: async (response, payload) => {
+      setPairingCodeDraft("");
+      setRawPairingPayloadDraft("");
       setPairingError(null);
-      setPairingMessage(`Trusted ${peerLabel(response.trusted_peer)}.`);
+      setPairingMessage(`Trusted ${peerLabel(response.trusted_peer)}. Fingerprint ${pairingFingerprint(payload)}.`);
       await refreshSyncQueries();
     },
     onError: () => {
@@ -624,12 +608,52 @@ export function ActivitySyncPanel() {
       setHiddenListenerSyncKey(listenerSyncKey);
     },
   });
+  const scanPairingQrMutation = useMutation({
+    mutationFn: scanPairingQrCode,
+    onSuccess: (value) => {
+      setPairingCodeDraft(value);
+      setRawPairingPayloadDraft("");
+      setPairingError(null);
+      setPairingMessage("QR code scanned. Confirm peer name and fingerprint before continuing.");
+    },
+    onError: (error) => {
+      setPairingError(
+        qrScanSupported
+          ? error instanceof Error ? error.message : "Could not scan QR code."
+          : "QR scanning is available on Android devices.",
+      );
+    },
+  });
+
+  function handlePairingCodeDraftChange(value: string) {
+    setPairingCodeDraft(value);
+    if (value.trim()) {
+      setRawPairingPayloadDraft("");
+    }
+  }
+
+  function handleRawPairingPayloadDraftChange(value: string) {
+    setRawPairingPayloadDraft(value);
+    if (value.trim()) {
+      setPairingCodeDraft("");
+    }
+  }
+
+  function handleCreatePairingOffer() {
+    setPairingError(null);
+    setPairingMessage(null);
+    if (!listenerActive) {
+      setPairingError("Start the listener before creating a pairing offer.");
+      return;
+    }
+    createPairingOfferMutation.mutate();
+  }
 
   function handleTrustPeer() {
     setPairingError(null);
-      setPairingMessage(null);
+    setPairingMessage(null);
     try {
-      trustPeerMutation.mutate(parsePairingPayload(pairingPayloadDraft));
+      trustPeerMutation.mutate(parsePairingInput(pairingInputValue));
     } catch (error) {
       setPairingError(error instanceof Error ? error.message : "Pairing payload is invalid.");
     }
@@ -639,21 +663,40 @@ export function ActivitySyncPanel() {
     setPairingError(null);
     setPairingMessage(null);
     try {
-      answerPairingOfferMutation.mutate(parsePairingPayload(pairingPayloadDraft));
+      answerPairingOfferMutation.mutate(parsePairingInput(pairingInputValue));
     } catch (error) {
       setPairingError(error instanceof Error ? error.message : "Pairing payload is invalid.");
     }
   }
 
-  async function handleCopyVisiblePairingPayload() {
+  async function handleCopyPairingCode() {
     setPairingError(null);
-    const label = pairingOfferLabel === "Pairing response" ? "Pairing response" : "Pairing offer";
-    if (!pairingOfferText.trim()) {
+    const label = pairingOutput?.kind === "response" ? "Pairing response" : "Pairing offer";
+    if (!pairingOutput?.code.trim()) {
       setPairingError(`No ${label.toLowerCase()} to copy.`);
       return;
     }
     try {
-      const copied = await copyToClipboard(pairingOfferText, pairingOutputRef.current);
+      const copied = await copyToClipboard(pairingOutput.code, pairingCodeOutputRef.current);
+      setPairingMessage(
+        copied
+          ? `${label} code copied.`
+          : `${label} ready. Select the text from the box if clipboard access is unavailable.`,
+      );
+    } catch {
+      setPairingMessage(`${label} ready. Select the text from the box if clipboard access is unavailable.`);
+    }
+  }
+
+  async function handleCopyRawPairingPayload() {
+    setPairingError(null);
+    const label = pairingOutput?.kind === "response" ? "Pairing response raw JSON" : "Pairing offer raw JSON";
+    if (!pairingOutput?.rawJson.trim()) {
+      setPairingError(`No ${label.toLowerCase()} to copy.`);
+      return;
+    }
+    try {
+      const copied = await copyToClipboard(pairingOutput.rawJson, rawPairingOutputRef.current);
       setPairingMessage(
         copied
           ? `${label} copied.`
@@ -674,6 +717,7 @@ export function ActivitySyncPanel() {
 
   const listenerMutationPending = startListenerMutation.isPending || stopListenerMutation.isPending;
   const pairingPayloadPending = answerPairingOfferMutation.isPending || trustPeerMutation.isPending;
+  const pairingInputInvalid = Boolean(pairingInputValue && decodedPairingInput.error);
   const trustedPeers = peersQuery.data ?? [];
   const lastListenerUpdatedAt = formatTimestamp(listenerQuery.data?.updated_at);
 
@@ -768,7 +812,7 @@ export function ActivitySyncPanel() {
             <button
               className="button button--ghost button--small"
               disabled={!listenerActive || createPairingOfferMutation.isPending}
-              onClick={() => createPairingOfferMutation.mutate()}
+              onClick={handleCreatePairingOffer}
               title={
                 listenerActive
                   ? "Creates a fresh local pairing offer."
@@ -780,49 +824,110 @@ export function ActivitySyncPanel() {
             </button>
           </div>
 
-          {pairingOfferText ? (
-            <div className="activity-sync-field">
-              <div className="activity-sync-field__header">
-                <label htmlFor="activity-sync-pairing-output">{pairingOfferLabel}</label>
-                <button
-                  className="button button--ghost button--small"
-                  onClick={handleCopyVisiblePairingPayload}
-                  type="button"
-                >
-                  {pairingOfferLabel === "Pairing response" ? "Copy Pairing Response" : "Copy Pairing Offer"}
-                </button>
+          {pairingOutput ? (
+            <div className="activity-sync-pairing-output">
+              <div className="activity-sync-pairing-output__meta">
+                <span className="activity-sync-pairing-state">{pairingOutput.state}</span>
+                <span>{pairingOutput.kind === "response" ? "Pairing response code" : "Local pairing code"}</span>
+                <span>Fingerprint {pairingFingerprint(pairingOutput.payload)}</span>
               </div>
-              <textarea
-                aria-label={pairingOfferLabel}
-                id="activity-sync-pairing-output"
-                onFocus={(event) => event.currentTarget.select()}
-                readOnly
-                ref={pairingOutputRef}
-                value={pairingOfferText}
-              />
+              <div className="activity-sync-pairing-output__body">
+                <label className="activity-sync-field">
+                  <span>{pairingOutput.kind === "response" ? "Pairing response code" : "Local pairing code"}</span>
+                  <textarea
+                    aria-label={pairingOutput.kind === "response" ? "Pairing response code" : "Local pairing code"}
+                    onFocus={(event) => event.currentTarget.select()}
+                    readOnly
+                    ref={pairingCodeOutputRef}
+                    value={pairingOutput.code}
+                  />
+                </label>
+                <div
+                  aria-label={
+                    pairingOutput.kind === "response"
+                      ? "Pairing response QR code"
+                      : "Pairing offer QR code"
+                  }
+                  className="activity-sync-pairing-qr"
+                  role="img"
+                >
+                  <QRCodeSVG
+                    bgColor="#ffffff"
+                    fgColor="#111827"
+                    level="L"
+                    marginSize={4}
+                    size={288}
+                    value={pairingOutput.code}
+                  />
+                </div>
+              </div>
+              <button
+                className="button button--ghost button--small"
+                onClick={handleCopyPairingCode}
+                type="button"
+              >
+                {pairingOutput.kind === "response" ? "Copy Response Code" : "Copy Pairing Code"}
+              </button>
             </div>
           ) : null}
 
           <label className="activity-sync-field">
-            <span>Peer offer or response payload</span>
+            <span>Peer pairing code</span>
             <textarea
-              onChange={(event) => setPairingPayloadDraft(event.currentTarget.value)}
-              placeholder='{"device_id":"...","pairing_offer_id":"..."}'
-              value={pairingPayloadDraft}
+              aria-label="Peer pairing code"
+              onChange={(event) => handlePairingCodeDraftChange(event.currentTarget.value)}
+              placeholder="TFPAIR1..."
+              value={pairingCodeDraft}
             />
           </label>
+
+          {qrScanSupported ? (
+            <div className="activity-sync-actions">
+              <button
+                className="button button--ghost button--small"
+                disabled={scanPairingQrMutation.isPending}
+                onClick={() => scanPairingQrMutation.mutate()}
+                title="Scan a pairing QR code with this device camera."
+                type="button"
+              >
+                {scanPairingQrMutation.isPending ? "Scanning..." : "Scan QR"}
+              </button>
+            </div>
+          ) : null}
+
+          {decodedPairingInput.payload ? (
+            <div className="activity-sync-peer-preview" aria-label="Peer pairing confirmation">
+              <strong>{pairingPayloadLabel(decodedPairingInput.payload)}</strong>
+              <dl>
+                <div>
+                  <dt>Fingerprint</dt>
+                  <dd>{pairingFingerprint(decodedPairingInput.payload)}</dd>
+                </div>
+                <div>
+                  <dt>Device</dt>
+                  <dd>{decodedPairingInput.payload.device_id}</dd>
+                </div>
+              </dl>
+            </div>
+          ) : null}
+          {decodedPairingInput.error ? (
+            <p className="activity-sync-alert activity-sync-alert--error" role="alert">
+              {decodedPairingInput.error}
+            </p>
+          ) : null}
+
           <label className="activity-sync-checkbox">
             <input
               checked={adoptSyncGroup}
               onChange={(event) => setAdoptSyncGroup(event.currentTarget.checked)}
               type="checkbox"
             />
-            <span>Adopt peer sync group</span>
+            <span>Adopt peer sync group for third-device join</span>
           </label>
           <div className="activity-sync-actions">
             <button
               className="button button--primary button--small"
-              disabled={!pairingPayloadDraft.trim() || pairingPayloadPending}
+              disabled={!pairingInputValue || pairingInputInvalid || pairingPayloadPending}
               onClick={handleAnswerPairingOffer}
               type="button"
             >
@@ -830,13 +935,51 @@ export function ActivitySyncPanel() {
             </button>
             <button
               className="button button--ghost button--small"
-              disabled={!pairingPayloadDraft.trim() || pairingPayloadPending}
+              disabled={!pairingInputValue || pairingInputInvalid || pairingPayloadPending}
               onClick={handleTrustPeer}
               type="button"
             >
               {trustPeerMutation.isPending ? "Trusting..." : "Trust Response"}
             </button>
           </div>
+          <details className="activity-sync-advanced">
+            <summary>Advanced</summary>
+            <label className="activity-sync-field">
+              <span>Pasted raw JSON payload</span>
+              <textarea
+                aria-label="Pasted raw JSON payload"
+                onChange={(event) => handleRawPairingPayloadDraftChange(event.currentTarget.value)}
+                placeholder='{"device_id":"...","pairing_offer_id":"..."}'
+                value={rawPairingPayloadDraft}
+              />
+            </label>
+            {pairingOutput ? (
+              <div className="activity-sync-field">
+                <div className="activity-sync-field__header">
+                  <label htmlFor="activity-sync-pairing-output-raw">
+                    {pairingOutput.kind === "response" ? "Pairing response raw JSON" : "Local pairing offer raw JSON"}
+                  </label>
+                  <button
+                    className="button button--ghost button--small"
+                    onClick={handleCopyRawPairingPayload}
+                    type="button"
+                  >
+                    {pairingOutput.kind === "response" ? "Copy Raw Response" : "Copy Raw Offer"}
+                  </button>
+                </div>
+                <textarea
+                  aria-label={
+                    pairingOutput.kind === "response" ? "Pairing response raw JSON" : "Local pairing offer raw JSON"
+                  }
+                  id="activity-sync-pairing-output-raw"
+                  onFocus={(event) => event.currentTarget.select()}
+                  readOnly
+                  ref={rawPairingOutputRef}
+                  value={pairingOutput.rawJson}
+                />
+              </div>
+            ) : null}
+          </details>
           {pairingMessage ? (
             <p className="activity-sync-alert" role="status">
               {pairingMessage}

@@ -41,6 +41,7 @@ ensure_permission() {
 ensure_permission "android.permission.INTERNET"
 ensure_permission "android.permission.RECORD_AUDIO"
 ensure_permission "android.permission.MODIFY_AUDIO_SETTINGS"
+ensure_permission "android.permission.CAMERA"
 
 cat > "$MAIN_ACTIVITY" <<'KOTLIN'
 package com.tuneforge.desktop

@@ -472,6 +472,102 @@
   outline-offset: 2px;
 }
 
+.activity-sync-pairing-output,
+.activity-sync-peer-preview,
+.activity-sync-advanced {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.activity-sync-pairing-output {
+  border: 1px solid color-mix(in srgb, var(--divider) 78%, transparent);
+  border-radius: 8px;
+  padding: 0.85rem;
+  background: color-mix(in srgb, var(--surface-muted) 52%, transparent);
+}
+
+.activity-sync-pairing-output__meta {
+  display: flex;
+  gap: 0.55rem;
+  align-items: center;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 760;
+}
+
+.activity-sync-pairing-state {
+  border: 1px solid color-mix(in srgb, var(--playback-accent) 38%, var(--chip-border));
+  border-radius: 999px;
+  padding: 0.16rem 0.48rem;
+  background: color-mix(in srgb, var(--chip-bg) 78%, transparent);
+  color: var(--text);
+}
+
+.activity-sync-pairing-output__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.85rem;
+  align-items: start;
+}
+
+.activity-sync-pairing-qr {
+  display: grid;
+  place-items: center;
+  width: min(100%, 18rem);
+  aspect-ratio: 1;
+  border: 1px solid color-mix(in srgb, var(--divider) 78%, transparent);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--text);
+}
+
+.activity-sync-pairing-qr svg {
+  width: 100%;
+  height: auto;
+}
+
+.activity-sync-peer-preview {
+  border-left: 3px solid var(--playback-accent);
+  padding-left: 0.75rem;
+}
+
+.activity-sync-peer-preview dl {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+}
+
+.activity-sync-peer-preview dt {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.activity-sync-peer-preview dd {
+  margin: 0.12rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.activity-sync-unsupported {
+  align-self: center;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 720;
+}
+
+.activity-sync-advanced {
+  border-top: 1px solid color-mix(in srgb, var(--divider) 74%, transparent);
+  padding-top: 0.75rem;
+}
+
+.activity-sync-advanced summary {
+  cursor: pointer;
+  color: var(--text);
+  font-weight: 800;
+}
+
 .activity-sync-checkbox {
   display: flex;
   gap: 0.5rem;
@@ -558,8 +654,13 @@
   }
 
   .activity-sync-grid,
-  .activity-sync-peer-row {
+  .activity-sync-peer-row,
+  .activity-sync-pairing-output__body {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .activity-sync-pairing-qr {
+    width: min(100%, 18rem);
   }
 
   .activity-sync-project-result {

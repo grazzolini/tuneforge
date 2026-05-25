@@ -76,6 +76,12 @@ This document is an engineering notice and distribution checklist, not legal adv
 - **Source:** <https://github.com/tauri-apps/tauri>
 - **Notes:** The Rust crate inventory is primarily MIT / Apache-2.0 / BSD / ISC / Zlib family. It also includes MPL-2.0 and Unicode-3.0 notice obligations. Crates with LGPL-2.1-or-later as one license option, such as `r-efi`, also provide MIT or Apache-2.0 alternatives in the resolved metadata.
 
+### Tauri barcode scanner plugin
+
+- **License:** MIT OR Apache-2.0
+- **Source:** <https://github.com/tauri-apps/plugins-workspace>
+- **Notes:** Used by the Android-only QR pairing scanner. The desktop shell does not enable the barcode scanner plugin.
+
 ### TuneForge LAN sync transport Rust crates
 
 - **License:** Apache-2.0 / MIT for `snow`, `base64`, `rand`, `sha2`, and the RustCrypto AEAD/hash stack; BSD-3-Clause for `ed25519-dalek` and `curve25519-dalek`; MIT / BSD-3-Clause for `if-addrs`.
@@ -129,6 +135,12 @@ This document is an engineering notice and distribution checklist, not legal adv
 - **License:** Unlicense for whisper-rs; MIT for whisper.cpp
 - **Source:** <https://codeberg.org/tazz4843/whisper-rs> and <https://github.com/ggml-org/whisper.cpp>
 - **Notes:** Used by the embedded Android backend for side-loaded local lyrics transcription. Tuneforge does not redistribute Whisper model weights.
+
+### qrcode.react
+
+- **License:** ISC
+- **Source:** <https://github.com/zpao/qrcode.react>
+- **Notes:** Used to render pairing QR codes. The package license also notes bundled QR Code Generator code under MIT terms.
 
 ### React, Vite, TanStack Query, openapi-fetch, openapi-typescript, lucide-react
 

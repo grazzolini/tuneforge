@@ -435,6 +435,7 @@ def _add_project_entity_revisions(session: Any, fixture: ManifestProjectFixture)
             "source_artifact_id": "art_source_audio",
             "source_kind": "user-edited",
             "language": "en",
+            "language_override": "en",
             "source_segments": [
                 {"start_seconds": 0.0, "end_seconds": 1.0, "text": "hello", "words": []}
             ],
@@ -1047,6 +1048,7 @@ def test_import_staged_project_manifest_hydrates_current_entity_revisions_and_sk
         assert lyrics.source_artifact_id == "art_source_audio"
         assert lyrics.source_kind == "user-edited"
         assert lyrics.language == "en"
+        assert lyrics.language_override == "en"
         assert lyrics.source_segments_json == [
             {"start_seconds": 0.0, "end_seconds": 1.0, "text": "hello", "words": []}
         ]
@@ -1080,6 +1082,29 @@ def test_import_staged_project_manifest_hydrates_current_entity_revisions_and_sk
 
         job_types = set(session.scalars(select(Job.type).where(Job.project_id == fixture.project_id)))
         assert job_types == set()
+
+
+def test_import_staged_project_manifest_rejects_invalid_lyrics_language_override(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    export_manifest, import_manifest = _sync_manifest_services()
+    staging_root = tmp_path / "staging"
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        _add_project_entity_revisions(session, fixture)
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+        lyrics_revision = _entity_revisions_by_id(manifest)["rev_lyrics_current"]
+        lyrics_revision["payload"]["language_override"] = "ru"
+        _stage_manifest_files(manifest, staging_root=staging_root, source_root=fixture.root)
+        _delete_live_project(session, fixture)
+
+        with pytest.raises(AppError) as exc:
+            import_manifest(session, manifest=manifest, staging_root=staging_root)
+
+    assert exc.value.code == "SYNC_MANIFEST_INVALID"
+    assert "language_override" in exc.value.message
 
 
 def test_import_staged_project_manifest_rejects_foreign_revision_base(

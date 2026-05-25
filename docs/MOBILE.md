@@ -44,6 +44,8 @@ Side-load a Whisper model to enable local lyrics. Stem generation is unavailable
 
 Debug Android emulator builds may set `generationTestingAvailable` so the lyrics action can submit jobs during UI flow testing. This does not report Whisper or stem separation as available. Once a Whisper model is side-loaded, lyrics use the real local transcription path; stems stay disabled and still fail closed if invoked directly.
 
+Lyrics generation accepts the same nullable `language_override` payload as desktop. `null`, omission, or blank text keeps Whisper language detection on auto. Mobile validates explicit overrides against `none`, `en`, `pt`, `es`, `fr`, `de`, `it`, `ja`, `ko`, `zh`, and `hi`. `none` records an empty lyrics transcript without running `whisper.cpp`; other explicit codes are passed to `whisper.cpp`.
+
 For local lyrics testing, side-load one of these files before launching the app:
 
 ```sh

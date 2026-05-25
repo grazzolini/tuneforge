@@ -730,11 +730,13 @@ class InProcessJobRunner:
 
     def _handle_lyrics(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")
+        payload = LyricsGenerateRequest.model_validate(job.payload_json)
         context.set_progress(15)
         lyrics = generate_project_lyrics(
             session,
             project=project,
-            force=bool(job.payload_json.get("force", False)),
+            force=payload.force,
+            language_override=payload.language_override,
             should_cancel=context.should_cancel,
             register_process=context.register_process,
             unregister_process=context.unregister_process,

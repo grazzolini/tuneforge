@@ -22,6 +22,7 @@ from app.services.sync_revisions import record_lyrics_revision
 from app.services.tab_state import clear_project_tab_state
 
 WORD_RE = re.compile(r"\S+")
+NO_LYRICS_LANGUAGE_OVERRIDE = "none"
 
 
 def _ensure_not_cancelled(should_cancel: Callable[[], bool] | None) -> None:
@@ -48,6 +49,7 @@ def _write_lyrics_snapshot(
         "device": lyrics.device,
         "model_name": lyrics.model_name,
         "language": lyrics.language,
+        "language_override": lyrics.language_override,
         "source_segments": lyrics.source_segments_json,
         "segments": lyrics.segments_json,
         "has_user_edits": lyrics.has_user_edits,
@@ -64,6 +66,7 @@ def generate_project_lyrics(
     *,
     project: Project,
     force: bool = False,
+    language_override: str | None = None,
     should_cancel: Callable[[], bool] | None = None,
     register_process: Callable[[Popen[str]], None] | None = None,
     unregister_process: Callable[[], None] | None = None,
@@ -73,16 +76,47 @@ def generate_project_lyrics(
     if existing is not None and existing.segments_json and not force:
         return existing
 
+    source_artifact = _source_artifact(project)
+    if language_override == NO_LYRICS_LANGUAGE_OVERRIDE:
+        _ensure_not_cancelled(should_cancel)
+        if force:
+            clear_project_tab_state(session, project_id=project.id)
+
+        _ensure_not_cancelled(should_cancel)
+        if existing is None:
+            existing = LyricsTranscript(project_id=project.id)
+            session.add(existing)
+
+        existing.backend = "none"
+        existing.source_artifact_id = source_artifact.id if source_artifact else None
+        existing.source_kind = "instrumental"
+        existing.requested_device = None
+        existing.device = None
+        existing.model_name = None
+        existing.language = None
+        existing.language_override = NO_LYRICS_LANGUAGE_OVERRIDE
+        existing.source_segments_json = []
+        existing.segments_json = []
+        existing.has_user_edits = False
+        session.flush()
+        session.refresh(existing)
+        _ensure_not_cancelled(should_cancel)
+        record_lyrics_revision(session, lyrics=existing, revision_type="generated")
+
+        _ensure_not_cancelled(should_cancel)
+        _write_lyrics_snapshot(project_id=project.id, lyrics=existing)
+        return existing
+
     transcription = transcribe_project_lyrics(
         Path(project.imported_path),
         model_name=get_settings().lyrics_model,
         requested_device=get_settings().lyrics_device,
         download_root=get_settings().lyrics_cache_dir,
+        language_override=language_override,
         should_cancel=should_cancel,
         register_process=register_process,
         unregister_process=unregister_process,
     )
-    source_artifact = _source_artifact(project)
     _ensure_not_cancelled(should_cancel)
     if force:
         clear_project_tab_state(session, project_id=project.id)
@@ -98,7 +132,12 @@ def generate_project_lyrics(
     existing.requested_device = transcription.requested_device
     existing.device = transcription.device
     existing.model_name = transcription.model
-    existing.language = transcription.language
+    existing.language = (
+        transcription.language
+        if transcription.language is not None and transcription.language.strip()
+        else transcription.language_override
+    )
+    existing.language_override = transcription.language_override
     existing.source_segments_json = cast(list[dict[str, Any]], deepcopy(transcription.segments))
     existing.segments_json = cast(list[dict[str, Any]], deepcopy(transcription.segments))
     existing.has_user_edits = False

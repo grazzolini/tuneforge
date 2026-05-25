@@ -26,6 +26,7 @@ class LyricsTranscription:
     model: str
     language: str | None
     segments: list[dict[str, Any]]
+    language_override: str | None = None
 
 
 def lyrics_transcription_to_payload(transcription: LyricsTranscription) -> dict[str, Any]:
@@ -35,12 +36,14 @@ def lyrics_transcription_to_payload(transcription: LyricsTranscription) -> dict[
         "device": transcription.device,
         "model": transcription.model,
         "language": transcription.language,
+        "language_override": transcription.language_override,
         "segments": transcription.segments,
     }
 
 
 def lyrics_transcription_from_payload(payload: dict[str, Any]) -> LyricsTranscription:
     language = payload.get("language")
+    language_override = payload.get("language_override")
     return LyricsTranscription(
         backend=str(payload.get("backend", "openai-whisper")),
         requested_device=str(payload.get("requested_device", "auto")),
@@ -48,6 +51,7 @@ def lyrics_transcription_from_payload(payload: dict[str, Any]) -> LyricsTranscri
         model=str(payload.get("model", "")),
         language=language if isinstance(language, str) else None,
         segments=cast(list[dict[str, Any]], payload.get("segments", [])),
+        language_override=language_override if isinstance(language_override, str) else None,
     )
 
 
@@ -187,8 +191,12 @@ def _transcribe_with_device(
     device: str,
     download_root: Path,
     whisper_module: Any,
+    language_override: str | None = None,
 ) -> LyricsTranscription:
     model = whisper_module.load_model(model_name, device=device, download_root=str(download_root))
+    transcribe_kwargs: dict[str, Any] = {}
+    if language_override is not None:
+        transcribe_kwargs["language"] = language_override
     result = whisper_module.transcribe(
         model,
         str(source_path),
@@ -196,15 +204,23 @@ def _transcribe_with_device(
         condition_on_previous_text=False,
         word_timestamps=True,
         fp16=device == "cuda",
+        **transcribe_kwargs,
     )
     segments = _normalize_segments(result.get("segments", []))
+    detected_language = result.get("language")
+    language = (
+        detected_language
+        if isinstance(detected_language, str) and detected_language.strip()
+        else language_override
+    )
     return LyricsTranscription(
         backend="openai-whisper",
         requested_device=requested_device,
         device=device,
         model=model_name,
-        language=result.get("language"),
+        language=language,
         segments=segments,
+        language_override=language_override,
     )
 
 
@@ -214,6 +230,7 @@ def transcribe_project_lyrics_in_process(
     model_name: str,
     requested_device: str,
     download_root: Path,
+    language_override: str | None = None,
 ) -> LyricsTranscription:
     torch_module, whisper_module = _load_runtime()
     candidates = resolve_whisper_device_candidates(requested_device, torch_module=torch_module)
@@ -230,6 +247,7 @@ def transcribe_project_lyrics_in_process(
                     device=device,
                     download_root=download_root,
                     whisper_module=whisper_module,
+                    language_override=language_override,
                 )
             except AppError:
                 raise
@@ -314,6 +332,7 @@ def transcribe_project_lyrics(
     model_name: str,
     requested_device: str,
     download_root: Path,
+    language_override: str | None = None,
     should_cancel: Callable[[], bool] | None = None,
     register_process: Callable[[subprocess.Popen[str]], None] | None = None,
     unregister_process: Callable[[], None] | None = None,
@@ -334,6 +353,8 @@ def transcribe_project_lyrics(
         "--download-root",
         str(download_root),
     ]
+    if language_override is not None:
+        command.extend(["--language", language_override])
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,

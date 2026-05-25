@@ -107,6 +107,7 @@ def record_lyrics_revision(
             "device": lyrics.device,
             "model_name": lyrics.model_name,
             "language": lyrics.language,
+            "language_override": lyrics.language_override,
             "has_user_edits": lyrics.has_user_edits,
             "source_segments": lyrics.source_segments_json or [],
             "segments": lyrics.segments_json or [],

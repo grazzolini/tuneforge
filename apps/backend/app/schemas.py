@@ -16,6 +16,20 @@ SUPPORTED_STEM_MODELS = {
     "two_stem",
     "htdemucs_ft",
 }
+LyricsLanguageOverride = Literal["none", "en", "pt", "es", "fr", "de", "it", "ja", "ko", "zh", "hi"]
+SUPPORTED_LYRICS_LANGUAGE_OVERRIDES: set[LyricsLanguageOverride] = {
+    "none",
+    "en",
+    "pt",
+    "es",
+    "fr",
+    "de",
+    "it",
+    "ja",
+    "ko",
+    "zh",
+    "hi",
+}
 SIX_STEM_MODEL_ALIASES = {"6_stems", "six_stems", "htdemucs_6s"}
 TWO_STEM_MODEL_ALIASES = {"2_stems", "two_stems", "two_stem", "htdemucs_ft"}
 SyncProjectStatus = Literal[
@@ -922,6 +936,21 @@ class StemModelsResponse(BaseModel):
 
 class LyricsGenerateRequest(BaseModel):
     force: bool = False
+    language_override: LyricsLanguageOverride | None = None
+
+    @field_validator("language_override", mode="before")
+    @classmethod
+    def validate_language_override(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip().lower()
+        if not normalized:
+            return None
+        if normalized not in SUPPORTED_LYRICS_LANGUAGE_OVERRIDES:
+            raise ValueError("Unsupported lyrics language override.")
+        return normalized
 
 
 class LyricsWordSchema(BaseModel):
@@ -957,6 +986,7 @@ class LyricsResponse(BaseModel):
     device: str | None = None
     model_name: str | None = None
     language: str | None = None
+    language_override: LyricsLanguageOverride | None = None
     source_segments: list[LyricsSegmentSchema] = Field(
         default_factory=list, validation_alias="source_segments_json"
     )

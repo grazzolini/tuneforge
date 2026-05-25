@@ -18,6 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", required=True)
     parser.add_argument("--requested-device", required=True)
     parser.add_argument("--download-root", required=True)
+    parser.add_argument("--language")
     return parser.parse_args()
 
 
@@ -33,6 +34,7 @@ def main() -> None:
             model_name=args.model,
             requested_device=args.requested_device,
             download_root=Path(args.download_root),
+            language_override=args.language,
         )
         _print_payload(
             {

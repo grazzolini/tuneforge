@@ -6,6 +6,7 @@ import App from "../App";
 import type {
   BulkJobRequest,
   BulkJobsResponse,
+  LyricsGenerateRequest,
   ListJobsParams,
   ListProjectsParams,
   SyncPairingAnswerRequest,
@@ -262,7 +263,11 @@ const {
     };
   }
 
-  function makeLyricsTranscript(projectId: string) {
+  function makeLyricsTranscript(
+    projectId: string,
+    languageOverride: LyricsGenerateRequest["language_override"] = null,
+  ) {
+    const hasNoLyrics = languageOverride === "none";
     const segments = [
       {
         start_seconds: 0,
@@ -292,11 +297,13 @@ const {
 
     return {
       project_id: projectId,
-      backend: "openai-whisper",
+      backend: hasNoLyrics ? "none" : "openai-whisper",
       source_artifact_id: "art_source",
-      source_kind: "ai",
-      source_segments: clone(segments),
-      segments: clone(segments),
+      source_kind: hasNoLyrics ? "instrumental" : "ai",
+      language: hasNoLyrics ? null : languageOverride ?? "en",
+      language_override: languageOverride,
+      source_segments: hasNoLyrics ? [] : clone(segments),
+      segments: hasNoLyrics ? [] : clone(segments),
       has_user_edits: false,
       created_at: createdAt,
       updated_at: createdAt,
@@ -1671,9 +1678,11 @@ const {
     state.jobs.unshift(job);
     return { job: clone(job) };
   });
-  const mockCreateLyrics = vi.fn(async (projectId: string, body?: { force?: boolean }) => {
-    void body;
-    state.lyricsByProject[projectId] = makeLyricsTranscript(projectId);
+  const mockCreateLyrics = vi.fn(async (projectId: string, body?: LyricsGenerateRequest) => {
+    state.lyricsByProject[projectId] = makeLyricsTranscript(
+      projectId,
+      body?.language_override ?? null,
+    );
     const job = makeMockJob({
       project_id: projectId,
       type: "lyrics",

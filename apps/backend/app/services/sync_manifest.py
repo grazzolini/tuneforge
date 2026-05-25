@@ -27,6 +27,7 @@ from app.models import (
     SyncDeleteTombstone,
     SyncEntityRevision,
 )
+from app.schemas import SUPPORTED_LYRICS_LANGUAGE_OVERRIDES
 from app.services.artifacts import register_artifact
 from app.services.paths import ensure_project_dirs, project_root
 from app.services.sync_identity import source_hash_to_project_id
@@ -1031,6 +1032,7 @@ def _hydrate_lyrics_revision(
     lyrics.device = _payload_optional_str(payload, "device")
     lyrics.model_name = _payload_optional_str(payload, "model_name")
     lyrics.language = _payload_optional_str(payload, "language")
+    lyrics.language_override = _payload_lyrics_language_override(payload)
     lyrics.source_segments_json = _payload_list(payload, ("source_segments", "source_segments_json"))
     lyrics.segments_json = _payload_list(payload, ("segments", "segments_json"))
     lyrics.has_user_edits = _payload_bool(payload, "has_user_edits", default=False)
@@ -1812,45 +1814,52 @@ def _duplicate_project_source_error(project_id: str, project_name: str) -> AppEr
 
 def _coerce_project_manifest(manifest: SyncProjectManifest | Mapping[str, Any] | object) -> SyncProjectManifest:
     if isinstance(manifest, SyncProjectManifest):
-        return manifest
+        project_manifest = manifest
+    else:
+        project_source = _field(manifest, "project", default=None)
+        project_fields = project_source if project_source is not None else manifest
+        raw_artifacts = _field(manifest, "artifacts")
+        if not isinstance(raw_artifacts, list):
+            raise _invalid_manifest("Project manifest artifacts must be a list.")
+        raw_entity_revisions = _field(manifest, "entity_revisions", default=[])
+        if not isinstance(raw_entity_revisions, list):
+            raise _invalid_manifest("Project manifest entity_revisions must be a list.")
+        raw_delete_tombstones = _field(manifest, "delete_tombstones", default=[])
+        if not isinstance(raw_delete_tombstones, list):
+            raise _invalid_manifest("Project manifest delete_tombstones must be a list.")
 
-    project_source = _field(manifest, "project", default=None)
-    project_fields = project_source if project_source is not None else manifest
-    raw_artifacts = _field(manifest, "artifacts")
-    if not isinstance(raw_artifacts, list):
-        raise _invalid_manifest("Project manifest artifacts must be a list.")
-    raw_entity_revisions = _field(manifest, "entity_revisions", default=[])
-    if not isinstance(raw_entity_revisions, list):
-        raise _invalid_manifest("Project manifest entity_revisions must be a list.")
-    raw_delete_tombstones = _field(manifest, "delete_tombstones", default=[])
-    if not isinstance(raw_delete_tombstones, list):
-        raise _invalid_manifest("Project manifest delete_tombstones must be a list.")
+        project_id = _required_str(project_fields, "project_id")
+        source_sha256 = _required_str(project_fields, "source_sha256").strip().lower()
 
-    project_id = _required_str(project_fields, "project_id")
-    source_sha256 = _required_str(project_fields, "source_sha256").strip().lower()
-
-    project_manifest = SyncProjectManifest(
-        schema_version=_optional_str(manifest, "schema_version") or SYNC_PROJECT_MANIFEST_SCHEMA_VERSION,
-        exported_at=_optional_datetime(manifest, "exported_at") or datetime.now(UTC),
-        project=SyncProjectManifestProject(
-            project_id=project_id,
-            display_name=_required_str(project_fields, "display_name"),
-            source_key_override=_optional_str(project_fields, "source_key_override"),
-            source_sha256=source_sha256,
-            duration_seconds=_optional_float(project_fields, "duration_seconds"),
-            sample_rate=_optional_int(project_fields, "sample_rate"),
-            channels=_optional_int(project_fields, "channels"),
-            created_at=_required_datetime(project_fields, "created_at"),
-            updated_at=_required_datetime(project_fields, "updated_at"),
-        ),
+        project_manifest = SyncProjectManifest(
+            schema_version=_optional_str(manifest, "schema_version") or SYNC_PROJECT_MANIFEST_SCHEMA_VERSION,
+            exported_at=_optional_datetime(manifest, "exported_at") or datetime.now(UTC),
+            project=SyncProjectManifestProject(
+                project_id=project_id,
+                display_name=_required_str(project_fields, "display_name"),
+                source_key_override=_optional_str(project_fields, "source_key_override"),
+                source_sha256=source_sha256,
+                duration_seconds=_optional_float(project_fields, "duration_seconds"),
+                sample_rate=_optional_int(project_fields, "sample_rate"),
+                channels=_optional_int(project_fields, "channels"),
+                created_at=_required_datetime(project_fields, "created_at"),
+                updated_at=_required_datetime(project_fields, "updated_at"),
+            ),
+            entity_revisions=[
+                _coerce_entity_revision_manifest(revision)
+                for revision in raw_entity_revisions
+            ],
+            artifacts=[_coerce_artifact_manifest(artifact) for artifact in raw_artifacts],
+            delete_tombstones=[
+                _coerce_delete_tombstone_manifest(tombstone)
+                for tombstone in raw_delete_tombstones
+            ],
+        )
+    project_manifest = replace(
+        project_manifest,
         entity_revisions=[
-            _coerce_entity_revision_manifest(revision)
-            for revision in raw_entity_revisions
-        ],
-        artifacts=[_coerce_artifact_manifest(artifact) for artifact in raw_artifacts],
-        delete_tombstones=[
-            _coerce_delete_tombstone_manifest(tombstone)
-            for tombstone in raw_delete_tombstones
+            _normalize_entity_revision_manifest_payload(revision)
+            for revision in project_manifest.entity_revisions
         ],
     )
     _validate_project_manifest_identity(project_manifest)
@@ -1923,6 +1932,42 @@ def _coerce_entity_revision_manifest(manifest: Mapping[str, Any] | object) -> Sy
     )
 
 
+def _normalize_entity_revision_manifest_payload(
+    revision: SyncEntityRevisionManifest,
+) -> SyncEntityRevisionManifest:
+    if revision.entity_type != "lyrics":
+        return revision
+
+    payload = deepcopy(revision.payload)
+    if "language_override" in payload:
+        payload["language_override"] = _normalize_lyrics_language_override_value(
+            payload["language_override"]
+        )
+    safe_payload = sanitize_revision_payload(payload)
+    if safe_payload != payload:
+        raise _invalid_manifest("Entity revision manifest payload must be sync-safe.")
+    return replace(
+        revision,
+        payload=safe_payload,
+        content_sha256=revision_payload_sha256(safe_payload),
+    )
+
+
+def _normalize_lyrics_language_override_value(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise _invalid_manifest(
+            "Entity revision payload field must be a string or null: language_override."
+        )
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    if normalized not in SUPPORTED_LYRICS_LANGUAGE_OVERRIDES:
+        raise _invalid_manifest("Lyrics revision language_override is unsupported.")
+    return normalized
+
+
 def _coerce_delete_tombstone_manifest(manifest: Mapping[str, Any] | object) -> SyncDeleteTombstoneManifest:
     prior_metadata = _field(manifest, "prior_metadata", default={})
     if not isinstance(prior_metadata, dict):
@@ -1956,6 +2001,10 @@ def _payload_optional_str(payload: Mapping[str, Any], name: str) -> str | None:
     if not isinstance(value, str):
         raise _invalid_manifest(f"Entity revision payload field must be a string or null: {name}.")
     return value
+
+
+def _payload_lyrics_language_override(payload: Mapping[str, Any]) -> str | None:
+    return _normalize_lyrics_language_override_value(payload.get("language_override"))
 
 
 def _payload_bool(payload: Mapping[str, Any], name: str, *, default: bool) -> bool:

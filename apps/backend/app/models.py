@@ -318,6 +318,7 @@ class LyricsTranscript(Base):
     device: Mapped[str | None] = mapped_column(String(16), nullable=True)
     model_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     language: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    language_override: Mapped[str | None] = mapped_column(String(16), nullable=True)
     source_segments_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON(), default=list)
     segments_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON(), default=list)
     has_user_edits: Mapped[bool] = mapped_column(Boolean(), default=False)

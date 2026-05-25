@@ -558,6 +558,7 @@ Queues local lyrics generation.
 Request fields:
 
 - `force`
+- `language_override` (optional): `null` or omitted uses Whisper auto-detection. Supported overrides are `none`, `en`, `pt`, `es`, `fr`, `de`, `it`, `ja`, `ko`, `zh`, and `hi`. `none` marks the project as having no lyrics and does not run Whisper.
 
 Response: `JobResponse`.
 
@@ -565,7 +566,7 @@ Response: `JobResponse`.
 
 `GET /api/v1/projects/{project_id}/lyrics`
 
-Returns source transcript segments, current edited segments, backend, source artifact, model/device metadata, language, user-edit state, and timestamps. If no lyrics exist, the response contains empty segment lists.
+Returns source transcript segments, current edited segments, backend, source artifact, model/device metadata, effective language, language override, user-edit state, and timestamps. If no lyrics exist, the response contains empty segment lists.
 
 Lyrics segments are unpaginated project document payloads. Source and edited segments stay complete so lyric editing
 and playback highlighting do not depend on lazy-loaded fragments.

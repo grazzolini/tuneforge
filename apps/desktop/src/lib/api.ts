@@ -52,6 +52,8 @@ export type ChordBackendSchema = components["schemas"]["ChordBackendSchema"];
 export type ChordBackendsResponse = components["schemas"]["ChordBackendsResponse"];
 export type LyricsGenerateRequest = components["schemas"]["LyricsGenerateRequest"];
 export type LyricsUpdateRequest = components["schemas"]["LyricsUpdateRequest"];
+export type AnalysisTimingUpdateRequest = components["schemas"]["AnalysisTimingCorrectionRequest"];
+export type AnalysisTimingUpdateResponse = components["schemas"]["AnalysisTimingCorrectionResponse"];
 export type SongSectionSchema = components["schemas"]["SongSectionSchema"];
 export type SongSectionsResponse = components["schemas"]["SongSectionsResponse"];
 export type TabImportApplyRequest = components["schemas"]["TabImportApplyRequest"];
@@ -1123,6 +1125,10 @@ export type TuneForgeClient = {
   deleteProject: (projectId: string) => Promise<components["schemas"]["DeleteResponse"]>;
   analyzeProject: (projectId: string) => Promise<components["schemas"]["JobResponse"]>;
   getAnalysis: (projectId: string) => Promise<AnalysisResponse>;
+  updateAnalysisTiming: (
+    projectId: string,
+    body: AnalysisTimingUpdateRequest,
+  ) => Promise<AnalysisTimingUpdateResponse>;
   listChordBackends: () => Promise<ChordBackendsResponse>;
   listStemModels: () => Promise<StemModelsResponse>;
   createChords: (projectId: string, body: ChordRequest) => Promise<components["schemas"]["JobResponse"]>;
@@ -1308,6 +1314,13 @@ function createHttpTuneForgeClient(): TuneForgeClient {
       ),
     getAnalysis: (projectId: string) =>
       unwrap(client.GET("/api/v1/projects/{project_id}/analysis", { params: { path: { project_id: projectId } } })),
+    updateAnalysisTiming: (projectId: string, body: AnalysisTimingUpdateRequest) =>
+      unwrap(
+        client.PATCH("/api/v1/projects/{project_id}/analysis/timing", {
+          params: { path: { project_id: projectId } },
+          body,
+        }),
+      ),
     listChordBackends: () => unwrap(client.GET("/api/v1/chord-backends")),
     listStemModels: () => unwrap(client.GET("/api/v1/stem-models")),
     createChords: (projectId: string, body: ChordRequest) =>
@@ -1399,6 +1412,13 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     deleteProject: (projectId: string) => invokeMobile("mobile_delete_project", { projectId }),
     analyzeProject: (projectId: string) => invokeMobile("mobile_submit_analyze", { projectId }),
     getAnalysis: (projectId: string) => invokeMobile("mobile_get_analysis", { projectId }),
+    updateAnalysisTiming: async () => {
+      throw new ApiError({
+        code: "UNSUPPORTED_RUNTIME",
+        message: "Timing grid correction is not available on mobile yet.",
+        details: {},
+      });
+    },
     listChordBackends: async () => mobileChordBackendsResponse,
     listStemModels: async () => mobileStemModelsResponse,
     createChords: (projectId: string, body: ChordRequest) =>
@@ -1525,6 +1545,8 @@ export const api: TuneForgeClient = {
   deleteProject: (projectId: string) => activeClient.deleteProject(projectId),
   analyzeProject: (projectId: string) => activeClient.analyzeProject(projectId),
   getAnalysis: (projectId: string) => activeClient.getAnalysis(projectId),
+  updateAnalysisTiming: (projectId: string, body: AnalysisTimingUpdateRequest) =>
+    activeClient.updateAnalysisTiming(projectId, body),
   listChordBackends: () => activeClient.listChordBackends(),
   listStemModels: () => activeClient.listStemModels(),
   createChords: (projectId: string, body: ChordRequest) => activeClient.createChords(projectId, body),

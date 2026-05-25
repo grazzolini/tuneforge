@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
-from typing import TypedDict
+from typing import NamedTuple, TypedDict
 
 import numpy as np
 
@@ -9,6 +10,15 @@ from app.engines.audio_features import HarmonicFeatures, active_chroma_mean, ext
 from app.engines.chords import ChordSegment, detect_chords_from_features
 
 BEATS_PER_BAR = 4
+DEFAULT_METER = "4/4"
+METER_CANDIDATES: tuple[tuple[str, int], ...] = (("3/4", 3), (DEFAULT_METER, 4), ("6/8", 6))
+MIN_METER_CANDIDATE_BARS = 3
+MIN_METER_CANDIDATE_BEATS = BEATS_PER_BAR * 2
+METER_MIN_SCORE = 0.38
+METER_MIN_CONFIDENCE = 0.52
+METER_MIN_SWITCH_MARGIN = 0.06
+METER_DEFAULT_CONFIDENCE = 0.0
+SIX_EIGHT_COMPOUND_WEIGHT = 0.28
 MIN_DOWNBEAT_INFERENCE_BEATS = BEATS_PER_BAR * 2
 DOWNBEAT_PROXIMITY_BEAT_FRACTION = 0.28
 MIN_DOWNBEAT_PROXIMITY_SECONDS = 0.08
@@ -92,6 +102,10 @@ class AnalysisTimingBarPayload(TypedDict):
 class AnalysisTimingPayload(TypedDict):
     beats_per_bar: int
     source: str
+    meter: str
+    meter_confidence: float
+    downbeat_source: str
+    downbeat_confidence: float
     beats: list[AnalysisTimingBeatPayload]
     bars: list[AnalysisTimingBarPayload]
 
@@ -108,7 +122,21 @@ class AnalysisPayload(TypedDict):
 SparseBridgeRelockCandidate = tuple[int, float, int, float, float]
 
 
-def analyze_track(source_path: Path) -> AnalysisPayload:
+class _TimingInference(NamedTuple):
+    meter: str
+    beats_per_bar: int
+    meter_confidence: float
+    downbeat_offset: int
+    downbeat_source: str
+    downbeat_confidence: float
+    meter_score: float
+
+
+def analyze_track(
+    source_path: Path,
+    *,
+    source_stem_paths: Sequence[Path] | None = None,
+) -> AnalysisPayload:
     features = extract_harmonic_features(source_path)
     if features.signal.size == 0:
         return {
@@ -120,6 +148,7 @@ def analyze_track(source_path: Path) -> AnalysisPayload:
             "timing": None,
         }
 
+    source_stem_features = _extract_source_stem_features(source_stem_paths)
     chord_timeline = detect_chords_from_features(features)
     estimated_key, key_confidence = _estimate_key(features, chord_timeline)
     return {
@@ -128,13 +157,33 @@ def analyze_track(source_path: Path) -> AnalysisPayload:
         "estimated_reference_hz": features.estimated_reference_hz,
         "tuning_offset_cents": features.tuning_offset_cents,
         "tempo_bpm": features.tempo_bpm,
-        "timing": _build_timing_payload(features, chord_timeline),
+        "timing": _build_timing_payload(
+            features,
+            chord_timeline,
+            source_stem_features=source_stem_features,
+        ),
     }
+
+
+def _extract_source_stem_features(
+    source_stem_paths: Sequence[Path] | None,
+) -> tuple[HarmonicFeatures, ...]:
+    if not source_stem_paths:
+        return ()
+
+    stem_features: list[HarmonicFeatures] = []
+    for stem_path in source_stem_paths:
+        features = extract_harmonic_features(stem_path)
+        if features.signal.size > 0:
+            stem_features.append(features)
+    return tuple(stem_features)
 
 
 def _build_timing_payload(
     features: HarmonicFeatures,
     chord_timeline: list[ChordSegment],
+    *,
+    source_stem_features: Sequence[HarmonicFeatures] = (),
 ) -> AnalysisTimingPayload | None:
     if features.duration_seconds <= 0.0:
         return None
@@ -147,15 +196,29 @@ def _build_timing_payload(
     if beat_times.size < 2:
         return None
 
-    downbeat_offset = (
-        _infer_downbeat_offset(features, beat_times, chord_timeline) if source == "detected" else 0
+    timing_inference = (
+        _infer_timing_metadata(
+            features,
+            beat_times,
+            chord_timeline,
+            source_stem_features=source_stem_features,
+        )
+        if source == "detected"
+        else _default_timing_inference(downbeat_source=source)
     )
     beats: list[AnalysisTimingBeatPayload] = [
         {
             "index": index,
             "seconds": round(float(seconds), 6),
-            "bar_index": _timing_beat_bar_index(index, downbeat_offset),
-            "beat_in_bar": ((index - downbeat_offset) % BEATS_PER_BAR) + 1,
+            "bar_index": _timing_beat_bar_index(
+                index,
+                timing_inference.downbeat_offset,
+                timing_inference.beats_per_bar,
+            ),
+            "beat_in_bar": (
+                (index - timing_inference.downbeat_offset) % timing_inference.beats_per_bar
+            )
+            + 1,
         }
         for index, seconds in enumerate(beat_times.tolist())
     ]
@@ -163,8 +226,12 @@ def _build_timing_payload(
     if not bars:
         return None
     payload: AnalysisTimingPayload = {
-        "beats_per_bar": BEATS_PER_BAR,
+        "beats_per_bar": timing_inference.beats_per_bar,
         "source": source,
+        "meter": timing_inference.meter,
+        "meter_confidence": timing_inference.meter_confidence,
+        "downbeat_source": timing_inference.downbeat_source,
+        "downbeat_confidence": timing_inference.downbeat_confidence,
         "beats": beats,
         "bars": bars,
     }
@@ -1173,12 +1240,12 @@ def _projected_grid_step_count(
     return max(1, int(round(last_candidate_delta / reference_seconds)))
 
 
-def _timing_beat_bar_index(index: int, downbeat_offset: int) -> int:
+def _timing_beat_bar_index(index: int, downbeat_offset: int, beats_per_bar: int) -> int:
     if downbeat_offset <= 0:
-        return index // BEATS_PER_BAR
+        return index // beats_per_bar
     if index < downbeat_offset:
         return 0
-    return 1 + ((index - downbeat_offset) // BEATS_PER_BAR)
+    return 1 + ((index - downbeat_offset) // beats_per_bar)
 
 
 def _infer_downbeat_offset(
@@ -1186,31 +1253,206 @@ def _infer_downbeat_offset(
     beat_times: np.ndarray,
     chord_timeline: list[ChordSegment],
 ) -> int:
-    if beat_times.size < MIN_DOWNBEAT_INFERENCE_BEATS:
-        return 0
+    return _infer_timing_metadata(features, beat_times, chord_timeline).downbeat_offset
+
+
+def _infer_timing_metadata(
+    features: HarmonicFeatures,
+    beat_times: np.ndarray,
+    chord_timeline: list[ChordSegment],
+    *,
+    source_stem_features: Sequence[HarmonicFeatures] = (),
+) -> _TimingInference:
+    if beat_times.size < MIN_METER_CANDIDATE_BEATS:
+        return _default_timing_inference()
 
     beat_interval = _median_beat_interval(beat_times)
     if beat_interval <= 0.0:
-        return 0
+        return _default_timing_inference()
 
     proximity_seconds = _downbeat_proximity_seconds(beat_interval)
-    chord_scores = _downbeat_chord_scores(beat_times, chord_timeline, proximity_seconds)
-    accent_scores = _downbeat_accent_scores(features, beat_times, beat_interval)
+    candidates = [
+        candidate
+        for meter, beats_per_bar in METER_CANDIDATES
+        if (
+            candidate := _timing_meter_candidate(
+                meter,
+                beats_per_bar,
+                features,
+                beat_times,
+                chord_timeline,
+                proximity_seconds=proximity_seconds,
+                beat_interval=beat_interval,
+                source_stem_features=source_stem_features,
+            )
+        )
+        is not None
+    ]
+    if not candidates:
+        return _default_timing_inference()
+
+    return _select_timing_inference(candidates)
+
+
+def _timing_meter_candidate(
+    meter: str,
+    beats_per_bar: int,
+    features: HarmonicFeatures,
+    beat_times: np.ndarray,
+    chord_timeline: list[ChordSegment],
+    *,
+    proximity_seconds: float,
+    beat_interval: float,
+    source_stem_features: Sequence[HarmonicFeatures],
+) -> _TimingInference | None:
+    min_bars = 2 if meter == DEFAULT_METER else MIN_METER_CANDIDATE_BARS
+    if beat_times.size < max(MIN_METER_CANDIDATE_BEATS, beats_per_bar * min_bars):
+        return None
+
+    chord_scores = _downbeat_chord_scores(
+        beat_times,
+        chord_timeline,
+        proximity_seconds,
+        beats_per_bar,
+    )
+    source_accent_scores = _downbeat_accent_scores(
+        features,
+        beat_times,
+        beat_interval,
+        beats_per_bar,
+    )
+    stem_accent_scores = _source_stem_downbeat_accent_scores(
+        source_stem_features,
+        beat_times,
+        beat_interval,
+        beats_per_bar,
+    )
+    accent_scores = np.maximum(source_accent_scores, stem_accent_scores)
     scores = DOWNBEAT_CHORD_WEIGHT * chord_scores + DOWNBEAT_ACCENT_WEIGHT * accent_scores
+    if meter == "6/8":
+        scores = scores + SIX_EIGHT_COMPOUND_WEIGHT * _six_eight_compound_scores(
+            features,
+            source_stem_features,
+            beat_times,
+            beat_interval,
+        )
 
     best_offset = int(np.argmax(scores))
-    if best_offset == 0:
-        return 0
-
     best_score = float(scores[best_offset])
     second_score = float(np.max(np.delete(scores, best_offset)))
+    downbeat_confidence = _downbeat_confidence(
+        best_score,
+        second_score,
+        zero_score=float(scores[0]),
+        best_offset=best_offset,
+    )
+    meter_confidence = _meter_confidence(best_score, second_score)
+    return _TimingInference(
+        meter=meter,
+        beats_per_bar=beats_per_bar,
+        meter_confidence=meter_confidence,
+        downbeat_offset=best_offset if downbeat_confidence > 0.0 else 0,
+        downbeat_source=(
+            _downbeat_source(
+                chord_score=float(chord_scores[best_offset]),
+                source_accent_score=float(source_accent_scores[best_offset]),
+                stem_accent_score=float(stem_accent_scores[best_offset]),
+            )
+            if downbeat_confidence > 0.0
+            else "default"
+        ),
+        downbeat_confidence=downbeat_confidence,
+        meter_score=best_score,
+    )
+
+
+def _select_timing_inference(candidates: list[_TimingInference]) -> _TimingInference:
+    default_candidate = next(
+        (candidate for candidate in candidates if candidate.meter == DEFAULT_METER),
+        _default_timing_inference(),
+    )
+    best_candidate = max(candidates, key=lambda candidate: candidate.meter_score)
+    if best_candidate.meter == DEFAULT_METER:
+        return best_candidate
+
+    competing_score = max(
+        (candidate.meter_score for candidate in candidates if candidate.meter != best_candidate.meter),
+        default=0.0,
+    )
+    clear_switch = (
+        best_candidate.meter_score >= METER_MIN_SCORE
+        and best_candidate.meter_confidence >= METER_MIN_CONFIDENCE
+        and best_candidate.meter_score - competing_score >= METER_MIN_SWITCH_MARGIN
+        and best_candidate.meter_score - default_candidate.meter_score >= METER_MIN_SWITCH_MARGIN
+    )
+    if clear_switch:
+        return best_candidate
+    return default_candidate
+
+
+def _default_timing_inference(*, downbeat_source: str = "default") -> _TimingInference:
+    return _TimingInference(
+        meter=DEFAULT_METER,
+        beats_per_bar=BEATS_PER_BAR,
+        meter_confidence=METER_DEFAULT_CONFIDENCE,
+        downbeat_offset=0,
+        downbeat_source=downbeat_source,
+        downbeat_confidence=0.0,
+        meter_score=0.0,
+    )
+
+
+def _meter_confidence(best_score: float, second_score: float) -> float:
+    if best_score < METER_MIN_SCORE:
+        return METER_DEFAULT_CONFIDENCE
+    margin = max(0.0, best_score - second_score)
+    confidence = float(np.clip(0.18 + best_score * 0.55 + margin * 1.15, 0.0, 0.95))
+    return round(confidence, 3)
+
+
+def _downbeat_confidence(
+    best_score: float,
+    second_score: float,
+    *,
+    zero_score: float,
+    best_offset: int,
+) -> float:
     if best_score < DOWNBEAT_MIN_SCORE:
-        return 0
+        return 0.0
     if best_score - second_score < DOWNBEAT_MIN_SCORE_MARGIN:
-        return 0
-    if best_score - float(scores[0]) < DOWNBEAT_MIN_ZERO_MARGIN:
-        return 0
-    return best_offset
+        return 0.0
+    if best_offset != 0 and best_score - zero_score < DOWNBEAT_MIN_ZERO_MARGIN:
+        return 0.0
+
+    confidence = float(
+        np.clip(
+            0.2 + best_score * 0.52 + (best_score - second_score) * 1.1,
+            0.0,
+            0.95,
+        )
+    )
+    return round(confidence, 3)
+
+
+def _downbeat_source(
+    *,
+    chord_score: float,
+    source_accent_score: float,
+    stem_accent_score: float,
+) -> str:
+    strongest = max(chord_score, source_accent_score, stem_accent_score)
+    if strongest <= 0.0:
+        return "default"
+
+    threshold = max(0.08, strongest * 0.45)
+    sources: list[str] = []
+    if chord_score >= threshold:
+        sources.append("chord")
+    if source_accent_score >= threshold:
+        sources.append("accent")
+    if stem_accent_score >= threshold:
+        sources.append("source_stem")
+    return "+".join(sources) if sources else "default"
 
 
 def _median_beat_interval(beat_times: np.ndarray) -> float:
@@ -1235,8 +1477,9 @@ def _downbeat_chord_scores(
     beat_times: np.ndarray,
     chord_timeline: list[ChordSegment],
     proximity_seconds: float,
+    beats_per_bar: int,
 ) -> np.ndarray:
-    scores = np.zeros(BEATS_PER_BAR, dtype=np.float32)
+    scores = np.zeros(beats_per_bar, dtype=np.float32)
     change_starts = _usable_chord_change_starts(beat_times, chord_timeline, proximity_seconds)
     if not change_starts:
         return scores
@@ -1247,7 +1490,7 @@ def _downbeat_chord_scores(
         distance = float(distances[nearest_index])
         if distance > proximity_seconds:
             continue
-        offset = nearest_index % BEATS_PER_BAR
+        offset = nearest_index % beats_per_bar
         scores[offset] += np.float32(1.0 - distance / proximity_seconds)
 
     return (scores / max(len(change_starts), 3)).astype(np.float32)
@@ -1280,14 +1523,15 @@ def _downbeat_accent_scores(
     features: HarmonicFeatures,
     beat_times: np.ndarray,
     beat_interval: float,
+    beats_per_bar: int,
 ) -> np.ndarray:
-    scores = np.zeros(BEATS_PER_BAR, dtype=np.float32)
+    scores = np.zeros(beats_per_bar, dtype=np.float32)
     strengths = _beat_accent_strengths(features, beat_times, beat_interval)
-    if strengths.size < MIN_DOWNBEAT_INFERENCE_BEATS:
+    if strengths.size < max(MIN_DOWNBEAT_INFERENCE_BEATS, beats_per_bar * 2):
         return scores
 
-    beat_positions = np.arange(strengths.size) % BEATS_PER_BAR
-    for offset in range(BEATS_PER_BAR):
+    beat_positions = np.arange(strengths.size) % beats_per_bar
+    for offset in range(beats_per_bar):
         candidate_strengths = strengths[beat_positions == offset]
         other_strengths = strengths[beat_positions != offset]
         if candidate_strengths.size < 2 or other_strengths.size == 0:
@@ -1298,6 +1542,102 @@ def _downbeat_accent_scores(
             continue
         scores[offset] = np.float32((candidate_mean - other_mean) / max(candidate_mean, 1e-6))
     return scores
+
+
+def _source_stem_downbeat_accent_scores(
+    source_stem_features: Sequence[HarmonicFeatures],
+    beat_times: np.ndarray,
+    beat_interval: float,
+    beats_per_bar: int,
+) -> np.ndarray:
+    scores = np.zeros(beats_per_bar, dtype=np.float32)
+    for features in source_stem_features:
+        if not _features_cover_beat_times(features, beat_times, beat_interval):
+            continue
+        scores = np.maximum(
+            scores,
+            _downbeat_accent_scores(features, beat_times, beat_interval, beats_per_bar),
+        )
+    return scores
+
+
+def _six_eight_compound_scores(
+    features: HarmonicFeatures,
+    source_stem_features: Sequence[HarmonicFeatures],
+    beat_times: np.ndarray,
+    beat_interval: float,
+) -> np.ndarray:
+    scores = np.zeros(6, dtype=np.float32)
+    strengths = _combined_beat_accent_strengths(
+        features,
+        source_stem_features,
+        beat_times,
+        beat_interval,
+    )
+    if strengths.size < 12:
+        return scores
+
+    beat_positions = np.arange(strengths.size) % 6
+    for offset in range(6):
+        primary = strengths[beat_positions == offset]
+        secondary = strengths[beat_positions == ((offset + 3) % 6)]
+        weak = strengths[(beat_positions != offset) & (beat_positions != ((offset + 3) % 6))]
+        if primary.size < 2 or secondary.size < 2 or weak.size == 0:
+            continue
+
+        primary_mean = float(np.mean(primary))
+        secondary_mean = float(np.mean(secondary))
+        weak_mean = float(np.mean(weak))
+        if primary_mean <= 0.0:
+            continue
+        if secondary_mean <= weak_mean or primary_mean <= secondary_mean:
+            continue
+        if secondary_mean < primary_mean * 0.25:
+            continue
+
+        primary_contrast = (primary_mean - weak_mean) / max(primary_mean, 1e-6)
+        secondary_support = (secondary_mean - weak_mean) / max(primary_mean, 1e-6)
+        primary_dominance = (primary_mean - secondary_mean) / max(primary_mean, 1e-6)
+        if primary_dominance < 0.12:
+            continue
+        scores[offset] = np.float32(
+            np.clip(
+                (primary_contrast * 0.65 + secondary_support * 0.35)
+                * min(1.0, primary_dominance / 0.35),
+                0.0,
+                1.0,
+            )
+        )
+    return scores
+
+
+def _combined_beat_accent_strengths(
+    features: HarmonicFeatures,
+    source_stem_features: Sequence[HarmonicFeatures],
+    beat_times: np.ndarray,
+    beat_interval: float,
+) -> np.ndarray:
+    strengths = _beat_accent_strengths(features, beat_times, beat_interval)
+    if strengths.size == 0:
+        strengths = np.zeros(beat_times.size, dtype=np.float32)
+
+    for stem_features in source_stem_features:
+        if not _features_cover_beat_times(stem_features, beat_times, beat_interval):
+            continue
+        stem_strengths = _beat_accent_strengths(stem_features, beat_times, beat_interval)
+        if stem_strengths.size == strengths.size:
+            strengths = np.maximum(strengths, stem_strengths)
+    return strengths
+
+
+def _features_cover_beat_times(
+    features: HarmonicFeatures,
+    beat_times: np.ndarray,
+    beat_interval: float,
+) -> bool:
+    if features.duration_seconds <= 0.0 or beat_times.size == 0:
+        return False
+    return features.duration_seconds + beat_interval >= float(beat_times[-1])
 
 
 def _beat_accent_strengths(

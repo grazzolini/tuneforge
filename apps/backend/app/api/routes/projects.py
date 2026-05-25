@@ -12,6 +12,8 @@ from app.schemas import (
     AnalysisRequest,
     AnalysisResponse,
     AnalysisSchema,
+    AnalysisTimingCorrectionRequest,
+    AnalysisTimingCorrectionResponse,
     ArtifactSchema,
     ArtifactsResponse,
     ChordRequest,
@@ -41,6 +43,7 @@ from app.schemas import (
     TabImportSchema,
     TransposeRequest,
 )
+from app.services.analysis import correct_analysis_timing
 from app.services.artifacts import delete_project_artifact
 from app.services.chord_backends import FAST_CHORD_BACKEND_ID, ChordDetectionBackend, resolve_chord_backend
 from app.services.jobs import create_project_activity_job
@@ -225,6 +228,23 @@ def project_analysis(project_id: str, session: Session = Depends(get_db)) -> Ana
     get_project(session, project_id)
     analysis = session.get(AnalysisResult, project_id)
     return AnalysisResponse(analysis=AnalysisSchema.model_validate(analysis) if analysis else None)
+
+
+@router.patch("/{project_id}/analysis/timing", response_model=AnalysisTimingCorrectionResponse)
+def project_analysis_timing_update(
+    project_id: str,
+    payload: AnalysisTimingCorrectionRequest,
+    session: Session = Depends(get_db),
+) -> AnalysisTimingCorrectionResponse:
+    project = get_mutable_project(session, project_id)
+    analysis = correct_analysis_timing(
+        session,
+        project=project,
+        action=payload.action,
+        playhead_seconds=payload.playhead_seconds,
+        beats_per_bar=payload.beats_per_bar,
+    )
+    return AnalysisTimingCorrectionResponse(analysis=AnalysisSchema.model_validate(analysis))
 
 
 @router.post("/{project_id}/chords", response_model=JobResponse)

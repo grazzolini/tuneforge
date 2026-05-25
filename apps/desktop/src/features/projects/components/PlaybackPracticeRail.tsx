@@ -1,6 +1,21 @@
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
-import { ArrowUpDown, AudioLines, Drumstick, Gauge, Layers } from "lucide-react";
-import { LOOP_ALIGNMENT_MODES, type LoopAlignmentMode } from "../../../lib/timingGrid";
+import {
+  ArrowUpDown,
+  AudioLines,
+  ChevronLeft,
+  ChevronRight,
+  Drumstick,
+  Gauge,
+  Grid3X3,
+  Layers,
+  LocateFixed,
+} from "lucide-react";
+import {
+  LOOP_ALIGNMENT_MODES,
+  TIMING_GRID_METERS,
+  type LoopAlignmentMode,
+  type TimingGridMeter,
+} from "../../../lib/timingGrid";
 import {
   artifactLabel,
   artifactSummary,
@@ -20,12 +35,16 @@ export function PlaybackPracticeRail() {
     capoShiftSummary,
     capoSourceKey,
     enharmonicDisplayMode,
+    canEditTimingGrid,
     canUseTempo,
     handleSetPlaybackTempo,
+    handleSetNearestTimingBeatAsBarOne,
     handleSetLoopAlignmentMode,
     handleResetPlaybackTempo,
+    handleSetTimingGridMeter,
     handleSelectPrimaryArtifact,
     handleSelectStemArtifact,
+    handleShiftTimingGrid,
     higherCapoPreview,
     higherCapoShiftOptions,
     handleSetPrecountClickCount,
@@ -63,6 +82,12 @@ export function PlaybackPracticeRail() {
     tempoOriginalBpm,
     tempoPlaybackRate,
     tempoTargetBpm,
+    timingGridConfidenceLabel,
+    timingGridDisabledReason,
+    timingGridMeter,
+    timingGridMutation,
+    timingGridSourceLabel,
+    timingGridStatusLabel,
     toggleStemControl,
     visibleStemArtifacts,
   } = useProjectViewModelContext();
@@ -78,6 +103,7 @@ export function PlaybackPracticeRail() {
     if (mode === "bar") return "Bar";
     return "Exact";
   };
+  const meterLabel = (meter: TimingGridMeter) => meter;
   const [tempoDraftText, setTempoDraftText] = useState(() =>
     tempoDisplayBpm === null
       ? ""
@@ -198,6 +224,9 @@ export function PlaybackPracticeRail() {
         <span title="Pre-count">
           <Drumstick aria-hidden="true" />
         </span>
+        <span title="Timing Grid">
+          <Grid3X3 aria-hidden="true" />
+        </span>
         <span title="Tempo">
           <Gauge aria-hidden="true" />
         </span>
@@ -309,6 +338,96 @@ export function PlaybackPracticeRail() {
             ? `${precountClickCount} clicks at ${precountTempoBpm.toFixed(1)} BPM`
             : precountDisabledReason}
         </p>
+      </section>
+
+      <section
+        className={`playback-timing-grid-control${
+          canEditTimingGrid ? "" : " playback-timing-grid-control--disabled"
+        }`}
+        aria-labelledby="playback-timing-grid-heading"
+      >
+        <div className="playback-timing-grid-control__header">
+          <div>
+            <p className="metric-label">Timing</p>
+            <h3 id="playback-timing-grid-heading">Timing Grid</h3>
+          </div>
+          <span className="playback-timing-grid-control__badge">{timingGridStatusLabel}</span>
+        </div>
+        <div className="playback-timing-grid-control__segments" role="group" aria-label="Timing grid meter">
+          {TIMING_GRID_METERS.map((meter) => (
+            <button
+              aria-pressed={timingGridMeter === meter}
+              className="button button--ghost button--small"
+              disabled={!canEditTimingGrid}
+              key={meter}
+              onClick={() => handleSetTimingGridMeter(meter)}
+              type="button"
+            >
+              {meterLabel(meter)}
+            </button>
+          ))}
+        </div>
+        <div className="playback-timing-grid-control__actions" role="group" aria-label="Timing grid correction">
+          <button
+            aria-label="Shift timing grid left one beat"
+            className="button button--ghost button--small"
+            disabled={!canEditTimingGrid}
+            onClick={() => handleShiftTimingGrid(-1)}
+            title="Shift left one beat"
+            type="button"
+          >
+            <ChevronLeft aria-hidden="true" />
+            <span>Beat</span>
+          </button>
+          <button
+            aria-label="Set nearest playhead beat as bar 1 beat 1"
+            className="button button--ghost button--small"
+            disabled={!canEditTimingGrid}
+            onClick={handleSetNearestTimingBeatAsBarOne}
+            title="Set nearest playhead beat as bar 1 beat 1"
+            type="button"
+          >
+            <LocateFixed aria-hidden="true" />
+            <span>Bar 1</span>
+          </button>
+          <button
+            aria-label="Shift timing grid right one beat"
+            className="button button--ghost button--small"
+            disabled={!canEditTimingGrid}
+            onClick={() => handleShiftTimingGrid(1)}
+            title="Shift right one beat"
+            type="button"
+          >
+            <span>Beat</span>
+            <ChevronRight aria-hidden="true" />
+          </button>
+        </div>
+        <dl className="playback-timing-grid-control__status" aria-label="Timing grid status">
+          <div>
+            <dt>Status</dt>
+            <dd>{timingGridStatusLabel}</dd>
+          </div>
+          <div>
+            <dt>Meter</dt>
+            <dd>{timingGridMeter}</dd>
+          </div>
+          <div>
+            <dt>Confidence</dt>
+            <dd>{timingGridConfidenceLabel}</dd>
+          </div>
+          <div>
+            <dt>Source</dt>
+            <dd>{timingGridSourceLabel}</dd>
+          </div>
+        </dl>
+        {timingGridDisabledReason ? (
+          <p className="artifact-meta playback-timing-grid-control__summary">
+            {timingGridDisabledReason}
+          </p>
+        ) : null}
+        {timingGridMutation.isError ? (
+          <p className="inline-error">Timing grid update failed.</p>
+        ) : null}
       </section>
 
       <section className="playback-loop-alignment-control" aria-labelledby="playback-loop-alignment-heading">

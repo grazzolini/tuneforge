@@ -91,7 +91,7 @@ export function ProcessingPanel() {
         <button
           className="button button--small"
           disabled={analyzeDisabled}
-          onClick={handleAnalyzeAction}
+          onClick={() => void handleAnalyzeAction()}
           title={editLockTitle}
           type="button"
         >

@@ -1,7 +1,17 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+import pytest
+
+from app.db import SessionLocal
+from app.errors import AppError
+from app.models import AnalysisResult, Project
+from app.services import analysis as analysis_service
+from app.services.artifacts import register_artifact
+from app.services.paths import ensure_project_dirs
 
 from .conftest import wait_for_job
 
@@ -57,3 +67,376 @@ def test_analysis_job_persists_results(client, sample_rhythmic_audio_file: Path)
 
     refreshed_artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
     assert len([artifact for artifact in refreshed_artifacts if artifact["type"] == "analysis_json"]) == 1
+
+
+def test_analysis_passes_latest_source_drums_and_bass_stems_only(
+    client,
+    sample_audio_file: Path,
+    tmp_path: Path,
+    monkeypatch,
+):
+    assert client is not None
+    project_id = "analysis_source_stem_project"
+    source_drums_path = tmp_path / "source-drums.wav"
+    source_bass_path = tmp_path / "source-bass.wav"
+    preview_drums_path = tmp_path / "preview-drums.wav"
+    preview_bass_path = tmp_path / "preview-bass.wav"
+    for path in (
+        source_drums_path,
+        source_bass_path,
+        preview_drums_path,
+        preview_bass_path,
+    ):
+        path.write_bytes(path.name.encode("utf-8"))
+
+    _seed_project_with_source_stems(
+        project_id=project_id,
+        source_path=sample_audio_file,
+        source_drums_path=source_drums_path,
+        source_bass_path=source_bass_path,
+        preview_drums_path=preview_drums_path,
+        preview_bass_path=preview_bass_path,
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_analyze_track(track_path: Path, *, source_stem_paths: tuple[Path, ...] | None = None):
+        captured["track_path"] = track_path
+        captured["source_stem_paths"] = source_stem_paths
+        return {
+            "estimated_key": "C major",
+            "key_confidence": 0.8,
+            "estimated_reference_hz": 440.0,
+            "tuning_offset_cents": 0.0,
+            "tempo_bpm": 120.0,
+            "timing": _timing_payload(),
+        }
+
+    monkeypatch.setattr(analysis_service, "analyze_track", fake_analyze_track)
+
+    with SessionLocal() as session:
+        project = session.get(Project, project_id)
+        assert project is not None
+        analysis = analysis_service.analyze_project(session, project)
+        session.commit()
+
+    assert analysis.source_artifact_id == "art_analysis_source"
+    assert captured["track_path"] == sample_audio_file
+    assert captured["source_stem_paths"] == (source_drums_path, source_bass_path)
+
+
+def test_analysis_timing_patch_updates_current_grid_and_reanalysis_overwrites(
+    client,
+    sample_audio_file: Path,
+    monkeypatch,
+):
+    project_id = "analysis_timing_patch_project"
+    _seed_analysis_project(project_id, sample_audio_file)
+
+    response = client.patch(
+        f"/api/v1/projects/{project_id}/analysis/timing",
+        json={"action": "set_bar_1_beat_1", "playhead_seconds": 1.1},
+    )
+
+    assert response.status_code == 200
+    timing = response.json()["analysis"]["timing"]
+    assert timing["source"] == "user_corrected"
+    assert timing["beats_per_bar"] == 4
+    assert timing["beats"][2] == {
+        "index": 2,
+        "seconds": 1.0,
+        "bar_index": 1,
+        "beat_in_bar": 1,
+    }
+    assert timing["beats"][0]["bar_index"] == 0
+    assert timing["beats"][0]["beat_in_bar"] == 3
+    _assert_timing_bar_indexes_are_nonnegative(timing)
+
+    shifted_response = client.patch(
+        f"/api/v1/projects/{project_id}/analysis/timing",
+        json={"action": "shift_right"},
+    )
+
+    assert shifted_response.status_code == 200
+    shifted_timing = shifted_response.json()["analysis"]["timing"]
+    assert shifted_timing["source"] == "user_corrected"
+    assert shifted_timing["beats"][3]["bar_index"] == 1
+    assert shifted_timing["beats"][3]["beat_in_bar"] == 1
+    _assert_timing_bar_indexes_are_nonnegative(shifted_timing)
+
+    meter_response = client.patch(
+        f"/api/v1/projects/{project_id}/analysis/timing",
+        json={"action": "set_meter", "beats_per_bar": 6},
+    )
+
+    assert meter_response.status_code == 200
+    meter_timing = meter_response.json()["analysis"]["timing"]
+    assert meter_timing["source"] == "user_corrected"
+    assert meter_timing["beats_per_bar"] == 6
+    assert meter_timing["meter"] == "6/8"
+    assert meter_timing["beats"][3]["bar_index"] == 1
+    assert meter_timing["beats"][3]["beat_in_bar"] == 1
+    _assert_timing_bar_indexes_are_nonnegative(meter_timing)
+
+    artifact = client.get(f"/api/v1/projects/{project_id}/artifacts").json()["artifacts"][0]
+    artifact_payload = json.loads(Path(artifact["path"]).read_text(encoding="utf-8"))
+    assert artifact_payload["timing"] == meter_timing
+
+    monkeypatch.setattr(
+        analysis_service,
+        "analyze_track",
+        lambda _path: {
+            "estimated_key": "G major",
+            "key_confidence": 0.9,
+            "estimated_reference_hz": 440.0,
+            "tuning_offset_cents": 0.0,
+            "tempo_bpm": 120.0,
+            "timing": _timing_payload(source="detected"),
+        },
+    )
+    with SessionLocal() as session:
+        project = session.get(Project, project_id)
+        assert project is not None
+        analysis_service.analyze_project(session, project)
+        session.commit()
+
+    refreshed = client.get(f"/api/v1/projects/{project_id}/analysis").json()["analysis"]["timing"]
+    assert refreshed["source"] == "detected"
+    assert refreshed["beats_per_bar"] == 4
+
+
+def test_analysis_timing_shift_left_from_first_visible_downbeat_creates_pickup(
+    client,
+    sample_audio_file: Path,
+):
+    project_id = "analysis_timing_shift_left_boundary_project"
+    _seed_analysis_project(
+        project_id,
+        sample_audio_file,
+        timing=_first_visible_downbeat_timing_payload(),
+    )
+
+    response = client.patch(
+        f"/api/v1/projects/{project_id}/analysis/timing",
+        json={"action": "shift_left"},
+    )
+
+    assert response.status_code == 200
+    timing = response.json()["analysis"]["timing"]
+    assert timing["source"] == "user_corrected"
+    assert timing["beats"][0] == {
+        "index": 0,
+        "seconds": 0.0,
+        "bar_index": 0,
+        "beat_in_bar": 2,
+    }
+    assert timing["beats"][1]["bar_index"] == 0
+    assert timing["beats"][1]["beat_in_bar"] == 3
+    assert timing["beats"][2]["bar_index"] == 0
+    assert timing["beats"][2]["beat_in_bar"] == 4
+    assert timing["beats"][3]["bar_index"] == 1
+    assert timing["beats"][3]["beat_in_bar"] == 1
+    _assert_timing_bar_indexes_are_nonnegative(timing)
+
+    restored_response = client.patch(
+        f"/api/v1/projects/{project_id}/analysis/timing",
+        json={"action": "shift_right"},
+    )
+
+    assert restored_response.status_code == 200
+    restored_timing = restored_response.json()["analysis"]["timing"]
+    original_timing = _first_visible_downbeat_timing_payload()
+    assert restored_timing["beats"] == original_timing["beats"]
+    assert restored_timing["bars"] == original_timing["bars"]
+    _assert_timing_bar_indexes_are_nonnegative(restored_timing)
+
+
+def test_analysis_timing_patch_rejects_unsupported_meter(
+    client,
+    sample_audio_file: Path,
+):
+    project_id = "analysis_timing_invalid_meter_project"
+    _seed_analysis_project(project_id, sample_audio_file)
+
+    response = client.patch(
+        f"/api/v1/projects/{project_id}/analysis/timing",
+        json={"action": "set_meter", "beats_per_bar": 5},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "INVALID_REQUEST"
+    persisted_timing = client.get(f"/api/v1/projects/{project_id}/analysis").json()["analysis"]["timing"]
+    assert persisted_timing["beats_per_bar"] == 4
+
+    with SessionLocal() as session:
+        project = session.get(Project, project_id)
+        assert project is not None
+        with pytest.raises(AppError, match="beats_per_bar must be one of 3, 4, or 6"):
+            analysis_service.correct_analysis_timing(
+                session,
+                project=project,
+                action="set_meter",
+                beats_per_bar=5,
+            )
+
+
+def _seed_analysis_project(project_id: str, source_path: Path, *, timing: dict | None = None) -> None:
+    ensure_project_dirs(project_id)
+    with SessionLocal() as session:
+        project = Project(
+            id=project_id,
+            display_name="Timing Patch Project",
+            source_path=str(source_path),
+            imported_path=str(source_path),
+            duration_seconds=4.0,
+        )
+        analysis = AnalysisResult(
+            project_id=project_id,
+            estimated_key="C major",
+            key_confidence=0.8,
+            estimated_reference_hz=440.0,
+            tuning_offset_cents=0.0,
+            tempo_bpm=120.0,
+            timing_json=timing or _timing_payload(),
+            analysis_version="v3",
+        )
+        session.add_all([project, analysis])
+        session.commit()
+
+
+def _seed_project_with_source_stems(
+    *,
+    project_id: str,
+    source_path: Path,
+    source_drums_path: Path,
+    source_bass_path: Path,
+    preview_drums_path: Path,
+    preview_bass_path: Path,
+) -> None:
+    ensure_project_dirs(project_id)
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    with SessionLocal() as session:
+        project = Project(
+            id=project_id,
+            display_name="Source Stem Analysis Project",
+            source_path=str(source_path),
+            imported_path=str(source_path),
+            duration_seconds=4.0,
+        )
+        session.add(project)
+        source_artifact = register_artifact(
+            session,
+            project_id=project_id,
+            artifact_id="art_analysis_source",
+            artifact_type="source_audio",
+            artifact_format="wav",
+            path=source_path,
+            metadata={},
+            generated_by="import",
+            can_delete=False,
+            can_regenerate=False,
+            created_at=created_at,
+        )
+        preview_artifact = register_artifact(
+            session,
+            project_id=project_id,
+            artifact_id="art_analysis_preview",
+            artifact_type="preview_mix",
+            artifact_format="wav",
+            path=source_path,
+            metadata={"source_artifact_id": source_artifact.id},
+            generated_by="ffmpeg",
+            created_at=created_at + timedelta(seconds=1),
+        )
+        register_artifact(
+            session,
+            project_id=project_id,
+            artifact_id="art_source_drums",
+            artifact_type="drums_stem",
+            artifact_format="wav",
+            path=source_drums_path,
+            metadata={"source_artifact_id": source_artifact.id, "source_artifact_type": "source_audio"},
+            generated_by="demucs",
+            created_at=created_at + timedelta(seconds=2),
+        )
+        register_artifact(
+            session,
+            project_id=project_id,
+            artifact_id="art_source_bass",
+            artifact_type="bass_stem",
+            artifact_format="wav",
+            path=source_bass_path,
+            metadata={"source_artifact_id": source_artifact.id, "source_artifact_type": "source_audio"},
+            generated_by="demucs",
+            created_at=created_at + timedelta(seconds=3),
+        )
+        register_artifact(
+            session,
+            project_id=project_id,
+            artifact_id="art_preview_drums",
+            artifact_type="drums_stem",
+            artifact_format="wav",
+            path=preview_drums_path,
+            metadata={"source_artifact_id": preview_artifact.id, "source_artifact_type": "preview_mix"},
+            generated_by="demucs",
+            created_at=created_at + timedelta(seconds=4),
+        )
+        register_artifact(
+            session,
+            project_id=project_id,
+            artifact_id="art_preview_bass",
+            artifact_type="bass_stem",
+            artifact_format="wav",
+            path=preview_bass_path,
+            metadata={"source_artifact_id": preview_artifact.id, "source_artifact_type": "preview_mix"},
+            generated_by="demucs",
+            created_at=created_at + timedelta(seconds=5),
+        )
+        session.commit()
+
+
+def _assert_timing_bar_indexes_are_nonnegative(timing: dict) -> None:
+    assert all(beat["bar_index"] >= 0 for beat in timing["beats"])
+    assert all(bar["index"] >= 0 for bar in timing["bars"])
+
+
+def _timing_payload(*, source: str = "detected") -> dict:
+    return {
+        "beats_per_bar": 4,
+        "source": source,
+        "beats": [
+            {"index": 0, "seconds": 0.0, "bar_index": 0, "beat_in_bar": 1},
+            {"index": 1, "seconds": 0.5, "bar_index": 0, "beat_in_bar": 2},
+            {"index": 2, "seconds": 1.0, "bar_index": 0, "beat_in_bar": 3},
+            {"index": 3, "seconds": 1.5, "bar_index": 0, "beat_in_bar": 4},
+            {"index": 4, "seconds": 2.0, "bar_index": 1, "beat_in_bar": 1},
+            {"index": 5, "seconds": 2.5, "bar_index": 1, "beat_in_bar": 2},
+        ],
+        "bars": [
+            {"index": 0, "start_seconds": 0.0, "end_seconds": 2.0},
+            {"index": 1, "start_seconds": 2.0, "end_seconds": 4.0},
+        ],
+    }
+
+
+def _first_visible_downbeat_timing_payload() -> dict:
+    return {
+        "beats_per_bar": 4,
+        "source": "user_corrected",
+        "meter": "4/4",
+        "meter_confidence": 1.0,
+        "downbeat_source": "user",
+        "downbeat_confidence": 1.0,
+        "beats": [
+            {"index": 0, "seconds": 0.0, "bar_index": 1, "beat_in_bar": 1},
+            {"index": 1, "seconds": 0.5, "bar_index": 1, "beat_in_bar": 2},
+            {"index": 2, "seconds": 1.0, "bar_index": 1, "beat_in_bar": 3},
+            {"index": 3, "seconds": 1.5, "bar_index": 1, "beat_in_bar": 4},
+            {"index": 4, "seconds": 2.0, "bar_index": 2, "beat_in_bar": 1},
+            {"index": 5, "seconds": 2.5, "bar_index": 2, "beat_in_bar": 2},
+        ],
+        "bars": [
+            {"index": 1, "start_seconds": 0.0, "end_seconds": 2.0},
+            {"index": 2, "start_seconds": 2.0, "end_seconds": 4.0},
+        ],
+    }

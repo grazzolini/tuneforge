@@ -10,7 +10,11 @@ import {
 
 const timingGrid: AnalysisTimingGrid = {
   beats_per_bar: 4,
+  meter: "4/4",
   source: "detected",
+  downbeat_source: "source",
+  downbeat_confidence: 0.82,
+  meter_confidence: 0.91,
   beats: [
     { index: 0, seconds: 0, bar_index: 0, beat_in_bar: 1 },
     { index: 1, seconds: 0.48, bar_index: 0, beat_in_bar: 2 },
@@ -69,5 +73,27 @@ describe("timing grid helpers", () => {
         timingGrid,
       }),
     ).toBe(3);
+  });
+
+  it("resets scheduled beat lookup after a backward seek", () => {
+    expect(
+      nextTimedBeatIndex({
+        lastPlaybackTimeSeconds: 1.5,
+        lastScheduledBeatIndex: 3,
+        playbackTimeSeconds: 0.49,
+        timingGrid,
+      }),
+    ).toBe(2);
+  });
+
+  it("resets scheduled beat lookup after a forward seek", () => {
+    expect(
+      nextTimedBeatIndex({
+        lastPlaybackTimeSeconds: 0.51,
+        lastScheduledBeatIndex: 2,
+        playbackTimeSeconds: 2.04,
+        timingGrid,
+      }),
+    ).toBe(4);
   });
 });

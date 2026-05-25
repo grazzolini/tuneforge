@@ -281,6 +281,10 @@ def test_analysis_infers_downbeat_offset_from_chord_changes_and_accents(monkeypa
     timing = analysis["timing"]
     assert timing is not None
     assert timing["source"] == "detected"
+    assert timing["meter"] == "4/4"
+    assert timing["meter_confidence"] >= 0.5
+    assert set(timing["downbeat_source"].split("+")) == {"chord", "accent"}
+    assert timing["downbeat_confidence"] >= 0.5
     assert [beat["beat_in_bar"] for beat in timing["beats"][:10]] == [
         4,
         1,
@@ -320,6 +324,89 @@ def test_analysis_infers_downbeat_offset_from_chord_changes_and_accents(monkeypa
         "start_seconds": timing["beats"][5]["seconds"],
         "end_seconds": timing["beats"][9]["seconds"],
     }
+    _assert_beats_map_to_bar_spans(timing)
+
+
+def test_analysis_infers_three_four_meter_metadata(monkeypatch):
+    beat_times = 0.25 + np.arange(18, dtype=np.float64) * 0.5
+    downbeat_indices = set(range(0, beat_times.size, 3))
+    features = _synthetic_timing_features(
+        beat_times,
+        accent_indices=downbeat_indices,
+        weak_indices=set(range(beat_times.size)) - downbeat_indices,
+        weak_rms=0.02,
+    )
+    chord_timeline = _synthetic_chord_timeline(
+        beat_times,
+        downbeat_offset=0,
+        duration_seconds=features.duration_seconds,
+        beats_per_bar=3,
+    )
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_three_four_meter.wav"))
+
+    timing = analysis["timing"]
+    assert timing is not None
+    assert timing["source"] == "detected"
+    assert timing["meter"] == "3/4"
+    assert timing["beats_per_bar"] == 3
+    assert timing["meter_confidence"] >= 0.5
+    assert timing["downbeat_source"] == "chord+accent"
+    assert timing["downbeat_confidence"] >= 0.5
+    assert [beat["beat_in_bar"] for beat in timing["beats"][:9]] == [1, 2, 3, 1, 2, 3, 1, 2, 3]
+    assert [bar["start_seconds"] for bar in timing["bars"][:3]] == [
+        timing["beats"][0]["seconds"],
+        timing["beats"][3]["seconds"],
+        timing["beats"][6]["seconds"],
+    ]
+    _assert_beats_map_to_bar_spans(timing)
+
+
+def test_analysis_infers_six_eight_meter_metadata(monkeypatch):
+    beat_times = 0.1 + np.arange(24, dtype=np.float64) * 0.25
+    primary_indices = set(range(0, beat_times.size, 6))
+    secondary_indices = set(range(3, beat_times.size, 6))
+    weak_indices = set(range(beat_times.size)) - primary_indices - secondary_indices
+    features = _synthetic_timing_features(
+        beat_times,
+        accent_indices=primary_indices,
+        weak_indices=weak_indices,
+        weak_rms=0.02,
+    )
+    chord_timeline = _synthetic_chord_timeline(
+        beat_times,
+        downbeat_offset=0,
+        duration_seconds=features.duration_seconds,
+        beats_per_bar=6,
+    )
+    _patch_synthetic_analysis(monkeypatch, features, chord_timeline)
+
+    analysis = analyze_track(Path("synthetic_six_eight_meter.wav"))
+
+    timing = analysis["timing"]
+    assert timing is not None
+    assert timing["source"] == "detected"
+    assert timing["meter"] == "6/8"
+    assert timing["beats_per_bar"] == 6
+    assert timing["meter_confidence"] >= 0.5
+    assert timing["downbeat_source"] == "chord+accent"
+    assert timing["downbeat_confidence"] >= 0.5
+    assert [beat["beat_in_bar"] for beat in timing["beats"][:12]] == [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+    ]
+    assert timing["bars"][1]["start_seconds"] == timing["beats"][6]["seconds"]
     _assert_beats_map_to_bar_spans(timing)
 
 
@@ -396,6 +483,10 @@ def test_analysis_keeps_ambiguous_downbeat_alignment(monkeypatch):
     timing = analysis["timing"]
     assert timing is not None
     assert timing["source"] == "detected"
+    assert timing["meter"] == "4/4"
+    assert timing["meter_confidence"] == 0.0
+    assert timing["downbeat_source"] == "default"
+    assert timing["downbeat_confidence"] == 0.0
     assert [beat["beat_in_bar"] for beat in timing["beats"][:8]] == [1, 2, 3, 4, 1, 2, 3, 4]
     assert [beat["bar_index"] for beat in timing["beats"][:8]] == [0, 0, 0, 0, 1, 1, 1, 1]
     assert timing["bars"][0] == {
@@ -403,6 +494,50 @@ def test_analysis_keeps_ambiguous_downbeat_alignment(monkeypatch):
         "start_seconds": timing["beats"][0]["seconds"],
         "end_seconds": timing["beats"][4]["seconds"],
     }
+    _assert_beats_map_to_bar_spans(timing)
+
+
+def test_analysis_uses_source_stem_evidence_for_downbeat_metadata(monkeypatch):
+    beat_times = 0.25 + np.arange(16, dtype=np.float64) * 0.5
+    source_features = _synthetic_timing_features(beat_times, accent_indices=set())
+    stem_downbeats = {2, 6, 10, 14}
+    stem_features = _synthetic_timing_features(
+        beat_times,
+        accent_indices=stem_downbeats,
+        weak_indices=set(range(beat_times.size)) - stem_downbeats,
+        weak_rms=0.02,
+    )
+    chord_timeline = [
+        _synthetic_chord_segment(
+            0.0,
+            source_features.duration_seconds,
+            label="C",
+            pitch_class=0,
+        )
+    ]
+
+    def extract_features(path: Path) -> HarmonicFeatures:
+        return stem_features if path.name == "source-drums.wav" else source_features
+
+    monkeypatch.setattr(analysis_engine, "extract_harmonic_features", extract_features)
+    monkeypatch.setattr(
+        analysis_engine,
+        "detect_chords_from_features",
+        lambda _features: chord_timeline,
+    )
+
+    analysis = analyze_track(
+        Path("source.wav"),
+        source_stem_paths=(Path("source-drums.wav"),),
+    )
+
+    timing = analysis["timing"]
+    assert timing is not None
+    assert timing["source"] == "detected"
+    assert timing["meter"] == "4/4"
+    assert timing["downbeat_source"] == "source_stem"
+    assert timing["downbeat_confidence"] >= 0.5
+    assert [beat["beat_in_bar"] for beat in timing["beats"][:8]] == [3, 4, 1, 2, 3, 4, 1, 2]
     _assert_beats_map_to_bar_spans(timing)
 
 
@@ -1264,9 +1399,22 @@ def test_analysis_timing_payload_keeps_consumer_fields(monkeypatch):
 
     timing = analysis["timing"]
     assert timing is not None
-    assert set(timing) == {"beats_per_bar", "source", "beats", "bars"}
+    assert set(timing) == {
+        "beats_per_bar",
+        "source",
+        "meter",
+        "meter_confidence",
+        "downbeat_source",
+        "downbeat_confidence",
+        "beats",
+        "bars",
+    }
     assert timing["beats_per_bar"] == 4
     assert timing["source"] == "detected"
+    assert timing["meter"] == "4/4"
+    assert isinstance(timing["meter_confidence"], float)
+    assert isinstance(timing["downbeat_source"], str)
+    assert isinstance(timing["downbeat_confidence"], float)
     assert timing["beats"]
     assert timing["bars"]
     assert set(timing["beats"][0]) == {"index", "seconds", "bar_index", "beat_in_bar"}
@@ -1488,8 +1636,9 @@ def _synthetic_chord_timeline(
     *,
     downbeat_offset: int,
     duration_seconds: float,
+    beats_per_bar: int = 4,
 ) -> list[ChordSegment]:
-    downbeat_times = beat_times[downbeat_offset::4]
+    downbeat_times = beat_times[downbeat_offset::beats_per_bar]
     boundaries = [0.0, *downbeat_times.tolist(), duration_seconds]
     chords = [
         ("G", 7),

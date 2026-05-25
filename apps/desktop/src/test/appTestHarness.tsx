@@ -87,6 +87,7 @@ const {
   mockDeleteProject,
   mockGetHealth,
   mockGetMobileCapabilities,
+  mockScanPairingQrCode,
   setMockSystemInputVolume,
   setMockNativeAudio,
   emitMockNativeAudioError,
@@ -1250,6 +1251,9 @@ const {
     preview_format: "wav",
   }));
   const mockGetMobileCapabilities = vi.fn(async (): Promise<unknown> => null);
+  const mockScanPairingQrCode = vi.fn(async (): Promise<string> => {
+    throw new Error("QR scanner unavailable.");
+  });
   const mockListChordBackends = vi.fn(async () => ({ backends: clone(state.chordBackends) }));
   const mockListStemModels = vi.fn(async () => ({ models: clone(state.stemModels) }));
   const mockListProjects = vi.fn(async (params?: ListProjectsParams) => {
@@ -1528,10 +1532,10 @@ const {
         protocol_version: "tuneforge-sync-v1",
         pairing_offer_id: "pair_offer_1",
         pairing_secret: "pair_secret_1",
-        expires_at: "2026-04-18T13:26:00.000Z",
+        expires_at: "2099-04-18T13:26:00.000Z",
         signature: "pair_signature_1",
       },
-      expires_at: "2026-04-18T13:26:00.000Z",
+      expires_at: "2099-04-18T13:26:00.000Z",
       ttl_seconds: body.ttl_seconds,
     },
   }));
@@ -2235,6 +2239,7 @@ const {
     mockDeleteProject,
     mockGetHealth,
     mockGetMobileCapabilities,
+    mockScanPairingQrCode,
     setMockSystemInputVolume,
     setMockNativeAudio,
     emitMockNativeAudioError,
@@ -2304,6 +2309,7 @@ export {
   mockDeleteProject,
   mockGetHealth,
   mockGetMobileCapabilities,
+  mockScanPairingQrCode,
   mockListen,
 };
 
@@ -2370,6 +2376,10 @@ vi.mock("../lib/api", async (importOriginal) => {
     },
   };
 });
+
+vi.mock("../lib/pairingQrScanner", () => ({
+  scanPairingQrCode: mockScanPairingQrCode,
+}));
 
 export function renderApp(initialEntries: string[]) {
   if (
@@ -2758,7 +2768,10 @@ export function resetAppTestHarness() {
   mockDeleteArtifact.mockClear();
   mockDeleteProject.mockClear();
   mockGetHealth.mockClear();
-  mockGetMobileCapabilities.mockClear();
+  mockGetMobileCapabilities.mockReset();
+  mockGetMobileCapabilities.mockResolvedValue(null);
+  mockScanPairingQrCode.mockReset();
+  mockScanPairingQrCode.mockRejectedValue(new Error("QR scanner unavailable."));
   vi.mocked(window.HTMLMediaElement.prototype.play).mockClear();
   vi.mocked(window.HTMLMediaElement.prototype.pause).mockClear();
   getMockFetch().mockClear();

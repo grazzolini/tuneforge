@@ -20,10 +20,12 @@
   "dependencies": {
     "@tanstack/react-query": "^5.100.11",
     "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-barcode-scanner": "~2.4.4",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tuneforge/shared-types": "workspace:*",
     "lucide-react": "^1.16.0",
     "openapi-fetch": "^0.17.0",
+    "qrcode.react": "^4.2.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-router-dom": "^7.15.1"

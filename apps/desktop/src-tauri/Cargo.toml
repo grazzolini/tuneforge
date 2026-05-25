@@ -60,5 +60,6 @@ rand = "0.8.6"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 sha2 = "0.10.9"
 snow = "0.9.6"
+tauri-plugin-barcode-scanner = "2"
 tokio = { version = "1", features = ["time"] }
 whisper-rs = "0.16.0"

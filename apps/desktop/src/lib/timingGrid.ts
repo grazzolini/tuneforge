@@ -1,4 +1,6 @@
 export type LoopAlignmentMode = "free" | "beat" | "bar";
+export const TIMING_GRID_METERS = ["4/4", "3/4", "6/8"] as const;
+export type TimingGridMeter = (typeof TIMING_GRID_METERS)[number];
 
 export type AnalysisTimingBeat = {
   index: number;
@@ -15,7 +17,11 @@ export type AnalysisTimingBar = {
 
 export type AnalysisTimingGrid = {
   beats_per_bar: number;
+  meter: TimingGridMeter;
   source: string;
+  downbeat_source: string | null;
+  downbeat_confidence: number | null;
+  meter_confidence: number | null;
   beats: AnalysisTimingBeat[];
   bars: AnalysisTimingBar[];
 };
@@ -66,10 +72,44 @@ export function normalizeAnalysisTimingGrid(value: unknown): AnalysisTimingGrid 
   }
   return {
     beats_per_bar: beatsPerBar,
+    meter: normalizeTimingGridMeter(candidate.meter, beatsPerBar),
     source: typeof candidate.source === "string" ? candidate.source : "detected",
+    downbeat_source: nullableString(candidate.downbeat_source),
+    downbeat_confidence: nullableFiniteNumber(candidate.downbeat_confidence),
+    meter_confidence: nullableFiniteNumber(candidate.meter_confidence),
     beats,
     bars,
   };
+}
+
+export function isTimingGridMeter(value: unknown): value is TimingGridMeter {
+  return TIMING_GRID_METERS.some((meter) => meter === value);
+}
+
+export function normalizeTimingGridMeter(
+  value: unknown,
+  fallbackBeatsPerBar = 4,
+): TimingGridMeter {
+  if (isTimingGridMeter(value)) {
+    return value;
+  }
+  if (fallbackBeatsPerBar === 3) {
+    return "3/4";
+  }
+  if (fallbackBeatsPerBar === 6) {
+    return "6/8";
+  }
+  return "4/4";
+}
+
+export function beatsPerBarForTimingGridMeter(meter: TimingGridMeter) {
+  if (meter === "3/4") {
+    return 3;
+  }
+  if (meter === "6/8") {
+    return 6;
+  }
+  return 4;
 }
 
 export function snapLoopPointToTiming(
@@ -169,6 +209,14 @@ function normalizeTimingBeat(value: unknown): AnalysisTimingBeat | null {
     bar_index: Math.max(0, Math.trunc(candidate.bar_index)),
     beat_in_bar: Math.max(1, Math.trunc(candidate.beat_in_bar)),
   };
+}
+
+function nullableString(value: unknown) {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function nullableFiniteNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function normalizeTimingBar(value: unknown): AnalysisTimingBar | null {

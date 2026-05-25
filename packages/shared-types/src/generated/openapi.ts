@@ -142,6 +142,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/analysis/timing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Project Analysis Timing Update */
+        patch: operations["project_analysis_timing_update_api_v1_projects__project_id__analysis_timing_patch"];
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/chords": {
         parameters: {
             query?: never;
@@ -774,12 +791,36 @@ export interface components {
             /** Beat In Bar */
             beat_in_bar: number;
         };
+        /** AnalysisTimingCorrectionRequest */
+        AnalysisTimingCorrectionRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "set_bar_1_beat_1" | "shift_left" | "shift_right" | "set_meter";
+            /** Playhead Seconds */
+            playhead_seconds?: number | null;
+            /** Beats Per Bar */
+            beats_per_bar?: (3 | 4 | 6) | null;
+        };
+        /** AnalysisTimingCorrectionResponse */
+        AnalysisTimingCorrectionResponse: {
+            analysis: components["schemas"]["AnalysisSchema"];
+        };
         /** AnalysisTimingSchema */
         AnalysisTimingSchema: {
             /** Beats Per Bar */
             beats_per_bar: number;
             /** Source */
             source: string;
+            /** Meter */
+            meter?: string | null;
+            /** Meter Confidence */
+            meter_confidence?: number | null;
+            /** Downbeat Source */
+            downbeat_source?: string | null;
+            /** Downbeat Confidence */
+            downbeat_confidence?: number | null;
             /** Beats */
             beats?: components["schemas"]["AnalysisTimingBeatSchema"][];
             /** Bars */
@@ -2595,6 +2636,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AnalysisResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    project_analysis_timing_update_api_v1_projects__project_id__analysis_timing_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AnalysisTimingCorrectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalysisTimingCorrectionResponse"];
                 };
             };
             /** @description Validation Error */

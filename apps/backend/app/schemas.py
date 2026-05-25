@@ -803,6 +803,24 @@ class AnalysisRequest(BaseModel):
     force: bool = False
 
 
+AnalysisTimingCorrectionAction = Literal["set_bar_1_beat_1", "shift_left", "shift_right", "set_meter"]
+AnalysisTimingBeatsPerBar = Literal[3, 4, 6]
+
+
+class AnalysisTimingCorrectionRequest(BaseModel):
+    action: AnalysisTimingCorrectionAction
+    playhead_seconds: float | None = Field(default=None, ge=0.0)
+    beats_per_bar: AnalysisTimingBeatsPerBar | None = None
+
+    @model_validator(mode="after")
+    def validate_timing_correction(self) -> AnalysisTimingCorrectionRequest:
+        if self.action == "set_bar_1_beat_1" and self.playhead_seconds is None:
+            raise ValueError("playhead_seconds is required when setting bar 1 beat 1.")
+        if self.action == "set_meter" and self.beats_per_bar is None:
+            raise ValueError("beats_per_bar is required when setting meter.")
+        return self
+
+
 class AnalysisTimingBeatSchema(BaseModel):
     index: int
     seconds: float
@@ -819,6 +837,10 @@ class AnalysisTimingBarSchema(BaseModel):
 class AnalysisTimingSchema(BaseModel):
     beats_per_bar: int
     source: str
+    meter: str | None = None
+    meter_confidence: float | None = None
+    downbeat_source: str | None = None
+    downbeat_confidence: float | None = None
     beats: list[AnalysisTimingBeatSchema] = Field(default_factory=list)
     bars: list[AnalysisTimingBarSchema] = Field(default_factory=list)
 
@@ -840,6 +862,10 @@ class AnalysisSchema(BaseModel):
 
 class AnalysisResponse(BaseModel):
     analysis: AnalysisSchema | None
+
+
+class AnalysisTimingCorrectionResponse(BaseModel):
+    analysis: AnalysisSchema
 
 
 class ChordRequest(BaseModel):

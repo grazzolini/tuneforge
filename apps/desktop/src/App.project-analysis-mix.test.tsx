@@ -20,6 +20,7 @@ import {
   mockDeleteProject,
   mockCreateExport,
   mockGetLyrics,
+  mockUpdateAnalysisTiming,
   mockUpdateLyrics,
   mockUpdateProject,
   renderApp,
@@ -89,6 +90,38 @@ describe("Desktop app project analysis mix", () => {
     }
   }
 
+  function setTimingGridAnalysis(source = "detected") {
+    setProjectAnalysis("proj_123", {
+      project_id: "proj_123",
+      estimated_key: "G major",
+      key_confidence: 0.82,
+      estimated_reference_hz: 440,
+      tuning_offset_cents: 0,
+      tempo_bpm: 121.48,
+      timing: {
+        beats_per_bar: 4,
+        meter: "4/4",
+        source,
+        downbeat_source: "source_stems",
+        downbeat_confidence: 0.86,
+        meter_confidence: 0.91,
+        beats: [
+          { index: 0, seconds: 0, bar_index: 0, beat_in_bar: 1 },
+          { index: 1, seconds: 0.5, bar_index: 0, beat_in_bar: 2 },
+          { index: 2, seconds: 1, bar_index: 0, beat_in_bar: 3 },
+          { index: 3, seconds: 1.5, bar_index: 0, beat_in_bar: 4 },
+          { index: 4, seconds: 2, bar_index: 1, beat_in_bar: 1 },
+        ],
+        bars: [
+          { index: 0, start_seconds: 0, end_seconds: 2 },
+          { index: 1, start_seconds: 2, end_seconds: 4 },
+        ],
+      },
+      analysis_version: "v1",
+      created_at: "2026-04-18T13:16:00.000Z",
+    });
+  }
+
   function installScrollMock(element: HTMLElement, axis: "vertical" | "horizontal" = "vertical") {
     const scrollTo = vi.fn();
     Object.defineProperty(element, "scrollTo", {
@@ -130,6 +163,76 @@ describe("Desktop app project analysis mix", () => {
     await user.click(screen.getByRole("button", { name: "Analyze Track" }));
 
     expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123");
+  });
+
+  it("shows timing grid controls in the playback rail", async () => {
+    const user = userEvent.setup();
+    setTimingGridAnalysis();
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+
+    const timingPanel = screen.getByRole("heading", { name: "Timing Grid" }).closest("section");
+    expect(timingPanel).not.toBeNull();
+    const panel = timingPanel as HTMLElement;
+
+    expect(within(panel).getAllByText("Detected").length).toBeGreaterThan(0);
+    expect(within(panel).getByText("86%")).toBeInTheDocument();
+    expect(within(panel).getByText("Source + stems")).toBeInTheDocument();
+
+    await user.click(within(panel).getByRole("button", { name: "3/4" }));
+    await waitFor(() =>
+      expect(mockUpdateAnalysisTiming).toHaveBeenLastCalledWith("proj_123", {
+        action: "set_meter",
+        beats_per_bar: 3,
+      }),
+    );
+
+    await user.click(within(panel).getByRole("button", { name: "Shift timing grid left one beat" }));
+    await waitFor(() =>
+      expect(mockUpdateAnalysisTiming).toHaveBeenLastCalledWith("proj_123", {
+        action: "shift_left",
+      }),
+    );
+
+    await user.click(within(panel).getByRole("button", { name: "Set nearest playhead beat as bar 1 beat 1" }));
+    await waitFor(() =>
+      expect(mockUpdateAnalysisTiming).toHaveBeenLastCalledWith("proj_123", {
+        action: "set_bar_1_beat_1",
+        playhead_seconds: 0,
+      }),
+    );
+
+    await user.click(within(panel).getByRole("button", { name: "Shift timing grid right one beat" }));
+    await waitFor(() =>
+      expect(mockUpdateAnalysisTiming).toHaveBeenLastCalledWith("proj_123", {
+        action: "shift_right",
+      }),
+    );
+  });
+
+  it("confirms before analyze when the timing grid was corrected", async () => {
+    const user = userEvent.setup();
+    setTimingGridAnalysis("user_corrected");
+    mockConfirm.mockResolvedValueOnce(false);
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openStudioPanel(user);
+    await user.click(screen.getByRole("button", { name: "Analyze Track" }));
+
+    expect(mockConfirm).toHaveBeenCalledWith(
+      expect.stringContaining("Re-analysis clears"),
+      expect.objectContaining({ title: "Refresh timing grid" }),
+    );
+    expect(mockAnalyzeProject).not.toHaveBeenCalled();
+
+    mockConfirm.mockResolvedValueOnce(true);
+    await user.click(screen.getByRole("button", { name: "Analyze Track" }));
+    await waitFor(() => expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123"));
   });
 
   it("shows sync lock reason and disables project mutation controls for locked projects", async () => {

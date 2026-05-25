@@ -1,25 +1,39 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
+from collections.abc import Mapping
+from math import isfinite
 from pathlib import Path
+from typing import Any, Literal, cast
 
+from fastapi import status
 from sqlalchemy.orm import Session
 
 from app.engines.analysis import analyze_track
+from app.errors import AppError
 from app.models import AnalysisResult, Artifact, Project
 from app.services.artifacts import refresh_artifact_file_metadata, register_artifact
 from app.services.paths import project_analysis_dir
 
+TimingCorrectionAction = Literal["set_bar_1_beat_1", "shift_left", "shift_right", "set_meter"]
+SUPPORTED_TIMING_BEATS_PER_BAR = frozenset({3, 4, 6})
+SOURCE_STEM_ARTIFACT_TYPES = ("drums_stem", "bass_stem")
+
 
 def analyze_project(session: Session, project: Project) -> AnalysisResult:
-    results = analyze_track(Path(project.imported_path))
+    source_artifact = _project_source_artifact(project)
+    source_stem_paths = _source_stem_paths(project, source_artifact) if source_artifact is not None else ()
+    if source_stem_paths:
+        results = analyze_track(Path(project.imported_path), source_stem_paths=source_stem_paths)
+    else:
+        results = analyze_track(Path(project.imported_path))
     analysis = session.get(AnalysisResult, project.id)
-    source_artifact = next((artifact for artifact in project.artifacts if artifact.type == "source_audio"), None)
     if analysis is None:
         analysis = AnalysisResult(project_id=project.id)
         session.add(analysis)
 
-    analysis.source_artifact_id = source_artifact.id if isinstance(source_artifact, Artifact) else None
+    analysis.source_artifact_id = source_artifact.id if source_artifact is not None else None
     analysis.estimated_key = results["estimated_key"]  # type: ignore[assignment]
     analysis.key_confidence = results["key_confidence"]  # type: ignore[assignment]
     analysis.estimated_reference_hz = results["estimated_reference_hz"]  # type: ignore[assignment]
@@ -29,6 +43,100 @@ def analyze_project(session: Session, project: Project) -> AnalysisResult:
     analysis.analysis_version = "v3"
     session.flush()
 
+    _write_analysis_artifact(session, project=project, analysis=analysis)
+
+    return analysis
+
+
+def _project_source_artifact(project: Project) -> Artifact | None:
+    return next((artifact for artifact in project.artifacts if artifact.type == "source_audio"), None)
+
+
+def _source_stem_paths(project: Project, source_artifact: Artifact) -> tuple[Path, ...]:
+    latest_by_type: dict[str, Artifact] = {}
+    for artifact in project.artifacts:
+        if not _is_source_analysis_stem(artifact, source_artifact):
+            continue
+        current = latest_by_type.get(artifact.type)
+        if current is None or (artifact.created_at, artifact.id) > (current.created_at, current.id):
+            latest_by_type[artifact.type] = artifact
+
+    source_stem_paths: list[Path] = []
+    for artifact_type in SOURCE_STEM_ARTIFACT_TYPES:
+        selected_artifact = latest_by_type.get(artifact_type)
+        if selected_artifact is not None:
+            source_stem_paths.append(Path(selected_artifact.path))
+    return tuple(source_stem_paths)
+
+
+def _is_source_analysis_stem(artifact: Artifact, source_artifact: Artifact) -> bool:
+    if artifact.type not in SOURCE_STEM_ARTIFACT_TYPES:
+        return False
+    metadata = artifact.metadata_json
+    if metadata.get("source_artifact_id") != source_artifact.id:
+        return False
+    if metadata.get("source_artifact_type") not in {None, "source_audio"}:
+        return False
+    return Path(artifact.path).exists()
+
+
+def correct_analysis_timing(
+    session: Session,
+    *,
+    project: Project,
+    action: TimingCorrectionAction,
+    playhead_seconds: float | None = None,
+    beats_per_bar: int | None = None,
+) -> AnalysisResult:
+    analysis = session.get(AnalysisResult, project.id)
+    if analysis is None or analysis.timing_json is None:
+        raise AppError(
+            "ANALYSIS_TIMING_NOT_FOUND",
+            "Analysis timing has not been generated for this project.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    timing = _normalize_timing_payload(analysis.timing_json)
+    if not timing["beats"]:
+        raise AppError(
+            "ANALYSIS_TIMING_NOT_FOUND",
+            "Analysis timing has no beats to correct.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    meter = timing["beats_per_bar"]
+    anchor_index = _timing_anchor_index(
+        timing,
+        prefer_pickup_phase=action in {"shift_left", "shift_right"},
+    )
+    if action == "set_bar_1_beat_1":
+        if playhead_seconds is None:
+            raise AppError("INVALID_REQUEST", "playhead_seconds is required for this timing correction.")
+        anchor_index = _nearest_beat_index(timing["beats"], playhead_seconds)
+    elif action == "shift_left":
+        anchor_index -= 1
+    elif action == "shift_right":
+        anchor_index += 1
+    elif action == "set_meter":
+        if beats_per_bar is None:
+            raise AppError("INVALID_REQUEST", "beats_per_bar is required for this timing correction.")
+        if beats_per_bar not in SUPPORTED_TIMING_BEATS_PER_BAR:
+            raise AppError("INVALID_REQUEST", "beats_per_bar must be one of 3, 4, or 6.")
+        meter = beats_per_bar
+
+    analysis.timing_json = _retime_grid(
+        timing,
+        beats_per_bar=meter,
+        anchor_index=anchor_index,
+        duration_seconds=project.duration_seconds,
+    )
+    session.flush()
+    _write_analysis_artifact(session, project=project, analysis=analysis)
+    session.refresh(analysis)
+    return analysis
+
+
+def _write_analysis_artifact(session: Session, *, project: Project, analysis: AnalysisResult) -> None:
     analysis_payload = {
         "project_id": project.id,
         "source_artifact_id": analysis.source_artifact_id,
@@ -40,7 +148,9 @@ def analyze_project(session: Session, project: Project) -> AnalysisResult:
         "timing": analysis.timing_json,
         "analysis_version": analysis.analysis_version,
     }
-    analysis_path = project_analysis_dir(project.id) / "analysis.json"
+    analysis_dir = project_analysis_dir(project.id)
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    analysis_path = analysis_dir / "analysis.json"
     analysis_path.write_text(
         json.dumps(analysis_payload, indent=2),
         encoding="utf-8",
@@ -74,4 +184,230 @@ def analyze_project(session: Session, project: Project) -> AnalysisResult:
             "source_artifact_id": analysis.source_artifact_id,
         }
 
-    return analysis
+    session.flush()
+
+
+def _normalize_timing_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    meter = _supported_beats_per_bar(payload.get("beats_per_bar"), fallback=4)
+    beats = [
+        normalized
+        for beat in payload.get("beats", [])
+        if isinstance(beat, Mapping) and (normalized := _normalize_timing_beat(beat)) is not None
+    ]
+    bars = [
+        normalized
+        for bar in payload.get("bars", [])
+        if isinstance(bar, Mapping) and (normalized := _normalize_timing_bar(bar)) is not None
+    ]
+    beats.sort(key=lambda beat: (beat["index"], beat["seconds"]))
+    bars.sort(key=lambda bar: (bar["start_seconds"], bar["index"]))
+    return {
+        "beats_per_bar": meter,
+        "source": str(payload.get("source") or "detected"),
+        "meter": _optional_str(payload.get("meter")) or _meter_label(meter),
+        "meter_confidence": _optional_float(payload.get("meter_confidence")),
+        "downbeat_source": _optional_str(payload.get("downbeat_source")),
+        "downbeat_confidence": _optional_float(payload.get("downbeat_confidence")),
+        "beats": beats,
+        "bars": bars,
+    }
+
+
+def _normalize_timing_beat(beat: Mapping[str, Any]) -> dict[str, int | float] | None:
+    index = _optional_int(beat.get("index"))
+    seconds = _optional_float(beat.get("seconds"))
+    bar_index = _optional_int(beat.get("bar_index"))
+    beat_in_bar = _optional_int(beat.get("beat_in_bar"))
+    if index is None or seconds is None or bar_index is None or beat_in_bar is None:
+        return None
+    return {
+        "index": index,
+        "seconds": max(0.0, seconds),
+        "bar_index": bar_index,
+        "beat_in_bar": max(1, beat_in_bar),
+    }
+
+
+def _normalize_timing_bar(bar: Mapping[str, Any]) -> dict[str, int | float] | None:
+    index = _optional_int(bar.get("index"))
+    start_seconds = _optional_float(bar.get("start_seconds"))
+    end_seconds = _optional_float(bar.get("end_seconds"))
+    if index is None or start_seconds is None or end_seconds is None:
+        return None
+    return {
+        "index": index,
+        "start_seconds": max(0.0, start_seconds),
+        "end_seconds": max(0.0, end_seconds),
+    }
+
+
+def _timing_anchor_index(timing: Mapping[str, Any], *, prefer_pickup_phase: bool = False) -> int:
+    meter = cast(int, timing["beats_per_bar"])
+    beats = cast(list[dict[str, int | float]], timing["beats"])
+    first_beat = beats[0]
+    if (
+        prefer_pickup_phase
+        and int(first_beat["bar_index"]) == 0
+        and int(first_beat["beat_in_bar"]) > 1
+    ):
+        return int(first_beat["index"]) - int(first_beat["beat_in_bar"]) + 1
+    for beat in beats:
+        if int(beat["bar_index"]) > 0 and int(beat["beat_in_bar"]) == 1:
+            return int(beat["index"]) - ((int(beat["bar_index"]) - 1) * meter)
+    for beat in beats:
+        if int(beat["bar_index"]) == 0 and int(beat["beat_in_bar"]) == 1:
+            return int(beat["index"])
+    return int(first_beat["index"]) - int(first_beat["beat_in_bar"]) + 1
+
+
+def _nearest_beat_index(beats: list[dict[str, int | float]], playhead_seconds: float) -> int:
+    return int(min(beats, key=lambda beat: abs(float(beat["seconds"]) - playhead_seconds))["index"])
+
+
+def _retime_grid(
+    timing: Mapping[str, Any],
+    *,
+    beats_per_bar: int,
+    anchor_index: int,
+    duration_seconds: float | None,
+) -> dict[str, Any]:
+    beats = []
+    timing_beats = cast(list[dict[str, int | float]], timing["beats"])
+    first_beat_index = int(timing_beats[0]["index"])
+    first_visible_downbeat_index = _first_visible_downbeat_index(
+        anchor_index=anchor_index,
+        first_beat_index=first_beat_index,
+        beats_per_bar=beats_per_bar,
+    )
+    for beat in timing_beats:
+        beat_index = int(beat["index"])
+        relative_position = beat_index - anchor_index
+        beats.append(
+            {
+                "index": beat_index,
+                "seconds": float(beat["seconds"]),
+                "bar_index": _retimed_beat_bar_index(
+                    beat_index,
+                    first_visible_downbeat_index=first_visible_downbeat_index,
+                    beats_per_bar=beats_per_bar,
+                ),
+                "beat_in_bar": (relative_position % beats_per_bar) + 1,
+            }
+        )
+    return {
+        "beats_per_bar": beats_per_bar,
+        "source": "user_corrected",
+        "meter": _meter_label(beats_per_bar),
+        "meter_confidence": 1.0,
+        "downbeat_source": "user",
+        "downbeat_confidence": 1.0,
+        "beats": beats,
+        "bars": _retimed_bars(beats, _timing_duration_seconds(timing, beats, duration_seconds)),
+    }
+
+
+def _retimed_bars(beats: list[dict[str, int | float]], duration_seconds: float) -> list[dict[str, int | float]]:
+    beats_by_bar: dict[int, list[dict[str, int | float]]] = defaultdict(list)
+    for beat in beats:
+        beats_by_bar[int(beat["bar_index"])].append(beat)
+
+    bars: list[dict[str, int | float]] = []
+    sorted_bar_indices = sorted(beats_by_bar)
+    for position, bar_index in enumerate(sorted_bar_indices):
+        bar_beats = sorted(beats_by_bar[bar_index], key=lambda beat: float(beat["seconds"]))
+        start_seconds = float(bar_beats[0]["seconds"])
+        if position + 1 < len(sorted_bar_indices):
+            next_bar_beats = sorted(
+                beats_by_bar[sorted_bar_indices[position + 1]],
+                key=lambda beat: float(beat["seconds"]),
+            )
+            end_seconds = float(next_bar_beats[0]["seconds"])
+        else:
+            end_seconds = max(duration_seconds, start_seconds)
+        if end_seconds <= start_seconds:
+            continue
+        bars.append(
+            {
+                "index": bar_index,
+                "start_seconds": round(start_seconds, 6),
+                "end_seconds": round(end_seconds, 6),
+            }
+        )
+    return bars
+
+
+def _retimed_beat_bar_index(
+    beat_index: int,
+    *,
+    first_visible_downbeat_index: int,
+    beats_per_bar: int,
+) -> int:
+    if beat_index < first_visible_downbeat_index:
+        return 0
+    return 1 + ((beat_index - first_visible_downbeat_index) // beats_per_bar)
+
+
+def _first_visible_downbeat_index(
+    *,
+    anchor_index: int,
+    first_beat_index: int,
+    beats_per_bar: int,
+) -> int:
+    if anchor_index >= first_beat_index:
+        return anchor_index
+    beats_after_anchor = (first_beat_index - anchor_index) % beats_per_bar
+    if beats_after_anchor == 0:
+        return first_beat_index
+    return first_beat_index + beats_per_bar - beats_after_anchor
+
+
+def _timing_duration_seconds(
+    timing: Mapping[str, Any],
+    beats: list[dict[str, int | float]],
+    duration_seconds: float | None,
+) -> float:
+    if duration_seconds is not None and isfinite(duration_seconds) and duration_seconds > 0.0:
+        return duration_seconds
+    bar_end_seconds = [
+        float(bar["end_seconds"])
+        for bar in cast(list[dict[str, int | float]], timing.get("bars", []))
+        if float(bar["end_seconds"]) > 0.0
+    ]
+    if bar_end_seconds:
+        return max(bar_end_seconds)
+    return max(float(beat["seconds"]) for beat in beats)
+
+
+def _supported_beats_per_bar(value: object, *, fallback: int) -> int:
+    parsed = _optional_int(value)
+    return parsed if parsed in SUPPORTED_TIMING_BEATS_PER_BAR else fallback
+
+
+def _meter_label(beats_per_bar: int) -> str:
+    if beats_per_bar == 6:
+        return "6/8"
+    return f"{beats_per_bar}/4"
+
+
+def _optional_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and isfinite(value):
+        return int(value)
+    return None
+
+
+def _optional_float(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float) and isfinite(value):
+        return float(value)
+    return None
+
+
+def _optional_str(value: object) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    return None

@@ -1162,21 +1162,18 @@ mod desktop {
                 .local_addr()
                 .map_err(|error| format!("Could not inspect sync transport listener: {error}"))?;
             let tcp_endpoint_hints = endpoint_hints_for_port(bind_addr.port(), &identity.device_id);
-            let iroh_transport = match create_iroh_transport(
-                &self.backend,
-                &identity.device_id,
-                bind_addr.port(),
-            ) {
-                Ok(transport) => Some(transport),
-                Err(error) => {
-                    update_status(&self.shared_status, |status| {
-                        status.last_status = Some(format!(
+            let iroh_transport =
+                match create_iroh_transport(&self.backend, &identity.device_id, bind_addr.port()) {
+                    Ok(transport) => Some(transport),
+                    Err(error) => {
+                        update_status(&self.shared_status, |status| {
+                            status.last_status = Some(format!(
                             "Iroh sync transport unavailable; starting TCP listener only: {error}"
                         ));
-                    });
-                    None
-                }
-            };
+                        });
+                        None
+                    }
+                };
             let mut endpoint_hints = iroh_transport
                 .as_ref()
                 .map(|transport| iroh_endpoint_hints(transport, &identity.device_id))

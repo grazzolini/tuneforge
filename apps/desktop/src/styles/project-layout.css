@@ -144,9 +144,56 @@
 }
 
 .processing-panel__actions {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.75rem, max-content));
+  align-items: start;
   gap: 0.65rem;
+}
+
+.processing-panel__lyrics-actions {
+  display: flex;
+  min-width: 10.5rem;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.42rem;
+}
+
+.processing-panel__lyrics-language {
+  display: flex;
+}
+
+.processing-panel__lyrics-language select {
+  width: 100%;
+  min-height: 2.3rem;
+  border: 1px solid var(--input-border);
+  border-radius: 999px;
+  padding: 0.45rem 0.65rem;
+  background: var(--input-bg);
+  color: var(--input-text);
+  font-weight: 700;
+}
+
+.processing-panel__lyrics-language select:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.processing-panel__lyrics-language select:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.processing-panel__lyrics-meta {
+  align-self: flex-start;
+  max-width: 14rem;
+  border: 1px solid var(--chip-border);
+  border-radius: 999px;
+  padding: 0.35rem 0.62rem;
+  background: var(--chip-bg);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.1;
 }
 
 .stack,

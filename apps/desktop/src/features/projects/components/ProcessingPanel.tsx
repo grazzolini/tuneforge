@@ -1,3 +1,4 @@
+import type { ChangeEvent } from "react";
 import { useProjectViewModelContext } from "./useProjectViewModelContext";
 
 export function ProcessingPanel() {
@@ -20,17 +21,27 @@ export function ProcessingPanel() {
     isLyricsRunning,
     isMobileRuntime,
     isStemRunning,
+    lyricsLanguageMetadata,
+    lyricsLanguageOptions,
     lyricsMutation,
     mobileGenerationMessage,
     projectEditLocked,
     projectSyncLockReason,
+    selectedLyricsLanguageOverride,
+    setSelectedLyricsLanguageOverride,
     selectedPrimaryArtifactId,
     showSupportingCopy,
     stemMutation,
   } = useProjectViewModelContext();
 
   const analyzeDisabled = projectEditLocked || analyzeMutation.isPending || isAnalysisRunning || !canAnalyze;
-  const lyricsDisabled = lyricsMutation.isPending || isLyricsRunning || !canGenerateLyrics;
+  const noLyricsSelected = selectedLyricsLanguageOverride === "none";
+  const lyricsDisabled =
+    projectEditLocked ||
+    lyricsMutation.isPending ||
+    isLyricsRunning ||
+    (!canGenerateLyrics && !noLyricsSelected);
+  const lyricsSelectorDisabled = projectEditLocked || lyricsMutation.isPending || isLyricsRunning;
   const chordsDisabled = chordMutation.isPending || isChordRunning || !canGenerateChords;
   const stemsDisabled =
     projectEditLocked ||
@@ -39,6 +50,27 @@ export function ProcessingPanel() {
     !selectedPrimaryArtifactId ||
     !canGenerateStems;
   const editLockTitle = projectSyncLockReason ?? undefined;
+  const selectedLyricsLanguageValue = selectedLyricsLanguageOverride ?? "auto";
+  const lyricsActionLabel =
+    lyricsMutation.isPending || isLyricsRunning
+      ? noLyricsSelected
+        ? "Clearing..."
+        : "Generating..."
+      : noLyricsSelected
+        ? hasLyricsTranscript
+          ? "Clear Lyrics"
+          : "Mark Instrumental"
+        : hasLyricsTranscript
+          ? "Refresh Lyrics"
+          : "Generate Lyrics";
+
+  function handleLyricsLanguageChange(event: ChangeEvent<HTMLSelectElement>) {
+    const nextValue = event.target.value;
+    const nextOption = lyricsLanguageOptions.find(
+      (option) => (option.value ?? "auto") === nextValue,
+    );
+    setSelectedLyricsLanguageOverride(nextOption?.value ?? null);
+  }
 
   return (
     <div className="panel processing-panel">
@@ -78,19 +110,35 @@ export function ProcessingPanel() {
               ? "Refresh Chords"
               : "Generate Chords"}
         </button>
-        <button
-          className="button button--small"
-          disabled={lyricsDisabled}
-          onClick={() => void handleLyricsAction()}
-          title={editLockTitle}
-          type="button"
-        >
-          {lyricsMutation.isPending || isLyricsRunning
-            ? "Generating..."
-            : hasLyricsTranscript
-              ? "Refresh Lyrics"
-              : "Generate Lyrics"}
-        </button>
+        <div className="processing-panel__lyrics-actions" role="group" aria-label="Lyrics generation">
+          <button
+            className="button button--small"
+            disabled={lyricsDisabled}
+            onClick={() => void handleLyricsAction()}
+            title={editLockTitle}
+            type="button"
+          >
+            {lyricsActionLabel}
+          </button>
+          <label className="processing-panel__lyrics-language">
+            <select
+              aria-label="Lyrics language"
+              disabled={lyricsSelectorDisabled}
+              onChange={handleLyricsLanguageChange}
+              title={editLockTitle}
+              value={selectedLyricsLanguageValue}
+            >
+              {lyricsLanguageOptions.map((option) => (
+                <option key={option.value ?? "auto"} value={option.value ?? "auto"}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          {lyricsLanguageMetadata ? (
+            <span className="processing-panel__lyrics-meta">{lyricsLanguageMetadata}</span>
+          ) : null}
+        </div>
         <button
           className="button button--small"
           disabled={stemsDisabled}

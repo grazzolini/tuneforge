@@ -1,6 +1,7 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { LyricsResponse } from "./lib/api";
 import {
   resetAppTestHarness,
   findAudioByArtifactId,
@@ -18,6 +19,7 @@ import {
   mockCreateTabImport,
   mockDeleteProject,
   mockCreateExport,
+  mockGetLyrics,
   mockUpdateLyrics,
   mockUpdateProject,
   renderApp,
@@ -350,7 +352,147 @@ describe("Desktop app project analysis mix", () => {
     await openStudioPanel(user);
     await user.click(screen.getByRole("button", { name: "Generate Lyrics" }));
 
-    expect(mockCreateLyrics).toHaveBeenCalledWith("proj_123", { force: false });
+    expect(mockCreateLyrics).toHaveBeenCalledWith("proj_123", {
+      force: false,
+      language_override: null,
+    });
+  });
+
+  it("generates lyrics with a selected Portuguese override", async () => {
+    const user = userEvent.setup();
+    setProjectLyrics("proj_123", {
+      project_id: "proj_123",
+      backend: null,
+      source_artifact_id: null,
+      source_kind: null,
+      source_segments: [],
+      segments: [],
+      has_user_edits: false,
+      created_at: null,
+      updated_at: null,
+    });
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openStudioPanel(user);
+    await user.selectOptions(screen.getByLabelText("Lyrics language"), "pt");
+    await user.click(screen.getByRole("button", { name: "Generate Lyrics" }));
+
+    expect(mockCreateLyrics).toHaveBeenCalledWith("proj_123", {
+      force: false,
+      language_override: "pt",
+    });
+  });
+
+  it("marks an existing transcript as instrumental without running lyrics", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openStudioPanel(user);
+    await user.selectOptions(screen.getByLabelText("Lyrics language"), "none");
+    await user.click(screen.getByRole("button", { name: "Clear Lyrics" }));
+
+    expect(mockConfirm).toHaveBeenCalledWith(
+      "Clear lyrics? This removes the current transcript and marks the project as having no lyrics.",
+      expect.objectContaining({
+        title: "Clear lyrics",
+        kind: "warning",
+      }),
+    );
+    expect(mockCreateLyrics).toHaveBeenCalledWith("proj_123", {
+      force: true,
+      language_override: "none",
+    });
+  });
+
+  it("keeps a manual lyrics override when the initial lyrics query settles later", async () => {
+    const user = userEvent.setup();
+    let resolveLyrics: (lyrics: LyricsResponse) => void = () => {};
+    mockGetLyrics.mockImplementationOnce(
+      () =>
+        new Promise<LyricsResponse>((resolve) => {
+          resolveLyrics = resolve;
+        }),
+    );
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openStudioPanel(user);
+    await user.selectOptions(screen.getByLabelText("Lyrics language"), "pt");
+
+    await act(async () => {
+      resolveLyrics({
+        project_id: "proj_123",
+        backend: null,
+        source_artifact_id: null,
+        source_kind: null,
+        language_override: null,
+        source_segments: [],
+        segments: [],
+        has_user_edits: false,
+        created_at: null,
+        updated_at: null,
+      });
+    });
+
+    await waitFor(() => expect(screen.getByLabelText("Lyrics language")).toHaveValue("pt"));
+    await user.click(screen.getByRole("button", { name: "Generate Lyrics" }));
+
+    expect(mockCreateLyrics).toHaveBeenCalledWith("proj_123", {
+      force: false,
+      language_override: "pt",
+    });
+  });
+
+  it("shows effective lyrics language metadata", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openStudioPanel(user);
+
+    expect(screen.getByText("Language: English")).toBeInTheDocument();
+  });
+
+  it("shows lyrics override metadata when effective language differs", async () => {
+    const user = userEvent.setup();
+    setProjectLyrics("proj_123", {
+      project_id: "proj_123",
+      backend: "openai-whisper",
+      source_artifact_id: "art_source",
+      source_kind: "ai",
+      language: "en",
+      language_override: "pt",
+      source_segments: [
+        {
+          start_seconds: 0,
+          end_seconds: 8,
+          text: "Original lyric line",
+          words: [],
+        },
+      ],
+      segments: [
+        {
+          start_seconds: 0,
+          end_seconds: 8,
+          text: "Original lyric line",
+          words: [],
+        },
+      ],
+      has_user_edits: false,
+      created_at: "2026-04-18T13:16:00.000Z",
+      updated_at: "2026-04-18T13:16:00.000Z",
+    });
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openStudioPanel(user);
+
+    expect(screen.getByText("Override: Portuguese (effective English)")).toBeInTheDocument();
   });
 
   it("renders active lyrics and saves in-app edits", async () => {
@@ -657,6 +799,56 @@ describe("Desktop app project analysis mix", () => {
     expect(secondChord).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("refreshes lyrics with the persisted language override", async () => {
+    const user = userEvent.setup();
+    setProjectLyrics("proj_123", {
+      project_id: "proj_123",
+      backend: "openai-whisper",
+      source_artifact_id: "art_source",
+      source_kind: "ai",
+      language: "pt",
+      language_override: "pt",
+      source_segments: [
+        {
+          start_seconds: 0,
+          end_seconds: 8,
+          text: "Linha original",
+          words: [],
+        },
+      ],
+      segments: [
+        {
+          start_seconds: 0,
+          end_seconds: 8,
+          text: "Linha original",
+          words: [],
+        },
+      ],
+      has_user_edits: false,
+      created_at: "2026-04-18T13:16:00.000Z",
+      updated_at: "2026-04-18T13:16:00.000Z",
+    });
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openStudioPanel(user);
+    await waitFor(() => expect(screen.getByLabelText("Lyrics language")).toHaveValue("pt"));
+    await user.click(screen.getByRole("button", { name: "Refresh Lyrics" }));
+
+    expect(mockConfirm).toHaveBeenCalledWith(
+      "Refresh lyrics? This replaces the current transcript with a new pass and clears the current tab import.",
+      expect.objectContaining({
+        title: "Refresh lyrics",
+        kind: "warning",
+      }),
+    );
+    expect(mockCreateLyrics).toHaveBeenCalledWith("proj_123", {
+      force: true,
+      language_override: "pt",
+    });
+  });
+
   it("refreshes edited lyrics with confirmation", async () => {
     const user = userEvent.setup();
     setProjectLyrics("proj_123", {
@@ -689,6 +881,7 @@ describe("Desktop app project analysis mix", () => {
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
     await openStudioPanel(user);
+    await user.selectOptions(screen.getByLabelText("Lyrics language"), "pt");
     await user.click(screen.getByRole("button", { name: "Refresh Lyrics" }));
 
     expect(mockConfirm).toHaveBeenCalledWith(
@@ -698,7 +891,10 @@ describe("Desktop app project analysis mix", () => {
         kind: "warning",
       }),
     );
-    expect(mockCreateLyrics).toHaveBeenCalledWith("proj_123", { force: true });
+    expect(mockCreateLyrics).toHaveBeenCalledWith("proj_123", {
+      force: true,
+      language_override: "pt",
+    });
   });
 
   it("refreshes edited chords with confirmation", async () => {

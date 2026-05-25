@@ -7,6 +7,8 @@ import {
   getProjectSyncSummary,
   type ArtifactSchema,
   type JobSchema,
+  type LyricsGenerateRequest,
+  type LyricsResponse,
   type ProjectSchema,
 } from "../../../lib/api";
 import { usePreferences } from "../../../lib/preferences";
@@ -95,6 +97,35 @@ type DeleteArtifactsRequest = {
   nextSelectedPrimaryArtifactId?: string | null;
   stemArtifactIds?: string[];
 };
+type LyricsLanguageOverride = Exclude<LyricsGenerateRequest["language_override"], undefined>;
+type LyricsLanguageOption = {
+  label: string;
+  value: LyricsLanguageOverride;
+};
+type LyricsMutationVariables = {
+  force: boolean;
+  languageOverride: LyricsLanguageOverride;
+};
+
+const LYRICS_LANGUAGE_OPTIONS = [
+  { label: "Auto-detect", value: null },
+  { label: "No lyrics", value: "none" },
+  { label: "English", value: "en" },
+  { label: "Portuguese", value: "pt" },
+  { label: "Spanish", value: "es" },
+  { label: "French", value: "fr" },
+  { label: "German", value: "de" },
+  { label: "Italian", value: "it" },
+  { label: "Japanese", value: "ja" },
+  { label: "Korean", value: "ko" },
+  { label: "Chinese", value: "zh" },
+  { label: "Hindi", value: "hi" },
+] satisfies readonly LyricsLanguageOption[];
+const LYRICS_LANGUAGE_LABELS = new Map<string, string>(
+  LYRICS_LANGUAGE_OPTIONS.flatMap((option) =>
+    option.value === null ? [] : [[option.value, option.label] as const],
+  ),
+);
 
 function getNextJobsPageOffset(lastPage: { has_more: boolean; offset: number; jobs: JobSchema[] }) {
   return lastPage.has_more ? lastPage.offset + lastPage.jobs.length : undefined;
@@ -104,6 +135,28 @@ function uniqueJobsById(jobs: JobSchema[]) {
   const jobsById = new Map<string, JobSchema>();
   jobs.forEach((job) => jobsById.set(job.id, job));
   return Array.from(jobsById.values());
+}
+
+function lyricsLanguageLabel(language: string | null | undefined) {
+  if (!language) {
+    return null;
+  }
+  return LYRICS_LANGUAGE_LABELS.get(language) ?? language.toUpperCase();
+}
+
+function formatLyricsLanguageMetadata(lyrics: LyricsResponse | undefined) {
+  if (lyrics?.language_override === "none") {
+    return "No lyrics";
+  }
+  const overrideLabel = lyricsLanguageLabel(lyrics?.language_override);
+  const effectiveLabel = lyricsLanguageLabel(lyrics?.language);
+  if (overrideLabel) {
+    if (effectiveLabel && effectiveLabel !== overrideLabel) {
+      return `Override: ${overrideLabel} (effective ${effectiveLabel})`;
+    }
+    return `Override: ${overrideLabel}`;
+  }
+  return effectiveLabel ? `Language: ${effectiveLabel}` : null;
 }
 
 function resolveDefaultPlaybackDisplayMode(
@@ -250,6 +303,10 @@ export function useProjectViewModel() {
   const [dismissedStemJobIds, setDismissedStemJobIds] = useState<string[]>([]);
   const [isEditingLyrics, setIsEditingLyrics] = useState(false);
   const [lyricsDraft, setLyricsDraft] = useState<string[]>([]);
+  const [selectedLyricsLanguageOverride, setSelectedLyricsLanguageOverride] =
+    useState<LyricsLanguageOverride>(null);
+  const lyricsLanguageOverrideSeededProjectId = useRef<string | null>(null);
+  const lyricsLanguageOverrideDirtyProjectId = useRef<string | null>(null);
   const [isTabImportOpen, setIsTabImportOpen] = useState(false);
   const [tabImportDraft, setTabImportDraft] = useState("");
   const [acceptedTabSuggestionIds, setAcceptedTabSuggestionIds] = useState<string[]>([]);
@@ -422,9 +479,13 @@ export function useProjectViewModel() {
   });
 
   const lyricsMutation = useMutation({
-    mutationFn: async (force: boolean) => {
+    mutationFn: async ({ force, languageOverride }: LyricsMutationVariables) => {
       assertProjectEditable();
-      return api.createLyrics(projectId, { force });
+      const request: LyricsGenerateRequest = {
+        force,
+        language_override: languageOverride,
+      };
+      return api.createLyrics(projectId, request);
     },
     onSuccess: async () => {
       setIsEditingLyrics(false);
@@ -891,6 +952,7 @@ export function useProjectViewModel() {
   );
   const hasLyricsTranscript = displayedLyrics.length > 0;
   const hasTimedLyricsTranscript = displayedLyrics.some((segment) => hasTimedLyrics(segment));
+  const lyricsLanguageMetadata = formatLyricsLanguageMetadata(lyricsQuery.data);
   const activeLyricsIndex = findActiveLyricsIndex(displayedLyrics, playbackTimeSeconds);
   const activeLyricsSegment =
     activeLyricsIndex >= 0 ? displayedLyrics[activeLyricsIndex] : null;
@@ -1271,10 +1333,34 @@ export function useProjectViewModel() {
     if (projectEditLocked) {
       return;
     }
-    if (!canGenerateLyrics) {
+    const skipsLyricsGeneration = selectedLyricsLanguageOverride === "none";
+    if (!canGenerateLyrics && !skipsLyricsGeneration) {
       return;
     }
     const hasExistingLyrics = (lyricsQuery.data?.segments?.length ?? 0) > 0;
+    if (skipsLyricsGeneration) {
+      if (hasExistingLyrics) {
+        const approved = await confirm(
+          "Clear lyrics? This removes the current transcript and marks the project as having no lyrics.",
+          {
+            title: "Clear lyrics",
+            kind: "warning",
+            okLabel: "Clear Lyrics",
+            cancelLabel: "Cancel",
+          },
+        );
+        if (!approved) {
+          return;
+        }
+      }
+
+      lyricsMutation.mutate({
+        force: hasExistingLyrics,
+        languageOverride: selectedLyricsLanguageOverride,
+      });
+      return;
+    }
+
     if (hasExistingLyrics) {
       const approved = await confirm(
         lyricsQuery.data?.has_user_edits
@@ -1292,7 +1378,15 @@ export function useProjectViewModel() {
       }
     }
 
-    lyricsMutation.mutate(hasExistingLyrics);
+    lyricsMutation.mutate({
+      force: hasExistingLyrics,
+      languageOverride: selectedLyricsLanguageOverride,
+    });
+  }
+
+  function handleSelectedLyricsLanguageOverride(languageOverride: LyricsLanguageOverride) {
+    lyricsLanguageOverrideDirtyProjectId.current = projectId;
+    setSelectedLyricsLanguageOverride(languageOverride);
   }
 
   async function handleStemAction() {
@@ -1687,6 +1781,9 @@ export function useProjectViewModel() {
     setLoopAlignmentModeOverride(storedPlaybackState.loopAlignmentMode);
     setPendingLoopStartSeconds(null);
     setLoopStatusMessage(null);
+    lyricsLanguageOverrideSeededProjectId.current = null;
+    lyricsLanguageOverrideDirtyProjectId.current = null;
+    setSelectedLyricsLanguageOverride(null);
     setPlaybackDisplayModeSource(hasStoredPlayback ? "stored" : "default");
     setLyricsFollowEnabled(
       hasStoredPlayback
@@ -1708,6 +1805,19 @@ export function useProjectViewModel() {
     defaultProjectWorkspace,
     projectId,
   ]);
+
+  useEffect(() => {
+    if (
+      !lyricsQuery.isSuccess ||
+      lyricsLanguageOverrideDirtyProjectId.current === projectId ||
+      lyricsLanguageOverrideSeededProjectId.current === projectId
+    ) {
+      return;
+    }
+
+    setSelectedLyricsLanguageOverride(lyricsQuery.data?.language_override ?? null);
+    lyricsLanguageOverrideSeededProjectId.current = projectId;
+  }, [lyricsQuery.data?.language_override, lyricsQuery.isSuccess, projectId]);
 
   useEffect(() => {
     if (
@@ -2256,6 +2366,8 @@ export function useProjectViewModel() {
     mobileCapabilities,
     mobileGenerationMessage,
     lyricsFollowEnabled,
+    lyricsLanguageMetadata,
+    lyricsLanguageOptions: LYRICS_LANGUAGE_OPTIONS,
     lyricsDraft,
     lyricsJob,
     lyricsMutation,
@@ -2291,6 +2403,7 @@ export function useProjectViewModel() {
     selectedArtifactId,
     selectedTabSuggestionId,
     selectedArtifactTimestamp,
+    selectedLyricsLanguageOverride,
     selectedPlaybackArtifact,
     selectedPrimaryArtifact,
     selectedPrimaryArtifactId,
@@ -2311,6 +2424,7 @@ export function useProjectViewModel() {
     setTargetSelectorOpen,
     setTargetTransposeSemitones,
     setLyricsDraft,
+    setSelectedLyricsLanguageOverride: handleSelectedLyricsLanguageOverride,
     setSelectedTabSuggestionId,
     setTabImportDraft,
     showSupportingCopy,

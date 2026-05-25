@@ -12,6 +12,28 @@ from app.services.sync_identity import source_hash_to_project_id, source_hash_to
 from app.utils.hashing import file_sha256
 
 
+def _create_legacy_lyrics_transcripts_table(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE lyrics_transcripts (
+            project_id VARCHAR(32) PRIMARY KEY,
+            backend VARCHAR(64) NOT NULL DEFAULT 'openai-whisper',
+            source_artifact_id VARCHAR(32),
+            source_kind VARCHAR(32) NOT NULL DEFAULT 'ai',
+            requested_device VARCHAR(16),
+            device VARCHAR(16),
+            model_name VARCHAR(64),
+            language VARCHAR(32),
+            source_segments_json JSON NOT NULL DEFAULT '[]',
+            segments_json JSON NOT NULL DEFAULT '[]',
+            has_user_edits BOOLEAN NOT NULL DEFAULT 0,
+            created_at DATETIME,
+            updated_at DATETIME
+        )
+        """
+    )
+
+
 def test_run_migrations_reports_unknown_database_revision() -> None:
     settings = get_settings()
     ensure_data_dirs(settings)
@@ -200,6 +222,23 @@ def test_sync_delete_tombstones_migration_creates_table_columns_and_indexes() ->
     assert group_target_index_columns == ["sync_group_id", "target_type", "target_id"]
 
 
+def test_lyrics_language_override_migration_adds_nullable_column() -> None:
+    settings = get_settings()
+    ensure_data_dirs(settings)
+
+    reconfigure_engine(settings)
+    run_migrations(settings)
+
+    with sqlite3.connect(settings.database_path) as connection:
+        columns = {
+            row[1]: row
+            for row in connection.execute("PRAGMA table_info('lyrics_transcripts')")
+        }
+
+    assert "language_override" in columns
+    assert columns["language_override"][3] == 0
+
+
 def test_hash_storage_migration_backfills_existing_files(tmp_path: Path) -> None:
     settings = get_settings()
     ensure_data_dirs(settings)
@@ -273,6 +312,7 @@ def test_hash_storage_migration_backfills_existing_files(tmp_path: Path) -> None
             )
             """
         )
+        _create_legacy_lyrics_transcripts_table(connection)
         connection.execute(
             """
             INSERT INTO projects (
@@ -459,6 +499,7 @@ def test_sync_identity_migration_prefers_imported_copy_when_hash_missing(tmp_pat
             )
             """
         )
+        _create_legacy_lyrics_transcripts_table(connection)
         connection.execute(
             """
             INSERT INTO projects (
@@ -565,6 +606,7 @@ def test_sync_identity_migration_does_not_recover_moved_root_from_external_sourc
             )
             """
         )
+        _create_legacy_lyrics_transcripts_table(connection)
         connection.execute(
             """
             INSERT INTO projects (
@@ -690,6 +732,7 @@ def test_sync_identity_migration_recovers_artifacts_already_referenced_by_new_pr
             )
             """
         )
+        _create_legacy_lyrics_transcripts_table(connection)
         connection.execute(
             """
             INSERT INTO projects (
@@ -861,6 +904,7 @@ def test_sync_identity_migration_recovers_canonical_project_with_legacy_paths() 
             )
             """
         )
+        _create_legacy_lyrics_transcripts_table(connection)
         connection.execute(
             """
             INSERT INTO projects (
@@ -1029,6 +1073,7 @@ def test_sync_identity_migration_recovers_already_rewritten_project_root_and_sna
             )
             """
         )
+        _create_legacy_lyrics_transcripts_table(connection)
         connection.execute(
             """
             INSERT INTO projects (

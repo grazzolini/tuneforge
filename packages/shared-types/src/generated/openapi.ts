@@ -1109,6 +1109,8 @@ export interface components {
              * @default false
              */
             force?: boolean;
+            /** Language Override */
+            language_override?: ("none" | "en" | "pt" | "es" | "fr" | "de" | "it" | "ja" | "ko" | "zh" | "hi") | null;
         };
         /** LyricsResponse */
         LyricsResponse: {
@@ -1128,6 +1130,8 @@ export interface components {
             model_name?: string | null;
             /** Language */
             language?: string | null;
+            /** Language Override */
+            language_override?: ("none" | "en" | "pt" | "es" | "fr" | "de" | "it" | "ja" | "ko" | "zh" | "hi") | null;
             /** Source Segments */
             source_segments?: components["schemas"]["LyricsSegmentSchema"][];
             /** Segments */

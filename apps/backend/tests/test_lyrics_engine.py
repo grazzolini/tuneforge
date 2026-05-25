@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ import pytest
 
 from app.engines.lyrics import (
     LyricsTranscription,
+    _transcribe_with_device,
     patch_whisper_timing_for_mps,
     resolve_whisper_device_candidates,
     resolve_whisper_model_candidates,
@@ -140,6 +142,7 @@ def test_transcribe_project_lyrics_falls_back_to_cpu(monkeypatch):
         device: str,
         download_root: Path,
         whisper_module: object,
+        language_override: str | None = None,
     ) -> LyricsTranscription:
         attempted_devices.append(device)
         if device == "mps":
@@ -189,6 +192,7 @@ def test_transcribe_project_lyrics_retries_smaller_model_on_cuda_oom(monkeypatch
         device: str,
         download_root: Path,
         whisper_module: object,
+        language_override: str | None = None,
     ) -> LyricsTranscription:
         attempts.append((device, model_name))
         if model_name == "turbo":
@@ -221,6 +225,122 @@ def test_transcribe_project_lyrics_retries_smaller_model_on_cuda_oom(monkeypatch
     assert result.device == "cuda"
     assert result.model == "small"
     assert result.requested_device == "auto"
+
+
+def test_transcribe_with_device_omits_language_for_auto_detect():
+    class FakeWhisper:
+        def __init__(self) -> None:
+            self.transcribe_kwargs: dict[str, object] | None = None
+
+        def load_model(self, model_name: str, *, device: str, download_root: str) -> str:
+            return f"{model_name}:{device}:{download_root}"
+
+        def transcribe(self, model: str, source_path: str, **kwargs: object) -> dict[str, object]:
+            self.transcribe_kwargs = kwargs
+            return {
+                "language": None,
+                "segments": [{"start": 0.0, "end": 1.0, "text": "hello"}],
+            }
+
+    whisper = FakeWhisper()
+
+    result = _transcribe_with_device(
+        Path("/tmp/fake.wav"),
+        requested_device="auto",
+        model_name="turbo",
+        device="cpu",
+        download_root=Path("/tmp/lyrics-cache"),
+        whisper_module=whisper,
+    )
+
+    assert whisper.transcribe_kwargs is not None
+    assert "language" not in whisper.transcribe_kwargs
+    assert result.language is None
+    assert result.language_override is None
+
+
+def test_transcribe_with_device_passes_language_override_and_falls_back_to_it():
+    class FakeWhisper:
+        def __init__(self) -> None:
+            self.transcribe_kwargs: dict[str, object] | None = None
+
+        def load_model(self, model_name: str, *, device: str, download_root: str) -> str:
+            return f"{model_name}:{device}:{download_root}"
+
+        def transcribe(self, model: str, source_path: str, **kwargs: object) -> dict[str, object]:
+            self.transcribe_kwargs = kwargs
+            return {
+                "language": None,
+                "segments": [{"start": 0.0, "end": 1.0, "text": "ola"}],
+            }
+
+    whisper = FakeWhisper()
+
+    result = _transcribe_with_device(
+        Path("/tmp/fake.wav"),
+        requested_device="auto",
+        model_name="turbo",
+        device="cpu",
+        download_root=Path("/tmp/lyrics-cache"),
+        whisper_module=whisper,
+        language_override="pt",
+    )
+
+    assert whisper.transcribe_kwargs is not None
+    assert whisper.transcribe_kwargs["language"] == "pt"
+    assert result.language == "pt"
+    assert result.language_override == "pt"
+
+
+def test_transcribe_project_lyrics_passes_language_override_to_worker(monkeypatch):
+    class FakeProcess:
+        returncode = 0
+
+        def poll(self) -> int:
+            return self.returncode
+
+        def communicate(self) -> tuple[str, str]:
+            return (
+                json.dumps(
+                    {
+                        "ok": True,
+                        "transcription": {
+                            "backend": "openai-whisper",
+                            "requested_device": "auto",
+                            "device": "cpu",
+                            "model": "turbo",
+                            "language": "pt",
+                            "language_override": "pt",
+                            "segments": [],
+                        },
+                    }
+                ),
+                "",
+            )
+
+        def kill(self) -> None:
+            raise AssertionError("completed process should not be killed")
+
+    process = FakeProcess()
+    commands: list[list[str]] = []
+
+    def fake_popen(command: list[str], **_kwargs: object) -> FakeProcess:
+        commands.append(command)
+        return process
+
+    monkeypatch.setattr("app.engines.lyrics.subprocess.Popen", fake_popen)
+
+    result = transcribe_project_lyrics(
+        Path("/tmp/fake.wav"),
+        model_name="turbo",
+        requested_device="auto",
+        download_root=Path("/tmp/lyrics-cache"),
+        language_override="pt",
+    )
+
+    assert commands[0][-2:] == ["--language", "pt"]
+    assert result.language == "pt"
+    assert result.language_override == "pt"
 
 
 def test_transcribe_project_lyrics_cancels_subprocess(monkeypatch):
@@ -280,6 +400,7 @@ def test_transcribe_project_lyrics_cancels_subprocess(monkeypatch):
         )
 
     assert commands[0][1:3] == ["-m", "app.engines.lyrics_worker"]
+    assert "--language" not in commands[0]
     assert process.terminated is True
     assert process.killed is True
     assert process.wait_timeouts == [2.0, 2.0]

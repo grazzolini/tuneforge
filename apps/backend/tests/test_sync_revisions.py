@@ -160,6 +160,7 @@ def test_lyrics_and_section_revisions_are_listed_as_current_project_entities(
         device="cpu",
         model_name="base",
         language="en",
+        language_override="en",
         source_segments_json=[{"start": 0.0, "end": 1.0, "text": "hello"}],
         segments_json=[{"start": 0.0, "end": 1.0, "text": "hello edit"}],
         has_user_edits=True,
@@ -189,6 +190,7 @@ def test_lyrics_and_section_revisions_are_listed_as_current_project_entities(
     assert lyrics_revision.entity_type == LYRICS_ENTITY_TYPE
     assert lyrics_revision.revision_type == "user_edit"
     assert lyrics_revision.payload_json["has_user_edits"] is True
+    assert lyrics_revision.payload_json["language_override"] == "en"
     assert section_revision.entity_type == SECTION_ENTITY_TYPE
     assert section_revision.payload_json["metadata"] == {"color": "blue"}
     _assert_sync_safe(section_revision.payload_json, tmp_path)

@@ -18,13 +18,26 @@ const TRANSPORT_HANDSHAKE_CLOCK_SKEW_SECONDS: i64 = 30;
 #[cfg(not(target_os = "android"))]
 const MOBILE_UNAVAILABLE: &str = "Mobile embedded backend is only available in Android builds.";
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-const MOBILE_DB_VERSION: i64 = 2;
+const MOBILE_DB_VERSION: i64 = 3;
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 const DEFAULT_SYNC_STATUS: &str = "local";
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 const DEFAULT_SYNC_LIST_JSON: &str = "[]";
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 const MOBILE_CANCELLED_JOB_STATUS: &str = "cancelled";
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const LYRICS_LANGUAGE_OVERRIDE_CODES: &[&str] = &[
+    "none", "en", "pt", "es", "fr", "de", "it", "ja", "ko", "zh", "hi",
+];
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const LYRICS_LANGUAGE_OVERRIDE_ERROR: &str =
+    "language_override must be null or one of none, en, pt, es, fr, de, it, ja, ko, zh, hi.";
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const LYRICS_SOURCE_KIND_AI: &str = "ai";
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const LYRICS_SOURCE_KIND_INSTRUMENTAL: &str = "instrumental";
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const LYRICS_BACKEND_NONE: &str = "none";
 #[cfg(target_os = "android")]
 const GPU_REQUIRED: &str = "Local generation requires GPU acceleration on this device.";
 #[cfg(target_os = "android")]
@@ -224,6 +237,7 @@ pub struct LyricsResponse {
     device: Option<String>,
     model_name: Option<String>,
     language: Option<String>,
+    language_override: Option<String>,
     source_segments: Vec<Value>,
     segments: Vec<Value>,
     has_user_edits: bool,
@@ -337,6 +351,42 @@ pub struct SyncTrustedPeerCreateRequest {
     payload: SyncPairingPayloadSchema,
     #[serde(default)]
     adopt_sync_group: bool,
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn payload_lyrics_language_override(payload: &Value) -> Result<Option<String>, String> {
+    match payload.get("language_override") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => {
+            let normalized = value.trim().to_ascii_lowercase();
+            if normalized.is_empty() {
+                return Ok(None);
+            }
+            if LYRICS_LANGUAGE_OVERRIDE_CODES.contains(&normalized.as_str()) {
+                Ok(Some(normalized))
+            } else {
+                Err(LYRICS_LANGUAGE_OVERRIDE_ERROR.to_string())
+            }
+        }
+        Some(_) => Err("language_override must be a string or null.".to_string()),
+    }
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn no_lyrics_transcript_metadata() -> (
+    &'static str,
+    &'static str,
+    Option<&'static str>,
+    Option<&'static str>,
+    Option<String>,
+) {
+    (
+        LYRICS_BACKEND_NONE,
+        LYRICS_SOURCE_KIND_INSTRUMENTAL,
+        None,
+        None,
+        None,
+    )
 }
 
 #[derive(Serialize)]
@@ -1699,7 +1749,7 @@ mobile_stub!(mobile_submit_chords, JobResponse, app: AppHandle, project_id: Stri
 #[cfg(not(target_os = "android"))]
 mobile_stub!(mobile_get_chords, ChordResponse, app: AppHandle, project_id: String);
 #[cfg(not(target_os = "android"))]
-mobile_stub!(mobile_submit_lyrics, JobResponse, app: AppHandle, project_id: String, payload: EmptyPayload);
+mobile_stub!(mobile_submit_lyrics, JobResponse, app: AppHandle, project_id: String, payload: Value);
 #[cfg(not(target_os = "android"))]
 mobile_stub!(mobile_get_lyrics, LyricsResponse, app: AppHandle, project_id: String);
 #[cfg(not(target_os = "android"))]
@@ -1905,6 +1955,7 @@ mod android {
             device TEXT,
             model_name TEXT,
             language TEXT,
+            language_override TEXT,
             source_segments_json TEXT NOT NULL,
             segments_json TEXT NOT NULL,
             has_user_edits INTEGER NOT NULL,
@@ -2038,10 +2089,12 @@ mod android {
 
     struct MobileLyricsTranscription {
         backend: &'static str,
-        requested_device: &'static str,
-        device: &'static str,
-        model_name: String,
+        source_kind: &'static str,
+        requested_device: Option<&'static str>,
+        device: Option<&'static str>,
+        model_name: Option<String>,
         language: Option<String>,
+        language_override: Option<String>,
         segments: Vec<Value>,
     }
 
@@ -2263,6 +2316,12 @@ mod android {
         )?;
         add_column_if_missing(connection, "artifacts", "content_sha256", "TEXT")?;
         add_column_if_missing(connection, "artifacts", "cache_key", "TEXT")?;
+        add_column_if_missing(
+            connection,
+            "lyrics_transcripts",
+            "language_override",
+            "TEXT",
+        )?;
         add_column_if_missing(
             connection,
             "jobs",
@@ -5684,11 +5743,11 @@ mod android {
     ) -> Result<LyricsResponse, String> {
         connection
             .query_row(
-                "SELECT project_id, backend, source_artifact_id, source_kind, requested_device, device, model_name, language, source_segments_json, segments_json, has_user_edits, created_at, updated_at FROM lyrics_transcripts WHERE project_id = ?1",
+                "SELECT project_id, backend, source_artifact_id, source_kind, requested_device, device, model_name, language, language_override, source_segments_json, segments_json, has_user_edits, created_at, updated_at FROM lyrics_transcripts WHERE project_id = ?1",
                 params![project_id],
                 |row| {
-                    let source_segments_raw: String = row.get(8)?;
-                    let segments_raw: String = row.get(9)?;
+                    let source_segments_raw: String = row.get(9)?;
+                    let segments_raw: String = row.get(10)?;
                     let source_segments =
                         serde_json::from_str(&source_segments_raw).unwrap_or_default();
                     let segments = serde_json::from_str(&segments_raw).unwrap_or_default();
@@ -5701,11 +5760,12 @@ mod android {
                         device: row.get(5)?,
                         model_name: row.get(6)?,
                         language: row.get(7)?,
+                        language_override: row.get(8)?,
                         source_segments,
                         segments,
-                        has_user_edits: row.get::<_, i64>(10)? != 0,
-                        created_at: row.get(11)?,
-                        updated_at: row.get(12)?,
+                        has_user_edits: row.get::<_, i64>(11)? != 0,
+                        created_at: row.get(12)?,
+                        updated_at: row.get(13)?,
                     })
                 },
             )
@@ -5743,17 +5803,19 @@ mod android {
         let segments_json = source_segments_json.clone();
         connection
             .execute(
-                "INSERT INTO lyrics_transcripts (project_id, backend, source_artifact_id, source_kind, requested_device, device, model_name, language, source_segments_json, segments_json, has_user_edits, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, 'ai', ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?10)
-                 ON CONFLICT(project_id) DO UPDATE SET backend = excluded.backend, source_artifact_id = excluded.source_artifact_id, source_kind = excluded.source_kind, requested_device = excluded.requested_device, device = excluded.device, model_name = excluded.model_name, language = excluded.language, source_segments_json = excluded.source_segments_json, segments_json = excluded.segments_json, has_user_edits = excluded.has_user_edits, updated_at = excluded.updated_at",
+                "INSERT INTO lyrics_transcripts (project_id, backend, source_artifact_id, source_kind, requested_device, device, model_name, language, language_override, source_segments_json, segments_json, has_user_edits, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12, ?12)
+                 ON CONFLICT(project_id) DO UPDATE SET backend = excluded.backend, source_artifact_id = excluded.source_artifact_id, source_kind = excluded.source_kind, requested_device = excluded.requested_device, device = excluded.device, model_name = excluded.model_name, language = excluded.language, language_override = excluded.language_override, source_segments_json = excluded.source_segments_json, segments_json = excluded.segments_json, has_user_edits = excluded.has_user_edits, updated_at = excluded.updated_at",
                 params![
                     project.id,
                     transcription.backend,
                     source_artifact.id,
+                    transcription.source_kind,
                     transcription.requested_device,
                     transcription.device,
                     transcription.model_name,
                     transcription.language,
+                    transcription.language_override,
                     source_segments_json,
                     segments_json,
                     timestamp,
@@ -5875,6 +5937,7 @@ mod android {
     fn transcribe_project_lyrics(
         source_path: &Path,
         model: &WhisperModel,
+        language_override: Option<&str>,
     ) -> Result<MobileLyricsTranscription, String> {
         let audio = read_resampled_mono_audio(source_path, WHISPER_SAMPLE_RATE)?;
         if audio.samples.is_empty() {
@@ -5896,7 +5959,7 @@ mod android {
             .unwrap_or(2);
         params.set_n_threads(thread_count);
         params.set_translate(false);
-        params.set_language(None);
+        params.set_language(language_override);
         params.set_no_context(true);
         params.set_token_timestamps(false);
         params.set_print_special(false);
@@ -5926,13 +5989,18 @@ mod android {
             }));
         }
 
+        let language = whisper_rs::get_lang_str(state.full_lang_id_from_state())
+            .map(ToString::to_string)
+            .or_else(|| language_override.map(ToString::to_string));
+
         Ok(MobileLyricsTranscription {
             backend: "whisper.cpp",
-            requested_device: "cpu",
-            device: "cpu",
-            model_name: model.name.to_string(),
-            language: whisper_rs::get_lang_str(state.full_lang_id_from_state())
-                .map(ToString::to_string),
+            source_kind: LYRICS_SOURCE_KIND_AI,
+            requested_device: Some("cpu"),
+            device: Some("cpu"),
+            model_name: Some(model.name.to_string()),
+            language,
+            language_override: language_override.map(ToString::to_string),
             segments,
         })
     }
@@ -5943,6 +6011,7 @@ mod android {
         project: ProjectSchema,
         source_artifact: ArtifactSchema,
         model: WhisperModel,
+        language_override: Option<String>,
     ) {
         let started = Instant::now();
         let connection = match db_at_root(&root) {
@@ -5952,8 +6021,11 @@ mod android {
 
         let result = (|| {
             update_job_progress(&connection, &job_id, 15)?;
-            let transcription =
-                transcribe_project_lyrics(Path::new(&project.imported_path), &model)?;
+            let transcription = transcribe_project_lyrics(
+                Path::new(&project.imported_path),
+                &model,
+                language_override.as_deref(),
+            )?;
             update_job_progress(&connection, &job_id, 90)?;
             store_lyrics_transcript(
                 &connection,
@@ -7085,6 +7157,14 @@ mod android {
         let root = app_data_root(&app)?;
         let project = require_sync_editable_project(&connection, &project_id)?;
         let force = payload_force(&payload);
+        let language_override = match payload_lyrics_language_override(&payload) {
+            Ok(language_override) => language_override,
+            Err(message) => {
+                return Ok(JobResponse {
+                    job: create_failed_job(&connection, &project_id, "lyrics", &message)?,
+                });
+            }
+        };
         let existing = get_lyrics_response(&connection, project_id.clone())?;
         if !force && !existing.segments.is_empty() {
             return Ok(JobResponse {
@@ -7104,6 +7184,34 @@ mod android {
                 });
             }
         };
+        if language_override.as_deref() == Some("none") {
+            let (backend, source_kind, requested_device, device, model_name) =
+                no_lyrics_transcript_metadata();
+            store_lyrics_transcript(
+                &connection,
+                &root,
+                &project,
+                &source_artifact,
+                MobileLyricsTranscription {
+                    backend,
+                    source_kind,
+                    requested_device,
+                    device,
+                    model_name,
+                    language: None,
+                    language_override,
+                    segments: Vec::new(),
+                },
+            )?;
+            return Ok(JobResponse {
+                job: create_completed_job(
+                    &connection,
+                    &project_id,
+                    "lyrics",
+                    Some(source_artifact.id),
+                )?,
+            });
+        }
         let model = match find_whisper_model(&root) {
             Some(model) => model,
             None => {
@@ -7124,7 +7232,16 @@ mod android {
             Some(source_artifact.id.clone()),
         )?;
         let job_id = job.id.clone();
-        thread::spawn(move || run_lyrics_job(root, job_id, project, source_artifact, model));
+        thread::spawn(move || {
+            run_lyrics_job(
+                root,
+                job_id,
+                project,
+                source_artifact,
+                model,
+                language_override,
+            )
+        });
         Ok(JobResponse { job })
     }
 
@@ -7157,6 +7274,7 @@ mod android {
             device: None,
             model_name: None,
             language: None,
+            language_override: None,
             source_segments: Vec::new(),
             segments: Vec::new(),
             has_user_edits: false,
@@ -7867,8 +7985,63 @@ mod mobile_backend_tests {
     }
 
     #[test]
+    fn mobile_lyrics_language_override_normalizes_auto_values() {
+        assert_eq!(payload_lyrics_language_override(&json!({})).unwrap(), None);
+        assert_eq!(
+            payload_lyrics_language_override(&json!({"language_override": null})).unwrap(),
+            None
+        );
+        assert_eq!(
+            payload_lyrics_language_override(&json!({"language_override": "   "})).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn mobile_lyrics_language_override_accepts_curated_codes() {
+        assert_eq!(
+            payload_lyrics_language_override(&json!({"language_override": "none"})).unwrap(),
+            Some("none".to_string())
+        );
+        assert_eq!(
+            payload_lyrics_language_override(&json!({"language_override": " PT "})).unwrap(),
+            Some("pt".to_string())
+        );
+        assert_eq!(
+            payload_lyrics_language_override(&json!({"language_override": "zh"})).unwrap(),
+            Some("zh".to_string())
+        );
+    }
+
+    #[test]
+    fn mobile_lyrics_language_override_rejects_bad_values() {
+        assert!(
+            payload_lyrics_language_override(&json!({"language_override": "ru"}))
+                .unwrap_err()
+                .contains("language_override must be null or one of")
+        );
+        assert!(
+            payload_lyrics_language_override(&json!({"language_override": 7}))
+                .unwrap_err()
+                .contains("language_override must be a string or null")
+        );
+    }
+
+    #[test]
+    fn mobile_lyrics_none_override_uses_instrumental_contract_metadata() {
+        let (backend, source_kind, requested_device, device, model_name) =
+            no_lyrics_transcript_metadata();
+
+        assert_eq!(backend, "none");
+        assert_eq!(source_kind, "instrumental");
+        assert_eq!(requested_device, None);
+        assert_eq!(device, None);
+        assert_eq!(model_name, None);
+    }
+
+    #[test]
     fn mobile_sync_defaults_match_local_project_contract() {
-        assert_eq!(MOBILE_DB_VERSION, 2);
+        assert_eq!(MOBILE_DB_VERSION, 3);
         assert!(sync_editable(DEFAULT_SYNC_STATUS));
         assert!(!sync_editable("remote_available"));
         assert!(!sync_editable("conflicted"));

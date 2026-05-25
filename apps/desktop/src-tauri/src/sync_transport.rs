@@ -145,7 +145,7 @@ mod sync_core {
     };
     use chrono::{DateTime, Utc};
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-    use rand::{rngs::OsRng, RngCore};
+    use rand::{rng, Rng};
     use serde::{Deserialize, Serialize};
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
@@ -932,7 +932,7 @@ mod sync_core {
 
     pub(crate) fn random_nonce() -> String {
         let mut bytes = [0_u8; 24];
-        OsRng.fill_bytes(&mut bytes);
+        rng().fill_bytes(&mut bytes);
         URL_SAFE_NO_PAD.encode(bytes)
     }
 
@@ -2592,7 +2592,9 @@ mod desktop {
         let params: NoiseParams = NOISE_PATTERN
             .parse()
             .map_err(|error| format!("Noise pattern is invalid: {error}"))?;
-        let builder = Builder::new(params).local_private_key(&keypair.private);
+        let builder = Builder::new(params)
+            .local_private_key(&keypair.private)
+            .map_err(|error| format!("Could not configure Noise static keypair: {error}"))?;
         if initiator {
             builder
                 .build_initiator()

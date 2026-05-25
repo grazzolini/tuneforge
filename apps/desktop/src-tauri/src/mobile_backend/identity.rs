@@ -14,7 +14,7 @@ pub(super) fn ensure_local_identity(connection: &Connection) -> Result<(), Strin
     }
 
     let mut private_key_bytes = [0_u8; 32];
-    OsRng.fill_bytes(&mut private_key_bytes);
+    rng().fill_bytes(&mut private_key_bytes);
     let signing_key = SigningKey::from_bytes(&private_key_bytes);
     let public_key_bytes = signing_key.verifying_key().to_bytes();
     let timestamp = now_iso();
@@ -38,7 +38,7 @@ pub(super) fn ensure_local_identity(connection: &Connection) -> Result<(), Strin
 
 pub(super) fn new_sync_group_id() -> String {
     let mut bytes = [0_u8; 16];
-    OsRng.fill_bytes(&mut bytes);
+    rng().fill_bytes(&mut bytes);
     format!("{SYNC_GROUP_ID_PREFIX}{}", encode_key(&bytes))
 }
 
@@ -59,7 +59,7 @@ pub(super) fn decode_key(value: &str) -> Result<Vec<u8>, String> {
 
 pub(super) fn new_prefixed_token(prefix: &str, byte_count: usize) -> String {
     let mut bytes = vec![0_u8; byte_count];
-    OsRng.fill_bytes(&mut bytes);
+    rng().fill_bytes(&mut bytes);
     format!("{prefix}{}", encode_key(&bytes))
 }
 

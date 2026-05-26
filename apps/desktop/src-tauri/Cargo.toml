@@ -26,12 +26,12 @@ chrono = { version = "0.4.44", features = ["serde"] }
 [target.'cfg(not(target_os = "android"))'.dependencies]
 base64 = "0.22.1"
 ed25519-dalek = "2.2.0"
-if-addrs = "0.13.4"
+if-addrs = "0.15.0"
 iroh = "1.0.0-rc.0"
 iroh-blobs = { version = "0.101.0", features = ["fs-store"] }
-rand = "0.8.6"
-sha2 = "0.10.9"
-snow = "0.9.6"
+rand = "0.10.1"
+sha2 = "0.11.0"
+snow = "0.10.0"
 tokio = { version = "1", features = ["time"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
@@ -52,14 +52,14 @@ objc2-foundation = "0.3.2"
 android_system_properties = "0.1.5"
 base64 = "0.22.1"
 ed25519-dalek = "2.2.0"
-if-addrs = "0.13.4"
+if-addrs = "0.15.0"
 iroh = "1.0.0-rc.0"
 iroh-blobs = { version = "0.101.0", features = ["fs-store"] }
 ndk-sys = { version = "0.6.0", features = ["media"] }
-rand = "0.8.6"
+rand = "0.10.1"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
-sha2 = "0.10.9"
-snow = "0.9.6"
+sha2 = "0.11.0"
+snow = "0.10.0"
 tauri-plugin-barcode-scanner = "2"
 tokio = { version = "1", features = ["time"] }
 whisper-rs = "0.16.0"

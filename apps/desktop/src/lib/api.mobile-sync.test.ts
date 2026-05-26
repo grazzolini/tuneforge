@@ -214,4 +214,26 @@ describe("mobile sync API adapter", () => {
       payload: { peerDeviceId: "device_peer_1", preferredTransport: "auto" },
     });
   });
+
+  it("passes discovered endpoint hints to native sync now", async () => {
+    const api = await loadMobileApi();
+    const currentEndpointHints = [
+      " tuneforge-sync+iroh://device_peer_1?direct=192.168.1.57%3A47620 ",
+      "tuneforge-sync+tcp://192.168.1.57:48625?device_id=device_peer_1&v=1",
+    ];
+
+    await api.syncTrustedPeerNow("device_peer_1", { endpointHints: currentEndpointHints });
+
+    expect(mockInvoke).toHaveBeenCalledWith("sync_transport_sync_now", {
+      payload: {
+        peerDeviceId: "device_peer_1",
+        preferredTransport: "auto",
+        endpointHint: "tuneforge-sync+iroh://device_peer_1?direct=192.168.1.57%3A47620",
+        endpointHints: [
+          "tuneforge-sync+iroh://device_peer_1?direct=192.168.1.57%3A47620",
+          "tuneforge-sync+tcp://192.168.1.57:48625?device_id=device_peer_1&v=1",
+        ],
+      },
+    });
+  });
 });

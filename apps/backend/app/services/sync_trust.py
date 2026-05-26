@@ -237,6 +237,31 @@ def revoke_trusted_peer(session: Session, device_id: str) -> TrustedSyncPeer:
     return _trusted_peer_from_orm(peer)
 
 
+def update_trusted_peer_endpoint_hints(
+    session: Session,
+    *,
+    device_id: str,
+    endpoint_hints: list[str] | None,
+) -> TrustedSyncPeer:
+    normalized_device_id = _normalize_required_string(device_id, "device_id")
+    normalized_endpoint_hints = _normalize_endpoint_hints(endpoint_hints)
+    peer = session.get(SyncTrustedPeer, normalized_device_id)
+    if peer is None or peer.revoked_at is not None:
+        raise AppError(
+            SYNC_PEER_UNTRUSTED,
+            "Trusted peer is unknown.",
+            status_code=status.HTTP_404_NOT_FOUND,
+            details={"device_id": normalized_device_id},
+        )
+
+    if _normalize_endpoint_hints(peer.endpoint_hints_json) != normalized_endpoint_hints:
+        peer.endpoint_hints_json = normalized_endpoint_hints
+        peer.updated_at = _utcnow()
+        session.flush()
+
+    return _trusted_peer_from_orm(peer)
+
+
 def list_trusted_peers(session: Session) -> list[TrustedSyncPeer]:
     peers = [
         _trusted_peer_from_orm(peer)

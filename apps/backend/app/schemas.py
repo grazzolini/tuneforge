@@ -787,6 +787,18 @@ class SyncTrustedPeerCreateRequest(BaseModel):
         return {"payload": payload, "adopt_sync_group": adopt_sync_group}
 
 
+class SyncTrustedPeerEndpointHintsRequest(BaseModel):
+    endpoint_hints: list[str]
+
+    @field_validator("endpoint_hints")
+    @classmethod
+    def validate_endpoint_hints(cls, value: list[str]) -> list[str]:
+        normalized = [hint.strip() for hint in value]
+        if any(not hint for hint in normalized):
+            raise ValueError("Endpoint hints cannot be empty.")
+        return normalized
+
+
 class SyncTrustedPeerResponse(BaseModel):
     trusted_peer: SyncTrustedPeerSchema
 

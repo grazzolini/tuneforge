@@ -17,6 +17,7 @@ pub struct SyncTransportStartListenerRequest {
 pub struct SyncTransportSyncNowRequest {
     pub peer_device_id: String,
     pub endpoint_hint: Option<String>,
+    pub endpoint_hints: Option<Vec<String>>,
     pub preferred_transport: Option<String>,
     pub project_ids: Option<Vec<String>>,
     #[serde(default = "default_true")]
@@ -33,12 +34,27 @@ pub struct SyncTransportPairingOfferRequest {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SyncTransportNearbyPeer {
+    pub device_id: String,
+    pub sync_group_id: String,
+    pub display_name: Option<String>,
+    pub public_key: String,
+    pub endpoint_hints: Vec<String>,
+    pub protocol_version: String,
+    pub timestamp: String,
+    pub observed_at: String,
+    pub expires_at: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncTransportStatus {
     pub supported: bool,
     pub running: bool,
     pub bind_host: Option<String>,
     pub port: Option<u16>,
     pub endpoint_hints: Vec<String>,
+    pub nearby_peers: Vec<SyncTransportNearbyPeer>,
     pub active_sessions: usize,
     pub accepted_sessions: u64,
     pub failed_sessions: u64,
@@ -108,6 +124,7 @@ pub struct SyncTransportSyncResult {
     pub message: String,
     pub selected_transport: String,
     pub fallback_reason: Option<String>,
+    pub fallback_code: Option<String>,
     pub attempted_transports: Vec<String>,
     pub started_at: String,
     pub completed_at: String,
@@ -205,7 +222,27 @@ mod sync_core {
         endpoint_hint: Option<String>,
         pub(crate) tcp_fallback_endpoint_hint: Option<String>,
         fallback_reason: Option<String>,
+        fallback_code: Option<TransportFallbackCode>,
         attempted_transports: Vec<TransportKind>,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(crate) enum TransportFallbackCode {
+        MissingIrohHint,
+        IrohUnavailable,
+        IrohConnectFailed,
+        StaleIrohHint,
+    }
+
+    impl TransportFallbackCode {
+        fn as_str(self) -> &'static str {
+            match self {
+                Self::MissingIrohHint => "missing_iroh_hint",
+                Self::IrohUnavailable => "iroh_unavailable",
+                Self::IrohConnectFailed => "iroh_connect_failed",
+                Self::StaleIrohHint => "stale_iroh_hint",
+            }
+        }
     }
 
     impl TransportSelection {
@@ -215,16 +252,22 @@ mod sync_core {
                 endpoint_hint: None,
                 tcp_fallback_endpoint_hint: None,
                 fallback_reason: None,
+                fallback_code: None,
                 attempted_transports: vec![selected],
             }
         }
 
-        fn tcp(endpoint_hint: Option<String>, fallback_reason: Option<String>) -> Self {
+        fn tcp(
+            endpoint_hint: Option<String>,
+            fallback_reason: Option<String>,
+            fallback_code: Option<TransportFallbackCode>,
+        ) -> Self {
             Self {
                 selected: TransportKind::Tcp,
                 endpoint_hint,
                 tcp_fallback_endpoint_hint: None,
                 fallback_reason,
+                fallback_code,
                 attempted_transports: vec![TransportKind::Tcp],
             }
         }
@@ -235,6 +278,7 @@ mod sync_core {
                 endpoint_hint: Some(endpoint_hint),
                 tcp_fallback_endpoint_hint,
                 fallback_reason: None,
+                fallback_code: None,
                 attempted_transports: vec![TransportKind::Iroh],
             }
         }
@@ -243,12 +287,14 @@ mod sync_core {
             endpoint_hint: String,
             preferred_transport: TransportKind,
             fallback_reason: String,
+            fallback_code: Option<TransportFallbackCode>,
         ) -> Self {
             Self {
                 selected: TransportKind::Tcp,
                 endpoint_hint: Some(endpoint_hint),
                 tcp_fallback_endpoint_hint: None,
                 fallback_reason: Some(fallback_reason),
+                fallback_code,
                 attempted_transports: vec![preferred_transport, TransportKind::Tcp],
             }
         }
@@ -264,8 +310,15 @@ mod sync_core {
             self.endpoint_hint = Some(endpoint_hint);
             self.tcp_fallback_endpoint_hint = None;
             self.fallback_reason = Some(reason);
+            self.fallback_code = Some(TransportFallbackCode::IrohConnectFailed);
             self.attempted_transports = vec![TransportKind::Iroh, TransportKind::Tcp];
             Ok(())
+        }
+
+        pub(crate) fn mark_stale_iroh_hint(&mut self) {
+            if self.fallback_code == Some(TransportFallbackCode::IrohConnectFailed) {
+                self.fallback_code = Some(TransportFallbackCode::StaleIrohHint);
+            }
         }
 
         pub(crate) fn endpoint_hint(&self) -> Option<&str> {
@@ -276,6 +329,7 @@ mod sync_core {
             TransportEvidence {
                 selected_transport: self.selected.id().to_string(),
                 fallback_reason: self.fallback_reason.clone(),
+                fallback_code: self.fallback_code.map(|code| code.as_str().to_string()),
                 attempted_transports: self
                     .attempted_transports
                     .iter()
@@ -289,6 +343,7 @@ mod sync_core {
     pub(crate) struct TransportEvidence {
         pub(crate) selected_transport: String,
         pub(crate) fallback_reason: Option<String>,
+        pub(crate) fallback_code: Option<String>,
         pub(crate) attempted_transports: Vec<String>,
     }
 
@@ -306,7 +361,7 @@ mod sync_core {
 
         match preferred_transport.map(TransportKind::from_id) {
             Some(TransportKind::Tcp) => tcp_endpoint_hint
-                .map(|hint| TransportSelection::tcp(Some(hint), None))
+                .map(|hint| TransportSelection::tcp(Some(hint), None, None))
                 .ok_or_else(|| {
                     format!(
                         "Trusted sync peer {peer_device_id} does not have a TuneForge TCP endpoint hint."
@@ -332,8 +387,11 @@ mod sync_core {
                     );
                     tcp_endpoint_hint
                         .map(|hint| {
-                            let mut selection =
-                                TransportSelection::tcp(Some(hint), Some(fallback_reason));
+                            let mut selection = TransportSelection::tcp(
+                                Some(hint),
+                                Some(fallback_reason),
+                                Some(TransportFallbackCode::MissingIrohHint),
+                            );
                             selection.attempted_transports =
                                 vec![TransportKind::Iroh, TransportKind::Tcp];
                             selection
@@ -349,8 +407,11 @@ mod sync_core {
                     );
                     tcp_endpoint_hint
                         .map(|hint| {
-                            let mut selection =
-                                TransportSelection::tcp(Some(hint), Some(fallback_reason));
+                            let mut selection = TransportSelection::tcp(
+                                Some(hint),
+                                Some(fallback_reason),
+                                Some(TransportFallbackCode::IrohUnavailable),
+                            );
                             selection.attempted_transports =
                                 vec![TransportKind::Iroh, TransportKind::Tcp];
                             selection
@@ -374,6 +435,7 @@ mod sync_core {
                             hint,
                             preferred_transport,
                             fallback_reason,
+                            None,
                         )
                     })
                     .ok_or_else(|| {
@@ -383,6 +445,38 @@ mod sync_core {
                     })
             }
         }
+    }
+
+    pub(crate) fn sync_now_selection_endpoint_hints(
+        endpoint_hint: Option<&str>,
+        endpoint_hints: Option<&[String]>,
+        peer_endpoint_hints: &[String],
+    ) -> Vec<String> {
+        let mut merged = Vec::new();
+        if let Some(endpoint_hint) = endpoint_hint {
+            push_selection_endpoint_hint(&mut merged, endpoint_hint);
+        }
+        if let Some(endpoint_hints) = endpoint_hints {
+            for endpoint_hint in endpoint_hints {
+                push_selection_endpoint_hint(&mut merged, endpoint_hint);
+            }
+        }
+        for endpoint_hint in peer_endpoint_hints {
+            push_selection_endpoint_hint(&mut merged, endpoint_hint);
+        }
+        merged
+    }
+
+    fn push_selection_endpoint_hint(endpoint_hints: &mut Vec<String>, endpoint_hint: &str) {
+        let endpoint_hint = endpoint_hint.trim();
+        if endpoint_hint.is_empty()
+            || endpoint_hints
+                .iter()
+                .any(|existing| existing == endpoint_hint)
+        {
+            return;
+        }
+        endpoint_hints.push(endpoint_hint.to_string());
     }
 
     fn select_iroh_transport(
@@ -414,6 +508,7 @@ mod sync_core {
                         hint,
                         TransportKind::Iroh,
                         fallback_reason,
+                        Some(TransportFallbackCode::MissingIrohHint),
                     )
                 })
                 .ok_or_else(|| {
@@ -432,7 +527,12 @@ mod sync_core {
         };
         tcp_endpoint_hint
             .map(|hint| {
-                TransportSelection::tcp_fallback(hint, TransportKind::Iroh, fallback_reason)
+                TransportSelection::tcp_fallback(
+                    hint,
+                    TransportKind::Iroh,
+                    fallback_reason,
+                    Some(TransportFallbackCode::IrohUnavailable),
+                )
             })
             .ok_or_else(|| {
                 format!(
@@ -495,6 +595,11 @@ mod sync_core {
         AuthProof {
             handshake_signature: Value,
         },
+        EndpointHints {
+            protocol_version: String,
+            endpoint_hints: Vec<String>,
+            observed_at: String,
+        },
         ManifestOffer(ManifestOffer),
         ArtifactRequest {
             artifact_id: String,
@@ -525,6 +630,7 @@ mod sync_core {
             match self {
                 Self::AuthChallenge { .. } => "auth_challenge",
                 Self::AuthProof { .. } => "auth_proof",
+                Self::EndpointHints { .. } => "endpoint_hints",
                 Self::ManifestOffer(_) => "manifest_offer",
                 Self::ArtifactRequest { .. } => "artifact_request",
                 Self::ArtifactStart { .. } => "artifact_start",
@@ -661,11 +767,15 @@ mod sync_core {
     #[derive(Debug)]
     pub(crate) struct AuthenticatedSession {
         pub(crate) remote_device_id: String,
+        pub(crate) remote_endpoint_hints: Vec<String>,
     }
 
     #[derive(Clone, Debug, Deserialize)]
     pub(crate) struct SyncLocalIdentity {
         pub(crate) device_id: String,
+        pub(crate) sync_group_id: String,
+        pub(crate) display_name: Option<String>,
+        pub(crate) public_key: String,
     }
 
     #[derive(Clone, Debug, Deserialize)]
@@ -690,6 +800,7 @@ mod sync_core {
         connection: &mut impl ProtocolConnection,
         client: &impl SyncTransportAuthBackend,
         expected_peer_device_id: Option<String>,
+        local_endpoint_hints: &[String],
     ) -> Result<AuthenticatedSession, String> {
         let identity = client
             .local_identity()
@@ -779,7 +890,59 @@ mod sync_core {
             connection.handshake_hash(),
         )?;
 
-        Ok(AuthenticatedSession { remote_device_id })
+        let endpoint_hints = normalize_advisory_endpoint_hints(local_endpoint_hints.to_vec())?;
+        connection.send_message(&ProtocolMessage::EndpointHints {
+            protocol_version: TRANSPORT_PROTOCOL_VERSION.to_string(),
+            endpoint_hints,
+            observed_at: Utc::now().to_rfc3339(),
+        })?;
+        let remote_endpoint_hints = match connection.read_message()? {
+            ProtocolMessage::EndpointHints {
+                protocol_version,
+                endpoint_hints,
+                ..
+            } => {
+                if protocol_version != TRANSPORT_PROTOCOL_VERSION {
+                    return Err(format!(
+                        "Sync peer endpoint hints use unsupported transport protocol version {protocol_version}."
+                    ));
+                }
+                normalize_advisory_endpoint_hints(endpoint_hints)?
+            }
+            ProtocolMessage::Error(error) => {
+                return Err(format!(
+                    "Sync peer returned an endpoint hint error: {}",
+                    error.message
+                ));
+            }
+            other => {
+                return Err(format!(
+                    "Sync peer sent unexpected endpoint hint message: {}",
+                    other.kind()
+                ));
+            }
+        };
+
+        Ok(AuthenticatedSession {
+            remote_device_id,
+            remote_endpoint_hints,
+        })
+    }
+
+    pub(crate) fn normalize_advisory_endpoint_hints(
+        endpoint_hints: Vec<String>,
+    ) -> Result<Vec<String>, String> {
+        let mut normalized = Vec::with_capacity(endpoint_hints.len());
+        for hint in endpoint_hints {
+            let trimmed = hint.trim();
+            if trimmed.is_empty() {
+                return Err("Sync endpoint hints cannot contain empty values.".to_string());
+            }
+            if !normalized.iter().any(|existing| existing == trimmed) {
+                normalized.push(trimmed.to_string());
+            }
+        }
+        Ok(normalized)
     }
 
     pub(crate) fn transport_handshake_challenge(
@@ -1060,8 +1223,8 @@ mod sync_core {
 
 mod desktop {
     use super::{
-        sync_core::*, SyncTransportManifestError, SyncTransportPairingOffer,
-        SyncTransportPairingOfferRequest, SyncTransportProjectResult,
+        sync_core::*, SyncTransportManifestError, SyncTransportNearbyPeer,
+        SyncTransportPairingOffer, SyncTransportPairingOfferRequest, SyncTransportProjectResult,
         SyncTransportStartListenerRequest, SyncTransportStatus, SyncTransportSyncNowRequest,
         SyncTransportSyncResult, SyncTransportTimingEvidence, SyncTransportTransferCounts,
         SyncTransportTransferResult,
@@ -1072,7 +1235,7 @@ mod desktop {
         Endpoint, EndpointAddr, EndpointId, SecretKey,
     };
     use iroh_blobs::store::fs::FsStore;
-    use serde::Deserialize;
+    use serde::{Deserialize, Serialize};
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
     use snow::{params::NoiseParams, Builder};
@@ -1083,7 +1246,7 @@ mod desktop {
         env,
         fs::{self, File},
         io::{self, Read, Write},
-        net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream},
+        net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket},
         path::{Path, PathBuf},
         process,
         str::FromStr,
@@ -1101,6 +1264,12 @@ mod desktop {
     const DEFAULT_BIND_HOST: &str = "0.0.0.0";
     const DEFAULT_LISTENER_PORT: u16 = 47619;
     const IROH_LISTENER_PORT_OFFSET: u16 = 1;
+    const DISCOVERY_PROTOCOL_VERSION: &str = "tuneforge-sync-discovery-v1";
+    const DISCOVERY_PORT: u16 = 47621;
+    const DISCOVERY_BEACON_INTERVAL: Duration = Duration::from_secs(5);
+    const DISCOVERY_PEER_TTL: Duration = Duration::from_secs(60);
+    const DISCOVERY_SOCKET_TIMEOUT: Duration = Duration::from_millis(250);
+    const DISCOVERY_MAX_PACKET_BYTES: usize = 8192;
     const IROH_ALPN: &[u8] = b"tuneforge-sync/iroh/v1";
     const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
     const READ_TIMEOUT: Duration = Duration::from_secs(45);
@@ -1183,18 +1352,39 @@ mod desktop {
             let tcp_stop = Arc::clone(&stop);
             let backend = self.backend.clone();
             let shared_status = Arc::clone(&self.shared_status);
+            let tcp_endpoint_hints_for_sessions = endpoint_hints.clone();
             let tcp_thread = thread::spawn(move || {
-                accept_loop(listener, backend, tcp_stop, shared_status);
+                accept_loop(
+                    listener,
+                    backend,
+                    tcp_stop,
+                    shared_status,
+                    tcp_endpoint_hints_for_sessions,
+                );
             });
             let iroh_thread = iroh_transport.as_ref().map(|transport| {
                 let transport = transport.clone();
                 let backend = self.backend.clone();
                 let shared_status = Arc::clone(&self.shared_status);
                 let iroh_stop = Arc::clone(&stop);
+                let endpoint_hints = endpoint_hints.clone();
                 thread::spawn(move || {
-                    iroh_accept_loop(transport, backend, iroh_stop, shared_status);
+                    iroh_accept_loop(transport, backend, iroh_stop, shared_status, endpoint_hints);
                 })
             });
+            let mut discovery_error = None;
+            let discovery_thread = match start_discovery(
+                identity,
+                endpoint_hints.clone(),
+                Arc::clone(&self.shared_status),
+                Arc::clone(&stop),
+            ) {
+                Ok(thread) => Some(thread),
+                Err(error) => {
+                    discovery_error = Some(error);
+                    None
+                }
+            };
 
             let handle = ListenerHandle {
                 bind_addr,
@@ -1203,6 +1393,7 @@ mod desktop {
                 stop,
                 tcp_thread: Some(tcp_thread),
                 iroh_thread,
+                discovery_thread,
             };
             {
                 let mut guard = self
@@ -1212,7 +1403,14 @@ mod desktop {
                 *guard = Some(handle);
             }
             update_status(&self.shared_status, |status| {
-                status.last_status = Some("Sync transport listener started.".to_string());
+                status.last_status = Some(match discovery_error {
+                    Some(error) => {
+                        format!(
+                            "Sync transport listener started; sync discovery unavailable: {error}"
+                        )
+                    }
+                    None => "Sync transport listener started.".to_string(),
+                });
                 status.last_error = None;
                 status.last_sync = None;
             });
@@ -1244,8 +1442,14 @@ mod desktop {
                         .join()
                         .map_err(|_| "Iroh sync transport listener thread panicked.".to_string())?;
                 }
+                if let Some(thread) = listener.discovery_thread.take() {
+                    thread
+                        .join()
+                        .map_err(|_| "Sync discovery listener thread panicked.".to_string())?;
+                }
                 update_status(&self.shared_status, |status| {
                     status.last_status = Some("Sync transport listener stopped.".to_string());
+                    status.nearby_peers.clear();
                 });
             }
 
@@ -1260,7 +1464,10 @@ mod desktop {
             let shared = self
                 .shared_status
                 .lock()
-                .map(|status| status.clone())
+                .map(|mut status| {
+                    prune_nearby_peers(&mut status, Instant::now());
+                    status.clone()
+                })
                 .unwrap_or_default();
             let listener = self.listener.lock().ok();
             let listener = listener.as_ref().and_then(|guard| guard.as_ref());
@@ -1273,6 +1480,7 @@ mod desktop {
                 endpoint_hints: listener
                     .map(|handle| handle.endpoint_hints.clone())
                     .unwrap_or_default(),
+                nearby_peers: nearby_peers_from_status(shared.nearby_peers.clone()),
                 active_sessions: shared.active_sessions,
                 accepted_sessions: shared.accepted_sessions,
                 failed_sessions: shared.failed_sessions,
@@ -1346,10 +1554,15 @@ mod desktop {
                 .as_deref()
                 .and_then(normalized_transport_id);
             let local_iroh = self.local_iroh_transport();
+            let selection_endpoint_hints = sync_now_selection_endpoint_hints(
+                payload.endpoint_hint.as_deref(),
+                payload.endpoint_hints.as_deref(),
+                &peer.endpoint_hints,
+            );
             let transport_selection = select_sync_transport(
                 preferred_transport,
-                payload.endpoint_hint.as_deref(),
-                &peer.endpoint_hints,
+                None,
+                &selection_endpoint_hints,
                 &payload.peer_device_id,
                 local_iroh.is_some(),
             )?;
@@ -1363,12 +1576,27 @@ mod desktop {
             timings.push(timer.finish());
 
             let timer = SyncPhaseTimer::start("peer_authentication");
+            let local_endpoint_hints = self.current_endpoint_hints();
             let session = authenticate_session(
                 &mut connection,
                 &client,
                 Some(payload.peer_device_id.clone()),
+                &local_endpoint_hints,
             )?;
             timings.push(timer.finish());
+            let mut refreshed_endpoint_hints_after_auth = false;
+            if authenticated_hints_make_trusted_iroh_hint_stale(
+                &peer.endpoint_hints,
+                &session.remote_endpoint_hints,
+            ) {
+                transport_selection.mark_stale_iroh_hint();
+                refresh_authenticated_endpoint_hints(
+                    &client,
+                    &session.remote_device_id,
+                    &session.remote_endpoint_hints,
+                );
+                refreshed_endpoint_hints_after_auth = true;
+            }
 
             let timer = SyncPhaseTimer::start("local_manifest_export");
             let local_offer = load_local_manifest_offer(
@@ -1444,8 +1672,16 @@ mod desktop {
             let TransportEvidence {
                 selected_transport,
                 fallback_reason,
+                fallback_code,
                 attempted_transports,
             } = transport_selection.evidence();
+            if !refreshed_endpoint_hints_after_auth {
+                refresh_authenticated_endpoint_hints(
+                    &client,
+                    &session.remote_device_id,
+                    &session.remote_endpoint_hints,
+                );
+            }
 
             Ok(SyncTransportSyncResult {
                 run_id,
@@ -1460,6 +1696,7 @@ mod desktop {
                 ),
                 selected_transport,
                 fallback_reason,
+                fallback_code,
                 attempted_transports,
                 started_at: run_started_at.to_rfc3339(),
                 completed_at: completed_at.to_rfc3339(),
@@ -1490,6 +1727,14 @@ mod desktop {
                     .as_ref()
                     .and_then(|handle| handle.iroh_transport.clone())
             })
+        }
+
+        fn current_endpoint_hints(&self) -> Vec<String> {
+            self.listener
+                .lock()
+                .ok()
+                .and_then(|guard| guard.as_ref().map(|handle| handle.endpoint_hints.clone()))
+                .unwrap_or_default()
         }
     }
 
@@ -1544,6 +1789,7 @@ mod desktop {
         stop: Arc<AtomicBool>,
         tcp_thread: Option<JoinHandle<()>>,
         iroh_thread: Option<JoinHandle<()>>,
+        discovery_thread: Option<JoinHandle<()>>,
     }
 
     struct IncomingSessionResult {
@@ -1559,6 +1805,264 @@ mod desktop {
         last_status: Option<String>,
         last_error: Option<String>,
         last_sync: Option<SyncTransportSyncResult>,
+        nearby_peers: HashMap<String, DiscoveryPeerEntry>,
+    }
+
+    #[derive(Clone)]
+    struct DiscoveryPeerEntry {
+        peer: SyncTransportNearbyPeer,
+        expires_at_instant: Instant,
+    }
+
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    struct DiscoveryBeaconPayload {
+        protocol_version: String,
+        device_id: String,
+        sync_group_id: String,
+        display_name: Option<String>,
+        public_key: String,
+        endpoint_hints: Vec<String>,
+        timestamp: String,
+    }
+
+    fn start_discovery(
+        identity: SyncLocalIdentity,
+        endpoint_hints: Vec<String>,
+        shared_status: Arc<Mutex<SharedStatus>>,
+        stop: Arc<AtomicBool>,
+    ) -> Result<JoinHandle<()>, String> {
+        let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, DISCOVERY_PORT)).map_err(|error| {
+            format!("Could not bind sync discovery UDP port {DISCOVERY_PORT}: {error}")
+        })?;
+        socket
+            .set_broadcast(true)
+            .map_err(|error| format!("Could not enable sync discovery broadcast: {error}"))?;
+        socket
+            .set_read_timeout(Some(DISCOVERY_SOCKET_TIMEOUT))
+            .map_err(|error| {
+                format!("Could not configure sync discovery receive timeout: {error}")
+            })?;
+        Ok(thread::spawn(move || {
+            discovery_loop(socket, identity, endpoint_hints, shared_status, stop);
+        }))
+    }
+
+    fn discovery_loop(
+        socket: UdpSocket,
+        identity: SyncLocalIdentity,
+        endpoint_hints: Vec<String>,
+        shared_status: Arc<Mutex<SharedStatus>>,
+        stop: Arc<AtomicBool>,
+    ) {
+        let mut last_broadcast = Instant::now()
+            .checked_sub(DISCOVERY_BEACON_INTERVAL)
+            .unwrap_or_else(Instant::now);
+        let broadcast_targets = discovery_broadcast_targets();
+        let mut buffer = [0_u8; DISCOVERY_MAX_PACKET_BYTES];
+
+        while !stop.load(Ordering::SeqCst) {
+            if last_broadcast.elapsed() >= DISCOVERY_BEACON_INTERVAL {
+                let timestamp = Utc::now();
+                for target in &broadcast_targets {
+                    let _ =
+                        send_discovery_beacon(&socket, *target, &identity, &endpoint_hints, timestamp);
+                }
+                last_broadcast = Instant::now();
+            }
+
+            match socket.recv_from(&mut buffer) {
+                Ok((size, _)) => {
+                    record_discovery_beacon(
+                        &shared_status,
+                        &buffer[..size],
+                        &identity.device_id,
+                        Utc::now(),
+                        Instant::now() + DISCOVERY_PEER_TTL,
+                    );
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) => {}
+                Err(_) => thread::sleep(ACCEPT_SLEEP),
+            }
+        }
+    }
+
+    fn send_discovery_beacon(
+        socket: &UdpSocket,
+        target: SocketAddr,
+        identity: &SyncLocalIdentity,
+        endpoint_hints: &[String],
+        timestamp: DateTime<Utc>,
+    ) -> Result<(), String> {
+        let payload = discovery_beacon_payload(identity, endpoint_hints, timestamp)?;
+        let bytes = serde_json::to_vec(&payload)
+            .map_err(|error| format!("Could not encode sync discovery beacon: {error}"))?;
+        if bytes.len() > DISCOVERY_MAX_PACKET_BYTES {
+            return Err("Sync discovery beacon exceeded the maximum packet size.".to_string());
+        }
+        socket
+            .send_to(&bytes, target)
+            .map(|_| ())
+            .map_err(|error| format!("Could not send sync discovery beacon: {error}"))
+    }
+
+    fn discovery_broadcast_targets() -> Vec<SocketAddr> {
+        let addresses = if_addrs::get_if_addrs()
+            .map(|interfaces| {
+                interfaces
+                    .into_iter()
+                    .filter_map(|interface| match interface.addr {
+                        if_addrs::IfAddr::V4(addr) => Some((addr.ip, addr.broadcast)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        discovery_broadcast_targets_from_ipv4(addresses)
+    }
+
+    fn discovery_broadcast_targets_from_ipv4(
+        addresses: impl IntoIterator<Item = (Ipv4Addr, Option<Ipv4Addr>)>,
+    ) -> Vec<SocketAddr> {
+        let mut targets = Vec::new();
+        for (ip, broadcast) in addresses {
+            if ip.is_loopback() || ip.is_link_local() {
+                continue;
+            }
+            if let Some(broadcast) = broadcast {
+                if broadcast.is_unspecified()
+                    || broadcast.is_loopback()
+                    || broadcast.is_link_local()
+                {
+                    continue;
+                }
+                push_discovery_broadcast_target(&mut targets, broadcast);
+            }
+        }
+        push_discovery_broadcast_target(&mut targets, Ipv4Addr::BROADCAST);
+        targets
+    }
+
+    fn push_discovery_broadcast_target(targets: &mut Vec<SocketAddr>, broadcast: Ipv4Addr) {
+        let target = SocketAddr::from((broadcast, DISCOVERY_PORT));
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+    }
+
+    fn discovery_beacon_payload(
+        identity: &SyncLocalIdentity,
+        endpoint_hints: &[String],
+        timestamp: DateTime<Utc>,
+    ) -> Result<DiscoveryBeaconPayload, String> {
+        Ok(DiscoveryBeaconPayload {
+            protocol_version: DISCOVERY_PROTOCOL_VERSION.to_string(),
+            device_id: required_discovery_string(&identity.device_id, "device_id")?,
+            sync_group_id: required_discovery_string(&identity.sync_group_id, "sync_group_id")?,
+            display_name: optional_discovery_string(identity.display_name.as_deref()),
+            public_key: required_discovery_string(&identity.public_key, "public_key")?,
+            endpoint_hints: normalize_advisory_endpoint_hints(endpoint_hints.to_vec())?,
+            timestamp: timestamp.to_rfc3339(),
+        })
+    }
+
+    fn record_discovery_beacon(
+        shared_status: &Arc<Mutex<SharedStatus>>,
+        bytes: &[u8],
+        local_device_id: &str,
+        observed_at: DateTime<Utc>,
+        expires_at_instant: Instant,
+    ) {
+        if let Ok(Some(entry)) =
+            parse_discovery_beacon(bytes, local_device_id, observed_at, expires_at_instant)
+        {
+            update_status(shared_status, |status| {
+                status
+                    .nearby_peers
+                    .insert(entry.peer.device_id.clone(), entry);
+            });
+        }
+    }
+
+    fn parse_discovery_beacon(
+        bytes: &[u8],
+        local_device_id: &str,
+        observed_at: DateTime<Utc>,
+        expires_at_instant: Instant,
+    ) -> Result<Option<DiscoveryPeerEntry>, String> {
+        if bytes.len() > DISCOVERY_MAX_PACKET_BYTES {
+            return Err("Sync discovery beacon exceeded the maximum packet size.".to_string());
+        }
+        let payload: DiscoveryBeaconPayload = serde_json::from_slice(bytes)
+            .map_err(|error| format!("Could not decode sync discovery beacon: {error}"))?;
+        if payload.protocol_version != DISCOVERY_PROTOCOL_VERSION {
+            return Ok(None);
+        }
+        let device_id = required_discovery_string(&payload.device_id, "device_id")?;
+        if device_id == local_device_id {
+            return Ok(None);
+        }
+        let observed_at_text = observed_at.to_rfc3339();
+        let expires_at =
+            observed_at + chrono::Duration::seconds(DISCOVERY_PEER_TTL.as_secs() as i64);
+        let peer = SyncTransportNearbyPeer {
+            device_id,
+            sync_group_id: required_discovery_string(&payload.sync_group_id, "sync_group_id")?,
+            display_name: optional_discovery_string(payload.display_name.as_deref()),
+            public_key: required_discovery_string(&payload.public_key, "public_key")?,
+            endpoint_hints: normalize_advisory_endpoint_hints(payload.endpoint_hints)?,
+            protocol_version: payload.protocol_version,
+            timestamp: required_discovery_string(&payload.timestamp, "timestamp")?,
+            observed_at: observed_at_text,
+            expires_at: expires_at.to_rfc3339(),
+        };
+        Ok(Some(DiscoveryPeerEntry {
+            peer,
+            expires_at_instant,
+        }))
+    }
+
+    fn required_discovery_string(value: &str, field: &str) -> Result<String, String> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(format!("Sync discovery beacon {field} cannot be empty."));
+        }
+        if trimmed.len() > 512 {
+            return Err(format!("Sync discovery beacon {field} is too long."));
+        }
+        Ok(trimmed.to_string())
+    }
+
+    fn optional_discovery_string(value: Option<&str>) -> Option<String> {
+        value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.chars().take(128).collect())
+    }
+
+    fn prune_nearby_peers(status: &mut SharedStatus, now: Instant) {
+        status
+            .nearby_peers
+            .retain(|_, entry| entry.expires_at_instant > now);
+    }
+
+    fn nearby_peers_from_status(
+        nearby_peers: HashMap<String, DiscoveryPeerEntry>,
+    ) -> Vec<SyncTransportNearbyPeer> {
+        let mut peers: Vec<SyncTransportNearbyPeer> =
+            nearby_peers.into_values().map(|entry| entry.peer).collect();
+        peers.sort_by(|left, right| {
+            left.display_name
+                .as_deref()
+                .unwrap_or("")
+                .cmp(right.display_name.as_deref().unwrap_or(""))
+                .then_with(|| left.device_id.cmp(&right.device_id))
+        });
+        peers
     }
 
     #[derive(Clone)]
@@ -1775,12 +2279,14 @@ mod desktop {
         backend: BackendAccess,
         stop: Arc<AtomicBool>,
         shared_status: Arc<Mutex<SharedStatus>>,
+        endpoint_hints: Vec<String>,
     ) {
         while !stop.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((stream, address)) => {
                     let backend = backend.clone();
                     let shared_status = Arc::clone(&shared_status);
+                    let endpoint_hints = endpoint_hints.clone();
                     update_status(&shared_status, |status| {
                         status.accepted_sessions += 1;
                         status.last_status =
@@ -1795,6 +2301,7 @@ mod desktop {
                             Box::new(stream),
                             None,
                             shared_status,
+                            endpoint_hints,
                         ),
                         Err(error) => {
                             update_status(&shared_status, |status| {
@@ -1824,6 +2331,7 @@ mod desktop {
         backend: BackendAccess,
         stop: Arc<AtomicBool>,
         shared_status: Arc<Mutex<SharedStatus>>,
+        endpoint_hints: Vec<String>,
     ) {
         tauri::async_runtime::block_on(async move {
             while !stop.load(Ordering::SeqCst) {
@@ -1832,6 +2340,7 @@ mod desktop {
                         let backend = backend.clone();
                         let shared_status = Arc::clone(&shared_status);
                         let blob_store = transport.blob_store.clone();
+                        let endpoint_hints = endpoint_hints.clone();
                         update_status(&shared_status, |status| {
                             status.accepted_sessions += 1;
                             status.last_status =
@@ -1865,6 +2374,7 @@ mod desktop {
                                             stream,
                                             Some(Arc::new(blob_store) as TransportBlobRecorderRef),
                                             session_status,
+                                            endpoint_hints,
                                         );
                                     });
                                     if let Err(error) = join.await {
@@ -1952,6 +2462,34 @@ mod desktop {
         SecurePeerConnection::connect_initiator(Box::new(stream), TransportKind::Tcp, None)
     }
 
+    fn authenticated_hints_make_trusted_iroh_hint_stale(
+        trusted_endpoint_hints: &[String],
+        authenticated_endpoint_hints: &[String],
+    ) -> bool {
+        let Some(authenticated_iroh_hint) = first_iroh_hint(authenticated_endpoint_hints) else {
+            return false;
+        };
+        first_iroh_hint(trusted_endpoint_hints) != Some(authenticated_iroh_hint)
+    }
+
+    fn first_iroh_hint(endpoint_hints: &[String]) -> Option<&str> {
+        endpoint_hints
+            .iter()
+            .find(|hint| hint.starts_with(IROH_ENDPOINT_SCHEME))
+            .map(String::as_str)
+    }
+
+    fn refresh_authenticated_endpoint_hints(
+        client: &BackendClient,
+        peer_device_id: &str,
+        endpoint_hints: &[String],
+    ) {
+        if endpoint_hints.is_empty() {
+            return;
+        }
+        let _ = client.refresh_trusted_peer_endpoint_hints(peer_device_id, endpoint_hints);
+    }
+
     fn connect_iroh_peer_connection(
         transport: &IrohTransport,
         endpoint_addr: EndpointAddr,
@@ -1982,11 +2520,12 @@ mod desktop {
         stream: Box<dyn PeerStream>,
         blob_store: Option<TransportBlobRecorderRef>,
         shared_status: Arc<Mutex<SharedStatus>>,
+        endpoint_hints: Vec<String>,
     ) {
         update_status(&shared_status, |status| {
             status.active_sessions += 1;
         });
-        let result = serve_incoming_session(backend, transport, stream, blob_store);
+        let result = serve_incoming_session(backend, transport, stream, blob_store, endpoint_hints);
         update_status(&shared_status, |status| {
             status.active_sessions = status.active_sessions.saturating_sub(1);
             match result {
@@ -2008,6 +2547,7 @@ mod desktop {
         transport: TransportKind,
         stream: Box<dyn PeerStream>,
         blob_store: Option<TransportBlobRecorderRef>,
+        endpoint_hints: Vec<String>,
     ) -> Result<IncomingSessionResult, String> {
         let run_id = sync_run_id();
         let run_started_at = Utc::now();
@@ -2018,7 +2558,7 @@ mod desktop {
         let timer = SyncPhaseTimer::start("peer_authentication");
         let mut connection =
             SecurePeerConnection::connect_responder(stream, transport, blob_store)?;
-        let session = authenticate_session(&mut connection, &client, None)?;
+        let session = authenticate_session(&mut connection, &client, None, &endpoint_hints)?;
         timings.push(timer.finish());
         let timer = SyncPhaseTimer::start("manifest_exchange");
         let remote_offer = match connection.read_message()? {
@@ -2087,8 +2627,14 @@ mod desktop {
         let TransportEvidence {
             selected_transport,
             fallback_reason,
+            fallback_code,
             attempted_transports,
         } = TransportSelection::single(connection.transport()).evidence();
+        refresh_authenticated_endpoint_hints(
+            &client,
+            &session.remote_device_id,
+            &session.remote_endpoint_hints,
+        );
         let sync_result = SyncTransportSyncResult {
             run_id,
             peer_device_id: session.remote_device_id.clone(),
@@ -2102,6 +2648,7 @@ mod desktop {
             ),
             selected_transport,
             fallback_reason,
+            fallback_code,
             attempted_transports,
             started_at: run_started_at.to_rfc3339(),
             completed_at: completed_at.to_rfc3339(),
@@ -4246,6 +4793,43 @@ mod desktop {
             }
         }
 
+        fn refresh_trusted_peer_endpoint_hints(
+            &self,
+            device_id: &str,
+            endpoint_hints: &[String],
+        ) -> Result<(), BackendError> {
+            let endpoint_hints = normalize_advisory_endpoint_hints(endpoint_hints.to_vec())
+                .map_err(BackendError::local)?;
+            if endpoint_hints.is_empty() {
+                return Ok(());
+            }
+
+            #[cfg(target_os = "android")]
+            {
+                crate::mobile_backend::mobile_sync_transport_update_trusted_peer_endpoint_hints_value(
+                    self.app.clone(),
+                    device_id.to_string(),
+                    endpoint_hints,
+                )
+                .map(|_| ())
+                .map_err(BackendError::local)
+            }
+
+            #[cfg(not(target_os = "android"))]
+            {
+                let body = json!({ "endpoint_hints": endpoint_hints });
+                let path = format!(
+                    "/api/v1/sync/trusted-peers/{}/endpoint-hints",
+                    percent_encode_path_segment(device_id)
+                );
+                match self.request_json_value("PATCH", &path, Some(&body)) {
+                    Ok(_) => Ok(()),
+                    Err(error) if matches!(error.status, Some(404 | 405)) => Ok(()),
+                    Err(error) => Err(error),
+                }
+            }
+        }
+
         fn sign_transport_handshake(
             &self,
             peer_device_id: &str,
@@ -4782,6 +5366,7 @@ mod desktop {
                 TransportEvidence {
                     selected_transport: IROH_TRANSPORT_ID.to_string(),
                     fallback_reason: None,
+                    fallback_code: None,
                     attempted_transports: vec![IROH_TRANSPORT_ID.to_string()],
                 }
             );
@@ -4801,6 +5386,121 @@ mod desktop {
                 .iter()
                 .skip(1)
                 .any(|hint| hint.starts_with(ENDPOINT_SCHEME)));
+        }
+
+        #[test]
+        fn discovery_beacon_payload_contains_advisory_fields_only() {
+            let identity = SyncLocalIdentity {
+                device_id: "dev_local".to_string(),
+                sync_group_id: "syncgrp_one".to_string(),
+                display_name: Some("Studio Mac".to_string()),
+                public_key: "public_key".to_string(),
+            };
+            let endpoint_hints = vec![format!(
+                "{ENDPOINT_SCHEME}192.0.2.2:47619?device_id=dev_local&v=1"
+            )];
+            let payload = discovery_beacon_payload(
+                &identity,
+                &endpoint_hints,
+                DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+                    .expect("timestamp")
+                    .with_timezone(&Utc),
+            )
+            .expect("beacon payload");
+            let value = serde_json::to_value(&payload).expect("serialize beacon");
+
+            assert_eq!(
+                value.get("protocol_version").and_then(Value::as_str),
+                Some(DISCOVERY_PROTOCOL_VERSION)
+            );
+            assert_eq!(value.get("endpoint_hints"), Some(&json!(endpoint_hints)));
+            assert!(value.get("pairing_secret").is_none());
+            assert!(value.get("source_path").is_none());
+        }
+
+        #[test]
+        fn discovery_broadcast_targets_include_directed_and_limited_broadcasts() {
+            let targets = discovery_broadcast_targets_from_ipv4([
+                (
+                    Ipv4Addr::new(192, 0, 2, 10),
+                    Some(Ipv4Addr::new(192, 0, 2, 255)),
+                ),
+                (
+                    Ipv4Addr::new(192, 0, 2, 11),
+                    Some(Ipv4Addr::new(192, 0, 2, 255)),
+                ),
+                (
+                    Ipv4Addr::new(198, 51, 100, 20),
+                    Some(Ipv4Addr::new(198, 51, 100, 255)),
+                ),
+                (
+                    Ipv4Addr::new(127, 0, 0, 1),
+                    Some(Ipv4Addr::new(127, 255, 255, 255)),
+                ),
+                (
+                    Ipv4Addr::new(169, 254, 1, 20),
+                    Some(Ipv4Addr::new(169, 254, 255, 255)),
+                ),
+                (Ipv4Addr::new(203, 0, 113, 7), None),
+            ]);
+
+            assert_eq!(
+                targets,
+                vec![
+                    SocketAddr::from((Ipv4Addr::new(192, 0, 2, 255), DISCOVERY_PORT)),
+                    SocketAddr::from((Ipv4Addr::new(198, 51, 100, 255), DISCOVERY_PORT)),
+                    SocketAddr::from((Ipv4Addr::BROADCAST, DISCOVERY_PORT)),
+                ]
+            );
+        }
+
+        #[test]
+        fn discovery_beacon_parser_ignores_self_and_expires_peers() {
+            let payload = DiscoveryBeaconPayload {
+                protocol_version: DISCOVERY_PROTOCOL_VERSION.to_string(),
+                device_id: "dev_peer".to_string(),
+                sync_group_id: "syncgrp_one".to_string(),
+                display_name: Some("Peer Phone".to_string()),
+                public_key: "peer_public".to_string(),
+                endpoint_hints: vec![format!(
+                    "{ENDPOINT_SCHEME}192.0.2.3:47619?device_id=dev_peer&v=1"
+                )],
+                timestamp: "2026-01-01T00:00:00Z".to_string(),
+            };
+            let bytes = serde_json::to_vec(&payload).expect("encode beacon");
+            let observed_at = DateTime::parse_from_rfc3339("2026-01-01T00:00:02Z")
+                .expect("timestamp")
+                .with_timezone(&Utc);
+            let now = Instant::now();
+            let entry =
+                parse_discovery_beacon(&bytes, "dev_local", observed_at, now + DISCOVERY_PEER_TTL)
+                    .expect("parse beacon")
+                    .expect("peer entry");
+
+            assert_eq!(entry.peer.device_id, "dev_peer");
+            assert_eq!(entry.peer.observed_at, "2026-01-01T00:00:02+00:00");
+            assert!(parse_discovery_beacon(
+                &bytes,
+                "dev_peer",
+                observed_at,
+                now + DISCOVERY_PEER_TTL
+            )
+            .expect("ignore self")
+            .is_none());
+
+            let mut status = SharedStatus::default();
+            status
+                .nearby_peers
+                .insert(entry.peer.device_id.clone(), entry);
+            assert_eq!(
+                nearby_peers_from_status(status.nearby_peers.clone()).len(),
+                1
+            );
+            prune_nearby_peers(
+                &mut status,
+                now + DISCOVERY_PEER_TTL + Duration::from_secs(1),
+            );
+            assert!(status.nearby_peers.is_empty());
         }
 
         #[test]
@@ -4845,6 +5545,7 @@ mod desktop {
                     fallback_reason: Some(format!(
                         "Iroh sync transport is not available locally; using {TCP_TRANSPORT_ID}."
                     )),
+                    fallback_code: Some("iroh_unavailable".to_string()),
                     attempted_transports: vec![
                         IROH_TRANSPORT_ID.to_string(),
                         TCP_TRANSPORT_ID.to_string()
@@ -4856,6 +5557,7 @@ mod desktop {
                 TransportEvidence {
                     selected_transport: TCP_TRANSPORT_ID.to_string(),
                     fallback_reason: None,
+                    fallback_code: None,
                     attempted_transports: vec![TCP_TRANSPORT_ID.to_string()],
                 }
             );
@@ -4893,12 +5595,83 @@ mod desktop {
                 TransportEvidence {
                     selected_transport: IROH_TRANSPORT_ID.to_string(),
                     fallback_reason: None,
+                    fallback_code: None,
                     attempted_transports: vec![IROH_TRANSPORT_ID.to_string()],
                 }
             );
             assert_eq!(
                 selection.tcp_fallback_endpoint_hint,
                 Some(endpoint_hints[0].clone())
+            );
+        }
+
+        #[test]
+        fn sync_now_request_uses_discovered_tcp_hint_for_iroh_fallback() {
+            let discovered_iroh_hint = format!(
+                "{IROH_ENDPOINT_SCHEME}iroh_peer?device_id=dev_peer&v=1&addr=127.0.0.1%3A47620"
+            );
+            let discovered_tcp_hint =
+                format!("{ENDPOINT_SCHEME}127.0.0.1:47619?device_id=dev_peer&v=1");
+            let stored_stale_iroh_hint = format!(
+                "{IROH_ENDPOINT_SCHEME}old_peer?device_id=dev_peer&v=1&addr=127.0.0.1%3A47621"
+            );
+            let request: SyncTransportSyncNowRequest = serde_json::from_value(json!({
+                "peerDeviceId": "dev_peer",
+                "endpointHint": discovered_iroh_hint.clone(),
+                "endpointHints": [
+                    discovered_iroh_hint.clone(),
+                    discovered_tcp_hint.clone()
+                ],
+                "preferredTransport": "auto"
+            }))
+            .expect("deserialize sync now request");
+            let selection_endpoint_hints = sync_now_selection_endpoint_hints(
+                request.endpoint_hint.as_deref(),
+                request.endpoint_hints.as_deref(),
+                &[stored_stale_iroh_hint.clone()],
+            );
+
+            assert_eq!(
+                selection_endpoint_hints,
+                vec![
+                    discovered_iroh_hint.clone(),
+                    discovered_tcp_hint.clone(),
+                    stored_stale_iroh_hint
+                ]
+            );
+
+            let mut selection = select_sync_transport(
+                request
+                    .preferred_transport
+                    .as_deref()
+                    .and_then(normalized_transport_id),
+                None,
+                &selection_endpoint_hints,
+                &request.peer_device_id,
+                true,
+            )
+            .expect("select discovered iroh");
+
+            assert_eq!(
+                selection.endpoint_hint(),
+                Some(discovered_iroh_hint.as_str())
+            );
+            assert_eq!(
+                selection.tcp_fallback_endpoint_hint.as_deref(),
+                Some(discovered_tcp_hint.as_str())
+            );
+            selection
+                .record_iroh_connect_fallback(format!(
+                    "Iroh sync transport was unavailable (connect failed); using {TCP_TRANSPORT_ID}."
+                ))
+                .expect("record discovered tcp fallback");
+            assert_eq!(
+                selection.endpoint_hint(),
+                Some(discovered_tcp_hint.as_str())
+            );
+            assert_eq!(
+                selection.evidence().fallback_code.as_deref(),
+                Some("iroh_connect_failed")
             );
         }
 
@@ -4927,11 +5700,71 @@ mod desktop {
                     fallback_reason: Some(format!(
                         "Preferred sync transport {IROH_TRANSPORT_ID} is not available locally; using {TCP_TRANSPORT_ID}."
                     )),
+                    fallback_code: Some("iroh_unavailable".to_string()),
                     attempted_transports: vec![
                         IROH_TRANSPORT_ID.to_string(),
                         TCP_TRANSPORT_ID.to_string()
                     ],
                 }
+            );
+        }
+
+        #[test]
+        fn missing_iroh_hint_records_fallback_code() {
+            let endpoint_hints = vec![format!(
+                "{ENDPOINT_SCHEME}127.0.0.1:47619?device_id=dev_peer&v=1"
+            )];
+
+            let selection = select_sync_transport(None, None, &endpoint_hints, "dev_peer", true)
+                .expect("select tcp fallback");
+
+            assert_eq!(
+                selection.evidence().fallback_code.as_deref(),
+                Some("missing_iroh_hint")
+            );
+        }
+
+        #[test]
+        fn iroh_connect_failure_can_be_marked_as_stale_hint_after_auth() {
+            let endpoint_hints = vec![
+                format!(
+                    "{IROH_ENDPOINT_SCHEME}old_peer?device_id=dev_peer&v=1&addr=127.0.0.1%3A47620"
+                ),
+                format!("{ENDPOINT_SCHEME}127.0.0.1:47619?device_id=dev_peer&v=1"),
+            ];
+            let authenticated_hints = vec![format!(
+                "{IROH_ENDPOINT_SCHEME}new_peer?device_id=dev_peer&v=1&addr=127.0.0.1%3A47620"
+            )];
+            let mut selection =
+                select_sync_transport(None, None, &endpoint_hints, "dev_peer", true)
+                    .expect("select iroh");
+
+            selection
+                .record_iroh_connect_fallback(format!(
+                    "Iroh sync transport was unavailable (connect failed); using {TCP_TRANSPORT_ID}."
+                ))
+                .expect("record fallback");
+            assert_eq!(
+                selection.evidence().fallback_code.as_deref(),
+                Some("iroh_connect_failed")
+            );
+            if authenticated_hints_make_trusted_iroh_hint_stale(
+                &endpoint_hints,
+                &authenticated_hints,
+            ) {
+                selection.mark_stale_iroh_hint();
+            }
+
+            assert_eq!(
+                selection.evidence().fallback_code.as_deref(),
+                Some("stale_iroh_hint")
+            );
+            let expected_reason = format!(
+                "Iroh sync transport was unavailable (connect failed); using {TCP_TRANSPORT_ID}."
+            );
+            assert_eq!(
+                selection.evidence().fallback_reason.as_deref(),
+                Some(expected_reason.as_str())
             );
         }
 
@@ -5397,6 +6230,7 @@ mod desktop {
                 message: "done".to_string(),
                 selected_transport: TCP_TRANSPORT_ID.to_string(),
                 fallback_reason: None,
+                fallback_code: None,
                 attempted_transports: vec![TCP_TRANSPORT_ID.to_string()],
                 started_at: "2026-01-01T00:00:00Z".to_string(),
                 completed_at: "2026-01-01T00:00:02Z".to_string(),
@@ -5435,6 +6269,7 @@ mod desktop {
                 Some(&json!(TCP_TRANSPORT_ID))
             );
             assert_eq!(value.get("fallbackReason"), Some(&Value::Null));
+            assert_eq!(value.get("fallbackCode"), Some(&Value::Null));
             assert_eq!(
                 value.get("attemptedTransports"),
                 Some(&json!([TCP_TRANSPORT_ID]))
@@ -5457,6 +6292,7 @@ mod desktop {
                 fallback_reason: Some(format!(
                     "Iroh sync transport was unavailable (direct path failed); using {TCP_TRANSPORT_ID}."
                 )),
+                fallback_code: Some("iroh_connect_failed".to_string()),
                 attempted_transports: vec![
                     IROH_TRANSPORT_ID.to_string(),
                     TCP_TRANSPORT_ID.to_string(),
@@ -5497,6 +6333,10 @@ mod desktop {
                 Some(&json!(format!(
                     "Iroh sync transport was unavailable (direct path failed); using {TCP_TRANSPORT_ID}."
                 )))
+            );
+            assert_eq!(
+                value.get("fallbackCode"),
+                Some(&json!("iroh_connect_failed"))
             );
         }
 

@@ -591,3 +591,37 @@ pub fn mobile_revoke_sync_trusted_peer(
         trusted_peer: get_trusted_peer(&connection, &normalized)?,
     })
 }
+
+pub fn mobile_update_sync_trusted_peer_endpoint_hints(
+    app: AppHandle,
+    device_id: String,
+    payload: SyncTrustedPeerEndpointHintsRequest,
+) -> Result<SyncTrustedPeerResponse, String> {
+    let connection = db(&app)?;
+    let normalized_device_id = device_id.trim().to_string();
+    if normalized_device_id.is_empty() {
+        return Err("device_id must not be empty.".to_string());
+    }
+    let endpoint_hints = normalize_endpoint_hints(payload.endpoint_hints)?;
+    let trusted_peer = find_trusted_peer(&connection, &normalized_device_id)?
+        .filter(|peer| peer.revoked_at.is_none())
+        .ok_or_else(|| "Trusted peer is unknown.".to_string())?;
+    if trusted_peer.endpoint_hints == endpoint_hints {
+        return Ok(SyncTrustedPeerResponse { trusted_peer });
+    }
+
+    let timestamp = now_iso();
+    connection
+        .execute(
+            "UPDATE sync_trusted_peers SET endpoint_hints_json = ?1, updated_at = ?2 WHERE device_id = ?3 AND revoked_at IS NULL",
+            params![
+                serde_json::to_string(&endpoint_hints).map_err(|error| error.to_string())?,
+                timestamp,
+                normalized_device_id,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(SyncTrustedPeerResponse {
+        trusted_peer: get_trusted_peer(&connection, &normalized_device_id)?,
+    })
+}

@@ -62,6 +62,7 @@ pub use identity::{
     mobile_answer_sync_pairing_offer, mobile_create_sync_pairing_offer, mobile_get_sync_identity,
     mobile_list_sync_trusted_peers, mobile_revoke_sync_trusted_peer,
     mobile_sign_transport_handshake, mobile_trust_sync_peer,
+    mobile_update_sync_trusted_peer_endpoint_hints,
 };
 pub use lyrics::{mobile_get_lyrics, mobile_submit_lyrics, mobile_update_lyrics};
 pub use manifests::{
@@ -79,8 +80,11 @@ pub use transport_bridge::{
     mobile_sync_transport_create_pairing_offer_value, mobile_sync_transport_local_identity_value,
     mobile_sync_transport_metadata_value, mobile_sync_transport_project_manifest_value,
     mobile_sync_transport_reconciliation_apply_value,
-    mobile_sync_transport_reconciliation_plan_value, mobile_sync_transport_stage_artifact_value,
-    mobile_sync_transport_staged_artifact_value, mobile_sync_transport_trusted_peers_value,
+    mobile_sync_transport_reconciliation_plan_value,
+    mobile_sync_transport_refresh_peer_endpoint_hints_value,
+    mobile_sync_transport_stage_artifact_value, mobile_sync_transport_staged_artifact_value,
+    mobile_sync_transport_trusted_peers_value,
+    mobile_sync_transport_update_trusted_peer_endpoint_hints_value,
 };
 
 const WHISPER_SAMPLE_RATE: u32 = 16_000;

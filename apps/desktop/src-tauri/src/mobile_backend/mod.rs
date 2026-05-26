@@ -14,8 +14,11 @@ pub use android::{
     mobile_sync_transport_create_pairing_offer_value, mobile_sync_transport_local_identity_value,
     mobile_sync_transport_metadata_value, mobile_sync_transport_project_manifest_value,
     mobile_sync_transport_reconciliation_apply_value,
-    mobile_sync_transport_reconciliation_plan_value, mobile_sync_transport_stage_artifact_value,
-    mobile_sync_transport_staged_artifact_value, mobile_sync_transport_trusted_peers_value,
+    mobile_sync_transport_reconciliation_plan_value,
+    mobile_sync_transport_refresh_peer_endpoint_hints_value,
+    mobile_sync_transport_stage_artifact_value, mobile_sync_transport_staged_artifact_value,
+    mobile_sync_transport_trusted_peers_value,
+    mobile_sync_transport_update_trusted_peer_endpoint_hints_value,
 };
 
 #[cfg(not(target_os = "android"))]

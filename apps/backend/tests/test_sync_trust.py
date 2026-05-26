@@ -53,6 +53,7 @@ class SyncTrustServices:
     list_trusted_peers: SyncTrustService
     revoke_trusted_peer: SyncTrustService
     require_trusted_peer: SyncTrustService
+    update_trusted_peer_endpoint_hints: SyncTrustService
     derive_device_id: SyncTrustService
 
 
@@ -98,6 +99,7 @@ def sync_trust_services() -> SyncTrustServices:
         list_trusted_peers=_require_callable(module, "list_trusted_peers"),
         revoke_trusted_peer=_require_callable(module, "revoke_trusted_peer"),
         require_trusted_peer=_require_callable(module, "require_trusted_peer"),
+        update_trusted_peer_endpoint_hints=_require_callable(module, "update_trusted_peer_endpoint_hints"),
         derive_device_id=derive_device_id,
     )
 
@@ -342,6 +344,95 @@ def test_revoked_peer_is_not_trusted_and_stale_payload_cannot_repair_revocation(
         sync_trust_services.trust_peer(db_session, peer_offer)
 
 
+def test_update_trusted_peer_endpoint_hints_normalizes_and_is_idempotent(
+    db_session: Session,
+    sync_trust_services: SyncTrustServices,
+) -> None:
+    identity = _local_identity(sync_trust_services, db_session)
+    template_offer = _pairing_payload(_pairing_offer(sync_trust_services, db_session))
+    peer_offer = _remote_pairing_offer(
+        sync_trust_services,
+        sync_group_id=identity["sync_group_id"],
+        public_key_like=identity["public_key"],
+        template_offer=template_offer,
+    )
+    sync_trust_services.trust_peer(db_session, peer_offer)
+
+    updated_peer = _plain_mapping(
+        sync_trust_services.update_trusted_peer_endpoint_hints(
+            db_session,
+            device_id=peer_offer["device_id"],
+            endpoint_hints=[
+                " tuneforge-sync+tcp://192.168.1.42:48625?device_id=device_peer&v=1 ",
+                "tuneforge-sync+iroh://peer.example?device_id=device_peer&v=1",
+            ],
+        )
+    )
+    unchanged_peer = _plain_mapping(
+        sync_trust_services.update_trusted_peer_endpoint_hints(
+            db_session,
+            device_id=peer_offer["device_id"],
+            endpoint_hints=[
+                "tuneforge-sync+tcp://192.168.1.42:48625?device_id=device_peer&v=1",
+                "tuneforge-sync+iroh://peer.example?device_id=device_peer&v=1",
+            ],
+        )
+    )
+
+    assert updated_peer["endpoint_hints"] == [
+        "tuneforge-sync+tcp://192.168.1.42:48625?device_id=device_peer&v=1",
+        "tuneforge-sync+iroh://peer.example?device_id=device_peer&v=1",
+    ]
+    assert unchanged_peer["endpoint_hints"] == updated_peer["endpoint_hints"]
+    assert unchanged_peer["updated_at"] == updated_peer["updated_at"]
+
+
+def test_update_trusted_peer_endpoint_hints_rejects_invalid_unknown_and_revoked(
+    db_session: Session,
+    sync_trust_services: SyncTrustServices,
+) -> None:
+    identity = _local_identity(sync_trust_services, db_session)
+    template_offer = _pairing_payload(_pairing_offer(sync_trust_services, db_session))
+    peer_offer = _remote_pairing_offer(
+        sync_trust_services,
+        sync_group_id=identity["sync_group_id"],
+        public_key_like=identity["public_key"],
+        template_offer=template_offer,
+    )
+    sync_trust_services.trust_peer(db_session, peer_offer)
+
+    with pytest.raises(AppError) as invalid_exc:
+        sync_trust_services.update_trusted_peer_endpoint_hints(
+            db_session,
+            device_id=peer_offer["device_id"],
+            endpoint_hints=[" "],
+        )
+    assert invalid_exc.value.code == "SYNC_PAIRING_INVALID"
+    assert invalid_exc.value.status_code == 400
+
+    with pytest.raises(AppError) as unknown_exc:
+        sync_trust_services.update_trusted_peer_endpoint_hints(
+            db_session,
+            device_id="device_unknown",
+            endpoint_hints=[],
+        )
+    assert unknown_exc.value.code == "SYNC_PEER_UNTRUSTED"
+    assert unknown_exc.value.status_code == 404
+    assert unknown_exc.value.details == {"device_id": "device_unknown"}
+
+    sync_trust_services.revoke_trusted_peer(db_session, peer_offer["device_id"])
+
+    with pytest.raises(AppError) as revoked_exc:
+        sync_trust_services.update_trusted_peer_endpoint_hints(
+            db_session,
+            device_id=peer_offer["device_id"],
+            endpoint_hints=[],
+        )
+    assert revoked_exc.value.code == "SYNC_PEER_UNTRUSTED"
+    assert revoked_exc.value.status_code == 404
+    assert revoked_exc.value.details == {"device_id": peer_offer["device_id"]}
+
+
 def test_expired_pairing_payload_is_rejected(
     db_session: Session,
     sync_trust_services: SyncTrustServices,
@@ -398,6 +489,37 @@ def test_trusted_peer_routes_create_list_and_revoke(client, sync_trust_services:
     listed_peers = _unwrap_list(list_response.json(), "trusted_peers")
     assert _peer_by_device_id(listed_peers, peer_offer["device_id"])["public_key"] == peer_offer["public_key"]
 
+    patch_response = client.patch(
+        f"/api/v1/sync/trusted-peers/{peer_offer['device_id']}/endpoint-hints",
+        json={
+            "endpoint_hints": [
+                " tuneforge-sync+tcp://192.168.1.42:48625?device_id=device_peer&v=1 ",
+                "tuneforge-sync+iroh://peer.example?device_id=device_peer&v=1",
+            ]
+        },
+    )
+    assert patch_response.status_code == 200
+    patched_peer = _unwrap_mapping(patch_response.json(), "trusted_peer")
+    assert patched_peer["endpoint_hints"] == [
+        "tuneforge-sync+tcp://192.168.1.42:48625?device_id=device_peer&v=1",
+        "tuneforge-sync+iroh://peer.example?device_id=device_peer&v=1",
+    ]
+
+    unchanged_response = client.patch(
+        f"/api/v1/sync/trusted-peers/{peer_offer['device_id']}/endpoint-hints",
+        json={"endpoint_hints": patched_peer["endpoint_hints"]},
+    )
+    assert unchanged_response.status_code == 200
+    unchanged_peer = _unwrap_mapping(unchanged_response.json(), "trusted_peer")
+    assert unchanged_peer["endpoint_hints"] == patched_peer["endpoint_hints"]
+    assert unchanged_peer["updated_at"] == patched_peer["updated_at"]
+
+    invalid_patch_response = client.patch(
+        f"/api/v1/sync/trusted-peers/{peer_offer['device_id']}/endpoint-hints",
+        json={"endpoint_hints": [" "]},
+    )
+    assert invalid_patch_response.status_code == 422
+
     revoke_response = client.request(
         "DELETE",
         f"/api/v1/sync/trusted-peers/{peer_offer['device_id']}",
@@ -406,6 +528,20 @@ def test_trusted_peer_routes_create_list_and_revoke(client, sync_trust_services:
     revoked_peer = _unwrap_mapping(revoke_response.json(), "trusted_peer")
     assert revoked_peer["device_id"] == peer_offer["device_id"]
     assert revoked_peer["revoked_at"] is not None
+
+    revoked_patch_response = client.patch(
+        f"/api/v1/sync/trusted-peers/{peer_offer['device_id']}/endpoint-hints",
+        json={"endpoint_hints": []},
+    )
+    assert revoked_patch_response.status_code == 404
+    assert revoked_patch_response.json()["error"]["code"] == "SYNC_PEER_UNTRUSTED"
+
+    unknown_patch_response = client.patch(
+        "/api/v1/sync/trusted-peers/device_unknown/endpoint-hints",
+        json={"endpoint_hints": []},
+    )
+    assert unknown_patch_response.status_code == 404
+    assert unknown_patch_response.json()["error"]["code"] == "SYNC_PEER_UNTRUSTED"
 
 
 def test_pairing_response_route_answers_remote_offer(client, sync_trust_services: SyncTrustServices) -> None:

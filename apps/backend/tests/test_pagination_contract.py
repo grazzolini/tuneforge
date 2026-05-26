@@ -6,6 +6,7 @@ from app.main import app
 
 PAGINATION_FIELDS = {"total", "limit", "offset", "has_more"}
 LIST_RESPONSE_CONTRACTS = {
+    ("/api/v1/beat-backends", "get"): ("BeatBackendsResponse", "backends", True),
     ("/api/v1/chord-backends", "get"): ("ChordBackendsResponse", "backends", True),
     ("/api/v1/stem-models", "get"): ("StemModelsResponse", "models", True),
     ("/api/v1/projects/{project_id}/sections", "get"): ("SongSectionsResponse", "sections", False),

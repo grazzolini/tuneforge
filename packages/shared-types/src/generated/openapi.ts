@@ -21,6 +21,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/beat-backends": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Beat Backends */
+        get: operations["beat_backends_api_v1_beat_backends_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/chord-backends": {
         parameters: {
             query?: never;
@@ -741,6 +758,12 @@ export interface components {
              * @default false
              */
             force?: boolean;
+            /**
+             * Beat Backend
+             * @default built-in
+             * @enum {string}
+             */
+            beat_backend?: "built-in" | "beat-this";
         };
         /** AnalysisResponse */
         AnalysisResponse: {
@@ -861,6 +884,32 @@ export interface components {
             /** Artifacts */
             artifacts: components["schemas"]["ArtifactSchema"][];
         };
+        /** BeatBackendSchema */
+        BeatBackendSchema: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Description */
+            description: string;
+            /** Availability */
+            availability: string;
+            /** Available */
+            available: boolean;
+            /** Unavailable Reason */
+            unavailable_reason?: string | null;
+            /** Experimental */
+            experimental: boolean;
+            /** Desktoponly */
+            desktopOnly: boolean;
+            /** Runtime Device */
+            runtime_device?: string | null;
+        };
+        /** BeatBackendsResponse */
+        BeatBackendsResponse: {
+            /** Backends */
+            backends: components["schemas"]["BeatBackendSchema"][];
+        };
         /** BulkJobRequest */
         BulkJobRequest: {
             /**
@@ -875,6 +924,12 @@ export interface components {
             chord_backend_fallback_from?: string | null;
             /** Stem Model */
             stem_model?: string | null;
+            /**
+             * Beat Backend
+             * @default built-in
+             * @enum {string}
+             */
+            beat_backend?: "built-in" | "beat-this";
         };
         /** BulkJobSkippedProjectSchema */
         BulkJobSkippedProjectSchema: {
@@ -1094,6 +1149,8 @@ export interface components {
             progress: number;
             /** Source Artifact Id */
             source_artifact_id?: string | null;
+            /** Beat Backend */
+            beat_backend?: string | null;
             /** Chord Backend */
             chord_backend?: string | null;
             /** Chord Backend Fallback From */
@@ -1253,6 +1310,12 @@ export interface components {
             chord_backend_fallback_from?: string | null;
             /** Stem Model */
             stem_model?: string | null;
+            /**
+             * Beat Backend
+             * @default built-in
+             * @enum {string}
+             */
+            beat_backend?: "built-in" | "beat-this";
         };
         /** ProjectResponse */
         ProjectResponse: {
@@ -2364,6 +2427,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+        };
+    };
+    beat_backends_api_v1_beat_backends_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BeatBackendsResponse"];
                 };
             };
         };

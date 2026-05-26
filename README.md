@@ -184,7 +184,7 @@ pnpm package:mac
 pnpm package:linux:flatpak
 ```
 
-For Linux local/dev packaging with Advanced Chords, legacy NVIDIA Torch, and shared host XDG data, use the full Flatpak profile:
+For Linux local/dev packaging with Advanced Chords, Advanced Beat Analysis, legacy NVIDIA Torch, and shared host XDG data, use the full Flatpak profile:
 
 ```sh
 pnpm package:linux:flatpak:full

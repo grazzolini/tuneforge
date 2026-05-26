@@ -7,6 +7,7 @@ import { api, getProjectSyncSummary, type ProjectSchema } from "../../lib/api";
 import { formatLocalDateTime, normalizeApiDateTime } from "../../lib/datetime";
 import { usePreferences } from "../../lib/preferences";
 import { useLazyLoadSentinel } from "../../lib/useLazyLoadSentinel";
+import { useBeatBackendActionSelection } from "./hooks/useBeatBackendActionSelection";
 import { useChordBackendActionSelection } from "./hooks/useChordBackendActionSelection";
 
 const MAX_IMPORT_SELECTION = 25;
@@ -243,6 +244,7 @@ export function LibraryView() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { defaultStemModel, informationDensity } = usePreferences();
+  const { beatBackendForAction } = useBeatBackendActionSelection();
   const { chordBackendForAction } = useChordBackendActionSelection();
   const [searchDraft, setSearchDraft] = useState("");
   const [importNotice, setImportNotice] = useState<ImportNotice | null>(null);
@@ -293,9 +295,11 @@ export function LibraryView() {
       if (uniquePaths.length > MAX_IMPORT_SELECTION) {
         return { kind: "selectionLimit" } satisfies ImportMutationResult;
       }
+      const beatBackendSelection = await beatBackendForAction();
       const backendSelection = await chordBackendForAction();
       const importPayload = {
         copy_into_project: true,
+        beat_backend: beatBackendSelection.beat_backend,
         chord_backend: backendSelection.backend,
         stem_model: defaultStemModel,
         ...(backendSelection.backend_fallback_from

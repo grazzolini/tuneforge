@@ -65,6 +65,7 @@ describe current pagination behavior or explicit unpaginated exceptions.
 | `GET /api/v1/projects/{project_id}/artifacts` | `artifacts` | Explicit unpaginated bounded project inventory exception: source audio, generated stems, practice mixes, exports, and cache artifacts. Ordered by `created_at DESC`; no pagination. |
 | `GET /api/v1/projects/{project_id}/sections` | `sections` | Explicit unpaginated project document/song-structure exception. Sections are bounded by the song arrangement and must stay complete for editing and playback. |
 | `GET /api/v1/sync/trusted-peers` | `trusted_peers` | Explicit unpaginated active manual trust-list exception. Active peers only; bounded by user-paired devices and returned complete for sync UI. Deterministic ordering is `display_name` case-insensitive, then `device_id`. |
+| `GET /api/v1/beat-backends` | `backends` | Explicit unpaginated exception: small static capability list, bounded by bundled/local backend implementations. |
 | `GET /api/v1/chord-backends` | `backends` | Explicit unpaginated exception: small static capability list, bounded by bundled/local backend implementations. |
 | `GET /api/v1/stem-models` | `models` | Explicit unpaginated exception: small static capability list, bounded by supported local stem models. |
 | `GET /api/v1/sync/metadata` | `projects`, `artifacts`, `delete_tombstones` | Explicit unpaginated sync snapshot exception. The payload is a complete sync inventory used by native sync and reconciliation, not an interactive scroll list. If scale requires chunking, it should be a sync protocol change rather than this generic pagination contract. |
@@ -134,6 +135,15 @@ Important fields:
 Returns backend name, legacy backend git ref in `version`, backend/frontend package versions and git refs, status,
 API base URL, data root, default export format, and preview format. Build git refs use the packaged build
 metadata when available, otherwise local development resolves them with `git describe --tags --long --dirty --always`.
+
+## Beat Backends
+
+### List beat backends
+
+`GET /api/v1/beat-backends`
+
+Returns available beat analysis backends. Built-in Beat Analysis is always expected to be available.
+Advanced Beat Analysis may be unavailable when optional desktop-only dependencies are not installed.
 
 ## Chord Backends
 

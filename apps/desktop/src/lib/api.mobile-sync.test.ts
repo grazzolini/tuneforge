@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MobileCapabilities } from "@tuneforge/shared-types";
 import type {
   ListJobsParams,
+  ProjectImportRequest,
   SyncPairingAnswerRequest,
   SyncPairingOfferRequest,
   SyncPairingPayloadSchema,
@@ -139,6 +140,63 @@ describe("mobile sync API adapter", () => {
     await api.listJobs(params);
 
     expect(mockInvoke).toHaveBeenCalledWith("mobile_list_jobs", { params });
+  });
+
+  it("allows built-in mobile import requests", async () => {
+    const api = await loadMobileApi();
+    const builtInRequest: ProjectImportRequest = {
+      source_path: "/music/song.wav",
+      copy_into_project: true,
+      beat_backend: "built-in",
+    };
+    const defaultRequest: ProjectImportRequest = {
+      source_path: "/music/default.wav",
+      copy_into_project: true,
+    };
+
+    await api.importProject(builtInRequest);
+    await api.importProject(defaultRequest);
+
+    expect(mockInvoke).toHaveBeenNthCalledWith(1, "mobile_import_project", { payload: builtInRequest });
+    expect(mockInvoke).toHaveBeenNthCalledWith(2, "mobile_import_project", { payload: defaultRequest });
+  });
+
+  it("rejects advanced mobile import beat analysis before native invoke", async () => {
+    const api = await loadMobileApi();
+
+    await expect(
+      api.importProject({
+        source_path: "/music/song.wav",
+        copy_into_project: true,
+        beat_backend: "beat-this",
+      }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_RUNTIME",
+      details: { beat_backend: "beat-this" },
+    });
+
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it("allows built-in mobile analysis requests", async () => {
+    const api = await loadMobileApi();
+
+    await api.analyzeProject("proj_1", { beat_backend: "built-in" });
+    await api.analyzeProject("proj_2");
+
+    expect(mockInvoke).toHaveBeenNthCalledWith(1, "mobile_submit_analyze", { projectId: "proj_1" });
+    expect(mockInvoke).toHaveBeenNthCalledWith(2, "mobile_submit_analyze", { projectId: "proj_2" });
+  });
+
+  it("rejects advanced mobile beat analysis before native invoke", async () => {
+    const api = await loadMobileApi();
+
+    await expect(api.analyzeProject("proj_1", { beat_backend: "beat-this" })).rejects.toMatchObject({
+      code: "UNSUPPORTED_RUNTIME",
+      details: { beat_backend: "beat-this" },
+    });
+
+    expect(mockInvoke).not.toHaveBeenCalled();
   });
 
   it("routes mobile sync transport methods to native transport commands", async () => {

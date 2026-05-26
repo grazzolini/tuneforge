@@ -10,7 +10,8 @@ from typing import Any, Literal, cast
 from fastapi import status
 from sqlalchemy.orm import Session
 
-from app.engines.analysis import analyze_track
+from app.engines.analysis import AnalysisPayload, analyze_track
+from app.engines.beat_this import BeatThisRuntimeError, analyze_track_with_beat_this, beat_this_dependency_status
 from app.errors import AppError
 from app.models import AnalysisResult, Artifact, Project
 from app.services.artifacts import refresh_artifact_file_metadata, register_artifact
@@ -19,15 +20,24 @@ from app.services.paths import project_analysis_dir
 TimingCorrectionAction = Literal["set_bar_1_beat_1", "shift_left", "shift_right", "set_meter"]
 SUPPORTED_TIMING_BEATS_PER_BAR = frozenset({3, 4, 6})
 SOURCE_STEM_ARTIFACT_TYPES = ("drums_stem", "bass_stem")
+BUILT_IN_BEAT_BACKEND = "built-in"
+BEAT_THIS_BACKEND = "beat-this"
 
 
-def analyze_project(session: Session, project: Project) -> AnalysisResult:
+def analyze_project(
+    session: Session,
+    project: Project,
+    *,
+    beat_backend: str = BUILT_IN_BEAT_BACKEND,
+) -> AnalysisResult:
     source_artifact = _project_source_artifact(project)
     source_stem_paths = _source_stem_paths(project, source_artifact) if source_artifact is not None else ()
-    if source_stem_paths:
-        results = analyze_track(Path(project.imported_path), source_stem_paths=source_stem_paths)
-    else:
-        results = analyze_track(Path(project.imported_path))
+    results = _analyze_track_with_backend(
+        Path(project.imported_path),
+        source_stem_paths=source_stem_paths,
+        beat_backend=beat_backend,
+        duration_seconds=project.duration_seconds,
+    )
     analysis = session.get(AnalysisResult, project.id)
     if analysis is None:
         analysis = AnalysisResult(project_id=project.id)
@@ -46,6 +56,49 @@ def analyze_project(session: Session, project: Project) -> AnalysisResult:
     _write_analysis_artifact(session, project=project, analysis=analysis)
 
     return analysis
+
+
+def _analyze_track_with_backend(
+    source_path: Path,
+    *,
+    source_stem_paths: tuple[Path, ...],
+    beat_backend: str,
+    duration_seconds: float | None,
+) -> AnalysisPayload:
+    if beat_backend == BUILT_IN_BEAT_BACKEND:
+        if source_stem_paths:
+            return analyze_track(source_path, source_stem_paths=source_stem_paths)
+        return analyze_track(source_path)
+
+    if beat_backend == BEAT_THIS_BACKEND:
+        available, reason = beat_this_dependency_status()
+        if not available:
+            raise AppError(
+                "ADVANCED_BEAT_BACKEND_UNAVAILABLE",
+                reason or "Beat This backend is unavailable.",
+                status_code=status.HTTP_409_CONFLICT,
+                details={"backend": BEAT_THIS_BACKEND},
+            )
+        try:
+            return analyze_track_with_beat_this(
+                source_path,
+                source_stem_paths=source_stem_paths,
+                duration_seconds=duration_seconds,
+            )
+        except BeatThisRuntimeError as exc:
+            raise AppError(
+                "ADVANCED_BEAT_BACKEND_FAILED",
+                str(exc),
+                status_code=status.HTTP_409_CONFLICT,
+                details={"backend": BEAT_THIS_BACKEND},
+            ) from exc
+
+    raise AppError(
+        "UNSUPPORTED_BEAT_BACKEND",
+        f"Unsupported beat backend: {beat_backend}.",
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        details={"supported_backends": [BUILT_IN_BEAT_BACKEND, BEAT_THIS_BACKEND]},
+    )
 
 
 def _project_source_artifact(project: Project) -> Artifact | None:

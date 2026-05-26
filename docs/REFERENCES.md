@@ -105,3 +105,44 @@ TuneForge should keep lyrics local and project-owned.
 - Project portability and optional device handoff.
 - Lightweight local import of tab/chord text for correction.
 
+## Beat/Downbeat Model Evaluation
+
+This evaluation checked whether TuneForge should integrate a local ML beat/downbeat/meter model after the first
+correctable timing-grid work. The recommendation is to keep the heuristic and correction path as the product route for
+now, and treat CPJKU Beat This as the only promising spike candidate after local-track bake-off evidence and explicit
+model-weight redistribution confirmation.
+
+Local-track baseline evidence from a read-only sample of 8 converted source WAVs in local app data: 8/8 completed,
+8/8 produced timing grids, median heuristic runtime was 12.686 seconds, median runtime ratio was 0.0531x track length,
+and 5/8 tracks had at least one large beat-gap flag. Candidate model runtime and quality estimates still require a
+separate optional-model spike against the same kind of non-committed local tracks.
+
+First `beat-this` smoke evidence used the `small0` checkpoint on CPU with minimal post-processing over the same 8
+converted source WAVs. The checkpoint downloaded once at 8.06 MB, warm model load was 0.04 seconds, median model
+runtime was 1.183 seconds, and median model runtime ratio was 0.0057x track length. Beat counts stayed close on 4/8
+tracks and differed by more than 10% on 4/8 tracks, including several tracks where the heuristic had large beat-gap
+flags. This is promising enough for a focused optional-backend spike, but it is not yet enough to replace the
+heuristic path without listening checks on the known out-of-sync songs.
+
+Several candidates were kept as research-only or excluded because their upstream project activity, release freshness,
+or supported Python/ML stack did not fit a new desktop runtime dependency.
+
+| Candidate | Fit | License / weights | Integration notes |
+| --- | --- | --- | --- |
+| [CPJKU Beat This](https://pypi.org/project/beat-this/) | Best spike candidate | PyPI/package metadata uses MIT; pretrained checkpoints need explicit redistribution confirmation before bundling. | Python package released for Python 3, uses PyTorch plus small inference deps, has `small*` checkpoints around 8.1 MB and `final*` around 78 MB, and can download models automatically when not preloaded. |
+| [madmom downbeat processors](https://madmom.readthedocs.io/en/v0.16/modules/features/downbeats.html) | Exclude for bundled runtime | Code is BSD-style, but pretrained models are documented as CC BY-NC-SA 4.0. | Strong prior art for RNN/DBN downbeat tracking, but the non-commercial/share-alike model terms conflict with TuneForge runtime dependency policy. |
+| [BeatNet](https://github.com/mjhydri/BeatNet) | Research only | Repository license file is CC BY 4.0, including packaged pretrained models. | Ships pretrained models and online/offline beat/downbeat/meter tracking, but license shape is not a normal permissive software dependency and docs warn about madmom compatibility with modern Python/NumPy. |
+| [All-In-One](https://pypi.org/project/allin1/) | Research only | Code/package is permissive, but model/dependency packaging remains too heavy for default TuneForge. | Predicts tempo, beats, downbeats, and sections, but requires PyTorch, NATTEN, a madmom install path, Demucs/FFmpeg-style preprocessing, and model preloading from Hugging Face. |
+| [Beat-Transformer](https://github.com/zhaojw1998/Beat-Transformer) | Research only | Code is MIT; checkpoint licensing and packaging path are not clear enough for default bundling. | Demixed-beat approach may align with TuneForge stems, but it appears research-code oriented, upstream activity appears stale, and it would add PyTorch/model packaging work without a clean package path. |
+| [Omnizart](https://github.com/Music-and-Culture-Technology-Lab/omnizart) | Exclude | License is permissive, but the stack is too old/heavy for TuneForge packaging. | Beat/downbeat support exists, but it depends on old TensorFlow-era tooling and does not fit Python 3.11 desktop packaging. Upstream release freshness also makes it a poor fit for a new dependency. |
+| [WaveBeat](https://github.com/csteinmetz1/wavebeat) | Exclude | GPL-3.0. | GPL runtime dependency conflicts with repository dependency rules. |
+
+Runtime and quality evaluation should use local tracks that are not committed to the repository:
+
+```sh
+bash scripts/run-backend-module.sh app.benchmarks.timing --audio-dir /path/to/local/tracks --json-only
+```
+
+For each candidate spike, compare model output against the timing benchmark by `track_###`: runtime ratio, beat count,
+downbeat count, meter, first beat numbers, whether corrections still drift out of sync, model size, and whether model
+weights were preloaded or downloaded during analysis.

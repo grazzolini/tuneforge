@@ -192,6 +192,67 @@ describe("transposeChordSegment", () => {
 });
 
 describe("formatJobStatusSummary", () => {
+  it("includes beat backend for analysis jobs", () => {
+    const job: JobSchema = {
+      beat_backend: "beat-this",
+      completed_at: "2026-04-18T13:16:02.000Z",
+      created_at: "2026-04-18T13:16:00.000Z",
+      duration_seconds: 1.8,
+      error_message: null,
+      id: "job_analyze",
+      progress: 100,
+      project_id: "proj_123",
+      runtime_device: "cpu",
+      source_artifact_id: null,
+      started_at: "2026-04-18T13:16:00.000Z",
+      status: "completed",
+      type: "analyze",
+      updated_at: "2026-04-18T13:16:02.000Z",
+    };
+
+    expect(formatJobStatusSummary(job)).toBe("completed / advanced / CPU / 1.8 s");
+  });
+
+  it("defaults missing analysis beat backend to built-in", () => {
+    const job: JobSchema = {
+      completed_at: "2026-04-18T13:16:02.000Z",
+      created_at: "2026-04-18T13:16:00.000Z",
+      duration_seconds: 1.8,
+      error_message: null,
+      id: "job_analyze",
+      progress: 100,
+      project_id: "proj_123",
+      runtime_device: "cpu",
+      source_artifact_id: null,
+      started_at: "2026-04-18T13:16:00.000Z",
+      status: "completed",
+      type: "analyze",
+      updated_at: "2026-04-18T13:16:02.000Z",
+    };
+
+    expect(formatJobStatusSummary(job)).toBe("completed / built-in / CPU / 1.8 s");
+  });
+
+  it("does not show a beat backend for non-analysis jobs", () => {
+    const job: JobSchema = {
+      completed_at: "2026-04-18T13:16:02.000Z",
+      created_at: "2026-04-18T13:16:00.000Z",
+      duration_seconds: 1.8,
+      error_message: null,
+      id: "job_preview",
+      progress: 100,
+      project_id: "proj_123",
+      runtime_device: "cpu",
+      source_artifact_id: null,
+      started_at: "2026-04-18T13:16:00.000Z",
+      status: "completed",
+      type: "preview",
+      updated_at: "2026-04-18T13:16:02.000Z",
+    };
+
+    expect(formatJobStatusSummary(job)).toBe("completed / CPU / 1.8 s");
+  });
+
   it("includes chord detection source for chord jobs", () => {
     const job: JobSchema = {
       chord_backend: "tuneforge-fast",

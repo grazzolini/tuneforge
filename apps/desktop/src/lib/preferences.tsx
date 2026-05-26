@@ -18,6 +18,7 @@ export type InformationDensity = "minimal" | "balanced" | "detailed";
 export type ProjectWorkspaceMode = "project" | "playback";
 export type PlaybackDisplayMode = "lyrics" | "chords" | "combined";
 export type DefaultPlaybackDisplayMode = "auto" | PlaybackDisplayMode;
+export type DefaultBeatAnalysisBackend = "built-in" | "beat-this";
 export type DefaultChordBackend = "tuneforge-fast" | "crema-advanced";
 export type DefaultStemModel = "htdemucs_6s" | "htdemucs_ft";
 export type TunerVisualMode = "simple" | "wide-arc";
@@ -35,6 +36,7 @@ export type UiPreferences = {
   defaultProjectWorkspace: ProjectWorkspaceMode;
   defaultPlaybackDisplayMode: DefaultPlaybackDisplayMode;
   defaultLoopAlignmentMode: LoopAlignmentMode;
+  defaultBeatAnalysisBackend: DefaultBeatAnalysisBackend;
   defaultChordBackend: DefaultChordBackend;
   defaultStemModel: DefaultStemModel;
   defaultLyricsFollowEnabled: boolean;
@@ -46,7 +48,10 @@ export type UiPreferences = {
 
 export type AppearancePreferences = Pick<UiPreferences, "informationDensity">;
 export type NotationPreferences = Pick<UiPreferences, "enharmonicDisplayMode">;
-export type AnalysisPreferences = Pick<UiPreferences, "defaultChordBackend" | "defaultStemModel">;
+export type AnalysisPreferences = Pick<
+  UiPreferences,
+  "defaultBeatAnalysisBackend" | "defaultChordBackend" | "defaultStemModel"
+>;
 export type TunerPreferences = Pick<
   UiPreferences,
   "defaultTunerInputDeviceId" | "defaultTunerReferenceHz" | "defaultTunerVisualMode"
@@ -70,6 +75,7 @@ type PreferencesContextValue = UiPreferences & {
   setDefaultProjectWorkspace: (value: ProjectWorkspaceMode) => void;
   setDefaultPlaybackDisplayMode: (value: DefaultPlaybackDisplayMode) => void;
   setDefaultLoopAlignmentMode: (value: LoopAlignmentMode) => void;
+  setDefaultBeatAnalysisBackend: (value: DefaultBeatAnalysisBackend) => void;
   setDefaultChordBackend: (value: DefaultChordBackend) => void;
   setDefaultStemModel: (value: DefaultStemModel) => void;
   setDefaultLyricsFollowEnabled: (value: boolean) => void;
@@ -97,6 +103,7 @@ export const DEFAULT_NOTATION_PREFERENCES: NotationPreferences = {
 };
 
 export const DEFAULT_ANALYSIS_PREFERENCES: AnalysisPreferences = {
+  defaultBeatAnalysisBackend: "built-in",
   defaultChordBackend: "tuneforge-fast",
   defaultStemModel: "htdemucs_6s",
 };
@@ -147,6 +154,10 @@ export function isDefaultPlaybackDisplayMode(
   value: unknown,
 ): value is DefaultPlaybackDisplayMode {
   return value === "auto" || isPlaybackDisplayMode(value);
+}
+
+export function isDefaultBeatAnalysisBackend(value: unknown): value is DefaultBeatAnalysisBackend {
+  return value === "built-in" || value === "beat-this";
 }
 
 export function isDefaultChordBackend(value: unknown): value is DefaultChordBackend {
@@ -212,6 +223,9 @@ export function normalizePreferences(value: unknown): UiPreferences {
       candidate.defaultLoopAlignmentMode,
       DEFAULT_PREFERENCES.defaultLoopAlignmentMode,
     ),
+    defaultBeatAnalysisBackend: isDefaultBeatAnalysisBackend(candidate.defaultBeatAnalysisBackend)
+      ? candidate.defaultBeatAnalysisBackend
+      : DEFAULT_PREFERENCES.defaultBeatAnalysisBackend,
     defaultChordBackend: isDefaultChordBackend(candidate.defaultChordBackend)
       ? candidate.defaultChordBackend
       : DEFAULT_PREFERENCES.defaultChordBackend,
@@ -294,6 +308,9 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       },
       setDefaultLoopAlignmentMode: (defaultLoopAlignmentMode) => {
         setPreferences((current) => mergePreferences(current, { defaultLoopAlignmentMode }));
+      },
+      setDefaultBeatAnalysisBackend: (defaultBeatAnalysisBackend) => {
+        setPreferences((current) => mergePreferences(current, { defaultBeatAnalysisBackend }));
       },
       setDefaultChordBackend: (defaultChordBackend) => {
         setPreferences((current) => mergePreferences(current, { defaultChordBackend }));

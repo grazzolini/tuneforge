@@ -77,6 +77,7 @@ import {
   type TargetShiftOption,
 } from "../projectViewUtils";
 import type { DefaultPlaybackDisplayMode, PlaybackDisplayMode } from "../../../lib/preferences";
+import { useBeatBackendActionSelection } from "./useBeatBackendActionSelection";
 import { useChordBackendActionSelection } from "./useChordBackendActionSelection";
 import {
   MAX_PLAYBACK_TEMPO_BPM,
@@ -271,6 +272,7 @@ export function useProjectViewModel() {
     enharmonicDisplayMode,
     informationDensity,
   } = usePreferences();
+  const { beatBackendForAction } = useBeatBackendActionSelection();
   const { chordBackendForAction } = useChordBackendActionSelection();
   const chordSegmentRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const chordTimelineRef = useRef<HTMLDivElement | null>(null);
@@ -416,9 +418,10 @@ export function useProjectViewModel() {
   }
 
   const analyzeMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       assertProjectEditable();
-      return api.analyzeProject(projectId);
+      const beatBackendSelection = await beatBackendForAction();
+      return api.analyzeProject(projectId, { beat_backend: beatBackendSelection.beat_backend });
     },
     onSuccess: async () => {
       await Promise.all([

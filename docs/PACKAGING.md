@@ -39,7 +39,7 @@ The standard profile generates local dependency source manifests, fetches pinned
 
 ## Linux Full Flatpak Profile
 
-Use the full profile for local/dev Linux builds that need Advanced Chords, the legacy NVIDIA Torch stack, broader GPU device access, and the same host library path used by `pnpm dev`:
+Use the full profile for local/dev Linux builds that need Advanced Chords, Advanced Beat Analysis, the legacy NVIDIA Torch stack, broader GPU device access, and the same host library path used by `pnpm dev`:
 
 ```sh
 pnpm package:linux:flatpak:full
@@ -47,7 +47,7 @@ pnpm package:linux:flatpak:full
 pnpm package:linux:flatpak -- --profile full
 ```
 
-The full profile includes the `advanced-chords` backend extra and pins the legacy CUDA 12.6 PyTorch stack used by the local legacy NVIDIA setup. Advanced Chords remains opt-in through existing settings; the package profile only makes the backend available.
+The full profile includes the `advanced-chords` and `advanced-beats` backend extras and pins the legacy CUDA 12.6 PyTorch stack used by the local legacy NVIDIA setup. Advanced Chords and Advanced Beat Analysis remain opt-in through existing settings; the package profile only makes the backends available. It does not bundle `beat-this` checkpoints, so the first Advanced Beat Analysis run may download the selected model if it is not already cached.
 
 The full profile grants access to `xdg-data/tuneforge` and points `TUNEFORGE_DATA_DIR` at `~/.local/share/tuneforge`, so it reads the same SQLite database and project files as local development. Do not run the Flatpak app and `pnpm dev` against that shared library at the same time; SQLite is local and Tuneforge is not designed for concurrent backends writing the same library.
 
@@ -73,6 +73,6 @@ Without `--no-bundle`, the Flatpak bundle is written under `packaging/flatpak/` 
 
 ## Size Expectations
 
-Linux Flatpak bundles that include GPU ML stacks are large. The standard profile is already dominated by Torch and NVIDIA CUDA Python wheels, plus about 373 MiB of raw Demucs stem weights. The full profile adds TensorFlow and related Advanced Chords dependencies.
+Linux Flatpak bundles that include GPU ML stacks are large. The standard profile is already dominated by Torch and NVIDIA CUDA Python wheels, plus about 373 MiB of raw Demucs stem weights. The full profile adds TensorFlow and related Advanced Chords dependencies, plus the optional `beat-this` Advanced Beat Analysis package.
 
 Packaging prints a size report for the built `/app` tree and selected Python artifacts. Use that report to distinguish accidental copied build inputs from expected ML runtime payloads.

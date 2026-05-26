@@ -15,6 +15,7 @@ from app.errors import AppError, JobCancelledError
 from app.models import Artifact, ChordTimeline, Job, Project, utcnow
 from app.schemas import AnalysisRequest, BulkJobRequest, ChordRequest, LyricsGenerateRequest, StemRequest
 from app.services.analysis import analyze_project
+from app.services.beat_backends import beat_backend_runtime_device
 from app.services.chord_backends import resolve_chord_backend
 from app.services.chords import detect_project_chords, project_chord_detection_source
 from app.services.lyrics import generate_project_lyrics
@@ -346,7 +347,7 @@ def _default_bulk_activity_job_payload(
     request: BulkJobRequest,
 ) -> ProjectActivityJobPayload:
     if job_type == "analyze":
-        return AnalysisRequest(include_tempo=False, force=True)
+        return AnalysisRequest(include_tempo=False, force=True, beat_backend=request.beat_backend)
     if job_type == "chords":
         return ChordRequest(
             backend=request.chord_backend or "default",
@@ -670,11 +671,17 @@ class InProcessJobRunner:
 
     def _handle_analyze(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")
+        payload = AnalysisRequest.model_validate(job.payload_json)
+        job.payload_json = {**job.payload_json, "beat_backend": payload.beat_backend}
+        session.flush()
         context.set_progress(20)
-        analyze_project(session, project)
+        analyze_project(session, project, beat_backend=payload.beat_backend)
         context.set_progress(90)
         artifact_ids = [artifact.id for artifact in project.artifacts if artifact.type == "analysis_json"]
-        return JobExecutionResult(artifact_ids=artifact_ids)
+        return JobExecutionResult(
+            artifact_ids=artifact_ids,
+            runtime_device=beat_backend_runtime_device(payload.beat_backend),
+        )
 
     def _handle_preview(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")

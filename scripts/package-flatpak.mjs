@@ -78,7 +78,7 @@ function fullProfileManifestPath() {
   fullManifest = replaceManifestFragment(
     fullManifest,
     '      - /app/lib/tuneforge/backend/python/bin/python3.11 -c "import fastapi, demucs, whisper, torch"\n',
-    '      - /app/lib/tuneforge/backend/python/bin/python3.11 -c "import fastapi, demucs, whisper, torch, crema, tensorflow, keras"\n',
+    '      - /app/lib/tuneforge/backend/python/bin/python3.11 -c "import fastapi, demucs, whisper, torch, crema, tensorflow, keras, beat_this"\n',
   );
   writeFileSync(generatedManifestPath, fullManifest);
   return generatedManifestPath;

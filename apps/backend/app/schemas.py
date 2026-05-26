@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SUPPORTED_CHORD_BACKENDS = {"default", "fast", "tuneforge-fast", "librosa", "advanced", "crema", "crema-advanced"}
+AnalysisBeatBackend = Literal["built-in", "beat-this"]
 SUPPORTED_STEM_MODELS = {
     "default",
     "6_stems",
@@ -105,6 +106,7 @@ class ProjectImportRequest(BaseModel):
     chord_backend: str | None = None
     chord_backend_fallback_from: str | None = None
     stem_model: str | None = None
+    beat_backend: AnalysisBeatBackend = "built-in"
 
     @model_validator(mode="after")
     def validate_import_request(self) -> ProjectImportRequest:
@@ -801,6 +803,7 @@ class SyncTrustedPeersResponse(BaseModel):
 class AnalysisRequest(BaseModel):
     include_tempo: bool = False
     force: bool = False
+    beat_backend: AnalysisBeatBackend = "built-in"
 
 
 AnalysisTimingCorrectionAction = Literal["set_bar_1_beat_1", "shift_left", "shift_right", "set_meter"]
@@ -940,6 +943,24 @@ class ChordBackendSchema(BaseModel):
 
 class ChordBackendsResponse(BaseModel):
     backends: list[ChordBackendSchema]
+
+
+class BeatBackendSchema(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    label: str
+    description: str
+    availability: str
+    available: bool
+    unavailable_reason: str | None = None
+    experimental: bool
+    desktop_only: bool = Field(alias="desktopOnly")
+    runtime_device: str | None = None
+
+
+class BeatBackendsResponse(BaseModel):
+    backends: list[BeatBackendSchema]
 
 
 class StemModelSchema(BaseModel):
@@ -1113,6 +1134,7 @@ class JobSchema(BaseModel):
     status: str
     progress: int
     source_artifact_id: str | None = None
+    beat_backend: str | None = None
     chord_backend: str | None = None
     chord_backend_fallback_from: str | None = None
     chord_source: str | None = None
@@ -1140,6 +1162,7 @@ class BulkJobRequest(BaseModel):
     chord_backend: str | None = None
     chord_backend_fallback_from: str | None = None
     stem_model: str | None = None
+    beat_backend: AnalysisBeatBackend = "built-in"
 
     @model_validator(mode="after")
     def validate_bulk_job_request(self) -> BulkJobRequest:

@@ -49,6 +49,27 @@ pnpm setup:dev -- --advanced-chords
 
 If `crema`, TensorFlow, Keras, or JAMS are missing, `/api/v1/chord-backends` reports `crema-advanced` as unavailable and normal Built-in Chords detection keeps working.
 
+### Advanced Beat Analysis backend
+
+Built-in Beat Analysis is the default timing-grid backend. It uses TuneForge's built-in librosa-derived beat tracker, sparse-gap stabilization, and downbeat heuristics.
+
+Advanced Beat Analysis is an experimental opt-in path backed by [`beat-this`](https://github.com/CPJKU/beat_this). It runs only when an analyze request uses `"beat_backend": "beat-this"`; import, manual analyze, and bulk analyze requests default to `"built-in"`. The `beat-this` dependency is not installed by default. For a local trial:
+
+```sh
+pnpm setup:dev -- --advanced-beats
+```
+
+The backend loads `beat-this` lazily and uses its `small0` checkpoint on CPU. `pnpm setup:dev -- --advanced-beats` preloads the checkpoint; if it is not preloaded, the first Advanced Beat Analysis run may download it through `beat-this`. If the dependency is unavailable, the advanced settings option is disabled and Built-in Beat Analysis keeps working.
+
+`pnpm setup:dev -- --advanced-beats` may download the checkpoint into the local PyTorch cache during setup. To preload manually:
+
+```sh
+uv sync --python 3.11 --all-groups --extra advanced-beats
+uv run --python 3.11 python -c "from beat_this.inference import File2Beats; File2Beats(checkpoint_path='small0', device='cpu', dbn=False)"
+```
+
+The preload is stored at `$TORCH_HOME/hub/checkpoints/beat_this-small0.ckpt` when `TORCH_HOME` is set, `$XDG_CACHE_HOME/torch/hub/checkpoints/beat_this-small0.ckpt` when `XDG_CACHE_HOME` is set, or `~/.cache/torch/hub/checkpoints/beat_this-small0.ckpt` by default.
+
 ### Linux legacy NVIDIA profile
 
 If you are on Linux `x86_64` and the default PyTorch build does not support your NVIDIA GPU architecture (for example, Pascal cards like the GTX 1050 Ti), start from the standard sync above and then locally override `torch` / `torchaudio` with the older CUDA 12.6 wheels:
@@ -160,6 +181,22 @@ bash scripts/run-backend-module.sh app.benchmarks.chords --audio /path/to/song.m
 ```
 
 Run from the repository root. The command writes machine-readable JSON to stdout and a short summary to stderr. Use `--json-only` for JSON-only output.
+
+Benchmark timing-grid heuristic analysis against a local, non-committed track set:
+
+```sh
+bash scripts/run-backend-module.sh app.benchmarks.timing --audio-dir /path/to/local/tracks --json-only
+```
+
+You can also run the wrapper from the backend environment:
+
+```sh
+cd apps/backend
+uv run --python 3.11 python ../../scripts/benchmark-timing.py --track-dir /path/to/local/tracks --json-only
+```
+
+The timing benchmark reports anonymized `track_###` rows by default. Add `--include-relative-paths` only when relative
+paths are safe to include in local research notes.
 
 ### Licensing note
 

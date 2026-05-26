@@ -31,6 +31,7 @@ import {
   renderApp,
   resetAppTestHarness,
   setJobs,
+  setBeatBackends,
   setChordBackends,
   setProjects,
   setSyncTransportStatus,
@@ -1306,6 +1307,29 @@ describe("Desktop app activity", () => {
     expect(within(rows[2]).getByText("No project")).toBeInTheDocument();
   });
 
+  it("shows beat analysis backend, runtime, and duration on analysis jobs", async () => {
+    setJobs([
+      job({
+        id: "job_analysis",
+        project_id: "proj_123",
+        type: "analyze",
+        status: "completed",
+        progress: 100,
+        beat_backend: "beat-this",
+        runtime_device: "cpu",
+        duration_seconds: 1.8,
+        completed_at: "2026-04-18T13:25:00.000Z",
+        created_at: "2026-04-18T13:24:58.200Z",
+        updated_at: "2026-04-18T13:25:00.000Z",
+      }),
+    ]);
+
+    renderApp(["/activity"]);
+
+    const row = await screen.findByRole("article", { name: "analyze completed job" });
+    expect(within(row).getByText("advanced / CPU / 1.8 s")).toBeInTheDocument();
+  });
+
   it("loads additional terminal history pages on request", async () => {
     const user = userEvent.setup();
     setJobs(terminalHistoryJobs(55));
@@ -1677,7 +1701,9 @@ describe("Desktop app activity", () => {
       approveConfirm?.(true);
     });
 
-    await waitFor(() => expect(mockBulkJobs).toHaveBeenCalledWith({ job_type: "analyze" }));
+    await waitFor(() =>
+      expect(mockBulkJobs).toHaveBeenCalledWith({ job_type: "analyze", beat_backend: "built-in" }),
+    );
   });
 
   it("does not enqueue a bulk job action when confirmation is cancelled", async () => {
@@ -1777,11 +1803,12 @@ describe("Desktop app activity", () => {
     expect(within(skippedProjects).getByText(/Busy Song B \(proj_bulk_skip_b\)/)).toBeInTheDocument();
   });
 
-  it("uses default chord backend and stem model preferences for bulk refresh actions", async () => {
+  it("uses default beat, chord, and stem preferences for bulk refresh actions", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem(
       "tuneforge.ui-preferences",
       JSON.stringify({
+        defaultBeatAnalysisBackend: "beat-this",
         defaultChordBackend: "crema-advanced",
         defaultStemModel: "htdemucs_ft",
       }),
@@ -1790,6 +1817,14 @@ describe("Desktop app activity", () => {
     renderApp(["/activity"]);
 
     expect(await screen.findByRole("heading", { level: 2, name: "Jobs" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Analyze all projects" }));
+    await waitFor(() =>
+      expect(mockBulkJobs).toHaveBeenCalledWith({
+        job_type: "analyze",
+        beat_backend: "beat-this",
+      }),
+    );
+
     await user.click(screen.getByRole("button", { name: "Refresh chords for all projects" }));
     await waitFor(() =>
       expect(mockBulkJobs).toHaveBeenCalledWith({
@@ -1804,6 +1839,30 @@ describe("Desktop app activity", () => {
         job_type: "stems",
         chord_backend: "crema-advanced",
         stem_model: "htdemucs_ft",
+      }),
+    );
+  });
+
+  it("falls back to built-in beats for bulk analyze when advanced beats are unavailable", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultBeatAnalysisBackend: "beat-this" }),
+    );
+    setBeatBackends([
+      { id: "built-in", available: true },
+      { id: "beat-this", available: false },
+    ]);
+
+    renderApp(["/activity"]);
+
+    expect(await screen.findByRole("heading", { level: 2, name: "Jobs" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Analyze all projects" }));
+
+    await waitFor(() =>
+      expect(mockBulkJobs).toHaveBeenCalledWith({
+        job_type: "analyze",
+        beat_backend: "built-in",
       }),
     );
   });

@@ -14,6 +14,8 @@ Runs the standard developer setup:
 
 Options:
   --advanced-chords, --crema  Install the optional crema/TensorFlow chord backend.
+  --advanced-beats, --beat-this
+                              Install the optional beat-this backend and preload small0.
   --legacy-nvidia             Use the Linux x86_64 legacy NVIDIA Torch profile.
   --skip-demucs-models        Skip preparing the local pinned Demucs model repo.
   --skip-playwright-browsers  Skip installing Playwright's Chromium browser.
@@ -24,6 +26,7 @@ EOF
 }
 
 advanced_chords=0
+advanced_beats=0
 legacy_nvidia=0
 skip_demucs_models=0
 skip_playwright_browsers=0
@@ -34,6 +37,9 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --advanced-chords | --crema)
       advanced_chords=1
+      ;;
+    --advanced-beats | --beat-this)
+      advanced_beats=1
       ;;
     --legacy-nvidia)
       legacy_nvidia=1
@@ -84,6 +90,9 @@ fi
 backend_sync_args=(sync --python 3.11 --all-groups)
 if [[ "${advanced_chords}" -eq 1 ]]; then
   backend_sync_args+=(--extra advanced-chords)
+fi
+if [[ "${advanced_beats}" -eq 1 ]]; then
+  backend_sync_args+=(--extra advanced-beats)
 fi
 
 cd "${repo_root}"
@@ -141,6 +150,16 @@ PY
   touch "${marker_file}"
 else
   rm -f "${marker_file}"
+fi
+
+if [[ "${advanced_beats}" -eq 1 ]]; then
+  echo "Preloading beat-this small0 checkpoint..."
+  .venv/bin/python - <<'PY'
+from beat_this.inference import File2Beats
+
+File2Beats(checkpoint_path="small0", device="cpu", dbn=False)
+print("Preloaded beat-this small0 checkpoint.")
+PY
 fi
 
 if [[ "${skip_contracts}" -eq 0 ]]; then

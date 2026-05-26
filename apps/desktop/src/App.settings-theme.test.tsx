@@ -12,6 +12,7 @@ import {
   mockSave,
   queryByAriaKeyLabel,
   renderApp,
+  setBeatBackends,
   setChordBackends,
   setMockNativeAudioState,
   setProjectAnalysis,
@@ -97,6 +98,7 @@ describe("Desktop app settings theme", () => {
     expect(screen.queryByRole("button", { name: /^Collapse sources rail by default/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Project first/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^AutoUse lyrics \+ chords/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Built-in Beat Analysis/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Built-in Chords/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Enable lyrics follow by default/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Enable chords follow by default/ })).toHaveAttribute("aria-pressed", "true");
@@ -108,6 +110,7 @@ describe("Desktop app settings theme", () => {
       defaultSourcesRailCollapsed: false,
       defaultProjectWorkspace: "project",
       defaultPlaybackDisplayMode: "auto",
+      defaultBeatAnalysisBackend: "built-in",
       defaultChordBackend: "tuneforge-fast",
       defaultLyricsFollowEnabled: true,
       defaultChordsFollowEnabled: true,
@@ -161,6 +164,7 @@ describe("Desktop app settings theme", () => {
     await user.click(screen.getByRole("button", { name: /^Playback first/ }));
     await user.click(screen.getByRole("button", { name: /^Lyrics \+ chords/ }));
     await user.click(screen.getByRole("button", { name: /^Beat/ }));
+    await user.click(screen.getByRole("button", { name: /^Advanced Beat Analysis/ }));
     await user.click(screen.getByRole("button", { name: /^Advanced Chords/ }));
     await user.click(screen.getByText("Show diagnostics"));
     expect(await screen.findByText("/tmp/tuneforge")).toBeInTheDocument();
@@ -191,6 +195,7 @@ describe("Desktop app settings theme", () => {
         defaultProjectWorkspace: "playback",
         defaultPlaybackDisplayMode: "combined",
         defaultLoopAlignmentMode: "beat",
+        defaultBeatAnalysisBackend: "beat-this",
         defaultChordBackend: "crema-advanced",
         defaultLyricsFollowEnabled: true,
         defaultChordsFollowEnabled: true,
@@ -272,6 +277,44 @@ describe("Desktop app settings theme", () => {
     expect(screen.getByRole("button", { name: /^Built-in Chords/ })).not.toBeDisabled();
     expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toBeDisabled();
     expect(await screen.findByText("crema is not installed")).toBeInTheDocument();
+  });
+
+  it("shows unavailable advanced beat backend and selects built-in fallback", async () => {
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultBeatAnalysisBackend: "beat-this", defaultSourcesRailCollapsed: false }),
+    );
+    setBeatBackends([
+      {
+        availability: "available",
+        available: true,
+        desktopOnly: false,
+        experimental: false,
+        id: "built-in",
+        label: "Built-in Beat Analysis",
+        unavailable_reason: null,
+      },
+      {
+        availability: "unavailable",
+        available: false,
+        desktopOnly: true,
+        experimental: true,
+        id: "beat-this",
+        label: "Advanced Beat Analysis",
+        unavailable_reason: "beat-this is not installed",
+      },
+    ]);
+
+    renderApp(["/settings"]);
+
+    expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
+    expect(await screen.findByText("beat-this is not installed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Built-in Beat Analysis/ })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: /^Advanced Beat Analysis/ })).toBeDisabled();
+    expect(screen.getAllByText("Built-in Beat Analysis").length).toBeGreaterThan(0);
   });
 
   it("resets appearance, playback, and all settings independently", async () => {

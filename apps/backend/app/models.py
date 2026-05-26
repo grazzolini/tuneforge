@@ -433,6 +433,13 @@ class Job(Base):
         return value if isinstance(value, str) else None
 
     @property
+    def beat_backend(self) -> str | None:
+        if self.type != "analyze":
+            return None
+        value = self.payload_json.get("beat_backend")
+        return value if isinstance(value, str) else "built-in"
+
+    @property
     def chord_source(self) -> str | None:
         if self.type != "chords":
             return None

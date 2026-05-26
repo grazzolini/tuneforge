@@ -7,6 +7,7 @@ import { api, type BulkJobRequest, type BulkJobsResponse, type JobSchema, type P
 import { formatLocalDateTime, normalizeApiDateTime, parseApiDateTime } from "../../lib/datetime";
 import { useLazyLoadSentinel } from "../../lib/useLazyLoadSentinel";
 import { usePreferences } from "../../lib/preferences";
+import { useBeatBackendActionSelection } from "../projects/hooks/useBeatBackendActionSelection";
 import { useChordBackendActionSelection } from "../projects/hooks/useChordBackendActionSelection";
 import { formatJobStatusSummary } from "../projects/projectViewUtils";
 import { ActivitySyncPanel } from "./ActivitySyncPanel";
@@ -348,6 +349,7 @@ export function ActivityView() {
   const previousActiveJobIds = useRef<Set<string>>(new Set());
   const queryClient = useQueryClient();
   const { defaultStemModel } = usePreferences();
+  const { beatBackendForAction } = useBeatBackendActionSelection();
   const { chordBackendForAction } = useChordBackendActionSelection();
   const activeJobsQueryKey = useMemo(
     () => [...ACTIVE_JOBS_QUERY_KEY, deferredSearch] as const,
@@ -453,6 +455,10 @@ export function ActivityView() {
   const bulkJobsMutation = useMutation({
     mutationFn: async (action: BulkJobAction) => {
       const request: BulkJobRequest = { job_type: action.jobType };
+      if (action.jobType === "analyze") {
+        const beatBackendSelection = await beatBackendForAction();
+        request.beat_backend = beatBackendSelection.beat_backend;
+      }
       if (action.jobType === "chords" || action.jobType === "stems") {
         const backendSelection = await chordBackendForAction();
         request.chord_backend = backendSelection.backend;

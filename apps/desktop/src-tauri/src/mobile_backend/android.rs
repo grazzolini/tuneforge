@@ -6,7 +6,7 @@ use android_system_properties::AndroidSystemProperties;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use rand::{rng, Rng};
+use rand::{rngs::SysRng, TryRng};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::json;
 use sha2::{Digest, Sha256};

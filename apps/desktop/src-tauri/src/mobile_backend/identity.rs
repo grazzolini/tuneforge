@@ -14,7 +14,7 @@ pub(super) fn ensure_local_identity(connection: &Connection) -> Result<(), Strin
     }
 
     let mut private_key_bytes = [0_u8; 32];
-    rng().fill_bytes(&mut private_key_bytes);
+    fill_os_random(&mut private_key_bytes, "sync identity private key")?;
     let signing_key = SigningKey::from_bytes(&private_key_bytes);
     let public_key_bytes = signing_key.verifying_key().to_bytes();
     let timestamp = now_iso();
@@ -24,7 +24,7 @@ pub(super) fn ensure_local_identity(connection: &Connection) -> Result<(), Strin
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
                 params![
                     LOCAL_IDENTITY_ID,
-                    new_sync_group_id(),
+                    new_sync_group_id()?,
                     derive_device_id(&public_key_bytes),
                     DEFAULT_LOCAL_DISPLAY_NAME,
                     encode_key(&public_key_bytes),
@@ -36,10 +36,10 @@ pub(super) fn ensure_local_identity(connection: &Connection) -> Result<(), Strin
     Ok(())
 }
 
-pub(super) fn new_sync_group_id() -> String {
+pub(super) fn new_sync_group_id() -> Result<String, String> {
     let mut bytes = [0_u8; 16];
-    rng().fill_bytes(&mut bytes);
-    format!("{SYNC_GROUP_ID_PREFIX}{}", encode_key(&bytes))
+    fill_os_random(&mut bytes, "sync group id")?;
+    Ok(format!("{SYNC_GROUP_ID_PREFIX}{}", encode_key(&bytes)))
 }
 
 pub(super) fn derive_device_id(public_key_bytes: &[u8; 32]) -> String {
@@ -57,18 +57,28 @@ pub(super) fn decode_key(value: &str) -> Result<Vec<u8>, String> {
         .map_err(|_| "Value must be URL-safe base64.".to_string())
 }
 
-pub(super) fn new_prefixed_token(prefix: &str, byte_count: usize) -> String {
+fn fill_os_random(bytes: &mut [u8], label: &str) -> Result<(), String> {
+    SysRng
+        .try_fill_bytes(bytes)
+        .map_err(|error| format!("Could not generate {label}: {error}"))
+}
+
+pub(super) fn new_prefixed_token(
+    prefix: &str,
+    byte_count: usize,
+    label: &str,
+) -> Result<String, String> {
     let mut bytes = vec![0_u8; byte_count];
-    rng().fill_bytes(&mut bytes);
-    format!("{prefix}{}", encode_key(&bytes))
+    fill_os_random(&mut bytes, label)?;
+    Ok(format!("{prefix}{}", encode_key(&bytes)))
 }
 
-pub(super) fn new_pairing_offer_id() -> String {
-    new_prefixed_token(PAIRING_PREFIX, 16)
+pub(super) fn new_pairing_offer_id() -> Result<String, String> {
+    new_prefixed_token(PAIRING_PREFIX, 16, "pairing offer id")
 }
 
-pub(super) fn new_pairing_secret() -> String {
-    new_prefixed_token(PAIRING_PREFIX, 32)
+pub(super) fn new_pairing_secret() -> Result<String, String> {
+    new_prefixed_token(PAIRING_PREFIX, 32, "pairing secret")
 }
 
 pub(super) fn hash_pairing_secret(secret: &str) -> String {
@@ -421,8 +431,8 @@ pub fn mobile_create_sync_pairing_offer(
     let identity = local_identity(&connection)?;
     let expires_at = Utc::now() + Duration::seconds(ttl_seconds);
     let expires_at_payload = pairing_iso(expires_at);
-    let pairing_offer_id = new_pairing_offer_id();
-    let pairing_secret = new_pairing_secret();
+    let pairing_offer_id = new_pairing_offer_id()?;
+    let pairing_secret = new_pairing_secret()?;
     let mut pairing_payload = SyncPairingPayloadSchema {
         sync_group_id: identity.sync_group_id.clone(),
         device_id: identity.device_id.clone(),

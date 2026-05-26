@@ -17,7 +17,7 @@ const pnpmLockPath = path.join(workspaceRoot, "pnpm-lock.yaml");
 const uvLockPath = path.join(workspaceRoot, "apps", "backend", "uv.lock");
 const demucsModelRoot = path.join(workspaceRoot, "packaging", "demucs");
 const flatpakProfile = readProfileArg();
-const profileIncludesAdvancedChords = flatpakProfile === "full";
+const profilePythonExtras = flatpakProfile === "full" ? ["advanced-chords", "advanced-beats"] : [];
 const profileUsesLegacyNvidia = flatpakProfile === "full";
 
 function sha256File(filePath) {
@@ -612,8 +612,7 @@ function mergeLegacyTorchPackages(packages) {
 }
 
 function generatePythonSources() {
-  const extras = profileIncludesAdvancedChords ? ["advanced-chords"] : [];
-  let packages = resolvePythonRuntimePackages(parseUvLock(readRequiredFile(uvLockPath)), { extras });
+  let packages = resolvePythonRuntimePackages(parseUvLock(readRequiredFile(uvLockPath)), { extras: profilePythonExtras });
   if (profileUsesLegacyNvidia) {
     packages = mergeLegacyTorchPackages(packages);
   }

@@ -26,6 +26,9 @@ advanced-chords = [
   "setuptools<83",
   "tensorflow>=2.15,<2.22",
 ]
+advanced-beats = [
+  "beat-this>=1.1.0,<2.0.0",
+]
 
 [dependency-groups]
 dev = [

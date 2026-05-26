@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Link } from "react-router-dom";
-import { api, type ChordBackendSchema, type StemModelSchema } from "../../lib/api";
+import { api, type BeatBackendSchema, type ChordBackendSchema, type StemModelSchema } from "../../lib/api";
 import { FRONTEND_VERSION_INFO } from "../../lib/buildInfo";
 import {
   readRememberedNativePlaybackError,
@@ -19,6 +19,7 @@ import {
 import { TunerPreferenceControls } from "../tools/TunerPreferenceControls";
 import {
   usePreferences,
+  type DefaultBeatAnalysisBackend,
   type DefaultChordBackend,
   type DefaultPlaybackDisplayMode,
   type DefaultStemModel,
@@ -176,6 +177,22 @@ const loopAlignmentOptions: ChoiceOption<LoopAlignmentMode>[] = [
   },
 ];
 
+const fallbackBeatAnalysisBackendOptions: ChoiceOption<DefaultBeatAnalysisBackend>[] = [
+  {
+    value: "built-in",
+    label: "Built-in Beat Analysis",
+    description: "Use the current local librosa heuristic for tempo and beat timing.",
+    status: "Default",
+  },
+  {
+    value: "beat-this",
+    label: "Advanced Beat Analysis",
+    description: "Use the optional beat-this ML model for experimental beat timing.",
+    disabled: true,
+    status: "Unavailable",
+  },
+];
+
 const fallbackChordBackendOptions: ChoiceOption<DefaultChordBackend>[] = [
   {
     value: "tuneforge-fast",
@@ -244,6 +261,10 @@ function loopAlignmentLabel(value: LoopAlignmentMode) {
   if (value === "beat") return "Beat";
   if (value === "bar") return "Bar";
   return "Exact";
+}
+
+function beatAnalysisBackendLabel(value: DefaultBeatAnalysisBackend) {
+  return value === "beat-this" ? "Advanced Beat Analysis" : "Built-in Beat Analysis";
 }
 
 function chordBackendLabel(value: DefaultChordBackend) {
@@ -355,6 +376,31 @@ function chordBackendOptions(backends: ChordBackendSchema[] | undefined): Choice
   });
 }
 
+function beatBackendOptions(backends: BeatBackendSchema[] | undefined): ChoiceOption<DefaultBeatAnalysisBackend>[] {
+  if (!backends?.length) {
+    return fallbackBeatAnalysisBackendOptions;
+  }
+
+  return fallbackBeatAnalysisBackendOptions.map((fallback) => {
+    const backend = backends.find((candidate) => candidate.id === fallback.value);
+    if (!backend) {
+      return fallback;
+    }
+    const unavailableReason = backend.available ? null : backend.unavailable_reason;
+    return {
+      value: fallback.value,
+      label: backend.label,
+      description: backend.description,
+      disabled: !backend.available,
+      status: unavailableReason ?? (backend.experimental ? "Experimental" : undefined),
+    };
+  });
+}
+
+function effectiveChoiceValue<T extends string>(value: T, options: ChoiceOption<T>[], fallback: T) {
+  return options.some((option) => option.value === value && !option.disabled) ? value : fallback;
+}
+
 function stemModelOptions(models: StemModelSchema[] | undefined): ChoiceOption<DefaultStemModel>[] {
   if (!models?.length) {
     return fallbackStemModelOptions;
@@ -453,6 +499,7 @@ export function SettingsView() {
     defaultProjectWorkspace,
     defaultPlaybackDisplayMode,
     defaultLoopAlignmentMode,
+    defaultBeatAnalysisBackend,
     defaultChordBackend,
     defaultStemModel,
     defaultLyricsFollowEnabled,
@@ -465,6 +512,7 @@ export function SettingsView() {
     setDefaultProjectWorkspace,
     setDefaultPlaybackDisplayMode,
     setDefaultLoopAlignmentMode,
+    setDefaultBeatAnalysisBackend,
     setDefaultChordBackend,
     setDefaultStemModel,
     setDefaultLyricsFollowEnabled,
@@ -491,6 +539,10 @@ export function SettingsView() {
     queryKey: ["chord-backends"],
     queryFn: api.listChordBackends,
   });
+  const beatBackendsQuery = useQuery({
+    queryKey: ["beat-backends"],
+    queryFn: api.listBeatBackends,
+  });
   const stemModelsQuery = useQuery({
     queryKey: ["stem-models"],
     queryFn: api.listStemModels,
@@ -512,6 +564,12 @@ export function SettingsView() {
   const latestNativeFallbackCause =
     lastNativePlaybackError ?? nativeAudioSnapshotQuery.data?.fallbackReason ?? "None";
   const savedThemeOverrideCount = themeOverrideCount(themeOverrides);
+  const beatBackendChoices = beatBackendOptions(beatBackendsQuery.data?.backends);
+  const effectiveBeatAnalysisBackend = effectiveChoiceValue(
+    defaultBeatAnalysisBackend,
+    beatBackendChoices,
+    "built-in",
+  );
   const chordBackendChoices = chordBackendOptions(chordBackendsQuery.data?.backends);
   const stemModelChoices = stemModelOptions(stemModelsQuery.data?.models);
 
@@ -560,6 +618,7 @@ export function SettingsView() {
       const contents = serializeSettingsSnapshot({
         preferences: {
           defaultChordsFollowEnabled,
+          defaultBeatAnalysisBackend,
           defaultChordBackend,
           defaultLoopAlignmentMode,
           defaultStemModel,
@@ -643,6 +702,7 @@ export function SettingsView() {
             <span className="pill">Density</span>
             <span className="pill">Musical notation</span>
             <span className="pill">Tuner</span>
+            <span className="pill">Beat analysis</span>
             <span className="pill">Chord backend</span>
             <span className="pill">Stem model</span>
             <span className="pill">Playback defaults</span>
@@ -677,6 +737,10 @@ export function SettingsView() {
           <div className="settings-overview__stat">
             <dt>Loop alignment</dt>
             <dd>{loopAlignmentLabel(defaultLoopAlignmentMode)}</dd>
+          </div>
+          <div className="settings-overview__stat">
+            <dt>Beat analysis</dt>
+            <dd>{beatAnalysisBackendLabel(effectiveBeatAnalysisBackend)}</dd>
           </div>
           <div className="settings-overview__stat">
             <dt>Chord backend</dt>
@@ -815,6 +879,14 @@ export function SettingsView() {
               <p className="subpanel__copy">Default engines for generated project analysis.</p>
             </div>
           </div>
+
+          <ChoiceGroup
+            description="Choose the backend used when generating tempo and beat timing."
+            legend="Default beat analysis"
+            onChange={setDefaultBeatAnalysisBackend}
+            options={beatBackendChoices}
+            value={effectiveBeatAnalysisBackend}
+          />
 
           <ChoiceGroup
             description="Choose the backend used when generating or refreshing chords."

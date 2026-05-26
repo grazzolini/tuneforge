@@ -9,6 +9,7 @@ import {
   mockListProjects,
   mockOpen,
   renderApp,
+  setBeatBackends,
   setChordBackends,
   setProjects,
   triggerMockIntersectionObserver,
@@ -353,6 +354,7 @@ describe("Desktop app library", () => {
     expect(mockImportProject).toHaveBeenCalledWith({
       source_path: "/tmp/new-song.mp4",
       copy_into_project: true,
+      beat_backend: "built-in",
       chord_backend: "tuneforge-fast",
       stem_model: "htdemucs_6s",
     });
@@ -394,6 +396,7 @@ describe("Desktop app library", () => {
       expect(payload).toEqual(
         expect.objectContaining({
           copy_into_project: true,
+          beat_backend: "built-in",
           chord_backend: "crema-advanced",
           stem_model: "htdemucs_ft",
         }),
@@ -587,6 +590,7 @@ describe("Desktop app library", () => {
       "tuneforge.ui-preferences",
       JSON.stringify({
         defaultChordBackend: "crema-advanced",
+        defaultBeatAnalysisBackend: "beat-this",
         defaultSourcesRailCollapsed: false,
         defaultStemModel: "htdemucs_ft",
       }),
@@ -601,6 +605,7 @@ describe("Desktop app library", () => {
     expect(mockImportProject).toHaveBeenCalledWith({
       source_path: "/tmp/new-song.mp4",
       copy_into_project: true,
+      beat_backend: "beat-this",
       chord_backend: "crema-advanced",
       stem_model: "htdemucs_ft",
     });
@@ -644,9 +649,36 @@ describe("Desktop app library", () => {
     expect(mockImportProject).toHaveBeenCalledWith({
       source_path: "/tmp/new-song.mp4",
       copy_into_project: true,
+      beat_backend: "built-in",
       chord_backend: "tuneforge-fast",
       stem_model: "htdemucs_6s",
       chord_backend_fallback_from: "crema-advanced",
+    });
+  });
+
+  it("falls back to built-in beat analysis when importing with unavailable advanced beats", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultBeatAnalysisBackend: "beat-this", defaultSourcesRailCollapsed: false }),
+    );
+    setBeatBackends([
+      { id: "built-in", available: true },
+      { id: "beat-this", available: false },
+    ]);
+    mockOpen.mockResolvedValue("/tmp/new-song.mp4");
+
+    renderApp(["/"]);
+
+    expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Import Track(s)" }));
+
+    expect(mockImportProject).toHaveBeenCalledWith({
+      source_path: "/tmp/new-song.mp4",
+      copy_into_project: true,
+      beat_backend: "built-in",
+      chord_backend: "tuneforge-fast",
+      stem_model: "htdemucs_6s",
     });
   });
 

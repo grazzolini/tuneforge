@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from app import __version__
 from app.api.routes.artifacts import router as artifacts_router
+from app.api.routes.beat_backends import router as beat_backends_router
 from app.api.routes.chord_backends import router as chord_backends_router
 from app.api.routes.health import router as health_router
 from app.api.routes.jobs import router as jobs_router
@@ -80,6 +81,7 @@ async def validation_error_handler(_: Request, exc: RequestValidationError) -> J
 
 
 app.include_router(health_router, prefix=get_settings().api_prefix)
+app.include_router(beat_backends_router, prefix=get_settings().api_prefix)
 app.include_router(chord_backends_router, prefix=get_settings().api_prefix)
 app.include_router(stem_models_router, prefix=get_settings().api_prefix)
 app.include_router(projects_router, prefix=get_settings().api_prefix)

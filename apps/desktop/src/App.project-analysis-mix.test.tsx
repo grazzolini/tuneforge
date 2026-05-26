@@ -24,6 +24,7 @@ import {
   mockUpdateLyrics,
   mockUpdateProject,
   renderApp,
+  setBeatBackends,
   setChordBackends,
   setProjectAnalysis,
   setProjectChords,
@@ -162,7 +163,45 @@ describe("Desktop app project analysis mix", () => {
     await openStudioPanel(user);
     await user.click(screen.getByRole("button", { name: "Analyze Track" }));
 
-    expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123");
+    expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123", { beat_backend: "built-in" });
+  });
+
+  it("uses the selected default beat backend when analyzing track", async () => {
+    const user = userEvent.setup();
+    setProjectAnalysis("proj_123", null);
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultBeatAnalysisBackend: "beat-this", defaultSourcesRailCollapsed: false }),
+    );
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openStudioPanel(user);
+    await user.click(screen.getByRole("button", { name: "Analyze Track" }));
+
+    expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123", { beat_backend: "beat-this" });
+  });
+
+  it("falls back to built-in beats when the saved advanced backend is unavailable", async () => {
+    const user = userEvent.setup();
+    setProjectAnalysis("proj_123", null);
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultBeatAnalysisBackend: "beat-this", defaultSourcesRailCollapsed: false }),
+    );
+    setBeatBackends([
+      { id: "built-in", available: true },
+      { id: "beat-this", available: false },
+    ]);
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openStudioPanel(user);
+    await user.click(screen.getByRole("button", { name: "Analyze Track" }));
+
+    expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123", { beat_backend: "built-in" });
   });
 
   it("shows timing grid controls in the playback rail", async () => {
@@ -232,7 +271,9 @@ describe("Desktop app project analysis mix", () => {
 
     mockConfirm.mockResolvedValueOnce(true);
     await user.click(screen.getByRole("button", { name: "Analyze Track" }));
-    await waitFor(() => expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123"));
+    await waitFor(() =>
+      expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123", { beat_backend: "built-in" }),
+    );
   });
 
   it("shows sync lock reason and disables project mutation controls for locked projects", async () => {

@@ -100,7 +100,7 @@ def create_project(
         session,
         project_id=project.id,
         job_type="analyze",
-        payload=AnalysisRequest(include_tempo=False, force=False).model_dump(),
+        payload=AnalysisRequest(include_tempo=False, force=False, beat_backend=payload.beat_backend).model_dump(),
     )
     selected_chord_backend, chord_backend_fallback_from = _resolve_import_chord_backend(
         payload.chord_backend,

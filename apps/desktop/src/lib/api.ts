@@ -27,6 +27,8 @@ export type HealthResponse = components["schemas"]["HealthResponse"];
 export type ProjectSchema = components["schemas"]["ProjectSchema"];
 export type AnalysisSchema = components["schemas"]["AnalysisSchema"];
 export type AnalysisResponse = components["schemas"]["AnalysisResponse"];
+export type AnalysisRequest = components["schemas"]["AnalysisRequest"];
+export type BeatAnalysisBackend = NonNullable<AnalysisRequest["beat_backend"]>;
 export type ChordResponse = components["schemas"]["ChordResponse"];
 export type ChordSegmentSchema = components["schemas"]["ChordSegmentSchema"];
 export type LyricsResponse = components["schemas"]["LyricsResponse"];
@@ -44,10 +46,13 @@ export type PreviewRequest = components["schemas"]["PreviewRequest"];
 export type RetuneRequest = components["schemas"]["RetuneRequest"];
 export type ExportRequest = components["schemas"]["ExportRequest"];
 export type ProjectUpdateRequest = components["schemas"]["ProjectUpdateRequest"];
+export type ProjectImportRequest = components["schemas"]["ProjectImportRequest"];
 export type StemRequest = components["schemas"]["StemRequest"];
 export type StemModelSchema = components["schemas"]["StemModelSchema"];
 export type StemModelsResponse = components["schemas"]["StemModelsResponse"];
 export type ChordRequest = components["schemas"]["ChordRequest"];
+export type BeatBackendSchema = components["schemas"]["BeatBackendSchema"];
+export type BeatBackendsResponse = components["schemas"]["BeatBackendsResponse"];
 export type ChordBackendSchema = components["schemas"]["ChordBackendSchema"];
 export type ChordBackendsResponse = components["schemas"]["ChordBackendsResponse"];
 export type LyricsGenerateRequest = components["schemas"]["LyricsGenerateRequest"];
@@ -1119,16 +1124,17 @@ export type TuneForgeClient = {
   getMobileCapabilities: () => Promise<RuntimeCapabilities>;
   getHealth: () => Promise<HealthResponse>;
   listProjects: (params?: ListProjectsParams) => Promise<components["schemas"]["ProjectsResponse"]>;
-  importProject: (body: components["schemas"]["ProjectImportRequest"]) => Promise<components["schemas"]["ProjectResponse"]>;
+  importProject: (body: ProjectImportRequest) => Promise<components["schemas"]["ProjectResponse"]>;
   getProject: (projectId: string) => Promise<components["schemas"]["ProjectResponse"]>;
   updateProject: (projectId: string, body: ProjectUpdateRequest) => Promise<components["schemas"]["ProjectResponse"]>;
   deleteProject: (projectId: string) => Promise<components["schemas"]["DeleteResponse"]>;
-  analyzeProject: (projectId: string) => Promise<components["schemas"]["JobResponse"]>;
+  analyzeProject: (projectId: string, body?: AnalysisRequest) => Promise<components["schemas"]["JobResponse"]>;
   getAnalysis: (projectId: string) => Promise<AnalysisResponse>;
   updateAnalysisTiming: (
     projectId: string,
     body: AnalysisTimingUpdateRequest,
   ) => Promise<AnalysisTimingUpdateResponse>;
+  listBeatBackends: () => Promise<BeatBackendsResponse>;
   listChordBackends: () => Promise<ChordBackendsResponse>;
   listStemModels: () => Promise<StemModelsResponse>;
   createChords: (projectId: string, body: ChordRequest) => Promise<components["schemas"]["JobResponse"]>;
@@ -1209,6 +1215,32 @@ const mobileChordBackendsResponse: ChordBackendsResponse = {
       id: "crema-advanced",
       label: "Advanced Chords",
       unavailable_reason: "advanced chord backend is disabled on mobile",
+    },
+  ],
+};
+const mobileBeatBackendsResponse: BeatBackendsResponse = {
+  backends: [
+    {
+      availability: "available",
+      available: true,
+      description: "TuneForge's built-in beat detector.",
+      desktopOnly: false,
+      experimental: false,
+      id: "built-in",
+      label: "Built-in Beat Analysis",
+      runtime_device: "cpu",
+      unavailable_reason: null,
+    },
+    {
+      availability: "unavailable",
+      available: false,
+      description: "Optional beat-this beat detector for desktop builds.",
+      desktopOnly: true,
+      experimental: true,
+      id: "beat-this",
+      label: "Advanced Beat Analysis",
+      runtime_device: "cpu",
+      unavailable_reason: "advanced beat analysis is disabled on mobile",
     },
   ],
 };
@@ -1298,18 +1330,18 @@ function createHttpTuneForgeClient(): TuneForgeClient {
     getHealth: () => unwrap(client.GET("/api/v1/health")),
     listProjects: (params?: ListProjectsParams) =>
       unwrap(client.GET("/api/v1/projects", params ? { params: { query: params } } : undefined)),
-    importProject: (body: components["schemas"]["ProjectImportRequest"]) =>
+    importProject: (body: ProjectImportRequest) =>
       unwrap(client.POST("/api/v1/projects/import", { body })),
     getProject: (projectId: string) => unwrap(client.GET("/api/v1/projects/{project_id}", { params: { path: { project_id: projectId } } })),
     updateProject: (projectId: string, body: ProjectUpdateRequest) =>
       unwrap(client.PATCH("/api/v1/projects/{project_id}", { params: { path: { project_id: projectId } }, body })),
     deleteProject: (projectId: string) =>
       unwrap(client.DELETE("/api/v1/projects/{project_id}", { params: { path: { project_id: projectId } } })),
-    analyzeProject: (projectId: string) =>
+    analyzeProject: (projectId: string, request?: AnalysisRequest) =>
       unwrap(
         client.POST("/api/v1/projects/{project_id}/analyze", {
           params: { path: { project_id: projectId } },
-          body: { include_tempo: false, force: false },
+          body: { include_tempo: false, force: false, ...request },
         }),
       ),
     getAnalysis: (projectId: string) =>
@@ -1321,6 +1353,7 @@ function createHttpTuneForgeClient(): TuneForgeClient {
           body,
         }),
       ),
+    listBeatBackends: () => unwrap(client.GET("/api/v1/beat-backends")),
     listChordBackends: () => unwrap(client.GET("/api/v1/chord-backends")),
     listStemModels: () => unwrap(client.GET("/api/v1/stem-models")),
     createChords: (projectId: string, body: ChordRequest) =>
@@ -1399,18 +1432,33 @@ function createHttpTuneForgeClient(): TuneForgeClient {
 }
 
 function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForgeClient {
+  const requireSupportedMobileAnalysisBackend = (request?: { beat_backend?: BeatAnalysisBackend }) => {
+    if (request?.beat_backend === "beat-this") {
+      throw new ApiError({
+        code: "UNSUPPORTED_RUNTIME",
+        message: "Advanced beat analysis is not available on mobile yet.",
+        details: { beat_backend: request.beat_backend },
+      });
+    }
+  };
+
   return {
     getMobileCapabilities: async () => capabilities,
     getHealth: () => invokeMobile("mobile_get_health"),
     listProjects: (params?: ListProjectsParams) =>
       invokeMobile("mobile_list_projects", { params: params ?? null }),
-    importProject: (body: components["schemas"]["ProjectImportRequest"]) =>
-      invokeMobile("mobile_import_project", { payload: body }),
+    importProject: async (body: ProjectImportRequest) => {
+      requireSupportedMobileAnalysisBackend(body);
+      return invokeMobile("mobile_import_project", { payload: body });
+    },
     getProject: (projectId: string) => invokeMobile("mobile_get_project", { projectId }),
     updateProject: (projectId: string, body: ProjectUpdateRequest) =>
       invokeMobile("mobile_update_project", { projectId, payload: body }),
     deleteProject: (projectId: string) => invokeMobile("mobile_delete_project", { projectId }),
-    analyzeProject: (projectId: string) => invokeMobile("mobile_submit_analyze", { projectId }),
+    analyzeProject: async (projectId: string, request?: AnalysisRequest) => {
+      requireSupportedMobileAnalysisBackend(request);
+      return invokeMobile("mobile_submit_analyze", { projectId });
+    },
     getAnalysis: (projectId: string) => invokeMobile("mobile_get_analysis", { projectId }),
     updateAnalysisTiming: async () => {
       throw new ApiError({
@@ -1419,6 +1467,7 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
         details: {},
       });
     },
+    listBeatBackends: async () => mobileBeatBackendsResponse,
     listChordBackends: async () => mobileChordBackendsResponse,
     listStemModels: async () => mobileStemModelsResponse,
     createChords: (projectId: string, body: ChordRequest) =>
@@ -1543,10 +1592,11 @@ export const api: TuneForgeClient = {
   getProject: (projectId: string) => activeClient.getProject(projectId),
   updateProject: (projectId: string, body: ProjectUpdateRequest) => activeClient.updateProject(projectId, body),
   deleteProject: (projectId: string) => activeClient.deleteProject(projectId),
-  analyzeProject: (projectId: string) => activeClient.analyzeProject(projectId),
+  analyzeProject: (projectId: string, body?: AnalysisRequest) => activeClient.analyzeProject(projectId, body),
   getAnalysis: (projectId: string) => activeClient.getAnalysis(projectId),
   updateAnalysisTiming: (projectId: string, body: AnalysisTimingUpdateRequest) =>
     activeClient.updateAnalysisTiming(projectId, body),
+  listBeatBackends: () => activeClient.listBeatBackends(),
   listChordBackends: () => activeClient.listChordBackends(),
   listStemModels: () => activeClient.listStemModels(),
   createChords: (projectId: string, body: ChordRequest) => activeClient.createChords(projectId, body),

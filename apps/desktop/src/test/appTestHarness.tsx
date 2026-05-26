@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { vi } from "vitest";
 import App from "../App";
 import type {
+  AnalysisRequest,
   AnalysisTimingUpdateRequest,
   BulkJobRequest,
   BulkJobsResponse,
@@ -37,6 +38,7 @@ const {
   setProjectAnalysis,
   setProjectChords,
   setProjectLyrics,
+  setBeatBackends,
   setChordBackends,
   setStemModels,
   setJobs,
@@ -54,6 +56,7 @@ const {
   mockGetAnalysis,
   mockGetChords,
   mockGetLyrics,
+  mockListBeatBackends,
   mockListChordBackends,
   mockListStemModels,
   mockListArtifacts,
@@ -174,6 +177,7 @@ const {
     tabImportsByProject: Record<string, Array<Record<string, unknown>>>;
     sectionsByProject: Record<string, Array<Record<string, unknown>>>;
     artifactsByProject: Record<string, Array<Record<string, unknown>>>;
+    beatBackends: Array<Record<string, unknown>>;
     chordBackends: Array<Record<string, unknown>>;
     stemModels: Array<Record<string, unknown>>;
     pendingPreviewArtifactsByProject: Record<string, Array<Record<string, unknown>>>;
@@ -356,6 +360,33 @@ const {
     ];
   }
 
+  function makeBeatBackends() {
+    return [
+      {
+        availability: "available",
+        available: true,
+        description: "TuneForge's built-in beat detector.",
+        desktopOnly: false,
+        experimental: false,
+        id: "built-in",
+        label: "Built-in Beat Analysis",
+        runtime_device: "cpu",
+        unavailable_reason: null,
+      },
+      {
+        availability: "available",
+        available: true,
+        description: "Experimental beat-this beat detector.",
+        desktopOnly: true,
+        experimental: true,
+        id: "beat-this",
+        label: "Advanced Beat Analysis",
+        runtime_device: "cpu",
+        unavailable_reason: null,
+      },
+    ];
+  }
+
   function makeStemModels() {
     return [
       {
@@ -397,6 +428,10 @@ const {
 
   function setProjectLyrics(projectId: string, lyrics: Record<string, unknown>) {
     state.lyricsByProject[projectId] = clone(lyrics);
+  }
+
+  function setBeatBackends(backends: Array<Record<string, unknown>>) {
+    state.beatBackends = clone(backends);
   }
 
   function setChordBackends(backends: Array<Record<string, unknown>>) {
@@ -720,6 +755,7 @@ const {
           },
         ],
       },
+      beatBackends: makeBeatBackends(),
       chordBackends: makeChordBackends(),
       stemModels: makeStemModels(),
       pendingPreviewArtifactsByProject: {},
@@ -1255,6 +1291,7 @@ const {
     throw new Error("QR scanner unavailable.");
   });
   const mockListChordBackends = vi.fn(async () => ({ backends: clone(state.chordBackends) }));
+  const mockListBeatBackends = vi.fn(async () => ({ backends: clone(state.beatBackends) }));
   const mockListStemModels = vi.fn(async () => ({ models: clone(state.stemModels) }));
   const mockListProjects = vi.fn(async (params?: ListProjectsParams) => {
     const normalizedSearch = params?.search?.trim().toLowerCase();
@@ -1284,6 +1321,7 @@ const {
   const mockImportProject = vi.fn(async (body: {
     source_path: string;
     display_name?: string | null;
+    beat_backend?: string | null;
     chord_backend?: string | null;
     chord_backend_fallback_from?: string | null;
     stem_model?: string | null;
@@ -1803,7 +1841,8 @@ const {
     state.jobs.unshift(job);
     return { job: clone(job) };
   });
-  const mockAnalyzeProject = vi.fn(async (projectId: string) => {
+  const mockAnalyzeProject = vi.fn(async (projectId: string, _body?: AnalysisRequest) => {
+    void _body;
     state.analysisByProject[projectId] = {
       project_id: projectId,
       estimated_key: "D major",
@@ -2189,6 +2228,7 @@ const {
     setProjectAnalysis,
     setProjectChords,
     setProjectLyrics,
+    setBeatBackends,
     setChordBackends,
     setStemModels,
     setJobs,
@@ -2206,6 +2246,7 @@ const {
     mockGetAnalysis,
     mockGetChords,
     mockGetLyrics,
+    mockListBeatBackends,
     mockListChordBackends,
     mockListStemModels,
     mockListArtifacts,
@@ -2259,6 +2300,7 @@ export {
   setProjectAnalysis,
   setProjectChords,
   setProjectLyrics,
+  setBeatBackends,
   setChordBackends,
   setStemModels,
   setJobs,
@@ -2276,6 +2318,7 @@ export {
   mockGetAnalysis,
   mockGetChords,
   mockGetLyrics,
+  mockListBeatBackends,
   mockListChordBackends,
   mockListStemModels,
   mockListArtifacts,
@@ -2341,6 +2384,7 @@ vi.mock("../lib/api", async (importOriginal) => {
       getAnalysis: mockGetAnalysis,
       getChords: mockGetChords,
       getLyrics: mockGetLyrics,
+      listBeatBackends: mockListBeatBackends,
       listChordBackends: mockListChordBackends,
       listStemModels: mockListStemModels,
       listArtifacts: mockListArtifacts,

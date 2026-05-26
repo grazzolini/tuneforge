@@ -272,6 +272,31 @@ def test_bulk_jobs_skips_locked_project(
     assert set(enqueued) == {payload["created_jobs"][0]["id"]}
 
 
+def test_bulk_analyze_jobs_store_requested_beat_backend(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _capture_enqueued_jobs(client, monkeypatch)
+    with SessionLocal() as session:
+        _add_project(session, "project_a")
+        _add_project(session, "project_b")
+        session.commit()
+
+    response = client.post(
+        "/api/v1/jobs/bulk",
+        json={"job_type": "analyze", "beat_backend": "beat-this"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["created_jobs"]) == 2
+    job_ids = [job["id"] for job in payload["created_jobs"]]
+    with SessionLocal() as session:
+        jobs = list(session.scalars(select(Job).where(Job.id.in_(job_ids))))
+
+    assert {job.payload_json["beat_backend"] for job in jobs} == {"beat-this"}
+
+
 def test_bulk_jobs_rejects_unsupported_job_type(client: TestClient) -> None:
     response = client.post("/api/v1/jobs/bulk", json={"job_type": "preview"})
 

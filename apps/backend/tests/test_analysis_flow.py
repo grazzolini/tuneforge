@@ -5,10 +5,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 
 from app.db import SessionLocal
 from app.errors import AppError
-from app.models import AnalysisResult, Project
+from app.models import AnalysisResult, Job, Project
 from app.services import analysis as analysis_service
 from app.services.artifacts import register_artifact
 from app.services.paths import ensure_project_dirs
@@ -38,7 +39,8 @@ def test_analysis_job_persists_results(client, sample_rhythmic_audio_file: Path)
     ).json()["job"]
     final_job = wait_for_job(client, job["id"])
     assert final_job["status"] == "completed"
-    assert final_job["runtime_device"] is None
+    assert final_job["beat_backend"] == "built-in"
+    assert final_job["runtime_device"] == "cpu"
     assert final_job["duration_seconds"] is not None
 
     analysis = client.get(f"/api/v1/projects/{project['id']}/analysis").json()["analysis"]
@@ -123,6 +125,121 @@ def test_analysis_passes_latest_source_drums_and_bass_stems_only(
     assert analysis.source_artifact_id == "art_analysis_source"
     assert captured["track_path"] == sample_audio_file
     assert captured["source_stem_paths"] == (source_drums_path, source_bass_path)
+
+
+def test_project_import_carries_beat_backend_to_initial_analysis_job(
+    client,
+    sample_audio_file: Path,
+    monkeypatch,
+):
+    enqueued: list[str] = []
+    monkeypatch.setattr(client.app.state.job_runner, "enqueue", enqueued.append)
+
+    response = client.post(
+        "/api/v1/projects/import",
+        json={
+            "source_path": str(sample_audio_file),
+            "copy_into_project": False,
+            "beat_backend": "beat-this",
+        },
+    )
+
+    assert response.status_code == 200
+    project_id = response.json()["project"]["id"]
+    with SessionLocal() as session:
+        jobs = list(session.scalars(select(Job).where(Job.project_id == project_id)))
+    analyze_job = next(job for job in jobs if job.type == "analyze")
+    assert analyze_job.payload_json["beat_backend"] == "beat-this"
+    assert analyze_job.id in enqueued
+
+
+def test_analysis_uses_beat_this_backend_when_requested(
+    client,
+    sample_audio_file: Path,
+    monkeypatch,
+):
+    del client
+    project_id = "analysis_beat_this_project"
+    _seed_analysis_project(project_id, sample_audio_file)
+    captured: dict[str, object] = {}
+
+    def fake_analyze_track_with_beat_this(
+        track_path: Path,
+        *,
+        source_stem_paths: tuple[Path, ...] | None = None,
+        duration_seconds: float | None = None,
+    ):
+        captured["track_path"] = track_path
+        captured["source_stem_paths"] = source_stem_paths
+        captured["duration_seconds"] = duration_seconds
+        return {
+            "estimated_key": "D minor",
+            "key_confidence": 0.7,
+            "estimated_reference_hz": 440.0,
+            "tuning_offset_cents": 0.0,
+            "tempo_bpm": 90.0,
+            "timing": _timing_payload(source="beat-this"),
+        }
+
+    monkeypatch.setattr(analysis_service, "beat_this_dependency_status", lambda: (True, None))
+    monkeypatch.setattr(analysis_service, "analyze_track_with_beat_this", fake_analyze_track_with_beat_this)
+
+    with SessionLocal() as session:
+        project = session.get(Project, project_id)
+        assert project is not None
+        analysis = analysis_service.analyze_project(session, project, beat_backend="beat-this")
+        session.commit()
+
+    assert captured == {
+        "track_path": sample_audio_file,
+        "source_stem_paths": (),
+        "duration_seconds": 4.0,
+    }
+    assert analysis.estimated_key == "D minor"
+    assert analysis.tempo_bpm == 90.0
+    assert analysis.timing_json["source"] == "beat-this"
+
+
+def test_analysis_beat_this_backend_fails_when_dependency_is_missing(
+    client,
+    sample_audio_file: Path,
+    monkeypatch,
+):
+    del client
+    project_id = "analysis_beat_this_unavailable_project"
+    _seed_analysis_project(project_id, sample_audio_file)
+    monkeypatch.setattr(analysis_service, "beat_this_dependency_status", lambda: (False, "beat-this is not installed"))
+
+    with SessionLocal() as session:
+        project = session.get(Project, project_id)
+        assert project is not None
+        with pytest.raises(AppError, match="beat-this is not installed"):
+            analysis_service.analyze_project(session, project, beat_backend="beat-this")
+
+
+def test_analysis_beat_this_backend_reports_runtime_failure(
+    client,
+    sample_audio_file: Path,
+    monkeypatch,
+):
+    del client
+    project_id = "analysis_beat_this_runtime_failure_project"
+    _seed_analysis_project(project_id, sample_audio_file)
+    monkeypatch.setattr(analysis_service, "beat_this_dependency_status", lambda: (True, None))
+
+    def fail_beat_this_analysis(*_args, **_kwargs):
+        raise analysis_service.BeatThisRuntimeError("Advanced Beat Analysis could not load the beat-this model.")
+
+    monkeypatch.setattr(analysis_service, "analyze_track_with_beat_this", fail_beat_this_analysis)
+
+    with SessionLocal() as session:
+        project = session.get(Project, project_id)
+        assert project is not None
+        with pytest.raises(AppError) as exc_info:
+            analysis_service.analyze_project(session, project, beat_backend="beat-this")
+
+    assert exc_info.value.code == "ADVANCED_BEAT_BACKEND_FAILED"
+    assert "could not load" in exc_info.value.message
 
 
 def test_analysis_timing_patch_updates_current_grid_and_reanalysis_overwrites(

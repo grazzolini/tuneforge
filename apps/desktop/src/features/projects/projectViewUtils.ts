@@ -135,6 +135,7 @@ export function formatJobDuration(durationSeconds: number | null | undefined) {
 export function formatJobStatusSummary(job: JobSchema) {
   return [
     job.status,
+    job.type === "analyze" ? formatBeatBackend(job.beat_backend) : null,
     job.type === "chords" ? formatChordBackend(job.chord_backend) : null,
     job.type === "chords" ? job.chord_source : null,
     job.type === "stems" ? formatStemModel(job.stem_model_label ?? job.stem_model) : null,
@@ -143,6 +144,22 @@ export function formatJobStatusSummary(job: JobSchema) {
   ]
     .filter(Boolean)
     .join(" / ");
+}
+
+function formatBeatBackend(backend: string | null | undefined) {
+  if (
+    backend == null ||
+    backend === "" ||
+    backend === "built-in" ||
+    backend === "librosa" ||
+    backend === "default"
+  ) {
+    return "built-in";
+  }
+  if (backend === "beat-this" || backend === "advanced") {
+    return "advanced";
+  }
+  return backend ?? null;
 }
 
 function formatStemModel(model: string | null | undefined) {

@@ -4,7 +4,6 @@ import sys
 import types
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pytest
@@ -20,7 +19,11 @@ def clear_file2beats_cache() -> Iterator[None]:
 
 
 def test_detect_beat_this_timing_uses_stubbed_file2beats(monkeypatch) -> None:
-    def fake_get_file2beats(**_kwargs: Any):
+    calls: list[str] = []
+
+    def fake_get_file2beats(*, checkpoint: str = beat_this_engine.BEAT_THIS_CHECKPOINT):
+        calls.append(checkpoint)
+
         def fake_file2beats(_source_path: str):
             return np.arange(0.0, 6.5, 0.5), np.asarray([0.0, 2.0, 4.0, 6.0])
 
@@ -39,6 +42,7 @@ def test_detect_beat_this_timing_uses_stubbed_file2beats(monkeypatch) -> None:
     assert timing["meter"] == "4/4"
     assert timing["meter_confidence"] == 1.0
     assert timing["downbeat_confidence"] == 1.0
+    assert calls == ["small0"]
     assert timing["beats"][0] == {
         "index": 0,
         "seconds": 0.0,
@@ -48,6 +52,30 @@ def test_detect_beat_this_timing_uses_stubbed_file2beats(monkeypatch) -> None:
     assert timing["beats"][4]["bar_index"] == 1
     assert timing["beats"][4]["beat_in_bar"] == 1
     assert timing["bars"][0] == {"index": 0, "start_seconds": 0.0, "end_seconds": 2.0}
+
+
+def test_detect_beat_this_timing_accepts_checkpoint_override(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_get_file2beats(*, checkpoint: str = beat_this_engine.BEAT_THIS_CHECKPOINT):
+        calls.append(checkpoint)
+
+        def fake_file2beats(_source_path: str):
+            return np.arange(0.0, 4.5, 0.5), np.asarray([0.0, 2.0, 4.0])
+
+        return fake_file2beats
+
+    monkeypatch.setattr(beat_this_engine, "_get_file2beats", fake_get_file2beats)
+
+    timing = beat_this_engine.detect_beat_this_timing(
+        Path("synthetic_beat_this.wav"),
+        duration_seconds=4.5,
+        checkpoint="final0",
+    )
+
+    assert timing is not None
+    assert timing["source"] == "beat-this"
+    assert calls == ["final0"]
 
 
 def test_analyze_track_with_beat_this_replaces_timing_and_tempo(monkeypatch) -> None:
@@ -107,6 +135,27 @@ def test_get_file2beats_initializes_beat_this_with_small_cpu_model(monkeypatch) 
     np.testing.assert_array_equal(beats, np.asarray([0.0, 1.0]))
     np.testing.assert_array_equal(downbeats, np.asarray([0.0]))
     assert calls == [("small0", "cpu", False)]
+
+
+def test_get_file2beats_initializes_beat_this_with_requested_checkpoint(monkeypatch) -> None:
+    calls: list[tuple[str, str, bool]] = []
+
+    class FakeFile2Beats:
+        def __init__(self, checkpoint_path: str, *, device: str, dbn: bool) -> None:
+            calls.append((checkpoint_path, device, dbn))
+
+        def __call__(self, _source_path: str):
+            return np.asarray([0.0, 1.0]), np.asarray([0.0])
+
+    _install_fake_beat_this(monkeypatch, FakeFile2Beats)
+    beat_this_engine._get_file2beats.cache_clear()
+
+    file2beats = beat_this_engine._get_file2beats(checkpoint="final0")
+
+    beats, downbeats = file2beats("song.wav")
+    np.testing.assert_array_equal(beats, np.asarray([0.0, 1.0]))
+    np.testing.assert_array_equal(downbeats, np.asarray([0.0]))
+    assert calls == [("final0", "cpu", False)]
 
 
 def _install_fake_beat_this(monkeypatch, file2beats_class: type) -> None:

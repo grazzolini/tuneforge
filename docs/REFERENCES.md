@@ -109,20 +109,24 @@ TuneForge should keep lyrics local and project-owned.
 
 This evaluation checked whether TuneForge should integrate a local ML beat/downbeat/meter model after the first
 correctable timing-grid work. The recommendation is to keep the heuristic and correction path as the product route for
-now, and treat CPJKU Beat This as the only promising spike candidate after local-track bake-off evidence and explicit
-model-weight redistribution confirmation.
+now, and use CPJKU Beat This `small0` as the optional full-profile model after local-track bake-off evidence and
+explicit model-weight redistribution confirmation.
 
 Local-track baseline evidence from a read-only sample of 8 converted source WAVs in local app data: 8/8 completed,
 8/8 produced timing grids, median heuristic runtime was 12.686 seconds, median runtime ratio was 0.0531x track length,
-and 5/8 tracks had at least one large beat-gap flag. Candidate model runtime and quality estimates still require a
-separate optional-model spike against the same kind of non-committed local tracks.
+and 5/8 tracks had at least one large beat-gap flag.
 
-First `beat-this` smoke evidence used the `small0` checkpoint on CPU with minimal post-processing over the same 8
-converted source WAVs. The checkpoint downloaded once at 8.06 MB, warm model load was 0.04 seconds, median model
-runtime was 1.183 seconds, and median model runtime ratio was 0.0057x track length. Beat counts stayed close on 4/8
-tracks and differed by more than 10% on 4/8 tracks, including several tracks where the heuristic had large beat-gap
-flags. This is promising enough for a focused optional-backend spike, but it is not yet enough to replace the
-heuristic path without listening checks on the known out-of-sync songs.
+Follow-up benchmark evidence compared the built-in analyzer, Beat This `small0`, and Beat This `final0` on the same
+kind of 8 local, non-committed tracks, including known timing failures and stable baselines. All 8 tracks completed for
+all 3 backends without source paths in the benchmark output. Median warm runtime ratios were 0.047267x for the
+built-in analyzer, 0.006145x for `small0`, and 0.007968x for `final0`; `final0` was about 1.30x slower than `small0`
+and about 9.6x larger.
+
+Quality evidence does not justify switching the default or exposing a model-size setting yet. `final0` reduced large
+gap flags on some tracks, but it still showed tempo and meter risks on known benchmark cases. The benchmark now records
+single-anchor drift and Beat This alignment against the built-in grid for future bake-offs, but the current
+recommendation is to keep `small0` as the default optional model until listening checks show `final0` improves practice
+sync without tempo or meter regressions.
 
 Several candidates were kept as research-only or excluded because their upstream project activity, release freshness,
 or supported Python/ML stack did not fit a new desktop runtime dependency.

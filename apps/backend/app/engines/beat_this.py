@@ -61,9 +61,11 @@ def detect_beat_this_timing(
     source_path: Path,
     *,
     duration_seconds: float | None = None,
+    checkpoint: str | None = None,
 ) -> AnalysisTimingPayload | None:
+    checkpoint_path = BEAT_THIS_CHECKPOINT if checkpoint is None else checkpoint
     try:
-        raw_beats, raw_downbeats = _get_file2beats()(str(source_path))
+        raw_beats, raw_downbeats = _get_file2beats(checkpoint=checkpoint_path)(str(source_path))
     except BeatThisRuntimeError:
         raise
     except Exception as exc:
@@ -104,8 +106,8 @@ def detect_beat_this_timing(
     }
 
 
-@lru_cache(maxsize=1)
-def _get_file2beats() -> File2BeatsCallable:
+@lru_cache(maxsize=4)
+def _get_file2beats(*, checkpoint: str = BEAT_THIS_CHECKPOINT) -> File2BeatsCallable:
     try:
         from beat_this.inference import File2Beats
     except Exception as exc:
@@ -116,7 +118,7 @@ def _get_file2beats() -> File2BeatsCallable:
     try:
         return cast(
             File2BeatsCallable,
-            File2Beats(checkpoint_path=BEAT_THIS_CHECKPOINT, device="cpu", dbn=False),
+            File2Beats(checkpoint_path=checkpoint, device="cpu", dbn=False),
         )
     except Exception as exc:
         raise BeatThisRuntimeError("Advanced Beat Analysis could not load the beat-this model.") from exc

@@ -5,7 +5,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import Any
 
 from sqlalchemy import select
@@ -24,7 +24,6 @@ from app.services.sync_identity import source_hash_to_project_id
 from app.services.sync_manifest import _coerce_project_manifest
 from app.services.sync_revisions import revision_payload_sha256, sanitize_revision_payload
 from app.services.sync_trust import LOCAL_IDENTITY_ID
-from app.utils.hashing import file_sha256
 
 SYNC_RECONCILIATION_STATUSES = (
     "noop",
@@ -1026,7 +1025,7 @@ def _plan_project(
         if local_artifact is None and provider_device_id is None
     ]
     if missing_provider_artifacts:
-        reason = "No local bytes or trusted provider are available for every project manifest artifact."
+        reason = "No recorded local artifact or trusted provider is available for every project manifest artifact."
         details = {"artifact_ids": sorted(missing_provider_artifacts)}
         _upsert_item(
             items_by_key,
@@ -1070,7 +1069,7 @@ def _plan_project(
                 status="identical_content",
                 action_type=ACTION_IMPORT_PROJECT_MANIFEST,
                 content_sha256=source_hash,
-                reason="All project manifest artifact bytes are already verified locally.",
+                reason="All project manifest artifact content is already recorded locally.",
                 details={
                     "local_artifact_ids": local_artifact_ids,
                     "manifest_artifact_count": len(manifest_artifacts),
@@ -1084,7 +1083,7 @@ def _plan_project(
                 item_id=project.project_id,
                 project_id=project.project_id,
                 content_sha256=source_hash,
-                reason="Import project manifest using locally verified artifact content.",
+                reason="Import project manifest using locally recorded artifact content.",
                 details={
                     "source_artifact_id": source_artifact.artifact_id if source_artifact else None,
                     "manifest_artifact_count": len(manifest_artifacts),
@@ -1230,7 +1229,7 @@ def _plan_artifact(
             )
             return
 
-        if _artifact_has_verified_content(local_artifact, artifact.content_sha256, artifact.size_bytes):
+        if _artifact_has_recorded_content(local_artifact, artifact.content_sha256, artifact.size_bytes):
             _upsert_item(
                 items_by_key,
                 SyncReconciliationItem(
@@ -1240,7 +1239,7 @@ def _plan_artifact(
                     status="identical_content",
                     action_type=ACTION_NOOP,
                     content_sha256=artifact.content_sha256,
-                    reason="Artifact bytes are already verified locally.",
+                    reason="Artifact content is already recorded locally.",
                 ),
             )
             return
@@ -1256,7 +1255,7 @@ def _plan_artifact(
                 action_type=ACTION_FETCH_ARTIFACT_CONTENT if provider_device_id is not None else None,
                 content_sha256=artifact.content_sha256,
                 chosen_provider_device_id=provider_device_id,
-                reason="Local artifact metadata exists, but verified bytes are missing.",
+                reason="Local artifact metadata exists, but recorded size does not match remote metadata.",
             ),
         )
         if provider_device_id is not None:
@@ -1273,7 +1272,7 @@ def _plan_artifact(
             )
         return
 
-    duplicate = _verified_artifact_for_hash(local, artifact.content_sha256)
+    duplicate = _recorded_artifact_for_hash(local, artifact.content_sha256)
     if duplicate is not None:
         _upsert_item(
             items_by_key,
@@ -1284,7 +1283,7 @@ def _plan_artifact(
                 status="identical_content",
                 action_type=ACTION_IMPORT_ARTIFACT_MANIFEST,
                 content_sha256=artifact.content_sha256,
-                reason="Content hash is already verified under another local artifact ID.",
+                reason="Content hash is already recorded under another local artifact ID.",
                 details={"local_artifact_id": duplicate.id},
             ),
         )
@@ -1348,7 +1347,7 @@ def _plan_artifact(
             project_id=artifact.project_id,
             status="missing_provider",
             content_sha256=artifact.content_sha256,
-            reason="No local bytes or trusted provider are available for artifact content.",
+            reason="No recorded local artifact or trusted provider is available for artifact content.",
         ),
     )
 
@@ -2464,7 +2463,7 @@ def _manifest_artifact_availability(
         if artifact.content_sha256 is None:
             availability.append((artifact, None, None))
             continue
-        local_artifact = _verified_artifact_for_hash(
+        local_artifact = _recorded_artifact_for_hash(
             local,
             artifact.content_sha256,
             size_bytes=artifact.size_bytes,
@@ -2502,7 +2501,7 @@ def _planned_artifact_project_ids(actions: Iterable[SyncReconciliationAction]) -
     }
 
 
-def _verified_artifact_for_hash(
+def _recorded_artifact_for_hash(
     local: _LocalState,
     content_sha256: str,
     *,
@@ -2512,26 +2511,19 @@ def _verified_artifact_for_hash(
     for artifact in local.artifacts_by_content_sha256.get(content_sha256, ()):
         if artifact.id == exclude_artifact_id:
             continue
-        if _artifact_has_verified_content(artifact, content_sha256, size_bytes):
+        if _artifact_has_recorded_content(artifact, content_sha256, size_bytes):
             return artifact
     return None
 
 
-def _artifact_has_verified_content(
+def _artifact_has_recorded_content(
     artifact: Artifact,
     content_sha256: str,
     size_bytes: int | None,
 ) -> bool:
     if _normalize_sha256(artifact.content_sha256) != content_sha256:
         return False
-    artifact_path = Path(artifact.path).expanduser()
-    if size_bytes is not None:
-        try:
-            if artifact_path.stat().st_size != size_bytes:
-                return False
-        except OSError:
-            return False
-    return file_sha256(artifact_path) == content_sha256
+    return size_bytes is None or artifact.size_bytes == size_bytes
 
 
 def _divergent_local_revision(

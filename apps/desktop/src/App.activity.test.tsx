@@ -902,6 +902,56 @@ describe("Desktop app activity", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows partial planner failures from native status without transport fallback", async () => {
+    const user = userEvent.setup();
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: syncEndpointHints,
+      last_sync: {
+        peer_device_id: "device_peer_1",
+        remote_device_id: "device_peer_1",
+        selected_transport: irohTransportId,
+        status: "completed_with_errors",
+        imported_project_count: 1,
+        skipped_project_count: 0,
+        failed_project_count: 1,
+        project_results: [
+          {
+            project_id: "proj_planner_failed",
+            status: "failed",
+            message: "Sync transport reconciliation plan failed for project proj_planner_failed.",
+          },
+          {
+            project_id: "proj_imported",
+            status: "imported",
+            message: "Imported from trusted peer.",
+          },
+        ],
+        manifest_errors: [],
+        received_artifacts: [],
+      },
+    });
+
+    await openSyncTab(user);
+
+    expect(await screen.findByText("Completed With Errors for device_peer_1.")).toBeInTheDocument();
+    expect(screen.getByText(/Transport Iroh/)).toBeInTheDocument();
+    expect(screen.getByText(/1 imported, 0 skipped, 1 failed/)).toBeInTheDocument();
+    expect(screen.queryByText(/Fallback/)).not.toBeInTheDocument();
+
+    const projectResults = await screen.findByRole("list", { name: "Last sync project results" });
+    const resultRows = within(projectResults).getAllByRole("listitem");
+    expect(resultRows).toHaveLength(2);
+    expect(within(resultRows[0]).getByText("Failed")).toBeInTheDocument();
+    expect(within(resultRows[0]).getByText("proj_planner_failed")).toBeInTheDocument();
+    expect(
+      within(resultRows[0]).getByText("Sync transport reconciliation plan failed for project proj_planner_failed."),
+    ).toBeInTheDocument();
+    expect(within(resultRows[1]).getByText("Imported")).toBeInTheDocument();
+    expect(within(resultRows[1]).getByText("proj_imported")).toBeInTheDocument();
+  });
+
   it("hides stale listener sync details after sync now fails", async () => {
     const user = userEvent.setup();
     setSyncTrustedPeers([
@@ -1180,6 +1230,65 @@ describe("Desktop app activity", () => {
       fallback_reason: null,
       attempted_transports: ["iroh"],
       status: "completed",
+    });
+    expect(nativeInvoke).toHaveBeenCalledWith(
+      "sync_transport_sync_now",
+      { payload: { peerDeviceId: "device_peer_1", preferredTransport: "auto" } },
+    );
+  });
+
+  it("normalizes direct native sync planner failures as partial errors", async () => {
+    const actualApi = await vi.importActual<typeof import("./lib/api")>("./lib/api");
+    type TauriInternals = {
+      invoke: (command: string, args?: Record<string, unknown>, options?: unknown) => Promise<unknown>;
+    };
+    const nativeInvoke = getMockInvoke();
+    nativeInvoke.mockResolvedValueOnce({
+      peerDeviceId: "device_peer_1",
+      selectedTransport: irohTransportId,
+      status: "completed_with_errors",
+      importedProjectCount: 1,
+      skippedProjectCount: 0,
+      failedProjectCount: 1,
+      projectResults: [
+        {
+          projectId: "proj_planner_failed",
+          status: "failed",
+          message: "Sync transport reconciliation plan failed for project proj_planner_failed.",
+        },
+        {
+          projectId: "proj_imported",
+          status: "imported",
+          message: "Imported from trusted peer.",
+        },
+      ],
+      manifestErrors: [],
+      receivedArtifacts: [],
+    });
+    (window as Window & { __TAURI_INTERNALS__?: TauriInternals }).__TAURI_INTERNALS__ = {
+      invoke: async (command, args) => nativeInvoke(command, args),
+    };
+
+    await expect(actualApi.api.syncTrustedPeerNow("device_peer_1")).resolves.toMatchObject({
+      peer_device_id: "device_peer_1",
+      selected_transport: "iroh",
+      fallback_code: null,
+      status: "completed_with_errors",
+      imported_project_count: 1,
+      skipped_project_count: 0,
+      failed_project_count: 1,
+      project_results: [
+        expect.objectContaining({
+          project_id: "proj_planner_failed",
+          status: "failed",
+          message: "Sync transport reconciliation plan failed for project proj_planner_failed.",
+        }),
+        expect.objectContaining({
+          project_id: "proj_imported",
+          status: "imported",
+          message: "Imported from trusted peer.",
+        }),
+      ],
     });
     expect(nativeInvoke).toHaveBeenCalledWith(
       "sync_transport_sync_now",

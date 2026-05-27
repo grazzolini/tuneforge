@@ -56,15 +56,19 @@ def db_session() -> Any:
         session.close()
 
 
-def test_artifact_classification_uses_verified_bytes_and_trusted_provider_choice(
+def test_artifact_classification_uses_recorded_metadata_and_trusted_provider_choice(
     db_session: Session,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _add_identity_and_peers(db_session)
     project = _add_project(db_session, "proj_local", source_sha256=_sha("source"))
     identical_hash, identical_size = _write_file(tmp_path / "identical.wav", b"same bytes")
     local_conflict_hash, _ = _write_file(tmp_path / "conflict.wav", b"local conflict")
-    missing_local_hash = _sha("missing local")
+    size_mismatch_hash, size_mismatch_size = _write_file(
+        tmp_path / "size-mismatch.wav",
+        b"size mismatch",
+    )
     remote_hash = _sha("remote")
     untrusted_hash = _sha("untrusted")
     missing_provider_hash = _sha("missing provider")
@@ -79,11 +83,11 @@ def test_artifact_classification_uses_verified_bytes_and_trusted_provider_choice
     )
     _add_artifact(
         db_session,
-        artifact_id="art_missing_local_bytes",
+        artifact_id="art_size_mismatch",
         project_id=project.id,
-        path=tmp_path / "missing.wav",
-        content_sha256=missing_local_hash,
-        size_bytes=32,
+        path=tmp_path / "size-mismatch.wav",
+        content_sha256=size_mismatch_hash,
+        size_bytes=size_mismatch_size,
     )
     _add_artifact(
         db_session,
@@ -106,7 +110,7 @@ def test_artifact_classification_uses_verified_bytes_and_trusted_provider_choice
             ],
             "artifacts": [
                 _artifact_manifest(project.id, "art_identical", identical_hash, identical_size),
-                _artifact_manifest(project.id, "art_missing_local_bytes", missing_local_hash, 32),
+                _artifact_manifest(project.id, "art_size_mismatch", size_mismatch_hash, size_mismatch_size + 1),
                 _artifact_manifest(project.id, "art_remote_available", remote_hash, 64),
                 _artifact_manifest(project.id, "art_missing_provider", missing_provider_hash, 64),
                 _artifact_manifest(project.id, "art_conflict", _sha("remote conflict"), 64),
@@ -117,22 +121,27 @@ def test_artifact_classification_uses_verified_bytes_and_trusted_provider_choice
         "peer_inventory": [
             {
                 "device_id": "peer-b",
-                "available_content_hashes": [missing_local_hash, remote_hash],
+                "available_content_hashes": [size_mismatch_hash, remote_hash],
             },
             {
                 "device_id": "peer-a",
-                "available_content_hashes": [missing_local_hash, remote_hash],
+                "available_content_hashes": [size_mismatch_hash, remote_hash],
             },
             {"device_id": "peer-revoked", "available_content_hashes": [untrusted_hash]},
             {"device_id": "peer-untrusted", "available_content_hashes": [untrusted_hash]},
         ],
     }
 
+    monkeypatch.setattr(
+        "app.services.sync_reconciliation.file_sha256",
+        _fail_planner_file_sha256,
+        raising=False,
+    )
     plan = plan_sync_reconciliation(db_session, request)
 
     assert _item(plan, ITEM_PROJECT, project.id).status == "noop"
     assert _item(plan, ITEM_ARTIFACT, "art_identical").status == "identical_content"
-    missing_local = _item(plan, ITEM_ARTIFACT, "art_missing_local_bytes")
+    missing_local = _item(plan, ITEM_ARTIFACT, "art_size_mismatch")
     assert missing_local.status == "missing_local_bytes"
     assert missing_local.chosen_provider_device_id == "peer-a"
     remote_available = _item(plan, ITEM_ARTIFACT, "art_remote_available")
@@ -150,7 +159,7 @@ def test_artifact_classification_uses_verified_bytes_and_trusted_provider_choice
         for action in plan.actions
         if action.action_type == ACTION_FETCH_ARTIFACT_CONTENT
     }
-    assert fetch_actions["art_missing_local_bytes"].provider_device_id == "peer-a"
+    assert fetch_actions["art_size_mismatch"].provider_device_id == "peer-a"
     assert fetch_actions["art_remote_available"].provider_device_id == "peer-a"
     assert _action(plan, ACTION_RECORD_CONFLICT, ITEM_ARTIFACT, "art_conflict") is not None
     assert _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, "art_duplicate_content") is not None
@@ -753,6 +762,7 @@ def test_library_entity_revisions_reject_invalid_reference_contract(
 def test_missing_project_import_requires_manifest_and_source_availability(
     db_session: Session,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _add_identity_and_peers(db_session)
     existing_project = _add_project(db_session, "proj_existing", source_sha256=_sha("existing source"))
@@ -798,6 +808,11 @@ def test_missing_project_import_requires_manifest_and_source_availability(
         ],
     }
 
+    monkeypatch.setattr(
+        "app.services.sync_reconciliation.file_sha256",
+        _fail_planner_file_sha256,
+        raising=False,
+    )
     plan = plan_sync_reconciliation(db_session, request)
 
     duplicate_project = _item(plan, ITEM_PROJECT, duplicate_project_id)
@@ -1618,6 +1633,10 @@ def _write_file(path: Path, contents: bytes) -> tuple[str, int]:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(contents)
     return hashlib.sha256(contents).hexdigest(), len(contents)
+
+
+def _fail_planner_file_sha256(path: Path) -> str:
+    raise AssertionError(f"reconciliation planner must not hash local artifact bytes: {path}")
 
 
 def _sha(seed: str) -> str:

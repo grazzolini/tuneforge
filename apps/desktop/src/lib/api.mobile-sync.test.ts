@@ -215,6 +215,50 @@ describe("mobile sync API adapter", () => {
     });
   });
 
+  it("normalizes nested native activeProgress from Rust camelCase status payloads", async () => {
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "mobile_capabilities") {
+        return mobileCapabilities;
+      }
+      if (command === "sync_transport_status") {
+        return {
+          supported: true,
+          running: true,
+          bindHost: "127.0.0.1",
+          port: 48625,
+          endpointHints: ["tuneforge-sync+tcp://192.168.1.42:48625"],
+          nearbyPeers: [],
+          activeSessions: 1,
+          acceptedSessions: 2,
+          failedSessions: 0,
+          lastStatus: "listener running",
+          lastError: null,
+          lastSync: null,
+          activeProgress: {
+            runId: "sync_run_active_1",
+            phase: "artifact_transfer",
+            message: "Receiving source audio.",
+            progressAt: "2026-05-22 12:00:01",
+            elapsedMs: 1234,
+          },
+        };
+      }
+      return {};
+    });
+    const api = await loadMobileApi();
+
+    await expect(api.getSyncTransportStatus()).resolves.toMatchObject({
+      active: true,
+      status: "listening",
+      active_run_id: "sync_run_active_1",
+      active_phase: "artifact_transfer",
+      active_message: "Receiving source audio.",
+      active_progress_at: "2026-05-22T12:00:01.000Z",
+      active_elapsed_ms: 1234,
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("sync_transport_status", undefined);
+  });
+
   it("passes discovered endpoint hints to native sync now", async () => {
     const api = await loadMobileApi();
     const currentEndpointHints = [

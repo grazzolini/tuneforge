@@ -22,6 +22,7 @@ import {
 } from "./syncPairingCode";
 
 const PAIRING_OFFER_TTL_SECONDS = 600;
+const SYNC_LISTENER_POLL_INTERVAL_MS = 2000;
 const EMPTY_NEARBY_PEERS: SyncNearbyPeer[] = [];
 
 type PairingOutputKind = "offer" | "response";
@@ -529,6 +530,7 @@ export function ActivitySyncPanel() {
   const [lastSyncMessage, setLastSyncMessage] = useState<string | null>(null);
   const [lastSyncResult, setLastSyncResult] = useState<SyncTransportRunStatus | null>(null);
   const [hiddenListenerSyncKey, setHiddenListenerSyncKey] = useState<string | null>(null);
+  const [syncNowPolling, setSyncNowPolling] = useState(false);
   const pairingCodeOutputRef = useRef<HTMLTextAreaElement | null>(null);
   const rawPairingOutputRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -539,6 +541,10 @@ export function ActivitySyncPanel() {
   const listenerQuery = useQuery({
     queryKey: ["sync", "listener"],
     queryFn: () => api.getSyncTransportStatus(),
+    refetchInterval: (query) => {
+      const status = query.state.data;
+      return syncNowPolling || status?.active ? SYNC_LISTENER_POLL_INTERVAL_MS : false;
+    },
   });
   const peersQuery = useQuery({
     queryKey: ["sync", "trusted-peers"],
@@ -684,6 +690,10 @@ export function ActivitySyncPanel() {
       request.endpointHints?.length
         ? api.syncTrustedPeerNow(request.deviceId, { endpointHints: request.endpointHints })
         : api.syncTrustedPeerNow(request.deviceId),
+    onMutate: () => {
+      setSyncNowPolling(true);
+      void queryClient.invalidateQueries({ queryKey: ["sync", "listener"] });
+    },
     onSuccess: async (status) => {
       setLastSyncMessage(syncStatusText(status, peersById));
       setLastSyncResult(status);
@@ -694,6 +704,9 @@ export function ActivitySyncPanel() {
       setLastSyncMessage(syncNowFailureText(error));
       setLastSyncResult(null);
       setHiddenListenerSyncKey(listenerSyncKey);
+    },
+    onSettled: () => {
+      setSyncNowPolling(false);
     },
   });
   const scanPairingQrMutation = useMutation({
@@ -808,6 +821,30 @@ export function ActivitySyncPanel() {
   const pairingInputInvalid = Boolean(pairingInputValue && decodedPairingInput.error);
   const trustedPeers = peersQuery.data ?? [];
   const lastListenerUpdatedAt = formatTimestamp(listenerQuery.data?.updated_at);
+  const currentSyncPhase = listenerQuery.data?.active_phase
+    ? statusLabel(listenerQuery.data.active_phase)
+    : null;
+  const currentSyncMessage = listenerQuery.data?.active_message?.trim() || null;
+  const currentSyncProgressAt = formatTimestamp(listenerQuery.data?.active_progress_at);
+  const currentSyncElapsed = formatDurationMs(listenerQuery.data?.active_elapsed_ms);
+  const currentSyncDetails = [
+    listenerQuery.data?.active_run_id ? `Run ${listenerQuery.data.active_run_id}` : null,
+    currentSyncProgressAt ? `Progress ${currentSyncProgressAt}` : null,
+    currentSyncElapsed ? `Elapsed ${currentSyncElapsed}` : null,
+  ].filter((item): item is string => item !== null).join(" · ");
+  const currentSyncText = currentSyncPhase && currentSyncMessage
+    ? `${currentSyncPhase}: ${currentSyncMessage}`
+    : currentSyncMessage ?? currentSyncPhase ?? "Sync in progress.";
+  const showCurrentSyncProgress = Boolean(
+    (listenerActive || syncNowPolling || syncNowMutation.isPending) &&
+      (
+        listenerQuery.data?.active_run_id ||
+        currentSyncPhase ||
+        currentSyncMessage ||
+        currentSyncProgressAt ||
+        currentSyncElapsed
+      ),
+  );
 
   return (
     <section
@@ -851,6 +888,15 @@ export function ActivitySyncPanel() {
               <dt>Endpoints</dt>
               <dd>{endpointList(endpointHints)}</dd>
             </div>
+            {showCurrentSyncProgress ? (
+              <div>
+                <dt>Current Sync</dt>
+                <dd className="activity-sync-last-sync">
+                  <span>{currentSyncText}</span>
+                  {currentSyncDetails ? <small>{currentSyncDetails}</small> : null}
+                </dd>
+              </div>
+            ) : null}
             <div>
               <dt>Last Sync</dt>
               <dd className="activity-sync-last-sync">

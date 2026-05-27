@@ -61,6 +61,17 @@ pub struct SyncTransportStatus {
     pub last_status: Option<String>,
     pub last_error: Option<String>,
     pub last_sync: Option<SyncTransportSyncResult>,
+    pub active_progress: Option<SyncTransportActiveProgress>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncTransportActiveProgress {
+    pub run_id: String,
+    pub phase: String,
+    pub message: String,
+    pub progress_at: String,
+    pub elapsed_ms: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -173,7 +184,7 @@ mod sync_core {
     pub(crate) const ENDPOINT_SCHEME: &str = "tuneforge-sync+tcp://";
     pub(crate) const IROH_ENDPOINT_SCHEME: &str = "tuneforge-sync+iroh://";
     pub(crate) const PAIRING_PROTOCOL_VERSION: &str = "tuneforge-sync-v1";
-    pub(crate) const TRANSPORT_PROTOCOL_VERSION: &str = "tuneforge-sync-transport-v2";
+    pub(crate) const TRANSPORT_PROTOCOL_VERSION: &str = "tuneforge-sync-transport-v3";
     pub(crate) const TRANSPORT_HANDSHAKE_CHALLENGE_TYPE: &str = "transport_handshake";
     pub(crate) const MAX_RAW_FRAME: usize = 65_535;
     pub(crate) const ENCRYPTED_PAYLOAD_CHUNK: usize = 32 * 1024;
@@ -616,8 +627,11 @@ mod sync_core {
             size_bytes: u64,
         },
         Status {
+            run_id: String,
             phase: String,
             message: String,
+            progress_at: String,
+            elapsed_ms: u64,
         },
         PhaseDone {
             phase: String,
@@ -639,6 +653,62 @@ mod sync_core {
                 Self::PhaseDone { .. } => "phase_done",
                 Self::Error(_) => "error",
             }
+        }
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub(crate) struct ProtocolStatusPayload {
+        pub(crate) run_id: String,
+        pub(crate) phase: String,
+        pub(crate) message: String,
+        pub(crate) progress_at: String,
+        pub(crate) elapsed_ms: u64,
+    }
+
+    pub(crate) fn protocol_status_message(status: ProtocolStatusPayload) -> ProtocolMessage {
+        ProtocolMessage::Status {
+            run_id: status.run_id,
+            phase: status.phase,
+            message: status.message,
+            progress_at: status.progress_at,
+            elapsed_ms: status.elapsed_ms,
+        }
+    }
+
+    pub(crate) fn protocol_status_payload(
+        run_id: impl Into<String>,
+        phase: impl Into<String>,
+        message: impl Into<String>,
+        progress_at: impl Into<String>,
+        elapsed_ms: u64,
+    ) -> ProtocolStatusPayload {
+        ProtocolStatusPayload {
+            run_id: run_id.into(),
+            phase: phase.into(),
+            message: message.into(),
+            progress_at: progress_at.into(),
+            elapsed_ms,
+        }
+    }
+
+    pub(crate) fn split_protocol_status(
+        message: ProtocolMessage,
+    ) -> Result<ProtocolStatusPayload, ProtocolMessage> {
+        match message {
+            ProtocolMessage::Status {
+                run_id,
+                phase,
+                message,
+                progress_at,
+                elapsed_ms,
+            } => Ok(ProtocolStatusPayload {
+                run_id,
+                phase,
+                message,
+                progress_at,
+                elapsed_ms,
+            }),
+            other => Err(other),
         }
     }
 
@@ -743,7 +813,7 @@ mod sync_core {
         let mut length = [0_u8; 4];
         stream
             .read_exact(&mut length)
-            .map_err(|error| format!("Could not read sync transport frame length: {error}"))?;
+            .map_err(|error| read_frame_error("length", error))?;
         let length = u32::from_be_bytes(length) as usize;
         if length > MAX_RAW_FRAME {
             return Err("Sync transport frame exceeds the maximum frame size.".to_string());
@@ -751,8 +821,18 @@ mod sync_core {
         let mut payload = vec![0_u8; length];
         stream
             .read_exact(&mut payload)
-            .map_err(|error| format!("Could not read sync transport frame: {error}"))?;
+            .map_err(|error| read_frame_error("payload", error))?;
         Ok(payload)
+    }
+
+    fn read_frame_error(part: &str, error: io::Error) -> String {
+        if matches!(
+            error.kind(),
+            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+        ) {
+            return "Timed out waiting for sync transport protocol progress.".to_string();
+        }
+        format!("Could not read sync transport frame {part}: {error}")
     }
 
     pub(crate) fn decode_standard_base64(value: &str) -> Result<Vec<u8>, String> {
@@ -1224,11 +1304,11 @@ mod sync_core {
 
 mod desktop {
     use super::{
-        sync_core::*, SyncTransportManifestError, SyncTransportNearbyPeer,
-        SyncTransportPairingOffer, SyncTransportPairingOfferRequest, SyncTransportProjectResult,
-        SyncTransportStartListenerRequest, SyncTransportStatus, SyncTransportSyncNowRequest,
-        SyncTransportSyncResult, SyncTransportTimingEvidence, SyncTransportTransferCounts,
-        SyncTransportTransferResult,
+        sync_core::*, SyncTransportActiveProgress, SyncTransportManifestError,
+        SyncTransportNearbyPeer, SyncTransportPairingOffer, SyncTransportPairingOfferRequest,
+        SyncTransportProjectResult, SyncTransportStartListenerRequest, SyncTransportStatus,
+        SyncTransportSyncNowRequest, SyncTransportSyncResult, SyncTransportTimingEvidence,
+        SyncTransportTransferCounts, SyncTransportTransferResult,
     };
     use chrono::{DateTime, Utc};
     use iroh::{
@@ -1274,7 +1354,8 @@ mod desktop {
     const IROH_ALPN: &[u8] = b"tuneforge-sync/iroh/v1";
     const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
     const READ_TIMEOUT: Duration = Duration::from_secs(45);
-    const ESTABLISHED_READ_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+    const PROTOCOL_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(75);
+    const STATUS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
     const WRITE_TIMEOUT: Duration = Duration::from_secs(45);
     const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
     const ACCEPT_SLEEP: Duration = Duration::from_millis(100);
@@ -1415,6 +1496,8 @@ mod desktop {
                 });
                 status.last_error = None;
                 status.last_sync = None;
+                status.active_progress = None;
+                status.active_progress_owner_run_id = None;
             });
 
             Ok(self.status())
@@ -1452,6 +1535,8 @@ mod desktop {
                 update_status(&self.shared_status, |status| {
                     status.last_status = Some("Sync transport listener stopped.".to_string());
                     status.nearby_peers.clear();
+                    status.active_progress = None;
+                    status.active_progress_owner_run_id = None;
                 });
             }
 
@@ -1489,6 +1574,7 @@ mod desktop {
                 last_status: shared.last_status,
                 last_error: shared.last_error,
                 last_sync: shared.last_sync,
+                active_progress: shared.active_progress,
             }
         }
 
@@ -1518,16 +1604,10 @@ mod desktop {
             &self,
             payload: SyncTransportSyncNowRequest,
         ) -> Result<SyncTransportSyncResult, String> {
-            let result = self.run_sync_now(payload);
-            update_status(&self.shared_status, |status| match &result {
-                Ok(sync_result) => {
-                    status.last_status = Some(sync_result.message.clone());
-                    status.last_sync = Some(sync_result.clone());
-                    status.last_error = None;
-                }
-                Err(error) => {
-                    status.last_error = Some(error.clone());
-                }
+            let run_id = sync_run_id();
+            let result = self.run_sync_now(payload, run_id.clone());
+            update_status(&self.shared_status, |status| {
+                apply_sync_now_status_result(status, &result, &run_id);
             });
             result
         }
@@ -1535,10 +1615,21 @@ mod desktop {
         fn run_sync_now(
             &self,
             payload: SyncTransportSyncNowRequest,
+            run_id: String,
         ) -> Result<SyncTransportSyncResult, String> {
-            let run_id = sync_run_id();
             let run_started_at = Utc::now();
             let run_started_instant = Instant::now();
+            record_active_progress(
+                &self.shared_status,
+                &run_id,
+                active_progress(protocol_status_payload(
+                    run_id.clone(),
+                    "peer_connect",
+                    "Connecting to sync peer.",
+                    Utc::now().to_rfc3339(),
+                    0,
+                )),
+            );
             let mut timings = Vec::new();
             let mut metrics = SyncRunMetrics::start(run_started_instant);
             let client = BackendClient::new(&self.backend)?;
@@ -1588,6 +1679,13 @@ mod desktop {
             .map_err(|error| phase_context_error("peer authentication", error))?;
             connection.set_established_read_timeout()?;
             timings.push(timer.finish());
+            let connection = SharedPeerConnection::new(connection);
+            let progress = ProgressReporter::new(
+                run_id.clone(),
+                run_started_instant,
+                Arc::clone(&self.shared_status),
+                connection.clone(),
+            );
             let mut refreshed_endpoint_hints_after_auth = false;
             if authenticated_hints_make_trusted_iroh_hint_stale(
                 &peer.endpoint_hints,
@@ -1603,11 +1701,15 @@ mod desktop {
             }
 
             let timer = SyncPhaseTimer::start("local_manifest_export");
-            let local_offer = load_local_manifest_offer(
-                &client,
-                payload.project_ids.as_deref(),
-                payload.export_local,
-            );
+            let local_offer = {
+                let _progress = progress
+                    .start_phase("local_manifest_export", "Exporting local sync manifests.");
+                load_local_manifest_offer(
+                    &client,
+                    payload.project_ids.as_deref(),
+                    payload.export_local,
+                )
+            };
             timings.push(timer.finish());
             let local_manifest_count = local_offer.project_manifests.len();
             let timer = SyncPhaseTimer::start("manifest_exchange");
@@ -1615,7 +1717,9 @@ mod desktop {
                 "manifest exchange",
                 &ProtocolMessage::ManifestOffer(local_offer.clone()),
             )?;
-            let remote_offer = match connection.read_message_for_phase("manifest exchange")? {
+            let remote_offer = match connection
+                .read_message_accepting_status_for_phase("manifest exchange", &progress)?
+            {
                 ProtocolMessage::ManifestOffer(offer) => offer,
                 ProtocolMessage::Error(error) => {
                     return Err(phase_context_error(
@@ -1638,13 +1742,14 @@ mod desktop {
                 let transport_id = connection.transport_id();
                 let prepared = stage_remote_manifest_artifacts(
                     &client,
-                    &mut connection,
+                    &connection,
                     &session.remote_device_id,
                     &remote_offer.metadata,
                     &remote_offer.project_manifests,
                     transport_id,
                     &mut metrics,
                     &mut timings,
+                    &progress,
                 );
                 received_artifacts = prepared.received_artifacts.clone();
                 prepared_remote_import = Some(prepared);
@@ -1661,9 +1766,10 @@ mod desktop {
             let timer = SyncPhaseTimer::start("serve_artifact_requests");
             let served_artifact_requests = match serve_artifact_requests_until_done(
                 &client,
-                &mut connection,
+                &connection,
                 &local_offer.project_manifests,
                 &mut metrics,
+                &progress,
             ) {
                 Ok(served_artifact_requests) => served_artifact_requests,
                 Err(error) => {
@@ -1818,6 +1924,8 @@ mod desktop {
         last_status: Option<String>,
         last_error: Option<String>,
         last_sync: Option<SyncTransportSyncResult>,
+        active_progress: Option<SyncTransportActiveProgress>,
+        active_progress_owner_run_id: Option<String>,
         nearby_peers: HashMap<String, DiscoveryPeerEntry>,
     }
 
@@ -1878,8 +1986,13 @@ mod desktop {
             if last_broadcast.elapsed() >= DISCOVERY_BEACON_INTERVAL {
                 let timestamp = Utc::now();
                 for target in &broadcast_targets {
-                    let _ =
-                        send_discovery_beacon(&socket, *target, &identity, &endpoint_hints, timestamp);
+                    let _ = send_discovery_beacon(
+                        &socket,
+                        *target,
+                        &identity,
+                        &endpoint_hints,
+                        timestamp,
+                    );
                 }
                 last_broadcast = Instant::now();
             }
@@ -2364,10 +2477,12 @@ mod desktop {
                         tauri::async_runtime::spawn(async move {
                             let stream = match incoming.await {
                                 Ok(connection) => match connection.accept_bi().await {
-                                    Ok((send, recv)) => {
-                                        Ok(Box::new(IrohPeerStream::new(send, recv))
-                                            as Box<dyn PeerStream>)
-                                    }
+                                    Ok((send, recv)) => Ok(Box::new(IrohPeerStream::new(
+                                        send,
+                                        recv,
+                                        tokio::runtime::Handle::current(),
+                                    ))
+                                        as Box<dyn PeerStream>),
                                     Err(error) => {
                                         Err(format!("Could not accept Iroh sync stream: {error}"))
                                     }
@@ -2509,19 +2624,21 @@ mod desktop {
     ) -> Result<SecurePeerConnection, String> {
         let endpoint = transport.endpoint.clone();
         let blob_store = transport.blob_store.clone();
-        let (send, recv) = tauri::async_runtime::block_on(async move {
+        let (send, recv, runtime_handle) = tauri::async_runtime::block_on(async move {
+            let runtime_handle = tokio::runtime::Handle::current();
             let connection =
                 tokio::time::timeout(CONNECT_TIMEOUT, endpoint.connect(endpoint_addr, IROH_ALPN))
                     .await
                     .map_err(|_| "Timed out connecting to Iroh sync peer.".to_string())?
                     .map_err(|error| format!("Could not connect to Iroh sync peer: {error}"))?;
-            tokio::time::timeout(CONNECT_TIMEOUT, connection.open_bi())
+            let (send, recv) = tokio::time::timeout(CONNECT_TIMEOUT, connection.open_bi())
                 .await
                 .map_err(|_| "Timed out opening Iroh sync stream.".to_string())?
-                .map_err(|error| format!("Could not open Iroh sync stream: {error}"))
+                .map_err(|error| format!("Could not open Iroh sync stream: {error}"))?;
+            Ok::<_, String>((send, recv, runtime_handle))
         })?;
         SecurePeerConnection::connect_initiator(
-            Box::new(IrohPeerStream::new(send, recv)),
+            Box::new(IrohPeerStream::new(send, recv, runtime_handle)),
             TransportKind::Iroh,
             Some(Arc::new(blob_store) as TransportBlobRecorderRef),
         )
@@ -2535,12 +2652,37 @@ mod desktop {
         shared_status: Arc<Mutex<SharedStatus>>,
         endpoint_hints: Vec<String>,
     ) {
+        let run_id = sync_run_id();
+        let run_started_at = Utc::now();
+        let run_started_instant = Instant::now();
+        record_active_progress(
+            &shared_status,
+            &run_id,
+            active_progress(protocol_status_payload(
+                run_id.clone(),
+                "peer_authentication",
+                "Authenticating sync peer.",
+                run_started_at.to_rfc3339(),
+                0,
+            )),
+        );
         update_status(&shared_status, |status| {
             status.active_sessions += 1;
         });
-        let result = serve_incoming_session(backend, transport, stream, blob_store, endpoint_hints);
+        let result = serve_incoming_session(
+            backend,
+            transport,
+            stream,
+            blob_store,
+            endpoint_hints,
+            Arc::clone(&shared_status),
+            run_id.clone(),
+            run_started_at,
+            run_started_instant,
+        );
         update_status(&shared_status, |status| {
             status.active_sessions = status.active_sessions.saturating_sub(1);
+            clear_active_progress_for_run(status, &run_id);
             match result {
                 Ok(result) => {
                     status.last_status = Some(result.message);
@@ -2561,10 +2703,11 @@ mod desktop {
         stream: Box<dyn PeerStream>,
         blob_store: Option<TransportBlobRecorderRef>,
         endpoint_hints: Vec<String>,
+        shared_status: Arc<Mutex<SharedStatus>>,
+        run_id: String,
+        run_started_at: DateTime<Utc>,
+        run_started_instant: Instant,
     ) -> Result<IncomingSessionResult, String> {
-        let run_id = sync_run_id();
-        let run_started_at = Utc::now();
-        let run_started_instant = Instant::now();
         let mut timings = Vec::new();
         let mut metrics = SyncRunMetrics::start(run_started_instant);
         let client = BackendClient::new(&backend)?;
@@ -2575,8 +2718,17 @@ mod desktop {
             .map_err(|error| phase_context_error("peer authentication", error))?;
         connection.set_established_read_timeout()?;
         timings.push(timer.finish());
+        let connection = SharedPeerConnection::new(connection);
+        let progress = ProgressReporter::new(
+            run_id.clone(),
+            run_started_instant,
+            shared_status,
+            connection.clone(),
+        );
         let timer = SyncPhaseTimer::start("manifest_exchange");
-        let remote_offer = match connection.read_message_for_phase("manifest exchange")? {
+        let remote_offer = match connection
+            .read_message_accepting_status_for_phase("manifest exchange", &progress)?
+        {
             ProtocolMessage::ManifestOffer(offer) => offer,
             ProtocolMessage::Error(error) => {
                 return Err(phase_context_error(
@@ -2593,7 +2745,11 @@ mod desktop {
         };
         timings.push(timer.finish());
         let timer = SyncPhaseTimer::start("local_manifest_export");
-        let local_offer = load_local_manifest_offer(&client, None, true);
+        let local_offer = {
+            let _progress =
+                progress.start_phase("local_manifest_export", "Exporting local sync manifests.");
+            load_local_manifest_offer(&client, None, true)
+        };
         timings.push(timer.finish());
         let local_manifest_count = local_offer.project_manifests.len();
         connection.send_message_for_phase(
@@ -2604,21 +2760,23 @@ mod desktop {
         let timer = SyncPhaseTimer::start("serve_artifact_requests");
         let served_artifact_requests = serve_artifact_requests_until_done(
             &client,
-            &mut connection,
+            &connection,
             &local_offer.project_manifests,
             &mut metrics,
+            &progress,
         )?;
         timings.push(timer.finish());
         let transport_id = connection.transport_id();
         let prepared_remote_import = stage_remote_manifest_artifacts(
             &client,
-            &mut connection,
+            &connection,
             &session.remote_device_id,
             &remote_offer.metadata,
             &remote_offer.project_manifests,
             transport_id,
             &mut metrics,
             &mut timings,
+            &progress,
         );
         if let Err(error) = connection.send_message_for_phase(
             "reconciliation apply",
@@ -2782,6 +2940,176 @@ mod desktop {
         format!("Sync transport {phase} {outcome}: {error}")
     }
 
+    fn read_message_accepting_status(
+        phase: &str,
+        mut read_next: impl FnMut() -> Result<ProtocolMessage, String>,
+        mut record_status: impl FnMut(ProtocolStatusPayload),
+    ) -> Result<ProtocolMessage, String> {
+        loop {
+            let message = read_next().map_err(|error| phase_context_error(phase, error))?;
+            match split_protocol_status(message) {
+                Ok(status) => record_status(status),
+                Err(message) => return Ok(message),
+            }
+        }
+    }
+
+    fn active_progress(status: ProtocolStatusPayload) -> SyncTransportActiveProgress {
+        SyncTransportActiveProgress {
+            run_id: status.run_id,
+            phase: status.phase,
+            message: status.message,
+            progress_at: status.progress_at,
+            elapsed_ms: status.elapsed_ms,
+        }
+    }
+
+    fn record_active_progress(
+        shared_status: &Arc<Mutex<SharedStatus>>,
+        owner_run_id: &str,
+        progress: SyncTransportActiveProgress,
+    ) {
+        update_status(shared_status, |status| {
+            status.active_progress = Some(progress);
+            status.active_progress_owner_run_id = Some(owner_run_id.to_string());
+        });
+    }
+
+    fn clear_active_progress_for_run(status: &mut SharedStatus, run_id: &str) {
+        let progress_matches_run = status
+            .active_progress
+            .as_ref()
+            .is_some_and(|progress| progress.run_id == run_id);
+        let owner_matches_run = status.active_progress_owner_run_id.as_deref() == Some(run_id);
+        if progress_matches_run || owner_matches_run {
+            status.active_progress = None;
+            status.active_progress_owner_run_id = None;
+        }
+    }
+
+    fn apply_sync_now_status_result(
+        status: &mut SharedStatus,
+        result: &Result<SyncTransportSyncResult, String>,
+        run_id: &str,
+    ) {
+        match result {
+            Ok(sync_result) => {
+                status.last_status = Some(sync_result.message.clone());
+                status.last_sync = Some(sync_result.clone());
+                status.last_error = None;
+                clear_active_progress_for_run(status, &sync_result.run_id);
+            }
+            Err(error) => {
+                status.last_error = Some(error.clone());
+                clear_active_progress_for_run(status, run_id);
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    struct ProgressReporter {
+        run_id: String,
+        run_started_instant: Instant,
+        shared_status: Arc<Mutex<SharedStatus>>,
+        connection: SharedPeerConnection,
+    }
+
+    impl ProgressReporter {
+        fn new(
+            run_id: String,
+            run_started_instant: Instant,
+            shared_status: Arc<Mutex<SharedStatus>>,
+            connection: SharedPeerConnection,
+        ) -> Self {
+            Self {
+                run_id,
+                run_started_instant,
+                shared_status,
+                connection,
+            }
+        }
+
+        fn start_phase(
+            &self,
+            phase: impl Into<String>,
+            message: impl Into<String>,
+        ) -> ProgressScope {
+            let phase = phase.into();
+            let message = message.into();
+            self.report_local_progress(&phase, &message);
+
+            let reporter = self.clone();
+            let ticker_phase = phase.clone();
+            let ticker_message = message.clone();
+            let (stop_sender, stop_receiver) = mpsc::channel();
+            thread::spawn(move || loop {
+                match stop_receiver.recv_timeout(STATUS_HEARTBEAT_INTERVAL) {
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        reporter.report_local_progress_if_connection_ready(
+                            &ticker_phase,
+                            &ticker_message,
+                        );
+                    }
+                }
+            });
+
+            ProgressScope {
+                stop_sender: Some(stop_sender),
+            }
+        }
+
+        fn report_local_progress(&self, phase: &str, message: &str) {
+            let payload = self.local_status_payload(phase, message);
+            record_active_progress(
+                &self.shared_status,
+                &self.run_id,
+                active_progress(payload.clone()),
+            );
+            let _ = self
+                .connection
+                .send_message_for_phase("status heartbeat", &protocol_status_message(payload));
+        }
+
+        fn report_local_progress_if_connection_ready(&self, phase: &str, message: &str) {
+            let payload = self.local_status_payload(phase, message);
+            record_active_progress(
+                &self.shared_status,
+                &self.run_id,
+                active_progress(payload.clone()),
+            );
+            let _ = self
+                .connection
+                .try_send_message_for_phase("status heartbeat", &protocol_status_message(payload));
+        }
+
+        fn local_status_payload(&self, phase: &str, message: &str) -> ProtocolStatusPayload {
+            protocol_status_payload(
+                self.run_id.clone(),
+                phase.to_string(),
+                message.to_string(),
+                Utc::now().to_rfc3339(),
+                duration_millis(self.run_started_instant.elapsed()),
+            )
+        }
+
+        fn record_peer_status(&self, status: ProtocolStatusPayload) {
+            record_active_progress(&self.shared_status, &self.run_id, active_progress(status));
+        }
+    }
+
+    struct ProgressScope {
+        stop_sender: Option<mpsc::Sender<()>>,
+    }
+
+    impl Drop for ProgressScope {
+        fn drop(&mut self) {
+            if let Some(stop_sender) = self.stop_sender.take() {
+                let _ = stop_sender.send(());
+            }
+        }
+    }
+
     fn throughput_bytes_per_second(bytes: u64, duration: Duration) -> f64 {
         if bytes == 0 {
             return 0.0;
@@ -2903,24 +3231,26 @@ mod desktop {
         send: SendStream,
         recv: RecvStream,
         read_timeout: Duration,
+        runtime_handle: tokio::runtime::Handle,
     }
 
     impl IrohPeerStream {
-        fn new(send: SendStream, recv: RecvStream) -> Self {
+        fn new(send: SendStream, recv: RecvStream, runtime_handle: tokio::runtime::Handle) -> Self {
             Self {
                 send,
                 recv,
                 read_timeout: READ_TIMEOUT,
+                runtime_handle,
             }
         }
     }
 
     impl PeerStream for IrohPeerStream {
         fn read_exact(&mut self, buffer: &mut [u8]) -> io::Result<()> {
-            match tauri::async_runtime::block_on(tokio::time::timeout(
-                self.read_timeout,
-                self.recv.read_exact(buffer),
-            )) {
+            let read_timeout = self.read_timeout;
+            match self.runtime_handle.block_on(async {
+                tokio::time::timeout(read_timeout, self.recv.read_exact(buffer)).await
+            }) {
                 Ok(Ok(_)) => Ok(()),
                 Ok(Err(error)) => Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
@@ -2934,10 +3264,9 @@ mod desktop {
         }
 
         fn write_all(&mut self, buffer: &[u8]) -> io::Result<()> {
-            match tauri::async_runtime::block_on(tokio::time::timeout(
-                WRITE_TIMEOUT,
-                self.send.write_all(buffer),
-            )) {
+            match self.runtime_handle.block_on(async {
+                tokio::time::timeout(WRITE_TIMEOUT, self.send.write_all(buffer)).await
+            }) {
                 Ok(Ok(())) => Ok(()),
                 Ok(Err(error)) => Err(io::Error::new(io::ErrorKind::Other, error.to_string())),
                 Err(_) => Err(io::Error::new(
@@ -3038,26 +3367,12 @@ mod desktop {
             self.transport.clone()
         }
 
-        fn transport_id(&self) -> &'static str {
-            match self.transport {
-                TransportKind::Tcp => TCP_TRANSPORT_ID,
-                TransportKind::Iroh => IROH_TRANSPORT_ID,
-                TransportKind::Other(_) => TCP_TRANSPORT_ID,
-            }
-        }
-
         fn set_established_read_timeout(&mut self) -> Result<(), String> {
             self.stream
-                .set_read_timeout(ESTABLISHED_READ_TIMEOUT)
+                .set_read_timeout(PROTOCOL_WATCHDOG_TIMEOUT)
                 .map_err(|error| {
                     format!("Could not configure established sync transport read timeout: {error}")
                 })
-        }
-
-        fn record_transport_blob_identity(&self, path: &Path) -> Option<String> {
-            self.blob_store
-                .as_ref()
-                .and_then(|store| store.record_path_identity(path).ok())
         }
 
         fn send_message(&mut self, message: &ProtocolMessage) -> Result<(), String> {
@@ -3087,15 +3402,6 @@ mod desktop {
             Ok(())
         }
 
-        fn send_message_for_phase(
-            &mut self,
-            phase: &str,
-            message: &ProtocolMessage,
-        ) -> Result<(), String> {
-            self.send_message(message)
-                .map_err(|error| phase_context_error(phase, error))
-        }
-
         fn read_message(&mut self) -> Result<ProtocolMessage, String> {
             let first = match self.read_encrypted_frame()? {
                 EncryptedFrame::MessageChunk(chunk) => chunk,
@@ -3109,23 +3415,9 @@ mod desktop {
             self.read_message_from_first_chunk(first)
         }
 
-        fn read_message_for_phase(&mut self, phase: &str) -> Result<ProtocolMessage, String> {
-            self.read_message()
-                .map_err(|error| phase_context_error(phase, error))
-        }
-
         fn send_artifact_chunk(&mut self, chunk: &[u8]) -> Result<(), String> {
             let plaintext = encode_artifact_chunk_frame(chunk);
             self.send_encrypted_plaintext(&plaintext)
-        }
-
-        fn send_artifact_chunk_for_phase(
-            &mut self,
-            phase: &str,
-            chunk: &[u8],
-        ) -> Result<(), String> {
-            self.send_artifact_chunk(chunk)
-                .map_err(|error| phase_context_error(phase, error))
         }
 
         fn read_artifact_transfer_frame(&mut self) -> Result<ArtifactTransferFrame, String> {
@@ -3135,14 +3427,6 @@ mod desktop {
                     .read_message_from_first_chunk(chunk)
                     .map(ArtifactTransferFrame::Message),
             }
-        }
-
-        fn read_artifact_transfer_frame_for_phase(
-            &mut self,
-            phase: &str,
-        ) -> Result<ArtifactTransferFrame, String> {
-            self.read_artifact_transfer_frame()
-                .map_err(|error| phase_context_error(phase, error))
         }
 
         fn read_message_from_first_chunk(
@@ -3203,6 +3487,134 @@ mod desktop {
                 .read_message(&ciphertext, &mut plaintext)
                 .map_err(|error| format!("Noise transport read failed: {error}"))?;
             decode_encrypted_frame_plaintext(&plaintext[..read])
+        }
+    }
+
+    #[derive(Clone)]
+    struct SharedPeerConnection {
+        inner: Arc<Mutex<SecurePeerConnection>>,
+    }
+
+    impl SharedPeerConnection {
+        fn new(connection: SecurePeerConnection) -> Self {
+            Self {
+                inner: Arc::new(Mutex::new(connection)),
+            }
+        }
+
+        fn with_connection<T>(
+            &self,
+            action: impl FnOnce(&mut SecurePeerConnection) -> Result<T, String>,
+        ) -> Result<T, String> {
+            let mut connection = self
+                .inner
+                .lock()
+                .map_err(|_| "Sync transport connection state is unavailable.".to_string())?;
+            action(&mut connection)
+        }
+
+        fn send_message_for_phase(
+            &self,
+            phase: &str,
+            message: &ProtocolMessage,
+        ) -> Result<(), String> {
+            self.with_connection(|connection| {
+                connection
+                    .send_message(message)
+                    .map_err(|error| phase_context_error(phase, error))
+            })
+        }
+
+        fn try_send_message_for_phase(
+            &self,
+            phase: &str,
+            message: &ProtocolMessage,
+        ) -> Result<(), String> {
+            let mut connection = match self.inner.try_lock() {
+                Ok(connection) => connection,
+                Err(std::sync::TryLockError::WouldBlock) => return Ok(()),
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err("Sync transport connection state is unavailable.".to_string());
+                }
+            };
+            connection
+                .send_message(message)
+                .map_err(|error| phase_context_error(phase, error))
+        }
+
+        fn send_artifact_chunk_for_phase(&self, phase: &str, chunk: &[u8]) -> Result<(), String> {
+            self.with_connection(|connection| {
+                connection
+                    .send_artifact_chunk(chunk)
+                    .map_err(|error| phase_context_error(phase, error))
+            })
+        }
+
+        fn read_message(&self) -> Result<ProtocolMessage, String> {
+            self.with_connection(SecurePeerConnection::read_message)
+        }
+
+        fn read_message_accepting_status_for_phase(
+            &self,
+            phase: &str,
+            progress: &ProgressReporter,
+        ) -> Result<ProtocolMessage, String> {
+            read_message_accepting_status(
+                phase,
+                || self.read_message(),
+                |status| progress.record_peer_status(status),
+            )
+        }
+
+        fn read_artifact_transfer_frame(&self) -> Result<ArtifactTransferFrame, String> {
+            self.with_connection(SecurePeerConnection::read_artifact_transfer_frame)
+        }
+
+        fn read_artifact_transfer_frame_accepting_status_for_phase(
+            &self,
+            phase: &str,
+            progress: &ProgressReporter,
+        ) -> Result<ArtifactTransferFrame, String> {
+            loop {
+                let frame = self
+                    .read_artifact_transfer_frame()
+                    .map_err(|error| phase_context_error(phase, error))?;
+                match frame {
+                    ArtifactTransferFrame::Message(message) => {
+                        match split_protocol_status(message) {
+                            Ok(status) => progress.record_peer_status(status),
+                            Err(message) => return Ok(ArtifactTransferFrame::Message(message)),
+                        }
+                    }
+                    ArtifactTransferFrame::Chunk(chunk) => {
+                        return Ok(ArtifactTransferFrame::Chunk(chunk));
+                    }
+                }
+            }
+        }
+
+        fn transport(&self) -> TransportKind {
+            self.inner
+                .lock()
+                .map(|connection| connection.transport())
+                .unwrap_or_else(|_| TransportKind::Other(TCP_TRANSPORT_ID.to_string()))
+        }
+
+        fn transport_id(&self) -> &'static str {
+            match self.transport() {
+                TransportKind::Tcp => TCP_TRANSPORT_ID,
+                TransportKind::Iroh => IROH_TRANSPORT_ID,
+                TransportKind::Other(_) => TCP_TRANSPORT_ID,
+            }
+        }
+
+        fn record_transport_blob_identity(&self, path: &Path) -> Option<String> {
+            let blob_store = self
+                .inner
+                .lock()
+                .ok()
+                .and_then(|connection| connection.blob_store.clone())?;
+            blob_store.record_path_identity(path).ok()
         }
     }
 
@@ -3362,24 +3774,29 @@ mod desktop {
 
     fn stage_remote_manifest_artifacts(
         client: &BackendClient,
-        connection: &mut SecurePeerConnection,
+        connection: &SharedPeerConnection,
         peer_device_id: &str,
         remote_metadata: &Value,
         manifests: &[Value],
         transport_id: &str,
         metrics: &mut SyncRunMetrics,
         timings: &mut Vec<SyncTransportTimingEvidence>,
+        progress: &ProgressReporter,
     ) -> StagedRemoteImport {
         let mut received_artifacts = Vec::new();
 
         let timer = SyncPhaseTimer::start("reconciliation_plan");
-        let plan = match plan_remote_manifest_batch(
-            client,
-            peer_device_id,
-            remote_metadata,
-            manifests,
-            transport_id,
-        ) {
+        let plan = match {
+            let _progress =
+                progress.start_phase("reconciliation_plan", "Planning sync reconciliation.");
+            plan_remote_manifest_batch(
+                client,
+                peer_device_id,
+                remote_metadata,
+                manifests,
+                transport_id,
+            )
+        } {
             Ok(plan) => {
                 timings.push(timer.finish());
                 plan
@@ -3398,8 +3815,13 @@ mod desktop {
             }
         };
 
-        let mut apply_worker =
-            RemoteApplyWorker::start(client, peer_device_id, remote_metadata, transport_id);
+        let mut apply_worker = RemoteApplyWorker::start(
+            client,
+            peer_device_id,
+            remote_metadata,
+            transport_id,
+            progress.clone(),
+        );
         stage_remote_manifest_projects(
             manifests,
             |manifest| {
@@ -3412,6 +3834,7 @@ mod desktop {
                     &mut received_artifacts,
                     metrics,
                     timings,
+                    progress,
                 )
             },
             |staged| apply_worker.enqueue_project(staged),
@@ -3472,6 +3895,7 @@ mod desktop {
             peer_device_id: &str,
             remote_metadata: &Value,
             transport_id: &str,
+            progress: ProgressReporter,
         ) -> Self {
             let (sender, receiver) = mpsc::channel();
             let client = client.clone();
@@ -3492,6 +3916,7 @@ mod desktop {
                             &project,
                             &transport_id,
                             &mut result.timings,
+                            &progress,
                         ),
                         RemoteApplyTask::Tombstone(project_id) => apply_remote_tombstone_project(
                             &client,
@@ -3500,6 +3925,7 @@ mod desktop {
                             &project_id,
                             &transport_id,
                             &mut result.timings,
+                            &progress,
                         ),
                     };
                     result.project_results.push(project_result);
@@ -3572,6 +3998,7 @@ mod desktop {
         project_id: &str,
         transport_id: &str,
         timings: &mut Vec<SyncTransportTimingEvidence>,
+        progress: &ProgressReporter,
     ) -> SyncTransportProjectResult {
         let remote_metadata = remote_metadata_for_project(remote_metadata, project_id);
         let body = reconciliation_apply_body_with_project_ids(
@@ -3583,7 +4010,11 @@ mod desktop {
             transport_id,
         );
         let timer = SyncPhaseTimer::start_project("reconciliation_apply", project_id);
-        let response = client.post_json_value("/api/v1/sync/reconciliation/apply", &body);
+        let response = {
+            let _progress =
+                progress.start_phase("reconciliation_apply", "Applying remote reconciliation.");
+            client.post_json_value("/api/v1/sync/reconciliation/apply", &body)
+        };
         timings.push(timer.finish());
         match response {
             Ok(response) => map_project_apply_response(&[project_id.to_string()], &response)
@@ -3603,13 +4034,14 @@ mod desktop {
 
     fn stage_remote_manifest_project_artifacts(
         client: &BackendClient,
-        connection: &mut SecurePeerConnection,
+        connection: &SharedPeerConnection,
         peer_device_id: &str,
         manifest: &Value,
         plan: &Value,
         received_artifacts: &mut Vec<SyncTransportTransferResult>,
         metrics: &mut SyncRunMetrics,
         timings: &mut Vec<SyncTransportTimingEvidence>,
+        progress: &ProgressReporter,
     ) -> StagedRemoteProject {
         let mut project_transfers = Vec::new();
         let mut transfer_failure = None;
@@ -3624,6 +4056,7 @@ mod desktop {
                 &entry.artifact,
                 metrics,
                 timings,
+                progress,
             ) {
                 Ok(result) => {
                     project_transfers.push(result.clone());
@@ -3651,6 +4084,7 @@ mod desktop {
         staged: &StagedRemoteProject,
         transport_id: &str,
         timings: &mut Vec<SyncTransportTimingEvidence>,
+        progress: &ProgressReporter,
     ) -> SyncTransportProjectResult {
         let project_id = manifest_project_id(&staged.manifest);
         if let Some(error) = &staged.transfer_failure {
@@ -3678,6 +4112,7 @@ mod desktop {
             &staged.available_content_sha256,
             transport_id,
             timings,
+            progress,
         ) {
             Ok(result) => result,
             Err(error) => apply_failure_results(
@@ -3722,6 +4157,7 @@ mod desktop {
         available_content_sha256: &[String],
         transport_id: &str,
         timings: &mut Vec<SyncTransportTimingEvidence>,
+        progress: &ProgressReporter,
     ) -> Result<SyncTransportProjectResult, BackendError> {
         let project_id = manifest_project_id(manifest);
         let manifests = vec![manifest.clone()];
@@ -3734,7 +4170,11 @@ mod desktop {
             transport_id,
         );
         let timer = SyncPhaseTimer::start_project("reconciliation_apply", &project_id);
-        let response = client.post_json_value("/api/v1/sync/reconciliation/apply", &body);
+        let response = {
+            let _progress =
+                progress.start_phase("reconciliation_apply", "Applying remote reconciliation.");
+            client.post_json_value("/api/v1/sync/reconciliation/apply", &body)
+        };
         timings.push(timer.finish());
         let response = response?;
         let mut results = map_batch_apply_response(&manifests, &response);
@@ -4369,15 +4809,20 @@ mod desktop {
 
     fn request_or_use_staged_artifact(
         client: &BackendClient,
-        connection: &mut SecurePeerConnection,
+        connection: &SharedPeerConnection,
         peer_device_id: &str,
         artifact: &RemoteArtifact,
         metrics: &mut SyncRunMetrics,
         timings: &mut Vec<SyncTransportTimingEvidence>,
+        progress: &ProgressReporter,
     ) -> Result<SyncTransportTransferResult, TransferFailure> {
         let transfer_timer = TransferTimer::start();
         let timer = SyncPhaseTimer::start_artifact("artifact_staging_check", artifact);
-        let staged = already_staged_artifact_result(client, artifact);
+        let staged = {
+            let _progress =
+                progress.start_phase("artifact_transfer", "Checking staged artifact content.");
+            already_staged_artifact_result(client, artifact)
+        };
         timings.push(timer.finish());
         match staged {
             Ok(true) => {
@@ -4401,6 +4846,7 @@ mod desktop {
             transfer_timer,
             metrics,
             timings,
+            progress,
         )
     }
 
@@ -4433,14 +4879,16 @@ mod desktop {
 
     fn request_and_stage_artifact(
         client: &BackendClient,
-        connection: &mut SecurePeerConnection,
+        connection: &SharedPeerConnection,
         peer_device_id: &str,
         artifact: &RemoteArtifact,
         transfer_timer: TransferTimer,
         metrics: &mut SyncRunMetrics,
         timings: &mut Vec<SyncTransportTimingEvidence>,
+        progress: &ProgressReporter,
     ) -> Result<SyncTransportTransferResult, TransferFailure> {
         let timer = SyncPhaseTimer::start_artifact("artifact_transfer", artifact);
+        let _progress = progress.start_phase("artifact_transfer", "Transferring artifact content.");
         if let Err(error) = connection.send_message_for_phase(
             "artifact request/transfer",
             &ProtocolMessage::ArtifactRequest {
@@ -4453,7 +4901,9 @@ mod desktop {
             return Err(transfer_failure(artifact, transfer_timer.finish(0), error));
         }
 
-        match connection.read_message_for_phase("artifact request/transfer") {
+        match connection
+            .read_message_accepting_status_for_phase("artifact request/transfer", progress)
+        {
             Ok(ProtocolMessage::ArtifactStart {
                 artifact_id,
                 content_sha256,
@@ -4521,7 +4971,10 @@ mod desktop {
         let mut hasher = Sha256::new();
         let mut size_bytes = 0_u64;
         let receive_result = loop {
-            match connection.read_artifact_transfer_frame_for_phase("artifact request/transfer") {
+            match connection.read_artifact_transfer_frame_accepting_status_for_phase(
+                "artifact request/transfer",
+                progress,
+            ) {
                 Ok(ArtifactTransferFrame::Chunk(chunk)) => {
                     let next_size_bytes = size_bytes.saturating_add(chunk.len() as u64);
                     if next_size_bytes > artifact.size_bytes {
@@ -4667,14 +5120,19 @@ mod desktop {
 
     fn serve_artifact_requests_until_done(
         client: &BackendClient,
-        connection: &mut SecurePeerConnection,
+        connection: &SharedPeerConnection,
         offered_manifests: &[Value],
         metrics: &mut SyncRunMetrics,
+        progress: &ProgressReporter,
     ) -> Result<u64, String> {
         let offered_artifacts = offered_artifacts_by_id(offered_manifests);
         let mut served = 0_u64;
+        progress
+            .report_local_progress("serve_artifact_requests", "Serving peer artifact requests.");
         loop {
-            match connection.read_message_for_phase("serve artifact requests")? {
+            match connection
+                .read_message_accepting_status_for_phase("serve artifact requests", progress)?
+            {
                 ProtocolMessage::ArtifactRequest {
                     artifact_id,
                     content_sha256,
@@ -4693,7 +5151,7 @@ mod desktop {
                                     "Sync peer request for artifact {artifact_id} does not match the offered manifest."
                                 ));
                             }
-                            send_artifact_response(client, connection, artifact, metrics)
+                            send_artifact_response(client, connection, artifact, metrics, progress)
                         });
                     if let Err(error) = result {
                         let peer_error =
@@ -4710,7 +5168,6 @@ mod desktop {
                     served = served.saturating_add(1);
                 }
                 ProtocolMessage::PhaseDone { .. } => return Ok(served),
-                ProtocolMessage::Status { .. } => {}
                 ProtocolMessage::Error(error) => {
                     return Err(phase_context_error(
                         "serve artifact requests",
@@ -4729,23 +5186,29 @@ mod desktop {
 
     fn send_artifact_response(
         client: &BackendClient,
-        connection: &mut SecurePeerConnection,
+        connection: &SharedPeerConnection,
         artifact: &RemoteArtifact,
         metrics: &mut SyncRunMetrics,
+        progress: &ProgressReporter,
     ) -> Result<(), String> {
         let path = format!(
             "/api/v1/artifacts/{}/stream",
             percent_encode_path_segment(&artifact.artifact_id)
         );
-        let mut body = client.get_body(&path).map_err(|error| {
-            phase_context_error(
-                "artifact request/transfer",
-                format!(
-                    "Could not read local artifact {}: {error}",
-                    artifact.artifact_id
-                ),
-            )
-        })?;
+        let mut body = {
+            let _progress =
+                progress.start_phase("artifact_transfer", "Transferring artifact content.");
+            client.get_body(&path).map_err(|error| {
+                phase_context_error(
+                    "artifact request/transfer",
+                    format!(
+                        "Could not read local artifact {}: {error}",
+                        artifact.artifact_id
+                    ),
+                )
+            })?
+        };
+        let _progress = progress.start_phase("artifact_transfer", "Transferring artifact content.");
         connection.send_message_for_phase(
             "artifact request/transfer",
             &ProtocolMessage::ArtifactStart {
@@ -5950,16 +6413,21 @@ mod desktop {
         }
 
         #[test]
-        fn peer_stream_can_switch_to_established_read_timeout() {
+        fn peer_stream_can_switch_to_protocol_watchdog_timeout() {
             let mut peer_stream = RecordingPeerStream {
                 read_timeout: READ_TIMEOUT,
             };
 
             peer_stream
-                .set_read_timeout(ESTABLISHED_READ_TIMEOUT)
-                .expect("set established timeout");
+                .set_read_timeout(PROTOCOL_WATCHDOG_TIMEOUT)
+                .expect("set watchdog timeout");
 
-            assert_eq!(peer_stream.read_timeout, ESTABLISHED_READ_TIMEOUT);
+            assert_eq!(peer_stream.read_timeout, Duration::from_secs(75));
+        }
+
+        #[test]
+        fn transport_protocol_version_gates_watchdog_status_frames() {
+            assert_eq!(TRANSPORT_PROTOCOL_VERSION, "tuneforge-sync-transport-v3");
         }
 
         #[test]
@@ -5972,6 +6440,203 @@ mod desktop {
             assert_eq!(
                 error,
                 "Sync transport manifest exchange stalled: Timed out reading from Iroh sync stream."
+            );
+        }
+
+        #[test]
+        fn phase_context_labels_watchdog_timeout_as_stalled() {
+            let error = phase_context_error(
+                "serve artifact requests",
+                "Timed out waiting for sync transport protocol progress.".to_string(),
+            );
+
+            assert_eq!(
+                error,
+                "Sync transport serve artifact requests stalled: Timed out waiting for sync transport protocol progress."
+            );
+        }
+
+        #[test]
+        fn protocol_status_serializes_progress_fields() {
+            let message = protocol_status_message(protocol_status_payload(
+                "sync_run",
+                "reconciliation_plan",
+                "Planning sync reconciliation.",
+                "2026-01-01T00:00:00Z",
+                15_000,
+            ));
+
+            let value = serde_json::to_value(message).expect("serialize status");
+
+            assert_eq!(value.get("type"), Some(&json!("status")));
+            assert_eq!(value.get("run_id"), Some(&json!("sync_run")));
+            assert_eq!(value.get("phase"), Some(&json!("reconciliation_plan")));
+            assert_eq!(
+                value.get("message"),
+                Some(&json!("Planning sync reconciliation."))
+            );
+            assert_eq!(
+                value.get("progress_at"),
+                Some(&json!("2026-01-01T00:00:00Z"))
+            );
+            assert_eq!(value.get("elapsed_ms"), Some(&json!(15_000)));
+            assert!(value.get("source_path").is_none());
+            assert!(value.get("data").is_none());
+            assert!(value.get("artifact_id").is_none());
+        }
+
+        #[test]
+        fn read_message_accepting_status_records_progress_and_keeps_waiting() {
+            let mut messages = std::collections::VecDeque::from([
+                protocol_status_message(protocol_status_payload(
+                    "sync_run",
+                    "reconciliation_apply",
+                    "Applying remote reconciliation.",
+                    "2026-01-01T00:00:15Z",
+                    15_000,
+                )),
+                ProtocolMessage::ManifestOffer(ManifestOffer {
+                    metadata: json!({}),
+                    project_manifests: Vec::new(),
+                    manifest_errors: Vec::new(),
+                }),
+            ]);
+            let mut statuses = Vec::new();
+
+            let message = read_message_accepting_status(
+                "manifest exchange",
+                || {
+                    messages
+                        .pop_front()
+                        .ok_or_else(|| "missing test protocol message".to_string())
+                },
+                |status| statuses.push(status),
+            )
+            .expect("read expected message");
+
+            assert_eq!(statuses.len(), 1);
+            assert_eq!(statuses[0].run_id, "sync_run");
+            assert_eq!(statuses[0].phase, "reconciliation_apply");
+            assert!(matches!(message, ProtocolMessage::ManifestOffer(_)));
+        }
+
+        #[test]
+        fn active_progress_serializes_for_native_status() {
+            let progress = SyncTransportActiveProgress {
+                run_id: "sync_run".to_string(),
+                phase: "artifact_transfer".to_string(),
+                message: "Transferring artifact content.".to_string(),
+                progress_at: "2026-01-01T00:00:15Z".to_string(),
+                elapsed_ms: 15_000,
+            };
+
+            let value = serde_json::to_value(progress).expect("serialize active progress");
+
+            assert_eq!(value.get("runId"), Some(&json!("sync_run")));
+            assert_eq!(value.get("phase"), Some(&json!("artifact_transfer")));
+            assert_eq!(
+                value.get("message"),
+                Some(&json!("Transferring artifact content."))
+            );
+            assert_eq!(
+                value.get("progressAt"),
+                Some(&json!("2026-01-01T00:00:15Z"))
+            );
+            assert_eq!(value.get("elapsedMs"), Some(&json!(15_000)));
+        }
+
+        #[test]
+        fn active_progress_clears_peer_status_owned_by_completed_run() {
+            let mut status = SharedStatus {
+                active_progress: Some(SyncTransportActiveProgress {
+                    run_id: "peer_run".to_string(),
+                    phase: "reconciliation_apply".to_string(),
+                    message: "Applying remote reconciliation.".to_string(),
+                    progress_at: "2026-01-01T00:00:15Z".to_string(),
+                    elapsed_ms: 15_000,
+                }),
+                active_progress_owner_run_id: Some("local_run".to_string()),
+                ..SharedStatus::default()
+            };
+
+            clear_active_progress_for_run(&mut status, "local_run");
+
+            assert!(status.active_progress.is_none());
+            assert!(status.active_progress_owner_run_id.is_none());
+        }
+
+        #[test]
+        fn active_progress_clear_preserves_unrelated_session() {
+            let mut status = SharedStatus {
+                active_progress: Some(SyncTransportActiveProgress {
+                    run_id: "peer_run_two".to_string(),
+                    phase: "artifact_transfer".to_string(),
+                    message: "Transferring artifact content.".to_string(),
+                    progress_at: "2026-01-01T00:00:15Z".to_string(),
+                    elapsed_ms: 15_000,
+                }),
+                active_progress_owner_run_id: Some("local_run_two".to_string()),
+                ..SharedStatus::default()
+            };
+
+            clear_active_progress_for_run(&mut status, "local_run_one");
+
+            assert!(status.active_progress.is_some());
+            assert_eq!(
+                status.active_progress_owner_run_id.as_deref(),
+                Some("local_run_two")
+            );
+        }
+
+        #[test]
+        fn sync_now_error_clears_only_owned_active_progress() {
+            let mut owned_status = SharedStatus {
+                active_progress: Some(SyncTransportActiveProgress {
+                    run_id: "peer_run".to_string(),
+                    phase: "reconciliation_plan".to_string(),
+                    message: "Planning sync reconciliation.".to_string(),
+                    progress_at: "2026-01-01T00:00:15Z".to_string(),
+                    elapsed_ms: 15_000,
+                }),
+                active_progress_owner_run_id: Some("local_run".to_string()),
+                ..SharedStatus::default()
+            };
+            let owned_result: Result<SyncTransportSyncResult, String> =
+                Err("outbound sync failed".to_string());
+
+            apply_sync_now_status_result(&mut owned_status, &owned_result, "local_run");
+
+            assert_eq!(
+                owned_status.last_error.as_deref(),
+                Some("outbound sync failed")
+            );
+            assert!(owned_status.active_progress.is_none());
+            assert!(owned_status.active_progress_owner_run_id.is_none());
+
+            let mut unrelated_status = SharedStatus {
+                active_progress: Some(SyncTransportActiveProgress {
+                    run_id: "inbound_peer_run".to_string(),
+                    phase: "artifact_transfer".to_string(),
+                    message: "Transferring artifact content.".to_string(),
+                    progress_at: "2026-01-01T00:00:15Z".to_string(),
+                    elapsed_ms: 15_000,
+                }),
+                active_progress_owner_run_id: Some("inbound_local_run".to_string()),
+                ..SharedStatus::default()
+            };
+            let unrelated_result: Result<SyncTransportSyncResult, String> =
+                Err("outbound sync failed".to_string());
+
+            apply_sync_now_status_result(
+                &mut unrelated_status,
+                &unrelated_result,
+                "outbound_local_run",
+            );
+
+            assert!(unrelated_status.active_progress.is_some());
+            assert_eq!(
+                unrelated_status.active_progress_owner_run_id.as_deref(),
+                Some("inbound_local_run")
             );
         }
 

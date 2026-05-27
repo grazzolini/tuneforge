@@ -7,6 +7,7 @@ import {
   type JobSchema,
   type ProjectSchema,
   type SyncPairingPayloadSchema,
+  type SyncTransportRunStatus,
 } from "./lib/api";
 import { encodePairingCode, pairingFingerprint } from "./features/activity/syncPairingCode";
 import {
@@ -119,6 +120,22 @@ function pairingPayload(overrides: Partial<SyncPairingPayloadSchema> = {}): Sync
     pairing_secret: "pair_secret_peer_1",
     expires_at: "2099-04-18T13:26:00.000Z",
     signature: "pair_signature_peer_1",
+    ...overrides,
+  };
+}
+
+function syncRunStatus(overrides: Partial<SyncTransportRunStatus> = {}): SyncTransportRunStatus {
+  return {
+    peer_device_id: "device_peer_1",
+    remote_device_id: "device_peer_1",
+    selected_transport: "iroh",
+    attempted_transports: ["iroh"],
+    status: "completed",
+    message: "Sync completed.",
+    error: null,
+    project_results: [],
+    manifest_errors: [],
+    received_artifacts: [],
     ...overrides,
   };
 }
@@ -587,6 +604,136 @@ describe("Desktop app activity", () => {
     expect(await screen.findByText("Stopped")).toBeInTheDocument();
   });
 
+  it("shows active sync progress and polls listener status while listening", async () => {
+    const user = userEvent.setup();
+    const intervalHandlers: Array<() => void | Promise<void>> = [];
+    const setIntervalSpy = vi
+      .spyOn(window, "setInterval")
+      .mockImplementation((handler: TimerHandler, timeout?: number) => {
+        if (timeout === 2000 && typeof handler === "function") {
+          intervalHandlers.push(handler as () => void | Promise<void>);
+          return 2000;
+        }
+        return 1;
+      });
+    const clearIntervalSpy = vi.spyOn(window, "clearInterval").mockImplementation(() => undefined);
+
+    try {
+      setSyncTransportStatus({
+        active: true,
+        status: "listening",
+        endpoint_hints: syncEndpointHints,
+        active_run_id: "sync_run_active_1",
+        active_phase: "artifact_transfer",
+        active_message: "Receiving source audio.",
+        active_progress_at: "2026-04-18T13:20:30.000Z",
+        active_elapsed_ms: 2500,
+      });
+
+      await openSyncTab(user);
+
+      expect(await screen.findByText("Artifact Transfer: Receiving source audio.")).toBeInTheDocument();
+      expect(screen.getByText(/Run sync_run_active_1/)).toBeInTheDocument();
+      expect(screen.getByText(/Progress Apr 18/)).toBeInTheDocument();
+      expect(screen.getByText(/Elapsed 2\.5 s/)).toBeInTheDocument();
+      await waitFor(() => expect(intervalHandlers.length).toBeGreaterThan(0));
+
+      const initialStatusCalls = mockGetSyncTransportStatus.mock.calls.length;
+      setSyncTransportStatus({
+        active_message: "Applying remote changes.",
+        active_progress_at: "2026-04-18T13:20:40.000Z",
+        active_elapsed_ms: 3500,
+      });
+      await act(async () => {
+        await intervalHandlers[intervalHandlers.length - 1]?.();
+      });
+
+      await waitFor(() =>
+        expect(mockGetSyncTransportStatus.mock.calls.length).toBeGreaterThan(initialStatusCalls),
+      );
+      expect(await screen.findByText("Artifact Transfer: Applying remote changes.")).toBeInTheDocument();
+    } finally {
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+    }
+  });
+
+  it("polls listener status while sync now is pending", async () => {
+    const user = userEvent.setup();
+    const intervalHandlers: Array<() => void | Promise<void>> = [];
+    let resolveSyncNow: (status: SyncTransportRunStatus) => void = () => {
+      throw new Error("Sync now promise was not captured.");
+    };
+    const setIntervalSpy = vi
+      .spyOn(window, "setInterval")
+      .mockImplementation((handler: TimerHandler, timeout?: number) => {
+        if (timeout === 2000 && typeof handler === "function") {
+          intervalHandlers.push(handler as () => void | Promise<void>);
+          return 2000;
+        }
+        return 1;
+      });
+    const clearIntervalSpy = vi.spyOn(window, "clearInterval").mockImplementation(() => undefined);
+
+    try {
+      setSyncTrustedPeers([
+        {
+          device_id: "device_peer_1",
+          sync_group_id: "sync_group_local",
+          display_name: "Laptop Rig",
+          public_key: "pub_peer_1",
+          endpoint_hints: syncEndpointHints,
+          trusted_at: "2026-04-18T13:16:00.000Z",
+        },
+      ]);
+      mockSyncTrustedPeerNow.mockImplementationOnce(
+        () =>
+          new Promise<SyncTransportRunStatus>((resolve) => {
+            resolveSyncNow = resolve;
+          }),
+      );
+      await openSyncTab(user);
+
+      const peers = await screen.findByRole("list", { name: "Trusted sync peers" });
+      const peerRow = within(peers).getByText("Laptop Rig").closest("li");
+      expect(peerRow).not.toBeNull();
+      await user.click(within(peerRow as HTMLElement).getByRole("button", { name: "Sync Now" }));
+
+      await waitFor(() => expect(mockSyncTrustedPeerNow).toHaveBeenCalledWith("device_peer_1"));
+      await waitFor(() => expect(intervalHandlers.length).toBeGreaterThan(0));
+
+      const initialStatusCalls = mockGetSyncTransportStatus.mock.calls.length;
+      setSyncTransportStatus({
+        active: false,
+        status: "stopped",
+        active_run_id: "sync_run_pending_1",
+        active_phase: "planning",
+        active_message: "Planning sync.",
+        active_progress_at: "2026-04-18T13:21:00.000Z",
+        active_elapsed_ms: 750,
+      });
+      await act(async () => {
+        await intervalHandlers[intervalHandlers.length - 1]?.();
+      });
+
+      await waitFor(() =>
+        expect(mockGetSyncTransportStatus.mock.calls.length).toBeGreaterThan(initialStatusCalls),
+      );
+      expect(await screen.findByText("Planning: Planning sync.")).toBeInTheDocument();
+      expect(screen.getByText(/Run sync_run_pending_1/)).toBeInTheDocument();
+
+      const finishSyncNow = resolveSyncNow;
+      await act(async () => {
+        finishSyncNow(syncRunStatus({ message: "Pending sync completed." }));
+      });
+
+      expect(await screen.findAllByText("Pending sync completed.")).not.toHaveLength(0);
+    } finally {
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+    }
+  });
+
   it("shows nearby devices and syncs trusted matches with discovered endpoints", async () => {
     const user = userEvent.setup();
     setSyncTrustedPeers([
@@ -819,6 +966,11 @@ describe("Desktop app activity", () => {
       state: "listening",
       endpointHints: syncEndpointHints,
       fallbackCode: "iroh_unavailable",
+      active_run_id: "sync_run_active_1",
+      active_phase: "artifact_transfer",
+      active_message: "Receiving source audio.",
+      progress_at: "2026-04-18 13:16:00",
+      elapsed_ms: 1500,
       nearbyPeers: [
         {
           deviceId: "device_peer_1",
@@ -946,6 +1098,11 @@ describe("Desktop app activity", () => {
     });
     expect(normalized.endpoint_hints).toEqual(syncEndpointHints);
     expect(normalized.fallback_code).toBe("iroh_unavailable");
+    expect(normalized.active_run_id).toBe("sync_run_active_1");
+    expect(normalized.active_phase).toBe("artifact_transfer");
+    expect(normalized.active_message).toBe("Receiving source audio.");
+    expect(normalized.active_progress_at).toBe("2026-04-18T13:16:00.000Z");
+    expect(normalized.active_elapsed_ms).toBe(1500);
     expect(normalized.nearby_peers).toEqual([
       expect.objectContaining({
         device_id: "device_peer_1",

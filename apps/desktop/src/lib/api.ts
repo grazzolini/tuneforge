@@ -191,6 +191,11 @@ export type SyncTransportStatus = {
   status: string;
   endpoint_hints: string[];
   nearby_peers: SyncNearbyPeer[];
+  active_run_id?: string | null;
+  active_phase?: string | null;
+  active_message?: string | null;
+  active_progress_at?: string | null;
+  active_elapsed_ms?: number | null;
   last_status?: string | null;
   last_error?: string | null;
   fallback_code?: string | null;
@@ -1199,11 +1204,52 @@ export function normalizeSyncTransportStatus(value: unknown): SyncTransportStatu
   const active = firstBooleanField([record], ["active", "running", "listening", "is_listening", "isListening"]) ?? false;
   const status = firstStringField([record], ["status", "state", "listener_status", "listenerStatus"]) ??
     (active ? "listening" : "stopped");
+  const activeProgressRecord = recordField(record, ["active_progress", "activeProgress", "current_progress", "currentProgress"]);
+  const activeProgressRecords = [activeProgressRecord, record];
+  const activeProgressAt = firstStringField(activeProgressRecords, [
+    "active_progress_at",
+    "activeProgressAt",
+    "progress_at",
+    "progressAt",
+    "last_progress_at",
+    "lastProgressAt",
+    "updated_at",
+    "updatedAt",
+  ]);
   return {
     active,
     status,
     endpoint_hints: stringArrayField(record, ["endpoint_hints", "endpointHints", "endpoints"]),
     nearby_peers: nearbyPeersField(record),
+    active_run_id: firstStringField(activeProgressRecords, [
+      "active_run_id",
+      "activeRunId",
+      "run_id",
+      "runId",
+      "sync_run_id",
+      "syncRunId",
+    ]),
+    active_phase: firstStringField(activeProgressRecords, [
+      "active_phase",
+      "activePhase",
+      "phase",
+      "current_phase",
+      "currentPhase",
+    ]),
+    active_message: firstStringField(activeProgressRecords, [
+      "active_message",
+      "activeMessage",
+      "message",
+      "status_message",
+      "statusMessage",
+    ]),
+    active_progress_at: activeProgressAt ? normalizeApiDateTime(activeProgressAt) : null,
+    active_elapsed_ms: numberField(activeProgressRecord, [
+      "active_elapsed_ms",
+      "activeElapsedMs",
+      "elapsed_ms",
+      "elapsedMs",
+    ]) ?? numberField(record, ["active_elapsed_ms", "activeElapsedMs", "elapsed_ms", "elapsedMs"]),
     last_status: firstStringField([record], ["last_status", "lastStatus"]),
     last_error: firstStringField([record], ["last_error", "lastError", "error"]),
     fallback_code: firstStringField([record], ["fallback_code", "fallbackCode"]),

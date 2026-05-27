@@ -29,6 +29,17 @@ import {
   rememberPlaybackBackend,
 } from "../../lib/playbackDiagnostics";
 import {
+  patchPlaybackE2ETelemetry,
+  type PlaybackE2EActivePath,
+  type PlaybackE2ECountInCancelReason,
+  type PlaybackE2ECountInCancelled,
+  type PlaybackE2ECountInFired,
+  type PlaybackE2ECountInSchedule,
+  type PlaybackE2ECountInState,
+  type PlaybackE2ETelemetryPatch,
+  type PlaybackE2ETransportState,
+} from "../../lib/playbackE2ETelemetry";
+import {
   activateWebAudioContext,
   getWebAudioContextConstructor,
   primeWebAudioContext,
@@ -78,6 +89,7 @@ type ActivePrecount = {
   ownsContext: boolean;
   sequence: number;
   signature: string;
+  telemetry: PlaybackE2ECountInEvent;
   timeoutId: number;
 };
 
@@ -95,6 +107,57 @@ type NativePlaybackState = {
   sessionSignature: string | null;
   playbackSignature: string | null;
 };
+
+type PlaybackE2ECountInEvent = PlaybackE2ECountInSchedule;
+type PlaybackE2ETelemetryOverrides = Omit<PlaybackE2ETelemetryPatch, "countIn">;
+
+function playbackTelemetryPathForBackend(
+  backend: PlaybackControlBackend,
+): PlaybackE2EActivePath {
+  if (backend === "native") {
+    return "native";
+  }
+  if (backend === "web") {
+    return "web-audio";
+  }
+  return "none";
+}
+
+function playbackTelemetryTransportState(
+  backend: PlaybackControlBackend,
+  isPlaying: boolean,
+): PlaybackE2ETransportState {
+  if (isPlaying) {
+    return "playing";
+  }
+  return backend === "none" ? "stopped" : "paused";
+}
+
+function playbackCountInCancelledEvent(
+  schedule: PlaybackE2ECountInSchedule,
+  context: AudioContext,
+  reason: PlaybackE2ECountInCancelReason,
+): PlaybackE2ECountInCancelled {
+  return {
+    sequence: schedule.sequence,
+    trigger: schedule.trigger,
+    playbackStartTimeSeconds: schedule.playbackStartTimeSeconds,
+    cancelledAtContextTimeSeconds: context.state === "closed" ? null : context.currentTime,
+    reason,
+  };
+}
+
+function playbackCountInFiredEvent(
+  schedule: PlaybackE2ECountInSchedule,
+  context: AudioContext,
+): PlaybackE2ECountInFired {
+  return {
+    sequence: schedule.sequence,
+    trigger: schedule.trigger,
+    playbackStartTimeSeconds: schedule.playbackStartTimeSeconds,
+    firedAtContextTimeSeconds: context.state === "closed" ? null : context.currentTime,
+  };
+}
 
 const mediaPlaybackRateRampFrames = new WeakMap<
   HTMLAudioElement,
@@ -289,45 +352,144 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   const playbackTimeSecondsRef = useRef(0);
   const playbackDurationSecondsRef = useRef(0);
   const isPlayingRef = useRef(false);
+  const playbackControlBackendRef = useRef<PlaybackControlBackend>("none");
+  const playbackTelemetryGenerationRef = useRef(0);
+  const nativeSnapshotRef = useRef<NativeAudioSnapshot | null>(null);
+  const countInTelemetryRef = useRef<PlaybackE2ECountInState>({
+    active: false,
+    lastScheduled: null,
+    lastFired: null,
+    lastCancelled: null,
+  });
   const [session, setSession] = useState<ProjectPlaybackSession | null>(null);
   const [playbackTimeSeconds, setPlaybackTimeSecondsState] = useState(0);
-  const [playbackDurationSeconds, setPlaybackDurationSeconds] = useState(0);
-  const [isPrecounting, setIsPrecounting] = useState(false);
-  const [isPlaying, setIsPlaying] = useState(false);
+  const [playbackDurationSeconds, setPlaybackDurationSecondsState] = useState(0);
+  const [isPrecounting, setIsPrecountingState] = useState(false);
+  const [isPlaying, setIsPlayingState] = useState(false);
   const [webMediaSourcesEnabled, setWebMediaSourcesEnabled] = useState(
     initialWebMediaSourcesEnabled,
   );
-  const [playbackControlBackend, setPlaybackControlBackend] =
+  const [playbackControlBackend, setPlaybackControlBackendState] =
     useState<PlaybackControlBackend>("none");
 
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
 
+  const writePlaybackE2ETelemetry = useStableCallback(function writePlaybackE2ETelemetry(
+    overrides: PlaybackE2ETelemetryOverrides = {},
+  ) {
+    playbackTelemetryGenerationRef.current += 1;
+    const activeSession = sessionRef.current;
+    const activePath =
+      overrides.activePath ??
+      playbackTelemetryPathForBackend(playbackControlBackendRef.current);
+    const durationSeconds =
+      overrides.durationSeconds ??
+      (playbackDurationSecondsRef.current || activeSession?.durationHintSeconds || 0);
+    const loopRange = overrides.loopRange ?? getPlayableLoopRange(activeSession);
+    const nativeSnapshot = nativeSnapshotRef.current;
+    patchPlaybackE2ETelemetry({
+      activePath,
+      transportState:
+        overrides.transportState ??
+        playbackTelemetryTransportState(
+          playbackControlBackendRef.current,
+          isPlayingRef.current,
+        ),
+      positionSeconds: overrides.positionSeconds ?? playbackTimeSecondsRef.current,
+      durationSeconds,
+      playbackRate:
+        overrides.playbackRate ??
+        (activePath === "native" && nativeSnapshot
+          ? nativeSnapshot.playbackRate
+          : playbackRateForSession(activeSession)),
+      loopRange,
+      nativeBufferHealth:
+        overrides.nativeBufferHealth ?? nativeSnapshot?.bufferHealth ?? [],
+      countIn: { ...countInTelemetryRef.current },
+    });
+  });
+
   useEffect(() => {
     playbackTimeSecondsRef.current = playbackTimeSeconds;
   }, [playbackTimeSeconds]);
 
-  const setPlaybackTimeSeconds = useCallback((nextTimeSeconds: number) => {
+  const setPlaybackTimeSeconds = useStableCallback(function setPlaybackTimeSeconds(
+    nextTimeSeconds: number,
+  ) {
     playbackTimeSecondsRef.current = nextTimeSeconds;
     setPlaybackTimeSecondsState(nextTimeSeconds);
-  }, []);
+    writePlaybackE2ETelemetry({ positionSeconds: nextTimeSeconds });
+  });
 
   useEffect(() => {
     playbackDurationSecondsRef.current = playbackDurationSeconds;
   }, [playbackDurationSeconds]);
 
+  const setPlaybackDurationSeconds = useStableCallback(function setPlaybackDurationSeconds(
+    nextDurationSeconds: number,
+  ) {
+    playbackDurationSecondsRef.current = nextDurationSeconds;
+    setPlaybackDurationSecondsState(nextDurationSeconds);
+    writePlaybackE2ETelemetry({ durationSeconds: nextDurationSeconds });
+  });
+
   useEffect(() => {
     isPlayingRef.current = isPlaying;
   }, [isPlaying]);
 
+  const setIsPrecounting = useStableCallback(function setIsPrecounting(
+    nextIsPrecounting: boolean,
+  ) {
+    setIsPrecountingState(nextIsPrecounting);
+    writePlaybackE2ETelemetry();
+  });
+
+  const setIsPlaying = useStableCallback(function setIsPlaying(nextIsPlaying: boolean) {
+    isPlayingRef.current = nextIsPlaying;
+    setIsPlayingState(nextIsPlaying);
+    writePlaybackE2ETelemetry({
+      transportState: playbackTelemetryTransportState(
+        playbackControlBackendRef.current,
+        nextIsPlaying,
+      ),
+    });
+  });
+
+  const setPlaybackControlBackend = useStableCallback(function setPlaybackControlBackend(
+    nextBackend: PlaybackControlBackend,
+  ) {
+    playbackControlBackendRef.current = nextBackend;
+    setPlaybackControlBackendState(nextBackend);
+    writePlaybackE2ETelemetry({
+      activePath: playbackTelemetryPathForBackend(nextBackend),
+      transportState: playbackTelemetryTransportState(nextBackend, isPlayingRef.current),
+    });
+  });
+
+  const recordNativeSnapshot = useStableCallback(function recordNativeSnapshot(
+    snapshot: NativeAudioSnapshot,
+    overrides: PlaybackE2ETelemetryOverrides = {},
+  ) {
+    nativeSnapshotRef.current = snapshot;
+    writePlaybackE2ETelemetry({
+      positionSeconds: snapshot.positionSeconds,
+      durationSeconds: snapshot.durationSeconds || sessionRef.current?.durationHintSeconds || 0,
+      playbackRate: snapshot.playbackRate,
+      nativeBufferHealth: snapshot.bufferHealth,
+      transportState: snapshot.state,
+      ...overrides,
+    });
+  });
+
   const clearPlaybackControlBackend = useCallback(() => {
     setPlaybackControlBackend("none");
-  }, []);
+  }, [setPlaybackControlBackend]);
 
   const markWebPlaybackStartResult = useCallback((started: boolean) => {
     setPlaybackControlBackend(started ? "web" : "none");
-  }, []);
+  }, [setPlaybackControlBackend]);
 
   function setPrimaryAudioRef(element: HTMLAudioElement | null) {
     primaryAudioRef.current = element;
@@ -438,7 +600,25 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   });
 
   const requestNativeStop = useStableCallback(function requestNativeStop() {
+    const stopTelemetryGeneration = playbackTelemetryGenerationRef.current;
+    const stoppedSessionSignature = nativePlaybackRef.current.sessionSignature;
     const stopPromise = stopNativeAudio()
+      .then((snapshot) => {
+        if (
+          nativeStopPromiseRef.current !== stopPromise ||
+          playbackTelemetryGenerationRef.current !== stopTelemetryGeneration ||
+          nativePlaybackRef.current.sessionSignature !== stoppedSessionSignature ||
+          playbackControlBackendRef.current === "web" ||
+          isPlayingRef.current ||
+          nativePlaybackRef.current.active
+        ) {
+          return;
+        }
+        recordNativeSnapshot(snapshot, {
+          activePath: "none",
+          transportState: "stopped",
+        });
+      })
       .catch(() => undefined)
       .then(() => undefined)
       .finally(() => {
@@ -465,7 +645,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     const sessionSignature = nativeSessionSignature(targetSession);
     const lanes = nativeLaneRequestsForSession(targetSession);
     if (nativePlaybackRef.current.sessionSignature === sessionSignature) {
-      await setNativeAudioLanes(nativeLaneUpdateForSession(targetSession));
+      const snapshot = await setNativeAudioLanes(nativeLaneUpdateForSession(targetSession));
+      recordNativeSnapshot(snapshot);
       return true;
     }
 
@@ -476,7 +657,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     ) {
       const prepared = await pendingPrepare.preparePromise;
       if (prepared && nativePlaybackRef.current.sessionSignature === sessionSignature) {
-        await setNativeAudioLanes(nativeLaneUpdateForSession(targetSession));
+        const snapshot = await setNativeAudioLanes(nativeLaneUpdateForSession(targetSession));
+        recordNativeSnapshot(snapshot);
       }
       return prepared;
     }
@@ -546,7 +728,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     try {
       const prepared = await preparePromise;
       if (prepared && nativePlaybackRef.current.sessionSignature === sessionSignature) {
-        await setNativeAudioLanes(nativeLaneUpdateForSession(targetSession));
+        const snapshot = await setNativeAudioLanes(nativeLaneUpdateForSession(targetSession));
+        recordNativeSnapshot(snapshot);
       }
       return prepared;
     } catch (error) {
@@ -594,7 +777,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         }
         return false;
       }
-      await setNativeAudioLanes(nativeLaneUpdateForSession(latestSession));
+      const lanesSnapshot = await setNativeAudioLanes(nativeLaneUpdateForSession(latestSession));
+      recordNativeSnapshot(lanesSnapshot);
       const snapshot = await playNativeAudio({
         startTimeSeconds:
           wasNativeActive || timeSeconds <= SEEK_TOLERANCE_SECONDS
@@ -604,6 +788,10 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       nativePlaybackRef.current.active = snapshot.nativePlaybackSupported;
       nativePlaybackRef.current.playbackSignature = playbackSignature(latestSession);
       if (!snapshot.nativePlaybackSupported) {
+        recordNativeSnapshot(snapshot, {
+          activePath: "none",
+          transportState: snapshot.state,
+        });
         rememberNativePlaybackError(
           snapshot.fallbackReason ?? "Native playback start fell back to Web Audio.",
         );
@@ -622,6 +810,10 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       setPlaybackDurationSeconds(snapshot.durationSeconds || latestSession.durationHintSeconds || 0);
       setPlaybackControlBackend("native");
       setIsPlaying(true);
+      recordNativeSnapshot(snapshot, {
+        activePath: "native",
+        transportState: snapshot.state,
+      });
       return true;
     } catch (error) {
       rememberNativePlaybackError(playbackErrorMessage(error));
@@ -704,10 +896,23 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     }
   });
 
-  const cancelPrecount = useStableCallback(function cancelPrecount() {
+  const cancelPrecount = useStableCallback(function cancelPrecount(
+    reason: PlaybackE2ECountInCancelReason,
+  ) {
     const activePrecount = activePrecountRef.current;
     activePrecountRef.current = null;
     precountSequenceRef.current += 1;
+    if (activePrecount) {
+      countInTelemetryRef.current = {
+        ...countInTelemetryRef.current,
+        active: false,
+        lastCancelled: playbackCountInCancelledEvent(
+          activePrecount.telemetry,
+          activePrecount.context,
+          reason,
+        ),
+      };
+    }
     setIsPrecounting(false);
 
     if (!activePrecount) {
@@ -1231,11 +1436,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       nativePlaybackRef.current.active &&
       nativePlaybackRef.current.sessionSignature === nativeSessionSignature(targetSession)
     ) {
-      void setNativeAudioLanes(nativeLaneUpdateForSession(targetSession)).catch(
-        (error) => {
+      void setNativeAudioLanes(nativeLaneUpdateForSession(targetSession))
+        .then((snapshot) => recordNativeSnapshot(snapshot))
+        .catch((error) => {
           rememberNativePlaybackError(playbackErrorMessage(error));
-        },
-      );
+        });
     }
   });
 
@@ -1699,7 +1904,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
   const pausePlayback = useCallback(() => {
     allowFreshPlaybackRef.current = false;
-    cancelPrecount();
+    cancelPrecount("playback-stopped");
     const pendingTransition = pendingTransitionRef.current;
     if (pendingTransition) {
       pendingTransition.shouldPlay = false;
@@ -1709,6 +1914,10 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     if (nativePlaybackRef.current.active) {
       void pauseNativeAudio()
         .then((snapshot) => {
+          recordNativeSnapshot(snapshot, {
+            activePath: "native",
+            transportState: "paused",
+          });
           setPlaybackTimeSeconds(snapshot.positionSeconds);
           setIsPlaying(false);
         })
@@ -1738,6 +1947,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     cancelPrecount,
     getActiveMediaElements,
     markNativePlaybackInactive,
+    recordNativeSnapshot,
+    setIsPlaying,
     setPlaybackTimeSeconds,
     stopStemSources,
   ]);
@@ -1859,7 +2070,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
     const clickCount = normalizePrecountClickCount(targetSession.precountClickCount);
     const signature = playbackSignature(targetSession);
-    cancelPrecount();
+    cancelPrecount("superseded");
     const sequence = ++precountSequenceRef.current;
 
     let preparedStemPlaybackState: StemPlaybackState | null = null;
@@ -1923,6 +2134,17 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     const firstClickTimeSeconds = precountAudio.context.currentTime + PRECOUNT_START_DELAY_SECONDS;
     const playbackStartTimeSeconds =
       firstClickTimeSeconds + countInIntervals.reduce((total, interval) => total + interval, 0);
+    const countInTelemetry: PlaybackE2ECountInEvent = {
+      clickCount,
+      trigger: shouldUseLoopPrecount ? "loop-start" : "song-start",
+      activePath: playbackTelemetryPathForBackend(playbackControlBackendRef.current),
+      scheduledAtContextTimeSeconds: precountAudio.context.currentTime,
+      firstClickTimeSeconds,
+      playbackStartTimeSeconds,
+      sequence,
+      startTimeSeconds,
+      tempoBpm,
+    };
     let nextClickTimeSeconds = firstClickTimeSeconds;
     for (let index = 0; index < clickCount; index += 1) {
       schedulePrecountClaveClick({
@@ -1939,6 +2161,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       }
 
       activePrecountRef.current = null;
+      countInTelemetryRef.current = {
+        ...countInTelemetryRef.current,
+        active: false,
+        lastFired: playbackCountInFiredEvent(activePrecount.telemetry, activePrecount.context),
+      };
       setIsPrecounting(false);
       closeOwnedPrecountContext(activePrecount);
 
@@ -1959,14 +2186,22 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       ownsContext: precountAudio.ownsContext,
       sequence,
       signature,
+      telemetry: countInTelemetry,
       timeoutId,
     };
+    countInTelemetryRef.current = {
+      ...countInTelemetryRef.current,
+      active: true,
+      lastScheduled: countInTelemetry,
+    };
     setIsPrecounting(true);
+    writePlaybackE2ETelemetry({ positionSeconds: startTimeSeconds });
     return true;
   });
 
   const playPlayback = useCallback(async () => {
     if (activePrecountRef.current) {
+      cancelPrecount("cancelled");
       return;
     }
 
@@ -1988,6 +2223,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     allowFreshPlaybackRef.current = false;
     await playPlaybackImmediately();
   }, [
+    cancelPrecount,
     playPlaybackImmediately,
     playbackStartTimeForSession,
     readMasterTime,
@@ -1997,7 +2233,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
   const togglePlayback = useCallback(async () => {
     if (activePrecountRef.current) {
-      cancelPrecount();
+      cancelPrecount("playback-stopped");
       return;
     }
     if (isPlayingRef.current) {
@@ -2009,7 +2245,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   }, [cancelPrecount, pausePlayback, playPlayback, primeWebAudioForGesture]);
 
   const seekTo = useCallback((timeSeconds: number) => {
-    cancelPrecount();
+    cancelPrecount("superseded");
     const targetSession = sessionRef.current;
     const nextTime = targetSession
       ? playbackStartTimeForSession(targetSession, timeSeconds)
@@ -2021,7 +2257,13 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
     if (nativePlaybackRef.current.active) {
       void seekNativeAudio({ timeSeconds: nextTime })
-        .then((snapshot) => setPlaybackTimeSeconds(snapshot.positionSeconds))
+        .then((snapshot) => {
+          recordNativeSnapshot(snapshot, {
+            activePath: "native",
+            transportState: snapshot.state,
+          });
+          setPlaybackTimeSeconds(snapshot.positionSeconds);
+        })
         .catch(() => {
           markNativePlaybackInactive();
           clearPlaybackControlBackend();
@@ -2058,6 +2300,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     getActiveMediaElements,
     markNativePlaybackInactive,
     playbackStartTimeForSession,
+    recordNativeSnapshot,
     setPlaybackTimeSeconds,
     startStemPlayback,
     syncStemElementTimes,
@@ -2072,7 +2315,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
   const stopPlayback = useCallback(() => {
     allowFreshPlaybackRef.current = true;
-    cancelPrecount();
+    cancelPrecount("playback-stopped");
     clearPendingTransition();
     const targetSession = sessionRef.current;
     const resetTime = playbackResetTimeForSession(targetSession);
@@ -2101,6 +2344,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     markNativePlaybackInactive,
     playbackResetTimeForSession,
     requestNativeStop,
+    setIsPlaying,
     setPlaybackTimeSeconds,
     stopStemSources,
     syncStemElementTimes,
@@ -2113,7 +2357,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     setSession(null);
     sessionRef.current = null;
     setPlaybackDurationSeconds(0);
-  }, [closePlaybackAudioContext, stopPlayback]);
+  }, [closePlaybackAudioContext, setPlaybackDurationSeconds, stopPlayback]);
 
   const registerProjectSession = useCallback((nextSession: ProjectPlaybackSession) => {
     const previousSession = sessionRef.current;
@@ -2122,7 +2366,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
     if (previousSession && previousSession.projectId !== nextSession.projectId) {
       const resetTime = playbackResetTimeForSession(nextSession);
-      cancelPrecount();
+      cancelPrecount("session-changed");
       clearPendingTransition();
       closePlaybackAudioContext();
       allowFreshPlaybackRef.current = true;
@@ -2135,7 +2379,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       clearPlaybackControlBackend();
       setIsPlaying(false);
     } else if (previousSession && previousSignature !== nextSignature) {
-      cancelPrecount();
+      cancelPrecount("session-changed");
       const activePendingTransition = pendingTransitionRef.current;
       const requestedTransitionTime =
         activePendingTransition?.signature === nextSignature
@@ -2215,6 +2459,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             ) {
               return;
             }
+            recordNativeSnapshot(snapshot);
             if (!snapshot.nativePlaybackSupported) {
               fallbackFromNativeLaneUpdate(
                 snapshot.fallbackReason ?? "Native playback lane update fell back to Web Audio.",
@@ -2325,7 +2570,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     playbackStartTimeForSession,
     playPlaybackImmediately,
     readMasterTime,
+    recordNativeSnapshot,
     requestNativeStop,
+    setIsPlaying,
+    setPlaybackControlBackend,
+    setPlaybackDurationSeconds,
     setPlaybackTimeSeconds,
     syncStemElementTimes,
   ]);
@@ -2359,11 +2608,23 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
   useEffect(
     () => () => {
-      cancelPrecount();
+      cancelPrecount("unavailable");
       closePlaybackAudioContext();
     },
     [cancelPrecount, closePlaybackAudioContext],
   );
+
+  useEffect(() => {
+    writePlaybackE2ETelemetry();
+  }, [
+    isPlaying,
+    isPrecounting,
+    playbackControlBackend,
+    playbackDurationSeconds,
+    playbackTimeSeconds,
+    session,
+    writePlaybackE2ETelemetry,
+  ]);
 
   useEffect(() => {
     if (!isTauriRuntime()) {
@@ -2390,6 +2651,12 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           clearPlaybackControlBackend();
         }
         setIsPlaying(position.state === "playing");
+        writePlaybackE2ETelemetry({
+          activePath: position.state === "stopped" ? "none" : "native",
+          transportState: position.state,
+          positionSeconds: position.positionSeconds,
+          durationSeconds: position.durationSeconds || activeSession.durationHintSeconds || 0,
+        });
       }),
       listenNativeAudioEnded((snapshot: NativeAudioSnapshot) => {
         if (snapshot.sessionId !== nativePlaybackRef.current.sessionSignature) {
@@ -2398,6 +2665,10 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         const activeSession = sessionRef.current;
         markNativePlaybackInactive();
         void requestNativeStop();
+        recordNativeSnapshot(snapshot, {
+          activePath: "none",
+          transportState: "stopped",
+        });
         if (restartActiveLoopPlayback(activeSession)) {
           return;
         }
@@ -2436,6 +2707,11 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           element.currentTime = fallbackTime;
         });
         setPlaybackTimeSeconds(fallbackTime);
+        writePlaybackE2ETelemetry({
+          activePath: "none",
+          transportState: "paused",
+          positionSeconds: fallbackTime,
+        });
         void releaseSystemMediaControls()
           .then(() => {
             void playPlaybackImmediately();
@@ -2457,11 +2733,15 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     markNativePlaybackInactive,
     playbackResetTimeForSession,
     playPlaybackImmediately,
+    recordNativeSnapshot,
     requestNativeStop,
     restartActiveLoopPlayback,
     restartLoopIfNeeded,
+    setIsPlaying,
+    setPlaybackDurationSeconds,
     setPlaybackTimeSeconds,
     syncStemElementTimes,
+    writePlaybackE2ETelemetry,
   ]);
 
   useWebPlaybackWakeLock({

@@ -69,6 +69,14 @@ async function flushMicrotasks(count = 6) {
   }
 }
 
+function readPlaybackE2ETelemetry() {
+  const telemetry = window.__TUNEFORGE_PLAYBACK_E2E__?.read();
+  if (!telemetry) {
+    throw new Error("Playback E2E telemetry bridge was not exposed.");
+  }
+  return telemetry;
+}
+
 describe("Desktop app project playback pre-count", () => {
   beforeEach(resetAppTestHarness);
 
@@ -139,6 +147,16 @@ describe("Desktop app project playback pre-count", () => {
     const audioContext = getMockAudioContexts()[0];
     expect(audioContext?.createdOscillators).toHaveLength(4);
     expect(audioContext?.createdSources).toHaveLength(0);
+    let telemetry = readPlaybackE2ETelemetry();
+    expect(telemetry.countIn.active).toBe(true);
+    expect(telemetry.countIn.lastScheduled).toMatchObject({
+      activePath: "none",
+      clickCount: 4,
+      startTimeSeconds: 0,
+      tempoBpm: 120,
+      trigger: "song-start",
+    });
+    expect(telemetry.countIn.lastFired).toBeNull();
     const clickStartTimes = audioContext?.createdOscillators.map(
       (oscillator) => oscillator.start.mock.calls[0]?.[0],
     ) ?? [];
@@ -159,6 +177,12 @@ describe("Desktop app project playback pre-count", () => {
     expect(audioContext?.createdSources[0]?.start.mock.calls[0]?.[0]).toBeCloseTo(2.035, 3);
     expect(audioContext?.createdSources[0]?.start.mock.calls[0]?.[1]).toBe(0);
     expect(sourceAudio.currentTime).toBe(0);
+    telemetry = readPlaybackE2ETelemetry();
+    expect(telemetry.countIn.active).toBe(false);
+    expect(telemetry.countIn.lastFired).toMatchObject({
+      sequence: telemetry.countIn.lastScheduled?.sequence,
+      trigger: "song-start",
+    });
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
   });
 
@@ -186,7 +210,62 @@ describe("Desktop app project playback pre-count", () => {
     expect(vi.mocked(window.HTMLMediaElement.prototype.play)).not.toHaveBeenCalled();
     expect(audioContext?.createdSources).toHaveLength(0);
     expect(sourceAudio.currentTime).toBe(0);
+    expect(readPlaybackE2ETelemetry().countIn.lastCancelled).toMatchObject({
+      reason: "playback-stopped",
+      sequence: readPlaybackE2ETelemetry().countIn.lastScheduled?.sequence,
+      trigger: "song-start",
+    });
     expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+  });
+
+  it("records pre-count cancellation reasons for superseded, session, and unavailable states", async () => {
+    const user = userEvent.setup();
+    setupTempoAnalysis();
+    const rendered = renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByLabelText("Enable pre-count"));
+    fireEvent.click(screen.getByRole("button", { name: "Play playback" }));
+    await flushMicrotasks();
+    let scheduledSequence = readPlaybackE2ETelemetry().countIn.lastScheduled?.sequence;
+    setPlaybackPosition("12.5");
+    expect(readPlaybackE2ETelemetry().countIn.lastCancelled).toMatchObject({
+      reason: "superseded",
+      sequence: scheduledSequence,
+      trigger: "song-start",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop playback" }));
+    setPlaybackPosition("0");
+    fireEvent.click(screen.getByRole("button", { name: "Play playback" }));
+    await flushMicrotasks();
+    scheduledSequence = readPlaybackE2ETelemetry().countIn.lastScheduled?.sequence;
+    const sourceList = screen.getByRole("group", { name: "Playback source and mix list" });
+    fireEvent.click(within(sourceList).getByRole("button", { name: /Practice Mix/i }));
+    await flushMicrotasks();
+    expect(readPlaybackE2ETelemetry().countIn.lastCancelled).toMatchObject({
+      reason: "session-changed",
+      sequence: scheduledSequence,
+      trigger: "song-start",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop playback" }));
+    setPlaybackPosition("0");
+    fireEvent.click(screen.getByRole("button", { name: "Play playback" }));
+    await flushMicrotasks();
+    scheduledSequence = readPlaybackE2ETelemetry().countIn.lastScheduled?.sequence;
+    rendered.unmount();
+    expect(readPlaybackE2ETelemetry().countIn.lastCancelled).toMatchObject({
+      reason: "unavailable",
+      sequence: scheduledSequence,
+      trigger: "song-start",
+    });
+    vi.useRealTimers();
   });
 
   it("does not pre-count when resuming mid-song", async () => {
@@ -271,6 +350,16 @@ describe("Desktop app project playback pre-count", () => {
     const audioContext = getMockAudioContexts()[0];
     expect(audioContext?.createdSources).toHaveLength(0);
     expect(audioContext?.createdOscillators).toHaveLength(4);
+    let telemetry = readPlaybackE2ETelemetry();
+    expect(telemetry.loopRange).toEqual({ startSeconds: 12.25, endSeconds: 24.5 });
+    expect(telemetry.countIn.active).toBe(true);
+    expect(telemetry.countIn.lastScheduled).toMatchObject({
+      clickCount: 4,
+      startTimeSeconds: 12.25,
+      tempoBpm: 120,
+      trigger: "loop-start",
+    });
+    const firstSequence = telemetry.countIn.lastScheduled?.sequence;
     act(() => {
       vi.advanceTimersByTime(2035);
     });
@@ -278,6 +367,12 @@ describe("Desktop app project playback pre-count", () => {
     expect(audioContext?.createdSources).toHaveLength(1);
     expect(audioContext?.createdSources[0]?.start.mock.calls[0]?.[1]).toBeCloseTo(12.25, 3);
     expect(sourceAudio.currentTime).toBeCloseTo(12.25, 3);
+    telemetry = readPlaybackE2ETelemetry();
+    expect(telemetry.countIn.active).toBe(false);
+    expect(telemetry.countIn.lastFired).toMatchObject({
+      sequence: firstSequence,
+      trigger: "loop-start",
+    });
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
 
     act(() => {
@@ -286,6 +381,13 @@ describe("Desktop app project playback pre-count", () => {
     });
     await flushMicrotasks();
     expect(audioContext?.createdOscillators).toHaveLength(8);
+    telemetry = readPlaybackE2ETelemetry();
+    expect(telemetry.countIn.active).toBe(true);
+    expect(telemetry.countIn.lastScheduled).toMatchObject({
+      startTimeSeconds: 12.25,
+      trigger: "loop-start",
+    });
+    expect(telemetry.countIn.lastScheduled?.sequence).not.toBe(firstSequence);
     const sourceCountBeforeRollover = audioContext?.createdSources.length ?? 0;
     act(() => {
       vi.advanceTimersByTime(2035);
@@ -296,6 +398,12 @@ describe("Desktop app project playback pre-count", () => {
       12.25,
       3,
     );
+    telemetry = readPlaybackE2ETelemetry();
+    expect(telemetry.countIn.active).toBe(false);
+    expect(telemetry.countIn.lastFired).toMatchObject({
+      sequence: telemetry.countIn.lastScheduled?.sequence,
+      trigger: "loop-start",
+    });
     vi.useRealTimers();
   }, 15000);
 

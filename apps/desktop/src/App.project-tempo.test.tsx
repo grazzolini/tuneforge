@@ -94,6 +94,14 @@ function latestNativeSessionId() {
   return payload.sessionId;
 }
 
+function readPlaybackE2ETelemetry() {
+  const telemetry = window.__TUNEFORGE_PLAYBACK_E2E__?.read();
+  if (!telemetry) {
+    throw new Error("Playback E2E telemetry bridge was not exposed.");
+  }
+  return telemetry;
+}
+
 describe("Desktop app project playback tempo", () => {
   beforeEach(resetAppTestHarness);
   afterEach(() => {
@@ -216,6 +224,55 @@ describe("Desktop app project playback tempo", () => {
     restoreTauriRuntime();
   });
 
+  it("reports native playback transport and buffer health for E2E assertions", async () => {
+    const restoreTauriRuntime = mockTauriRuntime();
+    const user = userEvent.setup();
+    setupTempoAnalysis(120);
+    setMockNativeAudioState({
+      capabilities: {
+        nativePlaybackSupported: true,
+        fallbackRequired: false,
+        fallbackReason: null,
+        backend: "desktop-cpal",
+      },
+    });
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    await waitFor(() =>
+      expect(
+        getMockInvoke().mock.calls.some(([command]) => command === "audio_play"),
+      ).toBe(true),
+    );
+    await waitFor(() =>
+      expect(readPlaybackE2ETelemetry()).toMatchObject({
+        activePath: "native",
+        durationSeconds: 182,
+        playbackRate: 1,
+        transportState: "playing",
+      }),
+    );
+    expect(readPlaybackE2ETelemetry().nativeBufferHealth).toEqual([
+      expect.objectContaining({
+        artifactId: "art_source",
+        laneId: "art_source",
+        role: "primary",
+      }),
+    ]);
+
+    emitMockNativePlaybackPosition({
+      sessionId: latestNativeSessionId(),
+      positionSeconds: 5.25,
+      durationSeconds: 182,
+      state: "playing",
+    });
+    await waitFor(() => expect(readPlaybackE2ETelemetry().positionSeconds).toBe(5.25));
+    restoreTauriRuntime();
+  });
+
   it("falls back to Web Audio when native play reports an underrun fallback", async () => {
     const restoreTauriRuntime = mockTauriRuntime();
     const user = userEvent.setup();
@@ -250,8 +307,90 @@ describe("Desktop app project playback tempo", () => {
     expect(window.localStorage.getItem("tuneforge.playback-native-error")).toBe(
       "Native playback underrun persisted; falling back to Web Audio.",
     );
+    expect(readPlaybackE2ETelemetry()).toMatchObject({
+      activePath: "web-audio",
+      transportState: "playing",
+    });
     expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
     restoreTauriRuntime();
+  });
+
+  it("keeps Web Audio telemetry when delayed native stop cleanup resolves after fallback", async () => {
+    const restoreTauriRuntime = mockTauriRuntime();
+    const user = userEvent.setup();
+    const mockInvoke = getMockInvoke();
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    if (!defaultInvoke) {
+      throw new Error("Mock invoke implementation was not installed.");
+    }
+    const nativeStopBlock: { resolve: (() => void) | null } = { resolve: null };
+    let resolveNativeStopSettled: (() => void) | null = null;
+    const nativeStopSettled = new Promise<void>((resolve) => {
+      resolveNativeStopSettled = resolve;
+    });
+    mockInvoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "audio_stop") {
+        await new Promise<void>((resolve) => {
+          nativeStopBlock.resolve = () => {
+            nativeStopBlock.resolve = null;
+            resolve();
+          };
+        });
+        const result = await defaultInvoke(command, args);
+        resolveNativeStopSettled?.();
+        return result;
+      }
+      return defaultInvoke(command, args);
+    });
+
+    try {
+      setupTempoAnalysis(120);
+      setMockNativeAudioState({
+        capabilities: {
+          nativePlaybackSupported: true,
+          fallbackRequired: false,
+          fallbackReason: null,
+          backend: "desktop-cpal",
+        },
+      });
+      renderApp(["/projects/proj_123"]);
+
+      expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+      await openPlaybackWorkspace(user);
+      await user.click(screen.getByRole("button", { name: "Play playback" }));
+      await waitFor(() =>
+        expect(readPlaybackE2ETelemetry()).toMatchObject({
+          activePath: "native",
+          transportState: "playing",
+        }),
+      );
+
+      emitMockNativePlaybackError({
+        sessionId: latestNativeSessionId(),
+        message: "Native playback underrun persisted; falling back to Web Audio.",
+      });
+      await waitFor(() => expect(nativeStopBlock.resolve).not.toBeNull());
+      const sourceAudio = findAudioByArtifactId("art_source");
+      markAudioReady(sourceAudio);
+      await waitFor(() =>
+        expect(readPlaybackE2ETelemetry()).toMatchObject({
+          activePath: "web-audio",
+          transportState: "playing",
+        }),
+      );
+
+      nativeStopBlock.resolve?.();
+      await nativeStopSettled;
+      await Promise.resolve();
+      expect(readPlaybackE2ETelemetry()).toMatchObject({
+        activePath: "web-audio",
+        transportState: "playing",
+      });
+    } finally {
+      nativeStopBlock.resolve?.();
+      mockInvoke.mockImplementation(defaultInvoke);
+      restoreTauriRuntime();
+    }
   });
 
   it("falls back to Web Audio at the current native time after a runtime underrun error", async () => {

@@ -5,6 +5,7 @@ import {
   getMockAudioContexts,
   resetAppTestHarness,
 } from "../../test/appTestHarness";
+import { readPlaybackE2ETelemetry } from "../../lib/playbackE2ETelemetry";
 import { PlaybackProvider } from "./playback";
 import {
   usePlayback,
@@ -131,5 +132,43 @@ describe("PlaybackProvider", () => {
       PRESERVED_PLAYBACK_TIME_SECONDS,
       3,
     );
+  });
+
+  it("records generic cancellation when play is requested during an active count-in", async () => {
+    let playback: PlaybackContextValue | null = null;
+    const onPlayback = (nextPlayback: PlaybackContextValue) => {
+      playback = nextPlayback;
+    };
+    const sourceSession = {
+      ...makePlaybackSession("art_source", {
+        stageTitle: "Source Track",
+      }),
+      precountEnabled: true,
+      precountTempoBpm: 120,
+    };
+
+    render(
+      <PlaybackProvider>
+        <PlaybackHarness onPlayback={onPlayback} session={sourceSession} />
+      </PlaybackProvider>,
+    );
+    await flushPlaybackWork();
+
+    await act(async () => {
+      await playback?.playPlayback();
+    });
+    const scheduledSequence = readPlaybackE2ETelemetry().countIn.lastScheduled?.sequence;
+    expect(readPlaybackE2ETelemetry().countIn.active).toBe(true);
+
+    await act(async () => {
+      await playback?.playPlayback();
+    });
+
+    expect(readPlaybackE2ETelemetry().countIn.active).toBe(false);
+    expect(readPlaybackE2ETelemetry().countIn.lastCancelled).toMatchObject({
+      reason: "cancelled",
+      sequence: scheduledSequence,
+      trigger: "song-start",
+    });
   });
 });

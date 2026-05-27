@@ -124,10 +124,16 @@ Run once with native playback selected per platform, then rerun with forced Web 
 
 ## Local-only Playwright Smoke Harness
 
-Scaffold file: `scripts/playback-smoke.mjs` (local only, not wired to CI). This is a
-browser-based smoke check for the frontend/Web Audio transport path; native output still needs the
-manual matrix above. `pnpm setup:dev` installs the Playwright Chromium browser needed by this
-smoke check; use `pnpm setup:dev -- --skip-playwright-browsers` to skip that download.
+Scaffold file: `scripts/playback-smoke.mjs` (local only, not wired to CI). This is a browser-based
+smoke check for the frontend transport path; native output still needs the manual matrix above.
+When the app exposes `window.__TUNEFORGE_PLAYBACK_E2E__.read()`, the smoke pass also polls that
+local telemetry bridge. It asserts song-start count-in scheduling/firing before loop setup, loop
+pre-count scheduling/firing during loop playback, and native transport/buffer health only when the
+telemetry reports native playback is the active path. Forced Web Audio and browser fallback runs
+continue to pass by skipping native-only buffer assertions.
+
+`pnpm setup:dev` installs the Playwright Chromium browser needed by this smoke check; use
+`pnpm setup:dev -- --skip-playwright-browsers` to skip that download.
 
 Check that the local smoke scaffold is available:
 
@@ -144,7 +150,7 @@ pnpm --filter @tuneforge/desktop test:e2e -- --run --project-name="Demo Song"
 
 For full coverage, use a fixture project with timed lyrics or chords. The smoke pass always checks
 stopped scrubber start, and it also checks stopped lyrics/chords start when a timed practice target
-is available.
+is available. It remains a local/manual diagnostic, not a CI gate and not part of `pnpm test`.
 
 If you already know the project ID, `--project-id=<id>` opens the project route directly.
 Set `TUNEFORGE_SMOKE_APP_URL` if the desktop frontend is not on `http://127.0.0.1:1420`.

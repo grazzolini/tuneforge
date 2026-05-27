@@ -20,6 +20,7 @@ import type {
   SyncTrustedPeerCreateRequest,
   SyncTrustedPeerResponse,
 } from "../lib/api";
+import { resetPlaybackE2ETelemetry } from "../lib/playbackE2ETelemetry";
 
 const DEFAULT_PROJECTS_LIMIT = 50;
 const DEFAULT_JOBS_LIMIT = 50;
@@ -2762,6 +2763,7 @@ export function getMockWakeLock() {
 
 export function resetAppTestHarness() {
   resetMockApiState();
+  resetPlaybackE2ETelemetry();
   delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   window.localStorage.clear();
   window.sessionStorage.clear();

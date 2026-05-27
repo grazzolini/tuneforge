@@ -304,6 +304,13 @@ pub struct SyncTrustedPeerCreateRequest {
     adopt_sync_group: bool,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub struct SyncTrustedPeerEndpointHintsRequest {
+    endpoint_hints: Vec<String>,
+}
+
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 fn payload_lyrics_language_override(payload: &Value) -> Result<Option<String>, String> {
     match payload.get("language_override") {

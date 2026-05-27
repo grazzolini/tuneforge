@@ -5,6 +5,8 @@ import {
   api,
   mergeSyncProjectResults,
   type SyncPairingPayloadSchema,
+  type SyncNearbyPeer,
+  type SyncNearbyPeerTrustStatus,
   type SyncTransportProjectResult,
   type SyncTransportRunStatus,
   type SyncTransportTransferResult,
@@ -20,6 +22,7 @@ import {
 } from "./syncPairingCode";
 
 const PAIRING_OFFER_TTL_SECONDS = 600;
+const EMPTY_NEARBY_PEERS: SyncNearbyPeer[] = [];
 
 type PairingOutputKind = "offer" | "response";
 type PairingOutput = {
@@ -28,6 +31,10 @@ type PairingOutput = {
   rawJson: string;
   payload: SyncPairingPayloadSchema;
   state: "waiting" | "answer received";
+};
+type SyncNowRequest = {
+  deviceId: string;
+  endpointHints?: string[];
 };
 
 function statusLabel(value: string | null | undefined) {
@@ -111,6 +118,52 @@ function peerEndpointSummary(peer: SyncTrustedPeerSchema) {
   return peer.endpoint_hints?.length ? peer.endpoint_hints.join(", ") : "No endpoint hints";
 }
 
+function nearbyPeerLabel(peer: SyncNearbyPeer) {
+  return peer.display_name?.trim() || peer.device_id || "Nearby TuneForge device";
+}
+
+function nearbyPeerEndpointSummary(peer: SyncNearbyPeer) {
+  return peer.endpoint_hints.length ? peer.endpoint_hints.join(", ") : "No endpoint hints";
+}
+
+function nearbyPeerFingerprint(peer: SyncNearbyPeer, trustedPeer: SyncTrustedPeerSchema | null) {
+  return peer.short_fingerprint?.trim() ||
+    pairingFingerprint({
+      device_id: peer.device_id ?? trustedPeer?.device_id,
+      public_key: peer.public_key ?? trustedPeer?.public_key,
+    });
+}
+
+function nearbyTrustedDeviceId(peer: SyncNearbyPeer) {
+  return peer.trusted_peer_device_id ?? peer.device_id ?? null;
+}
+
+function nearbyTrustStatus(
+  peer: SyncNearbyPeer,
+  trustedPeer: SyncTrustedPeerSchema | null,
+): SyncNearbyPeerTrustStatus {
+  if (peer.trust_status === "mismatch") {
+    return "mismatch";
+  }
+  if (!trustedPeer) {
+    return "unknown";
+  }
+  if (peer.public_key && trustedPeer.public_key && peer.public_key !== trustedPeer.public_key) {
+    return "mismatch";
+  }
+  return peer.trust_status === "unknown" ? "match" : peer.trust_status;
+}
+
+function nearbyTrustLabel(value: SyncNearbyPeerTrustStatus) {
+  if (value === "match") {
+    return "Trusted";
+  }
+  if (value === "mismatch") {
+    return "Trust mismatch";
+  }
+  return "Unknown";
+}
+
 function pairingPayloadLabel(payload: SyncPairingPayloadSchema) {
   return payload.display_name?.trim() || payload.device_id;
 }
@@ -161,6 +214,7 @@ function syncResultKey(status: SyncTransportRunStatus | null | undefined) {
     durationMs: status.duration_ms,
     selectedTransport: status.selected_transport,
     fallbackReason: status.fallback_reason,
+    fallbackCode: status.fallback_code,
     attemptedTransports: status.attempted_transports,
     timeToFirstArtifactMs: status.time_to_first_artifact_ms,
     totalReceivedBytes: status.total_received_bytes,
@@ -310,6 +364,9 @@ function syncRunSummaryText(status: SyncTransportRunStatus | null | undefined) {
   }
   if (status.fallback_reason) {
     parts.push(`Fallback: ${status.fallback_reason}`);
+  }
+  if (status.fallback_code) {
+    parts.push(`Fallback code ${status.fallback_code}`);
   }
   const counters = syncRunProjectCounterText(status);
   if (counters) {
@@ -481,6 +538,18 @@ export function ActivitySyncPanel() {
     [peersQuery.data],
   );
   const endpointHints = listenerQuery.data?.endpoint_hints ?? [];
+  const nearbyPeers = listenerQuery.data?.nearby_peers ?? EMPTY_NEARBY_PEERS;
+  const trustedNearbyPeerByDeviceId = useMemo(() => {
+    const trustedNearbyPeers = new Map<string, SyncNearbyPeer>();
+    nearbyPeers.forEach((peer) => {
+      const trustedDeviceId = nearbyTrustedDeviceId(peer);
+      const trustedPeer = trustedDeviceId ? peersById.get(trustedDeviceId) ?? null : null;
+      if (trustedDeviceId && nearbyTrustStatus(peer, trustedPeer) === "match") {
+        trustedNearbyPeers.set(trustedDeviceId, peer);
+      }
+    });
+    return trustedNearbyPeers;
+  }, [nearbyPeers, peersById]);
   const listenerActive = listenerQuery.data?.active ?? false;
   const listenerStatus = listenerQuery.isError ? "unavailable" : listenerQuery.data?.status ?? "checking";
   const listenerSyncResult = listenerQuery.data?.last_sync ?? null;
@@ -595,7 +664,10 @@ export function ActivitySyncPanel() {
     },
   });
   const syncNowMutation = useMutation({
-    mutationFn: (deviceId: string) => api.syncTrustedPeerNow(deviceId),
+    mutationFn: (request: SyncNowRequest) =>
+      request.endpointHints?.length
+        ? api.syncTrustedPeerNow(request.deviceId, { endpointHints: request.endpointHints })
+        : api.syncTrustedPeerNow(request.deviceId),
     onSuccess: async (status) => {
       setLastSyncMessage(syncStatusText(status, peersById));
       setLastSyncResult(status);
@@ -993,6 +1065,92 @@ export function ActivitySyncPanel() {
         </section>
       </div>
 
+      <section className="activity-sync-section activity-sync-section--nearby" aria-labelledby="activity-sync-nearby-heading">
+        <div className="activity-sync-section__header">
+          <h3 id="activity-sync-nearby-heading">Nearby Devices</h3>
+          <span className="metric-label">{nearbyPeers.length} nearby</span>
+        </div>
+
+        {!nearbyPeers.length ? (
+          <p className="activity-sync-empty">No nearby devices.</p>
+        ) : null}
+        {nearbyPeers.length ? (
+          <ul className="activity-sync-peer-list" aria-label="Nearby sync devices">
+            {nearbyPeers.map((nearbyPeer, index) => {
+              const trustedDeviceId = nearbyTrustedDeviceId(nearbyPeer);
+              const trustedPeer = trustedDeviceId ? peersById.get(trustedDeviceId) ?? null : null;
+              const trustStatus = nearbyTrustStatus(nearbyPeer, trustedPeer);
+              const canSync = trustStatus === "match" && trustedPeer !== null && nearbyPeer.endpoint_hints.length > 0;
+              const isSyncing = syncNowMutation.isPending &&
+                syncNowMutation.variables?.deviceId === trustedPeer?.device_id;
+              const lastSeenAt = formatTimestamp(nearbyPeer.last_seen_at);
+
+              return (
+                <li
+                  className="activity-sync-peer-row activity-sync-peer-row--nearby"
+                  key={`${nearbyPeer.device_id ?? "nearby"}-${nearbyPeer.short_fingerprint ?? index}`}
+                >
+                  <div className="activity-sync-peer-row__main">
+                    <strong>{nearbyPeerLabel(nearbyPeer)}</strong>
+                    <dl>
+                      <div>
+                        <dt>Fingerprint</dt>
+                        <dd>{nearbyPeerFingerprint(nearbyPeer, trustedPeer)}</dd>
+                      </div>
+                      <div>
+                        <dt>Trust</dt>
+                        <dd>
+                          <span className={`activity-sync-trust activity-sync-trust--${trustStatus}`}>
+                            {nearbyTrustLabel(trustStatus)}
+                          </span>
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Endpoints</dt>
+                        <dd>{nearbyPeerEndpointSummary(nearbyPeer)}</dd>
+                      </div>
+                      {lastSeenAt ? (
+                        <div>
+                          <dt>Last Seen</dt>
+                          <dd>
+                            <time dateTime={normalizeApiDateTime(nearbyPeer.last_seen_at ?? "")}>
+                              {lastSeenAt}
+                            </time>
+                          </dd>
+                        </div>
+                      ) : null}
+                    </dl>
+                  </div>
+                  <div className="activity-sync-peer-row__actions">
+                    <button
+                      className="button button--ghost button--small"
+                      disabled={!canSync || isSyncing}
+                      onClick={() => {
+                        if (trustedPeer) {
+                          syncNowMutation.mutate({
+                            deviceId: trustedPeer.device_id,
+                            endpointHints: nearbyPeer.endpoint_hints,
+                          });
+                        }
+                      }}
+                      type="button"
+                    >
+                      {isSyncing
+                        ? "Syncing..."
+                        : canSync
+                          ? "Sync Now"
+                          : trustStatus === "mismatch"
+                            ? "Trust Mismatch"
+                            : "Pair Required"}
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        ) : null}
+      </section>
+
       <section className="activity-sync-section activity-sync-section--peers" aria-labelledby="activity-sync-peers-heading">
         <div className="activity-sync-section__header">
           <h3 id="activity-sync-peers-heading">Trusted Peers</h3>
@@ -1015,8 +1173,10 @@ export function ActivitySyncPanel() {
         {trustedPeers.length ? (
           <ul className="activity-sync-peer-list" aria-label="Trusted sync peers">
             {trustedPeers.map((peer) => {
+              const nearbyPeer = trustedNearbyPeerByDeviceId.get(peer.device_id);
+              const nearbyEndpointHints = nearbyPeer?.endpoint_hints ?? [];
               const isRevoking = revokePeerMutation.isPending && revokePeerMutation.variables === peer.device_id;
-              const isSyncing = syncNowMutation.isPending && syncNowMutation.variables === peer.device_id;
+              const isSyncing = syncNowMutation.isPending && syncNowMutation.variables?.deviceId === peer.device_id;
               const trustedAt = formatTimestamp(peer.trusted_at);
 
               return (
@@ -1046,7 +1206,12 @@ export function ActivitySyncPanel() {
                     <button
                       className="button button--ghost button--small"
                       disabled={isSyncing}
-                      onClick={() => syncNowMutation.mutate(peer.device_id)}
+                      onClick={() =>
+                        syncNowMutation.mutate({
+                          deviceId: peer.device_id,
+                          endpointHints: nearbyEndpointHints.length ? nearbyEndpointHints : undefined,
+                        })
+                      }
                       type="button"
                     >
                       {isSyncing ? "Syncing..." : "Sync Now"}

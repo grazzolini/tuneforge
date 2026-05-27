@@ -293,6 +293,22 @@ Trusting a peer records its `device_id`, public identity, display name, endpoint
 peer can later be revoked without deleting local projects or changing this install's own `device_id`.
 Standalone payloads that do not reference a local pending offer are rejected.
 
+### Update trusted peer endpoint hints
+
+`PATCH /api/v1/sync/trusted-peers/{device_id}/endpoint-hints`
+
+Replaces advisory endpoint hints for an active trusted peer.
+
+Request fields:
+
+- `endpoint_hints` - advisory peer endpoints. Values are trimmed and empty values are rejected.
+
+Response wrapper:
+
+- `trusted_peer`
+
+Unknown or revoked peers return `404`.
+
 ### Revoke trusted peer
 
 `DELETE /api/v1/sync/trusted-peers/{device_id}`

@@ -106,7 +106,9 @@ export type SyncTransportRunStatus = {
   direction?: string | null;
   selected_transport?: string | null;
   fallback_reason?: string | null;
+  fallback_code?: string | null;
   attempted_transports?: string[];
+  nearby_peers?: SyncNearbyPeer[];
   status: string;
   message?: string | null;
   started_at?: string | null;
@@ -173,14 +175,31 @@ export type SyncTransportTransferResult = {
   duration_ms?: number | null;
   throughput_bytes_per_second?: number | null;
 };
+export type SyncNearbyPeerTrustStatus = "match" | "mismatch" | "unknown";
+export type SyncNearbyPeer = {
+  device_id?: string | null;
+  display_name?: string | null;
+  public_key?: string | null;
+  short_fingerprint?: string | null;
+  trust_status: SyncNearbyPeerTrustStatus;
+  trusted_peer_device_id?: string | null;
+  endpoint_hints: string[];
+  last_seen_at?: string | null;
+};
 export type SyncTransportStatus = {
   active: boolean;
   status: string;
   endpoint_hints: string[];
+  nearby_peers: SyncNearbyPeer[];
   last_status?: string | null;
   last_error?: string | null;
+  fallback_code?: string | null;
   last_sync?: SyncTransportRunStatus | null;
   updated_at?: string | null;
+};
+export type SyncTransportSyncNowOptions = {
+  endpointHint?: string | null;
+  endpointHints?: string[];
 };
 
 const LOCAL_SYNC_STATES = new Set(["local", "noop", "identical_content"]);
@@ -594,6 +613,114 @@ function normalizeSyncTransportToken(value: string | null) {
     return "auto";
   }
   return normalizeTransportStatusToken(normalized).replace(/\+/g, "_");
+}
+
+function normalizeNearbyPeerTrustStatus(record: Record<string, unknown>): SyncNearbyPeerTrustStatus {
+  const explicit = firstStringField([
+    record,
+  ], [
+    "trust_status",
+    "trustStatus",
+    "trust_state",
+    "trustState",
+    "trust",
+    "match_status",
+    "matchStatus",
+  ]);
+  const normalized = explicit ? normalizeTransportStatusToken(explicit) : null;
+  if (normalized) {
+    if (normalized.includes("mismatch") || normalized.includes("conflict")) {
+      return "mismatch";
+    }
+    if (normalized.includes("match") || normalized === "trusted" || normalized === "known") {
+      return "match";
+    }
+    if (normalized === "unknown" || normalized === "untrusted" || normalized === "new") {
+      return "unknown";
+    }
+  }
+
+  const trustMatches = firstBooleanField([
+    record,
+  ], ["trust_match", "trustMatch", "matches_trusted_peer", "matchesTrustedPeer"]);
+  if (trustMatches !== null) {
+    return trustMatches ? "match" : "mismatch";
+  }
+  const trusted = firstBooleanField([record], ["trusted", "is_trusted", "isTrusted"]);
+  return trusted ? "match" : "unknown";
+}
+
+function normalizeNearbyPeer(value: unknown): SyncNearbyPeer | null {
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+  const endpointHints = stringArrayField(record, [
+    "endpoint_hints",
+    "endpointHints",
+    "endpoints",
+    "current_endpoint_hints",
+    "currentEndpointHints",
+  ]);
+  return {
+    device_id: firstStringField([record], ["device_id", "deviceId", "id"]),
+    display_name: firstStringField([record], ["display_name", "displayName", "name"]),
+    public_key: firstStringField([record], ["public_key", "publicKey"]),
+    short_fingerprint: firstStringField([
+      record,
+    ], [
+      "short_fingerprint",
+      "shortFingerprint",
+      "fingerprint_short",
+      "fingerprintShort",
+      "fingerprint",
+    ]),
+    trust_status: normalizeNearbyPeerTrustStatus(record),
+    trusted_peer_device_id: firstStringField([
+      record,
+    ], ["trusted_peer_device_id", "trustedPeerDeviceId", "trusted_device_id", "trustedDeviceId"]),
+    endpoint_hints: endpointHints,
+    last_seen_at: dateTimeField(record, [
+      "last_seen_at",
+      "lastSeenAt",
+      "last_seen",
+      "lastSeen",
+      "observed_at",
+      "observedAt",
+      "discovered_at",
+      "discoveredAt",
+      "timestamp",
+      "updated_at",
+      "updatedAt",
+    ]),
+  };
+}
+
+function nearbyPeersField(record: Record<string, unknown>) {
+  return recordArrayOrObjectValuesField(record, [
+    "nearby_peers",
+    "nearbyPeers",
+    "discovered_peers",
+    "discoveredPeers",
+    "local_peers",
+    "localPeers",
+  ])
+    .map((item) => normalizeNearbyPeer(item))
+    .filter((item): item is SyncNearbyPeer => item !== null);
+}
+
+function normalizedEndpointHints(endpointHints: string[] | null | undefined) {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  (endpointHints ?? []).forEach((hint) => {
+    const trimmed = hint.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      return;
+    }
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  });
+  return normalized;
 }
 
 const SYNC_PROJECT_RESULT_PROGRESS_STATES = new Set([
@@ -1023,9 +1150,11 @@ export function normalizeSyncRunStatus(value: unknown): SyncTransportRunStatus |
       firstStringField([record], ["selected_transport", "selectedTransport"]),
     ),
     fallback_reason: firstStringField([record], ["fallback_reason", "fallbackReason"]),
+    fallback_code: firstStringField([record], ["fallback_code", "fallbackCode"]),
     attempted_transports: stringArrayField(record, ["attempted_transports", "attemptedTransports"])
       .map((transport) => normalizeSyncTransportToken(transport))
       .filter((transport): transport is string => transport !== null),
+    nearby_peers: nearbyPeersField(record),
     status,
     message: firstStringField([record], ["message", "status_message", "statusMessage"]) ?? summary,
     started_at: runStartedAt,
@@ -1062,6 +1191,7 @@ export function normalizeSyncTransportStatus(value: unknown): SyncTransportStatu
       active: false,
       status: "unavailable",
       endpoint_hints: [],
+      nearby_peers: [],
       last_error: "Native sync transport returned an invalid status.",
     };
   }
@@ -1073,8 +1203,10 @@ export function normalizeSyncTransportStatus(value: unknown): SyncTransportStatu
     active,
     status,
     endpoint_hints: stringArrayField(record, ["endpoint_hints", "endpointHints", "endpoints"]),
+    nearby_peers: nearbyPeersField(record),
     last_status: firstStringField([record], ["last_status", "lastStatus"]),
     last_error: firstStringField([record], ["last_error", "lastError", "error"]),
+    fallback_code: firstStringField([record], ["fallback_code", "fallbackCode"]),
     last_sync: normalizeSyncRunStatus(record.last_sync ?? record.lastSync ?? null),
     updated_at: firstStringField([record], ["updated_at", "updatedAt"]),
   };
@@ -1092,10 +1224,19 @@ async function stopSyncListener() {
   return normalizeSyncTransportStatus(await invokeDesktopNative<unknown>("sync_transport_stop_listener"));
 }
 
-async function syncTrustedPeerNow(deviceId: string) {
+async function syncTrustedPeerNow(deviceId: string, options?: SyncTransportSyncNowOptions) {
+  const endpointHints = normalizedEndpointHints(options?.endpointHints);
+  const endpointHint = options?.endpointHint?.trim() || endpointHints[0];
+  const payload: Record<string, unknown> = { peerDeviceId: deviceId, preferredTransport: "auto" };
+  if (endpointHint) {
+    payload.endpointHint = endpointHint;
+  }
+  if (endpointHints.length) {
+    payload.endpointHints = endpointHints;
+  }
   const result = normalizeSyncRunStatus(
     await invokeDesktopNative<unknown>("sync_transport_sync_now", {
-      payload: { peerDeviceId: deviceId, preferredTransport: "auto" },
+      payload,
     }),
   );
   if (!result) {
@@ -1170,7 +1311,10 @@ export type TuneForgeClient = {
   getSyncTransportStatus: () => Promise<SyncTransportStatus>;
   startSyncListener: () => Promise<SyncTransportStatus>;
   stopSyncListener: () => Promise<SyncTransportStatus>;
-  syncTrustedPeerNow: (deviceId: string) => Promise<SyncTransportRunStatus>;
+  syncTrustedPeerNow: (
+    deviceId: string,
+    options?: SyncTransportSyncNowOptions,
+  ) => Promise<SyncTransportRunStatus>;
   streamArtifactUrl: (artifactId: string) => string;
 };
 
@@ -1629,6 +1773,7 @@ export const api: TuneForgeClient = {
   getSyncTransportStatus: () => activeClient.getSyncTransportStatus(),
   startSyncListener: () => activeClient.startSyncListener(),
   stopSyncListener: () => activeClient.stopSyncListener(),
-  syncTrustedPeerNow: (deviceId: string) => activeClient.syncTrustedPeerNow(deviceId),
+  syncTrustedPeerNow: (deviceId: string, options?: SyncTransportSyncNowOptions) =>
+    activeClient.syncTrustedPeerNow(deviceId, options),
   streamArtifactUrl: (artifactId: string) => activeClient.streamArtifactUrl(artifactId),
 };

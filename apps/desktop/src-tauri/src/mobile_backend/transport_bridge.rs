@@ -12,6 +12,30 @@ pub fn mobile_sync_transport_trusted_peers_value(app: AppHandle) -> Result<Value
     sync_transport_value(mobile_list_sync_trusted_peers(app)?)
 }
 
+pub fn mobile_sync_transport_update_trusted_peer_endpoint_hints_value(
+    app: AppHandle,
+    peer_device_id: String,
+    endpoint_hints: Vec<String>,
+) -> Result<Value, String> {
+    sync_transport_value(mobile_update_sync_trusted_peer_endpoint_hints(
+        app,
+        peer_device_id,
+        SyncTrustedPeerEndpointHintsRequest { endpoint_hints },
+    )?)
+}
+
+pub fn mobile_sync_transport_refresh_peer_endpoint_hints_value(
+    app: AppHandle,
+    peer_device_id: String,
+    endpoint_hints: Vec<String>,
+) -> Result<Value, String> {
+    mobile_sync_transport_update_trusted_peer_endpoint_hints_value(
+        app,
+        peer_device_id,
+        endpoint_hints,
+    )
+}
+
 pub fn mobile_sync_transport_create_pairing_offer_value(
     app: AppHandle,
     endpoint_hints: Vec<String>,

@@ -657,6 +657,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sync/trusted-peers/{device_id}/endpoint-hints": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Sync Trusted Peer Endpoint Hints Update */
+        patch: operations["sync_trusted_peer_endpoint_hints_update_api_v1_sync_trusted_peers__device_id__endpoint_hints_patch"];
+        trace?: never;
+    };
     "/api/v1/sync/projects/{project_id}/manifest": {
         parameters: {
             query?: never;
@@ -2241,6 +2258,11 @@ export interface components {
              */
             adopt_sync_group?: boolean;
         };
+        /** SyncTrustedPeerEndpointHintsRequest */
+        SyncTrustedPeerEndpointHintsRequest: {
+            /** Endpoint Hints */
+            endpoint_hints: string[];
+        };
         /** SyncTrustedPeerResponse */
         SyncTrustedPeerResponse: {
             trusted_peer: components["schemas"]["SyncTrustedPeerSchema"];
@@ -3797,6 +3819,41 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncTrustedPeerResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_trusted_peer_endpoint_hints_update_api_v1_sync_trusted_peers__device_id__endpoint_hints_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                device_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncTrustedPeerEndpointHintsRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

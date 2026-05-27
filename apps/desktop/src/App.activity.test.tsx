@@ -44,6 +44,8 @@ const tcpTransportId = "tuneforge-sync+tcp";
 const irohEndpointHint = `${irohTransportId}://device_peer_1`;
 const tcpEndpointHint = `${tcpTransportId}://192.168.1.57:48625`;
 const listenerTcpEndpointHint = `${tcpTransportId}://192.168.1.42:48625`;
+const nearbyIrohEndpointHint = `${irohTransportId}://device_peer_1?direct=192.168.1.58%3A47620`;
+const nearbyTcpEndpointHint = `${tcpTransportId}://192.168.1.58:48625?device_id=device_peer_1&v=1`;
 const syncEndpointHints = [irohEndpointHint, tcpEndpointHint];
 const listenerEndpointHints = [irohEndpointHint, listenerTcpEndpointHint];
 const androidCapabilities: MobileCapabilities = {
@@ -585,6 +587,87 @@ describe("Desktop app activity", () => {
     expect(await screen.findByText("Stopped")).toBeInTheDocument();
   });
 
+  it("shows nearby devices and syncs trusted matches with discovered endpoints", async () => {
+    const user = userEvent.setup();
+    setSyncTrustedPeers([
+      {
+        device_id: "device_peer_1",
+        sync_group_id: "sync_group_local",
+        display_name: "Laptop Rig",
+        public_key: "pub_peer_1",
+        endpoint_hints: syncEndpointHints,
+        trusted_at: "2026-04-18T13:16:00.000Z",
+      },
+      {
+        device_id: "device_peer_2",
+        sync_group_id: "sync_group_local",
+        display_name: "Old Laptop",
+        public_key: "pub_peer_2",
+        endpoint_hints: [],
+        trusted_at: "2026-04-18T13:17:00.000Z",
+      },
+    ]);
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: listenerEndpointHints,
+      nearby_peers: [
+        {
+          device_id: "device_peer_1",
+          display_name: "Laptop Rig",
+          public_key: "pub_peer_1",
+          short_fingerprint: "A1B2-C3D4-E5F6-7890",
+          trust_status: "match",
+          endpoint_hints: [nearbyIrohEndpointHint, nearbyTcpEndpointHint],
+          last_seen_at: "2026-04-18T13:19:00.000Z",
+        },
+        {
+          device_id: "device_unknown",
+          display_name: "Guest Phone",
+          short_fingerprint: "1111-2222-3333-4444",
+          trust_status: "unknown",
+          endpoint_hints: ["tuneforge-sync+tcp://192.168.1.70:48625?device_id=device_unknown&v=1"],
+          last_seen_at: "2026-04-18T13:18:00.000Z",
+        },
+        {
+          device_id: "device_peer_2",
+          display_name: "Old Laptop",
+          public_key: "unexpected_pub_peer_2",
+          short_fingerprint: "9999-8888-7777-6666",
+          trust_status: "mismatch",
+          endpoint_hints: ["tuneforge-sync+tcp://192.168.1.71:48625?device_id=device_peer_2&v=1"],
+        },
+      ],
+    });
+    await openSyncTab(user);
+
+    const nearbyDevices = await screen.findByRole("list", { name: "Nearby sync devices" });
+    const laptopRow = within(nearbyDevices).getByText("Laptop Rig").closest("li");
+    const guestRow = within(nearbyDevices).getByText("Guest Phone").closest("li");
+    const mismatchRow = within(nearbyDevices).getByText("Old Laptop").closest("li");
+    expect(laptopRow).not.toBeNull();
+    expect(guestRow).not.toBeNull();
+    expect(mismatchRow).not.toBeNull();
+    expect(within(laptopRow as HTMLElement).getByText("A1B2-C3D4-E5F6-7890")).toBeInTheDocument();
+    expect(within(laptopRow as HTMLElement).getByText("Trusted")).toBeInTheDocument();
+    expect(
+      within(laptopRow as HTMLElement).getByText((content) => content.includes(nearbyIrohEndpointHint)),
+    ).toBeInTheDocument();
+    expect(within(laptopRow as HTMLElement).getByText(/Apr 18/)).toBeInTheDocument();
+    expect(within(guestRow as HTMLElement).getByText("Unknown")).toBeInTheDocument();
+    expect(within(guestRow as HTMLElement).getByRole("button", { name: "Pair Required" })).toBeDisabled();
+    expect(within(mismatchRow as HTMLElement).getByText("Trust mismatch")).toBeInTheDocument();
+    expect(within(mismatchRow as HTMLElement).getByRole("button", { name: "Trust Mismatch" })).toBeDisabled();
+
+    await user.click(within(laptopRow as HTMLElement).getByRole("button", { name: "Sync Now" }));
+
+    await waitFor(() =>
+      expect(mockSyncTrustedPeerNow).toHaveBeenCalledWith("device_peer_1", {
+        endpointHints: [nearbyIrohEndpointHint, nearbyTcpEndpointHint],
+      }),
+    );
+  });
+
   it("runs sync now for a trusted peer", async () => {
     const user = userEvent.setup();
     setSyncTrustedPeers([
@@ -731,6 +814,18 @@ describe("Desktop app activity", () => {
       running: true,
       state: "listening",
       endpointHints: syncEndpointHints,
+      fallbackCode: "iroh_unavailable",
+      nearbyPeers: [
+        {
+          deviceId: "device_peer_1",
+          displayName: "Laptop Rig",
+          publicKey: "pub_peer_1",
+          shortFingerprint: "A1B2-C3D4-E5F6-7890",
+          trustStatus: "match",
+          endpointHints: [nearbyIrohEndpointHint, nearbyTcpEndpointHint],
+          lastSeenAt: "2026-04-18 13:17:00",
+        },
+      ],
       lastSync: {
         runId: "sync_run_retry_2",
         sessionId: "sync_session_retry_2",
@@ -738,6 +833,7 @@ describe("Desktop app activity", () => {
         remoteDeviceId: "device_peer_1",
         selectedTransport: tcpTransportId,
         fallbackReason: "Iroh endpoint was unavailable; used TCP.",
+        fallbackCode: "stale_iroh_hint",
         attemptedTransports: [irohTransportId, tcpTransportId],
         status: "completed_with_errors",
         message: "Retry completed after staged bytes were reused.",
@@ -831,6 +927,7 @@ describe("Desktop app activity", () => {
       session_id: "sync_session_retry_2",
       selected_transport: "tcp",
       fallback_reason: "Iroh endpoint was unavailable; used TCP.",
+      fallback_code: "stale_iroh_hint",
       attempted_transports: ["iroh", "tcp"],
       status: "completed",
       started_at: "2026-04-18T13:16:00.000Z",
@@ -844,6 +941,17 @@ describe("Desktop app activity", () => {
       failed_project_count: 0,
     });
     expect(normalized.endpoint_hints).toEqual(syncEndpointHints);
+    expect(normalized.fallback_code).toBe("iroh_unavailable");
+    expect(normalized.nearby_peers).toEqual([
+      expect.objectContaining({
+        device_id: "device_peer_1",
+        display_name: "Laptop Rig",
+        short_fingerprint: "A1B2-C3D4-E5F6-7890",
+        trust_status: "match",
+        endpoint_hints: [nearbyIrohEndpointHint, nearbyTcpEndpointHint],
+        last_seen_at: "2026-04-18T13:17:00.000Z",
+      }),
+    ]);
     expect(normalized.last_sync?.timing).toEqual({
       planningMs: 10,
       transferMs: 25,

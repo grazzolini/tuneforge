@@ -33,6 +33,7 @@ from app.schemas import (
     SyncTransportHandshakeSignatureResponse,
     SyncTransportHandshakeSignRequest,
     SyncTrustedPeerCreateRequest,
+    SyncTrustedPeerEndpointHintsRequest,
     SyncTrustedPeerResponse,
     SyncTrustedPeerSchema,
     SyncTrustedPeersResponse,
@@ -48,6 +49,7 @@ from app.services.sync_trust import (
     revoke_trusted_peer,
     trust_peer_from_pairing_payload,
     update_local_identity_display_name,
+    update_trusted_peer_endpoint_hints,
 )
 
 router = APIRouter(prefix="/sync", tags=["sync"])
@@ -222,6 +224,20 @@ def sync_trusted_peer_delete(
     session: Session = Depends(get_db),
 ) -> SyncTrustedPeerResponse:
     trusted_peer = revoke_trusted_peer(session, device_id=device_id)
+    return SyncTrustedPeerResponse(trusted_peer=SyncTrustedPeerSchema.model_validate(trusted_peer))
+
+
+@router.patch("/trusted-peers/{device_id}/endpoint-hints", response_model=SyncTrustedPeerResponse)
+def sync_trusted_peer_endpoint_hints_update(
+    device_id: str,
+    payload: SyncTrustedPeerEndpointHintsRequest,
+    session: Session = Depends(get_db),
+) -> SyncTrustedPeerResponse:
+    trusted_peer = update_trusted_peer_endpoint_hints(
+        session,
+        device_id=device_id,
+        endpoint_hints=payload.endpoint_hints,
+    )
     return SyncTrustedPeerResponse(trusted_peer=SyncTrustedPeerSchema.model_validate(trusted_peer))
 
 

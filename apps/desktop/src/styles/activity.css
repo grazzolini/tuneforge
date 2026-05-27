@@ -327,6 +327,26 @@
   border-color: color-mix(in srgb, var(--playback-accent) 42%, var(--chip-border));
 }
 
+.activity-sync-trust {
+  display: inline-flex;
+  width: fit-content;
+  border: 1px solid color-mix(in srgb, var(--chip-border) 82%, transparent);
+  border-radius: 999px;
+  padding: 0.18rem 0.5rem;
+  background: color-mix(in srgb, var(--chip-bg) 78%, transparent);
+  font-size: 0.76rem;
+  font-weight: 820;
+}
+
+.activity-sync-trust--match {
+  border-color: color-mix(in srgb, var(--playback-accent) 42%, var(--chip-border));
+}
+
+.activity-sync-trust--mismatch {
+  border-color: color-mix(in srgb, var(--danger) 52%, var(--chip-border));
+  color: var(--danger);
+}
+
 .activity-sync-status--error,
 .activity-sync-status--unavailable {
   border-color: color-mix(in srgb, var(--danger) 48%, var(--chip-border));

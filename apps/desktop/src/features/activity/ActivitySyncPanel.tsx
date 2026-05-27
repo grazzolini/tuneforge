@@ -198,6 +198,22 @@ function syncStatusText(status: SyncTransportRunStatus | null | undefined, peers
   return status.message ?? `${statusLabel(status.status)} for ${peerName}.`;
 }
 
+function syncNowFailureText(error: unknown) {
+  if (error instanceof Error) {
+    const message = error.message.trim();
+    if (message) {
+      return `Sync now failed: ${message}`;
+    }
+  }
+  if (typeof error === "string") {
+    const message = error.trim();
+    if (message) {
+      return `Sync now failed: ${message}`;
+    }
+  }
+  return "Sync now failed.";
+}
+
 function syncResultKey(status: SyncTransportRunStatus | null | undefined) {
   if (!status) {
     return null;
@@ -674,8 +690,8 @@ export function ActivitySyncPanel() {
       setHiddenListenerSyncKey(listenerSyncKey);
       await refreshSyncQueries();
     },
-    onError: () => {
-      setLastSyncMessage("Sync now failed.");
+    onError: (error) => {
+      setLastSyncMessage(syncNowFailureText(error));
       setLastSyncResult(null);
       setHiddenListenerSyncKey(listenerSyncKey);
     },

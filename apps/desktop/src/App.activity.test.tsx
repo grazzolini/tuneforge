@@ -790,7 +790,9 @@ describe("Desktop app activity", () => {
         received_artifacts: [],
       },
     });
-    mockSyncTrustedPeerNow.mockRejectedValueOnce(new Error("Peer unavailable."));
+    mockSyncTrustedPeerNow.mockRejectedValueOnce(
+      "artifact_transfer: Timed out reading from Iroh sync stream.",
+    );
 
     await openSyncTab(user);
 
@@ -803,7 +805,9 @@ describe("Desktop app activity", () => {
     await user.click(within(peerRow as HTMLElement).getByRole("button", { name: "Sync Now" }));
 
     await waitFor(() => expect(mockSyncTrustedPeerNow).toHaveBeenCalledWith("device_peer_1"));
-    expect(await screen.findAllByText("Sync now failed.")).not.toHaveLength(0);
+    expect(
+      await screen.findAllByText("Sync now failed: artifact_transfer: Timed out reading from Iroh sync stream."),
+    ).not.toHaveLength(0);
     expect(screen.queryByText("Listener import completed before failed sync now.")).not.toBeInTheDocument();
     expect(screen.queryByText("proj_listener_previous")).not.toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "Last sync project results" })).not.toBeInTheDocument();

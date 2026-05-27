@@ -166,7 +166,7 @@ mod sync_core {
     use serde::{Deserialize, Serialize};
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
-    use std::{io, path::Path, sync::Arc};
+    use std::{io, path::Path, sync::Arc, time::Duration};
 
     pub(crate) const TCP_TRANSPORT_ID: &str = "tuneforge-sync+tcp";
     pub(crate) const IROH_TRANSPORT_ID: &str = "tuneforge-sync+iroh";
@@ -671,6 +671,7 @@ mod sync_core {
     pub(crate) trait PeerStream: Send {
         fn read_exact(&mut self, buffer: &mut [u8]) -> io::Result<()>;
         fn write_all(&mut self, buffer: &[u8]) -> io::Result<()>;
+        fn set_read_timeout(&mut self, timeout: Duration) -> io::Result<()>;
     }
 
     pub(crate) trait ProtocolConnection {
@@ -1273,6 +1274,7 @@ mod desktop {
     const IROH_ALPN: &[u8] = b"tuneforge-sync/iroh/v1";
     const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
     const READ_TIMEOUT: Duration = Duration::from_secs(45);
+    const ESTABLISHED_READ_TIMEOUT: Duration = Duration::from_secs(10 * 60);
     const WRITE_TIMEOUT: Duration = Duration::from_secs(45);
     const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
     const ACCEPT_SLEEP: Duration = Duration::from_millis(100);
@@ -1582,7 +1584,9 @@ mod desktop {
                 &client,
                 Some(payload.peer_device_id.clone()),
                 &local_endpoint_hints,
-            )?;
+            )
+            .map_err(|error| phase_context_error("peer authentication", error))?;
+            connection.set_established_read_timeout()?;
             timings.push(timer.finish());
             let mut refreshed_endpoint_hints_after_auth = false;
             if authenticated_hints_make_trusted_iroh_hint_stale(
@@ -1607,11 +1611,17 @@ mod desktop {
             timings.push(timer.finish());
             let local_manifest_count = local_offer.project_manifests.len();
             let timer = SyncPhaseTimer::start("manifest_exchange");
-            connection.send_message(&ProtocolMessage::ManifestOffer(local_offer.clone()))?;
-            let remote_offer = match connection.read_message()? {
+            connection.send_message_for_phase(
+                "manifest exchange",
+                &ProtocolMessage::ManifestOffer(local_offer.clone()),
+            )?;
+            let remote_offer = match connection.read_message_for_phase("manifest exchange")? {
                 ProtocolMessage::ManifestOffer(offer) => offer,
                 ProtocolMessage::Error(error) => {
-                    return Err(format!("Sync peer returned an error: {}", error.message));
+                    return Err(phase_context_error(
+                        "manifest exchange",
+                        format!("Sync peer returned an error: {}", error.message),
+                    ));
                 }
                 other => {
                     return Err(format!(
@@ -1639,9 +1649,12 @@ mod desktop {
                 received_artifacts = prepared.received_artifacts.clone();
                 prepared_remote_import = Some(prepared);
             }
-            if let Err(error) = connection.send_message(&ProtocolMessage::PhaseDone {
-                phase: "initiator_import".to_string(),
-            }) {
+            if let Err(error) = connection.send_message_for_phase(
+                "reconciliation staging",
+                &ProtocolMessage::PhaseDone {
+                    phase: "initiator_import".to_string(),
+                },
+            ) {
                 finish_staged_remote_import_for_failure(prepared_remote_import);
                 return Err(error);
             }
@@ -2558,13 +2571,18 @@ mod desktop {
         let timer = SyncPhaseTimer::start("peer_authentication");
         let mut connection =
             SecurePeerConnection::connect_responder(stream, transport, blob_store)?;
-        let session = authenticate_session(&mut connection, &client, None, &endpoint_hints)?;
+        let session = authenticate_session(&mut connection, &client, None, &endpoint_hints)
+            .map_err(|error| phase_context_error("peer authentication", error))?;
+        connection.set_established_read_timeout()?;
         timings.push(timer.finish());
         let timer = SyncPhaseTimer::start("manifest_exchange");
-        let remote_offer = match connection.read_message()? {
+        let remote_offer = match connection.read_message_for_phase("manifest exchange")? {
             ProtocolMessage::ManifestOffer(offer) => offer,
             ProtocolMessage::Error(error) => {
-                return Err(format!("Sync peer returned an error: {}", error.message));
+                return Err(phase_context_error(
+                    "manifest exchange",
+                    format!("Sync peer returned an error: {}", error.message),
+                ));
             }
             other => {
                 return Err(format!(
@@ -2578,7 +2596,10 @@ mod desktop {
         let local_offer = load_local_manifest_offer(&client, None, true);
         timings.push(timer.finish());
         let local_manifest_count = local_offer.project_manifests.len();
-        connection.send_message(&ProtocolMessage::ManifestOffer(local_offer.clone()))?;
+        connection.send_message_for_phase(
+            "manifest exchange",
+            &ProtocolMessage::ManifestOffer(local_offer.clone()),
+        )?;
 
         let timer = SyncPhaseTimer::start("serve_artifact_requests");
         let served_artifact_requests = serve_artifact_requests_until_done(
@@ -2599,9 +2620,12 @@ mod desktop {
             &mut metrics,
             &mut timings,
         );
-        if let Err(error) = connection.send_message(&ProtocolMessage::PhaseDone {
-            phase: "responder_import".to_string(),
-        }) {
+        if let Err(error) = connection.send_message_for_phase(
+            "reconciliation apply",
+            &ProtocolMessage::PhaseDone {
+                phase: "responder_import".to_string(),
+            },
+        ) {
             finish_staged_remote_import_for_failure(Some(prepared_remote_import));
             return Err(error);
         }
@@ -2743,6 +2767,21 @@ mod desktop {
         duration.as_millis().min(u128::from(u64::MAX)) as u64
     }
 
+    fn phase_context_error(phase: &str, error: String) -> String {
+        let failed_prefix = format!("Sync transport {phase} failed:");
+        let stalled_prefix = format!("Sync transport {phase} stalled:");
+        if error.starts_with(&failed_prefix) || error.starts_with(&stalled_prefix) {
+            return error;
+        }
+        let lower = error.to_ascii_lowercase();
+        let outcome = if lower.contains("timed out") || lower.contains("timeout") {
+            "stalled"
+        } else {
+            "failed"
+        };
+        format!("Sync transport {phase} {outcome}: {error}")
+    }
+
     fn throughput_bytes_per_second(bytes: u64, duration: Duration) -> f64 {
         if bytes == 0 {
             return 0.0;
@@ -2854,23 +2893,32 @@ mod desktop {
         fn write_all(&mut self, buffer: &[u8]) -> io::Result<()> {
             self.stream.write_all(buffer)
         }
+
+        fn set_read_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+            self.stream.set_read_timeout(Some(timeout))
+        }
     }
 
     struct IrohPeerStream {
         send: SendStream,
         recv: RecvStream,
+        read_timeout: Duration,
     }
 
     impl IrohPeerStream {
         fn new(send: SendStream, recv: RecvStream) -> Self {
-            Self { send, recv }
+            Self {
+                send,
+                recv,
+                read_timeout: READ_TIMEOUT,
+            }
         }
     }
 
     impl PeerStream for IrohPeerStream {
         fn read_exact(&mut self, buffer: &mut [u8]) -> io::Result<()> {
             match tauri::async_runtime::block_on(tokio::time::timeout(
-                READ_TIMEOUT,
+                self.read_timeout,
                 self.recv.read_exact(buffer),
             )) {
                 Ok(Ok(_)) => Ok(()),
@@ -2897,6 +2945,11 @@ mod desktop {
                     "Timed out writing to Iroh sync stream.",
                 )),
             }
+        }
+
+        fn set_read_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+            self.read_timeout = timeout;
+            Ok(())
         }
     }
 
@@ -2993,6 +3046,14 @@ mod desktop {
             }
         }
 
+        fn set_established_read_timeout(&mut self) -> Result<(), String> {
+            self.stream
+                .set_read_timeout(ESTABLISHED_READ_TIMEOUT)
+                .map_err(|error| {
+                    format!("Could not configure established sync transport read timeout: {error}")
+                })
+        }
+
         fn record_transport_blob_identity(&self, path: &Path) -> Option<String> {
             self.blob_store
                 .as_ref()
@@ -3026,6 +3087,15 @@ mod desktop {
             Ok(())
         }
 
+        fn send_message_for_phase(
+            &mut self,
+            phase: &str,
+            message: &ProtocolMessage,
+        ) -> Result<(), String> {
+            self.send_message(message)
+                .map_err(|error| phase_context_error(phase, error))
+        }
+
         fn read_message(&mut self) -> Result<ProtocolMessage, String> {
             let first = match self.read_encrypted_frame()? {
                 EncryptedFrame::MessageChunk(chunk) => chunk,
@@ -3039,9 +3109,23 @@ mod desktop {
             self.read_message_from_first_chunk(first)
         }
 
+        fn read_message_for_phase(&mut self, phase: &str) -> Result<ProtocolMessage, String> {
+            self.read_message()
+                .map_err(|error| phase_context_error(phase, error))
+        }
+
         fn send_artifact_chunk(&mut self, chunk: &[u8]) -> Result<(), String> {
             let plaintext = encode_artifact_chunk_frame(chunk);
             self.send_encrypted_plaintext(&plaintext)
+        }
+
+        fn send_artifact_chunk_for_phase(
+            &mut self,
+            phase: &str,
+            chunk: &[u8],
+        ) -> Result<(), String> {
+            self.send_artifact_chunk(chunk)
+                .map_err(|error| phase_context_error(phase, error))
         }
 
         fn read_artifact_transfer_frame(&mut self) -> Result<ArtifactTransferFrame, String> {
@@ -3051,6 +3135,14 @@ mod desktop {
                     .read_message_from_first_chunk(chunk)
                     .map(ArtifactTransferFrame::Message),
             }
+        }
+
+        fn read_artifact_transfer_frame_for_phase(
+            &mut self,
+            phase: &str,
+        ) -> Result<ArtifactTransferFrame, String> {
+            self.read_artifact_transfer_frame()
+                .map_err(|error| phase_context_error(phase, error))
         }
 
         fn read_message_from_first_chunk(
@@ -3296,8 +3388,9 @@ mod desktop {
                 timings.push(timer.finish());
                 return StagedRemoteImport {
                     manifests: manifests.to_vec(),
-                    plan_error: Some(format!(
-                        "Could not plan remote sync reconciliation batch: {error}"
+                    plan_error: Some(phase_context_error(
+                        "reconciliation plan",
+                        format!("Could not plan remote sync reconciliation batch: {error}"),
                     )),
                     apply_worker: None,
                     received_artifacts,
@@ -3501,7 +3594,10 @@ mod desktop {
                         "Backend apply response did not include this project.",
                     )
                 }),
-            Err(error) => failed_project_result(project_id, &error.to_string()),
+            Err(error) => failed_project_result(
+                project_id,
+                &phase_context_error("reconciliation apply", error.to_string()),
+            ),
         }
     }
 
@@ -3587,11 +3683,16 @@ mod desktop {
             Err(error) => apply_failure_results(
                 std::slice::from_ref(&staged.manifest),
                 &HashMap::new(),
-                &error.to_string(),
+                &phase_context_error("reconciliation apply", error.to_string()),
             )
             .into_iter()
             .next()
-            .unwrap_or_else(|| failed_project_result(&project_id, &error.to_string())),
+            .unwrap_or_else(|| {
+                failed_project_result(
+                    &project_id,
+                    "Sync transport reconciliation apply failed without a project result.",
+                )
+            }),
         }
     }
 
@@ -4340,16 +4441,19 @@ mod desktop {
         timings: &mut Vec<SyncTransportTimingEvidence>,
     ) -> Result<SyncTransportTransferResult, TransferFailure> {
         let timer = SyncPhaseTimer::start_artifact("artifact_transfer", artifact);
-        if let Err(error) = connection.send_message(&ProtocolMessage::ArtifactRequest {
-            artifact_id: artifact.artifact_id.clone(),
-            content_sha256: artifact.content_sha256.clone(),
-            size_bytes: artifact.size_bytes,
-        }) {
+        if let Err(error) = connection.send_message_for_phase(
+            "artifact request/transfer",
+            &ProtocolMessage::ArtifactRequest {
+                artifact_id: artifact.artifact_id.clone(),
+                content_sha256: artifact.content_sha256.clone(),
+                size_bytes: artifact.size_bytes,
+            },
+        ) {
             timings.push(timer.finish());
             return Err(transfer_failure(artifact, transfer_timer.finish(0), error));
         }
 
-        match connection.read_message() {
+        match connection.read_message_for_phase("artifact request/transfer") {
             Ok(ProtocolMessage::ArtifactStart {
                 artifact_id,
                 content_sha256,
@@ -4372,7 +4476,7 @@ mod desktop {
                 return Err(transfer_failure(
                     artifact,
                     transfer_timer.finish(0),
-                    error.message,
+                    phase_context_error("artifact request/transfer", error.message),
                 ));
             }
             Ok(other) => {
@@ -4417,7 +4521,7 @@ mod desktop {
         let mut hasher = Sha256::new();
         let mut size_bytes = 0_u64;
         let receive_result = loop {
-            match connection.read_artifact_transfer_frame() {
+            match connection.read_artifact_transfer_frame_for_phase("artifact request/transfer") {
                 Ok(ArtifactTransferFrame::Chunk(chunk)) => {
                     let next_size_bytes = size_bytes.saturating_add(chunk.len() as u64);
                     if next_size_bytes > artifact.size_bytes {
@@ -4457,7 +4561,10 @@ mod desktop {
                     break Ok(());
                 }
                 Ok(ArtifactTransferFrame::Message(ProtocolMessage::Error(error))) => {
-                    break Err(error.message);
+                    break Err(phase_context_error(
+                        "artifact request/transfer",
+                        error.message,
+                    ));
                 }
                 Ok(ArtifactTransferFrame::Message(other)) => {
                     break Err(format!(
@@ -4504,7 +4611,10 @@ mod desktop {
             return Err(transfer_failure(
                 artifact,
                 transfer_timing,
-                format!("Could not stage received sync artifact: {error}"),
+                phase_context_error(
+                    "reconciliation staging",
+                    format!("Could not stage received sync artifact: {error}"),
+                ),
             ));
         }
 
@@ -4564,7 +4674,7 @@ mod desktop {
         let offered_artifacts = offered_artifacts_by_id(offered_manifests);
         let mut served = 0_u64;
         loop {
-            match connection.read_message()? {
+            match connection.read_message_for_phase("serve artifact requests")? {
                 ProtocolMessage::ArtifactRequest {
                     artifact_id,
                     content_sha256,
@@ -4586,17 +4696,27 @@ mod desktop {
                             send_artifact_response(client, connection, artifact, metrics)
                         });
                     if let Err(error) = result {
-                        let _ = connection.send_message(&ProtocolMessage::Error(ProtocolError {
-                            code: "artifact_transfer_failed".to_string(),
-                            message: error.clone(),
-                        }));
-                        return Err(error);
+                        let peer_error =
+                            phase_context_error("artifact request/transfer", error.clone());
+                        let _ = connection.send_message_for_phase(
+                            "serve artifact requests",
+                            &ProtocolMessage::Error(ProtocolError {
+                                code: "artifact_transfer_failed".to_string(),
+                                message: peer_error,
+                            }),
+                        );
+                        return Err(phase_context_error("serve artifact requests", error));
                     }
                     served = served.saturating_add(1);
                 }
                 ProtocolMessage::PhaseDone { .. } => return Ok(served),
                 ProtocolMessage::Status { .. } => {}
-                ProtocolMessage::Error(error) => return Err(error.message),
+                ProtocolMessage::Error(error) => {
+                    return Err(phase_context_error(
+                        "serve artifact requests",
+                        error.message,
+                    ));
+                }
                 other => {
                     return Err(format!(
                         "Sync peer sent unexpected message while serving artifacts: {}",
@@ -4618,43 +4738,57 @@ mod desktop {
             percent_encode_path_segment(&artifact.artifact_id)
         );
         let mut body = client.get_body(&path).map_err(|error| {
-            format!(
-                "Could not read local artifact {}: {error}",
-                artifact.artifact_id
+            phase_context_error(
+                "artifact request/transfer",
+                format!(
+                    "Could not read local artifact {}: {error}",
+                    artifact.artifact_id
+                ),
             )
         })?;
-        connection.send_message(&ProtocolMessage::ArtifactStart {
-            artifact_id: artifact.artifact_id.clone(),
-            content_sha256: artifact.content_sha256.clone(),
-            size_bytes: artifact.size_bytes,
-        })?;
+        connection.send_message_for_phase(
+            "artifact request/transfer",
+            &ProtocolMessage::ArtifactStart {
+                artifact_id: artifact.artifact_id.clone(),
+                content_sha256: artifact.content_sha256.clone(),
+                size_bytes: artifact.size_bytes,
+            },
+        )?;
 
         let mut buffer = [0_u8; ARTIFACT_CHUNK_SIZE];
         let mut hasher = Sha256::new();
         let mut actual_size = 0_u64;
         loop {
-            let read = body
-                .read(&mut buffer)
-                .map_err(|error| format!("Could not stream local artifact bytes: {error}"))?;
+            let read = body.read(&mut buffer).map_err(|error| {
+                phase_context_error(
+                    "artifact request/transfer",
+                    format!("Could not stream local artifact bytes: {error}"),
+                )
+            })?;
             if read == 0 {
                 break;
             }
             actual_size = actual_size.saturating_add(read as u64);
             hasher.update(&buffer[..read]);
-            connection.send_artifact_chunk(&buffer[..read])?;
+            connection
+                .send_artifact_chunk_for_phase("artifact request/transfer", &buffer[..read])?;
             metrics.record_served_artifact_bytes(read as u64);
         }
 
         let actual_sha256 = hex_digest(hasher.finalize().as_slice());
         if actual_sha256 != artifact.content_sha256 || actual_size != artifact.size_bytes {
-            return Err(
+            return Err(phase_context_error(
+                "artifact request/transfer",
                 "Local artifact bytes do not match the requested SHA-256 or size.".to_string(),
-            );
+            ));
         }
-        connection.send_message(&ProtocolMessage::ArtifactEnd {
-            content_sha256: actual_sha256,
-            size_bytes: actual_size,
-        })
+        connection.send_message_for_phase(
+            "artifact request/transfer",
+            &ProtocolMessage::ArtifactEnd {
+                content_sha256: actual_sha256,
+                size_bytes: actual_size,
+            },
+        )
     }
 
     fn offered_artifacts_by_id(manifests: &[Value]) -> HashMap<String, RemoteArtifact> {
@@ -5793,6 +5927,94 @@ mod desktop {
             assert_eq!(
                 challenge.get("challenge_nonce").and_then(Value::as_str),
                 Some("remote.noise_hash")
+            );
+        }
+
+        struct RecordingPeerStream {
+            read_timeout: Duration,
+        }
+
+        impl PeerStream for RecordingPeerStream {
+            fn read_exact(&mut self, _buffer: &mut [u8]) -> io::Result<()> {
+                Ok(())
+            }
+
+            fn write_all(&mut self, _buffer: &[u8]) -> io::Result<()> {
+                Ok(())
+            }
+
+            fn set_read_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+                self.read_timeout = timeout;
+                Ok(())
+            }
+        }
+
+        #[test]
+        fn peer_stream_can_switch_to_established_read_timeout() {
+            let mut peer_stream = RecordingPeerStream {
+                read_timeout: READ_TIMEOUT,
+            };
+
+            peer_stream
+                .set_read_timeout(ESTABLISHED_READ_TIMEOUT)
+                .expect("set established timeout");
+
+            assert_eq!(peer_stream.read_timeout, ESTABLISHED_READ_TIMEOUT);
+        }
+
+        #[test]
+        fn phase_context_labels_timeout_as_stalled() {
+            let error = phase_context_error(
+                "manifest exchange",
+                "Timed out reading from Iroh sync stream.".to_string(),
+            );
+
+            assert_eq!(
+                error,
+                "Sync transport manifest exchange stalled: Timed out reading from Iroh sync stream."
+            );
+        }
+
+        #[test]
+        fn phase_context_labels_peer_manifest_errors() {
+            let error = phase_context_error(
+                "manifest exchange",
+                "Sync peer returned an error: remote manifest invalid.".to_string(),
+            );
+
+            assert_eq!(
+                error,
+                "Sync transport manifest exchange failed: Sync peer returned an error: remote manifest invalid."
+            );
+        }
+
+        #[test]
+        fn phase_context_preserves_existing_same_phase_context() {
+            let error = phase_context_error(
+                "artifact request/transfer",
+                "Sync transport artifact request/transfer failed: Could not read local artifact."
+                    .to_string(),
+            );
+
+            assert_eq!(
+                error,
+                "Sync transport artifact request/transfer failed: Could not read local artifact."
+            );
+        }
+
+        #[test]
+        fn phase_context_can_add_serve_context_to_artifact_transfer_failure() {
+            let error = phase_context_error(
+                "serve artifact requests",
+                phase_context_error(
+                    "artifact request/transfer",
+                    "Could not read local artifact.".to_string(),
+                ),
+            );
+
+            assert_eq!(
+                error,
+                "Sync transport serve artifact requests failed: Sync transport artifact request/transfer failed: Could not read local artifact."
             );
         }
 

@@ -180,7 +180,9 @@ def stem_model_availability(model_id: str) -> StemModelAvailability:
 
     repo = configured_stem_model_repo()
     if repo is None:
-        return StemModelAvailability(False, "Bundled Demucs model repo is not configured")
+        if importlib.util.find_spec("demucs") is None:
+            return StemModelAvailability(False, "Demucs is not installed")
+        return StemModelAvailability(True)
     if not repo.is_dir():
         return StemModelAvailability(False, f"Bundled Demucs model repo is missing: {repo}")
 

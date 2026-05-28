@@ -10,6 +10,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,7 +19,7 @@ const scriptDir = path.dirname(__filename);
 const workspaceRoot = path.resolve(scriptDir, "..");
 const demucsRoot = path.join(workspaceRoot, "packaging", "demucs");
 const manifestPath = path.join(demucsRoot, "models.json");
-const defaultCacheRoot = path.join(demucsRoot, "cache");
+const defaultCacheRoot = defaultTorchCheckpointCacheRoot();
 export const defaultPreparedModelRoot = path.join(
   workspaceRoot,
   "apps",
@@ -29,6 +30,26 @@ export const defaultPreparedModelRoot = path.join(
   "models",
   "demucs",
 );
+
+function expandHome(value) {
+  if (value === "~") {
+    return homedir();
+  }
+  if (value.startsWith("~/")) {
+    return path.join(homedir(), value.slice(2));
+  }
+  return value;
+}
+
+function defaultTorchCheckpointCacheRoot() {
+  if (process.env.TORCH_HOME) {
+    return path.join(path.resolve(expandHome(process.env.TORCH_HOME)), "hub", "checkpoints");
+  }
+  if (process.env.XDG_CACHE_HOME) {
+    return path.join(path.resolve(expandHome(process.env.XDG_CACHE_HOME)), "torch", "hub", "checkpoints");
+  }
+  return path.join(homedir(), ".cache", "torch", "hub", "checkpoints");
+}
 
 function modelMode(modelId) {
   if (modelId === "htdemucs_6s") {

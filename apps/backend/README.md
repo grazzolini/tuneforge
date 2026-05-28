@@ -141,7 +141,7 @@ All configuration is environment-driven (see [`app/config.py`](./app/config.py))
 | `TUNEFORGE_FFPROBE_PATH` | `ffprobe` | Override the `ffprobe` binary location. |
 | `TUNEFORGE_STEM_MODEL` | `htdemucs_6s` | Default Demucs model used for stem separation. |
 | `TUNEFORGE_STEM_DEVICE` | `auto` | One of `auto`, `cpu`, `mps`, `cuda`. `auto` prefers compatible CUDA, then MPS, then CPU. |
-| `TUNEFORGE_DEMUCS_MODEL_REPO` | unset | Local Demucs model repo containing packaged `.yaml` and `.th` files. `pnpm setup:dev` and packaged desktop builds set this automatically so stem weights are never downloaded at runtime. |
+| `TUNEFORGE_DEMUCS_MODEL_REPO` | unset | Optional local Demucs model repo containing packaged `.yaml` and `.th` files. When unset, Demucs uses the Torch checkpoint cache. Packaged desktop builds set this to the bundled repo so stem weights are never downloaded at runtime. |
 | `TUNEFORGE_LYRICS_MODEL` | `turbo` | Whisper model used for lyrics generation. |
 | `TUNEFORGE_LYRICS_DEVICE` | `auto` | One of `auto`, `cpu`, `mps`, `cuda`. `auto` prefers compatible CUDA, then MPS, then CPU. |
 | `TUNEFORGE_LYRICS_CACHE_DIR` | `<data>/cache/lyrics` | Override where Whisper model weights are cached. |
@@ -153,7 +153,7 @@ Default data directory:
 - macOS: `~/Library/Application Support/Tuneforge`
 - Linux: `~/.local/share/tuneforge`
 
-Lyrics models are downloaded on demand into the lyrics cache directory, then reused offline on later runs. Stem generation does not use Demucs runtime downloads; run `pnpm models:demucs:prepare`, configure `TUNEFORGE_DEMUCS_MODEL_REPO`, or use a packaged desktop build.
+Lyrics models are downloaded on demand into the lyrics cache directory, then reused offline on later runs. In development, `pnpm setup:dev` preloads Demucs weights into the Torch checkpoint cache; if they are not preloaded, the first stem generation may download them through Demucs. The Torch cache path is `$TORCH_HOME/hub/checkpoints` when `TORCH_HOME` is set, `$XDG_CACHE_HOME/torch/hub/checkpoints` when `XDG_CACHE_HOME` is set, or `~/.cache/torch/hub/checkpoints` by default. Packaged desktop builds and explicit `TUNEFORGE_DEMUCS_MODEL_REPO` configurations use a local verified repo instead.
 
 ## Chord backends
 

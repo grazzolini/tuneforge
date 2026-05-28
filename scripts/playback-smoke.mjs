@@ -1,55 +1,199 @@
 #!/usr/bin/env node
 
 import process from "node:process";
+import net from "node:net";
+import { spawn } from "node:child_process";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
 const desktopRequire = createRequire(new URL("../apps/desktop/package.json", import.meta.url));
+const repoRoot = fileURLToPath(new URL("../", import.meta.url));
+const DEFAULT_MANUAL_APP_URL = "http://127.0.0.1:1420";
+const DEFAULT_STARTUP_TIMEOUT_MS = 45_000;
+const CHILD_TAIL_LINES = 40;
 
-const appUrl = process.env.TUNEFORGE_SMOKE_APP_URL || "http://127.0.0.1:1420";
-const projectId = readOption("project-id") || process.env.TUNEFORGE_SMOKE_PROJECT_ID || "";
-const projectName = readOption("project-name") || process.env.TUNEFORGE_SMOKE_PROJECT_NAME || "";
-const run = process.argv.includes("--run");
-const headed = process.argv.includes("--headed");
+try {
+  await main();
+} catch (error) {
+  console.error(`[playback-smoke] ${errorMessage(error)}`);
+  process.exitCode = 1;
+}
 
-if (!run) {
+async function main() {
+  const options = parseOptions(process.argv.slice(2));
+  if (!options.run) {
+    printScaffold();
+    return;
+  }
+
+  if (options.manualApp) {
+    await runManualSmoke(options);
+    return;
+  }
+
+  if (options.projectId) {
+    throw new Error(
+      [
+        "Isolated playback smoke creates its own fixture project.",
+        'Use manual mode for an existing project: pnpm --filter @tuneforge/desktop test:e2e -- --run --manual-app --project-id="<id>"',
+      ].join("\n"),
+    );
+  }
+
+  await runIsolatedSmoke(options);
+}
+
+function printScaffold() {
   console.log("[playback-smoke] Local smoke scaffold is available.");
-  console.log("Start the desktop dev frontend, then run:");
+  console.log("Run isolated smoke with generated fixture data:");
+  console.log("  pnpm --filter @tuneforge/desktop test:e2e -- --run");
+  console.log("Run against an existing personal library app:");
   console.log(
-    '  pnpm --filter @tuneforge/desktop test:e2e -- --run --project-name="Demo Song"',
+    '  pnpm --filter @tuneforge/desktop test:e2e -- --run --manual-app --project-name="Demo Song"',
   );
-  process.exit(0);
 }
 
-if (!projectId && !projectName) {
-  console.error(
-    "[playback-smoke] Missing --project-name/--project-id or TUNEFORGE_SMOKE_PROJECT_NAME/TUNEFORGE_SMOKE_PROJECT_ID.",
-  );
-  process.exit(1);
+async function runManualSmoke(options) {
+  if (!options.projectId && !options.projectName) {
+    throw new Error(
+      [
+        "Manual app smoke requires --project-id or --project-name.",
+        'Example: pnpm --filter @tuneforge/desktop test:e2e -- --run --manual-app --project-name="Demo Song"',
+      ].join("\n"),
+    );
+  }
+
+  await runSmoke({
+    appUrl: options.appUrl,
+    projectId: options.projectId,
+    projectName: options.projectName,
+    headed: options.headed,
+    requireTelemetry: false,
+  });
 }
 
-let chromium;
-try {
-  ({ chromium } = desktopRequire("playwright"));
-} catch {
-  console.error("[playback-smoke] Playwright is not installed locally.");
-  console.error("  pnpm setup:dev");
-  console.error("or:");
-  console.error("  pnpm install");
-  console.error("  pnpm --filter @tuneforge/desktop exec playwright install chromium");
-  process.exit(1);
+async function runIsolatedSmoke(options) {
+  const appPort = await selectPort(options.appPort, new Set(), "desktop dev server");
+  const backendPort = await selectPort(options.backendPort, new Set([appPort]), "backend");
+  const tempRoot = await mkdtemp(join(tmpdir(), "tuneforge-playback-smoke-"));
+  const dataDir = join(tempRoot, "data");
+  const workDir = join(tempRoot, "work");
+  const children = [];
+  let fixture = null;
+
+  try {
+    await mkdir(dataDir, { recursive: true });
+    await mkdir(workDir, { recursive: true });
+    logStep(`Using temp root ${tempRoot}.`);
+    fixture = await createPlaybackFixture({ dataDir, workDir, projectName: options.projectName });
+    logStep(
+      `Seeded fixture project ${fixture.project_id} (${fixture.project_name ?? "unnamed"}) in ${dataDir}.`,
+    );
+
+    const backendUrl = `http://127.0.0.1:${backendPort}`;
+    const appUrl = `http://127.0.0.1:${appPort}`;
+    const backend = startChild("backend", "bash", [
+      "scripts/run-backend-module.sh",
+      "uvicorn",
+      "app.main:app",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      String(backendPort),
+    ], {
+      TUNEFORGE_DATA_DIR: dataDir,
+      TUNEFORGE_HOST: "127.0.0.1",
+      TUNEFORGE_PORT: String(backendPort),
+      TUNEFORGE_ADDITIONAL_CORS_ORIGINS: appUrl,
+      PYTHONUNBUFFERED: "1",
+    });
+    children.push(backend);
+    await waitForHttp(`${backendUrl}/api/v1/health`, {
+      label: "backend health",
+      child: backend,
+      timeoutMs: DEFAULT_STARTUP_TIMEOUT_MS,
+    });
+    logStep(`Backend ready on ${backendUrl}.`);
+
+    const app = startChild("desktop dev server", "pnpm", [
+      "--filter",
+      "@tuneforge/desktop",
+      "dev",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      String(appPort),
+      "--strictPort",
+    ], {
+      VITE_API_BASE_URL: backendUrl,
+    });
+    children.push(app);
+    await waitForHttp(appUrl, {
+      label: "desktop dev server",
+      child: app,
+      timeoutMs: DEFAULT_STARTUP_TIMEOUT_MS,
+    });
+    logStep(`Desktop dev server ready on ${appUrl}.`);
+
+    const fixturePath = fixture.app_url_path || `/#/projects/${fixture.project_id}`;
+    await runSmoke({
+      appUrl,
+      projectId: fixture.project_id,
+      projectName: fixture.project_name ?? "",
+      projectUrl: appendAppPath(appUrl, fixturePath),
+      headed: options.headed,
+      requireTelemetry: true,
+    });
+  } finally {
+    await stopChildren(children);
+    if (options.keepArtifacts) {
+      logStep(`Kept artifacts at ${tempRoot}.`);
+    } else {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  }
 }
 
-const browser = await chromium.launch({ headless: !headed });
+async function runSmoke({
+  appUrl,
+  projectId,
+  projectName,
+  projectUrl = "",
+  headed,
+  requireTelemetry = false,
+}) {
+  let chromium;
+  try {
+    ({ chromium } = desktopRequire("playwright"));
+  } catch {
+    throw new Error(
+      [
+        "Playwright is not installed locally.",
+        "  pnpm setup:dev",
+        "or:",
+        "  pnpm install",
+        "  pnpm --filter @tuneforge/desktop exec playwright install chromium",
+      ].join("\n"),
+    );
+  }
 
-try {
+  const browser = await chromium.launch({ headless: !headed });
+
+  try {
   const page = await browser.newPage();
   logStep(
-    `Running ${headed ? "headed" : "headless"} smoke against ${appUrl} (${projectId ? `project ${projectId}` : `project "${projectName}"`}).`,
+    `Running ${headed ? "headed" : "headless"} smoke against ${projectUrl || appUrl} (${projectId ? `project ${projectId}` : `project "${projectName}"`}).`,
   );
-  await openProject(page, { appUrl, projectId, projectName });
+  await openProject(page, { appUrl, projectId, projectName, projectUrl });
   await page.getByRole("heading", { name: /.+/ }).first().waitFor();
   logStep("Project opened.");
   await openPlayback(page);
+  if (requireTelemetry) {
+    await assertPlaybackE2EBridge(page);
+  }
   await resetSmokePlaybackState(page);
 
   const durationSeconds = await readPlaybackDuration(page);
@@ -80,6 +224,7 @@ try {
     expectedKind: "song-start",
     expectedStartSeconds: 0,
     label: "song-start pre-count",
+    requireTelemetry,
   });
   await page.getByRole("button", { name: "Pause playback" }).waitFor({ timeout: 5000 });
   await page.getByRole("button", { name: "Stop playback" }).click();
@@ -122,6 +267,7 @@ try {
     expectedKind: "loop-start",
     expectedStartSeconds: loopStartSeconds,
     label: "loop pre-count",
+    requireTelemetry,
   });
   if (loopCountInTelemetryAsserted) {
     logStep("Loop pre-count telemetry passed.");
@@ -132,6 +278,7 @@ try {
     expectedLoopStartSeconds: loopStartSeconds,
     expectedState: "playing",
     label: "loop playback",
+    requireTelemetry,
   });
   await page.getByRole("button", { name: "Pause playback" }).click();
   await page.getByRole("button", { name: "Play playback" }).click();
@@ -140,16 +287,389 @@ try {
   await expectPosition(page, loopStartSeconds, "after stop with active loop");
   logStep("Play, pause, resume, and stop passed.");
   logStep("Passed.");
-} catch (error) {
-  console.error(`[playback-smoke] ${errorMessage(error)}`);
-  process.exitCode = 1;
 } finally {
   await browser.close();
 }
+}
 
-function readOption(name) {
-  const prefix = `--${name}=`;
-  return process.argv.find((arg) => arg.startsWith(prefix))?.slice(prefix.length) ?? "";
+function parseOptions(argv) {
+  const parsed = parseCliArgs(argv);
+  const manualApp = readFlag(parsed, "manual-app");
+  const projectId = readStringOption(parsed, "project-id")
+    || (manualApp ? process.env.TUNEFORGE_SMOKE_PROJECT_ID || "" : "");
+  const projectName = readStringOption(parsed, "project-name")
+    || process.env.TUNEFORGE_SMOKE_PROJECT_NAME
+    || "";
+
+  return {
+    run: readFlag(parsed, "run"),
+    manualApp,
+    keepArtifacts: readFlag(parsed, "keep-artifacts"),
+    headed: readFlag(parsed, "headed"),
+    backendPort: readPortOption(parsed, "backend-port"),
+    appPort: readPortOption(parsed, "app-port"),
+    appUrl: readStringOption(parsed, "app-url")
+      || process.env.TUNEFORGE_SMOKE_APP_URL
+      || DEFAULT_MANUAL_APP_URL,
+    projectId,
+    projectName,
+  };
+}
+
+function parseCliArgs(argv) {
+  const flags = new Set();
+  const values = new Map();
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (!arg.startsWith("--")) {
+      continue;
+    }
+
+    const body = arg.slice(2);
+    const equalsIndex = body.indexOf("=");
+    if (equalsIndex >= 0) {
+      values.set(body.slice(0, equalsIndex), body.slice(equalsIndex + 1));
+      continue;
+    }
+
+    const next = argv[index + 1];
+    if (next && !next.startsWith("--")) {
+      values.set(body, next);
+      index += 1;
+      continue;
+    }
+
+    flags.add(body);
+  }
+
+  return { flags, values };
+}
+
+function readFlag(parsed, name) {
+  if (parsed.flags.has(name)) {
+    return true;
+  }
+  const value = parsed.values.get(name);
+  return value === "true" || value === "1";
+}
+
+function readStringOption(parsed, name) {
+  return parsed.values.get(name)?.trim() ?? "";
+}
+
+function readPortOption(parsed, name) {
+  const value = readStringOption(parsed, name);
+  return value ? parsePort(value, name) : null;
+}
+
+function parsePort(value, name) {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`Invalid --${name} value "${value}". Expected TCP port 1-65535.`);
+  }
+  return port;
+}
+
+async function selectPort(preferredPort, excludedPorts, label) {
+  if (preferredPort !== null) {
+    if (excludedPorts.has(preferredPort)) {
+      throw new Error(`Port ${preferredPort} conflicts with another smoke process port.`);
+    }
+    await assertPortAvailable(preferredPort, label);
+    return preferredPort;
+  }
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const port = await getFreePort();
+    if (!excludedPorts.has(port) && port !== 8765 && port !== 1420) {
+      return port;
+    }
+  }
+
+  throw new Error("Could not allocate a free local port for isolated playback smoke.");
+}
+
+async function getFreePort() {
+  const server = net.createServer();
+  server.unref();
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      server.close(() => {
+        if (address && typeof address === "object") {
+          resolve(address.port);
+          return;
+        }
+        reject(new Error("Could not inspect allocated local port."));
+      });
+    });
+  });
+}
+
+async function assertPortAvailable(port, label) {
+  const server = net.createServer();
+  server.unref();
+  const available = await new Promise((resolve) => {
+    server.once("error", () => resolve(false));
+    server.listen(port, "127.0.0.1", () => {
+      server.close(() => resolve(true));
+    });
+  });
+
+  if (!available) {
+    throw new Error(
+      [
+        `Port ${port} is already in use for the ${label}.`,
+        `Pass --${label === "backend" ? "backend" : "app"}-port=<free-port> or use --manual-app against a pre-running app.`,
+      ].join("\n"),
+    );
+  }
+}
+
+async function createPlaybackFixture({ dataDir, workDir, projectName }) {
+  const args = [
+    "scripts/run-backend-module.sh",
+    "app.cli.playback_e2e_fixture",
+    "create",
+    "--data-dir",
+    dataDir,
+    "--work-dir",
+    workDir,
+  ];
+  if (projectName) {
+    args.push("--project-name", projectName);
+  }
+
+  const result = await runCommand("fixture seed", "bash", args, {
+    env: {
+      TUNEFORGE_DATA_DIR: dataDir,
+      PYTHONUNBUFFERED: "1",
+    },
+    timeoutMs: DEFAULT_STARTUP_TIMEOUT_MS,
+  });
+  const fixture = parseJsonOutput(result.stdout, "fixture seed");
+
+  if (!fixture || typeof fixture !== "object" || typeof fixture.project_id !== "string") {
+    throw new Error("Fixture seed did not return JSON with project_id.");
+  }
+  return fixture;
+}
+
+function parseJsonOutput(stdout, label) {
+  const trimmed = stdout.trim();
+  if (!trimmed) {
+    throw new Error(`${label} did not write JSON to stdout.`);
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const lines = trimmed.split(/\r?\n/).reverse();
+    for (const line of lines) {
+      try {
+        return JSON.parse(line);
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  throw new Error(`${label} stdout was not valid JSON:\n${trimmed}`);
+}
+
+async function runCommand(label, command, args, { env = {}, timeoutMs = DEFAULT_STARTUP_TIMEOUT_MS } = {}) {
+  const child = spawn(command, args, {
+    cwd: repoRoot,
+    env: { ...process.env, ...env },
+    stdio: ["ignore", "pipe", "pipe"],
+    detached: process.platform !== "win32",
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout?.on("data", (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr?.on("data", (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    killChild(child, "SIGTERM");
+  }, timeoutMs);
+
+  const exit = await new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code, signal) => resolve({ code, signal }));
+  }).finally(() => clearTimeout(timeout));
+
+  if (timedOut) {
+    killChild(child, "SIGKILL");
+    throw new Error(`${label} timed out after ${timeoutMs}ms.\n${stderr.trim()}`);
+  }
+  if (exit.code !== 0) {
+    throw new Error(
+      [
+        `${label} failed with exit code ${exit.code ?? "null"}${exit.signal ? ` signal ${exit.signal}` : ""}.`,
+        stderr.trim(),
+      ].filter(Boolean).join("\n"),
+    );
+  }
+
+  return { stdout, stderr };
+}
+
+function startChild(label, command, args, env = {}) {
+  const child = spawn(command, args, {
+    cwd: repoRoot,
+    env: { ...process.env, ...env },
+    stdio: ["ignore", "pipe", "pipe"],
+    detached: process.platform !== "win32",
+  });
+  const handle = {
+    label,
+    child,
+    tail: [],
+    spawnError: null,
+    exit: null,
+    exitPromise: null,
+  };
+
+  handle.exitPromise = new Promise((resolve) => {
+    let settled = false;
+    const finish = (exit) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      handle.exit = exit;
+      resolve(exit);
+    };
+
+    child.once("error", (error) => {
+      handle.spawnError = error;
+      pushChildTail(handle, error.message);
+      finish({ code: null, signal: null });
+    });
+    child.once("exit", (code, signal) => finish({ code, signal }));
+  });
+
+  child.stdout?.on("data", (chunk) => pushChildTail(handle, chunk.toString()));
+  child.stderr?.on("data", (chunk) => pushChildTail(handle, chunk.toString()));
+  return handle;
+}
+
+async function waitForHttp(url, { label, child, timeoutMs }) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = "";
+
+  while (Date.now() <= deadline) {
+    throwIfChildExited(child, label);
+    try {
+      const response = await fetch(url, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(1500),
+      });
+      if (response.ok) {
+        return;
+      }
+      lastError = `${response.status} ${response.statusText}`;
+    } catch (error) {
+      lastError = errorMessage(error);
+    }
+
+    await delay(250);
+  }
+
+  throw new Error(
+    [
+      `Timed out waiting for ${label} at ${url}.`,
+      lastError ? `Last error: ${lastError}` : "",
+      formatChildTail(child),
+    ].filter(Boolean).join("\n"),
+  );
+}
+
+function throwIfChildExited(handle, label) {
+  if (handle.spawnError) {
+    throw new Error(`${label} failed to start: ${handle.spawnError.message}`);
+  }
+  if (handle.exit) {
+    throw new Error(
+      [
+        `${label} exited before becoming ready with code ${handle.exit.code ?? "null"}${handle.exit.signal ? ` signal ${handle.exit.signal}` : ""}.`,
+        formatChildTail(handle),
+      ].filter(Boolean).join("\n"),
+    );
+  }
+}
+
+async function stopChildren(children) {
+  await Promise.all(children.slice().reverse().map((child) => stopChild(child)));
+}
+
+async function stopChild(handle) {
+  if (handle.exit || !handle.child.pid) {
+    return;
+  }
+
+  killChild(handle.child, "SIGTERM");
+  await Promise.race([handle.exitPromise, delay(3000)]);
+  if (!handle.exit) {
+    killChild(handle.child, "SIGKILL");
+    await Promise.race([handle.exitPromise, delay(1000)]);
+  }
+}
+
+function killChild(child, signal) {
+  if (!child.pid) {
+    return;
+  }
+
+  try {
+    if (process.platform !== "win32") {
+      process.kill(-child.pid, signal);
+      return;
+    }
+  } catch {
+    // Fall through to direct child kill.
+  }
+
+  try {
+    child.kill(signal);
+  } catch {
+    // Process already exited.
+  }
+}
+
+function pushChildTail(handle, output) {
+  const lines = output.split(/\r?\n/).filter(Boolean);
+  handle.tail.push(...lines);
+  if (handle.tail.length > CHILD_TAIL_LINES) {
+    handle.tail.splice(0, handle.tail.length - CHILD_TAIL_LINES);
+  }
+}
+
+function formatChildTail(handle) {
+  if (!handle?.tail?.length) {
+    return "";
+  }
+  return `${handle.label} output:\n${handle.tail.join("\n")}`;
+}
+
+function appendAppPath(appUrl, path) {
+  const base = appUrl.replace(/\/$/, "");
+  if (!path) {
+    return base;
+  }
+  return `${base}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function logStep(message) {
@@ -160,10 +680,15 @@ function formatSeconds(value) {
   return `${value.toFixed(3)}s`;
 }
 
-async function openProject(page, { appUrl, projectId, projectName }) {
+async function openProject(page, { appUrl, projectId, projectName, projectUrl = "" }) {
+  if (projectUrl) {
+    await gotoApp(page, projectUrl);
+    return;
+  }
+
   const baseUrl = appUrl.replace(/\/$/, "");
   if (projectId) {
-    await gotoApp(page, `${baseUrl}/projects/${projectId}`);
+    await gotoApp(page, appendAppPath(baseUrl, `/#/projects/${projectId}`));
     return;
   }
 
@@ -307,6 +832,23 @@ async function readPlaybackE2EState(page) {
     const value = bridge.read();
     return value && typeof value.then === "function" ? await value : value;
   });
+}
+
+async function assertPlaybackE2EBridge(page) {
+  const telemetry = await readPlaybackE2EDiagnostic(page);
+  if (!telemetry.available) {
+    throw new Error(
+      "Isolated playback smoke requires window.__TUNEFORGE_PLAYBACK_E2E__.read(), but the bridge was unavailable.",
+    );
+  }
+  if (telemetry.error) {
+    throw new Error(`Playback E2E telemetry bridge read failed: ${telemetry.error}`);
+  }
+  if (!telemetry.snapshot || typeof telemetry.snapshot !== "object") {
+    throw new Error(
+      `Playback E2E telemetry bridge returned no snapshot: ${formatTelemetryState(telemetry.snapshot)}.`,
+    );
+  }
 }
 
 async function waitForPlaybackStartFromSelection(page, minimumPositionSeconds, label, options = {}) {
@@ -468,6 +1010,7 @@ function formatDiagnosticValue(value) {
 async function waitForPlaybackE2EState(page, label, predicate, options = {}) {
   const timeout = options.timeout ?? 3500;
   const pollInterval = options.pollInterval ?? 100;
+  const requireTelemetry = options.requireTelemetry === true;
   const deadline = Date.now() + timeout;
   let lastState = null;
   let bridgeWasAvailable = false;
@@ -485,6 +1028,10 @@ async function waitForPlaybackE2EState(page, label, predicate, options = {}) {
   }
 
   if (!bridgeWasAvailable) {
+    const message = `${label} telemetry bridge unavailable. Isolated playback smoke requires window.__TUNEFORGE_PLAYBACK_E2E__.read().`;
+    if (requireTelemetry) {
+      throw new Error(message);
+    }
     logStep(`Skipped ${label}; playback E2E telemetry bridge unavailable.`);
     return null;
   }
@@ -494,7 +1041,10 @@ async function waitForPlaybackE2EState(page, label, predicate, options = {}) {
   );
 }
 
-async function assertCountInTelemetry(page, { expectedKind, expectedStartSeconds, label }) {
+async function assertCountInTelemetry(
+  page,
+  { expectedKind, expectedStartSeconds, label, requireTelemetry = false },
+) {
   const scheduledState = await waitForPlaybackE2EState(
     page,
     `${label} schedule`,
@@ -510,7 +1060,7 @@ async function assertCountInTelemetry(page, { expectedKind, expectedStartSeconds
       }
       return true;
     },
-    { timeout: 2500 },
+    { timeout: 2500, requireTelemetry },
   );
   if (!scheduledState) {
     return false;
@@ -568,7 +1118,7 @@ async function assertCountInTelemetry(page, { expectedKind, expectedStartSeconds
       const firedSequence = firstNumberField(fired, ["sequence"]);
       return scheduledSequence === null || firedSequence === null || firedSequence === scheduledSequence;
     },
-    { timeout: 5000 },
+    { timeout: 5000, requireTelemetry },
   );
   if (!firedState) {
     return false;
@@ -593,13 +1143,13 @@ async function assertCountInTelemetry(page, { expectedKind, expectedStartSeconds
 
 async function assertPlaybackTransportTelemetry(
   page,
-  { expectedLoopEndSeconds, expectedLoopStartSeconds, expectedState, label },
+  { expectedLoopEndSeconds, expectedLoopStartSeconds, expectedState, label, requireTelemetry = false },
 ) {
   const state = await waitForPlaybackE2EState(
     page,
     `${label} transport`,
     (candidate) => isNativePlaybackActive(candidate) || isWebPlaybackActive(candidate),
-    { timeout: 2500 },
+    { timeout: 2500, requireTelemetry },
   );
   if (!state) {
     return;

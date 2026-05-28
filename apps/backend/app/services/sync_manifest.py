@@ -31,7 +31,7 @@ from app.schemas import SUPPORTED_LYRICS_LANGUAGE_OVERRIDES
 from app.services.artifacts import register_artifact
 from app.services.paths import ensure_project_dirs, project_root
 from app.services.sync_identity import source_hash_to_project_id
-from app.services.sync_metadata import project_relative_artifact_path, sanitize_sync_metadata
+from app.services.sync_metadata import artifact_sync_metadata, project_relative_artifact_path, sanitize_sync_metadata
 from app.services.sync_project_status import mark_project_sync_local
 from app.services.sync_revisions import (
     CURRENT_REVISION_STATE,
@@ -685,7 +685,7 @@ def _export_artifact_manifest(artifact: Artifact) -> SyncArtifactManifest:
         can_delete=artifact.can_delete,
         can_regenerate=artifact.can_regenerate,
         cache_key=artifact.cache_key,
-        metadata=cast(dict[str, Any], sanitize_sync_metadata(artifact.metadata_json or {})),
+        metadata=artifact_sync_metadata(artifact),
         created_at=artifact.created_at,
     )
 

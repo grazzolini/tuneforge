@@ -632,6 +632,103 @@ def test_export_project_manifest_omits_local_paths_and_includes_sync_safe_fields
     }
 
 
+def test_export_project_manifest_includes_analysis_divergence_metadata(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    del client
+    export_manifest, _ = _sync_manifest_services()
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        analysis_path = fixture.root / "analysis" / "analysis.json"
+        analysis_metadata = {
+            "analysis_generated_at": "2026-01-02T03:04:05+00:00",
+            "analysis_backend": "beat-this",
+            "analysis_version": "v3",
+            "source_artifact_id": "art_source_audio",
+            "source_artifact_sha256": fixture.artifact_hashes["art_source_audio"],
+            "source_stem_artifact_ids": ["art_vocals"],
+            "source_stem_content_sha256s": [fixture.artifact_hashes["art_vocals"]],
+        }
+        analysis_payload = {"project_id": fixture.project_id, **analysis_metadata}
+        analysis_hash, analysis_size = _write_bytes(
+            analysis_path,
+            json.dumps(analysis_payload, sort_keys=True).encode("utf-8"),
+        )
+        session.add(
+            Artifact(
+                id="art_analysis_json",
+                project_id=fixture.project_id,
+                type="analysis_json",
+                format="json",
+                path=str(analysis_path),
+                content_sha256=analysis_hash,
+                size_bytes=analysis_size,
+                generated_by="analysis",
+                can_delete=True,
+                can_regenerate=True,
+                metadata_json={
+                    **analysis_metadata,
+                    "source_path": str(tmp_path / "local-source.wav"),
+                },
+            )
+        )
+        session.commit()
+
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+
+    analysis_artifact = _artifacts_by_id(manifest)["art_analysis_json"]
+    assert analysis_artifact["relative_path"] == "analysis/analysis.json"
+    assert analysis_artifact["content_sha256"] == analysis_hash
+    assert analysis_artifact["metadata"] == analysis_metadata
+
+
+def test_export_project_manifest_backfills_analysis_generated_at_from_file_mtime(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    del client
+    export_manifest, _ = _sync_manifest_services()
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        analysis_path = fixture.root / "analysis" / "analysis.json"
+        analysis_metadata = {
+            "analysis_backend": "beat-this",
+            "analysis_version": "v3",
+            "source_artifact_id": "art_source_audio",
+            "source_artifact_sha256": fixture.artifact_hashes["art_source_audio"],
+        }
+        analysis_hash, analysis_size = _write_bytes(
+            analysis_path,
+            json.dumps({"project_id": fixture.project_id, **analysis_metadata}).encode("utf-8"),
+        )
+        generated_at = datetime.fromtimestamp(analysis_path.stat().st_mtime, UTC).isoformat()
+        session.add(
+            Artifact(
+                id="art_legacy_analysis_json",
+                project_id=fixture.project_id,
+                type="analysis_json",
+                format="json",
+                path=str(analysis_path),
+                content_sha256=analysis_hash,
+                size_bytes=analysis_size,
+                generated_by="analysis",
+                can_delete=True,
+                can_regenerate=True,
+                metadata_json=analysis_metadata,
+            )
+        )
+        session.commit()
+
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+
+    analysis_artifact = _artifacts_by_id(manifest)["art_legacy_analysis_json"]
+    assert analysis_artifact["metadata"] == {
+        **analysis_metadata,
+        "analysis_generated_at": generated_at,
+    }
+
+
 def test_export_project_manifest_includes_entity_revisions_without_local_paths(
     client: object,
     tmp_path: Path,

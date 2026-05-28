@@ -135,6 +135,7 @@ All configuration is environment-driven (see [`app/config.py`](./app/config.py))
 | --- | --- | --- |
 | `TUNEFORGE_HOST` | `127.0.0.1` | Bind address. **Do not change to a public address.** |
 | `TUNEFORGE_PORT` | `8765` | Bind port. |
+| `TUNEFORGE_ADDITIONAL_CORS_ORIGINS` | unset | Comma-separated local HTTP origins to allow in addition to the desktop defaults. Only `http://127.0.0.1:<port>` and `http://localhost:<port>` are accepted. |
 | `TUNEFORGE_DATA_DIR` | OS-specific | Override for the data directory (database, projects, cache). |
 | `TUNEFORGE_FFMPEG_PATH` | `ffmpeg` | Override the `ffmpeg` binary location. |
 | `TUNEFORGE_FFPROBE_PATH` | `ffprobe` | Override the `ffprobe` binary location. |

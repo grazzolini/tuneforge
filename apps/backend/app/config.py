@@ -5,6 +5,7 @@ import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 def _default_data_root() -> Path:
@@ -41,6 +42,7 @@ class Settings:
     lyrics_cache_dir: Path
     default_chord_backend: str
     runtime_platform: str
+    additional_cors_origins: tuple[str, ...]
     max_workers: int
     backend_root: Path
 
@@ -85,6 +87,9 @@ def get_settings() -> Settings:
         lyrics_cache_dir=Path(os.environ.get("TUNEFORGE_LYRICS_CACHE_DIR", str(cache_root / "lyrics"))),
         default_chord_backend=os.environ.get("TUNEFORGE_DEFAULT_CHORD_BACKEND", "tuneforge-fast"),
         runtime_platform=os.environ.get("TUNEFORGE_RUNTIME_PLATFORM", "desktop").strip().lower(),
+        additional_cors_origins=_parse_additional_cors_origins(
+            os.environ.get("TUNEFORGE_ADDITIONAL_CORS_ORIGINS", "")
+        ),
         max_workers=1,
         backend_root=backend_root,
     )
@@ -96,3 +101,32 @@ def ensure_data_dirs(settings: Settings | None = None) -> None:
     current.projects_root.mkdir(parents=True, exist_ok=True)
     current.cache_root.mkdir(parents=True, exist_ok=True)
     current.lyrics_cache_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _parse_additional_cors_origins(value: str) -> tuple[str, ...]:
+    origins: list[str] = []
+    for raw_origin in value.split(","):
+        origin = raw_origin.strip().rstrip("/")
+        if not origin:
+            continue
+        if not _is_loopback_http_origin(origin):
+            raise ValueError(
+                "TUNEFORGE_ADDITIONAL_CORS_ORIGINS only accepts http://127.0.0.1:<port> "
+                "or http://localhost:<port> origins."
+            )
+        if origin not in origins:
+            origins.append(origin)
+    return tuple(origins)
+
+
+def _is_loopback_http_origin(origin: str) -> bool:
+    parsed = urlparse(origin)
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
+        return False
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    if port is None:
+        return False
+    return not parsed.path and not parsed.params and not parsed.query and not parsed.fragment

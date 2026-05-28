@@ -26,6 +26,12 @@ from app.services.jobs import InProcessJobRunner
 
 logger = logging.getLogger("tuneforge.startup")
 
+DEFAULT_CORS_ORIGINS = (
+    "http://127.0.0.1:1420",
+    "http://localhost:1420",
+    "tauri://localhost",
+)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -48,14 +54,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Tuneforge API", version=__version__, lifespan=lifespan)
+settings = get_settings()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://127.0.0.1:1420",
-        "http://localhost:1420",
-        "tauri://localhost",
-    ],
+    allow_origins=[*DEFAULT_CORS_ORIGINS, *settings.additional_cors_origins],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -80,11 +83,11 @@ async def validation_error_handler(_: Request, exc: RequestValidationError) -> J
     return JSONResponse(status_code=422, content=payload.model_dump())
 
 
-app.include_router(health_router, prefix=get_settings().api_prefix)
-app.include_router(beat_backends_router, prefix=get_settings().api_prefix)
-app.include_router(chord_backends_router, prefix=get_settings().api_prefix)
-app.include_router(stem_models_router, prefix=get_settings().api_prefix)
-app.include_router(projects_router, prefix=get_settings().api_prefix)
-app.include_router(jobs_router, prefix=get_settings().api_prefix)
-app.include_router(artifacts_router, prefix=get_settings().api_prefix)
-app.include_router(sync_router, prefix=get_settings().api_prefix)
+app.include_router(health_router, prefix=settings.api_prefix)
+app.include_router(beat_backends_router, prefix=settings.api_prefix)
+app.include_router(chord_backends_router, prefix=settings.api_prefix)
+app.include_router(stem_models_router, prefix=settings.api_prefix)
+app.include_router(projects_router, prefix=settings.api_prefix)
+app.include_router(jobs_router, prefix=settings.api_prefix)
+app.include_router(artifacts_router, prefix=settings.api_prefix)
+app.include_router(sync_router, prefix=settings.api_prefix)

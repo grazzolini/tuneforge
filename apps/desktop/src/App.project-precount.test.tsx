@@ -4,9 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   findAudioByArtifactId,
   getMockAudioContexts,
+  getMockInvoke,
   markAudioReady,
+  emitMockNativePlaybackPosition,
   resetAppTestHarness,
   renderApp,
+  setMockNativeAudioState,
   setProjectAnalysis,
 } from "./test/appTestHarness";
 
@@ -75,6 +78,51 @@ function readPlaybackE2ETelemetry() {
     throw new Error("Playback E2E telemetry bridge was not exposed.");
   }
   return telemetry;
+}
+
+function mockTauriRuntime() {
+  Object.defineProperty(window, "__TAURI_INTERNALS__", {
+    configurable: true,
+    value: {},
+  });
+
+  return () => {
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  };
+}
+
+function enableNativePlayback() {
+  const restoreTauriRuntime = mockTauriRuntime();
+  setMockNativeAudioState({
+    capabilities: {
+      nativePlaybackSupported: true,
+      fallbackRequired: false,
+      fallbackReason: null,
+      backend: "desktop-cpal",
+    },
+  });
+  return restoreTauriRuntime;
+}
+
+function invokeCalls(command: string) {
+  return getMockInvoke().mock.calls.filter(([name]) => name === command);
+}
+
+function latestNativeSessionId() {
+  const prepareCall = [...getMockInvoke().mock.calls]
+    .reverse()
+    .find(([command]) => command === "audio_prepare_session");
+  const payload = (prepareCall?.[1] as { payload?: { sessionId?: string } } | undefined)?.payload;
+  if (!payload?.sessionId) {
+    throw new Error("Native audio session was not prepared.");
+  }
+  return payload.sessionId;
+}
+
+function audioPlayStartTime(callIndex = 0) {
+  const playCall = invokeCalls("audio_play")[callIndex];
+  const payload = (playCall?.[1] as { payload?: { startTimeSeconds?: number | null } } | undefined)?.payload;
+  return payload?.startTimeSeconds ?? null;
 }
 
 describe("Desktop app project playback pre-count", () => {
@@ -292,6 +340,30 @@ describe("Desktop app project playback pre-count", () => {
     expect(sourceAudio.currentTime).toBeCloseTo(12.5, 3);
   });
 
+  it("starts native playback from a stopped seek position", async () => {
+    const restoreTauriRuntime = enableNativePlayback();
+    const user = userEvent.setup();
+    setupTempoAnalysis();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    setPlaybackPosition("12.5");
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    await waitFor(() => expect(invokeCalls("audio_play")).toHaveLength(1));
+    expect(audioPlayStartTime()).toBeCloseTo(12.5, 3);
+    await waitFor(() =>
+      expect(readPlaybackE2ETelemetry()).toMatchObject({
+        activePath: "native",
+        positionSeconds: 12.5,
+        transportState: "playing",
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+    restoreTauriRuntime();
+  });
+
   it("does not pre-count when resuming after pause", async () => {
     const user = userEvent.setup();
     setupTempoAnalysis();
@@ -405,6 +477,114 @@ describe("Desktop app project playback pre-count", () => {
       trigger: "loop-start",
     });
     vi.useRealTimers();
+  }, 15000);
+
+  it("starts native playback at loop start when stopped outside the loop", async () => {
+    const restoreTauriRuntime = enableNativePlayback();
+    const user = userEvent.setup();
+    setupTempoAnalysis();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    setPlaybackPosition("12.25");
+    await user.click(screen.getByRole("button", { name: "Set loop start" }));
+    setPlaybackPosition("24.5");
+    await user.click(screen.getByRole("button", { name: "Set loop end" }));
+    setPlaybackPosition("48");
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    await waitFor(() => expect(invokeCalls("audio_play")).toHaveLength(1));
+    expect(audioPlayStartTime()).toBeCloseTo(12.25, 3);
+    await waitFor(() =>
+      expect(readPlaybackE2ETelemetry()).toMatchObject({
+        activePath: "native",
+        loopRange: { startSeconds: 12.25, endSeconds: 24.5 },
+        positionSeconds: 12.25,
+        transportState: "playing",
+      }),
+    );
+    restoreTauriRuntime();
+  });
+
+  it("runs loop pre-count on native loop wrap before restarting at loop start", async () => {
+    const restoreTauriRuntime = enableNativePlayback();
+    const user = userEvent.setup();
+    setupTempoAnalysis();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    setPlaybackPosition("12.25");
+    await user.click(screen.getByRole("button", { name: "Set loop start" }));
+    setPlaybackPosition("24.5");
+    await user.click(screen.getByRole("button", { name: "Set loop end" }));
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByLabelText("Enable loop pre-count"));
+    fireEvent.click(screen.getByRole("button", { name: "Play playback" }));
+    await flushMicrotasks();
+
+    const audioContext = getMockAudioContexts()[0];
+    expect(audioContext?.createdOscillators).toHaveLength(4);
+    expect(invokeCalls("audio_play")).toHaveLength(0);
+    let telemetry = readPlaybackE2ETelemetry();
+    expect(telemetry.countIn.active).toBe(true);
+    expect(telemetry.countIn.lastScheduled).toMatchObject({
+      startTimeSeconds: 12.25,
+      trigger: "loop-start",
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(2035);
+    });
+    await flushMicrotasks();
+    expect(invokeCalls("audio_play")).toHaveLength(1);
+    expect(audioPlayStartTime()).toBeCloseTo(12.25, 3);
+    expect(readPlaybackE2ETelemetry()).toMatchObject({
+      activePath: "native",
+      positionSeconds: 12.25,
+      transportState: "playing",
+    });
+
+    const firstSequence = readPlaybackE2ETelemetry().countIn.lastScheduled?.sequence;
+    act(() => {
+      emitMockNativePlaybackPosition({
+        sessionId: latestNativeSessionId(),
+        positionSeconds: 24.5,
+        durationSeconds: 182,
+        state: "playing",
+      });
+    });
+    await flushMicrotasks();
+
+    expect(audioContext?.createdOscillators).toHaveLength(8);
+    expect(invokeCalls("audio_stop")).toHaveLength(1);
+    expect(invokeCalls("audio_play")).toHaveLength(1);
+    telemetry = readPlaybackE2ETelemetry();
+    expect(telemetry.activePath).toBe("none");
+    expect(telemetry.transportState).toBe("stopped");
+    expect(telemetry.countIn.active).toBe(true);
+    expect(telemetry.countIn.lastScheduled).toMatchObject({
+      startTimeSeconds: 12.25,
+      trigger: "loop-start",
+    });
+    expect(telemetry.countIn.lastScheduled?.sequence).not.toBe(firstSequence);
+
+    await act(async () => {
+      vi.advanceTimersByTime(2035);
+    });
+    await flushMicrotasks();
+    expect(invokeCalls("audio_play")).toHaveLength(2);
+    expect(audioPlayStartTime(1)).toBeCloseTo(12.25, 3);
+    expect(readPlaybackE2ETelemetry()).toMatchObject({
+      activePath: "native",
+      positionSeconds: 12.25,
+      transportState: "playing",
+    });
+    vi.useRealTimers();
+    restoreTauriRuntime();
   }, 15000);
 
   it("uses timing-grid spacing for loop pre-counts when available", async () => {

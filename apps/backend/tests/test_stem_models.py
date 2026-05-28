@@ -4,7 +4,11 @@ import hashlib
 import json
 from pathlib import Path
 
+import soundfile as sf
+
 from app.config import get_settings
+from app.db import SessionLocal
+from app.services.projects import import_project
 from app.services.stem_models import resolve_stem_model
 
 from .conftest import wait_for_job
@@ -30,22 +34,57 @@ def test_stem_model_resolver_defaults_to_six_stems_model():
     assert resolve_stem_model(None).id == "htdemucs_6s"
 
 
-def test_unconfigured_model_repo_fails_stem_job(client, sample_stereo_audio_file, monkeypatch):
+def _create_project_without_import_jobs(source_path: Path) -> str:
+    with SessionLocal() as session:
+        project = import_project(
+            session,
+            source_path=str(source_path),
+            copy_into_project=True,
+            display_name=None,
+        )
+        project_id = project.id
+        session.commit()
+    return project_id
+
+
+def test_unconfigured_model_repo_uses_demucs_torch_cache_mode(client, sample_stereo_audio_file, monkeypatch):
     monkeypatch.delenv("TUNEFORGE_DEMUCS_MODEL_REPO")
     get_settings.cache_clear()
+    seen_model_repos: list[Path | None] = []
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    def fake_separate_sources(
+        source_path: Path,
+        output_paths: dict[str, Path],
+        *,
+        model: str,
+        device: str,
+        model_repo: Path | None = None,
+        on_progress=None,
+        should_cancel=None,
+        register_process=None,
+        unregister_process=None,
+    ):
+        del model, device, should_cancel, register_process, unregister_process
+        seen_model_repos.append(model_repo)
+        signal, sample_rate = sf.read(source_path, always_2d=True)
+        for output_path in output_paths.values():
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            sf.write(output_path, signal, sample_rate)
+        if on_progress:
+            on_progress(98)
+        return {"engine": "demucs", "model": "htdemucs_6s", "requested_device": "auto", "device": "cpu"}
+
+    monkeypatch.setattr("app.services.stems.separate_sources", fake_separate_sources)
+
+    project_id = _create_project_without_import_jobs(sample_stereo_audio_file)
     stem_job = client.post(
-        f"/api/v1/projects/{project['id']}/stems",
+        f"/api/v1/projects/{project_id}/stems",
         json={"mode": "stems", "stem_model": "htdemucs_6s", "output_format": "wav"},
     ).json()["job"]
     final_job = wait_for_job(client, stem_job["id"])
 
-    assert final_job["status"] == "failed"
-    assert final_job["error_message"] == "Bundled Demucs model repo is not configured"
+    assert final_job["status"] == "completed"
+    assert seen_model_repos == [None]
 
 
 def test_configured_missing_model_repo_fails_stem_job(client, sample_stereo_audio_file, tmp_path, monkeypatch):

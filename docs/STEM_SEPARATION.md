@@ -17,13 +17,25 @@ runtime behavior and security boundaries for model loading.
 - Stem artifacts are stored with metadata `source_artifact_id`, `stem_model`,
   `stem_model_label`, and `stem_source` for each generated file.
 
-## Bundled model repo and trusted boundary
+## Model loading modes and trusted boundary
 
-`TUNEFORGE_DEMUCS_MODEL_REPO` points to a local path containing Demucs model
-files and `manifest.json`. Backend behavior:
+Development uses Demucs' default Torch checkpoint cache when
+`TUNEFORGE_DEMUCS_MODEL_REPO` is unset:
 
-- If unset, stem jobs fail availability check with
-  `"Bundled Demucs model repo is not configured"`.
+- `pnpm setup:dev` preloads `htdemucs_6s` and `htdemucs_ft` into the Torch
+  checkpoint cache.
+- If the weights are not preloaded, the first stem job may download them through
+  Demucs, then later runs reuse the cache.
+- Cache path precedence matches Torch: `$TORCH_HOME/hub/checkpoints`,
+  `$XDG_CACHE_HOME/torch/hub/checkpoints`, then
+  `~/.cache/torch/hub/checkpoints`.
+- Availability in this mode only requires the local `demucs` package to be
+  installed.
+
+Packaged builds and explicit offline/pinned setups use
+`TUNEFORGE_DEMUCS_MODEL_REPO`, which points to a local path containing Demucs
+model files and `manifest.json`. Backend behavior:
+
 - If set, backend validates the repo before serving the model:
   - manifest exists and parses.
   - manifest entry exists for requested `stem_model`.
@@ -31,9 +43,7 @@ files and `manifest.json`. Backend behavior:
   - manifest file list has matching names, sizes, and SHA-256 hashes.
   - all declared files exist.
   - Demucs package is installed.
-- No HTTP downloads happen at generation time.
-- `pnpm setup:dev` (or model prepare commands) is the explicit preload step that
-  downloads model files.
+- No HTTP downloads happen at generation time when this repo is configured.
 - Trust boundary is the prepared local model repo. Treat the repo directory,
   `manifest.json`, YAML selectors, and checkpoint files as one trusted generated
   artifact.
@@ -44,9 +54,10 @@ files and `manifest.json`. Backend behavior:
 
 - Backend marks Demucs checkpoint loads as trusted checkpoint loading in
   `app/engines/demucs_worker.py` to support current Demucs pickle model format.
-- This is an explicit local-policy decision: checkpoint loading happens only for
-  files selected through the configured local repo manifest checks above.
-- Security control in this release is trusted local repo preparation plus
+- This is an explicit local-policy decision for two local sources: Demucs'
+  Torch cache in development, and the configured local repo in packaged/offline
+  builds.
+- Security control for configured repos is trusted local repo preparation plus
   runtime manifest checks, not arbitrary model repo verification. If an attacker
   can modify both `manifest.json` and checkpoint files in the configured repo,
   the manifest cannot protect checkpoint loading.

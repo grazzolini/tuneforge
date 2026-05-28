@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -102,3 +105,120 @@ def test_demucs_worker_uses_trusted_checkpoint_loading(monkeypatch):
 
     assert calls == [{"weights_only": False}]
     assert demucs_worker.torch.load is fake_load
+
+
+def test_demucs_torch_preload_skips_model_load_when_cache_is_valid(tmp_path: Path):
+    from app.engines.demucs_cache import preload_demucs_torch_cache
+
+    checkpoint_dir = tmp_path / "checkpoints"
+    first_file = _write_checkpoint(checkpoint_dir, "first.th", b"first")
+    second_file = _write_checkpoint(checkpoint_dir, "second.th", b"second")
+    manifest_path = _write_demucs_manifest(
+        tmp_path,
+        {
+            "model-a": [first_file],
+            "model-b": [second_file],
+        },
+    )
+    calls: list[str] = []
+
+    results = preload_demucs_torch_cache(
+        manifest_path=manifest_path,
+        checkpoint_dir=checkpoint_dir,
+        model_ids=("model-a", "model-b"),
+        get_model_func=lambda model_id: calls.append(model_id),
+    )
+
+    assert calls == []
+    assert [(result.model_id, result.cache_hit) for result in results] == [
+        ("model-a", True),
+        ("model-b", True),
+    ]
+
+
+def test_demucs_torch_preload_loads_only_affected_model(tmp_path: Path):
+    from app.engines.demucs_cache import preload_demucs_torch_cache
+
+    checkpoint_dir = tmp_path / "checkpoints"
+    first_file = _write_checkpoint(checkpoint_dir, "first.th", b"first")
+    missing_file = _expected_checkpoint("missing.th", b"missing")
+    manifest_path = _write_demucs_manifest(
+        tmp_path,
+        {
+            "model-a": [first_file],
+            "model-b": [missing_file],
+        },
+    )
+    calls: list[str] = []
+
+    def fake_get_model(model_id: str) -> None:
+        calls.append(model_id)
+        _write_checkpoint(checkpoint_dir, "missing.th", b"missing")
+
+    results = preload_demucs_torch_cache(
+        manifest_path=manifest_path,
+        checkpoint_dir=checkpoint_dir,
+        model_ids=("model-a", "model-b"),
+        get_model_func=fake_get_model,
+    )
+
+    assert calls == ["model-b"]
+    assert [(result.model_id, result.cache_hit) for result in results] == [
+        ("model-a", True),
+        ("model-b", False),
+    ]
+
+
+def test_demucs_torch_preload_raises_when_loaded_model_remains_invalid(tmp_path: Path):
+    from app.engines.demucs_cache import preload_demucs_torch_cache
+
+    checkpoint_dir = tmp_path / "checkpoints"
+    manifest_path = _write_demucs_manifest(
+        tmp_path,
+        {
+            "model-a": [_expected_checkpoint("missing.th", b"missing")],
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="missing.th \\(missing\\)"):
+        preload_demucs_torch_cache(
+            manifest_path=manifest_path,
+            checkpoint_dir=checkpoint_dir,
+            model_ids=("model-a",),
+            get_model_func=lambda _model_id: None,
+        )
+
+
+def _expected_checkpoint(file_name: str, contents: bytes) -> dict[str, object]:
+    return {
+        "fileName": file_name,
+        "size": len(contents),
+        "sha256": hashlib.sha256(contents).hexdigest(),
+    }
+
+
+def _write_checkpoint(checkpoint_dir: Path, file_name: str, contents: bytes) -> dict[str, object]:
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    (checkpoint_dir / file_name).write_bytes(contents)
+    return _expected_checkpoint(file_name, contents)
+
+
+def _write_demucs_manifest(tmp_path: Path, models: dict[str, list[dict[str, object]]]) -> Path:
+    manifest_path = tmp_path / "models.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "rootUrl": "https://example.invalid/",
+                "models": [
+                    {
+                        "id": model_id,
+                        "yaml": f"{model_id}.yaml",
+                        "files": files,
+                    }
+                    for model_id, files in models.items()
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest_path

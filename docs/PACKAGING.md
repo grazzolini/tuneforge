@@ -19,7 +19,7 @@ Run packaging from a normal macOS shell so `hdiutil` can create the disk image. 
 
 The packaged backend checks the inherited `PATH` plus common Homebrew and MacPorts install locations when looking for `ffmpeg` and `ffprobe`. System microphone volume control uses the built-in CoreAudio API on macOS.
 
-`pnpm package:mac` prepares `resources/backend/models/demucs` with pinned `htdemucs_6s` and `htdemucs_ft` weights. The app sets `TUNEFORGE_DEMUCS_MODEL_REPO` for the bundled backend so stem generation never downloads model weights at runtime. Use `pnpm models:demucs:prepare -- --cache-only` for offline packaging checks that must fail instead of downloading missing weights.
+`pnpm package:mac` prepares `resources/backend/models/demucs` with pinned `htdemucs_6s` and `htdemucs_ft` weights. The app sets `TUNEFORGE_DEMUCS_MODEL_REPO` for the bundled backend so stem generation never downloads model weights at runtime. `pnpm models:demucs:prepare` reads the Torch checkpoint cache by default, matching the `pnpm setup:dev` preload path, and downloads any missing pinned weights before staging the repo. Use `pnpm models:demucs:prepare -- --cache-only` for offline packaging checks that must fail instead of downloading missing weights.
 
 ## Linux Flatpak
 

@@ -10,14 +10,14 @@ Runs the standard developer setup:
   pnpm --filter @tuneforge/desktop exec playwright install chromium
   uv sync --python 3.11 --all-groups
   pnpm contracts:generate
-  pnpm models:demucs:prepare
+  preload Demucs model weights into the Torch cache
 
 Options:
   --advanced-chords, --crema  Install the optional crema/TensorFlow chord backend.
   --advanced-beats, --beat-this
                               Install the optional beat-this backend and preload small0.
   --legacy-nvidia             Use the Linux x86_64 legacy NVIDIA Torch profile.
-  --skip-demucs-models        Skip preparing the local pinned Demucs model repo.
+  --skip-demucs-models        Skip preloading Demucs weights into the Torch cache.
   --skip-playwright-browsers  Skip installing Playwright's Chromium browser.
   --skip-pnpm-install         Skip workspace dependency installation.
   --skip-contracts            Skip OpenAPI contract generation.
@@ -169,9 +169,17 @@ if [[ "${skip_contracts}" -eq 0 ]]; then
 fi
 
 if [[ "${skip_demucs_models}" -eq 0 ]]; then
-  cd "${repo_root}"
-  echo "Preparing local Demucs model repo..."
-  pnpm models:demucs:prepare
+  cd "${backend_dir}"
+  echo "Preloading Demucs model weights into the Torch cache..."
+  .venv/bin/python - <<'PY'
+from app.engines.demucs_cache import preload_demucs_torch_cache
+
+for result in preload_demucs_torch_cache():
+    if result.cache_hit:
+        print(f"Demucs {result.model_id} checkpoint cache hit.")
+    else:
+        print(f"Preloaded Demucs {result.model_id} checkpoint(s).")
+PY
 fi
 
 echo "Setup complete."

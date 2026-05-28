@@ -148,11 +148,83 @@ Run the isolated smoke pass:
 pnpm --filter @tuneforge/desktop test:e2e -- --run
 ```
 
+Run the optional Linux virtual-audio capture smoke:
+
+```sh
+pnpm --filter @tuneforge/desktop test:e2e -- --run --route-output
+```
+
+Run the optional macOS AVFoundation capture smoke with an explicit capture device:
+
+```sh
+pnpm --filter @tuneforge/desktop test:e2e -- --run --capture-provider=avfoundation --capture-device="BlackHole 2ch"
+```
+
+Use the same local debugging flags when needed. On macOS, replace `--route-output` with the explicit
+`--capture-provider=avfoundation --capture-device=<name-or-id>` pair:
+
+```sh
+pnpm --filter @tuneforge/desktop test:e2e -- --run --route-output --headed
+pnpm --filter @tuneforge/desktop test:e2e -- --run --route-output --keep-artifacts
+pnpm --filter @tuneforge/desktop test:e2e -- --run --route-output --backend-port=<port> --app-port=<port>
+```
+
 The isolated run prepares temporary app data and a temporary database, creates a deterministic
 generated fixture project, starts the backend and frontend, runs the smoke flow, then cleans the
 temporary data by default. Use `--keep-artifacts` to retain temporary paths and logs for debugging.
 If a local port is already in use, pass `--backend-port=<port>` or `--app-port=<port>`. The isolated
 backend allows only the selected loopback frontend origin so browser CORS stays enabled.
+
+`--route-output` is Linux-only and should be used only for isolated generated-fixture runs. It must
+not be combined with `--manual-app`, because virtual output capture is intended to avoid personal
+libraries and user audio. Without `--route-output`, the smoke does not change system audio routing.
+With `--route-output` on Linux, the smoke records the fixture playback through a temporary virtual
+output path and restores the previous output route during cleanup. If routing, recording, or platform
+support is missing, the virtual-capture portion fails or skips with a clear message; the standard
+browser smoke still reports its own pass/fail result separately.
+
+On Linux, use a PipeWire desktop with the PulseAudio compatibility service (`pipewire-pulse`) or a
+PulseAudio session, and make sure `pactl` plus either `pw-record` or `parecord` are available on
+`PATH`. Example setup:
+
+```sh
+# Arch
+sudo pacman -S pipewire-pulse pipewire-audio libpulse
+
+# Debian/Ubuntu
+sudo apt-get install pipewire-pulse pulseaudio-utils pipewire-bin
+```
+
+The smoke creates a temporary null sink only when `--route-output` is present, routes playback to
+that sink, records the sink through the selected local provider, then restores the previous default
+sink and unloads the temporary sink. With PipeWire, the smoke resolves the temp sink's
+`object.serial` and passes that serial to `pw-record --target`; the sidecar still records the
+Pulse/PipeWire monitor source as the logical device. If `pactl` cannot create the sink, no default
+sink can be restored, or capture is unavailable, keep artifacts and inspect the smoke logs before
+rerunning.
+
+On macOS, install a local BlackHole device and `ffmpeg` first, then verify AVFoundation can see it:
+
+```sh
+# Homebrew-managed setup
+brew install blackhole-2ch ffmpeg
+
+# Device discovery
+ffmpeg -f avfoundation -list_devices true -i ""
+```
+
+Select the BlackHole device with `--capture-device=<name-or-id>` if more than one virtual audio
+device is installed. macOS capture does not support `--route-output` and the smoke does not switch or
+restore the default output device. Configure any Multi-Output Device or output routing manually
+before running the smoke if you want to listen while capturing. Tauri WebDriver cannot automate the
+WKWebView on macOS, so this capture path validates the local browser smoke and explicit AVFoundation
+capture rather than automating the packaged Tauri WebView.
+
+With `--keep-artifacts`, virtual-capture runs retain the temporary root printed by the smoke. Expect
+the fixture data directory, backend/frontend child-process logs, the captured audio file, and any
+platform routing logs or metadata that describe the selected virtual sink/device. Custom
+`--capture-output` paths must end in `.wav`, because the capture analyzer reads WAV output. Without
+`--keep-artifacts`, these outputs are temporary diagnostics and are removed during cleanup.
 
 To run against an existing personal library or a pre-running app, opt into manual app mode and pass
 the project selector explicitly:

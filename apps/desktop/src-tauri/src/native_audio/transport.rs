@@ -2131,6 +2131,7 @@ fn prepare_stream_chunk(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::fs;
 
     fn capabilities() -> AudioCapabilities {
@@ -2200,6 +2201,49 @@ mod tests {
             underrun_error_pending: false,
             fallback_cause: None,
         }
+    }
+
+    fn push_ring_samples(ring: &Arc<Mutex<RingBuffer>>, samples: &[f32]) {
+        assert!(ring.lock().expect("ring lock").push_samples(samples));
+    }
+
+    fn assert_seconds_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 0.000_000_001,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn assert_sample_close(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() < 0.000_1,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn write_mono_i16_wav(path: &std::path::Path, sample_rate: u32, samples: &[i16]) {
+        let data_size = samples.len().checked_mul(2).expect("wav data size");
+        let chunk_size = 36usize.checked_add(data_size).expect("wav chunk size") as u32;
+        let data_size = data_size as u32;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&chunk_size.to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&sample_rate.to_le_bytes());
+        bytes.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_size.to_le_bytes());
+        for sample in samples {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        fs::write(path, bytes).expect("write wav");
     }
 
     #[test]
@@ -2331,6 +2375,33 @@ mod tests {
     }
 
     #[test]
+    fn count_in_play_uses_requested_start_offset_not_schedule_time() {
+        let mut state = TransportState::default();
+        state.prepare(
+            None,
+            AudioSessionRequest {
+                session_id: "session".to_string(),
+                duration_seconds: Some(30.0),
+                playback_rate: Some(1.0),
+                lanes: Vec::new(),
+            },
+            Vec::new(),
+            capabilities(),
+        );
+
+        let snapshot = state
+            .play(AudioPlayRequest {
+                start_time_seconds: Some(6.25),
+                scheduled_start_time_seconds: Some(2.0),
+            })
+            .expect("play");
+
+        assert_eq!(snapshot.state, "playing");
+        assert_eq!(state.status, TransportStatus::Playing);
+        assert_seconds_close(state.position_seconds, 6.25);
+    }
+
+    #[test]
     fn click_sample_accents_first_beat() {
         let click = ClickState {
             enabled: true,
@@ -2348,11 +2419,24 @@ mod tests {
     }
 
     #[test]
+    fn offline_render_play_advances_position_deterministically() {
+        let ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
+        push_ring_samples(&ring, &vec![0.25; 1_000]);
+        let mut shared = shared_with_lane(ring, 1_000, 1, 1.0);
+        let mut output = vec![0.0; 128];
+
+        render_shared_output(&mut shared, &mut output);
+
+        assert_eq!(output[0], 0.25);
+        assert_eq!(output[127], 0.25);
+        assert_seconds_close(shared.position_seconds, 0.128);
+        assert_eq!(shared.status, TransportStatus::Playing);
+    }
+
+    #[test]
     fn render_shared_output_advances_source_position_by_rate() {
         let ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
-        ring.lock()
-            .expect("ring lock")
-            .push_samples(&vec![0.5; 1_000]);
+        push_ring_samples(&ring, &vec![0.5; 1_000]);
         let mut shared = shared_with_lane(ring, 1_000, 1, 1.0);
         shared.playback_rate = 2.0;
         let mut output = vec![0.0; 10];
@@ -2364,11 +2448,169 @@ mod tests {
     }
 
     #[test]
+    fn offline_render_non_default_rate_advances_timing_by_rate() {
+        let ring = Arc::new(Mutex::new(RingBuffer::new(2_000)));
+        push_ring_samples(&ring, &vec![0.5; 2_000]);
+        let mut shared = shared_with_lane(ring, 2_000, 1, 1.0);
+        shared.playback_rate = 1.25;
+        let mut output = vec![0.0; 40];
+
+        render_shared_output(&mut shared, &mut output);
+
+        assert_seconds_close(shared.position_seconds, 0.025);
+        assert_eq!(shared.status, TransportStatus::Playing);
+    }
+
+    #[test]
+    fn offline_render_pause_snapshot_stops_advancement_and_output() {
+        let mut state = TransportState::default();
+        state.prepare(
+            None,
+            AudioSessionRequest {
+                session_id: "session".to_string(),
+                duration_seconds: Some(30.0),
+                playback_rate: Some(1.0),
+                lanes: Vec::new(),
+            },
+            Vec::new(),
+            capabilities(),
+        );
+        state.position_seconds = 4.0;
+
+        let snapshot = state.pause();
+
+        assert_eq!(snapshot.state, "paused");
+        assert_seconds_close(snapshot.position_seconds, 4.0);
+
+        let ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
+        push_ring_samples(&ring, &vec![0.75; 1_000]);
+        let mut shared = shared_with_lane(ring.clone(), 1_000, 1, 1.0);
+        shared.status = state.status;
+        shared.position_seconds = snapshot.position_seconds;
+        let mut output = vec![1.0; 64];
+
+        render_shared_output(&mut shared, &mut output);
+
+        assert!(output.iter().all(|sample| *sample == 0.0));
+        assert_seconds_close(shared.position_seconds, 4.0);
+        assert_eq!(ring.lock().expect("ring lock").fill_samples(), 1_000);
+    }
+
+    #[test]
+    fn offline_render_stop_snapshot_resets_position_and_output() {
+        let mut state = TransportState::default();
+        state.prepare(
+            None,
+            AudioSessionRequest {
+                session_id: "session".to_string(),
+                duration_seconds: Some(30.0),
+                playback_rate: Some(1.0),
+                lanes: Vec::new(),
+            },
+            Vec::new(),
+            capabilities(),
+        );
+        state.position_seconds = 8.0;
+
+        let snapshot = state.stop();
+
+        assert_eq!(snapshot.state, "stopped");
+        assert_seconds_close(snapshot.position_seconds, 0.0);
+
+        let ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
+        push_ring_samples(&ring, &vec![0.5; 1_000]);
+        let mut shared = shared_with_lane(ring, 1_000, 1, 1.0);
+        shared.status = TransportStatus::Stopped;
+        shared.position_seconds = snapshot.position_seconds;
+        let mut output = vec![1.0; 32];
+
+        render_shared_output(&mut shared, &mut output);
+
+        assert!(output.iter().all(|sample| *sample == 0.0));
+        assert_seconds_close(shared.position_seconds, 0.0);
+    }
+
+    #[test]
+    fn offline_loop_wrap_restarts_from_loop_start_after_owned_stop() {
+        let loop_start = 0.5;
+        let loop_end = 1.25;
+        let mut state = TransportState::default();
+        state.prepare(
+            None,
+            AudioSessionRequest {
+                session_id: "session".to_string(),
+                duration_seconds: Some(loop_end),
+                playback_rate: Some(1.0),
+                lanes: Vec::new(),
+            },
+            Vec::new(),
+            capabilities(),
+        );
+
+        let ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
+        push_ring_samples(&ring, &vec![0.2; 1_000]);
+        let mut shared = shared_with_lane(ring, 1_000, 1, 1.0);
+        shared.duration_seconds = loop_end;
+        shared.position_seconds = 1.245;
+        let mut output = vec![0.0; 6];
+
+        render_shared_output(&mut shared, &mut output);
+        assert_seconds_close(shared.position_seconds, 0.0);
+        assert_eq!(shared.status, TransportStatus::Stopped);
+        assert!(shared.ended_pending);
+
+        state.position_seconds = shared.position_seconds;
+        let snapshot = state
+            .play(AudioPlayRequest {
+                start_time_seconds: Some(loop_start),
+                scheduled_start_time_seconds: None,
+            })
+            .expect("restart loop");
+        assert_eq!(snapshot.state, "playing");
+        assert_seconds_close(state.position_seconds, loop_start);
+
+        clear_lane_rings(&mut shared.lanes);
+        let PlaybackLaneSource::Stream(stream) = &shared.lanes[0].source;
+        push_ring_samples(&stream.ring, &vec![0.8; 1_000]);
+        shared.position_seconds = state.position_seconds;
+        shared.ended_pending = false;
+        shared.status = state.status;
+
+        let mut wrapped_output = vec![0.0; 20];
+        render_shared_output(&mut shared, &mut wrapped_output);
+
+        assert_eq!(wrapped_output[0], 0.8);
+        assert_seconds_close(shared.position_seconds, loop_start + 0.02);
+        assert_eq!(shared.status, TransportStatus::Playing);
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn offline_render_seek_starts_from_requested_wav_offset() {
+        let sample_rate = 1_000;
+        let path = std::env::temp_dir().join(format!(
+            "tuneforge-transport-seek-offset-test-{}.wav",
+            std::process::id()
+        ));
+        let samples: Vec<i16> = (0..100).collect();
+        write_mono_i16_wav(&path, sample_rate, &samples);
+
+        let mut decoder =
+            WavStreamDecoder::open(&path, sample_rate, 1, 1.0, 0.0).expect("open stream decoder");
+        decoder.seek(0.037).expect("seek stream decoder");
+        let decoded = decoder
+            .next_chunk()
+            .expect("decode stream chunk")
+            .expect("stream chunk");
+        let _ = fs::remove_file(&path);
+
+        assert_sample_close(decoded[0], 37.0 / i16::MAX as f32);
+    }
+
+    #[test]
     fn snapshot_reports_buffer_health_for_stream_lane() {
         let ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
-        ring.lock()
-            .expect("ring lock")
-            .push_samples(&vec![0.5; 128]);
+        push_ring_samples(&ring, &vec![0.5; 128]);
         let mut shared = shared_with_lane(ring, 1_000, 1, 1.0);
         shared.lanes[0].underrun_count = 2;
         shared.lanes[0].worker_error_count = 1;
@@ -2399,10 +2641,7 @@ mod tests {
         assert_eq!(empty_lane.underrun_count, 1);
 
         let partial_ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
-        partial_ring
-            .lock()
-            .expect("ring lock")
-            .push_samples(&[0.25; 5]);
+        push_ring_samples(&partial_ring, &[0.25; 5]);
         let mut partial_lane = stream_lane("partial", partial_ring, 1.0);
         assert!(prepare_lane_scratch(
             std::slice::from_mut(&mut partial_lane),
@@ -2448,9 +2687,7 @@ mod tests {
     #[test]
     fn render_shared_output_does_not_advance_while_buffering() {
         let ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
-        ring.lock()
-            .expect("ring lock")
-            .push_samples(&vec![0.5; 1_000]);
+        push_ring_samples(&ring, &vec![0.5; 1_000]);
         let mut shared = shared_with_lane(ring, 1_000, 1, 1.0);
         shared.buffering = true;
         let mut output = vec![1.0; 10];
@@ -2493,6 +2730,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn wav_stream_decoder_preserves_stereo_channels() {
         let path = std::env::temp_dir().join(format!(
             "tuneforge-transport-stereo-stream-test-{}.wav",

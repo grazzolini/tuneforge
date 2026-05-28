@@ -1353,6 +1353,8 @@ mod desktop {
     const DISCOVERY_MAX_PACKET_BYTES: usize = 8192;
     const IROH_ALPN: &[u8] = b"tuneforge-sync/iroh/v1";
     const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
+    const RECONCILIATION_PLAN_MANIFEST_CHUNK_SIZE: usize = 24;
+    const RECONCILIATION_PLAN_DELETE_CHUNK_SIZE: usize = 24;
     const READ_TIMEOUT: Duration = Duration::from_secs(45);
     const PROTOCOL_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(75);
     const STATUS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
@@ -3734,10 +3736,30 @@ mod desktop {
     }
 
     struct StagedRemoteImport {
-        manifests: Vec<Value>,
-        plan_error: Option<String>,
+        plan_failures: Vec<SyncTransportProjectResult>,
         apply_worker: Option<RemoteApplyWorker>,
         received_artifacts: Vec<SyncTransportTransferResult>,
+    }
+
+    #[derive(Clone, Debug)]
+    struct PlannedRemoteProject {
+        project_id: String,
+        manifest: Option<Value>,
+        plan: Value,
+    }
+
+    enum RemotePlanRequest<'a> {
+        Manifest { manifests: &'a [Value] },
+        Delete { project_ids: &'a [String] },
+    }
+
+    impl RemotePlanRequest<'_> {
+        fn project_ids(&self) -> Vec<String> {
+            match self {
+                Self::Manifest { manifests } => manifests.iter().map(manifest_project_id).collect(),
+                Self::Delete { project_ids } => project_ids.to_vec(),
+            }
+        }
     }
 
     #[derive(Clone, Debug)]
@@ -3784,37 +3806,6 @@ mod desktop {
         progress: &ProgressReporter,
     ) -> StagedRemoteImport {
         let mut received_artifacts = Vec::new();
-
-        let timer = SyncPhaseTimer::start("reconciliation_plan");
-        let plan = match {
-            let _progress =
-                progress.start_phase("reconciliation_plan", "Planning sync reconciliation.");
-            plan_remote_manifest_batch(
-                client,
-                peer_device_id,
-                remote_metadata,
-                manifests,
-                transport_id,
-            )
-        } {
-            Ok(plan) => {
-                timings.push(timer.finish());
-                plan
-            }
-            Err(error) => {
-                timings.push(timer.finish());
-                return StagedRemoteImport {
-                    manifests: manifests.to_vec(),
-                    plan_error: Some(phase_context_error(
-                        "reconciliation plan",
-                        format!("Could not plan remote sync reconciliation batch: {error}"),
-                    )),
-                    apply_worker: None,
-                    received_artifacts,
-                };
-            }
-        };
-
         let mut apply_worker = RemoteApplyWorker::start(
             client,
             peer_device_id,
@@ -3822,48 +3813,205 @@ mod desktop {
             transport_id,
             progress.clone(),
         );
-        stage_remote_manifest_projects(
-            manifests,
-            |manifest| {
-                stage_remote_manifest_project_artifacts(
-                    client,
-                    connection,
-                    peer_device_id,
-                    manifest,
-                    &plan,
-                    &mut received_artifacts,
-                    metrics,
-                    timings,
-                    progress,
-                )
-            },
-            |staged| apply_worker.enqueue_project(staged),
-        );
-        let manifest_project_ids: HashSet<String> =
-            manifests.iter().map(manifest_project_id).collect();
-        for project_id in planned_delete_project_ids(&plan)
-            .into_iter()
-            .filter(|project_id| !manifest_project_ids.contains(project_id.as_str()))
-        {
-            apply_worker.enqueue_tombstone(project_id);
+        let (planned_projects, plan_failures) =
+            plan_remote_manifest_projects(manifests, remote_metadata, |request| {
+                let project_ids = request.project_ids();
+                let timers: Vec<_> = project_ids
+                    .iter()
+                    .map(|project_id| {
+                        SyncPhaseTimer::start_project("reconciliation_plan", project_id)
+                    })
+                    .collect();
+                let result = {
+                    match request {
+                        RemotePlanRequest::Manifest { manifests } => {
+                            let _progress = progress.start_phase(
+                                "reconciliation_plan",
+                                "Planning sync reconciliation for remote projects.",
+                            );
+                            plan_remote_manifest_chunk(
+                                client,
+                                peer_device_id,
+                                remote_metadata,
+                                manifests,
+                                transport_id,
+                            )
+                        }
+                        RemotePlanRequest::Delete { project_ids } => {
+                            let _progress = progress.start_phase(
+                                "reconciliation_plan",
+                                "Planning sync reconciliation for remote delete tombstones.",
+                            );
+                            plan_remote_delete_chunk(
+                                client,
+                                peer_device_id,
+                                remote_metadata,
+                                project_ids,
+                                transport_id,
+                            )
+                        }
+                    }
+                };
+                timings.extend(timers.into_iter().map(SyncPhaseTimer::finish));
+                result
+            });
+        for planned in planned_projects {
+            match planned.manifest {
+                Some(manifest) => {
+                    let staged = stage_remote_manifest_project_artifacts(
+                        client,
+                        connection,
+                        peer_device_id,
+                        &manifest,
+                        &planned.plan,
+                        &mut received_artifacts,
+                        metrics,
+                        timings,
+                        progress,
+                    );
+                    apply_worker.enqueue_project(staged);
+                }
+                None => {
+                    if planned_delete_project_ids(&planned.plan)
+                        .into_iter()
+                        .any(|project_id| project_id == planned.project_id)
+                    {
+                        apply_worker.enqueue_tombstone(planned.project_id);
+                    }
+                }
+            }
         }
 
         StagedRemoteImport {
-            manifests: manifests.to_vec(),
-            plan_error: None,
+            plan_failures,
             apply_worker: Some(apply_worker),
             received_artifacts,
         }
     }
 
-    fn stage_remote_manifest_projects(
+    fn plan_remote_manifest_projects(
         manifests: &[Value],
-        mut stage_project: impl FnMut(&Value) -> StagedRemoteProject,
-        mut enqueue_project: impl FnMut(StagedRemoteProject),
-    ) {
-        for manifest in manifests {
-            let staged = stage_project(manifest);
-            enqueue_project(staged);
+        remote_metadata: &Value,
+        mut plan: impl for<'a> FnMut(RemotePlanRequest<'a>) -> Result<Value, BackendError>,
+    ) -> (Vec<PlannedRemoteProject>, Vec<SyncTransportProjectResult>) {
+        let mut planned_projects = Vec::new();
+        let mut plan_failures = Vec::new();
+        let manifest_project_ids: HashSet<String> =
+            manifests.iter().map(manifest_project_id).collect();
+
+        for chunk in manifests.chunks(RECONCILIATION_PLAN_MANIFEST_CHUNK_SIZE) {
+            plan_remote_manifest_chunk_with_split(
+                chunk,
+                &mut plan,
+                &mut planned_projects,
+                &mut plan_failures,
+            );
+        }
+
+        let delete_project_ids: Vec<String> = remote_delete_tombstone_project_ids(remote_metadata)
+            .into_iter()
+            .filter(|project_id| !manifest_project_ids.contains(project_id.as_str()))
+            .collect();
+        for chunk in delete_project_ids.chunks(RECONCILIATION_PLAN_DELETE_CHUNK_SIZE) {
+            plan_remote_delete_chunk_with_split(
+                chunk,
+                &mut plan,
+                &mut planned_projects,
+                &mut plan_failures,
+            );
+        }
+
+        (planned_projects, plan_failures)
+    }
+
+    fn plan_remote_manifest_chunk_with_split<F>(
+        manifests: &[Value],
+        plan: &mut F,
+        planned_projects: &mut Vec<PlannedRemoteProject>,
+        plan_failures: &mut Vec<SyncTransportProjectResult>,
+    ) where
+        F: for<'a> FnMut(RemotePlanRequest<'a>) -> Result<Value, BackendError>,
+    {
+        if manifests.is_empty() {
+            return;
+        }
+
+        match plan(RemotePlanRequest::Manifest { manifests }) {
+            Ok(project_plan) => {
+                planned_projects.extend(manifests.iter().map(|manifest| PlannedRemoteProject {
+                    project_id: manifest_project_id(manifest),
+                    manifest: Some(manifest.clone()),
+                    plan: project_plan.clone(),
+                }));
+            }
+            Err(error) if manifests.len() == 1 => {
+                let project_id = manifest_project_id(&manifests[0]);
+                plan_failures.push(plan_failure_project_result(
+                    &project_id,
+                    format!("Could not plan remote sync reconciliation project: {error}"),
+                ));
+            }
+            Err(_) => {
+                let split_at = manifests.len() / 2;
+                plan_remote_manifest_chunk_with_split(
+                    &manifests[..split_at],
+                    plan,
+                    planned_projects,
+                    plan_failures,
+                );
+                plan_remote_manifest_chunk_with_split(
+                    &manifests[split_at..],
+                    plan,
+                    planned_projects,
+                    plan_failures,
+                );
+            }
+        }
+    }
+
+    fn plan_remote_delete_chunk_with_split<F>(
+        project_ids: &[String],
+        plan: &mut F,
+        planned_projects: &mut Vec<PlannedRemoteProject>,
+        plan_failures: &mut Vec<SyncTransportProjectResult>,
+    ) where
+        F: for<'a> FnMut(RemotePlanRequest<'a>) -> Result<Value, BackendError>,
+    {
+        if project_ids.is_empty() {
+            return;
+        }
+
+        match plan(RemotePlanRequest::Delete { project_ids }) {
+            Ok(project_plan) => {
+                planned_projects.extend(project_ids.iter().map(|project_id| {
+                    PlannedRemoteProject {
+                        project_id: project_id.clone(),
+                        manifest: None,
+                        plan: project_plan.clone(),
+                    }
+                }));
+            }
+            Err(error) if project_ids.len() == 1 => {
+                plan_failures.push(plan_failure_project_result(
+                    &project_ids[0],
+                    format!("Could not plan remote sync reconciliation delete tombstone: {error}"),
+                ));
+            }
+            Err(_) => {
+                let split_at = project_ids.len() / 2;
+                plan_remote_delete_chunk_with_split(
+                    &project_ids[..split_at],
+                    plan,
+                    planned_projects,
+                    plan_failures,
+                );
+                plan_remote_delete_chunk_with_split(
+                    &project_ids[split_at..],
+                    plan,
+                    planned_projects,
+                    plan_failures,
+                );
+            }
         }
     }
 
@@ -3871,15 +4019,13 @@ mod desktop {
         staged: StagedRemoteImport,
         timings: &mut Vec<SyncTransportTimingEvidence>,
     ) -> Vec<SyncTransportProjectResult> {
-        if let Some(error) = &staged.plan_error {
-            return apply_failure_results(&staged.manifests, &HashMap::new(), error);
-        }
+        let mut project_results = staged.plan_failures;
 
         if let Some(apply_worker) = staged.apply_worker {
-            return apply_worker.finish(timings);
+            project_results.extend(apply_worker.finish(timings));
         }
 
-        Vec::new()
+        project_results
     }
 
     fn finish_staged_remote_import_for_failure(staged: Option<StagedRemoteImport>) {
@@ -4131,19 +4277,33 @@ mod desktop {
         }
     }
 
-    fn plan_remote_manifest_batch(
+    fn plan_remote_manifest_chunk(
         client: &BackendClient,
         peer_device_id: &str,
         remote_metadata: &Value,
         manifests: &[Value],
         transport_id: &str,
     ) -> Result<Value, BackendError> {
-        let advertised_content_sha256 = manifest_content_sha256(manifests);
-        let body = reconciliation_plan_body(
+        let body = reconciliation_plan_body_for_manifest_chunk(
             peer_device_id,
             remote_metadata,
             manifests,
-            &advertised_content_sha256,
+            transport_id,
+        );
+        client.post_json_value("/api/v1/sync/reconciliation/plan", &body)
+    }
+
+    fn plan_remote_delete_chunk(
+        client: &BackendClient,
+        peer_device_id: &str,
+        remote_metadata: &Value,
+        project_ids: &[String],
+        transport_id: &str,
+    ) -> Result<Value, BackendError> {
+        let body = reconciliation_plan_body_for_delete_chunk(
+            peer_device_id,
+            remote_metadata,
+            project_ids,
             transport_id,
         );
         client.post_json_value("/api/v1/sync/reconciliation/plan", &body)
@@ -4204,6 +4364,34 @@ mod desktop {
         })
     }
 
+    fn reconciliation_plan_body_for_manifest_chunk(
+        peer_device_id: &str,
+        remote_metadata: &Value,
+        manifests: &[Value],
+        transport_id: &str,
+    ) -> Value {
+        let project_ids: Vec<String> = manifests.iter().map(manifest_project_id).collect();
+        let remote_metadata = remote_metadata_for_projects(remote_metadata, &project_ids);
+        let advertised_content_sha256 = manifest_content_sha256(manifests);
+        reconciliation_plan_body(
+            peer_device_id,
+            &remote_metadata,
+            manifests,
+            &advertised_content_sha256,
+            transport_id,
+        )
+    }
+
+    fn reconciliation_plan_body_for_delete_chunk(
+        peer_device_id: &str,
+        remote_metadata: &Value,
+        project_ids: &[String],
+        transport_id: &str,
+    ) -> Value {
+        let remote_metadata = remote_metadata_for_projects(remote_metadata, project_ids);
+        reconciliation_plan_body(peer_device_id, &remote_metadata, &[], &[], transport_id)
+    }
+
     fn reconciliation_apply_body(
         peer_device_id: &str,
         remote_metadata: &Value,
@@ -4245,37 +4433,49 @@ mod desktop {
     }
 
     fn remote_metadata_for_project(remote_metadata: &Value, project_id: &str) -> Value {
+        remote_metadata_for_projects(remote_metadata, &[project_id.to_string()])
+    }
+
+    fn remote_metadata_for_projects(remote_metadata: &Value, project_ids: &[String]) -> Value {
+        let project_ids: HashSet<&str> = project_ids.iter().map(String::as_str).collect();
         let mut metadata = remote_metadata
             .as_object()
             .cloned()
             .unwrap_or_else(serde_json::Map::new);
         metadata.insert(
             "projects".to_string(),
-            filtered_project_array(remote_metadata, "projects", project_id),
+            filtered_project_array_for_projects(remote_metadata, "projects", &project_ids),
         );
         metadata.insert(
             "artifacts".to_string(),
-            filtered_project_array(remote_metadata, "artifacts", project_id),
+            filtered_project_array_for_projects(remote_metadata, "artifacts", &project_ids),
         );
         metadata.insert(
             "entity_revisions".to_string(),
-            filtered_project_array(remote_metadata, "entity_revisions", project_id),
+            filtered_project_array_for_projects(remote_metadata, "entity_revisions", &project_ids),
         );
         metadata.insert(
             "delete_tombstones".to_string(),
-            filtered_project_array(remote_metadata, "delete_tombstones", project_id),
+            filtered_project_array_for_projects(remote_metadata, "delete_tombstones", &project_ids),
         );
         Value::Object(metadata)
     }
 
-    fn filtered_project_array(metadata: &Value, key: &str, project_id: &str) -> Value {
+    fn filtered_project_array_for_projects(
+        metadata: &Value,
+        key: &str,
+        project_ids: &HashSet<&str>,
+    ) -> Value {
         let values = metadata
             .get(key)
             .and_then(Value::as_array)
             .map(|items| {
                 items
                     .iter()
-                    .filter(|item| value_project_id(item) == Some(project_id))
+                    .filter(|item| {
+                        value_project_id(item)
+                            .is_some_and(|project_id| project_ids.contains(project_id))
+                    })
                     .cloned()
                     .collect::<Vec<_>>()
             })
@@ -4294,6 +4494,21 @@ mod desktop {
                     .and_then(|project| project.get("project_id"))
                     .and_then(Value::as_str)
             })
+    }
+
+    fn remote_delete_tombstone_project_ids(remote_metadata: &Value) -> Vec<String> {
+        let mut seen = HashSet::new();
+        let mut project_ids: Vec<String> = remote_metadata
+            .get("delete_tombstones")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(value_project_id)
+            .map(str::to_string)
+            .filter(|project_id| seen.insert(project_id.clone()))
+            .collect();
+        project_ids.sort();
+        project_ids
     }
 
     fn planned_delete_project_ids(plan: &Value) -> Vec<String> {
@@ -4587,6 +4802,16 @@ mod desktop {
             status: "failed".to_string(),
             message: Some(message.to_string()),
         }
+    }
+
+    fn plan_failure_project_result(
+        project_id: &str,
+        message: String,
+    ) -> SyncTransportProjectResult {
+        failed_project_result(
+            project_id,
+            &phase_context_error("reconciliation plan", message),
+        )
     }
 
     fn available_content_sha256(received_artifacts: &[SyncTransportTransferResult]) -> Vec<String> {
@@ -6722,42 +6947,6 @@ mod desktop {
         }
 
         #[test]
-        fn remote_project_apply_is_queued_after_each_project_stages() {
-            let manifests = vec![
-                json!({ "project": { "project_id": "proj_one" }, "artifacts": [] }),
-                json!({ "project": { "project_id": "proj_two" }, "artifacts": [] }),
-            ];
-            let events = std::cell::RefCell::new(Vec::new());
-
-            stage_remote_manifest_projects(
-                &manifests,
-                |manifest| {
-                    let project_id = manifest_project_id(manifest);
-                    events.borrow_mut().push(format!("stage:{project_id}"));
-                    StagedRemoteProject {
-                        manifest: manifest.clone(),
-                        available_content_sha256: Vec::new(),
-                        transfer_failure: None,
-                    }
-                },
-                |project| {
-                    let project_id = manifest_project_id(&project.manifest);
-                    events.borrow_mut().push(format!("apply:{project_id}"));
-                },
-            );
-
-            assert_eq!(
-                events.into_inner(),
-                vec![
-                    "stage:proj_one".to_string(),
-                    "apply:proj_one".to_string(),
-                    "stage:proj_two".to_string(),
-                    "apply:proj_two".to_string(),
-                ]
-            );
-        }
-
-        #[test]
         fn reconciliation_apply_body_batches_every_manifest_with_one_peer_inventory() {
             let manifests = vec![
                 json!({ "project": { "project_id": "proj_one" }, "artifacts": [] }),
@@ -6868,6 +7057,267 @@ mod desktop {
                 Some(&json!(["hash_a", "hash_b"]))
             );
             assert!(body.get("use_content_addressed_staging").is_none());
+        }
+
+        #[test]
+        fn reconciliation_plan_body_scopes_to_one_project() {
+            let remote_metadata = json!({
+                "projects": [
+                    { "project_id": "proj_one", "display_name": "One" },
+                    { "project_id": "proj_two", "display_name": "Two" }
+                ],
+                "artifacts": [
+                    { "artifact_id": "art_one", "project_id": "proj_one" },
+                    { "artifact_id": "art_two", "project_id": "proj_two" }
+                ],
+                "entity_revisions": [
+                    { "revision_id": "rev_one", "project_id": "proj_one" },
+                    { "revision_id": "rev_two", "project_id": "proj_two" }
+                ],
+                "delete_tombstones": [
+                    { "tombstone_id": "del_one", "project_id": "proj_one" },
+                    { "tombstone_id": "del_two", "project_id": "proj_two" }
+                ]
+            });
+            let manifest = json!({
+                "project": { "project_id": "proj_two" },
+                "artifacts": [{
+                    "artifact_id": "art_two",
+                    "project_id": "proj_two",
+                    "content_sha256": "hash_two",
+                    "size_bytes": 20
+                }]
+            });
+
+            let body = reconciliation_plan_body_for_manifest_chunk(
+                "dev_peer",
+                &remote_metadata,
+                &[manifest],
+                TCP_TRANSPORT_ID,
+            );
+
+            assert_eq!(
+                body.pointer("/remote_library/projects/0/project_id")
+                    .and_then(Value::as_str),
+                Some("proj_two")
+            );
+            assert_eq!(
+                body.pointer("/remote_library/projects")
+                    .and_then(Value::as_array)
+                    .map(Vec::len),
+                Some(1)
+            );
+            assert_eq!(
+                body.get("project_manifests")
+                    .and_then(Value::as_array)
+                    .map(Vec::len),
+                Some(1)
+            );
+            assert_eq!(
+                body.pointer("/peer_inventory/0/available_content_sha256"),
+                Some(&json!(["hash_two"]))
+            );
+        }
+
+        #[test]
+        fn remote_manifest_plan_success_uses_one_request_for_chunk() {
+            let manifests = vec![
+                json!({ "project": { "project_id": "proj_one" }, "artifacts": [] }),
+                json!({ "project": { "project_id": "proj_two" }, "artifacts": [] }),
+            ];
+            let mut plan_requests = 0;
+
+            let (planned, failures) =
+                plan_remote_manifest_projects(&manifests, &json!({}), |request| match request {
+                    RemotePlanRequest::Manifest { manifests } => {
+                        plan_requests += 1;
+                        assert_eq!(manifests.len(), 2);
+                        Ok(json!({
+                            "actions": manifests
+                                .iter()
+                                .map(|manifest| json!({
+                                    "project_id": manifest_project_id(manifest)
+                                }))
+                                .collect::<Vec<_>>()
+                        }))
+                    }
+                    RemotePlanRequest::Delete { .. } => unreachable!("no tombstones"),
+                });
+
+            assert!(failures.is_empty());
+            assert_eq!(planned.len(), 2);
+            assert_eq!(planned[0].project_id, "proj_one");
+            assert_eq!(planned[1].project_id, "proj_two");
+            assert_eq!(plan_requests, 1);
+        }
+
+        #[test]
+        fn failed_manifest_plan_chunk_splits_and_isolates_failed_project() {
+            let manifests = vec![
+                json!({ "project": { "project_id": "proj_ok_one" }, "artifacts": [] }),
+                json!({ "project": { "project_id": "proj_failed" }, "artifacts": [] }),
+                json!({ "project": { "project_id": "proj_ok_two" }, "artifacts": [] }),
+            ];
+            let mut requested_chunks = Vec::new();
+
+            let (planned, failures) =
+                plan_remote_manifest_projects(&manifests, &json!({}), |request| match request {
+                    RemotePlanRequest::Manifest { manifests } => {
+                        let project_ids: Vec<String> =
+                            manifests.iter().map(manifest_project_id).collect();
+                        requested_chunks.push(project_ids.clone());
+                        if project_ids
+                            .iter()
+                            .any(|project_id| project_id == "proj_failed")
+                        {
+                            Err(BackendError::local("planner refused project".to_string()))
+                        } else {
+                            Ok(json!({
+                                "actions": project_ids
+                                    .iter()
+                                    .map(|project_id| json!({ "project_id": project_id }))
+                                    .collect::<Vec<_>>()
+                            }))
+                        }
+                    }
+                    RemotePlanRequest::Delete { .. } => unreachable!("no tombstones"),
+                });
+
+            assert_eq!(planned.len(), 2);
+            assert_eq!(planned[0].project_id, "proj_ok_one");
+            assert_eq!(planned[1].project_id, "proj_ok_two");
+            assert_eq!(failures.len(), 1);
+            assert_eq!(failures[0].project_id, "proj_failed");
+            assert_eq!(failures[0].status, "failed");
+            assert!(failures[0]
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("planner refused project")));
+            assert_eq!(
+                requested_chunks,
+                vec![
+                    vec![
+                        "proj_ok_one".to_string(),
+                        "proj_failed".to_string(),
+                        "proj_ok_two".to_string()
+                    ],
+                    vec!["proj_ok_one".to_string()],
+                    vec!["proj_failed".to_string(), "proj_ok_two".to_string()],
+                    vec!["proj_failed".to_string()],
+                    vec!["proj_ok_two".to_string()],
+                ]
+            );
+        }
+
+        #[test]
+        fn successful_project_still_queued_after_another_project_plan_fails() {
+            let manifests = vec![
+                json!({ "project": { "project_id": "proj_failed" }, "artifacts": [] }),
+                json!({ "project": { "project_id": "proj_queued" }, "artifacts": [] }),
+            ];
+
+            let (planned, failures) =
+                plan_remote_manifest_projects(&manifests, &json!({}), |request| match request {
+                    RemotePlanRequest::Manifest { manifests } => {
+                        let project_ids: Vec<String> =
+                            manifests.iter().map(manifest_project_id).collect();
+                        if project_ids
+                            .iter()
+                            .any(|project_id| project_id == "proj_failed")
+                        {
+                            Err(BackendError::local("planner refused project".to_string()))
+                        } else {
+                            Ok(json!({
+                                "actions": project_ids
+                                    .iter()
+                                    .map(|project_id| json!({ "project_id": project_id }))
+                                    .collect::<Vec<_>>()
+                            }))
+                        }
+                    }
+                    RemotePlanRequest::Delete { .. } => unreachable!("no tombstones"),
+                });
+
+            assert_eq!(failures.len(), 1);
+            assert_eq!(planned.len(), 1);
+            assert_eq!(planned[0].project_id, "proj_queued");
+            assert!(planned[0].manifest.is_some());
+        }
+
+        #[test]
+        fn delete_only_tombstone_project_is_planned_without_manifest() {
+            let remote_metadata = json!({
+                "delete_tombstones": [
+                    { "tombstone_id": "del_deleted", "project_id": "proj_deleted" }
+                ]
+            });
+
+            let (planned, failures) =
+                plan_remote_manifest_projects(&[], &remote_metadata, |request| match request {
+                    RemotePlanRequest::Delete { project_ids } => {
+                        assert_eq!(project_ids, &["proj_deleted".to_string()]);
+                        Ok(json!({
+                            "actions": project_ids
+                                .iter()
+                                .map(|project_id| json!({
+                                    "action_type": "apply_delete_tombstone",
+                                    "project_id": project_id,
+                                    "item_id": project_id
+                                }))
+                                .collect::<Vec<_>>()
+                        }))
+                    }
+                    RemotePlanRequest::Manifest { .. } => unreachable!("no manifests"),
+                });
+
+            assert!(failures.is_empty());
+            assert_eq!(planned.len(), 1);
+            assert_eq!(planned[0].project_id, "proj_deleted");
+            assert!(planned[0].manifest.is_none());
+            assert_eq!(
+                planned_delete_project_ids(&planned[0].plan),
+                vec!["proj_deleted".to_string()]
+            );
+        }
+
+        #[test]
+        fn delete_only_tombstone_plan_success_uses_one_request_for_chunk() {
+            let remote_metadata = json!({
+                "delete_tombstones": [
+                    { "tombstone_id": "del_a", "project_id": "proj_deleted_a" },
+                    { "tombstone_id": "del_b", "project_id": "proj_deleted_b" }
+                ]
+            });
+            let mut plan_requests = 0;
+
+            let (planned, failures) =
+                plan_remote_manifest_projects(&[], &remote_metadata, |request| match request {
+                    RemotePlanRequest::Delete { project_ids } => {
+                        plan_requests += 1;
+                        assert_eq!(
+                            project_ids,
+                            &["proj_deleted_a".to_string(), "proj_deleted_b".to_string()]
+                        );
+                        Ok(json!({
+                            "actions": project_ids
+                                .iter()
+                                .map(|project_id| json!({
+                                    "action_type": "apply_delete_tombstone",
+                                    "project_id": project_id,
+                                    "item_id": project_id
+                                }))
+                                .collect::<Vec<_>>()
+                        }))
+                    }
+                    RemotePlanRequest::Manifest { .. } => unreachable!("no manifests"),
+                });
+
+            assert!(failures.is_empty());
+            assert_eq!(planned.len(), 2);
+            assert!(planned.iter().all(|project| project.manifest.is_none()));
+            assert_eq!(planned[0].project_id, "proj_deleted_a");
+            assert_eq!(planned[1].project_id, "proj_deleted_b");
+            assert_eq!(plan_requests, 1);
         }
 
         #[test]

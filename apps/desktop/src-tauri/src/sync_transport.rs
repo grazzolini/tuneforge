@@ -4571,11 +4571,25 @@ mod desktop {
                 _ => self.skipped_actions = self.skipped_actions.saturating_add(1),
             }
             if let Some(reason) = reason {
-                let priority = action_reason_priority(status, action);
-                if self.selected_reason.is_none() || priority >= self.selected_reason_priority {
-                    self.selected_reason = Some(reason.to_string());
-                    self.selected_reason_priority = priority;
-                }
+                self.select_reason(reason, action_reason_priority(status, action));
+            }
+        }
+
+        fn record_plan_item(&mut self, item: &Value) {
+            let Some(reason) = item.get("reason").and_then(Value::as_str) else {
+                return;
+            };
+            self.select_reason(reason, plan_item_reason_priority(item));
+        }
+
+        fn select_reason(&mut self, reason: &str, priority: u8) {
+            let reason = reason.trim();
+            if reason.is_empty() {
+                return;
+            }
+            if self.selected_reason.is_none() || priority >= self.selected_reason_priority {
+                self.selected_reason = Some(reason.to_string());
+                self.selected_reason_priority = priority;
             }
         }
 
@@ -4588,6 +4602,8 @@ mod desktop {
                 "deleted"
             } else if self.imported_project_manifest {
                 "imported"
+            } else if self.applied_actions > 0 {
+                "applied"
             } else {
                 "skipped"
             }
@@ -4629,6 +4645,86 @@ mod desktop {
         }
     }
 
+    fn plan_item_reason_priority(item: &Value) -> u8 {
+        if let Some(reason) = item.get("reason").and_then(Value::as_str) {
+            if generated_analysis_reason(reason, item) {
+                return 35;
+            }
+        }
+        match item.get("status").and_then(Value::as_str) {
+            Some("conflicted") => 42,
+            Some("missing_provider") | Some("missing_local_bytes") | Some("remote_available") => 15,
+            Some("identical_content") | Some("noop") => 12,
+            _ => 5,
+        }
+    }
+
+    fn apply_result_reason<'a>(result: &'a Value, action: &'a Value) -> Option<&'a str> {
+        let result_reason = result.get("reason").and_then(Value::as_str);
+        let action_reason = action.get("reason").and_then(Value::as_str);
+        if action.get("action_type").and_then(Value::as_str) == Some("record_conflict") {
+            return action_reason.or(result_reason);
+        }
+        if action_reason.is_some_and(|reason| generated_analysis_reason(reason, action)) {
+            return action_reason;
+        }
+        if result_reason.is_some_and(is_generic_apply_reason) {
+            return action_reason.or(result_reason);
+        }
+        result_reason.or(action_reason)
+    }
+
+    fn is_generic_apply_reason(reason: &str) -> bool {
+        matches!(
+            reason.trim(),
+            "Action is already satisfied."
+                | "Required artifact content is staged."
+                | "Required artifact content is staged and verified locally."
+                | "Artifact manifest was imported into the existing project."
+                | "Artifact manifest was imported through the mobile sync manifest service."
+                | "Project sync status was updated through the mobile sync status service."
+        )
+    }
+
+    fn generated_analysis_reason(reason: &str, value: &Value) -> bool {
+        let reason = reason.to_ascii_lowercase();
+        if reason.contains("generated analysis")
+            || reason.contains("analysis artifact")
+            || reason.contains("analysis_json")
+        {
+            return true;
+        }
+        if !value_contains_text(value, "analysis_json") {
+            return false;
+        }
+        [
+            "diverg",
+            "newer",
+            "updated",
+            "kept",
+            "keep",
+            "local",
+            "remote",
+            "tie",
+            "generated",
+        ]
+        .iter()
+        .any(|needle| reason.contains(needle))
+    }
+
+    fn value_contains_text(value: &Value, needle: &str) -> bool {
+        match value {
+            Value::String(value) => value.to_ascii_lowercase().contains(needle),
+            Value::Array(values) => values
+                .iter()
+                .any(|value| value_contains_text(value, needle)),
+            Value::Object(values) => values.iter().any(|(key, value)| {
+                key.to_ascii_lowercase().contains(needle) || value_contains_text(value, needle)
+            }),
+            _ => false,
+        }
+    }
+
     fn map_batch_apply_response(
         manifests: &[Value],
         response: &Value,
@@ -4642,6 +4738,8 @@ mod desktop {
                 )
             })
             .collect();
+
+        record_plan_item_reasons(&mut outcomes, response);
 
         for result in response
             .get("results")
@@ -4660,17 +4758,7 @@ mod desktop {
                 .get("status")
                 .and_then(Value::as_str)
                 .unwrap_or("skipped");
-            let reason = result
-                .get("reason")
-                .and_then(Value::as_str)
-                .or_else(|| action.get("reason").and_then(Value::as_str));
-            let reason =
-                if action.get("action_type").and_then(Value::as_str) == Some("record_conflict") {
-                    action.get("reason").and_then(Value::as_str).or(reason)
-                } else {
-                    reason
-                };
-            outcome.record(status, action, reason);
+            outcome.record(status, action, apply_result_reason(result, action));
         }
 
         manifests
@@ -4692,6 +4780,8 @@ mod desktop {
             .map(|project_id| (project_id.clone(), ProjectApplyOutcome::default()))
             .collect();
 
+        record_plan_item_reasons(&mut outcomes, response);
+
         for result in response
             .get("results")
             .and_then(Value::as_array)
@@ -4709,17 +4799,7 @@ mod desktop {
                 .get("status")
                 .and_then(Value::as_str)
                 .unwrap_or("skipped");
-            let reason = result
-                .get("reason")
-                .and_then(Value::as_str)
-                .or_else(|| action.get("reason").and_then(Value::as_str));
-            let reason =
-                if action.get("action_type").and_then(Value::as_str) == Some("record_conflict") {
-                    action.get("reason").and_then(Value::as_str).or(reason)
-                } else {
-                    reason
-                };
-            outcome.record(status, action, reason);
+            outcome.record(status, action, apply_result_reason(result, action));
         }
 
         project_ids
@@ -4729,6 +4809,36 @@ mod desktop {
                 outcome_to_project_result(project_id.clone(), outcome)
             })
             .collect()
+    }
+
+    fn record_plan_item_reasons(
+        outcomes: &mut HashMap<String, ProjectApplyOutcome>,
+        response: &Value,
+    ) {
+        for item in response
+            .get("plan")
+            .and_then(|plan| plan.get("items"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(project_id) = plan_item_project_id(item) else {
+                continue;
+            };
+            if let Some(outcome) = outcomes.get_mut(project_id) {
+                outcome.record_plan_item(item);
+            }
+        }
+    }
+
+    fn plan_item_project_id(item: &Value) -> Option<&str> {
+        item.get("project_id").and_then(Value::as_str).or_else(|| {
+            if item.get("item_type").and_then(Value::as_str) == Some("project") {
+                item.get("item_id").and_then(Value::as_str)
+            } else {
+                None
+            }
+        })
     }
 
     fn outcome_to_project_result(
@@ -7528,6 +7638,116 @@ mod desktop {
                     skipped: 1,
                     failed: 2,
                 }
+            );
+        }
+
+        #[test]
+        fn batch_apply_response_surfaces_generated_analysis_remote_newer_resolution() {
+            let manifests = vec![json!({
+                "project": { "project_id": "proj_generated" },
+                "artifacts": []
+            })];
+            let response = json!({
+                "plan": {
+                    "items": [{
+                        "item_type": "artifact",
+                        "item_id": "art_analysis",
+                        "project_id": "proj_generated",
+                        "status": "remote_available",
+                        "action_type": "import_artifact_manifest",
+                        "content_sha256": "hash_remote_analysis",
+                        "reason": "Generated analysis artifact updated from newer peer analysis.",
+                        "details": {
+                            "artifact_type": "analysis_json",
+                            "resolution": "remote_newer_import",
+                            "can_regenerate": true
+                        }
+                    }]
+                },
+                "results": [{
+                    "action": {
+                        "action_type": "import_artifact_manifest",
+                        "item_type": "artifact",
+                        "item_id": "art_analysis",
+                        "project_id": "proj_generated",
+                        "content_sha256": "hash_remote_analysis",
+                        "reason": "Generated analysis artifact updated from newer peer analysis.",
+                        "details": {
+                            "artifact_type": "analysis_json",
+                            "resolution": "remote_newer_import",
+                            "can_regenerate": true
+                        }
+                    },
+                    "status": "applied",
+                    "reason": "Artifact manifest was imported into the existing project."
+                }]
+            });
+
+            let results = map_batch_apply_response(&manifests, &response);
+
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].project_id, "proj_generated");
+            assert_eq!(results[0].status, "applied");
+            assert_eq!(
+                results[0].message.as_deref(),
+                Some(
+                    "Reconciliation apply: 1 applied, 0 satisfied, 0 skipped, 0 failed, 0 conflicted action(s). Generated analysis artifact updated from newer peer analysis."
+                )
+            );
+        }
+
+        #[test]
+        fn batch_apply_response_surfaces_generated_analysis_kept_local_resolution() {
+            let manifests = vec![json!({
+                "project": { "project_id": "proj_generated" },
+                "artifacts": []
+            })];
+            let response = json!({
+                "plan": {
+                    "items": [{
+                        "item_type": "artifact",
+                        "item_id": "art_analysis",
+                        "project_id": "proj_generated",
+                        "status": "identical_content",
+                        "action_type": "noop",
+                        "content_sha256": "hash_local_analysis",
+                        "reason": "Generated analysis artifact kept local because local analysis is newer.",
+                        "details": {
+                            "artifact_type": "analysis_json",
+                            "resolution": "local_newer_keep_local",
+                            "can_regenerate": true
+                        }
+                    }]
+                },
+                "results": [{
+                    "action": {
+                        "action_type": "noop",
+                        "item_type": "artifact",
+                        "item_id": "art_analysis",
+                        "project_id": "proj_generated",
+                        "content_sha256": "hash_local_analysis",
+                        "reason": "Generated analysis artifact kept local because local analysis is newer.",
+                        "details": {
+                            "artifact_type": "analysis_json",
+                            "resolution": "local_newer_keep_local",
+                            "can_regenerate": true
+                        }
+                    },
+                    "status": "satisfied",
+                    "reason": "Action is already satisfied."
+                }]
+            });
+
+            let results = map_batch_apply_response(&manifests, &response);
+
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].project_id, "proj_generated");
+            assert_eq!(results[0].status, "skipped");
+            assert_eq!(
+                results[0].message.as_deref(),
+                Some(
+                    "Reconciliation apply: 0 applied, 1 satisfied, 0 skipped, 0 failed, 0 conflicted action(s). Generated analysis artifact kept local because local analysis is newer."
+                )
             );
         }
 

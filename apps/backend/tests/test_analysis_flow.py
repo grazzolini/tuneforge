@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from app.db import SessionLocal
 from app.errors import AppError
-from app.models import AnalysisResult, Job, Project
+from app.models import AnalysisResult, Artifact, Job, Project
 from app.services import analysis as analysis_service
 from app.services.artifacts import register_artifact
 from app.services.paths import ensure_project_dirs
@@ -125,6 +125,128 @@ def test_analysis_passes_latest_source_drums_and_bass_stems_only(
     assert analysis.source_artifact_id == "art_analysis_source"
     assert captured["track_path"] == sample_audio_file
     assert captured["source_stem_paths"] == (source_drums_path, source_bass_path)
+
+
+def test_reanalysis_updates_analysis_artifact_sync_metadata(
+    client,
+    sample_audio_file: Path,
+    tmp_path: Path,
+    monkeypatch,
+):
+    del client
+    project_id = "analysis_metadata_project"
+    source_drums_path = tmp_path / "metadata-source-drums.wav"
+    source_bass_path = tmp_path / "metadata-source-bass.wav"
+    preview_drums_path = tmp_path / "metadata-preview-drums.wav"
+    preview_bass_path = tmp_path / "metadata-preview-bass.wav"
+    for path in (
+        source_drums_path,
+        source_bass_path,
+        preview_drums_path,
+        preview_bass_path,
+    ):
+        path.write_bytes(path.name.encode("utf-8"))
+
+    _seed_project_with_source_stems(
+        project_id=project_id,
+        source_path=sample_audio_file,
+        source_drums_path=source_drums_path,
+        source_bass_path=source_bass_path,
+        preview_drums_path=preview_drums_path,
+        preview_bass_path=preview_bass_path,
+    )
+
+    timestamps = iter(
+        [
+            "2026-01-02T03:04:05+00:00",
+            "2026-01-03T03:04:05+00:00",
+        ]
+    )
+    monkeypatch.setattr(analysis_service, "_analysis_generated_at_iso", lambda: next(timestamps))
+
+    def fake_analyze_track(track_path: Path, *, source_stem_paths: tuple[Path, ...] | None = None):
+        assert track_path == sample_audio_file
+        assert source_stem_paths == (source_drums_path, source_bass_path)
+        return {
+            "estimated_key": "C major",
+            "key_confidence": 0.8,
+            "estimated_reference_hz": 440.0,
+            "tuning_offset_cents": 0.0,
+            "tempo_bpm": 120.0,
+            "timing": _timing_payload(source="built-in"),
+        }
+
+    def fake_beat_this(
+        track_path: Path,
+        *,
+        source_stem_paths: tuple[Path, ...] | None = None,
+        duration_seconds: float | None = None,
+    ):
+        assert track_path == sample_audio_file
+        assert source_stem_paths == (source_drums_path, source_bass_path)
+        assert duration_seconds == 4.0
+        return {
+            "estimated_key": "D minor",
+            "key_confidence": 0.7,
+            "estimated_reference_hz": 441.0,
+            "tuning_offset_cents": 1.5,
+            "tempo_bpm": 90.0,
+            "timing": _timing_payload(source="beat-this"),
+        }
+
+    monkeypatch.setattr(analysis_service, "analyze_track", fake_analyze_track)
+    monkeypatch.setattr(analysis_service, "beat_this_dependency_status", lambda: (True, None))
+    monkeypatch.setattr(analysis_service, "analyze_track_with_beat_this", fake_beat_this)
+
+    with SessionLocal() as session:
+        project = session.get(Project, project_id)
+        assert project is not None
+        analysis_service.analyze_project(session, project)
+        first_artifact = _analysis_artifact(session, project_id)
+        source_artifact = session.get(Artifact, "art_analysis_source")
+        drums_artifact = session.get(Artifact, "art_source_drums")
+        bass_artifact = session.get(Artifact, "art_source_bass")
+        assert source_artifact is not None
+        assert drums_artifact is not None
+        assert bass_artifact is not None
+        expected_source_sha = source_artifact.content_sha256
+        expected_stem_sha256s = [drums_artifact.content_sha256, bass_artifact.content_sha256]
+        first_artifact_id = first_artifact.id
+        first_content_sha256 = first_artifact.content_sha256
+        session.commit()
+
+    expected_common_metadata = {
+        "analysis_version": "v3",
+        "source_artifact_id": "art_analysis_source",
+        "source_artifact_sha256": expected_source_sha,
+        "source_stem_artifact_ids": ["art_source_drums", "art_source_bass"],
+        "source_stem_content_sha256s": expected_stem_sha256s,
+    }
+    first_payload = _analysis_payload(first_artifact)
+    assert first_artifact.metadata_json == {
+        "analysis_generated_at": "2026-01-02T03:04:05+00:00",
+        "analysis_backend": "built-in",
+        **expected_common_metadata,
+    }
+    assert {key: first_payload[key] for key in first_artifact.metadata_json} == first_artifact.metadata_json
+
+    with SessionLocal() as session:
+        project = session.get(Project, project_id)
+        assert project is not None
+        analysis_service.analyze_project(session, project, beat_backend="beat-this")
+        second_artifact = _analysis_artifact(session, project_id)
+        session.commit()
+
+    second_payload = _analysis_payload(second_artifact)
+    assert second_artifact.id == first_artifact_id
+    assert second_artifact.content_sha256 != first_content_sha256
+    assert second_artifact.metadata_json == {
+        "analysis_generated_at": "2026-01-03T03:04:05+00:00",
+        "analysis_backend": "beat-this",
+        **expected_common_metadata,
+    }
+    assert {key: second_payload[key] for key in second_artifact.metadata_json} == second_artifact.metadata_json
+    assert second_payload["estimated_key"] == "D minor"
 
 
 def test_project_import_carries_beat_backend_to_initial_analysis_job(
@@ -515,6 +637,23 @@ def _seed_project_with_source_stems(
 def _assert_timing_bar_indexes_are_nonnegative(timing: dict) -> None:
     assert all(beat["bar_index"] >= 0 for beat in timing["beats"])
     assert all(bar["index"] >= 0 for bar in timing["bars"])
+
+
+def _analysis_artifact(session, project_id: str) -> Artifact:
+    artifact = session.scalar(
+        select(Artifact).where(
+            Artifact.project_id == project_id,
+            Artifact.type == "analysis_json",
+        )
+    )
+    assert artifact is not None
+    return artifact
+
+
+def _analysis_payload(artifact: Artifact) -> dict:
+    payload = json.loads(Path(artifact.path).read_text(encoding="utf-8"))
+    assert isinstance(payload, dict)
+    return payload
 
 
 def _timing_payload(*, source: str = "detected") -> dict:

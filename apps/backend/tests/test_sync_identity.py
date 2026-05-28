@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -123,13 +124,18 @@ def test_sync_metadata_exposes_sync_safe_project_and_artifact_metadata(
     project_id = source_hash_to_project_id(source_hash)
     root = project_root(project_id)
     project_artifact_path = root / "stems" / "vocals.wav"
+    analysis_artifact_path = root / "analysis" / "analysis.json"
     external_artifact_path = tmp_path / "external.wav"
     project_artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    analysis_artifact_path.parent.mkdir(parents=True, exist_ok=True)
     project_artifact_path.write_bytes(b"project artifact")
+    analysis_artifact_path.write_text(json.dumps({"project_id": project_id}), encoding="utf-8")
     external_artifact_path.write_bytes(b"external artifact")
     project_artifact_hash = file_sha256(project_artifact_path)
+    analysis_artifact_hash = file_sha256(analysis_artifact_path)
     external_artifact_hash = file_sha256(external_artifact_path)
     assert project_artifact_hash is not None
+    assert analysis_artifact_hash is not None
     assert external_artifact_hash is not None
 
     with SessionLocal() as session:
@@ -183,6 +189,28 @@ def test_sync_metadata_exposes_sync_safe_project_and_artifact_metadata(
                     },
                 ),
                 Artifact(
+                    id="art_analysis_json",
+                    project_id=project.id,
+                    type="analysis_json",
+                    format="json",
+                    path=str(analysis_artifact_path),
+                    content_sha256=analysis_artifact_hash,
+                    size_bytes=analysis_artifact_path.stat().st_size,
+                    generated_by="analysis",
+                    can_delete=True,
+                    can_regenerate=True,
+                    metadata_json={
+                        "analysis_generated_at": "2026-01-02T03:04:05+00:00",
+                        "analysis_backend": "built-in",
+                        "analysis_version": "v3",
+                        "source_artifact_id": "art_source",
+                        "source_artifact_sha256": source_hash,
+                        "source_stem_artifact_ids": ["art_project_safe"],
+                        "source_stem_content_sha256s": [project_artifact_hash],
+                        "source_path": str(sample_audio_file),
+                    },
+                ),
+                Artifact(
                     id="art_external",
                     project_id=project.id,
                     type="external_reference",
@@ -220,7 +248,7 @@ def test_sync_metadata_exposes_sync_safe_project_and_artifact_metadata(
     assert "imported_path" not in project_payload
 
     artifacts = {artifact["artifact_id"]: artifact for artifact in payload["artifacts"]}
-    assert set(artifacts) == {"art_project_safe", "art_external"}
+    assert set(artifacts) == {"art_project_safe", "art_analysis_json", "art_external"}
     safe_artifact = artifacts["art_project_safe"]
     assert safe_artifact["project_id"] == project_id
     assert safe_artifact["type"] == "vocals"
@@ -241,6 +269,19 @@ def test_sync_metadata_exposes_sync_safe_project_and_artifact_metadata(
     }
     assert "path" not in safe_artifact
     assert "result_artifact_ids_json" not in safe_artifact
+
+    analysis_artifact = artifacts["art_analysis_json"]
+    assert analysis_artifact["relative_path"] == "analysis/analysis.json"
+    assert analysis_artifact["content_sha256"] == analysis_artifact_hash
+    assert analysis_artifact["metadata"] == {
+        "analysis_generated_at": "2026-01-02T03:04:05+00:00",
+        "analysis_backend": "built-in",
+        "analysis_version": "v3",
+        "source_artifact_id": "art_source",
+        "source_artifact_sha256": source_hash,
+        "source_stem_artifact_ids": ["art_project_safe"],
+        "source_stem_content_sha256s": [project_artifact_hash],
+    }
 
     external_artifact = artifacts["art_external"]
     assert external_artifact["relative_path"] is None

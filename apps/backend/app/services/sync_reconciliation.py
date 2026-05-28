@@ -49,6 +49,21 @@ ITEM_ARTIFACT = "artifact"
 ITEM_ENTITY_REVISION = "entity_revision"
 ITEM_DELETE_TOMBSTONE = "delete_tombstone"
 
+ANALYSIS_ARTIFACT_TYPE = "analysis_json"
+_ANALYSIS_SOURCE_STEM_HASH_METADATA_KEYS = (
+    "source_stem_input_hashes",
+    "source_stem_content_sha256s",
+    "source_stem_sha256s",
+    "source_stem_hashes",
+    "input_source_stem_hashes",
+    "analysis_source_stem_sha256s",
+)
+_ANALYSIS_SOURCE_STEM_ARTIFACT_METADATA_KEYS = (
+    "source_stem_input_artifacts",
+    "source_stem_artifacts",
+)
+_ANALYSIS_SOURCE_STEM_ARTIFACT_TYPES = frozenset({"drums_stem", "bass_stem"})
+
 PROJECT_SYNC_STATUS_LOCAL = "local"
 PROJECT_SYNC_STATUS_SYNCING = "syncing"
 PROJECT_SYNC_STATUS_REMOTE_AVAILABLE = "remote_available"
@@ -196,6 +211,14 @@ class _LocalState:
     entity_revisions: dict[str, SyncEntityRevision]
     entity_revisions_by_entity: dict[tuple[str, str, str], tuple[SyncEntityRevision, ...]]
     tombstones: tuple[SyncDeleteTombstone, ...]
+
+
+@dataclass(frozen=True)
+class _GeneratedAnalysisDivergence:
+    resolvable: bool
+    keep_local: bool
+    reason: str
+    details: dict[str, Any]
 
 
 def plan_sync_reconciliation(
@@ -1214,6 +1237,109 @@ def _plan_artifact(
     if local_artifact is not None:
         local_hash = _normalize_sha256(local_artifact.content_sha256)
         if local_hash != artifact.content_sha256:
+            generated_divergence = _generated_analysis_divergence(
+                local_artifact,
+                artifact,
+                local_hash=local_hash,
+                local=local,
+                remote=remote,
+            )
+            if generated_divergence is not None:
+                if generated_divergence.resolvable:
+                    if generated_divergence.keep_local:
+                        _upsert_item(
+                            items_by_key,
+                            SyncReconciliationItem(
+                                item_type=ITEM_ARTIFACT,
+                                item_id=artifact.artifact_id,
+                                project_id=artifact.project_id,
+                                status="noop",
+                                action_type=ACTION_NOOP,
+                                content_sha256=artifact.content_sha256,
+                                reason=generated_divergence.reason,
+                                details=generated_divergence.details,
+                            ),
+                        )
+                        return
+
+                    provider_device_id = _choose_provider(remote, artifact.content_sha256)
+                    if provider_device_id is None:
+                        _upsert_item(
+                            items_by_key,
+                            SyncReconciliationItem(
+                                item_type=ITEM_ARTIFACT,
+                                item_id=artifact.artifact_id,
+                                project_id=artifact.project_id,
+                                status="missing_provider",
+                                content_sha256=artifact.content_sha256,
+                                reason=(
+                                    "Remote regenerable analysis_json is newer, but no trusted provider "
+                                    "advertises its content."
+                                ),
+                                details={
+                                    **generated_divergence.details,
+                                    "resolution": "waiting_for_remote_provider",
+                                },
+                            ),
+                        )
+                        return
+
+                    details = {
+                        **generated_divergence.details,
+                        "provider_device_id": provider_device_id,
+                    }
+                    _upsert_item(
+                        items_by_key,
+                        SyncReconciliationItem(
+                            item_type=ITEM_ARTIFACT,
+                            item_id=artifact.artifact_id,
+                            project_id=artifact.project_id,
+                            status="remote_available",
+                            action_type=ACTION_FETCH_ARTIFACT_CONTENT,
+                            content_sha256=artifact.content_sha256,
+                            chosen_provider_device_id=provider_device_id,
+                            reason=generated_divergence.reason,
+                            details=details,
+                        ),
+                    )
+                    actions.append(
+                        _action(
+                            ACTION_FETCH_ARTIFACT_CONTENT,
+                            item_type=ITEM_ARTIFACT,
+                            item_id=artifact.artifact_id,
+                            project_id=artifact.project_id,
+                            content_sha256=artifact.content_sha256,
+                            provider_device_id=provider_device_id,
+                            reason="Fetch newer remote regenerable analysis_json artifact bytes.",
+                            details=details,
+                        )
+                    )
+                    actions.append(
+                        _action(
+                            ACTION_IMPORT_ARTIFACT_MANIFEST,
+                            item_type=ITEM_ARTIFACT,
+                            item_id=artifact.artifact_id,
+                            project_id=artifact.project_id,
+                            content_sha256=artifact.content_sha256,
+                            provider_device_id=provider_device_id,
+                            reason="Import newer remote regenerable analysis_json artifact manifest.",
+                            details=details,
+                        )
+                    )
+                    return
+
+                _record_conflict(
+                    items_by_key,
+                    actions,
+                    item_type=ITEM_ARTIFACT,
+                    item_id=artifact.artifact_id,
+                    project_id=artifact.project_id,
+                    content_sha256=artifact.content_sha256,
+                    reason=generated_divergence.reason,
+                    details=generated_divergence.details,
+                )
+                return
+
             _record_conflict(
                 items_by_key,
                 actions,
@@ -1222,10 +1348,12 @@ def _plan_artifact(
                 project_id=artifact.project_id,
                 content_sha256=artifact.content_sha256,
                 reason="Local and remote artifacts share an ID but have different content hashes.",
-                details={
-                    "local_content_sha256": local_hash,
-                    "remote_content_sha256": artifact.content_sha256,
-                },
+                details=_artifact_conflict_details(
+                    local_artifact,
+                    artifact,
+                    local_content_sha256=local_hash,
+                    generated_divergence_reason="Artifact is not a regenerable analysis_json divergence candidate.",
+                ),
             )
             return
 
@@ -2526,6 +2654,491 @@ def _artifact_has_recorded_content(
     return size_bytes is None or artifact.size_bytes == size_bytes
 
 
+def _generated_analysis_divergence(
+    local_artifact: Artifact,
+    remote_artifact: _RemoteArtifact,
+    *,
+    local_hash: str | None,
+    local: _LocalState,
+    remote: _RemoteRequest,
+) -> _GeneratedAnalysisDivergence | None:
+    details = _artifact_conflict_details(
+        local_artifact,
+        remote_artifact,
+        local_content_sha256=local_hash,
+    )
+    local_type = _normalize_artifact_type(local_artifact.type)
+    remote_type = _normalize_artifact_type(remote_artifact.type)
+    if local_type != ANALYSIS_ARTIFACT_TYPE or remote_type != ANALYSIS_ARTIFACT_TYPE:
+        if ANALYSIS_ARTIFACT_TYPE not in {local_type, remote_type}:
+            return None
+        return _unresolvable_generated_analysis_divergence(
+            details,
+            "Local and remote artifacts are not both analysis_json artifacts.",
+        )
+
+    details["generated_divergence_candidate"] = True
+    if local_artifact.can_regenerate is not True or _remote_artifact_can_regenerate(remote_artifact) is not True:
+        return _unresolvable_generated_analysis_divergence(
+            details,
+            "Both analysis_json artifacts must be marked regenerable.",
+        )
+
+    if local_artifact.project_id != remote_artifact.project_id:
+        return _unresolvable_generated_analysis_divergence(
+            details,
+            "Local and remote analysis_json artifacts belong to different projects.",
+        )
+
+    project_details, project_error = _generated_analysis_project_input_details(
+        local_artifact,
+        remote_artifact,
+        local=local,
+        remote=remote,
+    )
+    details.update(project_details)
+    if project_error is not None:
+        return _unresolvable_generated_analysis_divergence(details, project_error)
+
+    source_details, source_error = _generated_analysis_source_input_details(
+        local_artifact,
+        remote_artifact,
+        local=local,
+        remote=remote,
+    )
+    details.update(source_details)
+    if source_error is not None:
+        return _unresolvable_generated_analysis_divergence(details, source_error)
+
+    local_source_artifact_id = source_details.get("local_source_artifact_id")
+    remote_source_artifact_id = source_details.get("remote_source_artifact_id")
+    if not isinstance(local_source_artifact_id, str) or not isinstance(remote_source_artifact_id, str):
+        return _unresolvable_generated_analysis_divergence(
+            details,
+            "Analysis source artifact identity is missing.",
+        )
+
+    stem_details, stem_error = _generated_analysis_source_stem_details(
+        local_artifact,
+        remote_artifact,
+        local=local,
+        remote=remote,
+        local_source_artifact_id=local_source_artifact_id,
+        remote_source_artifact_id=remote_source_artifact_id,
+    )
+    details.update(stem_details)
+    if stem_error is not None:
+        return _unresolvable_generated_analysis_divergence(details, stem_error)
+
+    timestamp_details, keep_local, timestamp_reason = _generated_analysis_timestamp_resolution(
+        local_artifact,
+        remote_artifact,
+    )
+    details.update(timestamp_details)
+    details.update(
+        {
+            "generated_divergence_resolvable": True,
+            "resolution": "keep_local" if keep_local else "fetch_remote",
+            "resolution_reason": timestamp_reason,
+        }
+    )
+    if keep_local:
+        return _GeneratedAnalysisDivergence(
+            resolvable=True,
+            keep_local=True,
+            reason=timestamp_reason,
+            details=details,
+        )
+    return _GeneratedAnalysisDivergence(
+        resolvable=True,
+        keep_local=False,
+        reason="Remote regenerable analysis_json is newer for matching source inputs.",
+        details=details,
+    )
+
+
+def _unresolvable_generated_analysis_divergence(
+    details: dict[str, Any],
+    reason: str,
+) -> _GeneratedAnalysisDivergence:
+    details.update(
+        {
+            "generated_divergence_resolvable": False,
+            "generated_divergence_unresolvable_reason": reason,
+        }
+    )
+    return _GeneratedAnalysisDivergence(
+        resolvable=False,
+        keep_local=True,
+        reason="Local and remote analysis_json artifacts diverge and cannot be auto-resolved.",
+        details=details,
+    )
+
+
+def _artifact_conflict_details(
+    local_artifact: Artifact,
+    remote_artifact: _RemoteArtifact,
+    *,
+    local_content_sha256: str | None,
+    generated_divergence_reason: str | None = None,
+) -> dict[str, Any]:
+    details: dict[str, Any] = {
+        "artifact_type": remote_artifact.type or local_artifact.type,
+        "artifact_id": remote_artifact.artifact_id,
+        "local_content_sha256": local_content_sha256,
+        "remote_content_sha256": remote_artifact.content_sha256,
+        "local_can_regenerate": bool(local_artifact.can_regenerate),
+        "remote_can_regenerate": _remote_artifact_can_regenerate(remote_artifact),
+    }
+    if generated_divergence_reason is not None:
+        details.update(
+            {
+                "generated_divergence_candidate": False,
+                "generated_divergence_resolvable": False,
+                "generated_divergence_unresolvable_reason": generated_divergence_reason,
+            }
+        )
+    return details
+
+
+def _generated_analysis_project_input_details(
+    local_artifact: Artifact,
+    remote_artifact: _RemoteArtifact,
+    *,
+    local: _LocalState,
+    remote: _RemoteRequest,
+) -> tuple[dict[str, Any], str | None]:
+    local_project = local.projects.get(local_artifact.project_id)
+    remote_project = remote.projects.get(remote_artifact.project_id)
+    local_source_sha256 = None if local_project is None else _normalize_sha256(local_project.source_sha256)
+    remote_source_sha256 = None if remote_project is None else remote_project.source_sha256
+    details = {
+        "local_project_id": local_artifact.project_id,
+        "remote_project_id": remote_artifact.project_id,
+        "local_project_source_sha256": local_source_sha256,
+        "remote_project_source_sha256": remote_source_sha256,
+    }
+    if local_project is None:
+        return details, "Local project metadata is missing."
+    if (
+        local_source_sha256 is not None
+        and remote_source_sha256 is not None
+        and local_source_sha256 != remote_source_sha256
+    ):
+        return details, "Project source_sha256 differs."
+    return details, None
+
+
+def _generated_analysis_source_input_details(
+    local_artifact: Artifact,
+    remote_artifact: _RemoteArtifact,
+    *,
+    local: _LocalState,
+    remote: _RemoteRequest,
+) -> tuple[dict[str, Any], str | None]:
+    local_metadata = _local_artifact_metadata(local_artifact)
+    remote_metadata = _remote_artifact_metadata(remote_artifact)
+    local_source_artifact = _analysis_local_source_artifact(
+        local,
+        project_id=local_artifact.project_id,
+        source_artifact_id=_str_field(local_metadata, "source_artifact_id"),
+    )
+    remote_source_artifact = _analysis_remote_source_artifact(
+        remote,
+        project_id=remote_artifact.project_id,
+        source_artifact_id=_str_field(remote_metadata, "source_artifact_id"),
+    )
+    local_metadata_source_id = _str_field(local_metadata, "source_artifact_id")
+    remote_metadata_source_id = _str_field(remote_metadata, "source_artifact_id")
+    local_metadata_source_hash = _metadata_source_artifact_sha256(local_metadata)
+    remote_metadata_source_hash = _metadata_source_artifact_sha256(remote_metadata)
+    local_source_id = (
+        local_source_artifact.id if local_source_artifact is not None else local_metadata_source_id
+    )
+    remote_source_id = (
+        remote_source_artifact.artifact_id
+        if remote_source_artifact is not None
+        else remote_metadata_source_id
+    )
+    local_source_hash = (
+        _normalize_sha256(local_source_artifact.content_sha256)
+        if local_source_artifact is not None
+        else local_metadata_source_hash
+    )
+    remote_source_hash = (
+        remote_source_artifact.content_sha256
+        if remote_source_artifact is not None
+        else remote_metadata_source_hash
+    )
+    details = {
+        "local_source_artifact_id": local_source_id,
+        "remote_source_artifact_id": remote_source_id,
+        "local_source_content_sha256": local_source_hash,
+        "remote_source_content_sha256": remote_source_hash,
+    }
+    if local_source_id is None or remote_source_id is None:
+        return details, "Analysis source artifact metadata is missing."
+    if local_source_id != remote_source_id:
+        return details, "Analysis source artifact IDs differ."
+    if local_source_hash is None or remote_source_hash is None or local_source_hash != remote_source_hash:
+        return details, "Analysis source artifact content hash differs."
+    return details, None
+
+
+def _generated_analysis_source_stem_details(
+    local_artifact: Artifact,
+    remote_artifact: _RemoteArtifact,
+    *,
+    local: _LocalState,
+    remote: _RemoteRequest,
+    local_source_artifact_id: str,
+    remote_source_artifact_id: str,
+) -> tuple[dict[str, Any], str | None]:
+    local_metadata = _local_artifact_metadata(local_artifact)
+    remote_metadata = _remote_artifact_metadata(remote_artifact)
+    local_stem_hashes = _analysis_metadata_source_stem_hashes(local_metadata)
+    remote_stem_hashes = _analysis_metadata_source_stem_hashes(remote_metadata)
+    source = "metadata" if local_stem_hashes is not None or remote_stem_hashes is not None else "artifacts"
+    if local_stem_hashes is None:
+        local_stem_hashes = _local_source_stem_hashes(
+            local,
+            project_id=local_artifact.project_id,
+            source_artifact_id=local_source_artifact_id,
+        )
+    if remote_stem_hashes is None:
+        remote_stem_hashes = _remote_source_stem_hashes(
+            remote,
+            project_id=remote_artifact.project_id,
+            source_artifact_id=remote_source_artifact_id,
+        )
+    details = {
+        "source_stem_hash_source": source,
+        "local_source_stem_content_sha256s": list(local_stem_hashes),
+        "remote_source_stem_content_sha256s": list(remote_stem_hashes),
+    }
+    if local_stem_hashes != remote_stem_hashes:
+        return details, "Analysis source-stem input hashes differ."
+    return details, None
+
+
+def _generated_analysis_timestamp_resolution(
+    local_artifact: Artifact,
+    remote_artifact: _RemoteArtifact,
+) -> tuple[dict[str, Any], bool, str]:
+    local_metadata = _local_artifact_metadata(local_artifact)
+    remote_metadata = _remote_artifact_metadata(remote_artifact)
+    local_timestamp, local_timestamp_source = _analysis_resolution_timestamp(
+        metadata=local_metadata,
+    )
+    remote_timestamp, remote_timestamp_source = _analysis_resolution_timestamp(
+        metadata=remote_metadata,
+    )
+    details = {
+        "local_resolution_timestamp": _datetime_detail(local_timestamp),
+        "local_resolution_timestamp_source": local_timestamp_source,
+        "remote_resolution_timestamp": _datetime_detail(remote_timestamp),
+        "remote_resolution_timestamp_source": remote_timestamp_source,
+    }
+    if local_timestamp is None or remote_timestamp is None:
+        return details, True, "Analysis generation timestamp is missing; keeping local analysis_json."
+    if remote_timestamp > local_timestamp:
+        return details, False, "Remote analysis_json generation timestamp is newer."
+    if local_timestamp > remote_timestamp:
+        return details, True, "Local analysis_json generation timestamp is newer."
+    return details, True, "Analysis generation timestamps tie; keeping local analysis_json."
+
+
+def _analysis_resolution_timestamp(
+    *,
+    metadata: Mapping[str, Any],
+) -> tuple[datetime | None, str]:
+    generated_at = _coerce_datetime(_first_field(metadata, "analysis_generated_at", default=None))
+    if generated_at is not None:
+        return generated_at, "metadata.analysis_generated_at"
+    return None, "missing"
+
+
+def _analysis_local_source_artifact(
+    local: _LocalState,
+    *,
+    project_id: str,
+    source_artifact_id: str | None,
+) -> Artifact | None:
+    if source_artifact_id is not None:
+        artifact = local.artifacts.get(source_artifact_id)
+        if artifact is None or artifact.project_id != project_id:
+            return None
+        return artifact
+    return _single_local_artifact_by_type(local, project_id=project_id, artifact_type="source_audio")
+
+
+def _analysis_remote_source_artifact(
+    remote: _RemoteRequest,
+    *,
+    project_id: str,
+    source_artifact_id: str | None,
+) -> _RemoteArtifact | None:
+    if source_artifact_id is not None:
+        artifact = remote.artifacts.get(source_artifact_id)
+        if artifact is None or artifact.project_id != project_id:
+            return None
+        return artifact
+    return _single_remote_artifact_by_type(remote, project_id=project_id, artifact_type="source_audio")
+
+
+def _single_local_artifact_by_type(
+    local: _LocalState,
+    *,
+    project_id: str,
+    artifact_type: str,
+) -> Artifact | None:
+    matches = [
+        artifact
+        for artifact in local.artifacts.values()
+        if artifact.project_id == project_id and _normalize_artifact_type(artifact.type) == artifact_type
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _single_remote_artifact_by_type(
+    remote: _RemoteRequest,
+    *,
+    project_id: str,
+    artifact_type: str,
+) -> _RemoteArtifact | None:
+    matches = [
+        artifact
+        for artifact in remote.artifacts.values()
+        if artifact.project_id == project_id and _normalize_artifact_type(artifact.type) == artifact_type
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _analysis_metadata_source_stem_hashes(metadata: Mapping[str, Any]) -> tuple[str, ...] | None:
+    for key in _ANALYSIS_SOURCE_STEM_HASH_METADATA_KEYS:
+        if key in metadata:
+            return _stable_hashes_from_value(metadata[key])
+    for key in _ANALYSIS_SOURCE_STEM_ARTIFACT_METADATA_KEYS:
+        if key in metadata:
+            return _stable_hashes_from_value(metadata[key])
+    return None
+
+
+def _metadata_source_artifact_sha256(metadata: Mapping[str, Any]) -> str | None:
+    for key in (
+        "source_artifact_sha256",
+        "source_artifact_content_sha256",
+        "source_content_sha256",
+        "source_sha256",
+    ):
+        content_hash = _normalize_sha256(metadata.get(key))
+        if content_hash is not None and _is_sha256(content_hash):
+            return content_hash
+    return None
+
+
+def _stable_hashes_from_value(value: object) -> tuple[str, ...]:
+    hashes: set[str] = set()
+
+    def collect(candidate: object) -> None:
+        if isinstance(candidate, Mapping):
+            for hash_key in ("content_sha256", "sha256", "content_hash"):
+                content_hash = _normalize_sha256(candidate.get(hash_key))
+                if content_hash is not None and _is_sha256(content_hash):
+                    hashes.add(content_hash)
+                    return
+            for child in candidate.values():
+                collect(child)
+            return
+        if isinstance(candidate, (list, tuple, set, frozenset)):
+            for child in candidate:
+                collect(child)
+            return
+        content_hash = _normalize_sha256(candidate)
+        if content_hash is not None and _is_sha256(content_hash):
+            hashes.add(content_hash)
+
+    collect(value)
+    return tuple(sorted(hashes))
+
+
+def _local_source_stem_hashes(
+    local: _LocalState,
+    *,
+    project_id: str,
+    source_artifact_id: str,
+) -> tuple[str, ...]:
+    hashes = [
+        content_hash
+        for artifact in local.artifacts.values()
+        if artifact.project_id == project_id
+        and _is_source_stem_artifact_type(artifact.type)
+        and _artifact_uses_source_artifact(artifact, source_artifact_id)
+        if (content_hash := _normalize_sha256(artifact.content_sha256)) is not None
+    ]
+    return tuple(sorted(hashes))
+
+
+def _remote_source_stem_hashes(
+    remote: _RemoteRequest,
+    *,
+    project_id: str,
+    source_artifact_id: str,
+) -> tuple[str, ...]:
+    hashes = [
+        artifact.content_sha256
+        for artifact in remote.artifacts.values()
+        if artifact.project_id == project_id
+        and _is_source_stem_artifact_type(artifact.type)
+        and _remote_artifact_uses_source_artifact(artifact, source_artifact_id)
+        and artifact.content_sha256 is not None
+    ]
+    return tuple(sorted(hashes))
+
+
+def _is_source_stem_artifact_type(artifact_type: str | None) -> bool:
+    normalized = _normalize_artifact_type(artifact_type)
+    return normalized in _ANALYSIS_SOURCE_STEM_ARTIFACT_TYPES
+
+
+def _artifact_uses_source_artifact(artifact: Artifact, source_artifact_id: str) -> bool:
+    metadata = _local_artifact_metadata(artifact)
+    if _str_field(metadata, "source_artifact_id") != source_artifact_id:
+        return False
+    source_type = _str_field(metadata, "source_artifact_type")
+    return source_type in {None, "source_audio"}
+
+
+def _remote_artifact_uses_source_artifact(artifact: _RemoteArtifact, source_artifact_id: str) -> bool:
+    metadata = _remote_artifact_metadata(artifact)
+    if _str_field(metadata, "source_artifact_id") != source_artifact_id:
+        return False
+    source_type = _str_field(metadata, "source_artifact_type")
+    return source_type in {None, "source_audio"}
+
+
+def _local_artifact_metadata(artifact: Artifact) -> Mapping[str, Any]:
+    metadata = artifact.metadata_json
+    return metadata if isinstance(metadata, Mapping) else {}
+
+
+def _remote_artifact_metadata(artifact: _RemoteArtifact) -> Mapping[str, Any]:
+    metadata = _first_field(artifact.raw, "metadata", "metadata_json", default={})
+    return metadata if isinstance(metadata, Mapping) else {}
+
+
+def _remote_artifact_can_regenerate(artifact: _RemoteArtifact) -> bool | None:
+    return _bool_field(artifact.raw, "can_regenerate")
+
+
+def _normalize_artifact_type(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+
+def _datetime_detail(value: datetime | None) -> str | None:
+    return None if value is None else value.isoformat()
+
+
 def _divergent_local_revision(
     remote_revision: _RemoteEntityRevision,
     local: _LocalState,
@@ -2730,6 +3343,19 @@ def _int_field(source: object, *names: str) -> int | None:
         return value
     if isinstance(value, str) and value.isdecimal():
         return int(value)
+    return None
+
+
+def _bool_field(source: object, *names: str) -> bool | None:
+    value = _first_field(source, *names, default=None)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
     return None
 
 

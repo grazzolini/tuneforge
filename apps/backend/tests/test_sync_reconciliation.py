@@ -165,6 +165,185 @@ def test_artifact_classification_uses_recorded_metadata_and_trusted_provider_cho
     assert _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, "art_duplicate_content") is not None
 
 
+def test_generated_analysis_same_hash_noops_even_when_remote_timestamp_is_newer(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    local_generated_at = datetime(2026, 1, 1, tzinfo=UTC)
+    remote_generated_at = datetime(2026, 1, 2, tzinfo=UTC)
+    analysis_hash = _sha("same generated analysis")
+    request = _seed_generated_analysis_divergence(
+        db_session,
+        tmp_path,
+        local_analysis_hash=analysis_hash,
+        remote_analysis_hash=analysis_hash,
+        local_generated_at=local_generated_at,
+        remote_generated_at=remote_generated_at,
+    )
+
+    plan = plan_sync_reconciliation(db_session, request)
+
+    analysis_item = _item(plan, ITEM_ARTIFACT, "art_generated_analysis")
+    assert analysis_item.status == "identical_content"
+    assert analysis_item.action_type == ACTION_NOOP
+    assert _action(plan, ACTION_FETCH_ARTIFACT_CONTENT, ITEM_ARTIFACT, "art_generated_analysis") is None
+    assert _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, "art_generated_analysis") is None
+    assert _action(plan, ACTION_RECORD_CONFLICT, ITEM_ARTIFACT, "art_generated_analysis") is None
+
+
+def test_generated_analysis_remote_newer_fetches_and_imports_without_conflict(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    local_hash = _sha("local generated analysis")
+    remote_hash = _sha("remote generated analysis")
+    request = _seed_generated_analysis_divergence(
+        db_session,
+        tmp_path,
+        local_analysis_hash=local_hash,
+        remote_analysis_hash=remote_hash,
+        local_generated_at=datetime(2026, 1, 1, tzinfo=UTC),
+        remote_generated_at=datetime(2026, 1, 2, tzinfo=UTC),
+    )
+
+    plan = plan_sync_reconciliation(db_session, request)
+
+    analysis_item = _item(plan, ITEM_ARTIFACT, "art_generated_analysis")
+    assert analysis_item.status == "remote_available"
+    assert analysis_item.action_type == ACTION_FETCH_ARTIFACT_CONTENT
+    assert analysis_item.chosen_provider_device_id == "peer-a"
+    assert analysis_item.details["artifact_type"] == "analysis_json"
+    assert analysis_item.details["artifact_id"] == "art_generated_analysis"
+    assert analysis_item.details["local_content_sha256"] == local_hash
+    assert analysis_item.details["remote_content_sha256"] == remote_hash
+    assert analysis_item.details["generated_divergence_resolvable"] is True
+    assert analysis_item.details["resolution"] == "fetch_remote"
+    assert _item(plan, ITEM_PROJECT, "proj_generated_analysis").status == "noop"
+    assert plan.summary.total_conflicts == 0
+    assert _action(plan, ACTION_RECORD_CONFLICT, ITEM_ARTIFACT, "art_generated_analysis") is None
+    assert _action(plan, ACTION_FETCH_ARTIFACT_CONTENT, ITEM_ARTIFACT, "art_generated_analysis") is not None
+    assert _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, "art_generated_analysis") is not None
+
+
+@pytest.mark.parametrize(
+    ("remote_generated_at", "expected_reason"),
+    [
+        (datetime(2025, 12, 31, tzinfo=UTC), "Local analysis_json generation timestamp is newer."),
+        (datetime(2026, 1, 1, tzinfo=UTC), "Analysis generation timestamps tie; keeping local analysis_json."),
+    ],
+)
+def test_generated_analysis_local_newer_or_tie_keeps_local_noop(
+    db_session: Session,
+    tmp_path: Path,
+    remote_generated_at: datetime,
+    expected_reason: str,
+) -> None:
+    local_hash = _sha("kept local generated analysis")
+    remote_hash = _sha(f"remote generated analysis {remote_generated_at.isoformat()}")
+    request = _seed_generated_analysis_divergence(
+        db_session,
+        tmp_path,
+        local_analysis_hash=local_hash,
+        remote_analysis_hash=remote_hash,
+        local_generated_at=datetime(2026, 1, 1, tzinfo=UTC),
+        remote_generated_at=remote_generated_at,
+    )
+
+    plan = plan_sync_reconciliation(db_session, request)
+
+    analysis_item = _item(plan, ITEM_ARTIFACT, "art_generated_analysis")
+    assert analysis_item.status == "noop"
+    assert analysis_item.action_type == ACTION_NOOP
+    assert analysis_item.reason == expected_reason
+    assert analysis_item.details["generated_divergence_resolvable"] is True
+    assert analysis_item.details["resolution"] == "keep_local"
+    assert _action(plan, ACTION_FETCH_ARTIFACT_CONTENT, ITEM_ARTIFACT, "art_generated_analysis") is None
+    assert _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, "art_generated_analysis") is None
+    assert _action(plan, ACTION_RECORD_CONFLICT, ITEM_ARTIFACT, "art_generated_analysis") is None
+
+
+@pytest.mark.parametrize(
+    ("missing_side", "expected_local_source", "expected_remote_source"),
+    [
+        ("local", "missing", "metadata.analysis_generated_at"),
+        ("remote", "metadata.analysis_generated_at", "missing"),
+    ],
+)
+def test_generated_analysis_missing_generation_metadata_keeps_local_noop(
+    db_session: Session,
+    tmp_path: Path,
+    missing_side: str,
+    expected_local_source: str,
+    expected_remote_source: str,
+) -> None:
+    request = _seed_generated_analysis_divergence(
+        db_session,
+        tmp_path,
+        local_analysis_hash=_sha("local generated analysis missing timestamp"),
+        remote_analysis_hash=_sha(f"remote generated analysis missing {missing_side} timestamp"),
+        local_generated_at=None if missing_side == "local" else datetime(2026, 1, 1, tzinfo=UTC),
+        remote_generated_at=None if missing_side == "remote" else datetime(2026, 1, 2, tzinfo=UTC),
+    )
+
+    plan = plan_sync_reconciliation(db_session, request)
+
+    analysis_item = _item(plan, ITEM_ARTIFACT, "art_generated_analysis")
+    assert analysis_item.status == "noop"
+    assert analysis_item.action_type == ACTION_NOOP
+    assert analysis_item.reason == "Analysis generation timestamp is missing; keeping local analysis_json."
+    assert analysis_item.details["resolution"] == "keep_local"
+    assert analysis_item.details["local_resolution_timestamp_source"] == expected_local_source
+    assert analysis_item.details["remote_resolution_timestamp_source"] == expected_remote_source
+    assert _action(plan, ACTION_FETCH_ARTIFACT_CONTENT, ITEM_ARTIFACT, "art_generated_analysis") is None
+    assert _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, "art_generated_analysis") is None
+    assert _action(plan, ACTION_RECORD_CONFLICT, ITEM_ARTIFACT, "art_generated_analysis") is None
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_detail"),
+    [
+        ("non_regenerable", "Both analysis_json artifacts must be marked regenerable."),
+        ("source_mismatch", "Analysis source artifact content hash differs."),
+    ],
+)
+def test_generated_analysis_unresolvable_divergence_stays_conflicted(
+    db_session: Session,
+    tmp_path: Path,
+    case: str,
+    expected_detail: str,
+) -> None:
+    source_hash = _sha("generated analysis source")
+    request = _seed_generated_analysis_divergence(
+        db_session,
+        tmp_path,
+        local_analysis_hash=_sha("local unresolvable analysis"),
+        remote_analysis_hash=_sha(f"remote unresolvable analysis {case}"),
+        local_generated_at=datetime(2026, 1, 1, tzinfo=UTC),
+        remote_generated_at=datetime(2026, 1, 2, tzinfo=UTC),
+        local_can_regenerate=case != "non_regenerable",
+        remote_source_hash=_sha("remote changed source") if case == "source_mismatch" else source_hash,
+    )
+
+    plan = plan_sync_reconciliation(db_session, request)
+
+    analysis_item = _item(plan, ITEM_ARTIFACT, "art_generated_analysis")
+    assert analysis_item.status == "conflicted"
+    assert analysis_item.action_type == ACTION_RECORD_CONFLICT
+    assert analysis_item.details["artifact_type"] == "analysis_json"
+    assert analysis_item.details["artifact_id"] == "art_generated_analysis"
+    assert analysis_item.details["local_content_sha256"] == _sha("local unresolvable analysis")
+    assert analysis_item.details["remote_content_sha256"] == _sha(f"remote unresolvable analysis {case}")
+    assert analysis_item.details["generated_divergence_resolvable"] is False
+    assert analysis_item.details["generated_divergence_unresolvable_reason"] == expected_detail
+    assert _action(plan, ACTION_FETCH_ARTIFACT_CONTENT, ITEM_ARTIFACT, "art_generated_analysis") is None
+    assert _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, "art_generated_analysis") is None
+    assert _action(plan, ACTION_RECORD_CONFLICT, ITEM_ARTIFACT, "art_generated_analysis") is not None
+    if case == "source_mismatch":
+        source_item = _item(plan, ITEM_ARTIFACT, "art_generated_source")
+        assert source_item.status == "conflicted"
+        assert source_item.details["artifact_type"] == "source_audio"
+
+
 def test_issue120_three_peer_group_uses_online_trusted_provider_deterministically(
     db_session: Session,
 ) -> None:
@@ -1464,19 +1643,27 @@ def _add_artifact(
     content_sha256: str,
     size_bytes: int,
     artifact_type: str = "stem",
+    artifact_format: str = "wav",
+    can_regenerate: bool = False,
+    metadata_json: dict[str, Any] | None = None,
+    created_at: datetime | None = None,
 ) -> Artifact:
+    artifact_kwargs: dict[str, Any] = {}
+    if created_at is not None:
+        artifact_kwargs["created_at"] = created_at
     artifact = Artifact(
         id=artifact_id,
         project_id=project_id,
         type=artifact_type,
-        format="wav",
+        format=artifact_format,
         path=str(path),
         content_sha256=content_sha256,
         size_bytes=size_bytes,
         generated_by="test",
         can_delete=True,
-        can_regenerate=False,
-        metadata_json={},
+        can_regenerate=can_regenerate,
+        metadata_json=metadata_json or {},
+        **artifact_kwargs,
     )
     session.add(artifact)
     session.flush()
@@ -1515,6 +1702,127 @@ def _add_revision(
     return revision
 
 
+def _seed_generated_analysis_divergence(
+    session: Session,
+    tmp_path: Path,
+    *,
+    local_analysis_hash: str,
+    remote_analysis_hash: str,
+    local_generated_at: datetime | None,
+    remote_generated_at: datetime | None,
+    local_can_regenerate: bool = True,
+    remote_can_regenerate: bool = True,
+    remote_source_hash: str | None = None,
+) -> dict[str, Any]:
+    _add_identity_and_peers(session)
+    project_id = "proj_generated_analysis"
+    source_artifact_id = "art_generated_source"
+    stem_artifact_id = "art_generated_drums"
+    analysis_artifact_id = "art_generated_analysis"
+    source_hash = _sha("generated analysis source")
+    source_size = 64
+    stem_hash = _sha("generated analysis source stem")
+    stem_size = 32
+    local_created_at = local_generated_at or datetime(2026, 1, 1, tzinfo=UTC)
+    remote_created_at = remote_generated_at or datetime(2026, 1, 2, tzinfo=UTC)
+    local_metadata = {"source_artifact_id": source_artifact_id}
+    if local_generated_at is not None:
+        local_metadata["analysis_generated_at"] = local_generated_at.isoformat()
+    remote_metadata = {"source_artifact_id": source_artifact_id}
+    if remote_generated_at is not None:
+        remote_metadata["analysis_generated_at"] = remote_generated_at.isoformat()
+    _add_project(session, project_id, source_sha256=source_hash)
+    _add_artifact(
+        session,
+        artifact_id=source_artifact_id,
+        project_id=project_id,
+        path=tmp_path / "source.wav",
+        content_sha256=source_hash,
+        size_bytes=source_size,
+        artifact_type="source_audio",
+        can_regenerate=False,
+    )
+    _add_artifact(
+        session,
+        artifact_id=stem_artifact_id,
+        project_id=project_id,
+        path=tmp_path / "drums.wav",
+        content_sha256=stem_hash,
+        size_bytes=stem_size,
+        artifact_type="drums_stem",
+        can_regenerate=True,
+        metadata_json={
+            "source_artifact_id": source_artifact_id,
+            "source_artifact_type": "source_audio",
+        },
+    )
+    _add_artifact(
+        session,
+        artifact_id=analysis_artifact_id,
+        project_id=project_id,
+        path=tmp_path / "analysis.json",
+        content_sha256=local_analysis_hash,
+        size_bytes=128,
+        artifact_type="analysis_json",
+        artifact_format="json",
+        can_regenerate=local_can_regenerate,
+        metadata_json=local_metadata,
+        created_at=local_created_at,
+    )
+    session.commit()
+
+    remote_source_hash = remote_source_hash or source_hash
+    return {
+        "remote_library": {
+            "projects": [{"project_id": project_id, "source_sha256": source_hash}],
+            "artifacts": [
+                _artifact_manifest(
+                    project_id,
+                    source_artifact_id,
+                    remote_source_hash,
+                    source_size,
+                    artifact_type="source_audio",
+                    can_regenerate=False,
+                    relative_path="source/source.wav",
+                    created_at=remote_created_at,
+                ),
+                _artifact_manifest(
+                    project_id,
+                    stem_artifact_id,
+                    stem_hash,
+                    stem_size,
+                    artifact_type="drums_stem",
+                    can_regenerate=True,
+                    metadata={
+                        "source_artifact_id": source_artifact_id,
+                        "source_artifact_type": "source_audio",
+                    },
+                    relative_path="stems/drums.wav",
+                    created_at=remote_created_at,
+                ),
+                _artifact_manifest(
+                    project_id,
+                    analysis_artifact_id,
+                    remote_analysis_hash,
+                    128,
+                    artifact_type="analysis_json",
+                    artifact_format="json",
+                    can_regenerate=remote_can_regenerate,
+                    metadata=remote_metadata,
+                    relative_path="analysis/analysis.json",
+                    created_at=remote_created_at,
+                ),
+            ],
+        },
+        "peer_inventory": [
+            {
+                "device_id": "peer-a",
+                "available_content_hashes": [remote_analysis_hash, remote_source_hash, stem_hash],
+            }
+        ],
+    }
+
+
 def _artifact_manifest(
     project_id: str,
     artifact_id: str,
@@ -1522,21 +1830,27 @@ def _artifact_manifest(
     size_bytes: int,
     *,
     artifact_type: str = "stem",
+    artifact_format: str = "wav",
+    can_regenerate: bool = False,
+    metadata: dict[str, Any] | None = None,
+    relative_path: str | None = None,
+    created_at: datetime | None = None,
 ) -> dict[str, Any]:
+    created = created_at or datetime.now(UTC)
     return {
         "artifact_id": artifact_id,
         "project_id": project_id,
         "type": artifact_type,
-        "format": "wav",
-        "relative_path": f"stems/{artifact_id}.wav",
+        "format": artifact_format,
+        "relative_path": relative_path or f"stems/{artifact_id}.wav",
         "content_sha256": content_sha256,
         "size_bytes": size_bytes,
         "generated_by": "test",
         "can_delete": True,
-        "can_regenerate": False,
+        "can_regenerate": can_regenerate,
         "cache_key": None,
-        "metadata": {},
-        "created_at": datetime.now(UTC),
+        "metadata": metadata or {},
+        "created_at": created,
     }
 
 

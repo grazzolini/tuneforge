@@ -18,6 +18,8 @@ LOCAL_METADATA_PATH_KEYS = {
     "playback_path",
     "imported_path",
 }
+ANALYSIS_ARTIFACT_TYPE = "analysis_json"
+ANALYSIS_GENERATED_AT_KEY = "analysis_generated_at"
 
 
 @dataclass(frozen=True)
@@ -150,7 +152,7 @@ def _artifact_metadata(artifact: Artifact) -> SyncMetadataArtifact:
         can_delete=artifact.can_delete,
         can_regenerate=artifact.can_regenerate,
         cache_key=artifact.cache_key,
-        metadata=_sanitize_metadata(artifact.metadata_json or {}),
+        metadata=artifact_sync_metadata(artifact),
         created_at=artifact.created_at,
     )
 
@@ -178,10 +180,32 @@ def sanitize_sync_metadata(value: Any) -> Any:
     return _sanitize_metadata(value)
 
 
+def artifact_sync_metadata(artifact: Artifact) -> dict[str, Any]:
+    sanitized = sanitize_sync_metadata(artifact.metadata_json or {})
+    metadata = sanitized if isinstance(sanitized, dict) else {}
+    if artifact.type != ANALYSIS_ARTIFACT_TYPE or ANALYSIS_GENERATED_AT_KEY in metadata:
+        return metadata
+    generated_at = _artifact_file_mtime_iso(artifact)
+    if generated_at is None:
+        return metadata
+    return {
+        **metadata,
+        ANALYSIS_GENERATED_AT_KEY: generated_at,
+    }
+
+
 def cast_metadata(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
     return cast(dict[str, Any], _sanitize_metadata(value))
+
+
+def _artifact_file_mtime_iso(artifact: Artifact) -> str | None:
+    try:
+        mtime = Path(artifact.path).expanduser().stat().st_mtime
+    except OSError:
+        return None
+    return datetime.fromtimestamp(mtime, UTC).isoformat()
 
 
 def _list_delete_tombstones(session: Session) -> list[SyncDeleteTombstone]:

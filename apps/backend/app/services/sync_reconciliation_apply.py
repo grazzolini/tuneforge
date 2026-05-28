@@ -8,7 +8,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
 from typing import Any
+from uuid import uuid4
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.errors import AppError
@@ -16,6 +18,7 @@ from app.models import Artifact, Project, SyncDeleteTombstone, SyncEntityRevisio
 from app.services.artifacts import register_artifact
 from app.services.paths import project_root
 from app.services.sync_manifest import (
+    SyncArtifactManifest,
     _coerce_project_manifest,
     _hydrate_current_entity_revisions,
     _normalize_revision_state,
@@ -33,6 +36,7 @@ from app.services.sync_reconciliation import (
     ACTION_NOOP,
     ACTION_RECORD_CONFLICT,
     ACTION_UPSERT_PROJECT_STATUS,
+    ITEM_ARTIFACT,
     ITEM_ENTITY_REVISION,
     ITEM_PROJECT,
     SyncReconciliationAction,
@@ -55,6 +59,7 @@ TIMING_PHASE_ACTION = "action"
 TIMING_PHASE_STAGING_CLEANUP = "staging_cleanup"
 
 _MISSING = object()
+_CANONICAL_ANALYSIS_JSON_RELATIVE_PATH = Path("analysis") / "analysis.json"
 
 
 @dataclass(frozen=True)
@@ -311,43 +316,78 @@ def _import_artifact_manifest(
     if artifact_manifest.project_id != project_id:
         return _result(action, APPLY_STATUS_FAILED, "Artifact manifest belongs to a different project.")
 
+    destination_has_manifest_bytes = False
     existing_artifact = session.get(Artifact, artifact_manifest.artifact_id)
     if existing_artifact is not None:
-        if (
+        has_manifest_conflict = (
             existing_artifact.project_id != project_id
             or existing_artifact.content_sha256 != artifact_manifest.content_sha256
             or existing_artifact.size_bytes != artifact_manifest.size_bytes
-        ):
+        )
+        overwrite_generated_analysis = _can_overwrite_generated_analysis_artifact(
+            action,
+            existing_artifact,
+            artifact_manifest,
+        )
+        if has_manifest_conflict and not overwrite_generated_analysis:
             return _result(action, APPLY_STATUS_FAILED, "Artifact manifest conflicts with a local artifact.")
         existing_path = Path(existing_artifact.path)
-        if (
+        existing_resolved_path = existing_path.resolve(strict=False)
+        if not has_manifest_conflict and (
             existing_path.exists()
             and existing_path.stat().st_size == artifact_manifest.size_bytes
             and file_sha256(existing_path) == artifact_manifest.content_sha256
         ):
             return _result(action, APPLY_STATUS_SATISFIED, "Artifact manifest is already imported locally.")
-        destination_path = existing_path
+        if overwrite_generated_analysis:
+            destination_path = _generated_analysis_overwrite_destination(project_id, existing_artifact)
+            if _destination_conflicts_with_existing_artifact(
+                session,
+                destination_path,
+                existing_artifact,
+            ) or (
+                destination_path.exists()
+                and existing_resolved_path != destination_path.resolve(strict=False)
+                and not _copied_artifact_matches_manifest(destination_path, artifact_manifest)
+            ):
+                return _result(action, APPLY_STATUS_FAILED, "Artifact destination already exists locally.")
+            destination_has_manifest_bytes = _copied_artifact_matches_manifest(destination_path, artifact_manifest)
+        else:
+            destination_path = existing_path
     else:
-        destination_path = project_root(project_id) / _safe_relative_path(artifact_manifest.relative_path)
+        destination_path = _resolve_project_destination_path(project_id, artifact_manifest.relative_path)
         if destination_path.exists():
-            return _result(action, APPLY_STATUS_FAILED, "Artifact destination already exists locally.")
+            if _destination_owned_by_other_artifact(
+                session,
+                destination_path,
+                exclude_artifact_id=artifact_manifest.artifact_id,
+            ) or not _copied_artifact_matches_manifest(destination_path, artifact_manifest):
+                return _result(action, APPLY_STATUS_FAILED, "Artifact destination already exists locally.")
+            destination_has_manifest_bytes = True
 
-    try:
-        staged_artifact = require_staged_artifact(
-            session,
-            content_sha256=artifact_manifest.content_sha256,
-            size_bytes=artifact_manifest.size_bytes,
-        )
-    except AppError as exc:
-        return _result(
-            action,
-            APPLY_STATUS_SKIPPED,
-            "Artifact manifest import is waiting for staged artifact content.",
-            details={"error_code": exc.code, "error_details": exc.details},
-        )
+    if not destination_has_manifest_bytes:
+        try:
+            staged_artifact = require_staged_artifact(
+                session,
+                content_sha256=artifact_manifest.content_sha256,
+                size_bytes=artifact_manifest.size_bytes,
+            )
+        except AppError as exc:
+            return _result(
+                action,
+                APPLY_STATUS_SKIPPED,
+                "Artifact manifest import is waiting for staged artifact content.",
+                details={"error_code": exc.code, "error_details": exc.details},
+            )
 
-    destination_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(staged_artifact.resolved_path, destination_path)
+        if not _copy_staged_artifact_verified(
+            staged_artifact.resolved_path,
+            destination_path,
+            artifact_manifest,
+        ):
+            return _result(action, APPLY_STATUS_FAILED, "Copied artifact bytes do not match the manifest.")
+    if not _copied_artifact_matches_manifest(destination_path, artifact_manifest):
+        return _result(action, APPLY_STATUS_FAILED, "Copied artifact bytes do not match the manifest.")
     if existing_artifact is None:
         imported_artifact = register_artifact(
             session,
@@ -364,18 +404,17 @@ def _import_artifact_manifest(
             created_at=artifact_manifest.created_at,
         )
     else:
-        existing_artifact.path = str(destination_path)
-        existing_artifact.metadata_json = deepcopy(artifact_manifest.metadata)
-        existing_artifact.cache_key = artifact_manifest.cache_key
-        existing_artifact.generated_by = artifact_manifest.generated_by
-        existing_artifact.can_delete = artifact_manifest.can_delete
-        existing_artifact.can_regenerate = artifact_manifest.can_regenerate
+        _update_existing_artifact_from_manifest(existing_artifact, artifact_manifest, destination_path)
         imported_artifact = existing_artifact
     if (
         imported_artifact.content_sha256 != artifact_manifest.content_sha256
         or imported_artifact.size_bytes != artifact_manifest.size_bytes
+        or not _copied_artifact_matches_manifest(Path(imported_artifact.path), artifact_manifest)
     ):
-        return _result(action, APPLY_STATUS_FAILED, "Copied artifact bytes do not match the manifest.")
+        raise AppError(
+            "SYNC_RECONCILIATION_COPIED_ARTIFACT_MISMATCH",
+            "Copied artifact bytes do not match the manifest.",
+        )
     if artifact_manifest.type == "analysis_json":
         hydrate_project_analysis_result_from_artifact(session, project_id)
     session.flush()
@@ -385,6 +424,164 @@ def _import_artifact_manifest(
         "Artifact manifest was imported into the existing project.",
         details={"artifact_id": artifact_manifest.artifact_id, "project_id": project_id},
     )
+
+
+def _can_overwrite_generated_analysis_artifact(
+    action: SyncReconciliationAction,
+    existing_artifact: Artifact,
+    artifact_manifest: SyncArtifactManifest,
+) -> bool:
+    return (
+        action.item_type == ITEM_ARTIFACT
+        and action.details.get("generated_divergence_candidate") is True
+        and action.details.get("generated_divergence_resolvable") is True
+        and action.details.get("resolution") == "fetch_remote"
+        and action.details.get("resolution_reason") == "Remote analysis_json generation timestamp is newer."
+        and action.details.get("artifact_type") == "analysis_json"
+        and action.details.get("artifact_id") == artifact_manifest.artifact_id
+        and action.details.get("remote_content_sha256") == artifact_manifest.content_sha256
+        and action.content_sha256 == artifact_manifest.content_sha256
+        and existing_artifact.id == artifact_manifest.artifact_id
+        and existing_artifact.project_id == artifact_manifest.project_id
+        and existing_artifact.type == "analysis_json"
+        and artifact_manifest.type == "analysis_json"
+        and existing_artifact.can_regenerate is True
+        and artifact_manifest.can_regenerate is True
+    )
+
+
+def _generated_analysis_overwrite_destination(
+    project_id: str,
+    existing_artifact: Artifact,
+) -> Path:
+    root = _resolved_project_root(project_id)
+    existing_path = Path(existing_artifact.path).resolve(strict=False)
+    if _is_safe_analysis_json_destination(root, existing_path):
+        return existing_path
+
+    destination_path = (root / _CANONICAL_ANALYSIS_JSON_RELATIVE_PATH).resolve(strict=False)
+    _ensure_path_under_project_root(root, destination_path)
+    return destination_path
+
+
+def _resolve_project_destination_path(project_id: str, relative_path: str) -> Path:
+    root = _resolved_project_root(project_id)
+    destination_path = (root / _safe_relative_path(relative_path)).resolve(strict=False)
+    _ensure_path_under_project_root(root, destination_path)
+    return destination_path
+
+
+def _resolved_project_root(project_id: str) -> Path:
+    return project_root(project_id).resolve(strict=False)
+
+
+def _ensure_path_under_project_root(root: Path, path: Path) -> None:
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise AppError(
+            "SYNC_RECONCILIATION_ARTIFACT_DESTINATION_INVALID",
+            "Artifact destination escapes the project root.",
+        ) from exc
+
+
+def _is_safe_analysis_json_destination(root: Path, path: Path) -> bool:
+    try:
+        relative_path = path.relative_to(root)
+    except ValueError:
+        return False
+    return (
+        len(relative_path.parts) == 2
+        and relative_path.parts[0] == "analysis"
+        and relative_path.suffix.lower() == ".json"
+    )
+
+
+def _copy_staged_artifact_verified(
+    source_path: Path,
+    destination_path: Path,
+    artifact_manifest: SyncArtifactManifest,
+) -> bool:
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = _temporary_artifact_copy_path(destination_path)
+    try:
+        shutil.copy2(source_path, temp_path)
+        if not _copied_artifact_matches_manifest(temp_path, artifact_manifest):
+            return False
+        temp_path.replace(destination_path)
+    except OSError as exc:
+        raise AppError(
+            "SYNC_RECONCILIATION_ARTIFACT_COPY_FAILED",
+            "A staged artifact could not be copied into the local project store.",
+        ) from exc
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return True
+
+
+def _temporary_artifact_copy_path(destination_path: Path) -> Path:
+    return destination_path.with_name(f".{destination_path.name}.{uuid4().hex}.tmp")
+
+
+def _destination_conflicts_with_existing_artifact(
+    session: Session,
+    destination_path: Path,
+    existing_artifact: Artifact,
+) -> bool:
+    destination_resolved = destination_path.resolve(strict=False)
+    existing_resolved = Path(existing_artifact.path).resolve(strict=False)
+    if destination_resolved == existing_resolved:
+        return False
+
+    for _artifact_id, artifact_path in session.execute(
+        select(Artifact.id, Artifact.path).where(Artifact.id != existing_artifact.id)
+    ):
+        if destination_resolved == Path(artifact_path).resolve(strict=False):
+            return True
+    return False
+
+
+def _destination_owned_by_other_artifact(
+    session: Session,
+    destination_path: Path,
+    *,
+    exclude_artifact_id: str,
+) -> bool:
+    destination_resolved = destination_path.resolve(strict=False)
+    for _artifact_id, artifact_path in session.execute(
+        select(Artifact.id, Artifact.path).where(Artifact.id != exclude_artifact_id)
+    ):
+        if destination_resolved == Path(artifact_path).resolve(strict=False):
+            return True
+    return False
+
+
+def _update_existing_artifact_from_manifest(
+    artifact: Artifact,
+    artifact_manifest: SyncArtifactManifest,
+    destination_path: Path,
+) -> None:
+    artifact.path = str(destination_path.resolve(strict=False))
+    artifact.metadata_json = deepcopy(artifact_manifest.metadata)
+    artifact.cache_key = artifact_manifest.cache_key
+    artifact.generated_by = artifact_manifest.generated_by
+    artifact.can_delete = artifact_manifest.can_delete
+    artifact.can_regenerate = artifact_manifest.can_regenerate
+    artifact.content_sha256 = artifact_manifest.content_sha256
+    artifact.size_bytes = artifact_manifest.size_bytes
+    artifact.created_at = artifact_manifest.created_at
+
+
+def _copied_artifact_matches_manifest(path: Path, artifact_manifest: SyncArtifactManifest) -> bool:
+    try:
+        if not path.exists() or path.stat().st_size != artifact_manifest.size_bytes:
+            return False
+    except OSError:
+        return False
+    return file_sha256(path) == artifact_manifest.content_sha256
 
 
 def _import_entity_revision(

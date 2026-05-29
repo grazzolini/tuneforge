@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { QRCodeSVG } from "qrcode.react";
 import {
@@ -26,6 +26,17 @@ import {
 const PAIRING_OFFER_TTL_SECONDS = 600;
 const SYNC_LISTENER_POLL_INTERVAL_MS = 2000;
 const EMPTY_NEARBY_PEERS: SyncNearbyPeer[] = [];
+const PROJECT_MUTATION_QUERY_KEYS = [
+  ["projects"],
+  ["project"],
+  ["lyrics"],
+  ["chords"],
+  ["analysis"],
+  ["sections"],
+  ["artifacts"],
+  ["jobs"],
+] as const;
+const SYNC_PROJECT_MUTATION_STATUSES = new Set(["applied", "conflicted", "deleted", "imported"]);
 
 type PairingOutputKind = "offer" | "response";
 type PairingOutput = {
@@ -360,6 +371,27 @@ function syncResultKey(status: SyncTransportRunStatus | null | undefined) {
   });
 }
 
+function positiveSyncCount(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function syncProjectResultMutatedLocalCache(result: SyncTransportProjectResult) {
+  return SYNC_PROJECT_MUTATION_STATUSES.has(result.status) ||
+    positiveSyncCount(result.imported_count) ||
+    positiveSyncCount(result.applied_count) ||
+    positiveSyncCount(result.deleted_count);
+}
+
+function syncResultMutatedLocalProjectCaches(status: SyncTransportRunStatus | null | undefined) {
+  if (!status) {
+    return false;
+  }
+  return positiveSyncCount(status.imported_project_count) ||
+    positiveSyncCount(status.applied_project_count) ||
+    positiveSyncCount(status.deleted_project_count) ||
+    mergeSyncProjectResults(status.project_results, status.manifest_errors).some(syncProjectResultMutatedLocalCache);
+}
+
 function formatSyncDuration(seconds: number | null | undefined) {
   if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) {
     return null;
@@ -627,6 +659,7 @@ export function ActivitySyncPanel() {
   const [syncNowPolling, setSyncNowPolling] = useState(false);
   const pairingCodeOutputRef = useRef<HTMLTextAreaElement | null>(null);
   const rawPairingOutputRef = useRef<HTMLTextAreaElement | null>(null);
+  const refreshedProjectSyncKeyRef = useRef<string | null>(null);
 
   const identityQuery = useQuery({
     queryKey: ["sync", "identity"],
@@ -699,13 +732,29 @@ export function ActivitySyncPanel() {
   }, [pairingInputValue]);
   const qrScanSupported = mobileCapabilitiesQuery.data?.platform === "android";
 
-  const refreshSyncQueries = async () => {
+  const refreshSyncQueries = useCallback(async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["sync", "listener"] }),
       queryClient.invalidateQueries({ queryKey: ["sync", "preflight"] }),
       queryClient.invalidateQueries({ queryKey: ["sync", "trusted-peers"] }),
     ]);
-  };
+  }, [queryClient]);
+
+  const refreshProjectMutationQueries = useCallback(async () => {
+    await Promise.all(
+      PROJECT_MUTATION_QUERY_KEYS.map((queryKey) => queryClient.invalidateQueries({ queryKey })),
+    );
+  }, [queryClient]);
+
+  useEffect(() => {
+    if (!listenerSyncKey || refreshedProjectSyncKeyRef.current === listenerSyncKey) {
+      return;
+    }
+    refreshedProjectSyncKeyRef.current = listenerSyncKey;
+    if (syncResultMutatedLocalProjectCaches(listenerSyncResult)) {
+      void refreshProjectMutationQueries();
+    }
+  }, [listenerSyncKey, listenerSyncResult, refreshProjectMutationQueries]);
 
   const startListenerMutation = useMutation({
     mutationFn: () => api.startSyncListener(),
@@ -809,7 +858,14 @@ export function ActivitySyncPanel() {
       setLastSyncMessage(syncStatusText(status, peersById));
       setLastSyncResult(status);
       setHiddenListenerSyncKey(listenerSyncKey);
-      await refreshSyncQueries();
+      const shouldRefreshProjectQueries = syncResultMutatedLocalProjectCaches(status);
+      if (shouldRefreshProjectQueries) {
+        refreshedProjectSyncKeyRef.current = syncResultKey(status);
+      }
+      await Promise.all([
+        refreshSyncQueries(),
+        shouldRefreshProjectQueries ? refreshProjectMutationQueries() : Promise.resolve(),
+      ]);
     },
     onError: (error) => {
       setLastSyncMessage(syncNowFailureText(error));

@@ -14,6 +14,8 @@ from sqlalchemy.orm import Session
 from app.errors import AppError
 from app.models import (
     Artifact,
+    ChordTimeline,
+    LyricsTranscript,
     Project,
     SyncDeleteTombstone,
     SyncEntityRevision,
@@ -210,6 +212,8 @@ class _LocalState:
     artifacts_by_content_sha256: dict[str, tuple[Artifact, ...]]
     entity_revisions: dict[str, SyncEntityRevision]
     entity_revisions_by_entity: dict[tuple[str, str, str], tuple[SyncEntityRevision, ...]]
+    chord_project_ids: frozenset[str]
+    lyrics_transcripts_by_project: dict[str, LyricsTranscript]
     tombstones: tuple[SyncDeleteTombstone, ...]
 
 
@@ -347,6 +351,13 @@ def plan_sync_reconciliation(
         )
 
     planned_artifact_project_ids = _planned_artifact_project_ids(actions)
+    embedded_revision_import_ids = _embedded_missing_current_revision_chain_ids(
+        remote,
+        local=local,
+        effective_tombstones=effective_tombstones,
+        planned_project_ids=planned_project_ids,
+        planned_artifact_project_ids=planned_artifact_project_ids,
+    )
     planned_revision_ids = set(local.entity_revisions)
     planned_remote_revisions_by_id: dict[str, _RemoteEntityRevision] = {}
     for revision in _sorted_remote_entity_revisions(remote.entity_revisions.values()):
@@ -364,6 +375,7 @@ def plan_sync_reconciliation(
             and revision.revision_id in remote.manifest_revision_ids_by_project.get(revision.project_id, frozenset())
             and revision.project_id not in planned_project_ids
             and _has_imported_local_project(local, revision.project_id)
+            and revision.revision_id not in embedded_revision_import_ids
             and not _is_deleted(
                 ITEM_ENTITY_REVISION,
                 revision.revision_id,
@@ -464,6 +476,13 @@ def _load_local_state(session: Session) -> _LocalState:
             )
         )
     )
+    chord_project_ids = frozenset(
+        session.scalars(select(ChordTimeline.project_id).order_by(ChordTimeline.project_id.asc()))
+    )
+    lyrics_transcripts = {
+        lyrics.project_id: lyrics
+        for lyrics in session.scalars(select(LyricsTranscript).order_by(LyricsTranscript.project_id.asc()))
+    }
 
     return _LocalState(
         identity=identity,
@@ -479,6 +498,8 @@ def _load_local_state(session: Session) -> _LocalState:
             key: tuple(sorted(rows, key=lambda revision: revision.id))
             for key, rows in revisions_by_entity.items()
         },
+        chord_project_ids=chord_project_ids,
+        lyrics_transcripts_by_project=lyrics_transcripts,
         tombstones=tombstones,
     )
 
@@ -486,6 +507,187 @@ def _load_local_state(session: Session) -> _LocalState:
 def _has_imported_local_project(local: _LocalState, project_id: str) -> bool:
     project = local.projects.get(project_id)
     return project is not None and not _is_sync_project_placeholder(project)
+
+
+def _embedded_current_revision_missing_locally(
+    revision: _RemoteEntityRevision,
+    local: _LocalState,
+) -> bool:
+    if revision.entity_type not in {"chords", "lyrics"}:
+        return False
+    if not _remote_revision_is_current(revision):
+        return False
+    entity_key = (revision.project_id, revision.entity_type, revision.entity_id)
+    if revision.entity_type == "chords":
+        if local.entity_revisions_by_entity.get(entity_key):
+            return False
+        return revision.project_id not in local.chord_project_ids
+    if not _remote_lyrics_revision_has_segments(revision):
+        return False
+    if _local_lyrics_revisions_block_embedded_import(local.entity_revisions_by_entity.get(entity_key, ())):
+        return False
+    local_lyrics = local.lyrics_transcripts_by_project.get(revision.project_id)
+    if local_lyrics is not None and _local_lyrics_transcript_blocks_embedded_import(local_lyrics):
+        return False
+    return True
+
+
+def _remote_lyrics_revision_has_segments(revision: _RemoteEntityRevision) -> bool:
+    payload = _first_field(revision.raw, "payload", default={})
+    return isinstance(payload, Mapping) and _lyrics_payload_has_segments(payload)
+
+
+def _local_lyrics_revisions_block_embedded_import(
+    revisions: Iterable[SyncEntityRevision],
+) -> bool:
+    return any(_local_lyrics_revision_blocks_embedded_import(revision) for revision in revisions)
+
+
+def _local_lyrics_revision_blocks_embedded_import(revision: SyncEntityRevision) -> bool:
+    payload = revision.payload_json
+    if not isinstance(payload, Mapping):
+        return True
+    if _lyrics_payload_has_segments(payload):
+        return True
+    if _bool_field(payload, "has_user_edits") is True:
+        return True
+    return _lyrics_fields_are_intentional_no_lyrics(
+        language_override=_str_field(payload, "language_override"),
+        source_kind=_str_field(payload, "source_kind"),
+    )
+
+
+def _local_lyrics_transcript_blocks_embedded_import(lyrics: LyricsTranscript) -> bool:
+    if _has_non_empty_segments(lyrics.segments_json):
+        return True
+    if lyrics.has_user_edits:
+        return True
+    return _lyrics_fields_are_intentional_no_lyrics(
+        language_override=lyrics.language_override,
+        source_kind=lyrics.source_kind,
+    )
+
+
+def _lyrics_payload_has_segments(payload: Mapping[str, Any]) -> bool:
+    return (
+        _has_non_empty_segments(_first_field(payload, "segments", default=[]))
+        or _has_non_empty_segments(_first_field(payload, "segments_json", default=[]))
+    )
+
+
+def _has_non_empty_segments(value: object) -> bool:
+    return isinstance(value, (list, tuple)) and len(value) > 0
+
+
+def _lyrics_fields_are_intentional_no_lyrics(
+    *,
+    language_override: str | None,
+    source_kind: str | None,
+) -> bool:
+    return (
+        _normalized_optional_string(language_override) == "none"
+        or _normalized_optional_string(source_kind) == "instrumental"
+    )
+
+
+def _normalized_optional_string(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    return normalized or None
+
+
+def _embedded_missing_current_revision_chain_ids(
+    remote: _RemoteRequest,
+    *,
+    local: _LocalState,
+    effective_tombstones: frozenset[tuple[str, str]],
+    planned_project_ids: frozenset[str],
+    planned_artifact_project_ids: Mapping[str, str],
+) -> frozenset[str]:
+    revision_ids: set[str] = set()
+    for project_id in sorted(remote.project_manifests_by_id):
+        if project_id in planned_project_ids or not _has_imported_local_project(local, project_id):
+            continue
+        manifest_revision_ids = remote.manifest_revision_ids_by_project.get(project_id, frozenset())
+        manifest_revisions_by_id = {
+            revision_id: remote.entity_revisions[revision_id]
+            for revision_id in manifest_revision_ids
+            if revision_id in remote.entity_revisions
+        }
+        current_counts = Counter(
+            (revision.project_id, revision.entity_type)
+            for revision in manifest_revisions_by_id.values()
+            if revision.entity_type in {"chords", "lyrics"} and _remote_revision_is_current(revision)
+        )
+        for revision in _sorted_remote_entity_revisions(manifest_revisions_by_id.values()):
+            if not _embedded_current_revision_missing_locally(revision, local):
+                continue
+            entity_key = (revision.project_id, revision.entity_type)
+            if current_counts[entity_key] != 1:
+                continue
+            chain = _embedded_revision_chain(revision, manifest_revisions_by_id)
+            if chain is None:
+                continue
+            if not _embedded_revision_chain_is_importable(
+                chain,
+                local=local,
+                effective_tombstones=effective_tombstones,
+                planned_artifact_project_ids=planned_artifact_project_ids,
+            ):
+                continue
+            revision_ids.update(chain_revision.revision_id for chain_revision in chain)
+    return frozenset(revision_ids)
+
+
+def _embedded_revision_chain(
+    revision: _RemoteEntityRevision,
+    manifest_revisions_by_id: Mapping[str, _RemoteEntityRevision],
+) -> list[_RemoteEntityRevision] | None:
+    chain: list[_RemoteEntityRevision] = []
+    current: _RemoteEntityRevision | None = revision
+    seen: set[str] = set()
+    entity_key = (revision.project_id, revision.entity_type, revision.entity_id)
+    while current is not None:
+        if current.revision_id in seen:
+            return None
+        if (current.project_id, current.entity_type, current.entity_id) != entity_key:
+            return None
+        seen.add(current.revision_id)
+        chain.append(current)
+        if current.base_revision_id is None:
+            break
+        current = manifest_revisions_by_id.get(current.base_revision_id)
+    return list(reversed(chain))
+
+
+def _embedded_revision_chain_is_importable(
+    chain: list[_RemoteEntityRevision],
+    *,
+    local: _LocalState,
+    effective_tombstones: frozenset[tuple[str, str]],
+    planned_artifact_project_ids: Mapping[str, str],
+) -> bool:
+    planned_remote_revisions_by_id: dict[str, _RemoteEntityRevision] = {}
+    for revision in chain:
+        if _is_deleted(ITEM_ENTITY_REVISION, revision.revision_id, revision.project_id, effective_tombstones):
+            return False
+        if _entity_revision_manifest_contract_error(revision) is not None:
+            return False
+        if _standalone_entity_revision_reference_error(
+            revision,
+            local=local,
+            planned_remote_revisions_by_id=planned_remote_revisions_by_id,
+            planned_artifact_project_ids=planned_artifact_project_ids,
+        ) is not None:
+            return False
+        planned_remote_revisions_by_id[revision.revision_id] = revision
+    return True
+
+
+def _remote_revision_is_current(revision: _RemoteEntityRevision) -> bool:
+    state = _str_field(revision.raw, "state")
+    return state is not None and state.lower() in {"active", "current"}
 
 
 def _is_sync_project_placeholder(project: Project) -> bool:
@@ -3154,6 +3356,12 @@ def _divergent_local_revision(
         if local_revision.base_revision_id != remote_revision.base_revision_id:
             continue
         if _local_revision_content_sha256(local_revision) == remote_revision.content_sha256:
+            continue
+        if (
+            remote_revision.entity_type == "lyrics"
+            and _remote_lyrics_revision_has_segments(remote_revision)
+            and not _local_lyrics_revision_blocks_embedded_import(local_revision)
+        ):
             continue
         return local_revision
     return None

@@ -79,6 +79,31 @@ export type SyncTrustedPeerCreateRequest = components["schemas"]["SyncTrustedPee
 export type SyncTrustedPeerResponse = components["schemas"]["SyncTrustedPeerResponse"];
 export type SyncTrustedPeerSchema = components["schemas"]["SyncTrustedPeerSchema"];
 export type SyncTrustedPeersResponse = components["schemas"]["SyncTrustedPeersResponse"];
+type GeneratedSyncPreflightResponse = components["schemas"]["SyncPreflightResponse"];
+export type SyncPreflightBlockingJob = {
+  id: string;
+  project_id: string | null;
+  project_name: string | null;
+  type: string;
+  status: string;
+  progress: number;
+  started_at: string | null;
+  updated_at: string;
+};
+export type SyncPreflightJobState = {
+  state: "ready" | "busy";
+  running_job_count: number;
+  pending_job_count: number;
+  blocking_job_count: number;
+  blocking_job_counts: Record<string, number>;
+  blocking_jobs: SyncPreflightBlockingJob[];
+  blocking_jobs_truncated: boolean;
+  guidance: string[];
+};
+export type SyncPreflightResponse = GeneratedSyncPreflightResponse & {
+  library_ok: boolean;
+  job_state: SyncPreflightJobState;
+};
 export type RuntimeCapabilities = MobileCapabilities | null;
 export type ProjectSyncSummary = {
   state: string;
@@ -383,6 +408,126 @@ function recordArrayField(record: Record<string, unknown> | null, keys: string[]
     }
   }
   return [];
+}
+
+function normalizeSyncPreflightBlockingJob(value: unknown): SyncPreflightBlockingJob | null {
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+  const id = firstStringField([record], ["id", "job_id", "jobId"]);
+  if (!id) {
+    return null;
+  }
+  return {
+    id,
+    project_id: firstStringField([record], ["project_id", "projectId"]),
+    project_name: firstStringField(
+      [record],
+      ["project_name", "projectName", "project_display_name", "projectDisplayName"],
+    ),
+    type: firstStringField([record], ["type", "job_type", "jobType"]) ?? "job",
+    status: firstStringField([record], ["status", "state"]) ?? "pending",
+    progress: numberField(record, ["progress", "progress_percent", "progressPercent"]) ?? 0,
+    started_at: dateTimeField(record, ["started_at", "startedAt"]),
+    updated_at: dateTimeField(record, ["updated_at", "updatedAt"]) ?? "",
+  };
+}
+
+function normalizeSyncPreflightJobCounts(value: unknown): Record<string, number> {
+  const record = asRecord(value);
+  if (!record) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(record).filter(
+      (entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]),
+    ),
+  );
+}
+
+function normalizeSyncPreflightJobState(value: unknown): SyncPreflightJobState {
+  const record = asRecord(value);
+  const rawBlockingJobs = Array.isArray(record?.blocking_jobs)
+    ? record.blocking_jobs
+    : Array.isArray(record?.blockingJobs)
+      ? record.blockingJobs
+      : [];
+  const blockingJobs = rawBlockingJobs
+    .map(normalizeSyncPreflightBlockingJob)
+    .filter((job): job is SyncPreflightBlockingJob => job !== null);
+  const blockingJobCounts = normalizeSyncPreflightJobCounts(record?.blocking_job_counts ?? record?.blockingJobCounts);
+  const runningJobCount =
+    numberField(record, ["running_job_count", "runningJobCount"]) ?? blockingJobCounts.running ?? 0;
+  const pendingJobCount =
+    numberField(record, ["pending_job_count", "pendingJobCount"]) ?? blockingJobCounts.pending ?? 0;
+  const countedBlockingJobs = Object.values(blockingJobCounts).reduce((total, count) => total + count, 0);
+  const explicitBlockingJobCount = numberField(record, ["blocking_job_count", "blockingJobCount"]);
+  const blockingJobCount = explicitBlockingJobCount ?? (countedBlockingJobs || blockingJobs.length);
+  const rawState = firstStringField([record], ["state", "status"]);
+  const state = rawState === "ready" || rawState === "busy"
+    ? rawState
+    : blockingJobCount > 0 ? "busy" : "ready";
+  return {
+    state,
+    running_job_count: runningJobCount,
+    pending_job_count: pendingJobCount,
+    blocking_job_count: blockingJobCount,
+    blocking_job_counts: {
+      ...blockingJobCounts,
+      pending: blockingJobCounts.pending ?? pendingJobCount,
+      running: blockingJobCounts.running ?? runningJobCount,
+    },
+    blocking_jobs: blockingJobs,
+    blocking_jobs_truncated: firstBooleanField([record], ["blocking_jobs_truncated", "blockingJobsTruncated"]) ?? false,
+    guidance: stringArrayField(record, ["guidance", "messages"]),
+  };
+}
+
+function normalizeSyncPreflightResponse(response: GeneratedSyncPreflightResponse): SyncPreflightResponse {
+  const record = asRecord(response);
+  const jobState = normalizeSyncPreflightJobState(record?.job_state ?? record?.jobState);
+  const libraryOk = firstBooleanField([record], ["library_ok", "libraryOk"]) ??
+    (
+      (record?.manual_cleanup_required === false || record?.manualCleanupRequired === false) &&
+      (response.missing_source_hash_projects ?? 0) === 0 &&
+      (response.invalid_source_hash_projects ?? 0) === 0 &&
+      (response.duplicate_source_hash_projects ?? 0) === 0 &&
+      (response.noncanonical_project_id_projects ?? 0) === 0
+    );
+  return {
+    ...response,
+    ok: Boolean(response.ok && libraryOk && jobState.blocking_job_count === 0),
+    library_ok: libraryOk,
+    job_state: jobState,
+  };
+}
+
+function mobileReadySyncPreflightResponse(): GeneratedSyncPreflightResponse {
+  return {
+    ok: true,
+    library_ok: true,
+    total_projects: 0,
+    ready_projects: 0,
+    missing_source_hash_projects: 0,
+    invalid_source_hash_projects: 0,
+    duplicate_source_hash_projects: 0,
+    noncanonical_project_id_projects: 0,
+    projects: [],
+    duplicate_groups: [],
+    job_state: {
+      state: "ready",
+      running_job_count: 0,
+      pending_job_count: 0,
+      blocking_job_count: 0,
+      blocking_job_counts: { running: 0, pending: 0 },
+      blocking_jobs: [],
+      blocking_jobs_truncated: false,
+      guidance: [],
+    },
+    manual_cleanup_required: false,
+    manual_cleanup_guidance: [],
+  };
 }
 
 function normalizeMetricKey(value: string) {
@@ -1348,6 +1493,7 @@ export type TuneForgeClient = {
   getJob: (jobId: string) => Promise<components["schemas"]["JobResponse"]>;
   cancelJob: (jobId: string) => Promise<components["schemas"]["JobResponse"]>;
   bulkJobs: (body: BulkJobRequest) => Promise<BulkJobsResponse>;
+  getSyncPreflight: () => Promise<SyncPreflightResponse>;
   getSyncIdentity: () => Promise<SyncLocalIdentityResponse>;
   createSyncPairingOffer: (body: SyncPairingOfferRequest) => Promise<SyncPairingOfferResponse>;
   answerSyncPairingOffer: (body: SyncPairingAnswerRequest) => Promise<SyncPairingAnswerResponse>;
@@ -1597,6 +1743,7 @@ function createHttpTuneForgeClient(): TuneForgeClient {
     cancelJob: (jobId: string) =>
       unwrap(client.POST("/api/v1/jobs/{job_id}/cancel", { params: { path: { job_id: jobId } } })),
     bulkJobs: (body: BulkJobRequest) => unwrap(client.POST("/api/v1/jobs/bulk", { body })),
+    getSyncPreflight: async () => normalizeSyncPreflightResponse(await unwrap(client.GET("/api/v1/sync/preflight"))),
     getSyncIdentity: () => unwrap(client.GET("/api/v1/sync/identity")),
     createSyncPairingOffer: (body: SyncPairingOfferRequest) =>
       isTauriRuntime()
@@ -1713,6 +1860,8 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     bulkJobs: async () => {
       throw unsupportedRuntimeError("Bulk jobs");
     },
+    getSyncPreflight: async () =>
+      normalizeSyncPreflightResponse(mobileReadySyncPreflightResponse()),
     getSyncIdentity: () => invokeMobile("mobile_get_sync_identity"),
     createSyncPairingOffer: (body: SyncPairingOfferRequest) =>
       invokeMobile("mobile_create_sync_pairing_offer", { payload: body }),
@@ -1810,6 +1959,7 @@ export const api: TuneForgeClient = {
   getJob: (jobId: string) => activeClient.getJob(jobId),
   cancelJob: (jobId: string) => activeClient.cancelJob(jobId),
   bulkJobs: (body: BulkJobRequest) => activeClient.bulkJobs(body),
+  getSyncPreflight: () => activeClient.getSyncPreflight(),
   getSyncIdentity: () => activeClient.getSyncIdentity(),
   createSyncPairingOffer: (body: SyncPairingOfferRequest) => activeClient.createSyncPairingOffer(body),
   answerSyncPairingOffer: (body: SyncPairingAnswerRequest) => activeClient.answerSyncPairingOffer(body),

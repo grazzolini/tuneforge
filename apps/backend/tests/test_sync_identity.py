@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.db import SessionLocal
-from app.models import Artifact, Project, SyncDeleteTombstone
+from app.models import Artifact, Job, Project, SyncDeleteTombstone
 from app.services.paths import project_root
 from app.services.sync_identity import (
     project_id_to_storage_key,
@@ -58,12 +58,23 @@ def test_sync_preflight_reports_ready_projects(client, sample_audio_file: Path) 
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
+    assert payload["library_ok"] is True
     assert payload["total_projects"] == 1
     assert payload["ready_projects"] == 1
     assert payload["missing_source_hash_projects"] == 0
     assert payload["invalid_source_hash_projects"] == 0
     assert payload["duplicate_source_hash_projects"] == 0
     assert payload["noncanonical_project_id_projects"] == 0
+    assert payload["job_state"] == {
+        "state": "ready",
+        "running_job_count": 0,
+        "pending_job_count": 0,
+        "blocking_job_count": 0,
+        "blocking_job_counts": {"pending": 0, "running": 0},
+        "blocking_jobs": [],
+        "blocking_jobs_truncated": False,
+        "guidance": [],
+    }
     assert payload["manual_cleanup_required"] is False
     assert payload["projects"] == [
         {
@@ -112,6 +123,168 @@ def test_sync_preflight_uses_stored_source_hash_before_original_copy(client, tmp
     assert payload["ok"] is True
     assert payload["projects"][0]["source_sha256"] == stored_hash
     assert payload["projects"][0]["source_hash_source"] == "database"
+
+
+def test_sync_preflight_blocks_pending_jobs_without_payload_leakage(
+    client,
+    sample_audio_file: Path,
+    tmp_path: Path,
+) -> None:
+    expected_hash = file_sha256(sample_audio_file)
+    assert expected_hash is not None
+    project_id = source_hash_to_project_id(expected_hash)
+    updated_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+    secret_path = tmp_path / "secret-source.wav"
+    with SessionLocal() as session:
+        session.add(
+            Project(
+                id=project_id,
+                display_name="Pending Fixture",
+                source_sha256=expected_hash,
+                source_path=str(sample_audio_file),
+                imported_path=str(sample_audio_file),
+            )
+        )
+        session.add(
+            Job(
+                id="job_pending_preflight",
+                project_id=project_id,
+                type="analyze",
+                status="pending",
+                progress=12,
+                payload_json={
+                    "source_path": str(secret_path),
+                    "audio_data": "raw-audio-bytes",
+                    "endpoint": "https://peer.example/sync",
+                },
+                created_at=updated_at,
+                updated_at=updated_at,
+            )
+        )
+        session.commit()
+
+    response = client.get("/api/v1/sync/preflight")
+
+    assert response.status_code == 200
+    assert str(tmp_path) not in response.text
+    assert "raw-audio-bytes" not in response.text
+    assert "peer.example" not in response.text
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["library_ok"] is True
+    assert payload["manual_cleanup_required"] is False
+    assert payload["job_state"]["state"] == "busy"
+    assert payload["job_state"]["pending_job_count"] == 1
+    assert payload["job_state"]["running_job_count"] == 0
+    assert payload["job_state"]["blocking_job_count"] == 1
+    assert payload["job_state"]["blocking_job_counts"] == {"pending": 1, "running": 0}
+    assert payload["job_state"]["blocking_jobs_truncated"] is False
+    assert payload["job_state"]["guidance"] == [
+        "Backend jobs are running. Sync can start, but backend work may delay sync endpoint responses."
+    ]
+    assert payload["job_state"]["blocking_jobs"] == [
+        {
+            "id": "job_pending_preflight",
+            "project_id": project_id,
+            "project_name": "Pending Fixture",
+            "type": "analyze",
+            "status": "pending",
+            "progress": 12,
+            "started_at": None,
+            "updated_at": "2026-01-02T03:04:05",
+        }
+    ]
+
+
+def test_sync_preflight_blocks_running_jobs(client, sample_audio_file: Path) -> None:
+    expected_hash = file_sha256(sample_audio_file)
+    assert expected_hash is not None
+    project_id = source_hash_to_project_id(expected_hash)
+    started_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+    updated_at = datetime(2026, 1, 2, 3, 5, 6, tzinfo=UTC)
+    with SessionLocal() as session:
+        session.add(
+            Project(
+                id=project_id,
+                display_name="Running Fixture",
+                source_sha256=expected_hash,
+                source_path=str(sample_audio_file),
+                imported_path=str(sample_audio_file),
+            )
+        )
+        session.add(
+            Job(
+                id="job_running_preflight",
+                project_id=project_id,
+                type="stems",
+                status="running",
+                progress=50,
+                payload_json={},
+                created_at=started_at,
+                started_at=started_at,
+                updated_at=updated_at,
+            )
+        )
+        session.commit()
+
+    response = client.get("/api/v1/sync/preflight")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["library_ok"] is True
+    assert payload["job_state"]["state"] == "busy"
+    assert payload["job_state"]["pending_job_count"] == 0
+    assert payload["job_state"]["running_job_count"] == 1
+    assert payload["job_state"]["blocking_job_count"] == 1
+    assert payload["job_state"]["blocking_jobs"][0] == {
+        "id": "job_running_preflight",
+        "project_id": project_id,
+        "project_name": "Running Fixture",
+        "type": "stems",
+        "status": "running",
+        "progress": 50,
+        "started_at": "2026-01-02T03:04:05",
+        "updated_at": "2026-01-02T03:05:06",
+    }
+
+
+def test_sync_preflight_caps_and_truncates_blocking_jobs(client) -> None:
+    created_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+    with SessionLocal() as session:
+        session.add_all(
+            [
+                Job(
+                    id=f"job_cap_{index:02d}",
+                    project_id=None,
+                    type="export",
+                    status="pending",
+                    progress=index,
+                    payload_json={"path": f"/tmp/private-{index}.wav"},
+                    created_at=created_at,
+                    updated_at=created_at,
+                )
+                for index in range(25)
+            ]
+        )
+        session.commit()
+
+    response = client.get("/api/v1/sync/preflight")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["library_ok"] is True
+    assert payload["job_state"]["pending_job_count"] == 25
+    assert payload["job_state"]["running_job_count"] == 0
+    assert payload["job_state"]["blocking_job_count"] == 25
+    assert payload["job_state"]["blocking_job_counts"] == {"pending": 25, "running": 0}
+    assert len(payload["job_state"]["blocking_jobs"]) == 20
+    assert payload["job_state"]["blocking_jobs_truncated"] is True
+    assert {job["id"] for job in payload["job_state"]["blocking_jobs"]} == {
+        f"job_cap_{index:02d}" for index in range(20)
+    }
+    assert "/tmp/private" not in response.text
 
 
 def test_sync_metadata_exposes_sync_safe_project_and_artifact_metadata(

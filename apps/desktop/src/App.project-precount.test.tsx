@@ -125,6 +125,27 @@ function audioPlayStartTime(callIndex = 0) {
   return payload?.startTimeSeconds ?? null;
 }
 
+function expectPrecountClicksCancelled(
+  audioContext: ReturnType<typeof getMockAudioContexts>[number] | undefined,
+) {
+  expect(audioContext?.createdOscillators).toHaveLength(4);
+  audioContext?.createdOscillators.forEach((oscillator) => {
+    expect(oscillator.stop).toHaveBeenCalledTimes(2);
+    expect(oscillator.disconnect).toHaveBeenCalledTimes(1);
+  });
+}
+
+function createDeferred<T>(_type?: T) {
+  void _type;
+  let resolve: (value: T) => void = () => undefined;
+  let reject: (error: Error) => void = () => undefined;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, reject, resolve };
+}
+
 describe("Desktop app project playback pre-count", () => {
   beforeEach(resetAppTestHarness);
 
@@ -250,6 +271,7 @@ describe("Desktop app project playback pre-count", () => {
     await flushMicrotasks();
     const audioContext = getMockAudioContexts()[0];
     fireEvent.click(screen.getByRole("button", { name: "Stop playback" }));
+    expectPrecountClicksCancelled(audioContext);
 
     act(() => {
       vi.advanceTimersByTime(2500);
@@ -262,6 +284,54 @@ describe("Desktop app project playback pre-count", () => {
       reason: "playback-stopped",
       sequence: readPlaybackE2ETelemetry().countIn.lastScheduled?.sequence,
       trigger: "song-start",
+    });
+    expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+  });
+
+  it("cancels loop pre-count clicks and resets to loop start on stop", async () => {
+    const user = userEvent.setup();
+    setupTempoAnalysis();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    setPlaybackPosition("12.25");
+    await user.click(screen.getByRole("button", { name: "Set loop start" }));
+    setPlaybackPosition("24.5");
+    await user.click(screen.getByRole("button", { name: "Set loop end" }));
+
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByLabelText("Enable loop pre-count"));
+    fireEvent.click(screen.getByRole("button", { name: "Play playback" }));
+    await flushMicrotasks();
+
+    const audioContext = getMockAudioContexts()[0];
+    expect(audioContext?.createdSources).toHaveLength(0);
+    expect(audioContext?.createdOscillators).toHaveLength(4);
+    fireEvent.click(screen.getByRole("button", { name: "Stop playback" }));
+    expectPrecountClicksCancelled(audioContext);
+
+    act(() => {
+      vi.advanceTimersByTime(2500);
+    });
+
+    expect(audioContext?.createdSources).toHaveLength(0);
+    expect(sourceAudio.currentTime).toBeCloseTo(12.25, 3);
+    expect(readPlaybackE2ETelemetry()).toMatchObject({
+      countIn: {
+        active: false,
+        lastCancelled: {
+          reason: "playback-stopped",
+          sequence: readPlaybackE2ETelemetry().countIn.lastScheduled?.sequence,
+          trigger: "loop-start",
+        },
+      },
+      loopRange: { startSeconds: 12.25, endSeconds: 24.5 },
+      positionSeconds: 12.25,
+      transportState: "stopped",
     });
     expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
   });
@@ -505,6 +575,611 @@ describe("Desktop app project playback pre-count", () => {
         transportState: "playing",
       }),
     );
+    restoreTauriRuntime();
+  });
+
+  it("stops paused native playback before replaying from song start", async () => {
+    const restoreTauriRuntime = enableNativePlayback();
+    const user = userEvent.setup();
+    setupTempoAnalysis();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    setPlaybackPosition("18.75");
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() => expect(invokeCalls("audio_play")).toHaveLength(1));
+    expect(audioPlayStartTime()).toBeCloseTo(18.75, 3);
+
+    act(() => {
+      emitMockNativePlaybackPosition({
+        sessionId: latestNativeSessionId(),
+        positionSeconds: 23.5,
+        durationSeconds: 182,
+        state: "playing",
+      });
+    });
+    await waitFor(() =>
+      expect(readPlaybackE2ETelemetry()).toMatchObject({
+        activePath: "native",
+        positionSeconds: 23.5,
+        transportState: "playing",
+      }),
+    );
+
+    const pauseDeferred = createDeferred({
+      sessionId: latestNativeSessionId(),
+      state: "paused",
+      positionSeconds: 23.5,
+      durationSeconds: 182,
+      playbackRate: 1,
+      nativePlaybackSupported: true,
+      fallbackReason: null,
+      lanes: [],
+      bufferHealth: [],
+    });
+    const stopDeferred = createDeferred({
+      sessionId: latestNativeSessionId(),
+      state: "stopped",
+      positionSeconds: 0,
+      durationSeconds: 182,
+      playbackRate: 1,
+      nativePlaybackSupported: true,
+      fallbackReason: null,
+      lanes: [],
+      bufferHealth: [],
+    });
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation();
+    invoke.mockImplementation(async (command, args) => {
+      if (command === "audio_pause") {
+        return pauseDeferred.promise;
+      }
+      if (command === "audio_stop") {
+        return stopDeferred.promise;
+      }
+      if (!originalInvoke) {
+        throw new Error(`Unhandled invoke command ${command}`);
+      }
+      return originalInvoke(command, args);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Pause playback" }));
+    await waitFor(() => expect(invokeCalls("audio_pause")).toHaveLength(1));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument(),
+    );
+    expect(readPlaybackE2ETelemetry()).toMatchObject({
+      activePath: "native",
+      positionSeconds: 23.5,
+      transportState: "paused",
+    });
+    expect(invokeCalls("audio_stop")).toHaveLength(0);
+
+    await user.click(screen.getByRole("button", { name: "Stop playback" }));
+    await waitFor(() => expect(invokeCalls("audio_stop")).toHaveLength(1));
+    await waitFor(() =>
+      expect(readPlaybackE2ETelemetry()).toMatchObject({
+        activePath: "none",
+        positionSeconds: 0,
+        transportState: "stopped",
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await flushMicrotasks();
+    expect(invokeCalls("audio_play")).toHaveLength(1);
+    pauseDeferred.resolve({
+      sessionId: latestNativeSessionId(),
+      state: "paused",
+      positionSeconds: 23.5,
+      durationSeconds: 182,
+      playbackRate: 1,
+      nativePlaybackSupported: true,
+      fallbackReason: null,
+      lanes: [],
+      bufferHealth: [],
+    });
+    await flushMicrotasks();
+    expect(readPlaybackE2ETelemetry()).toMatchObject({
+      activePath: "none",
+      positionSeconds: 0,
+      transportState: "stopped",
+    });
+    expect(invokeCalls("audio_play")).toHaveLength(1);
+    stopDeferred.resolve({
+      sessionId: latestNativeSessionId(),
+      state: "stopped",
+      positionSeconds: 0,
+      durationSeconds: 182,
+      playbackRate: 1,
+      nativePlaybackSupported: true,
+      fallbackReason: null,
+      lanes: [],
+      bufferHealth: [],
+    });
+    await waitFor(() => expect(invokeCalls("audio_play")).toHaveLength(2));
+    expect(audioPlayStartTime(1)).toBe(0);
+    await waitFor(() =>
+      expect(readPlaybackE2ETelemetry()).toMatchObject({
+        activePath: "native",
+        positionSeconds: 0,
+        transportState: "playing",
+      }),
+    );
+    if (originalInvoke) {
+      invoke.mockImplementation(originalInvoke);
+    }
+    restoreTauriRuntime();
+  });
+
+  it("ignores stale native play completion after stop", async () => {
+    const restoreTauriRuntime = enableNativePlayback();
+    const user = userEvent.setup();
+    setupTempoAnalysis();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    setPlaybackPosition("18.75");
+
+    const playDeferred = createDeferred({
+      sessionId: "proj_123:art_source",
+      state: "playing",
+      positionSeconds: 18.75,
+      durationSeconds: 182,
+      playbackRate: 1,
+      nativePlaybackSupported: true,
+      fallbackReason: null,
+      lanes: [],
+      bufferHealth: [],
+    });
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation();
+    invoke.mockImplementation(async (command, args) => {
+      if (command === "audio_play") {
+        return playDeferred.promise;
+      }
+      if (!originalInvoke) {
+        throw new Error(`Unhandled invoke command ${command}`);
+      }
+      return originalInvoke(command, args);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() => expect(invokeCalls("audio_play")).toHaveLength(1));
+    expect(audioPlayStartTime()).toBeCloseTo(18.75, 3);
+
+    await user.click(screen.getByRole("button", { name: "Stop playback" }));
+    await waitFor(() => expect(invokeCalls("audio_stop")).toHaveLength(1));
+    await waitFor(() =>
+      expect(readPlaybackE2ETelemetry()).toMatchObject({
+        activePath: "none",
+        positionSeconds: 0,
+        transportState: "stopped",
+      }),
+    );
+
+    playDeferred.resolve({
+      sessionId: latestNativeSessionId(),
+      state: "playing",
+      positionSeconds: 18.75,
+      durationSeconds: 182,
+      playbackRate: 1,
+      nativePlaybackSupported: true,
+      fallbackReason: null,
+      lanes: [],
+      bufferHealth: [],
+    });
+    await waitFor(() => expect(invokeCalls("audio_stop")).toHaveLength(2));
+    expect(readPlaybackE2ETelemetry()).toMatchObject({
+      activePath: "none",
+      positionSeconds: 0,
+      transportState: "stopped",
+    });
+    expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+    if (originalInvoke) {
+      invoke.mockImplementation(originalInvoke);
+    }
+    restoreTauriRuntime();
+  });
+
+  it("does not stop newer native replay when stale play completes", async () => {
+    const restoreTauriRuntime = enableNativePlayback();
+    const user = userEvent.setup();
+    setupTempoAnalysis();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    setPlaybackPosition("18.75");
+
+    const firstPlayDeferred = createDeferred({
+      sessionId: "proj_123:art_source",
+      state: "playing",
+      positionSeconds: 18.75,
+      durationSeconds: 182,
+      playbackRate: 1,
+      nativePlaybackSupported: true,
+      fallbackReason: null,
+      lanes: [],
+      bufferHealth: [],
+    });
+    const secondPlayDeferred = createDeferred({
+      sessionId: "proj_123:art_source",
+      state: "playing",
+      positionSeconds: 0,
+      durationSeconds: 182,
+      playbackRate: 1,
+      nativePlaybackSupported: true,
+      fallbackReason: null,
+      lanes: [],
+      bufferHealth: [],
+    });
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation();
+    invoke.mockImplementation(async (command, args) => {
+      if (command === "audio_play") {
+        return invokeCalls("audio_play").length === 1
+          ? firstPlayDeferred.promise
+          : secondPlayDeferred.promise;
+      }
+      if (!originalInvoke) {
+        throw new Error(`Unhandled invoke command ${command}`);
+      }
+      return originalInvoke(command, args);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() => expect(invokeCalls("audio_play")).toHaveLength(1));
+    expect(audioPlayStartTime()).toBeCloseTo(18.75, 3);
+
+    await user.click(screen.getByRole("button", { name: "Stop playback" }));
+    await waitFor(() => expect(invokeCalls("audio_stop")).toHaveLength(1));
+    await waitFor(() =>
+      expect(readPlaybackE2ETelemetry()).toMatchObject({
+        activePath: "none",
+        positionSeconds: 0,
+        transportState: "stopped",
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() => expect(invokeCalls("audio_play")).toHaveLength(2));
+    expect(audioPlayStartTime(1)).toBe(0);
+    secondPlayDeferred.resolve({
+      sessionId: latestNativeSessionId(),
+      state: "playing",
+      positionSeconds: 0,
+      durationSeconds: 182,
+      playbackRate: 1,
+      nativePlaybackSupported: true,
+      fallbackReason: null,
+      lanes: [],
+      bufferHealth: [],
+    });
+    firstPlayDeferred.resolve({
+      sessionId: latestNativeSessionId(),
+      state: "playing",
+      positionSeconds: 18.75,
+      durationSeconds: 182,
+      playbackRate: 1,
+      nativePlaybackSupported: true,
+      fallbackReason: null,
+      lanes: [],
+      bufferHealth: [],
+    });
+    await waitFor(() =>
+      expect(readPlaybackE2ETelemetry()).toMatchObject({
+        activePath: "native",
+        positionSeconds: 0,
+        transportState: "playing",
+      }),
+    );
+    expect(invokeCalls("audio_stop")).toHaveLength(1);
+    expect(readPlaybackE2ETelemetry()).toMatchObject({
+      activePath: "native",
+      positionSeconds: 0,
+      transportState: "playing",
+    });
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+    if (originalInvoke) {
+      invoke.mockImplementation(originalInvoke);
+    }
+    restoreTauriRuntime();
+  });
+
+  it("ignores stale native play failure after newer replay starts", async () => {
+    const restoreTauriRuntime = enableNativePlayback();
+    const user = userEvent.setup();
+    setupTempoAnalysis();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    setPlaybackPosition("18.75");
+
+    const firstPlayDeferred = createDeferred({
+      sessionId: "proj_123:art_source",
+      state: "playing",
+      positionSeconds: 18.75,
+      durationSeconds: 182,
+      playbackRate: 1,
+      nativePlaybackSupported: true,
+      fallbackReason: null,
+      lanes: [],
+      bufferHealth: [],
+    });
+    const secondPlayDeferred = createDeferred({
+      sessionId: "proj_123:art_source",
+      state: "playing",
+      positionSeconds: 0,
+      durationSeconds: 182,
+      playbackRate: 1,
+      nativePlaybackSupported: true,
+      fallbackReason: null,
+      lanes: [],
+      bufferHealth: [],
+    });
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation();
+    invoke.mockImplementation(async (command, args) => {
+      if (command === "audio_play") {
+        return invokeCalls("audio_play").length === 1
+          ? firstPlayDeferred.promise
+          : secondPlayDeferred.promise;
+      }
+      if (!originalInvoke) {
+        throw new Error(`Unhandled invoke command ${command}`);
+      }
+      return originalInvoke(command, args);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() => expect(invokeCalls("audio_play")).toHaveLength(1));
+
+    await user.click(screen.getByRole("button", { name: "Stop playback" }));
+    await waitFor(() => expect(invokeCalls("audio_stop")).toHaveLength(1));
+    await waitFor(() =>
+      expect(readPlaybackE2ETelemetry()).toMatchObject({
+        activePath: "none",
+        positionSeconds: 0,
+        transportState: "stopped",
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() => expect(invokeCalls("audio_play")).toHaveLength(2));
+    secondPlayDeferred.resolve({
+      sessionId: latestNativeSessionId(),
+      state: "playing",
+      positionSeconds: 0,
+      durationSeconds: 182,
+      playbackRate: 1,
+      nativePlaybackSupported: true,
+      fallbackReason: null,
+      lanes: [],
+      bufferHealth: [],
+    });
+    await waitFor(() =>
+      expect(readPlaybackE2ETelemetry()).toMatchObject({
+        activePath: "native",
+        positionSeconds: 0,
+        transportState: "playing",
+      }),
+    );
+
+    firstPlayDeferred.reject(new Error("stale native play failed"));
+    await flushMicrotasks();
+    expect(invokeCalls("audio_stop")).toHaveLength(1);
+    expect(readPlaybackE2ETelemetry()).toMatchObject({
+      activePath: "native",
+      positionSeconds: 0,
+      transportState: "playing",
+    });
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+    if (originalInvoke) {
+      invoke.mockImplementation(originalInvoke);
+    }
+    restoreTauriRuntime();
+  });
+
+  it("does not stop pending newer native replay when stale play completes", async () => {
+    const restoreTauriRuntime = enableNativePlayback();
+    const user = userEvent.setup();
+    setupTempoAnalysis();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    setPlaybackPosition("18.75");
+
+    const firstPlayDeferred = createDeferred({
+      sessionId: "proj_123:art_source",
+      state: "playing",
+      positionSeconds: 18.75,
+      durationSeconds: 182,
+      playbackRate: 1,
+      nativePlaybackSupported: true,
+      fallbackReason: null,
+      lanes: [],
+      bufferHealth: [],
+    });
+    const secondPlayDeferred = createDeferred({
+      sessionId: "proj_123:art_source",
+      state: "playing",
+      positionSeconds: 0,
+      durationSeconds: 182,
+      playbackRate: 1,
+      nativePlaybackSupported: true,
+      fallbackReason: null,
+      lanes: [],
+      bufferHealth: [],
+    });
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation();
+    invoke.mockImplementation(async (command, args) => {
+      if (command === "audio_play") {
+        return invokeCalls("audio_play").length === 1
+          ? firstPlayDeferred.promise
+          : secondPlayDeferred.promise;
+      }
+      if (!originalInvoke) {
+        throw new Error(`Unhandled invoke command ${command}`);
+      }
+      return originalInvoke(command, args);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() => expect(invokeCalls("audio_play")).toHaveLength(1));
+
+    await user.click(screen.getByRole("button", { name: "Stop playback" }));
+    await waitFor(() => expect(invokeCalls("audio_stop")).toHaveLength(1));
+    await waitFor(() =>
+      expect(readPlaybackE2ETelemetry()).toMatchObject({
+        activePath: "none",
+        positionSeconds: 0,
+        transportState: "stopped",
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() => expect(invokeCalls("audio_play")).toHaveLength(2));
+    expect(audioPlayStartTime(1)).toBe(0);
+
+    firstPlayDeferred.resolve({
+      sessionId: latestNativeSessionId(),
+      state: "playing",
+      positionSeconds: 18.75,
+      durationSeconds: 182,
+      playbackRate: 1,
+      nativePlaybackSupported: true,
+      fallbackReason: null,
+      lanes: [],
+      bufferHealth: [],
+    });
+    await flushMicrotasks();
+    expect(invokeCalls("audio_stop")).toHaveLength(1);
+    expect(readPlaybackE2ETelemetry()).toMatchObject({
+      activePath: "none",
+      positionSeconds: 0,
+      transportState: "stopped",
+    });
+
+    secondPlayDeferred.resolve({
+      sessionId: latestNativeSessionId(),
+      state: "playing",
+      positionSeconds: 0,
+      durationSeconds: 182,
+      playbackRate: 1,
+      nativePlaybackSupported: true,
+      fallbackReason: null,
+      lanes: [],
+      bufferHealth: [],
+    });
+    await waitFor(() =>
+      expect(readPlaybackE2ETelemetry()).toMatchObject({
+        activePath: "native",
+        positionSeconds: 0,
+        transportState: "playing",
+      }),
+    );
+    expect(invokeCalls("audio_stop")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+    if (originalInvoke) {
+      invoke.mockImplementation(originalInvoke);
+    }
+    restoreTauriRuntime();
+  });
+
+  it("stops stale native play if pending newer replay fails", async () => {
+    const restoreTauriRuntime = enableNativePlayback();
+    const user = userEvent.setup();
+    setupTempoAnalysis();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    setPlaybackPosition("18.75");
+
+    const firstPlayDeferred = createDeferred({
+      sessionId: "proj_123:art_source",
+      state: "playing",
+      positionSeconds: 18.75,
+      durationSeconds: 182,
+      playbackRate: 1,
+      nativePlaybackSupported: true,
+      fallbackReason: null,
+      lanes: [],
+      bufferHealth: [],
+    });
+    const secondPlayDeferred = createDeferred({
+      sessionId: "proj_123:art_source",
+      state: "playing",
+      positionSeconds: 0,
+      durationSeconds: 182,
+      playbackRate: 1,
+      nativePlaybackSupported: true,
+      fallbackReason: null,
+      lanes: [],
+      bufferHealth: [],
+    });
+    const invoke = getMockInvoke();
+    const originalInvoke = invoke.getMockImplementation();
+    invoke.mockImplementation(async (command, args) => {
+      if (command === "audio_play") {
+        return invokeCalls("audio_play").length === 1
+          ? firstPlayDeferred.promise
+          : secondPlayDeferred.promise;
+      }
+      if (!originalInvoke) {
+        throw new Error(`Unhandled invoke command ${command}`);
+      }
+      return originalInvoke(command, args);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() => expect(invokeCalls("audio_play")).toHaveLength(1));
+
+    await user.click(screen.getByRole("button", { name: "Stop playback" }));
+    await waitFor(() => expect(invokeCalls("audio_stop")).toHaveLength(1));
+    await waitFor(() =>
+      expect(readPlaybackE2ETelemetry()).toMatchObject({
+        activePath: "none",
+        positionSeconds: 0,
+        transportState: "stopped",
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() => expect(invokeCalls("audio_play")).toHaveLength(2));
+
+    firstPlayDeferred.resolve({
+      sessionId: latestNativeSessionId(),
+      state: "playing",
+      positionSeconds: 18.75,
+      durationSeconds: 182,
+      playbackRate: 1,
+      nativePlaybackSupported: true,
+      fallbackReason: null,
+      lanes: [],
+      bufferHealth: [],
+    });
+    await flushMicrotasks();
+    expect(invokeCalls("audio_stop")).toHaveLength(1);
+
+    secondPlayDeferred.reject(new Error("native play failed"));
+    await waitFor(() => expect(invokeCalls("audio_stop")).toHaveLength(2));
+    expect(readPlaybackE2ETelemetry()).toMatchObject({
+      activePath: "none",
+      positionSeconds: 0,
+      transportState: "stopped",
+    });
+    expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+    if (originalInvoke) {
+      invoke.mockImplementation(originalInvoke);
+    }
     restoreTauriRuntime();
   });
 

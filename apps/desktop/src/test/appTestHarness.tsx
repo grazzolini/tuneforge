@@ -2693,6 +2693,7 @@ export function getMockAudioContexts() {
           setSamples: (samples: Float32Array | null) => void;
         }>;
         createdOscillators: Array<{
+          disconnect: ReturnType<typeof vi.fn>;
           frequency: {
             setValueAtTime: ReturnType<typeof vi.fn>;
           };

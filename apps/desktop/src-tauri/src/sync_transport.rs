@@ -1323,11 +1323,14 @@ mod desktop {
     #[cfg(not(target_os = "android"))]
     use std::io::{BufRead, BufReader};
     use std::{
-        collections::{HashMap, HashSet},
+        collections::{BTreeMap, HashMap, HashSet},
         env,
         fs::{self, File},
         io::{self, Read, Write},
-        net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket},
+        net::{
+            IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs,
+            UdpSocket,
+        },
         path::{Path, PathBuf},
         process,
         str::FromStr,
@@ -1361,8 +1364,17 @@ mod desktop {
     const WRITE_TIMEOUT: Duration = Duration::from_secs(45);
     const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
     const ACCEPT_SLEEP: Duration = Duration::from_millis(100);
+    const NOT_STARTED_TRANSPORT_ID: &str = "not_started";
+    const BACKEND_PREFLIGHT_UNRESPONSIVE_CODE: &str = "backend_preflight_unresponsive";
+    const BACKEND_BUSY_CODE: &str = "backend_busy";
+    const LIBRARY_PREFLIGHT_FAILED_CODE: &str = "library_preflight_failed";
+    const BACKEND_PREFLIGHT_UNRESPONSIVE_MESSAGE: &str = "Local backend is unresponsive during sync preflight. Wait for backend work to finish or restart TuneForge, then retry sync.";
+    const BACKEND_BUSY_RETRY_GUIDANCE: &str =
+        "Wait for those jobs to finish or cancel them, then retry sync.";
     #[cfg(not(target_os = "android"))]
     const HTTP_TIMEOUT: Duration = Duration::from_secs(45);
+    #[cfg(not(target_os = "android"))]
+    const BACKEND_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(3);
 
     #[derive(Clone)]
     pub struct SyncTransportState {
@@ -1626,8 +1638,8 @@ mod desktop {
                 &run_id,
                 active_progress(protocol_status_payload(
                     run_id.clone(),
-                    "peer_connect",
-                    "Connecting to sync peer.",
+                    "backend_preflight",
+                    "Checking local backend readiness before sync.",
                     Utc::now().to_rfc3339(),
                     0,
                 )),
@@ -1635,6 +1647,51 @@ mod desktop {
             let mut timings = Vec::new();
             let mut metrics = SyncRunMetrics::start(run_started_instant);
             let client = BackendClient::new(&self.backend)?;
+            let preflight = match client.sync_preflight() {
+                Ok(preflight) => preflight,
+                Err(_) => {
+                    return Ok(failed_preflight_sync_result(
+                        run_id,
+                        payload.peer_device_id,
+                        BACKEND_PREFLIGHT_UNRESPONSIVE_CODE,
+                        BACKEND_PREFLIGHT_UNRESPONSIVE_MESSAGE.to_string(),
+                        run_started_at,
+                        run_started_instant,
+                    ));
+                }
+            };
+            if let Some(failure) = sync_preflight_failure(&preflight) {
+                return Ok(failed_preflight_sync_result(
+                    run_id,
+                    payload.peer_device_id,
+                    failure.fallback_code,
+                    failure.message,
+                    run_started_at,
+                    run_started_instant,
+                ));
+            }
+            if client.sync_metadata_preflight_probe().is_err() {
+                let failure = sync_endpoint_unresponsive_failure(&preflight);
+                return Ok(failed_preflight_sync_result(
+                    run_id,
+                    payload.peer_device_id,
+                    failure.fallback_code,
+                    failure.message,
+                    run_started_at,
+                    run_started_instant,
+                ));
+            }
+            record_active_progress(
+                &self.shared_status,
+                &run_id,
+                active_progress(protocol_status_payload(
+                    run_id.clone(),
+                    "peer_connect",
+                    "Connecting to sync peer.",
+                    Utc::now().to_rfc3339(),
+                    duration_millis(run_started_instant.elapsed()),
+                )),
+            );
             let peer = client
                 .trusted_peer(&payload.peer_device_id)
                 .map_err(|error| format!("Could not load trusted sync peer: {error}"))?
@@ -1864,6 +1921,439 @@ mod desktop {
         base_url: String,
         #[cfg_attr(not(target_os = "android"), allow(dead_code))]
         app: AppHandle,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct SyncBackendPreflight {
+        #[serde(default = "sync_backend_preflight_default_ok")]
+        ok: bool,
+        #[serde(default = "sync_backend_preflight_default_library_ok")]
+        library_ok: bool,
+        #[serde(default)]
+        total_projects: usize,
+        #[serde(default)]
+        ready_projects: usize,
+        #[serde(default)]
+        missing_source_hash_projects: usize,
+        #[serde(default)]
+        invalid_source_hash_projects: usize,
+        #[serde(default)]
+        duplicate_source_hash_projects: usize,
+        #[serde(default)]
+        noncanonical_project_id_projects: usize,
+        #[serde(default)]
+        manual_cleanup_required: bool,
+        #[serde(default)]
+        manual_cleanup_guidance: Vec<String>,
+        #[serde(default)]
+        job_state: Option<Value>,
+    }
+
+    impl SyncBackendPreflight {
+        #[cfg(target_os = "android")]
+        fn ready() -> Self {
+            Self {
+                ok: true,
+                library_ok: true,
+                total_projects: 0,
+                ready_projects: 0,
+                missing_source_hash_projects: 0,
+                invalid_source_hash_projects: 0,
+                duplicate_source_hash_projects: 0,
+                noncanonical_project_id_projects: 0,
+                manual_cleanup_required: false,
+                manual_cleanup_guidance: Vec::new(),
+                job_state: None,
+            }
+        }
+    }
+
+    fn sync_backend_preflight_default_ok() -> bool {
+        true
+    }
+
+    fn sync_backend_preflight_default_library_ok() -> bool {
+        true
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct BackendPreflightFailure {
+        fallback_code: &'static str,
+        message: String,
+    }
+
+    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    struct BackendJobStateSummary {
+        running_count: usize,
+        pending_count: usize,
+        running_type_counts: BTreeMap<String, usize>,
+        pending_type_counts: BTreeMap<String, usize>,
+    }
+
+    fn sync_preflight_failure(preflight: &SyncBackendPreflight) -> Option<BackendPreflightFailure> {
+        if library_preflight_failed(preflight) {
+            return Some(BackendPreflightFailure {
+                fallback_code: LIBRARY_PREFLIGHT_FAILED_CODE,
+                message: library_preflight_failed_message(preflight),
+            });
+        }
+
+        if !preflight.ok {
+            return Some(BackendPreflightFailure {
+                fallback_code: LIBRARY_PREFLIGHT_FAILED_CODE,
+                message: library_preflight_failed_message(preflight),
+            });
+        }
+
+        None
+    }
+
+    fn sync_endpoint_unresponsive_failure(
+        preflight: &SyncBackendPreflight,
+    ) -> BackendPreflightFailure {
+        if let Some(summary) = preflight
+            .job_state
+            .as_ref()
+            .and_then(blocking_job_state_summary)
+        {
+            return BackendPreflightFailure {
+                fallback_code: BACKEND_BUSY_CODE,
+                message: backend_busy_message(&summary),
+            };
+        }
+        BackendPreflightFailure {
+            fallback_code: BACKEND_PREFLIGHT_UNRESPONSIVE_CODE,
+            message: BACKEND_PREFLIGHT_UNRESPONSIVE_MESSAGE.to_string(),
+        }
+    }
+
+    fn library_preflight_failed(preflight: &SyncBackendPreflight) -> bool {
+        !preflight.library_ok
+            || preflight.manual_cleanup_required
+            || preflight.missing_source_hash_projects > 0
+            || preflight.invalid_source_hash_projects > 0
+            || preflight.duplicate_source_hash_projects > 0
+            || preflight.noncanonical_project_id_projects > 0
+    }
+
+    fn failed_preflight_sync_result(
+        run_id: String,
+        peer_device_id: String,
+        fallback_code: &'static str,
+        message: String,
+        run_started_at: DateTime<Utc>,
+        run_started_instant: Instant,
+    ) -> SyncTransportSyncResult {
+        let completed_at = Utc::now();
+        SyncTransportSyncResult {
+            run_id,
+            peer_device_id: peer_device_id.clone(),
+            remote_device_id: peer_device_id,
+            status: "failed".to_string(),
+            message,
+            selected_transport: NOT_STARTED_TRANSPORT_ID.to_string(),
+            fallback_reason: None,
+            fallback_code: Some(fallback_code.to_string()),
+            attempted_transports: Vec::new(),
+            started_at: run_started_at.to_rfc3339(),
+            completed_at: completed_at.to_rfc3339(),
+            duration_ms: duration_millis(run_started_instant.elapsed()),
+            project_results: Vec::new(),
+            imported_projects: Vec::new(),
+            imported_project_count: 0,
+            skipped_project_count: 0,
+            failed_project_count: 0,
+            received_artifacts: Vec::new(),
+            transfer_counts: SyncTransportTransferCounts::default(),
+            served_artifact_requests: 0,
+            total_received_bytes: 0,
+            total_served_bytes: 0,
+            time_to_first_artifact_ms: None,
+            throughput_bytes_per_second: 0.0,
+            remote_manifest_count: 0,
+            local_manifest_count: 0,
+            manifest_errors: Vec::new(),
+            phase_timings: Vec::new(),
+        }
+    }
+
+    fn blocking_job_state_summary(job_state: &Value) -> Option<BackendJobStateSummary> {
+        let mut summary = BackendJobStateSummary {
+            running_count: job_state_count(
+                job_state,
+                &[
+                    "running_job_count",
+                    "running_count",
+                    "running_jobs_count",
+                    "active_count",
+                    "running",
+                ],
+            )
+            .unwrap_or(0),
+            pending_count: job_state_count(
+                job_state,
+                &[
+                    "pending_job_count",
+                    "pending_count",
+                    "pending_jobs_count",
+                    "queued_count",
+                    "pending",
+                    "queued",
+                ],
+            )
+            .unwrap_or(0),
+            running_type_counts: BTreeMap::new(),
+            pending_type_counts: BTreeMap::new(),
+        };
+        let blocking_job_count = job_state_count(job_state, &["blocking_job_count"]).unwrap_or(0);
+
+        if let Some(status_counts) = job_state.get("blocking_job_counts") {
+            if summary.running_count == 0 {
+                summary.running_count = status_count(status_counts, "running").unwrap_or(0);
+            }
+            if summary.pending_count == 0 {
+                summary.pending_count = status_count(status_counts, "pending").unwrap_or(0);
+            }
+        }
+
+        merge_type_counts(
+            &mut summary.running_type_counts,
+            job_state_type_counts(job_state.get("running_types")),
+        );
+        merge_type_counts(
+            &mut summary.running_type_counts,
+            job_state_type_counts(job_state.get("running_job_types")),
+        );
+        merge_type_counts(
+            &mut summary.running_type_counts,
+            job_state_type_counts(job_state.get("running_jobs")),
+        );
+        merge_type_counts(
+            &mut summary.running_type_counts,
+            job_state_type_counts(job_state.get("running")),
+        );
+        merge_type_counts(
+            &mut summary.pending_type_counts,
+            job_state_type_counts(job_state.get("pending_types")),
+        );
+        merge_type_counts(
+            &mut summary.pending_type_counts,
+            job_state_type_counts(job_state.get("pending_job_types")),
+        );
+        merge_type_counts(
+            &mut summary.pending_type_counts,
+            job_state_type_counts(job_state.get("pending_jobs")),
+        );
+        merge_type_counts(
+            &mut summary.pending_type_counts,
+            job_state_type_counts(job_state.get("pending")),
+        );
+        merge_type_counts(
+            &mut summary.running_type_counts,
+            job_state_status_type_counts(job_state, "running"),
+        );
+        merge_type_counts(
+            &mut summary.pending_type_counts,
+            job_state_status_type_counts(job_state, "pending"),
+        );
+
+        if summary.running_count == 0 {
+            summary.running_count = job_state_array_len(job_state, &["running_jobs", "running"])
+                .unwrap_or_else(|| summary.running_type_counts.values().sum());
+        }
+        if summary.pending_count == 0 {
+            summary.pending_count = job_state_array_len(job_state, &["pending_jobs", "pending"])
+                .unwrap_or_else(|| summary.pending_type_counts.values().sum());
+        }
+
+        let state_busy = job_state
+            .get("state")
+            .and_then(Value::as_str)
+            .is_some_and(|state| state == "busy");
+        let legacy_blocks_sync = job_state_bool(job_state, &["blocks_sync", "blocked", "busy"])
+            .or_else(|| job_state_bool(job_state, &["can_sync"]).map(|can_sync| !can_sync))
+            .or_else(|| job_state_bool(job_state, &["ready"]).map(|ready| !ready));
+        let blocks_sync = state_busy
+            || blocking_job_count > 0
+            || legacy_blocks_sync
+                .unwrap_or_else(|| summary.running_count + summary.pending_count > 0);
+        if blocks_sync {
+            Some(summary)
+        } else {
+            None
+        }
+    }
+
+    fn job_state_count(job_state: &Value, keys: &[&str]) -> Option<usize> {
+        keys.iter()
+            .find_map(|key| job_state.get(*key).and_then(value_as_usize))
+    }
+
+    fn job_state_array_len(job_state: &Value, keys: &[&str]) -> Option<usize> {
+        keys.iter().find_map(|key| {
+            job_state
+                .get(*key)
+                .and_then(Value::as_array)
+                .map(std::vec::Vec::len)
+        })
+    }
+
+    fn job_state_bool(job_state: &Value, keys: &[&str]) -> Option<bool> {
+        keys.iter()
+            .find_map(|key| job_state.get(*key).and_then(Value::as_bool))
+    }
+
+    fn value_as_usize(value: &Value) -> Option<usize> {
+        value.as_u64().and_then(|count| usize::try_from(count).ok())
+    }
+
+    fn status_count(value: &Value, status: &str) -> Option<usize> {
+        value.get(status).and_then(value_as_usize)
+    }
+
+    fn job_state_status_type_counts(job_state: &Value, status: &str) -> BTreeMap<String, usize> {
+        let mut counts = BTreeMap::new();
+        let jobs = ["blocking_jobs", "jobs"]
+            .into_iter()
+            .filter_map(|key| job_state.get(key).and_then(Value::as_array))
+            .flatten();
+        for job in jobs {
+            if job.get("status").and_then(Value::as_str) == Some(status) {
+                if let Some(job_type) = job.get("type").and_then(Value::as_str) {
+                    *counts.entry(job_type.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+        counts
+    }
+
+    fn job_state_type_counts(value: Option<&Value>) -> BTreeMap<String, usize> {
+        let mut counts = BTreeMap::new();
+        match value {
+            Some(Value::Object(object)) => {
+                for (job_type, count) in object {
+                    if let Some(count) = value_as_usize(count) {
+                        counts.insert(job_type.clone(), count);
+                    }
+                }
+            }
+            Some(Value::Array(values)) => {
+                for value in values {
+                    let job_type = value
+                        .as_str()
+                        .or_else(|| value.get("type").and_then(Value::as_str));
+                    if let Some(job_type) = job_type {
+                        *counts.entry(job_type.to_string()).or_insert(0) += 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+        counts
+    }
+
+    fn merge_type_counts(target: &mut BTreeMap<String, usize>, source: BTreeMap<String, usize>) {
+        for (job_type, count) in source {
+            *target.entry(job_type).or_insert(0) += count;
+        }
+    }
+
+    fn backend_busy_message(summary: &BackendJobStateSummary) -> String {
+        let mut parts = Vec::new();
+        if summary.running_count > 0 {
+            parts.push(format!(
+                "{}{}",
+                plural_count(summary.running_count, "running job", "running jobs"),
+                job_type_count_suffix(&summary.running_type_counts)
+            ));
+        }
+        if summary.pending_count > 0 {
+            parts.push(format!(
+                "{}{}",
+                plural_count(summary.pending_count, "pending job", "pending jobs"),
+                job_type_count_suffix(&summary.pending_type_counts)
+            ));
+        }
+        let job_summary = if parts.is_empty() {
+            "active backend job work".to_string()
+        } else {
+            parts.join(" and ")
+        };
+        format!("Local backend is busy with {job_summary}. {BACKEND_BUSY_RETRY_GUIDANCE}")
+    }
+
+    fn job_type_count_suffix(type_counts: &BTreeMap<String, usize>) -> String {
+        if type_counts.is_empty() {
+            return String::new();
+        }
+        let parts: Vec<String> = type_counts
+            .iter()
+            .map(|(job_type, count)| format!("{job_type}: {count}"))
+            .collect();
+        format!(" ({})", parts.join(", "))
+    }
+
+    fn library_preflight_failed_message(preflight: &SyncBackendPreflight) -> String {
+        let mut count_parts = Vec::new();
+        push_preflight_count(
+            &mut count_parts,
+            preflight.missing_source_hash_projects,
+            "missing source hash project",
+        );
+        push_preflight_count(
+            &mut count_parts,
+            preflight.invalid_source_hash_projects,
+            "invalid source hash project",
+        );
+        push_preflight_count(
+            &mut count_parts,
+            preflight.duplicate_source_hash_projects,
+            "duplicate source hash project",
+        );
+        push_preflight_count(
+            &mut count_parts,
+            preflight.noncanonical_project_id_projects,
+            "noncanonical project ID project",
+        );
+        if count_parts.is_empty() && preflight.total_projects > preflight.ready_projects {
+            push_preflight_count(
+                &mut count_parts,
+                preflight.total_projects - preflight.ready_projects,
+                "not-ready project",
+            );
+        }
+        let count_summary = if count_parts.is_empty() {
+            "local library is not ready for sync".to_string()
+        } else {
+            count_parts.join(", ")
+        };
+        let guidance = preflight
+            .manual_cleanup_guidance
+            .iter()
+            .map(|guidance| guidance.trim())
+            .filter(|guidance| !guidance.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let guidance = if guidance.is_empty() {
+            "Review local library cleanup requirements, then retry sync.".to_string()
+        } else {
+            guidance
+        };
+        format!("Library sync preflight failed: {count_summary}. Manual cleanup: {guidance}")
+    }
+
+    fn push_preflight_count(parts: &mut Vec<String>, count: usize, singular: &str) {
+        if count > 0 {
+            parts.push(plural_count(count, singular, &format!("{singular}s")));
+        }
+    }
+
+    fn plural_count(count: usize, singular: &str, plural: &str) -> String {
+        if count == 1 {
+            format!("{count} {singular}")
+        } else {
+            format!("{count} {plural}")
+        }
     }
 
     pub fn sync_transport_start_listener(
@@ -5657,6 +6147,27 @@ mod desktop {
             }
         }
 
+        fn sync_preflight(&self) -> Result<SyncBackendPreflight, BackendError> {
+            #[cfg(target_os = "android")]
+            {
+                return Ok(SyncBackendPreflight::ready());
+            }
+
+            #[cfg(not(target_os = "android"))]
+            self.get_json_with_timeout("/api/v1/sync/preflight", BACKEND_PREFLIGHT_TIMEOUT)
+        }
+
+        fn sync_metadata_preflight_probe(&self) -> Result<(), BackendError> {
+            #[cfg(target_os = "android")]
+            {
+                return Ok(());
+            }
+
+            #[cfg(not(target_os = "android"))]
+            self.get_json_with_timeout::<Value>("/api/v1/sync/metadata", BACKEND_PREFLIGHT_TIMEOUT)
+                .map(|_| ())
+        }
+
         fn local_identity(&self) -> Result<SyncLocalIdentity, BackendError> {
             #[cfg(target_os = "android")]
             {
@@ -5807,6 +6318,16 @@ mod desktop {
             serde_json::from_value(value).map_err(|error| BackendError::local(error.to_string()))
         }
 
+        #[cfg(not(target_os = "android"))]
+        fn get_json_with_timeout<T: for<'de> Deserialize<'de>>(
+            &self,
+            path: &str,
+            timeout: Duration,
+        ) -> Result<T, BackendError> {
+            let value = self.request_json_value_with_timeout("GET", path, None, timeout)?;
+            serde_json::from_value(value).map_err(|error| BackendError::local(error.to_string()))
+        }
+
         fn get_json_value(&self, path: &str) -> Result<Value, BackendError> {
             #[cfg(target_os = "android")]
             {
@@ -5891,7 +6412,18 @@ mod desktop {
             path: &str,
             body: Option<&Value>,
         ) -> Result<Value, BackendError> {
-            let mut response = self.request_body(method, path, body)?;
+            self.request_json_value_with_timeout(method, path, body, HTTP_TIMEOUT)
+        }
+
+        #[cfg(not(target_os = "android"))]
+        fn request_json_value_with_timeout(
+            &self,
+            method: &str,
+            path: &str,
+            body: Option<&Value>,
+            timeout: Duration,
+        ) -> Result<Value, BackendError> {
+            let mut response = self.request_body_with_timeout(method, path, body, timeout)?;
             let mut bytes = Vec::new();
             response
                 .read_to_end(&mut bytes)
@@ -5940,13 +6472,23 @@ mod desktop {
             path: &str,
             body: Option<&Value>,
         ) -> Result<BackendBody, BackendError> {
-            let mut stream = TcpStream::connect((self.host.as_str(), self.port))
+            self.request_body_with_timeout(method, path, body, HTTP_TIMEOUT)
+        }
+
+        #[cfg(not(target_os = "android"))]
+        fn request_body_with_timeout(
+            &self,
+            method: &str,
+            path: &str,
+            body: Option<&Value>,
+            timeout: Duration,
+        ) -> Result<BackendBody, BackendError> {
+            let mut stream = self.connect_with_timeout(timeout)?;
+            stream
+                .set_read_timeout(Some(timeout))
                 .map_err(|error| BackendError::local(error.to_string()))?;
             stream
-                .set_read_timeout(Some(HTTP_TIMEOUT))
-                .map_err(|error| BackendError::local(error.to_string()))?;
-            stream
-                .set_write_timeout(Some(HTTP_TIMEOUT))
+                .set_write_timeout(Some(timeout))
                 .map_err(|error| BackendError::local(error.to_string()))?;
 
             let body_bytes = match body {
@@ -6005,6 +6547,38 @@ mod desktop {
                 reader: Box::new(reader),
                 remaining: content_length,
             })
+        }
+
+        #[cfg(not(target_os = "android"))]
+        fn connect_with_timeout(&self, timeout: Duration) -> Result<TcpStream, BackendError> {
+            let host = self
+                .host
+                .strip_prefix('[')
+                .and_then(|value| value.strip_suffix(']'))
+                .unwrap_or(&self.host);
+            let addresses: Vec<SocketAddr> = (host, self.port)
+                .to_socket_addrs()
+                .map_err(|error| BackendError::local(error.to_string()))?
+                .collect();
+            if addresses.is_empty() {
+                return Err(BackendError::local(
+                    "Backend loopback address did not resolve.".to_string(),
+                ));
+            }
+
+            let mut last_error = None;
+            for address in addresses {
+                match TcpStream::connect_timeout(&address, timeout) {
+                    Ok(stream) => return Ok(stream),
+                    Err(error) => last_error = Some(error),
+                }
+            }
+
+            Err(BackendError::local(
+                last_error
+                    .map(|error| error.to_string())
+                    .unwrap_or_else(|| "Could not connect to backend.".to_string()),
+            ))
         }
     }
 
@@ -6192,6 +6766,11 @@ mod desktop {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        const MISSING_SOURCE_HASH_GUIDANCE: &str =
+            "Restore the original source file or re-import affected projects so TuneForge can compute source hashes.";
+        const DUPLICATE_SOURCE_HASH_GUIDANCE: &str =
+            "Delete duplicate same-source projects or keep one canonical project before enabling sync.";
 
         fn test_transfer_result(
             artifact_id: &str,
@@ -7771,10 +8350,172 @@ mod desktop {
                 sync_result_status(&[], counts.failed),
                 "completed_with_errors"
             );
-            assert_eq!(
-                sync_result_message(4, 5, &transfer_counts, counts),
-                "Exchanged 4 local and 5 remote manifest(s); imported 2 project(s), skipped 1 project(s), failed 1 project(s), received 6 artifact(s), reused 1 staged artifact(s), failed 1 transfer(s)."
+            let message = sync_result_message(4, 5, &transfer_counts, counts);
+            let expected = "Exchanged 4 local and 5 remote manifest(s); imported 2 project(s), skipped 1 project(s), failed 1 project(s), received 6 artifact(s), reused 1 staged artifact(s), failed 1 transfer(s).";
+            assert_eq!(message, expected);
+        }
+
+        #[test]
+        fn backend_preflight_failed_result_serializes_not_started_transport() {
+            let started_at = DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc);
+            let result = failed_preflight_sync_result(
+                "sync_preflight".to_string(),
+                "dev_peer".to_string(),
+                BACKEND_PREFLIGHT_UNRESPONSIVE_CODE,
+                BACKEND_PREFLIGHT_UNRESPONSIVE_MESSAGE.to_string(),
+                started_at,
+                Instant::now(),
             );
+
+            let value = serde_json::to_value(result).expect("serialize failed result");
+
+            assert_eq!(value.get("status"), Some(&json!("failed")));
+            assert_eq!(
+                value.get("selectedTransport"),
+                Some(&json!(NOT_STARTED_TRANSPORT_ID))
+            );
+            assert_eq!(value.get("attemptedTransports"), Some(&json!([])));
+            assert_eq!(
+                value.get("fallbackCode"),
+                Some(&json!(BACKEND_PREFLIGHT_UNRESPONSIVE_CODE))
+            );
+            assert_eq!(value.get("remoteDeviceId"), Some(&json!("dev_peer")));
+        }
+
+        #[test]
+        fn backend_preflight_gate_allows_busy_job_state() {
+            let preflight: SyncBackendPreflight = serde_json::from_value(json!({
+                "ok": true,
+                "library_ok": true,
+                "total_projects": 1,
+                "ready_projects": 1,
+                "missing_source_hash_projects": 0,
+                "invalid_source_hash_projects": 0,
+                "duplicate_source_hash_projects": 0,
+                "noncanonical_project_id_projects": 0,
+                "job_state": {
+                    "state": "busy",
+                    "running_job_count": 0,
+                    "pending_job_count": 1,
+                    "blocking_job_count": 1,
+                    "blocking_job_counts": { "pending": 1, "running": 0 },
+                    "blocking_jobs": [
+                        {
+                            "id": "job_pending_preflight",
+                            "project_id": "project_pending",
+                            "project_name": "Pending Fixture",
+                            "type": "analyze",
+                            "status": "pending",
+                            "progress": 12,
+                            "started_at": null,
+                            "updated_at": "2026-01-02T03:04:05"
+                        }
+                    ],
+                    "blocking_jobs_truncated": false,
+                    "guidance": [
+                        "Backend jobs are running. Sync can start, but backend work may delay sync endpoint responses."
+                    ]
+                },
+                "manual_cleanup_required": false,
+                "manual_cleanup_guidance": []
+            }))
+            .expect("preflight");
+
+            assert!(sync_preflight_failure(&preflight).is_none());
+
+            let failure = sync_endpoint_unresponsive_failure(&preflight);
+            assert_eq!(failure.fallback_code, BACKEND_BUSY_CODE);
+            assert!(!failure.message.contains("Library sync preflight failed"));
+            assert!(failure.message.contains("1 pending job"));
+            assert!(failure.message.contains("analyze: 1"));
+        }
+
+        #[test]
+        fn backend_preflight_gate_uses_blocking_job_counts_without_jobs() {
+            let preflight: SyncBackendPreflight = serde_json::from_value(json!({
+                "ok": true,
+                "library_ok": true,
+                "job_state": {
+                    "state": "busy",
+                    "running_job_count": 0,
+                    "pending_job_count": 1,
+                    "blocking_job_count": 1,
+                    "blocking_job_counts": { "pending": 1, "running": 0 },
+                    "blocking_jobs": [],
+                    "blocking_jobs_truncated": true,
+                    "guidance": []
+                },
+                "manual_cleanup_required": false,
+                "manual_cleanup_guidance": []
+            }))
+            .expect("preflight");
+
+            assert!(sync_preflight_failure(&preflight).is_none());
+
+            let failure = sync_endpoint_unresponsive_failure(&preflight);
+            assert_eq!(failure.fallback_code, BACKEND_BUSY_CODE);
+            assert!(failure.message.contains("1 pending job"));
+        }
+
+        #[test]
+        fn backend_preflight_gate_blocks_unexplained_not_ok() {
+            let preflight: SyncBackendPreflight = serde_json::from_value(json!({
+                "ok": false,
+                "library_ok": true,
+                "total_projects": 1,
+                "ready_projects": 1,
+                "missing_source_hash_projects": 0,
+                "invalid_source_hash_projects": 0,
+                "duplicate_source_hash_projects": 0,
+                "noncanonical_project_id_projects": 0,
+                "job_state": {
+                    "state": "ready",
+                    "running_job_count": 0,
+                    "pending_job_count": 0,
+                    "blocking_job_count": 0,
+                    "blocking_job_counts": { "pending": 0, "running": 0 },
+                    "blocking_jobs": [],
+                    "blocking_jobs_truncated": false,
+                    "guidance": []
+                },
+                "manual_cleanup_required": false,
+                "manual_cleanup_guidance": []
+            }))
+            .expect("preflight");
+
+            let failure = sync_preflight_failure(&preflight).expect("not ok failure");
+
+            assert_eq!(failure.fallback_code, LIBRARY_PREFLIGHT_FAILED_CODE);
+            assert!(failure.message.contains("Library sync preflight failed"));
+        }
+
+        #[test]
+        fn backend_preflight_gate_blocks_library_cleanup_failures() {
+            let preflight: SyncBackendPreflight = serde_json::from_value(json!({
+                "ok": false,
+                "library_ok": false,
+                "total_projects": 4,
+                "ready_projects": 1,
+                "missing_source_hash_projects": 1,
+                "duplicate_source_hash_projects": 2,
+                "manual_cleanup_required": true,
+                "manual_cleanup_guidance": [
+                    MISSING_SOURCE_HASH_GUIDANCE,
+                    DUPLICATE_SOURCE_HASH_GUIDANCE
+                ]
+            }))
+            .expect("preflight");
+
+            let failure = sync_preflight_failure(&preflight).expect("library failure");
+
+            assert_eq!(failure.fallback_code, LIBRARY_PREFLIGHT_FAILED_CODE);
+            assert!(failure.message.contains("1 missing source hash project"));
+            assert!(failure.message.contains("2 duplicate source hash projects"));
+            assert!(failure.message.contains("Manual cleanup:"));
+            assert!(failure.message.contains("re-import affected projects"));
+            assert!(!failure.message.contains("source_path"));
         }
 
         #[test]

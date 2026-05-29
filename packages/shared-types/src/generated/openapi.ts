@@ -1743,6 +1743,28 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** SyncPreflightBlockingJobSchema */
+        SyncPreflightBlockingJobSchema: {
+            /** Id */
+            id: string;
+            /** Project Id */
+            project_id: string | null;
+            /** Project Name */
+            project_name: string | null;
+            /** Type */
+            type: string;
+            /** Status */
+            status: string;
+            /** Progress */
+            progress: number;
+            /** Started At */
+            started_at: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
         /** SyncPreflightDuplicateGroupSchema */
         SyncPreflightDuplicateGroupSchema: {
             /** Source Sha256 */
@@ -1758,6 +1780,30 @@ export interface components {
             project_id: string;
             /** Display Name */
             display_name: string;
+        };
+        /** SyncPreflightJobStateSchema */
+        SyncPreflightJobStateSchema: {
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "ready" | "busy";
+            /** Running Job Count */
+            running_job_count: number;
+            /** Pending Job Count */
+            pending_job_count: number;
+            /** Blocking Job Count */
+            blocking_job_count: number;
+            /** Blocking Job Counts */
+            blocking_job_counts: {
+                [key: string]: number;
+            };
+            /** Blocking Jobs */
+            blocking_jobs: components["schemas"]["SyncPreflightBlockingJobSchema"][];
+            /** Blocking Jobs Truncated */
+            blocking_jobs_truncated: boolean;
+            /** Guidance */
+            guidance: string[];
         };
         /** SyncPreflightProjectSchema */
         SyncPreflightProjectSchema: {
@@ -1785,6 +1831,8 @@ export interface components {
         SyncPreflightResponse: {
             /** Ok */
             ok: boolean;
+            /** Library Ok */
+            library_ok: boolean;
             /** Total Projects */
             total_projects: number;
             /** Ready Projects */
@@ -1801,6 +1849,7 @@ export interface components {
             projects: components["schemas"]["SyncPreflightProjectSchema"][];
             /** Duplicate Groups */
             duplicate_groups: components["schemas"]["SyncPreflightDuplicateGroupSchema"][];
+            job_state: components["schemas"]["SyncPreflightJobStateSchema"];
             /** Manual Cleanup Required */
             manual_cleanup_required: boolean;
             /** Manual Cleanup Guidance */

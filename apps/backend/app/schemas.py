@@ -184,6 +184,7 @@ SyncPreflightSourceHashSource = Literal[
     "database",
     "original_copy_path",
 ]
+SyncPreflightJobStateValue = Literal["ready", "busy"]
 
 
 class SyncPreflightProjectSchema(BaseModel):
@@ -214,10 +215,37 @@ class SyncPreflightDuplicateGroupSchema(BaseModel):
     projects: list[SyncPreflightDuplicateProjectSchema]
 
 
+class SyncPreflightBlockingJobSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    project_id: str | None
+    project_name: str | None
+    type: str
+    status: str
+    progress: int
+    started_at: datetime | None
+    updated_at: datetime
+
+
+class SyncPreflightJobStateSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    state: SyncPreflightJobStateValue
+    running_job_count: int
+    pending_job_count: int
+    blocking_job_count: int
+    blocking_job_counts: dict[str, int]
+    blocking_jobs: list[SyncPreflightBlockingJobSchema]
+    blocking_jobs_truncated: bool
+    guidance: list[str]
+
+
 class SyncPreflightResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     ok: bool
+    library_ok: bool
     total_projects: int
     ready_projects: int
     missing_source_hash_projects: int
@@ -226,6 +254,7 @@ class SyncPreflightResponse(BaseModel):
     noncanonical_project_id_projects: int
     projects: list[SyncPreflightProjectSchema]
     duplicate_groups: list[SyncPreflightDuplicateGroupSchema]
+    job_state: SyncPreflightJobStateSchema
     manual_cleanup_required: bool
     manual_cleanup_guidance: list[str]
 

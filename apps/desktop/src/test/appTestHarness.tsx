@@ -11,6 +11,7 @@ import type {
   LyricsGenerateRequest,
   ListJobsParams,
   ListProjectsParams,
+  SyncPreflightResponse,
   SyncPairingAnswerRequest,
   SyncPairingAnswerResponse,
   SyncPairingOfferRequest,
@@ -44,6 +45,7 @@ const {
   setStemModels,
   setJobs,
   setSyncTransportStatus,
+  setSyncPreflight,
   setSyncTrustedPeers,
   setDeferredPreviewCompletion,
   flushPendingPreview,
@@ -64,6 +66,7 @@ const {
   mockListJobs,
   mockCancelJob,
   mockBulkJobs,
+  mockGetSyncPreflight,
   mockGetSyncIdentity,
   mockGetSyncTransportStatus,
   mockStartSyncListener,
@@ -183,6 +186,7 @@ const {
     stemModels: Array<Record<string, unknown>>;
     pendingPreviewArtifactsByProject: Record<string, Array<Record<string, unknown>>>;
     jobs: Array<Record<string, unknown>>;
+    syncPreflight: Record<string, unknown> | null;
     syncIdentity: Record<string, unknown>;
     syncTransportStatus: Record<string, unknown>;
     syncTrustedPeers: Array<Record<string, unknown>>;
@@ -671,6 +675,10 @@ const {
     };
   }
 
+  function setSyncPreflight(preflight: Record<string, unknown> | null) {
+    state.syncPreflight = preflight ? clone(preflight) : null;
+  }
+
   function setSyncTrustedPeers(peers: Array<Record<string, unknown>>) {
     state.syncTrustedPeers = clone(peers);
   }
@@ -782,6 +790,7 @@ const {
           updated_at: createdAt,
         },
       ],
+      syncPreflight: null,
       syncIdentity: {
         device_id: "device_local",
         sync_group_id: "sync_group_local",
@@ -1521,6 +1530,67 @@ const {
       skipped,
     };
   });
+  function buildMockSyncPreflight(): SyncPreflightResponse {
+    const blockingJobs = state.jobs
+      .map((item, index) => normalizeMockJob(item, index))
+      .filter((item) => item.status === "pending" || item.status === "running")
+      .sort(compareActivityJobs);
+    const runningJobCount = blockingJobs.filter((item) => item.status === "running").length;
+    const pendingJobCount = blockingJobs.filter((item) => item.status === "pending").length;
+    const visibleBlockingJobs = blockingJobs.slice(0, 20).map((item) => {
+      const projectId = typeof item.project_id === "string" ? item.project_id : null;
+      const project = projectId ? state.projects.find((candidate) => candidate.id === projectId) : null;
+      return {
+        id: String(item.id),
+        project_id: projectId,
+        project_name: typeof project?.display_name === "string" ? project.display_name : null,
+        type: String(item.type ?? "job"),
+        status: String(item.status ?? "pending"),
+        progress: typeof item.progress === "number" ? item.progress : 0,
+        started_at: typeof item.started_at === "string" ? item.started_at : null,
+        updated_at: typeof item.updated_at === "string" ? item.updated_at : createdAt,
+      };
+    });
+
+    return {
+      ok: true,
+      library_ok: true,
+      total_projects: state.projects.length,
+      ready_projects: state.projects.length,
+      missing_source_hash_projects: 0,
+      invalid_source_hash_projects: 0,
+      duplicate_source_hash_projects: 0,
+      noncanonical_project_id_projects: 0,
+      projects: state.projects.map((item) => ({
+        project_id: String(item.id),
+        display_name: String(item.display_name ?? item.id),
+        status: "ready",
+        source_sha256: null,
+        expected_project_id: null,
+        expected_storage_key: null,
+        source_hash_source: null,
+        reason: null,
+      })),
+      duplicate_groups: [],
+      job_state: {
+        state: blockingJobs.length ? "busy" : "ready",
+        running_job_count: runningJobCount,
+        pending_job_count: pendingJobCount,
+        blocking_job_count: blockingJobs.length,
+        blocking_job_counts: {
+          running: runningJobCount,
+          pending: pendingJobCount,
+        },
+        blocking_jobs: visibleBlockingJobs,
+        blocking_jobs_truncated: blockingJobs.length > visibleBlockingJobs.length,
+        guidance: blockingJobs.length
+          ? ["Backend jobs are running. Sync can start, but backend work may delay sync endpoint responses."]
+          : [],
+      },
+      manual_cleanup_required: false,
+      manual_cleanup_guidance: [],
+    };
+  }
   function normalizeSyncPeer(peer: Record<string, unknown>): SyncTrustedPeerSchema {
     return {
       device_id: String(peer.device_id ?? "device_peer"),
@@ -1535,6 +1605,9 @@ const {
       updated_at: typeof peer.updated_at === "string" ? peer.updated_at : createdAt,
     };
   }
+  const mockGetSyncPreflight = vi.fn(async (): Promise<SyncPreflightResponse> =>
+    clone((state.syncPreflight as SyncPreflightResponse | null) ?? buildMockSyncPreflight()),
+  );
   const mockGetSyncIdentity = vi.fn(async () => ({ identity: clone(state.syncIdentity) }));
   const mockGetSyncTransportStatus = vi.fn(async () => clone(state.syncTransportStatus));
   const mockStartSyncListener = vi.fn(async () => {
@@ -2234,6 +2307,7 @@ const {
     setStemModels,
     setJobs,
     setSyncTransportStatus,
+    setSyncPreflight,
     setSyncTrustedPeers,
     setDeferredPreviewCompletion,
     flushPendingPreview,
@@ -2254,6 +2328,7 @@ const {
     mockListJobs,
     mockCancelJob,
     mockBulkJobs,
+    mockGetSyncPreflight,
     mockGetSyncIdentity,
     mockGetSyncTransportStatus,
     mockStartSyncListener,
@@ -2306,6 +2381,7 @@ export {
   setStemModels,
   setJobs,
   setSyncTransportStatus,
+  setSyncPreflight,
   setSyncTrustedPeers,
   setDeferredPreviewCompletion,
   flushPendingPreview,
@@ -2326,6 +2402,7 @@ export {
   mockListJobs,
   mockCancelJob,
   mockBulkJobs,
+  mockGetSyncPreflight,
   mockGetSyncIdentity,
   mockGetSyncTransportStatus,
   mockStartSyncListener,
@@ -2392,6 +2469,7 @@ vi.mock("../lib/api", async (importOriginal) => {
       listJobs: mockListJobs,
       cancelJob: mockCancelJob,
       bulkJobs: mockBulkJobs,
+      getSyncPreflight: mockGetSyncPreflight,
       getSyncIdentity: mockGetSyncIdentity,
       getSyncTransportStatus: mockGetSyncTransportStatus,
       startSyncListener: mockStartSyncListener,

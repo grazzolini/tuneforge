@@ -330,11 +330,22 @@ Checks the local library before multi-device sync is enabled. The endpoint retur
 
 The response includes:
 
-- `ok`
+- `ok` - overall sync readiness. This is `true` when library checks pass. Pending or running jobs
+  are diagnostic state, not a hard sync blocker.
+- `library_ok` - library-only readiness, matching the previous `ok` behavior.
 - project status counts
 - per-project sync identity status
 - duplicate source-hash groups
+- `job_state` - active job diagnostics for sync startup and backend responsiveness failures.
 - manual cleanup guidance
+
+`job_state` includes `state` (`ready` or `busy`), `running_job_count`, `pending_job_count`,
+`blocking_job_count`, `blocking_job_counts`, `blocking_jobs`, `blocking_jobs_truncated`, and
+`guidance`. Pending and running jobs do not block sync by themselves; they are included so the UI can
+explain backend-busy or endpoint-timeout failures. `blocking_jobs` is capped at 20 entries and
+exposes only sync-safe fields: `id`, `project_id`, `project_name`, `type`, `status`, `progress`,
+`started_at`, and `updated_at`. It does not expose job payloads, file paths, audio data, or endpoint
+details.
 
 Project status values are `ready`, `missing_source_hash`, `invalid_source_hash`, `duplicate_source_hash`, and `noncanonical_project_id`. Canonical project IDs use `proj_sha256_<full_source_sha256>`, while project storage directories use a shorter derived key such as `proj_<first_24_sha256_hex>`. Preflight uses a stored `projects.source_sha256` when present. If that field is missing, preflight only recovers it from an explicit app-managed original-byte copy and otherwise reports `missing_source_hash`; `source_path` is provenance only and is not hashed during recovery. This endpoint is sync-specific; general project responses do not expose source hashes.
 

@@ -7,6 +7,8 @@ import {
   type SyncPairingPayloadSchema,
   type SyncNearbyPeer,
   type SyncNearbyPeerTrustStatus,
+  type SyncPreflightBlockingJob,
+  type SyncPreflightResponse,
   type SyncTransportProjectResult,
   type SyncTransportRunStatus,
   type SyncTransportTransferResult,
@@ -213,6 +215,98 @@ function syncNowFailureText(error: unknown) {
     }
   }
   return "Sync now failed.";
+}
+
+function pluralize(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function syncPreflightLibraryIssueItems(preflight: SyncPreflightResponse) {
+  const entries: Array<[number, string]> = [
+    [preflight.missing_source_hash_projects, "missing source hash project"],
+    [preflight.invalid_source_hash_projects, "invalid source hash project"],
+    [preflight.duplicate_source_hash_projects, "duplicate source hash project"],
+    [preflight.noncanonical_project_id_projects, "noncanonical project ID"],
+  ];
+  return entries
+    .filter((entry): entry is [number, string] => entry[0] > 0)
+    .map(([count, label]) => pluralize(count, label));
+}
+
+function syncPreflightLibraryIssueText(preflight: SyncPreflightResponse) {
+  const issues = syncPreflightLibraryIssueItems(preflight);
+  return issues.length ? issues.join(", ") : null;
+}
+
+function syncPreflightJobStatusSummary(preflight: SyncPreflightResponse) {
+  const counts = preflight.job_state.blocking_job_counts;
+  const entries: Array<[string, number]> = [
+    ["running", counts.running ?? preflight.job_state.running_job_count],
+    ["pending", counts.pending ?? preflight.job_state.pending_job_count],
+    ...Object.entries(counts).filter(([status]) => status !== "running" && status !== "pending"),
+  ];
+  const ordered = entries.filter((entry): entry is [string, number] => entry[1] > 0);
+  return ordered.length
+    ? ordered.map(([status, count]) => `${count} ${statusLabel(status).toLowerCase()}`).join(", ")
+    : null;
+}
+
+function syncPreflightBlockingTypeSummary(jobs: SyncPreflightBlockingJob[], truncated = false) {
+  const counts = new Map<string, number>();
+  jobs.forEach((job) => {
+    counts.set(job.type, (counts.get(job.type) ?? 0) + 1);
+  });
+  const parts = Array.from(counts.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([type, count]) => `${count} ${type}`);
+  if (!parts.length) {
+    return null;
+  }
+  const summary = parts.join(", ");
+  return truncated ? `sample: ${summary} (first ${pluralize(jobs.length, "job")} shown)` : summary;
+}
+
+function syncPreflightJobSummary(preflight: SyncPreflightResponse) {
+  const blockingCount = preflight.job_state.blocking_job_count;
+  if (blockingCount === 0) {
+    return "No blocking backend jobs.";
+  }
+  const statusSummary = syncPreflightJobStatusSummary(preflight);
+  return `${pluralize(blockingCount, "blocking job")}${statusSummary ? ` (${statusSummary})` : ""}.`;
+}
+
+function syncPreflightBlockedText(preflight: SyncPreflightResponse) {
+  if (!preflight.library_ok) {
+    const issueText = syncPreflightLibraryIssueText(preflight);
+    return `Library preflight failed${issueText ? `: ${issueText}` : ""}.`;
+  }
+  return "Local sync preflight failed.";
+}
+
+function syncPreflightUnavailableText(error: unknown) {
+  if (error instanceof Error && error.message.trim()) {
+    return `Backend preflight unavailable: ${error.message.trim()}`;
+  }
+  return "Backend preflight unavailable.";
+}
+
+function syncPreflightReadinessLabel(preflight: SyncPreflightResponse | undefined, isError: boolean) {
+  if (isError) {
+    return "Unavailable";
+  }
+  if (!preflight) {
+    return "Checking";
+  }
+  if (!preflight.library_ok) {
+    return "Library Cleanup Required";
+  }
+  if (preflight.job_state.blocking_job_count > 0) {
+    return "Ready With Jobs";
+  }
+  if (preflight.ok) {
+    return "Ready";
+  }
+  return "Not Ready";
 }
 
 function syncResultKey(status: SyncTransportRunStatus | null | undefined) {
@@ -546,6 +640,10 @@ export function ActivitySyncPanel() {
       return syncNowPolling || status?.active ? SYNC_LISTENER_POLL_INTERVAL_MS : false;
     },
   });
+  const preflightQuery = useQuery({
+    queryKey: ["sync", "preflight"],
+    queryFn: () => api.getSyncPreflight(),
+  });
   const peersQuery = useQuery({
     queryKey: ["sync", "trusted-peers"],
     queryFn: async () => (await api.listSyncTrustedPeers()).trusted_peers,
@@ -604,6 +702,7 @@ export function ActivitySyncPanel() {
   const refreshSyncQueries = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["sync", "listener"] }),
+      queryClient.invalidateQueries({ queryKey: ["sync", "preflight"] }),
       queryClient.invalidateQueries({ queryKey: ["sync", "trusted-peers"] }),
     ]);
   };
@@ -686,12 +785,24 @@ export function ActivitySyncPanel() {
     },
   });
   const syncNowMutation = useMutation({
-    mutationFn: (request: SyncNowRequest) =>
-      request.endpointHints?.length
-        ? api.syncTrustedPeerNow(request.deviceId, { endpointHints: request.endpointHints })
-        : api.syncTrustedPeerNow(request.deviceId),
-    onMutate: () => {
+    mutationFn: async (request: SyncNowRequest) => {
+      let preflight: SyncPreflightResponse;
+      try {
+        preflight = await api.getSyncPreflight();
+        queryClient.setQueryData(["sync", "preflight"], preflight);
+      } catch (error) {
+        throw Object.assign(new Error(syncPreflightUnavailableText(error)), { cause: error });
+      }
+      if (!preflight.ok) {
+        throw new Error(syncPreflightBlockedText(preflight));
+      }
       setSyncNowPolling(true);
+      void queryClient.invalidateQueries({ queryKey: ["sync", "listener"] });
+      return request.endpointHints?.length
+        ? api.syncTrustedPeerNow(request.deviceId, { endpointHints: request.endpointHints })
+        : api.syncTrustedPeerNow(request.deviceId);
+    },
+    onMutate: () => {
       void queryClient.invalidateQueries({ queryKey: ["sync", "listener"] });
     },
     onSuccess: async (status) => {
@@ -845,6 +956,19 @@ export function ActivitySyncPanel() {
         currentSyncElapsed
       ),
   );
+  const preflight = preflightQuery.data;
+  const preflightReadiness = syncPreflightReadinessLabel(preflight, preflightQuery.isError);
+  const preflightLibraryIssues = preflight ? syncPreflightLibraryIssueText(preflight) : null;
+  const preflightJobText = preflight ? syncPreflightJobSummary(preflight) : "Checking backend jobs.";
+  const preflightJobTypeText = preflight
+    ? syncPreflightBlockingTypeSummary(
+        preflight.job_state.blocking_jobs,
+        preflight.job_state.blocking_jobs_truncated,
+      )
+    : null;
+  const preflightGuidance = preflight
+    ? Array.from(new Set([...preflight.manual_cleanup_guidance, ...preflight.job_state.guidance]))
+    : [];
 
   return (
     <section
@@ -1126,6 +1250,74 @@ export function ActivitySyncPanel() {
           ) : null}
         </section>
       </div>
+
+      <section className="activity-sync-section" aria-labelledby="activity-sync-preflight-heading">
+        <div className="activity-sync-section__header">
+          <h3 id="activity-sync-preflight-heading">Local Readiness</h3>
+          <button
+            className="button button--ghost button--small"
+            disabled={preflightQuery.isFetching}
+            onClick={() => {
+              void preflightQuery.refetch();
+            }}
+            type="button"
+          >
+            {preflightQuery.isFetching ? "Checking..." : "Refresh"}
+          </button>
+        </div>
+
+        <dl className="activity-sync-facts">
+          <div>
+            <dt>Status</dt>
+            <dd>
+              <span className={`activity-sync-status activity-sync-status--${statusClassName(preflightReadiness)}`}>
+                {preflightReadiness}
+              </span>
+            </dd>
+          </div>
+          <div>
+            <dt>Library</dt>
+            <dd>
+              {preflight
+                ? preflight.library_ok
+                  ? `${preflight.ready_projects}/${preflight.total_projects} projects ready.`
+                  : `Library preflight failed${preflightLibraryIssues ? `: ${preflightLibraryIssues}` : ""}.`
+                : "Checking local library."}
+            </dd>
+          </div>
+          <div>
+            <dt>Backend Jobs</dt>
+            <dd>{preflightJobText}</dd>
+          </div>
+          {preflightJobTypeText ? (
+            <div>
+              <dt>Job Types</dt>
+              <dd>{preflightJobTypeText}</dd>
+            </div>
+          ) : null}
+        </dl>
+
+        {preflightQuery.isError ? (
+          <p className="activity-sync-alert activity-sync-alert--error" role="alert">
+            Backend preflight unavailable. Retry when the local backend responds.
+          </p>
+        ) : null}
+        {preflight && !preflight.library_ok ? (
+          <p className="activity-sync-alert activity-sync-alert--error" role="alert">
+            Library preflight failed{preflightLibraryIssues ? `: ${preflightLibraryIssues}` : ""}.
+          </p>
+        ) : null}
+        {preflight && preflight.job_state.blocking_job_count > 0 ? (
+          <p className="activity-sync-alert" role="status">
+            Backend jobs running: {preflightJobText}
+          </p>
+        ) : null}
+        {preflightGuidance.map((guidance) => (
+          <p className="activity-sync-alert" key={guidance} role="status">
+            {guidance}
+          </p>
+        ))}
+      </section>
 
       <section className="activity-sync-section activity-sync-section--nearby" aria-labelledby="activity-sync-nearby-heading">
         <div className="activity-sync-section__header">

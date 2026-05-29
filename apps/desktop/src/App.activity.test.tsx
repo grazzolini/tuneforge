@@ -7,6 +7,7 @@ import {
   type JobSchema,
   type ProjectSchema,
   type SyncPairingPayloadSchema,
+  type SyncPreflightResponse,
   type SyncTransportRunStatus,
 } from "./lib/api";
 import { encodePairingCode, pairingFingerprint } from "./features/activity/syncPairingCode";
@@ -28,6 +29,7 @@ import {
   mockTrustSyncPeer,
   mockListJobs,
   mockBulkJobs,
+  mockGetSyncPreflight,
   mockListProjects,
   renderApp,
   resetAppTestHarness,
@@ -35,6 +37,7 @@ import {
   setBeatBackends,
   setChordBackends,
   setProjects,
+  setSyncPreflight,
   setSyncTransportStatus,
   setSyncTrustedPeers,
   triggerMockIntersectionObserver,
@@ -136,6 +139,34 @@ function syncRunStatus(overrides: Partial<SyncTransportRunStatus> = {}): SyncTra
     project_results: [],
     manifest_errors: [],
     received_artifacts: [],
+    ...overrides,
+  };
+}
+
+function syncPreflight(overrides: Partial<SyncPreflightResponse> = {}): SyncPreflightResponse {
+  return {
+    ok: true,
+    library_ok: true,
+    total_projects: 1,
+    ready_projects: 1,
+    missing_source_hash_projects: 0,
+    invalid_source_hash_projects: 0,
+    duplicate_source_hash_projects: 0,
+    noncanonical_project_id_projects: 0,
+    projects: [],
+    duplicate_groups: [],
+    job_state: {
+      state: "ready",
+      running_job_count: 0,
+      pending_job_count: 0,
+      blocking_job_count: 0,
+      blocking_job_counts: { running: 0, pending: 0 },
+      blocking_jobs: [],
+      blocking_jobs_truncated: false,
+      guidance: [],
+    },
+    manual_cleanup_required: false,
+    manual_cleanup_guidance: [],
     ...overrides,
   };
 }
@@ -815,7 +846,7 @@ describe("Desktop app activity", () => {
     );
   });
 
-  it("runs sync now for a trusted peer", async () => {
+  it("ready preflight allows sync now for a trusted peer", async () => {
     const user = userEvent.setup();
     setSyncTrustedPeers([
       {
@@ -833,10 +864,18 @@ describe("Desktop app activity", () => {
     const peerRow = within(peers).getByText("Laptop Rig").closest("li");
     expect(peerRow).not.toBeNull();
     expect(within(peerRow as HTMLElement).getByText(syncEndpointHints.join(", "))).toBeInTheDocument();
+    const preflightSection = screen.getByRole("heading", { name: "Local Readiness" }).closest("section");
+    expect(preflightSection).not.toBeNull();
+    expect(within(preflightSection as HTMLElement).getByText("Ready")).toBeInTheDocument();
+    mockGetSyncPreflight.mockClear();
 
     await user.click(within(peerRow as HTMLElement).getByRole("button", { name: "Sync Now" }));
 
+    await waitFor(() => expect(mockGetSyncPreflight).toHaveBeenCalled());
     await waitFor(() => expect(mockSyncTrustedPeerNow).toHaveBeenCalledWith("device_peer_1"));
+    expect(mockGetSyncPreflight.mock.invocationCallOrder[0]).toBeLessThan(
+      mockSyncTrustedPeerNow.mock.invocationCallOrder[0],
+    );
     expect(await screen.findAllByText("Manifest exchange completed with 4 project results.")).not.toHaveLength(0);
     expect(screen.getByText(/Transport Iroh/)).toBeInTheDocument();
 
@@ -853,6 +892,156 @@ describe("Desktop app activity", () => {
     expect(within(resultRows[3]).getByText("Failed")).toBeInTheDocument();
     expect(within(resultRows[3]).getByText("proj_missing_audio")).toBeInTheDocument();
     expect(within(resultRows[3]).getByText("Peer did not provide the required source audio.")).toBeInTheDocument();
+  });
+
+  it("busy preflight shows job counts while allowing sync now", async () => {
+    const user = userEvent.setup();
+    setSyncTrustedPeers([
+      {
+        device_id: "device_peer_1",
+        sync_group_id: "sync_group_local",
+        display_name: "Laptop Rig",
+        public_key: "pub_peer_1",
+        endpoint_hints: syncEndpointHints,
+        trusted_at: "2026-04-18T13:16:00.000Z",
+      },
+    ]);
+    setJobs([
+      job({
+        id: "job_running_analyze",
+        type: "analyze",
+        status: "running",
+        progress: 25,
+        started_at: "2026-04-18T13:15:00.000Z",
+      }),
+      job({
+        id: "job_pending_stems",
+        type: "stems",
+        status: "pending",
+        progress: 0,
+      }),
+    ]);
+    await openSyncTab(user);
+
+    const preflightSection = await screen.findByRole("heading", { name: "Local Readiness" });
+    const readiness = preflightSection.closest("section");
+    expect(readiness).not.toBeNull();
+    expect(within(readiness as HTMLElement).getByText("Ready With Jobs")).toBeInTheDocument();
+    expect(within(readiness as HTMLElement).getAllByText(/2 blocking jobs \(1 running, 1 pending\)\./)).not.toHaveLength(0);
+    expect(within(readiness as HTMLElement).getByText("1 analyze, 1 stems")).toBeInTheDocument();
+    mockGetSyncPreflight.mockClear();
+    mockSyncTrustedPeerNow.mockClear();
+
+    const peers = await screen.findByRole("list", { name: "Trusted sync peers" });
+    const peerRow = within(peers).getByText("Laptop Rig").closest("li");
+    expect(peerRow).not.toBeNull();
+    await user.click(within(peerRow as HTMLElement).getByRole("button", { name: "Sync Now" }));
+
+    await waitFor(() => expect(mockGetSyncPreflight).toHaveBeenCalled());
+    await waitFor(() => expect(mockSyncTrustedPeerNow).toHaveBeenCalledWith("device_peer_1"));
+    expect(await screen.findAllByText("Manifest exchange completed with 4 project results.")).not.toHaveLength(0);
+  });
+
+  it("hides preflight job details and cancel controls while showing compact job summary", async () => {
+    const user = userEvent.setup();
+    setJobs([
+      job({
+        id: "job_pending",
+        type: "analyze",
+        status: "pending",
+        progress: 0,
+      }),
+    ]);
+    await openSyncTab(user);
+
+    const preflightSection = screen.getByRole("heading", { name: "Local Readiness" }).closest("section");
+    expect(preflightSection).not.toBeNull();
+    expect(within(preflightSection as HTMLElement).getByText("Ready With Jobs")).toBeInTheDocument();
+    expect(within(preflightSection as HTMLElement).getAllByText(/1 blocking job \(1 pending\)\./)).not.toHaveLength(0);
+    expect(within(preflightSection as HTMLElement).getByText("1 analyze")).toBeInTheDocument();
+    expect(
+      within(preflightSection as HTMLElement).queryByRole("list", { name: "Sync preflight blocking jobs" }),
+    ).not.toBeInTheDocument();
+    expect(within(preflightSection as HTMLElement).queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+    expect(mockCancelJob).not.toHaveBeenCalled();
+  });
+
+  it("marks truncated preflight job type summaries as samples", async () => {
+    const user = userEvent.setup();
+    setSyncPreflight(syncPreflight({
+      job_state: {
+        state: "busy",
+        running_job_count: 0,
+        pending_job_count: 25,
+        blocking_job_count: 25,
+        blocking_job_counts: { running: 0, pending: 25 },
+        blocking_jobs: Array.from({ length: 20 }, (_, index) => ({
+          id: `job_export_${index + 1}`,
+          project_id: `proj_${index + 1}`,
+          project_name: `Export Song ${index + 1}`,
+          type: "export",
+          status: "pending",
+          progress: 0,
+          started_at: null,
+          updated_at: "2026-04-18T13:16:00.000Z",
+        })),
+        blocking_jobs_truncated: true,
+        guidance: [],
+      },
+    }));
+    await openSyncTab(user);
+
+    const preflightSection = screen.getByRole("heading", { name: "Local Readiness" }).closest("section");
+    expect(preflightSection).not.toBeNull();
+    expect(within(preflightSection as HTMLElement).getByText("Ready With Jobs")).toBeInTheDocument();
+    expect(within(preflightSection as HTMLElement).getAllByText(/25 blocking jobs \(25 pending\)\./)).not.toHaveLength(0);
+    expect(
+      within(preflightSection as HTMLElement).getByText("sample: 20 export (first 20 jobs shown)"),
+    ).toBeInTheDocument();
+    expect(
+      within(preflightSection as HTMLElement).queryByRole("list", { name: "Sync preflight blocking jobs" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows library preflight failures before sync now", async () => {
+    const user = userEvent.setup();
+    setSyncTrustedPeers([
+      {
+        device_id: "device_peer_1",
+        sync_group_id: "sync_group_local",
+        display_name: "Laptop Rig",
+        public_key: "pub_peer_1",
+        endpoint_hints: syncEndpointHints,
+        trusted_at: "2026-04-18T13:16:00.000Z",
+      },
+    ]);
+    setSyncPreflight(syncPreflight({
+      ok: false,
+      library_ok: false,
+      total_projects: 1,
+      ready_projects: 0,
+      missing_source_hash_projects: 1,
+      manual_cleanup_required: true,
+      manual_cleanup_guidance: [
+        "Restore the original source file or re-import affected projects so TuneForge can compute source hashes.",
+      ],
+    }));
+    await openSyncTab(user);
+
+    expect(await screen.findAllByText(/Library preflight failed: 1 missing source hash project\./)).not.toHaveLength(0);
+    mockGetSyncPreflight.mockClear();
+    mockSyncTrustedPeerNow.mockClear();
+
+    const peers = await screen.findByRole("list", { name: "Trusted sync peers" });
+    const peerRow = within(peers).getByText("Laptop Rig").closest("li");
+    expect(peerRow).not.toBeNull();
+    await user.click(within(peerRow as HTMLElement).getByRole("button", { name: "Sync Now" }));
+
+    await waitFor(() => expect(mockGetSyncPreflight).toHaveBeenCalled());
+    expect(mockSyncTrustedPeerNow).not.toHaveBeenCalled();
+    expect(
+      await screen.findAllByText(/Sync now failed: Library preflight failed: 1 missing source hash project\./),
+    ).not.toHaveLength(0);
   });
 
   it("shows listener-side sync project results from native status", async () => {

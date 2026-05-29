@@ -2,14 +2,15 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import Artifact, Project
+from app.models import Artifact, Job, Project
 from app.utils.hashing import file_sha256
 
 PROJECT_ID_PREFIX = "proj_sha256_"
@@ -28,6 +29,9 @@ SyncPreflightSourceHashSource = Literal[
     "database",
     "original_copy_path",
 ]
+SyncPreflightJobStateValue = Literal["ready", "busy"]
+ACTIVE_SYNC_BLOCKING_JOB_STATUSES = ("pending", "running")
+SYNC_PREFLIGHT_BLOCKING_JOBS_LIMIT = 20
 
 
 @dataclass(frozen=True)
@@ -56,8 +60,33 @@ class SyncPreflightDuplicateGroup:
 
 
 @dataclass(frozen=True)
+class SyncPreflightBlockingJob:
+    id: str
+    project_id: str | None
+    project_name: str | None
+    type: str
+    status: str
+    progress: int
+    started_at: datetime | None
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class SyncPreflightJobState:
+    state: SyncPreflightJobStateValue
+    running_job_count: int
+    pending_job_count: int
+    blocking_job_count: int
+    blocking_job_counts: dict[str, int]
+    blocking_jobs: list[SyncPreflightBlockingJob]
+    blocking_jobs_truncated: bool
+    guidance: list[str]
+
+
+@dataclass(frozen=True)
 class SyncPreflightResult:
     ok: bool
+    library_ok: bool
     total_projects: int
     ready_projects: int
     missing_source_hash_projects: int
@@ -66,6 +95,7 @@ class SyncPreflightResult:
     noncanonical_project_id_projects: int
     projects: list[SyncPreflightProject]
     duplicate_groups: list[SyncPreflightDuplicateGroup]
+    job_state: SyncPreflightJobState
     manual_cleanup_required: bool
     manual_cleanup_guidance: list[str]
 
@@ -120,10 +150,17 @@ def run_sync_preflight(session: Session) -> SyncPreflightResult:
     duplicate_count = sum(1 for project in final_projects if project.status == "duplicate_source_hash")
     noncanonical_count = sum(1 for project in final_projects if project.status == "noncanonical_project_id")
     ready_count = sum(1 for project in final_projects if project.status == "ready")
-    ok = missing_count == 0 and invalid_count == 0 and duplicate_count == 0 and noncanonical_count == 0
+    library_ok = (
+        missing_count == 0
+        and invalid_count == 0
+        and duplicate_count == 0
+        and noncanonical_count == 0
+    )
+    job_state = _sync_preflight_job_state(session)
 
     return SyncPreflightResult(
-        ok=ok,
+        ok=library_ok,
+        library_ok=library_ok,
         total_projects=len(final_projects),
         ready_projects=ready_count,
         missing_source_hash_projects=missing_count,
@@ -132,7 +169,8 @@ def run_sync_preflight(session: Session) -> SyncPreflightResult:
         noncanonical_project_id_projects=noncanonical_count,
         projects=final_projects,
         duplicate_groups=duplicate_groups,
-        manual_cleanup_required=not ok,
+        job_state=job_state,
+        manual_cleanup_required=not library_ok,
         manual_cleanup_guidance=_manual_cleanup_guidance(
             missing_count=missing_count,
             invalid_count=invalid_count,
@@ -140,6 +178,68 @@ def run_sync_preflight(session: Session) -> SyncPreflightResult:
             noncanonical_count=noncanonical_count,
         ),
     )
+
+
+def _sync_preflight_job_state(session: Session) -> SyncPreflightJobState:
+    counts = {status: 0 for status in ACTIVE_SYNC_BLOCKING_JOB_STATUSES}
+    count_stmt = (
+        select(Job.status, func.count())
+        .where(Job.status.in_(ACTIVE_SYNC_BLOCKING_JOB_STATUSES))
+        .group_by(Job.status)
+    )
+    for status, count in session.execute(count_stmt):
+        if status in counts:
+            counts[status] = int(count)
+
+    blocking_job_count = sum(counts.values())
+    jobs = _sync_preflight_blocking_jobs(session)
+    blocking_jobs_truncated = blocking_job_count > len(jobs)
+    return SyncPreflightJobState(
+        state="busy" if blocking_job_count else "ready",
+        running_job_count=counts["running"],
+        pending_job_count=counts["pending"],
+        blocking_job_count=blocking_job_count,
+        blocking_job_counts=counts,
+        blocking_jobs=jobs,
+        blocking_jobs_truncated=blocking_jobs_truncated,
+        guidance=_sync_preflight_job_guidance(blocking_job_count),
+    )
+
+
+def _sync_preflight_blocking_jobs(session: Session) -> list[SyncPreflightBlockingJob]:
+    status_rank = case(
+        (Job.status == "running", 0),
+        (Job.status == "pending", 1),
+        else_=2,
+    )
+    stmt = (
+        select(Job, Project.display_name)
+        .outerjoin(Project, Project.id == Job.project_id)
+        .where(Job.status.in_(ACTIVE_SYNC_BLOCKING_JOB_STATUSES))
+        .order_by(status_rank.asc(), Job.updated_at.asc(), Job.id.asc())
+        .limit(SYNC_PREFLIGHT_BLOCKING_JOBS_LIMIT)
+    )
+    return [
+        SyncPreflightBlockingJob(
+            id=job.id,
+            project_id=job.project_id,
+            project_name=project_name,
+            type=job.type,
+            status=job.status,
+            progress=job.progress,
+            started_at=job.started_at,
+            updated_at=job.updated_at,
+        )
+        for job, project_name in session.execute(stmt)
+    ]
+
+
+def _sync_preflight_job_guidance(blocking_job_count: int) -> list[str]:
+    if blocking_job_count == 0:
+        return []
+    return [
+        "Backend jobs are running. Sync can start, but backend work may delay sync endpoint responses."
+    ]
 
 
 def _source_artifacts_by_project(session: Session) -> dict[str, Artifact]:

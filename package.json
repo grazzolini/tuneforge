@@ -22,6 +22,7 @@
     "package:mac:app": "pnpm --filter @tuneforge/desktop tauri build --bundles app",
     "package:mac:dmg": "node scripts/package-dmg.mjs",
     "setup:dev": "bash scripts/setup-dev.sh",
+    "stems:waveforms": "bash -c 'if [[ \"${1:-}\" == \"--\" ]]; then shift; fi; invocation_dir=\"${INIT_CWD:-$PWD}\"; cd apps/backend && uv run --python 3.11 python ../../scripts/stem-waveforms.py --output-dir \"${invocation_dir}/stem-waveforms\" \"$@\"' --",
     "sync:bundle": "bash -c 'if [[ \"${1:-}\" == \"--\" ]]; then shift; fi; exec bash scripts/run-backend-module.sh app.cli.sync_bundle \"$@\"' --",
     "sync:backend:default": "bash scripts/sync-backend-default.sh",
     "sync:backend:legacy-nvidia": "bash scripts/sync-backend-legacy-nvidia.sh",

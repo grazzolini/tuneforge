@@ -14,6 +14,8 @@ from app.config import ensure_data_dirs, get_settings
 from app.db import SessionLocal, reconfigure_engine, run_migrations
 from app.models import (
     Artifact,
+    ChordTimeline,
+    LyricsTranscript,
     Project,
     SyncDeleteTombstone,
     SyncEntityRevision,
@@ -814,6 +816,892 @@ def test_existing_project_manifest_scoped_revision_does_not_create_standalone_co
     )
     assert plan.summary.total_conflicts == 0
     assert _action(plan, ACTION_RECORD_CONFLICT, ITEM_ENTITY_REVISION, "rev_legacy_hash") is None
+
+
+def test_existing_project_imports_missing_embedded_current_chords_and_lyrics(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    _add_identity_and_peers(db_session)
+    source_hash, source_size = _write_file(tmp_path / "embedded-revisions-source.wav", b"source")
+    project_id = source_hash_to_project_id(source_hash)
+    _add_project(db_session, project_id, source_sha256=source_hash)
+    _add_artifact(
+        db_session,
+        artifact_id=f"art_source_{project_id}",
+        project_id=project_id,
+        path=tmp_path / "embedded-revisions-source.wav",
+        content_sha256=source_hash,
+        size_bytes=source_size,
+        artifact_type="source_audio",
+    )
+    db_session.commit()
+
+    chord_payload = {
+        "revision_id": "rev_embedded_current_chords",
+        "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "C"}],
+    }
+    lyrics_payload = {
+        "revision_id": "rev_embedded_current_lyrics",
+        "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "text": "hello"}],
+    }
+    manifest = _project_manifest(
+        project_id,
+        source_hash,
+        source_size_bytes=source_size,
+        extra_revisions=[
+            _current_revision_manifest(
+                project_id,
+                revision_id="rev_embedded_current_chords",
+                entity_type="chords",
+                payload=chord_payload,
+            ),
+            _current_revision_manifest(
+                project_id,
+                revision_id="rev_embedded_current_lyrics",
+                entity_type="lyrics",
+                payload=lyrics_payload,
+            ),
+        ],
+    )
+
+    plan = plan_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {},
+            "project_manifests": [manifest],
+            "peer_inventory": [{"device_id": "peer-a", "available_content_hashes": [source_hash]}],
+        },
+    )
+
+    assert _item(plan, ITEM_PROJECT, project_id).status == "noop"
+    chord_item = _item(plan, ITEM_ENTITY_REVISION, "rev_embedded_current_chords")
+    assert chord_item.status == "remote_available"
+    assert chord_item.action_type == ACTION_IMPORT_ENTITY_REVISION
+    lyrics_item = _item(plan, ITEM_ENTITY_REVISION, "rev_embedded_current_lyrics")
+    assert lyrics_item.status == "remote_available"
+    assert lyrics_item.action_type == ACTION_IMPORT_ENTITY_REVISION
+    assert _action(
+        plan,
+        ACTION_IMPORT_ENTITY_REVISION,
+        ITEM_ENTITY_REVISION,
+        "rev_embedded_current_chords",
+    ) is not None
+    assert _action(
+        plan,
+        ACTION_IMPORT_ENTITY_REVISION,
+        ITEM_ENTITY_REVISION,
+        "rev_embedded_current_lyrics",
+    ) is not None
+
+
+def test_existing_project_imports_remote_lyrics_over_empty_local_fillers(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    source_hash, source_size, project_id = _seed_existing_project_with_source(
+        db_session,
+        tmp_path,
+        filename="embedded-empty-local-lyrics-source.wav",
+    )
+    db_session.add(
+        LyricsTranscript(
+            project_id=project_id,
+            segments_json=[],
+            source_segments_json=[],
+            has_user_edits=False,
+            language_override=None,
+            source_kind="ai",
+        )
+    )
+    local_payload = {"revision_id": "rev_empty_local_lyrics", "segments": []}
+    _add_revision(
+        db_session,
+        project_id=project_id,
+        revision_id="rev_empty_local_lyrics",
+        content_sha256=revision_payload_sha256(local_payload),
+        base_revision_id=None,
+        entity_type="lyrics",
+        payload=local_payload,
+    )
+    db_session.commit()
+
+    remote_payload = {
+        "revision_id": "rev_remote_current_lyrics_after_empty_local",
+        "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "text": "hello"}],
+    }
+    manifest = _project_manifest(
+        project_id,
+        source_hash,
+        source_size_bytes=source_size,
+        extra_revisions=[
+            _current_revision_manifest(
+                project_id,
+                revision_id="rev_remote_current_lyrics_after_empty_local",
+                entity_type="lyrics",
+                payload=remote_payload,
+            )
+        ],
+    )
+
+    plan = plan_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {},
+            "project_manifests": [manifest],
+            "peer_inventory": [{"device_id": "peer-a", "available_content_hashes": [source_hash]}],
+        },
+    )
+
+    lyrics_item = _item(plan, ITEM_ENTITY_REVISION, "rev_remote_current_lyrics_after_empty_local")
+    assert lyrics_item.status == "remote_available"
+    assert lyrics_item.action_type == ACTION_IMPORT_ENTITY_REVISION
+    assert _action(
+        plan,
+        ACTION_IMPORT_ENTITY_REVISION,
+        ITEM_ENTITY_REVISION,
+        "rev_remote_current_lyrics_after_empty_local",
+    ) is not None
+
+
+@pytest.mark.parametrize(
+    ("intentional_source", "payload"),
+    [
+        ("row", {"language_override": "none"}),
+        ("row", {"source_kind": "instrumental"}),
+        ("revision", {"language_override": "none"}),
+        ("revision", {"source_kind": "instrumental"}),
+    ],
+)
+def test_existing_project_keeps_intentional_no_lyrics_over_remote_embedded_lyrics(
+    db_session: Session,
+    tmp_path: Path,
+    intentional_source: str,
+    payload: dict[str, str],
+) -> None:
+    intentional_key = next(iter(payload))
+    source_hash, source_size, project_id = _seed_existing_project_with_source(
+        db_session,
+        tmp_path,
+        filename=f"embedded-intentional-no-lyrics-{intentional_source}-{intentional_key}.wav",
+    )
+    db_session.add(
+        LyricsTranscript(
+            project_id=project_id,
+            segments_json=[],
+            source_segments_json=[],
+            has_user_edits=False,
+            language_override=payload.get("language_override") if intentional_source == "row" else None,
+            source_kind=payload.get("source_kind") if intentional_source == "row" else "ai",
+        )
+    )
+    local_revision_id = f"rev_intentional_no_lyrics_{intentional_source}_{intentional_key}"
+    local_payload = {
+        "revision_id": local_revision_id,
+        "segments": [],
+        **(payload if intentional_source == "revision" else {}),
+    }
+    _add_revision(
+        db_session,
+        project_id=project_id,
+        revision_id=local_revision_id,
+        content_sha256=revision_payload_sha256(local_payload),
+        base_revision_id=None,
+        entity_type="lyrics",
+        payload=local_payload,
+    )
+    db_session.commit()
+
+    remote_payload = {
+        "revision_id": "rev_remote_current_lyrics_blocked_by_intentional_local",
+        "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "text": "hello"}],
+    }
+    manifest = _project_manifest(
+        project_id,
+        source_hash,
+        source_size_bytes=source_size,
+        extra_revisions=[
+            _current_revision_manifest(
+                project_id,
+                revision_id="rev_remote_current_lyrics_blocked_by_intentional_local",
+                entity_type="lyrics",
+                payload=remote_payload,
+            )
+        ],
+    )
+
+    plan = plan_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {},
+            "project_manifests": [manifest],
+            "peer_inventory": [{"device_id": "peer-a", "available_content_hashes": [source_hash]}],
+        },
+    )
+
+    assert all(
+        item.item_id != "rev_remote_current_lyrics_blocked_by_intentional_local"
+        for item in plan.items
+        if item.item_type == ITEM_ENTITY_REVISION
+    )
+    assert _action(
+        plan,
+        ACTION_IMPORT_ENTITY_REVISION,
+        ITEM_ENTITY_REVISION,
+        "rev_remote_current_lyrics_blocked_by_intentional_local",
+    ) is None
+
+
+def test_existing_project_skips_empty_remote_embedded_lyrics_over_empty_local_row(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    source_hash, source_size, project_id = _seed_existing_project_with_source(
+        db_session,
+        tmp_path,
+        filename="embedded-empty-remote-lyrics-source.wav",
+    )
+    db_session.add(
+        LyricsTranscript(
+            project_id=project_id,
+            segments_json=[],
+            source_segments_json=[],
+            has_user_edits=False,
+            language_override=None,
+            source_kind="ai",
+        )
+    )
+    db_session.commit()
+
+    remote_payload = {
+        "revision_id": "rev_remote_empty_lyrics",
+        "segments": [],
+    }
+    manifest = _project_manifest(
+        project_id,
+        source_hash,
+        source_size_bytes=source_size,
+        extra_revisions=[
+            _current_revision_manifest(
+                project_id,
+                revision_id="rev_remote_empty_lyrics",
+                entity_type="lyrics",
+                payload=remote_payload,
+            )
+        ],
+    )
+
+    plan = plan_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {},
+            "project_manifests": [manifest],
+            "peer_inventory": [{"device_id": "peer-a", "available_content_hashes": [source_hash]}],
+        },
+    )
+
+    assert all(
+        item.item_id != "rev_remote_empty_lyrics"
+        for item in plan.items
+        if item.item_type == ITEM_ENTITY_REVISION
+    )
+    assert _action(
+        plan,
+        ACTION_IMPORT_ENTITY_REVISION,
+        ITEM_ENTITY_REVISION,
+        "rev_remote_empty_lyrics",
+    ) is None
+
+
+def test_existing_project_imports_missing_embedded_revision_chain_in_order(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    _add_identity_and_peers(db_session)
+    source_hash, source_size = _write_file(tmp_path / "embedded-revision-chain-source.wav", b"source")
+    project_id = source_hash_to_project_id(source_hash)
+    _add_project(db_session, project_id, source_sha256=source_hash)
+    _add_artifact(
+        db_session,
+        artifact_id=f"art_source_{project_id}",
+        project_id=project_id,
+        path=tmp_path / "embedded-revision-chain-source.wav",
+        content_sha256=source_hash,
+        size_bytes=source_size,
+        artifact_type="source_audio",
+    )
+    db_session.commit()
+
+    base_payload = {
+        "revision_id": "rev_embedded_base_chords",
+        "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "C"}],
+    }
+    current_payload = {
+        "revision_id": "rev_embedded_current_child_chords",
+        "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "G"}],
+    }
+    manifest = _project_manifest(
+        project_id,
+        source_hash,
+        source_size_bytes=source_size,
+        extra_revisions=[
+            _current_revision_manifest(
+                project_id,
+                revision_id="rev_embedded_base_chords",
+                entity_type="chords",
+                payload=base_payload,
+                state="superseded",
+            ),
+            _current_revision_manifest(
+                project_id,
+                revision_id="rev_embedded_current_child_chords",
+                entity_type="chords",
+                payload=current_payload,
+                base_revision_id="rev_embedded_base_chords",
+            ),
+        ],
+    )
+
+    plan = plan_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {},
+            "project_manifests": [manifest],
+            "peer_inventory": [{"device_id": "peer-a", "available_content_hashes": [source_hash]}],
+        },
+    )
+
+    base_item = _item(plan, ITEM_ENTITY_REVISION, "rev_embedded_base_chords")
+    assert base_item.status == "remote_available"
+    assert base_item.action_type == ACTION_IMPORT_ENTITY_REVISION
+    current_item = _item(plan, ITEM_ENTITY_REVISION, "rev_embedded_current_child_chords")
+    assert current_item.status == "remote_available"
+    assert current_item.action_type == ACTION_IMPORT_ENTITY_REVISION
+    import_revision_action_ids = [
+        action.item_id
+        for action in plan.actions
+        if action.action_type == ACTION_IMPORT_ENTITY_REVISION
+    ]
+    assert import_revision_action_ids.index("rev_embedded_base_chords") < import_revision_action_ids.index(
+        "rev_embedded_current_child_chords"
+    )
+
+
+@pytest.mark.parametrize("case", ["bad_payload_hash", "missing_source_artifact"])
+def test_existing_project_skips_embedded_revision_chain_when_current_is_invalid(
+    db_session: Session,
+    tmp_path: Path,
+    case: str,
+) -> None:
+    _add_identity_and_peers(db_session)
+    source_hash, source_size = _write_file(tmp_path / f"embedded-invalid-chain-{case}.wav", b"source")
+    project_id = source_hash_to_project_id(source_hash)
+    _add_project(db_session, project_id, source_sha256=source_hash)
+    _add_artifact(
+        db_session,
+        artifact_id=f"art_source_{project_id}",
+        project_id=project_id,
+        path=tmp_path / f"embedded-invalid-chain-{case}.wav",
+        content_sha256=source_hash,
+        size_bytes=source_size,
+        artifact_type="source_audio",
+    )
+    db_session.commit()
+
+    base_payload = {
+        "revision_id": f"rev_invalid_chain_base_{case}",
+        "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "C"}],
+    }
+    current_payload = {
+        "revision_id": f"rev_invalid_chain_current_{case}",
+        "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "G"}],
+    }
+    current_revision = _current_revision_manifest(
+        project_id,
+        revision_id=f"rev_invalid_chain_current_{case}",
+        entity_type="chords",
+        payload=current_payload,
+        base_revision_id=f"rev_invalid_chain_base_{case}",
+        content_sha256=(
+            _sha("invalid child payload hash")
+            if case == "bad_payload_hash"
+            else None
+        ),
+        source_artifact_id=(
+            "art_missing_revision_source"
+            if case == "missing_source_artifact"
+            else None
+        ),
+    )
+    manifest = _project_manifest(
+        project_id,
+        source_hash,
+        source_size_bytes=source_size,
+        extra_revisions=[
+            _current_revision_manifest(
+                project_id,
+                revision_id=f"rev_invalid_chain_base_{case}",
+                entity_type="chords",
+                payload=base_payload,
+                state="superseded",
+            ),
+            current_revision,
+        ],
+    )
+
+    plan = plan_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {},
+            "project_manifests": [manifest],
+            "peer_inventory": [{"device_id": "peer-a", "available_content_hashes": [source_hash]}],
+        },
+    )
+
+    assert _item(plan, ITEM_PROJECT, project_id).status == "noop"
+    for revision_id in (
+        f"rev_invalid_chain_base_{case}",
+        f"rev_invalid_chain_current_{case}",
+    ):
+        assert _action(
+            plan,
+            ACTION_IMPORT_ENTITY_REVISION,
+            ITEM_ENTITY_REVISION,
+            revision_id,
+        ) is None
+
+
+def test_existing_project_skips_duplicate_embedded_current_revisions(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    _add_identity_and_peers(db_session)
+    source_hash, source_size = _write_file(tmp_path / "embedded-duplicate-current-source.wav", b"source")
+    project_id = source_hash_to_project_id(source_hash)
+    _add_project(db_session, project_id, source_sha256=source_hash)
+    _add_artifact(
+        db_session,
+        artifact_id=f"art_source_{project_id}",
+        project_id=project_id,
+        path=tmp_path / "embedded-duplicate-current-source.wav",
+        content_sha256=source_hash,
+        size_bytes=source_size,
+        artifact_type="source_audio",
+    )
+    db_session.commit()
+
+    first_payload = {
+        "revision_id": "rev_duplicate_current_chords_a",
+        "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "C"}],
+    }
+    second_payload = {
+        "revision_id": "rev_duplicate_current_chords_b",
+        "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "G"}],
+    }
+    manifest = _project_manifest(
+        project_id,
+        source_hash,
+        source_size_bytes=source_size,
+        extra_revisions=[
+            _current_revision_manifest(
+                project_id,
+                revision_id="rev_duplicate_current_chords_a",
+                entity_type="chords",
+                payload=first_payload,
+            ),
+            _current_revision_manifest(
+                project_id,
+                revision_id="rev_duplicate_current_chords_b",
+                entity_type="chords",
+                payload=second_payload,
+            ),
+        ],
+    )
+
+    plan = plan_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {},
+            "project_manifests": [manifest],
+            "peer_inventory": [{"device_id": "peer-a", "available_content_hashes": [source_hash]}],
+        },
+    )
+
+    assert _item(plan, ITEM_PROJECT, project_id).status == "noop"
+    for revision_id in ("rev_duplicate_current_chords_a", "rev_duplicate_current_chords_b"):
+        assert _action(
+            plan,
+            ACTION_IMPORT_ENTITY_REVISION,
+            ITEM_ENTITY_REVISION,
+            revision_id,
+        ) is None
+
+
+def test_existing_project_skips_duplicate_embedded_current_singleton_with_different_entity_ids(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    _add_identity_and_peers(db_session)
+    source_hash, source_size = _write_file(tmp_path / "embedded-duplicate-singleton-source.wav", b"source")
+    project_id = source_hash_to_project_id(source_hash)
+    _add_project(db_session, project_id, source_sha256=source_hash)
+    _add_artifact(
+        db_session,
+        artifact_id=f"art_source_{project_id}",
+        project_id=project_id,
+        path=tmp_path / "embedded-duplicate-singleton-source.wav",
+        content_sha256=source_hash,
+        size_bytes=source_size,
+        artifact_type="source_audio",
+    )
+    db_session.commit()
+
+    first_payload = {
+        "revision_id": "rev_duplicate_singleton_chords_a",
+        "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "C"}],
+    }
+    second_payload = {
+        "revision_id": "rev_duplicate_singleton_chords_b",
+        "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "G"}],
+    }
+    manifest = _project_manifest(
+        project_id,
+        source_hash,
+        source_size_bytes=source_size,
+        extra_revisions=[
+            _current_revision_manifest(
+                project_id,
+                revision_id="rev_duplicate_singleton_chords_a",
+                entity_type="chords",
+                payload=first_payload,
+            ),
+            _current_revision_manifest(
+                project_id,
+                revision_id="rev_duplicate_singleton_chords_b",
+                entity_type="chords",
+                entity_id="other-chord-entity",
+                payload=second_payload,
+            ),
+        ],
+    )
+
+    plan = plan_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {},
+            "project_manifests": [manifest],
+            "peer_inventory": [{"device_id": "peer-a", "available_content_hashes": [source_hash]}],
+        },
+    )
+
+    assert _item(plan, ITEM_PROJECT, project_id).status == "noop"
+    for revision_id in ("rev_duplicate_singleton_chords_a", "rev_duplicate_singleton_chords_b"):
+        assert _action(
+            plan,
+            ACTION_IMPORT_ENTITY_REVISION,
+            ITEM_ENTITY_REVISION,
+            revision_id,
+        ) is None
+
+
+def test_existing_project_skips_embedded_chain_with_foreign_base(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    _add_identity_and_peers(db_session)
+    source_hash, source_size = _write_file(tmp_path / "embedded-foreign-base-source.wav", b"source")
+    project_id = source_hash_to_project_id(source_hash)
+    _add_project(db_session, project_id, source_sha256=source_hash)
+    _add_artifact(
+        db_session,
+        artifact_id=f"art_source_{project_id}",
+        project_id=project_id,
+        path=tmp_path / "embedded-foreign-base-source.wav",
+        content_sha256=source_hash,
+        size_bytes=source_size,
+        artifact_type="source_audio",
+    )
+    db_session.commit()
+
+    foreign_payload = {
+        "revision_id": "rev_foreign_lyrics_base",
+        "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "text": "base"}],
+    }
+    current_payload = {
+        "revision_id": "rev_current_chords_foreign_base",
+        "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "G"}],
+    }
+    manifest = _project_manifest(
+        project_id,
+        source_hash,
+        source_size_bytes=source_size,
+        extra_revisions=[
+            _current_revision_manifest(
+                project_id,
+                revision_id="rev_foreign_lyrics_base",
+                entity_type="lyrics",
+                payload=foreign_payload,
+                state="superseded",
+            ),
+            _current_revision_manifest(
+                project_id,
+                revision_id="rev_current_chords_foreign_base",
+                entity_type="chords",
+                payload=current_payload,
+                base_revision_id="rev_foreign_lyrics_base",
+            ),
+        ],
+    )
+
+    plan = plan_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {},
+            "project_manifests": [manifest],
+            "peer_inventory": [{"device_id": "peer-a", "available_content_hashes": [source_hash]}],
+        },
+    )
+
+    assert _item(plan, ITEM_PROJECT, project_id).status == "noop"
+    for revision_id in ("rev_foreign_lyrics_base", "rev_current_chords_foreign_base"):
+        assert _action(
+            plan,
+            ACTION_IMPORT_ENTITY_REVISION,
+            ITEM_ENTITY_REVISION,
+            revision_id,
+        ) is None
+
+
+def test_existing_project_skips_embedded_chain_when_current_is_tombstoned(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    _add_identity_and_peers(db_session)
+    source_hash, source_size = _write_file(tmp_path / "embedded-tombstoned-current-source.wav", b"source")
+    project_id = source_hash_to_project_id(source_hash)
+    _add_project(db_session, project_id, source_sha256=source_hash)
+    _add_artifact(
+        db_session,
+        artifact_id=f"art_source_{project_id}",
+        project_id=project_id,
+        path=tmp_path / "embedded-tombstoned-current-source.wav",
+        content_sha256=source_hash,
+        size_bytes=source_size,
+        artifact_type="source_audio",
+    )
+    db_session.commit()
+
+    base_payload = {
+        "revision_id": "rev_tombstone_chain_base_chords",
+        "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "C"}],
+    }
+    current_payload = {
+        "revision_id": "rev_tombstone_chain_current_chords",
+        "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "G"}],
+    }
+    manifest = _project_manifest(
+        project_id,
+        source_hash,
+        source_size_bytes=source_size,
+        extra_revisions=[
+            _current_revision_manifest(
+                project_id,
+                revision_id="rev_tombstone_chain_base_chords",
+                entity_type="chords",
+                payload=base_payload,
+                state="superseded",
+            ),
+            _current_revision_manifest(
+                project_id,
+                revision_id="rev_tombstone_chain_current_chords",
+                entity_type="chords",
+                payload=current_payload,
+                base_revision_id="rev_tombstone_chain_base_chords",
+            ),
+        ],
+    )
+    manifest["delete_tombstones"] = [
+        _tombstone(
+            tombstone_id="tomb_current_chords",
+            project_id=project_id,
+            target_type=ITEM_ENTITY_REVISION,
+            target_id="rev_tombstone_chain_current_chords",
+            author_device_id="peer-a",
+        )
+    ]
+
+    plan = plan_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {},
+            "project_manifests": [manifest],
+            "peer_inventory": [{"device_id": "peer-a", "available_content_hashes": [source_hash]}],
+        },
+    )
+
+    assert _item(plan, ITEM_PROJECT, project_id).status == "noop"
+    for revision_id in ("rev_tombstone_chain_base_chords", "rev_tombstone_chain_current_chords"):
+        assert _action(
+            plan,
+            ACTION_IMPORT_ENTITY_REVISION,
+            ITEM_ENTITY_REVISION,
+            revision_id,
+        ) is None
+
+
+def test_existing_project_skips_embedded_current_revision_when_local_content_exists(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    _add_identity_and_peers(db_session)
+    source_hash, source_size = _write_file(tmp_path / "embedded-local-content-source.wav", b"source")
+    project_id = source_hash_to_project_id(source_hash)
+    _add_project(db_session, project_id, source_sha256=source_hash)
+    _add_artifact(
+        db_session,
+        artifact_id=f"art_source_{project_id}",
+        project_id=project_id,
+        path=tmp_path / "embedded-local-content-source.wav",
+        content_sha256=source_hash,
+        size_bytes=source_size,
+        artifact_type="source_audio",
+    )
+    db_session.add_all(
+        [
+            ChordTimeline(project_id=project_id),
+            LyricsTranscript(
+                project_id=project_id,
+                segments_json=[{"start_seconds": 0.0, "end_seconds": 1.0, "text": "local"}],
+            ),
+        ]
+    )
+    db_session.commit()
+
+    chord_payload = {
+        "revision_id": "rev_local_content_chords",
+        "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "C"}],
+    }
+    lyrics_payload = {
+        "revision_id": "rev_local_content_lyrics",
+        "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "text": "hello"}],
+    }
+    manifest = _project_manifest(
+        project_id,
+        source_hash,
+        source_size_bytes=source_size,
+        extra_revisions=[
+            _current_revision_manifest(
+                project_id,
+                revision_id="rev_local_content_chords",
+                entity_type="chords",
+                payload=chord_payload,
+            ),
+            _current_revision_manifest(
+                project_id,
+                revision_id="rev_local_content_lyrics",
+                entity_type="lyrics",
+                payload=lyrics_payload,
+            ),
+        ],
+    )
+
+    plan = plan_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {},
+            "project_manifests": [manifest],
+            "peer_inventory": [{"device_id": "peer-a", "available_content_hashes": [source_hash]}],
+        },
+    )
+
+    assert _item(plan, ITEM_PROJECT, project_id).status == "noop"
+    for revision_id in ("rev_local_content_chords", "rev_local_content_lyrics"):
+        assert _action(
+            plan,
+            ACTION_IMPORT_ENTITY_REVISION,
+            ITEM_ENTITY_REVISION,
+            revision_id,
+        ) is None
+
+
+def test_existing_project_skips_embedded_current_revision_when_local_revision_exists(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    _add_identity_and_peers(db_session)
+    source_hash, source_size = _write_file(tmp_path / "embedded-local-revision-source.wav", b"source")
+    project_id = source_hash_to_project_id(source_hash)
+    _add_project(db_session, project_id, source_sha256=source_hash)
+    _add_artifact(
+        db_session,
+        artifact_id=f"art_source_{project_id}",
+        project_id=project_id,
+        path=tmp_path / "embedded-local-revision-source.wav",
+        content_sha256=source_hash,
+        size_bytes=source_size,
+        artifact_type="source_audio",
+    )
+    _add_revision(
+        db_session,
+        project_id=project_id,
+        revision_id="rev_local_current_chords",
+        content_sha256=_revision_payload_sha("rev_local_current_chords"),
+        base_revision_id=None,
+    )
+    db_session.commit()
+
+    base_payload = {
+        "revision_id": "rev_remote_base_chords",
+        "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "C"}],
+    }
+    remote_payload = {
+        "revision_id": "rev_remote_current_chords",
+        "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "G"}],
+    }
+    manifest = _project_manifest(
+        project_id,
+        source_hash,
+        source_size_bytes=source_size,
+        extra_revisions=[
+            _current_revision_manifest(
+                project_id,
+                revision_id="rev_remote_base_chords",
+                entity_type="chords",
+                payload=base_payload,
+                state="superseded",
+            ),
+            _current_revision_manifest(
+                project_id,
+                revision_id="rev_remote_current_chords",
+                entity_type="chords",
+                payload=remote_payload,
+                base_revision_id="rev_remote_base_chords",
+            )
+        ],
+    )
+
+    plan = plan_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {},
+            "project_manifests": [manifest],
+            "peer_inventory": [{"device_id": "peer-a", "available_content_hashes": [source_hash]}],
+        },
+    )
+
+    assert _item(plan, ITEM_PROJECT, project_id).status == "noop"
+    for revision_id in ("rev_remote_base_chords", "rev_remote_current_chords"):
+        assert all(
+            item.item_id != revision_id
+            for item in plan.items
+            if item.item_type == ITEM_ENTITY_REVISION
+        )
+        assert _action(
+            plan,
+            ACTION_IMPORT_ENTITY_REVISION,
+            ITEM_ENTITY_REVISION,
+            revision_id,
+        ) is None
 
 
 @pytest.mark.parametrize(
@@ -1670,6 +2558,28 @@ def _add_artifact(
     return artifact
 
 
+def _seed_existing_project_with_source(
+    session: Session,
+    tmp_path: Path,
+    *,
+    filename: str,
+) -> tuple[str, int, str]:
+    _add_identity_and_peers(session)
+    source_hash, source_size = _write_file(tmp_path / filename, b"source")
+    project_id = source_hash_to_project_id(source_hash)
+    _add_project(session, project_id, source_sha256=source_hash)
+    _add_artifact(
+        session,
+        artifact_id=f"art_source_{project_id}",
+        project_id=project_id,
+        path=tmp_path / filename,
+        content_sha256=source_hash,
+        size_bytes=source_size,
+        artifact_type="source_audio",
+    )
+    return source_hash, source_size, project_id
+
+
 def _add_revision(
     session: Session,
     *,
@@ -1679,12 +2589,15 @@ def _add_revision(
     base_revision_id: str | None,
     entity_id: str | None = None,
     source_artifact_id: str | None = None,
+    entity_type: str = "chords",
+    payload: dict[str, Any] | None = None,
 ) -> SyncEntityRevision:
     now = datetime.now(UTC)
+    payload_json = {"revision_id": revision_id} if payload is None else payload
     revision = SyncEntityRevision(
         id=revision_id,
         project_id=project_id,
-        entity_type="chords",
+        entity_type=entity_type,
         entity_id=entity_id or project_id,
         revision_type="manual",
         base_revision_id=base_revision_id,
@@ -1693,7 +2606,7 @@ def _add_revision(
         author_device_id="dev-local",
         state="current",
         metadata_json={},
-        payload_json={"revision_id": revision_id},
+        payload_json=payload_json,
         created_at=now,
         updated_at=now,
     )
@@ -1914,6 +2827,37 @@ def _revision_manifest(
         "state": "current",
         "metadata": {},
         "payload": {"revision_id": revision_id},
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+def _current_revision_manifest(
+    project_id: str,
+    *,
+    revision_id: str,
+    entity_type: str,
+    payload: dict[str, Any],
+    entity_id: str | None = None,
+    base_revision_id: str | None = None,
+    content_sha256: str | None = None,
+    source_artifact_id: str | None = None,
+    state: str = "current",
+) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    return {
+        "revision_id": revision_id,
+        "project_id": project_id,
+        "entity_type": entity_type,
+        "entity_id": entity_id or project_id,
+        "revision_type": "generated",
+        "base_revision_id": base_revision_id,
+        "author_device_id": "peer-a",
+        "source_artifact_id": source_artifact_id,
+        "content_sha256": content_sha256 or revision_payload_sha256(payload),
+        "state": state,
+        "metadata": {},
+        "payload": payload,
         "created_at": now,
         "updated_at": now,
     }

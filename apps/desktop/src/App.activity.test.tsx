@@ -14,6 +14,9 @@ import { encodePairingCode, pairingFingerprint } from "./features/activity/syncP
 import {
   mockCancelJob,
   mockConfirm,
+  mockGetAnalysis,
+  mockGetChords,
+  mockGetLyrics,
   mockGetProject,
   mockGetMobileCapabilities,
   mockGetSyncIdentity,
@@ -22,9 +25,11 @@ import {
   mockCreateSyncPairingOffer,
   mockListSyncTrustedPeers,
   getMockInvoke,
+  mockListArtifacts,
   mockStartSyncListener,
   mockStopSyncListener,
   mockScanPairingQrCode,
+  mockListSections,
   mockSyncTrustedPeerNow,
   mockTrustSyncPeer,
   mockListJobs,
@@ -178,6 +183,100 @@ async function openSyncTab(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("tab", { name: "Sync" }));
 
   expect(await screen.findByRole("heading", { level: 2, name: "Sync" })).toBeInTheDocument();
+}
+
+async function primeProjectDataQueries(
+  queryClient: ReturnType<typeof renderApp>["queryClient"],
+  projectId: string,
+) {
+  await Promise.all([
+    queryClient.fetchQuery({
+      queryKey: ["projects", ""],
+      queryFn: () => mockListProjects({ limit: 50, offset: 0 }),
+    }),
+    queryClient.fetchQuery({
+      queryKey: ["project", projectId],
+      queryFn: async () => (await mockGetProject(projectId)).project,
+    }),
+    queryClient.fetchQuery({
+      queryKey: ["lyrics", projectId],
+      queryFn: () => mockGetLyrics(projectId),
+    }),
+    queryClient.fetchQuery({
+      queryKey: ["chords", projectId],
+      queryFn: () => mockGetChords(projectId),
+    }),
+    queryClient.fetchQuery({
+      queryKey: ["analysis", projectId],
+      queryFn: async () => (await mockGetAnalysis(projectId)).analysis,
+    }),
+    queryClient.fetchQuery({
+      queryKey: ["sections", projectId],
+      queryFn: () => mockListSections(projectId),
+    }),
+    queryClient.fetchQuery({
+      queryKey: ["artifacts", projectId],
+      queryFn: async () => (await mockListArtifacts(projectId)).artifacts,
+    }),
+    queryClient.fetchQuery({
+      queryKey: ["jobs", { projectId, scope: "project", status: "active" }],
+      queryFn: () =>
+        mockListJobs({
+          project_id: projectId,
+          status: ["running", "pending"],
+          limit: 200,
+          offset: 0,
+        }),
+    }),
+    queryClient.fetchQuery({
+      queryKey: ["jobs", { projectId, scope: "project", status: "terminal" }],
+      queryFn: () =>
+        mockListJobs({
+          project_id: projectId,
+          status: ["completed", "failed", "cancelled"],
+          limit: 50,
+          offset: 0,
+        }),
+    }),
+  ]);
+}
+
+function expectProjectDataQueriesInvalidationState(
+  queryClient: ReturnType<typeof renderApp>["queryClient"],
+  projectId: string,
+  isInvalidated: boolean,
+) {
+  [
+    ["projects", ""],
+    ["project", projectId],
+    ["lyrics", projectId],
+    ["chords", projectId],
+    ["analysis", projectId],
+    ["sections", projectId],
+    ["artifacts", projectId],
+    ["jobs", { projectId, scope: "project", status: "active" }],
+    ["jobs", { projectId, scope: "project", status: "terminal" }],
+  ].forEach((queryKey) => {
+    const queryState = queryClient.getQueryState(queryKey);
+    expect(queryState, `Expected query ${JSON.stringify(queryKey)} to be primed`).toBeDefined();
+    expect(queryState?.isInvalidated, `Expected query ${JSON.stringify(queryKey)} invalidation state`).toBe(
+      isInvalidated,
+    );
+  });
+}
+
+function expectProjectDataQueriesInvalidated(
+  queryClient: ReturnType<typeof renderApp>["queryClient"],
+  projectId: string,
+) {
+  expectProjectDataQueriesInvalidationState(queryClient, projectId, true);
+}
+
+function expectProjectDataQueriesNotInvalidated(
+  queryClient: ReturnType<typeof renderApp>["queryClient"],
+  projectId: string,
+) {
+  expectProjectDataQueriesInvalidationState(queryClient, projectId, false);
 }
 
 describe("Desktop app activity", () => {
@@ -892,6 +991,165 @@ describe("Desktop app activity", () => {
     expect(within(resultRows[3]).getByText("Failed")).toBeInTheDocument();
     expect(within(resultRows[3]).getByText("proj_missing_audio")).toBeInTheDocument();
     expect(within(resultRows[3]).getByText("Peer did not provide the required source audio.")).toBeInTheDocument();
+  });
+
+  it("refreshes project data queries after sync now imports or applies project data", async () => {
+    const user = userEvent.setup();
+    const projectId = "proj_cache_target";
+    setProjects([project({ id: projectId, display_name: "Cache Target" })]);
+    setJobs([]);
+    setSyncTrustedPeers([
+      {
+        device_id: "device_peer_1",
+        sync_group_id: "sync_group_local",
+        display_name: "Laptop Rig",
+        public_key: "pub_peer_1",
+        endpoint_hints: syncEndpointHints,
+        trusted_at: "2026-04-18T13:16:00.000Z",
+      },
+    ]);
+    mockSyncTrustedPeerNow.mockImplementationOnce(async (deviceId) =>
+      syncRunStatus({
+        peer_device_id: deviceId,
+        remote_device_id: deviceId,
+        selected_transport: irohTransportId,
+        attempted_transports: [irohTransportId],
+        status: "completed",
+        message: "Applied and imported project data.",
+        imported_project_count: 1,
+        applied_project_count: 1,
+        project_results: [
+          {
+            project_id: projectId,
+            status: "applied",
+            message: "Applied remote lyrics, chords, analysis, sections, artifacts, and jobs.",
+          },
+          {
+            project_id: "proj_imported",
+            status: "imported",
+            message: "Imported project from trusted peer.",
+          },
+        ],
+      }),
+    );
+
+    const { queryClient } = renderApp(["/activity"]);
+    expect(await screen.findByRole("heading", { level: 2, name: "Jobs" })).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Sync" }));
+    expect(await screen.findByRole("heading", { level: 2, name: "Sync" })).toBeInTheDocument();
+    const peers = await screen.findByRole("list", { name: "Trusted sync peers" });
+    const peerRow = within(peers).getByText("Laptop Rig").closest("li");
+    expect(peerRow).not.toBeNull();
+
+    await primeProjectDataQueries(queryClient, projectId);
+
+    await user.click(within(peerRow as HTMLElement).getByRole("button", { name: "Sync Now" }));
+
+    await waitFor(() => expect(mockSyncTrustedPeerNow).toHaveBeenCalledWith("device_peer_1"));
+    expect(await screen.findAllByText("Applied and imported project data.")).not.toHaveLength(0);
+    const projectResults = await screen.findByRole("list", { name: "Last sync project results" });
+    const resultRows = within(projectResults).getAllByRole("listitem");
+    expect(resultRows).toHaveLength(2);
+    expect(within(resultRows[0]).getByText("Applied")).toBeInTheDocument();
+    expect(within(resultRows[0]).getByText(projectId)).toBeInTheDocument();
+    expect(within(resultRows[1]).getByText("Imported")).toBeInTheDocument();
+    expect(within(resultRows[1]).getByText("proj_imported")).toBeInTheDocument();
+
+    expectProjectDataQueriesInvalidated(queryClient, projectId);
+  });
+
+  it("refreshes project data queries once for new listener-side sync results", async () => {
+    const user = userEvent.setup();
+    const projectId = "proj_listener_cache_target";
+    setProjects([project({ id: projectId, display_name: "Listener Cache Target" })]);
+    setJobs([]);
+    const listenerLastSync = syncRunStatus({
+      run_id: "listener_sync_run_cache_1",
+      session_id: "listener_sync_session_cache_1",
+      peer_device_id: "device_peer_1",
+      remote_device_id: "device_peer_1",
+      selected_transport: irohTransportId,
+      attempted_transports: [irohTransportId],
+      status: "completed_with_errors",
+      message: "Listener applied cached project data.",
+      imported_project_count: 1,
+      applied_project_count: 1,
+      deleted_project_count: 1,
+      project_results: [
+        {
+          project_id: projectId,
+          status: "applied",
+          message: "Applied listener-side project data.",
+        },
+        {
+          project_id: "proj_listener_imported",
+          status: "imported",
+          message: "Imported listener-side project data.",
+        },
+        {
+          project_id: "proj_listener_deleted",
+          status: "deleted",
+          message: "Deleted listener-side project data.",
+        },
+        {
+          project_id: "proj_listener_conflicted",
+          status: "conflicted",
+          message: "Conflicted listener-side project data.",
+        },
+      ],
+      manifest_errors: [],
+      received_artifacts: [],
+      started_at: "2026-04-18T13:16:00.000Z",
+      completed_at: "2026-04-18T13:16:01.000Z",
+    });
+
+    const { queryClient } = renderApp(["/activity"]);
+    expect(await screen.findByRole("heading", { level: 2, name: "Jobs" })).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Sync" }));
+    expect(await screen.findByRole("heading", { level: 2, name: "Sync" })).toBeInTheDocument();
+
+    await primeProjectDataQueries(queryClient, projectId);
+    expectProjectDataQueriesNotInvalidated(queryClient, projectId);
+
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: syncEndpointHints,
+      last_sync: listenerLastSync,
+    });
+    const listenerStatusCalls = mockGetSyncTransportStatus.mock.calls.length;
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["sync", "listener"] });
+    });
+    await waitFor(() => expect(mockGetSyncTransportStatus.mock.calls.length).toBeGreaterThan(listenerStatusCalls));
+    expect(await screen.findAllByText("Listener applied cached project data.")).not.toHaveLength(0);
+
+    const projectResults = await screen.findByRole("list", { name: "Last sync project results" });
+    const resultRows = within(projectResults).getAllByRole("listitem");
+    expect(resultRows).toHaveLength(4);
+    expect(within(resultRows[0]).getByText("Applied")).toBeInTheDocument();
+    expect(within(resultRows[0]).getByText(projectId)).toBeInTheDocument();
+    expect(within(resultRows[1]).getByText("Imported")).toBeInTheDocument();
+    expect(within(resultRows[1]).getByText("proj_listener_imported")).toBeInTheDocument();
+    expect(within(resultRows[2]).getByText("Deleted")).toBeInTheDocument();
+    expect(within(resultRows[2]).getByText("proj_listener_deleted")).toBeInTheDocument();
+    expect(within(resultRows[3]).getByText("Conflicted")).toBeInTheDocument();
+    expect(within(resultRows[3]).getByText("proj_listener_conflicted")).toBeInTheDocument();
+    await waitFor(() => expectProjectDataQueriesInvalidated(queryClient, projectId));
+
+    await primeProjectDataQueries(queryClient, projectId);
+    expectProjectDataQueriesNotInvalidated(queryClient, projectId);
+
+    const repeatedListenerStatusCalls = mockGetSyncTransportStatus.mock.calls.length;
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["sync", "listener"] });
+    });
+    await waitFor(() =>
+      expect(mockGetSyncTransportStatus.mock.calls.length).toBeGreaterThan(repeatedListenerStatusCalls),
+    );
+    await act(async () => {});
+
+    expectProjectDataQueriesNotInvalidated(queryClient, projectId);
   });
 
   it("busy preflight shows job counts while allowing sync now", async () => {

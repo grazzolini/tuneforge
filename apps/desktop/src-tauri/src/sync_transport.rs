@@ -7613,6 +7613,85 @@ mod desktop {
         }
 
         #[test]
+        fn manifest_offer_round_trip_preserves_hash_bound_lyrics_payload_numbers() {
+            let lyrics_payload_json = concat!(
+                r#"{"segments":[{"end":12.209999999999999,"#,
+                r#""start":11.639999999999999,"text":"first line"},"#,
+                r#"{"end":21.540000000000003,"#,
+                r#""start":20.329999999999998,"text":"second line"}]}"#
+            );
+            let lyrics_payload =
+                serde_json::from_str::<Value>(lyrics_payload_json).expect("parse lyrics payload");
+            let content_sha256 =
+                hex_digest(Sha256::digest(lyrics_payload_json.as_bytes()).as_slice());
+            let manifest = json!({
+                "artifacts": [],
+                "entity_revisions": [{
+                    "content_sha256": content_sha256,
+                    "entity_id": "lyrics-main",
+                    "entity_type": "lyrics",
+                    "metadata": {},
+                    "payload": lyrics_payload,
+                    "revision_id": "lyrics-rev",
+                    "revision_type": "snapshot",
+                    "state": "active",
+                }],
+                "project": { "project_id": "proj_lyrics" },
+            });
+            let message = ProtocolMessage::ManifestOffer(ManifestOffer {
+                metadata: json!({ "projects": [] }),
+                project_manifests: vec![manifest],
+                manifest_errors: Vec::new(),
+            });
+
+            let encoded = serde_json::to_vec(&message).expect("serialize manifest offer");
+            let decoded =
+                serde_json::from_slice::<ProtocolMessage>(&encoded).expect("decode manifest offer");
+            let decoded_manifest = match decoded {
+                ProtocolMessage::ManifestOffer(offer) => offer
+                    .project_manifests
+                    .into_iter()
+                    .next()
+                    .expect("project manifest"),
+                other => panic!("expected manifest offer, got {}", other.kind()),
+            };
+            let decoded_payload = decoded_manifest
+                .pointer("/entity_revisions/0/payload")
+                .expect("lyrics payload");
+            let decoded_payload_bytes =
+                serde_json::to_vec(decoded_payload).expect("serialize decoded lyrics payload");
+            let decoded_payload_json =
+                std::str::from_utf8(&decoded_payload_bytes).expect("utf8 payload json");
+
+            assert_eq!(decoded_payload_json, lyrics_payload_json);
+            assert!(decoded_payload_json.contains("11.639999999999999"));
+            assert!(decoded_payload_json.contains("20.329999999999998"));
+            assert_eq!(
+                hex_digest(Sha256::digest(&decoded_payload_bytes).as_slice()),
+                content_sha256
+            );
+
+            let apply_body = reconciliation_apply_body(
+                "dev_peer",
+                &json!({ "projects": [{ "project_id": "proj_lyrics" }] }),
+                &[decoded_manifest],
+                &[],
+                "tcp",
+            );
+            let apply_body_payload = apply_body
+                .pointer("/project_manifests/0/entity_revisions/0/payload")
+                .expect("apply body lyrics payload");
+            let apply_body_payload_bytes =
+                serde_json::to_vec(apply_body_payload).expect("serialize apply body payload");
+
+            assert_eq!(apply_body_payload_bytes, decoded_payload_bytes);
+            assert_eq!(
+                hex_digest(Sha256::digest(&apply_body_payload_bytes).as_slice()),
+                content_sha256
+            );
+        }
+
+        #[test]
         fn offered_artifacts_are_scoped_to_manifest_metadata() {
             let manifests = vec![json!({
                 "artifacts": [{

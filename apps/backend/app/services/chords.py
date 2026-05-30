@@ -20,6 +20,7 @@ from app.services.chord_backends import (
 )
 from app.services.paths import project_analysis_dir
 from app.services.stem_models import NON_VOCAL_SIX_STEM_SOURCES, model_output_artifact_type
+from app.services.stem_signal_metadata import stem_signal_analysis_usable
 from app.services.sync_revisions import record_chord_revision
 from app.services.tab_state import clear_project_tab_state
 
@@ -133,26 +134,34 @@ def _source_instrumental_stem(project: Project, source_artifact: Artifact | None
         if artifact.type == "instrumental_stem"
         and Path(artifact.path).exists()
         and artifact.metadata_json.get("source_artifact_id") == source_artifact.id
+        and artifact.metadata_json.get("source_artifact_type") in {None, "source_audio"}
     ]
-    if instrumental_stems:
-        return max(instrumental_stems, key=lambda artifact: artifact.created_at)
-    return None
+    if not instrumental_stems:
+        return None
+    latest_stem = max(instrumental_stems, key=lambda artifact: artifact.created_at)
+    return latest_stem if stem_signal_analysis_usable(latest_stem.metadata_json) else None
 
 
 def _source_non_vocal_stems(project: Project, source_artifact: Artifact | None) -> list[Artifact]:
     if source_artifact is None:
         return []
-    stems_by_source = {
-        artifact.metadata_json.get("stem_source"): artifact
-        for artifact in project.artifacts
-        if artifact.type in {model_output_artifact_type(source) for source in NON_VOCAL_SIX_STEM_SOURCES}
-        and Path(artifact.path).exists()
-        and artifact.metadata_json.get("source_artifact_id") == source_artifact.id
-    }
-    stems = [stems_by_source.get(source) for source in NON_VOCAL_SIX_STEM_SOURCES]
-    if any(stem is None for stem in stems):
-        return []
-    return [stem for stem in stems if stem is not None]
+    expected_artifact_types = {model_output_artifact_type(source) for source in NON_VOCAL_SIX_STEM_SOURCES}
+    stems_by_source: dict[str, Artifact] = {}
+    for artifact in project.artifacts:
+        stem_source = artifact.metadata_json.get("stem_source")
+        if (
+            artifact.type not in expected_artifact_types
+            or stem_source not in NON_VOCAL_SIX_STEM_SOURCES
+            or not Path(artifact.path).exists()
+            or artifact.metadata_json.get("source_artifact_id") != source_artifact.id
+            or artifact.metadata_json.get("source_artifact_type") not in {None, "source_audio"}
+            or not stem_signal_analysis_usable(artifact.metadata_json)
+        ):
+            continue
+        existing = stems_by_source.get(str(stem_source))
+        if existing is None or artifact.created_at > existing.created_at:
+            stems_by_source[str(stem_source)] = artifact
+    return [stems_by_source[source] for source in NON_VOCAL_SIX_STEM_SOURCES if source in stems_by_source]
 
 
 def _source_stem_analysis_available(project: Project, source_artifact: Artifact | None) -> bool:

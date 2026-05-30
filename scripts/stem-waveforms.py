@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import importlib
 import json
 import math
 import os
@@ -13,15 +14,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.request import pathname2url
 
-import numpy as np
-import soundfile as sf
+BACKEND_ROOT = Path(__file__).resolve().parents[1] / "apps" / "backend"
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
+audio_signal = importlib.import_module("app.engines.audio_signal")
 
 PEAK_THRESHOLD = 0.001
 RMS_THRESHOLD = 0.00005
 ACTIVE_DURATION_THRESHOLD_SECONDS = 0.20
 ANALYSIS_WINDOW_SECONDS = 0.05
 DEFAULT_WIDTH = 1600
-MAX_READ_FRAMES = 65_536
 PROJECT_ID_PREFIX = "proj_sha256_"
 PROJECT_STORAGE_KEY_PREFIX = "proj_"
 PROJECT_STORAGE_HASH_LENGTH = 24
@@ -452,119 +455,32 @@ def sorted_stems(stems: list[StemPath]) -> list[StemPath]:
 
 
 def analyze_stem(path: Path, *, width: int, thresholds: Thresholds) -> StemMetrics:
+    shared_thresholds = audio_signal.AudioSignalThresholds(
+        peak=thresholds.peak,
+        rms=thresholds.rms,
+        active_duration_seconds=thresholds.active_duration,
+        window_seconds=thresholds.window_seconds,
+    )
     try:
-        with sf.SoundFile(path, mode="r") as audio:
-            sample_rate = int(audio.samplerate)
-            channels = int(audio.channels)
-            total_frames = int(audio.frames)
-            bin_count = max(1, width)
-            bins = [0.0] * bin_count
-            frames_per_bin = max(1, math.ceil(max(total_frames, 1) / bin_count))
-            window_frames = max(1, int(round(sample_rate * thresholds.window_seconds)))
-            chunk_frame_cap = max(1, min(sample_rate if sample_rate > 0 else MAX_READ_FRAMES, MAX_READ_FRAMES))
-            read_frames = min(
-                max(window_frames, min(frames_per_bin, chunk_frame_cap)),
-                chunk_frame_cap,
-            )
-
-            peak = 0.0
-            square_sum = 0.0
-            inspected_frames = 0
-            active_frames = 0
-            pending_window_peak = 0.0
-            pending_window_square_sum = 0.0
-            pending_window_frames = 0
-            pending_window_active_frames = 0
-
-            while True:
-                block = audio.read(read_frames, dtype="float32", always_2d=True)
-                frame_count = int(block.shape[0])
-                if frame_count == 0:
-                    break
-
-                frame_magnitudes = np.max(np.abs(block), axis=1).astype(np.float64, copy=False)
-                peak = max(peak, float(np.max(frame_magnitudes)))
-                square_sum += float(np.sum(frame_magnitudes * frame_magnitudes))
-
-                offset = 0
-                while offset < frame_count:
-                    absolute_frame = inspected_frames + offset
-                    bin_index = min(bin_count - 1, absolute_frame // frames_per_bin)
-                    frames_for_bin = min(frame_count - offset, frames_per_bin - (absolute_frame % frames_per_bin))
-                    slice_magnitudes = frame_magnitudes[offset : offset + frames_for_bin]
-                    bins[bin_index] = max(bins[bin_index], float(np.max(slice_magnitudes)))
-                    offset += frames_for_bin
-
-                offset = 0
-                while offset < frame_count:
-                    available = min(frame_count - offset, window_frames - pending_window_frames)
-                    window_slice = frame_magnitudes[offset : offset + available]
-                    pending_window_peak = max(pending_window_peak, float(np.max(window_slice)))
-                    pending_window_square_sum += float(np.sum(window_slice * window_slice))
-                    pending_window_frames += available
-                    pending_window_active_frames += int(np.count_nonzero(window_slice >= thresholds.rms))
-                    if pending_window_frames == window_frames:
-                        active_frames += active_frame_count(
-                            pending_window_peak,
-                            pending_window_square_sum,
-                            pending_window_frames,
-                            threshold_rms=thresholds.rms,
-                            threshold_peak=thresholds.peak,
-                            active_frames=pending_window_active_frames,
-                        )
-                        pending_window_peak = 0.0
-                        pending_window_square_sum = 0.0
-                        pending_window_frames = 0
-                        pending_window_active_frames = 0
-                    offset += available
-
-                inspected_frames += frame_count
-
-            if pending_window_frames > 0:
-                active_frames += active_frame_count(
-                    pending_window_peak,
-                    pending_window_square_sum,
-                    pending_window_frames,
-                    threshold_rms=thresholds.rms,
-                    threshold_peak=thresholds.peak,
-                    active_frames=pending_window_active_frames,
-                )
+        summary = audio_signal.inspect_audio_signal_file(
+            path,
+            shared_thresholds,
+            bin_count=width,
+        )
     except (OSError, RuntimeError) as error:
         raise DiagnosticError(f"Could not read stem audio {path}: {error}") from error
 
-    rms = math.sqrt(square_sum / inspected_frames) if inspected_frames > 0 else 0.0
-    active_duration_seconds = active_frames / sample_rate if inspected_frames > 0 else 0.0
-    inspected_duration_seconds = inspected_frames / sample_rate if inspected_frames > 0 else 0.0
-    has_signal = (
-        peak >= thresholds.peak
-        and rms >= thresholds.rms
-        and active_duration_seconds >= thresholds.active_duration
-    )
+    bins = summary.bins if summary.bins is not None else ()
     return StemMetrics(
-        has_signal=has_signal,
-        peak=peak,
-        rms=rms,
-        active_duration_seconds=active_duration_seconds,
-        inspected_duration_seconds=inspected_duration_seconds,
-        sample_rate=sample_rate,
-        channels=channels,
-        bins=bins,
+        has_signal=summary.has_signal,
+        peak=summary.peak,
+        rms=summary.rms,
+        active_duration_seconds=summary.active_duration_seconds,
+        inspected_duration_seconds=summary.inspected_duration_seconds,
+        sample_rate=summary.sample_rate,
+        channels=summary.channels,
+        bins=list(bins),
     )
-
-
-def active_frame_count(
-    window_peak: float,
-    window_square_sum: float,
-    window_frames: int,
-    *,
-    threshold_rms: float,
-    threshold_peak: float,
-    active_frames: int,
-) -> int:
-    window_rms = math.sqrt(window_square_sum / window_frames)
-    if window_peak < threshold_peak or window_rms < threshold_rms:
-        return 0
-    return active_frames
 
 
 def render_project_svg(

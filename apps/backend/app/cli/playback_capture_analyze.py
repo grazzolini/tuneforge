@@ -11,12 +11,21 @@ from typing import Any, cast
 import numpy as np
 import soundfile as sf
 
+from app.engines.audio_signal import AudioSignalThresholds, inspect_audio_signal_array
+
 DEFAULT_MIN_DURATION_SECONDS = 1.0
 DEFAULT_RMS_THRESHOLD = 0.002
 DEFAULT_MARKER_TOLERANCE_SECONDS = 0.08
 DEFAULT_SPACING_TOLERANCE_SECONDS = 0.08
 DEFAULT_QUIET_WINDOW_MAX_RMS = 0.003
 DEFAULT_LOOP_MIN_SIMILARITY = 0.7
+PLAYBACK_CAPTURE_SIGNAL_WINDOW_SECONDS = 0.05
+PLAYBACK_CAPTURE_SIGNAL_THRESHOLDS = AudioSignalThresholds(
+    peak=DEFAULT_RMS_THRESHOLD,
+    rms=DEFAULT_RMS_THRESHOLD,
+    active_duration_seconds=0.0,
+    window_seconds=PLAYBACK_CAPTURE_SIGNAL_WINDOW_SECONDS,
+)
 
 
 class PlaybackCaptureAnalyzeCliError(RuntimeError):
@@ -31,6 +40,14 @@ class AudioCapture:
     @property
     def duration_seconds(self) -> float:
         return float(self.samples.size / self.sample_rate)
+
+
+@dataclass(frozen=True)
+class AudioCaptureSignalSummary:
+    duration_seconds: float
+    sample_rate: int
+    rms: float
+    peak: float
 
 
 @dataclass(frozen=True)
@@ -105,8 +122,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def _run_analysis(args: argparse.Namespace) -> dict[str, Any]:
     sidecar = _read_sidecar(args.sidecar)
     capture = _read_capture(args)
-    rms = _rms(capture.samples)
-    peak = _peak(capture.samples)
+    signal_summary = _summarize_capture_signal(capture)
 
     min_duration_seconds = cast(
         float,
@@ -133,12 +149,14 @@ def _run_analysis(args: argparse.Namespace) -> dict[str, Any]:
         ),
     )
 
-    if capture.duration_seconds < min_duration_seconds:
+    if signal_summary.duration_seconds < min_duration_seconds:
         raise PlaybackCaptureAnalyzeCliError(
-            f"capture duration {capture.duration_seconds:.3f}s below minimum {min_duration_seconds:.3f}s"
+            f"capture duration {signal_summary.duration_seconds:.3f}s below minimum {min_duration_seconds:.3f}s"
         )
-    if rms < rms_threshold:
-        raise PlaybackCaptureAnalyzeCliError(f"capture RMS {rms:.6f} below threshold {rms_threshold:.6f}")
+    if signal_summary.rms < rms_threshold:
+        raise PlaybackCaptureAnalyzeCliError(
+            f"capture RMS {signal_summary.rms:.6f} below threshold {rms_threshold:.6f}"
+        )
 
     markers = _extract_pulse_markers(sidecar)
     marker_summary = _analyze_pulse_markers(
@@ -163,10 +181,10 @@ def _run_analysis(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "audio_path": str(args.audio.expanduser().resolve()),
         "sidecar_path": str(args.sidecar.expanduser().resolve()),
-        "duration_seconds": round(capture.duration_seconds, 6),
-        "sample_rate": capture.sample_rate,
-        "rms": round(rms, 8),
-        "peak": round(peak, 8),
+        "duration_seconds": round(signal_summary.duration_seconds, 6),
+        "sample_rate": signal_summary.sample_rate,
+        "rms": round(signal_summary.rms, 8),
+        "peak": round(signal_summary.peak, 8),
         "min_duration_seconds": min_duration_seconds,
         "rms_threshold": rms_threshold,
         "pulse_markers": marker_summary,
@@ -207,6 +225,20 @@ def _read_capture(args: argparse.Namespace) -> AudioCapture:
 
     mono = np.mean(data.astype(np.float64, copy=False), axis=1)
     return AudioCapture(samples=mono, sample_rate=int(effective_sample_rate))
+
+
+def _summarize_capture_signal(capture: AudioCapture) -> AudioCaptureSignalSummary:
+    shared_summary = inspect_audio_signal_array(
+        capture.samples,
+        capture.sample_rate,
+        PLAYBACK_CAPTURE_SIGNAL_THRESHOLDS,
+    )
+    return AudioCaptureSignalSummary(
+        duration_seconds=shared_summary.inspected_duration_seconds,
+        sample_rate=shared_summary.sample_rate,
+        rms=shared_summary.rms,
+        peak=shared_summary.peak,
+    )
 
 
 def _analyze_pulse_markers(
@@ -720,12 +752,6 @@ def _rms(samples: np.ndarray) -> float:
     if samples.size == 0:
         return 0.0
     return float(np.sqrt(np.mean(np.square(samples, dtype=np.float64))))
-
-
-def _peak(samples: np.ndarray) -> float:
-    if samples.size == 0:
-        return 0.0
-    return float(np.max(np.abs(samples)))
 
 
 def _first_sequence(mapping: dict[str, Any], keys: tuple[str, ...]) -> list[Any]:

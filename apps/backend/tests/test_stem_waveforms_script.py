@@ -163,7 +163,7 @@ def test_analyze_stem_width_one_reads_bounded_chunks(monkeypatch: pytest.MonkeyP
     module = _load_script_module()
     fake_audio = _FakeSoundFile(total_frames=SAMPLE_RATE * 10)
 
-    monkeypatch.setattr(module.sf, "SoundFile", lambda *_args, **_kwargs: fake_audio)
+    monkeypatch.setattr(module.audio_signal.sf, "SoundFile", lambda *_args, **_kwargs: fake_audio)
 
     metrics = module.analyze_stem(
         Path("registered.wav"),
@@ -177,7 +177,7 @@ def test_analyze_stem_width_one_reads_bounded_chunks(monkeypatch: pytest.MonkeyP
     )
 
     assert metrics.inspected_duration_seconds == pytest.approx(10.0)
-    assert max(fake_audio.read_sizes) == SAMPLE_RATE
+    assert max(fake_audio.read_sizes) <= SAMPLE_RATE
     assert len(fake_audio.read_sizes) > 1
 
 

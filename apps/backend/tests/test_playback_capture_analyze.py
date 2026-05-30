@@ -221,6 +221,47 @@ def test_cli_rejects_silent_capture(
     assert "capture RMS" in captured.err
 
 
+def test_cli_uses_shared_audio_signal_summary_when_available(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    audio_path = tmp_path / "capture.wav"
+    sidecar_path = tmp_path / "capture.json"
+    _write_pulse_capture(audio_path, marker_seconds=[])
+    _write_json(sidecar_path, {"minDurationSeconds": 1.0, "rmsThreshold": 0.2})
+
+    class SharedSummary:
+        inspected_duration_seconds = 1.25
+        sample_rate = 12_345
+        rms = 0.25
+        peak = 0.75
+
+    def inspect_audio_signal_array(
+        samples: np.ndarray,
+        sample_rate: int,
+        thresholds: object,
+    ) -> SharedSummary:
+        assert samples.size == 16_000
+        assert sample_rate == 8_000
+        assert thresholds is playback_capture_analyze.PLAYBACK_CAPTURE_SIGNAL_THRESHOLDS
+        return SharedSummary()
+
+    monkeypatch.setattr(playback_capture_analyze, "inspect_audio_signal_array", inspect_audio_signal_array)
+
+    exit_code = playback_capture_analyze.main(
+        ["--audio", str(audio_path), "--sidecar", str(sidecar_path)]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0, captured.err
+    payload = json.loads(captured.out)
+    assert payload["duration_seconds"] == pytest.approx(1.25)
+    assert payload["sample_rate"] == 12_345
+    assert payload["rms"] == pytest.approx(0.25)
+    assert payload["peak"] == pytest.approx(0.75)
+
+
 def test_cli_rejects_missing_expected_pulse(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

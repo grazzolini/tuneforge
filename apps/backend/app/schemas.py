@@ -383,6 +383,67 @@ class SyncProjectManifestResponse(BaseModel):
     project_manifest: SyncProjectManifestSchema
 
 
+class SyncProjectManifestsRequest(BaseModel):
+    project_ids: list[str] = Field(min_length=1)
+
+    @field_validator("project_ids")
+    @classmethod
+    def normalize_project_ids(cls, value: list[str]) -> list[str]:
+        return [project_id.strip() for project_id in value]
+
+
+class SyncProjectManifestErrorSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    project_id: str
+    code: str
+    message: str
+    status_code: int = Field(ge=400, le=599)
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class SyncProjectManifestsResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    project_manifests: list[SyncProjectManifestSchema] = Field(default_factory=list)
+    manifest_errors: list[SyncProjectManifestErrorSchema] = Field(default_factory=list)
+
+
+class SyncArtifactFileResolveRequest(BaseModel):
+    artifact_ids: list[str]
+
+    @field_validator("artifact_ids")
+    @classmethod
+    def normalize_artifact_ids(cls, value: list[str]) -> list[str]:
+        return [artifact_id.strip() for artifact_id in value]
+
+
+class SyncArtifactFileRecordSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    artifact_id: str
+    source_path: str
+    content_sha256: str
+    size_bytes: int
+
+
+class SyncArtifactFileResolveErrorSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    artifact_id: str
+    code: str
+    message: str
+    status_code: int = Field(ge=400, le=599)
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class SyncArtifactFileResolveResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    records: list[SyncArtifactFileRecordSchema] = Field(default_factory=list)
+    errors: list[SyncArtifactFileResolveErrorSchema] = Field(default_factory=list)
+
+
 class SyncProjectStatusProjectMetadataSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

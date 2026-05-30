@@ -9,6 +9,8 @@ from app.dependencies import get_db
 from app.schemas import (
     ErrorResponse,
     ProjectSchema,
+    SyncArtifactFileResolveRequest,
+    SyncArtifactFileResolveResponse,
     SyncArtifactStagingRequest,
     SyncLocalIdentityResponse,
     SyncLocalIdentitySchema,
@@ -22,6 +24,8 @@ from app.schemas import (
     SyncPreflightResponse,
     SyncProjectImportResponse,
     SyncProjectManifestResponse,
+    SyncProjectManifestsRequest,
+    SyncProjectManifestsResponse,
     SyncProjectStagedImportRequest,
     SyncProjectStatusUpdateRequest,
     SyncProjectStatusUpdateResponse,
@@ -102,6 +106,14 @@ def sign_transport_handshake_challenge(session: Session, payload: SyncTransportH
     from app.services.sync_transport import sign_transport_handshake_challenge as service_sign_challenge
 
     return service_sign_challenge(session, payload)
+
+
+def resolve_artifact_file_sources(session: Session, payload: SyncArtifactFileResolveRequest) -> Any:
+    from app.services.sync_manifest import (
+        resolve_artifact_file_sources as service_resolve_artifact_file_sources,
+    )
+
+    return service_resolve_artifact_file_sources(session, artifact_ids=payload.artifact_ids)
 
 
 @router.get("/preflight", response_model=SyncPreflightResponse)
@@ -252,6 +264,17 @@ def sync_project_manifest(
     return SyncProjectManifestResponse.model_validate({"project_manifest": project_manifest})
 
 
+@router.post("/projects/manifests", response_model=SyncProjectManifestsResponse)
+def sync_project_manifests(
+    payload: SyncProjectManifestsRequest,
+    session: Session = Depends(get_db),
+) -> SyncProjectManifestsResponse:
+    from app.services.sync_manifest import export_project_manifests
+
+    manifest_export = export_project_manifests(session, project_ids=payload.project_ids)
+    return SyncProjectManifestsResponse.model_validate(manifest_export)
+
+
 @router.patch("/projects/{project_id}/status", response_model=SyncProjectStatusUpdateResponse)
 def sync_project_status_update(
     project_id: str,
@@ -292,6 +315,15 @@ def sync_artifact_stage(
         metadata=payload.metadata,
     )
     return SyncStagedArtifactSchema.model_validate(staged_artifact)
+
+
+@router.post("/artifacts/files/resolve", response_model=SyncArtifactFileResolveResponse)
+def sync_artifact_files_resolve(
+    payload: SyncArtifactFileResolveRequest,
+    session: Session = Depends(get_db),
+) -> SyncArtifactFileResolveResponse:
+    resolved_files = resolve_artifact_file_sources(session, payload)
+    return SyncArtifactFileResolveResponse.model_validate(resolved_files)
 
 
 @router.get("/artifacts/staging/{content_sha256}", response_model=SyncStagedArtifactSchema)

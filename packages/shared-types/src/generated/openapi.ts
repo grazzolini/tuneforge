@@ -691,6 +691,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sync/projects/manifests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sync Project Manifests */
+        post: operations["sync_project_manifests_api_v1_sync_projects_manifests_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sync/projects/{project_id}/status": {
         parameters: {
             query?: never;
@@ -719,6 +736,23 @@ export interface paths {
         put?: never;
         /** Sync Artifact Stage */
         post: operations["sync_artifact_stage_api_v1_sync_artifacts_staging_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sync/artifacts/files/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sync Artifact Files Resolve */
+        post: operations["sync_artifact_files_resolve_api_v1_sync_artifacts_files_resolve_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1522,6 +1556,44 @@ export interface components {
              */
             overwrite_chord_edits?: boolean;
         };
+        /** SyncArtifactFileRecordSchema */
+        SyncArtifactFileRecordSchema: {
+            /** Artifact Id */
+            artifact_id: string;
+            /** Source Path */
+            source_path: string;
+            /** Content Sha256 */
+            content_sha256: string;
+            /** Size Bytes */
+            size_bytes: number;
+        };
+        /** SyncArtifactFileResolveErrorSchema */
+        SyncArtifactFileResolveErrorSchema: {
+            /** Artifact Id */
+            artifact_id: string;
+            /** Code */
+            code: string;
+            /** Message */
+            message: string;
+            /** Status Code */
+            status_code: number;
+            /** Details */
+            details?: {
+                [key: string]: unknown;
+            };
+        };
+        /** SyncArtifactFileResolveRequest */
+        SyncArtifactFileResolveRequest: {
+            /** Artifact Ids */
+            artifact_ids: string[];
+        };
+        /** SyncArtifactFileResolveResponse */
+        SyncArtifactFileResolveResponse: {
+            /** Records */
+            records?: components["schemas"]["SyncArtifactFileRecordSchema"][];
+            /** Errors */
+            errors?: components["schemas"]["SyncArtifactFileResolveErrorSchema"][];
+        };
         /** SyncArtifactStagingRequest */
         SyncArtifactStagingRequest: {
             /** Source Path */
@@ -1934,6 +2006,21 @@ export interface components {
              */
             updated_at: string;
         };
+        /** SyncProjectManifestErrorSchema */
+        SyncProjectManifestErrorSchema: {
+            /** Project Id */
+            project_id: string;
+            /** Code */
+            code: string;
+            /** Message */
+            message: string;
+            /** Status Code */
+            status_code: number;
+            /** Details */
+            details?: {
+                [key: string]: unknown;
+            };
+        };
         /** SyncProjectManifestProjectSchema */
         SyncProjectManifestProjectSchema: {
             /** Project Id */
@@ -1981,6 +2068,18 @@ export interface components {
             artifacts: components["schemas"]["SyncProjectManifestArtifactSchema"][];
             /** Delete Tombstones */
             delete_tombstones?: components["schemas"]["SyncDeleteTombstoneSchema"][];
+        };
+        /** SyncProjectManifestsRequest */
+        SyncProjectManifestsRequest: {
+            /** Project Ids */
+            project_ids: string[];
+        };
+        /** SyncProjectManifestsResponse */
+        SyncProjectManifestsResponse: {
+            /** Project Manifests */
+            project_manifests?: components["schemas"]["SyncProjectManifestSchema"][];
+            /** Manifest Errors */
+            manifest_errors?: components["schemas"]["SyncProjectManifestErrorSchema"][];
         };
         /** SyncProjectStagedImportRequest */
         SyncProjectStagedImportRequest: {
@@ -3955,6 +4054,39 @@ export interface operations {
             };
         };
     };
+    sync_project_manifests_api_v1_sync_projects_manifests_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncProjectManifestsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncProjectManifestsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     sync_project_status_update_api_v1_sync_projects__project_id__status_patch: {
         parameters: {
             query?: never;
@@ -4010,6 +4142,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SyncStagedArtifactSchema"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_artifact_files_resolve_api_v1_sync_artifacts_files_resolve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncArtifactFileResolveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncArtifactFileResolveResponse"];
                 };
             };
             /** @description Validation Error */

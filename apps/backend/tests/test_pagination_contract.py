@@ -31,6 +31,8 @@ SYNC_DOCUMENT_RESPONSE_CONTRACTS = {
     ("/api/v1/sync/metadata", "get"): "SyncMetadataResponse",
     ("/api/v1/sync/reconciliation/plan", "post"): "SyncReconciliationPlanResponse",
     ("/api/v1/sync/reconciliation/apply", "post"): "SyncReconciliationApplyResponse",
+    ("/api/v1/sync/projects/manifests", "post"): "SyncProjectManifestsResponse",
+    ("/api/v1/sync/artifacts/files/resolve", "post"): "SyncArtifactFileResolveResponse",
 }
 JOB_ACTION_DOCUMENT_RESPONSE_CONTRACTS = {
     ("/api/v1/jobs/bulk", "post"): "BulkJobsResponse",

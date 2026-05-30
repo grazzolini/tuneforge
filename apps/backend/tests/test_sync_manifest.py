@@ -1867,6 +1867,176 @@ def test_import_staged_project_manifest_rejects_duplicate_source_conflict(
     }
 
 
+def test_sync_project_manifest_batch_returns_ordered_manifests_and_errors(
+    client: Any,
+    tmp_path: Path,
+) -> None:
+    bad_source_sha256 = hashlib.sha256(b"bad source fixture").hexdigest()
+    bad_project_id = source_hash_to_project_id(bad_source_sha256)
+    missing_project_id = "proj_missing_manifest"
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        bad_source_path = tmp_path / "bad-source.wav"
+        session.add(
+            Project(
+                id=bad_project_id,
+                display_name="Bad Sync Fixture",
+                source_sha256=bad_source_sha256,
+                source_path=str(bad_source_path),
+                imported_path=str(bad_source_path),
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/api/v1/sync/projects/manifests",
+        json={"project_ids": [bad_project_id, fixture.project_id, missing_project_id]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert set(payload) == {"project_manifests", "manifest_errors"}
+    assert [manifest["project"]["project_id"] for manifest in payload["project_manifests"]] == [
+        fixture.project_id
+    ]
+    assert [error["project_id"] for error in payload["manifest_errors"]] == [
+        bad_project_id,
+        missing_project_id,
+    ]
+
+    bad_project_error, missing_project_error = payload["manifest_errors"]
+    assert bad_project_error["code"] == "SYNC_MANIFEST_SOURCE_ARTIFACT_MISSING"
+    assert bad_project_error["status_code"] == 400
+    assert missing_project_error["code"] == "SYNC_MANIFEST_PROJECT_NOT_FOUND"
+    assert missing_project_error["status_code"] == 404
+
+
+def test_sync_artifact_file_resolve_accepts_empty_artifact_ids(client: Any) -> None:
+    response = client.post(
+        "/api/v1/sync/artifacts/files/resolve",
+        json={"artifact_ids": []},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"records": [], "errors": []}
+
+
+def test_sync_artifact_file_resolve_returns_ordered_records_and_errors(
+    client: Any,
+    tmp_path: Path,
+) -> None:
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+
+    response = client.post(
+        "/api/v1/sync/artifacts/files/resolve",
+        json={"artifact_ids": ["art_vocals", "art_missing", "art_vocals"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert set(payload) == {"records", "errors"}
+    assert [record["artifact_id"] for record in payload["records"]] == [
+        "art_vocals",
+        "art_vocals",
+    ]
+    assert [error["artifact_id"] for error in payload["errors"]] == ["art_missing"]
+
+    record = payload["records"][0]
+    assert record == payload["records"][1]
+    assert set(record) == {"artifact_id", "source_path", "content_sha256", "size_bytes"}
+    assert record["source_path"] == str(
+        (fixture.root / fixture.stem_relative_path).resolve(strict=False)
+    )
+    assert record["content_sha256"] == fixture.artifact_hashes["art_vocals"]
+    assert record["size_bytes"] == fixture.artifact_sizes["art_vocals"]
+
+    missing_error = payload["errors"][0]
+    assert missing_error["code"] == "SYNC_ARTIFACT_FILE_NOT_FOUND"
+    assert missing_error["message"]
+    assert missing_error["status_code"] == 404
+
+
+def test_sync_artifact_file_resolve_reports_per_artifact_file_errors(
+    client: Any,
+    tmp_path: Path,
+) -> None:
+    missing_file_hash = hashlib.sha256(b"missing file").hexdigest()
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        mismatch_path = fixture.root / "stems" / "size-mismatch.wav"
+        mismatch_hash, mismatch_size = _write_bytes(mismatch_path, b"mismatch")
+        session.add_all(
+            [
+                Artifact(
+                    id="art_missing_hash",
+                    project_id=fixture.project_id,
+                    type="vocals",
+                    format="wav",
+                    path=str(fixture.root / fixture.stem_relative_path),
+                    content_sha256=None,
+                    size_bytes=fixture.artifact_sizes["art_vocals"],
+                    generated_by="stems",
+                ),
+                Artifact(
+                    id="art_missing_file",
+                    project_id=fixture.project_id,
+                    type="vocals",
+                    format="wav",
+                    path=str(fixture.root / "stems" / "missing.wav"),
+                    content_sha256=missing_file_hash,
+                    size_bytes=len(b"missing file"),
+                    generated_by="stems",
+                ),
+                Artifact(
+                    id="art_size_mismatch",
+                    project_id=fixture.project_id,
+                    type="vocals",
+                    format="wav",
+                    path=str(mismatch_path),
+                    content_sha256=mismatch_hash,
+                    size_bytes=mismatch_size + 1,
+                    generated_by="stems",
+                ),
+            ]
+        )
+        session.commit()
+
+    response = client.post(
+        "/api/v1/sync/artifacts/files/resolve",
+        json={
+            "artifact_ids": [
+                "art_missing_hash",
+                "art_missing_file",
+                "art_size_mismatch",
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["records"] == []
+    assert [error["artifact_id"] for error in payload["errors"]] == [
+        "art_missing_hash",
+        "art_missing_file",
+        "art_size_mismatch",
+    ]
+    assert [error["code"] for error in payload["errors"]] == [
+        "SYNC_ARTIFACT_FILE_HASH_MISSING",
+        "SYNC_ARTIFACT_FILE_UNREADABLE",
+        "SYNC_ARTIFACT_FILE_SIZE_MISMATCH",
+    ]
+
+    size_mismatch_error = payload["errors"][2]
+    assert size_mismatch_error["status_code"] == 400
+    assert size_mismatch_error["details"] == {
+        "project_id": fixture.project_id,
+        "expected_size_bytes": mismatch_size + 1,
+        "actual_size_bytes": mismatch_size,
+    }
+
+
 def test_sync_project_manifest_api_round_trips_staged_import(
     client: Any,
     tmp_path: Path,

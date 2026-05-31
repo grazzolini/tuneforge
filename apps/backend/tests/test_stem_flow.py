@@ -4,16 +4,19 @@ import threading
 import time
 from pathlib import Path
 
+import numpy as np
 import pytest
 import soundfile as sf
 from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
 from app.db import SessionLocal
+from app.engines.stem_signal import STEM_SIGNAL_THRESHOLDS
 from app.errors import AppError, JobCancelledError
-from app.models import Job
+from app.models import Artifact, Job
 from app.services.artifacts import register_artifact
 from app.services.projects import get_project, import_project
+from app.services.stem_signal_metadata import STEM_SIGNAL_METADATA_KEY, STEM_SIGNAL_METADATA_VERSION
 from app.utils.ids import new_id
 
 from .conftest import wait_for_job
@@ -30,6 +33,91 @@ def _create_project_without_import_jobs(source_path: Path) -> str:
         project_id = project.id
         session.commit()
     return project_id
+
+
+def _assert_current_stem_signal_metadata(
+    metadata: dict[str, object],
+    *,
+    expected_has_signal: bool = True,
+    expected_usable: bool = True,
+    expected_reason: str = "usable",
+) -> None:
+    stem_signal = metadata[STEM_SIGNAL_METADATA_KEY]
+    assert isinstance(stem_signal, dict)
+    assert set(stem_signal) == {
+        "version",
+        "has_signal",
+        "peak",
+        "rms",
+        "active_duration_seconds",
+        "inspected_duration_seconds",
+        "active_ratio",
+        "sample_rate",
+        "channels",
+        "thresholds",
+        "analysis_usability",
+    }
+    assert stem_signal["version"] == STEM_SIGNAL_METADATA_VERSION
+    assert stem_signal["has_signal"] is expected_has_signal
+    if expected_has_signal:
+        assert float(stem_signal["peak"]) > 0.0
+        assert float(stem_signal["rms"]) > 0.0
+        assert float(stem_signal["active_duration_seconds"]) >= 0.20
+    assert float(stem_signal["inspected_duration_seconds"]) == pytest.approx(2.0)
+    assert 0.0 <= float(stem_signal["active_ratio"]) <= 1.0
+    assert stem_signal["sample_rate"] == 44_100
+    assert stem_signal["channels"] == 2
+
+    thresholds = stem_signal["thresholds"]
+    assert isinstance(thresholds, dict)
+    assert set(thresholds) == {"peak", "rms", "active_duration_seconds", "window_seconds"}
+    assert thresholds["peak"] == pytest.approx(STEM_SIGNAL_THRESHOLDS.peak)
+    assert thresholds["rms"] == pytest.approx(STEM_SIGNAL_THRESHOLDS.rms)
+    assert thresholds["active_duration_seconds"] == pytest.approx(
+        STEM_SIGNAL_THRESHOLDS.active_duration_seconds
+    )
+    assert thresholds["window_seconds"] == pytest.approx(STEM_SIGNAL_THRESHOLDS.window_seconds)
+
+    analysis_usability = stem_signal["analysis_usability"]
+    assert isinstance(analysis_usability, dict)
+    assert set(analysis_usability) == {
+        "version",
+        "usable",
+        "reason",
+        "rms_ratio",
+        "rms_db_below_reference",
+        "active_ratio",
+        "peak_ratio",
+        "reference",
+        "thresholds",
+    }
+    assert analysis_usability["version"] == 1
+    assert analysis_usability["usable"] is expected_usable
+    assert analysis_usability["reason"] == expected_reason
+    assert 0.0 <= float(analysis_usability["rms_ratio"]) <= 1.0
+    assert 0.0 <= float(analysis_usability["active_ratio"]) <= 1.0
+    assert 0.0 <= float(analysis_usability["peak_ratio"]) <= 1.0
+    rms_db_below_reference = analysis_usability["rms_db_below_reference"]
+    if float(analysis_usability["rms_ratio"]) > 0.0:
+        assert isinstance(rms_db_below_reference, int | float)
+        assert float(rms_db_below_reference) <= 0.0
+    else:
+        assert rms_db_below_reference is None
+
+    reference = analysis_usability["reference"]
+    assert isinstance(reference, dict)
+    assert set(reference) == {"max_rms", "max_active_duration_seconds", "max_peak"}
+    assert float(reference["max_rms"]) >= float(stem_signal["rms"])
+    assert float(reference["max_active_duration_seconds"]) >= float(stem_signal["active_duration_seconds"])
+    assert float(reference["max_peak"]) >= float(stem_signal["peak"])
+
+    usability_thresholds = analysis_usability["thresholds"]
+    assert isinstance(usability_thresholds, dict)
+    assert usability_thresholds == {
+        "min_rms_ratio": pytest.approx(0.10),
+        "min_active_ratio": pytest.approx(0.20),
+        "clear_absent_rms_ratio": pytest.approx(0.01),
+    }
 
 
 def test_default_stem_generation_creates_six_stem_artifacts(client, sample_stereo_audio_file: Path, monkeypatch):
@@ -88,6 +176,8 @@ def test_default_stem_generation_creates_six_stem_artifacts(client, sample_stere
         "piano",
         "other",
     }
+    for artifact in stem_artifacts:
+        _assert_current_stem_signal_metadata(artifact["metadata"])
     assert stem_job["stem_model"] == "htdemucs_6s"
     assert stem_job["stem_model_label"] == "Default (6 stems model)"
     assert final_job["stem_model"] == "htdemucs_6s"
@@ -432,6 +522,443 @@ def test_stem_generation_creates_vocal_and_instrumental_artifacts(client, sample
     assert len([artifact for artifact in all_artifacts if artifact["type"] == "vocal_stem"]) == 2
     assert len([artifact for artifact in all_artifacts if artifact["type"] == "instrumental_stem"]) == 2
     assert seen_sources == [source_artifact["path"], source_artifact["path"], preview_artifact["path"]]
+
+
+def test_source_audio_stem_generation_stores_signal_metadata(
+    client,
+    sample_stereo_audio_file: Path,
+    monkeypatch,
+):
+    def fake_separate_two_stems(
+        source_path: Path,
+        vocal_path: Path,
+        instrumental_path: Path,
+        *,
+        model: str,
+        device: str,
+        model_repo=None,
+        on_progress=None,
+        should_cancel=None,
+        register_process=None,
+        unregister_process=None,
+    ):
+        signal, sample_rate = sf.read(source_path, always_2d=True)
+        vocal_path.parent.mkdir(parents=True, exist_ok=True)
+        instrumental_path.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(vocal_path, signal * 0.7, sample_rate)
+        sf.write(instrumental_path, signal * 0.3, sample_rate)
+        return {"engine": "demucs", "model": model, "requested_device": device, "device": "cpu"}
+
+    monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
+
+    project = client.post(
+        "/api/v1/projects/import",
+        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
+    ).json()["project"]
+
+    stem_job = client.post(
+        f"/api/v1/projects/{project['id']}/stems",
+        json={"mode": "two_stem", "stem_model": "htdemucs_ft", "output_format": "wav", "force": False},
+    ).json()["job"]
+    assert wait_for_job(client, stem_job["id"])["status"] == "completed"
+
+    artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
+    source_artifact = next(artifact for artifact in artifacts if artifact["type"] == "source_audio")
+    source_stems = [
+        artifact
+        for artifact in artifacts
+        if artifact["metadata"].get("source_artifact_id") == source_artifact["id"]
+        and artifact["metadata"].get("stem_model") == "htdemucs_ft"
+    ]
+
+    assert {artifact["type"] for artifact in source_stems} == {"vocal_stem", "instrumental_stem"}
+    for artifact in source_stems:
+        _assert_current_stem_signal_metadata(artifact["metadata"])
+
+
+def test_source_audio_stem_generation_marks_relative_leakage_unusable(
+    client,
+    sample_stereo_audio_file: Path,
+    monkeypatch,
+):
+    def fake_separate_sources(
+        source_path: Path,
+        output_paths: dict[str, Path],
+        *,
+        model: str,
+        device: str,
+        model_repo=None,
+        on_progress=None,
+        should_cancel=None,
+        register_process=None,
+        unregister_process=None,
+    ):
+        del source_path, model, device, model_repo, should_cancel, register_process, unregister_process
+        sample_rate = 44_100
+        duration_seconds = 2.0
+        timeline = np.linspace(0.0, duration_seconds, int(sample_rate * duration_seconds), endpoint=False)
+        reference_signal = np.column_stack(
+            [
+                0.4 * np.sin(2 * np.pi * 220.0 * timeline),
+                0.4 * np.sin(2 * np.pi * 220.0 * timeline),
+            ]
+        ).astype(np.float32)
+        leakage_signal = np.zeros_like(reference_signal)
+        active_frames = int(sample_rate * 0.25)
+        leakage_timeline = timeline[:active_frames]
+        leakage_signal[:active_frames, 0] = 0.04 * np.sin(2 * np.pi * 440.0 * leakage_timeline)
+        leakage_signal[:active_frames, 1] = leakage_signal[:active_frames, 0]
+        for source, output_path in output_paths.items():
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            sf.write(output_path, leakage_signal if source == "piano" else reference_signal, sample_rate)
+        if on_progress:
+            on_progress(98)
+        return {"engine": "demucs", "model": "htdemucs_6s", "requested_device": "cpu", "device": "cpu"}
+
+    monkeypatch.setattr("app.services.stems.separate_sources", fake_separate_sources)
+
+    project = client.post(
+        "/api/v1/projects/import",
+        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
+    ).json()["project"]
+
+    stem_job = client.post(
+        f"/api/v1/projects/{project['id']}/stems",
+        json={"mode": "stems", "stem_model": "htdemucs_6s", "output_format": "wav", "force": False},
+    ).json()["job"]
+    assert wait_for_job(client, stem_job["id"])["status"] == "completed"
+
+    artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
+    piano_artifact = next(
+        artifact
+        for artifact in artifacts
+        if artifact["type"] == "piano_stem" and artifact["metadata"].get("stem_model") == "htdemucs_6s"
+    )
+    piano_signal = piano_artifact["metadata"][STEM_SIGNAL_METADATA_KEY]
+    piano_usability = piano_signal["analysis_usability"]
+    assert piano_signal["has_signal"] is True
+    assert piano_usability["usable"] is False
+    assert piano_usability["reason"] == "relative_leakage"
+    assert piano_usability["rms_ratio"] < 0.10
+    assert piano_usability["active_ratio"] < 0.20
+
+
+def test_preview_mix_stem_generation_does_not_store_signal_metadata(
+    client,
+    sample_stereo_audio_file: Path,
+    monkeypatch,
+):
+    def fake_separate_two_stems(
+        source_path: Path,
+        vocal_path: Path,
+        instrumental_path: Path,
+        *,
+        model: str,
+        device: str,
+        model_repo=None,
+        on_progress=None,
+        should_cancel=None,
+        register_process=None,
+        unregister_process=None,
+    ):
+        signal, sample_rate = sf.read(source_path, always_2d=True)
+        vocal_path.parent.mkdir(parents=True, exist_ok=True)
+        instrumental_path.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(vocal_path, signal * 0.7, sample_rate)
+        sf.write(instrumental_path, signal * 0.3, sample_rate)
+        return {"engine": "demucs", "model": model, "requested_device": device, "device": "cpu"}
+
+    monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
+
+    project = client.post(
+        "/api/v1/projects/import",
+        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
+    ).json()["project"]
+    preview_job = client.post(
+        f"/api/v1/projects/{project['id']}/preview",
+        json={"transpose": {"semitones": 1}, "output_format": "wav"},
+    ).json()["job"]
+    assert wait_for_job(client, preview_job["id"])["status"] == "completed"
+
+    artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
+    preview_artifact = next(artifact for artifact in artifacts if artifact["type"] == "preview_mix")
+
+    stem_job = client.post(
+        f"/api/v1/projects/{project['id']}/stems",
+        json={
+            "mode": "two_stem",
+            "stem_model": "htdemucs_ft",
+            "output_format": "wav",
+            "force": False,
+            "source_artifact_id": preview_artifact["id"],
+        },
+    ).json()["job"]
+    assert wait_for_job(client, stem_job["id"])["status"] == "completed"
+
+    all_artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
+    preview_stems = [
+        artifact
+        for artifact in all_artifacts
+        if artifact["metadata"].get("source_artifact_id") == preview_artifact["id"]
+        and artifact["metadata"].get("stem_model") == "htdemucs_ft"
+    ]
+
+    assert {artifact["type"] for artifact in preview_stems} == {"vocal_stem", "instrumental_stem"}
+    assert all(STEM_SIGNAL_METADATA_KEY not in artifact["metadata"] for artifact in preview_stems)
+
+
+def test_cached_source_audio_stems_missing_signal_metadata_are_hydrated_and_refresh_chords(
+    client,
+    sample_stereo_audio_file: Path,
+    monkeypatch,
+):
+    separation_count = 0
+
+    def fake_separate_two_stems(
+        source_path: Path,
+        vocal_path: Path,
+        instrumental_path: Path,
+        *,
+        model: str,
+        device: str,
+        model_repo=None,
+        on_progress=None,
+        should_cancel=None,
+        register_process=None,
+        unregister_process=None,
+    ):
+        nonlocal separation_count
+        separation_count += 1
+        signal, sample_rate = sf.read(source_path, always_2d=True)
+        vocal_path.parent.mkdir(parents=True, exist_ok=True)
+        instrumental_path.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(vocal_path, signal * 0.7, sample_rate)
+        sf.write(instrumental_path, signal * 0.3, sample_rate)
+        return {"engine": "demucs", "model": model, "requested_device": device, "device": "cpu"}
+
+    monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
+
+    project = client.post(
+        "/api/v1/projects/import",
+        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
+    ).json()["project"]
+
+    initial_jobs = client.get("/api/v1/jobs").json()["jobs"]
+    initial_chord_job = next(
+        job for job in initial_jobs if job["project_id"] == project["id"] and job["type"] == "chords"
+    )
+    assert wait_for_job(client, initial_chord_job["id"])["status"] == "completed"
+
+    stem_job = client.post(
+        f"/api/v1/projects/{project['id']}/stems",
+        json={"mode": "two_stem", "stem_model": "htdemucs_ft", "output_format": "wav", "force": False},
+    ).json()["job"]
+    assert wait_for_job(client, stem_job["id"])["status"] == "completed"
+
+    chord_jobs_after_generation = [
+        job
+        for job in client.get("/api/v1/jobs").json()["jobs"]
+        if job["project_id"] == project["id"] and job["type"] == "chords" and job["id"] != initial_chord_job["id"]
+    ]
+    assert len(chord_jobs_after_generation) == 1
+    assert chord_jobs_after_generation[0]["chord_source"] == "source+stem"
+    assert wait_for_job(client, chord_jobs_after_generation[0]["id"])["status"] == "completed"
+
+    artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
+    source_artifact = next(artifact for artifact in artifacts if artifact["type"] == "source_audio")
+    stem_ids = [
+        artifact["id"]
+        for artifact in artifacts
+        if artifact["metadata"].get("source_artifact_id") == source_artifact["id"]
+        and artifact["metadata"].get("stem_model") == "htdemucs_ft"
+    ]
+    assert len(stem_ids) == 2
+
+    with SessionLocal() as session:
+        missing_metadata_artifact = session.get(Artifact, stem_ids[0])
+        assert missing_metadata_artifact is not None
+        missing_metadata = dict(missing_metadata_artifact.metadata_json)
+        missing_metadata.pop(STEM_SIGNAL_METADATA_KEY, None)
+        missing_metadata_artifact.metadata_json = missing_metadata
+
+        stale_metadata_artifact = session.get(Artifact, stem_ids[1])
+        assert stale_metadata_artifact is not None
+        stale_metadata = dict(stale_metadata_artifact.metadata_json)
+        stale_metadata[STEM_SIGNAL_METADATA_KEY] = {"version": 0}
+        stale_metadata_artifact.metadata_json = stale_metadata
+        session.commit()
+
+    cached_job = client.post(
+        f"/api/v1/projects/{project['id']}/stems",
+        json={"mode": "two_stem", "stem_model": "htdemucs_ft", "output_format": "wav", "force": False},
+    ).json()["job"]
+    assert wait_for_job(client, cached_job["id"])["status"] == "completed"
+
+    hydrated_artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
+    hydrated_stems = [artifact for artifact in hydrated_artifacts if artifact["id"] in stem_ids]
+    assert separation_count == 1
+    for artifact in hydrated_stems:
+        _assert_current_stem_signal_metadata(artifact["metadata"])
+
+    chord_jobs_after_hydration = [
+        job
+        for job in client.get("/api/v1/jobs").json()["jobs"]
+        if job["project_id"] == project["id"]
+        and job["type"] == "chords"
+        and job["id"] not in {initial_chord_job["id"], chord_jobs_after_generation[0]["id"]}
+    ]
+    assert len(chord_jobs_after_hydration) == 1
+    assert chord_jobs_after_hydration[0]["chord_source"] == "source+stem"
+    assert wait_for_job(client, chord_jobs_after_hydration[0]["id"])["status"] == "completed"
+
+
+def test_cached_source_audio_stems_raw_only_metadata_gets_usability_without_audio_read(
+    client,
+    sample_stereo_audio_file: Path,
+    monkeypatch,
+):
+    separation_count = 0
+
+    def fake_separate_two_stems(
+        source_path: Path,
+        vocal_path: Path,
+        instrumental_path: Path,
+        *,
+        model: str,
+        device: str,
+        model_repo=None,
+        on_progress=None,
+        should_cancel=None,
+        register_process=None,
+        unregister_process=None,
+    ):
+        nonlocal separation_count
+        del model, device, model_repo, should_cancel, register_process, unregister_process
+        separation_count += 1
+        signal, sample_rate = sf.read(source_path, always_2d=True)
+        vocal_path.parent.mkdir(parents=True, exist_ok=True)
+        instrumental_path.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(vocal_path, signal * 0.7, sample_rate)
+        sf.write(instrumental_path, signal * 0.3, sample_rate)
+        if on_progress:
+            on_progress(98)
+        return {"engine": "demucs", "model": "htdemucs_ft", "requested_device": "cpu", "device": "cpu"}
+
+    monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
+
+    project = client.post(
+        "/api/v1/projects/import",
+        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
+    ).json()["project"]
+
+    stem_job = client.post(
+        f"/api/v1/projects/{project['id']}/stems",
+        json={"mode": "two_stem", "stem_model": "htdemucs_ft", "output_format": "wav", "force": False},
+    ).json()["job"]
+    assert wait_for_job(client, stem_job["id"])["status"] == "completed"
+
+    artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
+    source_artifact = next(artifact for artifact in artifacts if artifact["type"] == "source_audio")
+    stem_ids = [
+        artifact["id"]
+        for artifact in artifacts
+        if artifact["metadata"].get("source_artifact_id") == source_artifact["id"]
+        and artifact["metadata"].get("stem_model") == "htdemucs_ft"
+    ]
+
+    with SessionLocal() as session:
+        for index, stem_id in enumerate(stem_ids):
+            artifact = session.get(Artifact, stem_id)
+            assert artifact is not None
+            metadata = dict(artifact.metadata_json)
+            stem_signal = dict(metadata[STEM_SIGNAL_METADATA_KEY])
+            if index == 0:
+                stem_signal.pop("analysis_usability", None)
+            else:
+                analysis_usability = dict(stem_signal["analysis_usability"])
+                analysis_usability["version"] = 0
+                stem_signal["analysis_usability"] = analysis_usability
+            metadata[STEM_SIGNAL_METADATA_KEY] = stem_signal
+            artifact.metadata_json = metadata
+        session.commit()
+
+    def fail_build_stem_signal_metadata(_path: Path) -> dict[str, object]:
+        raise AssertionError("raw stem_signal metadata should not be re-read when only usability is missing")
+
+    monkeypatch.setattr("app.services.stems.build_stem_signal_metadata", fail_build_stem_signal_metadata)
+
+    cached_job = client.post(
+        f"/api/v1/projects/{project['id']}/stems",
+        json={"mode": "two_stem", "stem_model": "htdemucs_ft", "output_format": "wav", "force": False},
+    ).json()["job"]
+    assert wait_for_job(client, cached_job["id"])["status"] == "completed"
+
+    hydrated_artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
+    hydrated_stems = [artifact for artifact in hydrated_artifacts if artifact["id"] in stem_ids]
+    assert separation_count == 1
+    for artifact in hydrated_stems:
+        _assert_current_stem_signal_metadata(artifact["metadata"])
+
+
+def test_vocal_only_signal_stems_do_not_enqueue_chord_refresh(
+    client,
+    sample_stereo_audio_file: Path,
+    monkeypatch,
+):
+    def fake_separate_two_stems(
+        source_path: Path,
+        vocal_path: Path,
+        instrumental_path: Path,
+        *,
+        model: str,
+        device: str,
+        model_repo=None,
+        on_progress=None,
+        should_cancel=None,
+        register_process=None,
+        unregister_process=None,
+    ):
+        signal, sample_rate = sf.read(source_path, always_2d=True)
+        vocal_path.parent.mkdir(parents=True, exist_ok=True)
+        instrumental_path.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(vocal_path, signal * 0.7, sample_rate)
+        sf.write(instrumental_path, signal * 0.0, sample_rate)
+        return {"engine": "demucs", "model": model, "requested_device": device, "device": "cpu"}
+
+    monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
+
+    project = client.post(
+        "/api/v1/projects/import",
+        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
+    ).json()["project"]
+
+    initial_jobs = client.get("/api/v1/jobs").json()["jobs"]
+    initial_chord_job = next(
+        job for job in initial_jobs if job["project_id"] == project["id"] and job["type"] == "chords"
+    )
+    assert wait_for_job(client, initial_chord_job["id"])["status"] == "completed"
+
+    stem_job = client.post(
+        f"/api/v1/projects/{project['id']}/stems",
+        json={"mode": "two_stem", "stem_model": "htdemucs_ft", "output_format": "wav", "force": False},
+    ).json()["job"]
+    assert wait_for_job(client, stem_job["id"])["status"] == "completed"
+
+    artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
+    vocal_artifact = next(artifact for artifact in artifacts if artifact["type"] == "vocal_stem")
+    instrumental_artifact = next(artifact for artifact in artifacts if artifact["type"] == "instrumental_stem")
+    assert vocal_artifact["metadata"][STEM_SIGNAL_METADATA_KEY]["has_signal"] is True
+    assert instrumental_artifact["metadata"][STEM_SIGNAL_METADATA_KEY]["has_signal"] is False
+    instrumental_usability = instrumental_artifact["metadata"][STEM_SIGNAL_METADATA_KEY]["analysis_usability"]
+    assert instrumental_usability["usable"] is False
+    assert instrumental_usability["reason"] == "absolute_no_signal"
+
+    chord_jobs_after_stems = [
+        job
+        for job in client.get("/api/v1/jobs").json()["jobs"]
+        if job["project_id"] == project["id"] and job["type"] == "chords"
+    ]
+    assert [job["id"] for job in chord_jobs_after_stems] == [initial_chord_job["id"]]
 
 
 def test_omitted_stem_mode_uses_configured_default_model(client, sample_stereo_audio_file: Path, monkeypatch):

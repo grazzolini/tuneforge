@@ -23,6 +23,13 @@ from app.services.stem_models import (
     model_output_artifact_type,
     resolve_stem_model,
 )
+from app.services.stem_signal_metadata import (
+    STEM_SIGNAL_METADATA_KEY,
+    add_analysis_usability_to_stem_signal_metadatas,
+    build_stem_signal_metadata,
+    has_current_stem_signal_analysis_usability,
+    has_current_stem_signal_metadata,
+)
 from app.services.sync_tombstones import record_artifact_delete_tombstone
 from app.utils.ids import new_id
 
@@ -39,6 +46,7 @@ class StemOutputPlan:
 class StemGenerationResult:
     artifacts: list[Artifact]
     generated_this_job: bool
+    signal_metadata_hydrated: bool = False
 
 
 def _default_source_artifact(session: Session, *, project_id: str) -> Artifact:
@@ -289,6 +297,32 @@ def _cleanup_stem_outputs(plan: list[StemOutputPlan]) -> None:
         _cleanup_artifact_path(output.path)
 
 
+def _hydrate_stem_signal_metadata(session: Session, artifacts: list[Artifact]) -> bool:
+    updated = False
+    for artifact in artifacts:
+        if has_current_stem_signal_metadata(artifact.metadata_json):
+            continue
+        metadata = dict(artifact.metadata_json)
+        metadata[STEM_SIGNAL_METADATA_KEY] = build_stem_signal_metadata(Path(artifact.path))
+        artifact.metadata_json = metadata
+        updated = True
+
+    if artifacts and any(
+        not has_current_stem_signal_analysis_usability(artifact.metadata_json)
+        for artifact in artifacts
+    ):
+        updated_metadatas = add_analysis_usability_to_stem_signal_metadatas(
+            [artifact.metadata_json for artifact in artifacts]
+        )
+        for artifact, metadata in zip(artifacts, updated_metadatas, strict=True):
+            artifact.metadata_json = metadata
+        updated = True
+
+    if updated:
+        session.flush()
+    return updated
+
+
 def generate_stems(
     session: Session,
     *,
@@ -320,9 +354,16 @@ def generate_stems(
             stem_model=selected_model,
         )
         if existing:
+            signal_metadata_hydrated = False
+            if source_artifact.type == "source_audio":
+                signal_metadata_hydrated = _hydrate_stem_signal_metadata(session, existing)
             if on_progress:
                 on_progress(100)
-            return StemGenerationResult(artifacts=existing, generated_this_job=False)
+            return StemGenerationResult(
+                artifacts=existing,
+                generated_this_job=False,
+                signal_metadata_hydrated=signal_metadata_hydrated,
+            )
 
     plan = build_stem_plan(
         source_artifact,
@@ -358,6 +399,7 @@ def generate_stems(
     existing_by_type = {artifact.type: artifact for artifact in existing_artifacts}
     saved_artifacts: list[Artifact] = []
 
+    stem_output_metadatas: list[tuple[StemOutputPlan, dict[str, Any]]] = []
     for output in plan:
         stem_metadata = {
             "mode": selected_model.mode,
@@ -368,6 +410,24 @@ def generate_stems(
             "source_artifact_type": source_artifact.type,
             **metadata,
         }
+        if source_artifact.type == "source_audio":
+            stem_metadata[STEM_SIGNAL_METADATA_KEY] = build_stem_signal_metadata(output.path)
+        stem_output_metadatas.append((output, stem_metadata))
+
+    if source_artifact.type == "source_audio":
+        updated_metadatas = add_analysis_usability_to_stem_signal_metadatas(
+            [stem_metadata for _, stem_metadata in stem_output_metadatas]
+        )
+        stem_output_metadatas = [
+            (output, updated_metadata)
+            for (output, _), updated_metadata in zip(
+                stem_output_metadatas,
+                updated_metadatas,
+                strict=True,
+            )
+        ]
+
+    for output, stem_metadata in stem_output_metadatas:
         saved_artifacts.append(
             _upsert_stem_artifact(
                 session,

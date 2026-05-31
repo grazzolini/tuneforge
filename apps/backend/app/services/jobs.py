@@ -20,7 +20,14 @@ from app.services.chord_backends import resolve_chord_backend
 from app.services.chords import detect_project_chords, project_chord_detection_source
 from app.services.lyrics import generate_project_lyrics
 from app.services.projects import get_mutable_project, get_project
-from app.services.stem_models import STEM_ARTIFACT_TYPES, TWO_STEMS_MODEL_ID, resolve_stem_model
+from app.services.stem_models import (
+    NON_VOCAL_SIX_STEM_SOURCES,
+    STEM_ARTIFACT_TYPE_SOURCES,
+    STEM_ARTIFACT_TYPES,
+    TWO_STEMS_MODEL_ID,
+    resolve_stem_model,
+)
+from app.services.stem_signal_metadata import stem_signal_analysis_usable
 from app.services.stems import generate_stems, resolve_stem_source_artifact
 from app.services.transformations import (
     build_preview_plan,
@@ -795,11 +802,13 @@ class InProcessJobRunner:
             unregister_process=context.unregister_process,
         )
         artifacts = stem_result.artifacts
+        chord_source = _stem_artifacts_chord_source(artifacts)
         if _should_enqueue_chord_refresh_after_stems(
             job,
             artifacts,
             session.get(ChordTimeline, project.id),
             generated_this_job=stem_result.generated_this_job,
+            signal_metadata_hydrated=stem_result.signal_metadata_hydrated,
         ):
             selected_chord_backend = resolve_chord_backend(
                 str(payload.get("chord_backend", "default")),
@@ -817,7 +826,7 @@ class InProcessJobRunner:
                     "force": True,
                     "overwrite_user_edits": bool(payload.get("overwrite_chord_edits", False)),
                     "chord_backend": selected_chord_backend.id,
-                    "chord_source": "source+stem",
+                    "chord_source": chord_source,
                 },
             )
             self.enqueue(chord_job.id)
@@ -841,21 +850,40 @@ def _should_enqueue_chord_refresh_after_stems(
     chords: ChordTimeline | None,
     *,
     generated_this_job: bool,
+    signal_metadata_hydrated: bool,
 ) -> bool:
-    if not generated_this_job:
+    if not generated_this_job and not signal_metadata_hydrated:
         return False
-    source_stem = next(
-        (
-            artifact
-            for artifact in artifacts
-            if artifact.metadata_json.get("source_artifact_type") == "source_audio"
-            and artifact.metadata_json.get("source_artifact_id")
-        ),
-        None,
-    )
-    if source_stem is None:
+    if _stem_artifacts_chord_source(artifacts) != "source+stem":
         return False
     overwrite_chord_edits = bool(job.payload_json.get("overwrite_chord_edits", False))
     if chords is not None and chords.has_user_edits and not overwrite_chord_edits:
         return False
     return True
+
+
+def _stem_artifacts_chord_source(artifacts: list[Artifact]) -> Literal["source", "source+stem"]:
+    if any(_is_signal_bearing_chord_stem(artifact) for artifact in artifacts):
+        return "source+stem"
+    return "source"
+
+
+def _is_signal_bearing_chord_stem(artifact: Artifact) -> bool:
+    metadata = artifact.metadata_json
+    source_artifact_id = metadata.get("source_artifact_id")
+    if not isinstance(source_artifact_id, str) or not source_artifact_id:
+        return False
+    source_artifact_type = metadata.get("source_artifact_type")
+    if source_artifact_type not in {None, "source_audio"}:
+        return False
+    if not stem_signal_analysis_usable(metadata):
+        return False
+    if artifact.type == "instrumental_stem":
+        return True
+
+    stem_source = metadata.get("stem_source")
+    return (
+        isinstance(stem_source, str)
+        and stem_source in NON_VOCAL_SIX_STEM_SOURCES
+        and STEM_ARTIFACT_TYPE_SOURCES.get(artifact.type) == stem_source
+    )

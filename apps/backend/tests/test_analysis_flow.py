@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sqlalchemy import select
@@ -13,6 +14,7 @@ from app.models import AnalysisResult, Artifact, Job, Project
 from app.services import analysis as analysis_service
 from app.services.artifacts import register_artifact
 from app.services.paths import ensure_project_dirs
+from app.services.stem_signal_metadata import STEM_SIGNAL_METADATA_KEY, STEM_SIGNAL_METADATA_VERSION
 
 from .conftest import wait_for_job
 
@@ -40,6 +42,7 @@ def test_analysis_job_persists_results(client, sample_rhythmic_audio_file: Path)
     final_job = wait_for_job(client, job["id"])
     assert final_job["status"] == "completed"
     assert final_job["beat_backend"] == "built-in"
+    assert final_job["beat_input"] == "source"
     assert final_job["runtime_device"] == "cpu"
     assert final_job["duration_seconds"] is not None
 
@@ -183,7 +186,7 @@ def test_reanalysis_updates_analysis_artifact_sync_metadata(
         duration_seconds: float | None = None,
     ):
         assert track_path == sample_audio_file
-        assert source_stem_paths == (source_drums_path, source_bass_path)
+        assert source_stem_paths is None
         assert duration_seconds == 4.0
         return {
             "estimated_key": "D minor",
@@ -219,14 +222,22 @@ def test_reanalysis_updates_analysis_artifact_sync_metadata(
         "analysis_version": "v3",
         "source_artifact_id": "art_analysis_source",
         "source_artifact_sha256": expected_source_sha,
+    }
+    expected_built_in_metadata = {
+        **expected_common_metadata,
         "source_stem_artifact_ids": ["art_source_drums", "art_source_bass"],
         "source_stem_content_sha256s": expected_stem_sha256s,
+    }
+    expected_beat_this_metadata = {
+        **expected_common_metadata,
+        "source_stem_artifact_ids": [],
+        "source_stem_content_sha256s": [],
     }
     first_payload = _analysis_payload(first_artifact)
     assert first_artifact.metadata_json == {
         "analysis_generated_at": "2026-01-02T03:04:05+00:00",
         "analysis_backend": "built-in",
-        **expected_common_metadata,
+        **expected_built_in_metadata,
     }
     assert {key: first_payload[key] for key in first_artifact.metadata_json} == first_artifact.metadata_json
 
@@ -243,7 +254,7 @@ def test_reanalysis_updates_analysis_artifact_sync_metadata(
     assert second_artifact.metadata_json == {
         "analysis_generated_at": "2026-01-03T03:04:05+00:00",
         "analysis_backend": "beat-this",
-        **expected_common_metadata,
+        **expected_beat_this_metadata,
     }
     assert {key: second_payload[key] for key in second_artifact.metadata_json} == second_artifact.metadata_json
     assert second_payload["estimated_key"] == "D minor"
@@ -272,6 +283,7 @@ def test_project_import_carries_beat_backend_to_initial_analysis_job(
         jobs = list(session.scalars(select(Job).where(Job.project_id == project_id)))
     analyze_job = next(job for job in jobs if job.type == "analyze")
     assert analyze_job.payload_json["beat_backend"] == "beat-this"
+    assert analyze_job.payload_json["beat_input"] == "source"
     assert analyze_job.id in enqueued
 
 
@@ -314,12 +326,72 @@ def test_analysis_uses_beat_this_backend_when_requested(
 
     assert captured == {
         "track_path": sample_audio_file,
-        "source_stem_paths": (),
+        "source_stem_paths": None,
         "duration_seconds": 4.0,
     }
     assert analysis.estimated_key == "D minor"
     assert analysis.tempo_bpm == 90.0
     assert analysis.timing_json["source"] == "beat-this"
+
+
+def test_analysis_beat_this_uses_source_only_even_when_source_stems_have_signal_metadata(
+    client,
+    sample_audio_file: Path,
+    tmp_path: Path,
+    monkeypatch,
+):
+    del client
+    project_id = "analysis_beat_this_source_only_project"
+    source_drums_path = tmp_path / "beat-this-source-drums.wav"
+    source_bass_path = tmp_path / "beat-this-source-bass.wav"
+    preview_drums_path = tmp_path / "beat-this-preview-drums.wav"
+    preview_bass_path = tmp_path / "beat-this-preview-bass.wav"
+    _write_paths(source_drums_path, source_bass_path, preview_drums_path, preview_bass_path)
+    _seed_project_with_source_stems(
+        project_id=project_id,
+        source_path=sample_audio_file,
+        source_drums_path=source_drums_path,
+        source_bass_path=source_bass_path,
+        preview_drums_path=preview_drums_path,
+        preview_bass_path=preview_bass_path,
+        source_drums_metadata=_stem_signal_metadata(has_signal=True),
+        source_bass_metadata=_stem_signal_metadata(has_signal=True),
+    )
+    _forbid_analysis_signal_inspection(monkeypatch)
+    monkeypatch.setattr(analysis_service, "beat_this_dependency_status", lambda: (True, None))
+    captured: dict[str, object] = {}
+
+    def fake_analyze_track_with_beat_this(
+        track_path: Path,
+        *,
+        source_stem_paths: tuple[Path, ...] | None = None,
+        duration_seconds: float | None = None,
+    ):
+        captured["track_path"] = track_path
+        captured["source_stem_paths"] = source_stem_paths
+        captured["duration_seconds"] = duration_seconds
+        return {
+            "estimated_key": "D minor",
+            "key_confidence": 0.7,
+            "estimated_reference_hz": 440.0,
+            "tuning_offset_cents": 0.0,
+            "tempo_bpm": 90.0,
+            "timing": _timing_payload(source="beat-this"),
+        }
+
+    monkeypatch.setattr(analysis_service, "analyze_track_with_beat_this", fake_analyze_track_with_beat_this)
+
+    with SessionLocal() as session:
+        project = session.get(Project, project_id)
+        assert project is not None
+        analysis_service.analyze_project(session, project, beat_backend="beat-this")
+        session.commit()
+
+    assert captured == {
+        "track_path": sample_audio_file,
+        "source_stem_paths": None,
+        "duration_seconds": 4.0,
+    }
 
 
 def test_analysis_beat_this_backend_fails_when_dependency_is_missing(
@@ -551,6 +623,8 @@ def _seed_project_with_source_stems(
     source_bass_path: Path,
     preview_drums_path: Path,
     preview_bass_path: Path,
+    source_drums_metadata: dict[str, Any] | None = None,
+    source_bass_metadata: dict[str, Any] | None = None,
 ) -> None:
     ensure_project_dirs(project_id)
     created_at = datetime(2026, 1, 1, tzinfo=UTC)
@@ -594,7 +668,7 @@ def _seed_project_with_source_stems(
             artifact_type="drums_stem",
             artifact_format="wav",
             path=source_drums_path,
-            metadata={"source_artifact_id": source_artifact.id, "source_artifact_type": "source_audio"},
+            metadata=_source_stem_artifact_metadata(source_artifact.id, source_drums_metadata),
             generated_by="demucs",
             created_at=created_at + timedelta(seconds=2),
         )
@@ -605,7 +679,7 @@ def _seed_project_with_source_stems(
             artifact_type="bass_stem",
             artifact_format="wav",
             path=source_bass_path,
-            metadata={"source_artifact_id": source_artifact.id, "source_artifact_type": "source_audio"},
+            metadata=_source_stem_artifact_metadata(source_artifact.id, source_bass_metadata),
             generated_by="demucs",
             created_at=created_at + timedelta(seconds=3),
         )
@@ -632,6 +706,69 @@ def _seed_project_with_source_stems(
             created_at=created_at + timedelta(seconds=5),
         )
         session.commit()
+
+
+def _source_stem_artifact_metadata(
+    source_artifact_id: str,
+    extra_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    metadata = {
+        "source_artifact_id": source_artifact_id,
+        "source_artifact_type": "source_audio",
+    }
+    if extra_metadata is not None:
+        metadata.update(_json_clone(extra_metadata))
+    return metadata
+
+
+def _stem_signal_metadata(
+    *,
+    has_signal: bool,
+    version: int = STEM_SIGNAL_METADATA_VERSION,
+) -> dict[str, Any]:
+    peak = 0.4 if has_signal else 0.0
+    rms = 0.2 if has_signal else 0.0
+    active_duration = 2.0 if has_signal else 0.0
+    return {
+        STEM_SIGNAL_METADATA_KEY: {
+            "version": version,
+            "has_signal": has_signal,
+            "peak": peak,
+            "rms": rms,
+            "active_duration_seconds": active_duration,
+            "inspected_duration_seconds": 4.0,
+            "active_ratio": active_duration / 4.0,
+            "sample_rate": 44_100,
+            "channels": 2,
+            "thresholds": {
+                "peak": 0.001,
+                "rms": 0.0005,
+                "active_duration_seconds": 0.2,
+                "window_seconds": 0.05,
+            },
+        }
+    }
+
+
+def _write_paths(*paths: Path) -> None:
+    for path in paths:
+        path.write_bytes(path.name.encode("utf-8"))
+
+
+def _json_clone(value: dict[str, Any]) -> dict[str, Any]:
+    cloned = json.loads(json.dumps(value))
+    assert isinstance(cloned, dict)
+    return cloned
+
+
+def _forbid_analysis_signal_inspection(monkeypatch) -> None:
+    def raise_if_called(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("analysis flow must only read persisted stem_signal metadata")
+
+    monkeypatch.setattr("app.services.stem_signal_metadata.build_stem_signal_metadata", raise_if_called)
+    monkeypatch.setattr("app.services.stem_signal_metadata.inspect_audio_signal_file", raise_if_called)
+    monkeypatch.setattr("app.engines.audio_signal.inspect_audio_signal_file", raise_if_called)
+    monkeypatch.setattr("app.engines.stem_signal.inspect_stem_signal", raise_if_called)
 
 
 def _assert_timing_bar_indexes_are_nonnegative(timing: dict) -> None:

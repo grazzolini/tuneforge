@@ -1237,6 +1237,7 @@ class JobSchema(BaseModel):
     progress: int
     source_artifact_id: str | None = None
     beat_backend: str | None = None
+    beat_input: str | None = None
     chord_backend: str | None = None
     chord_backend_fallback_from: str | None = None
     chord_source: str | None = None

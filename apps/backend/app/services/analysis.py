@@ -63,7 +63,7 @@ def analyze_project(
         analysis=analysis,
         analysis_backend=beat_backend,
         source_artifact=source_artifact,
-        source_stem_artifacts=source_stem_artifacts,
+        source_stem_artifacts=() if beat_backend == BEAT_THIS_BACKEND else source_stem_artifacts,
     )
 
     return analysis
@@ -93,7 +93,6 @@ def _analyze_track_with_backend(
         try:
             return analyze_track_with_beat_this(
                 source_path,
-                source_stem_paths=source_stem_paths,
                 duration_seconds=duration_seconds,
             )
         except BeatThisRuntimeError as exc:

@@ -440,6 +440,12 @@ class Job(Base):
         return value if isinstance(value, str) else "built-in"
 
     @property
+    def beat_input(self) -> str | None:
+        if self.type != "analyze":
+            return None
+        return "source"
+
+    @property
     def chord_source(self) -> str | None:
         if self.type != "chords":
             return None

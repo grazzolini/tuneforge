@@ -102,16 +102,6 @@ export function normalizeTimingGridMeter(
   return "4/4";
 }
 
-export function beatsPerBarForTimingGridMeter(meter: TimingGridMeter) {
-  if (meter === "3/4") {
-    return 3;
-  }
-  if (meter === "6/8") {
-    return 6;
-  }
-  return 4;
-}
-
 export function snapLoopPointToTiming(
   value: number,
   mode: LoopAlignmentMode,

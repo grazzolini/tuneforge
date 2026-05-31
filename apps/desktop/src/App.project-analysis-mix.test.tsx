@@ -20,7 +20,6 @@ import {
   mockDeleteProject,
   mockCreateExport,
   mockGetLyrics,
-  mockUpdateAnalysisTiming,
   mockUpdateLyrics,
   mockUpdateProject,
   renderApp,
@@ -204,7 +203,7 @@ describe("Desktop app project analysis mix", () => {
     expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123", { beat_backend: "built-in" });
   });
 
-  it("shows timing grid controls in the playback rail", async () => {
+  it("does not show the timing status panel in the playback rail", async () => {
     const user = userEvent.setup();
     setTimingGridAnalysis();
 
@@ -213,67 +212,7 @@ describe("Desktop app project analysis mix", () => {
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
     await openPlaybackWorkspace(user);
 
-    const timingPanel = screen.getByRole("heading", { name: "Timing Grid" }).closest("section");
-    expect(timingPanel).not.toBeNull();
-    const panel = timingPanel as HTMLElement;
-
-    expect(within(panel).getAllByText("Detected").length).toBeGreaterThan(0);
-    expect(within(panel).getByText("86%")).toBeInTheDocument();
-    expect(within(panel).getByText("Source + stems")).toBeInTheDocument();
-
-    await user.click(within(panel).getByRole("button", { name: "3/4" }));
-    await waitFor(() =>
-      expect(mockUpdateAnalysisTiming).toHaveBeenLastCalledWith("proj_123", {
-        action: "set_meter",
-        beats_per_bar: 3,
-      }),
-    );
-
-    await user.click(within(panel).getByRole("button", { name: "Shift timing grid left one beat" }));
-    await waitFor(() =>
-      expect(mockUpdateAnalysisTiming).toHaveBeenLastCalledWith("proj_123", {
-        action: "shift_left",
-      }),
-    );
-
-    await user.click(within(panel).getByRole("button", { name: "Set nearest playhead beat as bar 1 beat 1" }));
-    await waitFor(() =>
-      expect(mockUpdateAnalysisTiming).toHaveBeenLastCalledWith("proj_123", {
-        action: "set_bar_1_beat_1",
-        playhead_seconds: 0,
-      }),
-    );
-
-    await user.click(within(panel).getByRole("button", { name: "Shift timing grid right one beat" }));
-    await waitFor(() =>
-      expect(mockUpdateAnalysisTiming).toHaveBeenLastCalledWith("proj_123", {
-        action: "shift_right",
-      }),
-    );
-  });
-
-  it("confirms before analyze when the timing grid was corrected", async () => {
-    const user = userEvent.setup();
-    setTimingGridAnalysis("user_corrected");
-    mockConfirm.mockResolvedValueOnce(false);
-
-    renderApp(["/projects/proj_123"]);
-
-    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    await openStudioPanel(user);
-    await user.click(screen.getByRole("button", { name: "Analyze Track" }));
-
-    expect(mockConfirm).toHaveBeenCalledWith(
-      expect.stringContaining("Re-analysis clears"),
-      expect.objectContaining({ title: "Refresh timing grid" }),
-    );
-    expect(mockAnalyzeProject).not.toHaveBeenCalled();
-
-    mockConfirm.mockResolvedValueOnce(true);
-    await user.click(screen.getByRole("button", { name: "Analyze Track" }));
-    await waitFor(() =>
-      expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123", { beat_backend: "built-in" }),
-    );
+    expect(screen.queryByRole("heading", { name: /Timing\s+Grid/i })).not.toBeInTheDocument();
   });
 
   it("shows sync lock reason and disables project mutation controls for locked projects", async () => {

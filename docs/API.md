@@ -556,7 +556,7 @@ Returns the stored analysis result, or `null` if no result exists.
 Analysis includes key, key confidence, reference tuning, tuning offset, tempo, analysis version, source artifact, and creation time.
 
 Analysis is an unpaginated project document payload. Its timing data is returned with the analysis document so playback
-and editing consumers do not need lazy-loaded fragments.
+and practice consumers do not need lazy-loaded fragments.
 
 ## Chords
 

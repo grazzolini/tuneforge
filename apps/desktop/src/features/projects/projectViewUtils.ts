@@ -136,6 +136,7 @@ export function formatJobStatusSummary(job: JobSchema) {
   return [
     job.status,
     job.type === "analyze" ? formatBeatBackend(job.beat_backend) : null,
+    job.type === "analyze" ? formatBeatInput(job.beat_input) : null,
     job.type === "chords" ? formatChordBackend(job.chord_backend) : null,
     job.type === "chords" ? job.chord_source : null,
     job.type === "stems" ? formatStemModel(job.stem_model_label ?? job.stem_model) : null,
@@ -160,6 +161,10 @@ function formatBeatBackend(backend: string | null | undefined) {
     return "advanced";
   }
   return backend ?? null;
+}
+
+function formatBeatInput(input: string | null | undefined) {
+  return input === "source" ? input : "source";
 }
 
 function formatStemModel(model: string | null | undefined) {

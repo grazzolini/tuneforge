@@ -514,13 +514,14 @@ class InProcessJobRunner:
     def create_job(self, session: Session, *, project_id: str | None, job_type: str, payload: dict[str, Any]) -> Job:
         if project_id is not None:
             get_mutable_project(session, project_id)
+        job_payload = _job_payload_for_create(job_type=job_type, payload=payload)
         job = Job(
             id=new_id("job"),
             project_id=project_id,
             type=job_type,
             status="pending",
             progress=0,
-            payload_json=payload,
+            payload_json=job_payload,
             result_artifact_ids_json=[],
             cancel_requested=False,
         )
@@ -679,10 +680,15 @@ class InProcessJobRunner:
     def _handle_analyze(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")
         payload = AnalysisRequest.model_validate(job.payload_json)
-        job.payload_json = {**job.payload_json, "beat_backend": payload.beat_backend}
+        job.payload_json = {**job.payload_json, "beat_backend": payload.beat_backend, "beat_input": "source"}
         session.flush()
         context.set_progress(20)
         analyze_project(session, project, beat_backend=payload.beat_backend)
+        job.payload_json = {
+            **job.payload_json,
+            "beat_backend": payload.beat_backend,
+            "beat_input": "source",
+        }
         context.set_progress(90)
         artifact_ids = [artifact.id for artifact in project.artifacts if artifact.type == "analysis_json"]
         return JobExecutionResult(
@@ -842,6 +848,12 @@ class InProcessJobRunner:
             artifact_ids=[artifact.id for artifact in artifacts],
             runtime_device=runtime_device,
         )
+
+
+def _job_payload_for_create(*, job_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if job_type == "analyze":
+        return {**payload, "beat_input": "source"}
+    return payload
 
 
 def _should_enqueue_chord_refresh_after_stems(

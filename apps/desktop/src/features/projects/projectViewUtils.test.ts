@@ -192,9 +192,10 @@ describe("transposeChordSegment", () => {
 });
 
 describe("formatJobStatusSummary", () => {
-  it("includes beat backend for analysis jobs", () => {
+  it("includes beat backend and source beat input for analysis jobs", () => {
     const job: JobSchema = {
       beat_backend: "beat-this",
+      beat_input: "source",
       completed_at: "2026-04-18T13:16:02.000Z",
       created_at: "2026-04-18T13:16:00.000Z",
       duration_seconds: 1.8,
@@ -210,7 +211,28 @@ describe("formatJobStatusSummary", () => {
       updated_at: "2026-04-18T13:16:02.000Z",
     };
 
-    expect(formatJobStatusSummary(job)).toBe("completed / advanced / CPU / 1.8 s");
+    expect(formatJobStatusSummary(job)).toBe("completed / advanced / source / CPU / 1.8 s");
+  });
+
+  it("defaults missing analysis beat input to source", () => {
+    const job: JobSchema = {
+      beat_backend: "beat-this",
+      completed_at: "2026-04-18T13:16:02.000Z",
+      created_at: "2026-04-18T13:16:00.000Z",
+      duration_seconds: 1.8,
+      error_message: null,
+      id: "job_analyze_missing_input",
+      progress: 100,
+      project_id: "proj_123",
+      runtime_device: "cpu",
+      source_artifact_id: null,
+      started_at: "2026-04-18T13:16:00.000Z",
+      status: "completed",
+      type: "analyze",
+      updated_at: "2026-04-18T13:16:02.000Z",
+    };
+
+    expect(formatJobStatusSummary(job)).toBe("completed / advanced / source / CPU / 1.8 s");
   });
 
   it("defaults missing analysis beat backend to built-in", () => {
@@ -230,7 +252,7 @@ describe("formatJobStatusSummary", () => {
       updated_at: "2026-04-18T13:16:02.000Z",
     };
 
-    expect(formatJobStatusSummary(job)).toBe("completed / built-in / CPU / 1.8 s");
+    expect(formatJobStatusSummary(job)).toBe("completed / built-in / source / CPU / 1.8 s");
   });
 
   it("does not show a beat backend for non-analysis jobs", () => {

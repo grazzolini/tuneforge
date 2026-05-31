@@ -4,6 +4,7 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 from subprocess import TimeoutExpired
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
 from app.errors import AppError
-from app.models import Artifact, Job, Project
+from app.models import AnalysisResult, Artifact, Job, Project
 from app.services.jobs import InProcessJobRunner, JobExecutionContext, JobExecutionResult
 
 _BASE_TIME = datetime(2026, 1, 1, tzinfo=UTC)
@@ -53,6 +54,7 @@ def _add_job(
     started_at: datetime | None = None,
     completed_at: datetime | None = None,
     updated_at: datetime | None = None,
+    payload_json: dict[str, Any] | None = None,
 ) -> None:
     effective_created_at = created_at or _timestamp(0)
     session.add(
@@ -64,7 +66,7 @@ def _add_job(
             progress=0,
             error_message=None,
             runtime_device=None,
-            payload_json={},
+            payload_json=payload_json or {},
             result_artifact_ids_json=[],
             cancel_requested=False,
             created_at=effective_created_at,
@@ -295,6 +297,130 @@ def test_bulk_analyze_jobs_store_requested_beat_backend(
         jobs = list(session.scalars(select(Job).where(Job.id.in_(job_ids))))
 
     assert {job.payload_json["beat_backend"] for job in jobs} == {"beat-this"}
+    assert {job.payload_json["beat_input"] for job in jobs} == {"source"}
+
+
+@pytest.mark.parametrize(
+    "timing_json",
+    [
+        None,
+        {},
+        {"source": "detected"},
+        {"source": "beat-this"},
+    ],
+)
+def test_analyze_job_exposes_source_beat_input(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    timing_json: dict[str, str] | None,
+) -> None:
+    runner = InProcessJobRunner(SessionLocal)
+    project_id = "project_source_beat_input"
+
+    def fake_analyze_project(
+        _session: Session,
+        project: Project,
+        *,
+        beat_backend: str = "built-in",
+    ) -> AnalysisResult:
+        assert beat_backend == "beat-this"
+        return AnalysisResult(project_id=project.id, timing_json=None if timing_json is None else dict(timing_json))
+
+    monkeypatch.setattr("app.services.jobs.analyze_project", fake_analyze_project)
+    with SessionLocal() as session:
+        _add_project(session, project_id)
+        session.flush()
+        job = runner.create_job(
+            session,
+            project_id=project_id,
+            job_type="analyze",
+            payload={"beat_backend": "beat-this"},
+        )
+        assert job.payload_json["beat_input"] == "source"
+        job_id = job.id
+        session.commit()
+
+    runner._execute_job(job_id)
+
+    with SessionLocal() as session:
+        job = session.get(Job, job_id)
+        assert job is not None
+        assert job.status == "completed"
+        assert job.runtime_device == "cpu"
+        assert job.payload_json["beat_input"] == "source"
+        assert job.beat_input == "source"
+
+    response = client.get(f"/api/v1/jobs/{job_id}")
+    assert response.status_code == 200
+    payload = response.json()["job"]
+    assert payload["beat_backend"] == "beat-this"
+    assert payload["beat_input"] == "source"
+    assert payload["runtime_device"] == "cpu"
+
+
+def test_cancelled_analyze_job_keeps_source_beat_input(client: TestClient) -> None:
+    runner = InProcessJobRunner(SessionLocal)
+    with SessionLocal() as session:
+        _add_project(session, "project_cancelled_analyze")
+        session.flush()
+        job = runner.create_job(
+            session,
+            project_id="project_cancelled_analyze",
+            job_type="analyze",
+            payload={"beat_backend": "beat-this"},
+        )
+        job.cancel_requested = True
+        job_id = job.id
+        session.commit()
+
+    runner._execute_job(job_id)
+
+    response = client.get(f"/api/v1/jobs/{job_id}")
+    assert response.status_code == 200
+    payload = response.json()["job"]
+    assert payload["status"] == "cancelled"
+    assert payload["beat_backend"] == "beat-this"
+    assert payload["beat_input"] == "source"
+
+    with SessionLocal() as session:
+        job = session.get(Job, job_id)
+        assert job is not None
+        assert job.payload_json["beat_input"] == "source"
+
+
+@pytest.mark.parametrize(
+    "payload_json",
+    [
+        {},
+        {"beat_input": "percussion"},
+        {"beat_input": []},
+        {"beat_input": {}},
+    ],
+)
+def test_analyze_job_api_defaults_missing_or_unknown_beat_input_to_source(
+    client: TestClient,
+    payload_json: dict[str, Any],
+) -> None:
+    with SessionLocal() as session:
+        _add_job(
+            session,
+            "job_analyze_input",
+            "completed",
+            job_type="analyze",
+            payload_json=payload_json,
+            created_at=_timestamp(1),
+            completed_at=_timestamp(2),
+        )
+        session.commit()
+
+    get_response = client.get("/api/v1/jobs/job_analyze_input")
+    assert get_response.status_code == 200
+    assert get_response.json()["job"]["beat_input"] == "source"
+
+    list_response = client.get("/api/v1/jobs")
+    assert list_response.status_code == 200
+    listed_job = next(job for job in list_response.json()["jobs"] if job["id"] == "job_analyze_input")
+    assert listed_job["beat_input"] == "source"
 
 
 def test_bulk_jobs_rejects_unsupported_job_type(client: TestClient) -> None:

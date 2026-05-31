@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, cast
@@ -42,10 +42,9 @@ def beat_this_dependency_status() -> tuple[bool, str | None]:
 def analyze_track_with_beat_this(
     source_path: Path,
     *,
-    source_stem_paths: Sequence[Path] | None = None,
     duration_seconds: float | None = None,
 ) -> AnalysisPayload:
-    payload = analyze_track(source_path, source_stem_paths=source_stem_paths)
+    payload = analyze_track(source_path)
     timing = detect_beat_this_timing(source_path, duration_seconds=duration_seconds)
     if timing is None:
         raise BeatThisRuntimeError("Advanced Beat Analysis did not produce usable beat timing.")

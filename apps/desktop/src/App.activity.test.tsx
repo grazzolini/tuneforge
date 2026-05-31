@@ -2152,7 +2152,7 @@ describe("Desktop app activity", () => {
     renderApp(["/activity"]);
 
     const row = await screen.findByRole("article", { name: "analyze completed job" });
-    expect(within(row).getByText("advanced / CPU / 1.8 s")).toBeInTheDocument();
+    expect(within(row).getByText("advanced / source / CPU / 1.8 s")).toBeInTheDocument();
   });
 
   it("loads additional terminal history pages on request", async () => {

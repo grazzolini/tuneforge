@@ -1202,6 +1202,8 @@ export interface components {
             source_artifact_id?: string | null;
             /** Beat Backend */
             beat_backend?: string | null;
+            /** Beat Input */
+            beat_input?: string | null;
             /** Chord Backend */
             chord_backend?: string | null;
             /** Chord Backend Fallback From */

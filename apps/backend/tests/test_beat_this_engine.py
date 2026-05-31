@@ -80,6 +80,7 @@ def test_detect_beat_this_timing_accepts_checkpoint_override(monkeypatch) -> Non
 
 def test_analyze_track_with_beat_this_replaces_timing_and_tempo(monkeypatch) -> None:
     def fake_analyze_track(_source_path: Path, *, source_stem_paths=None):
+        assert source_stem_paths is None
         return {
             "estimated_key": "C major",
             "key_confidence": 0.8,
@@ -89,7 +90,8 @@ def test_analyze_track_with_beat_this_replaces_timing_and_tempo(monkeypatch) -> 
             "timing": None,
         }
 
-    def fake_detect_beat_this_timing(_source_path: Path, *, duration_seconds: float | None = None):
+    def fake_detect_beat_this_timing(source_path: Path, *, duration_seconds: float | None = None):
+        assert source_path == Path("synthetic_beat_this.wav")
         assert duration_seconds == 4.0
         return {
             "beats_per_bar": 4,
@@ -109,7 +111,10 @@ def test_analyze_track_with_beat_this_replaces_timing_and_tempo(monkeypatch) -> 
     monkeypatch.setattr(beat_this_engine, "analyze_track", fake_analyze_track)
     monkeypatch.setattr(beat_this_engine, "detect_beat_this_timing", fake_detect_beat_this_timing)
 
-    payload = beat_this_engine.analyze_track_with_beat_this(Path("synthetic_beat_this.wav"), duration_seconds=4.0)
+    payload = beat_this_engine.analyze_track_with_beat_this(
+        Path("synthetic_beat_this.wav"),
+        duration_seconds=4.0,
+    )
 
     assert payload["timing"] is not None
     assert payload["timing"]["source"] == "beat-this"

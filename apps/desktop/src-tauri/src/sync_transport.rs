@@ -177,18 +177,19 @@ mod sync_core {
     use serde::{Deserialize, Serialize};
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
-    use std::{io, path::Path, sync::Arc, time::Duration};
+    use std::{io, time::Duration};
 
     pub(crate) const TCP_TRANSPORT_ID: &str = "tuneforge-sync+tcp";
     pub(crate) const IROH_TRANSPORT_ID: &str = "tuneforge-sync+iroh";
     pub(crate) const ENDPOINT_SCHEME: &str = "tuneforge-sync+tcp://";
     pub(crate) const IROH_ENDPOINT_SCHEME: &str = "tuneforge-sync+iroh://";
     pub(crate) const PAIRING_PROTOCOL_VERSION: &str = "tuneforge-sync-v1";
-    pub(crate) const TRANSPORT_PROTOCOL_VERSION: &str = "tuneforge-sync-transport-v3";
+    pub(crate) const TRANSPORT_PROTOCOL_VERSION: &str = "tuneforge-sync-transport-v5";
     pub(crate) const TRANSPORT_HANDSHAKE_CHALLENGE_TYPE: &str = "transport_handshake";
     pub(crate) const MAX_RAW_FRAME: usize = 65_535;
+    pub(crate) const NOISE_FRAME_SAFETY_MARGIN: usize = 1024;
     pub(crate) const ENCRYPTED_PAYLOAD_CHUNK: usize = 32 * 1024;
-    pub(crate) const ARTIFACT_CHUNK_SIZE: usize = 32 * 1024;
+    pub(crate) const ARTIFACT_CHUNK_SIZE: usize = MAX_RAW_FRAME - NOISE_FRAME_SAFETY_MARGIN - 1;
     pub(crate) const PAIRING_OFFER_TTL_SECONDS: u32 = 600;
     const TRANSPORT_HANDSHAKE_TTL_SECONDS: i64 = 60;
     pub(crate) const ENCRYPTED_FRAME_MESSAGE_CHUNK: u8 = 1;
@@ -595,6 +596,24 @@ mod sync_core {
         pub(crate) manifest_errors: Vec<SyncTransportManifestError>,
     }
 
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub(crate) struct ArtifactRequest {
+        pub(crate) artifact_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub(crate) project_id: Option<String>,
+        pub(crate) content_sha256: String,
+        pub(crate) size_bytes: u64,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub(crate) struct ArtifactBatchRequest {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub(crate) batch_token: Option<String>,
+        pub(crate) artifacts: Vec<ArtifactRequest>,
+    }
+
     #[derive(Debug, Serialize, Deserialize)]
     #[serde(tag = "type", rename_all = "snake_case")]
     pub(crate) enum ProtocolMessage {
@@ -612,15 +631,19 @@ mod sync_core {
             observed_at: String,
         },
         ManifestOffer(ManifestOffer),
-        ArtifactRequest {
-            artifact_id: String,
-            content_sha256: String,
-            size_bytes: u64,
-        },
+        ArtifactRequest(ArtifactRequest),
+        ArtifactBatchRequest(ArtifactBatchRequest),
         ArtifactStart {
             artifact_id: String,
             content_sha256: String,
             size_bytes: u64,
+        },
+        ArtifactBatchStart {
+            batch_token: String,
+            artifact_count: u64,
+        },
+        ArtifactBatchEnd {
+            batch_token: String,
         },
         ArtifactEnd {
             content_sha256: String,
@@ -646,8 +669,11 @@ mod sync_core {
                 Self::AuthProof { .. } => "auth_proof",
                 Self::EndpointHints { .. } => "endpoint_hints",
                 Self::ManifestOffer(_) => "manifest_offer",
-                Self::ArtifactRequest { .. } => "artifact_request",
+                Self::ArtifactRequest(_) => "artifact_request",
+                Self::ArtifactBatchRequest(_) => "artifact_batch_request",
                 Self::ArtifactStart { .. } => "artifact_start",
+                Self::ArtifactBatchStart { .. } => "artifact_batch_start",
+                Self::ArtifactBatchEnd { .. } => "artifact_batch_end",
                 Self::ArtifactEnd { .. } => "artifact_end",
                 Self::Status { .. } => "status",
                 Self::PhaseDone { .. } => "phase_done",
@@ -749,12 +775,6 @@ mod sync_core {
         fn read_message(&mut self) -> Result<ProtocolMessage, String>;
         fn handshake_hash(&self) -> &str;
     }
-
-    pub(crate) trait TransportBlobRecorder: Send + Sync {
-        fn record_path_identity(&self, path: &Path) -> Result<String, String>;
-    }
-
-    pub(crate) type TransportBlobRecorderRef = Arc<dyn TransportBlobRecorder>;
 
     pub(crate) fn encode_message_chunk_frame(chunk: &EncryptedChunk) -> Result<Vec<u8>, String> {
         let payload = serde_json::to_vec(chunk)
@@ -1312,7 +1332,9 @@ mod desktop {
     };
     use chrono::{DateTime, Utc};
     use iroh::{
-        endpoint::{presets, BindOpts, RecvStream, SendStream},
+        endpoint::{
+            presets, BindOpts, Connection, QuicTransportConfig, RecvStream, SendStream, VarInt,
+        },
         Endpoint, EndpointAddr, EndpointId, SecretKey,
     };
     use iroh_blobs::store::fs::FsStore;
@@ -1355,6 +1377,15 @@ mod desktop {
     const DISCOVERY_SOCKET_TIMEOUT: Duration = Duration::from_millis(250);
     const DISCOVERY_MAX_PACKET_BYTES: usize = 8192;
     const IROH_ALPN: &[u8] = b"tuneforge-sync/iroh/v1";
+    const IROH_ARTIFACT_PARALLELISM: usize = 4;
+    const IROH_BATCH_CONTROL_POLL_INTERVAL: Duration = Duration::from_millis(100);
+    const IROH_DATA_HEADER_MAX_BYTES: usize = 16 * 1024;
+    const IROH_ARTIFACT_RECEIVE_CANCELLED: &str =
+        "Iroh artifact stream receive was cancelled after batch control stopped the transfer.";
+    const IROH_STREAM_RECEIVE_WINDOW_BYTES: u32 = 32 * 1024 * 1024;
+    const IROH_CONNECTION_RECEIVE_WINDOW_BYTES: u32 = 128 * 1024 * 1024;
+    const IROH_SEND_WINDOW_BYTES: u64 = 64 * 1024 * 1024;
+    const IROH_INITIAL_RTT: Duration = Duration::from_millis(20);
     const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
     const RECONCILIATION_PLAN_MANIFEST_CHUNK_SIZE: usize = 24;
     const RECONCILIATION_PLAN_DELETE_CHUNK_SIZE: usize = 24;
@@ -2689,6 +2720,18 @@ mod desktop {
         blob_store: IrohBlobStore,
     }
 
+    #[derive(Clone)]
+    struct IrohDataConnection {
+        connection: Connection,
+        runtime_handle: tokio::runtime::Handle,
+    }
+
+    enum IrohDataReadPoll {
+        Data(usize),
+        EndOfStream,
+        TimedOut,
+    }
+
     impl IrohTransport {
         fn close(&self) {
             let endpoint = self.endpoint.clone();
@@ -2703,28 +2746,6 @@ mod desktop {
     #[derive(Clone)]
     struct IrohBlobStore {
         store: FsStore,
-    }
-
-    impl IrohBlobStore {
-        fn add_path(&self, path: &Path) -> Result<String, String> {
-            let store = self.store.clone();
-            let path = path.to_path_buf();
-            tauri::async_runtime::block_on(async move {
-                let tag = store.blobs().add_path(path).await.map_err(|error| {
-                    format!("Could not import artifact into iroh-blobs store: {error}")
-                })?;
-                store.sync_db().await.map_err(|error| {
-                    format!("Could not sync iroh-blobs store metadata: {error}")
-                })?;
-                Ok(tag.hash.to_string())
-            })
-        }
-    }
-
-    impl TransportBlobRecorder for IrohBlobStore {
-        fn record_path_identity(&self, path: &Path) -> Result<String, String> {
-            self.add_path(path)
-        }
     }
 
     fn create_iroh_transport(
@@ -2746,6 +2767,7 @@ mod desktop {
             // disabled and make direct endpoint hints stable across listener restarts.
             Endpoint::builder(presets::Minimal)
                 .clear_ip_transports()
+                .clear_relay_transports()
                 .bind_addr((Ipv4Addr::UNSPECIFIED, iroh_port))
                 .map_err(|error| format!("Could not configure Iroh IPv4 bind: {error}"))?
                 .bind_addr_with_opts(
@@ -2753,6 +2775,7 @@ mod desktop {
                     BindOpts::default().set_is_required(false),
                 )
                 .map_err(|error| format!("Could not configure Iroh IPv6 bind: {error}"))?
+                .transport_config(iroh_lan_transport_config())
                 .secret_key(secret_key)
                 .alpns(vec![IROH_ALPN.to_vec()])
                 .bind()
@@ -2772,6 +2795,15 @@ mod desktop {
             return Err("Local Iroh endpoint did not expose a direct address.".to_string());
         }
         Ok(transport)
+    }
+
+    fn iroh_lan_transport_config() -> QuicTransportConfig {
+        QuicTransportConfig::builder()
+            .stream_receive_window(VarInt::from_u32(IROH_STREAM_RECEIVE_WINDOW_BYTES))
+            .receive_window(VarInt::from_u32(IROH_CONNECTION_RECEIVE_WINDOW_BYTES))
+            .send_window(IROH_SEND_WINDOW_BYTES)
+            .initial_rtt(IROH_INITIAL_RTT)
+            .build()
     }
 
     fn iroh_listener_port(tcp_listener_port: u16) -> Result<u16, String> {
@@ -2957,7 +2989,6 @@ mod desktop {
                     Ok(Some(incoming)) => {
                         let backend = backend.clone();
                         let shared_status = Arc::clone(&shared_status);
-                        let blob_store = transport.blob_store.clone();
                         let endpoint_hints = endpoint_hints.clone();
                         update_status(&shared_status, |status| {
                             status.accepted_sessions += 1;
@@ -2968,23 +2999,33 @@ mod desktop {
                         });
                         tauri::async_runtime::spawn(async move {
                             let stream = match incoming.await {
-                                Ok(connection) => match connection.accept_bi().await {
-                                    Ok((send, recv)) => Ok(Box::new(IrohPeerStream::new(
-                                        send,
-                                        recv,
-                                        tokio::runtime::Handle::current(),
-                                    ))
-                                        as Box<dyn PeerStream>),
-                                    Err(error) => {
-                                        Err(format!("Could not accept Iroh sync stream: {error}"))
+                                Ok(connection) => {
+                                    let runtime_handle = tokio::runtime::Handle::current();
+                                    let iroh_data = IrohDataConnection {
+                                        connection: connection.clone(),
+                                        runtime_handle: runtime_handle.clone(),
+                                    };
+                                    match connection.accept_bi().await {
+                                        Ok((send, recv)) => Ok((
+                                            Box::new(IrohPeerStream::new(
+                                                send,
+                                                recv,
+                                                runtime_handle,
+                                            ))
+                                                as Box<dyn PeerStream>,
+                                            iroh_data,
+                                        )),
+                                        Err(error) => Err(format!(
+                                            "Could not accept Iroh sync stream: {error}"
+                                        )),
                                     }
-                                },
+                                }
                                 Err(error) => {
                                     Err(format!("Could not accept Iroh sync connection: {error}"))
                                 }
                             };
                             match stream {
-                                Ok(stream) => {
+                                Ok((stream, iroh_data)) => {
                                     let session_status = Arc::clone(&shared_status);
                                     let error_status = Arc::clone(&shared_status);
                                     let join = tauri::async_runtime::spawn_blocking(move || {
@@ -2992,7 +3033,7 @@ mod desktop {
                                             backend,
                                             TransportKind::Iroh,
                                             stream,
-                                            Some(Arc::new(blob_store) as TransportBlobRecorderRef),
+                                            Some(iroh_data),
                                             session_status,
                                             endpoint_hints,
                                         );
@@ -3115,24 +3156,30 @@ mod desktop {
         endpoint_addr: EndpointAddr,
     ) -> Result<SecurePeerConnection, String> {
         let endpoint = transport.endpoint.clone();
-        let blob_store = transport.blob_store.clone();
-        let (send, recv, runtime_handle) = tauri::async_runtime::block_on(async move {
-            let runtime_handle = tokio::runtime::Handle::current();
-            let connection =
-                tokio::time::timeout(CONNECT_TIMEOUT, endpoint.connect(endpoint_addr, IROH_ALPN))
-                    .await
-                    .map_err(|_| "Timed out connecting to Iroh sync peer.".to_string())?
-                    .map_err(|error| format!("Could not connect to Iroh sync peer: {error}"))?;
-            let (send, recv) = tokio::time::timeout(CONNECT_TIMEOUT, connection.open_bi())
+        let (connection, send, recv, runtime_handle) =
+            tauri::async_runtime::block_on(async move {
+                let runtime_handle = tokio::runtime::Handle::current();
+                let connection = tokio::time::timeout(
+                    CONNECT_TIMEOUT,
+                    endpoint.connect(endpoint_addr, IROH_ALPN),
+                )
                 .await
-                .map_err(|_| "Timed out opening Iroh sync stream.".to_string())?
-                .map_err(|error| format!("Could not open Iroh sync stream: {error}"))?;
-            Ok::<_, String>((send, recv, runtime_handle))
-        })?;
+                .map_err(|_| "Timed out connecting to Iroh sync peer.".to_string())?
+                .map_err(|error| format!("Could not connect to Iroh sync peer: {error}"))?;
+                let (send, recv) = tokio::time::timeout(CONNECT_TIMEOUT, connection.open_bi())
+                    .await
+                    .map_err(|_| "Timed out opening Iroh sync stream.".to_string())?
+                    .map_err(|error| format!("Could not open Iroh sync stream: {error}"))?;
+                Ok::<_, String>((connection, send, recv, runtime_handle))
+            })?;
+        let iroh_data = IrohDataConnection {
+            connection,
+            runtime_handle: runtime_handle.clone(),
+        };
         SecurePeerConnection::connect_initiator(
             Box::new(IrohPeerStream::new(send, recv, runtime_handle)),
             TransportKind::Iroh,
-            Some(Arc::new(blob_store) as TransportBlobRecorderRef),
+            Some(iroh_data),
         )
     }
 
@@ -3140,7 +3187,7 @@ mod desktop {
         backend: BackendAccess,
         transport: TransportKind,
         stream: Box<dyn PeerStream>,
-        blob_store: Option<TransportBlobRecorderRef>,
+        iroh_data: Option<IrohDataConnection>,
         shared_status: Arc<Mutex<SharedStatus>>,
         endpoint_hints: Vec<String>,
     ) {
@@ -3165,7 +3212,7 @@ mod desktop {
             backend,
             transport,
             stream,
-            blob_store,
+            iroh_data,
             endpoint_hints,
             Arc::clone(&shared_status),
             run_id.clone(),
@@ -3193,7 +3240,7 @@ mod desktop {
         backend: BackendAccess,
         transport: TransportKind,
         stream: Box<dyn PeerStream>,
-        blob_store: Option<TransportBlobRecorderRef>,
+        iroh_data: Option<IrohDataConnection>,
         endpoint_hints: Vec<String>,
         shared_status: Arc<Mutex<SharedStatus>>,
         run_id: String,
@@ -3204,8 +3251,7 @@ mod desktop {
         let mut metrics = SyncRunMetrics::start(run_started_instant);
         let client = BackendClient::new(&backend)?;
         let timer = SyncPhaseTimer::start("peer_authentication");
-        let mut connection =
-            SecurePeerConnection::connect_responder(stream, transport, blob_store)?;
+        let mut connection = SecurePeerConnection::connect_responder(stream, transport, iroh_data)?;
         let session = authenticate_session(&mut connection, &client, None, &endpoint_hints)
             .map_err(|error| phase_context_error("peer authentication", error))?;
         connection.set_established_read_timeout()?;
@@ -3637,14 +3683,46 @@ mod desktop {
             self.record_first_artifact_bytes(bytes);
         }
 
+        fn record_received_artifact_bytes_at(
+            &mut self,
+            bytes: u64,
+            first_bytes_at: Option<Duration>,
+        ) {
+            self.total_received_bytes = self.total_received_bytes.saturating_add(bytes);
+            self.record_first_artifact_bytes_at(bytes, first_bytes_at);
+        }
+
         fn record_served_artifact_bytes(&mut self, bytes: u64) {
             self.total_served_bytes = self.total_served_bytes.saturating_add(bytes);
             self.record_first_artifact_bytes(bytes);
         }
 
+        fn record_served_artifact_bytes_at(
+            &mut self,
+            bytes: u64,
+            first_bytes_at: Option<Duration>,
+        ) {
+            self.total_served_bytes = self.total_served_bytes.saturating_add(bytes);
+            self.record_first_artifact_bytes_at(bytes, first_bytes_at);
+        }
+
         fn record_first_artifact_bytes(&mut self, bytes: u64) {
             if bytes > 0 && self.first_artifact_at.is_none() {
                 self.first_artifact_at = Some(self.started_instant.elapsed());
+            }
+        }
+
+        fn record_first_artifact_bytes_at(&mut self, bytes: u64, first_bytes_at: Option<Duration>) {
+            if bytes == 0 {
+                return;
+            }
+            match (self.first_artifact_at, first_bytes_at) {
+                (None, Some(first_bytes_at)) => self.first_artifact_at = Some(first_bytes_at),
+                (Some(existing), Some(first_bytes_at)) if first_bytes_at < existing => {
+                    self.first_artifact_at = Some(first_bytes_at);
+                }
+                (None, None) => self.first_artifact_at = Some(self.started_instant.elapsed()),
+                _ => {}
             }
         }
 
@@ -3682,6 +3760,16 @@ mod desktop {
             }
         }
 
+        fn zero_now() -> TransferTiming {
+            let now = Utc::now().to_rfc3339();
+            TransferTiming {
+                started_at: now.clone(),
+                completed_at: now,
+                duration_ms: 0,
+                throughput_bytes_per_second: 0.0,
+            }
+        }
+
         fn finish(self, bytes: u64) -> TransferTiming {
             let completed_at = Utc::now();
             let duration = self.started_instant.elapsed();
@@ -3691,6 +3779,31 @@ mod desktop {
                 duration_ms: duration_millis(duration),
                 throughput_bytes_per_second: throughput_bytes_per_second(bytes, duration),
             }
+        }
+
+        fn finish_with_phase(
+            self,
+            bytes: u64,
+            phase: &str,
+            artifact: &RemoteArtifact,
+        ) -> (TransferTiming, SyncTransportTimingEvidence) {
+            let completed_at = Utc::now();
+            let duration = self.started_instant.elapsed();
+            let timing = TransferTiming {
+                started_at: self.started_at.to_rfc3339(),
+                completed_at: completed_at.to_rfc3339(),
+                duration_ms: duration_millis(duration),
+                throughput_bytes_per_second: throughput_bytes_per_second(bytes, duration),
+            };
+            let phase_timing = SyncTransportTimingEvidence {
+                phase: phase.to_string(),
+                project_id: Some(artifact.project_id.clone()),
+                artifact_id: Some(artifact.artifact_id.clone()),
+                started_at: timing.started_at.clone(),
+                completed_at: timing.completed_at.clone(),
+                duration_ms: timing.duration_ms,
+            };
+            (timing, phase_timing)
         }
     }
 
@@ -3774,20 +3887,79 @@ mod desktop {
         }
     }
 
+    impl IrohDataConnection {
+        fn open_send_stream(&self) -> Result<SendStream, String> {
+            let connection = self.connection.clone();
+            self.runtime_handle.block_on(async move {
+                tokio::time::timeout(CONNECT_TIMEOUT, connection.open_uni())
+                    .await
+                    .map_err(|_| "Timed out opening Iroh artifact data stream.".to_string())?
+                    .map_err(|error| format!("Could not open Iroh artifact data stream: {error}"))
+            })
+        }
+
+        fn accept_recv_stream_with_timeout(
+            &self,
+            timeout: Duration,
+        ) -> Result<Option<RecvStream>, String> {
+            let connection = self.connection.clone();
+            self.runtime_handle.block_on(async move {
+                match tokio::time::timeout(timeout, connection.accept_uni()).await {
+                    Ok(Ok(recv)) => Ok(Some(recv)),
+                    Ok(Err(error)) => Err(format!(
+                        "Could not accept Iroh artifact data stream: {error}"
+                    )),
+                    Err(_) => Ok(None),
+                }
+            })
+        }
+
+        fn write_all(&self, send: &mut SendStream, buffer: &[u8]) -> Result<(), String> {
+            self.runtime_handle
+                .block_on(async {
+                    tokio::time::timeout(WRITE_TIMEOUT, send.write_all(buffer)).await
+                })
+                .map_err(|_| "Timed out writing to Iroh artifact data stream.".to_string())?
+                .map_err(|error| format!("Could not write Iroh artifact data stream: {error}"))
+        }
+
+        fn finish_send(&self, send: &mut SendStream) -> Result<(), String> {
+            send.finish()
+                .map_err(|error| format!("Could not finish Iroh artifact data stream: {error}"))
+        }
+
+        fn read_with_timeout(
+            &self,
+            recv: &mut RecvStream,
+            buffer: &mut [u8],
+            timeout: Duration,
+        ) -> Result<IrohDataReadPoll, String> {
+            match self
+                .runtime_handle
+                .block_on(async { tokio::time::timeout(timeout, recv.read(buffer)).await })
+            {
+                Ok(Ok(Some(read))) => Ok(IrohDataReadPoll::Data(read)),
+                Ok(Ok(None)) => Ok(IrohDataReadPoll::EndOfStream),
+                Ok(Err(error)) => Err(format!("Could not read Iroh artifact data stream: {error}")),
+                Err(_) => Ok(IrohDataReadPoll::TimedOut),
+            }
+        }
+    }
+
     struct SecurePeerConnection {
         stream: Box<dyn PeerStream>,
         noise: snow::TransportState,
         handshake_hash: String,
         next_message_id: u64,
         transport: TransportKind,
-        blob_store: Option<TransportBlobRecorderRef>,
+        iroh_data: Option<IrohDataConnection>,
     }
 
     impl SecurePeerConnection {
         fn connect_initiator(
             mut stream: Box<dyn PeerStream>,
             transport: TransportKind,
-            blob_store: Option<TransportBlobRecorderRef>,
+            iroh_data: Option<IrohDataConnection>,
         ) -> Result<Self, String> {
             let mut handshake = build_noise_handshake(true)?;
             let mut buffer = vec![0_u8; MAX_RAW_FRAME];
@@ -3815,14 +3987,14 @@ mod desktop {
                 handshake_hash,
                 next_message_id: 1,
                 transport,
-                blob_store,
+                iroh_data,
             })
         }
 
         fn connect_responder(
             mut stream: Box<dyn PeerStream>,
             transport: TransportKind,
-            blob_store: Option<TransportBlobRecorderRef>,
+            iroh_data: Option<IrohDataConnection>,
         ) -> Result<Self, String> {
             let mut handshake = build_noise_handshake(false)?;
             let mut buffer = vec![0_u8; MAX_RAW_FRAME];
@@ -3851,7 +4023,7 @@ mod desktop {
                 handshake_hash,
                 next_message_id: 1,
                 transport,
-                blob_store,
+                iroh_data,
             })
         }
 
@@ -4100,13 +4272,11 @@ mod desktop {
             }
         }
 
-        fn record_transport_blob_identity(&self, path: &Path) -> Option<String> {
-            let blob_store = self
-                .inner
+        fn iroh_data_connection(&self) -> Option<IrohDataConnection> {
+            self.inner
                 .lock()
                 .ok()
-                .and_then(|connection| connection.blob_store.clone())?;
-            blob_store.record_path_identity(path).ok()
+                .and_then(|connection| connection.iroh_data.clone())
         }
     }
 
@@ -4179,35 +4349,145 @@ mod desktop {
             let selected_project_ids = project_ids
                 .map(|values| values.to_vec())
                 .unwrap_or_else(|| project_ids_from_metadata(&metadata));
-            for project_id in selected_project_ids {
-                let path = format!(
-                    "/api/v1/sync/projects/{}/manifest",
-                    percent_encode_path_segment(&project_id)
-                );
-                match client.get_json_value(&path) {
-                    Ok(response) => {
-                        if let Some(manifest) = response.get("project_manifest") {
-                            project_manifests.push(manifest.clone());
-                        } else {
-                            manifest_errors.push(SyncTransportManifestError {
-                                project_id,
-                                message:
-                                    "Backend manifest response did not include project_manifest."
-                                        .to_string(),
-                            });
-                        }
-                    }
-                    Err(error) => manifest_errors.push(SyncTransportManifestError {
-                        project_id,
-                        message: error.to_string(),
-                    }),
-                }
-            }
+            let manifests = load_local_project_manifests(client, &selected_project_ids);
+            project_manifests = manifests.project_manifests;
+            manifest_errors = manifests.manifest_errors;
         }
         ManifestOffer {
             metadata,
             project_manifests,
             manifest_errors,
+        }
+    }
+
+    fn load_local_project_manifests(
+        client: &BackendClient,
+        project_ids: &[String],
+    ) -> ManifestOffer {
+        if project_ids.is_empty() {
+            return ManifestOffer {
+                metadata: Value::Null,
+                project_manifests: Vec::new(),
+                manifest_errors: Vec::new(),
+            };
+        }
+
+        let body = json!({ "project_ids": project_ids });
+        match client.post_json_value("/api/v1/sync/projects/manifests", &body) {
+            Ok(response) => manifest_offer_from_batch_response(&response, project_ids),
+            Err(error) if client.manifest_batch_unavailable(&error) => {
+                load_local_project_manifests_one_by_one(client, project_ids)
+            }
+            Err(error) => ManifestOffer {
+                metadata: Value::Null,
+                project_manifests: Vec::new(),
+                manifest_errors: project_ids
+                    .iter()
+                    .map(|project_id| SyncTransportManifestError {
+                        project_id: project_id.clone(),
+                        message: error.to_string(),
+                    })
+                    .collect(),
+            },
+        }
+    }
+
+    fn load_local_project_manifests_one_by_one(
+        client: &BackendClient,
+        project_ids: &[String],
+    ) -> ManifestOffer {
+        let mut project_manifests = Vec::new();
+        let mut manifest_errors = Vec::new();
+        for project_id in project_ids {
+            let path = format!(
+                "/api/v1/sync/projects/{}/manifest",
+                percent_encode_path_segment(project_id)
+            );
+            match client.get_json_value(&path) {
+                Ok(response) => {
+                    if let Some(manifest) = response
+                        .get("project_manifest")
+                        .or_else(|| response.get("projectManifest"))
+                    {
+                        project_manifests.push(manifest.clone());
+                    } else {
+                        manifest_errors.push(SyncTransportManifestError {
+                            project_id: project_id.clone(),
+                            message: "Backend manifest response did not include project_manifest."
+                                .to_string(),
+                        });
+                    }
+                }
+                Err(error) => manifest_errors.push(SyncTransportManifestError {
+                    project_id: project_id.clone(),
+                    message: error.to_string(),
+                }),
+            }
+        }
+        ManifestOffer {
+            metadata: Value::Null,
+            project_manifests,
+            manifest_errors,
+        }
+    }
+
+    fn manifest_offer_from_batch_response(
+        response: &Value,
+        project_ids: &[String],
+    ) -> ManifestOffer {
+        let project_manifests = response
+            .get("project_manifests")
+            .or_else(|| response.get("projectManifests"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut manifest_errors = response
+            .get("manifest_errors")
+            .or_else(|| response.get("manifestErrors"))
+            .and_then(Value::as_array)
+            .map(|errors| {
+                errors
+                    .iter()
+                    .map(manifest_error_from_value)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let mut completed_project_ids: HashSet<String> = project_manifests
+            .iter()
+            .map(manifest_project_id)
+            .filter(|project_id| project_id != "unknown")
+            .collect();
+        completed_project_ids.extend(manifest_errors.iter().map(|error| error.project_id.clone()));
+        for project_id in project_ids {
+            if !completed_project_ids.contains(project_id) {
+                manifest_errors.push(SyncTransportManifestError {
+                    project_id: project_id.clone(),
+                    message: "Backend batch manifest response omitted this project.".to_string(),
+                });
+            }
+        }
+
+        ManifestOffer {
+            metadata: Value::Null,
+            project_manifests,
+            manifest_errors,
+        }
+    }
+
+    fn manifest_error_from_value(value: &Value) -> SyncTransportManifestError {
+        SyncTransportManifestError {
+            project_id: value
+                .get("project_id")
+                .or_else(|| value.get("projectId"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_string(),
+            message: value
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("Backend manifest export failed.")
+                .to_string(),
         }
     }
 
@@ -4682,18 +4962,18 @@ mod desktop {
         let mut project_transfers = Vec::new();
         let mut transfer_failure = None;
 
-        for entry in
-            planned_fetch_artifact_entries(plan, std::slice::from_ref(manifest), peer_device_id)
-        {
-            match request_or_use_staged_artifact(
-                client,
-                connection,
-                peer_device_id,
-                &entry.artifact,
-                metrics,
-                timings,
-                progress,
-            ) {
+        let entries =
+            planned_fetch_artifact_entries(plan, std::slice::from_ref(manifest), peer_device_id);
+        for transfer in request_or_use_staged_artifacts(
+            client,
+            connection,
+            peer_device_id,
+            &entries,
+            metrics,
+            timings,
+            progress,
+        ) {
+            match transfer {
                 Ok(result) => {
                     project_transfers.push(result.clone());
                     received_artifacts.push(result);
@@ -5583,6 +5863,26 @@ mod desktop {
         size_bytes: u64,
     }
 
+    impl RemoteArtifact {
+        fn artifact_request(&self) -> ArtifactRequest {
+            ArtifactRequest {
+                artifact_id: self.artifact_id.clone(),
+                project_id: Some(self.project_id.clone()),
+                content_sha256: self.content_sha256.clone(),
+                size_bytes: self.size_bytes,
+            }
+        }
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct IrohArtifactStreamHeader {
+        batch_token: String,
+        artifact_id: String,
+        content_sha256: String,
+        size_bytes: u64,
+    }
+
     #[derive(Clone, Debug)]
     struct ManifestArtifactEntry {
         artifact: RemoteArtifact,
@@ -5632,47 +5932,65 @@ mod desktop {
             .collect()
     }
 
-    fn request_or_use_staged_artifact(
+    struct PendingArtifactTransfer {
+        artifact: RemoteArtifact,
+    }
+
+    fn request_or_use_staged_artifacts(
         client: &BackendClient,
         connection: &SharedPeerConnection,
         peer_device_id: &str,
-        artifact: &RemoteArtifact,
+        entries: &[ManifestArtifactEntry],
         metrics: &mut SyncRunMetrics,
         timings: &mut Vec<SyncTransportTimingEvidence>,
         progress: &ProgressReporter,
-    ) -> Result<SyncTransportTransferResult, TransferFailure> {
-        let transfer_timer = TransferTimer::start();
-        let timer = SyncPhaseTimer::start_artifact("artifact_staging_check", artifact);
-        let staged = {
-            let _progress =
-                progress.start_phase("artifact_transfer", "Checking staged artifact content.");
-            already_staged_artifact_result(client, artifact)
-        };
-        timings.push(timer.finish());
-        match staged {
-            Ok(true) => {
-                return Ok(transfer_result(
-                    artifact,
-                    "already_staged",
-                    Some("Artifact content was already staged and verified locally.".to_string()),
-                    transfer_timer.finish(0),
-                ));
-            }
-            Ok(false) => {}
-            Err(error) => {
-                return Err(transfer_failure(artifact, transfer_timer.finish(0), error));
+    ) -> Vec<Result<SyncTransportTransferResult, TransferFailure>> {
+        let mut results = Vec::new();
+        let mut pending = Vec::new();
+
+        for entry in entries {
+            let artifact = &entry.artifact;
+            let timer = SyncPhaseTimer::start_artifact("artifact_staging_check", artifact);
+            let staged = {
+                let _progress =
+                    progress.start_phase("artifact_transfer", "Checking staged artifact content.");
+                already_staged_artifact_result(client, artifact)
+            };
+            timings.push(timer.finish());
+            match staged {
+                Ok(true) => {
+                    results.push(Ok(transfer_result(
+                        artifact,
+                        "already_staged",
+                        Some(
+                            "Artifact content was already staged and verified locally.".to_string(),
+                        ),
+                        TransferTimer::zero_now(),
+                    )));
+                }
+                Ok(false) => pending.push(PendingArtifactTransfer {
+                    artifact: artifact.clone(),
+                }),
+                Err(error) => {
+                    results.push(Err(transfer_failure(
+                        artifact,
+                        TransferTimer::zero_now(),
+                        error,
+                    )));
+                }
             }
         }
-        request_and_stage_artifact(
+
+        results.extend(request_and_stage_artifact_batch(
             client,
             connection,
             peer_device_id,
-            artifact,
-            transfer_timer,
+            pending,
             metrics,
             timings,
             progress,
-        )
+        ));
+        results
     }
 
     fn already_staged_artifact_result(
@@ -5702,29 +6020,957 @@ mod desktop {
         }
     }
 
-    fn request_and_stage_artifact(
-        client: &BackendClient,
+    fn request_and_stage_artifact_batch(
+        client: &impl ArtifactStagingClient,
         connection: &SharedPeerConnection,
         peer_device_id: &str,
+        pending: Vec<PendingArtifactTransfer>,
+        metrics: &mut SyncRunMetrics,
+        timings: &mut Vec<SyncTransportTimingEvidence>,
+        progress: &ProgressReporter,
+    ) -> Vec<Result<SyncTransportTransferResult, TransferFailure>> {
+        if pending.is_empty() {
+            return Vec::new();
+        }
+
+        if connection.transport() == TransportKind::Iroh {
+            if let Some(iroh_data) = connection.iroh_data_connection() {
+                return request_and_stage_iroh_artifact_batch(
+                    client,
+                    connection,
+                    iroh_data,
+                    peer_device_id,
+                    pending,
+                    metrics,
+                    timings,
+                    progress,
+                );
+            }
+        }
+
+        let request = ArtifactBatchRequest {
+            batch_token: None,
+            artifacts: pending
+                .iter()
+                .map(|pending| pending.artifact.artifact_request())
+                .collect(),
+        };
+        let _progress = progress.start_phase("artifact_transfer", "Transferring artifact content.");
+        if let Err(error) = connection.send_message_for_phase(
+            "artifact request/transfer",
+            &ProtocolMessage::ArtifactBatchRequest(request),
+        ) {
+            return pending
+                .into_iter()
+                .map(|pending| {
+                    Err(transfer_failure(
+                        &pending.artifact,
+                        TransferTimer::zero_now(),
+                        error.clone(),
+                    ))
+                })
+                .collect();
+        }
+
+        let mut results = Vec::new();
+        let mut pending = pending.into_iter();
+        while let Some(pending_transfer) = pending.next() {
+            match receive_and_stage_artifact(
+                client,
+                connection,
+                peer_device_id,
+                pending_transfer,
+                metrics,
+                timings,
+                progress,
+            ) {
+                Ok(result) => results.push(Ok(result)),
+                Err(error) => {
+                    if error.can_continue_batch {
+                        results.push(Err(error));
+                        continue;
+                    }
+                    let message = error.message.clone();
+                    results.push(Err(error));
+                    results.extend(pending.map(|pending| {
+                        Err(transfer_failure(
+                            &pending.artifact,
+                            TransferTimer::zero_now(),
+                            format!(
+                                "Sync artifact batch transfer stopped after a peer error: {message}"
+                            ),
+                        ))
+                    }));
+                    break;
+                }
+            }
+        }
+        results
+    }
+
+    #[derive(Clone)]
+    struct IrohPendingReceive {
+        artifact: RemoteArtifact,
+        temp_path: PathBuf,
+    }
+
+    struct IrohReceivedArtifact {
+        artifact: RemoteArtifact,
+        temp_path: PathBuf,
+        timing: TransferTiming,
+        phase_timing: SyncTransportTimingEvidence,
+        size_bytes: u64,
+        first_bytes_at: Option<Duration>,
+    }
+
+    struct IrohArtifactReceiveError {
+        artifact_id: Option<String>,
+        message: String,
+        timing: Option<TransferTiming>,
+        phase_timing: Option<SyncTransportTimingEvidence>,
+    }
+
+    enum IrohBatchControlPoll {
+        Pending,
+        Complete,
+        Failed(String),
+    }
+
+    fn read_iroh_artifact_batch_control(
+        connection: &SharedPeerConnection,
+        batch_token: &str,
+        progress: &ProgressReporter,
+    ) -> Result<(), String> {
+        match connection
+            .read_message_accepting_status_for_phase("artifact request/transfer", progress)
+        {
+            Ok(ProtocolMessage::ArtifactBatchEnd {
+                batch_token: peer_batch_token,
+            }) if peer_batch_token == batch_token => Ok(()),
+            Ok(ProtocolMessage::ArtifactBatchEnd { .. }) => Err(
+                "Sync peer Iroh artifact batch completion did not match the request.".to_string(),
+            ),
+            Ok(ProtocolMessage::Error(error)) => Err(phase_context_error(
+                "artifact request/transfer",
+                error.message,
+            )),
+            Ok(other) => Err(format!(
+                "Sync peer sent unexpected Iroh artifact batch completion: {}",
+                other.kind()
+            )),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn poll_iroh_artifact_batch_control(
+        receiver: &mpsc::Receiver<Result<(), String>>,
+        result: &mut Option<Result<(), String>>,
+    ) -> IrohBatchControlPoll {
+        if result.is_none() {
+            match receiver.try_recv() {
+                Ok(control_result) => *result = Some(control_result),
+                Err(mpsc::TryRecvError::Empty) => return IrohBatchControlPoll::Pending,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    *result = Some(Err(
+                        "Iroh artifact batch control reader stopped before reporting completion."
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+        match result.as_ref().expect("control result recorded") {
+            Ok(()) => IrohBatchControlPoll::Complete,
+            Err(error) => IrohBatchControlPoll::Failed(error.clone()),
+        }
+    }
+
+    fn wait_iroh_artifact_batch_control(
+        receiver: &mpsc::Receiver<Result<(), String>>,
+        result: &mut Option<Result<(), String>>,
+        timeout: Duration,
+    ) -> IrohBatchControlPoll {
+        if result.is_none() {
+            match receiver.recv_timeout(timeout) {
+                Ok(control_result) => *result = Some(control_result),
+                Err(mpsc::RecvTimeoutError::Timeout) => return IrohBatchControlPoll::Pending,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    *result = Some(Err(
+                        "Iroh artifact batch control reader stopped before reporting completion."
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+        poll_iroh_artifact_batch_control(receiver, result)
+    }
+
+    fn await_iroh_artifact_batch_control(
+        receiver: &mpsc::Receiver<Result<(), String>>,
+        result: &mut Option<Result<(), String>>,
+    ) -> Result<(), String> {
+        if let Some(result) = result.take() {
+            return result;
+        }
+        receiver.recv().unwrap_or_else(|_| {
+            Err(
+                "Iroh artifact batch control reader stopped before reporting completion."
+                    .to_string(),
+            )
+        })
+    }
+
+    fn record_iroh_artifact_receive_result(
+        result: Result<IrohReceivedArtifact, IrohArtifactReceiveError>,
+        expected: &HashMap<String, IrohPendingReceive>,
+        timings: &mut Vec<SyncTransportTimingEvidence>,
+        received: &mut HashMap<String, IrohReceivedArtifact>,
+        stream_failures: &mut HashMap<String, TransferFailure>,
+        fatal_error: &mut Option<String>,
+    ) {
+        match result {
+            Ok(artifact) => {
+                timings.push(artifact.phase_timing.clone());
+                received.insert(artifact.artifact.artifact_id.clone(), artifact);
+            }
+            Err(error) => {
+                if let Some(phase_timing) = error.phase_timing {
+                    timings.push(phase_timing);
+                }
+                if let Some(artifact_id) = error.artifact_id {
+                    if let Some(expected) = expected.get(&artifact_id) {
+                        if fatal_error.is_some() && error.message == IROH_ARTIFACT_RECEIVE_CANCELLED
+                        {
+                            return;
+                        }
+                        let failure = transfer_failure(
+                            &expected.artifact,
+                            error.timing.unwrap_or_else(TransferTimer::zero_now),
+                            error.message.clone(),
+                        );
+                        stream_failures.insert(artifact_id, failure);
+                    } else {
+                        fatal_error.get_or_insert(error.message);
+                    }
+                } else {
+                    fatal_error.get_or_insert(error.message);
+                }
+            }
+        }
+    }
+
+    fn request_and_stage_iroh_artifact_batch(
+        client: &impl ArtifactStagingClient,
+        connection: &SharedPeerConnection,
+        iroh_data: IrohDataConnection,
+        peer_device_id: &str,
+        pending: Vec<PendingArtifactTransfer>,
+        metrics: &mut SyncRunMetrics,
+        timings: &mut Vec<SyncTransportTimingEvidence>,
+        progress: &ProgressReporter,
+    ) -> Vec<Result<SyncTransportTransferResult, TransferFailure>> {
+        let batch_token = random_nonce();
+        let request = ArtifactBatchRequest {
+            batch_token: Some(batch_token.clone()),
+            artifacts: pending
+                .iter()
+                .map(|pending| pending.artifact.artifact_request())
+                .collect(),
+        };
+        let _progress = progress.start_phase("artifact_transfer", "Transferring artifact content.");
+        if let Err(error) = connection.send_message_for_phase(
+            "artifact request/transfer",
+            &ProtocolMessage::ArtifactBatchRequest(request),
+        ) {
+            return pending
+                .into_iter()
+                .map(|pending| {
+                    Err(transfer_failure(
+                        &pending.artifact,
+                        TransferTimer::zero_now(),
+                        error.clone(),
+                    ))
+                })
+                .collect();
+        }
+        match connection
+            .read_message_accepting_status_for_phase("artifact request/transfer", progress)
+        {
+            Ok(ProtocolMessage::ArtifactBatchStart {
+                batch_token: peer_batch_token,
+                artifact_count,
+            }) if peer_batch_token == batch_token && artifact_count == pending.len() as u64 => {}
+            Ok(ProtocolMessage::ArtifactBatchStart { .. }) => {
+                return pending
+                    .into_iter()
+                    .map(|pending| {
+                        Err(transfer_failure(
+                            &pending.artifact,
+                            TransferTimer::zero_now(),
+                            "Sync peer Iroh artifact batch response did not match the request."
+                                .to_string(),
+                        ))
+                    })
+                    .collect();
+            }
+            Ok(ProtocolMessage::Error(error)) => {
+                let message = phase_context_error("artifact request/transfer", error.message);
+                return pending
+                    .into_iter()
+                    .map(|pending| {
+                        Err(transfer_failure(
+                            &pending.artifact,
+                            TransferTimer::zero_now(),
+                            message.clone(),
+                        ))
+                    })
+                    .collect();
+            }
+            Ok(other) => {
+                let message = format!(
+                    "Sync peer sent unexpected Iroh artifact batch response: {}",
+                    other.kind()
+                );
+                return pending
+                    .into_iter()
+                    .map(|pending| {
+                        Err(transfer_failure(
+                            &pending.artifact,
+                            TransferTimer::zero_now(),
+                            message.clone(),
+                        ))
+                    })
+                    .collect();
+            }
+            Err(error) => {
+                return pending
+                    .into_iter()
+                    .map(|pending| {
+                        Err(transfer_failure(
+                            &pending.artifact,
+                            TransferTimer::zero_now(),
+                            error.clone(),
+                        ))
+                    })
+                    .collect();
+            }
+        }
+
+        let mut expected = HashMap::new();
+        for pending_transfer in &pending {
+            if expected
+                .insert(
+                    pending_transfer.artifact.artifact_id.clone(),
+                    IrohPendingReceive {
+                        artifact: pending_transfer.artifact.clone(),
+                        temp_path: client
+                            .temp_artifact_path(&pending_transfer.artifact.content_sha256),
+                    },
+                )
+                .is_some()
+            {
+                let message = format!(
+                    "Sync artifact batch repeated artifact {}.",
+                    pending_transfer.artifact.artifact_id
+                );
+                return pending
+                    .into_iter()
+                    .map(|pending| {
+                        Err(transfer_failure(
+                            &pending.artifact,
+                            TransferTimer::zero_now(),
+                            message.clone(),
+                        ))
+                    })
+                    .collect();
+            }
+        }
+
+        let expected = Arc::new(expected);
+        let seen = Arc::new(Mutex::new(HashSet::new()));
+        let cancel_receivers = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) =
+            mpsc::channel::<Result<IrohReceivedArtifact, IrohArtifactReceiveError>>();
+        let (control_sender, control_receiver) = mpsc::channel::<Result<(), String>>();
+        let control_connection = connection.clone();
+        let control_progress = progress.clone();
+        let control_batch_token = batch_token.clone();
+        let control_handle = thread::spawn(move || {
+            let result = read_iroh_artifact_batch_control(
+                &control_connection,
+                &control_batch_token,
+                &control_progress,
+            );
+            let _ = control_sender.send(result);
+        });
+        let mut control_result = None;
+        let mut control_done = false;
+        let mut handles = Vec::new();
+        let mut fatal_error = None;
+        let mut stop_for_control_result = false;
+        for _ in 0..expected.len() {
+            let accept_started = Instant::now();
+            let recv = loop {
+                match poll_iroh_artifact_batch_control(&control_receiver, &mut control_result) {
+                    IrohBatchControlPoll::Pending => {}
+                    IrohBatchControlPoll::Complete => {
+                        control_done = true;
+                        fatal_error.get_or_insert(
+                            "Sync peer ended the Iroh artifact batch before sending all requested data streams."
+                                .to_string(),
+                        );
+                        cancel_receivers.store(true, Ordering::SeqCst);
+                        stop_for_control_result = true;
+                        break None;
+                    }
+                    IrohBatchControlPoll::Failed(error) => {
+                        control_done = true;
+                        fatal_error.get_or_insert(error);
+                        cancel_receivers.store(true, Ordering::SeqCst);
+                        stop_for_control_result = true;
+                        break None;
+                    }
+                }
+
+                let Some(remaining) =
+                    PROTOCOL_WATCHDOG_TIMEOUT.checked_sub(accept_started.elapsed())
+                else {
+                    fatal_error.get_or_insert(
+                        "Timed out accepting Iroh artifact data stream.".to_string(),
+                    );
+                    break None;
+                };
+                if remaining.is_zero() {
+                    fatal_error.get_or_insert(
+                        "Timed out accepting Iroh artifact data stream.".to_string(),
+                    );
+                    break None;
+                }
+                let accept_timeout = remaining.min(IROH_BATCH_CONTROL_POLL_INTERVAL);
+                match iroh_data.accept_recv_stream_with_timeout(accept_timeout) {
+                    Ok(Some(recv)) => break Some(recv),
+                    Ok(None) => {}
+                    Err(error) => {
+                        match wait_iroh_artifact_batch_control(
+                            &control_receiver,
+                            &mut control_result,
+                            IROH_BATCH_CONTROL_POLL_INTERVAL,
+                        ) {
+                            IrohBatchControlPoll::Pending => {
+                                fatal_error.get_or_insert(error);
+                            }
+                            IrohBatchControlPoll::Complete => {
+                                control_done = true;
+                                fatal_error.get_or_insert(
+                                    "Sync peer ended the Iroh artifact batch before sending all requested data streams."
+                                        .to_string(),
+                                );
+                                cancel_receivers.store(true, Ordering::SeqCst);
+                                stop_for_control_result = true;
+                            }
+                            IrohBatchControlPoll::Failed(control_error) => {
+                                control_done = true;
+                                fatal_error.get_or_insert(control_error);
+                                cancel_receivers.store(true, Ordering::SeqCst);
+                                stop_for_control_result = true;
+                            }
+                        }
+                        break None;
+                    }
+                }
+            };
+            let Some(recv) = recv else {
+                break;
+            };
+            let sender = sender.clone();
+            let data = iroh_data.clone();
+            let expected = Arc::clone(&expected);
+            let seen = Arc::clone(&seen);
+            let cancel_receivers = Arc::clone(&cancel_receivers);
+            let batch_token = batch_token.clone();
+            let run_started_instant = metrics.started_instant;
+            handles.push(thread::spawn(move || {
+                let result = receive_iroh_artifact_stream(
+                    data,
+                    recv,
+                    &batch_token,
+                    expected,
+                    seen,
+                    cancel_receivers,
+                    run_started_instant,
+                );
+                if let Err(send_error) = sender.send(result) {
+                    if let Ok(artifact) = send_error.0 {
+                        let _ = fs::remove_file(&artifact.temp_path);
+                    }
+                }
+            }));
+        }
+        drop(sender);
+
+        let mut received = HashMap::new();
+        let mut stream_failures: HashMap<String, TransferFailure> = HashMap::new();
+        let mut pending_workers = handles.len();
+        while pending_workers > 0 {
+            match poll_iroh_artifact_batch_control(&control_receiver, &mut control_result) {
+                IrohBatchControlPoll::Pending => {}
+                IrohBatchControlPoll::Complete => control_done = true,
+                IrohBatchControlPoll::Failed(error) => {
+                    control_done = true;
+                    fatal_error.get_or_insert(error);
+                    cancel_receivers.store(true, Ordering::SeqCst);
+                    stop_for_control_result = true;
+                    break;
+                }
+            }
+            match receiver.recv_timeout(IROH_BATCH_CONTROL_POLL_INTERVAL) {
+                Ok(result) => {
+                    pending_workers = pending_workers.saturating_sub(1);
+                    record_iroh_artifact_receive_result(
+                        result,
+                        expected.as_ref(),
+                        timings,
+                        &mut received,
+                        &mut stream_failures,
+                        &mut fatal_error,
+                    );
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+
+        if stop_for_control_result {
+            cancel_receivers.store(true, Ordering::SeqCst);
+            while let Ok(result) = receiver.try_recv() {
+                record_iroh_artifact_receive_result(
+                    result,
+                    expected.as_ref(),
+                    timings,
+                    &mut received,
+                    &mut stream_failures,
+                    &mut fatal_error,
+                );
+            }
+        }
+
+        for handle in handles {
+            if handle.join().is_err() {
+                fatal_error.get_or_insert("Iroh artifact receive worker panicked.".to_string());
+            }
+        }
+        while let Ok(result) = receiver.try_recv() {
+            record_iroh_artifact_receive_result(
+                result,
+                expected.as_ref(),
+                timings,
+                &mut received,
+                &mut stream_failures,
+                &mut fatal_error,
+            );
+        }
+
+        if fatal_error.is_none() && !control_done {
+            match await_iroh_artifact_batch_control(&control_receiver, &mut control_result) {
+                Ok(()) => {}
+                Err(error) => fatal_error = Some(error),
+            }
+            control_done = true;
+        }
+        if control_done && control_handle.join().is_err() {
+            fatal_error.get_or_insert("Iroh artifact batch control reader panicked.".to_string());
+        }
+
+        if fatal_error.is_some() || !stream_failures.is_empty() {
+            for artifact in received.values() {
+                let _ = fs::remove_file(&artifact.temp_path);
+            }
+            let message = fatal_error
+                .or_else(|| {
+                    stream_failures
+                        .values()
+                        .next()
+                        .map(|failure| failure.message.clone())
+                })
+                .unwrap_or_else(|| "Iroh artifact data stream failed.".to_string());
+            return pending
+                .into_iter()
+                .map(|pending| {
+                    if let Some(failure) = stream_failures.remove(&pending.artifact.artifact_id) {
+                        Err(failure)
+                    } else {
+                        Err(transfer_failure(
+                            &pending.artifact,
+                            TransferTimer::zero_now(),
+                            format!(
+                                "Sync artifact batch transfer stopped after a peer error: {message}"
+                            ),
+                        ))
+                    }
+                })
+                .collect();
+        }
+
+        pending
+            .into_iter()
+            .map(|pending| {
+                let Some(received) = received.remove(&pending.artifact.artifact_id) else {
+                    return Err(transfer_failure(
+                        &pending.artifact,
+                        TransferTimer::zero_now(),
+                        "Sync peer did not send the requested Iroh artifact stream.".to_string(),
+                    ));
+                };
+                metrics.record_received_artifact_bytes_at(
+                    received.size_bytes,
+                    received.first_bytes_at,
+                );
+                stage_received_iroh_artifact(
+                    client,
+                    connection.transport_id(),
+                    peer_device_id,
+                    received,
+                    timings,
+                )
+            })
+            .collect()
+    }
+
+    fn receive_iroh_artifact_stream(
+        iroh_data: IrohDataConnection,
+        mut recv: RecvStream,
+        batch_token: &str,
+        expected: Arc<HashMap<String, IrohPendingReceive>>,
+        seen: Arc<Mutex<HashSet<String>>>,
+        cancel_receivers: Arc<AtomicBool>,
+        run_started_instant: Instant,
+    ) -> Result<IrohReceivedArtifact, IrohArtifactReceiveError> {
+        let transfer_timer = TransferTimer::start();
+        let header = read_iroh_artifact_stream_header(&iroh_data, &mut recv, &cancel_receivers)
+            .map_err(|message| IrohArtifactReceiveError {
+                artifact_id: None,
+                message,
+                timing: None,
+                phase_timing: None,
+            })?;
+        let artifact_id = header.artifact_id.clone();
+        let Some(pending) = expected.get(&header.artifact_id).cloned() else {
+            return Err(IrohArtifactReceiveError {
+                artifact_id: Some(artifact_id),
+                message: "Iroh artifact stream referenced an artifact outside the current batch."
+                    .to_string(),
+                timing: None,
+                phase_timing: None,
+            });
+        };
+        if header.batch_token != batch_token {
+            return Err(known_iroh_receive_failure(
+                &pending.artifact,
+                transfer_timer,
+                0,
+                "Iroh artifact stream used an unknown batch token.".to_string(),
+            ));
+        }
+        if header.content_sha256 != pending.artifact.content_sha256
+            || header.size_bytes != pending.artifact.size_bytes
+        {
+            return Err(known_iroh_receive_failure(
+                &pending.artifact,
+                transfer_timer,
+                0,
+                "Iroh artifact stream header did not match the requested artifact.".to_string(),
+            ));
+        }
+        {
+            let mut seen = seen.lock().map_err(|_| IrohArtifactReceiveError {
+                artifact_id: Some(pending.artifact.artifact_id.clone()),
+                message: "Iroh artifact stream receive state is unavailable.".to_string(),
+                timing: None,
+                phase_timing: None,
+            })?;
+            if !seen.insert(pending.artifact.artifact_id.clone()) {
+                return Err(known_iroh_receive_failure(
+                    &pending.artifact,
+                    transfer_timer,
+                    0,
+                    "Iroh artifact stream repeated an artifact in the current batch.".to_string(),
+                ));
+            }
+        }
+
+        if let Some(parent) = pending.temp_path.parent() {
+            if let Err(error) = fs::create_dir_all(parent) {
+                return Err(known_iroh_receive_failure(
+                    &pending.artifact,
+                    transfer_timer,
+                    0,
+                    format!("Could not create sync artifact temp dir: {error}"),
+                ));
+            }
+        }
+        let mut file = match File::create(&pending.temp_path) {
+            Ok(file) => file,
+            Err(error) => {
+                return Err(known_iroh_receive_failure(
+                    &pending.artifact,
+                    transfer_timer,
+                    0,
+                    format!("Could not create sync artifact temp file: {error}"),
+                ));
+            }
+        };
+        let mut hasher = Sha256::new();
+        let mut size_bytes = 0_u64;
+        let mut buffer = [0_u8; ARTIFACT_CHUNK_SIZE];
+        let mut first_bytes_at = None;
+        while size_bytes < pending.artifact.size_bytes {
+            let remaining = pending.artifact.size_bytes.saturating_sub(size_bytes);
+            let read_len = remaining.min(buffer.len() as u64) as usize;
+            let read = match read_iroh_artifact_stream_chunk(
+                &iroh_data,
+                &mut recv,
+                &mut buffer[..read_len],
+                &cancel_receivers,
+            ) {
+                Ok(Some(read)) => read,
+                Ok(None) => {
+                    let _ = fs::remove_file(&pending.temp_path);
+                    return Err(known_iroh_receive_failure(
+                        &pending.artifact,
+                        transfer_timer,
+                        size_bytes,
+                        "Iroh artifact stream ended before the requested size.".to_string(),
+                    ));
+                }
+                Err(error) => {
+                    let _ = fs::remove_file(&pending.temp_path);
+                    return Err(known_iroh_receive_failure(
+                        &pending.artifact,
+                        transfer_timer,
+                        size_bytes,
+                        error,
+                    ));
+                }
+            };
+            if read == 0 {
+                let _ = fs::remove_file(&pending.temp_path);
+                return Err(known_iroh_receive_failure(
+                    &pending.artifact,
+                    transfer_timer,
+                    size_bytes,
+                    "Iroh artifact stream returned an empty read before completion.".to_string(),
+                ));
+            }
+            if first_bytes_at.is_none() {
+                first_bytes_at = Some(run_started_instant.elapsed());
+            }
+            size_bytes = size_bytes.saturating_add(read as u64);
+            hasher.update(&buffer[..read]);
+            if let Err(error) = file.write_all(&buffer[..read]) {
+                let _ = fs::remove_file(&pending.temp_path);
+                return Err(known_iroh_receive_failure(
+                    &pending.artifact,
+                    transfer_timer,
+                    size_bytes,
+                    format!("Could not write received sync artifact bytes: {error}"),
+                ));
+            }
+        }
+        if let Err(error) = file.flush() {
+            let _ = fs::remove_file(&pending.temp_path);
+            return Err(known_iroh_receive_failure(
+                &pending.artifact,
+                transfer_timer,
+                size_bytes,
+                format!("Could not flush received sync artifact bytes: {error}"),
+            ));
+        }
+        let actual_sha256 = hex_digest(hasher.finalize().as_slice());
+        if actual_sha256 != pending.artifact.content_sha256
+            || size_bytes != pending.artifact.size_bytes
+        {
+            let _ = fs::remove_file(&pending.temp_path);
+            return Err(known_iroh_receive_failure(
+                &pending.artifact,
+                transfer_timer,
+                size_bytes,
+                "Received sync artifact bytes failed SHA-256 or size verification.".to_string(),
+            ));
+        }
+        let (timing, phase_timing) =
+            transfer_timer.finish_with_phase(size_bytes, "artifact_transfer", &pending.artifact);
+        Ok(IrohReceivedArtifact {
+            artifact: pending.artifact,
+            temp_path: pending.temp_path,
+            timing,
+            phase_timing,
+            size_bytes,
+            first_bytes_at,
+        })
+    }
+
+    fn known_iroh_receive_failure(
         artifact: &RemoteArtifact,
         transfer_timer: TransferTimer,
+        bytes: u64,
+        message: String,
+    ) -> IrohArtifactReceiveError {
+        let (timing, phase_timing) =
+            transfer_timer.finish_with_phase(bytes, "artifact_transfer", artifact);
+        IrohArtifactReceiveError {
+            artifact_id: Some(artifact.artifact_id.clone()),
+            message,
+            timing: Some(timing),
+            phase_timing: Some(phase_timing),
+        }
+    }
+
+    fn write_iroh_artifact_stream_header(
+        iroh_data: &IrohDataConnection,
+        send: &mut SendStream,
+        header: &IrohArtifactStreamHeader,
+    ) -> Result<(), String> {
+        let payload = serde_json::to_vec(header)
+            .map_err(|error| format!("Could not encode Iroh artifact stream header: {error}"))?;
+        if payload.len() > IROH_DATA_HEADER_MAX_BYTES {
+            return Err("Iroh artifact stream header is too large.".to_string());
+        }
+        let length = (payload.len() as u32).to_be_bytes();
+        iroh_data.write_all(send, &length)?;
+        iroh_data.write_all(send, &payload)
+    }
+
+    fn read_iroh_artifact_stream_header(
+        iroh_data: &IrohDataConnection,
+        recv: &mut RecvStream,
+        cancel_receivers: &AtomicBool,
+    ) -> Result<IrohArtifactStreamHeader, String> {
+        let mut length = [0_u8; 4];
+        read_iroh_artifact_stream_exact(iroh_data, recv, &mut length, cancel_receivers)?;
+        let length = u32::from_be_bytes(length) as usize;
+        if length == 0 || length > IROH_DATA_HEADER_MAX_BYTES {
+            return Err("Iroh artifact stream header has an invalid length.".to_string());
+        }
+        let mut payload = vec![0_u8; length];
+        read_iroh_artifact_stream_exact(iroh_data, recv, &mut payload, cancel_receivers)?;
+        serde_json::from_slice(&payload)
+            .map_err(|error| format!("Could not decode Iroh artifact stream header: {error}"))
+    }
+
+    fn read_iroh_artifact_stream_exact(
+        iroh_data: &IrohDataConnection,
+        recv: &mut RecvStream,
+        buffer: &mut [u8],
+        cancel_receivers: &AtomicBool,
+    ) -> Result<(), String> {
+        let mut read_bytes = 0_usize;
+        while read_bytes < buffer.len() {
+            match read_iroh_artifact_stream_chunk(
+                iroh_data,
+                recv,
+                &mut buffer[read_bytes..],
+                cancel_receivers,
+            )? {
+                Some(0) => {
+                    return Err(
+                        "Iroh artifact stream returned an empty read before completion."
+                            .to_string(),
+                    );
+                }
+                Some(read) => read_bytes = read_bytes.saturating_add(read),
+                None => {
+                    return Err(
+                        "Iroh artifact stream ended before the requested bytes.".to_string()
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn read_iroh_artifact_stream_chunk(
+        iroh_data: &IrohDataConnection,
+        recv: &mut RecvStream,
+        buffer: &mut [u8],
+        cancel_receivers: &AtomicBool,
+    ) -> Result<Option<usize>, String> {
+        let read_started = Instant::now();
+        loop {
+            if cancel_receivers.load(Ordering::SeqCst) {
+                return Err(IROH_ARTIFACT_RECEIVE_CANCELLED.to_string());
+            }
+            let Some(remaining) = PROTOCOL_WATCHDOG_TIMEOUT.checked_sub(read_started.elapsed())
+            else {
+                return Err("Timed out reading Iroh artifact data stream.".to_string());
+            };
+            if remaining.is_zero() {
+                return Err("Timed out reading Iroh artifact data stream.".to_string());
+            }
+            let timeout = remaining.min(IROH_BATCH_CONTROL_POLL_INTERVAL);
+            match iroh_data.read_with_timeout(recv, buffer, timeout)? {
+                IrohDataReadPoll::Data(read) => return Ok(Some(read)),
+                IrohDataReadPoll::EndOfStream => return Ok(None),
+                IrohDataReadPoll::TimedOut => {}
+            }
+        }
+    }
+
+    fn stage_received_iroh_artifact(
+        client: &impl ArtifactStagingClient,
+        transport_id: &str,
+        peer_device_id: &str,
+        received: IrohReceivedArtifact,
+        timings: &mut Vec<SyncTransportTimingEvidence>,
+    ) -> Result<SyncTransportTransferResult, TransferFailure> {
+        let artifact = received.artifact;
+        let body = json!({
+            "source_path": received.temp_path.to_string_lossy(),
+            "content_sha256": &artifact.content_sha256,
+            "size_bytes": artifact.size_bytes,
+            "provider_device_id": peer_device_id,
+            "metadata": {
+                "source": transport_id,
+                "artifact_id": &artifact.artifact_id,
+                "project_id": &artifact.project_id,
+            },
+        });
+        let timer = SyncPhaseTimer::start_artifact("artifact_staging", &artifact);
+        let stage_result = client.post_json_value("/api/v1/sync/artifacts/staging", &body);
+        timings.push(timer.finish());
+        let cleanup_timer = SyncPhaseTimer::start_artifact("artifact_cleanup", &artifact);
+        let _ = fs::remove_file(&received.temp_path);
+        timings.push(cleanup_timer.finish());
+        if let Err(error) = stage_result {
+            return Err(post_receive_transfer_failure(
+                &artifact,
+                received.timing,
+                phase_context_error(
+                    "reconciliation staging",
+                    format!("Could not stage received sync artifact: {error}"),
+                ),
+            ));
+        }
+
+        Ok(transfer_result(
+            &artifact,
+            "received",
+            None,
+            received.timing,
+        ))
+    }
+
+    fn receive_and_stage_artifact(
+        client: &impl ArtifactStagingClient,
+        connection: &SharedPeerConnection,
+        peer_device_id: &str,
+        pending: PendingArtifactTransfer,
         metrics: &mut SyncRunMetrics,
         timings: &mut Vec<SyncTransportTimingEvidence>,
         progress: &ProgressReporter,
     ) -> Result<SyncTransportTransferResult, TransferFailure> {
-        let timer = SyncPhaseTimer::start_artifact("artifact_transfer", artifact);
+        let artifact = pending.artifact;
+        let transfer_timer = TransferTimer::start();
+        let timer = SyncPhaseTimer::start_artifact("artifact_transfer", &artifact);
         let _progress = progress.start_phase("artifact_transfer", "Transferring artifact content.");
-        if let Err(error) = connection.send_message_for_phase(
-            "artifact request/transfer",
-            &ProtocolMessage::ArtifactRequest {
-                artifact_id: artifact.artifact_id.clone(),
-                content_sha256: artifact.content_sha256.clone(),
-                size_bytes: artifact.size_bytes,
-            },
-        ) {
-            timings.push(timer.finish());
-            return Err(transfer_failure(artifact, transfer_timer.finish(0), error));
-        }
 
         match connection
             .read_message_accepting_status_for_phase("artifact request/transfer", progress)
@@ -5740,7 +6986,7 @@ mod desktop {
                 {
                     timings.push(timer.finish());
                     return Err(transfer_failure(
-                        artifact,
+                        &artifact,
                         transfer_timer.finish(0),
                         "Sync peer artifact response did not match the request.".to_string(),
                     ));
@@ -5749,7 +6995,7 @@ mod desktop {
             Ok(ProtocolMessage::Error(error)) => {
                 timings.push(timer.finish());
                 return Err(transfer_failure(
-                    artifact,
+                    &artifact,
                     transfer_timer.finish(0),
                     phase_context_error("artifact request/transfer", error.message),
                 ));
@@ -5757,7 +7003,7 @@ mod desktop {
             Ok(other) => {
                 timings.push(timer.finish());
                 return Err(transfer_failure(
-                    artifact,
+                    &artifact,
                     transfer_timer.finish(0),
                     format!(
                         "Sync peer sent unexpected artifact response: {}",
@@ -5767,7 +7013,7 @@ mod desktop {
             }
             Err(error) => {
                 timings.push(timer.finish());
-                return Err(transfer_failure(artifact, transfer_timer.finish(0), error));
+                return Err(transfer_failure(&artifact, transfer_timer.finish(0), error));
             }
         }
 
@@ -5776,7 +7022,7 @@ mod desktop {
             if let Err(error) = fs::create_dir_all(parent) {
                 timings.push(timer.finish());
                 return Err(transfer_failure(
-                    artifact,
+                    &artifact,
                     transfer_timer.finish(0),
                     format!("Could not create sync artifact temp dir: {error}"),
                 ));
@@ -5787,7 +7033,7 @@ mod desktop {
             Err(error) => {
                 timings.push(timer.finish());
                 return Err(transfer_failure(
-                    artifact,
+                    &artifact,
                     transfer_timer.finish(0),
                     format!("Could not create sync artifact temp file: {error}"),
                 ));
@@ -5857,37 +7103,32 @@ mod desktop {
         timings.push(timer.finish());
 
         if let Err(error) = receive_result {
-            let cleanup_timer = SyncPhaseTimer::start_artifact("artifact_cleanup", artifact);
+            let cleanup_timer = SyncPhaseTimer::start_artifact("artifact_cleanup", &artifact);
             let _ = fs::remove_file(&temp_path);
             timings.push(cleanup_timer.finish());
-            return Err(transfer_failure(artifact, transfer_timing, error));
+            return Err(transfer_failure(&artifact, transfer_timing, error));
         }
 
-        // Prototype scope: bytes still move over the TuneForge stream frames. The
-        // disk-backed iroh-blobs store records a transport-local BLAKE3 identity
-        // only after TuneForge SHA-256/size verification succeeds.
-        let transport_local_blob_hash = connection.record_transport_blob_identity(&temp_path);
         let body = json!({
             "source_path": temp_path.to_string_lossy(),
-            "content_sha256": artifact.content_sha256,
+            "content_sha256": &artifact.content_sha256,
             "size_bytes": artifact.size_bytes,
             "provider_device_id": peer_device_id,
             "metadata": {
                 "source": connection.transport_id(),
-                "artifact_id": artifact.artifact_id,
-                "project_id": artifact.project_id,
-                "iroh_blob_hash": transport_local_blob_hash,
+                "artifact_id": &artifact.artifact_id,
+                "project_id": &artifact.project_id,
             },
         });
-        let timer = SyncPhaseTimer::start_artifact("artifact_staging", artifact);
+        let timer = SyncPhaseTimer::start_artifact("artifact_staging", &artifact);
         let stage_result = client.post_json_value("/api/v1/sync/artifacts/staging", &body);
         timings.push(timer.finish());
-        let cleanup_timer = SyncPhaseTimer::start_artifact("artifact_cleanup", artifact);
+        let cleanup_timer = SyncPhaseTimer::start_artifact("artifact_cleanup", &artifact);
         let _ = fs::remove_file(&temp_path);
         timings.push(cleanup_timer.finish());
         if let Err(error) = stage_result {
-            return Err(transfer_failure(
-                artifact,
+            return Err(post_receive_transfer_failure(
+                &artifact,
                 transfer_timing,
                 phase_context_error(
                     "reconciliation staging",
@@ -5896,13 +7137,19 @@ mod desktop {
             ));
         }
 
-        Ok(transfer_result(artifact, "received", None, transfer_timing))
+        Ok(transfer_result(
+            &artifact,
+            "received",
+            None,
+            transfer_timing,
+        ))
     }
 
     #[derive(Clone, Debug)]
     struct TransferFailure {
         message: String,
         result: SyncTransportTransferResult,
+        can_continue_batch: bool,
     }
 
     fn transfer_result(
@@ -5932,6 +7179,19 @@ mod desktop {
         TransferFailure {
             result: transfer_result(artifact, "failed", Some(message.clone()), timing),
             message,
+            can_continue_batch: false,
+        }
+    }
+
+    fn post_receive_transfer_failure(
+        artifact: &RemoteArtifact,
+        timing: TransferTiming,
+        message: String,
+    ) -> TransferFailure {
+        TransferFailure {
+            result: transfer_result(artifact, "failed", Some(message.clone()), timing),
+            message,
+            can_continue_batch: true,
         }
     }
 
@@ -5950,7 +7210,7 @@ mod desktop {
         metrics: &mut SyncRunMetrics,
         progress: &ProgressReporter,
     ) -> Result<u64, String> {
-        let offered_artifacts = offered_artifacts_by_id(offered_manifests);
+        let offered_artifacts = offered_artifacts(offered_manifests);
         let mut served = 0_u64;
         progress
             .report_local_progress("serve_artifact_requests", "Serving peer artifact requests.");
@@ -5958,39 +7218,71 @@ mod desktop {
             match connection
                 .read_message_accepting_status_for_phase("serve artifact requests", progress)?
             {
-                ProtocolMessage::ArtifactRequest {
-                    artifact_id,
-                    content_sha256,
-                    size_bytes,
-                } => {
-                    let result = offered_artifacts
-                        .get(&artifact_id)
-                        .ok_or_else(|| {
-                            format!("Sync peer requested artifact {artifact_id} that was not offered.")
-                        })
-                        .and_then(|artifact| {
-                            if artifact.content_sha256 != content_sha256
-                                || artifact.size_bytes != size_bytes
-                            {
-                                return Err(format!(
-                                    "Sync peer request for artifact {artifact_id} does not match the offered manifest."
-                                ));
-                            }
-                            send_artifact_response(client, connection, artifact, metrics, progress)
-                        });
-                    if let Err(error) = result {
-                        let peer_error =
-                            phase_context_error("artifact request/transfer", error.clone());
-                        let _ = connection.send_message_for_phase(
-                            "serve artifact requests",
-                            &ProtocolMessage::Error(ProtocolError {
-                                code: "artifact_transfer_failed".to_string(),
-                                message: peer_error,
-                            }),
-                        );
-                        return Err(phase_context_error("serve artifact requests", error));
+                ProtocolMessage::ArtifactRequest(request) => {
+                    let result = requested_offered_artifact(&offered_artifacts, &request).and_then(
+                        |artifact| {
+                            send_artifact_response(client, connection, &artifact, metrics, progress)
+                                .map(|_| 1_u64)
+                        },
+                    );
+                    match result {
+                        Ok(count) => served = served.saturating_add(count),
+                        Err(error) => {
+                            let peer_error =
+                                phase_context_error("artifact request/transfer", error.clone());
+                            let _ = connection.send_message_for_phase(
+                                "serve artifact requests",
+                                &ProtocolMessage::Error(ProtocolError {
+                                    code: "artifact_transfer_failed".to_string(),
+                                    message: peer_error,
+                                }),
+                            );
+                            return Err(phase_context_error("serve artifact requests", error));
+                        }
                     }
-                    served = served.saturating_add(1);
+                }
+                ProtocolMessage::ArtifactBatchRequest(request) => {
+                    let result = requested_offered_artifact_batch(&offered_artifacts, &request)
+                        .and_then(|artifacts| {
+                            if connection.transport() == TransportKind::Iroh {
+                                if let (Some(batch_token), Some(iroh_data)) = (
+                                    request.batch_token.as_deref(),
+                                    connection.iroh_data_connection(),
+                                ) {
+                                    send_iroh_artifact_batch_response(
+                                        client,
+                                        connection,
+                                        iroh_data,
+                                        batch_token,
+                                        &artifacts,
+                                        metrics,
+                                        progress,
+                                    )?;
+                                    return Ok(artifacts.len() as u64);
+                                }
+                            }
+                            for artifact in &artifacts {
+                                send_artifact_response(
+                                    client, connection, artifact, metrics, progress,
+                                )?;
+                            }
+                            Ok(artifacts.len() as u64)
+                        });
+                    match result {
+                        Ok(count) => served = served.saturating_add(count),
+                        Err(error) => {
+                            let peer_error =
+                                phase_context_error("artifact request/transfer", error.clone());
+                            let _ = connection.send_message_for_phase(
+                                "serve artifact requests",
+                                &ProtocolMessage::Error(ProtocolError {
+                                    code: "artifact_transfer_failed".to_string(),
+                                    message: peer_error,
+                                }),
+                            );
+                            return Err(phase_context_error("serve artifact requests", error));
+                        }
+                    }
                 }
                 ProtocolMessage::PhaseDone { .. } => return Ok(served),
                 ProtocolMessage::Error(error) => {
@@ -6009,6 +7301,129 @@ mod desktop {
         }
     }
 
+    fn send_iroh_artifact_batch_response(
+        client: &BackendClient,
+        connection: &SharedPeerConnection,
+        iroh_data: IrohDataConnection,
+        batch_token: &str,
+        artifacts: &[RemoteArtifact],
+        metrics: &mut SyncRunMetrics,
+        progress: &ProgressReporter,
+    ) -> Result<(), String> {
+        let local_files = client
+            .resolve_artifact_files(artifacts)
+            .map_err(|error| phase_context_error("artifact request/transfer", error.to_string()))?;
+        let _progress = progress.start_phase("artifact_transfer", "Transferring artifact content.");
+        connection.send_message_for_phase(
+            "artifact request/transfer",
+            &ProtocolMessage::ArtifactBatchStart {
+                batch_token: batch_token.to_string(),
+                artifact_count: artifacts.len() as u64,
+            },
+        )?;
+        for chunk in artifacts.chunks(IROH_ARTIFACT_PARALLELISM) {
+            let mut handles = Vec::new();
+            for artifact in chunk {
+                let local_file =
+                    local_files
+                        .get(&artifact.artifact_id)
+                        .cloned()
+                        .ok_or_else(|| {
+                            format!(
+                                "Backend artifact resolver omitted artifact {}.",
+                                artifact.artifact_id
+                            )
+                        })?;
+                let data = iroh_data.clone();
+                let artifact = artifact.clone();
+                let batch_token = batch_token.to_string();
+                let run_started_instant = metrics.started_instant;
+                handles.push(thread::spawn(move || {
+                    stream_iroh_artifact_file(
+                        data,
+                        &batch_token,
+                        artifact,
+                        local_file,
+                        run_started_instant,
+                    )
+                }));
+            }
+            for handle in handles {
+                let streamed = handle
+                    .join()
+                    .map_err(|_| "Iroh artifact stream worker panicked.".to_string())??;
+                metrics
+                    .record_served_artifact_bytes_at(streamed.size_bytes, streamed.first_bytes_at);
+            }
+        }
+        connection.send_message_for_phase(
+            "artifact request/transfer",
+            &ProtocolMessage::ArtifactBatchEnd {
+                batch_token: batch_token.to_string(),
+            },
+        )
+    }
+
+    struct StreamedIrohArtifact {
+        size_bytes: u64,
+        first_bytes_at: Option<Duration>,
+    }
+
+    fn stream_iroh_artifact_file(
+        iroh_data: IrohDataConnection,
+        batch_token: &str,
+        artifact: RemoteArtifact,
+        local_file: LocalArtifactFile,
+        run_started_instant: Instant,
+    ) -> Result<StreamedIrohArtifact, String> {
+        local_file.verify_matches(&artifact)?;
+        let mut file = local_file.open_file()?;
+        let mut send = iroh_data.open_send_stream()?;
+        write_iroh_artifact_stream_header(
+            &iroh_data,
+            &mut send,
+            &IrohArtifactStreamHeader {
+                batch_token: batch_token.to_string(),
+                artifact_id: artifact.artifact_id.clone(),
+                content_sha256: artifact.content_sha256.clone(),
+                size_bytes: artifact.size_bytes,
+            },
+        )?;
+        let mut buffer = [0_u8; ARTIFACT_CHUNK_SIZE];
+        let mut hasher = Sha256::new();
+        let mut actual_size = 0_u64;
+        let mut first_bytes_at = None;
+        loop {
+            let read = file.read(&mut buffer).map_err(|error| {
+                phase_context_error(
+                    "artifact request/transfer",
+                    format!("Could not read local artifact bytes: {error}"),
+                )
+            })?;
+            if read == 0 {
+                break;
+            }
+            if first_bytes_at.is_none() {
+                first_bytes_at = Some(run_started_instant.elapsed());
+            }
+            actual_size = actual_size.saturating_add(read as u64);
+            hasher.update(&buffer[..read]);
+            iroh_data.write_all(&mut send, &buffer[..read])?;
+        }
+        iroh_data.finish_send(&mut send)?;
+        let actual_sha256 = hex_digest(hasher.finalize().as_slice());
+        if actual_sha256 != artifact.content_sha256 || actual_size != artifact.size_bytes {
+            return Err(phase_context_error(
+                "artifact request/transfer",
+                "Local artifact bytes do not match the requested SHA-256 or size.".to_string(),
+            ));
+        }
+        Ok(StreamedIrohArtifact {
+            size_bytes: actual_size,
+            first_bytes_at,
+        })
+    }
+
     fn send_artifact_response(
         client: &BackendClient,
         connection: &SharedPeerConnection,
@@ -6016,14 +7431,10 @@ mod desktop {
         metrics: &mut SyncRunMetrics,
         progress: &ProgressReporter,
     ) -> Result<(), String> {
-        let path = format!(
-            "/api/v1/artifacts/{}/stream",
-            percent_encode_path_segment(&artifact.artifact_id)
-        );
         let mut body = {
             let _progress =
                 progress.start_phase("artifact_transfer", "Transferring artifact content.");
-            client.get_body(&path).map_err(|error| {
+            client.open_artifact_body(artifact).map_err(|error| {
                 phase_context_error(
                     "artifact request/transfer",
                     format!(
@@ -6079,12 +7490,111 @@ mod desktop {
         )
     }
 
-    fn offered_artifacts_by_id(manifests: &[Value]) -> HashMap<String, RemoteArtifact> {
-        manifests
+    fn offered_artifacts(manifests: &[Value]) -> Vec<RemoteArtifact> {
+        manifests.iter().flat_map(manifest_artifacts).collect()
+    }
+
+    fn requested_offered_artifact(
+        offered_artifacts: &[RemoteArtifact],
+        request: &ArtifactRequest,
+    ) -> Result<RemoteArtifact, String> {
+        let matches: Vec<_> = offered_artifacts
             .iter()
-            .flat_map(manifest_artifacts)
-            .map(|artifact| (artifact.artifact_id.clone(), artifact))
-            .collect()
+            .filter(|artifact| artifact_matches_request(artifact, request))
+            .collect();
+        match matches.as_slice() {
+            [artifact] => Ok((*artifact).clone()),
+            [] => Err(format!(
+                "Sync peer requested artifact {} that was not offered by the manifest.",
+                request.artifact_id
+            )),
+            _ => Err(format!(
+                "Sync peer request for artifact {} is ambiguous without a project id.",
+                request.artifact_id
+            )),
+        }
+    }
+
+    fn requested_offered_artifact_batch(
+        offered_artifacts: &[RemoteArtifact],
+        request: &ArtifactBatchRequest,
+    ) -> Result<Vec<RemoteArtifact>, String> {
+        if request.artifacts.is_empty() {
+            return Err("Sync peer sent an empty artifact batch request.".to_string());
+        }
+
+        let mut seen = HashSet::new();
+        let mut artifacts = Vec::with_capacity(request.artifacts.len());
+        for artifact_request in &request.artifacts {
+            if artifact_request.project_id.is_none() {
+                return Err(format!(
+                    "Sync peer batch request for artifact {} did not include a project id.",
+                    artifact_request.artifact_id
+                ));
+            }
+            let key = (
+                artifact_request.project_id.clone(),
+                artifact_request.artifact_id.clone(),
+                artifact_request.content_sha256.clone(),
+                artifact_request.size_bytes,
+            );
+            if !seen.insert(key) {
+                return Err(format!(
+                    "Sync peer batch request repeated artifact {}.",
+                    artifact_request.artifact_id
+                ));
+            }
+            artifacts.push(requested_offered_artifact(
+                offered_artifacts,
+                artifact_request,
+            )?);
+        }
+        Ok(artifacts)
+    }
+
+    fn artifact_matches_request(artifact: &RemoteArtifact, request: &ArtifactRequest) -> bool {
+        artifact.artifact_id == request.artifact_id
+            && request
+                .project_id
+                .as_deref()
+                .is_none_or(|project_id| artifact.project_id == project_id)
+            && artifact.content_sha256 == request.content_sha256
+            && artifact.size_bytes == request.size_bytes
+    }
+
+    #[derive(Clone, Debug)]
+    struct LocalArtifactFile {
+        artifact_id: String,
+        source_path: PathBuf,
+        content_sha256: String,
+        size_bytes: u64,
+    }
+
+    impl LocalArtifactFile {
+        fn verify_matches(&self, artifact: &RemoteArtifact) -> Result<(), String> {
+            if self.artifact_id != artifact.artifact_id
+                || self.content_sha256 != artifact.content_sha256
+                || self.size_bytes != artifact.size_bytes
+            {
+                return Err(
+                    "Resolved local artifact file did not match the requested SHA-256 or size."
+                        .to_string(),
+                );
+            }
+            Ok(())
+        }
+
+        fn open_file(&self) -> Result<File, String> {
+            File::open(&self.source_path)
+                .map_err(|error| format!("Could not open resolved local artifact file: {error}"))
+        }
+
+        fn open_body(&self) -> Result<BackendBody, String> {
+            Ok(BackendBody {
+                reader: Box::new(self.open_file()?),
+                remaining: Some(self.size_bytes),
+            })
+        }
     }
 
     #[derive(Clone, Debug, Deserialize)]
@@ -6405,6 +7915,23 @@ mod desktop {
             self.request_json_value("POST", path, Some(body))
         }
 
+        fn manifest_batch_unavailable(&self, error: &BackendError) -> bool {
+            if matches!(error.status, Some(404 | 405)) {
+                return true;
+            }
+            #[cfg(target_os = "android")]
+            {
+                error.status.is_none()
+                    && error
+                        .message
+                        .contains("does not implement POST /api/v1/sync/projects/manifests")
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                false
+            }
+        }
+
         #[cfg(not(target_os = "android"))]
         fn request_json_value(
             &self,
@@ -6436,43 +7963,106 @@ mod desktop {
             })
         }
 
-        fn get_body(&self, path: &str) -> Result<BackendBody, BackendError> {
+        fn open_artifact_body(
+            &self,
+            artifact: &RemoteArtifact,
+        ) -> Result<BackendBody, BackendError> {
             #[cfg(target_os = "android")]
             {
-                let artifact_id = path
-                    .strip_prefix("/api/v1/artifacts/")
-                    .and_then(|value| value.strip_suffix("/stream"))
-                    .ok_or_else(|| {
-                        BackendError::local(format!(
-                            "Android mobile backend does not implement body stream {path}."
-                        ))
-                    })?;
-                let artifact = crate::mobile_backend::mobile_sync_transport_artifact_file(
-                    self.app.clone(),
-                    &percent_decode(artifact_id),
-                )
-                .map_err(BackendError::local)?;
-                let file = File::open(&artifact.path).map_err(|error| {
-                    BackendError::local(format!("Could not open mobile artifact file: {error}"))
-                })?;
-                return Ok(BackendBody {
-                    reader: Box::new(file),
-                    remaining: Some(artifact.size_bytes),
-                });
+                let path = format!(
+                    "/api/v1/artifacts/{}/stream",
+                    percent_encode_path_segment(&artifact.artifact_id)
+                );
+                return self.get_body(&path);
             }
 
             #[cfg(not(target_os = "android"))]
-            self.request_body("GET", path, None)
+            {
+                let local_file = self
+                    .resolve_artifact_file(artifact)
+                    .map_err(|error| BackendError::local(error.to_string()))?;
+                local_file
+                    .verify_matches(artifact)
+                    .map_err(BackendError::local)?;
+                local_file.open_body().map_err(BackendError::local)
+            }
         }
 
-        #[cfg(not(target_os = "android"))]
-        fn request_body(
+        fn resolve_artifact_file(
             &self,
-            method: &str,
-            path: &str,
-            body: Option<&Value>,
-        ) -> Result<BackendBody, BackendError> {
-            self.request_body_with_timeout(method, path, body, HTTP_TIMEOUT)
+            artifact: &RemoteArtifact,
+        ) -> Result<LocalArtifactFile, BackendError> {
+            let mut files = self.resolve_artifact_files(std::slice::from_ref(artifact))?;
+            files.remove(&artifact.artifact_id).ok_or_else(|| {
+                BackendError::local(format!(
+                    "Backend artifact resolver omitted artifact {}.",
+                    artifact.artifact_id
+                ))
+            })
+        }
+
+        fn resolve_artifact_files(
+            &self,
+            artifacts: &[RemoteArtifact],
+        ) -> Result<HashMap<String, LocalArtifactFile>, BackendError> {
+            #[cfg(target_os = "android")]
+            {
+                let mut files = HashMap::new();
+                for artifact in artifacts {
+                    let mobile_artifact =
+                        crate::mobile_backend::mobile_sync_transport_artifact_file(
+                            self.app.clone(),
+                            &artifact.artifact_id,
+                        )
+                        .map_err(BackendError::local)?;
+                    files.insert(
+                        artifact.artifact_id.clone(),
+                        LocalArtifactFile {
+                            artifact_id: artifact.artifact_id.clone(),
+                            source_path: mobile_artifact.path,
+                            content_sha256: artifact.content_sha256.clone(),
+                            size_bytes: mobile_artifact.size_bytes,
+                        },
+                    );
+                }
+                return Ok(files);
+            }
+
+            #[cfg(not(target_os = "android"))]
+            {
+                let artifact_ids: Vec<_> = artifacts
+                    .iter()
+                    .map(|artifact| artifact.artifact_id.clone())
+                    .collect();
+                let body = json!({ "artifact_ids": artifact_ids });
+                let response =
+                    self.post_json_value("/api/v1/sync/artifacts/files/resolve", &body)?;
+                parse_artifact_file_resolve_response(&response, artifacts)
+            }
+        }
+
+        #[cfg(target_os = "android")]
+        fn get_body(&self, path: &str) -> Result<BackendBody, BackendError> {
+            let artifact_id = path
+                .strip_prefix("/api/v1/artifacts/")
+                .and_then(|value| value.strip_suffix("/stream"))
+                .ok_or_else(|| {
+                    BackendError::local(format!(
+                        "Android mobile backend does not implement body stream {path}."
+                    ))
+                })?;
+            let artifact = crate::mobile_backend::mobile_sync_transport_artifact_file(
+                self.app.clone(),
+                &percent_decode(artifact_id),
+            )
+            .map_err(BackendError::local)?;
+            let file = File::open(&artifact.path).map_err(|error| {
+                BackendError::local(format!("Could not open mobile artifact file: {error}"))
+            })?;
+            Ok(BackendBody {
+                reader: Box::new(file),
+                remaining: Some(artifact.size_bytes),
+            })
         }
 
         #[cfg(not(target_os = "android"))]
@@ -6647,6 +8237,120 @@ mod desktop {
         }
     }
 
+    fn parse_artifact_file_resolve_response(
+        response: &Value,
+        artifacts: &[RemoteArtifact],
+    ) -> Result<HashMap<String, LocalArtifactFile>, BackendError> {
+        let requested: HashMap<_, _> = artifacts
+            .iter()
+            .map(|artifact| (artifact.artifact_id.as_str(), artifact))
+            .collect();
+        let errors = artifact_resolve_error_values(response)
+            .into_iter()
+            .filter_map(|error| {
+                let artifact_id = value_string(error, &["artifact_id", "artifactId"])?;
+                if !requested.contains_key(artifact_id.as_str()) {
+                    return None;
+                }
+                let message = value_string(error, &["message"]).unwrap_or_else(|| {
+                    "Backend could not resolve the local artifact file.".to_string()
+                });
+                Some(format!("{artifact_id}: {message}"))
+            })
+            .collect::<Vec<_>>();
+        if !errors.is_empty() {
+            return Err(BackendError::local(format!(
+                "Could not resolve local artifact files: {}",
+                errors.join("; ")
+            )));
+        }
+
+        let records = artifact_resolve_record_values(response);
+        let mut files = HashMap::new();
+        for record in records {
+            let artifact_id =
+                value_string(record, &["artifact_id", "artifactId"]).ok_or_else(|| {
+                    BackendError::local(
+                        "Artifact file resolver record omitted artifact_id.".to_string(),
+                    )
+                })?;
+            let Some(artifact) = requested.get(artifact_id.as_str()) else {
+                continue;
+            };
+            let source_path =
+                value_string(record, &["source_path", "sourcePath"]).ok_or_else(|| {
+                    BackendError::local(
+                        "Artifact file resolver record omitted source_path.".to_string(),
+                    )
+                })?;
+            let content_sha256 = value_string(record, &["content_sha256", "contentSha256"])
+                .ok_or_else(|| {
+                    BackendError::local(
+                        "Artifact file resolver record omitted content_sha256.".to_string(),
+                    )
+                })?;
+            let size_bytes = value_u64(record, &["size_bytes", "sizeBytes"]).ok_or_else(|| {
+                BackendError::local("Artifact file resolver record omitted size_bytes.".to_string())
+            })?;
+            let local_file = LocalArtifactFile {
+                artifact_id,
+                source_path: PathBuf::from(source_path),
+                content_sha256,
+                size_bytes,
+            };
+            local_file
+                .verify_matches(artifact)
+                .map_err(BackendError::local)?;
+            files.insert(local_file.artifact_id.clone(), local_file);
+        }
+
+        for artifact in artifacts {
+            if !files.contains_key(&artifact.artifact_id) {
+                return Err(BackendError::local(format!(
+                    "Backend artifact resolver omitted artifact {}.",
+                    artifact.artifact_id
+                )));
+            }
+        }
+        Ok(files)
+    }
+
+    fn artifact_resolve_record_values(response: &Value) -> Vec<&Value> {
+        if let Some(records) = response.as_array() {
+            return records.iter().collect();
+        }
+        ["records", "files", "artifacts", "resolved"]
+            .into_iter()
+            .find_map(|key| response.get(key).and_then(Value::as_array))
+            .map(|records| records.iter().collect())
+            .unwrap_or_default()
+    }
+
+    fn artifact_resolve_error_values(response: &Value) -> Vec<&Value> {
+        [
+            "errors",
+            "artifact_errors",
+            "artifactErrors",
+            "file_errors",
+            "fileErrors",
+        ]
+        .into_iter()
+        .find_map(|key| response.get(key).and_then(Value::as_array))
+        .map(|errors| errors.iter().collect())
+        .unwrap_or_default()
+    }
+
+    fn value_string(value: &Value, keys: &[&str]) -> Option<String> {
+        keys.iter()
+            .find_map(|key| value.get(*key).and_then(Value::as_str))
+            .map(str::to_string)
+    }
+
+    fn value_u64(value: &Value, keys: &[&str]) -> Option<u64> {
+        keys.iter()
+            .find_map(|key| value.get(*key).and_then(Value::as_u64))
+    }
+
     #[cfg(not(target_os = "android"))]
     fn parse_status_code(status_line: &str) -> Result<u16, BackendError> {
         status_line
@@ -6763,9 +8467,25 @@ mod desktop {
         Ok(endpoint_addr)
     }
 
+    trait ArtifactStagingClient {
+        fn temp_artifact_path(&self, content_sha256: &str) -> PathBuf;
+        fn post_json_value(&self, path: &str, body: &Value) -> Result<Value, BackendError>;
+    }
+
+    impl ArtifactStagingClient for BackendClient {
+        fn temp_artifact_path(&self, content_sha256: &str) -> PathBuf {
+            BackendClient::temp_artifact_path(self, content_sha256)
+        }
+
+        fn post_json_value(&self, path: &str, body: &Value) -> Result<Value, BackendError> {
+            BackendClient::post_json_value(self, path, body)
+        }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
+        use std::collections::VecDeque;
 
         const MISSING_SOURCE_HASH_GUIDANCE: &str =
             "Restore the original source file or re-import affected projects so TuneForge can compute source hashes.";
@@ -6788,6 +8508,318 @@ mod desktop {
                 throughput_bytes_per_second: size_bytes as f64,
                 status: status.to_string(),
                 message: None,
+            }
+        }
+
+        fn test_sha256(bytes: &[u8]) -> String {
+            let digest = Sha256::digest(bytes);
+            hex_digest(digest.as_ref())
+        }
+
+        struct ChannelPeerStream {
+            incoming: mpsc::Receiver<Vec<u8>>,
+            outgoing: mpsc::Sender<Vec<u8>>,
+            read_buffer: VecDeque<u8>,
+            read_timeout: Duration,
+        }
+
+        impl PeerStream for ChannelPeerStream {
+            fn read_exact(&mut self, buffer: &mut [u8]) -> io::Result<()> {
+                let mut written = 0_usize;
+                while written < buffer.len() {
+                    if self.read_buffer.is_empty() {
+                        match self.incoming.recv_timeout(self.read_timeout) {
+                            Ok(bytes) => self.read_buffer.extend(bytes),
+                            Err(mpsc::RecvTimeoutError::Timeout) => {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::TimedOut,
+                                    "Timed out reading test peer stream.",
+                                ));
+                            }
+                            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::UnexpectedEof,
+                                    "Test peer stream closed.",
+                                ));
+                            }
+                        }
+                    }
+                    while written < buffer.len() {
+                        let Some(byte) = self.read_buffer.pop_front() else {
+                            break;
+                        };
+                        buffer[written] = byte;
+                        written += 1;
+                    }
+                }
+                Ok(())
+            }
+
+            fn write_all(&mut self, buffer: &[u8]) -> io::Result<()> {
+                self.outgoing
+                    .send(buffer.to_vec())
+                    .map_err(|error| io::Error::new(io::ErrorKind::BrokenPipe, error.to_string()))
+            }
+
+            fn set_read_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+                self.read_timeout = timeout;
+                Ok(())
+            }
+        }
+
+        fn test_peer_stream_pair() -> (ChannelPeerStream, ChannelPeerStream) {
+            let (left_outgoing, right_incoming) = mpsc::channel();
+            let (right_outgoing, left_incoming) = mpsc::channel();
+            (
+                ChannelPeerStream {
+                    incoming: left_incoming,
+                    outgoing: left_outgoing,
+                    read_buffer: VecDeque::new(),
+                    read_timeout: Duration::from_secs(2),
+                },
+                ChannelPeerStream {
+                    incoming: right_incoming,
+                    outgoing: right_outgoing,
+                    read_buffer: VecDeque::new(),
+                    read_timeout: Duration::from_secs(2),
+                },
+            )
+        }
+
+        fn spawn_test_sync_peer(
+            action: impl FnOnce(SecurePeerConnection) -> Result<(), String> + Send + 'static,
+        ) -> (SharedPeerConnection, JoinHandle<Result<(), String>>) {
+            let (local_stream, peer_stream) = test_peer_stream_pair();
+            let peer = thread::spawn(move || {
+                let connection = SecurePeerConnection::connect_responder(
+                    Box::new(peer_stream),
+                    TransportKind::Tcp,
+                    None,
+                )?;
+                action(connection)
+            });
+
+            let connection = SecurePeerConnection::connect_initiator(
+                Box::new(local_stream),
+                TransportKind::Tcp,
+                None,
+            )
+            .expect("establish test sync connection");
+            (SharedPeerConnection::new(connection), peer)
+        }
+
+        fn spawn_test_iroh_sync_peer(
+            action: impl FnOnce(SecurePeerConnection, IrohDataConnection) -> Result<(), String>
+                + Send
+                + 'static,
+        ) -> (
+            SharedPeerConnection,
+            Endpoint,
+            JoinHandle<Result<(), String>>,
+        ) {
+            let (server_endpoint, client_endpoint) = tauri::async_runtime::block_on(async {
+                let server_endpoint = Endpoint::builder(presets::Minimal)
+                    .clear_ip_transports()
+                    .clear_relay_transports()
+                    .bind_addr((Ipv4Addr::LOCALHOST, 0))
+                    .expect("configure test Iroh server bind")
+                    .transport_config(iroh_lan_transport_config())
+                    .alpns(vec![IROH_ALPN.to_vec()])
+                    .bind()
+                    .await
+                    .expect("bind test Iroh server");
+                let client_endpoint = Endpoint::builder(presets::Minimal)
+                    .clear_ip_transports()
+                    .clear_relay_transports()
+                    .bind_addr((Ipv4Addr::LOCALHOST, 0))
+                    .expect("configure test Iroh client bind")
+                    .transport_config(iroh_lan_transport_config())
+                    .bind()
+                    .await
+                    .expect("bind test Iroh client");
+                (server_endpoint, client_endpoint)
+            });
+            let server_addr = server_endpoint.addr();
+            assert!(
+                server_addr.ip_addrs().next().is_some(),
+                "test Iroh server must expose a direct address"
+            );
+            let peer = thread::spawn(move || {
+                let accepted =
+                    tauri::async_runtime::block_on(async {
+                        let incoming = server_endpoint.accept().await.ok_or_else(|| {
+                            "Test Iroh server closed before accepting.".to_string()
+                        })?;
+                        let connection = incoming
+                            .await
+                            .map_err(|error| format!("Could not accept test Iroh peer: {error}"))?;
+                        let runtime_handle = tokio::runtime::Handle::current();
+                        let (send, recv) = connection.accept_bi().await.map_err(|error| {
+                            format!("Could not accept test Iroh stream: {error}")
+                        })?;
+                        Ok::<_, String>((connection, send, recv, runtime_handle))
+                    });
+                let result = accepted.and_then(|(connection, send, recv, runtime_handle)| {
+                    let iroh_data = IrohDataConnection {
+                        connection,
+                        runtime_handle: runtime_handle.clone(),
+                    };
+                    let connection = SecurePeerConnection::connect_responder(
+                        Box::new(IrohPeerStream::new(send, recv, runtime_handle)),
+                        TransportKind::Iroh,
+                        Some(iroh_data.clone()),
+                    )?;
+                    action(connection, iroh_data)
+                });
+                tauri::async_runtime::block_on(server_endpoint.close());
+                result
+            });
+
+            let (connection, send, recv, runtime_handle) = tauri::async_runtime::block_on(async {
+                let connection = client_endpoint
+                    .connect(server_addr, IROH_ALPN)
+                    .await
+                    .map_err(|error| format!("Could not connect test Iroh peer: {error}"))
+                    .expect("connect test Iroh peer");
+                let runtime_handle = tokio::runtime::Handle::current();
+                let (send, recv) = connection
+                    .open_bi()
+                    .await
+                    .map_err(|error| format!("Could not open test Iroh stream: {error}"))
+                    .expect("open test Iroh stream");
+                (connection, send, recv, runtime_handle)
+            });
+            let iroh_data = IrohDataConnection {
+                connection,
+                runtime_handle: runtime_handle.clone(),
+            };
+            let connection = SecurePeerConnection::connect_initiator(
+                Box::new(IrohPeerStream::new(send, recv, runtime_handle)),
+                TransportKind::Iroh,
+                Some(iroh_data),
+            )
+            .expect("establish test Iroh sync connection");
+            (SharedPeerConnection::new(connection), client_endpoint, peer)
+        }
+
+        fn close_test_iroh_endpoint(endpoint: &Endpoint) {
+            tauri::async_runtime::block_on(endpoint.close());
+        }
+
+        fn send_test_iroh_artifact_stream(
+            iroh_data: &IrohDataConnection,
+            batch_token: &str,
+            artifact: &RemoteArtifact,
+            bytes: &[u8],
+        ) -> Result<(), String> {
+            let mut send = iroh_data.open_send_stream()?;
+            write_iroh_artifact_stream_header(
+                iroh_data,
+                &mut send,
+                &IrohArtifactStreamHeader {
+                    batch_token: batch_token.to_string(),
+                    artifact_id: artifact.artifact_id.clone(),
+                    content_sha256: artifact.content_sha256.clone(),
+                    size_bytes: artifact.size_bytes,
+                },
+            )?;
+            iroh_data.write_all(&mut send, bytes)?;
+            iroh_data.finish_send(&mut send)
+        }
+
+        fn open_test_iroh_artifact_stream_header(
+            iroh_data: &IrohDataConnection,
+            batch_token: &str,
+            artifact: &RemoteArtifact,
+        ) -> Result<SendStream, String> {
+            let mut send = iroh_data.open_send_stream()?;
+            write_iroh_artifact_stream_header(
+                iroh_data,
+                &mut send,
+                &IrohArtifactStreamHeader {
+                    batch_token: batch_token.to_string(),
+                    artifact_id: artifact.artifact_id.clone(),
+                    content_sha256: artifact.content_sha256.clone(),
+                    size_bytes: artifact.size_bytes,
+                },
+            )?;
+            Ok(send)
+        }
+
+        fn collect_test_files(root: &Path) -> Vec<PathBuf> {
+            let Ok(entries) = fs::read_dir(root) else {
+                return Vec::new();
+            };
+            let mut files = Vec::new();
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    files.extend(collect_test_files(&path));
+                } else {
+                    files.push(path);
+                }
+            }
+            files
+        }
+
+        struct TestStagingClient {
+            temp_root: PathBuf,
+            responses: Mutex<VecDeque<Result<Value, BackendError>>>,
+            requests: Mutex<Vec<Value>>,
+        }
+
+        impl TestStagingClient {
+            fn new(responses: Vec<Result<Value, BackendError>>) -> Self {
+                Self {
+                    temp_root: env::temp_dir()
+                        .join(format!("tuneforge-sync-transport-test-{}", random_nonce())),
+                    responses: Mutex::new(responses.into()),
+                    requests: Mutex::new(Vec::new()),
+                }
+            }
+
+            fn requests(&self) -> Vec<Value> {
+                self.requests
+                    .lock()
+                    .expect("read test staging requests")
+                    .clone()
+            }
+        }
+
+        impl ArtifactStagingClient for TestStagingClient {
+            fn temp_artifact_path(&self, content_sha256: &str) -> PathBuf {
+                temp_artifact_path_in(self.temp_root.clone(), content_sha256)
+            }
+
+            fn post_json_value(&self, path: &str, body: &Value) -> Result<Value, BackendError> {
+                if path != "/api/v1/sync/artifacts/staging" {
+                    return Err(BackendError::local(format!(
+                        "Unexpected test staging path: {path}"
+                    )));
+                }
+                self.requests
+                    .lock()
+                    .map_err(|_| {
+                        BackendError::local("Test staging requests unavailable.".to_string())
+                    })?
+                    .push(body.clone());
+                self.responses
+                    .lock()
+                    .map_err(|_| {
+                        BackendError::local("Test staging responses unavailable.".to_string())
+                    })?
+                    .pop_front()
+                    .unwrap_or_else(|| {
+                        Err(BackendError::local(
+                            "Unexpected test staging request.".to_string(),
+                        ))
+                    })
+            }
+        }
+
+        impl Drop for TestStagingClient {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.temp_root);
             }
         }
 
@@ -7341,7 +9373,7 @@ mod desktop {
 
         #[test]
         fn transport_protocol_version_gates_watchdog_status_frames() {
-            assert_eq!(TRANSPORT_PROTOCOL_VERSION, "tuneforge-sync-transport-v3");
+            assert_eq!(TRANSPORT_PROTOCOL_VERSION, "tuneforge-sync-transport-v5");
         }
 
         #[test]
@@ -7613,6 +9645,470 @@ mod desktop {
         }
 
         #[test]
+        fn artifact_chunk_size_leaves_raw_noise_frame_margin() {
+            assert!(ARTIFACT_CHUNK_SIZE > 32 * 1024);
+            assert_eq!(
+                ARTIFACT_CHUNK_SIZE + 1 + NOISE_FRAME_SAFETY_MARGIN,
+                MAX_RAW_FRAME
+            );
+        }
+
+        #[test]
+        fn artifact_batch_request_serializes_protocol_payload() {
+            let message = ProtocolMessage::ArtifactBatchRequest(ArtifactBatchRequest {
+                batch_token: None,
+                artifacts: vec![ArtifactRequest {
+                    artifact_id: "art_one".to_string(),
+                    project_id: Some("proj_one".to_string()),
+                    content_sha256: "hash_one".to_string(),
+                    size_bytes: 42,
+                }],
+            });
+
+            let value = serde_json::to_value(&message).expect("serialize batch request");
+            assert_eq!(value.get("type"), Some(&json!("artifact_batch_request")));
+            assert_eq!(
+                value.pointer("/artifacts/0/projectId"),
+                Some(&json!("proj_one"))
+            );
+
+            let legacy = json!({
+                "type": "artifact_request",
+                "artifactId": "art_legacy",
+                "contentSha256": "hash_legacy",
+                "sizeBytes": 11
+            });
+            let decoded =
+                serde_json::from_value::<ProtocolMessage>(legacy).expect("decode request");
+            match decoded {
+                ProtocolMessage::ArtifactRequest(request) => {
+                    assert_eq!(request.artifact_id, "art_legacy");
+                    assert_eq!(request.project_id, None);
+                    assert_eq!(request.content_sha256, "hash_legacy");
+                    assert_eq!(request.size_bytes, 11);
+                }
+                other => panic!("expected artifact request, got {}", other.kind()),
+            }
+        }
+
+        #[test]
+        fn iroh_artifact_stream_header_uses_batch_metadata_without_local_paths() {
+            let header = IrohArtifactStreamHeader {
+                batch_token: "batch_one".to_string(),
+                artifact_id: "art_one".to_string(),
+                content_sha256: "hash_one".to_string(),
+                size_bytes: 42,
+            };
+
+            let value = serde_json::to_value(header).expect("serialize iroh stream header");
+
+            assert_eq!(value.get("batchToken"), Some(&json!("batch_one")));
+            assert_eq!(value.get("artifactId"), Some(&json!("art_one")));
+            assert_eq!(value.get("contentSha256"), Some(&json!("hash_one")));
+            assert_eq!(value.get("sizeBytes"), Some(&json!(42)));
+            assert!(value.get("source_path").is_none());
+            assert!(value.get("sourcePath").is_none());
+        }
+
+        #[test]
+        fn iroh_artifact_batch_control_error_stops_before_missing_later_stream() {
+            let payloads = (0..5)
+                .map(|index| format!("artifact payload {index}").into_bytes())
+                .collect::<Vec<_>>();
+            let artifacts = payloads
+                .iter()
+                .enumerate()
+                .map(|(index, bytes)| RemoteArtifact {
+                    artifact_id: format!("art_{index}"),
+                    project_id: format!("proj_{index}"),
+                    content_sha256: test_sha256(bytes),
+                    size_bytes: bytes.len() as u64,
+                })
+                .collect::<Vec<_>>();
+            let peer_artifacts = artifacts.clone();
+            let peer_payloads = payloads.clone();
+            let (connection, client_endpoint, peer_thread) =
+                spawn_test_iroh_sync_peer(move |mut peer, iroh_data| {
+                    let request = read_message_accepting_status(
+                        "artifact request/transfer",
+                        || peer.read_message(),
+                        |_| {},
+                    )?;
+                    let ProtocolMessage::ArtifactBatchRequest(request) = request else {
+                        return Err("expected Iroh artifact batch request".to_string());
+                    };
+                    if request.artifacts.len() != 5 {
+                        return Err(format!(
+                            "expected 5 artifact requests, got {}",
+                            request.artifacts.len()
+                        ));
+                    }
+                    let batch_token = request
+                        .batch_token
+                        .ok_or_else(|| "expected Iroh batch token".to_string())?;
+                    peer.send_message(&ProtocolMessage::ArtifactBatchStart {
+                        batch_token: batch_token.clone(),
+                        artifact_count: 5,
+                    })?;
+                    for (artifact, bytes) in peer_artifacts
+                        .iter()
+                        .take(IROH_ARTIFACT_PARALLELISM)
+                        .zip(peer_payloads.iter())
+                    {
+                        send_test_iroh_artifact_stream(&iroh_data, &batch_token, artifact, bytes)?;
+                    }
+                    peer.send_message(&ProtocolMessage::Error(ProtocolError {
+                        code: "artifact_transfer_failed".to_string(),
+                        message: "peer stopped before final Iroh stream".to_string(),
+                    }))?;
+                    thread::sleep(Duration::from_millis(250));
+                    Ok(())
+                });
+            let pending = artifacts
+                .clone()
+                .into_iter()
+                .map(|artifact| PendingArtifactTransfer { artifact })
+                .collect::<Vec<_>>();
+            let (result_sender, result_receiver) = mpsc::channel();
+            let request_connection = connection.clone();
+            let request_thread = thread::spawn(move || {
+                let client = TestStagingClient::new(Vec::new());
+                let started = Instant::now();
+                let progress = ProgressReporter::new(
+                    "sync_iroh_control_error_test".to_string(),
+                    started,
+                    Arc::new(Mutex::new(SharedStatus::default())),
+                    request_connection.clone(),
+                );
+                let mut metrics = SyncRunMetrics::start(started);
+                let mut timings = Vec::new();
+                let results = request_and_stage_artifact_batch(
+                    &client,
+                    &request_connection,
+                    "dev_peer",
+                    pending,
+                    &mut metrics,
+                    &mut timings,
+                    &progress,
+                );
+                let _ = result_sender.send((results, client.requests()));
+            });
+
+            let started = Instant::now();
+            let (results, staging_requests) = match result_receiver
+                .recv_timeout(Duration::from_secs(5))
+            {
+                Ok(results) => results,
+                Err(error) => {
+                    close_test_iroh_endpoint(&client_endpoint);
+                    panic!(
+                            "Iroh receiver waited for missing fifth data stream before control error: {error}"
+                        );
+                }
+            };
+            request_thread
+                .join()
+                .expect("join Iroh artifact batch request thread");
+            close_test_iroh_endpoint(&client_endpoint);
+            peer_thread
+                .join()
+                .expect("join test Iroh sync peer")
+                .expect("test Iroh sync peer completed");
+
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "Iroh control error should propagate before the missing stream watchdog"
+            );
+            assert_eq!(results.len(), 5);
+            assert!(staging_requests.is_empty());
+            for result in results {
+                let failure = result.expect_err("artifact should fail from control error");
+                assert!(
+                    failure
+                        .message
+                        .contains("peer stopped before final Iroh stream"),
+                    "unexpected Iroh batch failure: {}",
+                    failure.message
+                );
+            }
+        }
+
+        #[test]
+        fn iroh_artifact_batch_end_before_later_stream_fails_without_watchdog() {
+            let payloads = (0..5)
+                .map(|index| format!("artifact payload {index}").into_bytes())
+                .collect::<Vec<_>>();
+            let artifacts = payloads
+                .iter()
+                .enumerate()
+                .map(|(index, bytes)| RemoteArtifact {
+                    artifact_id: format!("art_end_{index}"),
+                    project_id: format!("proj_end_{index}"),
+                    content_sha256: test_sha256(bytes),
+                    size_bytes: bytes.len() as u64,
+                })
+                .collect::<Vec<_>>();
+            let peer_artifacts = artifacts.clone();
+            let peer_payloads = payloads.clone();
+            let (connection, client_endpoint, peer_thread) =
+                spawn_test_iroh_sync_peer(move |mut peer, iroh_data| {
+                    let request = read_message_accepting_status(
+                        "artifact request/transfer",
+                        || peer.read_message(),
+                        |_| {},
+                    )?;
+                    let ProtocolMessage::ArtifactBatchRequest(request) = request else {
+                        return Err("expected Iroh artifact batch request".to_string());
+                    };
+                    if request.artifacts.len() != 5 {
+                        return Err(format!(
+                            "expected 5 artifact requests, got {}",
+                            request.artifacts.len()
+                        ));
+                    }
+                    let batch_token = request
+                        .batch_token
+                        .ok_or_else(|| "expected Iroh batch token".to_string())?;
+                    peer.send_message(&ProtocolMessage::ArtifactBatchStart {
+                        batch_token: batch_token.clone(),
+                        artifact_count: 5,
+                    })?;
+                    for (artifact, bytes) in peer_artifacts
+                        .iter()
+                        .take(IROH_ARTIFACT_PARALLELISM)
+                        .zip(peer_payloads.iter())
+                    {
+                        send_test_iroh_artifact_stream(&iroh_data, &batch_token, artifact, bytes)?;
+                    }
+                    peer.send_message(&ProtocolMessage::ArtifactBatchEnd { batch_token })?;
+                    thread::sleep(Duration::from_millis(250));
+                    Ok(())
+                });
+            let pending = artifacts
+                .clone()
+                .into_iter()
+                .map(|artifact| PendingArtifactTransfer { artifact })
+                .collect::<Vec<_>>();
+            let (result_sender, result_receiver) = mpsc::channel();
+            let request_connection = connection.clone();
+            let request_thread = thread::spawn(move || {
+                let client = TestStagingClient::new(Vec::new());
+                let started = Instant::now();
+                let progress = ProgressReporter::new(
+                    "sync_iroh_batch_end_test".to_string(),
+                    started,
+                    Arc::new(Mutex::new(SharedStatus::default())),
+                    request_connection.clone(),
+                );
+                let mut metrics = SyncRunMetrics::start(started);
+                let mut timings = Vec::new();
+                let results = request_and_stage_artifact_batch(
+                    &client,
+                    &request_connection,
+                    "dev_peer",
+                    pending,
+                    &mut metrics,
+                    &mut timings,
+                    &progress,
+                );
+                let _ = result_sender.send((results, client.requests()));
+            });
+
+            let started = Instant::now();
+            let (results, staging_requests) = match result_receiver
+                .recv_timeout(Duration::from_secs(5))
+            {
+                Ok(results) => results,
+                Err(error) => {
+                    close_test_iroh_endpoint(&client_endpoint);
+                    panic!(
+                        "Iroh receiver waited for a missing fifth data stream after early batch end: {error}"
+                    );
+                }
+            };
+            request_thread
+                .join()
+                .expect("join Iroh artifact batch request thread");
+            close_test_iroh_endpoint(&client_endpoint);
+            peer_thread
+                .join()
+                .expect("join test Iroh sync peer")
+                .expect("test Iroh sync peer completed");
+
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "early Iroh batch end should fail before the missing stream watchdog"
+            );
+            assert_eq!(results.len(), 5);
+            assert!(staging_requests.is_empty());
+            for result in results {
+                let failure = result.expect_err("artifact should fail from early batch end");
+                assert!(
+                    failure.message.contains(
+                        "ended the Iroh artifact batch before sending all requested data streams"
+                    ),
+                    "unexpected Iroh batch failure: {}",
+                    failure.message
+                );
+            }
+        }
+
+        #[test]
+        fn iroh_control_error_cancels_stalled_receive_workers_before_returning() {
+            let payload = b"artifact payload that never fully arrives".to_vec();
+            let artifact = RemoteArtifact {
+                artifact_id: "art_stalled".to_string(),
+                project_id: "proj_stalled".to_string(),
+                content_sha256: test_sha256(&payload),
+                size_bytes: payload.len() as u64,
+            };
+            let peer_artifact = artifact.clone();
+            let (connection, client_endpoint, peer_thread) =
+                spawn_test_iroh_sync_peer(move |mut peer, iroh_data| {
+                    let request = read_message_accepting_status(
+                        "artifact request/transfer",
+                        || peer.read_message(),
+                        |_| {},
+                    )?;
+                    let ProtocolMessage::ArtifactBatchRequest(request) = request else {
+                        return Err("expected Iroh artifact batch request".to_string());
+                    };
+                    let batch_token = request
+                        .batch_token
+                        .ok_or_else(|| "expected Iroh batch token".to_string())?;
+                    peer.send_message(&ProtocolMessage::ArtifactBatchStart {
+                        batch_token: batch_token.clone(),
+                        artifact_count: request.artifacts.len() as u64,
+                    })?;
+                    let _stalled_stream = open_test_iroh_artifact_stream_header(
+                        &iroh_data,
+                        &batch_token,
+                        &peer_artifact,
+                    )?;
+                    thread::sleep(Duration::from_millis(500));
+                    peer.send_message(&ProtocolMessage::Error(ProtocolError {
+                        code: "artifact_transfer_failed".to_string(),
+                        message: "control error while data stream is stalled".to_string(),
+                    }))?;
+                    thread::sleep(Duration::from_secs(2));
+                    Ok(())
+                });
+            let pending = vec![PendingArtifactTransfer { artifact }];
+            let (result_sender, result_receiver) = mpsc::channel();
+            let request_connection = connection.clone();
+            let request_thread = thread::spawn(move || {
+                let client = std::mem::ManuallyDrop::new(TestStagingClient::new(Vec::new()));
+                let temp_root = client.temp_root.clone();
+                let started = Instant::now();
+                let progress = ProgressReporter::new(
+                    "sync_iroh_cancel_stalled_worker_test".to_string(),
+                    started,
+                    Arc::new(Mutex::new(SharedStatus::default())),
+                    request_connection.clone(),
+                );
+                let mut metrics = SyncRunMetrics::start(started);
+                let mut timings = Vec::new();
+                let results = request_and_stage_artifact_batch(
+                    &*client,
+                    &request_connection,
+                    "dev_peer",
+                    pending,
+                    &mut metrics,
+                    &mut timings,
+                    &progress,
+                );
+                let _ = result_sender.send((results, client.requests(), temp_root));
+            });
+
+            let started = Instant::now();
+            let (results, staging_requests, temp_root) = match result_receiver
+                .recv_timeout(Duration::from_secs(5))
+            {
+                Ok(results) => results,
+                Err(error) => {
+                    close_test_iroh_endpoint(&client_endpoint);
+                    panic!(
+                            "Iroh receiver waited on a stalled data stream after control error: {error}"
+                        );
+                }
+            };
+            request_thread
+                .join()
+                .expect("join Iroh stalled stream request thread");
+            let leaked_files = collect_test_files(&temp_root);
+            close_test_iroh_endpoint(&client_endpoint);
+            peer_thread
+                .join()
+                .expect("join test Iroh sync peer")
+                .expect("test Iroh sync peer completed");
+            let _ = fs::remove_dir_all(&temp_root);
+
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "control error should cancel stalled data workers before the read watchdog"
+            );
+            assert_eq!(results.len(), 1);
+            assert!(staging_requests.is_empty());
+            assert!(
+                leaked_files.is_empty(),
+                "stalled Iroh receive worker left temp files after sync returned: {leaked_files:?}"
+            );
+            let failure = results
+                .into_iter()
+                .next()
+                .expect("one artifact result")
+                .expect_err("stalled artifact should fail from control error");
+            assert!(
+                failure
+                    .message
+                    .contains("control error while data stream is stalled"),
+                "unexpected Iroh batch failure: {}",
+                failure.message
+            );
+        }
+
+        #[test]
+        fn artifact_file_resolver_response_maps_records_and_errors() {
+            let artifact = RemoteArtifact {
+                artifact_id: "art_one".to_string(),
+                project_id: "proj_one".to_string(),
+                content_sha256: "hash_one".to_string(),
+                size_bytes: 42,
+            };
+            let response = json!({
+                "records": [{
+                    "artifact_id": "art_one",
+                    "source_path": "/tmp/tuneforge/art_one.wav",
+                    "content_sha256": "hash_one",
+                    "size_bytes": 42
+                }],
+                "errors": []
+            });
+
+            let files =
+                parse_artifact_file_resolve_response(&response, std::slice::from_ref(&artifact))
+                    .expect("parse resolver response");
+
+            assert_eq!(files.len(), 1);
+            assert_eq!(
+                files.get("art_one").map(|file| file.source_path.as_path()),
+                Some(Path::new("/tmp/tuneforge/art_one.wav"))
+            );
+
+            let response = json!({
+                "records": [],
+                "errors": [{
+                    "artifact_id": "art_one",
+                    "message": "missing local file"
+                }]
+            });
+            let error = parse_artifact_file_resolve_response(&response, &[artifact])
+                .expect_err("surface resolver error");
+
+            assert!(error.to_string().contains("missing local file"));
+        }
+
+        #[test]
         fn manifest_offer_round_trip_preserves_hash_bound_lyrics_payload_numbers() {
             let lyrics_payload_json = concat!(
                 r#"{"segments":[{"end":12.209999999999999,"#,
@@ -7692,6 +10188,35 @@ mod desktop {
         }
 
         #[test]
+        fn batch_manifest_response_maps_manifests_and_errors() {
+            let response = json!({
+                "project_manifests": [{
+                    "project": { "project_id": "proj_ok" },
+                    "artifacts": []
+                }],
+                "manifest_errors": [{
+                    "project_id": "proj_failed",
+                    "message": "manifest failed"
+                }]
+            });
+
+            let offer = manifest_offer_from_batch_response(
+                &response,
+                &[
+                    "proj_ok".to_string(),
+                    "proj_failed".to_string(),
+                    "proj_omitted".to_string(),
+                ],
+            );
+
+            assert_eq!(offer.project_manifests.len(), 1);
+            assert_eq!(offer.manifest_errors.len(), 2);
+            assert_eq!(offer.manifest_errors[0].project_id, "proj_failed");
+            assert_eq!(offer.manifest_errors[0].message, "manifest failed");
+            assert_eq!(offer.manifest_errors[1].project_id, "proj_omitted");
+        }
+
+        #[test]
         fn offered_artifacts_are_scoped_to_manifest_metadata() {
             let manifests = vec![json!({
                 "artifacts": [{
@@ -7702,16 +10227,218 @@ mod desktop {
                 }]
             })];
 
-            let offered = offered_artifacts_by_id(&manifests);
+            let offered = offered_artifacts(&manifests);
 
             assert_eq!(offered.len(), 1);
             assert_eq!(
                 offered
-                    .get("art_allowed")
+                    .iter()
+                    .find(|artifact| artifact.artifact_id == "art_allowed")
                     .map(|artifact| artifact.content_sha256.as_str()),
                 Some("abc123")
             );
-            assert!(offered.get("art_unknown").is_none());
+            assert!(requested_offered_artifact(
+                &offered,
+                &ArtifactRequest {
+                    artifact_id: "art_unknown".to_string(),
+                    project_id: None,
+                    content_sha256: "abc123".to_string(),
+                    size_bytes: 42,
+                }
+            )
+            .is_err());
+        }
+
+        #[test]
+        fn batch_artifact_requests_validate_against_offered_manifest() {
+            let manifests = vec![json!({
+                "artifacts": [{
+                    "artifact_id": "art_one",
+                    "project_id": "proj_one",
+                    "content_sha256": "hash_one",
+                    "size_bytes": 10,
+                }, {
+                    "artifact_id": "art_two",
+                    "project_id": "proj_two",
+                    "content_sha256": "hash_two",
+                    "size_bytes": 20,
+                }]
+            })];
+            let offered = offered_artifacts(&manifests);
+
+            let artifacts = requested_offered_artifact_batch(
+                &offered,
+                &ArtifactBatchRequest {
+                    batch_token: None,
+                    artifacts: vec![
+                        ArtifactRequest {
+                            artifact_id: "art_one".to_string(),
+                            project_id: Some("proj_one".to_string()),
+                            content_sha256: "hash_one".to_string(),
+                            size_bytes: 10,
+                        },
+                        ArtifactRequest {
+                            artifact_id: "art_two".to_string(),
+                            project_id: Some("proj_two".to_string()),
+                            content_sha256: "hash_two".to_string(),
+                            size_bytes: 20,
+                        },
+                    ],
+                },
+            )
+            .expect("batch request is valid");
+
+            assert_eq!(
+                artifacts
+                    .iter()
+                    .map(|artifact| artifact.artifact_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["art_one", "art_two"]
+            );
+
+            let mismatch = requested_offered_artifact_batch(
+                &offered,
+                &ArtifactBatchRequest {
+                    batch_token: None,
+                    artifacts: vec![ArtifactRequest {
+                        artifact_id: "art_one".to_string(),
+                        project_id: Some("proj_one".to_string()),
+                        content_sha256: "wrong_hash".to_string(),
+                        size_bytes: 10,
+                    }],
+                },
+            )
+            .expect_err("reject mismatch");
+            assert!(mismatch.contains("not offered"));
+        }
+
+        #[test]
+        fn artifact_batch_continues_after_post_receive_staging_failure() {
+            let first_bytes = b"first artifact content".to_vec();
+            let second_bytes = b"second artifact content".to_vec();
+            let first_hash = test_sha256(&first_bytes);
+            let second_hash = test_sha256(&second_bytes);
+            let artifacts = vec![
+                RemoteArtifact {
+                    artifact_id: "art_one".to_string(),
+                    project_id: "proj_one".to_string(),
+                    content_sha256: first_hash.clone(),
+                    size_bytes: first_bytes.len() as u64,
+                },
+                RemoteArtifact {
+                    artifact_id: "art_two".to_string(),
+                    project_id: "proj_two".to_string(),
+                    content_sha256: second_hash.clone(),
+                    size_bytes: second_bytes.len() as u64,
+                },
+            ];
+            let peer_artifacts = artifacts.clone();
+            let peer_payloads = vec![first_bytes, second_bytes];
+            let (connection, peer_thread) = spawn_test_sync_peer(move |mut peer| {
+                let request = read_message_accepting_status(
+                    "artifact request/transfer",
+                    || peer.read_message(),
+                    |_| {},
+                )?;
+                let ProtocolMessage::ArtifactBatchRequest(request) = request else {
+                    return Err("expected artifact batch request".to_string());
+                };
+                if request.artifacts.len() != 2 {
+                    return Err(format!(
+                        "expected 2 artifact requests, got {}",
+                        request.artifacts.len()
+                    ));
+                }
+
+                for (artifact, bytes) in peer_artifacts.iter().zip(peer_payloads.iter()) {
+                    peer.send_message(&ProtocolMessage::ArtifactStart {
+                        artifact_id: artifact.artifact_id.clone(),
+                        content_sha256: artifact.content_sha256.clone(),
+                        size_bytes: artifact.size_bytes,
+                    })?;
+                    peer.send_artifact_chunk(bytes)?;
+                    peer.send_message(&ProtocolMessage::ArtifactEnd {
+                        content_sha256: artifact.content_sha256.clone(),
+                        size_bytes: artifact.size_bytes,
+                    })?;
+                }
+                peer.send_message(&ProtocolMessage::PhaseDone {
+                    phase: "artifact_batch_test".to_string(),
+                })
+            });
+            let client = TestStagingClient::new(vec![
+                Err(BackendError {
+                    status: Some(500),
+                    message: "stage refused".to_string(),
+                }),
+                Ok(json!({})),
+            ]);
+            let pending = artifacts
+                .clone()
+                .into_iter()
+                .map(|artifact| PendingArtifactTransfer { artifact })
+                .collect::<Vec<_>>();
+            let started = Instant::now();
+            let progress = ProgressReporter::new(
+                "sync_test".to_string(),
+                started,
+                Arc::new(Mutex::new(SharedStatus::default())),
+                connection.clone(),
+            );
+            let mut metrics = SyncRunMetrics::start(started);
+            let mut timings = Vec::new();
+
+            let results = request_and_stage_artifact_batch(
+                &client,
+                &connection,
+                "dev_peer",
+                pending,
+                &mut metrics,
+                &mut timings,
+                &progress,
+            );
+            let next_message = connection
+                .read_message_accepting_status_for_phase("artifact batch test", &progress);
+            peer_thread
+                .join()
+                .expect("join test sync peer")
+                .expect("test sync peer completed");
+            let next_message = next_message.expect("read message after artifact batch");
+
+            assert_eq!(results.len(), 2);
+            let first_error = results[0]
+                .as_ref()
+                .expect_err("first artifact staging fails");
+            assert!(first_error.message.contains("reconciliation staging"));
+            let second_result = results[1]
+                .as_ref()
+                .expect("second artifact is still received and staged");
+            assert_eq!(second_result.artifact_id, "art_two");
+            assert_eq!(second_result.status, "received");
+            match next_message {
+                ProtocolMessage::PhaseDone { phase } => {
+                    assert_eq!(phase, "artifact_batch_test");
+                }
+                other => panic!(
+                    "expected drained batch before phase_done, got {}",
+                    other.kind()
+                ),
+            }
+
+            let staging_requests = client.requests();
+            assert_eq!(staging_requests.len(), 2);
+            assert_eq!(
+                staging_requests[0]
+                    .get("content_sha256")
+                    .and_then(Value::as_str),
+                Some(first_hash.as_str())
+            );
+            assert_eq!(
+                staging_requests[1]
+                    .get("content_sha256")
+                    .and_then(Value::as_str),
+                Some(second_hash.as_str())
+            );
         }
 
         #[test]

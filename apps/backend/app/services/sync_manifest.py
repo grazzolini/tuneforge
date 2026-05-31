@@ -154,6 +154,44 @@ class SyncProjectManifest:
 
 
 @dataclass(frozen=True)
+class SyncProjectManifestExportError:
+    project_id: str
+    code: str
+    message: str
+    status_code: int
+    details: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class SyncProjectManifestsExport:
+    project_manifests: list[SyncProjectManifest]
+    manifest_errors: list[SyncProjectManifestExportError]
+
+
+@dataclass(frozen=True)
+class SyncArtifactFileRecord:
+    artifact_id: str
+    source_path: str
+    content_sha256: str
+    size_bytes: int
+
+
+@dataclass(frozen=True)
+class SyncArtifactFileResolveError:
+    artifact_id: str
+    code: str
+    message: str
+    status_code: int
+    details: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class SyncArtifactFileResolveResult:
+    records: list[SyncArtifactFileRecord]
+    errors: list[SyncArtifactFileResolveError]
+
+
+@dataclass(frozen=True)
 class _VerifiedStagedArtifact:
     manifest: SyncArtifactManifest
     staged_path: Path
@@ -220,6 +258,112 @@ def export_project_manifest(session: Session, project_id: str) -> SyncProjectMan
     )
     _validate_source_artifact_present(manifest)
     return manifest
+
+
+def export_project_manifests(
+    session: Session,
+    *,
+    project_ids: Iterable[str],
+) -> SyncProjectManifestsExport:
+    project_manifests: list[SyncProjectManifest] = []
+    manifest_errors: list[SyncProjectManifestExportError] = []
+
+    for project_id in project_ids:
+        try:
+            project_manifests.append(export_project_manifest(session, project_id=project_id))
+        except AppError as exc:
+            manifest_errors.append(
+                SyncProjectManifestExportError(
+                    project_id=project_id,
+                    code=exc.code,
+                    message=exc.message,
+                    status_code=exc.status_code,
+                    details=deepcopy(exc.details),
+                )
+            )
+
+    return SyncProjectManifestsExport(
+        project_manifests=project_manifests,
+        manifest_errors=manifest_errors,
+    )
+
+
+def resolve_artifact_file_sources(
+    session: Session,
+    *,
+    artifact_ids: Iterable[str],
+) -> SyncArtifactFileResolveResult:
+    records: list[SyncArtifactFileRecord] = []
+    errors: list[SyncArtifactFileResolveError] = []
+
+    for artifact_id in artifact_ids:
+        artifact = session.get(Artifact, artifact_id)
+        if artifact is None:
+            errors.append(
+                _artifact_file_resolve_error(
+                    artifact_id=artifact_id,
+                    code="SYNC_ARTIFACT_FILE_NOT_FOUND",
+                    message="Artifact file cannot be resolved because the artifact does not exist.",
+                    status_code=status.HTTP_404_NOT_FOUND,
+                )
+            )
+            continue
+
+        if artifact.content_sha256 is None:
+            errors.append(
+                _artifact_file_resolve_error(
+                    artifact_id=artifact.id,
+                    code="SYNC_ARTIFACT_FILE_HASH_MISSING",
+                    message=(
+                        "Artifact file cannot be resolved because it is missing a "
+                        "content SHA-256."
+                    ),
+                    details={"project_id": artifact.project_id},
+                )
+            )
+            continue
+
+        artifact_path = Path(artifact.path).expanduser().resolve(strict=False)
+        actual_size = _file_size(artifact_path)
+        if actual_size is None:
+            errors.append(
+                _artifact_file_resolve_error(
+                    artifact_id=artifact.id,
+                    code="SYNC_ARTIFACT_FILE_UNREADABLE",
+                    message="Artifact file cannot be resolved because its file is not readable.",
+                    details={"project_id": artifact.project_id},
+                )
+            )
+            continue
+
+        if actual_size != artifact.size_bytes:
+            errors.append(
+                _artifact_file_resolve_error(
+                    artifact_id=artifact.id,
+                    code="SYNC_ARTIFACT_FILE_SIZE_MISMATCH",
+                    message=(
+                        "Artifact file cannot be resolved because its file size no "
+                        "longer matches metadata."
+                    ),
+                    details={
+                        "project_id": artifact.project_id,
+                        "expected_size_bytes": artifact.size_bytes,
+                        "actual_size_bytes": actual_size,
+                    },
+                )
+            )
+            continue
+
+        records.append(
+            SyncArtifactFileRecord(
+                artifact_id=artifact.id,
+                source_path=str(artifact_path),
+                content_sha256=artifact.content_sha256,
+                size_bytes=artifact.size_bytes,
+            )
+        )
+
+    return SyncArtifactFileResolveResult(records=records, errors=errors)
 
 
 def import_staged_project_manifest(
@@ -2254,6 +2398,23 @@ def _invalid_relative_path(relative_path: str) -> AppError:
         "SYNC_MANIFEST_RELATIVE_PATH_INVALID",
         "Sync manifest artifact relative path is invalid.",
         details={"relative_path": relative_path},
+    )
+
+
+def _artifact_file_resolve_error(
+    *,
+    artifact_id: str,
+    code: str,
+    message: str,
+    status_code: int = status.HTTP_400_BAD_REQUEST,
+    details: dict[str, Any] | None = None,
+) -> SyncArtifactFileResolveError:
+    return SyncArtifactFileResolveError(
+        artifact_id=artifact_id,
+        code=code,
+        message=message,
+        status_code=status_code,
+        details={} if details is None else deepcopy(details),
     )
 
 

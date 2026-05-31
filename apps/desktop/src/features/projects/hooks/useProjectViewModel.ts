@@ -5,7 +5,6 @@ import { confirm, save } from "@tauri-apps/plugin-dialog";
 import {
   api,
   getProjectSyncSummary,
-  type AnalysisTimingUpdateRequest,
   type ArtifactSchema,
   type JobSchema,
   type LyricsGenerateRequest,
@@ -14,13 +13,11 @@ import {
 } from "../../../lib/api";
 import { usePreferences } from "../../../lib/preferences";
 import {
-  beatsPerBarForTimingGridMeter,
   normalizeAnalysisTimingGrid,
   normalizeLoopAlignmentMode,
   snapLoopPointToTiming,
   type AnalysisTimingGrid,
   type LoopAlignmentMode,
-  type TimingGridMeter,
 } from "../../../lib/timingGrid";
 import { usePlayback } from "../playback-context";
 import {
@@ -94,29 +91,6 @@ const TERMINAL_PROJECT_JOB_STATUSES = ["completed", "failed", "cancelled"] as co
 const ACTIVE_PROJECT_JOBS_LIMIT = 200;
 const PROJECT_HISTORY_JOBS_PAGE_SIZE = 50;
 const EMPTY_JOBS: JobSchema[] = [];
-
-function isUserCorrectedTimingGrid(timingGrid: AnalysisTimingGrid | null) {
-  return timingGrid?.source.toLowerCase() === "user_corrected";
-}
-
-function formatTimingGridConfidence(timingGrid: AnalysisTimingGrid | null) {
-  const confidence = timingGrid?.downbeat_confidence ?? timingGrid?.meter_confidence ?? null;
-  if (confidence === null) {
-    return "Unknown";
-  }
-  const percentage = confidence <= 1 ? confidence * 100 : confidence;
-  return `${Math.round(Math.max(0, Math.min(100, percentage)))}%`;
-}
-
-function formatTimingGridSource(timingGrid: AnalysisTimingGrid | null) {
-  if (!timingGrid) {
-    return "No grid";
-  }
-  const source = (timingGrid.downbeat_source ?? timingGrid.source).toLowerCase();
-  return source.includes("stem") || source.includes("drum") || source.includes("bass")
-    ? "Source + stems"
-    : "Source";
-}
 
 type DeleteArtifactsRequest = {
   artifactIds: string[];
@@ -431,17 +405,6 @@ export function useProjectViewModel() {
         queryClient.invalidateQueries({ queryKey: ["project", projectId] }),
         queryClient.invalidateQueries({ queryKey: ["projects"] }),
       ]);
-    },
-  });
-
-  const timingGridMutation = useMutation({
-    mutationFn: (body: AnalysisTimingUpdateRequest) => {
-      assertProjectEditable();
-      return api.updateAnalysisTiming(projectId, body);
-    },
-    onSuccess: async (response) => {
-      queryClient.setQueryData(["analysis", projectId], response.analysis);
-      await queryClient.invalidateQueries({ queryKey: ["analysis", projectId] });
     },
   });
 
@@ -843,14 +806,6 @@ export function useProjectViewModel() {
     () => normalizeAnalysisTimingGrid(analysisQuery.data?.timing),
     [analysisQuery.data?.timing],
   );
-  const timingGridStatusLabel = isUserCorrectedTimingGrid(analysisTimingGrid)
-    ? "Corrected"
-    : analysisTimingGrid
-      ? "Detected"
-      : "No grid";
-  const timingGridMeter = analysisTimingGrid?.meter ?? "4/4";
-  const timingGridConfidenceLabel = formatTimingGridConfidence(analysisTimingGrid);
-  const timingGridSourceLabel = formatTimingGridSource(analysisTimingGrid);
   const detectedKey = parseKey(analysisQuery.data?.estimated_key);
   const loopAlignmentMode = loopAlignmentModeOverride ?? defaultLoopAlignmentMode;
   const tempoOriginalBpm = normalizeTempoBpm(analysisQuery.data?.tempo_bpm);
@@ -866,18 +821,6 @@ export function useProjectViewModel() {
   const precountDisabledReason = canUsePrecount ? null : "Waiting for BPM analysis";
   const mobileCapabilities = mobileCapabilitiesQuery.data ?? null;
   const isMobileRuntime = mobileCapabilities !== null;
-  const canEditTimingGrid =
-    !projectEditLocked &&
-    !isMobileRuntime &&
-    analysisTimingGrid !== null &&
-    !timingGridMutation.isPending;
-  const timingGridDisabledReason = analysisTimingGrid
-    ? projectEditLocked
-      ? projectSyncLockReason
-      : isMobileRuntime
-        ? "Timing grid correction is not available on mobile yet."
-      : null
-    : "Waiting for timing analysis";
   const sourceKeyOverride = parseStoredKey(projectQuery.data?.source_key_override);
   const sourceKeyBasis = sourceKeyOverride ?? detectedKey ?? null;
   const sourceKey = sourceKeyBasis ?? DEFAULT_KEY;
@@ -1174,23 +1117,9 @@ export function useProjectViewModel() {
     handleSetPlaybackDisplayMode("combined");
   }
 
-  async function handleAnalyzeAction() {
+  function handleAnalyzeAction() {
     if (projectEditLocked) {
       return;
-    }
-    if (isUserCorrectedTimingGrid(analysisTimingGrid)) {
-      const approved = await confirm(
-        "Analyze track again? Re-analysis clears the current timing grid correction.",
-        {
-          title: "Refresh timing grid",
-          kind: "warning",
-          okLabel: "Analyze",
-          cancelLabel: "Cancel",
-        },
-      );
-      if (!approved) {
-        return;
-      }
     }
     analyzeMutation.mutate();
   }
@@ -1318,35 +1247,6 @@ export function useProjectViewModel() {
 
   function handleSetLoopAlignmentMode(value: LoopAlignmentMode) {
     setLoopAlignmentModeOverride(normalizeLoopAlignmentMode(value));
-  }
-
-  function handleSetTimingGridMeter(meter: TimingGridMeter) {
-    if (!canEditTimingGrid || timingGridMeter === meter) {
-      return;
-    }
-    timingGridMutation.mutate({
-      action: "set_meter",
-      beats_per_bar: beatsPerBarForTimingGridMeter(meter),
-    });
-  }
-
-  function handleShiftTimingGrid(shiftBeats: -1 | 1) {
-    if (!canEditTimingGrid) {
-      return;
-    }
-    timingGridMutation.mutate({
-      action: shiftBeats < 0 ? "shift_left" : "shift_right",
-    });
-  }
-
-  function handleSetNearestTimingBeatAsBarOne() {
-    if (!canEditTimingGrid) {
-      return;
-    }
-    timingGridMutation.mutate({
-      action: "set_bar_1_beat_1",
-      playhead_seconds: Math.max(0, playbackTimeSeconds),
-    });
   }
 
   function handleDecreasePlaybackTempo() {
@@ -2359,7 +2259,6 @@ export function useProjectViewModel() {
     canGenerateChords,
     canGenerateLyrics,
     canGenerateStems,
-    canEditTimingGrid,
     canUseTempo,
     capoKey,
     capoOptionRefs,
@@ -2414,11 +2313,8 @@ export function useProjectViewModel() {
     handleSetPrecountEnabled,
     handleSetPrecountLoopEnabled,
     handleSetLoopAlignmentMode,
-    handleSetNearestTimingBeatAsBarOne,
     handleIncreasePlaybackTempo,
     handleSetPlaybackTempo,
-    handleSetTimingGridMeter,
-    handleShiftTimingGrid,
     handleAcceptTabSuggestionGroup,
     handleApplyTabSuggestions,
     handleCloseTabImport,
@@ -2573,12 +2469,6 @@ export function useProjectViewModel() {
     tempoOriginalBpm,
     tempoPlaybackRate: tempoPlaybackRateValue,
     tempoTargetBpm: tempoTargetBpmForPlayback,
-    timingGridConfidenceLabel,
-    timingGridDisabledReason,
-    timingGridMeter,
-    timingGridMutation,
-    timingGridSourceLabel,
-    timingGridStatusLabel,
     togglePlayback: handleTogglePlayback,
     toggleStemControl,
     transposeSemitones,

@@ -5,7 +5,6 @@ import { vi } from "vitest";
 import App from "../App";
 import type {
   AnalysisRequest,
-  AnalysisTimingUpdateRequest,
   BulkJobRequest,
   BulkJobsResponse,
   LyricsGenerateRequest,
@@ -83,7 +82,6 @@ const {
   mockCreatePreview,
   mockCreateStems,
   mockAnalyzeProject,
-  mockUpdateAnalysisTiming,
   mockUpdateLyrics,
   mockUpdateProject,
   mockGetTabImport,
@@ -1940,29 +1938,6 @@ const {
     state.jobs.unshift(job);
     return { job: clone(job) };
   });
-  const mockUpdateAnalysisTiming = vi.fn(
-    async (projectId: string, body: AnalysisTimingUpdateRequest) => {
-      const analysis = state.analysisByProject[projectId];
-      if (!analysis) {
-        throw new Error("Analysis not found.");
-      }
-      const currentTiming =
-        typeof analysis.timing === "object" && analysis.timing !== null
-          ? analysis.timing as Record<string, unknown>
-          : {};
-      const nextTiming = {
-        ...currentTiming,
-        source: "user_corrected",
-        ...(body.action === "set_meter" && body.beats_per_bar
-          ? {
-              beats_per_bar: body.beats_per_bar,
-            }
-          : {}),
-      };
-      analysis.timing = nextTiming;
-      return { analysis: clone(analysis) };
-    },
-  );
   const mockUpdateProject = vi.fn(async (projectId: string, body: { display_name?: string; source_key_override?: string | null }) => {
     const project = getProjectOrThrow(projectId);
     if (body.display_name !== undefined) {
@@ -2345,7 +2320,6 @@ const {
     mockCreatePreview,
     mockCreateStems,
     mockAnalyzeProject,
-    mockUpdateAnalysisTiming,
     mockUpdateLyrics,
     mockUpdateProject,
     mockGetTabImport,
@@ -2419,7 +2393,6 @@ export {
   mockCreatePreview,
   mockCreateStems,
   mockAnalyzeProject,
-  mockUpdateAnalysisTiming,
   mockUpdateLyrics,
   mockUpdateProject,
   mockGetTabImport,
@@ -2489,7 +2462,6 @@ vi.mock("../lib/api", async (importOriginal) => {
       createPreview: mockCreatePreview,
       createStems: mockCreateStems,
       analyzeProject: mockAnalyzeProject,
-      updateAnalysisTiming: mockUpdateAnalysisTiming,
       updateLyrics: mockUpdateLyrics,
       updateProject: mockUpdateProject,
       createExport: mockCreateExport,
@@ -2886,7 +2858,6 @@ export function resetAppTestHarness() {
   mockCreatePreview.mockClear();
   mockCreateStems.mockClear();
   mockAnalyzeProject.mockClear();
-  mockUpdateAnalysisTiming.mockClear();
   mockUpdateLyrics.mockClear();
   mockUpdateProject.mockClear();
   mockCreateExport.mockClear();

@@ -107,10 +107,10 @@ TuneForge should keep lyrics local and project-owned.
 
 ## Beat/Downbeat Model Evaluation
 
-This evaluation checked whether TuneForge should integrate a local ML beat/downbeat/meter model after the first
-correctable timing-grid work. The recommendation is to keep the heuristic and correction path as the product route for
-now, and use CPJKU Beat This `small0` as the optional full-profile model after local-track bake-off evidence and
-explicit model-weight redistribution confirmation.
+This evaluation checked whether TuneForge should integrate a local ML beat/downbeat/meter model for source-track timing
+analysis. The current direction is to keep the built-in heuristic as the source-track baseline, and use CPJKU Beat This
+`small0` as the optional full-profile Advanced Beat Analysis model after local-track bake-off evidence and explicit
+model-weight redistribution confirmation.
 
 Local-track baseline evidence from a read-only sample of 8 converted source WAVs in local app data: 8/8 completed,
 8/8 produced timing grids, median heuristic runtime was 12.686 seconds, median runtime ratio was 0.0531x track length,
@@ -148,5 +148,5 @@ bash scripts/run-backend-module.sh app.benchmarks.timing --audio-dir /path/to/lo
 ```
 
 For each candidate spike, compare model output against the timing benchmark by `track_###`: runtime ratio, beat count,
-downbeat count, meter, first beat numbers, whether corrections still drift out of sync, model size, and whether model
-weights were preloaded or downloaded during analysis.
+downbeat count, meter, first beat numbers, source-grid drift, model size, and whether model weights were preloaded or
+downloaded during analysis.

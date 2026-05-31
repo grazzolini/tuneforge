@@ -812,7 +812,7 @@ def test_cached_source_audio_stems_missing_signal_metadata_are_hydrated_and_refr
     assert wait_for_job(client, chord_jobs_after_hydration[0]["id"])["status"] == "completed"
 
 
-def test_cached_source_audio_stems_raw_only_metadata_gets_usability_without_audio_read(
+def test_cached_source_audio_stems_raw_only_signal_metadata_gets_usability_and_refreshes_chords_without_audio_read(
     client,
     sample_stereo_audio_file: Path,
     monkeypatch,
@@ -851,11 +851,25 @@ def test_cached_source_audio_stems_raw_only_metadata_gets_usability_without_audi
         json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
     ).json()["project"]
 
+    initial_jobs = client.get("/api/v1/jobs").json()["jobs"]
+    initial_chord_job = next(
+        job for job in initial_jobs if job["project_id"] == project["id"] and job["type"] == "chords"
+    )
+    assert wait_for_job(client, initial_chord_job["id"])["status"] == "completed"
+
     stem_job = client.post(
         f"/api/v1/projects/{project['id']}/stems",
         json={"mode": "two_stem", "stem_model": "htdemucs_ft", "output_format": "wav", "force": False},
     ).json()["job"]
     assert wait_for_job(client, stem_job["id"])["status"] == "completed"
+    chord_jobs_after_generation = [
+        job
+        for job in client.get("/api/v1/jobs").json()["jobs"]
+        if job["project_id"] == project["id"] and job["type"] == "chords" and job["id"] != initial_chord_job["id"]
+    ]
+    assert len(chord_jobs_after_generation) == 1
+    assert wait_for_job(client, chord_jobs_after_generation[0]["id"])["status"] == "completed"
+    chord_job_ids_before_hydration = {initial_chord_job["id"], chord_jobs_after_generation[0]["id"]}
 
     artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
     source_artifact = next(artifact for artifact in artifacts if artifact["type"] == "source_audio")
@@ -898,6 +912,108 @@ def test_cached_source_audio_stems_raw_only_metadata_gets_usability_without_audi
     assert separation_count == 1
     for artifact in hydrated_stems:
         _assert_current_stem_signal_metadata(artifact["metadata"])
+    chord_jobs_after_hydration = [
+        job
+        for job in client.get("/api/v1/jobs").json()["jobs"]
+        if job["project_id"] == project["id"]
+        and job["type"] == "chords"
+        and job["id"] not in chord_job_ids_before_hydration
+    ]
+    assert len(chord_jobs_after_hydration) == 1
+    assert chord_jobs_after_hydration[0]["chord_source"] == "source+stem"
+    assert wait_for_job(client, chord_jobs_after_hydration[0]["id"])["status"] == "completed"
+
+
+def test_cached_source_audio_stems_hydrated_unusable_signal_metadata_does_not_refresh_chords(
+    client,
+    sample_stereo_audio_file: Path,
+    monkeypatch,
+):
+    separation_count = 0
+
+    def fake_separate_two_stems(
+        source_path: Path,
+        vocal_path: Path,
+        instrumental_path: Path,
+        *,
+        model: str,
+        device: str,
+        model_repo=None,
+        on_progress=None,
+        should_cancel=None,
+        register_process=None,
+        unregister_process=None,
+    ):
+        nonlocal separation_count
+        separation_count += 1
+        signal, sample_rate = sf.read(source_path, always_2d=True)
+        vocal_path.parent.mkdir(parents=True, exist_ok=True)
+        instrumental_path.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(vocal_path, signal * 0.7, sample_rate)
+        sf.write(instrumental_path, signal * 0.0, sample_rate)
+        return {"engine": "demucs", "model": model, "requested_device": device, "device": "cpu"}
+
+    monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
+
+    project = client.post(
+        "/api/v1/projects/import",
+        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
+    ).json()["project"]
+
+    initial_jobs = client.get("/api/v1/jobs").json()["jobs"]
+    initial_chord_job = next(
+        job for job in initial_jobs if job["project_id"] == project["id"] and job["type"] == "chords"
+    )
+    assert wait_for_job(client, initial_chord_job["id"])["status"] == "completed"
+
+    stem_job = client.post(
+        f"/api/v1/projects/{project['id']}/stems",
+        json={"mode": "two_stem", "stem_model": "htdemucs_ft", "output_format": "wav", "force": False},
+    ).json()["job"]
+    assert wait_for_job(client, stem_job["id"])["status"] == "completed"
+
+    artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
+    source_artifact = next(artifact for artifact in artifacts if artifact["type"] == "source_audio")
+    stem_ids = [
+        artifact["id"]
+        for artifact in artifacts
+        if artifact["metadata"].get("source_artifact_id") == source_artifact["id"]
+        and artifact["metadata"].get("stem_model") == "htdemucs_ft"
+    ]
+    assert len(stem_ids) == 2
+
+    with SessionLocal() as session:
+        for stem_id in stem_ids:
+            artifact = session.get(Artifact, stem_id)
+            assert artifact is not None
+            metadata = dict(artifact.metadata_json)
+            metadata.pop(STEM_SIGNAL_METADATA_KEY, None)
+            artifact.metadata_json = metadata
+        session.commit()
+
+    cached_job = client.post(
+        f"/api/v1/projects/{project['id']}/stems",
+        json={"mode": "two_stem", "stem_model": "htdemucs_ft", "output_format": "wav", "force": False},
+    ).json()["job"]
+    assert wait_for_job(client, cached_job["id"])["status"] == "completed"
+
+    hydrated_artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
+    hydrated_stems = [artifact for artifact in hydrated_artifacts if artifact["id"] in stem_ids]
+    assert separation_count == 1
+    for artifact in hydrated_stems:
+        _assert_current_stem_signal_metadata(
+            artifact["metadata"],
+            expected_has_signal=artifact["type"] != "instrumental_stem",
+            expected_usable=artifact["type"] != "instrumental_stem",
+            expected_reason="usable" if artifact["type"] != "instrumental_stem" else "absolute_no_signal",
+        )
+
+    chord_jobs_after_stems = [
+        job
+        for job in client.get("/api/v1/jobs").json()["jobs"]
+        if job["project_id"] == project["id"] and job["type"] == "chords"
+    ]
+    assert [job["id"] for job in chord_jobs_after_stems] == [initial_chord_job["id"]]
 
 
 def test_vocal_only_signal_stems_do_not_enqueue_chord_refresh(

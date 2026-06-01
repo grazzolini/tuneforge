@@ -50,7 +50,7 @@ jobs:
           if [[ -s "${changed_files}" ]]; then
             while IFS= read -r path; do
               case "${path}" in
-                .github/workflows/*|scripts/*|package.json|pnpm-lock.yaml|apps/backend/pyproject.toml|apps/backend/uv.lock)
+                scripts/*|package.json|pnpm-lock.yaml|apps/backend/pyproject.toml|apps/backend/uv.lock)
                   full_gate=true
                   ;;
                 apps/backend/app/api/*|apps/backend/app/schemas.py|apps/backend/app/main.py)
@@ -65,7 +65,7 @@ jobs:
                 apps/desktop/*|packages/shared-types/*)
                   desktop=true
                   ;;
-                docs/*|README.md|CONTRIBUTING.md|CODE_OF_CONDUCT.md|LICENSE|THIRD_PARTY_NOTICES.md|SECURITY.md|AGENTS.md|.github/ISSUE_TEMPLATE/*|.github/PULL_REQUEST_TEMPLATE.md)
+                .github/workflows/ci.yml|.codex/environments/*|docs/*|README.md|CONTRIBUTING.md|CODE_OF_CONDUCT.md|LICENSE|THIRD_PARTY_NOTICES.md|SECURITY.md|AGENTS.md|.github/ISSUE_TEMPLATE/*|.github/PULL_REQUEST_TEMPLATE.md)
                   ;;
                 *)
                   full_gate=true
@@ -79,6 +79,22 @@ jobs:
             backend_ffmpeg=true
             desktop=true
           fi
+
+          print_scope_decision() {
+            local label="$1"
+            local enabled="$2"
+
+            if [[ "${enabled}" == "true" ]]; then
+              echo "- Include ${label}"
+            else
+              echo "- Skip ${label}"
+            fi
+          }
+
+          echo "Final CI scope decision:"
+          print_scope_decision "backend static checks" "${backend_static}"
+          print_scope_decision "backend FFmpeg tests" "${backend_ffmpeg}"
+          print_scope_decision "desktop checks" "${desktop}"
 
           {
             echo "backend_static=${backend_static}"
@@ -144,7 +160,7 @@ jobs:
 
   backend:
     needs: ci-scope
-    if: ${{ always() }}
+    if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - name: Require CI scope
@@ -210,7 +226,7 @@ jobs:
 
   desktop:
     needs: ci-scope
-    if: ${{ always() }}
+    if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.desktop == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - name: Require CI scope

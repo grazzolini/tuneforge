@@ -5,7 +5,7 @@ name = "development"
 [setup]
 script = '''
 cd "$CODEX_WORKTREE_PATH"
-pnpm setup:dev --crema
+pnpm setup:dev -- --beat-this --crema
 '''
 
 [[actions]]
@@ -14,9 +14,9 @@ icon = "run"
 command = "pnpm dev"
 
 [[actions]]
-name = "Advanced chords"
+name = "Advanced"
 icon = "tool"
-command = "pnpm setup:dev --crema"
+command = "pnpm setup:dev -- --beat-this --crema"
 
 [[actions]]
 name = "Setup dev"

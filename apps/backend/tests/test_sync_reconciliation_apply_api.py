@@ -1,14 +1,25 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.db import SessionLocal
-from app.models import Artifact, Project, SyncDeleteTombstone, SyncEntityRevision, SyncTrustedPeer
+from app.models import (
+    AnalysisResult,
+    Artifact,
+    Project,
+    SyncDeleteTombstone,
+    SyncEntityRevision,
+    SyncStagedArtifact,
+    SyncTrustedPeer,
+)
+from app.services import sync_reconciliation_apply as sync_reconciliation_apply_service
 from app.services.paths import project_root
 from app.services.sync_identity import source_hash_to_project_id
 from app.services.sync_revisions import revision_payload_sha256
@@ -229,6 +240,413 @@ def test_reconciliation_apply_imports_manifest_when_bytes_are_already_staged(
         artifact = session.get(Artifact, f"art_source_{project_id}")
         assert artifact is not None
         assert Path(artifact.path).exists()
+
+
+def test_reconciliation_apply_scoped_extra_manifests_does_not_import_unscoped_project(
+    client: TestClient,
+    sample_audio_file: Path,
+    sample_rhythmic_audio_file: Path,
+) -> None:
+    peer_device_id = "peer-apply-scoped-extra"
+    _ensure_identity_and_peer(peer_device_id)
+    selected_sha256 = hashlib.sha256(sample_audio_file.read_bytes()).hexdigest()
+    unscoped_sha256 = hashlib.sha256(sample_rhythmic_audio_file.read_bytes()).hexdigest()
+    selected_project_id = source_hash_to_project_id(selected_sha256)
+    unscoped_project_id = source_hash_to_project_id(unscoped_sha256)
+    selected_manifest = _project_manifest(
+        selected_project_id,
+        selected_sha256,
+        sample_audio_file.stat().st_size,
+        peer_device_id=peer_device_id,
+        revision_id="rev_apply_scoped_selected",
+    )
+    unscoped_manifest = _project_manifest(
+        unscoped_project_id,
+        unscoped_sha256,
+        sample_rhythmic_audio_file.stat().st_size,
+        peer_device_id=peer_device_id,
+        revision_id="rev_apply_scoped_unscoped",
+    )
+    _stage_source_audio(
+        sample_audio_file,
+        content_sha256=selected_sha256,
+        provider_device_id=peer_device_id,
+    )
+    _stage_source_audio(
+        sample_rhythmic_audio_file,
+        content_sha256=unscoped_sha256,
+        provider_device_id=peer_device_id,
+    )
+
+    response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": {
+                "projects": [
+                    _remote_project(selected_project_id, selected_sha256),
+                    _remote_project(unscoped_project_id, unscoped_sha256),
+                ],
+                "artifacts": [],
+                "entity_revisions": [],
+                "delete_tombstones": [],
+            },
+            "project_manifests": [selected_manifest, unscoped_manifest],
+            "peer_inventory": [
+                {
+                    "device_id": peer_device_id,
+                    "available_content_sha256": [selected_sha256, unscoped_sha256],
+                }
+            ],
+            "project_ids": [selected_project_id],
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["failed_actions"] == 0
+    result_project_ids = {
+        result["action"]["project_id"] or result["action"]["item_id"]
+        for result in payload["results"]
+    }
+    planned_project_ids = {
+        item["project_id"]
+        for item in payload["plan"]["items"]
+        if item["project_id"] is not None
+    }
+    assert selected_project_id in result_project_ids
+    assert selected_project_id in planned_project_ids
+    assert unscoped_project_id not in result_project_ids
+    assert unscoped_project_id not in planned_project_ids
+
+    with SessionLocal() as session:
+        assert session.get(Project, selected_project_id) is not None
+        assert session.get(Project, unscoped_project_id) is None
+
+
+def test_reconciliation_apply_scoped_extra_manifest_does_not_hydrate_imported_unscoped_project(
+    client: TestClient,
+    sample_audio_file: Path,
+    sample_rhythmic_audio_file: Path,
+    tmp_path: Path,
+) -> None:
+    peer_device_id = "peer-apply-scoped-hydrate"
+    _ensure_identity_and_peer(peer_device_id)
+    selected_sha256 = hashlib.sha256(sample_audio_file.read_bytes()).hexdigest()
+    unscoped_sha256 = hashlib.sha256(sample_rhythmic_audio_file.read_bytes()).hexdigest()
+    selected_project_id = source_hash_to_project_id(selected_sha256)
+    unscoped_project_id = source_hash_to_project_id(unscoped_sha256)
+    analysis_payload = {
+        "project_id": unscoped_project_id,
+        "estimated_key": "D minor",
+        "tempo_bpm": 123.0,
+        "analysis_version": "scoped-regression",
+    }
+    analysis_path = tmp_path / "unscoped-analysis.json"
+    analysis_path.write_text(json.dumps(analysis_payload), encoding="utf-8")
+    analysis_sha256 = file_sha256(analysis_path)
+    assert analysis_sha256 is not None
+    analysis_artifact_id = "art_unscoped_analysis"
+    selected_manifest = _project_manifest(
+        selected_project_id,
+        selected_sha256,
+        sample_audio_file.stat().st_size,
+        peer_device_id=peer_device_id,
+        revision_id="rev_apply_scoped_hydrate_selected",
+    )
+    unscoped_manifest = _project_manifest(
+        unscoped_project_id,
+        unscoped_sha256,
+        sample_rhythmic_audio_file.stat().st_size,
+        peer_device_id=peer_device_id,
+        revision_id="rev_apply_scoped_hydrate_unscoped",
+        extra_artifacts=[
+            _artifact_manifest(
+                artifact_id=analysis_artifact_id,
+                project_id=unscoped_project_id,
+                artifact_type="analysis_json",
+                relative_path="analysis/analysis.json",
+                content_sha256=analysis_sha256,
+                size_bytes=analysis_path.stat().st_size,
+            )
+        ],
+    )
+    _stage_source_audio(
+        sample_audio_file,
+        content_sha256=selected_sha256,
+        provider_device_id=peer_device_id,
+    )
+    with SessionLocal() as session:
+        session.add(
+            Project(
+                id=unscoped_project_id,
+                display_name="Already Imported Cleanup Context",
+                source_sha256=unscoped_sha256,
+                source_path=str(sample_rhythmic_audio_file),
+                imported_path=str(sample_rhythmic_audio_file),
+            )
+        )
+        session.add(
+            Artifact(
+                id=analysis_artifact_id,
+                project_id=unscoped_project_id,
+                type="analysis_json",
+                format="json",
+                path=str(analysis_path),
+                content_sha256=analysis_sha256,
+                size_bytes=analysis_path.stat().st_size,
+                generated_by="analysis",
+                can_delete=True,
+                can_regenerate=True,
+                metadata_json={},
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": {
+                "projects": [
+                    _remote_project(selected_project_id, selected_sha256),
+                    _remote_project(unscoped_project_id, unscoped_sha256),
+                ],
+                "artifacts": [],
+                "entity_revisions": [],
+                "delete_tombstones": [],
+            },
+            "project_manifests": [selected_manifest, unscoped_manifest],
+            "peer_inventory": [
+                {
+                    "device_id": peer_device_id,
+                    "available_content_sha256": [
+                        selected_sha256,
+                        unscoped_sha256,
+                        analysis_sha256,
+                    ],
+                }
+            ],
+            "project_ids": [selected_project_id],
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["failed_actions"] == 0
+    result_project_ids = {
+        result["action"]["project_id"] or result["action"]["item_id"]
+        for result in payload["results"]
+    }
+    assert selected_project_id in result_project_ids
+    assert unscoped_project_id not in result_project_ids
+
+    with SessionLocal() as session:
+        assert session.get(Project, selected_project_id) is not None
+        assert session.get(Project, unscoped_project_id) is not None
+        assert session.get(AnalysisResult, unscoped_project_id) is None
+
+
+def test_reconciliation_apply_cleanup_preserves_pending_shared_content_hash(
+    client: TestClient,
+    tmp_path: Path,
+    sample_audio_file: Path,
+    sample_rhythmic_audio_file: Path,
+) -> None:
+    peer_device_id = "peer-apply-shared-pending"
+    _ensure_identity_and_peer(peer_device_id)
+    selected_sha256 = hashlib.sha256(sample_audio_file.read_bytes()).hexdigest()
+    pending_sha256 = hashlib.sha256(sample_rhythmic_audio_file.read_bytes()).hexdigest()
+    selected_project_id = source_hash_to_project_id(selected_sha256)
+    pending_project_id = source_hash_to_project_id(pending_sha256)
+    shared_path = tmp_path / "shared-stem.bin"
+    shared_path.write_bytes(b"shared duplicate stem bytes")
+    shared_sha256 = file_sha256(shared_path)
+    assert shared_sha256 is not None
+    shared_size = shared_path.stat().st_size
+    selected_manifest = _project_manifest(
+        selected_project_id,
+        selected_sha256,
+        sample_audio_file.stat().st_size,
+        peer_device_id=peer_device_id,
+        revision_id="rev_apply_shared_selected",
+        extra_artifacts=[
+            _artifact_manifest(
+                artifact_id=f"art_shared_{selected_project_id}",
+                project_id=selected_project_id,
+                artifact_type="stem",
+                relative_path="stems/shared.wav",
+                content_sha256=shared_sha256,
+                size_bytes=shared_size,
+            )
+        ],
+    )
+    pending_manifest = _project_manifest(
+        pending_project_id,
+        pending_sha256,
+        sample_rhythmic_audio_file.stat().st_size,
+        peer_device_id=peer_device_id,
+        revision_id="rev_apply_shared_pending",
+        extra_artifacts=[
+            _artifact_manifest(
+                artifact_id=f"art_shared_{pending_project_id}",
+                project_id=pending_project_id,
+                artifact_type="stem",
+                relative_path="stems/shared.wav",
+                content_sha256=shared_sha256,
+                size_bytes=shared_size,
+            )
+        ],
+    )
+    _stage_source_audio(
+        sample_audio_file,
+        content_sha256=selected_sha256,
+        provider_device_id=peer_device_id,
+    )
+    _stage_source_audio(
+        sample_rhythmic_audio_file,
+        content_sha256=pending_sha256,
+        provider_device_id=peer_device_id,
+    )
+    _stage_artifact(shared_path, content_sha256=shared_sha256, provider_device_id=peer_device_id)
+
+    response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": {
+                "projects": [
+                    _remote_project(selected_project_id, selected_sha256),
+                    _remote_project(pending_project_id, pending_sha256),
+                ],
+                "artifacts": [],
+                "entity_revisions": [],
+                "delete_tombstones": [],
+            },
+            "project_manifests": [selected_manifest, pending_manifest],
+            "peer_inventory": [
+                {
+                    "device_id": peer_device_id,
+                    "available_content_sha256": [selected_sha256, pending_sha256, shared_sha256],
+                }
+            ],
+            "project_ids": [selected_project_id],
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["failed_actions"] == 0
+    with SessionLocal() as session:
+        assert session.get(Project, selected_project_id) is not None
+        assert session.get(Project, pending_project_id) is None
+        assert session.get(SyncStagedArtifact, shared_sha256) is not None
+        assert session.get(SyncStagedArtifact, selected_sha256) is None
+
+
+def test_reconciliation_apply_generic_exception_becomes_sanitized_failed_action(
+    client: TestClient,
+    sample_audio_file: Path,
+    sample_rhythmic_audio_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    peer_device_id = "peer-apply-generic-error"
+    _ensure_identity_and_peer(peer_device_id)
+    failing_sha256 = hashlib.sha256(sample_audio_file.read_bytes()).hexdigest()
+    successful_sha256 = hashlib.sha256(sample_rhythmic_audio_file.read_bytes()).hexdigest()
+    failing_project_id = source_hash_to_project_id(failing_sha256)
+    successful_project_id = source_hash_to_project_id(successful_sha256)
+    failing_manifest = _project_manifest(
+        failing_project_id,
+        failing_sha256,
+        sample_audio_file.stat().st_size,
+        peer_device_id=peer_device_id,
+        revision_id="rev_apply_generic_error",
+    )
+    successful_manifest = _project_manifest(
+        successful_project_id,
+        successful_sha256,
+        sample_rhythmic_audio_file.stat().st_size,
+        peer_device_id=peer_device_id,
+        revision_id="rev_apply_generic_success",
+    )
+    _stage_source_audio(
+        sample_audio_file,
+        content_sha256=failing_sha256,
+        provider_device_id=peer_device_id,
+    )
+    _stage_source_audio(
+        sample_rhythmic_audio_file,
+        content_sha256=successful_sha256,
+        provider_device_id=peer_device_id,
+    )
+    original_import = sync_reconciliation_apply_service.import_staged_project_manifest
+    leaked_source_path = tmp_path / "secret-source.wav"
+
+    def fake_import_staged_project_manifest(
+        session: Any,
+        *,
+        manifest: Any,
+        **kwargs: Any,
+    ) -> Any:
+        raw_manifest = (
+            manifest.model_dump(mode="python")
+            if hasattr(manifest, "model_dump")
+            else manifest
+        )
+        project_id = raw_manifest["project"]["project_id"]
+        if project_id == failing_project_id:
+            raise RuntimeError(f"decoder failed source_path={leaked_source_path}")
+        return original_import(session, manifest=manifest, **kwargs)
+
+    monkeypatch.setattr(
+        sync_reconciliation_apply_service,
+        "import_staged_project_manifest",
+        fake_import_staged_project_manifest,
+    )
+
+    response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": {
+                "projects": [
+                    _remote_project(failing_project_id, failing_sha256),
+                    _remote_project(successful_project_id, successful_sha256),
+                ],
+                "artifacts": [],
+                "entity_revisions": [],
+                "delete_tombstones": [],
+            },
+            "project_manifests": [failing_manifest, successful_manifest],
+            "peer_inventory": [
+                {
+                    "device_id": peer_device_id,
+                    "available_content_sha256": [failing_sha256, successful_sha256],
+                }
+            ],
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["failed_actions"] == 1
+    failed_results = [result for result in payload["results"] if result["status"] == "failed"]
+    assert len(failed_results) == 1
+    failed_result = failed_results[0]
+    assert failed_result["action"]["project_id"] == failing_project_id
+    assert failed_result["reason"] == "Unexpected sync apply action error."
+    assert failed_result["details"]["error_code"] == "SYNC_RECONCILIATION_ACTION_EXCEPTION"
+    assert failed_result["details"]["exception_type"] == "RuntimeError"
+    assert str(leaked_source_path) not in json.dumps(failed_result["details"])
+
+    with SessionLocal() as session:
+        failing_project = session.get(Project, failing_project_id)
+        if failing_project is not None:
+            assert failing_project.sync_status != "local"
+        assert session.get(Artifact, f"art_source_{failing_project_id}") is None
+        assert session.get(Project, successful_project_id) is not None
 
 
 def test_reconciliation_apply_applies_trusted_delete_tombstone(

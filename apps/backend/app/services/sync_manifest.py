@@ -448,18 +448,12 @@ def import_staged_project_manifest(
             updated_at=project_manifest.updated_at,
         )
         session.add(project)
-        try:
-            session.flush()
-        except IntegrityError as exc:
-            session.rollback()
-            _raise_duplicate_project_source(session, project_manifest.project_id, project_manifest.source_sha256, exc)
     else:
         _upgrade_project_placeholder_from_manifest(
             project,
             project_manifest,
             source_path=source_path,
         )
-        session.flush()
 
     ensure_project_dirs(project.id)
     copied_paths: list[Path] = []

@@ -12,7 +12,7 @@ from app.models import Artifact, Job
 from app.services.stem_models import STEM_ARTIFACT_TYPES
 from app.services.sync_tombstones import record_artifact_delete_tombstone
 from app.utils.hashing import file_sha256
-from app.utils.ids import new_id
+from app.utils.ids import new_artifact_id
 
 REGENERABLE_ARTIFACT_TYPES = {
     "analysis_json",
@@ -56,7 +56,7 @@ def register_artifact(
     if created_at is not None:
         artifact_kwargs["created_at"] = created_at
     artifact = Artifact(
-        id=artifact_id or new_id("art"),
+        id=artifact_id or new_artifact_id(),
         project_id=project_id,
         type=artifact_type,
         format=artifact_format,

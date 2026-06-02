@@ -6,6 +6,7 @@ from collections.abc import Iterable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
+from errno import EXDEV
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -46,11 +47,27 @@ def stage_sync_artifact(
     normalized_sha256 = _normalize_content_sha256(content_sha256)
     _validate_size_bytes(size_bytes)
     source = Path(source_path).expanduser().resolve(strict=False)
-    _verify_source_file(source, content_sha256=normalized_sha256, size_bytes=size_bytes)
+    source_is_transport_temp = _is_transport_temp_source(source)
 
     relative_path = _relative_path_for_hash(normalized_sha256)
-    destination_path = _staging_root() / Path(relative_path)
-    if not _staged_path_matches(destination_path, content_sha256=normalized_sha256, size_bytes=size_bytes):
+    destination_path = _staging_destination_path(relative_path)
+    destination_verified = _staged_path_matches(
+        destination_path,
+        content_sha256=normalized_sha256,
+        size_bytes=size_bytes,
+    )
+    if destination_verified:
+        if not source_is_transport_temp:
+            _verify_source_file(source, content_sha256=normalized_sha256, size_bytes=size_bytes)
+    elif source_is_transport_temp:
+        destination_verified = _promote_transport_source_to_verified_destination(
+            source,
+            destination_path,
+            content_sha256=normalized_sha256,
+            size_bytes=size_bytes,
+        )
+    else:
+        _verify_source_file(source, content_sha256=normalized_sha256, size_bytes=size_bytes)
         _copy_verified_source(source, destination_path)
 
     public_metadata = dict(metadata) if metadata is not None else None
@@ -98,6 +115,8 @@ def stage_sync_artifact(
         record.updated_at = now
 
     session.flush()
+    if destination_verified:
+        return _to_dto(record, destination_path)
     return _verify_staged_record(record, expected_size_bytes=size_bytes)
 
 
@@ -317,12 +336,72 @@ def _copy_verified_source(source_path: Path, destination_path: Path) -> None:
         ) from exc
 
 
+def _promote_transport_source_to_verified_destination(
+    source_path: Path,
+    destination_path: Path,
+    *,
+    content_sha256: str,
+    size_bytes: int,
+) -> bool:
+    try:
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.replace(destination_path)
+    except OSError as exc:
+        if exc.errno == EXDEV:
+            _verify_source_file(source_path, content_sha256=content_sha256, size_bytes=size_bytes)
+            _copy_verified_source(source_path, destination_path)
+            return False
+        raise AppError(
+            "SYNC_STAGING_MOVE_FAILED",
+            "Transport sync artifact could not be promoted into sync staging.",
+            details={"source_path": str(source_path), "destination_path": str(destination_path)},
+        ) from exc
+    if _staged_path_matches(destination_path, content_sha256=content_sha256, size_bytes=size_bytes):
+        return True
+    with suppress(OSError):
+        destination_path.unlink(missing_ok=True)
+    raise AppError(
+        "SYNC_STAGING_PROMOTED_FILE_MISMATCH",
+        "Promoted transport sync artifact did not match the requested staged artifact hash or size.",
+        status_code=status.HTTP_409_CONFLICT,
+        details={"source_path": str(source_path), "destination_path": str(destination_path)},
+    )
+
+
 def _relative_path_for_hash(content_sha256: str) -> str:
     return str(PurePosixPath("sha256", content_sha256[:2], content_sha256))
 
 
 def _staging_root() -> Path:
     return get_settings().data_root / "sync" / "staging"
+
+
+def _transport_temp_root() -> Path:
+    return get_settings().data_root / "sync" / "transport-tmp"
+
+
+def _staging_destination_path(relative_path: str) -> Path:
+    root = _staging_root().resolve(strict=False)
+    destination = (root / Path(relative_path)).resolve(strict=False)
+    try:
+        destination.relative_to(root)
+    except ValueError as exc:
+        raise AppError(
+            "SYNC_STAGING_DESTINATION_INVALID",
+            "Staged sync artifact destination points outside the sync staging root.",
+            status_code=status.HTTP_409_CONFLICT,
+            details={"relative_path": relative_path},
+        ) from exc
+    return destination
+
+
+def _is_transport_temp_source(source_path: Path) -> bool:
+    transport_root = _transport_temp_root().resolve(strict=False)
+    try:
+        source_path.resolve(strict=False).relative_to(transport_root)
+    except ValueError:
+        return False
+    return True
 
 
 def _resolve_staged_relative_path(relative_path: str) -> Path:

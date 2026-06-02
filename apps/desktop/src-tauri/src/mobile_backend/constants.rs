@@ -1,5 +1,9 @@
 
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const ARTIFACT_ID_PREFIX: &str = "art_";
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const ARTIFACT_ID_RANDOM_BYTE_COUNT: usize = 14;
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 const PROJECT_ID_PREFIX: &str = "proj_sha256_";
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 const SYNC_PROJECT_MANIFEST_SCHEMA_VERSION: &str = "1";

@@ -1345,7 +1345,7 @@ mod desktop {
     #[cfg(not(target_os = "android"))]
     use std::io::{BufRead, BufReader};
     use std::{
-        collections::{BTreeMap, HashMap, HashSet},
+        collections::{BTreeMap, HashMap, HashSet, VecDeque},
         env,
         fs::{self, File},
         io::{self, Read, Write},
@@ -1378,7 +1378,9 @@ mod desktop {
     const DISCOVERY_MAX_PACKET_BYTES: usize = 8192;
     const IROH_ALPN: &[u8] = b"tuneforge-sync/iroh/v1";
     const IROH_ARTIFACT_PARALLELISM: usize = 4;
+    const IROH_ARTIFACT_STAGING_QUEUE_CAPACITY: usize = IROH_ARTIFACT_PARALLELISM * 2;
     const IROH_BATCH_CONTROL_POLL_INTERVAL: Duration = Duration::from_millis(100);
+    const IROH_MISSING_STREAM_AFTER_CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
     const IROH_DATA_HEADER_MAX_BYTES: usize = 16 * 1024;
     const IROH_ARTIFACT_RECEIVE_CANCELLED: &str =
         "Iroh artifact stream receive was cancelled after batch control stopped the transfer.";
@@ -3888,6 +3890,11 @@ mod desktop {
     }
 
     impl IrohDataConnection {
+        fn close_for_artifact_batch_abort(&self) {
+            self.connection
+                .close(VarInt::from_u32(0), b"artifact batch aborted");
+        }
+
         fn open_send_stream(&self) -> Result<SendStream, String> {
             let connection = self.connection.clone();
             self.runtime_handle.block_on(async move {
@@ -4535,6 +4542,7 @@ mod desktop {
     #[derive(Clone, Debug)]
     struct StagedRemoteProject {
         manifest: Value,
+        cleanup_context_manifests: Vec<Value>,
         available_content_sha256: Vec<String>,
         transfer_failure: Option<String>,
     }
@@ -4544,17 +4552,34 @@ mod desktop {
         Tombstone(String),
     }
 
-    // Apply work stays off the transport thread so peers keep serving artifact requests.
-    struct RemoteApplyWorker {
-        sender: Option<mpsc::Sender<RemoteApplyTask>>,
-        handle: JoinHandle<RemoteApplyWorkerResult>,
-        queued_project_ids: Vec<String>,
-        enqueue_failures: Vec<SyncTransportProjectResult>,
+    enum BackendWriteTask {
+        StageIrohArtifact(IrohReceivedArtifact),
+        Apply {
+            project_id: String,
+            task: RemoteApplyTask,
+        },
     }
 
-    struct RemoteApplyWorkerResult {
+    enum BackendWriteEvent {
+        Stage(IrohStageResult),
+        Apply {
+            project_id: String,
+            result: SyncTransportProjectResult,
+            timings: Vec<SyncTransportTimingEvidence>,
+        },
+    }
+
+    // Backend writes run through one FIFO lane so staging and reconciliation apply never overlap.
+    struct RemoteApplyWorker {
+        sender: Option<mpsc::SyncSender<BackendWriteTask>>,
+        event_receiver: mpsc::Receiver<BackendWriteEvent>,
+        handle: Option<JoinHandle<()>>,
+        queued_project_ids: Arc<Mutex<Vec<String>>>,
+        completed_project_ids: HashSet<String>,
+        enqueue_failures: Arc<Mutex<Vec<SyncTransportProjectResult>>>,
+        apply_cancelled: Arc<AtomicBool>,
         project_results: Vec<SyncTransportProjectResult>,
-        timings: Vec<SyncTransportTimingEvidence>,
+        pending_stage_jobs: usize,
     }
 
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -4625,6 +4650,65 @@ mod desktop {
                 timings.extend(timers.into_iter().map(SyncPhaseTimer::finish));
                 result
             });
+        if connection.transport() == TransportKind::Iroh {
+            if let Some(iroh_data) = connection.iroh_data_connection() {
+                stage_remote_manifest_iroh_artifacts(
+                    client,
+                    connection,
+                    iroh_data,
+                    peer_device_id,
+                    planned_projects,
+                    &mut apply_worker,
+                    &mut received_artifacts,
+                    metrics,
+                    timings,
+                    progress,
+                );
+            } else {
+                stage_remote_manifest_artifacts_sequential(
+                    client,
+                    connection,
+                    peer_device_id,
+                    planned_projects,
+                    &mut apply_worker,
+                    &mut received_artifacts,
+                    metrics,
+                    timings,
+                    progress,
+                );
+            }
+        } else {
+            stage_remote_manifest_artifacts_sequential(
+                client,
+                connection,
+                peer_device_id,
+                planned_projects,
+                &mut apply_worker,
+                &mut received_artifacts,
+                metrics,
+                timings,
+                progress,
+            );
+        }
+
+        StagedRemoteImport {
+            plan_failures,
+            apply_worker: Some(apply_worker),
+            received_artifacts,
+        }
+    }
+
+    fn stage_remote_manifest_artifacts_sequential(
+        client: &BackendClient,
+        connection: &SharedPeerConnection,
+        peer_device_id: &str,
+        planned_projects: Vec<PlannedRemoteProject>,
+        apply_worker: &mut RemoteApplyWorker,
+        received_artifacts: &mut Vec<SyncTransportTransferResult>,
+        metrics: &mut SyncRunMetrics,
+        timings: &mut Vec<SyncTransportTimingEvidence>,
+        progress: &ProgressReporter,
+    ) {
         for planned in planned_projects {
             match planned.manifest {
                 Some(manifest) => {
@@ -4634,7 +4718,7 @@ mod desktop {
                         peer_device_id,
                         &manifest,
                         &planned.plan,
-                        &mut received_artifacts,
+                        received_artifacts,
                         metrics,
                         timings,
                         progress,
@@ -4650,12 +4734,6 @@ mod desktop {
                     }
                 }
             }
-        }
-
-        StagedRemoteImport {
-            plan_failures,
-            apply_worker: Some(apply_worker),
-            received_artifacts,
         }
     }
 
@@ -4800,6 +4878,9 @@ mod desktop {
 
     fn finish_staged_remote_import_for_failure(staged: Option<StagedRemoteImport>) {
         if let Some(staged) = staged {
+            if let Some(apply_worker) = staged.apply_worker.as_ref() {
+                apply_worker.cancel_pending_apply();
+            }
             let mut timings = Vec::new();
             let _ = finish_staged_remote_import(staged, &mut timings);
         }
@@ -4813,48 +4894,98 @@ mod desktop {
             transport_id: &str,
             progress: ProgressReporter,
         ) -> Self {
-            let (sender, receiver) = mpsc::channel();
+            let (sender, receiver) =
+                mpsc::sync_channel::<BackendWriteTask>(IROH_ARTIFACT_STAGING_QUEUE_CAPACITY);
+            let (event_sender, event_receiver) = mpsc::channel::<BackendWriteEvent>();
             let client = client.clone();
             let peer_device_id = peer_device_id.to_string();
             let remote_metadata = remote_metadata.clone();
             let transport_id = transport_id.to_string();
-            let handle = thread::spawn(move || {
-                let mut result = RemoteApplyWorkerResult {
-                    project_results: Vec::new(),
-                    timings: Vec::new(),
-                };
-                while let Ok(task) = receiver.recv() {
-                    let project_result = match task {
-                        RemoteApplyTask::Project(project) => apply_staged_remote_manifest_project(
-                            &client,
-                            &peer_device_id,
-                            &remote_metadata,
-                            &project,
-                            &transport_id,
-                            &mut result.timings,
-                            &progress,
-                        ),
-                        RemoteApplyTask::Tombstone(project_id) => apply_remote_tombstone_project(
-                            &client,
-                            &peer_device_id,
-                            &remote_metadata,
-                            &project_id,
-                            &transport_id,
-                            &mut result.timings,
-                            &progress,
-                        ),
-                    };
-                    result.project_results.push(project_result);
+            let queued_project_ids = Arc::new(Mutex::new(Vec::new()));
+            let enqueue_failures = Arc::new(Mutex::new(Vec::new()));
+            let apply_cancelled = Arc::new(AtomicBool::new(false));
+            let handle = thread::spawn({
+                let progress = progress.clone();
+                let apply_cancelled = Arc::clone(&apply_cancelled);
+                move || {
+                    while let Ok(task) = receiver.recv() {
+                        let event = match task {
+                            BackendWriteTask::StageIrohArtifact(received) => {
+                                let mut stage_timings = Vec::new();
+                                let transfer = stage_received_iroh_artifact(
+                                    &client,
+                                    &transport_id,
+                                    &peer_device_id,
+                                    received,
+                                    &mut stage_timings,
+                                );
+                                BackendWriteEvent::Stage(IrohStageResult {
+                                    transfer,
+                                    timings: stage_timings,
+                                })
+                            }
+                            BackendWriteTask::Apply { project_id, task } => {
+                                let mut apply_timings = Vec::new();
+                                let result = if apply_cancelled.load(Ordering::SeqCst) {
+                                    failed_project_result(
+                                        &project_id,
+                                        "Remote sync import skipped after Iroh artifact transfer aborted.",
+                                    )
+                                } else {
+                                    match task {
+                                        RemoteApplyTask::Project(project) => {
+                                            apply_staged_remote_manifest_project(
+                                                &client,
+                                                &peer_device_id,
+                                                &remote_metadata,
+                                                &project,
+                                                &transport_id,
+                                                &mut apply_timings,
+                                                &progress,
+                                            )
+                                        }
+                                        RemoteApplyTask::Tombstone(tombstone_project_id) => {
+                                            apply_remote_tombstone_project(
+                                                &client,
+                                                &peer_device_id,
+                                                &remote_metadata,
+                                                &tombstone_project_id,
+                                                &transport_id,
+                                                &mut apply_timings,
+                                                &progress,
+                                            )
+                                        }
+                                    }
+                                };
+                                BackendWriteEvent::Apply {
+                                    project_id,
+                                    result,
+                                    timings: apply_timings,
+                                }
+                            }
+                        };
+                        if event_sender.send(event).is_err() {
+                            break;
+                        }
+                    }
                 }
-                result
             });
 
             Self {
                 sender: Some(sender),
-                handle,
-                queued_project_ids: Vec::new(),
-                enqueue_failures: Vec::new(),
+                event_receiver,
+                handle: Some(handle),
+                queued_project_ids,
+                completed_project_ids: HashSet::new(),
+                enqueue_failures,
+                apply_cancelled,
+                project_results: Vec::new(),
+                pending_stage_jobs: 0,
             }
+        }
+
+        fn cancel_pending_apply(&self) {
+            self.apply_cancelled.store(true, Ordering::SeqCst);
         }
 
         fn enqueue_project(&mut self, project: StagedRemoteProject) {
@@ -4867,21 +4998,104 @@ mod desktop {
         }
 
         fn enqueue(&mut self, project_id: String, task: RemoteApplyTask) {
-            let send_result = self
-                .sender
-                .as_ref()
-                .ok_or_else(|| "Remote sync import worker is closed.".to_string())
-                .and_then(|sender| {
-                    sender
-                        .send(task)
-                        .map_err(|_| "Remote sync import worker stopped.".to_string())
-                });
-            match send_result {
-                Ok(()) => self.queued_project_ids.push(project_id),
-                Err(error) => self
-                    .enqueue_failures
-                    .push(failed_project_result(&project_id, &error)),
+            let Some(sender) = &self.sender else {
+                self.enqueue_failures
+                    .lock()
+                    .map(|mut failures| {
+                        failures.push(failed_project_result(
+                            &project_id,
+                            "Remote sync import worker is closed.",
+                        ));
+                    })
+                    .ok();
+                return;
+            };
+            match sender.send(BackendWriteTask::Apply {
+                project_id: project_id.clone(),
+                task,
+            }) {
+                Ok(()) => {
+                    if let Ok(mut queued) = self.queued_project_ids.lock() {
+                        queued.push(project_id);
+                    }
+                }
+                Err(_) => {
+                    if let Ok(mut failures) = self.enqueue_failures.lock() {
+                        failures.push(failed_project_result(
+                            &project_id,
+                            "Remote sync import worker stopped.",
+                        ));
+                    }
+                }
             }
+        }
+
+        fn process_backend_write_event(
+            &mut self,
+            event: BackendWriteEvent,
+            timings: &mut Vec<SyncTransportTimingEvidence>,
+            stage_results: &mut Vec<IrohStageResult>,
+        ) {
+            match event {
+                BackendWriteEvent::Stage(stage_result) => {
+                    self.pending_stage_jobs = self.pending_stage_jobs.saturating_sub(1);
+                    stage_results.push(stage_result);
+                }
+                BackendWriteEvent::Apply {
+                    project_id,
+                    result,
+                    timings: mut apply_timings,
+                } => {
+                    timings.append(&mut apply_timings);
+                    self.completed_project_ids.insert(project_id);
+                    self.project_results.push(result);
+                }
+            }
+        }
+
+        fn drain_backend_write_events(
+            &mut self,
+            timings: &mut Vec<SyncTransportTimingEvidence>,
+        ) -> Vec<IrohStageResult> {
+            let mut stage_results = Vec::new();
+            while let Ok(event) = self.event_receiver.try_recv() {
+                self.process_backend_write_event(event, timings, &mut stage_results);
+            }
+            stage_results
+        }
+
+        fn enqueue_received_iroh_artifact(
+            &mut self,
+            received: IrohReceivedArtifact,
+        ) -> Result<(), IrohReceivedArtifact> {
+            let Some(sender) = &self.sender else {
+                return Err(received);
+            };
+            match sender.send(BackendWriteTask::StageIrohArtifact(received)) {
+                Ok(()) => {
+                    self.pending_stage_jobs = self.pending_stage_jobs.saturating_add(1);
+                    Ok(())
+                }
+                Err(error) => match error.0 {
+                    BackendWriteTask::StageIrohArtifact(received) => Err(received),
+                    BackendWriteTask::Apply { .. } => unreachable!(),
+                },
+            }
+        }
+
+        fn finish_iroh_stage_jobs(
+            &mut self,
+            timings: &mut Vec<SyncTransportTimingEvidence>,
+        ) -> Result<Vec<IrohStageResult>, String> {
+            let mut stage_results = Vec::new();
+            while self.pending_stage_jobs > 0 {
+                let event = self.event_receiver.recv().map_err(|_| {
+                    "Remote sync backend write lane stopped before staging all received artifacts."
+                        .to_string()
+                })?;
+                self.process_backend_write_event(event, timings, &mut stage_results);
+            }
+            Ok(stage_results)
         }
 
         fn finish(
@@ -4889,21 +5103,443 @@ mod desktop {
             timings: &mut Vec<SyncTransportTimingEvidence>,
         ) -> Vec<SyncTransportProjectResult> {
             self.sender.take();
-            match self.handle.join() {
-                Ok(mut result) => {
-                    timings.append(&mut result.timings);
-                    result.project_results.extend(self.enqueue_failures);
-                    result.project_results
-                }
-                Err(_) => self
-                    .queued_project_ids
-                    .iter()
-                    .map(|project_id| {
-                        failed_project_result(project_id, "Remote sync import worker panicked.")
-                    })
-                    .chain(self.enqueue_failures)
-                    .collect(),
+            let mut stage_results = Vec::new();
+            while let Ok(event) = self.event_receiver.recv() {
+                self.process_backend_write_event(event, timings, &mut stage_results);
             }
+            if let Some(handle) = self.handle.take() {
+                if handle.join().is_err() {
+                    if let Ok(queued) = self.queued_project_ids.lock() {
+                        for project_id in queued.iter() {
+                            if !self.completed_project_ids.contains(project_id) {
+                                self.project_results.push(failed_project_result(
+                                    project_id,
+                                    "Remote sync import worker panicked.",
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            if let Ok(mut failures) = self.enqueue_failures.lock() {
+                self.project_results.extend(failures.drain(..));
+            }
+            self.project_results
+        }
+    }
+
+    struct IrohScheduledRemoteProject {
+        manifest: Value,
+        transfers: Vec<SyncTransportTransferResult>,
+        pending_artifacts: HashMap<String, RemoteArtifact>,
+        transfer_failure: Option<String>,
+        discovered: bool,
+        enqueued: bool,
+    }
+
+    impl IrohScheduledRemoteProject {
+        fn new(manifest: Value) -> Self {
+            Self {
+                manifest,
+                transfers: Vec::new(),
+                pending_artifacts: HashMap::new(),
+                transfer_failure: None,
+                discovered: false,
+                enqueued: false,
+            }
+        }
+
+        fn add_pending_artifact(&mut self, artifact: RemoteArtifact) {
+            self.pending_artifacts
+                .insert(artifact.artifact_id.clone(), artifact);
+        }
+
+        fn mark_discovered(&mut self) {
+            self.discovered = true;
+        }
+
+        fn record_transfer(
+            &mut self,
+            transfer: Result<SyncTransportTransferResult, TransferFailure>,
+            received_artifacts: &mut Vec<SyncTransportTransferResult>,
+        ) {
+            match transfer {
+                Ok(result) => {
+                    self.pending_artifacts.remove(&result.artifact_id);
+                    self.transfers.push(result.clone());
+                    received_artifacts.push(result);
+                }
+                Err(error) => {
+                    self.pending_artifacts.remove(&error.result.artifact_id);
+                    self.transfers.push(error.result.clone());
+                    received_artifacts.push(error.result);
+                    self.transfer_failure.get_or_insert(error.message);
+                }
+            }
+        }
+
+        fn fail_pending_artifacts(
+            &mut self,
+            message: &str,
+            received_artifacts: &mut Vec<SyncTransportTransferResult>,
+        ) {
+            let pending = self.pending_artifacts.values().cloned().collect::<Vec<_>>();
+            for artifact in pending {
+                self.record_transfer(
+                    Err(transfer_failure(
+                        &artifact,
+                        TransferTimer::zero_now(),
+                        message.to_string(),
+                    )),
+                    received_artifacts,
+                );
+            }
+        }
+
+        fn is_ready(&self) -> bool {
+            if !self.discovered
+                || self.enqueued
+                || (self.transfer_failure.is_none() && !self.pending_artifacts.is_empty())
+            {
+                return false;
+            }
+            true
+        }
+
+        fn take_ready_project(
+            &mut self,
+            cleanup_context_manifests: Vec<Value>,
+        ) -> Option<StagedRemoteProject> {
+            if !self.is_ready() {
+                return None;
+            }
+            self.enqueued = true;
+            Some(StagedRemoteProject {
+                manifest: self.manifest.clone(),
+                cleanup_context_manifests,
+                available_content_sha256: available_content_sha256(&self.transfers),
+                transfer_failure: self.transfer_failure.clone(),
+            })
+        }
+    }
+
+    struct IrohPendingArtifactSubscribers {
+        artifact: RemoteArtifact,
+        project_indices: Vec<usize>,
+    }
+
+    enum IrohRegisteredPlannedRemoteProject {
+        Manifest {
+            project_index: usize,
+            manifest: Value,
+            plan: Value,
+        },
+        Tombstone {
+            project_id: String,
+            plan: Value,
+        },
+    }
+
+    #[derive(Default)]
+    struct IrohGlobalProjectScheduler {
+        projects: Vec<IrohScheduledRemoteProject>,
+        artifact_subscribers: HashMap<String, IrohPendingArtifactSubscribers>,
+    }
+
+    impl IrohGlobalProjectScheduler {
+        fn push_project(&mut self, manifest: Value) -> usize {
+            let index = self.projects.len();
+            self.projects
+                .push(IrohScheduledRemoteProject::new(manifest));
+            index
+        }
+
+        fn mark_project_discovered(&mut self, project_index: usize) {
+            if let Some(project) = self.projects.get_mut(project_index) {
+                project.mark_discovered();
+            }
+        }
+
+        fn add_pending_artifact(
+            &mut self,
+            project_index: usize,
+            artifact: RemoteArtifact,
+        ) -> Result<bool, String> {
+            let artifact_id = artifact.artifact_id.clone();
+            if let Some(project) = self.projects.get_mut(project_index) {
+                project.add_pending_artifact(artifact.clone());
+            }
+            if let Some(subscribers) = self.artifact_subscribers.get_mut(&artifact_id) {
+                if subscribers.artifact.content_sha256 != artifact.content_sha256
+                    || subscribers.artifact.size_bytes != artifact.size_bytes
+                {
+                    return Err(format!(
+                        "Sync artifact batch repeated artifact {artifact_id}."
+                    ));
+                }
+                subscribers.project_indices.push(project_index);
+                return Ok(false);
+            }
+            self.artifact_subscribers.insert(
+                artifact_id,
+                IrohPendingArtifactSubscribers {
+                    artifact,
+                    project_indices: vec![project_index],
+                },
+            );
+            Ok(true)
+        }
+
+        fn record_project_transfer(
+            &mut self,
+            project_index: usize,
+            transfer: Result<SyncTransportTransferResult, TransferFailure>,
+            received_artifacts: &mut Vec<SyncTransportTransferResult>,
+        ) {
+            if let Some(project) = self.projects.get_mut(project_index) {
+                project.record_transfer(transfer, received_artifacts);
+            }
+        }
+
+        fn record_artifact_transfer(
+            &mut self,
+            transfer: Result<SyncTransportTransferResult, TransferFailure>,
+            received_artifacts: &mut Vec<SyncTransportTransferResult>,
+        ) {
+            let artifact_id = match &transfer {
+                Ok(result) => result.artifact_id.clone(),
+                Err(error) => error.result.artifact_id.clone(),
+            };
+            let Some(subscribers) = self.artifact_subscribers.remove(&artifact_id) else {
+                return;
+            };
+            for project_index in subscribers.project_indices {
+                self.record_project_transfer(project_index, transfer.clone(), received_artifacts);
+            }
+        }
+
+        fn drain_ready_projects(&mut self) -> Vec<StagedRemoteProject> {
+            let ready_indices = self
+                .projects
+                .iter()
+                .enumerate()
+                .filter_map(|(index, project)| project.is_ready().then_some(index))
+                .collect::<Vec<_>>();
+            let mut staged = Vec::new();
+            for index in ready_indices {
+                let cleanup_context_manifests = self.cleanup_context_manifests_for(index);
+                if let Some(project) = self
+                    .projects
+                    .get_mut(index)
+                    .and_then(|project| project.take_ready_project(cleanup_context_manifests))
+                {
+                    staged.push(project);
+                }
+            }
+            staged
+        }
+
+        fn cleanup_context_manifests_for(&self, ready_index: usize) -> Vec<Value> {
+            self.projects
+                .iter()
+                .enumerate()
+                .filter(|(index, project)| *index != ready_index && !project.enqueued)
+                .map(|(_, project)| project.manifest.clone())
+                .collect()
+        }
+
+        fn fail_unfinished_projects(
+            &mut self,
+            message: &str,
+            received_artifacts: &mut Vec<SyncTransportTransferResult>,
+        ) -> Vec<StagedRemoteProject> {
+            for project in &mut self.projects {
+                if !project.enqueued && !project.pending_artifacts.is_empty() {
+                    project.fail_pending_artifacts(message, received_artifacts);
+                }
+            }
+            self.drain_ready_projects()
+        }
+    }
+
+    fn register_planned_iroh_projects(
+        planned_projects: Vec<PlannedRemoteProject>,
+        scheduler: &mut IrohGlobalProjectScheduler,
+    ) -> Vec<IrohRegisteredPlannedRemoteProject> {
+        planned_projects
+            .into_iter()
+            .map(|planned| match planned.manifest {
+                Some(manifest) => {
+                    let project_index = scheduler.push_project(manifest.clone());
+                    IrohRegisteredPlannedRemoteProject::Manifest {
+                        project_index,
+                        manifest,
+                        plan: planned.plan,
+                    }
+                }
+                None => IrohRegisteredPlannedRemoteProject::Tombstone {
+                    project_id: planned.project_id,
+                    plan: planned.plan,
+                },
+            })
+            .collect()
+    }
+
+    fn stage_remote_manifest_iroh_artifacts(
+        client: &BackendClient,
+        connection: &SharedPeerConnection,
+        iroh_data: IrohDataConnection,
+        peer_device_id: &str,
+        planned_projects: Vec<PlannedRemoteProject>,
+        apply_worker: &mut RemoteApplyWorker,
+        received_artifacts: &mut Vec<SyncTransportTransferResult>,
+        metrics: &mut SyncRunMetrics,
+        timings: &mut Vec<SyncTransportTimingEvidence>,
+        progress: &ProgressReporter,
+    ) {
+        let mut scheduler = IrohGlobalProjectScheduler::default();
+        let mut pending = Vec::new();
+        let mut ready_projects = Vec::new();
+        let mut ready_tombstone_project_ids = Vec::new();
+        let registered_projects = register_planned_iroh_projects(planned_projects, &mut scheduler);
+
+        for planned in registered_projects {
+            match planned {
+                IrohRegisteredPlannedRemoteProject::Manifest {
+                    project_index,
+                    manifest,
+                    plan,
+                } => {
+                    let entries = planned_fetch_artifact_entries(
+                        &plan,
+                        std::slice::from_ref(&manifest),
+                        peer_device_id,
+                    );
+                    for entry in entries {
+                        let artifact = entry.artifact;
+                        let timer =
+                            SyncPhaseTimer::start_artifact("artifact_staging_check", &artifact);
+                        let staged = {
+                            let _progress = progress.start_phase(
+                                "artifact_transfer",
+                                "Checking staged artifact content.",
+                            );
+                            already_staged_artifact_result(client, &artifact)
+                        };
+                        timings.push(timer.finish());
+                        match staged {
+                            Ok(true) => {
+                                scheduler.record_project_transfer(
+                                    project_index,
+                                    Ok(transfer_result(
+                                        &artifact,
+                                        "already_staged",
+                                        Some(
+                                            "Artifact content was already staged and verified locally."
+                                                .to_string(),
+                                        ),
+                                        TransferTimer::zero_now(),
+                                    )),
+                                    received_artifacts,
+                                );
+                            }
+                            Ok(false) => match scheduler
+                                .add_pending_artifact(project_index, artifact.clone())
+                            {
+                                Ok(true) => pending.push(PendingArtifactTransfer { artifact }),
+                                Ok(false) => {}
+                                Err(error) => scheduler.record_project_transfer(
+                                    project_index,
+                                    Err(transfer_failure(
+                                        &artifact,
+                                        TransferTimer::zero_now(),
+                                        error,
+                                    )),
+                                    received_artifacts,
+                                ),
+                            },
+                            Err(error) => scheduler.record_project_transfer(
+                                project_index,
+                                Err(transfer_failure(
+                                    &artifact,
+                                    TransferTimer::zero_now(),
+                                    error,
+                                )),
+                                received_artifacts,
+                            ),
+                        }
+                    }
+                    scheduler.mark_project_discovered(project_index);
+                    ready_projects.extend(scheduler.drain_ready_projects());
+                }
+                IrohRegisteredPlannedRemoteProject::Tombstone { project_id, plan } => {
+                    if planned_delete_project_ids(&plan)
+                        .into_iter()
+                        .any(|delete_project_id| delete_project_id == project_id)
+                    {
+                        ready_tombstone_project_ids.push(project_id);
+                    }
+                }
+            }
+        }
+
+        if !pending.is_empty() {
+            let pending = round_robin_pending_artifacts_by_project(pending);
+            let can_apply_after_iroh = request_and_stage_global_iroh_artifact_batch_on_write_lane(
+                client,
+                connection,
+                iroh_data,
+                peer_device_id,
+                pending,
+                metrics,
+                timings,
+                progress,
+                apply_worker,
+                |transfer, _allow_project_apply| {
+                    scheduler.record_artifact_transfer(transfer, received_artifacts);
+                    ready_projects.extend(scheduler.drain_ready_projects());
+                },
+            );
+            if !can_apply_after_iroh {
+                apply_worker.cancel_pending_apply();
+                enqueue_collected_iroh_ready_projects(
+                    apply_worker,
+                    &mut ready_projects,
+                    &mut ready_tombstone_project_ids,
+                );
+                for staged in scheduler.fail_unfinished_projects(
+                    "Sync artifact batch transfer stopped before all project artifacts were staged.",
+                    received_artifacts,
+                ) {
+                    apply_worker.enqueue_project(staged);
+                }
+                return;
+            }
+        }
+
+        enqueue_collected_iroh_ready_projects(
+            apply_worker,
+            &mut ready_projects,
+            &mut ready_tombstone_project_ids,
+        );
+        for staged in scheduler.fail_unfinished_projects(
+            "Sync artifact batch transfer stopped before all project artifacts were staged.",
+            received_artifacts,
+        ) {
+            apply_worker.enqueue_project(staged);
+        }
+    }
+
+    fn enqueue_collected_iroh_ready_projects(
+        apply_worker: &mut RemoteApplyWorker,
+        ready_projects: &mut Vec<StagedRemoteProject>,
+        ready_tombstone_project_ids: &mut Vec<String>,
+    ) {
+        for staged in ready_projects.drain(..) {
+            apply_worker.enqueue_project(staged);
+        }
+        for project_id in ready_tombstone_project_ids.drain(..) {
+            apply_worker.enqueue_tombstone(project_id);
         }
     }
 
@@ -4988,6 +5624,7 @@ mod desktop {
 
         StagedRemoteProject {
             manifest: manifest.clone(),
+            cleanup_context_manifests: Vec::new(),
             available_content_sha256: available_content_sha256(&project_transfers),
             transfer_failure,
         }
@@ -5025,6 +5662,7 @@ mod desktop {
             peer_device_id,
             remote_metadata,
             &staged.manifest,
+            &staged.cleanup_context_manifests,
             &staged.available_content_sha256,
             transport_id,
             timings,
@@ -5084,21 +5722,39 @@ mod desktop {
         peer_device_id: &str,
         remote_metadata: &Value,
         manifest: &Value,
+        cleanup_context_manifests: &[Value],
         available_content_sha256: &[String],
         transport_id: &str,
         timings: &mut Vec<SyncTransportTimingEvidence>,
         progress: &ProgressReporter,
     ) -> Result<SyncTransportProjectResult, BackendError> {
         let project_id = manifest_project_id(manifest);
-        let manifests = vec![manifest.clone()];
-        let remote_metadata = remote_metadata_for_project(remote_metadata, &project_id);
-        let body = reconciliation_apply_body(
-            peer_device_id,
-            &remote_metadata,
-            &manifests,
-            available_content_sha256,
-            transport_id,
-        );
+        let manifests =
+            apply_project_manifests_with_cleanup_context(manifest, cleanup_context_manifests);
+        let manifest_project_ids = manifests
+            .iter()
+            .map(manifest_project_id)
+            .collect::<Vec<_>>();
+        let remote_metadata = remote_metadata_for_projects(remote_metadata, &manifest_project_ids);
+        let project_ids = vec![project_id.clone()];
+        let body = if cleanup_context_manifests.is_empty() {
+            reconciliation_apply_body(
+                peer_device_id,
+                &remote_metadata,
+                &manifests,
+                available_content_sha256,
+                transport_id,
+            )
+        } else {
+            reconciliation_apply_body_with_project_ids(
+                peer_device_id,
+                &remote_metadata,
+                &manifests,
+                available_content_sha256,
+                &project_ids,
+                transport_id,
+            )
+        };
         let timer = SyncPhaseTimer::start_project("reconciliation_apply", &project_id);
         let response = {
             let _progress =
@@ -5107,13 +5763,30 @@ mod desktop {
         };
         timings.push(timer.finish());
         let response = response?;
-        let mut results = map_batch_apply_response(&manifests, &response);
+        let mut results = map_batch_apply_response(std::slice::from_ref(manifest), &response);
         Ok(results.pop().unwrap_or_else(|| {
             failed_project_result(
                 &project_id,
                 "Backend apply response did not include this project.",
             )
         }))
+    }
+
+    fn apply_project_manifests_with_cleanup_context(
+        manifest: &Value,
+        cleanup_context_manifests: &[Value],
+    ) -> Vec<Value> {
+        let project_id = manifest_project_id(manifest);
+        let mut seen_project_ids = HashSet::from([project_id]);
+        let mut manifests = Vec::with_capacity(cleanup_context_manifests.len() + 1);
+        manifests.push(manifest.clone());
+        for context_manifest in cleanup_context_manifests {
+            let context_project_id = manifest_project_id(context_manifest);
+            if seen_project_ids.insert(context_project_id) {
+                manifests.push(context_manifest.clone());
+            }
+        }
+        manifests
     }
 
     fn reconciliation_plan_body(
@@ -5936,6 +6609,38 @@ mod desktop {
         artifact: RemoteArtifact,
     }
 
+    fn round_robin_pending_artifacts_by_project(
+        pending: Vec<PendingArtifactTransfer>,
+    ) -> Vec<PendingArtifactTransfer> {
+        let total = pending.len();
+        let mut groups: Vec<(String, VecDeque<PendingArtifactTransfer>)> = Vec::new();
+        for transfer in pending {
+            let project_id = transfer.artifact.project_id.clone();
+            if let Some((_, queue)) = groups.iter_mut().find(|(id, _)| id == &project_id) {
+                queue.push_back(transfer);
+                continue;
+            }
+
+            let mut queue = VecDeque::new();
+            queue.push_back(transfer);
+            groups.push((project_id, queue));
+        }
+
+        let mut ordered = Vec::with_capacity(total);
+        while ordered.len() < total {
+            let before = ordered.len();
+            for (_, queue) in &mut groups {
+                if let Some(transfer) = queue.pop_front() {
+                    ordered.push(transfer);
+                }
+            }
+            if ordered.len() == before {
+                break;
+            }
+        }
+        ordered
+    }
+
     fn request_or_use_staged_artifacts(
         client: &BackendClient,
         connection: &SharedPeerConnection,
@@ -6021,7 +6726,7 @@ mod desktop {
     }
 
     fn request_and_stage_artifact_batch(
-        client: &impl ArtifactStagingClient,
+        client: &(impl ArtifactStagingClient + Sync),
         connection: &SharedPeerConnection,
         peer_device_id: &str,
         pending: Vec<PendingArtifactTransfer>,
@@ -6031,21 +6736,6 @@ mod desktop {
     ) -> Vec<Result<SyncTransportTransferResult, TransferFailure>> {
         if pending.is_empty() {
             return Vec::new();
-        }
-
-        if connection.transport() == TransportKind::Iroh {
-            if let Some(iroh_data) = connection.iroh_data_connection() {
-                return request_and_stage_iroh_artifact_batch(
-                    client,
-                    connection,
-                    iroh_data,
-                    peer_device_id,
-                    pending,
-                    metrics,
-                    timings,
-                    progress,
-                );
-            }
         }
 
         let request = ArtifactBatchRequest {
@@ -6130,10 +6820,9 @@ mod desktop {
         phase_timing: Option<SyncTransportTimingEvidence>,
     }
 
-    enum IrohBatchControlPoll {
-        Pending,
-        Complete,
-        Failed(String),
+    struct IrohStageResult {
+        transfer: Result<SyncTransportTransferResult, TransferFailure>,
+        timings: Vec<SyncTransportTimingEvidence>,
     }
 
     fn read_iroh_artifact_batch_control(
@@ -6162,48 +6851,6 @@ mod desktop {
         }
     }
 
-    fn poll_iroh_artifact_batch_control(
-        receiver: &mpsc::Receiver<Result<(), String>>,
-        result: &mut Option<Result<(), String>>,
-    ) -> IrohBatchControlPoll {
-        if result.is_none() {
-            match receiver.try_recv() {
-                Ok(control_result) => *result = Some(control_result),
-                Err(mpsc::TryRecvError::Empty) => return IrohBatchControlPoll::Pending,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    *result = Some(Err(
-                        "Iroh artifact batch control reader stopped before reporting completion."
-                            .to_string(),
-                    ));
-                }
-            }
-        }
-        match result.as_ref().expect("control result recorded") {
-            Ok(()) => IrohBatchControlPoll::Complete,
-            Err(error) => IrohBatchControlPoll::Failed(error.clone()),
-        }
-    }
-
-    fn wait_iroh_artifact_batch_control(
-        receiver: &mpsc::Receiver<Result<(), String>>,
-        result: &mut Option<Result<(), String>>,
-        timeout: Duration,
-    ) -> IrohBatchControlPoll {
-        if result.is_none() {
-            match receiver.recv_timeout(timeout) {
-                Ok(control_result) => *result = Some(control_result),
-                Err(mpsc::RecvTimeoutError::Timeout) => return IrohBatchControlPoll::Pending,
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    *result = Some(Err(
-                        "Iroh artifact batch control reader stopped before reporting completion."
-                            .to_string(),
-                    ));
-                }
-            }
-        }
-        poll_iroh_artifact_batch_control(receiver, result)
-    }
-
     fn await_iroh_artifact_batch_control(
         receiver: &mpsc::Receiver<Result<(), String>>,
         result: &mut Option<Result<(), String>>,
@@ -6219,35 +6866,164 @@ mod desktop {
         })
     }
 
-    fn record_iroh_artifact_receive_result(
-        result: Result<IrohReceivedArtifact, IrohArtifactReceiveError>,
-        expected: &HashMap<String, IrohPendingReceive>,
-        timings: &mut Vec<SyncTransportTimingEvidence>,
-        received: &mut HashMap<String, IrohReceivedArtifact>,
-        stream_failures: &mut HashMap<String, TransferFailure>,
+    fn settle_iroh_artifact_batch_control_reader(
+        close_control_connection: impl FnOnce(),
+        receiver: &mpsc::Receiver<Result<(), String>>,
+        result: &mut Option<Result<(), String>>,
+        control_done: &mut bool,
+        control_handle: JoinHandle<()>,
         fatal_error: &mut Option<String>,
     ) {
+        if !*control_done {
+            if fatal_error.is_some() && !control_handle.is_finished() {
+                close_control_connection();
+            }
+            if let Err(error) = await_iroh_artifact_batch_control(receiver, result) {
+                fatal_error.get_or_insert(error);
+            }
+            *control_done = true;
+        }
+        if control_handle.join().is_err() {
+            fatal_error.get_or_insert("Iroh artifact batch control reader panicked.".to_string());
+        }
+    }
+
+    fn fatal_iroh_receive_error_message(
+        error: &IrohArtifactReceiveError,
+        expected: &HashMap<String, IrohPendingReceive>,
+    ) -> Option<String> {
+        match error.artifact_id.as_deref() {
+            Some(artifact_id) if expected.contains_key(artifact_id) => None,
+            _ => Some(error.message.clone()),
+        }
+    }
+
+    fn fail_unfinished_iroh_pending_transfers(
+        pending: &[PendingArtifactTransfer],
+        completed_artifact_ids: &mut HashSet<String>,
+        message: &str,
+        allow_project_apply: bool,
+        record_transfer: &mut impl FnMut(Result<SyncTransportTransferResult, TransferFailure>, bool),
+    ) {
+        for pending in pending {
+            if completed_artifact_ids.insert(pending.artifact.artifact_id.clone()) {
+                record_transfer(
+                    Err(transfer_failure(
+                        &pending.artifact,
+                        TransferTimer::zero_now(),
+                        message.to_string(),
+                    )),
+                    allow_project_apply,
+                );
+            }
+        }
+    }
+
+    fn repeated_pending_iroh_artifact_message(
+        pending: &[PendingArtifactTransfer],
+    ) -> Option<String> {
+        let mut seen = HashSet::new();
+        for pending_transfer in pending {
+            if !seen.insert(pending_transfer.artifact.artifact_id.as_str()) {
+                return Some(format!(
+                    "Sync artifact batch repeated artifact {}.",
+                    pending_transfer.artifact.artifact_id
+                ));
+            }
+        }
+        None
+    }
+
+    fn record_iroh_stage_result(
+        stage_result: IrohStageResult,
+        completed_artifact_ids: &mut HashSet<String>,
+        timings: &mut Vec<SyncTransportTimingEvidence>,
+        allow_project_apply: bool,
+        record_transfer: &mut impl FnMut(Result<SyncTransportTransferResult, TransferFailure>, bool),
+    ) {
+        timings.extend(stage_result.timings);
+        let artifact_id = match &stage_result.transfer {
+            Ok(result) => result.artifact_id.clone(),
+            Err(error) => error.result.artifact_id.clone(),
+        };
+        if completed_artifact_ids.insert(artifact_id) {
+            record_transfer(stage_result.transfer, allow_project_apply);
+        }
+    }
+
+    fn drain_iroh_stage_results(
+        stage_results: Vec<IrohStageResult>,
+        completed_artifact_ids: &mut HashSet<String>,
+        timings: &mut Vec<SyncTransportTimingEvidence>,
+        allow_project_apply: bool,
+        record_transfer: &mut impl FnMut(Result<SyncTransportTransferResult, TransferFailure>, bool),
+    ) {
+        for stage_result in stage_results {
+            record_iroh_stage_result(
+                stage_result,
+                completed_artifact_ids,
+                timings,
+                allow_project_apply,
+                record_transfer,
+            );
+        }
+    }
+
+    fn handle_iroh_receive_result(
+        result: Result<IrohReceivedArtifact, IrohArtifactReceiveError>,
+        expected: &HashMap<String, IrohPendingReceive>,
+        metrics: &mut SyncRunMetrics,
+        timings: &mut Vec<SyncTransportTimingEvidence>,
+        completed_artifact_ids: &mut HashSet<String>,
+        fatal_error: &mut Option<String>,
+        apply_worker: &mut RemoteApplyWorker,
+        record_transfer: &mut impl FnMut(Result<SyncTransportTransferResult, TransferFailure>, bool),
+    ) {
         match result {
-            Ok(artifact) => {
-                timings.push(artifact.phase_timing.clone());
-                received.insert(artifact.artifact.artifact_id.clone(), artifact);
+            Ok(received) => {
+                let artifact = received.artifact.clone();
+                timings.push(received.phase_timing.clone());
+                metrics.record_received_artifact_bytes_at(
+                    received.size_bytes,
+                    received.first_bytes_at,
+                );
+                if let Err(received) = apply_worker.enqueue_received_iroh_artifact(received) {
+                    let _ = fs::remove_file(&received.temp_path);
+                    fatal_error.get_or_insert(
+                        "Iroh artifact staging worker stopped before staging all received files."
+                            .to_string(),
+                    );
+                    apply_worker.cancel_pending_apply();
+                    if completed_artifact_ids.insert(artifact.artifact_id.clone()) {
+                        record_transfer(
+                            Err(post_receive_transfer_failure(
+                                &artifact,
+                                received.timing,
+                                "Iroh artifact staging worker stopped before staging the received file."
+                                    .to_string(),
+                            )),
+                            false,
+                        );
+                    }
+                }
             }
             Err(error) => {
+                if error.message == IROH_ARTIFACT_RECEIVE_CANCELLED {
+                    return;
+                }
                 if let Some(phase_timing) = error.phase_timing {
                     timings.push(phase_timing);
                 }
                 if let Some(artifact_id) = error.artifact_id {
                     if let Some(expected) = expected.get(&artifact_id) {
-                        if fatal_error.is_some() && error.message == IROH_ARTIFACT_RECEIVE_CANCELLED
-                        {
-                            return;
-                        }
                         let failure = transfer_failure(
                             &expected.artifact,
                             error.timing.unwrap_or_else(TransferTimer::zero_now),
-                            error.message.clone(),
+                            error.message,
                         );
-                        stream_failures.insert(artifact_id, failure);
+                        if completed_artifact_ids.insert(artifact_id) {
+                            record_transfer(Err(failure), true);
+                        }
                     } else {
                         fatal_error.get_or_insert(error.message);
                     }
@@ -6258,16 +7034,65 @@ mod desktop {
         }
     }
 
-    fn request_and_stage_iroh_artifact_batch(
-        client: &impl ArtifactStagingClient,
+    fn request_and_stage_iroh_artifact_batch_with_stage_queue(
+        client: &(impl ArtifactStagingClient + Sync),
         connection: &SharedPeerConnection,
         iroh_data: IrohDataConnection,
-        peer_device_id: &str,
+        _peer_device_id: &str,
         pending: Vec<PendingArtifactTransfer>,
         metrics: &mut SyncRunMetrics,
         timings: &mut Vec<SyncTransportTimingEvidence>,
         progress: &ProgressReporter,
-    ) -> Vec<Result<SyncTransportTransferResult, TransferFailure>> {
+        apply_worker: &mut RemoteApplyWorker,
+        mut record_transfer: impl FnMut(Result<SyncTransportTransferResult, TransferFailure>, bool),
+    ) -> bool {
+        if pending.is_empty() {
+            return true;
+        }
+
+        if let Some(message) = repeated_pending_iroh_artifact_message(&pending) {
+            for pending in pending {
+                record_transfer(
+                    Err(transfer_failure(
+                        &pending.artifact,
+                        TransferTimer::zero_now(),
+                        message.clone(),
+                    )),
+                    false,
+                );
+            }
+            return false;
+        }
+
+        let temp_root = match client.temp_artifact_root() {
+            Ok(root) => root,
+            Err(error) => {
+                for pending in pending {
+                    record_transfer(
+                        Err(transfer_failure(
+                            &pending.artifact,
+                            TransferTimer::zero_now(),
+                            format!("Could not allocate sync artifact temp path: {error}"),
+                        )),
+                        false,
+                    );
+                }
+                return false;
+            }
+        };
+
+        let mut expected = HashMap::new();
+        for pending_transfer in &pending {
+            let temp_path =
+                temp_artifact_path_in(temp_root.clone(), &pending_transfer.artifact.content_sha256);
+            expected.insert(
+                pending_transfer.artifact.artifact_id.clone(),
+                IrohPendingReceive {
+                    artifact: pending_transfer.artifact.clone(),
+                    temp_path,
+                },
+            );
+        }
         let batch_token = random_nonce();
         let request = ArtifactBatchRequest {
             batch_token: Some(batch_token.clone()),
@@ -6281,17 +7106,19 @@ mod desktop {
             "artifact request/transfer",
             &ProtocolMessage::ArtifactBatchRequest(request),
         ) {
-            return pending
-                .into_iter()
-                .map(|pending| {
+            for pending in pending {
+                record_transfer(
                     Err(transfer_failure(
                         &pending.artifact,
                         TransferTimer::zero_now(),
                         error.clone(),
-                    ))
-                })
-                .collect();
+                    )),
+                    false,
+                );
+            }
+            return false;
         }
+
         match connection
             .read_message_accepting_status_for_phase("artifact request/transfer", progress)
         {
@@ -6300,92 +7127,93 @@ mod desktop {
                 artifact_count,
             }) if peer_batch_token == batch_token && artifact_count == pending.len() as u64 => {}
             Ok(ProtocolMessage::ArtifactBatchStart { .. }) => {
-                return pending
-                    .into_iter()
-                    .map(|pending| {
-                        Err(transfer_failure(
-                            &pending.artifact,
-                            TransferTimer::zero_now(),
-                            "Sync peer Iroh artifact batch response did not match the request."
-                                .to_string(),
-                        ))
-                    })
-                    .collect();
-            }
-            Ok(ProtocolMessage::Error(error)) => {
-                let message = phase_context_error("artifact request/transfer", error.message);
-                return pending
-                    .into_iter()
-                    .map(|pending| {
+                let message =
+                    "Sync peer Iroh artifact batch response did not match the request.".to_string();
+                for pending in pending {
+                    record_transfer(
                         Err(transfer_failure(
                             &pending.artifact,
                             TransferTimer::zero_now(),
                             message.clone(),
-                        ))
-                    })
-                    .collect();
+                        )),
+                        false,
+                    );
+                }
+                return false;
+            }
+            Ok(ProtocolMessage::Error(error)) => {
+                let message = phase_context_error("artifact request/transfer", error.message);
+                for pending in pending {
+                    record_transfer(
+                        Err(transfer_failure(
+                            &pending.artifact,
+                            TransferTimer::zero_now(),
+                            message.clone(),
+                        )),
+                        false,
+                    );
+                }
+                return false;
             }
             Ok(other) => {
                 let message = format!(
                     "Sync peer sent unexpected Iroh artifact batch response: {}",
                     other.kind()
                 );
-                return pending
-                    .into_iter()
-                    .map(|pending| {
+                for pending in pending {
+                    record_transfer(
                         Err(transfer_failure(
                             &pending.artifact,
                             TransferTimer::zero_now(),
                             message.clone(),
-                        ))
-                    })
-                    .collect();
+                        )),
+                        false,
+                    );
+                }
+                return false;
             }
             Err(error) => {
-                return pending
-                    .into_iter()
-                    .map(|pending| {
+                for pending in pending {
+                    record_transfer(
                         Err(transfer_failure(
                             &pending.artifact,
                             TransferTimer::zero_now(),
                             error.clone(),
-                        ))
-                    })
-                    .collect();
-            }
-        }
-
-        let mut expected = HashMap::new();
-        for pending_transfer in &pending {
-            if expected
-                .insert(
-                    pending_transfer.artifact.artifact_id.clone(),
-                    IrohPendingReceive {
-                        artifact: pending_transfer.artifact.clone(),
-                        temp_path: client
-                            .temp_artifact_path(&pending_transfer.artifact.content_sha256),
-                    },
-                )
-                .is_some()
-            {
-                let message = format!(
-                    "Sync artifact batch repeated artifact {}.",
-                    pending_transfer.artifact.artifact_id
-                );
-                return pending
-                    .into_iter()
-                    .map(|pending| {
-                        Err(transfer_failure(
-                            &pending.artifact,
-                            TransferTimer::zero_now(),
-                            message.clone(),
-                        ))
-                    })
-                    .collect();
+                        )),
+                        false,
+                    );
+                }
+                return false;
             }
         }
 
         let expected = Arc::new(expected);
+        receive_and_stage_iroh_artifact_batch_pipeline(
+            connection,
+            iroh_data,
+            batch_token,
+            Arc::clone(&expected),
+            &pending,
+            metrics,
+            timings,
+            progress,
+            apply_worker,
+            &mut record_transfer,
+        )
+    }
+
+    fn receive_and_stage_iroh_artifact_batch_pipeline(
+        connection: &SharedPeerConnection,
+        iroh_data: IrohDataConnection,
+        batch_token: String,
+        expected: Arc<HashMap<String, IrohPendingReceive>>,
+        pending: &[PendingArtifactTransfer],
+        metrics: &mut SyncRunMetrics,
+        timings: &mut Vec<SyncTransportTimingEvidence>,
+        progress: &ProgressReporter,
+        apply_worker: &mut RemoteApplyWorker,
+        record_transfer: &mut impl FnMut(Result<SyncTransportTransferResult, TransferFailure>, bool),
+    ) -> bool {
         let seen = Arc::new(Mutex::new(HashSet::new()));
         let cancel_receivers = Arc::new(AtomicBool::new(false));
         let (sender, receiver) =
@@ -6405,234 +7233,350 @@ mod desktop {
         let mut control_result = None;
         let mut control_done = false;
         let mut handles = Vec::new();
-        let mut fatal_error = None;
-        let mut stop_for_control_result = false;
-        for _ in 0..expected.len() {
-            let accept_started = Instant::now();
-            let recv = loop {
-                match poll_iroh_artifact_batch_control(&control_receiver, &mut control_result) {
-                    IrohBatchControlPoll::Pending => {}
-                    IrohBatchControlPoll::Complete => {
+        let mut fatal_error: Option<String> = None;
+        let mut completed_artifact_ids = HashSet::new();
+        let mut accepted_streams = 0_usize;
+        let mut active_workers = 0_usize;
+        let mut accept_started: Option<Instant> = None;
+        let total_expected = expected.len();
+        let mut current_chunk_accept_limit = total_expected.min(IROH_ARTIFACT_PARALLELISM);
+
+        while accepted_streams < total_expected || active_workers > 0 {
+            drain_iroh_stage_results(
+                apply_worker.drain_backend_write_events(timings),
+                &mut completed_artifact_ids,
+                timings,
+                fatal_error.is_none(),
+                record_transfer,
+            );
+
+            if !control_done {
+                match control_receiver.try_recv() {
+                    Ok(Ok(())) => {
                         control_done = true;
-                        fatal_error.get_or_insert(
-                            "Sync peer ended the Iroh artifact batch before sending all requested data streams."
-                                .to_string(),
-                        );
-                        cancel_receivers.store(true, Ordering::SeqCst);
-                        stop_for_control_result = true;
-                        break None;
                     }
-                    IrohBatchControlPoll::Failed(error) => {
+                    Ok(Err(error)) => {
                         control_done = true;
                         fatal_error.get_or_insert(error);
+                        apply_worker.cancel_pending_apply();
                         cancel_receivers.store(true, Ordering::SeqCst);
-                        stop_for_control_result = true;
-                        break None;
+                        break;
+                    }
+                    Err(mpsc::TryRecvError::Empty) => {}
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        control_done = true;
+                        fatal_error.get_or_insert(
+                            "Iroh artifact batch control reader stopped before reporting completion."
+                                .to_string(),
+                        );
+                        apply_worker.cancel_pending_apply();
+                        cancel_receivers.store(true, Ordering::SeqCst);
+                        break;
                     }
                 }
+            }
 
-                let Some(remaining) =
-                    PROTOCOL_WATCHDOG_TIMEOUT.checked_sub(accept_started.elapsed())
-                else {
-                    fatal_error.get_or_insert(
-                        "Timed out accepting Iroh artifact data stream.".to_string(),
-                    );
-                    break None;
+            while active_workers > 0 {
+                match receiver.try_recv() {
+                    Ok(result) => {
+                        active_workers = active_workers.saturating_sub(1);
+                        if let Err(error) = &result {
+                            if let Some(message) =
+                                fatal_iroh_receive_error_message(error, expected.as_ref())
+                            {
+                                fatal_error.get_or_insert(message);
+                            }
+                        }
+                        handle_iroh_receive_result(
+                            result,
+                            expected.as_ref(),
+                            metrics,
+                            timings,
+                            &mut completed_artifact_ids,
+                            &mut fatal_error,
+                            apply_worker,
+                            record_transfer,
+                        );
+                        drain_iroh_stage_results(
+                            apply_worker.drain_backend_write_events(timings),
+                            &mut completed_artifact_ids,
+                            timings,
+                            fatal_error.is_none(),
+                            record_transfer,
+                        );
+                        if fatal_error.is_some() {
+                            apply_worker.cancel_pending_apply();
+                            cancel_receivers.store(true, Ordering::SeqCst);
+                            break;
+                        }
+                    }
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        fatal_error.get_or_insert(
+                            "Iroh artifact receive worker stopped before reporting completion."
+                                .to_string(),
+                        );
+                        apply_worker.cancel_pending_apply();
+                        break;
+                    }
+                }
+            }
+            if fatal_error.is_some() {
+                apply_worker.cancel_pending_apply();
+                break;
+            }
+
+            if active_workers == 0
+                && accepted_streams >= current_chunk_accept_limit
+                && accepted_streams < total_expected
+            {
+                current_chunk_accept_limit =
+                    total_expected.min(accepted_streams.saturating_add(IROH_ARTIFACT_PARALLELISM));
+                accept_started = None;
+            }
+
+            if accepted_streams < current_chunk_accept_limit {
+                let started = accept_started.get_or_insert_with(Instant::now);
+                let accept_watchdog = if control_done {
+                    IROH_MISSING_STREAM_AFTER_CONTROL_TIMEOUT
+                } else {
+                    PROTOCOL_WATCHDOG_TIMEOUT
+                };
+                let Some(remaining) = accept_watchdog.checked_sub(started.elapsed()) else {
+                    let message = if control_done {
+                        "Sync peer ended the Iroh artifact batch before sending all requested data streams."
+                    } else {
+                        "Timed out accepting Iroh artifact data stream."
+                    };
+                    fatal_error.get_or_insert(message.to_string());
+                    apply_worker.cancel_pending_apply();
+                    break;
                 };
                 if remaining.is_zero() {
-                    fatal_error.get_or_insert(
-                        "Timed out accepting Iroh artifact data stream.".to_string(),
-                    );
-                    break None;
+                    let message = if control_done {
+                        "Sync peer ended the Iroh artifact batch before sending all requested data streams."
+                    } else {
+                        "Timed out accepting Iroh artifact data stream."
+                    };
+                    fatal_error.get_or_insert(message.to_string());
+                    apply_worker.cancel_pending_apply();
+                    break;
                 }
                 let accept_timeout = remaining.min(IROH_BATCH_CONTROL_POLL_INTERVAL);
                 match iroh_data.accept_recv_stream_with_timeout(accept_timeout) {
-                    Ok(Some(recv)) => break Some(recv),
+                    Ok(Some(recv)) => {
+                        accept_started = None;
+                        accepted_streams = accepted_streams.saturating_add(1);
+                        active_workers = active_workers.saturating_add(1);
+                        let sender = sender.clone();
+                        let data = iroh_data.clone();
+                        let expected = Arc::clone(&expected);
+                        let seen = Arc::clone(&seen);
+                        let cancel_receivers = Arc::clone(&cancel_receivers);
+                        let batch_token = batch_token.clone();
+                        let run_started_instant = metrics.started_instant;
+                        handles.push(thread::spawn(move || {
+                            let result = receive_iroh_artifact_stream(
+                                data,
+                                recv,
+                                &batch_token,
+                                expected,
+                                seen,
+                                cancel_receivers,
+                                run_started_instant,
+                            );
+                            if let Err(send_error) = sender.send(result) {
+                                if let Ok(artifact) = send_error.0 {
+                                    let _ = fs::remove_file(&artifact.temp_path);
+                                }
+                            }
+                        }));
+                        continue;
+                    }
                     Ok(None) => {}
                     Err(error) => {
-                        match wait_iroh_artifact_batch_control(
-                            &control_receiver,
-                            &mut control_result,
-                            IROH_BATCH_CONTROL_POLL_INTERVAL,
-                        ) {
-                            IrohBatchControlPoll::Pending => {
-                                fatal_error.get_or_insert(error);
-                            }
-                            IrohBatchControlPoll::Complete => {
-                                control_done = true;
-                                fatal_error.get_or_insert(
+                        let message = if control_done {
+                            "Sync peer ended the Iroh artifact batch before sending all requested data streams."
+                                .to_string()
+                        } else {
+                            match control_receiver.recv_timeout(IROH_BATCH_CONTROL_POLL_INTERVAL) {
+                                Ok(Ok(())) => {
+                                    control_done = true;
                                     "Sync peer ended the Iroh artifact batch before sending all requested data streams."
-                                        .to_string(),
-                                );
-                                cancel_receivers.store(true, Ordering::SeqCst);
-                                stop_for_control_result = true;
+                                        .to_string()
+                                }
+                                Ok(Err(control_error)) => {
+                                    control_done = true;
+                                    control_error
+                                }
+                                Err(mpsc::RecvTimeoutError::Timeout) => error,
+                                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                    control_done = true;
+                                    "Iroh artifact batch control reader stopped before reporting completion."
+                                        .to_string()
+                                }
                             }
-                            IrohBatchControlPoll::Failed(control_error) => {
-                                control_done = true;
-                                fatal_error.get_or_insert(control_error);
-                                cancel_receivers.store(true, Ordering::SeqCst);
-                                stop_for_control_result = true;
+                        };
+                        fatal_error.get_or_insert(message);
+                        apply_worker.cancel_pending_apply();
+                        cancel_receivers.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                }
+            } else {
+                accept_started = None;
+                match receiver.recv_timeout(IROH_BATCH_CONTROL_POLL_INTERVAL) {
+                    Ok(result) => {
+                        active_workers = active_workers.saturating_sub(1);
+                        if let Err(error) = &result {
+                            if let Some(message) =
+                                fatal_iroh_receive_error_message(error, expected.as_ref())
+                            {
+                                fatal_error.get_or_insert(message);
                             }
                         }
-                        break None;
+                        handle_iroh_receive_result(
+                            result,
+                            expected.as_ref(),
+                            metrics,
+                            timings,
+                            &mut completed_artifact_ids,
+                            &mut fatal_error,
+                            apply_worker,
+                            record_transfer,
+                        );
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        fatal_error.get_or_insert(
+                            "Iroh artifact receive worker stopped before reporting completion."
+                                .to_string(),
+                        );
+                        apply_worker.cancel_pending_apply();
+                        break;
                     }
                 }
-            };
-            let Some(recv) = recv else {
-                break;
-            };
-            let sender = sender.clone();
-            let data = iroh_data.clone();
-            let expected = Arc::clone(&expected);
-            let seen = Arc::clone(&seen);
-            let cancel_receivers = Arc::clone(&cancel_receivers);
-            let batch_token = batch_token.clone();
-            let run_started_instant = metrics.started_instant;
-            handles.push(thread::spawn(move || {
-                let result = receive_iroh_artifact_stream(
-                    data,
-                    recv,
-                    &batch_token,
-                    expected,
-                    seen,
-                    cancel_receivers,
-                    run_started_instant,
-                );
-                if let Err(send_error) = sender.send(result) {
-                    if let Ok(artifact) = send_error.0 {
-                        let _ = fs::remove_file(&artifact.temp_path);
-                    }
-                }
-            }));
+            }
         }
+
+        if fatal_error.is_some() {
+            apply_worker.cancel_pending_apply();
+        }
+        cancel_receivers.store(true, Ordering::SeqCst);
         drop(sender);
-
-        let mut received = HashMap::new();
-        let mut stream_failures: HashMap<String, TransferFailure> = HashMap::new();
-        let mut pending_workers = handles.len();
-        while pending_workers > 0 {
-            match poll_iroh_artifact_batch_control(&control_receiver, &mut control_result) {
-                IrohBatchControlPoll::Pending => {}
-                IrohBatchControlPoll::Complete => control_done = true,
-                IrohBatchControlPoll::Failed(error) => {
-                    control_done = true;
-                    fatal_error.get_or_insert(error);
-                    cancel_receivers.store(true, Ordering::SeqCst);
-                    stop_for_control_result = true;
-                    break;
-                }
-            }
-            match receiver.recv_timeout(IROH_BATCH_CONTROL_POLL_INTERVAL) {
-                Ok(result) => {
-                    pending_workers = pending_workers.saturating_sub(1);
-                    record_iroh_artifact_receive_result(
-                        result,
-                        expected.as_ref(),
-                        timings,
-                        &mut received,
-                        &mut stream_failures,
-                        &mut fatal_error,
-                    );
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
+        while let Ok(result) = receiver.try_recv() {
+            handle_iroh_receive_result(
+                result,
+                expected.as_ref(),
+                metrics,
+                timings,
+                &mut completed_artifact_ids,
+                &mut fatal_error,
+                apply_worker,
+                record_transfer,
+            );
         }
-
-        if stop_for_control_result {
-            cancel_receivers.store(true, Ordering::SeqCst);
-            while let Ok(result) = receiver.try_recv() {
-                record_iroh_artifact_receive_result(
-                    result,
-                    expected.as_ref(),
-                    timings,
-                    &mut received,
-                    &mut stream_failures,
-                    &mut fatal_error,
-                );
-            }
-        }
-
         for handle in handles {
             if handle.join().is_err() {
                 fatal_error.get_or_insert("Iroh artifact receive worker panicked.".to_string());
             }
         }
         while let Ok(result) = receiver.try_recv() {
-            record_iroh_artifact_receive_result(
+            handle_iroh_receive_result(
                 result,
                 expected.as_ref(),
+                metrics,
                 timings,
-                &mut received,
-                &mut stream_failures,
+                &mut completed_artifact_ids,
                 &mut fatal_error,
+                apply_worker,
+                record_transfer,
             );
         }
-
-        if fatal_error.is_none() && !control_done {
-            match await_iroh_artifact_batch_control(&control_receiver, &mut control_result) {
-                Ok(()) => {}
-                Err(error) => fatal_error = Some(error),
+        match apply_worker.finish_iroh_stage_jobs(timings) {
+            Ok(stage_results) => drain_iroh_stage_results(
+                stage_results,
+                &mut completed_artifact_ids,
+                timings,
+                fatal_error.is_none(),
+                record_transfer,
+            ),
+            Err(error) => {
+                fatal_error.get_or_insert(error);
+                apply_worker.cancel_pending_apply();
             }
-            control_done = true;
-        }
-        if control_done && control_handle.join().is_err() {
-            fatal_error.get_or_insert("Iroh artifact batch control reader panicked.".to_string());
         }
 
-        if fatal_error.is_some() || !stream_failures.is_empty() {
-            for artifact in received.values() {
-                let _ = fs::remove_file(&artifact.temp_path);
-            }
-            let message = fatal_error
-                .or_else(|| {
-                    stream_failures
-                        .values()
-                        .next()
-                        .map(|failure| failure.message.clone())
-                })
-                .unwrap_or_else(|| "Iroh artifact data stream failed.".to_string());
-            return pending
-                .into_iter()
-                .map(|pending| {
-                    if let Some(failure) = stream_failures.remove(&pending.artifact.artifact_id) {
-                        Err(failure)
-                    } else {
-                        Err(transfer_failure(
-                            &pending.artifact,
-                            TransferTimer::zero_now(),
-                            format!(
-                                "Sync artifact batch transfer stopped after a peer error: {message}"
-                            ),
-                        ))
-                    }
-                })
-                .collect();
+        drain_iroh_stage_results(
+            apply_worker.drain_backend_write_events(timings),
+            &mut completed_artifact_ids,
+            timings,
+            fatal_error.is_none(),
+            record_transfer,
+        );
+
+        settle_iroh_artifact_batch_control_reader(
+            || iroh_data.close_for_artifact_batch_abort(),
+            &control_receiver,
+            &mut control_result,
+            &mut control_done,
+            control_handle,
+            &mut fatal_error,
+        );
+        if fatal_error.is_some() {
+            apply_worker.cancel_pending_apply();
         }
 
-        pending
-            .into_iter()
-            .map(|pending| {
-                let Some(received) = received.remove(&pending.artifact.artifact_id) else {
-                    return Err(transfer_failure(
-                        &pending.artifact,
-                        TransferTimer::zero_now(),
-                        "Sync peer did not send the requested Iroh artifact stream.".to_string(),
-                    ));
-                };
-                metrics.record_received_artifact_bytes_at(
-                    received.size_bytes,
-                    received.first_bytes_at,
-                );
-                stage_received_iroh_artifact(
-                    client,
-                    connection.transport_id(),
-                    peer_device_id,
-                    received,
-                    timings,
-                )
+        drain_iroh_stage_results(
+            apply_worker.drain_backend_write_events(timings),
+            &mut completed_artifact_ids,
+            timings,
+            fatal_error.is_none(),
+            record_transfer,
+        );
+
+        let missing_message = fatal_error
+            .as_ref()
+            .map(|message| {
+                format!("Sync artifact batch transfer stopped after a peer error: {message}")
             })
-            .collect()
+            .unwrap_or_else(|| {
+                "Sync peer did not send the requested Iroh artifact stream.".to_string()
+            });
+        fail_unfinished_iroh_pending_transfers(
+            pending,
+            &mut completed_artifact_ids,
+            &missing_message,
+            fatal_error.is_none(),
+            record_transfer,
+        );
+        fatal_error.is_none()
+    }
+
+    fn request_and_stage_global_iroh_artifact_batch_on_write_lane(
+        client: &BackendClient,
+        connection: &SharedPeerConnection,
+        iroh_data: IrohDataConnection,
+        peer_device_id: &str,
+        pending: Vec<PendingArtifactTransfer>,
+        metrics: &mut SyncRunMetrics,
+        timings: &mut Vec<SyncTransportTimingEvidence>,
+        progress: &ProgressReporter,
+        apply_worker: &mut RemoteApplyWorker,
+        mut record_transfer: impl FnMut(Result<SyncTransportTransferResult, TransferFailure>, bool),
+    ) -> bool {
+        request_and_stage_iroh_artifact_batch_with_stage_queue(
+            client,
+            connection,
+            iroh_data,
+            peer_device_id,
+            pending,
+            metrics,
+            timings,
+            progress,
+            apply_worker,
+            &mut record_transfer,
+        )
     }
 
     fn receive_iroh_artifact_stream(
@@ -7017,7 +7961,17 @@ mod desktop {
             }
         }
 
-        let temp_path = client.temp_artifact_path(&artifact.content_sha256);
+        let temp_path = match client.temp_artifact_path(&artifact.content_sha256) {
+            Ok(path) => path,
+            Err(error) => {
+                timings.push(timer.finish());
+                return Err(transfer_failure(
+                    &artifact,
+                    transfer_timer.finish(0),
+                    format!("Could not allocate sync artifact temp path: {error}"),
+                ));
+            }
+        };
         if let Some(parent) = temp_path.parent() {
             if let Err(error) = fs::create_dir_all(parent) {
                 timings.push(timer.finish());
@@ -7196,11 +8150,23 @@ mod desktop {
     }
 
     fn temp_artifact_path_in(root: PathBuf, content_sha256: &str) -> PathBuf {
-        root.join("tuneforge-sync-transport").join(format!(
+        root.join(format!(
             "{}-{}-{content_sha256}",
             process::id(),
             random_nonce()
         ))
+    }
+
+    fn sync_transport_temp_root_from_health(health: &Value) -> Result<PathBuf, String> {
+        let data_root = health
+            .get("data_root")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                "Backend health response did not include data_root for sync transport.".to_string()
+            })?;
+        Ok(PathBuf::from(data_root).join("sync").join("transport-tmp"))
     }
 
     fn serve_artifact_requests_until_done(
@@ -7613,6 +8579,8 @@ mod desktop {
         host: String,
         #[cfg(not(target_os = "android"))]
         port: u16,
+        #[cfg(not(target_os = "android"))]
+        sync_transport_temp_root: Arc<Mutex<Option<PathBuf>>>,
         #[cfg(target_os = "android")]
         app: AppHandle,
     }
@@ -7653,7 +8621,11 @@ mod desktop {
                             .to_string(),
                     );
                 }
-                Ok(Self { host, port })
+                Ok(Self {
+                    host,
+                    port,
+                    sync_transport_temp_root: Arc::new(Mutex::new(None)),
+                })
             }
         }
 
@@ -7808,18 +8780,36 @@ mod desktop {
             }
         }
 
-        fn temp_artifact_path(&self, content_sha256: &str) -> PathBuf {
+        fn temp_artifact_root(&self) -> Result<PathBuf, String> {
             #[cfg(target_os = "android")]
             {
                 if let Ok(path) = self.app.path().app_cache_dir() {
-                    return temp_artifact_path_in(path, content_sha256);
+                    return Ok(path);
                 }
                 if let Ok(path) = self.app.path().app_data_dir() {
-                    return temp_artifact_path_in(path, content_sha256);
+                    return Ok(path);
                 }
+                return Err(
+                    "Could not resolve Android sync transport artifact temp directory.".to_string(),
+                );
             }
 
-            temp_artifact_path_in(env::temp_dir(), content_sha256)
+            #[cfg(not(target_os = "android"))]
+            {
+                let mut cached = self
+                    .sync_transport_temp_root
+                    .lock()
+                    .map_err(|_| "Sync transport temp root cache is unavailable.".to_string())?;
+                if let Some(temp_root) = cached.as_ref() {
+                    return Ok(temp_root.clone());
+                }
+                let health = self.get_json_value("/api/v1/health").map_err(|error| {
+                    format!("Could not resolve backend data root for sync transport: {error}")
+                })?;
+                let temp_root = sync_transport_temp_root_from_health(&health)?;
+                *cached = Some(temp_root.clone());
+                Ok(temp_root)
+            }
         }
 
         #[cfg(not(target_os = "android"))]
@@ -8468,13 +9458,19 @@ mod desktop {
     }
 
     trait ArtifactStagingClient {
-        fn temp_artifact_path(&self, content_sha256: &str) -> PathBuf;
+        fn temp_artifact_root(&self) -> Result<PathBuf, String>;
+        fn temp_artifact_path(&self, content_sha256: &str) -> Result<PathBuf, String> {
+            Ok(temp_artifact_path_in(
+                self.temp_artifact_root()?,
+                content_sha256,
+            ))
+        }
         fn post_json_value(&self, path: &str, body: &Value) -> Result<Value, BackendError>;
     }
 
     impl ArtifactStagingClient for BackendClient {
-        fn temp_artifact_path(&self, content_sha256: &str) -> PathBuf {
-            BackendClient::temp_artifact_path(self, content_sha256)
+        fn temp_artifact_root(&self) -> Result<PathBuf, String> {
+            BackendClient::temp_artifact_root(self)
         }
 
         fn post_json_value(&self, path: &str, body: &Value) -> Result<Value, BackendError> {
@@ -8727,25 +9723,6 @@ mod desktop {
             iroh_data.finish_send(&mut send)
         }
 
-        fn open_test_iroh_artifact_stream_header(
-            iroh_data: &IrohDataConnection,
-            batch_token: &str,
-            artifact: &RemoteArtifact,
-        ) -> Result<SendStream, String> {
-            let mut send = iroh_data.open_send_stream()?;
-            write_iroh_artifact_stream_header(
-                iroh_data,
-                &mut send,
-                &IrohArtifactStreamHeader {
-                    batch_token: batch_token.to_string(),
-                    artifact_id: artifact.artifact_id.clone(),
-                    content_sha256: artifact.content_sha256.clone(),
-                    size_bytes: artifact.size_bytes,
-                },
-            )?;
-            Ok(send)
-        }
-
         fn collect_test_files(root: &Path) -> Vec<PathBuf> {
             let Ok(entries) = fs::read_dir(root) else {
                 return Vec::new();
@@ -8760,6 +9737,164 @@ mod desktop {
                 }
             }
             files
+        }
+
+        #[cfg(not(target_os = "android"))]
+        struct TestBackendServer {
+            port: u16,
+            requests: Arc<Mutex<Vec<String>>>,
+            data_root: PathBuf,
+            stop_sender: Option<mpsc::Sender<()>>,
+            handle: Option<JoinHandle<()>>,
+        }
+
+        #[cfg(not(target_os = "android"))]
+        struct TestBackendResponses {
+            data_root: PathBuf,
+            staged_artifact_sizes: HashMap<String, u64>,
+        }
+
+        #[cfg(not(target_os = "android"))]
+        impl TestBackendServer {
+            fn start_with_staged_artifacts(staged_artifact_sizes: HashMap<String, u64>) -> Self {
+                let listener =
+                    TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind test backend");
+                listener
+                    .set_nonblocking(true)
+                    .expect("set test backend nonblocking");
+                let port = listener
+                    .local_addr()
+                    .expect("test backend local addr")
+                    .port();
+                let requests = Arc::new(Mutex::new(Vec::new()));
+                let data_root =
+                    env::temp_dir().join(format!("tuneforge-sync-backend-test-{}", random_nonce()));
+                fs::create_dir_all(data_root.join("sync").join("transport-tmp"))
+                    .expect("create test sync transport temp root");
+                let responses = Arc::new(TestBackendResponses {
+                    data_root: data_root.clone(),
+                    staged_artifact_sizes,
+                });
+                let (stop_sender, stop_receiver) = mpsc::channel();
+                let handle = {
+                    let requests = Arc::clone(&requests);
+                    let responses = Arc::clone(&responses);
+                    thread::spawn(move || loop {
+                        if stop_receiver.try_recv().is_ok() {
+                            break;
+                        }
+                        match listener.accept() {
+                            Ok((stream, _addr)) => {
+                                handle_test_backend_stream(stream, &requests, &responses);
+                            }
+                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                                thread::sleep(Duration::from_millis(10));
+                            }
+                            Err(_) => break,
+                        }
+                    })
+                };
+                Self {
+                    port,
+                    requests,
+                    data_root,
+                    stop_sender: Some(stop_sender),
+                    handle: Some(handle),
+                }
+            }
+
+            fn requests(&self) -> Vec<String> {
+                self.requests
+                    .lock()
+                    .expect("read test backend requests")
+                    .clone()
+            }
+
+            fn transport_temp_root(&self) -> PathBuf {
+                self.data_root.join("sync").join("transport-tmp")
+            }
+        }
+
+        #[cfg(not(target_os = "android"))]
+        impl Drop for TestBackendServer {
+            fn drop(&mut self) {
+                if let Some(stop_sender) = self.stop_sender.take() {
+                    let _ = stop_sender.send(());
+                    let _ = TcpStream::connect((Ipv4Addr::LOCALHOST, self.port));
+                }
+                if let Some(handle) = self.handle.take() {
+                    let _ = handle.join();
+                }
+                let _ = fs::remove_dir_all(&self.data_root);
+            }
+        }
+
+        #[cfg(not(target_os = "android"))]
+        fn handle_test_backend_stream(
+            stream: TcpStream,
+            requests: &Arc<Mutex<Vec<String>>>,
+            responses: &TestBackendResponses,
+        ) {
+            let mut reader = BufReader::new(stream);
+            let mut request_line = String::new();
+            if reader.read_line(&mut request_line).is_err() {
+                return;
+            }
+            let path = request_line
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or("")
+                .to_string();
+            let mut content_length = 0_usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() || line == "\r\n" || line == "\n" {
+                    break;
+                }
+                if let Some(value) = line
+                    .strip_prefix("Content-Length:")
+                    .or_else(|| line.strip_prefix("content-length:"))
+                {
+                    content_length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            if content_length > 0 {
+                let mut body = vec![0_u8; content_length];
+                let _ = reader.read_exact(&mut body);
+            }
+            if !path.is_empty() {
+                requests
+                    .lock()
+                    .expect("record test backend request")
+                    .push(path.clone());
+            }
+            let (status, body) = if path == "/api/v1/sync/reconciliation/apply" {
+                ("200 OK", json!({ "actions": [] }).to_string())
+            } else if path == "/api/v1/health" {
+                (
+                    "200 OK",
+                    json!({ "data_root": responses.data_root.to_string_lossy() }).to_string(),
+                )
+            } else if let Some(content_sha256) =
+                path.strip_prefix("/api/v1/sync/artifacts/staging/")
+            {
+                match responses.staged_artifact_sizes.get(content_sha256) {
+                    Some(size_bytes) => ("200 OK", json!({ "size_bytes": size_bytes }).to_string()),
+                    None => (
+                        "404 Not Found",
+                        json!({ "detail": "not staged" }).to_string(),
+                    ),
+                }
+            } else {
+                ("200 OK", "{}".to_string())
+            };
+            let mut stream = reader.into_inner();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
         }
 
         struct TestStagingClient {
@@ -8787,8 +9922,8 @@ mod desktop {
         }
 
         impl ArtifactStagingClient for TestStagingClient {
-            fn temp_artifact_path(&self, content_sha256: &str) -> PathBuf {
-                temp_artifact_path_in(self.temp_root.clone(), content_sha256)
+            fn temp_artifact_root(&self) -> Result<PathBuf, String> {
+                Ok(self.temp_root.clone())
             }
 
             fn post_json_value(&self, path: &str, body: &Value) -> Result<Value, BackendError> {
@@ -8797,12 +9932,12 @@ mod desktop {
                         "Unexpected test staging path: {path}"
                     )));
                 }
-                self.requests
-                    .lock()
-                    .map_err(|_| {
+                {
+                    let mut requests = self.requests.lock().map_err(|_| {
                         BackendError::local("Test staging requests unavailable.".to_string())
-                    })?
-                    .push(body.clone());
+                    })?;
+                    requests.push(body.clone());
+                }
                 self.responses
                     .lock()
                     .map_err(|_| {
@@ -9403,6 +10538,68 @@ mod desktop {
         }
 
         #[test]
+        fn failure_finalizer_cancels_pending_remote_apply_before_drain() {
+            let (sender, receiver) =
+                mpsc::sync_channel::<BackendWriteTask>(IROH_ARTIFACT_STAGING_QUEUE_CAPACITY);
+            let (event_sender, event_receiver) = mpsc::channel::<BackendWriteEvent>();
+            let (observed_cancel_sender, observed_cancel_receiver) = mpsc::channel::<bool>();
+            let queued_project_ids = Arc::new(Mutex::new(Vec::new()));
+            let enqueue_failures = Arc::new(Mutex::new(Vec::new()));
+            let apply_cancelled = Arc::new(AtomicBool::new(false));
+            let worker_apply_cancelled = Arc::clone(&apply_cancelled);
+            let handle = thread::spawn(move || {
+                while let Ok(task) = receiver.recv() {
+                    let BackendWriteTask::Apply { project_id, .. } = task else {
+                        continue;
+                    };
+                    let wait_started = Instant::now();
+                    while !worker_apply_cancelled.load(Ordering::SeqCst)
+                        && wait_started.elapsed() < Duration::from_secs(2)
+                    {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    let cancelled = worker_apply_cancelled.load(Ordering::SeqCst);
+                    let _ = observed_cancel_sender.send(cancelled);
+                    let message = if cancelled {
+                        "Remote sync import skipped after Iroh artifact transfer aborted."
+                    } else {
+                        "Remote sync import worker drained without cancellation."
+                    };
+                    let _ = event_sender.send(BackendWriteEvent::Apply {
+                        project_id: project_id.clone(),
+                        result: failed_project_result(&project_id, message),
+                        timings: Vec::new(),
+                    });
+                }
+            });
+            let mut apply_worker = RemoteApplyWorker {
+                sender: Some(sender),
+                event_receiver,
+                handle: Some(handle),
+                queued_project_ids,
+                completed_project_ids: HashSet::new(),
+                enqueue_failures,
+                apply_cancelled,
+                project_results: Vec::new(),
+                pending_stage_jobs: 0,
+            };
+            apply_worker.enqueue_tombstone("proj_abort".to_string());
+
+            finish_staged_remote_import_for_failure(Some(StagedRemoteImport {
+                plan_failures: Vec::new(),
+                apply_worker: Some(apply_worker),
+                received_artifacts: Vec::new(),
+            }));
+
+            assert!(
+                observed_cancel_receiver
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("worker observed failure finalizer drain"),
+                "failure finalizer must cancel pending reconciliation apply before draining worker"
+            );
+        }
+
+        #[test]
         fn protocol_status_serializes_progress_fields() {
             let message = protocol_status_message(protocol_status_payload(
                 "sync_run",
@@ -9710,148 +10907,21 @@ mod desktop {
             assert!(value.get("sourcePath").is_none());
         }
 
+        #[cfg(not(target_os = "android"))]
+        #[cfg(not(target_os = "android"))]
+        #[cfg(not(target_os = "android"))]
         #[test]
-        fn iroh_artifact_batch_control_error_stops_before_missing_later_stream() {
-            let payloads = (0..5)
-                .map(|index| format!("artifact payload {index}").into_bytes())
-                .collect::<Vec<_>>();
-            let artifacts = payloads
-                .iter()
-                .enumerate()
-                .map(|(index, bytes)| RemoteArtifact {
-                    artifact_id: format!("art_{index}"),
-                    project_id: format!("proj_{index}"),
-                    content_sha256: test_sha256(bytes),
-                    size_bytes: bytes.len() as u64,
-                })
-                .collect::<Vec<_>>();
-            let peer_artifacts = artifacts.clone();
-            let peer_payloads = payloads.clone();
-            let (connection, client_endpoint, peer_thread) =
-                spawn_test_iroh_sync_peer(move |mut peer, iroh_data| {
-                    let request = read_message_accepting_status(
-                        "artifact request/transfer",
-                        || peer.read_message(),
-                        |_| {},
-                    )?;
-                    let ProtocolMessage::ArtifactBatchRequest(request) = request else {
-                        return Err("expected Iroh artifact batch request".to_string());
-                    };
-                    if request.artifacts.len() != 5 {
-                        return Err(format!(
-                            "expected 5 artifact requests, got {}",
-                            request.artifacts.len()
-                        ));
-                    }
-                    let batch_token = request
-                        .batch_token
-                        .ok_or_else(|| "expected Iroh batch token".to_string())?;
-                    peer.send_message(&ProtocolMessage::ArtifactBatchStart {
-                        batch_token: batch_token.clone(),
-                        artifact_count: 5,
-                    })?;
-                    for (artifact, bytes) in peer_artifacts
-                        .iter()
-                        .take(IROH_ARTIFACT_PARALLELISM)
-                        .zip(peer_payloads.iter())
-                    {
-                        send_test_iroh_artifact_stream(&iroh_data, &batch_token, artifact, bytes)?;
-                    }
-                    peer.send_message(&ProtocolMessage::Error(ProtocolError {
-                        code: "artifact_transfer_failed".to_string(),
-                        message: "peer stopped before final Iroh stream".to_string(),
-                    }))?;
-                    thread::sleep(Duration::from_millis(250));
-                    Ok(())
-                });
-            let pending = artifacts
-                .clone()
-                .into_iter()
-                .map(|artifact| PendingArtifactTransfer { artifact })
-                .collect::<Vec<_>>();
-            let (result_sender, result_receiver) = mpsc::channel();
-            let request_connection = connection.clone();
-            let request_thread = thread::spawn(move || {
-                let client = TestStagingClient::new(Vec::new());
-                let started = Instant::now();
-                let progress = ProgressReporter::new(
-                    "sync_iroh_control_error_test".to_string(),
-                    started,
-                    Arc::new(Mutex::new(SharedStatus::default())),
-                    request_connection.clone(),
-                );
-                let mut metrics = SyncRunMetrics::start(started);
-                let mut timings = Vec::new();
-                let results = request_and_stage_artifact_batch(
-                    &client,
-                    &request_connection,
-                    "dev_peer",
-                    pending,
-                    &mut metrics,
-                    &mut timings,
-                    &progress,
-                );
-                let _ = result_sender.send((results, client.requests()));
-            });
-
-            let started = Instant::now();
-            let (results, staging_requests) = match result_receiver
-                .recv_timeout(Duration::from_secs(5))
-            {
-                Ok(results) => results,
-                Err(error) => {
-                    close_test_iroh_endpoint(&client_endpoint);
-                    panic!(
-                            "Iroh receiver waited for missing fifth data stream before control error: {error}"
-                        );
-                }
+        fn iroh_global_batch_end_before_missing_stream_fails_without_apply() {
+            let payload = b"missing streamed payload".to_vec();
+            let artifact = RemoteArtifact {
+                artifact_id: "art_missing".to_string(),
+                project_id: "proj_missing".to_string(),
+                content_sha256: test_sha256(&payload),
+                size_bytes: payload.len() as u64,
             };
-            request_thread
-                .join()
-                .expect("join Iroh artifact batch request thread");
-            close_test_iroh_endpoint(&client_endpoint);
-            peer_thread
-                .join()
-                .expect("join test Iroh sync peer")
-                .expect("test Iroh sync peer completed");
-
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "Iroh control error should propagate before the missing stream watchdog"
-            );
-            assert_eq!(results.len(), 5);
-            assert!(staging_requests.is_empty());
-            for result in results {
-                let failure = result.expect_err("artifact should fail from control error");
-                assert!(
-                    failure
-                        .message
-                        .contains("peer stopped before final Iroh stream"),
-                    "unexpected Iroh batch failure: {}",
-                    failure.message
-                );
-            }
-        }
-
-        #[test]
-        fn iroh_artifact_batch_end_before_later_stream_fails_without_watchdog() {
-            let payloads = (0..5)
-                .map(|index| format!("artifact payload {index}").into_bytes())
-                .collect::<Vec<_>>();
-            let artifacts = payloads
-                .iter()
-                .enumerate()
-                .map(|(index, bytes)| RemoteArtifact {
-                    artifact_id: format!("art_end_{index}"),
-                    project_id: format!("proj_end_{index}"),
-                    content_sha256: test_sha256(bytes),
-                    size_bytes: bytes.len() as u64,
-                })
-                .collect::<Vec<_>>();
-            let peer_artifacts = artifacts.clone();
-            let peer_payloads = payloads.clone();
+            let backend = TestBackendServer::start_with_staged_artifacts(HashMap::new());
             let (connection, client_endpoint, peer_thread) =
-                spawn_test_iroh_sync_peer(move |mut peer, iroh_data| {
+                spawn_test_iroh_sync_peer(move |mut peer, _iroh_data| {
                     let request = read_message_accepting_status(
                         "artifact request/transfer",
                         || peer.read_message(),
@@ -9860,9 +10930,9 @@ mod desktop {
                     let ProtocolMessage::ArtifactBatchRequest(request) = request else {
                         return Err("expected Iroh artifact batch request".to_string());
                     };
-                    if request.artifacts.len() != 5 {
+                    if request.artifacts.len() != 1 {
                         return Err(format!(
-                            "expected 5 artifact requests, got {}",
+                            "expected 1 artifact request, got {}",
                             request.artifacts.len()
                         ));
                     }
@@ -9871,98 +10941,129 @@ mod desktop {
                         .ok_or_else(|| "expected Iroh batch token".to_string())?;
                     peer.send_message(&ProtocolMessage::ArtifactBatchStart {
                         batch_token: batch_token.clone(),
-                        artifact_count: 5,
+                        artifact_count: 1,
                     })?;
-                    for (artifact, bytes) in peer_artifacts
-                        .iter()
-                        .take(IROH_ARTIFACT_PARALLELISM)
-                        .zip(peer_payloads.iter())
-                    {
-                        send_test_iroh_artifact_stream(&iroh_data, &batch_token, artifact, bytes)?;
-                    }
                     peer.send_message(&ProtocolMessage::ArtifactBatchEnd { batch_token })?;
                     thread::sleep(Duration::from_millis(250));
                     Ok(())
                 });
-            let pending = artifacts
-                .clone()
-                .into_iter()
-                .map(|artifact| PendingArtifactTransfer { artifact })
-                .collect::<Vec<_>>();
-            let (result_sender, result_receiver) = mpsc::channel();
-            let request_connection = connection.clone();
-            let request_thread = thread::spawn(move || {
-                let client = TestStagingClient::new(Vec::new());
-                let started = Instant::now();
-                let progress = ProgressReporter::new(
-                    "sync_iroh_batch_end_test".to_string(),
-                    started,
-                    Arc::new(Mutex::new(SharedStatus::default())),
-                    request_connection.clone(),
-                );
-                let mut metrics = SyncRunMetrics::start(started);
-                let mut timings = Vec::new();
-                let results = request_and_stage_artifact_batch(
-                    &client,
-                    &request_connection,
-                    "dev_peer",
-                    pending,
-                    &mut metrics,
-                    &mut timings,
-                    &progress,
-                );
-                let _ = result_sender.send((results, client.requests()));
-            });
-
-            let started = Instant::now();
-            let (results, staging_requests) = match result_receiver
-                .recv_timeout(Duration::from_secs(5))
-            {
-                Ok(results) => results,
-                Err(error) => {
-                    close_test_iroh_endpoint(&client_endpoint);
-                    panic!(
-                        "Iroh receiver waited for a missing fifth data stream after early batch end: {error}"
-                    );
-                }
+            let client = BackendClient {
+                host: "127.0.0.1".to_string(),
+                port: backend.port,
+                sync_transport_temp_root: Arc::new(Mutex::new(None)),
             };
-            request_thread
-                .join()
-                .expect("join Iroh artifact batch request thread");
+            let started = Instant::now();
+            let progress = ProgressReporter::new(
+                "sync_iroh_batch_end_missing_stream_test".to_string(),
+                started,
+                Arc::new(Mutex::new(SharedStatus::default())),
+                connection.clone(),
+            );
+            let mut apply_worker = RemoteApplyWorker::start(
+                &client,
+                "dev_peer",
+                &json!({ "projects": [{ "project_id": "proj_missing" }] }),
+                IROH_TRANSPORT_ID,
+                progress.clone(),
+            );
+            let planned_projects = vec![PlannedRemoteProject {
+                project_id: artifact.project_id.clone(),
+                manifest: Some(json!({
+                    "project": { "project_id": artifact.project_id.clone() },
+                    "artifacts": [{
+                        "artifact_id": artifact.artifact_id.clone(),
+                        "project_id": artifact.project_id.clone(),
+                        "content_sha256": artifact.content_sha256.clone(),
+                        "size_bytes": artifact.size_bytes
+                    }]
+                })),
+                plan: json!({
+                    "actions": [{
+                        "action_type": "fetch_artifact_content",
+                        "provider_device_id": "dev_peer",
+                        "item_id": artifact.artifact_id.clone(),
+                        "project_id": artifact.project_id.clone(),
+                        "content_sha256": artifact.content_sha256.clone()
+                    }]
+                }),
+            }];
+            let mut metrics = SyncRunMetrics::start(started);
+            let mut timings = Vec::new();
+            let mut received_artifacts = Vec::new();
+
+            stage_remote_manifest_iroh_artifacts(
+                &client,
+                &connection,
+                connection
+                    .iroh_data_connection()
+                    .expect("test Iroh data connection"),
+                "dev_peer",
+                planned_projects,
+                &mut apply_worker,
+                &mut received_artifacts,
+                &mut metrics,
+                &mut timings,
+                &progress,
+            );
+            let project_results = apply_worker.finish(&mut timings);
+            let requests = backend.requests();
+            let temp_files = collect_test_files(&backend.transport_temp_root());
             close_test_iroh_endpoint(&client_endpoint);
             peer_thread
                 .join()
-                .expect("join test Iroh sync peer")
-                .expect("test Iroh sync peer completed");
+                .expect("join Iroh early-end peer")
+                .expect("Iroh early-end peer completed");
 
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "early Iroh batch end should fail before the missing stream watchdog"
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|path| path.as_str() == "/api/v1/sync/reconciliation/apply")
+                    .count(),
+                0,
+                "early batch end must not call reconciliation apply; requests: {requests:?}"
             );
-            assert_eq!(results.len(), 5);
-            assert!(staging_requests.is_empty());
-            for result in results {
-                let failure = result.expect_err("artifact should fail from early batch end");
-                assert!(
-                    failure.message.contains(
-                        "ended the Iroh artifact batch before sending all requested data streams"
-                    ),
-                    "unexpected Iroh batch failure: {}",
-                    failure.message
-                );
-            }
+            assert!(
+                temp_files.is_empty(),
+                "Iroh early batch end left temp files: {temp_files:?}"
+            );
+            let transfer_counts = transfer_counts(&received_artifacts);
+            assert_eq!(transfer_counts.failed, 1);
+            assert_eq!(project_results.len(), 1);
+            assert_eq!(project_results[0].project_id, "proj_missing");
+            assert_eq!(project_results[0].status, "failed");
         }
 
+        #[cfg(not(target_os = "android"))]
         #[test]
-        fn iroh_control_error_cancels_stalled_receive_workers_before_returning() {
-            let payload = b"artifact payload that never fully arrives".to_vec();
-            let artifact = RemoteArtifact {
-                artifact_id: "art_stalled".to_string(),
-                project_id: "proj_stalled".to_string(),
-                content_sha256: test_sha256(&payload),
-                size_bytes: payload.len() as u64,
+        fn iroh_global_batch_abort_fails_ready_projects_without_apply() {
+            let already_payload = b"already staged payload".to_vec();
+            let first_payload = b"first streamed payload".to_vec();
+            let second_payload = b"second streamed payload".to_vec();
+            let already_artifact = RemoteArtifact {
+                artifact_id: "art_already".to_string(),
+                project_id: "proj_already".to_string(),
+                content_sha256: test_sha256(&already_payload),
+                size_bytes: already_payload.len() as u64,
             };
-            let peer_artifact = artifact.clone();
+            let first_artifact = RemoteArtifact {
+                artifact_id: "art_first".to_string(),
+                project_id: "proj_first".to_string(),
+                content_sha256: test_sha256(&first_payload),
+                size_bytes: first_payload.len() as u64,
+            };
+            let second_artifact = RemoteArtifact {
+                artifact_id: "art_second".to_string(),
+                project_id: "proj_second".to_string(),
+                content_sha256: test_sha256(&second_payload),
+                size_bytes: second_payload.len() as u64,
+            };
+            let backend = TestBackendServer::start_with_staged_artifacts(HashMap::from([(
+                already_artifact.content_sha256.clone(),
+                already_artifact.size_bytes,
+            )]));
+            let backend_requests = Arc::clone(&backend.requests);
+            let peer_first_artifact = first_artifact.clone();
+            let peer_first_payload = first_payload.clone();
             let (connection, client_endpoint, peer_thread) =
                 spawn_test_iroh_sync_peer(move |mut peer, iroh_data| {
                     let request = read_message_accepting_status(
@@ -9973,6 +11074,12 @@ mod desktop {
                     let ProtocolMessage::ArtifactBatchRequest(request) = request else {
                         return Err("expected Iroh artifact batch request".to_string());
                     };
+                    if request.artifacts.len() != 2 {
+                        return Err(format!(
+                            "expected 2 artifact requests, got {}",
+                            request.artifacts.len()
+                        ));
+                    }
                     let batch_token = request
                         .batch_token
                         .ok_or_else(|| "expected Iroh batch token".to_string())?;
@@ -9980,90 +11087,180 @@ mod desktop {
                         batch_token: batch_token.clone(),
                         artifact_count: request.artifacts.len() as u64,
                     })?;
-                    let _stalled_stream = open_test_iroh_artifact_stream_header(
+                    send_test_iroh_artifact_stream(
                         &iroh_data,
                         &batch_token,
-                        &peer_artifact,
+                        &peer_first_artifact,
+                        &peer_first_payload,
                     )?;
-                    thread::sleep(Duration::from_millis(500));
+                    let wait_started = Instant::now();
+                    loop {
+                        let staged = backend_requests
+                            .lock()
+                            .map_err(|_| "test backend requests unavailable".to_string())?
+                            .iter()
+                            .any(|path| path == "/api/v1/sync/artifacts/staging");
+                        if staged {
+                            break;
+                        }
+                        if wait_started.elapsed() > Duration::from_secs(5) {
+                            return Err("first Iroh artifact was not staged before control error"
+                                .to_string());
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                    }
                     peer.send_message(&ProtocolMessage::Error(ProtocolError {
                         code: "artifact_transfer_failed".to_string(),
-                        message: "control error while data stream is stalled".to_string(),
+                        message: "control error before second Iroh stream".to_string(),
                     }))?;
-                    thread::sleep(Duration::from_secs(2));
+                    thread::sleep(Duration::from_millis(250));
                     Ok(())
                 });
-            let pending = vec![PendingArtifactTransfer { artifact }];
-            let (result_sender, result_receiver) = mpsc::channel();
-            let request_connection = connection.clone();
-            let request_thread = thread::spawn(move || {
-                let client = std::mem::ManuallyDrop::new(TestStagingClient::new(Vec::new()));
-                let temp_root = client.temp_root.clone();
-                let started = Instant::now();
-                let progress = ProgressReporter::new(
-                    "sync_iroh_cancel_stalled_worker_test".to_string(),
-                    started,
-                    Arc::new(Mutex::new(SharedStatus::default())),
-                    request_connection.clone(),
-                );
-                let mut metrics = SyncRunMetrics::start(started);
-                let mut timings = Vec::new();
-                let results = request_and_stage_artifact_batch(
-                    &*client,
-                    &request_connection,
-                    "dev_peer",
-                    pending,
-                    &mut metrics,
-                    &mut timings,
-                    &progress,
-                );
-                let _ = result_sender.send((results, client.requests(), temp_root));
-            });
-
-            let started = Instant::now();
-            let (results, staging_requests, temp_root) = match result_receiver
-                .recv_timeout(Duration::from_secs(5))
-            {
-                Ok(results) => results,
-                Err(error) => {
-                    close_test_iroh_endpoint(&client_endpoint);
-                    panic!(
-                            "Iroh receiver waited on a stalled data stream after control error: {error}"
-                        );
-                }
+            let client = BackendClient {
+                host: "127.0.0.1".to_string(),
+                port: backend.port,
+                sync_transport_temp_root: Arc::new(Mutex::new(None)),
             };
-            request_thread
-                .join()
-                .expect("join Iroh stalled stream request thread");
-            let leaked_files = collect_test_files(&temp_root);
+            let started = Instant::now();
+            let progress = ProgressReporter::new(
+                "sync_iroh_batch_abort_ready_projects_test".to_string(),
+                started,
+                Arc::new(Mutex::new(SharedStatus::default())),
+                connection.clone(),
+            );
+            let mut apply_worker = RemoteApplyWorker::start(
+                &client,
+                "dev_peer",
+                &json!({
+                    "projects": [
+                        { "project_id": "proj_already" },
+                        { "project_id": "proj_first" },
+                        { "project_id": "proj_second" }
+                    ],
+                    "delete_tombstones": [
+                        { "project_id": "proj_deleted", "tombstone_id": "del_deleted" }
+                    ]
+                }),
+                IROH_TRANSPORT_ID,
+                progress.clone(),
+            );
+            let manifest_for = |artifact: &RemoteArtifact| {
+                json!({
+                    "project": { "project_id": artifact.project_id.clone() },
+                    "artifacts": [{
+                        "artifact_id": artifact.artifact_id.clone(),
+                        "project_id": artifact.project_id.clone(),
+                        "content_sha256": artifact.content_sha256.clone(),
+                        "size_bytes": artifact.size_bytes
+                    }]
+                })
+            };
+            let fetch_plan_for = |artifact: &RemoteArtifact| {
+                json!({
+                    "actions": [{
+                        "action_type": "fetch_artifact_content",
+                        "provider_device_id": "dev_peer",
+                        "item_id": artifact.artifact_id.clone(),
+                        "project_id": artifact.project_id.clone(),
+                        "content_sha256": artifact.content_sha256.clone()
+                    }]
+                })
+            };
+            let planned_projects = vec![
+                PlannedRemoteProject {
+                    project_id: already_artifact.project_id.clone(),
+                    manifest: Some(manifest_for(&already_artifact)),
+                    plan: fetch_plan_for(&already_artifact),
+                },
+                PlannedRemoteProject {
+                    project_id: "proj_deleted".to_string(),
+                    manifest: None,
+                    plan: json!({
+                        "actions": [{
+                            "action_type": "apply_delete_tombstone",
+                            "project_id": "proj_deleted",
+                            "item_id": "proj_deleted"
+                        }]
+                    }),
+                },
+                PlannedRemoteProject {
+                    project_id: first_artifact.project_id.clone(),
+                    manifest: Some(manifest_for(&first_artifact)),
+                    plan: fetch_plan_for(&first_artifact),
+                },
+                PlannedRemoteProject {
+                    project_id: second_artifact.project_id.clone(),
+                    manifest: Some(manifest_for(&second_artifact)),
+                    plan: fetch_plan_for(&second_artifact),
+                },
+            ];
+            let mut metrics = SyncRunMetrics::start(started);
+            let mut timings = Vec::new();
+            let mut received_artifacts = Vec::new();
+
+            stage_remote_manifest_iroh_artifacts(
+                &client,
+                &connection,
+                connection
+                    .iroh_data_connection()
+                    .expect("test Iroh data connection"),
+                "dev_peer",
+                planned_projects,
+                &mut apply_worker,
+                &mut received_artifacts,
+                &mut metrics,
+                &mut timings,
+                &progress,
+            );
+            let project_results = apply_worker.finish(&mut timings);
+            let requests = backend.requests();
+            let temp_files = collect_test_files(&backend.transport_temp_root());
             close_test_iroh_endpoint(&client_endpoint);
             peer_thread
                 .join()
-                .expect("join test Iroh sync peer")
-                .expect("test Iroh sync peer completed");
-            let _ = fs::remove_dir_all(&temp_root);
+                .expect("join Iroh abort peer")
+                .expect("Iroh abort peer completed");
 
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "control error should cancel stalled data workers before the read watchdog"
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|path| path.as_str() == "/api/v1/sync/reconciliation/apply")
+                    .count(),
+                0,
+                "fatal abort must not call reconciliation apply; requests: {requests:?}"
             );
-            assert_eq!(results.len(), 1);
-            assert!(staging_requests.is_empty());
-            assert!(
-                leaked_files.is_empty(),
-                "stalled Iroh receive worker left temp files after sync returned: {leaked_files:?}"
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|path| path.as_str() == "/api/v1/sync/artifacts/staging")
+                    .count(),
+                1
             );
-            let failure = results
-                .into_iter()
-                .next()
-                .expect("one artifact result")
-                .expect_err("stalled artifact should fail from control error");
             assert!(
-                failure
-                    .message
-                    .contains("control error while data stream is stalled"),
-                "unexpected Iroh batch failure: {}",
-                failure.message
+                temp_files.is_empty(),
+                "Iroh staging temp files should be cleaned up: {temp_files:?}"
+            );
+            let transfer_counts = transfer_counts(&received_artifacts);
+            assert_eq!(transfer_counts.already_staged, 1);
+            assert_eq!(transfer_counts.received, 1);
+            assert_eq!(transfer_counts.failed, 1);
+            let mut result_project_ids = project_results
+                .iter()
+                .map(|result| {
+                    assert_eq!(result.status, "failed");
+                    result.project_id.as_str()
+                })
+                .collect::<Vec<_>>();
+            result_project_ids.sort_unstable();
+            assert_eq!(
+                result_project_ids,
+                vec!["proj_already", "proj_deleted", "proj_first", "proj_second"]
+            );
+            let import_counts = import_outcome_counts(&project_results);
+            assert_eq!(import_counts.failed, 4);
+            assert_eq!(
+                sync_result_status(&[], import_counts.failed),
+                "completed_with_errors"
             );
         }
 
@@ -10931,6 +12128,343 @@ mod desktop {
         }
 
         #[test]
+        fn iroh_pending_artifacts_round_robin_projects_before_first_cap_window() {
+            let pending = (0..IROH_ARTIFACT_PARALLELISM + 2)
+                .map(|index| PendingArtifactTransfer {
+                    artifact: RemoteArtifact {
+                        artifact_id: format!("art_a_{index}"),
+                        project_id: "proj_a".to_string(),
+                        content_sha256: format!("hash_a_{index}"),
+                        size_bytes: 10,
+                    },
+                })
+                .chain((0..2).map(|index| PendingArtifactTransfer {
+                    artifact: RemoteArtifact {
+                        artifact_id: format!("art_b_{index}"),
+                        project_id: "proj_b".to_string(),
+                        content_sha256: format!("hash_b_{index}"),
+                        size_bytes: 20,
+                    },
+                }))
+                .collect::<Vec<_>>();
+
+            let ordered = round_robin_pending_artifacts_by_project(pending);
+
+            assert_eq!(
+                ordered
+                    .iter()
+                    .take(IROH_ARTIFACT_PARALLELISM)
+                    .map(|pending| pending.artifact.artifact_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["art_a_0", "art_b_0", "art_a_1", "art_b_1"]
+            );
+        }
+
+        #[test]
+        fn iroh_global_scheduler_releases_each_project_when_ready() {
+            let mut scheduler = IrohGlobalProjectScheduler::default();
+            let mut received_artifacts = Vec::new();
+            let first = RemoteArtifact {
+                artifact_id: "art_one".to_string(),
+                project_id: "proj_one".to_string(),
+                content_sha256: "hash_one".to_string(),
+                size_bytes: 10,
+            };
+            let second = RemoteArtifact {
+                artifact_id: "art_two".to_string(),
+                project_id: "proj_two".to_string(),
+                content_sha256: "hash_two".to_string(),
+                size_bytes: 20,
+            };
+            let first_project =
+                scheduler.push_project(json!({ "project": { "project_id": "proj_one" } }));
+            let second_project =
+                scheduler.push_project(json!({ "project": { "project_id": "proj_two" } }));
+
+            assert!(scheduler
+                .add_pending_artifact(first_project, first.clone())
+                .expect("add first pending"));
+            assert!(scheduler
+                .add_pending_artifact(second_project, second.clone())
+                .expect("add second pending"));
+            scheduler.mark_project_discovered(first_project);
+            scheduler.mark_project_discovered(second_project);
+
+            assert!(scheduler.drain_ready_projects().is_empty());
+
+            scheduler.record_artifact_transfer(
+                Ok(test_transfer_result("art_two", "hash_two", 20, "received")),
+                &mut received_artifacts,
+            );
+            let ready = scheduler.drain_ready_projects();
+
+            assert_eq!(ready.len(), 1);
+            assert_eq!(manifest_project_id(&ready[0].manifest), "proj_two");
+            assert_eq!(
+                ready[0].available_content_sha256,
+                vec!["hash_two".to_string()]
+            );
+            assert!(ready[0].transfer_failure.is_none());
+
+            scheduler.record_artifact_transfer(
+                Ok(test_transfer_result("art_one", "hash_one", 10, "received")),
+                &mut received_artifacts,
+            );
+            let ready = scheduler.drain_ready_projects();
+
+            assert_eq!(ready.len(), 1);
+            assert_eq!(manifest_project_id(&ready[0].manifest), "proj_one");
+            assert_eq!(
+                received_artifacts
+                    .iter()
+                    .map(|transfer| transfer.artifact_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["art_two", "art_one"]
+            );
+        }
+
+        #[test]
+        fn iroh_global_scheduler_keeps_same_hash_artifact_ids_distinct() {
+            let mut scheduler = IrohGlobalProjectScheduler::default();
+            let first_project =
+                scheduler.push_project(json!({ "project": { "project_id": "proj_one" } }));
+            let second_project =
+                scheduler.push_project(json!({ "project": { "project_id": "proj_two" } }));
+            let first = RemoteArtifact {
+                artifact_id: "art_same_hash_one".to_string(),
+                project_id: "proj_one".to_string(),
+                content_sha256: "hash_shared".to_string(),
+                size_bytes: 10,
+            };
+            let second = RemoteArtifact {
+                artifact_id: "art_same_hash_two".to_string(),
+                project_id: "proj_two".to_string(),
+                content_sha256: "hash_shared".to_string(),
+                size_bytes: 10,
+            };
+
+            assert!(scheduler
+                .add_pending_artifact(first_project, first)
+                .expect("add first same-hash artifact"));
+            assert!(scheduler
+                .add_pending_artifact(second_project, second)
+                .expect("add second same-hash artifact"));
+
+            assert_eq!(scheduler.artifact_subscribers.len(), 2);
+            assert!(scheduler
+                .artifact_subscribers
+                .contains_key("art_same_hash_one"));
+            assert!(scheduler
+                .artifact_subscribers
+                .contains_key("art_same_hash_two"));
+        }
+
+        #[test]
+        fn iroh_initial_scan_ready_project_includes_later_manifest_cleanup_context() {
+            let mut scheduler = IrohGlobalProjectScheduler::default();
+            let mut received_artifacts = Vec::new();
+            let shared_hash = "hash_shared".to_string();
+            let ready_manifest = json!({
+                "project": { "project_id": "proj_ready" },
+                "artifacts": [{
+                    "artifact_id": "art_ready",
+                    "project_id": "proj_ready",
+                    "content_sha256": shared_hash,
+                    "size_bytes": 10
+                }]
+            });
+            let pending_manifest = json!({
+                "project": { "project_id": "proj_pending" },
+                "artifacts": [{
+                    "artifact_id": "art_pending",
+                    "project_id": "proj_pending",
+                    "content_sha256": "hash_shared",
+                    "size_bytes": 10
+                }]
+            });
+            let ready_plan = json!({
+                "actions": [{
+                    "action_type": "fetch_artifact_content",
+                    "item_type": "artifact",
+                    "item_id": "art_ready",
+                    "project_id": "proj_ready",
+                    "content_sha256": "hash_shared",
+                    "provider_device_id": "dev_peer",
+                    "priority": 20
+                }]
+            });
+            let pending_plan = json!({
+                "actions": [{
+                    "action_type": "fetch_artifact_content",
+                    "item_type": "artifact",
+                    "item_id": "art_pending",
+                    "project_id": "proj_pending",
+                    "content_sha256": "hash_shared",
+                    "provider_device_id": "dev_peer",
+                    "priority": 20
+                }]
+            });
+            let registered_projects = register_planned_iroh_projects(
+                vec![
+                    PlannedRemoteProject {
+                        project_id: "proj_ready".to_string(),
+                        manifest: Some(ready_manifest),
+                        plan: ready_plan,
+                    },
+                    PlannedRemoteProject {
+                        project_id: "proj_pending".to_string(),
+                        manifest: Some(pending_manifest),
+                        plan: pending_plan,
+                    },
+                ],
+                &mut scheduler,
+            );
+            assert_eq!(registered_projects.len(), 2);
+            let first_registered = registered_projects
+                .first()
+                .expect("registered ready project");
+            let IrohRegisteredPlannedRemoteProject::Manifest {
+                project_index,
+                manifest,
+                plan,
+            } = first_registered
+            else {
+                panic!("expected first registered manifest project");
+            };
+            let entries =
+                planned_fetch_artifact_entries(plan, std::slice::from_ref(manifest), "dev_peer");
+
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].artifact.content_sha256, "hash_shared");
+            scheduler.record_project_transfer(
+                *project_index,
+                Ok(test_transfer_result(
+                    "art_ready",
+                    "hash_shared",
+                    10,
+                    "already_staged",
+                )),
+                &mut received_artifacts,
+            );
+            scheduler.mark_project_discovered(*project_index);
+
+            let ready = scheduler.drain_ready_projects();
+
+            assert_eq!(ready.len(), 1);
+            assert!(scheduler.drain_ready_projects().is_empty());
+            assert_eq!(received_artifacts.len(), 1);
+            assert_eq!(received_artifacts[0].status, "already_staged");
+            let staged = &ready[0];
+            assert_eq!(manifest_project_id(&staged.manifest), "proj_ready");
+            assert_eq!(staged.cleanup_context_manifests.len(), 1);
+            assert_eq!(
+                manifest_project_id(&staged.cleanup_context_manifests[0]),
+                "proj_pending"
+            );
+            assert_eq!(staged.available_content_sha256, vec!["hash_shared"]);
+
+            let apply_manifests = apply_project_manifests_with_cleanup_context(
+                &staged.manifest,
+                &staged.cleanup_context_manifests,
+            );
+            let remote_metadata = remote_metadata_for_projects(
+                &json!({
+                    "projects": [
+                        { "project_id": "proj_ready" },
+                        { "project_id": "proj_pending" }
+                    ]
+                }),
+                &apply_manifests
+                    .iter()
+                    .map(manifest_project_id)
+                    .collect::<Vec<_>>(),
+            );
+            let body = reconciliation_apply_body_with_project_ids(
+                "dev_peer",
+                &remote_metadata,
+                &apply_manifests,
+                &staged.available_content_sha256,
+                &["proj_ready".to_string()],
+                IROH_TRANSPORT_ID,
+            );
+
+            let body_manifest_ids = body
+                .get("project_manifests")
+                .and_then(Value::as_array)
+                .expect("project manifests")
+                .iter()
+                .map(manifest_project_id)
+                .collect::<Vec<_>>();
+            assert_eq!(body_manifest_ids, vec!["proj_ready", "proj_pending"]);
+            assert_eq!(body.get("project_ids"), Some(&json!(["proj_ready"])));
+            assert_eq!(
+                body.pointer("/peer_inventory/0/available_content_sha256"),
+                Some(&json!(["hash_shared"]))
+            );
+        }
+
+        #[test]
+        fn iroh_global_scheduler_isolates_failed_artifact_project() {
+            let mut scheduler = IrohGlobalProjectScheduler::default();
+            let mut received_artifacts = Vec::new();
+            let failed_artifact = RemoteArtifact {
+                artifact_id: "art_failed".to_string(),
+                project_id: "proj_failed".to_string(),
+                content_sha256: "hash_failed".to_string(),
+                size_bytes: 10,
+            };
+            let ok_artifact = RemoteArtifact {
+                artifact_id: "art_ok".to_string(),
+                project_id: "proj_ok".to_string(),
+                content_sha256: "hash_ok".to_string(),
+                size_bytes: 20,
+            };
+            let failed_project =
+                scheduler.push_project(json!({ "project": { "project_id": "proj_failed" } }));
+            let ok_project =
+                scheduler.push_project(json!({ "project": { "project_id": "proj_ok" } }));
+
+            scheduler
+                .add_pending_artifact(failed_project, failed_artifact.clone())
+                .expect("add failed pending");
+            scheduler
+                .add_pending_artifact(ok_project, ok_artifact.clone())
+                .expect("add ok pending");
+            scheduler.mark_project_discovered(failed_project);
+            scheduler.mark_project_discovered(ok_project);
+
+            scheduler.record_artifact_transfer(
+                Err(transfer_failure(
+                    &failed_artifact,
+                    TransferTimer::zero_now(),
+                    "stream failed".to_string(),
+                )),
+                &mut received_artifacts,
+            );
+            let ready = scheduler.drain_ready_projects();
+
+            assert_eq!(ready.len(), 1);
+            assert_eq!(manifest_project_id(&ready[0].manifest), "proj_failed");
+            assert_eq!(ready[0].transfer_failure.as_deref(), Some("stream failed"));
+            assert_eq!(received_artifacts.len(), 1);
+            assert_eq!(received_artifacts[0].status, "failed");
+
+            scheduler.record_artifact_transfer(
+                Ok(test_transfer_result("art_ok", "hash_ok", 20, "received")),
+                &mut received_artifacts,
+            );
+            let ready = scheduler.drain_ready_projects();
+
+            assert_eq!(ready.len(), 1);
+            assert_eq!(manifest_project_id(&ready[0].manifest), "proj_ok");
+            assert!(ready[0].transfer_failure.is_none());
+            assert_eq!(
+                ready[0].available_content_sha256,
+                vec!["hash_ok".to_string()]
+            );
+        }
+
+        #[test]
         fn batch_apply_response_maps_projects_to_imported_skipped_and_failed() {
             let manifests = vec![
                 json!({ "project": { "project_id": "proj_imported" }, "artifacts": [] }),
@@ -11492,6 +13026,28 @@ mod desktop {
             let second = temp_artifact_path_in(env::temp_dir(), "hash_same");
 
             assert_ne!(first, second);
+        }
+
+        #[test]
+        fn desktop_temp_artifact_root_uses_health_data_root_without_tmp_fallback() {
+            let health = json!({ "data_root": "/var/lib/tuneforge-test" });
+
+            let root = sync_transport_temp_root_from_health(&health)
+                .expect("resolve sync transport temp root");
+
+            assert_eq!(
+                root,
+                PathBuf::from("/var/lib/tuneforge-test")
+                    .join("sync")
+                    .join("transport-tmp")
+            );
+            let temp_path = temp_artifact_path_in(root.clone(), "hash_one");
+            assert!(temp_path.starts_with(&root));
+            assert!(!temp_path
+                .to_string_lossy()
+                .contains("tuneforge-sync-transport"));
+            assert!(sync_transport_temp_root_from_health(&json!({})).is_err());
+            assert!(sync_transport_temp_root_from_health(&json!({ "data_root": "" })).is_err());
         }
 
         #[test]

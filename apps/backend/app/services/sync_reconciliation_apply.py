@@ -189,6 +189,13 @@ def _apply_action_in_savepoint(
             reason=exc.message,
             details=_error_details(action, exc),
         )
+    except Exception as exc:
+        return SyncReconciliationApplyActionResult(
+            action=action,
+            status=APPLY_STATUS_FAILED,
+            reason="Unexpected sync apply action error.",
+            details=_unexpected_error_details(action, exc),
+        )
 
 
 def _apply_action(
@@ -809,6 +816,8 @@ def _hydrate_imported_project_analysis(
         and result.status == APPLY_STATUS_APPLIED
     }
     for project_id, manifest in context.project_manifests_by_id.items():
+        if context.scoped_project_ids and project_id not in context.scoped_project_ids:
+            continue
         if project_id in imported_project_ids:
             continue
         if not _project_is_imported(session, project_id) or not _manifest_has_analysis_artifact(manifest):
@@ -1067,6 +1076,8 @@ def _staged_manifest_import_actions(
     priority = _project_manifest_import_priority(plan)
     actions: list[SyncReconciliationAction] = []
     for project_id in sorted(context.project_manifests_by_id):
+        if context.scoped_project_ids and project_id not in context.scoped_project_ids:
+            continue
         if project_id in planned_import_project_ids:
             continue
         if _project_has_blocking_apply_action(plan, project_id):
@@ -1231,6 +1242,17 @@ def _error_details(action: SyncReconciliationAction, exc: AppError) -> dict[str,
         "project_id": action.project_id,
         "error_code": exc.code,
         "error_details": exc.details,
+    }
+
+
+def _unexpected_error_details(action: SyncReconciliationAction, exc: Exception) -> dict[str, Any]:
+    return {
+        "action_type": action.action_type,
+        "item_type": action.item_type,
+        "item_id": action.item_id,
+        "project_id": action.project_id,
+        "error_code": "SYNC_RECONCILIATION_ACTION_EXCEPTION",
+        "exception_type": type(exc).__name__,
     }
 
 

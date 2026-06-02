@@ -344,7 +344,7 @@ fn store_analysis_result(
             "INSERT INTO artifacts (id, project_id, type, format, path, content_sha256, size_bytes, generated_by, can_delete, can_regenerate, metadata_json, cache_key, created_at)
              VALUES (?1, ?2, 'analysis_json', 'json', ?3, ?4, ?5, 'analysis', 0, 1, ?6, NULL, ?7)",
             params![
-                new_id("art"),
+                new_artifact_id()?,
                 project.id,
                 analysis_path.to_string_lossy().into_owned(),
                 content_sha256,

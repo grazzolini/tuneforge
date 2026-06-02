@@ -1591,7 +1591,7 @@ pub fn mobile_import_project(
     let size_bytes = fs::metadata(&imported_path)
         .map(|metadata| metadata.len() as i64)
         .unwrap_or(0);
-    let source_artifact_id = new_id("art");
+    let source_artifact_id = new_artifact_id()?;
     let artifact_metadata = json!({ "source_path": payload.source_path });
 
     connection

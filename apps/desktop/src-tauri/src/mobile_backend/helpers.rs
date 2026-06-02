@@ -1,4 +1,22 @@
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn new_artifact_id() -> Result<String, String> {
+    use rand::TryRng as _;
+
+    let mut bytes = [0_u8; ARTIFACT_ID_RANDOM_BYTE_COUNT];
+    rand::rngs::SysRng
+        .try_fill_bytes(&mut bytes)
+        .map_err(|error| format!("Could not generate artifact id: {error}"))?;
+    let mut id = String::with_capacity(ARTIFACT_ID_PREFIX.len() + bytes.len() * 2);
+    id.push_str(ARTIFACT_ID_PREFIX);
+    for byte in bytes {
+        use std::fmt::Write as _;
+
+        write!(&mut id, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    Ok(id)
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 fn sync_editable(sync_status: &str) -> bool {
     sync_status == DEFAULT_SYNC_STATUS
 }
@@ -1071,6 +1089,20 @@ mod mobile_backend_tests {
             created_at: "2026-05-22T12:00:00.000Z".to_string(),
             updated_at: "2026-05-22T12:00:00.000Z".to_string(),
         }
+    }
+
+    #[test]
+    fn mobile_new_artifact_id_uses_column_safe_hex_entropy() {
+        let artifact_id = new_artifact_id().unwrap();
+        let suffix = artifact_id.strip_prefix(ARTIFACT_ID_PREFIX).unwrap();
+
+        assert_eq!(artifact_id.len(), 32);
+        assert_eq!(suffix.len(), 28);
+        assert!(
+            suffix
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        );
     }
 
     #[test]

@@ -1797,6 +1797,121 @@ describe("Desktop app activity", () => {
     expect(legacyPayload.last_sync?.time_to_first_artifact_ms).toBe(800);
   });
 
+  it("normalizes Iroh flow-control evidence from snake and camel metrics", () => {
+    const normalized = normalizeSyncTransportStatus({
+      active: true,
+      status: "listening",
+      lastSync: {
+        selectedTransport: irohTransportId,
+        status: "completed",
+        scratchPeakBytes: 128_000_000,
+        credit_wait_ms_total: 42,
+        credit_wait_ms_max: 40,
+        credit_wait_events: 2,
+        credit_hold_ms_total: 80,
+        credit_hold_ms_max: 50,
+        stage_queue_wait_ms_total: 9,
+        stage_queue_wait_ms_max: 6,
+        stage_queue_wait_events: 3,
+        stream_open_ms_total: 5,
+        stream_open_ms_max: 4,
+        stream_open_events: 2,
+        sender_write_ms_total: 120,
+        sender_write_ms_max: 70,
+        sender_write_events: 4,
+        receiver_read_ms_total: 130,
+        receiver_read_ms_max: 90,
+        receiver_read_events: 5,
+        receiver_hash_ms_total: 11,
+        receiver_hash_ms_max: 5,
+        receiver_hash_events: 5,
+        receiver_temp_write_ms_total: 39,
+        receiver_temp_write_ms_max: 12,
+        receiver_temp_write_events: 5,
+        staging_post_ms_total: 300,
+        staging_post_ms_max: 200,
+        staging_post_events: 2,
+        transferCounts: {
+          staging_peak_bytes: 16_000_000,
+          maxActiveStreams: 8,
+          credit_grants: 64,
+          creditRevokes: 2,
+        },
+        projectResults: [],
+        manifestErrors: [],
+        receivedArtifacts: [],
+      },
+    });
+
+    expect(normalized.last_sync).toMatchObject({
+      selected_transport: "iroh",
+      scratch_peak_bytes: 128_000_000,
+      staging_peak_bytes: 16_000_000,
+      max_active_streams: 8,
+      credit_grants: 64,
+      credit_revokes: 2,
+      credit_wait_ms_total: 42,
+      credit_wait_ms_max: 40,
+      credit_wait_events: 2,
+      credit_hold_ms_total: 80,
+      credit_hold_ms_max: 50,
+      stage_queue_wait_ms_total: 9,
+      stage_queue_wait_ms_max: 6,
+      stage_queue_wait_events: 3,
+      stream_open_ms_total: 5,
+      stream_open_ms_max: 4,
+      stream_open_events: 2,
+      sender_write_ms_total: 120,
+      sender_write_ms_max: 70,
+      sender_write_events: 4,
+      receiver_read_ms_total: 130,
+      receiver_read_ms_max: 90,
+      receiver_read_events: 5,
+      receiver_hash_ms_total: 11,
+      receiver_hash_ms_max: 5,
+      receiver_hash_events: 5,
+      receiver_temp_write_ms_total: 39,
+      receiver_temp_write_ms_max: 12,
+      receiver_temp_write_events: 5,
+      staging_post_ms_total: 300,
+      staging_post_ms_max: 200,
+      staging_post_events: 2,
+      transfer_counts: {
+        scratch_peak_bytes: 128_000_000,
+        staging_peak_bytes: 16_000_000,
+        max_active_streams: 8,
+        credit_grants: 64,
+        credit_revokes: 2,
+        credit_wait_ms_total: 42,
+        credit_wait_ms_max: 40,
+        credit_wait_events: 2,
+        credit_hold_ms_total: 80,
+        credit_hold_ms_max: 50,
+        stage_queue_wait_ms_total: 9,
+        stage_queue_wait_ms_max: 6,
+        stage_queue_wait_events: 3,
+        stream_open_ms_total: 5,
+        stream_open_ms_max: 4,
+        stream_open_events: 2,
+        sender_write_ms_total: 120,
+        sender_write_ms_max: 70,
+        sender_write_events: 4,
+        receiver_read_ms_total: 130,
+        receiver_read_ms_max: 90,
+        receiver_read_events: 5,
+        receiver_hash_ms_total: 11,
+        receiver_hash_ms_max: 5,
+        receiver_hash_events: 5,
+        receiver_temp_write_ms_total: 39,
+        receiver_temp_write_ms_max: 12,
+        receiver_temp_write_events: 5,
+        staging_post_ms_total: 300,
+        staging_post_ms_max: 200,
+        staging_post_events: 2,
+      },
+    });
+  });
+
   it("keeps newer successful sync rows when stale failures arrive later in the payload", () => {
     const normalized = normalizeSyncTransportStatus({
       active: true,
@@ -1891,10 +2006,53 @@ describe("Desktop app activity", () => {
         started_at: "2026-04-18T13:16:00.000Z",
         completed_at: "2026-04-18T13:16:01.400Z",
         duration_ms: 1400,
+        phase_timings: [
+          {
+            phase: "artifact_transfer",
+            duration_ms: 500,
+          },
+          {
+            phase: "backend_staging",
+            duration_ms: 900,
+          },
+        ],
         time_to_first_artifact_ms: 450,
         total_received_bytes: 3_000_000,
         total_served_bytes: 1_000_000,
         throughput_bytes_per_second: 2_500_000,
+        scratch_peak_bytes: 64_000_000,
+        transfer_counts: {
+          staging_peak_bytes: 12_000_000,
+          max_active_streams: 8,
+          credit_grants: 64,
+          credit_revokes: 2,
+          credit_wait_ms_total: 42,
+          credit_wait_ms_max: 40,
+          credit_wait_events: 2,
+          credit_hold_ms_total: 80,
+          credit_hold_ms_max: 50,
+          stage_queue_wait_ms_total: 9,
+          stage_queue_wait_ms_max: 6,
+          stage_queue_wait_events: 3,
+          stream_open_ms_total: 5,
+          stream_open_ms_max: 4,
+          stream_open_events: 2,
+          sender_write_ms_total: 120,
+          sender_write_ms_max: 70,
+          sender_write_events: 4,
+          receiver_read_ms_total: 130,
+          receiver_read_ms_max: 90,
+          receiver_read_events: 5,
+          receiver_hash_ms_total: 11,
+          receiver_hash_ms_max: 5,
+          receiver_hash_events: 5,
+          receiver_temp_write_ms_total: 39,
+          receiver_temp_write_ms_max: 12,
+          receiver_temp_write_events: 5,
+          staging_post_ms_total: 300,
+          staging_post_ms_max: 200,
+          staging_post_events: 2,
+        },
         imported_project_count: 1,
         skipped_project_count: 1,
         failed_project_count: 0,
@@ -1957,6 +2115,16 @@ describe("Desktop app activity", () => {
     expect(screen.getByText(/TTFA 450 ms/)).toBeInTheDocument();
     expect(screen.getByText(/4\.0 MB total/)).toBeInTheDocument();
     expect(screen.getByText(/2\.5 MB\/s/)).toBeInTheDocument();
+    expect(screen.getByText(/Slowest Backend Staging 900 ms/)).toBeInTheDocument();
+    expect(screen.getByText(/Scratch peak 64 MB/)).toBeInTheDocument();
+    expect(screen.getByText(/Staging peak 12 MB/)).toBeInTheDocument();
+    expect(screen.getByText(/Max 8 streams/)).toBeInTheDocument();
+    expect(screen.getByText(/Credits 64 grants, 2 revokes/)).toBeInTheDocument();
+    const diagnosticsSummary = screen.getByText(/Diagnostics staging POST 300 ms/);
+    expect(diagnosticsSummary).toHaveTextContent(
+      "Diagnostics staging POST 300 ms (2 events, max 200 ms); receiver read 130 ms (5 events, max 90 ms); sender write 120 ms (4 events, max 70 ms); credit hold 80 ms (max 50 ms); credit wait 42 ms (2 events, max 40 ms); temp write 39 ms (5 events, max 12 ms); receiver hash 11 ms (5 events, max 5 ms); queue wait 9 ms (3 events, max 6 ms); stream open 5 ms (2 events, max 4 ms)",
+    );
+    expect(diagnosticsSummary).not.toHaveTextContent(/\+\d+ more/);
 
     const projectResults = await screen.findByRole("list", { name: "Last sync project results" });
     const resultRows = within(projectResults).getAllByRole("listitem");

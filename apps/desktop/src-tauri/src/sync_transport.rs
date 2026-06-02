@@ -106,6 +106,207 @@ pub struct SyncTransportTransferCounts {
     pub already_staged_bytes: u64,
 }
 
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct SyncTransportDiagnostics {
+    pub credit_wait_ms_total: u64,
+    pub credit_wait_ms_max: u64,
+    pub credit_wait_events: u64,
+    pub credit_hold_ms_total: u64,
+    pub credit_hold_ms_max: u64,
+    pub stage_queue_wait_ms_total: u64,
+    pub stage_queue_wait_ms_max: u64,
+    pub stage_queue_wait_events: u64,
+    pub stream_open_ms_total: u64,
+    pub stream_open_ms_max: u64,
+    pub stream_open_events: u64,
+    pub sender_write_ms_total: u64,
+    pub sender_write_ms_max: u64,
+    pub sender_write_events: u64,
+    pub receiver_read_ms_total: u64,
+    pub receiver_read_ms_max: u64,
+    pub receiver_read_events: u64,
+    pub receiver_hash_ms_total: u64,
+    pub receiver_hash_ms_max: u64,
+    pub receiver_hash_events: u64,
+    pub receiver_temp_write_ms_total: u64,
+    pub receiver_temp_write_ms_max: u64,
+    pub receiver_temp_write_events: u64,
+    pub staging_post_ms_total: u64,
+    pub staging_post_ms_max: u64,
+    pub staging_post_events: u64,
+}
+
+impl SyncTransportDiagnostics {
+    fn duration_ms(duration: std::time::Duration) -> u64 {
+        u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+    }
+
+    fn record_timed_event(
+        total_ms: &mut u64,
+        max_ms: &mut u64,
+        events: &mut u64,
+        duration: std::time::Duration,
+    ) {
+        let duration_ms = Self::duration_ms(duration);
+        *total_ms = total_ms.saturating_add(duration_ms);
+        *max_ms = (*max_ms).max(duration_ms);
+        *events = events.saturating_add(1);
+    }
+
+    fn record_timed_total(total_ms: &mut u64, max_ms: &mut u64, duration: std::time::Duration) {
+        let duration_ms = Self::duration_ms(duration);
+        *total_ms = total_ms.saturating_add(duration_ms);
+        *max_ms = (*max_ms).max(duration_ms);
+    }
+
+    fn record_credit_wait(&mut self, duration: std::time::Duration) {
+        Self::record_timed_event(
+            &mut self.credit_wait_ms_total,
+            &mut self.credit_wait_ms_max,
+            &mut self.credit_wait_events,
+            duration,
+        );
+    }
+
+    fn record_credit_hold(&mut self, duration: std::time::Duration) {
+        Self::record_timed_total(
+            &mut self.credit_hold_ms_total,
+            &mut self.credit_hold_ms_max,
+            duration,
+        );
+    }
+
+    fn record_stage_queue_wait(&mut self, duration: std::time::Duration) {
+        Self::record_timed_event(
+            &mut self.stage_queue_wait_ms_total,
+            &mut self.stage_queue_wait_ms_max,
+            &mut self.stage_queue_wait_events,
+            duration,
+        );
+    }
+
+    fn record_stream_open(&mut self, duration: std::time::Duration) {
+        Self::record_timed_event(
+            &mut self.stream_open_ms_total,
+            &mut self.stream_open_ms_max,
+            &mut self.stream_open_events,
+            duration,
+        );
+    }
+
+    fn record_sender_write(&mut self, duration: std::time::Duration) {
+        Self::record_timed_event(
+            &mut self.sender_write_ms_total,
+            &mut self.sender_write_ms_max,
+            &mut self.sender_write_events,
+            duration,
+        );
+    }
+
+    fn record_receiver_read(&mut self, duration: std::time::Duration) {
+        Self::record_timed_event(
+            &mut self.receiver_read_ms_total,
+            &mut self.receiver_read_ms_max,
+            &mut self.receiver_read_events,
+            duration,
+        );
+    }
+
+    fn record_receiver_hash(&mut self, duration: std::time::Duration) {
+        Self::record_timed_event(
+            &mut self.receiver_hash_ms_total,
+            &mut self.receiver_hash_ms_max,
+            &mut self.receiver_hash_events,
+            duration,
+        );
+    }
+
+    fn record_receiver_temp_write(&mut self, duration: std::time::Duration) {
+        Self::record_timed_event(
+            &mut self.receiver_temp_write_ms_total,
+            &mut self.receiver_temp_write_ms_max,
+            &mut self.receiver_temp_write_events,
+            duration,
+        );
+    }
+
+    fn record_staging_post(&mut self, duration: std::time::Duration) {
+        Self::record_timed_event(
+            &mut self.staging_post_ms_total,
+            &mut self.staging_post_ms_max,
+            &mut self.staging_post_events,
+            duration,
+        );
+    }
+
+    fn merge_from(&mut self, other: &Self) {
+        self.credit_wait_ms_total = self
+            .credit_wait_ms_total
+            .saturating_add(other.credit_wait_ms_total);
+        self.credit_wait_ms_max = self.credit_wait_ms_max.max(other.credit_wait_ms_max);
+        self.credit_wait_events = self
+            .credit_wait_events
+            .saturating_add(other.credit_wait_events);
+        self.credit_hold_ms_total = self
+            .credit_hold_ms_total
+            .saturating_add(other.credit_hold_ms_total);
+        self.credit_hold_ms_max = self.credit_hold_ms_max.max(other.credit_hold_ms_max);
+        self.stage_queue_wait_ms_total = self
+            .stage_queue_wait_ms_total
+            .saturating_add(other.stage_queue_wait_ms_total);
+        self.stage_queue_wait_ms_max = self
+            .stage_queue_wait_ms_max
+            .max(other.stage_queue_wait_ms_max);
+        self.stage_queue_wait_events = self
+            .stage_queue_wait_events
+            .saturating_add(other.stage_queue_wait_events);
+        self.stream_open_ms_total = self
+            .stream_open_ms_total
+            .saturating_add(other.stream_open_ms_total);
+        self.stream_open_ms_max = self.stream_open_ms_max.max(other.stream_open_ms_max);
+        self.stream_open_events = self
+            .stream_open_events
+            .saturating_add(other.stream_open_events);
+        self.sender_write_ms_total = self
+            .sender_write_ms_total
+            .saturating_add(other.sender_write_ms_total);
+        self.sender_write_ms_max = self.sender_write_ms_max.max(other.sender_write_ms_max);
+        self.sender_write_events = self
+            .sender_write_events
+            .saturating_add(other.sender_write_events);
+        self.receiver_read_ms_total = self
+            .receiver_read_ms_total
+            .saturating_add(other.receiver_read_ms_total);
+        self.receiver_read_ms_max = self.receiver_read_ms_max.max(other.receiver_read_ms_max);
+        self.receiver_read_events = self
+            .receiver_read_events
+            .saturating_add(other.receiver_read_events);
+        self.receiver_hash_ms_total = self
+            .receiver_hash_ms_total
+            .saturating_add(other.receiver_hash_ms_total);
+        self.receiver_hash_ms_max = self.receiver_hash_ms_max.max(other.receiver_hash_ms_max);
+        self.receiver_hash_events = self
+            .receiver_hash_events
+            .saturating_add(other.receiver_hash_events);
+        self.receiver_temp_write_ms_total = self
+            .receiver_temp_write_ms_total
+            .saturating_add(other.receiver_temp_write_ms_total);
+        self.receiver_temp_write_ms_max = self
+            .receiver_temp_write_ms_max
+            .max(other.receiver_temp_write_ms_max);
+        self.receiver_temp_write_events = self
+            .receiver_temp_write_events
+            .saturating_add(other.receiver_temp_write_events);
+        self.staging_post_ms_total = self
+            .staging_post_ms_total
+            .saturating_add(other.staging_post_ms_total);
+        self.staging_post_ms_max = self.staging_post_ms_max.max(other.staging_post_ms_max);
+        self.staging_post_events = self
+            .staging_post_events
+            .saturating_add(other.staging_post_events);
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncTransportTimingEvidence {
@@ -152,10 +353,17 @@ pub struct SyncTransportSyncResult {
     pub total_served_bytes: u64,
     pub time_to_first_artifact_ms: Option<u64>,
     pub throughput_bytes_per_second: f64,
+    pub scratch_peak_bytes: u64,
+    pub staging_peak_bytes: u64,
+    pub max_active_streams: u64,
+    pub credit_grants: u64,
+    pub credit_revokes: u64,
     pub remote_manifest_count: usize,
     pub local_manifest_count: usize,
     pub manifest_errors: Vec<SyncTransportManifestError>,
     pub phase_timings: Vec<SyncTransportTimingEvidence>,
+    #[serde(flatten)]
+    pub diagnostics: SyncTransportDiagnostics,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -642,6 +850,14 @@ mod sync_core {
             batch_token: String,
             artifact_count: u64,
         },
+        ArtifactBatchCredit {
+            batch_token: String,
+            artifact_ids: Vec<String>,
+        },
+        ArtifactBatchAbort {
+            batch_token: String,
+            message: String,
+        },
         ArtifactBatchEnd {
             batch_token: String,
         },
@@ -673,6 +889,8 @@ mod sync_core {
                 Self::ArtifactBatchRequest(_) => "artifact_batch_request",
                 Self::ArtifactStart { .. } => "artifact_start",
                 Self::ArtifactBatchStart { .. } => "artifact_batch_start",
+                Self::ArtifactBatchCredit { .. } => "artifact_batch_credit",
+                Self::ArtifactBatchAbort { .. } => "artifact_batch_abort",
                 Self::ArtifactBatchEnd { .. } => "artifact_batch_end",
                 Self::ArtifactEnd { .. } => "artifact_end",
                 Self::Status { .. } => "status",
@@ -853,6 +1071,12 @@ mod sync_core {
             return "Timed out waiting for sync transport protocol progress.".to_string();
         }
         format!("Could not read sync transport frame {part}: {error}")
+    }
+
+    pub(crate) fn sync_transport_read_timed_out(error: &str) -> bool {
+        error.contains("Timed out waiting for sync transport protocol progress.")
+            || error.contains("Timed out reading from Iroh sync stream.")
+            || error.contains("Timed out reading test peer stream.")
     }
 
     pub(crate) fn decode_standard_base64(value: &str) -> Result<Vec<u8>, String> {
@@ -1324,11 +1548,12 @@ mod sync_core {
 
 mod desktop {
     use super::{
-        sync_core::*, SyncTransportActiveProgress, SyncTransportManifestError,
-        SyncTransportNearbyPeer, SyncTransportPairingOffer, SyncTransportPairingOfferRequest,
-        SyncTransportProjectResult, SyncTransportStartListenerRequest, SyncTransportStatus,
-        SyncTransportSyncNowRequest, SyncTransportSyncResult, SyncTransportTimingEvidence,
-        SyncTransportTransferCounts, SyncTransportTransferResult,
+        sync_core::*, SyncTransportActiveProgress, SyncTransportDiagnostics,
+        SyncTransportManifestError, SyncTransportNearbyPeer, SyncTransportPairingOffer,
+        SyncTransportPairingOfferRequest, SyncTransportProjectResult,
+        SyncTransportStartListenerRequest, SyncTransportStatus, SyncTransportSyncNowRequest,
+        SyncTransportSyncResult, SyncTransportTimingEvidence, SyncTransportTransferCounts,
+        SyncTransportTransferResult,
     };
     use chrono::{DateTime, Utc};
     use iroh::{
@@ -1378,6 +1603,7 @@ mod desktop {
     const DISCOVERY_MAX_PACKET_BYTES: usize = 8192;
     const IROH_ALPN: &[u8] = b"tuneforge-sync/iroh/v1";
     const IROH_ARTIFACT_PARALLELISM: usize = 4;
+    const IROH_ARTIFACT_RECEIVE_BYTE_BUDGET: u64 = 4 * 1024 * 1024 * 1024;
     const IROH_ARTIFACT_STAGING_QUEUE_CAPACITY: usize = IROH_ARTIFACT_PARALLELISM * 2;
     const IROH_BATCH_CONTROL_POLL_INTERVAL: Duration = Duration::from_millis(100);
     const IROH_MISSING_STREAM_AFTER_CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
@@ -1925,10 +2151,16 @@ mod desktop {
                 time_to_first_artifact_ms: metrics.time_to_first_artifact_ms(),
                 throughput_bytes_per_second: metrics
                     .throughput_bytes_per_second(run_started_instant.elapsed()),
+                scratch_peak_bytes: metrics.scratch_peak_bytes,
+                staging_peak_bytes: metrics.staging_peak_bytes,
+                max_active_streams: metrics.max_active_streams,
+                credit_grants: metrics.credit_grants,
+                credit_revokes: metrics.credit_revokes,
                 remote_manifest_count: remote_offer.project_manifests.len(),
                 local_manifest_count,
                 manifest_errors,
                 phase_timings: timings,
+                diagnostics: metrics.diagnostics,
             })
         }
 
@@ -2103,10 +2335,16 @@ mod desktop {
             total_served_bytes: 0,
             time_to_first_artifact_ms: None,
             throughput_bytes_per_second: 0.0,
+            scratch_peak_bytes: 0,
+            staging_peak_bytes: 0,
+            max_active_streams: 0,
+            credit_grants: 0,
+            credit_revokes: 0,
             remote_manifest_count: 0,
             local_manifest_count: 0,
             manifest_errors: Vec::new(),
             phase_timings: Vec::new(),
+            diagnostics: SyncTransportDiagnostics::default(),
         }
     }
 
@@ -3388,10 +3626,16 @@ mod desktop {
             time_to_first_artifact_ms: metrics.time_to_first_artifact_ms(),
             throughput_bytes_per_second: metrics
                 .throughput_bytes_per_second(run_started_instant.elapsed()),
+            scratch_peak_bytes: metrics.scratch_peak_bytes,
+            staging_peak_bytes: metrics.staging_peak_bytes,
+            max_active_streams: metrics.max_active_streams,
+            credit_grants: metrics.credit_grants,
+            credit_revokes: metrics.credit_revokes,
             remote_manifest_count: remote_offer.project_manifests.len(),
             local_manifest_count,
             manifest_errors,
             phase_timings: timings,
+            diagnostics: metrics.diagnostics,
         };
 
         Ok(IncomingSessionResult {
@@ -3668,6 +3912,12 @@ mod desktop {
         total_received_bytes: u64,
         total_served_bytes: u64,
         first_artifact_at: Option<Duration>,
+        scratch_peak_bytes: u64,
+        staging_peak_bytes: u64,
+        max_active_streams: u64,
+        credit_grants: u64,
+        credit_revokes: u64,
+        diagnostics: SyncTransportDiagnostics,
     }
 
     impl SyncRunMetrics {
@@ -3677,6 +3927,12 @@ mod desktop {
                 total_received_bytes: 0,
                 total_served_bytes: 0,
                 first_artifact_at: None,
+                scratch_peak_bytes: 0,
+                staging_peak_bytes: 0,
+                max_active_streams: 0,
+                credit_grants: 0,
+                credit_revokes: 0,
+                diagnostics: SyncTransportDiagnostics::default(),
             }
         }
 
@@ -3706,6 +3962,30 @@ mod desktop {
         ) {
             self.total_served_bytes = self.total_served_bytes.saturating_add(bytes);
             self.record_first_artifact_bytes_at(bytes, first_bytes_at);
+        }
+
+        fn record_scratch_peak_bytes(&mut self, bytes: u64) {
+            self.scratch_peak_bytes = self.scratch_peak_bytes.max(bytes);
+        }
+
+        fn record_staging_peak_bytes(&mut self, bytes: u64) {
+            self.staging_peak_bytes = self.staging_peak_bytes.max(bytes);
+        }
+
+        fn record_max_active_streams(&mut self, active_streams: usize) {
+            self.max_active_streams = self.max_active_streams.max(active_streams as u64);
+        }
+
+        fn record_credit_grants(&mut self, count: usize) {
+            self.credit_grants = self.credit_grants.saturating_add(count as u64);
+        }
+
+        fn record_credit_revokes(&mut self, count: usize) {
+            self.credit_revokes = self.credit_revokes.saturating_add(count as u64);
+        }
+
+        fn record_diagnostics(&mut self, diagnostics: &SyncTransportDiagnostics) {
+            self.diagnostics.merge_from(diagnostics);
         }
 
         fn record_first_artifact_bytes(&mut self, bytes: u64) {
@@ -4046,6 +4326,23 @@ mod desktop {
                 })
         }
 
+        fn read_message_with_timeout(
+            &mut self,
+            timeout: Duration,
+        ) -> Result<Option<ProtocolMessage>, String> {
+            self.stream.set_read_timeout(timeout).map_err(|error| {
+                format!("Could not configure sync transport read timeout: {error}")
+            })?;
+            let result = self.read_message();
+            let restore_result = self.set_established_read_timeout();
+            match (result, restore_result) {
+                (Ok(message), Ok(())) => Ok(Some(message)),
+                (Err(error), Ok(())) if sync_transport_read_timed_out(&error) => Ok(None),
+                (Err(error), Ok(())) => Err(error),
+                (Ok(_), Err(error)) | (Err(_), Err(error)) => Err(error),
+            }
+        }
+
         fn send_message(&mut self, message: &ProtocolMessage) -> Result<(), String> {
             let payload = serde_json::to_vec(message)
                 .map_err(|error| format!("Could not encode sync transport message: {error}"))?;
@@ -4225,6 +4522,13 @@ mod desktop {
             self.with_connection(SecurePeerConnection::read_message)
         }
 
+        fn read_message_with_timeout(
+            &self,
+            timeout: Duration,
+        ) -> Result<Option<ProtocolMessage>, String> {
+            self.with_connection(|connection| connection.read_message_with_timeout(timeout))
+        }
+
         fn read_message_accepting_status_for_phase(
             &self,
             phase: &str,
@@ -4235,6 +4539,30 @@ mod desktop {
                 || self.read_message(),
                 |status| progress.record_peer_status(status),
             )
+        }
+
+        fn read_message_with_timeout_accepting_status_for_phase(
+            &self,
+            phase: &str,
+            timeout: Duration,
+            progress: &ProgressReporter,
+        ) -> Result<(Option<ProtocolMessage>, bool), String> {
+            let mut had_status_progress = false;
+            loop {
+                let Some(message) = self
+                    .read_message_with_timeout(timeout)
+                    .map_err(|error| phase_context_error(phase, error))?
+                else {
+                    return Ok((None, had_status_progress));
+                };
+                match split_protocol_status(message) {
+                    Ok(status) => {
+                        had_status_progress = true;
+                        progress.record_peer_status(status);
+                    }
+                    Err(message) => return Ok((Some(message), had_status_progress)),
+                }
+            }
         }
 
         fn read_artifact_transfer_frame(&self) -> Result<ArtifactTransferFrame, String> {
@@ -4553,7 +4881,10 @@ mod desktop {
     }
 
     enum BackendWriteTask {
-        StageIrohArtifact(IrohReceivedArtifact),
+        StageIrohArtifact {
+            received: IrohReceivedArtifact,
+            queued_at: Instant,
+        },
         Apply {
             project_id: String,
             task: RemoteApplyTask,
@@ -4580,6 +4911,8 @@ mod desktop {
         apply_cancelled: Arc<AtomicBool>,
         project_results: Vec<SyncTransportProjectResult>,
         pending_stage_jobs: usize,
+        pending_stage_bytes: u64,
+        staging_peak_bytes: u64,
     }
 
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -4910,18 +5243,25 @@ mod desktop {
                 move || {
                     while let Ok(task) = receiver.recv() {
                         let event = match task {
-                            BackendWriteTask::StageIrohArtifact(received) => {
+                            BackendWriteTask::StageIrohArtifact {
+                                received,
+                                queued_at,
+                            } => {
                                 let mut stage_timings = Vec::new();
+                                let mut diagnostics = SyncTransportDiagnostics::default();
+                                diagnostics.record_stage_queue_wait(queued_at.elapsed());
                                 let transfer = stage_received_iroh_artifact(
                                     &client,
                                     &transport_id,
                                     &peer_device_id,
                                     received,
                                     &mut stage_timings,
+                                    &mut diagnostics,
                                 );
                                 BackendWriteEvent::Stage(IrohStageResult {
                                     transfer,
                                     timings: stage_timings,
+                                    diagnostics,
                                 })
                             }
                             BackendWriteTask::Apply { project_id, task } => {
@@ -4981,6 +5321,8 @@ mod desktop {
                 apply_cancelled,
                 project_results: Vec::new(),
                 pending_stage_jobs: 0,
+                pending_stage_bytes: 0,
+                staging_peak_bytes: 0,
             }
         }
 
@@ -5038,7 +5380,9 @@ mod desktop {
         ) {
             match event {
                 BackendWriteEvent::Stage(stage_result) => {
+                    let size_bytes = iroh_stage_result_size_bytes(&stage_result);
                     self.pending_stage_jobs = self.pending_stage_jobs.saturating_sub(1);
+                    self.pending_stage_bytes = self.pending_stage_bytes.saturating_sub(size_bytes);
                     stage_results.push(stage_result);
                 }
                 BackendWriteEvent::Apply {
@@ -5071,16 +5415,31 @@ mod desktop {
             let Some(sender) = &self.sender else {
                 return Err(received);
             };
-            match sender.send(BackendWriteTask::StageIrohArtifact(received)) {
+            let received_size_bytes = received.size_bytes;
+            match sender.send(BackendWriteTask::StageIrohArtifact {
+                received,
+                queued_at: Instant::now(),
+            }) {
                 Ok(()) => {
+                    self.pending_stage_bytes =
+                        self.pending_stage_bytes.saturating_add(received_size_bytes);
+                    self.staging_peak_bytes = self.staging_peak_bytes.max(self.pending_stage_bytes);
                     self.pending_stage_jobs = self.pending_stage_jobs.saturating_add(1);
                     Ok(())
                 }
                 Err(error) => match error.0 {
-                    BackendWriteTask::StageIrohArtifact(received) => Err(received),
+                    BackendWriteTask::StageIrohArtifact { received, .. } => Err(received),
                     BackendWriteTask::Apply { .. } => unreachable!(),
                 },
             }
+        }
+
+        fn staging_peak_bytes(&self) -> u64 {
+            self.staging_peak_bytes
+        }
+
+        fn pending_stage_bytes(&self) -> u64 {
+            self.pending_stage_bytes
         }
 
         fn finish_iroh_stage_jobs(
@@ -5495,9 +5854,16 @@ mod desktop {
                 timings,
                 progress,
                 apply_worker,
-                |transfer, _allow_project_apply| {
+                |transfer, allow_project_apply, apply_worker| {
                     scheduler.record_artifact_transfer(transfer, received_artifacts);
                     ready_projects.extend(scheduler.drain_ready_projects());
+                    if allow_project_apply {
+                        enqueue_collected_iroh_ready_projects(
+                            apply_worker,
+                            &mut ready_projects,
+                            &mut ready_tombstone_project_ids,
+                        );
+                    }
                 },
             );
             if !can_apply_after_iroh {
@@ -6811,6 +7177,7 @@ mod desktop {
         phase_timing: SyncTransportTimingEvidence,
         size_bytes: u64,
         first_bytes_at: Option<Duration>,
+        diagnostics: SyncTransportDiagnostics,
     }
 
     struct IrohArtifactReceiveError {
@@ -6818,73 +7185,352 @@ mod desktop {
         message: String,
         timing: Option<TransferTiming>,
         phase_timing: Option<SyncTransportTimingEvidence>,
+        diagnostics: SyncTransportDiagnostics,
     }
 
     struct IrohStageResult {
         transfer: Result<SyncTransportTransferResult, TransferFailure>,
         timings: Vec<SyncTransportTimingEvidence>,
+        diagnostics: SyncTransportDiagnostics,
     }
 
-    fn read_iroh_artifact_batch_control(
+    struct IrohActiveCredit {
+        size_bytes: u64,
+        granted_at: Instant,
+    }
+
+    struct IrohBatchCreditWindow {
+        queue: VecDeque<String>,
+        artifact_sizes: HashMap<String, u64>,
+        active: HashMap<String, IrohActiveCredit>,
+        reserved_bytes: u64,
+        stream_cap: usize,
+        byte_budget: u64,
+        grants_issued: usize,
+    }
+
+    impl IrohBatchCreditWindow {
+        fn new(pending: &[PendingArtifactTransfer], stream_cap: usize, byte_budget: u64) -> Self {
+            let mut queue = VecDeque::with_capacity(pending.len());
+            let mut artifact_sizes = HashMap::with_capacity(pending.len());
+            for pending in pending {
+                queue.push_back(pending.artifact.artifact_id.clone());
+                artifact_sizes.insert(
+                    pending.artifact.artifact_id.clone(),
+                    pending.artifact.size_bytes,
+                );
+            }
+            Self {
+                queue,
+                artifact_sizes,
+                active: HashMap::new(),
+                reserved_bytes: 0,
+                stream_cap: stream_cap.max(1),
+                byte_budget,
+                grants_issued: 0,
+            }
+        }
+
+        fn grant_available(&mut self, pending_stage_bytes: u64) -> Result<Vec<String>, String> {
+            let mut artifact_ids = Vec::new();
+            while self.active.len() < self.stream_cap {
+                let Some(artifact_id) = self.queue.front().cloned() else {
+                    break;
+                };
+                let size_bytes = self.artifact_sizes.get(&artifact_id).copied().unwrap_or(0);
+                if size_bytes > self.byte_budget {
+                    if self.active.is_empty() && artifact_ids.is_empty() {
+                        return Err(format!(
+                            "Iroh artifact {artifact_id} requires {size_bytes} byte(s), which exceeds the receive credit budget of {} byte(s).",
+                            self.byte_budget
+                        ));
+                    }
+                    break;
+                }
+                let scratch_bytes = self.reserved_bytes.saturating_add(pending_stage_bytes);
+                if scratch_bytes.saturating_add(size_bytes) > self.byte_budget {
+                    break;
+                }
+                self.queue.pop_front();
+                self.reserved_bytes = self.reserved_bytes.saturating_add(size_bytes);
+                self.active.insert(
+                    artifact_id.clone(),
+                    IrohActiveCredit {
+                        size_bytes,
+                        granted_at: Instant::now(),
+                    },
+                );
+                self.grants_issued = self.grants_issued.saturating_add(1);
+                artifact_ids.push(artifact_id);
+            }
+            Ok(artifact_ids)
+        }
+
+        fn release(&mut self, artifact_id: &str) -> Option<Duration> {
+            if let Some(active) = self.active.remove(artifact_id) {
+                self.reserved_bytes = self.reserved_bytes.saturating_sub(active.size_bytes);
+                return Some(active.granted_at.elapsed());
+            }
+            None
+        }
+
+        fn clear(&mut self) -> Vec<Duration> {
+            self.queue.clear();
+            let held = self
+                .active
+                .drain()
+                .map(|(_, active)| active.granted_at.elapsed())
+                .collect();
+            self.active.clear();
+            self.reserved_bytes = 0;
+            held
+        }
+
+        fn grants_issued(&self) -> usize {
+            self.grants_issued
+        }
+
+        fn scratch_bytes(&self, pending_stage_bytes: u64) -> u64 {
+            self.reserved_bytes.saturating_add(pending_stage_bytes)
+        }
+
+        fn active_credit_count(&self) -> usize {
+            self.active.len()
+        }
+    }
+
+    #[derive(Clone)]
+    struct IrohBatchProgressMarker {
+        progress_at: Arc<Mutex<Instant>>,
+    }
+
+    impl IrohBatchProgressMarker {
+        fn new(started_at: Instant) -> Self {
+            Self {
+                progress_at: Arc::new(Mutex::new(started_at)),
+            }
+        }
+
+        fn record(&self) {
+            self.record_at(Instant::now());
+        }
+
+        fn record_at(&self, progress_at: Instant) {
+            if let Ok(mut current) = self.progress_at.lock() {
+                if progress_at > *current {
+                    *current = progress_at;
+                }
+            }
+        }
+
+        fn snapshot(&self) -> Option<Instant> {
+            self.progress_at.lock().ok().map(|current| *current)
+        }
+    }
+
+    struct IrohBatchProgressWatchdog {
+        last_progress_at: Instant,
+        timeout: Duration,
+        marker: IrohBatchProgressMarker,
+    }
+
+    impl IrohBatchProgressWatchdog {
+        fn new(started_at: Instant, timeout: Duration) -> Self {
+            Self {
+                last_progress_at: started_at,
+                timeout,
+                marker: IrohBatchProgressMarker::new(started_at),
+            }
+        }
+
+        fn marker(&self) -> IrohBatchProgressMarker {
+            self.marker.clone()
+        }
+
+        fn record(&mut self) {
+            self.record_at(Instant::now());
+        }
+
+        fn record_at(&mut self, progress_at: Instant) {
+            if progress_at > self.last_progress_at {
+                self.last_progress_at = progress_at;
+                self.marker.record_at(progress_at);
+            }
+        }
+
+        fn timed_out(&mut self) -> bool {
+            self.timed_out_at(Instant::now())
+        }
+
+        fn timed_out_at(&mut self, now: Instant) -> bool {
+            if let Some(progress_at) = self.marker.snapshot() {
+                if progress_at > self.last_progress_at {
+                    self.last_progress_at = progress_at;
+                }
+            }
+            now.checked_duration_since(self.last_progress_at)
+                .is_some_and(|elapsed| elapsed > self.timeout)
+        }
+    }
+
+    enum IrohBatchControlStatus {
+        Pending,
+        Progress,
+        Done,
+    }
+
+    fn poll_iroh_artifact_batch_control(
         connection: &SharedPeerConnection,
         batch_token: &str,
         progress: &ProgressReporter,
-    ) -> Result<(), String> {
-        match connection
-            .read_message_accepting_status_for_phase("artifact request/transfer", progress)
-        {
-            Ok(ProtocolMessage::ArtifactBatchEnd {
+    ) -> Result<IrohBatchControlStatus, String> {
+        let (message, had_status_progress) = connection
+            .read_message_with_timeout_accepting_status_for_phase(
+                "artifact request/transfer",
+                IROH_BATCH_CONTROL_POLL_INTERVAL,
+                progress,
+            )?;
+        match message {
+            None if had_status_progress => Ok(IrohBatchControlStatus::Progress),
+            None => Ok(IrohBatchControlStatus::Pending),
+            Some(ProtocolMessage::ArtifactBatchEnd {
                 batch_token: peer_batch_token,
-            }) if peer_batch_token == batch_token => Ok(()),
-            Ok(ProtocolMessage::ArtifactBatchEnd { .. }) => Err(
+            }) if peer_batch_token == batch_token => Ok(IrohBatchControlStatus::Done),
+            Some(ProtocolMessage::ArtifactBatchEnd { .. }) => Err(
                 "Sync peer Iroh artifact batch completion did not match the request.".to_string(),
             ),
-            Ok(ProtocolMessage::Error(error)) => Err(phase_context_error(
+            Some(ProtocolMessage::ArtifactBatchAbort {
+                batch_token: peer_batch_token,
+                message,
+            }) if peer_batch_token == batch_token => {
+                Err(phase_context_error("artifact request/transfer", message))
+            }
+            Some(ProtocolMessage::ArtifactBatchAbort { .. }) => {
+                Err("Sync peer Iroh artifact batch abort did not match the request.".to_string())
+            }
+            Some(ProtocolMessage::Error(error)) => Err(phase_context_error(
                 "artifact request/transfer",
                 error.message,
             )),
-            Ok(other) => Err(format!(
+            Some(other) => Err(format!(
                 "Sync peer sent unexpected Iroh artifact batch completion: {}",
                 other.kind()
             )),
-            Err(error) => Err(error),
         }
     }
 
-    fn await_iroh_artifact_batch_control(
-        receiver: &mpsc::Receiver<Result<(), String>>,
-        result: &mut Option<Result<(), String>>,
+    fn send_iroh_artifact_batch_credit(
+        connection: &SharedPeerConnection,
+        batch_token: &str,
+        artifact_ids: Vec<String>,
     ) -> Result<(), String> {
-        if let Some(result) = result.take() {
-            return result;
+        if artifact_ids.is_empty() {
+            return Ok(());
         }
-        receiver.recv().unwrap_or_else(|_| {
-            Err(
-                "Iroh artifact batch control reader stopped before reporting completion."
-                    .to_string(),
-            )
-        })
+        connection.send_message_for_phase(
+            "artifact request/transfer",
+            &ProtocolMessage::ArtifactBatchCredit {
+                batch_token: batch_token.to_string(),
+                artifact_ids,
+            },
+        )
     }
 
-    fn settle_iroh_artifact_batch_control_reader(
-        close_control_connection: impl FnOnce(),
-        receiver: &mpsc::Receiver<Result<(), String>>,
-        result: &mut Option<Result<(), String>>,
-        control_done: &mut bool,
-        control_handle: JoinHandle<()>,
-        fatal_error: &mut Option<String>,
+    fn send_iroh_artifact_batch_abort(
+        connection: &SharedPeerConnection,
+        batch_token: &str,
+        message: &str,
     ) {
-        if !*control_done {
-            if fatal_error.is_some() && !control_handle.is_finished() {
-                close_control_connection();
-            }
-            if let Err(error) = await_iroh_artifact_batch_control(receiver, result) {
-                fatal_error.get_or_insert(error);
-            }
-            *control_done = true;
+        let _ = connection.send_message_for_phase(
+            "artifact request/transfer",
+            &ProtocolMessage::ArtifactBatchAbort {
+                batch_token: batch_token.to_string(),
+                message: message.to_string(),
+            },
+        );
+    }
+
+    fn send_available_iroh_batch_credit(
+        connection: &SharedPeerConnection,
+        batch_token: &str,
+        credit_window: &mut IrohBatchCreditWindow,
+        credited_artifact_ids: &Arc<Mutex<HashSet<String>>>,
+        pending_stage_bytes: u64,
+        metrics: &mut SyncRunMetrics,
+    ) -> Result<bool, String> {
+        let artifact_ids = credit_window.grant_available(pending_stage_bytes)?;
+        if artifact_ids.is_empty() {
+            return Ok(false);
         }
-        if control_handle.join().is_err() {
-            fatal_error.get_or_insert("Iroh artifact batch control reader panicked.".to_string());
+        let grant_count = artifact_ids.len();
+        let granted_artifact_ids = artifact_ids.clone();
+        {
+            let mut credited = credited_artifact_ids.lock().map_err(|_| {
+                for artifact_id in &granted_artifact_ids {
+                    let _ = credit_window.release(artifact_id);
+                }
+                "Iroh artifact batch credit state is unavailable.".to_string()
+            })?;
+            credited.extend(artifact_ids.iter().cloned());
+        }
+        match send_iroh_artifact_batch_credit(connection, batch_token, artifact_ids) {
+            Ok(()) => {
+                metrics.record_credit_grants(grant_count);
+                metrics.record_scratch_peak_bytes(credit_window.scratch_bytes(pending_stage_bytes));
+                Ok(true)
+            }
+            Err(error) => {
+                if let Ok(mut credited) = credited_artifact_ids.lock() {
+                    for artifact_id in &granted_artifact_ids {
+                        credited.remove(artifact_id.as_str());
+                    }
+                }
+                for artifact_id in &granted_artifact_ids {
+                    let _ = credit_window.release(artifact_id);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn release_iroh_batch_credit(
+        credit_window: &mut IrohBatchCreditWindow,
+        credited_artifact_ids: &Arc<Mutex<HashSet<String>>>,
+        artifact_id: &str,
+        metrics: &mut SyncRunMetrics,
+    ) {
+        if let Some(held) = credit_window.release(artifact_id) {
+            metrics.diagnostics.record_credit_hold(held);
+        }
+        if let Ok(mut credited) = credited_artifact_ids.lock() {
+            credited.remove(artifact_id);
+        }
+    }
+
+    fn clear_iroh_batch_credits(
+        credit_window: &mut IrohBatchCreditWindow,
+        credited_artifact_ids: &Arc<Mutex<HashSet<String>>>,
+        metrics: &mut SyncRunMetrics,
+    ) {
+        for held in credit_window.clear() {
+            metrics.diagnostics.record_credit_hold(held);
+        }
+        if let Ok(mut credited) = credited_artifact_ids.lock() {
+            credited.clear();
+        }
+    }
+
+    fn iroh_stage_result_artifact_id(stage_result: &IrohStageResult) -> &str {
+        match &stage_result.transfer {
+            Ok(result) => &result.artifact_id,
+            Err(error) => &error.result.artifact_id,
+        }
+    }
+
+    fn iroh_stage_result_size_bytes(stage_result: &IrohStageResult) -> u64 {
+        match &stage_result.transfer {
+            Ok(result) => result.size_bytes,
+            Err(error) => error.result.size_bytes,
         }
     }
 
@@ -6903,7 +7549,12 @@ mod desktop {
         completed_artifact_ids: &mut HashSet<String>,
         message: &str,
         allow_project_apply: bool,
-        record_transfer: &mut impl FnMut(Result<SyncTransportTransferResult, TransferFailure>, bool),
+        apply_worker: &mut RemoteApplyWorker,
+        record_transfer: &mut impl FnMut(
+            Result<SyncTransportTransferResult, TransferFailure>,
+            bool,
+            &mut RemoteApplyWorker,
+        ),
     ) {
         for pending in pending {
             if completed_artifact_ids.insert(pending.artifact.artifact_id.clone()) {
@@ -6914,6 +7565,7 @@ mod desktop {
                         message.to_string(),
                     )),
                     allow_project_apply,
+                    apply_worker,
                 );
             }
         }
@@ -6937,33 +7589,45 @@ mod desktop {
     fn record_iroh_stage_result(
         stage_result: IrohStageResult,
         completed_artifact_ids: &mut HashSet<String>,
+        metrics: &mut SyncRunMetrics,
         timings: &mut Vec<SyncTransportTimingEvidence>,
         allow_project_apply: bool,
-        record_transfer: &mut impl FnMut(Result<SyncTransportTransferResult, TransferFailure>, bool),
+        apply_worker: &mut RemoteApplyWorker,
+        record_transfer: &mut impl FnMut(
+            Result<SyncTransportTransferResult, TransferFailure>,
+            bool,
+            &mut RemoteApplyWorker,
+        ),
     ) {
+        let artifact_id = iroh_stage_result_artifact_id(&stage_result).to_string();
+        metrics.record_diagnostics(&stage_result.diagnostics);
         timings.extend(stage_result.timings);
-        let artifact_id = match &stage_result.transfer {
-            Ok(result) => result.artifact_id.clone(),
-            Err(error) => error.result.artifact_id.clone(),
-        };
         if completed_artifact_ids.insert(artifact_id) {
-            record_transfer(stage_result.transfer, allow_project_apply);
+            record_transfer(stage_result.transfer, allow_project_apply, apply_worker);
         }
     }
 
     fn drain_iroh_stage_results(
         stage_results: Vec<IrohStageResult>,
         completed_artifact_ids: &mut HashSet<String>,
+        metrics: &mut SyncRunMetrics,
         timings: &mut Vec<SyncTransportTimingEvidence>,
         allow_project_apply: bool,
-        record_transfer: &mut impl FnMut(Result<SyncTransportTransferResult, TransferFailure>, bool),
+        apply_worker: &mut RemoteApplyWorker,
+        record_transfer: &mut impl FnMut(
+            Result<SyncTransportTransferResult, TransferFailure>,
+            bool,
+            &mut RemoteApplyWorker,
+        ),
     ) {
         for stage_result in stage_results {
             record_iroh_stage_result(
                 stage_result,
                 completed_artifact_ids,
+                metrics,
                 timings,
                 allow_project_apply,
+                apply_worker,
                 record_transfer,
             );
         }
@@ -6974,13 +7638,20 @@ mod desktop {
         expected: &HashMap<String, IrohPendingReceive>,
         metrics: &mut SyncRunMetrics,
         timings: &mut Vec<SyncTransportTimingEvidence>,
+        credit_window: &mut IrohBatchCreditWindow,
+        credited_artifact_ids: &Arc<Mutex<HashSet<String>>>,
         completed_artifact_ids: &mut HashSet<String>,
         fatal_error: &mut Option<String>,
         apply_worker: &mut RemoteApplyWorker,
-        record_transfer: &mut impl FnMut(Result<SyncTransportTransferResult, TransferFailure>, bool),
+        record_transfer: &mut impl FnMut(
+            Result<SyncTransportTransferResult, TransferFailure>,
+            bool,
+            &mut RemoteApplyWorker,
+        ),
     ) {
         match result {
             Ok(received) => {
+                metrics.record_diagnostics(&received.diagnostics);
                 let artifact = received.artifact.clone();
                 timings.push(received.phase_timing.clone());
                 metrics.record_received_artifact_bytes_at(
@@ -6989,6 +7660,12 @@ mod desktop {
                 );
                 if let Err(received) = apply_worker.enqueue_received_iroh_artifact(received) {
                     let _ = fs::remove_file(&received.temp_path);
+                    release_iroh_batch_credit(
+                        credit_window,
+                        credited_artifact_ids,
+                        &artifact.artifact_id,
+                        metrics,
+                    );
                     fatal_error.get_or_insert(
                         "Iroh artifact staging worker stopped before staging all received files."
                             .to_string(),
@@ -7003,11 +7680,24 @@ mod desktop {
                                     .to_string(),
                             )),
                             false,
+                            apply_worker,
                         );
                     }
+                } else {
+                    release_iroh_batch_credit(
+                        credit_window,
+                        credited_artifact_ids,
+                        &artifact.artifact_id,
+                        metrics,
+                    );
+                    metrics.record_staging_peak_bytes(apply_worker.staging_peak_bytes());
+                    metrics.record_scratch_peak_bytes(
+                        credit_window.scratch_bytes(apply_worker.pending_stage_bytes()),
+                    );
                 }
             }
             Err(error) => {
+                metrics.record_diagnostics(&error.diagnostics);
                 if error.message == IROH_ARTIFACT_RECEIVE_CANCELLED {
                     return;
                 }
@@ -7016,13 +7706,19 @@ mod desktop {
                 }
                 if let Some(artifact_id) = error.artifact_id {
                     if let Some(expected) = expected.get(&artifact_id) {
+                        release_iroh_batch_credit(
+                            credit_window,
+                            credited_artifact_ids,
+                            &artifact_id,
+                            metrics,
+                        );
                         let failure = transfer_failure(
                             &expected.artifact,
                             error.timing.unwrap_or_else(TransferTimer::zero_now),
                             error.message,
                         );
                         if completed_artifact_ids.insert(artifact_id) {
-                            record_transfer(Err(failure), true);
+                            record_transfer(Err(failure), true, apply_worker);
                         }
                     } else {
                         fatal_error.get_or_insert(error.message);
@@ -7044,7 +7740,11 @@ mod desktop {
         timings: &mut Vec<SyncTransportTimingEvidence>,
         progress: &ProgressReporter,
         apply_worker: &mut RemoteApplyWorker,
-        mut record_transfer: impl FnMut(Result<SyncTransportTransferResult, TransferFailure>, bool),
+        mut record_transfer: impl FnMut(
+            Result<SyncTransportTransferResult, TransferFailure>,
+            bool,
+            &mut RemoteApplyWorker,
+        ),
     ) -> bool {
         if pending.is_empty() {
             return true;
@@ -7059,6 +7759,7 @@ mod desktop {
                         message.clone(),
                     )),
                     false,
+                    apply_worker,
                 );
             }
             return false;
@@ -7075,6 +7776,7 @@ mod desktop {
                             format!("Could not allocate sync artifact temp path: {error}"),
                         )),
                         false,
+                        apply_worker,
                     );
                 }
                 return false;
@@ -7114,6 +7816,7 @@ mod desktop {
                         error.clone(),
                     )),
                     false,
+                    apply_worker,
                 );
             }
             return false;
@@ -7137,6 +7840,7 @@ mod desktop {
                             message.clone(),
                         )),
                         false,
+                        apply_worker,
                     );
                 }
                 return false;
@@ -7151,6 +7855,7 @@ mod desktop {
                             message.clone(),
                         )),
                         false,
+                        apply_worker,
                     );
                 }
                 return false;
@@ -7168,6 +7873,7 @@ mod desktop {
                             message.clone(),
                         )),
                         false,
+                        apply_worker,
                     );
                 }
                 return false;
@@ -7181,6 +7887,7 @@ mod desktop {
                             error.clone(),
                         )),
                         false,
+                        apply_worker,
                     );
                 }
                 return false;
@@ -7212,25 +7919,17 @@ mod desktop {
         timings: &mut Vec<SyncTransportTimingEvidence>,
         progress: &ProgressReporter,
         apply_worker: &mut RemoteApplyWorker,
-        record_transfer: &mut impl FnMut(Result<SyncTransportTransferResult, TransferFailure>, bool),
+        record_transfer: &mut impl FnMut(
+            Result<SyncTransportTransferResult, TransferFailure>,
+            bool,
+            &mut RemoteApplyWorker,
+        ),
     ) -> bool {
         let seen = Arc::new(Mutex::new(HashSet::new()));
+        let credited_artifact_ids = Arc::new(Mutex::new(HashSet::new()));
         let cancel_receivers = Arc::new(AtomicBool::new(false));
         let (sender, receiver) =
             mpsc::channel::<Result<IrohReceivedArtifact, IrohArtifactReceiveError>>();
-        let (control_sender, control_receiver) = mpsc::channel::<Result<(), String>>();
-        let control_connection = connection.clone();
-        let control_progress = progress.clone();
-        let control_batch_token = batch_token.clone();
-        let control_handle = thread::spawn(move || {
-            let result = read_iroh_artifact_batch_control(
-                &control_connection,
-                &control_batch_token,
-                &control_progress,
-            );
-            let _ = control_sender.send(result);
-        });
-        let mut control_result = None;
         let mut control_done = false;
         let mut handles = Vec::new();
         let mut fatal_error: Option<String> = None;
@@ -7239,38 +7938,92 @@ mod desktop {
         let mut active_workers = 0_usize;
         let mut accept_started: Option<Instant> = None;
         let total_expected = expected.len();
-        let mut current_chunk_accept_limit = total_expected.min(IROH_ARTIFACT_PARALLELISM);
+        let mut credit_window = IrohBatchCreditWindow::new(
+            pending,
+            IROH_ARTIFACT_PARALLELISM,
+            IROH_ARTIFACT_RECEIVE_BYTE_BUDGET,
+        );
+        let mut progress_watchdog =
+            IrohBatchProgressWatchdog::new(Instant::now(), PROTOCOL_WATCHDOG_TIMEOUT);
+        let data_progress_marker = progress_watchdog.marker();
 
-        while accepted_streams < total_expected || active_workers > 0 {
-            drain_iroh_stage_results(
-                apply_worker.drain_backend_write_events(timings),
-                &mut completed_artifact_ids,
-                timings,
-                fatal_error.is_none(),
-                record_transfer,
-            );
+        match send_available_iroh_batch_credit(
+            connection,
+            &batch_token,
+            &mut credit_window,
+            &credited_artifact_ids,
+            apply_worker.pending_stage_bytes(),
+            metrics,
+        ) {
+            Ok(true) => progress_watchdog.record(),
+            Ok(false) => {}
+            Err(error) => {
+                fatal_error.get_or_insert(error);
+            }
+        }
 
+        while fatal_error.is_none()
+            && (!control_done
+                || completed_artifact_ids.len() < total_expected
+                || active_workers > 0
+                || apply_worker.pending_stage_jobs > 0)
+        {
             if !control_done {
-                match control_receiver.try_recv() {
-                    Ok(Ok(())) => {
-                        control_done = true;
+                match poll_iroh_artifact_batch_control(connection, &batch_token, progress) {
+                    Ok(IrohBatchControlStatus::Pending) => {
+                        if progress_watchdog.timed_out() {
+                            fatal_error.get_or_insert(
+                                "Timed out waiting for Iroh artifact batch control completion."
+                                    .to_string(),
+                            );
+                            apply_worker.cancel_pending_apply();
+                            break;
+                        }
                     }
-                    Ok(Err(error)) => {
+                    Ok(IrohBatchControlStatus::Progress) => {
+                        progress_watchdog.record();
+                    }
+                    Ok(IrohBatchControlStatus::Done) => {
                         control_done = true;
+                        progress_watchdog.record();
+                    }
+                    Err(error) => {
                         fatal_error.get_or_insert(error);
                         apply_worker.cancel_pending_apply();
-                        cancel_receivers.store(true, Ordering::SeqCst);
                         break;
                     }
-                    Err(mpsc::TryRecvError::Empty) => {}
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        control_done = true;
-                        fatal_error.get_or_insert(
-                            "Iroh artifact batch control reader stopped before reporting completion."
-                                .to_string(),
-                        );
+                }
+            }
+            if fatal_error.is_some() {
+                apply_worker.cancel_pending_apply();
+                break;
+            }
+
+            let stage_results = apply_worker.drain_backend_write_events(timings);
+            if !stage_results.is_empty() {
+                progress_watchdog.record();
+                drain_iroh_stage_results(
+                    stage_results,
+                    &mut completed_artifact_ids,
+                    metrics,
+                    timings,
+                    fatal_error.is_none(),
+                    apply_worker,
+                    record_transfer,
+                );
+                match send_available_iroh_batch_credit(
+                    connection,
+                    &batch_token,
+                    &mut credit_window,
+                    &credited_artifact_ids,
+                    apply_worker.pending_stage_bytes(),
+                    metrics,
+                ) {
+                    Ok(true) => progress_watchdog.record(),
+                    Ok(false) => {}
+                    Err(error) => {
+                        fatal_error.get_or_insert(error);
                         apply_worker.cancel_pending_apply();
-                        cancel_receivers.store(true, Ordering::SeqCst);
                         break;
                     }
                 }
@@ -7279,6 +8032,7 @@ mod desktop {
             while active_workers > 0 {
                 match receiver.try_recv() {
                     Ok(result) => {
+                        progress_watchdog.record();
                         active_workers = active_workers.saturating_sub(1);
                         if let Err(error) = &result {
                             if let Some(message) =
@@ -7292,18 +8046,32 @@ mod desktop {
                             expected.as_ref(),
                             metrics,
                             timings,
+                            &mut credit_window,
+                            &credited_artifact_ids,
                             &mut completed_artifact_ids,
                             &mut fatal_error,
                             apply_worker,
                             record_transfer,
                         );
-                        drain_iroh_stage_results(
-                            apply_worker.drain_backend_write_events(timings),
-                            &mut completed_artifact_ids,
-                            timings,
-                            fatal_error.is_none(),
-                            record_transfer,
-                        );
+                        if fatal_error.is_none() {
+                            match send_available_iroh_batch_credit(
+                                connection,
+                                &batch_token,
+                                &mut credit_window,
+                                &credited_artifact_ids,
+                                apply_worker.pending_stage_bytes(),
+                                metrics,
+                            ) {
+                                Ok(true) => progress_watchdog.record(),
+                                Ok(false) => {}
+                                Err(error) => {
+                                    fatal_error.get_or_insert(error);
+                                    apply_worker.cancel_pending_apply();
+                                    cancel_receivers.store(true, Ordering::SeqCst);
+                                    break;
+                                }
+                            }
+                        }
                         if fatal_error.is_some() {
                             apply_worker.cancel_pending_apply();
                             cancel_receivers.store(true, Ordering::SeqCst);
@@ -7326,16 +8094,7 @@ mod desktop {
                 break;
             }
 
-            if active_workers == 0
-                && accepted_streams >= current_chunk_accept_limit
-                && accepted_streams < total_expected
-            {
-                current_chunk_accept_limit =
-                    total_expected.min(accepted_streams.saturating_add(IROH_ARTIFACT_PARALLELISM));
-                accept_started = None;
-            }
-
-            if accepted_streams < current_chunk_accept_limit {
+            if accepted_streams < credit_window.grants_issued() {
                 let started = accept_started.get_or_insert_with(Instant::now);
                 let accept_watchdog = if control_done {
                     IROH_MISSING_STREAM_AFTER_CONTROL_TIMEOUT
@@ -7365,14 +8124,18 @@ mod desktop {
                 let accept_timeout = remaining.min(IROH_BATCH_CONTROL_POLL_INTERVAL);
                 match iroh_data.accept_recv_stream_with_timeout(accept_timeout) {
                     Ok(Some(recv)) => {
+                        progress_watchdog.record();
                         accept_started = None;
                         accepted_streams = accepted_streams.saturating_add(1);
                         active_workers = active_workers.saturating_add(1);
+                        metrics.record_max_active_streams(active_workers);
                         let sender = sender.clone();
                         let data = iroh_data.clone();
                         let expected = Arc::clone(&expected);
                         let seen = Arc::clone(&seen);
+                        let credited_artifact_ids = Arc::clone(&credited_artifact_ids);
                         let cancel_receivers = Arc::clone(&cancel_receivers);
+                        let data_progress_marker = data_progress_marker.clone();
                         let batch_token = batch_token.clone();
                         let run_started_instant = metrics.started_instant;
                         handles.push(thread::spawn(move || {
@@ -7382,7 +8145,9 @@ mod desktop {
                                 &batch_token,
                                 expected,
                                 seen,
+                                credited_artifact_ids,
                                 cancel_receivers,
+                                data_progress_marker,
                                 run_started_instant,
                             );
                             if let Err(send_error) = sender.send(result) {
@@ -7399,23 +8164,7 @@ mod desktop {
                             "Sync peer ended the Iroh artifact batch before sending all requested data streams."
                                 .to_string()
                         } else {
-                            match control_receiver.recv_timeout(IROH_BATCH_CONTROL_POLL_INTERVAL) {
-                                Ok(Ok(())) => {
-                                    control_done = true;
-                                    "Sync peer ended the Iroh artifact batch before sending all requested data streams."
-                                        .to_string()
-                                }
-                                Ok(Err(control_error)) => {
-                                    control_done = true;
-                                    control_error
-                                }
-                                Err(mpsc::RecvTimeoutError::Timeout) => error,
-                                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                                    control_done = true;
-                                    "Iroh artifact batch control reader stopped before reporting completion."
-                                        .to_string()
-                                }
-                            }
+                            error
                         };
                         fatal_error.get_or_insert(message);
                         apply_worker.cancel_pending_apply();
@@ -7427,6 +8176,7 @@ mod desktop {
                 accept_started = None;
                 match receiver.recv_timeout(IROH_BATCH_CONTROL_POLL_INTERVAL) {
                     Ok(result) => {
+                        progress_watchdog.record();
                         active_workers = active_workers.saturating_sub(1);
                         if let Err(error) = &result {
                             if let Some(message) =
@@ -7440,11 +8190,29 @@ mod desktop {
                             expected.as_ref(),
                             metrics,
                             timings,
+                            &mut credit_window,
+                            &credited_artifact_ids,
                             &mut completed_artifact_ids,
                             &mut fatal_error,
                             apply_worker,
                             record_transfer,
                         );
+                        if fatal_error.is_none() {
+                            match send_available_iroh_batch_credit(
+                                connection,
+                                &batch_token,
+                                &mut credit_window,
+                                &credited_artifact_ids,
+                                apply_worker.pending_stage_bytes(),
+                                metrics,
+                            ) {
+                                Ok(true) => progress_watchdog.record(),
+                                Ok(false) => {}
+                                Err(error) => {
+                                    fatal_error.get_or_insert(error);
+                                }
+                            }
+                        }
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -7461,6 +8229,12 @@ mod desktop {
 
         if fatal_error.is_some() {
             apply_worker.cancel_pending_apply();
+            if let Some(message) = fatal_error.as_deref() {
+                send_iroh_artifact_batch_abort(connection, &batch_token, message);
+            }
+            iroh_data.close_for_artifact_batch_abort();
+            metrics.record_credit_revokes(credit_window.active_credit_count());
+            clear_iroh_batch_credits(&mut credit_window, &credited_artifact_ids, metrics);
         }
         cancel_receivers.store(true, Ordering::SeqCst);
         drop(sender);
@@ -7470,6 +8244,8 @@ mod desktop {
                 expected.as_ref(),
                 metrics,
                 timings,
+                &mut credit_window,
+                &credited_artifact_ids,
                 &mut completed_artifact_ids,
                 &mut fatal_error,
                 apply_worker,
@@ -7487,6 +8263,8 @@ mod desktop {
                 expected.as_ref(),
                 metrics,
                 timings,
+                &mut credit_window,
+                &credited_artifact_ids,
                 &mut completed_artifact_ids,
                 &mut fatal_error,
                 apply_worker,
@@ -7497,8 +8275,10 @@ mod desktop {
             Ok(stage_results) => drain_iroh_stage_results(
                 stage_results,
                 &mut completed_artifact_ids,
+                metrics,
                 timings,
                 fatal_error.is_none(),
+                apply_worker,
                 record_transfer,
             ),
             Err(error) => {
@@ -7510,18 +8290,11 @@ mod desktop {
         drain_iroh_stage_results(
             apply_worker.drain_backend_write_events(timings),
             &mut completed_artifact_ids,
+            metrics,
             timings,
             fatal_error.is_none(),
+            apply_worker,
             record_transfer,
-        );
-
-        settle_iroh_artifact_batch_control_reader(
-            || iroh_data.close_for_artifact_batch_abort(),
-            &control_receiver,
-            &mut control_result,
-            &mut control_done,
-            control_handle,
-            &mut fatal_error,
         );
         if fatal_error.is_some() {
             apply_worker.cancel_pending_apply();
@@ -7530,8 +8303,10 @@ mod desktop {
         drain_iroh_stage_results(
             apply_worker.drain_backend_write_events(timings),
             &mut completed_artifact_ids,
+            metrics,
             timings,
             fatal_error.is_none(),
+            apply_worker,
             record_transfer,
         );
 
@@ -7548,6 +8323,7 @@ mod desktop {
             &mut completed_artifact_ids,
             &missing_message,
             fatal_error.is_none(),
+            apply_worker,
             record_transfer,
         );
         fatal_error.is_none()
@@ -7563,7 +8339,11 @@ mod desktop {
         timings: &mut Vec<SyncTransportTimingEvidence>,
         progress: &ProgressReporter,
         apply_worker: &mut RemoteApplyWorker,
-        mut record_transfer: impl FnMut(Result<SyncTransportTransferResult, TransferFailure>, bool),
+        mut record_transfer: impl FnMut(
+            Result<SyncTransportTransferResult, TransferFailure>,
+            bool,
+            &mut RemoteApplyWorker,
+        ),
     ) -> bool {
         request_and_stage_iroh_artifact_batch_with_stage_queue(
             client,
@@ -7585,17 +8365,26 @@ mod desktop {
         batch_token: &str,
         expected: Arc<HashMap<String, IrohPendingReceive>>,
         seen: Arc<Mutex<HashSet<String>>>,
+        credited_artifact_ids: Arc<Mutex<HashSet<String>>>,
         cancel_receivers: Arc<AtomicBool>,
+        data_progress_marker: IrohBatchProgressMarker,
         run_started_instant: Instant,
     ) -> Result<IrohReceivedArtifact, IrohArtifactReceiveError> {
         let transfer_timer = TransferTimer::start();
-        let header = read_iroh_artifact_stream_header(&iroh_data, &mut recv, &cancel_receivers)
-            .map_err(|message| IrohArtifactReceiveError {
-                artifact_id: None,
-                message,
-                timing: None,
-                phase_timing: None,
-            })?;
+        let mut diagnostics = SyncTransportDiagnostics::default();
+        let header = read_iroh_artifact_stream_header(
+            &iroh_data,
+            &mut recv,
+            &cancel_receivers,
+            &mut diagnostics,
+        )
+        .map_err(|message| IrohArtifactReceiveError {
+            artifact_id: None,
+            message,
+            timing: None,
+            phase_timing: None,
+            diagnostics: diagnostics.clone(),
+        })?;
         let artifact_id = header.artifact_id.clone();
         let Some(pending) = expected.get(&header.artifact_id).cloned() else {
             return Err(IrohArtifactReceiveError {
@@ -7604,6 +8393,7 @@ mod desktop {
                     .to_string(),
                 timing: None,
                 phase_timing: None,
+                diagnostics: diagnostics.clone(),
             });
         };
         if header.batch_token != batch_token {
@@ -7612,6 +8402,7 @@ mod desktop {
                 transfer_timer,
                 0,
                 "Iroh artifact stream used an unknown batch token.".to_string(),
+                diagnostics.clone(),
             ));
         }
         if header.content_sha256 != pending.artifact.content_sha256
@@ -7622,7 +8413,28 @@ mod desktop {
                 transfer_timer,
                 0,
                 "Iroh artifact stream header did not match the requested artifact.".to_string(),
+                diagnostics.clone(),
             ));
+        }
+        {
+            let credited = credited_artifact_ids
+                .lock()
+                .map_err(|_| IrohArtifactReceiveError {
+                    artifact_id: Some(pending.artifact.artifact_id.clone()),
+                    message: "Iroh artifact batch credit state is unavailable.".to_string(),
+                    timing: None,
+                    phase_timing: None,
+                    diagnostics: diagnostics.clone(),
+                })?;
+            if !credited.contains(&pending.artifact.artifact_id) {
+                return Err(known_iroh_receive_failure(
+                    &pending.artifact,
+                    transfer_timer,
+                    0,
+                    "Iroh artifact stream was opened before receiver credit.".to_string(),
+                    diagnostics.clone(),
+                ));
+            }
         }
         {
             let mut seen = seen.lock().map_err(|_| IrohArtifactReceiveError {
@@ -7630,6 +8442,7 @@ mod desktop {
                 message: "Iroh artifact stream receive state is unavailable.".to_string(),
                 timing: None,
                 phase_timing: None,
+                diagnostics: diagnostics.clone(),
             })?;
             if !seen.insert(pending.artifact.artifact_id.clone()) {
                 return Err(known_iroh_receive_failure(
@@ -7637,6 +8450,7 @@ mod desktop {
                     transfer_timer,
                     0,
                     "Iroh artifact stream repeated an artifact in the current batch.".to_string(),
+                    diagnostics.clone(),
                 ));
             }
         }
@@ -7648,6 +8462,7 @@ mod desktop {
                     transfer_timer,
                     0,
                     format!("Could not create sync artifact temp dir: {error}"),
+                    diagnostics.clone(),
                 ));
             }
         }
@@ -7659,6 +8474,7 @@ mod desktop {
                     transfer_timer,
                     0,
                     format!("Could not create sync artifact temp file: {error}"),
+                    diagnostics.clone(),
                 ));
             }
         };
@@ -7669,29 +8485,37 @@ mod desktop {
         while size_bytes < pending.artifact.size_bytes {
             let remaining = pending.artifact.size_bytes.saturating_sub(size_bytes);
             let read_len = remaining.min(buffer.len() as u64) as usize;
+            let read_started = Instant::now();
             let read = match read_iroh_artifact_stream_chunk(
                 &iroh_data,
                 &mut recv,
                 &mut buffer[..read_len],
                 &cancel_receivers,
             ) {
-                Ok(Some(read)) => read,
+                Ok(Some(read)) => {
+                    diagnostics.record_receiver_read(read_started.elapsed());
+                    read
+                }
                 Ok(None) => {
+                    diagnostics.record_receiver_read(read_started.elapsed());
                     let _ = fs::remove_file(&pending.temp_path);
                     return Err(known_iroh_receive_failure(
                         &pending.artifact,
                         transfer_timer,
                         size_bytes,
                         "Iroh artifact stream ended before the requested size.".to_string(),
+                        diagnostics.clone(),
                     ));
                 }
                 Err(error) => {
+                    diagnostics.record_receiver_read(read_started.elapsed());
                     let _ = fs::remove_file(&pending.temp_path);
                     return Err(known_iroh_receive_failure(
                         &pending.artifact,
                         transfer_timer,
                         size_bytes,
                         error,
+                        diagnostics.clone(),
                     ));
                 }
             };
@@ -7702,22 +8526,30 @@ mod desktop {
                     transfer_timer,
                     size_bytes,
                     "Iroh artifact stream returned an empty read before completion.".to_string(),
+                    diagnostics.clone(),
                 ));
             }
             if first_bytes_at.is_none() {
                 first_bytes_at = Some(run_started_instant.elapsed());
             }
+            data_progress_marker.record();
             size_bytes = size_bytes.saturating_add(read as u64);
+            let hash_started = Instant::now();
             hasher.update(&buffer[..read]);
+            diagnostics.record_receiver_hash(hash_started.elapsed());
+            let write_started = Instant::now();
             if let Err(error) = file.write_all(&buffer[..read]) {
+                diagnostics.record_receiver_temp_write(write_started.elapsed());
                 let _ = fs::remove_file(&pending.temp_path);
                 return Err(known_iroh_receive_failure(
                     &pending.artifact,
                     transfer_timer,
                     size_bytes,
                     format!("Could not write received sync artifact bytes: {error}"),
+                    diagnostics.clone(),
                 ));
             }
+            diagnostics.record_receiver_temp_write(write_started.elapsed());
         }
         if let Err(error) = file.flush() {
             let _ = fs::remove_file(&pending.temp_path);
@@ -7726,6 +8558,7 @@ mod desktop {
                 transfer_timer,
                 size_bytes,
                 format!("Could not flush received sync artifact bytes: {error}"),
+                diagnostics.clone(),
             ));
         }
         let actual_sha256 = hex_digest(hasher.finalize().as_slice());
@@ -7738,6 +8571,7 @@ mod desktop {
                 transfer_timer,
                 size_bytes,
                 "Received sync artifact bytes failed SHA-256 or size verification.".to_string(),
+                diagnostics.clone(),
             ));
         }
         let (timing, phase_timing) =
@@ -7749,6 +8583,7 @@ mod desktop {
             phase_timing,
             size_bytes,
             first_bytes_at,
+            diagnostics,
         })
     }
 
@@ -7757,6 +8592,7 @@ mod desktop {
         transfer_timer: TransferTimer,
         bytes: u64,
         message: String,
+        diagnostics: SyncTransportDiagnostics,
     ) -> IrohArtifactReceiveError {
         let (timing, phase_timing) =
             transfer_timer.finish_with_phase(bytes, "artifact_transfer", artifact);
@@ -7765,6 +8601,7 @@ mod desktop {
             message,
             timing: Some(timing),
             phase_timing: Some(phase_timing),
+            diagnostics,
         }
     }
 
@@ -7772,6 +8609,7 @@ mod desktop {
         iroh_data: &IrohDataConnection,
         send: &mut SendStream,
         header: &IrohArtifactStreamHeader,
+        diagnostics: &mut SyncTransportDiagnostics,
     ) -> Result<(), String> {
         let payload = serde_json::to_vec(header)
             .map_err(|error| format!("Could not encode Iroh artifact stream header: {error}"))?;
@@ -7779,23 +8617,43 @@ mod desktop {
             return Err("Iroh artifact stream header is too large.".to_string());
         }
         let length = (payload.len() as u32).to_be_bytes();
+        let write_started = Instant::now();
         iroh_data.write_all(send, &length)?;
-        iroh_data.write_all(send, &payload)
+        diagnostics.record_sender_write(write_started.elapsed());
+        let write_started = Instant::now();
+        iroh_data.write_all(send, &payload)?;
+        diagnostics.record_sender_write(write_started.elapsed());
+        Ok(())
     }
 
     fn read_iroh_artifact_stream_header(
         iroh_data: &IrohDataConnection,
         recv: &mut RecvStream,
         cancel_receivers: &AtomicBool,
+        diagnostics: &mut SyncTransportDiagnostics,
     ) -> Result<IrohArtifactStreamHeader, String> {
         let mut length = [0_u8; 4];
-        read_iroh_artifact_stream_exact(iroh_data, recv, &mut length, cancel_receivers)?;
+        let read_started = Instant::now();
+        if let Err(error) =
+            read_iroh_artifact_stream_exact(iroh_data, recv, &mut length, cancel_receivers)
+        {
+            diagnostics.record_receiver_read(read_started.elapsed());
+            return Err(error);
+        }
+        diagnostics.record_receiver_read(read_started.elapsed());
         let length = u32::from_be_bytes(length) as usize;
         if length == 0 || length > IROH_DATA_HEADER_MAX_BYTES {
             return Err("Iroh artifact stream header has an invalid length.".to_string());
         }
         let mut payload = vec![0_u8; length];
-        read_iroh_artifact_stream_exact(iroh_data, recv, &mut payload, cancel_receivers)?;
+        let read_started = Instant::now();
+        if let Err(error) =
+            read_iroh_artifact_stream_exact(iroh_data, recv, &mut payload, cancel_receivers)
+        {
+            diagnostics.record_receiver_read(read_started.elapsed());
+            return Err(error);
+        }
+        diagnostics.record_receiver_read(read_started.elapsed());
         serde_json::from_slice(&payload)
             .map_err(|error| format!("Could not decode Iroh artifact stream header: {error}"))
     }
@@ -7864,6 +8722,7 @@ mod desktop {
         peer_device_id: &str,
         received: IrohReceivedArtifact,
         timings: &mut Vec<SyncTransportTimingEvidence>,
+        diagnostics: &mut SyncTransportDiagnostics,
     ) -> Result<SyncTransportTransferResult, TransferFailure> {
         let artifact = received.artifact;
         let body = json!({
@@ -7878,7 +8737,9 @@ mod desktop {
             },
         });
         let timer = SyncPhaseTimer::start_artifact("artifact_staging", &artifact);
+        let post_started = Instant::now();
         let stage_result = client.post_json_value("/api/v1/sync/artifacts/staging", &body);
+        diagnostics.record_staging_post(post_started.elapsed());
         timings.push(timer.finish());
         let cleanup_timer = SyncPhaseTimer::start_artifact("artifact_cleanup", &artifact);
         let _ = fs::remove_file(&received.temp_path);
@@ -8075,7 +8936,11 @@ mod desktop {
             },
         });
         let timer = SyncPhaseTimer::start_artifact("artifact_staging", &artifact);
+        let post_started = Instant::now();
         let stage_result = client.post_json_value("/api/v1/sync/artifacts/staging", &body);
+        metrics
+            .diagnostics
+            .record_staging_post(post_started.elapsed());
         timings.push(timer.finish());
         let cleanup_timer = SyncPhaseTimer::start_artifact("artifact_cleanup", &artifact);
         let _ = fs::remove_file(&temp_path);
@@ -8287,21 +9152,87 @@ mod desktop {
                 artifact_count: artifacts.len() as u64,
             },
         )?;
-        for chunk in artifacts.chunks(IROH_ARTIFACT_PARALLELISM) {
+
+        let artifacts_by_id: HashMap<_, _> = artifacts
+            .iter()
+            .map(|artifact| (artifact.artifact_id.clone(), artifact.clone()))
+            .collect();
+        let mut served_artifact_ids = HashSet::new();
+        while served_artifact_ids.len() < artifacts.len() {
+            let credit_wait_started = Instant::now();
+            let credit_message = connection
+                .read_message_accepting_status_for_phase("artifact request/transfer", progress)?;
+            metrics
+                .diagnostics
+                .record_credit_wait(credit_wait_started.elapsed());
+            let artifact_ids = match credit_message {
+                ProtocolMessage::ArtifactBatchCredit {
+                    batch_token: peer_batch_token,
+                    artifact_ids,
+                } if peer_batch_token == batch_token => artifact_ids,
+                ProtocolMessage::ArtifactBatchCredit { .. } => {
+                    let message =
+                        "Sync peer Iroh artifact batch credit did not match the response."
+                            .to_string();
+                    send_iroh_artifact_batch_abort(connection, batch_token, &message);
+                    return Err(message);
+                }
+                ProtocolMessage::ArtifactBatchAbort {
+                    batch_token: peer_batch_token,
+                    message,
+                } if peer_batch_token == batch_token => {
+                    return Err(phase_context_error("artifact request/transfer", message));
+                }
+                ProtocolMessage::ArtifactBatchAbort { .. } => {
+                    return Err(
+                        "Sync peer Iroh artifact batch abort did not match the response."
+                            .to_string(),
+                    );
+                }
+                ProtocolMessage::Error(error) => {
+                    return Err(phase_context_error(
+                        "artifact request/transfer",
+                        error.message,
+                    ));
+                }
+                other => {
+                    let message = format!(
+                        "Sync peer sent unexpected Iroh artifact batch credit message: {}",
+                        other.kind()
+                    );
+                    send_iroh_artifact_batch_abort(connection, batch_token, &message);
+                    return Err(message);
+                }
+            };
+            if artifact_ids.is_empty() {
+                let message = "Sync peer sent an empty Iroh artifact batch credit.".to_string();
+                send_iroh_artifact_batch_abort(connection, batch_token, &message);
+                return Err(message);
+            }
+
             let mut handles = Vec::new();
-            for artifact in chunk {
-                let local_file =
-                    local_files
-                        .get(&artifact.artifact_id)
-                        .cloned()
-                        .ok_or_else(|| {
-                            format!(
-                                "Backend artifact resolver omitted artifact {}.",
-                                artifact.artifact_id
-                            )
-                        })?;
+            for artifact_id in artifact_ids {
+                let Some(artifact) = artifacts_by_id.get(&artifact_id).cloned() else {
+                    let message =
+                        format!("Sync peer credited unknown Iroh artifact {artifact_id}.");
+                    send_iroh_artifact_batch_abort(connection, batch_token, &message);
+                    return Err(message);
+                };
+                if !served_artifact_ids.insert(artifact_id.clone()) {
+                    let message =
+                        format!("Sync peer credited Iroh artifact {artifact_id} more than once.");
+                    send_iroh_artifact_batch_abort(connection, batch_token, &message);
+                    return Err(message);
+                }
+                let Some(local_file) = local_files.get(&artifact_id).cloned() else {
+                    let message = format!(
+                        "Backend artifact resolver omitted artifact {}.",
+                        artifact_id
+                    );
+                    send_iroh_artifact_batch_abort(connection, batch_token, &message);
+                    return Err(message);
+                };
                 let data = iroh_data.clone();
-                let artifact = artifact.clone();
                 let batch_token = batch_token.to_string();
                 let run_started_instant = metrics.started_instant;
                 handles.push(thread::spawn(move || {
@@ -8315,11 +9246,20 @@ mod desktop {
                 }));
             }
             for handle in handles {
-                let streamed = handle
+                let streamed = match handle
                     .join()
-                    .map_err(|_| "Iroh artifact stream worker panicked.".to_string())??;
+                    .map_err(|_| "Iroh artifact stream worker panicked.".to_string())
+                    .and_then(|result| result)
+                {
+                    Ok(streamed) => streamed,
+                    Err(error) => {
+                        send_iroh_artifact_batch_abort(connection, batch_token, &error);
+                        return Err(error);
+                    }
+                };
                 metrics
                     .record_served_artifact_bytes_at(streamed.size_bytes, streamed.first_bytes_at);
+                metrics.record_diagnostics(&streamed.diagnostics);
             }
         }
         connection.send_message_for_phase(
@@ -8333,6 +9273,7 @@ mod desktop {
     struct StreamedIrohArtifact {
         size_bytes: u64,
         first_bytes_at: Option<Duration>,
+        diagnostics: SyncTransportDiagnostics,
     }
 
     fn stream_iroh_artifact_file(
@@ -8342,9 +9283,12 @@ mod desktop {
         local_file: LocalArtifactFile,
         run_started_instant: Instant,
     ) -> Result<StreamedIrohArtifact, String> {
+        let mut diagnostics = SyncTransportDiagnostics::default();
         local_file.verify_matches(&artifact)?;
         let mut file = local_file.open_file()?;
+        let stream_open_started = Instant::now();
         let mut send = iroh_data.open_send_stream()?;
+        diagnostics.record_stream_open(stream_open_started.elapsed());
         write_iroh_artifact_stream_header(
             &iroh_data,
             &mut send,
@@ -8354,6 +9298,7 @@ mod desktop {
                 content_sha256: artifact.content_sha256.clone(),
                 size_bytes: artifact.size_bytes,
             },
+            &mut diagnostics,
         )?;
         let mut buffer = [0_u8; ARTIFACT_CHUNK_SIZE];
         let mut hasher = Sha256::new();
@@ -8374,7 +9319,9 @@ mod desktop {
             }
             actual_size = actual_size.saturating_add(read as u64);
             hasher.update(&buffer[..read]);
+            let write_started = Instant::now();
             iroh_data.write_all(&mut send, &buffer[..read])?;
+            diagnostics.record_sender_write(write_started.elapsed());
         }
         iroh_data.finish_send(&mut send)?;
         let actual_sha256 = hex_digest(hasher.finalize().as_slice());
@@ -8387,6 +9334,7 @@ mod desktop {
         Ok(StreamedIrohArtifact {
             size_bytes: actual_size,
             first_bytes_at,
+            diagnostics,
         })
     }
 
@@ -9709,6 +10657,7 @@ mod desktop {
             bytes: &[u8],
         ) -> Result<(), String> {
             let mut send = iroh_data.open_send_stream()?;
+            let mut diagnostics = SyncTransportDiagnostics::default();
             write_iroh_artifact_stream_header(
                 iroh_data,
                 &mut send,
@@ -9718,9 +10667,78 @@ mod desktop {
                     content_sha256: artifact.content_sha256.clone(),
                     size_bytes: artifact.size_bytes,
                 },
+                &mut diagnostics,
             )?;
             iroh_data.write_all(&mut send, bytes)?;
             iroh_data.finish_send(&mut send)
+        }
+
+        fn receive_test_iroh_artifact_stream(
+            iroh_data: &IrohDataConnection,
+            batch_token: &str,
+            artifact: &RemoteArtifact,
+        ) -> Result<Vec<u8>, String> {
+            let mut recv = iroh_data
+                .accept_recv_stream_with_timeout(Duration::from_secs(5))?
+                .ok_or_else(|| "test peer did not receive Iroh artifact stream".to_string())?;
+            let cancel_receivers = AtomicBool::new(false);
+            let mut diagnostics = SyncTransportDiagnostics::default();
+            let header = read_iroh_artifact_stream_header(
+                iroh_data,
+                &mut recv,
+                &cancel_receivers,
+                &mut diagnostics,
+            )?;
+            if header.batch_token != batch_token
+                || header.artifact_id != artifact.artifact_id
+                || header.content_sha256 != artifact.content_sha256
+                || header.size_bytes != artifact.size_bytes
+            {
+                return Err("test Iroh artifact stream header did not match credit".to_string());
+            }
+            let mut bytes = vec![0_u8; artifact.size_bytes as usize];
+            read_iroh_artifact_stream_exact(iroh_data, &mut recv, &mut bytes, &cancel_receivers)?;
+            Ok(bytes)
+        }
+
+        fn try_read_test_iroh_artifact_stream_header(
+            iroh_data: &IrohDataConnection,
+            recv: &mut RecvStream,
+        ) -> Result<Option<IrohArtifactStreamHeader>, String> {
+            let mut length = [0_u8; 4];
+            if !read_test_iroh_data_exact_with_short_timeout(iroh_data, recv, &mut length)? {
+                return Ok(None);
+            }
+            let length = u32::from_be_bytes(length) as usize;
+            if length == 0 || length > IROH_DATA_HEADER_MAX_BYTES {
+                return Ok(None);
+            }
+            let mut payload = vec![0_u8; length];
+            if !read_test_iroh_data_exact_with_short_timeout(iroh_data, recv, &mut payload)? {
+                return Ok(None);
+            }
+            Ok(serde_json::from_slice(&payload).ok())
+        }
+
+        fn read_test_iroh_data_exact_with_short_timeout(
+            iroh_data: &IrohDataConnection,
+            recv: &mut RecvStream,
+            buffer: &mut [u8],
+        ) -> Result<bool, String> {
+            let started = Instant::now();
+            let mut read_bytes = 0_usize;
+            while read_bytes < buffer.len() && started.elapsed() < Duration::from_millis(250) {
+                match iroh_data.read_with_timeout(
+                    recv,
+                    &mut buffer[read_bytes..],
+                    Duration::from_millis(25),
+                )? {
+                    IrohDataReadPoll::Data(0) | IrohDataReadPoll::EndOfStream => return Ok(false),
+                    IrohDataReadPoll::Data(read) => read_bytes = read_bytes.saturating_add(read),
+                    IrohDataReadPoll::TimedOut => {}
+                }
+            }
+            Ok(read_bytes == buffer.len())
         }
 
         fn collect_test_files(root: &Path) -> Vec<PathBuf> {
@@ -9752,11 +10770,19 @@ mod desktop {
         struct TestBackendResponses {
             data_root: PathBuf,
             staged_artifact_sizes: HashMap<String, u64>,
+            artifact_files: HashMap<String, LocalArtifactFile>,
         }
 
         #[cfg(not(target_os = "android"))]
         impl TestBackendServer {
             fn start_with_staged_artifacts(staged_artifact_sizes: HashMap<String, u64>) -> Self {
+                Self::start_with_staged_artifacts_and_files(staged_artifact_sizes, HashMap::new())
+            }
+
+            fn start_with_staged_artifacts_and_files(
+                staged_artifact_sizes: HashMap<String, u64>,
+                artifact_files: HashMap<String, LocalArtifactFile>,
+            ) -> Self {
                 let listener =
                     TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind test backend");
                 listener
@@ -9774,6 +10800,7 @@ mod desktop {
                 let responses = Arc::new(TestBackendResponses {
                     data_root: data_root.clone(),
                     staged_artifact_sizes,
+                    artifact_files,
                 });
                 let (stop_sender, stop_receiver) = mpsc::channel();
                 let handle = {
@@ -9875,6 +10902,20 @@ mod desktop {
                     "200 OK",
                     json!({ "data_root": responses.data_root.to_string_lossy() }).to_string(),
                 )
+            } else if path == "/api/v1/sync/artifacts/files/resolve" {
+                let records = responses
+                    .artifact_files
+                    .values()
+                    .map(|file| {
+                        json!({
+                            "artifact_id": &file.artifact_id,
+                            "source_path": file.source_path.to_string_lossy().to_string(),
+                            "content_sha256": &file.content_sha256,
+                            "size_bytes": file.size_bytes,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                ("200 OK", json!({ "records": records }).to_string())
             } else if let Some(content_sha256) =
                 path.strip_prefix("/api/v1/sync/artifacts/staging/")
             {
@@ -10582,6 +11623,8 @@ mod desktop {
                 apply_cancelled,
                 project_results: Vec::new(),
                 pending_stage_jobs: 0,
+                pending_stage_bytes: 0,
+                staging_peak_bytes: 0,
             };
             apply_worker.enqueue_tombstone("proj_abort".to_string());
 
@@ -10626,6 +11669,42 @@ mod desktop {
             assert!(value.get("source_path").is_none());
             assert!(value.get("data").is_none());
             assert!(value.get("artifact_id").is_none());
+        }
+
+        #[test]
+        fn artifact_batch_credit_and_abort_serialize_as_internal_protocol_messages() {
+            let credit = ProtocolMessage::ArtifactBatchCredit {
+                batch_token: "batch_one".to_string(),
+                artifact_ids: vec!["art_one".to_string(), "art_two".to_string()],
+            };
+            let abort = ProtocolMessage::ArtifactBatchAbort {
+                batch_token: "batch_one".to_string(),
+                message: "receiver cancelled".to_string(),
+            };
+
+            let credit_value = serde_json::to_value(credit).expect("serialize credit");
+            let abort_value = serde_json::to_value(abort).expect("serialize abort");
+
+            assert_eq!(
+                credit_value.get("type"),
+                Some(&json!("artifact_batch_credit"))
+            );
+            assert_eq!(credit_value.get("batch_token"), Some(&json!("batch_one")));
+            assert_eq!(
+                credit_value.get("artifact_ids"),
+                Some(&json!(["art_one", "art_two"]))
+            );
+            assert_eq!(
+                abort_value.get("type"),
+                Some(&json!("artifact_batch_abort"))
+            );
+            assert_eq!(abort_value.get("batch_token"), Some(&json!("batch_one")));
+            assert_eq!(
+                abort_value.get("message"),
+                Some(&json!("receiver cancelled"))
+            );
+            assert!(credit_value.get("source_path").is_none());
+            assert!(abort_value.get("source_path").is_none());
         }
 
         #[test]
@@ -10905,6 +11984,209 @@ mod desktop {
             assert_eq!(value.get("sizeBytes"), Some(&json!(42)));
             assert!(value.get("source_path").is_none());
             assert!(value.get("sourcePath").is_none());
+        }
+
+        #[cfg(not(target_os = "android"))]
+        #[test]
+        fn iroh_sender_waits_for_batch_credit_before_opening_streams() {
+            let first_payload = b"first credited payload".to_vec();
+            let second_payload = b"second credited payload".to_vec();
+            let first_artifact = RemoteArtifact {
+                artifact_id: "art_first".to_string(),
+                project_id: "proj_one".to_string(),
+                content_sha256: test_sha256(&first_payload),
+                size_bytes: first_payload.len() as u64,
+            };
+            let second_artifact = RemoteArtifact {
+                artifact_id: "art_second".to_string(),
+                project_id: "proj_two".to_string(),
+                content_sha256: test_sha256(&second_payload),
+                size_bytes: second_payload.len() as u64,
+            };
+            let source_root =
+                env::temp_dir().join(format!("tuneforge-sync-source-test-{}", random_nonce()));
+            fs::create_dir_all(&source_root).expect("create source root");
+            let first_path = source_root.join("first.bin");
+            let second_path = source_root.join("second.bin");
+            fs::write(&first_path, &first_payload).expect("write first payload");
+            fs::write(&second_path, &second_payload).expect("write second payload");
+            let backend = TestBackendServer::start_with_staged_artifacts_and_files(
+                HashMap::new(),
+                HashMap::from([
+                    (
+                        first_artifact.artifact_id.clone(),
+                        LocalArtifactFile {
+                            artifact_id: first_artifact.artifact_id.clone(),
+                            source_path: first_path,
+                            content_sha256: first_artifact.content_sha256.clone(),
+                            size_bytes: first_artifact.size_bytes,
+                        },
+                    ),
+                    (
+                        second_artifact.artifact_id.clone(),
+                        LocalArtifactFile {
+                            artifact_id: second_artifact.artifact_id.clone(),
+                            source_path: second_path,
+                            content_sha256: second_artifact.content_sha256.clone(),
+                            size_bytes: second_artifact.size_bytes,
+                        },
+                    ),
+                ]),
+            );
+            let peer_first_artifact = first_artifact.clone();
+            let peer_second_artifact = second_artifact.clone();
+            let peer_first_payload = first_payload.clone();
+            let peer_second_payload = second_payload.clone();
+            let (connection, client_endpoint, peer_thread) = spawn_test_iroh_sync_peer(
+                move |mut peer, iroh_data| {
+                    let batch_token = "batch_credit_gate".to_string();
+                    peer.send_message(&ProtocolMessage::ArtifactBatchRequest(
+                        ArtifactBatchRequest {
+                            batch_token: Some(batch_token.clone()),
+                            artifacts: vec![
+                                peer_first_artifact.artifact_request(),
+                                peer_second_artifact.artifact_request(),
+                            ],
+                        },
+                    ))?;
+                    let start = read_message_accepting_status(
+                        "artifact request/transfer",
+                        || peer.read_message(),
+                        |_| {},
+                    )?;
+                    match start {
+                        ProtocolMessage::ArtifactBatchStart {
+                            batch_token: peer_batch_token,
+                            artifact_count,
+                        } if peer_batch_token == batch_token && artifact_count == 2 => {}
+                        other => {
+                            return Err(format!(
+                                "expected artifact batch start, got {}",
+                                other.kind()
+                            ));
+                        }
+                    }
+                    if let Some(mut recv) =
+                        iroh_data.accept_recv_stream_with_timeout(Duration::from_millis(250))?
+                    {
+                        if let Some(header) =
+                            try_read_test_iroh_artifact_stream_header(&iroh_data, &mut recv)?
+                        {
+                            if header.batch_token == batch_token {
+                                return Err(
+                                    "sender opened Iroh data stream before credit".to_string()
+                                );
+                            }
+                        }
+                    }
+                    peer.send_message(&ProtocolMessage::ArtifactBatchCredit {
+                        batch_token: batch_token.clone(),
+                        artifact_ids: vec![peer_first_artifact.artifact_id.clone()],
+                    })?;
+                    let first_bytes = receive_test_iroh_artifact_stream(
+                        &iroh_data,
+                        &batch_token,
+                        &peer_first_artifact,
+                    )?;
+                    assert_eq!(first_bytes, peer_first_payload);
+                    if let Some(mut recv) =
+                        iroh_data.accept_recv_stream_with_timeout(Duration::from_millis(250))?
+                    {
+                        if let Some(header) =
+                            try_read_test_iroh_artifact_stream_header(&iroh_data, &mut recv)?
+                        {
+                            if header.batch_token == batch_token {
+                                return Err(
+                                    "sender opened next Iroh data stream before replenishment credit"
+                                        .to_string(),
+                                );
+                            }
+                        }
+                    }
+
+                    peer.send_message(&ProtocolMessage::ArtifactBatchCredit {
+                        batch_token: batch_token.clone(),
+                        artifact_ids: vec![peer_second_artifact.artifact_id.clone()],
+                    })?;
+                    let second_bytes = receive_test_iroh_artifact_stream(
+                        &iroh_data,
+                        &batch_token,
+                        &peer_second_artifact,
+                    )?;
+                    assert_eq!(second_bytes, peer_second_payload);
+                    let end = read_message_accepting_status(
+                        "artifact request/transfer",
+                        || peer.read_message(),
+                        |_| {},
+                    )?;
+                    match end {
+                        ProtocolMessage::ArtifactBatchEnd {
+                            batch_token: peer_batch_token,
+                        } if peer_batch_token == batch_token => {}
+                        other => {
+                            return Err(format!(
+                                "expected artifact batch end, got {}",
+                                other.kind()
+                            ));
+                        }
+                    }
+                    peer.send_message(&ProtocolMessage::PhaseDone {
+                        phase: "artifact_transfer".to_string(),
+                    })?;
+                    thread::sleep(Duration::from_millis(100));
+                    Ok(())
+                },
+            );
+            let client = BackendClient {
+                host: "127.0.0.1".to_string(),
+                port: backend.port,
+                sync_transport_temp_root: Arc::new(Mutex::new(None)),
+            };
+            let started = Instant::now();
+            let progress = ProgressReporter::new(
+                "sync_iroh_credit_gate_sender_test".to_string(),
+                started,
+                Arc::new(Mutex::new(SharedStatus::default())),
+                connection.clone(),
+            );
+            let mut metrics = SyncRunMetrics::start(started);
+            let served = serve_artifact_requests_until_done(
+                &client,
+                &connection,
+                &[json!({
+                    "project": { "project_id": "proj_one" },
+                    "artifacts": [
+                        {
+                            "artifact_id": first_artifact.artifact_id,
+                            "project_id": first_artifact.project_id,
+                            "content_sha256": first_artifact.content_sha256,
+                            "size_bytes": first_artifact.size_bytes,
+                        },
+                        {
+                            "artifact_id": second_artifact.artifact_id,
+                            "project_id": second_artifact.project_id,
+                            "content_sha256": second_artifact.content_sha256,
+                            "size_bytes": second_artifact.size_bytes,
+                        }
+                    ]
+                })],
+                &mut metrics,
+                &progress,
+            );
+            close_test_iroh_endpoint(&client_endpoint);
+            let peer_result = peer_thread.join().expect("join Iroh credit gate peer");
+            let _ = fs::remove_dir_all(&source_root);
+
+            assert_eq!(peer_result, Ok(()));
+            assert_eq!(served.expect("serve credited Iroh artifacts"), 2);
+            assert_eq!(
+                backend
+                    .requests()
+                    .iter()
+                    .filter(|path| path.as_str() == "/api/v1/sync/artifacts/files/resolve")
+                    .count(),
+                1
+            );
         }
 
         #[cfg(not(target_os = "android"))]
@@ -11244,6 +12526,17 @@ mod desktop {
             assert_eq!(transfer_counts.already_staged, 1);
             assert_eq!(transfer_counts.received, 1);
             assert_eq!(transfer_counts.failed, 1);
+            assert_eq!(metrics.credit_grants, 2);
+            assert_eq!(
+                metrics.scratch_peak_bytes,
+                first_artifact
+                    .size_bytes
+                    .saturating_add(second_artifact.size_bytes)
+            );
+            assert!(metrics.staging_peak_bytes >= first_artifact.size_bytes);
+            assert_eq!(metrics.max_active_streams, 1);
+            assert!(metrics.credit_revokes >= 1);
+            assert!(metrics.credit_revokes <= 2);
             let mut result_project_ids = project_results
                 .iter()
                 .map(|result| {
@@ -12161,6 +13454,132 @@ mod desktop {
         }
 
         #[test]
+        fn iroh_credit_window_replenishes_after_receive_release_when_budget_allows() {
+            let pending = ["art_one", "art_two", "art_three"]
+                .into_iter()
+                .map(|artifact_id| PendingArtifactTransfer {
+                    artifact: RemoteArtifact {
+                        artifact_id: artifact_id.to_string(),
+                        project_id: "proj_one".to_string(),
+                        content_sha256: format!("hash_{artifact_id}"),
+                        size_bytes: 10,
+                    },
+                })
+                .collect::<Vec<_>>();
+            let mut window = IrohBatchCreditWindow::new(&pending, 2, 30);
+
+            assert_eq!(
+                window.grant_available(0).expect("initial credit"),
+                vec!["art_one".to_string(), "art_two".to_string()]
+            );
+            assert_eq!(window.reserved_bytes, 20);
+            assert_eq!(window.grants_issued(), 2);
+
+            window.release("art_one");
+
+            assert_eq!(
+                window.grant_available(10).expect("replenishment credit"),
+                vec!["art_three".to_string()]
+            );
+            assert_eq!(window.reserved_bytes, 20);
+            assert_eq!(window.grants_issued(), 3);
+        }
+
+        #[test]
+        fn iroh_credit_window_counts_pending_staging_bytes_against_budget() {
+            let pending = [
+                ("art_one", 40_u64),
+                ("art_two", 40_u64),
+                ("art_three", 30_u64),
+            ]
+            .into_iter()
+            .map(|(artifact_id, size_bytes)| PendingArtifactTransfer {
+                artifact: RemoteArtifact {
+                    artifact_id: artifact_id.to_string(),
+                    project_id: "proj_one".to_string(),
+                    content_sha256: format!("hash_{artifact_id}"),
+                    size_bytes,
+                },
+            })
+            .collect::<Vec<_>>();
+            let mut window = IrohBatchCreditWindow::new(&pending, 2, 100);
+
+            assert_eq!(
+                window.grant_available(0).expect("initial credit"),
+                vec!["art_one".to_string(), "art_two".to_string()]
+            );
+            assert_eq!(window.reserved_bytes, 80);
+
+            window.release("art_one");
+
+            assert!(window
+                .grant_available(40)
+                .expect("pending staging consumes budget")
+                .is_empty());
+            assert_eq!(window.reserved_bytes, 40);
+            assert_eq!(window.scratch_bytes(40), 80);
+
+            assert_eq!(
+                window.grant_available(0).expect("staging drained"),
+                vec!["art_three".to_string()]
+            );
+            assert_eq!(window.reserved_bytes, 70);
+        }
+
+        #[test]
+        fn iroh_credit_window_byte_budget_prevents_over_credit() {
+            let pending = [
+                ("art_one", 60_u64),
+                ("art_two", 50_u64),
+                ("art_three", 10_u64),
+            ]
+            .into_iter()
+            .map(|(artifact_id, size_bytes)| PendingArtifactTransfer {
+                artifact: RemoteArtifact {
+                    artifact_id: artifact_id.to_string(),
+                    project_id: "proj_one".to_string(),
+                    content_sha256: format!("hash_{artifact_id}"),
+                    size_bytes,
+                },
+            })
+            .collect::<Vec<_>>();
+            let mut window = IrohBatchCreditWindow::new(&pending, 4, 100);
+
+            assert_eq!(
+                window.grant_available(0).expect("initial credit"),
+                vec!["art_one".to_string()]
+            );
+            assert_eq!(window.reserved_bytes, 60);
+
+            window.release("art_one");
+
+            assert_eq!(
+                window.grant_available(0).expect("budgeted replenishment"),
+                vec!["art_two".to_string(), "art_three".to_string()]
+            );
+            assert_eq!(window.reserved_bytes, 60);
+        }
+
+        #[test]
+        fn iroh_progress_watchdog_allows_delayed_control_after_stream_and_staging_progress() {
+            let started = Instant::now();
+            let timeout = Duration::from_secs(75);
+            let mut batch_started_only = IrohBatchProgressWatchdog::new(started, timeout);
+            assert!(batch_started_only.timed_out_at(started + Duration::from_secs(76)));
+
+            let mut watchdog = IrohBatchProgressWatchdog::new(started, timeout);
+            let stream_progress = watchdog.marker();
+            stream_progress.record_at(started + Duration::from_secs(60));
+
+            assert!(!watchdog.timed_out_at(started + Duration::from_secs(100)));
+
+            watchdog.record_at(started + Duration::from_secs(120));
+
+            assert!(!watchdog.timed_out_at(started + Duration::from_secs(150)));
+            assert!(watchdog.timed_out_at(started + Duration::from_secs(196)));
+        }
+
+        #[test]
         fn iroh_global_scheduler_releases_each_project_when_ready() {
             let mut scheduler = IrohGlobalProjectScheduler::default();
             let mut received_artifacts = Vec::new();
@@ -12885,6 +14304,11 @@ mod desktop {
                 total_served_bytes: 70,
                 time_to_first_artifact_ms: Some(250),
                 throughput_bytes_per_second: 50.0,
+                scratch_peak_bytes: 0,
+                staging_peak_bytes: 0,
+                max_active_streams: 0,
+                credit_grants: 0,
+                credit_revokes: 0,
                 remote_manifest_count: 0,
                 local_manifest_count: 0,
                 manifest_errors: Vec::new(),
@@ -12896,6 +14320,34 @@ mod desktop {
                     completed_at: "2026-01-01T00:00:01Z".to_string(),
                     duration_ms: 1_000,
                 }],
+                diagnostics: SyncTransportDiagnostics {
+                    credit_wait_ms_total: 42,
+                    credit_wait_ms_max: 40,
+                    credit_wait_events: 2,
+                    credit_hold_ms_total: 80,
+                    credit_hold_ms_max: 50,
+                    stage_queue_wait_ms_total: 9,
+                    stage_queue_wait_ms_max: 6,
+                    stage_queue_wait_events: 3,
+                    stream_open_ms_total: 5,
+                    stream_open_ms_max: 4,
+                    stream_open_events: 2,
+                    sender_write_ms_total: 120,
+                    sender_write_ms_max: 70,
+                    sender_write_events: 4,
+                    receiver_read_ms_total: 130,
+                    receiver_read_ms_max: 90,
+                    receiver_read_events: 5,
+                    receiver_hash_ms_total: 11,
+                    receiver_hash_ms_max: 5,
+                    receiver_hash_events: 5,
+                    receiver_temp_write_ms_total: 39,
+                    receiver_temp_write_ms_max: 12,
+                    receiver_temp_write_events: 5,
+                    staging_post_ms_total: 300,
+                    staging_post_ms_max: 200,
+                    staging_post_events: 2,
+                },
             };
 
             let value = serde_json::to_value(result).expect("serialize sync result");
@@ -12916,6 +14368,37 @@ mod desktop {
             assert_eq!(value.get("totalServedBytes"), Some(&json!(70)));
             assert_eq!(value.get("timeToFirstArtifactMs"), Some(&json!(250)));
             assert_eq!(value.get("throughputBytesPerSecond"), Some(&json!(50.0)));
+            assert_eq!(value.get("scratchPeakBytes"), Some(&json!(0)));
+            assert_eq!(value.get("stagingPeakBytes"), Some(&json!(0)));
+            assert_eq!(value.get("maxActiveStreams"), Some(&json!(0)));
+            assert_eq!(value.get("creditGrants"), Some(&json!(0)));
+            assert_eq!(value.get("creditRevokes"), Some(&json!(0)));
+            assert_eq!(value.get("credit_wait_ms_total"), Some(&json!(42)));
+            assert_eq!(value.get("credit_wait_ms_max"), Some(&json!(40)));
+            assert_eq!(value.get("credit_wait_events"), Some(&json!(2)));
+            assert_eq!(value.get("credit_hold_ms_total"), Some(&json!(80)));
+            assert_eq!(value.get("credit_hold_ms_max"), Some(&json!(50)));
+            assert_eq!(value.get("stage_queue_wait_ms_total"), Some(&json!(9)));
+            assert_eq!(value.get("stage_queue_wait_ms_max"), Some(&json!(6)));
+            assert_eq!(value.get("stage_queue_wait_events"), Some(&json!(3)));
+            assert_eq!(value.get("stream_open_ms_total"), Some(&json!(5)));
+            assert_eq!(value.get("stream_open_ms_max"), Some(&json!(4)));
+            assert_eq!(value.get("stream_open_events"), Some(&json!(2)));
+            assert_eq!(value.get("sender_write_ms_total"), Some(&json!(120)));
+            assert_eq!(value.get("sender_write_ms_max"), Some(&json!(70)));
+            assert_eq!(value.get("sender_write_events"), Some(&json!(4)));
+            assert_eq!(value.get("receiver_read_ms_total"), Some(&json!(130)));
+            assert_eq!(value.get("receiver_read_ms_max"), Some(&json!(90)));
+            assert_eq!(value.get("receiver_read_events"), Some(&json!(5)));
+            assert_eq!(value.get("receiver_hash_ms_total"), Some(&json!(11)));
+            assert_eq!(value.get("receiver_hash_ms_max"), Some(&json!(5)));
+            assert_eq!(value.get("receiver_hash_events"), Some(&json!(5)));
+            assert_eq!(value.get("receiver_temp_write_ms_total"), Some(&json!(39)));
+            assert_eq!(value.get("receiver_temp_write_ms_max"), Some(&json!(12)));
+            assert_eq!(value.get("receiver_temp_write_events"), Some(&json!(5)));
+            assert_eq!(value.get("staging_post_ms_total"), Some(&json!(300)));
+            assert_eq!(value.get("staging_post_ms_max"), Some(&json!(200)));
+            assert_eq!(value.get("staging_post_events"), Some(&json!(2)));
         }
 
         #[test]
@@ -12950,10 +14433,16 @@ mod desktop {
                 total_served_bytes: 0,
                 time_to_first_artifact_ms: None,
                 throughput_bytes_per_second: 0.0,
+                scratch_peak_bytes: 96,
+                staging_peak_bytes: 48,
+                max_active_streams: 4,
+                credit_grants: 7,
+                credit_revokes: 2,
                 remote_manifest_count: 0,
                 local_manifest_count: 0,
                 manifest_errors: Vec::new(),
                 phase_timings: Vec::new(),
+                diagnostics: SyncTransportDiagnostics::default(),
             };
 
             let value = serde_json::to_value(result).expect("serialize sync result");
@@ -12976,6 +14465,11 @@ mod desktop {
                 value.get("fallbackCode"),
                 Some(&json!("iroh_connect_failed"))
             );
+            assert_eq!(value.get("scratchPeakBytes"), Some(&json!(96)));
+            assert_eq!(value.get("stagingPeakBytes"), Some(&json!(48)));
+            assert_eq!(value.get("maxActiveStreams"), Some(&json!(4)));
+            assert_eq!(value.get("creditGrants"), Some(&json!(7)));
+            assert_eq!(value.get("creditRevokes"), Some(&json!(2)));
         }
 
         #[test]

@@ -121,6 +121,34 @@ export type SyncTransportPhaseTiming = {
   throughput_bytes_per_second?: number | null;
 };
 export type SyncTransportTiming = Record<string, unknown> | Record<string, unknown>[];
+type SyncTransportDiagnosticField =
+  | "credit_wait_ms_total"
+  | "credit_wait_ms_max"
+  | "credit_wait_events"
+  | "credit_hold_ms_total"
+  | "credit_hold_ms_max"
+  | "stage_queue_wait_ms_total"
+  | "stage_queue_wait_ms_max"
+  | "stage_queue_wait_events"
+  | "stream_open_ms_total"
+  | "stream_open_ms_max"
+  | "stream_open_events"
+  | "sender_write_ms_total"
+  | "sender_write_ms_max"
+  | "sender_write_events"
+  | "receiver_read_ms_total"
+  | "receiver_read_ms_max"
+  | "receiver_read_events"
+  | "receiver_hash_ms_total"
+  | "receiver_hash_ms_max"
+  | "receiver_hash_events"
+  | "receiver_temp_write_ms_total"
+  | "receiver_temp_write_ms_max"
+  | "receiver_temp_write_events"
+  | "staging_post_ms_total"
+  | "staging_post_ms_max"
+  | "staging_post_events";
+type SyncTransportDiagnosticValues = Partial<Record<SyncTransportDiagnosticField, number | null>>;
 export type SyncTransportRunStatus = {
   run_id?: string | null;
   session_id?: string | null;
@@ -145,6 +173,11 @@ export type SyncTransportRunStatus = {
   total_served_bytes?: number | null;
   time_to_first_artifact_ms?: number | null;
   throughput_bytes_per_second?: number | null;
+  scratch_peak_bytes?: number | null;
+  staging_peak_bytes?: number | null;
+  max_active_streams?: number | null;
+  credit_grants?: number | null;
+  credit_revokes?: number | null;
   error?: string | null;
   project_results: SyncTransportProjectResult[];
   manifest_errors: SyncTransportManifestError[];
@@ -158,7 +191,7 @@ export type SyncTransportRunStatus = {
   skipped_project_count?: number | null;
   failed_project_count?: number | null;
   total_project_count?: number | null;
-};
+} & SyncTransportDiagnosticValues;
 export type SyncTransportProjectResult = {
   project_id: string;
   run_id?: string | null;
@@ -307,6 +340,16 @@ function numberField(record: Record<string, unknown> | null, keys: string[]) {
   for (const key of keys) {
     const value = record[key];
     if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function firstNumberField(records: Array<Record<string, unknown> | null>, keys: string[]) {
+  for (const record of records) {
+    const value = numberField(record, keys);
+    if (value !== null) {
       return value;
     }
   }
@@ -535,6 +578,58 @@ function normalizeMetricKey(value: string) {
     .toLowerCase();
 }
 
+const SYNC_TRANSPORT_EVIDENCE_METRIC_KEYS = new Set([
+  "scratch_peak_bytes",
+  "scratch_bytes_peak",
+  "scratch_storage_peak_bytes",
+  "staging_peak_bytes",
+  "staging_bytes_peak",
+  "staging_storage_peak_bytes",
+  "max_active_streams",
+  "active_streams_peak",
+  "max_streams",
+  "max_stream_count",
+  "credit_grants",
+  "credit_grant_count",
+  "credit_grants_count",
+  "credits_granted",
+  "credit_revokes",
+  "credit_revoke_count",
+  "credit_revokes_count",
+  "credit_revocations",
+  "credit_revocation_count",
+  "credits_revoked",
+]);
+
+const SYNC_TRANSPORT_DIAGNOSTIC_FIELDS: Array<[SyncTransportDiagnosticField, string[]]> = [
+  ["credit_wait_ms_total", ["credit_wait_ms_total", "creditWaitMsTotal"]],
+  ["credit_wait_ms_max", ["credit_wait_ms_max", "creditWaitMsMax"]],
+  ["credit_wait_events", ["credit_wait_events", "creditWaitEvents"]],
+  ["credit_hold_ms_total", ["credit_hold_ms_total", "creditHoldMsTotal"]],
+  ["credit_hold_ms_max", ["credit_hold_ms_max", "creditHoldMsMax"]],
+  ["stage_queue_wait_ms_total", ["stage_queue_wait_ms_total", "stageQueueWaitMsTotal"]],
+  ["stage_queue_wait_ms_max", ["stage_queue_wait_ms_max", "stageQueueWaitMsMax"]],
+  ["stage_queue_wait_events", ["stage_queue_wait_events", "stageQueueWaitEvents"]],
+  ["stream_open_ms_total", ["stream_open_ms_total", "streamOpenMsTotal"]],
+  ["stream_open_ms_max", ["stream_open_ms_max", "streamOpenMsMax"]],
+  ["stream_open_events", ["stream_open_events", "streamOpenEvents"]],
+  ["sender_write_ms_total", ["sender_write_ms_total", "senderWriteMsTotal"]],
+  ["sender_write_ms_max", ["sender_write_ms_max", "senderWriteMsMax"]],
+  ["sender_write_events", ["sender_write_events", "senderWriteEvents"]],
+  ["receiver_read_ms_total", ["receiver_read_ms_total", "receiverReadMsTotal"]],
+  ["receiver_read_ms_max", ["receiver_read_ms_max", "receiverReadMsMax"]],
+  ["receiver_read_events", ["receiver_read_events", "receiverReadEvents"]],
+  ["receiver_hash_ms_total", ["receiver_hash_ms_total", "receiverHashMsTotal"]],
+  ["receiver_hash_ms_max", ["receiver_hash_ms_max", "receiverHashMsMax"]],
+  ["receiver_hash_events", ["receiver_hash_events", "receiverHashEvents"]],
+  ["receiver_temp_write_ms_total", ["receiver_temp_write_ms_total", "receiverTempWriteMsTotal"]],
+  ["receiver_temp_write_ms_max", ["receiver_temp_write_ms_max", "receiverTempWriteMsMax"]],
+  ["receiver_temp_write_events", ["receiver_temp_write_events", "receiverTempWriteEvents"]],
+  ["staging_post_ms_total", ["staging_post_ms_total", "stagingPostMsTotal"]],
+  ["staging_post_ms_max", ["staging_post_ms_max", "stagingPostMsMax"]],
+  ["staging_post_events", ["staging_post_events", "stagingPostEvents"]],
+];
+
 function numericMetricsFromRecord(record: Record<string, unknown> | null) {
   const metrics: SyncTransportMetricMap = {};
   if (!record) {
@@ -543,9 +638,11 @@ function numericMetricsFromRecord(record: Record<string, unknown> | null) {
   Object.entries(record).forEach(([key, value]) => {
     const metricKey = normalizeMetricKey(key);
     const looksLikeMetric =
-      /(?:_count|_bytes|_ms|_seconds)$/.test(metricKey) ||
+      /(?:_count|_bytes|_ms|_seconds|_events)$/.test(metricKey) ||
+      /_ms_(?:total|max)$/.test(metricKey) ||
       /_per_second$/.test(metricKey) ||
-      metricKey.startsWith("count_");
+      metricKey.startsWith("count_") ||
+      SYNC_TRANSPORT_EVIDENCE_METRIC_KEYS.has(metricKey);
     if (looksLikeMetric && typeof value === "number" && Number.isFinite(value)) {
       metrics[metricKey] = value;
     }
@@ -560,6 +657,15 @@ function syncMetricMap(record: Record<string, unknown>) {
     ...numericMetricsFromRecord(explicitMetrics),
     ...numericMetricsFromRecord(record),
   };
+}
+
+function syncTransportDiagnosticValues(records: Array<Record<string, unknown> | null>) {
+  return Object.fromEntries(
+    SYNC_TRANSPORT_DIAGNOSTIC_FIELDS.map(([field, keys]) => [
+      field,
+      firstNumberField(records, keys),
+    ]),
+  ) as Record<SyncTransportDiagnosticField, number | null>;
 }
 
 function timingField(record: Record<string, unknown>) {
@@ -614,8 +720,15 @@ function normalizeSyncPhaseTiming(value: unknown): SyncTransportPhaseTiming | nu
     "end_time",
     "endTime",
   ]);
+  const durationSeconds = numberField(record, [
+    "duration_seconds",
+    "durationSeconds",
+    "elapsed_seconds",
+    "elapsedSeconds",
+  ]);
   const durationMs =
     numberField(record, ["duration_ms", "durationMs", "elapsed_ms", "elapsedMs"]) ??
+    (durationSeconds === null ? null : durationSeconds * 1000) ??
     durationMsFromDateTimes(startedAt, completedAt);
   const timing: SyncTransportPhaseTiming = {
     phase: firstStringField([record], ["phase", "stage", "name"]),
@@ -1215,7 +1328,14 @@ export function normalizeSyncRunStatus(value: unknown): SyncTransportRunStatus |
   const failedProjectCount = numberField(record, ["failed_project_count", "failedProjectCount"]);
   const totalProjectCount = numberField(record, ["total_project_count", "totalProjectCount", "project_count", "projectCount"]);
   const transferCountRecord = recordField(record, ["transfer_counts", "transferCounts"]);
-  const transferCounts = numericMetricsFromRecord(transferCountRecord);
+  const explicitRunMetricRecord = recordField(record, ["counters", "counts", "metrics"]);
+  const runMetricRecords = [record, transferCountRecord, explicitRunMetricRecord];
+  const diagnosticValues = syncTransportDiagnosticValues(runMetricRecords);
+  const transferCounts = {
+    ...numericMetricsFromRecord(record),
+    ...numericMetricsFromRecord(explicitRunMetricRecord),
+    ...numericMetricsFromRecord(transferCountRecord),
+  };
   const durationMs =
     numberField(record, ["duration_ms", "durationMs", "elapsed_ms", "elapsedMs"]) ??
     durationMsFromDateTimes(runStartedAt, runCompletedAt);
@@ -1263,6 +1383,56 @@ export function normalizeSyncRunStatus(value: unknown): SyncTransportRunStatus |
   const timeToFirstArtifactMs = explicitTimeToFirstArtifactMs.present
     ? explicitTimeToFirstArtifactMs.value
     : firstArtifactCompletedOffsetMs(runStartedAt, receivedArtifacts, phaseTimings);
+  const scratchPeakBytes = firstNumberField(runMetricRecords, [
+    "scratch_peak_bytes",
+    "scratchPeakBytes",
+    "scratch_bytes_peak",
+    "scratchBytesPeak",
+    "scratch_storage_peak_bytes",
+    "scratchStoragePeakBytes",
+  ]);
+  const stagingPeakBytes = firstNumberField(runMetricRecords, [
+    "staging_peak_bytes",
+    "stagingPeakBytes",
+    "staging_bytes_peak",
+    "stagingBytesPeak",
+    "staging_storage_peak_bytes",
+    "stagingStoragePeakBytes",
+  ]);
+  const maxActiveStreams = firstNumberField(runMetricRecords, [
+    "max_active_streams",
+    "maxActiveStreams",
+    "active_streams_peak",
+    "activeStreamsPeak",
+    "max_streams",
+    "maxStreams",
+    "max_stream_count",
+    "maxStreamCount",
+  ]);
+  const creditGrants = firstNumberField(runMetricRecords, [
+    "credit_grants",
+    "creditGrants",
+    "credit_grant_count",
+    "creditGrantCount",
+    "credit_grants_count",
+    "creditGrantsCount",
+    "credits_granted",
+    "creditsGranted",
+  ]);
+  const creditRevokes = firstNumberField(runMetricRecords, [
+    "credit_revokes",
+    "creditRevokes",
+    "credit_revoke_count",
+    "creditRevokeCount",
+    "credit_revokes_count",
+    "creditRevokesCount",
+    "credit_revocations",
+    "creditRevocations",
+    "credit_revocation_count",
+    "creditRevocationCount",
+    "credits_revoked",
+    "creditsRevoked",
+  ]);
   const hasProjectProblems = projectResults.some((result) =>
     SYNC_PROJECT_RESULT_PROBLEM_STATES.has(result.status),
   );
@@ -1316,6 +1486,11 @@ export function normalizeSyncRunStatus(value: unknown): SyncTransportRunStatus |
     total_served_bytes: totalServedBytes,
     time_to_first_artifact_ms: timeToFirstArtifactMs,
     throughput_bytes_per_second: throughputBytesPerSecond,
+    scratch_peak_bytes: scratchPeakBytes,
+    staging_peak_bytes: stagingPeakBytes,
+    max_active_streams: maxActiveStreams,
+    credit_grants: creditGrants,
+    credit_revokes: creditRevokes,
     error: explicitError,
     project_results: projectResults,
     manifest_errors: manifestErrors,
@@ -1329,6 +1504,7 @@ export function normalizeSyncRunStatus(value: unknown): SyncTransportRunStatus |
     skipped_project_count: skippedProjectCount,
     failed_project_count: failedProjectCount,
     total_project_count: totalProjectCount,
+    ...diagnosticValues,
   };
 }
 

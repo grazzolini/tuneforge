@@ -342,6 +342,13 @@ function syncResultKey(status: SyncTransportRunStatus | null | undefined) {
     totalReceivedBytes: status.total_received_bytes,
     totalServedBytes: status.total_served_bytes,
     throughputBytesPerSecond: status.throughput_bytes_per_second,
+    scratchPeakBytes: status.scratch_peak_bytes,
+    stagingPeakBytes: status.staging_peak_bytes,
+    maxActiveStreams: status.max_active_streams,
+    creditGrants: status.credit_grants,
+    creditRevokes: status.credit_revokes,
+    transferCounts: status.transfer_counts,
+    phaseTimings: status.phase_timings,
     status: status.status,
     message: status.message,
     projects: projectResults.map((result) => [
@@ -437,6 +444,13 @@ function formatThroughput(bytesPerSecond: number | null | undefined) {
   return formatted ? `${formatted}/s` : null;
 }
 
+function formatInteger(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return null;
+  }
+  return String(Math.round(value));
+}
+
 function syncRunDurationSeconds(status: SyncTransportRunStatus) {
   if (typeof status.duration_seconds === "number") {
     return status.duration_seconds;
@@ -483,6 +497,206 @@ function syncRunTotalTransferBytes(status: SyncTransportRunStatus) {
   return (receivedBytes ?? 0) + (servedBytes ?? 0);
 }
 
+function syncRunPeakText(label: string, bytes: number | null | undefined) {
+  const formatted = formatByteCount(bytes);
+  return formatted ? `${label} peak ${formatted}` : null;
+}
+
+type SyncRunEvidenceKey =
+  | "scratch_peak_bytes"
+  | "staging_peak_bytes"
+  | "max_active_streams"
+  | "credit_grants"
+  | "credit_revokes";
+
+function syncRunMetricValue(status: SyncTransportRunStatus, key: string) {
+  const directValue = status[key as keyof SyncTransportRunStatus];
+  if (typeof directValue === "number" && Number.isFinite(directValue)) {
+    return directValue;
+  }
+  const metricValue = status.transfer_counts?.[key];
+  if (typeof metricValue === "number" && Number.isFinite(metricValue)) {
+    return metricValue;
+  }
+  return null;
+}
+
+function syncRunEvidenceValue(status: SyncTransportRunStatus, directKey: SyncRunEvidenceKey, metricKeys: string[]) {
+  const directValue = syncRunMetricValue(status, directKey);
+  if (typeof directValue === "number" && Number.isFinite(directValue)) {
+    return directValue;
+  }
+  for (const key of metricKeys) {
+    const metricValue = syncRunMetricValue(status, key);
+    if (typeof metricValue === "number" && Number.isFinite(metricValue)) {
+      return metricValue;
+    }
+  }
+  return null;
+}
+
+function syncRunStreamText(status: SyncTransportRunStatus) {
+  const streamCount = formatInteger(syncRunEvidenceValue(status, "max_active_streams", [
+    "max_active_streams",
+    "active_streams_peak",
+    "max_streams",
+    "max_stream_count",
+  ]));
+  if (!streamCount) {
+    return null;
+  }
+  return `Max ${streamCount} ${streamCount === "1" ? "stream" : "streams"}`;
+}
+
+function syncRunCreditText(status: SyncTransportRunStatus) {
+  const grants = formatInteger(syncRunEvidenceValue(status, "credit_grants", [
+    "credit_grants",
+    "credit_grant_count",
+    "credit_grants_count",
+    "credits_granted",
+  ]));
+  const revokes = formatInteger(syncRunEvidenceValue(status, "credit_revokes", [
+    "credit_revokes",
+    "credit_revoke_count",
+    "credit_revokes_count",
+    "credit_revocations",
+    "credit_revocation_count",
+    "credits_revoked",
+  ]));
+  const parts = [
+    grants ? `${grants} grants` : null,
+    revokes ? `${revokes} revokes` : null,
+  ].filter((item): item is string => item !== null);
+  return parts.length ? `Credits ${parts.join(", ")}` : null;
+}
+
+const SYNC_RUN_DIAGNOSTIC_GROUPS = [
+  {
+    label: "credit wait",
+    totalKey: "credit_wait_ms_total",
+    maxKey: "credit_wait_ms_max",
+    eventsKey: "credit_wait_events",
+  },
+  {
+    label: "credit hold",
+    totalKey: "credit_hold_ms_total",
+    maxKey: "credit_hold_ms_max",
+  },
+  {
+    label: "queue wait",
+    totalKey: "stage_queue_wait_ms_total",
+    maxKey: "stage_queue_wait_ms_max",
+    eventsKey: "stage_queue_wait_events",
+  },
+  {
+    label: "stream open",
+    totalKey: "stream_open_ms_total",
+    maxKey: "stream_open_ms_max",
+    eventsKey: "stream_open_events",
+  },
+  {
+    label: "sender write",
+    totalKey: "sender_write_ms_total",
+    maxKey: "sender_write_ms_max",
+    eventsKey: "sender_write_events",
+  },
+  {
+    label: "receiver read",
+    totalKey: "receiver_read_ms_total",
+    maxKey: "receiver_read_ms_max",
+    eventsKey: "receiver_read_events",
+  },
+  {
+    label: "receiver hash",
+    totalKey: "receiver_hash_ms_total",
+    maxKey: "receiver_hash_ms_max",
+    eventsKey: "receiver_hash_events",
+  },
+  {
+    label: "temp write",
+    totalKey: "receiver_temp_write_ms_total",
+    maxKey: "receiver_temp_write_ms_max",
+    eventsKey: "receiver_temp_write_events",
+  },
+  {
+    label: "staging POST",
+    totalKey: "staging_post_ms_total",
+    maxKey: "staging_post_ms_max",
+    eventsKey: "staging_post_events",
+  },
+] as const;
+
+type SyncRunDiagnosticBottleneck = {
+  label: string;
+  totalValue: number;
+  maxValue: number;
+  eventValue: number;
+};
+
+function syncRunDiagnosticsText(status: SyncTransportRunStatus) {
+  const bottlenecks = SYNC_RUN_DIAGNOSTIC_GROUPS.map<SyncRunDiagnosticBottleneck | null>((group) => {
+    const totalValue = syncRunMetricValue(status, group.totalKey) ?? 0;
+    const maxValue = syncRunMetricValue(status, group.maxKey) ?? 0;
+    const eventValue = "eventsKey" in group
+      ? (syncRunMetricValue(status, group.eventsKey) ?? 0)
+      : 0;
+    if (totalValue <= 0 && maxValue <= 0 && eventValue <= 0) {
+      return null;
+    }
+    return {
+      label: group.label,
+      totalValue,
+      maxValue,
+      eventValue,
+    };
+  })
+    .filter((item): item is SyncRunDiagnosticBottleneck => item !== null)
+    .sort((left, right) => (
+      right.totalValue - left.totalValue ||
+      right.maxValue - left.maxValue ||
+      right.eventValue - left.eventValue
+    ));
+
+  if (!bottlenecks.length) {
+    return null;
+  }
+
+  const diagnostics = bottlenecks.map((diagnostic) => {
+    const total = formatDurationMs(diagnostic.totalValue) ?? "0 ms";
+    const events = formatInteger(diagnostic.eventValue);
+    const max = formatDurationMs(diagnostic.maxValue);
+    const details = [
+      diagnostic.eventValue > 0 && events
+        ? `${events} ${diagnostic.eventValue === 1 ? "event" : "events"}`
+        : null,
+      max ? `max ${max}` : null,
+    ].filter((item): item is string => item !== null);
+    return details.length
+      ? `${diagnostic.label} ${total} (${details.join(", ")})`
+      : `${diagnostic.label} ${total}`;
+  });
+  return `Diagnostics ${diagnostics.join("; ")}`;
+}
+
+function syncRunSlowestPhaseText(status: SyncTransportRunStatus) {
+  const phaseDurations = new Map<string, { label: string; durationMs: number }>();
+  status.phase_timings?.forEach((timing) => {
+    if (!timing.phase || typeof timing.duration_ms !== "number" || !Number.isFinite(timing.duration_ms)) {
+      return;
+    }
+    const key = timing.phase.trim().toLowerCase();
+    const current = phaseDurations.get(key);
+    phaseDurations.set(key, {
+      label: statusLabel(timing.phase),
+      durationMs: (current?.durationMs ?? 0) + timing.duration_ms,
+    });
+  });
+  const slowest = Array.from(phaseDurations.values())
+    .sort((left, right) => right.durationMs - left.durationMs)[0];
+  const formatted = formatDurationMs(slowest?.durationMs);
+  return slowest && formatted ? `Slowest ${slowest.label} ${formatted}` : null;
+}
+
 function syncRunSummaryText(status: SyncTransportRunStatus | null | undefined) {
   if (!status) {
     return null;
@@ -527,6 +741,29 @@ function syncRunSummaryText(status: SyncTransportRunStatus | null | undefined) {
   if (throughput) {
     parts.push(throughput);
   }
+  const slowestPhase = syncRunSlowestPhaseText(status);
+  if (slowestPhase) {
+    parts.push(slowestPhase);
+  }
+  [
+    syncRunPeakText("Scratch", syncRunEvidenceValue(status, "scratch_peak_bytes", [
+      "scratch_peak_bytes",
+      "scratch_bytes_peak",
+      "scratch_storage_peak_bytes",
+    ])),
+    syncRunPeakText("Staging", syncRunEvidenceValue(status, "staging_peak_bytes", [
+      "staging_peak_bytes",
+      "staging_bytes_peak",
+      "staging_storage_peak_bytes",
+    ])),
+    syncRunStreamText(status),
+    syncRunCreditText(status),
+    syncRunDiagnosticsText(status),
+  ].forEach((item) => {
+    if (item) {
+      parts.push(item);
+    }
+  });
   return parts.length ? parts.join(" | ") : null;
 }
 

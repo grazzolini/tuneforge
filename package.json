@@ -33,9 +33,9 @@
     "prepare": "husky"
   },
   "devDependencies": {
-    "@commitlint/cli": "^21.0.1",
-    "@commitlint/config-conventional": "^21.0.1",
-    "concurrently": "^9.2.1",
+    "@commitlint/cli": "^21.0.2",
+    "@commitlint/config-conventional": "^21.0.2",
+    "concurrently": "^10.0.3",
     "husky": "^9.1.7"
   }
 }

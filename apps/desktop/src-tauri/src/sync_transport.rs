@@ -9022,6 +9022,44 @@ mod desktop {
         ))
     }
 
+    fn cleanup_stale_transport_temp_artifacts(root: &Path) -> Result<(), String> {
+        fs::create_dir_all(root).map_err(|error| {
+            format!("Could not create sync transport artifact temp directory: {error}")
+        })?;
+        let current_process_prefix = format!("{}-", process::id());
+        let entries = fs::read_dir(root).map_err(|error| {
+            format!("Could not inspect sync transport artifact temp directory: {error}")
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                format!("Could not inspect sync transport artifact temp entry: {error}")
+            })?;
+            let file_name = entry.file_name();
+            if file_name
+                .to_str()
+                .is_some_and(|name| name.starts_with(&current_process_prefix))
+            {
+                continue;
+            }
+            let path = entry.path();
+            let file_type = entry.file_type().map_err(|error| {
+                format!("Could not inspect sync transport artifact temp entry: {error}")
+            })?;
+            let result = if file_type.is_dir() {
+                fs::remove_dir_all(&path)
+            } else {
+                fs::remove_file(&path)
+            };
+            result.map_err(|error| {
+                format!(
+                    "Could not remove stale sync transport artifact temp entry {}: {error}",
+                    path.display()
+                )
+            })?;
+        }
+        Ok(())
+    }
+
     fn sync_transport_temp_root_from_health(health: &Value) -> Result<PathBuf, String> {
         let data_root = health
             .get("data_root")
@@ -9755,6 +9793,7 @@ mod desktop {
                     format!("Could not resolve backend data root for sync transport: {error}")
                 })?;
                 let temp_root = sync_transport_temp_root_from_health(&health)?;
+                cleanup_stale_transport_temp_artifacts(&temp_root)?;
                 *cached = Some(temp_root.clone());
                 Ok(temp_root)
             }
@@ -10771,6 +10810,7 @@ mod desktop {
             data_root: PathBuf,
             staged_artifact_sizes: HashMap<String, u64>,
             artifact_files: HashMap<String, LocalArtifactFile>,
+            staging_failure: Option<String>,
         }
 
         #[cfg(not(target_os = "android"))]
@@ -10782,6 +10822,22 @@ mod desktop {
             fn start_with_staged_artifacts_and_files(
                 staged_artifact_sizes: HashMap<String, u64>,
                 artifact_files: HashMap<String, LocalArtifactFile>,
+            ) -> Self {
+                Self::start_with_responses(staged_artifact_sizes, artifact_files, None)
+            }
+
+            fn start_with_staging_failure(staging_failure: impl Into<String>) -> Self {
+                Self::start_with_responses(
+                    HashMap::new(),
+                    HashMap::new(),
+                    Some(staging_failure.into()),
+                )
+            }
+
+            fn start_with_responses(
+                staged_artifact_sizes: HashMap<String, u64>,
+                artifact_files: HashMap<String, LocalArtifactFile>,
+                staging_failure: Option<String>,
             ) -> Self {
                 let listener =
                     TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind test backend");
@@ -10801,6 +10857,7 @@ mod desktop {
                     data_root: data_root.clone(),
                     staged_artifact_sizes,
                     artifact_files,
+                    staging_failure,
                 });
                 let (stop_sender, stop_receiver) = mpsc::channel();
                 let handle = {
@@ -10812,7 +10869,11 @@ mod desktop {
                         }
                         match listener.accept() {
                             Ok((stream, _addr)) => {
-                                handle_test_backend_stream(stream, &requests, &responses);
+                                let requests = Arc::clone(&requests);
+                                let responses = Arc::clone(&responses);
+                                thread::spawn(move || {
+                                    handle_test_backend_stream(stream, &requests, &responses);
+                                });
                             }
                             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                                 thread::sleep(Duration::from_millis(10));
@@ -10916,6 +10977,15 @@ mod desktop {
                     })
                     .collect::<Vec<_>>();
                 ("200 OK", json!({ "records": records }).to_string())
+            } else if path == "/api/v1/sync/artifacts/staging" {
+                if let Some(message) = responses.staging_failure.as_deref() {
+                    (
+                        "500 Internal Server Error",
+                        json!({ "detail": message }).to_string(),
+                    )
+                } else {
+                    ("200 OK", "{}".to_string())
+                }
             } else if let Some(content_sha256) =
                 path.strip_prefix("/api/v1/sync/artifacts/staging/")
             {
@@ -11035,6 +11105,48 @@ mod desktop {
             assert!(parse_iroh_endpoint_hint(&hints[0], Some("dev_two"))
                 .expect_err("reject mismatched device")
                 .contains("device_id"));
+        }
+
+        #[test]
+        fn iroh_auth_error_does_not_record_tcp_fallback() {
+            let mut connection =
+                ScriptedProtocolConnection::new(vec![ProtocolMessage::Error(ProtocolError {
+                    code: "auth_failed".to_string(),
+                    message: "auth proof rejected".to_string(),
+                })]);
+            let selection = select_sync_transport(
+                None,
+                None,
+                &[
+                    format!(
+                        "{IROH_ENDPOINT_SCHEME}iroh_peer?device_id=dev_peer&v=1&addr=127.0.0.1%3A47620"
+                    ),
+                    format!("{ENDPOINT_SCHEME}127.0.0.1:47619?device_id=dev_peer&v=1"),
+                ],
+                "dev_peer",
+                true,
+            )
+            .expect("select Iroh before auth");
+
+            let error = authenticate_session(
+                &mut connection,
+                &TestAuthBackend,
+                Some("dev_peer".to_string()),
+                &[],
+            )
+            .expect_err("peer auth error should fail session");
+
+            assert!(error.contains("auth proof rejected"));
+            assert_eq!(
+                selection.evidence(),
+                TransportEvidence {
+                    selected_transport: IROH_TRANSPORT_ID.to_string(),
+                    fallback_reason: None,
+                    fallback_code: None,
+                    attempted_transports: vec![IROH_TRANSPORT_ID.to_string()],
+                }
+            );
+            assert_eq!(connection.sent_count, 1);
         }
 
         #[test]
@@ -11488,6 +11600,276 @@ mod desktop {
         }
 
         #[test]
+        fn only_availability_hint_and_connect_paths_record_tcp_fallback() {
+            let iroh_hint = format!(
+                "{IROH_ENDPOINT_SCHEME}iroh_peer?device_id=dev_peer&v=1&addr=127.0.0.1%3A47620"
+            );
+            let tcp_hint = format!("{ENDPOINT_SCHEME}127.0.0.1:47619?device_id=dev_peer&v=1");
+            let endpoint_hints = vec![iroh_hint.clone(), tcp_hint.clone()];
+
+            let unavailable = select_sync_transport(
+                Some(IROH_TRANSPORT_ID),
+                None,
+                &endpoint_hints,
+                "dev_peer",
+                false,
+            )
+            .expect("local Iroh unavailable falls back");
+            assert_eq!(
+                unavailable.evidence().fallback_code.as_deref(),
+                Some("iroh_unavailable")
+            );
+
+            let missing_hint = select_sync_transport(
+                Some(IROH_TRANSPORT_ID),
+                None,
+                std::slice::from_ref(&tcp_hint),
+                "dev_peer",
+                true,
+            )
+            .expect("missing Iroh hint falls back");
+            assert_eq!(
+                missing_hint.evidence().fallback_code.as_deref(),
+                Some("missing_iroh_hint")
+            );
+
+            let mut connect_failed =
+                select_sync_transport(None, None, &endpoint_hints, "dev_peer", true)
+                    .expect("select Iroh with TCP fallback hint");
+            connect_failed
+                .record_iroh_connect_fallback(format!(
+                    "Iroh sync transport was unavailable (connect failed); using {TCP_TRANSPORT_ID}."
+                ))
+                .expect("connect failure can fall back");
+            assert_eq!(
+                connect_failed.evidence().fallback_code.as_deref(),
+                Some("iroh_connect_failed")
+            );
+
+            let auth_error =
+                phase_context_error("peer authentication", "auth proof rejected".to_string());
+            let manifest_error =
+                phase_context_error("manifest exchange", "manifest rejected".to_string());
+            let hash_error =
+                "Received sync artifact bytes failed SHA-256 or size verification.".to_string();
+            let staging_error = phase_context_error(
+                "reconciliation staging",
+                "Could not stage received sync artifact.".to_string(),
+            );
+            for non_fallback_error in [auth_error, manifest_error, hash_error, staging_error] {
+                assert!(!non_fallback_error.is_empty());
+            }
+            let post_connect =
+                select_sync_transport(None, None, &[iroh_hint, tcp_hint], "dev_peer", true)
+                    .expect("select post-connect Iroh");
+            assert_eq!(
+                post_connect.evidence(),
+                TransportEvidence {
+                    selected_transport: IROH_TRANSPORT_ID.to_string(),
+                    fallback_reason: None,
+                    fallback_code: None,
+                    attempted_transports: vec![IROH_TRANSPORT_ID.to_string()],
+                }
+            );
+        }
+
+        #[cfg(not(target_os = "android"))]
+        #[test]
+        fn connected_iroh_manifest_exchange_failure_does_not_attempt_tcp_fallback() {
+            let selection = test_iroh_selection_with_tcp_hint();
+            let (connection, client_endpoint, peer_thread) =
+                spawn_test_iroh_sync_peer(move |mut peer, _iroh_data| {
+                    let local_offer = read_message_accepting_status(
+                        "manifest exchange",
+                        || peer.read_message(),
+                        |_| {},
+                    )?;
+                    match local_offer {
+                        ProtocolMessage::ManifestOffer(_) => {}
+                        other => {
+                            return Err(format!("expected manifest offer, got {}", other.kind()));
+                        }
+                    }
+                    peer.send_message(&ProtocolMessage::Error(ProtocolError {
+                        code: "manifest_failed".to_string(),
+                        message: "remote manifest invalid".to_string(),
+                    }))?;
+                    thread::sleep(Duration::from_millis(250));
+                    Ok(())
+                });
+            let progress = test_progress("sync_iroh_manifest_failure_test", &connection);
+
+            connection
+                .send_message_for_phase(
+                    "manifest exchange",
+                    &ProtocolMessage::ManifestOffer(ManifestOffer {
+                        metadata: json!({ "projects": [] }),
+                        project_manifests: Vec::new(),
+                        manifest_errors: Vec::new(),
+                    }),
+                )
+                .expect("send local manifest offer");
+            let error = match connection
+                .read_message_accepting_status_for_phase("manifest exchange", &progress)
+            {
+                Ok(ProtocolMessage::Error(error)) => phase_context_error(
+                    "manifest exchange",
+                    format!("Sync peer returned an error: {}", error.message),
+                ),
+                Ok(other) => format!(
+                    "Sync peer sent unexpected message during manifest exchange: {}",
+                    other.kind()
+                ),
+                Err(error) => error,
+            };
+            close_test_iroh_endpoint(&client_endpoint);
+            peer_thread
+                .join()
+                .expect("join manifest failure peer")
+                .expect("manifest failure peer completed");
+
+            assert!(
+                error.contains("remote manifest invalid"),
+                "unexpected manifest failure error: {error}"
+            );
+            assert_iroh_selection_has_no_tcp_fallback(&selection);
+        }
+
+        #[cfg(not(target_os = "android"))]
+        #[test]
+        fn connected_iroh_peer_trust_failure_does_not_attempt_tcp_fallback() {
+            let selection = test_iroh_selection_with_tcp_hint();
+            let (connection, client_endpoint, peer_thread) =
+                spawn_test_iroh_sync_peer(move |mut peer, _iroh_data| {
+                    let challenge = peer.read_message()?;
+                    match challenge {
+                        ProtocolMessage::AuthChallenge { .. } => {}
+                        other => {
+                            return Err(format!("expected auth challenge, got {}", other.kind()));
+                        }
+                    }
+                    peer.send_message(&ProtocolMessage::AuthChallenge {
+                        protocol_version: TRANSPORT_PROTOCOL_VERSION.to_string(),
+                        device_id: "dev_peer".to_string(),
+                        session_nonce: "peer_nonce".to_string(),
+                    })?;
+                    thread::sleep(Duration::from_millis(250));
+                    Ok(())
+                });
+
+            let error = connection
+                .with_connection(|connection| {
+                    authenticate_session(
+                        connection,
+                        &UntrustedPeerAuthBackend,
+                        Some("dev_peer".to_string()),
+                        &[],
+                    )
+                })
+                .expect_err("untrusted connected Iroh peer should fail auth");
+            close_test_iroh_endpoint(&client_endpoint);
+            peer_thread
+                .join()
+                .expect("join untrusted peer")
+                .expect("untrusted peer completed");
+
+            assert!(error.contains("not trusted"));
+            assert_iroh_selection_has_no_tcp_fallback(&selection);
+        }
+
+        #[cfg(not(target_os = "android"))]
+        #[test]
+        fn connected_iroh_hash_verification_failure_does_not_attempt_tcp_fallback() {
+            let selection = test_iroh_selection_with_tcp_hint();
+            let payload = b"hash checked streamed payload".to_vec();
+            let mut corrupt_payload = payload.clone();
+            corrupt_payload[0] ^= 0xff;
+            let artifact = RemoteArtifact {
+                artifact_id: "art_hash_fail".to_string(),
+                project_id: "proj_hash_fail".to_string(),
+                content_sha256: test_sha256(&payload),
+                size_bytes: payload.len() as u64,
+            };
+            let backend = TestBackendServer::start_with_staged_artifacts(HashMap::new());
+
+            let (received_artifacts, project_results, requests, temp_files) =
+                run_connected_iroh_stage_artifact(
+                    &backend,
+                    artifact,
+                    corrupt_payload,
+                    "sync_iroh_hash_failure_test",
+                );
+
+            let counts = transfer_counts(&received_artifacts);
+            assert_eq!(counts.received, 0);
+            assert_eq!(counts.failed, 1);
+            assert_eq!(project_results.len(), 1);
+            assert_eq!(project_results[0].status, "failed");
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|path| path.as_str() == "/api/v1/sync/artifacts/staging")
+                    .count(),
+                0,
+                "hash failure must not stage corrupt bytes: {requests:?}"
+            );
+            assert!(
+                temp_files.is_empty(),
+                "hash failure left transport temp files: {temp_files:?}"
+            );
+            assert_iroh_selection_has_no_tcp_fallback(&selection);
+        }
+
+        #[cfg(not(target_os = "android"))]
+        #[test]
+        fn connected_iroh_staging_post_failure_does_not_attempt_tcp_fallback() {
+            let selection = test_iroh_selection_with_tcp_hint();
+            let payload = b"staging failure streamed payload".to_vec();
+            let artifact = RemoteArtifact {
+                artifact_id: "art_staging_fail".to_string(),
+                project_id: "proj_staging_fail".to_string(),
+                content_sha256: test_sha256(&payload),
+                size_bytes: payload.len() as u64,
+            };
+            let backend = TestBackendServer::start_with_staging_failure("staging unavailable");
+
+            let (received_artifacts, project_results, requests, temp_files) =
+                run_connected_iroh_stage_artifact(
+                    &backend,
+                    artifact,
+                    payload,
+                    "sync_iroh_staging_failure_test",
+                );
+
+            let counts = transfer_counts(&received_artifacts);
+            assert_eq!(counts.received, 0);
+            assert_eq!(counts.failed, 1);
+            assert_eq!(project_results.len(), 1);
+            assert_eq!(project_results[0].status, "failed");
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|path| path.as_str() == "/api/v1/sync/artifacts/staging")
+                    .count(),
+                1,
+                "staging failure should attempt Iroh staging once: {requests:?}"
+            );
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|path| path.as_str() == "/api/v1/sync/reconciliation/apply")
+                    .count(),
+                0,
+                "staging failure must not apply import: {requests:?}"
+            );
+            assert!(
+                temp_files.is_empty(),
+                "staging failure left transport temp files: {temp_files:?}"
+            );
+            assert_iroh_selection_has_no_tcp_fallback(&selection);
+        }
+
+        #[test]
         fn transport_handshake_challenge_binds_nonces_and_noise_hash() {
             let challenge = transport_handshake_challenge(
                 "dev_requester",
@@ -11532,6 +11914,252 @@ mod desktop {
                 self.read_timeout = timeout;
                 Ok(())
             }
+        }
+
+        struct ScriptedProtocolConnection {
+            incoming: VecDeque<ProtocolMessage>,
+            sent_count: usize,
+        }
+
+        impl ScriptedProtocolConnection {
+            fn new(incoming: Vec<ProtocolMessage>) -> Self {
+                Self {
+                    incoming: incoming.into(),
+                    sent_count: 0,
+                }
+            }
+        }
+
+        impl ProtocolConnection for ScriptedProtocolConnection {
+            fn send_message(&mut self, _message: &ProtocolMessage) -> Result<(), String> {
+                self.sent_count = self.sent_count.saturating_add(1);
+                Ok(())
+            }
+
+            fn read_message(&mut self) -> Result<ProtocolMessage, String> {
+                self.incoming
+                    .pop_front()
+                    .ok_or_else(|| "missing scripted protocol message".to_string())
+            }
+
+            fn handshake_hash(&self) -> &str {
+                "test_handshake_hash"
+            }
+        }
+
+        struct TestAuthBackend;
+
+        impl SyncTransportAuthBackend for TestAuthBackend {
+            fn local_identity(&self) -> Result<SyncLocalIdentity, String> {
+                Ok(SyncLocalIdentity {
+                    device_id: "dev_local".to_string(),
+                    sync_group_id: "syncgrp_test".to_string(),
+                    display_name: None,
+                    public_key: "local_public_key".to_string(),
+                })
+            }
+
+            fn trusted_peer(&self, _device_id: &str) -> Result<Option<SyncTrustedPeer>, String> {
+                panic!("auth error test should stop before trusted peer lookup")
+            }
+
+            fn sign_transport_handshake(
+                &self,
+                _peer_device_id: &str,
+                _challenge: &Value,
+            ) -> Result<Value, String> {
+                panic!("auth error test should stop before signing")
+            }
+        }
+
+        struct UntrustedPeerAuthBackend;
+
+        impl SyncTransportAuthBackend for UntrustedPeerAuthBackend {
+            fn local_identity(&self) -> Result<SyncLocalIdentity, String> {
+                Ok(SyncLocalIdentity {
+                    device_id: "dev_local".to_string(),
+                    sync_group_id: "syncgrp_test".to_string(),
+                    display_name: None,
+                    public_key: "local_public_key".to_string(),
+                })
+            }
+
+            fn trusted_peer(&self, _device_id: &str) -> Result<Option<SyncTrustedPeer>, String> {
+                Ok(None)
+            }
+
+            fn sign_transport_handshake(
+                &self,
+                _peer_device_id: &str,
+                _challenge: &Value,
+            ) -> Result<Value, String> {
+                panic!("untrusted peer should stop before signing")
+            }
+        }
+
+        fn test_iroh_selection_with_tcp_hint() -> TransportSelection {
+            let endpoint_hints = vec![
+                format!(
+                    "{IROH_ENDPOINT_SCHEME}iroh_peer?device_id=dev_peer&v=1&addr=127.0.0.1%3A47620"
+                ),
+                format!("{ENDPOINT_SCHEME}127.0.0.1:47619?device_id=dev_peer&v=1"),
+            ];
+            select_sync_transport(None, None, &endpoint_hints, "dev_peer", true)
+                .expect("select Iroh with TCP fallback hint")
+        }
+
+        fn assert_iroh_selection_has_no_tcp_fallback(selection: &TransportSelection) {
+            assert_eq!(
+                selection.evidence(),
+                TransportEvidence {
+                    selected_transport: IROH_TRANSPORT_ID.to_string(),
+                    fallback_reason: None,
+                    fallback_code: None,
+                    attempted_transports: vec![IROH_TRANSPORT_ID.to_string()],
+                }
+            );
+            assert!(
+                selection.tcp_fallback_endpoint_hint.is_some(),
+                "TCP fallback hint should remain advisory, not attempted"
+            );
+        }
+
+        fn test_progress(
+            run_id: impl Into<String>,
+            connection: &SharedPeerConnection,
+        ) -> ProgressReporter {
+            ProgressReporter::new(
+                run_id.into(),
+                Instant::now(),
+                Arc::new(Mutex::new(SharedStatus::default())),
+                connection.clone(),
+            )
+        }
+
+        fn planned_project_with_fetch_artifact(
+            project_id: &str,
+            artifact: &RemoteArtifact,
+        ) -> PlannedRemoteProject {
+            PlannedRemoteProject {
+                project_id: project_id.to_string(),
+                manifest: Some(json!({
+                    "project": { "project_id": project_id },
+                    "artifacts": [{
+                        "artifact_id": artifact.artifact_id.clone(),
+                        "project_id": artifact.project_id.clone(),
+                        "content_sha256": artifact.content_sha256.clone(),
+                        "size_bytes": artifact.size_bytes
+                    }]
+                })),
+                plan: json!({
+                    "actions": [{
+                        "action_type": "fetch_artifact_content",
+                        "provider_device_id": "dev_peer",
+                        "item_id": artifact.artifact_id.clone(),
+                        "project_id": artifact.project_id.clone(),
+                        "content_sha256": artifact.content_sha256.clone()
+                    }]
+                }),
+            }
+        }
+
+        #[cfg(not(target_os = "android"))]
+        fn run_connected_iroh_stage_artifact(
+            backend: &TestBackendServer,
+            artifact: RemoteArtifact,
+            stream_payload: Vec<u8>,
+            run_id: &str,
+        ) -> (
+            Vec<SyncTransportTransferResult>,
+            Vec<SyncTransportProjectResult>,
+            Vec<String>,
+            Vec<PathBuf>,
+        ) {
+            let peer_artifact = artifact.clone();
+            let (connection, client_endpoint, peer_thread) =
+                spawn_test_iroh_sync_peer(move |mut peer, iroh_data| {
+                    let request = read_message_accepting_status(
+                        "artifact request/transfer",
+                        || peer.read_message(),
+                        |_| {},
+                    )?;
+                    let ProtocolMessage::ArtifactBatchRequest(request) = request else {
+                        return Err("expected Iroh artifact batch request".to_string());
+                    };
+                    if request.artifacts.len() != 1
+                        || request.artifacts[0].artifact_id != peer_artifact.artifact_id
+                    {
+                        return Err(format!(
+                            "expected one artifact request for {}, got {:?}",
+                            peer_artifact.artifact_id,
+                            request
+                                .artifacts
+                                .iter()
+                                .map(|artifact| artifact.artifact_id.as_str())
+                                .collect::<Vec<_>>()
+                        ));
+                    }
+                    let batch_token = request
+                        .batch_token
+                        .ok_or_else(|| "expected Iroh batch token".to_string())?;
+                    peer.send_message(&ProtocolMessage::ArtifactBatchStart {
+                        batch_token: batch_token.clone(),
+                        artifact_count: 1,
+                    })?;
+                    send_test_iroh_artifact_stream(
+                        &iroh_data,
+                        &batch_token,
+                        &peer_artifact,
+                        &stream_payload,
+                    )?;
+                    peer.send_message(&ProtocolMessage::ArtifactBatchEnd { batch_token })?;
+                    thread::sleep(Duration::from_millis(250));
+                    Ok(())
+                });
+            let client = BackendClient {
+                host: "127.0.0.1".to_string(),
+                port: backend.port,
+                sync_transport_temp_root: Arc::new(Mutex::new(None)),
+            };
+            let progress = test_progress(run_id, &connection);
+            let mut apply_worker = RemoteApplyWorker::start(
+                &client,
+                "dev_peer",
+                &json!({ "projects": [{ "project_id": artifact.project_id.clone() }] }),
+                IROH_TRANSPORT_ID,
+                progress.clone(),
+            );
+            let mut metrics = SyncRunMetrics::start(Instant::now());
+            let mut timings = Vec::new();
+            let mut received_artifacts = Vec::new();
+
+            stage_remote_manifest_iroh_artifacts(
+                &client,
+                &connection,
+                connection
+                    .iroh_data_connection()
+                    .expect("test Iroh data connection"),
+                "dev_peer",
+                vec![planned_project_with_fetch_artifact(
+                    &artifact.project_id,
+                    &artifact,
+                )],
+                &mut apply_worker,
+                &mut received_artifacts,
+                &mut metrics,
+                &mut timings,
+                &progress,
+            );
+            let project_results = apply_worker.finish(&mut timings);
+            let requests = backend.requests();
+            let temp_files = collect_test_files(&backend.transport_temp_root());
+            close_test_iroh_endpoint(&client_endpoint);
+            peer_thread
+                .join()
+                .expect("join connected Iroh artifact peer")
+                .expect("connected Iroh artifact peer completed");
+
+            (received_artifacts, project_results, requests, temp_files)
         }
 
         #[test]
@@ -11643,6 +12271,57 @@ mod desktop {
         }
 
         #[test]
+        fn iroh_receiver_cancel_does_not_record_fatal_transfer() {
+            let (_event_sender, event_receiver) = mpsc::channel::<BackendWriteEvent>();
+            let mut apply_worker = RemoteApplyWorker {
+                sender: None,
+                event_receiver,
+                handle: None,
+                queued_project_ids: Arc::new(Mutex::new(Vec::new())),
+                completed_project_ids: HashSet::new(),
+                enqueue_failures: Arc::new(Mutex::new(Vec::new())),
+                apply_cancelled: Arc::new(AtomicBool::new(false)),
+                project_results: Vec::new(),
+                pending_stage_jobs: 0,
+                pending_stage_bytes: 0,
+                staging_peak_bytes: 0,
+            };
+            let mut metrics = SyncRunMetrics::start(Instant::now());
+            let mut timings = Vec::new();
+            let mut credit_window = IrohBatchCreditWindow::new(&[], 1, 1024);
+            let credited_artifact_ids = Arc::new(Mutex::new(HashSet::new()));
+            let mut completed_artifact_ids = HashSet::new();
+            let mut fatal_error = None;
+            let mut recorded = Vec::new();
+
+            handle_iroh_receive_result(
+                Err(IrohArtifactReceiveError {
+                    artifact_id: Some("art_cancelled".to_string()),
+                    message: IROH_ARTIFACT_RECEIVE_CANCELLED.to_string(),
+                    timing: None,
+                    phase_timing: None,
+                    diagnostics: SyncTransportDiagnostics::default(),
+                }),
+                &HashMap::new(),
+                &mut metrics,
+                &mut timings,
+                &mut credit_window,
+                &credited_artifact_ids,
+                &mut completed_artifact_ids,
+                &mut fatal_error,
+                &mut apply_worker,
+                &mut |transfer, allow_project_apply, _apply_worker| {
+                    recorded.push((transfer, allow_project_apply));
+                },
+            );
+
+            assert!(fatal_error.is_none());
+            assert!(completed_artifact_ids.is_empty());
+            assert!(recorded.is_empty());
+            assert!(timings.is_empty());
+        }
+
+        #[test]
         fn protocol_status_serializes_progress_fields() {
             let message = protocol_status_message(protocol_status_payload(
                 "sync_run",
@@ -11705,6 +12384,36 @@ mod desktop {
             );
             assert!(credit_value.get("source_path").is_none());
             assert!(abort_value.get("source_path").is_none());
+        }
+
+        #[test]
+        fn iroh_batch_control_abort_surfaces_peer_reason() {
+            let (connection, peer_thread) = spawn_test_sync_peer(move |mut peer| {
+                peer.send_message(&ProtocolMessage::ArtifactBatchAbort {
+                    batch_token: "batch_abort".to_string(),
+                    message: "receiver cancelled transfer".to_string(),
+                })
+            });
+            let started = Instant::now();
+            let progress = ProgressReporter::new(
+                "sync_abort_control_test".to_string(),
+                started,
+                Arc::new(Mutex::new(SharedStatus::default())),
+                connection.clone(),
+            );
+
+            let error =
+                match poll_iroh_artifact_batch_control(&connection, "batch_abort", &progress) {
+                    Ok(_) => panic!("abort should fail control polling"),
+                    Err(error) => error,
+                };
+            peer_thread
+                .join()
+                .expect("join abort control peer")
+                .expect("abort control peer completed");
+
+            assert!(error.contains("artifact request/transfer"));
+            assert!(error.contains("receiver cancelled transfer"));
         }
 
         #[test]
@@ -12369,6 +13078,24 @@ mod desktop {
                         batch_token: batch_token.clone(),
                         artifact_count: request.artifacts.len() as u64,
                     })?;
+                    let credit = read_message_accepting_status(
+                        "artifact request/transfer",
+                        || peer.read_message(),
+                        |_| {},
+                    )?;
+                    match credit {
+                        ProtocolMessage::ArtifactBatchCredit {
+                            batch_token: peer_batch_token,
+                            artifact_ids,
+                        } if peer_batch_token == batch_token
+                            && artifact_ids.contains(&peer_first_artifact.artifact_id) => {}
+                        other => {
+                            return Err(format!(
+                                "expected Iroh batch credit for first artifact, got {}",
+                                other.kind()
+                            ));
+                        }
+                    }
                     send_test_iroh_artifact_stream(
                         &iroh_data,
                         &batch_token,
@@ -12391,10 +13118,10 @@ mod desktop {
                         }
                         thread::sleep(Duration::from_millis(10));
                     }
-                    peer.send_message(&ProtocolMessage::Error(ProtocolError {
-                        code: "artifact_transfer_failed".to_string(),
+                    peer.send_message(&ProtocolMessage::ArtifactBatchAbort {
+                        batch_token,
                         message: "control error before second Iroh stream".to_string(),
-                    }))?;
+                    })?;
                     thread::sleep(Duration::from_millis(250));
                     Ok(())
                 });
@@ -12554,6 +13281,350 @@ mod desktop {
             assert_eq!(
                 sync_result_status(&[], import_counts.failed),
                 "completed_with_errors"
+            );
+        }
+
+        #[cfg(not(target_os = "android"))]
+        #[test]
+        fn iroh_retry_reuses_staged_artifact_and_retransfers_incomplete_temp() {
+            let reused_payload = b"verified staged payload".to_vec();
+            let retry_payload = b"retry streamed payload after interruption".to_vec();
+            let reused_artifact = RemoteArtifact {
+                artifact_id: "art_reused".to_string(),
+                project_id: "proj_retry".to_string(),
+                content_sha256: test_sha256(&reused_payload),
+                size_bytes: reused_payload.len() as u64,
+            };
+            let retry_artifact = RemoteArtifact {
+                artifact_id: "art_retry".to_string(),
+                project_id: "proj_retry".to_string(),
+                content_sha256: test_sha256(&retry_payload),
+                size_bytes: retry_payload.len() as u64,
+            };
+            let manifest = json!({
+                "project": { "project_id": "proj_retry" },
+                "artifacts": [
+                    {
+                        "artifact_id": reused_artifact.artifact_id.clone(),
+                        "project_id": reused_artifact.project_id.clone(),
+                        "content_sha256": reused_artifact.content_sha256.clone(),
+                        "size_bytes": reused_artifact.size_bytes
+                    },
+                    {
+                        "artifact_id": retry_artifact.artifact_id.clone(),
+                        "project_id": retry_artifact.project_id.clone(),
+                        "content_sha256": retry_artifact.content_sha256.clone(),
+                        "size_bytes": retry_artifact.size_bytes
+                    }
+                ]
+            });
+            let plan = json!({
+                "actions": [
+                    {
+                        "action_type": "fetch_artifact_content",
+                        "provider_device_id": "dev_peer",
+                        "item_id": reused_artifact.artifact_id.clone(),
+                        "project_id": reused_artifact.project_id.clone(),
+                        "content_sha256": reused_artifact.content_sha256.clone()
+                    },
+                    {
+                        "action_type": "fetch_artifact_content",
+                        "provider_device_id": "dev_peer",
+                        "item_id": retry_artifact.artifact_id.clone(),
+                        "project_id": retry_artifact.project_id.clone(),
+                        "content_sha256": retry_artifact.content_sha256.clone()
+                    }
+                ]
+            });
+            let backend = TestBackendServer::start_with_staged_artifacts(HashMap::from([(
+                reused_artifact.content_sha256.clone(),
+                reused_artifact.size_bytes,
+            )]));
+            let client = BackendClient {
+                host: "127.0.0.1".to_string(),
+                port: backend.port,
+                sync_transport_temp_root: Arc::new(Mutex::new(None)),
+            };
+
+            let first_peer_artifact = retry_artifact.clone();
+            let first_partial_payload = retry_payload[..retry_payload.len() / 2].to_vec();
+            let (first_connection, first_endpoint, first_peer_thread) =
+                spawn_test_iroh_sync_peer(move |mut peer, iroh_data| {
+                    let request = read_message_accepting_status(
+                        "artifact request/transfer",
+                        || peer.read_message(),
+                        |_| {},
+                    )?;
+                    let ProtocolMessage::ArtifactBatchRequest(request) = request else {
+                        return Err("expected first Iroh artifact batch request".to_string());
+                    };
+                    if request.artifacts.len() != 1
+                        || request.artifacts[0].artifact_id != first_peer_artifact.artifact_id
+                    {
+                        return Err(format!(
+                            "expected only retry artifact, got {:?}",
+                            request
+                                .artifacts
+                                .iter()
+                                .map(|artifact| artifact.artifact_id.as_str())
+                                .collect::<Vec<_>>()
+                        ));
+                    }
+                    let batch_token = request
+                        .batch_token
+                        .ok_or_else(|| "expected first Iroh batch token".to_string())?;
+                    peer.send_message(&ProtocolMessage::ArtifactBatchStart {
+                        batch_token: batch_token.clone(),
+                        artifact_count: 1,
+                    })?;
+                    let credit = read_message_accepting_status(
+                        "artifact request/transfer",
+                        || peer.read_message(),
+                        |_| {},
+                    )?;
+                    match credit {
+                        ProtocolMessage::ArtifactBatchCredit {
+                            batch_token: peer_batch_token,
+                            artifact_ids,
+                        } if peer_batch_token == batch_token
+                            && artifact_ids.contains(&first_peer_artifact.artifact_id) => {}
+                        other => {
+                            return Err(format!(
+                                "expected first Iroh batch credit, got {}",
+                                other.kind()
+                            ));
+                        }
+                    }
+                    send_test_iroh_artifact_stream(
+                        &iroh_data,
+                        &batch_token,
+                        &first_peer_artifact,
+                        &first_partial_payload,
+                    )?;
+                    peer.send_message(&ProtocolMessage::ArtifactBatchEnd { batch_token })?;
+                    thread::sleep(Duration::from_millis(250));
+                    Ok(())
+                });
+            let first_started = Instant::now();
+            let first_progress = ProgressReporter::new(
+                "sync_iroh_retry_first_test".to_string(),
+                first_started,
+                Arc::new(Mutex::new(SharedStatus::default())),
+                first_connection.clone(),
+            );
+            let mut first_apply_worker = RemoteApplyWorker::start(
+                &client,
+                "dev_peer",
+                &json!({ "projects": [{ "project_id": "proj_retry" }] }),
+                IROH_TRANSPORT_ID,
+                first_progress.clone(),
+            );
+            let mut first_metrics = SyncRunMetrics::start(first_started);
+            let mut first_timings = Vec::new();
+            let mut first_received_artifacts = Vec::new();
+
+            stage_remote_manifest_iroh_artifacts(
+                &client,
+                &first_connection,
+                first_connection
+                    .iroh_data_connection()
+                    .expect("first test Iroh data connection"),
+                "dev_peer",
+                vec![PlannedRemoteProject {
+                    project_id: "proj_retry".to_string(),
+                    manifest: Some(manifest.clone()),
+                    plan: plan.clone(),
+                }],
+                &mut first_apply_worker,
+                &mut first_received_artifacts,
+                &mut first_metrics,
+                &mut first_timings,
+                &first_progress,
+            );
+            let first_project_results = first_apply_worker.finish(&mut first_timings);
+            let first_requests = backend.requests();
+            let first_temp_files = collect_test_files(&backend.transport_temp_root());
+            close_test_iroh_endpoint(&first_endpoint);
+            first_peer_thread
+                .join()
+                .expect("join first retry peer")
+                .expect("first retry peer completed");
+
+            let first_counts = transfer_counts(&first_received_artifacts);
+            assert_eq!(first_counts.already_staged, 1);
+            assert_eq!(first_counts.received, 0);
+            assert_eq!(first_counts.failed, 1);
+            assert_eq!(first_project_results.len(), 1);
+            assert_eq!(first_project_results[0].status, "failed");
+            assert_eq!(
+                first_requests
+                    .iter()
+                    .filter(|path| path.as_str() == "/api/v1/sync/reconciliation/apply")
+                    .count(),
+                0,
+                "incomplete retry transfer must not apply: {first_requests:?}"
+            );
+            assert!(
+                first_temp_files.is_empty(),
+                "incomplete retry transfer left temp files: {first_temp_files:?}"
+            );
+
+            let stale_temp_path = backend.transport_temp_root().join(format!(
+                "0-stale-{}-{}",
+                random_nonce(),
+                retry_artifact.content_sha256
+            ));
+            fs::write(&stale_temp_path, &retry_payload[..retry_payload.len() / 2])
+                .expect("write stale orphan temp artifact");
+            assert!(
+                stale_temp_path.exists(),
+                "test must create stale orphan temp artifact before retry"
+            );
+            let retry_client = BackendClient {
+                host: "127.0.0.1".to_string(),
+                port: backend.port,
+                sync_transport_temp_root: Arc::new(Mutex::new(None)),
+            };
+
+            let second_peer_artifact = retry_artifact.clone();
+            let second_payload = retry_payload.clone();
+            let (second_connection, second_endpoint, second_peer_thread) =
+                spawn_test_iroh_sync_peer(move |mut peer, iroh_data| {
+                    let request = read_message_accepting_status(
+                        "artifact request/transfer",
+                        || peer.read_message(),
+                        |_| {},
+                    )?;
+                    let ProtocolMessage::ArtifactBatchRequest(request) = request else {
+                        return Err("expected second Iroh artifact batch request".to_string());
+                    };
+                    if request.artifacts.len() != 1
+                        || request.artifacts[0].artifact_id != second_peer_artifact.artifact_id
+                    {
+                        return Err(format!(
+                            "expected only retry artifact on retry, got {:?}",
+                            request
+                                .artifacts
+                                .iter()
+                                .map(|artifact| artifact.artifact_id.as_str())
+                                .collect::<Vec<_>>()
+                        ));
+                    }
+                    let batch_token = request
+                        .batch_token
+                        .ok_or_else(|| "expected second Iroh batch token".to_string())?;
+                    peer.send_message(&ProtocolMessage::ArtifactBatchStart {
+                        batch_token: batch_token.clone(),
+                        artifact_count: 1,
+                    })?;
+                    let credit = read_message_accepting_status(
+                        "artifact request/transfer",
+                        || peer.read_message(),
+                        |_| {},
+                    )?;
+                    match credit {
+                        ProtocolMessage::ArtifactBatchCredit {
+                            batch_token: peer_batch_token,
+                            artifact_ids,
+                        } if peer_batch_token == batch_token
+                            && artifact_ids.contains(&second_peer_artifact.artifact_id) => {}
+                        other => {
+                            return Err(format!(
+                                "expected second Iroh batch credit, got {}",
+                                other.kind()
+                            ));
+                        }
+                    }
+                    send_test_iroh_artifact_stream(
+                        &iroh_data,
+                        &batch_token,
+                        &second_peer_artifact,
+                        &second_payload,
+                    )?;
+                    peer.send_message(&ProtocolMessage::ArtifactBatchEnd { batch_token })?;
+                    thread::sleep(Duration::from_millis(250));
+                    Ok(())
+                });
+            let second_started = Instant::now();
+            let second_progress = ProgressReporter::new(
+                "sync_iroh_retry_second_test".to_string(),
+                second_started,
+                Arc::new(Mutex::new(SharedStatus::default())),
+                second_connection.clone(),
+            );
+            let mut second_apply_worker = RemoteApplyWorker::start(
+                &retry_client,
+                "dev_peer",
+                &json!({ "projects": [{ "project_id": "proj_retry" }] }),
+                IROH_TRANSPORT_ID,
+                second_progress.clone(),
+            );
+            let mut second_metrics = SyncRunMetrics::start(second_started);
+            let mut second_timings = Vec::new();
+            let mut second_received_artifacts = Vec::new();
+
+            stage_remote_manifest_iroh_artifacts(
+                &retry_client,
+                &second_connection,
+                second_connection
+                    .iroh_data_connection()
+                    .expect("second test Iroh data connection"),
+                "dev_peer",
+                vec![PlannedRemoteProject {
+                    project_id: "proj_retry".to_string(),
+                    manifest: Some(manifest),
+                    plan,
+                }],
+                &mut second_apply_worker,
+                &mut second_received_artifacts,
+                &mut second_metrics,
+                &mut second_timings,
+                &second_progress,
+            );
+            let second_project_results = second_apply_worker.finish(&mut second_timings);
+            let second_requests = backend.requests();
+            let second_temp_files = collect_test_files(&backend.transport_temp_root());
+            close_test_iroh_endpoint(&second_endpoint);
+            second_peer_thread
+                .join()
+                .expect("join second retry peer")
+                .expect("second retry peer completed");
+
+            let second_counts = transfer_counts(&second_received_artifacts);
+            assert_eq!(second_counts.already_staged, 1);
+            assert_eq!(second_counts.received, 1);
+            assert_eq!(second_counts.failed, 0);
+            assert_eq!(second_project_results.len(), 1);
+            assert_ne!(second_project_results[0].status, "failed");
+            assert_eq!(
+                second_requests
+                    .iter()
+                    .filter(|path| path.as_str() == "/api/v1/sync/artifacts/staging")
+                    .count(),
+                1,
+                "only successful retry should stage received bytes: {second_requests:?}"
+            );
+            assert_eq!(
+                second_requests
+                    .iter()
+                    .filter(|path| {
+                        path.as_str()
+                            == format!(
+                                "/api/v1/sync/artifacts/staging/{}",
+                                retry_artifact.content_sha256
+                            )
+                    })
+                    .count(),
+                2,
+                "retry artifact should be rechecked and retransferred, not treated as verified"
+            );
+            assert!(
+                second_temp_files.is_empty(),
+                "successful retry left temp files: {second_temp_files:?}"
+            );
+            assert!(
+                !stale_temp_path.exists(),
+                "retry should clean stale orphan temp artifact from previous process"
             );
         }
 
@@ -13558,6 +14629,39 @@ mod desktop {
                 vec!["art_two".to_string(), "art_three".to_string()]
             );
             assert_eq!(window.reserved_bytes, 60);
+        }
+
+        #[test]
+        fn iroh_stale_credit_cleanup_revokes_and_clears_active_artifacts() {
+            let pending = (0..2)
+                .map(|index| PendingArtifactTransfer {
+                    artifact: RemoteArtifact {
+                        artifact_id: format!("art_{index}"),
+                        project_id: format!("proj_{index}"),
+                        content_sha256: format!("hash_{index}"),
+                        size_bytes: 10,
+                    },
+                })
+                .collect::<Vec<_>>();
+            let mut window = IrohBatchCreditWindow::new(&pending, 2, 100);
+            let credited_artifact_ids = Arc::new(Mutex::new(HashSet::new()));
+            let mut metrics = SyncRunMetrics::start(Instant::now());
+
+            let granted = window.grant_available(0).expect("grant stale credits");
+            credited_artifact_ids
+                .lock()
+                .expect("record credited artifacts")
+                .extend(granted);
+            metrics.record_credit_revokes(window.active_credit_count());
+            clear_iroh_batch_credits(&mut window, &credited_artifact_ids, &mut metrics);
+
+            assert_eq!(metrics.credit_revokes, 2);
+            assert_eq!(window.active_credit_count(), 0);
+            assert_eq!(window.scratch_bytes(0), 0);
+            assert!(credited_artifact_ids
+                .lock()
+                .expect("read credited artifacts")
+                .is_empty());
         }
 
         #[test]

@@ -138,6 +138,116 @@ def test_issue119_apply_imports_fresh_multi_project_receiver(
                 assert artifact.size_bytes == fixture.artifact_sizes[artifact_id]
 
 
+def test_issue200_repeated_apply_retry_reuses_staged_content_without_duplicate_rows(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    peer_id = "peer-issue200-resume"
+    _ensure_identity_and_peers(peer_id)
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(
+            session,
+            tmp_path,
+            slug="issue200-resume",
+            source_frames=88,
+        )
+        revision_payload = {
+            "project_id": fixture.project_id,
+            "timeline": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "C"}],
+        }
+        session.add(
+            SyncEntityRevision(
+                id="rev_issue200_resume_chords",
+                project_id=fixture.project_id,
+                entity_type="chords",
+                entity_id=fixture.project_id,
+                revision_type="manual",
+                base_revision_id=None,
+                author_device_id=peer_id,
+                source_artifact_id=fixture.source_artifact_id,
+                content_sha256=revision_payload_sha256(revision_payload),
+                state=CURRENT_REVISION_STATE,
+                metadata_json={},
+                payload_json=revision_payload,
+                created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+            )
+        )
+        session.commit()
+        manifest = _jsonable_manifest(export_project_manifest(session, project_id=fixture.project_id))
+        content_hashes = _manifest_content_hashes([manifest])
+        _stage_manifest_content(
+            session,
+            manifest,
+            tmp_path=tmp_path,
+            artifact_bytes=fixture.artifact_bytes,
+            provider_device_id=peer_id,
+        )
+        _delete_live_project(session, fixture)
+        session.commit()
+
+    request_payload = {
+        "remote_library": {
+            "projects": [manifest["project"]],
+            "artifacts": manifest["artifacts"],
+            "entity_revisions": manifest["entity_revisions"],
+            "delete_tombstones": manifest["delete_tombstones"],
+        },
+        "project_manifests": [manifest],
+        "peer_inventory": [
+            {
+                "device_id": peer_id,
+                "available_content_sha256": content_hashes,
+            }
+        ],
+        "use_content_addressed_staging": True,
+        "include_timing_evidence": True,
+    }
+
+    first_response = client.post("/api/v1/sync/reconciliation/apply", json=request_payload)
+
+    assert first_response.status_code == 200
+    first_payload = first_response.json()
+    assert first_payload["summary"]["failed_actions"] == 0
+    assert any(
+        result["action"]["action_type"] == "fetch_artifact_content"
+        and result["status"] == "satisfied"
+        and result["reason"] == "Required artifact content is staged and verified locally."
+        for result in first_payload["results"]
+    )
+    assert any(
+        result["action"]["action_type"] == "import_project_manifest"
+        and result["action"]["project_id"] == fixture.project_id
+        and result["status"] == "applied"
+        for result in first_payload["results"]
+    )
+    _assert_issue200_resume_counts(fixture.project_id, manifest, staged_count=0)
+
+    with SessionLocal() as session:
+        _stage_manifest_content(
+            session,
+            manifest,
+            tmp_path=tmp_path,
+            artifact_bytes=fixture.artifact_bytes,
+            provider_device_id=peer_id,
+        )
+        session.commit()
+        assert session.scalar(select(func.count()).select_from(SyncStagedArtifact)) == len(content_hashes)
+
+    second_response = client.post("/api/v1/sync/reconciliation/apply", json=request_payload)
+
+    assert second_response.status_code == 200
+    second_payload = second_response.json()
+    assert second_payload["summary"]["failed_actions"] == 0
+    assert any(
+        result["status"] == "satisfied"
+        for result in second_payload["results"]
+    ) or second_payload["summary"]["planned_actions"] == 0
+    assert second_payload["timing_evidence"][-1]["details"]["failed_actions"] == 0
+    _assert_issue200_resume_counts(fixture.project_id, manifest, staged_count=0)
+
+
 def test_issue163_project_scoped_apply_ignores_unselected_remote_projects_and_reports_timing(
     client: TestClient,
     tmp_path: Path,
@@ -2584,6 +2694,44 @@ def _manifest_content_hashes(manifests: list[dict[str, Any]]) -> list[str]:
             for artifact in manifest["artifacts"]
         }
     )
+
+
+def _assert_issue200_resume_counts(
+    project_id: str,
+    manifest: dict[str, Any],
+    *,
+    staged_count: int,
+) -> None:
+    with SessionLocal() as session:
+        assert (
+            session.scalar(
+                select(func.count()).select_from(Project).where(Project.id == project_id)
+            )
+            == 1
+        )
+        assert (
+            session.scalar(
+                select(func.count()).select_from(Artifact).where(Artifact.project_id == project_id)
+            )
+            == len(manifest["artifacts"])
+        )
+        assert (
+            session.scalar(
+                select(func.count()).select_from(SyncEntityRevision).where(
+                    SyncEntityRevision.project_id == project_id
+                )
+            )
+            == len(manifest["entity_revisions"])
+        )
+        assert (
+            session.scalar(
+                select(func.count()).select_from(SyncDeleteTombstone).where(
+                    SyncDeleteTombstone.project_id == project_id
+                )
+            )
+            == len(manifest["delete_tombstones"])
+        )
+        assert session.scalar(select(func.count()).select_from(SyncStagedArtifact)) == staged_count
 
 
 def _empty_remote_library() -> dict[str, list[Any]]:

@@ -249,6 +249,89 @@ def test_sync_preflight_blocks_running_jobs(client, sample_audio_file: Path) -> 
     }
 
 
+def test_sync_preflight_reports_pending_and_running_jobs_without_payload_leakage(
+    client,
+    sample_audio_file: Path,
+    tmp_path: Path,
+) -> None:
+    expected_hash = file_sha256(sample_audio_file)
+    assert expected_hash is not None
+    project_id = source_hash_to_project_id(expected_hash)
+    started_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+    updated_at = datetime(2026, 1, 2, 3, 5, 6, tzinfo=UTC)
+    pending_secret_path = tmp_path / "pending-secret.wav"
+    running_secret_path = tmp_path / "running-secret.wav"
+    with SessionLocal() as session:
+        session.add(
+            Project(
+                id=project_id,
+                display_name="Busy Fixture",
+                source_sha256=expected_hash,
+                source_path=str(sample_audio_file),
+                imported_path=str(sample_audio_file),
+            )
+        )
+        session.add_all(
+            [
+                Job(
+                    id="job_pending_resume_preflight",
+                    project_id=project_id,
+                    type="analyze",
+                    status="pending",
+                    progress=10,
+                    payload_json={
+                        "source_path": str(pending_secret_path),
+                        "token": "pending-secret-token",
+                    },
+                    created_at=started_at,
+                    updated_at=updated_at,
+                ),
+                Job(
+                    id="job_running_resume_preflight",
+                    project_id=project_id,
+                    type="stems",
+                    status="running",
+                    progress=55,
+                    payload_json={
+                        "render_path": str(running_secret_path),
+                        "endpoint": "https://peer.example/sync",
+                    },
+                    created_at=started_at,
+                    started_at=started_at,
+                    updated_at=updated_at,
+                ),
+            ]
+        )
+        session.commit()
+
+    response = client.get("/api/v1/sync/preflight")
+
+    assert response.status_code == 200
+    assert str(pending_secret_path) not in response.text
+    assert str(running_secret_path) not in response.text
+    assert "pending-secret-token" not in response.text
+    assert "peer.example" not in response.text
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["library_ok"] is True
+    assert payload["manual_cleanup_required"] is False
+    job_state = payload["job_state"]
+    assert job_state["state"] == "busy"
+    assert job_state["pending_job_count"] == 1
+    assert job_state["running_job_count"] == 1
+    assert job_state["blocking_job_count"] == 2
+    assert job_state["blocking_job_counts"] == {"pending": 1, "running": 1}
+    assert job_state["blocking_jobs_truncated"] is False
+    assert job_state["guidance"] == [
+        "Backend jobs are running. Sync can start, but backend work may delay sync endpoint responses."
+    ]
+    jobs_by_id = {job["id"]: job for job in job_state["blocking_jobs"]}
+    assert set(jobs_by_id) == {"job_pending_resume_preflight", "job_running_resume_preflight"}
+    assert jobs_by_id["job_pending_resume_preflight"]["status"] == "pending"
+    assert jobs_by_id["job_running_resume_preflight"]["status"] == "running"
+    assert all("payload" not in job and "payload_json" not in job for job in jobs_by_id.values())
+
+
 def test_sync_preflight_caps_and_truncates_blocking_jobs(client) -> None:
     created_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
     with SessionLocal() as session:

@@ -1219,6 +1219,7 @@ class JobSchema(BaseModel):
     chord_backend: str | None = None
     chord_backend_fallback_from: str | None = None
     chord_source: str | None = None
+    lyrics_source: str | None = None
     stem_model: str | None = None
     stem_model_label: str | None = None
     error_message: str | None

@@ -139,6 +139,7 @@ export function formatJobStatusSummary(job: JobSchema) {
     job.type === "analyze" ? formatBeatInput(job.beat_input) : null,
     job.type === "chords" ? formatChordBackend(job.chord_backend) : null,
     job.type === "chords" ? job.chord_source : null,
+    job.type === "lyrics" ? formatLyricsSource(job.lyrics_source) : null,
     job.type === "stems" ? formatStemModel(job.stem_model_label ?? job.stem_model) : null,
     typeof job.runtime_device === "string" ? job.runtime_device.toUpperCase() : null,
     formatJobDuration(job.duration_seconds),
@@ -175,6 +176,19 @@ function formatStemModel(model: string | null | undefined) {
     return "2 stems model";
   }
   return model;
+}
+
+function formatLyricsSource(source: string | null | undefined) {
+  if (source === "vocals") {
+    return "vocals";
+  }
+  if (source === "source_preferred") {
+    return "source preferred";
+  }
+  if (source === "none") {
+    return "no lyrics";
+  }
+  return null;
 }
 
 function formatChordBackend(backend: string | null | undefined) {

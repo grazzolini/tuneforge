@@ -1403,19 +1403,12 @@ export function useProjectViewModel() {
       return;
     }
 
-    const affectsSourceChords = selectedPrimaryArtifact?.type === "source_audio";
-    const hasUserChordEdits = affectsSourceChords && chordsQuery.data?.has_user_edits === true;
-    let overwriteChordEdits = false;
-
     if (hasVisibleStems) {
       const stemTargetLabel = selectedPrimaryArtifact
         ? artifactLabel(selectedPrimaryArtifact)
         : "selected audio";
-      const rebuildMessage = hasUserChordEdits
-        ? `Rebuild stems for ${stemTargetLabel}? Existing chord edits will be replaced. Existing stems will be replaced. On desktop, Demucs uses GPU when available; CPU rebuilds may take longer.`
-        : `Rebuild stems for ${stemTargetLabel}? Existing stems will be replaced. On desktop, Demucs uses GPU when available; CPU rebuilds may take longer.`;
       const approved = await confirm(
-        rebuildMessage,
+        `Rebuild stems for ${stemTargetLabel}? Existing stems will be replaced. On desktop, Demucs uses GPU when available; CPU rebuilds may take longer.`,
         {
           title: "Rebuild stems",
           kind: "warning",
@@ -1426,27 +1419,9 @@ export function useProjectViewModel() {
       if (!approved) {
         return;
       }
-      overwriteChordEdits = hasUserChordEdits;
-    } else if (hasUserChordEdits) {
-      const stemTargetLabel = selectedPrimaryArtifact
-        ? artifactLabel(selectedPrimaryArtifact)
-        : "selected audio";
-      const approved = await confirm(
-        `Generate stems for ${stemTargetLabel}? Existing chord edits will be replaced when chords refresh after stem generation. On desktop, Demucs uses GPU when available; CPU generation may take longer.`,
-        {
-          title: "Generate stems",
-          kind: "warning",
-          okLabel: "Generate",
-          cancelLabel: "Cancel",
-        },
-      );
-      if (!approved) {
-        return;
-      }
-      overwriteChordEdits = true;
     }
 
-    stemMutation.mutate(overwriteChordEdits);
+    stemMutation.mutate(false);
   }
 
   function toggleStemControl(

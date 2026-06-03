@@ -1177,6 +1177,8 @@ export interface components {
             chord_backend_fallback_from?: string | null;
             /** Chord Source */
             chord_source?: string | null;
+            /** Lyrics Source */
+            lyrics_source?: string | null;
             /** Stem Model */
             stem_model?: string | null;
             /** Stem Model Label */

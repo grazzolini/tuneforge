@@ -60,6 +60,11 @@ fn write_settings_snapshot_file(path: String, contents: String) -> Result<(), St
     fs::write(&path, contents).map_err(|error| format!("Could not write settings file: {error}"))
 }
 
+#[tauri::command]
+fn write_sync_evidence_file(path: String, contents: String) -> Result<(), String> {
+    fs::write(&path, contents).map_err(|error| format!("Could not write sync evidence file: {error}"))
+}
+
 #[cfg(not(target_os = "android"))]
 fn allocate_port() -> Result<u16, Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
@@ -356,6 +361,7 @@ pub fn run() {
             backend_base_url,
             read_settings_snapshot_file,
             write_settings_snapshot_file,
+            write_sync_evidence_file,
             native_audio::system_input::get_system_default_input_volume,
             native_audio::system_input::set_system_default_input_volume,
             native_audio::audio_get_capabilities,

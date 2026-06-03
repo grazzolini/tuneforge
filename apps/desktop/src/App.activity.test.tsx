@@ -14,6 +14,7 @@ import { encodePairingCode, pairingFingerprint } from "./features/activity/syncP
 import {
   mockCancelJob,
   mockConfirm,
+  mockSave,
   mockGetAnalysis,
   mockGetChords,
   mockGetLyrics,
@@ -277,6 +278,49 @@ function expectProjectDataQueriesNotInvalidated(
   projectId: string,
 ) {
   expectProjectDataQueriesInvalidationState(queryClient, projectId, false);
+}
+
+async function exportEvidenceFromCurrentSyncResult(user: ReturnType<typeof userEvent.setup>) {
+  let exportedBlob: Blob | null = null;
+  const createObjectURL = vi.fn((blob: Blob) => {
+    exportedBlob = blob;
+    return "blob:sync-evidence";
+  });
+  const revokeObjectURL = vi.fn();
+  const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  const originalSetTimeout = window.setTimeout.bind(window);
+  const setTimeoutSpy = vi
+    .spyOn(window, "setTimeout")
+    .mockImplementation((handler: TimerHandler, timeout?: number) => {
+      if (timeout === 5000 && typeof handler === "function") {
+        handler();
+        return 0;
+      }
+      return originalSetTimeout(handler, timeout);
+    });
+  Object.defineProperty(window.URL, "createObjectURL", {
+    configurable: true,
+    writable: true,
+    value: createObjectURL,
+  });
+  Object.defineProperty(window.URL, "revokeObjectURL", {
+    configurable: true,
+    writable: true,
+    value: revokeObjectURL,
+  });
+
+  try {
+    await user.click(screen.getByRole("button", { name: "Export Evidence" }));
+
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledOnce());
+    expect(clickSpy).toHaveBeenCalledOnce();
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:sync-evidence");
+    expect(exportedBlob).not.toBeNull();
+    return JSON.parse(await exportedBlob!.text()) as Record<string, unknown>;
+  } finally {
+    clickSpy.mockRestore();
+    setTimeoutSpy.mockRestore();
+  }
 }
 
 describe("Desktop app activity", () => {
@@ -2143,6 +2187,511 @@ describe("Desktop app activity", () => {
     expect(transferRows).toHaveLength(1);
     expect(within(transferRows[0]).getByText("art_retry_source")).toBeInTheDocument();
     expect(within(transferRows[0]).getByText("500 ms / 2.0 MB/s")).toBeInTheDocument();
+  });
+
+  it("disables evidence export when no sync result is available", async () => {
+    const user = userEvent.setup();
+    await openSyncTab(user);
+
+    expect(screen.getByRole("button", { name: "Copy Evidence" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Export Evidence" })).toBeDisabled();
+  });
+
+  it("exports privacy-safe evidence from listener last_sync", async () => {
+    const user = userEvent.setup();
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: listenerEndpointHints,
+      display_name: "Studio Desktop",
+      last_status: "Listener imported project proj_export_alpha from device_peer_1.",
+      active_phase: "artifact_transfer",
+      active_message:
+        'Receiving artifact art_export_alpha from "C:\\Users\\test\\Music\\Secret Demo.wav" via tuneforge-sync+tcp://192.168.1.42:48625',
+      active_progress_at: "2026-04-18T13:16:00.300Z",
+      active_elapsed_ms: 900,
+      last_sync: {
+        run_id: "sync_run_export_listener",
+        session_id: "sync_session_export_listener",
+        peer_device_id: "device_peer_1",
+        remote_device_id: "device_peer_1",
+        selected_transport: tcpTransportId,
+        fallback_reason: "Iroh endpoint tuneforge-sync+iroh://device_peer_1 was unavailable; used TCP.",
+        fallback_code: "stale_iroh_hint",
+        attempted_transports: [irohTransportId, tcpTransportId],
+        status: "completed",
+        message:
+          'Imported "/Users/test/Music/Secret Demo.wav" for proj_export_alpha after retry using art_export_alpha.',
+        error: "Previous artifact art_export_beta failed from file:///Users/test/Music/Mix.wav",
+        started_at: "2026-04-18T13:16:00.000Z",
+        completed_at: "2026-04-18T13:16:01.250Z",
+        duration_ms: 1250,
+        time_to_first_artifact_ms: 650,
+        total_received_bytes: 1_000_000,
+        total_served_bytes: 9_000_000,
+        throughput_bytes_per_second: 3_200_000,
+        scratch_peak_bytes: 128_000_000,
+        transfer_counts: {
+          staging_peak_bytes: 16_000_000,
+          max_active_streams: 8,
+          credit_grants: 64,
+          credit_revokes: 2,
+          staging_post_ms_total: 300,
+        },
+        imported_project_count: 1,
+        applied_project_count: 1,
+        skipped_project_count: 0,
+        failed_project_count: 0,
+        project_results: [
+          {
+            project_id: "proj_export_alpha",
+            status: "failed",
+            message: "Old failure for proj_export_alpha.",
+            is_final: true,
+            completed_at: "2026-04-18T13:15:30.000Z",
+            failed_count: 1,
+          },
+          {
+            project_id: "proj_export_alpha",
+            status: "applied",
+            message: "Retry imported proj_export_alpha from '/Users/test/Music/Secret Demo.wav'.",
+            is_final: true,
+            started_at: "2026-04-18T13:16:00.500Z",
+            completed_at: "2026-04-18T13:16:01.100Z",
+            applied_count: 2,
+            reused_artifact_count: 1,
+          },
+        ],
+        manifest_errors: [],
+        phase_timings: [
+          {
+            phase: "artifact_transfer",
+            project_id: "proj_export_alpha",
+            artifact_id: "art_export_alpha",
+            started_at: "2026-04-18T13:16:00.200Z",
+            completed_at: "2026-04-18T13:16:00.650Z",
+            duration_ms: 450,
+            throughput_bytes_per_second: 2_000_000,
+          },
+        ],
+        received_artifacts: [
+          {
+            artifact_id: "art_export_alpha",
+            content_sha256: "sha256-export-alpha",
+            size_bytes: 1_000_000,
+            status: "received",
+            message: "Fetched art_export_alpha from file:///Users/test/Music/Secret%20Demo.wav",
+            started_at: "2026-04-18T13:16:00.200Z",
+            completed_at: "2026-04-18T13:16:00.650Z",
+            duration_ms: 450,
+            throughput_bytes_per_second: 2_000_000,
+          },
+          {
+            artifact_id: "art_export_beta",
+            content_sha256: "sha256-export-beta",
+            size_bytes: 500_000,
+            status: "already_staged",
+            message: "Reused art_export_beta from Mix.wav",
+            completed_at: "2026-04-18T13:16:00.150Z",
+          },
+        ],
+      },
+    });
+
+    await openSyncTab(user);
+
+    expect(screen.getByRole("button", { name: "Export Evidence" })).toBeEnabled();
+    const exportedJson = await exportEvidenceFromCurrentSyncResult(user);
+
+    expect(await screen.findByText(/Sync evidence exported/)).toBeInTheDocument();
+    expect(Object.keys(exportedJson)).toEqual([
+      "capturedAt",
+      "scenario",
+      "source",
+      "run",
+      "transport",
+      "metrics",
+      "projects",
+      "artifacts",
+      "lifecycle",
+      "storage",
+      "validation",
+    ]);
+    expect(exportedJson.scenario).toBe("listener-last-sync");
+    expect(exportedJson.source).toMatchObject({
+      kind: "listener.last_sync",
+      listenerActive: true,
+      listenerStatus: "listening",
+    });
+    expect(exportedJson.run).toMatchObject({
+      label: "run_1",
+      peer: "peer_1",
+      remotePeer: "peer_1",
+      hasRunId: true,
+      hasSessionId: true,
+      status: "completed",
+    });
+    expect(exportedJson.transport).toMatchObject({
+      selected: tcpTransportId,
+      attempted: [irohTransportId, tcpTransportId],
+      fallback: {
+        code: "stale_iroh_hint",
+        reason: expect.stringContaining("[redacted_endpoint]"),
+      },
+    });
+    expect(exportedJson.metrics).toMatchObject({
+      timeToFirstArtifactMs: 650,
+      throughputBytesPerSecond: 3_200_000,
+      retryIndicators: {
+        duplicateProjectEvents: true,
+        messageMentionsRetry: true,
+      },
+      reuseIndicators: {
+        reusedArtifacts: true,
+        reusedProjectArtifacts: true,
+        messageMentionsReuse: false,
+      },
+    });
+    const exportedMetrics = exportedJson.metrics as {
+      backend_staging_throughput_bytes_per_second?: number;
+    };
+    expect(exportedMetrics.backend_staging_throughput_bytes_per_second).toBeCloseTo(
+      1_000_000 / 0.3,
+    );
+    expect(exportedJson.projects).toEqual([
+      expect.objectContaining({
+        label: "project_1",
+        status: "applied",
+        counts: expect.objectContaining({
+          applied: 2,
+          reusedArtifacts: 1,
+        }),
+        appearance: expect.objectContaining({
+          eventCount: 5,
+          cadenceMs: 7775,
+        }),
+      }),
+    ]);
+    expect(exportedJson.artifacts).toEqual([
+      expect.objectContaining({
+        label: "artifact_1",
+        status: "received",
+        throughputBytesPerSecond: 2_000_000,
+        reused: false,
+      }),
+      expect.objectContaining({
+        label: "artifact_2",
+        status: "already_staged",
+        reused: true,
+      }),
+    ]);
+    expect(exportedJson.lifecycle).toMatchObject({
+      listener: {
+        active: true,
+        status: "listening",
+        activePhase: "artifact_transfer",
+        hasLastError: false,
+      },
+      phaseTimings: [
+        expect.objectContaining({
+          label: "phase_1",
+          project: "project_1",
+          artifact: "artifact_1",
+        }),
+      ],
+    });
+    expect(exportedJson.storage).toMatchObject({
+      scratch_peak_bytes: 128_000_000,
+      staging_peak_bytes: 16_000_000,
+      scratchPeakBytes: 128_000_000,
+      stagingPeakBytes: 16_000_000,
+    });
+    expect(exportedJson.validation).toMatchObject({
+      schema: "tuneforge-sync-evidence-v1",
+      privacySafe: true,
+      redactionCounts: {
+        peers: 1,
+        projects: 1,
+        artifacts: 2,
+      },
+    });
+
+    const serialized = JSON.stringify(exportedJson);
+    expect(serialized).toContain("peer_1");
+    expect(serialized).toContain("project_1");
+    expect(serialized).toContain("artifact_1");
+    expect(serialized).not.toContain("device_peer_1");
+    expect(serialized).not.toContain("proj_export_alpha");
+    expect(serialized).not.toContain("art_export_alpha");
+    expect(serialized).not.toContain("sha256-export-alpha");
+    expect(serialized).not.toContain("Studio Desktop");
+    expect(serialized).not.toContain("endpoint_hints");
+    expect(serialized).not.toContain("Mix.wav");
+    expect(serialized).not.toContain("Secret Demo.wav");
+    expect(serialized).not.toContain("C:\\Users");
+    expect(serialized).not.toContain("C:\\\\Users");
+    expect(serialized).not.toContain("file://");
+    expect(serialized).not.toContain("/Users/test/Music");
+    expect(serialized).not.toContain("/tmp/demo.wav");
+    expect(serialized).not.toContain("tuneforge-sync+tcp://192.168.1.42:48625");
+  });
+
+  it("does not export UI fallback listener status with trusted peer display names", async () => {
+    const user = userEvent.setup();
+    setSyncTrustedPeers([
+      {
+        device_id: "device_peer_1",
+        sync_group_id: "sync_group_local",
+        display_name: "Laptop Rig",
+        public_key: "pub_peer_1",
+        endpoint_hints: syncEndpointHints,
+        trusted_at: "2026-04-18T13:16:00.000Z",
+      },
+    ]);
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: listenerEndpointHints,
+      last_sync: syncRunStatus({
+        run_id: "sync_run_display_name_fallback",
+        session_id: "sync_session_display_name_fallback",
+        peer_device_id: "device_peer_1",
+        remote_device_id: "device_peer_1",
+        status: "completed",
+        message: null,
+        project_results: [
+          {
+            project_id: "proj_display_name_fallback",
+            status: "imported",
+            message: "Imported proj_display_name_fallback.",
+            imported_count: 1,
+          },
+        ],
+      }),
+    });
+
+    await openSyncTab(user);
+
+    expect(await screen.findByText("Completed for Laptop Rig.")).toBeInTheDocument();
+    const exportedJson = await exportEvidenceFromCurrentSyncResult(user);
+    const serialized = JSON.stringify(exportedJson);
+    expect(exportedJson.lifecycle).toMatchObject({
+      listener: {
+        lastStatus: null,
+      },
+    });
+    expect(serialized).not.toContain("Completed for Laptop Rig.");
+    expect(serialized).not.toContain("Laptop Rig");
+    expect(serialized).not.toContain("proj_display_name_fallback");
+  });
+
+  it("copies privacy-safe evidence JSON from listener last_sync", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: listenerEndpointHints,
+      last_status: "Listener imported proj_copy_alpha from device_peer_1.",
+      last_sync: syncRunStatus({
+        run_id: "sync_run_copy_listener",
+        session_id: "sync_session_copy_listener",
+        peer_device_id: "device_peer_1",
+        remote_device_id: "device_peer_1",
+        selected_transport: tcpTransportId,
+        attempted_transports: [tcpTransportId],
+        status: "completed",
+        message: 'Imported "/Users/test/Music/Secret Demo.wav" for proj_copy_alpha with art_copy_alpha.',
+        project_results: [
+          {
+            project_id: "proj_copy_alpha",
+            status: "imported",
+            message: "Imported proj_copy_alpha from file:///Users/test/Music/Secret%20Demo.wav.",
+            imported_count: 1,
+          },
+        ],
+        received_artifacts: [
+          {
+            artifact_id: "art_copy_alpha",
+            content_sha256: "sha256-copy-alpha",
+            size_bytes: 1_000_000,
+            status: "received",
+            message: "Fetched art_copy_alpha from Secret Demo.wav",
+          },
+        ],
+      }),
+    });
+
+    await openSyncTab(user);
+    await user.click(screen.getByRole("button", { name: "Copy Evidence" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledOnce());
+    const copiedJson = JSON.parse(writeText.mock.calls[0]?.[0] as string) as Record<string, unknown>;
+    expect(await screen.findByText("Sync evidence copied.")).toBeInTheDocument();
+    expect(copiedJson.validation).toMatchObject({
+      schema: "tuneforge-sync-evidence-v1",
+      privacySafe: true,
+    });
+    const serialized = JSON.stringify(copiedJson);
+    expect(serialized).toContain("project_1");
+    expect(serialized).toContain("artifact_1");
+    expect(serialized).not.toContain("device_peer_1");
+    expect(serialized).not.toContain("proj_copy_alpha");
+    expect(serialized).not.toContain("art_copy_alpha");
+    expect(serialized).not.toContain("sha256-copy-alpha");
+    expect(serialized).not.toContain("Secret Demo.wav");
+    expect(serialized).not.toContain("/Users/test/Music");
+    expect(serialized).not.toContain("file://");
+  });
+
+  it("exports evidence through the Tauri save command when available", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+    mockSave.mockResolvedValue("/tmp/tuneforge-sync-evidence.json");
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: listenerEndpointHints,
+      last_sync: syncRunStatus({
+        run_id: "sync_run_tauri_export",
+        session_id: "sync_session_tauri_export",
+        message: "Imported proj_tauri_export from device_peer_1.",
+        project_results: [
+          {
+            project_id: "proj_tauri_export",
+            status: "imported",
+            message: "Imported proj_tauri_export.",
+            imported_count: 1,
+          },
+        ],
+      }),
+    });
+
+    await openSyncTab(user);
+    await user.click(screen.getByRole("button", { name: "Export Evidence" }));
+
+    await waitFor(() =>
+      expect(mockSave).toHaveBeenCalledWith({
+        defaultPath: expect.stringMatching(/^tuneforge-sync-evidence-.+\.json$/),
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      }),
+    );
+    const mockInvoke = getMockInvoke();
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("write_sync_evidence_file", {
+        contents: expect.any(String),
+        path: "/tmp/tuneforge-sync-evidence.json",
+      }),
+    );
+    const writeCall = mockInvoke.mock.calls.find(([command]) => command === "write_sync_evidence_file");
+    expect(writeCall).toBeDefined();
+    const exportedJson = JSON.parse((writeCall?.[1] as { contents: string }).contents) as Record<string, unknown>;
+    expect(await screen.findByText(/Sync evidence exported/)).toBeInTheDocument();
+    expect(exportedJson.scenario).toBe("listener-last-sync");
+    expect(exportedJson.run).toMatchObject({
+      label: "run_1",
+      hasRunId: true,
+      hasSessionId: true,
+      status: "completed",
+    });
+    expect(JSON.stringify(exportedJson)).not.toContain("proj_tauri_export");
+    expect(JSON.stringify(exportedJson)).not.toContain("device_peer_1");
+  });
+
+  it("exports the latest sync now result when listener last_sync is hidden", async () => {
+    const user = userEvent.setup();
+    setSyncTrustedPeers([
+      {
+        device_id: "device_peer_1",
+        sync_group_id: "sync_group_local",
+        display_name: "Laptop Rig",
+        public_key: "pub_peer_1",
+        endpoint_hints: syncEndpointHints,
+        trusted_at: "2026-04-18T13:16:00.000Z",
+      },
+    ]);
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: syncEndpointHints,
+      last_sync: {
+        peer_device_id: "device_peer_1",
+        remote_device_id: "device_peer_1",
+        status: "completed",
+        message: "Listener sync completed first.",
+        project_results: [
+          {
+            project_id: "proj_listener_old",
+            status: "imported",
+            message: "Old listener result.",
+          },
+        ],
+        manifest_errors: [],
+        received_artifacts: [],
+      },
+    });
+    mockSyncTrustedPeerNow.mockResolvedValueOnce(syncRunStatus({
+      run_id: "sync_run_now_export",
+      session_id: "sync_session_now_export",
+      selected_transport: irohTransportId,
+      attempted_transports: [irohTransportId],
+      status: "completed",
+      message: "Sync now imported proj_now_result.",
+      project_results: [
+        {
+          project_id: "proj_now_result",
+          status: "imported",
+          message: "Imported proj_now_result.",
+          imported_count: 1,
+        },
+      ],
+      received_artifacts: [],
+      imported_project_count: 1,
+    }));
+
+    await openSyncTab(user);
+
+    const peers = await screen.findByRole("list", { name: "Trusted sync peers" });
+    const peerRow = within(peers).getByText("Laptop Rig").closest("li");
+    expect(peerRow).not.toBeNull();
+    await user.click(within(peerRow as HTMLElement).getByRole("button", { name: "Sync Now" }));
+
+    expect(await screen.findAllByText("Sync now imported proj_now_result.")).not.toHaveLength(0);
+    const exportedJson = await exportEvidenceFromCurrentSyncResult(user);
+
+    expect(exportedJson.scenario).toBe("sync-now-result");
+    expect(exportedJson.source).toMatchObject({
+      kind: "sync_now",
+      listenerActive: true,
+      listenerStatus: "listening",
+    });
+    expect(exportedJson.run).toMatchObject({
+      status: "completed",
+      hasRunId: true,
+      hasSessionId: true,
+    });
+    expect(exportedJson.transport).toMatchObject({
+      selected: irohTransportId,
+      attempted: [irohTransportId],
+    });
+    expect(exportedJson.projects).toEqual([
+      expect.objectContaining({
+        label: "project_1",
+        status: "imported",
+        counts: expect.objectContaining({
+          imported: 1,
+        }),
+      }),
+    ]);
+    expect(JSON.stringify(exportedJson)).not.toContain("proj_listener_old");
+    expect(JSON.stringify(exportedJson)).not.toContain("proj_now_result");
   });
 
   it("shows newer listener sync results after a prior sync now result", async () => {

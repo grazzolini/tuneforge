@@ -26,6 +26,7 @@
     "sync:bundle": "bash -c 'if [[ \"${1:-}\" == \"--\" ]]; then shift; fi; exec bash scripts/run-backend-module.sh app.cli.sync_bundle \"$@\"' --",
     "sync:backend:default": "bash scripts/sync-backend-default.sh",
     "sync:backend:legacy-nvidia": "bash scripts/sync-backend-legacy-nvidia.sh",
+    "sync:validate": "node scripts/sync-validation.mjs",
     "test": "bash scripts/run-tests.sh",
     "typecheck": "pnpm --filter @tuneforge/desktop typecheck",
     "commitlint": "commitlint --edit",

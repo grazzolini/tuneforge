@@ -112,7 +112,9 @@ permissions out of other platform capabilities unless a separate scanner flow is
 
 Real mobile sync validation must use an initialized Android target, a debug or release APK built
 through the package scripts above, and a physical Android device when collecting CPU and battery
-evidence. Record the selected transport path in the notes for each run:
+evidence. Use the privacy-safe evidence model and validation checklist in
+[MULTI_DEVICE_LIBRARY_SYNC_SPIKE.md](./MULTI_DEVICE_LIBRARY_SYNC_SPIKE.md#sync-validation-evidence-model).
+Record the selected transport path in the notes for each run:
 
 - `tuneforge-sync+tcp`
 - `tuneforge-sync+iroh`
@@ -129,6 +131,17 @@ For accepted mobile sync evidence, sync at least one desktop project to Android,
 source and synced WAV stem artifacts from app-local storage, and compare battery, CPU, storage, and
 transfer costs against AAC/M4A or another compressed baseline. Mobile sync remains library sync
 only; remote processing stays out of scope.
+
+For Android-to-desktop validation, import or change durable library data on Android, sync it to a
+desktop peer, and record redacted project import cadence, TTFA, transfer counts, selected transport,
+fallback reason/code, backend/mobile staging throughput, reconciliation apply time, and scratch or
+staging peaks. Do not record audio content, file contents, filenames, absolute paths, display names,
+raw device/project/artifact IDs, endpoint hints, or pairing payloads.
+
+For listener lifecycle validation, start, stop, restart, pause, and resume the Android listener where
+the build supports it. Record whether desktop peers recover, whether fallback was used, and whether
+synced projects remain deduped after reconnect. If Android still reports the transport stub, record
+that blocker and limit the run to pairing, storage, and playback checks.
 
 For QR pairing validation, grant the camera permission, scan a pairing QR code with the Android
 build, and record whether the scan produced the expected pairing payload before trusting the peer.

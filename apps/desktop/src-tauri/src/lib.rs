@@ -62,7 +62,8 @@ fn write_settings_snapshot_file(path: String, contents: String) -> Result<(), St
 
 #[tauri::command]
 fn write_sync_evidence_file(path: String, contents: String) -> Result<(), String> {
-    fs::write(&path, contents).map_err(|error| format!("Could not write sync evidence file: {error}"))
+    fs::write(&path, contents)
+        .map_err(|error| format!("Could not write sync evidence file: {error}"))
 }
 
 #[cfg(not(target_os = "android"))]
@@ -385,6 +386,7 @@ pub fn run() {
             sync_transport::sync_transport_start_listener,
             sync_transport::sync_transport_stop_listener,
             sync_transport::sync_transport_status,
+            sync_transport::sync_transport_record_lifecycle_event,
             sync_transport::sync_transport_create_pairing_offer,
             sync_transport::sync_transport_sync_now,
             mobile_backend::mobile_capabilities,

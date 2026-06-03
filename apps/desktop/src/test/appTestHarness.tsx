@@ -10,6 +10,7 @@ import type {
   LyricsGenerateRequest,
   ListJobsParams,
   ListProjectsParams,
+  SyncLifecycleEventRequest,
   SyncPreflightResponse,
   SyncPairingAnswerRequest,
   SyncPairingAnswerResponse,
@@ -70,6 +71,7 @@ const {
   mockGetSyncTransportStatus,
   mockStartSyncListener,
   mockStopSyncListener,
+  mockRecordSyncLifecycleEvent,
   mockCreateSyncPairingOffer,
   mockAnswerSyncPairingOffer,
   mockListSyncTrustedPeers,
@@ -1635,6 +1637,29 @@ const {
     };
     return clone(state.syncTransportStatus);
   });
+  const mockRecordSyncLifecycleEvent = vi.fn(async (event: SyncLifecycleEventRequest) => {
+    const occurredAt = event.occurredAt ?? createdAt;
+    const lifecycleEvent = {
+      kind: event.kind,
+      occurred_at: occurredAt,
+      message: event.message ?? null,
+      retryable: false,
+      interruption_code: null,
+      retry_guidance: null,
+      peer_device_id: null,
+      run_id: null,
+    };
+    const lifecycleEvents = Array.isArray(state.syncTransportStatus.lifecycle_events)
+      ? state.syncTransportStatus.lifecycle_events
+      : [];
+    state.syncTransportStatus = {
+      ...state.syncTransportStatus,
+      last_lifecycle_event: lifecycleEvent,
+      lifecycle_events: [...lifecycleEvents, lifecycleEvent],
+      updated_at: occurredAt,
+    };
+    return clone(state.syncTransportStatus);
+  });
   const mockCreateSyncPairingOffer = vi.fn(async (
     body: SyncPairingOfferRequest,
   ): Promise<SyncPairingOfferResponse> => ({
@@ -2314,6 +2339,7 @@ const {
     mockGetSyncTransportStatus,
     mockStartSyncListener,
     mockStopSyncListener,
+    mockRecordSyncLifecycleEvent,
     mockCreateSyncPairingOffer,
     mockAnswerSyncPairingOffer,
     mockListSyncTrustedPeers,
@@ -2387,6 +2413,7 @@ export {
   mockGetSyncTransportStatus,
   mockStartSyncListener,
   mockStopSyncListener,
+  mockRecordSyncLifecycleEvent,
   mockCreateSyncPairingOffer,
   mockAnswerSyncPairingOffer,
   mockListSyncTrustedPeers,
@@ -2454,6 +2481,7 @@ vi.mock("../lib/api", async (importOriginal) => {
       getSyncTransportStatus: mockGetSyncTransportStatus,
       startSyncListener: mockStartSyncListener,
       stopSyncListener: mockStopSyncListener,
+      recordSyncLifecycleEvent: mockRecordSyncLifecycleEvent,
       createSyncPairingOffer: mockCreateSyncPairingOffer,
       answerSyncPairingOffer: mockAnswerSyncPairingOffer,
       listSyncTrustedPeers: mockListSyncTrustedPeers,
@@ -2854,6 +2882,7 @@ export function resetAppTestHarness() {
   mockGetSyncTransportStatus.mockClear();
   mockStartSyncListener.mockClear();
   mockStopSyncListener.mockClear();
+  mockRecordSyncLifecycleEvent.mockClear();
   mockCreateSyncPairingOffer.mockClear();
   mockAnswerSyncPairingOffer.mockClear();
   mockListSyncTrustedPeers.mockClear();

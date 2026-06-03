@@ -22,6 +22,7 @@ import {
   mockGetMobileCapabilities,
   mockGetSyncIdentity,
   mockGetSyncTransportStatus,
+  mockRecordSyncLifecycleEvent,
   mockAnswerSyncPairingOffer,
   mockCreateSyncPairingOffer,
   mockListSyncTrustedPeers,
@@ -321,6 +322,13 @@ async function exportEvidenceFromCurrentSyncResult(user: ReturnType<typeof userE
     clickSpy.mockRestore();
     setTimeoutSpy.mockRestore();
   }
+}
+
+function setDocumentVisibility(value: DocumentVisibilityState) {
+  Object.defineProperty(document, "visibilityState", {
+    configurable: true,
+    value,
+  });
 }
 
 describe("Desktop app activity", () => {
@@ -906,6 +914,356 @@ describe("Desktop app activity", () => {
       setIntervalSpy.mockRestore();
       clearIntervalSpy.mockRestore();
     }
+  });
+
+	  it("records passive blur and hidden lifecycle events without showing retry", async () => {
+    const user = userEvent.setup();
+    setSyncTrustedPeers([
+      {
+        device_id: "device_peer_1",
+        sync_group_id: "sync_group_local",
+        display_name: "Laptop Rig",
+        public_key: "pub_peer_1",
+        endpoint_hints: syncEndpointHints,
+        trusted_at: "2026-04-18T13:16:00.000Z",
+      },
+    ]);
+    const retryableStatus = {
+      active: false,
+      status: "stopped",
+      endpoint_hints: [],
+      nearby_peers: [],
+      last_lifecycle_event: {
+        kind: "background",
+        occurred_at: "2026-04-18T13:16:30.000Z",
+        message: "window blurred",
+        retryable: true,
+        interruption_code: "network_offline",
+        retry_guidance: "Retry with Laptop Rig.",
+        peer_device_id: "device_peer_1",
+        run_id: "sync_run_background_1",
+      },
+      lifecycle_events: [],
+      retryable_interruption_code: "network_offline",
+      retryable_interruption_peer_device_id: "device_peer_1",
+      retry_guidance: "Retry with Laptop Rig.",
+      last_sync: null,
+      updated_at: "2026-04-18T13:16:30.000Z",
+    };
+    mockRecordSyncLifecycleEvent.mockResolvedValue(retryableStatus);
+
+    try {
+      await openSyncTab(user);
+      mockRecordSyncLifecycleEvent.mockClear();
+
+      fireEvent.blur(window);
+      setDocumentVisibility("hidden");
+      fireEvent(document, new Event("visibilitychange"));
+
+      await waitFor(() => expect(mockRecordSyncLifecycleEvent).toHaveBeenCalledTimes(2));
+      expect(mockRecordSyncLifecycleEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "background", message: "window blurred" }),
+      );
+      expect(mockRecordSyncLifecycleEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "background", message: "document hidden" }),
+      );
+      expect(screen.queryByRole("button", { name: "Retry Sync" })).not.toBeInTheDocument();
+    } finally {
+      setDocumentVisibility("visible");
+    }
+	  });
+
+	  it("records Android background and screen-lock lifecycle events as retryable", async () => {
+	    const user = userEvent.setup();
+	    mockGetMobileCapabilities.mockResolvedValue(androidCapabilities);
+	    setSyncTrustedPeers([
+	      {
+	        device_id: "device_peer_1",
+	        sync_group_id: "sync_group_local",
+	        display_name: "Laptop Rig",
+	        public_key: "pub_peer_1",
+	        endpoint_hints: syncEndpointHints,
+	        trusted_at: "2026-04-18T13:16:00.000Z",
+	      },
+	    ]);
+	    mockRecordSyncLifecycleEvent.mockImplementation(async (event) => {
+	      const retryableStatus = {
+	        active: true,
+	        status: "listening",
+	        endpoint_hints: listenerEndpointHints,
+	        nearby_peers: [],
+	        last_lifecycle_event: {
+	          kind: event.kind,
+	          occurred_at: event.occurredAt ?? "2026-04-18T13:16:30.000Z",
+	          message: event.message ?? null,
+	          retryable: true,
+	          interruption_code: event.kind === "android_screen_lock"
+	            ? "lifecycle_interrupted_android_screen_lock"
+	            : "lifecycle_interrupted_android_background",
+	          retry_guidance: "Bring Android back to the foreground, then retry sync.",
+	          peer_device_id: "device_peer_1",
+	          run_id: "sync_run_android_lifecycle_1",
+	        },
+	        lifecycle_events: [],
+	        retryable_interruption_code: event.kind === "android_screen_lock"
+	          ? "lifecycle_interrupted_android_screen_lock"
+	          : "lifecycle_interrupted_android_background",
+	        retryable_interruption_peer_device_id: "device_peer_1",
+	        retry_guidance: "Bring Android back to the foreground, then retry sync.",
+	        last_sync: null,
+	        updated_at: "2026-04-18T13:16:30.000Z",
+	      };
+	      setSyncTransportStatus(retryableStatus);
+	      return retryableStatus;
+	    });
+
+	    try {
+	      await openSyncTab(user);
+	      await waitFor(() => expect(screen.getByRole("button", { name: "Scan QR" })).toBeEnabled());
+	      mockRecordSyncLifecycleEvent.mockClear();
+
+	      fireEvent.blur(window);
+	      setDocumentVisibility("hidden");
+	      fireEvent(document, new Event("visibilitychange"));
+
+	      await waitFor(() => expect(mockRecordSyncLifecycleEvent).toHaveBeenCalledTimes(2));
+	      expect(mockRecordSyncLifecycleEvent).toHaveBeenCalledWith(
+	        expect.objectContaining({ kind: "android_screen_lock", message: "android window blurred" }),
+	      );
+	      expect(mockRecordSyncLifecycleEvent).toHaveBeenCalledWith(
+	        expect.objectContaining({ kind: "android_background", message: "android background or screen lock" }),
+	      );
+	      expect(await screen.findByRole("button", { name: "Retry Sync" })).toBeInTheDocument();
+	    } finally {
+	      setDocumentVisibility("visible");
+	    }
+	  });
+
+	  it("records desktop sleep and wake after a long visible timer gap", async () => {
+	    const user = userEvent.setup();
+	    const setIntervalSpy = vi.spyOn(window, "setInterval");
+	    const clearIntervalSpy = vi.spyOn(window, "clearInterval");
+	    const dateNowSpy = vi.spyOn(Date, "now");
+	    const intervalHandlers: Array<() => void> = [];
+	    let now = 1_000_000;
+	    dateNowSpy.mockImplementation(() => now);
+	    setIntervalSpy.mockImplementation((handler: TimerHandler, timeout?: number) => {
+	      if (timeout === 10_000 && typeof handler === "function") {
+	        intervalHandlers.push(handler as () => void);
+	      }
+	      return 1;
+	    });
+
+	    try {
+	      setDocumentVisibility("visible");
+	      mockRecordSyncLifecycleEvent.mockResolvedValue({
+	        active: true,
+	        status: "listening",
+	        endpoint_hints: listenerEndpointHints,
+	        nearby_peers: [],
+	        lifecycle_events: [],
+	        last_sync: null,
+	      });
+
+	      await openSyncTab(user);
+	      mockRecordSyncLifecycleEvent.mockClear();
+	      expect(intervalHandlers.length).toBeGreaterThan(0);
+
+	      now += 120_000;
+	      await act(async () => {
+	        intervalHandlers[intervalHandlers.length - 1]?.();
+	      });
+
+	      await waitFor(() => expect(mockRecordSyncLifecycleEvent).toHaveBeenCalledTimes(2));
+	      expect(mockRecordSyncLifecycleEvent).toHaveBeenNthCalledWith(
+	        1,
+	        expect.objectContaining({ kind: "sleep", message: "desktop suspended for 120 seconds" }),
+	      );
+	      expect(mockRecordSyncLifecycleEvent).toHaveBeenNthCalledWith(
+	        2,
+	        expect.objectContaining({ kind: "wake", message: "desktop woke after suspension" }),
+	      );
+	    } finally {
+	      dateNowSpy.mockRestore();
+	      setIntervalSpy.mockRestore();
+	      clearIntervalSpy.mockRestore();
+	      setDocumentVisibility("visible");
+	    }
+	  });
+
+	  it("records offline lifecycle state and retries sync through preflight with nearby endpoints", async () => {
+    const user = userEvent.setup();
+    setSyncTrustedPeers([
+      {
+        device_id: "device_peer_1",
+        sync_group_id: "sync_group_local",
+        display_name: "Laptop Rig",
+        public_key: "pub_peer_1",
+        endpoint_hints: syncEndpointHints,
+        trusted_at: "2026-04-18T13:16:00.000Z",
+      },
+    ]);
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: listenerEndpointHints,
+      nearby_peers: [
+        {
+          device_id: "device_peer_1",
+          display_name: "Laptop Rig",
+          public_key: "pub_peer_1",
+          trust_status: "match",
+          endpoint_hints: [nearbyIrohEndpointHint, nearbyTcpEndpointHint],
+        },
+      ],
+    });
+    mockRecordSyncLifecycleEvent.mockImplementation(async (event) => {
+      const retryableStatus = {
+        active: true,
+        status: "listening",
+        endpoint_hints: listenerEndpointHints,
+        nearby_peers: [
+          {
+            device_id: "device_peer_1",
+            display_name: "Laptop Rig",
+            public_key: "pub_peer_1",
+            trust_status: "match",
+            endpoint_hints: [nearbyIrohEndpointHint, nearbyTcpEndpointHint],
+          },
+        ],
+        last_lifecycle_event: {
+          kind: event.kind,
+          occurred_at: event.occurredAt ?? "2026-04-18T13:17:00.000Z",
+          message: event.message ?? null,
+          retryable: true,
+          interruption_code: "network_offline",
+          retry_guidance: "Network restored. Retry sync.",
+          peer_device_id: "device_peer_1",
+          run_id: "sync_run_offline_1",
+        },
+        lifecycle_events: [
+          {
+            kind: event.kind,
+            occurred_at: event.occurredAt ?? "2026-04-18T13:17:00.000Z",
+            message: event.message ?? null,
+            retryable: true,
+            interruption_code: "network_offline",
+            retry_guidance: "Network restored. Retry sync.",
+            peer_device_id: "device_peer_1",
+            run_id: "sync_run_offline_1",
+          },
+        ],
+        retryable_interruption_code: "network_offline",
+        retryable_interruption_peer_device_id: "device_peer_1",
+        retry_guidance: "Network restored. Retry sync.",
+        last_sync: null,
+        updated_at: "2026-04-18T13:17:00.000Z",
+      };
+      setSyncTransportStatus(retryableStatus);
+      return retryableStatus;
+    });
+
+    await openSyncTab(user);
+    mockRecordSyncLifecycleEvent.mockClear();
+    mockGetSyncPreflight.mockClear();
+    mockSyncTrustedPeerNow.mockClear();
+
+    fireEvent(window, new Event("offline"));
+
+    await waitFor(() =>
+      expect(mockRecordSyncLifecycleEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "network_offline", message: "network offline" }),
+      ),
+    );
+    expect(await screen.findByRole("button", { name: "Retry Sync" })).toBeInTheDocument();
+    expect(screen.getByText("Network restored. Retry sync.")).toBeInTheDocument();
+
+	    const retryButton = screen.getByRole("button", { name: "Retry Sync" });
+	    expect(retryButton).toBeEnabled();
+	    mockSyncTrustedPeerNow.mockImplementationOnce(async () => {
+	      const result = syncRunStatus({
+	        run_id: "sync_run_retry_success_1",
+	        status: "completed",
+	        message: "Retry completed.",
+	        lifecycle_events: [],
+	        retryable_interruption_code: null,
+	        retryable_interruption_peer_device_id: null,
+	        retry_guidance: null,
+	      });
+	      setSyncTransportStatus({
+	        nearby_peers: [],
+	        retryable_interruption_code: null,
+	        retryable_interruption_peer_device_id: null,
+	        retry_guidance: null,
+	        last_sync: result,
+	      });
+	      return result;
+	    });
+	    fireEvent.click(retryButton);
+
+    await waitFor(() => expect(mockGetSyncPreflight).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(mockSyncTrustedPeerNow).toHaveBeenCalledWith("device_peer_1", {
+        endpointHints: [nearbyIrohEndpointHint, nearbyTcpEndpointHint],
+      }),
+    );
+	    expect(mockGetSyncPreflight.mock.invocationCallOrder[0]).toBeLessThan(
+	      mockSyncTrustedPeerNow.mock.invocationCallOrder[0],
+	    );
+	    await waitFor(() => expect(screen.queryByRole("button", { name: "Retry Sync" })).not.toBeInTheDocument());
+	    expect(await screen.findAllByText("Retry completed.")).not.toHaveLength(0);
+	  });
+
+  it("records foreground and online lifecycle events while refreshing listener status", async () => {
+    const user = userEvent.setup();
+    mockRecordSyncLifecycleEvent.mockImplementation(async (event) => ({
+      active: false,
+      status: "stopped",
+      endpoint_hints: [],
+      nearby_peers: [],
+      last_lifecycle_event: {
+        kind: event.kind,
+        occurred_at: event.occurredAt ?? "2026-04-18T13:18:00.000Z",
+        message: event.message ?? null,
+        retryable: false,
+      },
+      lifecycle_events: [],
+      last_sync: null,
+      updated_at: "2026-04-18T13:18:00.000Z",
+    }));
+    await openSyncTab(user);
+    mockRecordSyncLifecycleEvent.mockClear();
+    mockGetSyncTransportStatus.mockClear();
+
+    fireEvent(window, new Event("online"));
+
+    await waitFor(() =>
+      expect(mockRecordSyncLifecycleEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "network_online", message: "network online" }),
+      ),
+    );
+    await waitFor(() => expect(mockGetSyncTransportStatus.mock.calls.length).toBeGreaterThan(0));
+
+    mockGetSyncTransportStatus.mockClear();
+    fireEvent.focus(window);
+
+    await waitFor(() =>
+      expect(mockRecordSyncLifecycleEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "foreground", message: "window focused" }),
+      ),
+    );
+    await waitFor(() => expect(mockGetSyncTransportStatus.mock.calls.length).toBeGreaterThan(0));
+
+    mockGetSyncTransportStatus.mockClear();
+    setDocumentVisibility("visible");
+    fireEvent(document, new Event("visibilitychange"));
+
+    await waitFor(() =>
+      expect(mockRecordSyncLifecycleEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "foreground", message: "document visible" }),
+      ),
+    );
+    await waitFor(() => expect(mockGetSyncTransportStatus.mock.calls.length).toBeGreaterThan(0));
   });
 
   it("shows nearby devices and syncs trusted matches with discovered endpoints", async () => {
@@ -2210,6 +2568,41 @@ describe("Desktop app activity", () => {
         'Receiving artifact art_export_alpha from "C:\\Users\\test\\Music\\Secret Demo.wav" via tuneforge-sync+tcp://192.168.1.42:48625',
       active_progress_at: "2026-04-18T13:16:00.300Z",
       active_elapsed_ms: 900,
+      last_lifecycle_event: {
+        kind: "network_offline",
+        occurred_at: "2026-04-18T13:16:00.700Z",
+        message:
+          "Lost device_peer_1 while reading /Users/test/Music/Secret Demo.wav via tuneforge-sync+tcp://192.168.1.42:48625.",
+        retryable: true,
+        interruption_code: "network_offline",
+        retry_guidance: "Reconnect device_peer_1 and retry Secret Demo.wav.",
+        peer_device_id: "device_peer_1",
+        run_id: "sync_run_export_listener",
+      },
+      lifecycle_events: [
+        {
+          kind: "background",
+          occurred_at: "2026-04-18T13:15:59.000Z",
+          message: "Window blurred during sync_run_export_listener.",
+          retryable: false,
+          peer_device_id: "device_peer_1",
+          run_id: "sync_run_export_listener",
+        },
+        {
+          kind: "network_offline",
+          occurred_at: "2026-04-18T13:16:00.700Z",
+          message:
+            "Lost device_peer_1 while reading /Users/test/Music/Secret Demo.wav via tuneforge-sync+tcp://192.168.1.42:48625.",
+          retryable: true,
+          interruption_code: "network_offline",
+          retry_guidance: "Reconnect device_peer_1 and retry Secret Demo.wav.",
+          peer_device_id: "device_peer_1",
+          run_id: "sync_run_export_listener",
+        },
+      ],
+      retryable_interruption_code: "network_offline",
+      retryable_interruption_peer_device_id: "device_peer_1",
+      retry_guidance: "Reconnect device_peer_1 and retry Secret Demo.wav.",
       last_sync: {
         run_id: "sync_run_export_listener",
         session_id: "sync_session_export_listener",
@@ -2238,6 +2631,33 @@ describe("Desktop app activity", () => {
           credit_revokes: 2,
           staging_post_ms_total: 300,
         },
+        last_lifecycle_event: {
+          kind: "network_offline",
+          occurred_at: "2026-04-18T13:16:00.700Z",
+          message:
+            "Run sync_run_export_listener interrupted by device_peer_1 at /Users/test/Music/Secret Demo.wav.",
+          retryable: true,
+          interruption_code: "network_offline",
+          retry_guidance: "Reconnect device_peer_1 and retry Secret Demo.wav.",
+          peer_device_id: "device_peer_1",
+          run_id: "sync_run_export_listener",
+        },
+        lifecycle_events: [
+          {
+            kind: "network_offline",
+            occurred_at: "2026-04-18T13:16:00.700Z",
+            message:
+              "Run sync_run_export_listener interrupted by device_peer_1 at /Users/test/Music/Secret Demo.wav.",
+            retryable: true,
+            interruption_code: "network_offline",
+            retry_guidance: "Reconnect device_peer_1 and retry Secret Demo.wav.",
+            peer_device_id: "device_peer_1",
+            run_id: "sync_run_export_listener",
+          },
+        ],
+        retryable_interruption_code: "network_offline",
+        retryable_interruption_peer_device_id: "device_peer_1",
+        retry_guidance: "Reconnect device_peer_1 and retry Secret Demo.wav.",
         imported_project_count: 1,
         applied_project_count: 1,
         skipped_project_count: 0,
@@ -2386,11 +2806,47 @@ describe("Desktop app activity", () => {
       }),
     ]);
     expect(exportedJson.lifecycle).toMatchObject({
+      events: expect.arrayContaining([
+        expect.objectContaining({
+          kind: "background",
+          peer: "peer_1",
+          hasRunId: true,
+        }),
+        expect.objectContaining({
+          kind: "network_offline",
+          retryable: true,
+          interruptionCode: "network_offline",
+          peer: "peer_1",
+          hasRunId: true,
+        }),
+      ]),
+      lastLifecycleEvent: expect.objectContaining({
+        kind: "network_offline",
+        retryable: true,
+        interruptionCode: "network_offline",
+        retryGuidance: expect.stringContaining("peer_1"),
+        peer: "peer_1",
+        hasRunId: true,
+      }),
+      retryableInterruptionCode: "network_offline",
+      retryGuidance: expect.stringContaining("peer_1"),
       listener: {
         active: true,
         status: "listening",
         activePhase: "artifact_transfer",
         hasLastError: false,
+        lastLifecycleEvent: expect.objectContaining({
+          kind: "network_offline",
+          peer: "peer_1",
+        }),
+        retryableInterruptionCode: "network_offline",
+      },
+      run: {
+        lastLifecycleEvent: expect.objectContaining({
+          kind: "network_offline",
+          peer: "peer_1",
+        }),
+        retryableInterruptionCode: "network_offline",
       },
       phaseTimings: [
         expect.objectContaining({
@@ -2421,6 +2877,7 @@ describe("Desktop app activity", () => {
     expect(serialized).toContain("project_1");
     expect(serialized).toContain("artifact_1");
     expect(serialized).not.toContain("device_peer_1");
+    expect(serialized).not.toContain("sync_run_export_listener");
     expect(serialized).not.toContain("proj_export_alpha");
     expect(serialized).not.toContain("art_export_alpha");
     expect(serialized).not.toContain("sha256-export-alpha");

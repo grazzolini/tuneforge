@@ -11,8 +11,10 @@ import {
   type SyncNearbyPeerTrustStatus,
   type SyncPreflightBlockingJob,
   type SyncPreflightResponse,
+  type SyncTransportLifecycleEvent,
   type SyncTransportProjectResult,
   type SyncTransportRunStatus,
+  type SyncTransportStatus,
   type SyncTransportTransferResult,
   type SyncTrustedPeerSchema,
 } from "../../lib/api";
@@ -27,6 +29,8 @@ import {
 
 const PAIRING_OFFER_TTL_SECONDS = 600;
 const SYNC_LISTENER_POLL_INTERVAL_MS = 2000;
+const DESKTOP_SLEEP_CHECK_INTERVAL_MS = 10_000;
+const DESKTOP_SLEEP_ELAPSED_THRESHOLD_MS = 90_000;
 const EMPTY_NEARBY_PEERS: SyncNearbyPeer[] = [];
 const PROJECT_MUTATION_QUERY_KEYS = [
   ["projects"],
@@ -67,6 +71,26 @@ type PairingOutput = {
 type SyncNowRequest = {
   deviceId: string;
   endpointHints?: string[];
+};
+type SyncLifecycleRecordOptions = {
+  message?: string;
+  refreshListener?: boolean;
+  updateListenerStatus?: boolean;
+};
+type RetryableSyncInterruption = {
+  peerDeviceId: string;
+  endpointHints?: string[];
+  code: string;
+  guidance: string | null;
+};
+type SyncRetrySource = {
+  retryable_interruption_code?: string | null;
+  retryable_interruption_peer_device_id?: string | null;
+  retry_guidance?: string | null;
+  last_lifecycle_event?: SyncTransportLifecycleEvent | null;
+  lifecycle_events?: SyncTransportLifecycleEvent[];
+  peer_device_id?: string | null;
+  remote_device_id?: string | null;
 };
 
 function statusLabel(value: string | null | undefined) {
@@ -260,6 +284,58 @@ function syncStatusText(status: SyncTransportRunStatus | null | undefined, peers
   return status.message ?? `${statusLabel(status.status)} for ${peerName}.`;
 }
 
+function retryableLifecycleEvent(source: SyncRetrySource | null | undefined) {
+  if (!source) {
+    return null;
+  }
+  const events = [
+    source.last_lifecycle_event,
+    ...[...(source.lifecycle_events ?? [])].reverse(),
+  ];
+  return events.find((event): event is SyncTransportLifecycleEvent => Boolean(event?.retryable)) ?? null;
+}
+
+function hasSyncRetryField(source: SyncRetrySource | null | undefined, key: keyof SyncRetrySource) {
+  return Boolean(source && Object.prototype.hasOwnProperty.call(source, key));
+}
+
+function retryableInterruptionFromSource(
+  source: SyncRetrySource | null | undefined,
+  peersById: Map<string, SyncTrustedPeerSchema>,
+  trustedNearbyPeerByDeviceId: Map<string, SyncNearbyPeer>,
+): RetryableSyncInterruption | null {
+  const lifecycleEvent = retryableLifecycleEvent(source);
+  const hasExplicitCode = hasSyncRetryField(source, "retryable_interruption_code");
+  const hasExplicitPeer = hasSyncRetryField(source, "retryable_interruption_peer_device_id");
+  const hasExplicitGuidance = hasSyncRetryField(source, "retry_guidance");
+  const hasExplicitInterruptionState = hasExplicitCode || hasExplicitPeer || hasExplicitGuidance;
+  const code = hasExplicitInterruptionState
+    ? source?.retryable_interruption_code ?? null
+    : lifecycleEvent?.interruption_code ?? null;
+  const peerDeviceId = hasExplicitInterruptionState
+    ? source?.retryable_interruption_peer_device_id ?? null
+    : lifecycleEvent?.peer_device_id ??
+      source?.peer_device_id ??
+      source?.remote_device_id ??
+      null;
+  if (!code || !peerDeviceId || !peersById.has(peerDeviceId)) {
+    return null;
+  }
+  const endpointHints = trustedNearbyPeerByDeviceId.get(peerDeviceId)?.endpoint_hints;
+  return {
+    peerDeviceId,
+    endpointHints: endpointHints?.length ? endpointHints : undefined,
+    code,
+    guidance: hasExplicitInterruptionState
+      ? source?.retry_guidance ?? null
+      : lifecycleEvent?.retry_guidance ?? null,
+  };
+}
+
+function retryableInterruptionText(interruption: RetryableSyncInterruption) {
+  return interruption.guidance?.trim() || `${statusLabel(interruption.code)}. Retry when peer is reachable.`;
+}
+
 function syncNowFailureText(error: unknown) {
   if (error instanceof Error) {
     const message = error.message.trim();
@@ -386,6 +462,11 @@ function syncResultKey(status: SyncTransportRunStatus | null | undefined) {
     fallbackReason: status.fallback_reason,
     fallbackCode: status.fallback_code,
     attemptedTransports: status.attempted_transports,
+    retryableInterruptionCode: status.retryable_interruption_code,
+    retryableInterruptionPeerDeviceId: status.retryable_interruption_peer_device_id,
+    retryGuidance: status.retry_guidance,
+    lastLifecycleEvent: status.last_lifecycle_event,
+    lifecycleEvents: status.lifecycle_events ?? [],
     timeToFirstArtifactMs: status.time_to_first_artifact_ms,
     totalReceivedBytes: status.total_received_bytes,
     totalServedBytes: status.total_served_bytes,
@@ -893,10 +974,18 @@ function createEvidenceLabelMap(values: Array<string | null | undefined>, prefix
   return labels;
 }
 
-function createSyncEvidenceRedactionContext(status: SyncTransportRunStatus): SyncEvidenceRedactionContext {
+function createSyncEvidenceRedactionContext(
+  status: SyncTransportRunStatus,
+  extraPeerDeviceIds: Array<string | null | undefined> = [],
+  extraRunIds: Array<string | null | undefined> = [],
+): SyncEvidenceRedactionContext {
   const peerLabels = createEvidenceLabelMap([
     status.peer_device_id,
     status.remote_device_id,
+    status.retryable_interruption_peer_device_id,
+    status.last_lifecycle_event?.peer_device_id,
+    ...(status.lifecycle_events ?? []).map((event) => event.peer_device_id),
+    ...extraPeerDeviceIds,
   ], "peer");
   const projectLabels = createEvidenceLabelMap([
     ...status.project_results.map((result) => result.project_id),
@@ -907,10 +996,18 @@ function createSyncEvidenceRedactionContext(status: SyncTransportRunStatus): Syn
     ...status.received_artifacts.map((artifact) => artifact.artifact_id),
     ...(status.phase_timings ?? []).map((timing) => timing.artifact_id),
   ], "artifact");
+  const runLabels = createEvidenceLabelMap([
+    status.run_id,
+    status.session_id,
+    status.last_lifecycle_event?.run_id,
+    ...(status.lifecycle_events ?? []).map((event) => event.run_id),
+    ...extraRunIds,
+  ], "run");
   const tokenReplacements = [
     ...Array.from(peerLabels.entries()),
     ...Array.from(projectLabels.entries()),
     ...Array.from(artifactLabels.entries()),
+    ...Array.from(runLabels.entries()),
   ].sort(([left], [right]) => right.length - left.length);
   return {
     peerLabels,
@@ -949,6 +1046,34 @@ function redactSyncEvidenceText(
   );
   redacted = redacted.replace(SYNC_EVIDENCE_FILENAME_PATTERN, "[redacted_filename]");
   return redacted;
+}
+
+function syncEvidenceLifecycleEvent(
+  event: SyncTransportLifecycleEvent | null | undefined,
+  context: SyncEvidenceRedactionContext,
+) {
+  if (!event) {
+    return null;
+  }
+  return {
+    kind: event.kind,
+    occurredAt: event.occurred_at ?? null,
+    message: redactSyncEvidenceText(event.message, context),
+    retryable: event.retryable,
+    interruptionCode: event.interruption_code ?? null,
+    retryGuidance: redactSyncEvidenceText(event.retry_guidance, context),
+    peer: event.peer_device_id ? context.peerLabels.get(event.peer_device_id) ?? "peer_1" : null,
+    hasRunId: Boolean(event.run_id),
+  };
+}
+
+function syncEvidenceLifecycleEvents(
+  events: SyncTransportLifecycleEvent[],
+  context: SyncEvidenceRedactionContext,
+) {
+  return events
+    .map((event) => syncEvidenceLifecycleEvent(event, context))
+    .filter((event): event is NonNullable<ReturnType<typeof syncEvidenceLifecycleEvent>> => event !== null);
 }
 
 function syncEvidenceProjectCadence(status: SyncTransportRunStatus) {
@@ -1080,10 +1205,20 @@ function buildSyncEvidenceExport(
     listenerActiveElapsedMs: number | null | undefined;
     listenerLastStatus: string | null | undefined;
     listenerLastError: string | null | undefined;
+    listenerLifecycleEvents: SyncTransportLifecycleEvent[];
+    listenerLastLifecycleEvent: SyncTransportLifecycleEvent | null | undefined;
+    listenerRetryableInterruptionCode: string | null | undefined;
+    listenerRetryGuidance: string | null | undefined;
     showListenerSyncResult: boolean;
   },
 ) {
-  const redactionContext = createSyncEvidenceRedactionContext(status);
+  const redactionContext = createSyncEvidenceRedactionContext(status, [
+    options.listenerLastLifecycleEvent?.peer_device_id,
+    ...options.listenerLifecycleEvents.map((event) => event.peer_device_id),
+  ], [
+    options.listenerLastLifecycleEvent?.run_id,
+    ...options.listenerLifecycleEvents.map((event) => event.run_id),
+  ]);
   const projectAppearances = syncEvidenceProjectCadence(status);
   const mergedProjectResults = mergeSyncProjectResults(status.project_results, status.manifest_errors);
   const artifactStatusCounts = status.received_artifacts.reduce<Record<string, number>>((counts, artifact) => {
@@ -1124,6 +1259,14 @@ function buildSyncEvidenceExport(
     ? importedProjectCount / (durationMs / 60000)
     : null;
   const evidenceTransferCounts = syncRunTransferCountsEvidence(status, artifactStatusCounts);
+  const evidenceLifecycleEvents = [
+    ...options.listenerLifecycleEvents,
+    ...(status.lifecycle_events ?? []),
+  ];
+  const lastLifecycleEvent = status.last_lifecycle_event ?? options.listenerLastLifecycleEvent ?? null;
+  const retryableInterruptionCode =
+    status.retryable_interruption_code ?? options.listenerRetryableInterruptionCode ?? null;
+  const retryGuidance = status.retry_guidance ?? options.listenerRetryGuidance ?? null;
 
   return {
     capturedAt: options.capturedAt,
@@ -1267,6 +1410,10 @@ function buildSyncEvidenceExport(
       reused: artifact.status === "already_staged",
     })),
     lifecycle: {
+      events: syncEvidenceLifecycleEvents(evidenceLifecycleEvents, redactionContext),
+      lastLifecycleEvent: syncEvidenceLifecycleEvent(lastLifecycleEvent, redactionContext),
+      retryableInterruptionCode,
+      retryGuidance: redactSyncEvidenceText(retryGuidance, redactionContext),
       listener: {
         active: options.listenerActive,
         status: options.listenerStatus,
@@ -1277,6 +1424,14 @@ function buildSyncEvidenceExport(
         lastStatus: redactSyncEvidenceText(options.listenerLastStatus, redactionContext),
         hasLastError: Boolean(options.listenerLastError),
         updatedAt: options.listenerUpdatedAt ?? null,
+        lastLifecycleEvent: syncEvidenceLifecycleEvent(options.listenerLastLifecycleEvent, redactionContext),
+        retryableInterruptionCode: options.listenerRetryableInterruptionCode ?? null,
+        retryGuidance: redactSyncEvidenceText(options.listenerRetryGuidance, redactionContext),
+      },
+      run: {
+        lastLifecycleEvent: syncEvidenceLifecycleEvent(status.last_lifecycle_event, redactionContext),
+        retryableInterruptionCode: status.retryable_interruption_code ?? null,
+        retryGuidance: redactSyncEvidenceText(status.retry_guidance, redactionContext),
       },
       phaseTimings: (status.phase_timings ?? []).map((timing, index) => ({
         label: `phase_${index + 1}`,
@@ -1406,9 +1561,11 @@ export function ActivitySyncPanel() {
   const [syncNowPolling, setSyncNowPolling] = useState(false);
   const [evidenceMessage, setEvidenceMessage] = useState<string | null>(null);
   const [evidenceError, setEvidenceError] = useState<string | null>(null);
-  const pairingCodeOutputRef = useRef<HTMLTextAreaElement | null>(null);
-  const rawPairingOutputRef = useRef<HTMLTextAreaElement | null>(null);
-  const refreshedProjectSyncKeyRef = useRef<string | null>(null);
+	  const pairingCodeOutputRef = useRef<HTMLTextAreaElement | null>(null);
+	  const rawPairingOutputRef = useRef<HTMLTextAreaElement | null>(null);
+	  const refreshedProjectSyncKeyRef = useRef<string | null>(null);
+	  const desktopLifecycleLastObservedAtRef = useRef(Date.now());
+	  const desktopLifecyclePassiveAwayRef = useRef(false);
 
   const identityQuery = useQuery({
     queryKey: ["sync", "identity"],
@@ -1465,6 +1622,23 @@ export function ActivitySyncPanel() {
     ? lastSyncMessage ?? lastSyncStatus
     : lastSyncStatus;
   const visibleSyncSummary = syncRunSummaryText(visibleSyncResult);
+  const retryableInterruption = useMemo(() => {
+    const sources: Array<SyncRetrySource | null | undefined> = [
+      listenerQuery.data,
+      visibleSyncResult,
+    ];
+    for (const source of sources) {
+      const interruption = retryableInterruptionFromSource(
+        source,
+        peersById,
+        trustedNearbyPeerByDeviceId,
+      );
+      if (interruption) {
+        return interruption;
+      }
+    }
+    return null;
+  }, [listenerQuery.data, visibleSyncResult, peersById, trustedNearbyPeerByDeviceId]);
   const pairingInputValue = pairingCodeDraft.trim() || rawPairingPayloadDraft.trim();
   const decodedPairingInput = useMemo(() => {
     if (!pairingInputValue) {
@@ -1479,7 +1653,8 @@ export function ActivitySyncPanel() {
       };
     }
   }, [pairingInputValue]);
-  const qrScanSupported = mobileCapabilitiesQuery.data?.platform === "android";
+	  const qrScanSupported = mobileCapabilitiesQuery.data?.platform === "android";
+	  const isAndroidRuntime = mobileCapabilitiesQuery.data?.platform === "android";
 
   const refreshSyncQueries = useCallback(async () => {
     await Promise.all([
@@ -1489,11 +1664,185 @@ export function ActivitySyncPanel() {
     ]);
   }, [queryClient]);
 
+	  const recordLifecycleEvent = useCallback(
+	    async (kind: string, options: SyncLifecycleRecordOptions = {}) => {
+	      const occurredAt = new Date().toISOString();
+	      let status: SyncTransportStatus | null = null;
+	      try {
+	        status = await api.recordSyncLifecycleEvent({
+	          kind,
+	          occurredAt,
+	          message: options.message,
+	        });
+	      } catch {
+	        // Lifecycle recording is best-effort; still refresh listener state when requested.
+	      }
+      if (status && options.updateListenerStatus) {
+        queryClient.setQueryData(["sync", "listener"], status);
+      }
+      if (options.refreshListener) {
+        await queryClient.invalidateQueries({ queryKey: ["sync", "listener"] });
+      }
+    },
+    [queryClient],
+  );
+
   const refreshProjectMutationQueries = useCallback(async () => {
     await Promise.all(
       PROJECT_MUTATION_QUERY_KEYS.map((queryKey) => queryClient.invalidateQueries({ queryKey })),
     );
   }, [queryClient]);
+
+	  useEffect(() => {
+	    const markDesktopLifecycleObserved = () => {
+	      desktopLifecycleLastObservedAtRef.current = Date.now();
+	    };
+	    const recordDesktopSuspensionIfNeeded = (wakeMessage: string) => {
+	      const now = Date.now();
+	      const elapsedMs = now - desktopLifecycleLastObservedAtRef.current;
+	      desktopLifecycleLastObservedAtRef.current = now;
+	      if (
+	        isAndroidRuntime ||
+	        desktopLifecyclePassiveAwayRef.current ||
+	        document.visibilityState !== "visible" ||
+	        elapsedMs < DESKTOP_SLEEP_ELAPSED_THRESHOLD_MS
+	      ) {
+	        return;
+	      }
+	      void (async () => {
+	        await recordLifecycleEvent("sleep", {
+	          message: `desktop suspended for ${Math.round(elapsedMs / 1000)} seconds`,
+	          updateListenerStatus: true,
+	        });
+	        await recordLifecycleEvent("wake", {
+	          message: wakeMessage,
+	          refreshListener: true,
+	          updateListenerStatus: true,
+	        });
+	      })();
+	    };
+	    const recordPassiveBackground = (message: string) => {
+	      desktopLifecyclePassiveAwayRef.current = true;
+	      markDesktopLifecycleObserved();
+	      void recordLifecycleEvent("background", { message });
+	    };
+	    const recordAndroidBackground = (message: string) => {
+	      void recordLifecycleEvent("android_background", {
+	        message,
+	        updateListenerStatus: true,
+	      });
+	    };
+	    const recordAndroidScreenLock = (message: string) => {
+	      void recordLifecycleEvent("android_screen_lock", {
+	        message,
+	        updateListenerStatus: true,
+	      });
+	    };
+	    const recordForeground = (message: string) => {
+	      const wasDesktopPassiveAway = desktopLifecyclePassiveAwayRef.current;
+	      desktopLifecyclePassiveAwayRef.current = false;
+	      if (!wasDesktopPassiveAway) {
+	        recordDesktopSuspensionIfNeeded(message);
+	      } else {
+	        markDesktopLifecycleObserved();
+	      }
+	      void recordLifecycleEvent("foreground", {
+	        message,
+	        refreshListener: true,
+	        updateListenerStatus: true,
+	      });
+	    };
+	    const recordAndroidForeground = (message: string) => {
+	      void recordLifecycleEvent("android_foreground", {
+	        message,
+	        refreshListener: true,
+	        updateListenerStatus: true,
+	      });
+	    };
+	    const handleVisibilityChange = () => {
+	      if (document.visibilityState === "hidden") {
+	        if (isAndroidRuntime) {
+	          recordAndroidBackground("android background or screen lock");
+	          return;
+	        }
+	        recordPassiveBackground("document hidden");
+	        return;
+	      }
+	      if (document.visibilityState === "visible") {
+	        if (isAndroidRuntime) {
+	          recordAndroidForeground("android foreground");
+	          return;
+	        }
+	        recordForeground("document visible");
+	      }
+	    };
+	    const handleBlur = () => {
+	      if (isAndroidRuntime) {
+	        recordAndroidScreenLock("android window blurred");
+	        return;
+	      }
+	      recordPassiveBackground("window blurred");
+	    };
+	    const handleFocus = () => {
+	      if (isAndroidRuntime) {
+	        recordAndroidForeground("android window focused");
+	        return;
+	      }
+	      recordForeground("window focused");
+	    };
+    const handleOnline = () => {
+      void recordLifecycleEvent("network_online", {
+        message: "network online",
+        refreshListener: true,
+        updateListenerStatus: true,
+      });
+    };
+    const handleOffline = () => {
+      void recordLifecycleEvent("network_offline", {
+        message: "network offline",
+        updateListenerStatus: true,
+      });
+    };
+	    const handlePageHide = () => {
+	      if (isAndroidRuntime) {
+	        recordAndroidBackground("android page hidden");
+	        return;
+	      }
+	      recordPassiveBackground("page hidden");
+	    };
+	    const handlePageShow = () => {
+	      if (isAndroidRuntime) {
+	        recordAndroidForeground("android page shown");
+	        return;
+	      }
+	      recordForeground("page shown");
+	    };
+	    const handleDesktopSleepCheck = () => {
+	      recordDesktopSuspensionIfNeeded("desktop woke after suspension");
+	    };
+
+	    document.addEventListener("visibilitychange", handleVisibilityChange);
+	    window.addEventListener("blur", handleBlur);
+	    window.addEventListener("focus", handleFocus);
+	    window.addEventListener("online", handleOnline);
+	    window.addEventListener("offline", handleOffline);
+	    window.addEventListener("pagehide", handlePageHide);
+	    window.addEventListener("pageshow", handlePageShow);
+	    const desktopSleepCheckId = window.setInterval(
+	      handleDesktopSleepCheck,
+	      DESKTOP_SLEEP_CHECK_INTERVAL_MS,
+	    );
+	    return () => {
+	      document.removeEventListener("visibilitychange", handleVisibilityChange);
+	      window.removeEventListener("blur", handleBlur);
+	      window.removeEventListener("focus", handleFocus);
+	      window.removeEventListener("online", handleOnline);
+	      window.removeEventListener("offline", handleOffline);
+	      window.removeEventListener("pagehide", handlePageHide);
+	      window.removeEventListener("pageshow", handlePageShow);
+	      window.clearInterval(desktopSleepCheckId);
+	    };
+	  }, [isAndroidRuntime, recordLifecycleEvent]);
 
   useEffect(() => {
     if (!listenerSyncKey || refreshedProjectSyncKeyRef.current === listenerSyncKey) {
@@ -1582,7 +1931,8 @@ export function ActivitySyncPanel() {
       await refreshSyncQueries();
     },
   });
-  const syncNowMutation = useMutation({
+	  const syncNowMutation = useMutation({
+    networkMode: "always",
     mutationFn: async (request: SyncNowRequest) => {
       let preflight: SyncPreflightResponse;
       try {
@@ -1603,13 +1953,26 @@ export function ActivitySyncPanel() {
     onMutate: () => {
       void queryClient.invalidateQueries({ queryKey: ["sync", "listener"] });
     },
-    onSuccess: async (status) => {
-      setLastSyncMessage(syncStatusText(status, peersById));
-      setLastSyncResult(status);
-      setHiddenListenerSyncKey(listenerSyncKey);
-      const shouldRefreshProjectQueries = syncResultMutatedLocalProjectCaches(status);
-      if (shouldRefreshProjectQueries) {
-        refreshedProjectSyncKeyRef.current = syncResultKey(status);
+	    onSuccess: async (status) => {
+	      setLastSyncMessage(syncStatusText(status, peersById));
+	      setLastSyncResult(status);
+	      setHiddenListenerSyncKey(listenerSyncKey);
+	      if (!status.retryable_interruption_code) {
+	        queryClient.setQueryData<SyncTransportStatus | undefined>(
+	          ["sync", "listener"],
+	          (current) => current
+	            ? {
+	                ...current,
+	                retryable_interruption_code: null,
+	                retryable_interruption_peer_device_id: null,
+	                retry_guidance: null,
+	              }
+	            : current,
+	        );
+	      }
+	      const shouldRefreshProjectQueries = syncResultMutatedLocalProjectCaches(status);
+	      if (shouldRefreshProjectQueries) {
+	        refreshedProjectSyncKeyRef.current = syncResultKey(status);
       }
       await Promise.all([
         refreshSyncQueries(),
@@ -1748,6 +2111,10 @@ export function ActivitySyncPanel() {
       listenerActiveElapsedMs: listenerQuery.data?.active_elapsed_ms ?? null,
       listenerLastStatus: listenerQuery.data?.last_status ?? null,
       listenerLastError: listenerQuery.data?.last_error ?? null,
+      listenerLifecycleEvents: listenerQuery.data?.lifecycle_events ?? [],
+      listenerLastLifecycleEvent: listenerQuery.data?.last_lifecycle_event ?? null,
+      listenerRetryableInterruptionCode: listenerQuery.data?.retryable_interruption_code ?? null,
+      listenerRetryGuidance: listenerQuery.data?.retry_guidance ?? null,
       showListenerSyncResult,
     });
     return {
@@ -1890,6 +2257,24 @@ export function ActivitySyncPanel() {
           <div className="activity-sync-section__header">
             <h3 id="activity-sync-listener-heading">Listener</h3>
             <div className="activity-sync-section__actions">
+              {retryableInterruption ? (
+                <button
+                  className="button button--primary button--small"
+                  disabled={syncNowMutation.isPending}
+                  onClick={() => {
+                    syncNowMutation.mutate({
+                      deviceId: retryableInterruption.peerDeviceId,
+                      endpointHints: retryableInterruption.endpointHints,
+                    });
+                  }}
+                  type="button"
+                >
+                  {syncNowMutation.isPending &&
+                    syncNowMutation.variables?.deviceId === retryableInterruption.peerDeviceId
+                    ? "Retrying..."
+                    : "Retry Sync"}
+                </button>
+              ) : null}
               <button
                 className="button button--ghost button--small"
                 disabled={!visibleSyncResult}
@@ -1963,6 +2348,11 @@ export function ActivitySyncPanel() {
           {listenerQuery.data?.last_error ? (
             <p className="activity-sync-alert activity-sync-alert--error" role="alert">
               {listenerQuery.data.last_error}
+            </p>
+          ) : null}
+          {retryableInterruption ? (
+            <p className="activity-sync-alert" role="status">
+              {retryableInterruptionText(retryableInterruption)}
             </p>
           ) : null}
           {startListenerMutation.isError || stopListenerMutation.isError ? (

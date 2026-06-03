@@ -32,6 +32,27 @@ pub struct SyncTransportPairingOfferRequest {
     pub ttl_seconds: Option<u32>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncTransportLifecycleEventRequest {
+    pub kind: String,
+    pub occurred_at: Option<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncTransportLifecycleEvent {
+    pub kind: String,
+    pub occurred_at: String,
+    pub message: Option<String>,
+    pub retryable: bool,
+    pub interruption_code: Option<String>,
+    pub retry_guidance: Option<String>,
+    pub peer_device_id: Option<String>,
+    pub run_id: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncTransportNearbyPeer {
@@ -62,6 +83,11 @@ pub struct SyncTransportStatus {
     pub last_error: Option<String>,
     pub last_sync: Option<SyncTransportSyncResult>,
     pub active_progress: Option<SyncTransportActiveProgress>,
+    pub last_lifecycle_event: Option<SyncTransportLifecycleEvent>,
+    pub lifecycle_events: Vec<SyncTransportLifecycleEvent>,
+    pub retryable_interruption_code: Option<String>,
+    pub retryable_interruption_peer_device_id: Option<String>,
+    pub retry_guidance: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -361,6 +387,9 @@ pub struct SyncTransportSyncResult {
     pub remote_manifest_count: usize,
     pub local_manifest_count: usize,
     pub manifest_errors: Vec<SyncTransportManifestError>,
+    pub lifecycle_events: Vec<SyncTransportLifecycleEvent>,
+    pub retryable_interruption_code: Option<String>,
+    pub retry_guidance: Option<String>,
     pub phase_timings: Vec<SyncTransportTimingEvidence>,
     #[serde(flatten)]
     pub diagnostics: SyncTransportDiagnostics,
@@ -385,7 +414,7 @@ mod sync_core {
     use serde::{Deserialize, Serialize};
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
-    use std::{io, time::Duration};
+    use std::{io, net::TcpStream, sync::Arc, time::Duration};
 
     pub(crate) const TCP_TRANSPORT_ID: &str = "tuneforge-sync+tcp";
     pub(crate) const IROH_TRANSPORT_ID: &str = "tuneforge-sync+iroh";
@@ -986,6 +1015,9 @@ mod sync_core {
         fn read_exact(&mut self, buffer: &mut [u8]) -> io::Result<()>;
         fn write_all(&mut self, buffer: &[u8]) -> io::Result<()>;
         fn set_read_timeout(&mut self, timeout: Duration) -> io::Result<()>;
+        fn tcp_abort_stream(&self) -> Option<Arc<TcpStream>> {
+            None
+        }
     }
 
     pub(crate) trait ProtocolConnection {
@@ -1549,6 +1581,7 @@ mod sync_core {
 mod desktop {
     use super::{
         sync_core::*, SyncTransportActiveProgress, SyncTransportDiagnostics,
+        SyncTransportLifecycleEvent, SyncTransportLifecycleEventRequest,
         SyncTransportManifestError, SyncTransportNearbyPeer, SyncTransportPairingOffer,
         SyncTransportPairingOfferRequest, SyncTransportProjectResult,
         SyncTransportStartListenerRequest, SyncTransportStatus, SyncTransportSyncNowRequest,
@@ -1575,8 +1608,8 @@ mod desktop {
         fs::{self, File},
         io::{self, Read, Write},
         net::{
-            IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs,
-            UdpSocket,
+            IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream,
+            ToSocketAddrs, UdpSocket,
         },
         path::{Path, PathBuf},
         process,
@@ -1630,6 +1663,13 @@ mod desktop {
     const BACKEND_PREFLIGHT_UNRESPONSIVE_MESSAGE: &str = "Local backend is unresponsive during sync preflight. Wait for backend work to finish or restart TuneForge, then retry sync.";
     const BACKEND_BUSY_RETRY_GUIDANCE: &str =
         "Wait for those jobs to finish or cancel them, then retry sync.";
+    const LIFECYCLE_EVENT_HISTORY_LIMIT: usize = 20;
+    const LIFECYCLE_INTERRUPTION_DEFAULT_GUIDANCE: &str =
+        "Restore the device state, then retry sync.";
+    const LIFECYCLE_INTERRUPTION_NETWORK_GUIDANCE: &str =
+        "Restore network connectivity, then retry sync.";
+    const LIFECYCLE_INTERRUPTION_FOREGROUND_GUIDANCE: &str =
+        "Bring TuneForge back to the foreground, then retry sync.";
     #[cfg(not(target_os = "android"))]
     const HTTP_TIMEOUT: Duration = Duration::from_secs(45);
     #[cfg(not(target_os = "android"))]
@@ -1771,6 +1811,7 @@ mod desktop {
                 status.last_sync = None;
                 status.active_progress = None;
                 status.active_progress_owner_run_id = None;
+                clear_retryable_interruption(status);
             });
 
             Ok(self.status())
@@ -1848,7 +1889,31 @@ mod desktop {
                 last_error: shared.last_error,
                 last_sync: shared.last_sync,
                 active_progress: shared.active_progress,
+                last_lifecycle_event: shared.last_lifecycle_event,
+                lifecycle_events: shared.lifecycle_events,
+                retryable_interruption_code: shared.retryable_interruption_code,
+                retryable_interruption_peer_device_id: shared.retryable_interruption_peer_device_id,
+                retry_guidance: shared.retry_guidance,
             }
+        }
+
+        fn record_lifecycle_event(
+            &self,
+            payload: SyncTransportLifecycleEventRequest,
+        ) -> SyncTransportStatus {
+            let outcome = self
+                .shared_status
+                .lock()
+                .map(|mut status| record_lifecycle_event_in_status(&mut status, payload))
+                .unwrap_or_else(|_| LifecycleRecordOutcome::default());
+
+            if outcome.refresh_endpoint_hints {
+                self.refresh_listener_endpoint_hints();
+            }
+
+            interrupt_active_runs_for_lifecycle(&outcome.event, outcome.interrupted_runs);
+
+            self.status()
         }
 
         fn create_pairing_offer(
@@ -1878,7 +1943,12 @@ mod desktop {
             payload: SyncTransportSyncNowRequest,
         ) -> Result<SyncTransportSyncResult, String> {
             let run_id = sync_run_id();
-            let result = self.run_sync_now(payload, run_id.clone());
+            let run_cancel = register_active_run(
+                &self.shared_status,
+                &run_id,
+                Some(payload.peer_device_id.clone()),
+            );
+            let result = self.run_sync_now(payload, run_id.clone(), run_cancel);
             update_status(&self.shared_status, |status| {
                 apply_sync_now_status_result(status, &result, &run_id);
             });
@@ -1889,9 +1959,11 @@ mod desktop {
             &self,
             payload: SyncTransportSyncNowRequest,
             run_id: String,
+            run_cancel: RunCancellationToken,
         ) -> Result<SyncTransportSyncResult, String> {
             let run_started_at = Utc::now();
             let run_started_instant = Instant::now();
+            let requested_peer_device_id = payload.peer_device_id.clone();
             record_active_progress(
                 &self.shared_status,
                 &run_id,
@@ -1905,10 +1977,46 @@ mod desktop {
             );
             let mut timings = Vec::new();
             let mut metrics = SyncRunMetrics::start(run_started_instant);
+            if let Some(interruption) = run_cancel.interruption() {
+                let lifecycle_events =
+                    lifecycle_events_for_interruption(&self.shared_status, &run_id, &interruption);
+                return Ok(lifecycle_interrupted_sync_result(
+                    run_id.clone(),
+                    requested_peer_device_id.clone(),
+                    requested_peer_device_id,
+                    NOT_STARTED_TRANSPORT_ID.to_string(),
+                    Vec::new(),
+                    interruption,
+                    lifecycle_events,
+                    run_started_at,
+                    run_started_instant,
+                    Vec::new(),
+                    0,
+                    metrics,
+                    timings,
+                ));
+            }
             let client = BackendClient::new(&self.backend)?;
             let preflight = match client.sync_preflight() {
                 Ok(preflight) => preflight,
                 Err(_) => {
+                    if let Some(result) = lifecycle_interrupted_sync_result_for_run(
+                        &self.shared_status,
+                        &run_cancel,
+                        &run_id,
+                        &requested_peer_device_id,
+                        &requested_peer_device_id,
+                        NOT_STARTED_TRANSPORT_ID,
+                        Vec::new(),
+                        &run_started_at,
+                        run_started_instant,
+                        &[],
+                        0,
+                        &metrics,
+                        &timings,
+                    ) {
+                        return Ok(result);
+                    }
                     return Ok(failed_preflight_sync_result(
                         run_id,
                         payload.peer_device_id,
@@ -1920,6 +2028,23 @@ mod desktop {
                 }
             };
             if let Some(failure) = sync_preflight_failure(&preflight) {
+                if let Some(result) = lifecycle_interrupted_sync_result_for_run(
+                    &self.shared_status,
+                    &run_cancel,
+                    &run_id,
+                    &requested_peer_device_id,
+                    &requested_peer_device_id,
+                    NOT_STARTED_TRANSPORT_ID,
+                    Vec::new(),
+                    &run_started_at,
+                    run_started_instant,
+                    &[],
+                    0,
+                    &metrics,
+                    &timings,
+                ) {
+                    return Ok(result);
+                }
                 return Ok(failed_preflight_sync_result(
                     run_id,
                     payload.peer_device_id,
@@ -1931,6 +2056,23 @@ mod desktop {
             }
             if client.sync_metadata_preflight_probe().is_err() {
                 let failure = sync_endpoint_unresponsive_failure(&preflight);
+                if let Some(result) = lifecycle_interrupted_sync_result_for_run(
+                    &self.shared_status,
+                    &run_cancel,
+                    &run_id,
+                    &requested_peer_device_id,
+                    &requested_peer_device_id,
+                    NOT_STARTED_TRANSPORT_ID,
+                    Vec::new(),
+                    &run_started_at,
+                    run_started_instant,
+                    &[],
+                    0,
+                    &metrics,
+                    &timings,
+                ) {
+                    return Ok(result);
+                }
                 return Ok(failed_preflight_sync_result(
                     run_id,
                     payload.peer_device_id,
@@ -1979,31 +2121,110 @@ mod desktop {
             )?;
             let mut transport_selection = transport_selection;
             let timer = SyncPhaseTimer::start("peer_connect");
-            let mut connection = connect_selected_transport(
+            let mut connection = match connect_selected_transport(
                 &mut transport_selection,
                 local_iroh,
                 &payload.peer_device_id,
-            )?;
+            ) {
+                Ok(connection) => connection,
+                Err(error) => {
+                    let TransportEvidence {
+                        selected_transport,
+                        attempted_transports,
+                        ..
+                    } = transport_selection.evidence();
+                    if let Some(result) = lifecycle_interrupted_sync_result_for_run(
+                        &self.shared_status,
+                        &run_cancel,
+                        &run_id,
+                        &requested_peer_device_id,
+                        &requested_peer_device_id,
+                        &selected_transport,
+                        attempted_transports,
+                        &run_started_at,
+                        run_started_instant,
+                        &[],
+                        0,
+                        &metrics,
+                        &timings,
+                    ) {
+                        return Ok(result);
+                    }
+                    return Err(error);
+                }
+            };
             timings.push(timer.finish());
 
             let timer = SyncPhaseTimer::start("peer_authentication");
             let local_endpoint_hints = self.current_endpoint_hints();
-            let session = authenticate_session(
+            let session = match authenticate_session(
                 &mut connection,
                 &client,
                 Some(payload.peer_device_id.clone()),
                 &local_endpoint_hints,
             )
-            .map_err(|error| phase_context_error("peer authentication", error))?;
+            .map_err(|error| phase_context_error("peer authentication", error))
+            {
+                Ok(session) => session,
+                Err(error) => {
+                    let TransportEvidence {
+                        selected_transport,
+                        attempted_transports,
+                        ..
+                    } = transport_selection.evidence();
+                    if let Some(result) = lifecycle_interrupted_sync_result_for_run(
+                        &self.shared_status,
+                        &run_cancel,
+                        &run_id,
+                        &requested_peer_device_id,
+                        &requested_peer_device_id,
+                        &selected_transport,
+                        attempted_transports,
+                        &run_started_at,
+                        run_started_instant,
+                        &[],
+                        0,
+                        &metrics,
+                        &timings,
+                    ) {
+                        return Ok(result);
+                    }
+                    return Err(error);
+                }
+            };
             connection.set_established_read_timeout()?;
             timings.push(timer.finish());
             let connection = SharedPeerConnection::new(connection);
+            attach_active_run_connection(&self.shared_status, &run_id, connection.clone());
             let progress = ProgressReporter::new(
                 run_id.clone(),
                 run_started_instant,
                 Arc::clone(&self.shared_status),
                 connection.clone(),
+                run_cancel.clone(),
             );
+            let TransportEvidence {
+                selected_transport: current_transport,
+                attempted_transports: current_attempted_transports,
+                ..
+            } = transport_selection.evidence();
+            if let Some(result) = lifecycle_interrupted_sync_result_for_run(
+                &self.shared_status,
+                &run_cancel,
+                &run_id,
+                &requested_peer_device_id,
+                &session.remote_device_id,
+                &current_transport,
+                current_attempted_transports,
+                &run_started_at,
+                run_started_instant,
+                &[],
+                0,
+                &metrics,
+                &timings,
+            ) {
+                return Ok(result);
+            }
             let mut refreshed_endpoint_hints_after_auth = false;
             if authenticated_hints_make_trusted_iroh_hint_stale(
                 &peer.endpoint_hints,
@@ -2031,13 +2252,65 @@ mod desktop {
             timings.push(timer.finish());
             let local_manifest_count = local_offer.project_manifests.len();
             let timer = SyncPhaseTimer::start("manifest_exchange");
-            connection.send_message_for_phase(
+            if let Err(error) = connection.send_message_for_phase(
                 "manifest exchange",
                 &ProtocolMessage::ManifestOffer(local_offer.clone()),
-            )?;
-            let remote_offer = match connection
-                .read_message_accepting_status_for_phase("manifest exchange", &progress)?
+            ) {
+                let TransportEvidence {
+                    selected_transport,
+                    attempted_transports,
+                    ..
+                } = transport_selection.evidence();
+                if let Some(result) = lifecycle_interrupted_sync_result_for_run(
+                    &self.shared_status,
+                    &run_cancel,
+                    &run_id,
+                    &requested_peer_device_id,
+                    &session.remote_device_id,
+                    &selected_transport,
+                    attempted_transports,
+                    &run_started_at,
+                    run_started_instant,
+                    &[],
+                    0,
+                    &metrics,
+                    &timings,
+                ) {
+                    return Ok(result);
+                }
+                return Err(error);
+            }
+            let remote_message = match connection
+                .read_message_accepting_status_for_phase("manifest exchange", &progress)
             {
+                Ok(message) => message,
+                Err(error) => {
+                    let TransportEvidence {
+                        selected_transport,
+                        attempted_transports,
+                        ..
+                    } = transport_selection.evidence();
+                    if let Some(result) = lifecycle_interrupted_sync_result_for_run(
+                        &self.shared_status,
+                        &run_cancel,
+                        &run_id,
+                        &requested_peer_device_id,
+                        &session.remote_device_id,
+                        &selected_transport,
+                        attempted_transports,
+                        &run_started_at,
+                        run_started_instant,
+                        &[],
+                        0,
+                        &metrics,
+                        &timings,
+                    ) {
+                        return Ok(result);
+                    }
+                    return Err(error);
+                }
+            };
+            let remote_offer = match remote_message {
                 ProtocolMessage::ManifestOffer(offer) => offer,
                 ProtocolMessage::Error(error) => {
                     return Err(phase_context_error(
@@ -2072,6 +2345,31 @@ mod desktop {
                 received_artifacts = prepared.received_artifacts.clone();
                 prepared_remote_import = Some(prepared);
             }
+            if let Some(interruption) = run_cancel.interruption() {
+                finish_staged_remote_import_for_failure(prepared_remote_import);
+                let TransportEvidence {
+                    selected_transport,
+                    attempted_transports,
+                    ..
+                } = transport_selection.evidence();
+                let lifecycle_events =
+                    lifecycle_events_for_interruption(&self.shared_status, &run_id, &interruption);
+                return Ok(lifecycle_interrupted_sync_result(
+                    run_id.clone(),
+                    requested_peer_device_id,
+                    session.remote_device_id,
+                    selected_transport,
+                    attempted_transports,
+                    interruption,
+                    lifecycle_events,
+                    run_started_at,
+                    run_started_instant,
+                    received_artifacts,
+                    0,
+                    metrics,
+                    timings,
+                ));
+            }
             if let Err(error) = connection.send_message_for_phase(
                 "reconciliation staging",
                 &ProtocolMessage::PhaseDone {
@@ -2079,6 +2377,28 @@ mod desktop {
                 },
             ) {
                 finish_staged_remote_import_for_failure(prepared_remote_import);
+                let TransportEvidence {
+                    selected_transport,
+                    attempted_transports,
+                    ..
+                } = transport_selection.evidence();
+                if let Some(result) = lifecycle_interrupted_sync_result_for_run(
+                    &self.shared_status,
+                    &run_cancel,
+                    &run_id,
+                    &requested_peer_device_id,
+                    &session.remote_device_id,
+                    &selected_transport,
+                    attempted_transports,
+                    &run_started_at,
+                    run_started_instant,
+                    &received_artifacts,
+                    0,
+                    &metrics,
+                    &timings,
+                ) {
+                    return Ok(result);
+                }
                 return Err(error);
             }
             let timer = SyncPhaseTimer::start("serve_artifact_requests");
@@ -2092,10 +2412,57 @@ mod desktop {
                 Ok(served_artifact_requests) => served_artifact_requests,
                 Err(error) => {
                     finish_staged_remote_import_for_failure(prepared_remote_import);
+                    let TransportEvidence {
+                        selected_transport,
+                        attempted_transports,
+                        ..
+                    } = transport_selection.evidence();
+                    if let Some(result) = lifecycle_interrupted_sync_result_for_run(
+                        &self.shared_status,
+                        &run_cancel,
+                        &run_id,
+                        &requested_peer_device_id,
+                        &session.remote_device_id,
+                        &selected_transport,
+                        attempted_transports,
+                        &run_started_at,
+                        run_started_instant,
+                        &received_artifacts,
+                        0,
+                        &metrics,
+                        &timings,
+                    ) {
+                        return Ok(result);
+                    }
                     return Err(error);
                 }
             };
             timings.push(timer.finish());
+            if let Some(interruption) = run_cancel.interruption() {
+                finish_staged_remote_import_for_failure(prepared_remote_import);
+                let TransportEvidence {
+                    selected_transport,
+                    attempted_transports,
+                    ..
+                } = transport_selection.evidence();
+                let lifecycle_events =
+                    lifecycle_events_for_interruption(&self.shared_status, &run_id, &interruption);
+                return Ok(lifecycle_interrupted_sync_result(
+                    run_id.clone(),
+                    requested_peer_device_id,
+                    session.remote_device_id,
+                    selected_transport,
+                    attempted_transports,
+                    interruption,
+                    lifecycle_events,
+                    run_started_at,
+                    run_started_instant,
+                    received_artifacts,
+                    served_artifact_requests,
+                    metrics,
+                    timings,
+                ));
+            }
             let imported_projects = prepared_remote_import
                 .map(|prepared| finish_staged_remote_import(prepared, &mut timings))
                 .unwrap_or_default();
@@ -2159,6 +2526,9 @@ mod desktop {
                 remote_manifest_count: remote_offer.project_manifests.len(),
                 local_manifest_count,
                 manifest_errors,
+                lifecycle_events: Vec::new(),
+                retryable_interruption_code: None,
+                retry_guidance: None,
                 phase_timings: timings,
                 diagnostics: metrics.diagnostics,
             })
@@ -2178,6 +2548,56 @@ mod desktop {
                 .ok()
                 .and_then(|guard| guard.as_ref().map(|handle| handle.endpoint_hints.clone()))
                 .unwrap_or_default()
+        }
+
+        fn refresh_listener_endpoint_hints(&self) {
+            let client = match BackendClient::new(&self.backend) {
+                Ok(client) => client,
+                Err(error) => {
+                    update_status(&self.shared_status, |status| {
+                        status.last_error =
+                            Some(format!("Could not refresh sync endpoint hints: {error}"));
+                    });
+                    return;
+                }
+            };
+            let identity = match client.local_identity() {
+                Ok(identity) => identity,
+                Err(error) => {
+                    update_status(&self.shared_status, |status| {
+                        status.last_error =
+                            Some(format!("Could not refresh sync endpoint hints: {error}"));
+                    });
+                    return;
+                }
+            };
+            let refreshed = self
+                .listener
+                .lock()
+                .ok()
+                .and_then(|mut guard| {
+                    let handle = guard.as_mut()?;
+                    let mut endpoint_hints = handle
+                        .iroh_transport
+                        .as_ref()
+                        .map(|transport| iroh_endpoint_hints(transport, &identity.device_id))
+                        .unwrap_or_default();
+                    endpoint_hints.extend(endpoint_hints_for_port(
+                        handle.bind_addr.port(),
+                        &identity.device_id,
+                    ));
+                    handle.endpoint_hints = endpoint_hints;
+                    Some(())
+                })
+                .is_some();
+
+            if refreshed {
+                update_status(&self.shared_status, |status| {
+                    status.last_status =
+                        Some("Sync transport endpoint hints refreshed.".to_string());
+                    status.last_error = None;
+                });
+            }
         }
     }
 
@@ -2343,9 +2763,109 @@ mod desktop {
             remote_manifest_count: 0,
             local_manifest_count: 0,
             manifest_errors: Vec::new(),
+            lifecycle_events: Vec::new(),
+            retryable_interruption_code: None,
+            retry_guidance: None,
             phase_timings: Vec::new(),
             diagnostics: SyncTransportDiagnostics::default(),
         }
+    }
+
+    fn lifecycle_interrupted_sync_result(
+        run_id: String,
+        peer_device_id: String,
+        remote_device_id: String,
+        selected_transport: String,
+        attempted_transports: Vec<String>,
+        interruption: LifecycleInterruptionEvidence,
+        lifecycle_events: Vec<SyncTransportLifecycleEvent>,
+        run_started_at: DateTime<Utc>,
+        run_started_instant: Instant,
+        received_artifacts: Vec<SyncTransportTransferResult>,
+        served_artifact_requests: u64,
+        metrics: SyncRunMetrics,
+        phase_timings: Vec<SyncTransportTimingEvidence>,
+    ) -> SyncTransportSyncResult {
+        let completed_at = Utc::now();
+        let transfer_counts = transfer_counts(&received_artifacts);
+        SyncTransportSyncResult {
+            run_id,
+            peer_device_id,
+            remote_device_id,
+            status: "failed".to_string(),
+            message: format!(
+                "Sync interrupted by lifecycle event {}. {}",
+                interruption.event.kind, interruption.guidance
+            ),
+            selected_transport,
+            fallback_reason: None,
+            fallback_code: None,
+            attempted_transports,
+            started_at: run_started_at.to_rfc3339(),
+            completed_at: completed_at.to_rfc3339(),
+            duration_ms: duration_millis(run_started_instant.elapsed()),
+            project_results: Vec::new(),
+            imported_projects: Vec::new(),
+            imported_project_count: 0,
+            skipped_project_count: 0,
+            failed_project_count: 0,
+            received_artifacts,
+            transfer_counts,
+            served_artifact_requests,
+            total_received_bytes: metrics.total_received_bytes,
+            total_served_bytes: metrics.total_served_bytes,
+            time_to_first_artifact_ms: metrics.time_to_first_artifact_ms(),
+            throughput_bytes_per_second: metrics
+                .throughput_bytes_per_second(run_started_instant.elapsed()),
+            scratch_peak_bytes: metrics.scratch_peak_bytes,
+            staging_peak_bytes: metrics.staging_peak_bytes,
+            max_active_streams: metrics.max_active_streams,
+            credit_grants: metrics.credit_grants,
+            credit_revokes: metrics.credit_revokes,
+            remote_manifest_count: 0,
+            local_manifest_count: 0,
+            manifest_errors: Vec::new(),
+            lifecycle_events,
+            retryable_interruption_code: Some(interruption.code),
+            retry_guidance: Some(interruption.guidance),
+            phase_timings,
+            diagnostics: metrics.diagnostics,
+        }
+    }
+
+    fn lifecycle_interrupted_sync_result_for_run(
+        shared_status: &Arc<Mutex<SharedStatus>>,
+        run_cancel: &RunCancellationToken,
+        run_id: &str,
+        peer_device_id: &str,
+        remote_device_id: &str,
+        selected_transport: &str,
+        attempted_transports: Vec<String>,
+        run_started_at: &DateTime<Utc>,
+        run_started_instant: Instant,
+        received_artifacts: &[SyncTransportTransferResult],
+        served_artifact_requests: u64,
+        metrics: &SyncRunMetrics,
+        phase_timings: &[SyncTransportTimingEvidence],
+    ) -> Option<SyncTransportSyncResult> {
+        let interruption = run_cancel.interruption()?;
+        let lifecycle_events =
+            lifecycle_events_for_interruption(shared_status, run_id, &interruption);
+        Some(lifecycle_interrupted_sync_result(
+            run_id.to_string(),
+            peer_device_id.to_string(),
+            remote_device_id.to_string(),
+            selected_transport.to_string(),
+            attempted_transports,
+            interruption,
+            lifecycle_events,
+            run_started_at.clone(),
+            run_started_instant,
+            received_artifacts.to_vec(),
+            served_artifact_requests,
+            metrics.clone(),
+            phase_timings.to_vec(),
+        ))
     }
 
     fn blocking_job_state_summary(job_state: &Value) -> Option<BackendJobStateSummary> {
@@ -2644,6 +3164,13 @@ mod desktop {
         state.status()
     }
 
+    pub fn sync_transport_record_lifecycle_event(
+        state: State<'_, SyncTransportState>,
+        payload: SyncTransportLifecycleEventRequest,
+    ) -> SyncTransportStatus {
+        state.record_lifecycle_event(payload)
+    }
+
     pub async fn sync_transport_create_pairing_offer(
         state: State<'_, SyncTransportState>,
         payload: SyncTransportPairingOfferRequest,
@@ -2690,12 +3217,75 @@ mod desktop {
         active_progress: Option<SyncTransportActiveProgress>,
         active_progress_owner_run_id: Option<String>,
         nearby_peers: HashMap<String, DiscoveryPeerEntry>,
+        lifecycle_events: Vec<SyncTransportLifecycleEvent>,
+        last_lifecycle_event: Option<SyncTransportLifecycleEvent>,
+        retryable_interruption_code: Option<String>,
+        retryable_interruption_peer_device_id: Option<String>,
+        retry_guidance: Option<String>,
+        active_runs: HashMap<String, ActiveSyncRun>,
     }
 
     #[derive(Clone)]
     struct DiscoveryPeerEntry {
         peer: SyncTransportNearbyPeer,
         expires_at_instant: Instant,
+    }
+
+    #[derive(Clone)]
+    struct ActiveSyncRun {
+        peer_device_id: Option<String>,
+        cancel: RunCancellationToken,
+        connection: Option<SharedPeerConnection>,
+    }
+
+    #[derive(Clone)]
+    struct ActiveRunSnapshot {
+        run_id: String,
+        peer_device_id: Option<String>,
+        cancel: RunCancellationToken,
+        connection: Option<SharedPeerConnection>,
+    }
+
+    #[derive(Clone, Debug)]
+    struct LifecycleInterruptionEvidence {
+        code: String,
+        guidance: String,
+        event: SyncTransportLifecycleEvent,
+    }
+
+    #[derive(Clone, Default)]
+    struct RunCancellationToken {
+        cancelled: Arc<AtomicBool>,
+        interruption: Arc<Mutex<Option<LifecycleInterruptionEvidence>>>,
+    }
+
+    impl RunCancellationToken {
+        fn interrupt(&self, evidence: LifecycleInterruptionEvidence) {
+            self.cancelled.store(true, Ordering::SeqCst);
+            if let Ok(mut interruption) = self.interruption.lock() {
+                if interruption.is_none() {
+                    *interruption = Some(evidence);
+                }
+            }
+        }
+
+        fn is_cancelled(&self) -> bool {
+            self.cancelled.load(Ordering::SeqCst)
+        }
+
+        fn interruption(&self) -> Option<LifecycleInterruptionEvidence> {
+            self.interruption
+                .lock()
+                .ok()
+                .and_then(|interruption| interruption.clone())
+        }
+    }
+
+    #[derive(Default)]
+    struct LifecycleRecordOutcome {
+        event: SyncTransportLifecycleEvent,
+        interrupted_runs: Vec<ActiveRunSnapshot>,
+        refresh_endpoint_hints: bool,
     }
 
     #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2952,6 +3542,270 @@ mod desktop {
                 .then_with(|| left.device_id.cmp(&right.device_id))
         });
         peers
+    }
+
+    fn register_active_run(
+        shared_status: &Arc<Mutex<SharedStatus>>,
+        run_id: &str,
+        peer_device_id: Option<String>,
+    ) -> RunCancellationToken {
+        let cancel = RunCancellationToken::default();
+        update_status(shared_status, |status| {
+            status.active_runs.insert(
+                run_id.to_string(),
+                ActiveSyncRun {
+                    peer_device_id,
+                    cancel: cancel.clone(),
+                    connection: None,
+                },
+            );
+        });
+        cancel
+    }
+
+    fn attach_active_run_connection(
+        shared_status: &Arc<Mutex<SharedStatus>>,
+        run_id: &str,
+        connection: SharedPeerConnection,
+    ) {
+        update_status(shared_status, |status| {
+            if let Some(active_run) = status.active_runs.get_mut(run_id) {
+                active_run.connection = Some(connection);
+            }
+        });
+    }
+
+    fn update_active_run_peer(
+        shared_status: &Arc<Mutex<SharedStatus>>,
+        run_id: &str,
+        peer_device_id: String,
+    ) {
+        update_status(shared_status, |status| {
+            if let Some(active_run) = status.active_runs.get_mut(run_id) {
+                active_run.peer_device_id = Some(peer_device_id);
+            }
+        });
+    }
+
+    fn remove_active_run(status: &mut SharedStatus, run_id: &str) {
+        status.active_runs.remove(run_id);
+    }
+
+    fn active_run_snapshots(status: &SharedStatus) -> Vec<ActiveRunSnapshot> {
+        let mut runs = status
+            .active_runs
+            .iter()
+            .map(|(run_id, active_run)| ActiveRunSnapshot {
+                run_id: run_id.clone(),
+                peer_device_id: active_run.peer_device_id.clone(),
+                cancel: active_run.cancel.clone(),
+                connection: active_run.connection.clone(),
+            })
+            .collect::<Vec<_>>();
+        runs.sort_by(|left, right| left.run_id.cmp(&right.run_id));
+        runs
+    }
+
+    fn record_lifecycle_event_in_status(
+        status: &mut SharedStatus,
+        payload: SyncTransportLifecycleEventRequest,
+    ) -> LifecycleRecordOutcome {
+        let kind = normalize_lifecycle_kind(&payload.kind);
+        let active_runs = active_run_snapshots(status);
+        let first_run = active_runs.first();
+        let interruption_code = lifecycle_interruption_code(&kind).map(str::to_string);
+        let retry_guidance = interruption_code
+            .as_deref()
+            .map(|_| lifecycle_retry_guidance(&kind).to_string());
+        let event = SyncTransportLifecycleEvent {
+            kind: kind.clone(),
+            occurred_at: lifecycle_event_occurred_at(payload.occurred_at),
+            message: sanitize_lifecycle_message(payload.message),
+            retryable: interruption_code.is_some(),
+            interruption_code: interruption_code.clone(),
+            retry_guidance: retry_guidance.clone(),
+            peer_device_id: first_run.and_then(|run| run.peer_device_id.clone()),
+            run_id: first_run.map(|run| run.run_id.clone()),
+        };
+        push_lifecycle_event(status, event.clone());
+
+        if let Some(code) = interruption_code.as_ref() {
+            status.retryable_interruption_code = Some(code.clone());
+            status.retryable_interruption_peer_device_id = event.peer_device_id.clone();
+            status.retry_guidance = retry_guidance;
+        }
+
+        let refresh_endpoint_hints = lifecycle_refreshes_endpoint_hints(&kind);
+        if interruption_code.is_none() && refresh_endpoint_hints {
+            clear_retryable_interruption(status);
+        }
+        if refresh_endpoint_hints {
+            status.nearby_peers.clear();
+        }
+
+        LifecycleRecordOutcome {
+            event,
+            interrupted_runs: if lifecycle_interruption_code(&kind).is_some() {
+                active_runs
+            } else {
+                Vec::new()
+            },
+            refresh_endpoint_hints,
+        }
+    }
+
+    fn lifecycle_event_for_active_run(
+        event: &SyncTransportLifecycleEvent,
+        active_run: &ActiveRunSnapshot,
+    ) -> SyncTransportLifecycleEvent {
+        let mut event = event.clone();
+        event.peer_device_id = active_run.peer_device_id.clone();
+        event.run_id = Some(active_run.run_id.clone());
+        event
+    }
+
+    fn interrupt_active_runs_for_lifecycle(
+        event: &SyncTransportLifecycleEvent,
+        active_runs: Vec<ActiveRunSnapshot>,
+    ) {
+        for active_run in active_runs {
+            let event = lifecycle_event_for_active_run(event, &active_run);
+            active_run.cancel.interrupt(LifecycleInterruptionEvidence {
+                code: event
+                    .interruption_code
+                    .clone()
+                    .unwrap_or_else(|| "lifecycle_interrupted".to_string()),
+                guidance: event
+                    .retry_guidance
+                    .clone()
+                    .unwrap_or_else(|| LIFECYCLE_INTERRUPTION_DEFAULT_GUIDANCE.to_string()),
+                event,
+            });
+            if let Some(connection) = active_run.connection {
+                connection.abort_for_lifecycle_interruption();
+            }
+        }
+    }
+
+    fn push_lifecycle_event(status: &mut SharedStatus, event: SyncTransportLifecycleEvent) {
+        status.lifecycle_events.push(event.clone());
+        let overflow = status
+            .lifecycle_events
+            .len()
+            .saturating_sub(LIFECYCLE_EVENT_HISTORY_LIMIT);
+        if overflow > 0 {
+            status.lifecycle_events.drain(0..overflow);
+        }
+        status.last_lifecycle_event = Some(event);
+    }
+
+    fn normalize_lifecycle_kind(kind: &str) -> String {
+        kind.trim()
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() {
+                    ch.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>()
+            .split('_')
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("_")
+    }
+
+    fn lifecycle_event_occurred_at(occurred_at: Option<String>) -> String {
+        occurred_at
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| Utc::now().to_rfc3339())
+    }
+
+    fn sanitize_lifecycle_message(message: Option<String>) -> Option<String> {
+        let message = message?.trim().to_string();
+        if message.is_empty()
+            || message.len() > 240
+            || message.contains('/')
+            || message.contains('\\')
+            || message.contains("://")
+            || message.contains("tuneforge-sync+")
+        {
+            return None;
+        }
+        Some(message)
+    }
+
+    fn lifecycle_interruption_code(kind: &str) -> Option<&'static str> {
+        match kind {
+            "sleep" => Some("lifecycle_interrupted_sleep"),
+            "network_offline" | "networkoffline" => Some("lifecycle_interrupted_network_offline"),
+            "android_background" | "androidbackground" => {
+                Some("lifecycle_interrupted_android_background")
+            }
+            "android_screen_lock" | "androidscreenlock" => {
+                Some("lifecycle_interrupted_android_screen_lock")
+            }
+            _ => None,
+        }
+    }
+
+    fn lifecycle_retry_guidance(kind: &str) -> &'static str {
+        match kind {
+            "network_offline" | "networkoffline" => LIFECYCLE_INTERRUPTION_NETWORK_GUIDANCE,
+            "android_background"
+            | "androidbackground"
+            | "android_screen_lock"
+            | "androidscreenlock" => LIFECYCLE_INTERRUPTION_FOREGROUND_GUIDANCE,
+            _ => LIFECYCLE_INTERRUPTION_DEFAULT_GUIDANCE,
+        }
+    }
+
+    fn lifecycle_refreshes_endpoint_hints(kind: &str) -> bool {
+        matches!(
+            kind,
+            "wake"
+                | "network_online"
+                | "networkonline"
+                | "foreground"
+                | "android_foreground"
+                | "androidforeground"
+        )
+    }
+
+    fn lifecycle_events_for_run(
+        shared_status: &Arc<Mutex<SharedStatus>>,
+        run_id: &str,
+    ) -> Vec<SyncTransportLifecycleEvent> {
+        shared_status
+            .lock()
+            .map(|status| {
+                status
+                    .lifecycle_events
+                    .iter()
+                    .filter(|event| event.run_id.as_deref().is_none_or(|id| id == run_id))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn lifecycle_events_for_interruption(
+        shared_status: &Arc<Mutex<SharedStatus>>,
+        run_id: &str,
+        interruption: &LifecycleInterruptionEvidence,
+    ) -> Vec<SyncTransportLifecycleEvent> {
+        let mut events = lifecycle_events_for_run(shared_status, run_id);
+        let has_interruption = events.iter().any(|event| {
+            event.run_id == interruption.event.run_id
+                && event.kind == interruption.event.kind
+                && event.occurred_at == interruption.event.occurred_at
+        });
+        if !has_interruption {
+            events.push(interruption.event.clone());
+        }
+        events
     }
 
     #[derive(Clone)]
@@ -3434,6 +4288,7 @@ mod desktop {
         let run_id = sync_run_id();
         let run_started_at = Utc::now();
         let run_started_instant = Instant::now();
+        let run_cancel = register_active_run(&shared_status, &run_id, None);
         record_active_progress(
             &shared_status,
             &run_id,
@@ -3448,6 +4303,7 @@ mod desktop {
         update_status(&shared_status, |status| {
             status.active_sessions += 1;
         });
+        let transport_for_result = transport.clone();
         let result = serve_incoming_session(
             backend,
             transport,
@@ -3456,16 +4312,51 @@ mod desktop {
             endpoint_hints,
             Arc::clone(&shared_status),
             run_id.clone(),
+            run_cancel.clone(),
             run_started_at,
             run_started_instant,
         );
+        let result = match (result, run_cancel.interruption()) {
+            (Err(_), Some(interruption)) => {
+                let peer_device_id = interruption
+                    .event
+                    .peer_device_id
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string());
+                let sync_result = lifecycle_interrupted_sync_result(
+                    run_id.clone(),
+                    peer_device_id.clone(),
+                    peer_device_id.clone(),
+                    transport_for_result.id().to_string(),
+                    vec![transport_for_result.id().to_string()],
+                    interruption,
+                    lifecycle_events_for_run(&shared_status, &run_id),
+                    run_started_at,
+                    run_started_instant,
+                    Vec::new(),
+                    0,
+                    SyncRunMetrics::start(run_started_instant),
+                    Vec::new(),
+                );
+                Ok(IncomingSessionResult {
+                    message: sync_result.message.clone(),
+                    sync_result,
+                })
+            }
+            (result, _) => result,
+        };
         update_status(&shared_status, |status| {
             status.active_sessions = status.active_sessions.saturating_sub(1);
+            remove_active_run(status, &run_id);
             clear_active_progress_for_run(status, &run_id);
             match result {
                 Ok(result) => {
                     status.last_status = Some(result.message);
-                    status.last_sync = Some(result.sync_result);
+                    let sync_result = result.sync_result;
+                    if !sync_result_has_retryable_interruption(&sync_result) {
+                        clear_retryable_interruption(status);
+                    }
+                    status.last_sync = Some(sync_result);
                     status.last_error = None;
                 }
                 Err(error) => {
@@ -3484,6 +4375,7 @@ mod desktop {
         endpoint_hints: Vec<String>,
         shared_status: Arc<Mutex<SharedStatus>>,
         run_id: String,
+        run_cancel: RunCancellationToken,
         run_started_at: DateTime<Utc>,
         run_started_instant: Instant,
     ) -> Result<IncomingSessionResult, String> {
@@ -3494,14 +4386,17 @@ mod desktop {
         let mut connection = SecurePeerConnection::connect_responder(stream, transport, iroh_data)?;
         let session = authenticate_session(&mut connection, &client, None, &endpoint_hints)
             .map_err(|error| phase_context_error("peer authentication", error))?;
+        update_active_run_peer(&shared_status, &run_id, session.remote_device_id.clone());
         connection.set_established_read_timeout()?;
         timings.push(timer.finish());
         let connection = SharedPeerConnection::new(connection);
+        attach_active_run_connection(&shared_status, &run_id, connection.clone());
         let progress = ProgressReporter::new(
             run_id.clone(),
             run_started_instant,
             shared_status,
             connection.clone(),
+            run_cancel.clone(),
         );
         let timer = SyncPhaseTimer::start("manifest_exchange");
         let remote_offer = match connection
@@ -3634,6 +4529,9 @@ mod desktop {
             remote_manifest_count: remote_offer.project_manifests.len(),
             local_manifest_count,
             manifest_errors,
+            lifecycle_events: Vec::new(),
+            retryable_interruption_code: None,
+            retry_guidance: None,
             phase_timings: timings,
             diagnostics: metrics.diagnostics,
         };
@@ -3771,6 +4669,20 @@ mod desktop {
         }
     }
 
+    fn clear_retryable_interruption(status: &mut SharedStatus) {
+        status.retryable_interruption_code = None;
+        status.retryable_interruption_peer_device_id = None;
+        status.retry_guidance = None;
+    }
+
+    fn sync_result_has_retryable_interruption(sync_result: &SyncTransportSyncResult) -> bool {
+        sync_result.retryable_interruption_code.is_some()
+            || sync_result
+                .lifecycle_events
+                .iter()
+                .any(|event| event.retryable)
+    }
+
     fn apply_sync_now_status_result(
         status: &mut SharedStatus,
         result: &Result<SyncTransportSyncResult, String>,
@@ -3781,10 +4693,15 @@ mod desktop {
                 status.last_status = Some(sync_result.message.clone());
                 status.last_sync = Some(sync_result.clone());
                 status.last_error = None;
+                if !sync_result_has_retryable_interruption(sync_result) {
+                    clear_retryable_interruption(status);
+                }
+                remove_active_run(status, &sync_result.run_id);
                 clear_active_progress_for_run(status, &sync_result.run_id);
             }
             Err(error) => {
                 status.last_error = Some(error.clone());
+                remove_active_run(status, run_id);
                 clear_active_progress_for_run(status, run_id);
             }
         }
@@ -3796,6 +4713,7 @@ mod desktop {
         run_started_instant: Instant,
         shared_status: Arc<Mutex<SharedStatus>>,
         connection: SharedPeerConnection,
+        cancel: RunCancellationToken,
     }
 
     impl ProgressReporter {
@@ -3804,12 +4722,14 @@ mod desktop {
             run_started_instant: Instant,
             shared_status: Arc<Mutex<SharedStatus>>,
             connection: SharedPeerConnection,
+            cancel: RunCancellationToken,
         ) -> Self {
             Self {
                 run_id,
                 run_started_instant,
                 shared_status,
                 connection,
+                cancel,
             }
         }
 
@@ -3879,6 +4799,34 @@ mod desktop {
 
         fn record_peer_status(&self, status: ProtocolStatusPayload) {
             record_active_progress(&self.shared_status, &self.run_id, active_progress(status));
+        }
+
+        fn is_cancelled(&self) -> bool {
+            self.cancel.is_cancelled()
+        }
+
+        fn interruption(&self) -> Option<LifecycleInterruptionEvidence> {
+            self.cancel.interruption()
+        }
+
+        fn interruption_message(&self) -> Option<String> {
+            self.interruption().map(|interruption| {
+                format!(
+                    "Sync interrupted by lifecycle event {}. {}",
+                    interruption.event.kind, interruption.guidance
+                )
+            })
+        }
+
+        fn check_not_cancelled(&self) -> Result<(), String> {
+            match self.interruption_message() {
+                Some(message) => Err(message),
+                None => Ok(()),
+            }
+        }
+
+        fn cancel_token(&self) -> RunCancellationToken {
+            self.cancel.clone()
         }
     }
 
@@ -4091,12 +5039,17 @@ mod desktop {
 
     struct TcpPeerStream {
         stream: TcpStream,
+        abort_stream: Option<Arc<TcpStream>>,
     }
 
     impl TcpPeerStream {
         fn new(stream: TcpStream) -> Result<Self, String> {
             configure_stream(&stream)?;
-            Ok(Self { stream })
+            let abort_stream = stream.try_clone().ok().map(Arc::new);
+            Ok(Self {
+                stream,
+                abort_stream,
+            })
         }
     }
 
@@ -4111,6 +5064,10 @@ mod desktop {
 
         fn set_read_timeout(&mut self, timeout: Duration) -> io::Result<()> {
             self.stream.set_read_timeout(Some(timeout))
+        }
+
+        fn tcp_abort_stream(&self) -> Option<Arc<TcpStream>> {
+            self.abort_stream.clone()
         }
     }
 
@@ -4458,16 +5415,50 @@ mod desktop {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct ConnectionAbortHandle {
+        tcp_stream: Option<Arc<TcpStream>>,
+        iroh_connection: Option<Connection>,
+    }
+
+    impl ConnectionAbortHandle {
+        fn from_connection(connection: &SecurePeerConnection) -> Self {
+            Self {
+                tcp_stream: connection.stream.tcp_abort_stream(),
+                iroh_connection: connection
+                    .iroh_data
+                    .as_ref()
+                    .map(|iroh_data| iroh_data.connection.clone()),
+            }
+        }
+
+        fn abort(&self) {
+            if let Some(stream) = &self.tcp_stream {
+                let _ = stream.shutdown(Shutdown::Both);
+            }
+            if let Some(connection) = &self.iroh_connection {
+                connection.close(VarInt::from_u32(0), b"lifecycle interrupted");
+            }
+        }
+    }
+
     #[derive(Clone)]
     struct SharedPeerConnection {
         inner: Arc<Mutex<SecurePeerConnection>>,
+        abort_handle: ConnectionAbortHandle,
     }
 
     impl SharedPeerConnection {
         fn new(connection: SecurePeerConnection) -> Self {
+            let abort_handle = ConnectionAbortHandle::from_connection(&connection);
             Self {
                 inner: Arc::new(Mutex::new(connection)),
+                abort_handle,
             }
+        }
+
+        fn abort_for_lifecycle_interruption(&self) {
+            self.abort_handle.abort();
         }
 
         fn with_connection<T>(
@@ -4941,6 +5932,14 @@ mod desktop {
             transport_id,
             progress.clone(),
         );
+        if progress.is_cancelled() {
+            apply_worker.cancel_pending_apply();
+            return StagedRemoteImport {
+                plan_failures: Vec::new(),
+                apply_worker: Some(apply_worker),
+                received_artifacts,
+            };
+        }
         let (planned_projects, plan_failures) =
             plan_remote_manifest_projects(manifests, remote_metadata, |request| {
                 let project_ids = request.project_ids();
@@ -5043,6 +6042,10 @@ mod desktop {
         progress: &ProgressReporter,
     ) {
         for planned in planned_projects {
+            if progress.is_cancelled() {
+                apply_worker.cancel_pending_apply();
+                break;
+            }
             match planned.manifest {
                 Some(manifest) => {
                     let staged = stage_remote_manifest_project_artifacts(
@@ -5250,14 +6253,30 @@ mod desktop {
                                 let mut stage_timings = Vec::new();
                                 let mut diagnostics = SyncTransportDiagnostics::default();
                                 diagnostics.record_stage_queue_wait(queued_at.elapsed());
-                                let transfer = stage_received_iroh_artifact(
-                                    &client,
-                                    &transport_id,
-                                    &peer_device_id,
-                                    received,
-                                    &mut stage_timings,
-                                    &mut diagnostics,
-                                );
+                                let transfer =
+                                    if let Some(message) = progress.interruption_message() {
+                                        let artifact = received.artifact.clone();
+                                        let cleanup_timer = SyncPhaseTimer::start_artifact(
+                                            "artifact_cleanup",
+                                            &artifact,
+                                        );
+                                        let _ = fs::remove_file(&received.temp_path);
+                                        stage_timings.push(cleanup_timer.finish());
+                                        Err(post_receive_transfer_failure(
+                                            &artifact,
+                                            received.timing,
+                                            message,
+                                        ))
+                                    } else {
+                                        stage_received_iroh_artifact(
+                                            &client,
+                                            &transport_id,
+                                            &peer_device_id,
+                                            received,
+                                            &mut stage_timings,
+                                            &mut diagnostics,
+                                        )
+                                    };
                                 BackendWriteEvent::Stage(IrohStageResult {
                                     transfer,
                                     timings: stage_timings,
@@ -5271,6 +6290,8 @@ mod desktop {
                                         &project_id,
                                         "Remote sync import skipped after Iroh artifact transfer aborted.",
                                     )
+                                } else if let Some(message) = progress.interruption_message() {
+                                    failed_project_result(&project_id, &message)
                                 } else {
                                     match task {
                                         RemoteApplyTask::Project(project) => {
@@ -5763,6 +6784,10 @@ mod desktop {
         let registered_projects = register_planned_iroh_projects(planned_projects, &mut scheduler);
 
         for planned in registered_projects {
+            if progress.is_cancelled() {
+                apply_worker.cancel_pending_apply();
+                break;
+            }
             match planned {
                 IrohRegisteredPlannedRemoteProject::Manifest {
                     project_index,
@@ -5843,6 +6868,10 @@ mod desktop {
         }
 
         if !pending.is_empty() {
+            if progress.is_cancelled() {
+                apply_worker.cancel_pending_apply();
+                return;
+            }
             let pending = round_robin_pending_artifacts_by_project(pending);
             let can_apply_after_iroh = request_and_stage_global_iroh_artifact_batch_on_write_lane(
                 client,
@@ -7021,6 +8050,14 @@ mod desktop {
 
         for entry in entries {
             let artifact = &entry.artifact;
+            if let Some(message) = progress.interruption_message() {
+                results.push(Err(transfer_failure(
+                    artifact,
+                    TransferTimer::zero_now(),
+                    message,
+                )));
+                continue;
+            }
             let timer = SyncPhaseTimer::start_artifact("artifact_staging_check", artifact);
             let staged = {
                 let _progress =
@@ -7103,6 +8140,18 @@ mod desktop {
         if pending.is_empty() {
             return Vec::new();
         }
+        if let Some(message) = progress.interruption_message() {
+            return pending
+                .into_iter()
+                .map(|pending| {
+                    Err(transfer_failure(
+                        &pending.artifact,
+                        TransferTimer::zero_now(),
+                        message.clone(),
+                    ))
+                })
+                .collect();
+        }
 
         let request = ArtifactBatchRequest {
             batch_token: None,
@@ -7131,6 +8180,21 @@ mod desktop {
         let mut results = Vec::new();
         let mut pending = pending.into_iter();
         while let Some(pending_transfer) = pending.next() {
+            if let Some(message) = progress.interruption_message() {
+                results.push(Err(transfer_failure(
+                    &pending_transfer.artifact,
+                    TransferTimer::zero_now(),
+                    message.clone(),
+                )));
+                results.extend(pending.map(|pending| {
+                    Err(transfer_failure(
+                        &pending.artifact,
+                        TransferTimer::zero_now(),
+                        message.clone(),
+                    ))
+                }));
+                break;
+            }
             match receive_and_stage_artifact(
                 client,
                 connection,
@@ -7749,6 +8813,21 @@ mod desktop {
         if pending.is_empty() {
             return true;
         }
+        if let Some(message) = progress.interruption_message() {
+            for pending in pending {
+                record_transfer(
+                    Err(transfer_failure(
+                        &pending.artifact,
+                        TransferTimer::zero_now(),
+                        message.clone(),
+                    )),
+                    false,
+                    apply_worker,
+                );
+            }
+            apply_worker.cancel_pending_apply();
+            return false;
+        }
 
         if let Some(message) = repeated_pending_iroh_artifact_message(&pending) {
             for pending in pending {
@@ -7968,6 +9047,12 @@ mod desktop {
                 || active_workers > 0
                 || apply_worker.pending_stage_jobs > 0)
         {
+            if let Some(message) = progress.interruption_message() {
+                fatal_error.get_or_insert(message);
+                apply_worker.cancel_pending_apply();
+                cancel_receivers.store(true, Ordering::SeqCst);
+                break;
+            }
             if !control_done {
                 match poll_iroh_artifact_batch_control(connection, &batch_token, progress) {
                     Ok(IrohBatchControlStatus::Pending) => {
@@ -8776,6 +9861,14 @@ mod desktop {
         let transfer_timer = TransferTimer::start();
         let timer = SyncPhaseTimer::start_artifact("artifact_transfer", &artifact);
         let _progress = progress.start_phase("artifact_transfer", "Transferring artifact content.");
+        if let Some(message) = progress.interruption_message() {
+            timings.push(timer.finish());
+            return Err(transfer_failure(
+                &artifact,
+                transfer_timer.finish(0),
+                message,
+            ));
+        }
 
         match connection
             .read_message_accepting_status_for_phase("artifact request/transfer", progress)
@@ -8857,6 +9950,9 @@ mod desktop {
         let mut hasher = Sha256::new();
         let mut size_bytes = 0_u64;
         let receive_result = loop {
+            if let Some(message) = progress.interruption_message() {
+                break Err(message);
+            }
             match connection.read_artifact_transfer_frame_accepting_status_for_phase(
                 "artifact request/transfer",
                 progress,
@@ -8922,6 +10018,12 @@ mod desktop {
             let _ = fs::remove_file(&temp_path);
             timings.push(cleanup_timer.finish());
             return Err(transfer_failure(&artifact, transfer_timing, error));
+        }
+        if let Some(message) = progress.interruption_message() {
+            let cleanup_timer = SyncPhaseTimer::start_artifact("artifact_cleanup", &artifact);
+            let _ = fs::remove_file(&temp_path);
+            timings.push(cleanup_timer.finish());
+            return Err(transfer_failure(&artifact, transfer_timing, message));
         }
 
         let body = json!({
@@ -9050,14 +10152,13 @@ mod desktop {
             } else {
                 fs::remove_file(&path)
             };
-            result.map_err(|error| {
-                format!(
-                    "Could not remove stale sync transport artifact temp entry {}: {error}",
-                    path.display()
-                )
-            })?;
+            result.map_err(stale_transport_temp_cleanup_error)?;
         }
         Ok(())
+    }
+
+    fn stale_transport_temp_cleanup_error(error: io::Error) -> String {
+        format!("Could not remove stale sync transport artifact temp entry: {error}")
     }
 
     fn sync_transport_temp_root_from_health(health: &Value) -> Result<PathBuf, String> {
@@ -9084,6 +10185,7 @@ mod desktop {
         progress
             .report_local_progress("serve_artifact_requests", "Serving peer artifact requests.");
         loop {
+            progress.check_not_cancelled()?;
             match connection
                 .read_message_accepting_status_for_phase("serve artifact requests", progress)?
             {
@@ -9183,6 +10285,7 @@ mod desktop {
             .resolve_artifact_files(artifacts)
             .map_err(|error| phase_context_error("artifact request/transfer", error.to_string()))?;
         let _progress = progress.start_phase("artifact_transfer", "Transferring artifact content.");
+        progress.check_not_cancelled()?;
         connection.send_message_for_phase(
             "artifact request/transfer",
             &ProtocolMessage::ArtifactBatchStart {
@@ -9197,6 +10300,7 @@ mod desktop {
             .collect();
         let mut served_artifact_ids = HashSet::new();
         while served_artifact_ids.len() < artifacts.len() {
+            progress.check_not_cancelled()?;
             let credit_wait_started = Instant::now();
             let credit_message = connection
                 .read_message_accepting_status_for_phase("artifact request/transfer", progress)?;
@@ -9273,6 +10377,7 @@ mod desktop {
                 let data = iroh_data.clone();
                 let batch_token = batch_token.to_string();
                 let run_started_instant = metrics.started_instant;
+                let cancel = progress.cancel_token();
                 handles.push(thread::spawn(move || {
                     stream_iroh_artifact_file(
                         data,
@@ -9280,6 +10385,7 @@ mod desktop {
                         artifact,
                         local_file,
                         run_started_instant,
+                        cancel,
                     )
                 }));
             }
@@ -9320,6 +10426,7 @@ mod desktop {
         artifact: RemoteArtifact,
         local_file: LocalArtifactFile,
         run_started_instant: Instant,
+        cancel: RunCancellationToken,
     ) -> Result<StreamedIrohArtifact, String> {
         let mut diagnostics = SyncTransportDiagnostics::default();
         local_file.verify_matches(&artifact)?;
@@ -9343,6 +10450,12 @@ mod desktop {
         let mut actual_size = 0_u64;
         let mut first_bytes_at = None;
         loop {
+            if let Some(interruption) = cancel.interruption() {
+                return Err(format!(
+                    "Sync interrupted by lifecycle event {}. {}",
+                    interruption.event.kind, interruption.guidance
+                ));
+            }
             let read = file.read(&mut buffer).map_err(|error| {
                 phase_context_error(
                     "artifact request/transfer",
@@ -9386,6 +10499,7 @@ mod desktop {
         let mut body = {
             let _progress =
                 progress.start_phase("artifact_transfer", "Transferring artifact content.");
+            progress.check_not_cancelled()?;
             client.open_artifact_body(artifact).map_err(|error| {
                 phase_context_error(
                     "artifact request/transfer",
@@ -9397,6 +10511,7 @@ mod desktop {
             })?
         };
         let _progress = progress.start_phase("artifact_transfer", "Transferring artifact content.");
+        progress.check_not_cancelled()?;
         connection.send_message_for_phase(
             "artifact request/transfer",
             &ProtocolMessage::ArtifactStart {
@@ -9410,6 +10525,7 @@ mod desktop {
         let mut hasher = Sha256::new();
         let mut actual_size = 0_u64;
         loop {
+            progress.check_not_cancelled()?;
             let read = body.read(&mut buffer).map_err(|error| {
                 phase_context_error(
                     "artifact request/transfer",
@@ -11335,6 +12451,228 @@ mod desktop {
         }
 
         #[test]
+        fn passive_lifecycle_event_records_without_retry_or_abort() {
+            let cancel = RunCancellationToken::default();
+            let mut status = SharedStatus::default();
+            status.active_runs.insert(
+                "sync_passive".to_string(),
+                ActiveSyncRun {
+                    peer_device_id: Some("dev_peer".to_string()),
+                    cancel: cancel.clone(),
+                    connection: None,
+                },
+            );
+
+            let outcome = record_lifecycle_event_in_status(
+                &mut status,
+                SyncTransportLifecycleEventRequest {
+                    kind: "blur".to_string(),
+                    occurred_at: Some("2026-01-01T00:00:00Z".to_string()),
+                    message: Some("window blurred".to_string()),
+                },
+            );
+
+            assert!(outcome.interrupted_runs.is_empty());
+            assert!(!cancel.is_cancelled());
+            assert_eq!(status.lifecycle_events.len(), 1);
+            assert_eq!(status.lifecycle_events[0].kind, "blur");
+            assert!(!status.lifecycle_events[0].retryable);
+            assert_eq!(
+                status.lifecycle_events[0].message.as_deref(),
+                Some("window blurred")
+            );
+            assert!(status.retryable_interruption_code.is_none());
+        }
+
+        #[test]
+        fn retryable_lifecycle_event_sets_interruption_evidence() {
+            let cancel = RunCancellationToken::default();
+            let mut status = SharedStatus::default();
+            status.active_runs.insert(
+                "sync_retry".to_string(),
+                ActiveSyncRun {
+                    peer_device_id: Some("dev_peer".to_string()),
+                    cancel: cancel.clone(),
+                    connection: None,
+                },
+            );
+
+            let outcome = record_lifecycle_event_in_status(
+                &mut status,
+                SyncTransportLifecycleEventRequest {
+                    kind: "network_offline".to_string(),
+                    occurred_at: Some("2026-01-01T00:00:01Z".to_string()),
+                    message: Some("lost tuneforge-sync+tcp://192.0.2.2:47619 endpoint".to_string()),
+                },
+            );
+            interrupt_active_runs_for_lifecycle(&outcome.event, outcome.interrupted_runs);
+
+            assert_eq!(
+                status.retryable_interruption_code.as_deref(),
+                Some("lifecycle_interrupted_network_offline")
+            );
+            assert_eq!(
+                status.retryable_interruption_peer_device_id.as_deref(),
+                Some("dev_peer")
+            );
+            assert_eq!(
+                status.retry_guidance.as_deref(),
+                Some(LIFECYCLE_INTERRUPTION_NETWORK_GUIDANCE)
+            );
+            let event = status.last_lifecycle_event.expect("last lifecycle event");
+            assert!(event.retryable);
+            assert_eq!(event.run_id.as_deref(), Some("sync_retry"));
+            assert_eq!(event.peer_device_id.as_deref(), Some("dev_peer"));
+            assert!(event.message.is_none());
+
+            let interruption = cancel.interruption().expect("run interrupted");
+            assert_eq!(interruption.code, "lifecycle_interrupted_network_offline");
+            assert_eq!(interruption.event.run_id.as_deref(), Some("sync_retry"));
+            assert_eq!(
+                interruption.event.peer_device_id.as_deref(),
+                Some("dev_peer")
+            );
+        }
+
+        #[test]
+        fn retryable_lifecycle_event_cancels_pending_remote_apply_before_drain() {
+            let (sender, receiver) =
+                mpsc::sync_channel::<BackendWriteTask>(IROH_ARTIFACT_STAGING_QUEUE_CAPACITY);
+            let (event_sender, event_receiver) = mpsc::channel::<BackendWriteEvent>();
+            let (observed_cancel_sender, observed_cancel_receiver) = mpsc::channel::<bool>();
+            let queued_project_ids = Arc::new(Mutex::new(Vec::new()));
+            let enqueue_failures = Arc::new(Mutex::new(Vec::new()));
+            let apply_cancelled = Arc::new(AtomicBool::new(false));
+            let run_cancel = RunCancellationToken::default();
+            let worker_run_cancel = run_cancel.clone();
+            let handle = thread::spawn(move || {
+                while let Ok(task) = receiver.recv() {
+                    let BackendWriteTask::Apply { project_id, .. } = task else {
+                        continue;
+                    };
+                    let wait_started = Instant::now();
+                    while !worker_run_cancel.is_cancelled()
+                        && wait_started.elapsed() < Duration::from_secs(2)
+                    {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    let cancelled = worker_run_cancel.is_cancelled();
+                    let _ = observed_cancel_sender.send(cancelled);
+                    let message = if cancelled {
+                        "Remote sync import skipped after lifecycle interruption."
+                    } else {
+                        "Remote sync import worker drained without lifecycle cancellation."
+                    };
+                    let _ = event_sender.send(BackendWriteEvent::Apply {
+                        project_id: project_id.clone(),
+                        result: failed_project_result(&project_id, message),
+                        timings: Vec::new(),
+                    });
+                }
+            });
+            let mut apply_worker = RemoteApplyWorker {
+                sender: Some(sender),
+                event_receiver,
+                handle: Some(handle),
+                queued_project_ids,
+                completed_project_ids: HashSet::new(),
+                enqueue_failures,
+                apply_cancelled,
+                project_results: Vec::new(),
+                pending_stage_jobs: 0,
+                pending_stage_bytes: 0,
+                staging_peak_bytes: 0,
+            };
+            apply_worker.enqueue_tombstone("proj_lifecycle_abort".to_string());
+            let mut status = SharedStatus::default();
+            status.active_runs.insert(
+                "sync_lifecycle_abort".to_string(),
+                ActiveSyncRun {
+                    peer_device_id: Some("dev_peer".to_string()),
+                    cancel: run_cancel,
+                    connection: None,
+                },
+            );
+
+            let outcome = record_lifecycle_event_in_status(
+                &mut status,
+                SyncTransportLifecycleEventRequest {
+                    kind: "sleep".to_string(),
+                    occurred_at: None,
+                    message: None,
+                },
+            );
+            interrupt_active_runs_for_lifecycle(&outcome.event, outcome.interrupted_runs);
+            let results = apply_worker.finish(&mut Vec::new());
+
+            assert!(
+                observed_cancel_receiver
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("worker observed lifecycle cancellation"),
+                "lifecycle abort must cancel pending reconciliation apply before draining worker"
+            );
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].status, "failed");
+            assert!(results[0]
+                .message
+                .as_deref()
+                .unwrap_or("")
+                .contains("lifecycle interruption"));
+        }
+
+        #[test]
+        fn recovery_lifecycle_event_clears_nearby_peers_and_requests_refresh() {
+            let mut status = SharedStatus {
+                retryable_interruption_code: Some(
+                    "lifecycle_interrupted_network_offline".to_string(),
+                ),
+                retryable_interruption_peer_device_id: Some("dev_peer".to_string()),
+                retry_guidance: Some(LIFECYCLE_INTERRUPTION_NETWORK_GUIDANCE.to_string()),
+                ..SharedStatus::default()
+            };
+            status.nearby_peers.insert(
+                "dev_stale".to_string(),
+                DiscoveryPeerEntry {
+                    peer: SyncTransportNearbyPeer {
+                        device_id: "dev_stale".to_string(),
+                        sync_group_id: "syncgrp_one".to_string(),
+                        display_name: None,
+                        public_key: "peer_public".to_string(),
+                        endpoint_hints: Vec::new(),
+                        protocol_version: DISCOVERY_PROTOCOL_VERSION.to_string(),
+                        timestamp: "2026-01-01T00:00:00Z".to_string(),
+                        observed_at: "2026-01-01T00:00:00Z".to_string(),
+                        expires_at: "2026-01-01T00:01:00Z".to_string(),
+                    },
+                    expires_at_instant: Instant::now() + DISCOVERY_PEER_TTL,
+                },
+            );
+
+            let outcome = record_lifecycle_event_in_status(
+                &mut status,
+                SyncTransportLifecycleEventRequest {
+                    kind: "network_online".to_string(),
+                    occurred_at: None,
+                    message: None,
+                },
+            );
+
+            assert!(outcome.refresh_endpoint_hints);
+            assert!(outcome.interrupted_runs.is_empty());
+            assert!(status.nearby_peers.is_empty());
+            assert_eq!(
+                status
+                    .last_lifecycle_event
+                    .as_ref()
+                    .map(|event| event.kind.as_str()),
+                Some("network_online")
+            );
+            assert!(status.retryable_interruption_code.is_none());
+            assert!(status.retryable_interruption_peer_device_id.is_none());
+            assert!(status.retry_guidance.is_none());
+        }
+
+        #[test]
         fn sync_now_request_missing_preferred_transport_selects_tcp_default() {
             let request: SyncTransportSyncNowRequest = serde_json::from_value(json!({
                 "peerDeviceId": "dev_peer"
@@ -12033,6 +13371,7 @@ mod desktop {
                 Instant::now(),
                 Arc::new(Mutex::new(SharedStatus::default())),
                 connection.clone(),
+                RunCancellationToken::default(),
             )
         }
 
@@ -12400,6 +13739,7 @@ mod desktop {
                 started,
                 Arc::new(Mutex::new(SharedStatus::default())),
                 connection.clone(),
+                RunCancellationToken::default(),
             );
 
             let error =
@@ -12569,6 +13909,44 @@ mod desktop {
                 unrelated_status.active_progress_owner_run_id.as_deref(),
                 Some("inbound_local_run")
             );
+        }
+
+        #[test]
+        fn sync_now_non_interrupted_result_clears_retryable_interruption() {
+            let mut status = SharedStatus {
+                retryable_interruption_code: Some(
+                    "lifecycle_interrupted_android_background".to_string(),
+                ),
+                retryable_interruption_peer_device_id: Some("dev_peer".to_string()),
+                retry_guidance: Some(LIFECYCLE_INTERRUPTION_FOREGROUND_GUIDANCE.to_string()),
+                ..SharedStatus::default()
+            };
+            let result = Ok(failed_preflight_sync_result(
+                "sync_run_recovered".to_string(),
+                "dev_peer".to_string(),
+                BACKEND_PREFLIGHT_UNRESPONSIVE_CODE,
+                "Local backend was unavailable.".to_string(),
+                Utc::now(),
+                Instant::now(),
+            ));
+
+            apply_sync_now_status_result(&mut status, &result, "sync_run_recovered");
+
+            assert!(status.retryable_interruption_code.is_none());
+            assert!(status.retryable_interruption_peer_device_id.is_none());
+            assert!(status.retry_guidance.is_none());
+        }
+
+        #[test]
+        fn stale_transport_temp_cleanup_error_omits_entry_path() {
+            let message = stale_transport_temp_cleanup_error(io::Error::from_raw_os_error(13));
+
+            assert!(
+                message.starts_with("Could not remove stale sync transport artifact temp entry:")
+            );
+            assert!(message.contains("Permission denied"));
+            assert!(!message.contains("/"));
+            assert!(!message.contains("transport-tmp"));
         }
 
         #[test]
@@ -12857,6 +14235,7 @@ mod desktop {
                 started,
                 Arc::new(Mutex::new(SharedStatus::default())),
                 connection.clone(),
+                RunCancellationToken::default(),
             );
             let mut metrics = SyncRunMetrics::start(started);
             let served = serve_artifact_requests_until_done(
@@ -12949,6 +14328,7 @@ mod desktop {
                 started,
                 Arc::new(Mutex::new(SharedStatus::default())),
                 connection.clone(),
+                RunCancellationToken::default(),
             );
             let mut apply_worker = RemoteApplyWorker::start(
                 &client,
@@ -13136,6 +14516,7 @@ mod desktop {
                 started,
                 Arc::new(Mutex::new(SharedStatus::default())),
                 connection.clone(),
+                RunCancellationToken::default(),
             );
             let mut apply_worker = RemoteApplyWorker::start(
                 &client,
@@ -13411,6 +14792,7 @@ mod desktop {
                 first_started,
                 Arc::new(Mutex::new(SharedStatus::default())),
                 first_connection.clone(),
+                RunCancellationToken::default(),
             );
             let mut first_apply_worker = RemoteApplyWorker::start(
                 &client,
@@ -13551,6 +14933,7 @@ mod desktop {
                 second_started,
                 Arc::new(Mutex::new(SharedStatus::default())),
                 second_connection.clone(),
+                RunCancellationToken::default(),
             );
             let mut second_apply_worker = RemoteApplyWorker::start(
                 &retry_client,
@@ -13945,6 +15328,7 @@ mod desktop {
                 started,
                 Arc::new(Mutex::new(SharedStatus::default())),
                 connection.clone(),
+                RunCancellationToken::default(),
             );
             let mut metrics = SyncRunMetrics::start(started);
             let mut timings = Vec::new();
@@ -15416,6 +16800,9 @@ mod desktop {
                 remote_manifest_count: 0,
                 local_manifest_count: 0,
                 manifest_errors: Vec::new(),
+                lifecycle_events: Vec::new(),
+                retryable_interruption_code: None,
+                retry_guidance: None,
                 phase_timings: vec![SyncTransportTimingEvidence {
                     phase: "artifact_transfer".to_string(),
                     project_id: Some("proj_one".to_string()),
@@ -15545,6 +16932,9 @@ mod desktop {
                 remote_manifest_count: 0,
                 local_manifest_count: 0,
                 manifest_errors: Vec::new(),
+                lifecycle_events: Vec::new(),
+                retryable_interruption_code: None,
+                retry_guidance: None,
                 phase_timings: Vec::new(),
                 diagnostics: SyncTransportDiagnostics::default(),
             };
@@ -15870,6 +17260,14 @@ pub fn sync_transport_status(
     state: tauri::State<'_, desktop::SyncTransportState>,
 ) -> SyncTransportStatus {
     desktop::sync_transport_status(state)
+}
+
+#[tauri::command]
+pub fn sync_transport_record_lifecycle_event(
+    state: tauri::State<'_, desktop::SyncTransportState>,
+    payload: SyncTransportLifecycleEventRequest,
+) -> SyncTransportStatus {
+    desktop::sync_transport_record_lifecycle_event(state, payload)
 }
 
 #[tauri::command]

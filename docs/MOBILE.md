@@ -139,9 +139,23 @@ staging peaks. Do not record audio content, file contents, filenames, absolute p
 raw device/project/artifact IDs, endpoint hints, or pairing payloads.
 
 For listener lifecycle validation, start, stop, restart, pause, and resume the Android listener where
-the build supports it. Record whether desktop peers recover, whether fallback was used, and whether
-synced projects remain deduped after reconnect. If Android still reports the transport stub, record
-that blocker and limit the run to pairing, storage, and playback checks.
+the build supports it. The UI records native-only lifecycle events through
+`sync_transport_record_lifecycle_event`: desktop background events from `visibilitychange` hidden,
+window blur, and `pagehide` stay passive; Android hidden/pagehide records `android_background`, and
+Android window blur records `android_screen_lock` so active sync runs are interrupted for retry.
+Foreground events from window focus, `visibilitychange` visible, and `pageshow` refresh listener
+state; Android foreground uses `android_foreground`. Browser `online` and `offline` events record
+network recovery/interruption. Offline or Android lifecycle interruptions may expose native retry
+guidance and a trusted peer ID; when they do, the UI shows Retry Sync and reuses the normal preflight
+plus Sync Now path, including nearby endpoint hints.
+
+Desktop sleep/wake has no native command bridge. The UI uses an elapsed-time check while visible: a
+long timer gap records `sleep` followed by `wake`, while ordinary desktop hidden/blur/pagehide remains
+passive. Current Android builds still do not expose a separate OS screen-lock callback to React, so
+screen lock is inferred from Android focus/visibility changes.
+Record whether desktop peers recover, whether fallback was used, and whether synced projects remain
+deduped after reconnect. If Android still reports the transport stub, record that blocker and limit
+the run to pairing, storage, and playback checks.
 
 For QR pairing validation, grant the camera permission, scan a pairing QR code with the Android
 build, and record whether the scan produced the expected pairing payload before trusting the peer.

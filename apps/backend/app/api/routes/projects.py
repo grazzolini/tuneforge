@@ -103,26 +103,6 @@ def create_project(
         payload.chord_backend,
         payload.chord_backend_fallback_from,
     )
-    chords_job = runner.create_job(
-        session,
-        project_id=project.id,
-        job_type="chords",
-        payload={
-            **ChordRequest(
-                backend=selected_chord_backend.id,
-                backend_fallback_from=chord_backend_fallback_from,
-                force=False,
-            ).model_dump(),
-            "chord_backend": selected_chord_backend.id,
-            "chord_source": "source",
-        },
-    )
-    lyrics_job = runner.create_job(
-        session,
-        project_id=project.id,
-        job_type="lyrics",
-        payload=LyricsGenerateRequest(force=False).model_dump(),
-    )
     source_artifact = resolve_stem_source_artifact(
         session,
         project=project,
@@ -147,12 +127,32 @@ def create_project(
             "stem_model_label": selected_stem_model.label,
         },
     )
+    chords_job = runner.create_job(
+        session,
+        project_id=project.id,
+        job_type="chords",
+        payload={
+            **ChordRequest(
+                backend=selected_chord_backend.id,
+                backend_fallback_from=chord_backend_fallback_from,
+                force=False,
+            ).model_dump(),
+            "chord_backend": selected_chord_backend.id,
+            "chord_source": "source",
+        },
+    )
+    lyrics_job = runner.create_job(
+        session,
+        project_id=project.id,
+        job_type="lyrics",
+        payload=LyricsGenerateRequest(force=False).model_dump(),
+    )
     session.commit()
     session.refresh(project)
     runner.enqueue(analyze_job.id)
+    runner.enqueue(stem_job.id)
     runner.enqueue(chords_job.id)
     runner.enqueue(lyrics_job.id)
-    runner.enqueue(stem_job.id)
     return ProjectResponse(project=ProjectSchema.model_validate(project))
 
 

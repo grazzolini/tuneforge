@@ -275,6 +275,52 @@ describe("formatJobStatusSummary", () => {
     expect(formatJobStatusSummary(job)).toBe("completed / CPU / 1.8 s");
   });
 
+  it.each([
+    ["vocals", "vocals"],
+    ["source_preferred", "source preferred"],
+    ["none", "no lyrics"],
+  ])("includes lyrics source label for %s jobs", (lyricsSource, label) => {
+    const job: JobSchema = {
+      completed_at: "2026-04-18T13:17:37.000Z",
+      created_at: "2026-04-18T13:16:00.000Z",
+      duration_seconds: 97,
+      error_message: null,
+      id: `job_lyrics_${lyricsSource}`,
+      lyrics_source: lyricsSource,
+      progress: 100,
+      project_id: "proj_123",
+      runtime_device: "mps",
+      source_artifact_id: "art_source",
+      started_at: "2026-04-18T13:16:00.000Z",
+      status: "completed",
+      type: "lyrics",
+      updated_at: "2026-04-18T13:17:37.000Z",
+    };
+
+    expect(formatJobStatusSummary(job)).toBe(`completed / ${label} / MPS / 1:37`);
+  });
+
+  it("omits unknown lyrics source labels", () => {
+    const job: JobSchema = {
+      completed_at: "2026-04-18T13:16:02.000Z",
+      created_at: "2026-04-18T13:16:00.000Z",
+      duration_seconds: 1.8,
+      error_message: null,
+      id: "job_lyrics_unknown_source",
+      lyrics_source: "unknown",
+      progress: 100,
+      project_id: "proj_123",
+      runtime_device: "cpu",
+      source_artifact_id: "art_source",
+      started_at: "2026-04-18T13:16:00.000Z",
+      status: "completed",
+      type: "lyrics",
+      updated_at: "2026-04-18T13:16:02.000Z",
+    };
+
+    expect(formatJobStatusSummary(job)).toBe("completed / CPU / 1.8 s");
+  });
+
   it("includes chord detection source for chord jobs", () => {
     const job: JobSchema = {
       chord_backend: "tuneforge-fast",

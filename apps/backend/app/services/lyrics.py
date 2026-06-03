@@ -10,6 +10,7 @@ from subprocess import Popen
 from typing import Any, cast
 
 from fastapi import status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -18,6 +19,7 @@ from app.errors import AppError, JobCancelledError
 from app.models import Artifact, LyricsTranscript, Project
 from app.schemas import LyricsEditSegmentSchema
 from app.services.paths import project_analysis_dir
+from app.services.stem_signal_metadata import stem_signal_analysis_usable
 from app.services.sync_revisions import record_lyrics_revision
 from app.services.tab_state import clear_project_tab_state
 
@@ -33,6 +35,33 @@ def _ensure_not_cancelled(should_cancel: Callable[[], bool] | None) -> None:
 def _source_artifact(project: Project) -> Artifact | None:
     artifact = next((artifact for artifact in project.artifacts if artifact.type == "source_audio"), None)
     return artifact if isinstance(artifact, Artifact) else None
+
+
+def _latest_usable_source_vocal_stem(
+    session: Session,
+    *,
+    project_id: str,
+    source_artifact: Artifact | None,
+) -> Artifact | None:
+    if source_artifact is None:
+        return None
+    stmt = (
+        select(Artifact)
+        .where(
+            Artifact.project_id == project_id,
+            Artifact.type == "vocal_stem",
+        )
+        .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+    )
+    for artifact in session.scalars(stmt):
+        if (
+            artifact.metadata_json.get("source_artifact_id") == source_artifact.id
+            and artifact.metadata_json.get("source_artifact_type") in {None, "source_audio"}
+            and Path(artifact.path).exists()
+            and stem_signal_analysis_usable(artifact.metadata_json)
+        ):
+            return artifact
+    return None
 
 
 def _write_lyrics_snapshot(
@@ -107,8 +136,18 @@ def generate_project_lyrics(
         _write_lyrics_snapshot(project_id=project.id, lyrics=existing)
         return existing
 
+    lyrics_source_artifact = _latest_usable_source_vocal_stem(
+        session,
+        project_id=project.id,
+        source_artifact=source_artifact,
+    )
+    transcription_source_path = (
+        Path(lyrics_source_artifact.path)
+        if lyrics_source_artifact is not None
+        else Path(project.imported_path)
+    )
     transcription = transcribe_project_lyrics(
-        Path(project.imported_path),
+        transcription_source_path,
         model_name=get_settings().lyrics_model,
         requested_device=get_settings().lyrics_device,
         download_root=get_settings().lyrics_cache_dir,
@@ -127,8 +166,14 @@ def generate_project_lyrics(
         session.add(existing)
 
     existing.backend = transcription.backend
-    existing.source_artifact_id = source_artifact.id if source_artifact else None
-    existing.source_kind = "ai"
+    if lyrics_source_artifact is not None:
+        lyrics_source_artifact_id = lyrics_source_artifact.id
+    elif source_artifact is not None:
+        lyrics_source_artifact_id = source_artifact.id
+    else:
+        lyrics_source_artifact_id = None
+    existing.source_artifact_id = lyrics_source_artifact_id
+    existing.source_kind = "vocal_stem" if lyrics_source_artifact is not None else "ai"
     existing.requested_device = transcription.requested_device
     existing.device = transcription.device
     existing.model_name = transcription.model

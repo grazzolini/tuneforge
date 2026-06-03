@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -12,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from app.config import ensure_data_dirs, get_settings
 from app.db import SessionLocal, reconfigure_engine, run_migrations
 from app.errors import AppError
-from app.models import Artifact, Project, SyncDeleteTombstone, SyncEntityRevision
+from app.models import Artifact, Job, Project, SyncDeleteTombstone, SyncEntityRevision
 from app.services.analysis import analyze_project
 from app.services.artifacts import delete_project_artifact, register_artifact
 from app.services.paths import project_root
@@ -35,17 +34,6 @@ def _prepare_database() -> None:
     ensure_data_dirs(settings)
     reconfigure_engine(settings)
     run_migrations(settings)
-
-
-def _wait_for_project_job(client, project_id: str, predicate, *, timeout: float = 5.0) -> dict:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        jobs = client.get("/api/v1/jobs").json()["jobs"]
-        for job in jobs:
-            if job["project_id"] == project_id and predicate(job):
-                return job
-        time.sleep(0.1)
-    raise AssertionError(f"Timed out waiting for matching job in project {project_id}")
 
 
 def _insert_project_rows(
@@ -444,6 +432,39 @@ def test_pruning_stem_artifacts_records_tombstones(tmp_path: Path) -> None:
         }
 
 
+def test_import_project_enqueues_source_processing_after_stems(
+    client,
+    sample_chord_audio_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    enqueued_job_ids: list[str] = []
+    monkeypatch.setattr(client.app.state.job_runner, "enqueue", enqueued_job_ids.append)
+
+    response = client.post(
+        "/api/v1/projects/import",
+        json={
+            "source_path": str(sample_chord_audio_file),
+            "copy_into_project": True,
+            "stem_model": "htdemucs_ft",
+        },
+    )
+
+    assert response.status_code == 200
+    project = response.json()["project"]
+    with SessionLocal() as session:
+        jobs_by_id = {
+            job.id: job
+            for job in session.scalars(select(Job).where(Job.project_id == project["id"]))
+        }
+
+    assert [jobs_by_id[job_id].type for job_id in enqueued_job_ids] == [
+        "analyze",
+        "stems",
+        "chords",
+        "lyrics",
+    ]
+
+
 def test_import_project_enqueues_full_source_processing(
     client,
     sample_chord_audio_file: Path,
@@ -492,41 +513,33 @@ def test_import_project_enqueues_full_source_processing(
 
     jobs = client.get("/api/v1/jobs").json()["jobs"]
     analyze_job = next(job for job in jobs if job["project_id"] == project["id"] and job["type"] == "analyze")
-    chord_job = next(
-        job
-        for job in jobs
-        if job["project_id"] == project["id"] and job["type"] == "chords" and job["chord_source"] == "source"
-    )
+    chord_job = next(job for job in jobs if job["project_id"] == project["id"] and job["type"] == "chords")
     lyrics_job = next(job for job in jobs if job["project_id"] == project["id"] and job["type"] == "lyrics")
     stem_job = next(job for job in jobs if job["project_id"] == project["id"] and job["type"] == "stems")
 
     assert wait_for_job(client, analyze_job["id"], timeout=90.0)["status"] == "completed"
-    completed_chord_job = wait_for_job(client, chord_job["id"], timeout=90.0)
-    assert completed_chord_job["status"] == "completed"
-    assert completed_chord_job["chord_backend"] == "tuneforge-fast"
-    assert completed_chord_job["chord_source"] == "source"
-    assert wait_for_job(client, lyrics_job["id"])["status"] == "completed"
     completed_stem_job = wait_for_job(client, stem_job["id"])
     assert completed_stem_job["status"] == "completed"
     assert completed_stem_job["source_artifact_id"] == source_artifact["id"]
     assert completed_stem_job["stem_model"] == "htdemucs_ft"
     assert completed_stem_job["stem_model_label"] == "2 stems model"
-
-    chord_refresh_job = _wait_for_project_job(
-        client,
-        project["id"],
-        lambda job: job["type"] == "chords" and job["id"] != chord_job["id"],
-    )
-    completed_chord_refresh_job = wait_for_job(client, chord_refresh_job["id"])
-    assert completed_chord_refresh_job["status"] == "completed"
-    assert completed_chord_refresh_job["chord_backend"] == "tuneforge-fast"
-    assert completed_chord_refresh_job["chord_source"] == "source+stem"
+    completed_chord_job = wait_for_job(client, chord_job["id"], timeout=90.0)
+    assert completed_chord_job["status"] == "completed"
+    assert completed_chord_job["chord_backend"] == "tuneforge-fast"
+    assert completed_chord_job["chord_source"] == "source+stem"
+    assert wait_for_job(client, lyrics_job["id"])["status"] == "completed"
 
     analysis = client.get(f"/api/v1/projects/{project['id']}/analysis").json()["analysis"]
     chords = client.get(f"/api/v1/projects/{project['id']}/chords").json()
     lyrics = client.get(f"/api/v1/projects/{project['id']}/lyrics").json()
+    project_jobs = [
+        job
+        for job in client.get("/api/v1/jobs").json()["jobs"]
+        if job["project_id"] == project["id"]
+    ]
 
     assert analysis is not None
+    assert len([job for job in project_jobs if job["type"] == "chords"]) == 1
     assert len(chords["timeline"]) >= 3
     assert lyrics["segments"][0]["text"] == "Test lyric"
 

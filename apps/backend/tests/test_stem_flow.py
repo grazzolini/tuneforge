@@ -707,7 +707,7 @@ def test_preview_mix_stem_generation_does_not_store_signal_metadata(
     assert all(STEM_SIGNAL_METADATA_KEY not in artifact["metadata"] for artifact in preview_stems)
 
 
-def test_cached_source_audio_stems_missing_signal_metadata_are_hydrated_and_refresh_chords(
+def test_cached_source_audio_stems_missing_signal_metadata_are_hydrated_without_refreshing_chords(
     client,
     sample_stereo_audio_file: Path,
     monkeypatch,
@@ -758,11 +758,9 @@ def test_cached_source_audio_stems_missing_signal_metadata_are_hydrated_and_refr
     chord_jobs_after_generation = [
         job
         for job in client.get("/api/v1/jobs").json()["jobs"]
-        if job["project_id"] == project["id"] and job["type"] == "chords" and job["id"] != initial_chord_job["id"]
+        if job["project_id"] == project["id"] and job["type"] == "chords"
     ]
-    assert len(chord_jobs_after_generation) == 1
-    assert chord_jobs_after_generation[0]["chord_source"] == "source+stem"
-    assert wait_for_job(client, chord_jobs_after_generation[0]["id"])["status"] == "completed"
+    assert [job["id"] for job in chord_jobs_after_generation] == [initial_chord_job["id"]]
 
     artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
     source_artifact = next(artifact for artifact in artifacts if artifact["type"] == "source_audio")
@@ -803,16 +801,12 @@ def test_cached_source_audio_stems_missing_signal_metadata_are_hydrated_and_refr
     chord_jobs_after_hydration = [
         job
         for job in client.get("/api/v1/jobs").json()["jobs"]
-        if job["project_id"] == project["id"]
-        and job["type"] == "chords"
-        and job["id"] not in {initial_chord_job["id"], chord_jobs_after_generation[0]["id"]}
+        if job["project_id"] == project["id"] and job["type"] == "chords"
     ]
-    assert len(chord_jobs_after_hydration) == 1
-    assert chord_jobs_after_hydration[0]["chord_source"] == "source+stem"
-    assert wait_for_job(client, chord_jobs_after_hydration[0]["id"])["status"] == "completed"
+    assert [job["id"] for job in chord_jobs_after_hydration] == [initial_chord_job["id"]]
 
 
-def test_cached_source_audio_stems_raw_only_signal_metadata_gets_usability_and_refreshes_chords_without_audio_read(
+def test_cached_source_audio_stems_raw_only_signal_metadata_gets_usability_without_audio_read(
     client,
     sample_stereo_audio_file: Path,
     monkeypatch,
@@ -865,11 +859,9 @@ def test_cached_source_audio_stems_raw_only_signal_metadata_gets_usability_and_r
     chord_jobs_after_generation = [
         job
         for job in client.get("/api/v1/jobs").json()["jobs"]
-        if job["project_id"] == project["id"] and job["type"] == "chords" and job["id"] != initial_chord_job["id"]
+        if job["project_id"] == project["id"] and job["type"] == "chords"
     ]
-    assert len(chord_jobs_after_generation) == 1
-    assert wait_for_job(client, chord_jobs_after_generation[0]["id"])["status"] == "completed"
-    chord_job_ids_before_hydration = {initial_chord_job["id"], chord_jobs_after_generation[0]["id"]}
+    assert [job["id"] for job in chord_jobs_after_generation] == [initial_chord_job["id"]]
 
     artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
     source_artifact = next(artifact for artifact in artifacts if artifact["type"] == "source_audio")
@@ -915,13 +907,9 @@ def test_cached_source_audio_stems_raw_only_signal_metadata_gets_usability_and_r
     chord_jobs_after_hydration = [
         job
         for job in client.get("/api/v1/jobs").json()["jobs"]
-        if job["project_id"] == project["id"]
-        and job["type"] == "chords"
-        and job["id"] not in chord_job_ids_before_hydration
+        if job["project_id"] == project["id"] and job["type"] == "chords"
     ]
-    assert len(chord_jobs_after_hydration) == 1
-    assert chord_jobs_after_hydration[0]["chord_source"] == "source+stem"
-    assert wait_for_job(client, chord_jobs_after_hydration[0]["id"])["status"] == "completed"
+    assert [job["id"] for job in chord_jobs_after_hydration] == [initial_chord_job["id"]]
 
 
 def test_cached_source_audio_stems_hydrated_unusable_signal_metadata_does_not_refresh_chords(
@@ -1175,7 +1163,7 @@ def test_two_stem_mode_with_default_uses_two_stem_model(client, sample_stereo_au
     assert {artifact["type"] for artifact in stems} == {"vocal_stem", "instrumental_stem"}
 
 
-def test_source_stem_generation_enqueues_chord_refresh_job(
+def test_source_stem_generation_does_not_enqueue_chord_refresh_job(
     client,
     sample_stereo_audio_file: Path,
     monkeypatch,
@@ -1222,15 +1210,12 @@ def test_source_stem_generation_enqueues_chord_refresh_job(
     assert wait_for_job(client, stem_job["id"])["status"] == "completed"
 
     source_stem_jobs = client.get("/api/v1/jobs").json()["jobs"]
-    chord_refresh_jobs = [
+    chord_jobs_after_source_stems = [
         job
         for job in source_stem_jobs
-        if job["project_id"] == project["id"] and job["type"] == "chords" and job["id"] != initial_chord_job["id"]
+        if job["project_id"] == project["id"] and job["type"] == "chords"
     ]
-    assert len(chord_refresh_jobs) == 1
-    assert chord_refresh_jobs[0]["chord_backend"] == "tuneforge-fast"
-    assert chord_refresh_jobs[0]["chord_source"] == "source+stem"
-    assert wait_for_job(client, chord_refresh_jobs[0]["id"])["status"] == "completed"
+    assert [job["id"] for job in chord_jobs_after_source_stems] == [initial_chord_job["id"]]
 
     preview_job = client.post(
         f"/api/v1/projects/{project['id']}/preview",
@@ -1253,19 +1238,14 @@ def test_source_stem_generation_enqueues_chord_refresh_job(
     assert wait_for_job(client, preview_stem_job["id"])["status"] == "completed"
 
     preview_stem_jobs = client.get("/api/v1/jobs").json()["jobs"]
-    assert (
-        len(
-            [
-                job
-                for job in preview_stem_jobs
-                if job["project_id"] == project["id"] and job["type"] == "chords"
-            ]
-        )
-        == 2
-    )
+    assert [
+        job["id"]
+        for job in preview_stem_jobs
+        if job["project_id"] == project["id"] and job["type"] == "chords"
+    ] == [initial_chord_job["id"]]
 
 
-def test_source_stems_do_not_refresh_edited_chords_without_overwrite(
+def test_source_stems_do_not_refresh_edited_chords_even_with_overwrite_flag(
     client,
     sample_stereo_audio_file: Path,
     monkeypatch,
@@ -1334,7 +1314,7 @@ def test_source_stems_do_not_refresh_edited_chords_without_overwrite(
     chord_jobs_after_rebuild = [
         job for job in jobs_after_rebuild if job["project_id"] == project["id"] and job["type"] == "chords"
     ]
-    assert len(chord_jobs_after_rebuild) == 2
+    assert [job["id"] for job in chord_jobs_after_rebuild] == [initial_chord_job["id"]]
 
 
 def test_stem_artifact_unique_constraint_rejects_duplicates(client, sample_stereo_audio_file: Path):

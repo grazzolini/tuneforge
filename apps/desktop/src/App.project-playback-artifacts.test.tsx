@@ -637,7 +637,7 @@ describe("Desktop app project playback artifacts", () => {
     );
   });
 
-  it("warns before source stem generation can replace chord edits", async () => {
+  it("does not warn about chord edits for source stem generation", async () => {
     const user = userEvent.setup();
     const timeline = [
       { start_seconds: 0, end_seconds: 16, label: "G", confidence: 0.81, pitch_class: 7, quality: "major" },
@@ -657,19 +657,12 @@ describe("Desktop app project playback artifacts", () => {
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
     await generateStems(user);
 
-    expect(mockConfirm).toHaveBeenCalledWith(
-      expect.stringContaining("Existing chord edits will be replaced"),
-      expect.objectContaining({
-        title: "Generate stems",
-        kind: "warning",
-        okLabel: "Generate",
-      }),
-    );
+    expect(mockConfirm).not.toHaveBeenCalled();
     expect(mockCreateStems).toHaveBeenCalledWith(
       "proj_123",
       expect.objectContaining({
         force: false,
-        overwrite_chord_edits: true,
+        overwrite_chord_edits: false,
         source_artifact_id: "art_source",
       }),
     );

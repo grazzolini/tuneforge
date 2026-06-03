@@ -2,6 +2,9 @@
 
 Use this only for manual or power-user testing with an existing external Syncthing install. TuneForge does not bundle, launch, or supervise Syncthing.
 
+Syncthing is a control/reference path for comparing a TuneForge sync bundle against native
+transports. It is not a dependency, product requirement, or source of library truth.
+
 ## Safety Boundary
 
 - Sync only the bundle directory passed to `--bundle-root`.
@@ -50,6 +53,27 @@ pnpm sync:bundle -- import \
 ```
 
 Import stages and verifies content-addressed blobs, rewrites paths for the local install, then applies manifests, revisions, and tombstones through TuneForge services. It does not attach the project to the Syncthing folder.
+
+## Control Benchmark
+
+Use this benchmark only when an existing external Syncthing setup is already available. Compare it
+against the same dataset used for the custom LAN or Iroh run, and keep all evidence privacy-safe as
+defined in [MULTI_DEVICE_LIBRARY_SYNC_SPIKE.md](./MULTI_DEVICE_LIBRARY_SYNC_SPIKE.md#issue-203-evidence-model).
+
+Record:
+
+- Bundle export duration and byte count.
+- Syncthing folder receive duration and receive throughput when available.
+- TuneForge import staging throughput, reconciliation apply time, project import cadence, TTFA, and
+  transfer counts.
+- Scratch/staging peak bytes for the TuneForge import side.
+- Safe bundle boundary checks: no raw app data, SQLite files, logs, caches, settings, model files,
+  symlinks, absolute paths, filenames, display names, endpoint hints, raw IDs, or pairing payloads.
+- Conflict, temporary, partial, stale, and deleted-file observations before TuneForge import.
+
+Passing this benchmark means the external folder sync moved a sync-safe bundle and TuneForge
+imported it through services with verification. It does not make Syncthing required for TuneForge
+sync, and it does not validate raw folder sync of TuneForge app data.
 
 ## Bidirectional Runs
 

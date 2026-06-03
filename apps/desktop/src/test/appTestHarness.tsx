@@ -1054,6 +1054,12 @@ const {
       return null;
     }
 
+    if (command === "write_sync_evidence_file") {
+      const path = String(args?.path ?? "");
+      state.snapshotFiles[path] = String(args?.contents ?? "");
+      return null;
+    }
+
     if (command === "read_settings_snapshot_file") {
       const path = String(args?.path ?? "");
       const contents = state.snapshotFiles[path];
@@ -2416,6 +2422,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => path,
   invoke: mockInvoke,
+  isTauri: () => Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -2824,6 +2831,10 @@ export function resetAppTestHarness() {
   mockSave.mockReset();
   mockConfirm.mockReset();
   mockInvoke.mockClear();
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: undefined,
+  });
   mockListen.mockClear();
   mockConfirm.mockResolvedValue(true);
   getMockMediaSession().reset();

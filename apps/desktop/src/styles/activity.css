@@ -282,6 +282,13 @@
   flex-wrap: wrap;
 }
 
+.activity-sync-section__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
 .activity-sync-facts,
 .activity-sync-peer-row dl {
   display: grid;

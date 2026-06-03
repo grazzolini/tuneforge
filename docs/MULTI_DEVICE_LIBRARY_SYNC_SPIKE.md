@@ -477,6 +477,43 @@ Expected Syncthing speed is not the key question. The bake-off should emphasize 
 | Reuse behavior | Unchanged synced content can be reused without changing project semantics or bypassing TuneForge verification. |
 | Delete behavior | Tombstones remain authoritative, and stale folder contents do not resurrect deleted library state. |
 
+### Sync Validation Evidence Model
+
+Sync validation evidence should be privacy-safe before any persistent sync logs exist. Manual notes, screenshots, copied Activity output, and future logs must record only redacted identifiers and aggregate transfer facts.
+
+Do not record:
+
+- Audio content or file contents.
+- Filenames, original import names, absolute paths, or user-chosen display names.
+- Raw device IDs, project IDs, artifact IDs, endpoint hints, pairing payloads, QR payloads, public keys, or secrets.
+- LAN IP addresses, relay addresses, hostnames, or other endpoint material unless a future debug export adds explicit redaction.
+
+Acceptable evidence:
+
+- Redacted run labels such as `run-a`, `peer-a`, `project-1`, and `artifact-1`.
+- Relative sync phases, counts, byte totals, durations, status values, and redacted error codes.
+- Transport choice and fallback code when it does not expose endpoint hints or peer identity material.
+- Scratch and staging peak byte usage without local path disclosure.
+- Playback result summaries such as source/stem playable, duration matched, seek worked, or decoder failed with a redacted code.
+
+Required metrics for every sync validation run:
+
+| Metric | Evidence to capture |
+| --- | --- |
+| Network receive throughput | Received bytes divided by receive duration for the selected transport. |
+| Backend staging throughput | Staged bytes divided by staging duration before apply. |
+| Reconciliation apply time | Total backend/mobile service apply duration after staged content is verified. |
+| Project import cadence | Imported projects per minute and time between successive project availability events. |
+| TTFA | Time from sync start to first verified artifact becoming locally available. |
+| Transfer counts | Requested, received, skipped/already-local, already-staged, failed, and retried artifacts. |
+| Transport choice | Selected transport, candidate transports, and whether fallback was allowed or used. |
+| Fallback reason/code | Redacted fallback reason/code, without endpoint hints or raw peer IDs. |
+| Scratch/staging peaks | Peak scratch bytes and staging bytes during the run. |
+
+For `pnpm sync:validate -- storage-peaks`, use `--samples` and `--interval-ms` during an active
+run when possible. Output `peakBytes` is the max observed across samples; `sampleCount: 1` is only
+the current snapshot and is not proof of the run peak.
+
 ### Baseline Evidence Fields
 
 The current custom desktop transport records run-level and phase-level evidence that should be copied into bake-off notes before testing another candidate against the same dataset:
@@ -491,6 +528,8 @@ The current custom desktop transport records run-level and phase-level evidence 
 | Transport phase timing evidence | `phaseTimings[]` / `phase_timings[]` entries with `phase`, `projectId`, `artifactId`, `startedAt`, `completedAt`, and `durationMs` | Compare discovery/handshake, manifest exchange, staging checks, transfers, staging, reconciliation, cleanup, and serving phases. |
 | Backend reconciliation timing | `include_timing_evidence=true` on apply requests; response `timing_evidence[]` with `phase`, `duration_ms`, `action_type`, `item_type`, `item_id`, `project_id`, `status`, and `details` | Separate transport time from backend plan/apply/action/staging-cleanup time. |
 | Resumability evidence | `alreadyStaged`, `alreadyStagedBytes`, artifact statuses `already_staged`, `received`, or `failed` | The custom baseline currently proves full verified staged-content reuse on rerun; it does not prove mid-artifact byte-range resume. |
+
+When copying these fields into validation notes, redact raw IDs and endpoint material according to "Sync Validation Evidence Model". Schema/API examples can name existing fields, but persistent evidence should not preserve raw values.
 
 ### Candidate Comparison
 
@@ -515,6 +554,23 @@ Fill this table with real evidence from the fields above. Do not enter estimated
 | 2026-05-20 | Iroh | Stale endpoint hint fallback | Linux-to-Mac after Linux listener restart | 227 MB, 1 project, 8 artifacts | Stored Linux Iroh hint pointed at a previous UDP port | Fallback to TCP completed in 1:37 at 2.3 MB/s with TTFA 19 s; imported 1 project and skipped 5 | Follow-up: stable Iroh UDP port and endpoint-hint refresh. |
 
 The interrupted lyrics-job convergence edge case is a sync v2 follow-up and does not block the transport bake-off. Completed lyrics revisions and artifacts should still sync as durable library state, but interrupted runnable jobs are not part of the v1 sync truth and should not determine the transport bake-off outcome.
+
+### Sync Validation Checklist
+
+Use this checklist for manual sync validation evidence. Keep every row tied to redacted run labels from "Sync Validation Evidence Model" and compare candidates against the same dataset where possible.
+
+| Scenario | Pass evidence |
+| --- | --- |
+| Desktop to desktop | A desktop import on peer A becomes available on peer B after manifest exchange, transfer, staging, SHA-256 verification, and service-level import. Record required metrics, transfer counts, and TTFA. |
+| Desktop to Android | A desktop import becomes available on Android as normal library state. Android records selected transport, fallback reason/code if used, staging/apply timing, storage peaks, and playback results for synced source and stem artifacts. |
+| Android to desktop | An Android import or Android-origin durable project change becomes available on a desktop peer through the same sync group model. Record import cadence, transfer counts, staging/apply timing, selected transport, and fallback reason/code if any. |
+| Three-device join and catch-up | A third peer joins an existing group, catches up from trusted online peers, and reaches the same project/artifact/revision/tombstone state. Record which peers were online, project import cadence, TTFA, and missing-provider behavior without raw IDs. |
+| Retry and resume | Interrupt a run, restart sync, and prove completed verified staging is reused. Record retried counts, already-staged counts/bytes, failed counts, final verification status, and whether byte-range resume was actually proven. |
+| Listener lifecycle | Start, stop, restart, pause, and resume listeners on desktop and Android where supported. Record selected transport, fallback reason/code, stale-hint handling, and whether peers recover without duplicating imports. |
+| Playback validation | Open synced projects only after the minimum usable set is verified. Play synced source and desktop WAV stem artifacts on desktop and Android, then record playable/seek/duration-match outcomes and redacted decoder failures. |
+| Syncthing control benchmark | Use only an external user-managed Syncthing setup moving a TuneForge sync bundle. Record control timing, transfer counts if available, safe bundle boundary checks, and service-level import results. Do not treat Syncthing as a product dependency or implementation requirement. |
+
+Accepted sync validation evidence must not claim mid-artifact byte-range resume, Android transport parity, background sync lifecycle, or Syncthing product readiness unless the specific run proves it.
 
 ## Recommended Direction
 

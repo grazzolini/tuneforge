@@ -14,6 +14,15 @@ desktop_start=${SECONDS}
 desktop_elapsed=$((SECONDS - desktop_start))
 printf '\n[tests] Desktop tests finished in %ss\n' "${desktop_elapsed}"
 
+printf '\n[tests] Starting sync validation harness tests\n\n'
+sync_validation_start=${SECONDS}
+(
+  cd "${repo_root}"
+  node --test scripts/sync-validation.test.mjs
+)
+sync_validation_elapsed=$((SECONDS - sync_validation_start))
+printf '\n[tests] Sync validation harness tests finished in %ss\n' "${sync_validation_elapsed}"
+
 printf '\n[tests] Starting Tauri shell tests\n\n'
 tauri_start=${SECONDS}
 (

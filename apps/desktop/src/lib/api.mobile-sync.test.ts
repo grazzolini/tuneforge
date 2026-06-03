@@ -280,4 +280,174 @@ describe("mobile sync API adapter", () => {
       },
     });
   });
-});
+
+	  it("routes lifecycle events to native transport and normalizes camelCase lifecycle fields", async () => {
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "mobile_capabilities") {
+        return mobileCapabilities;
+      }
+      if (command === "sync_transport_record_lifecycle_event") {
+        return {
+          running: true,
+          status: "listening",
+          endpointHints: [],
+          nearbyPeers: [],
+          lastLifecycleEvent: {
+            kind: "network_offline",
+            occurredAt: "2026-05-22 12:04:00",
+            message: "Network dropped.",
+            retryable: true,
+            interruptionCode: "android_screen_locked",
+            retryGuidance: "Wake the phone and retry sync.",
+            peerDeviceId: "device_peer_1",
+            runId: "sync_run_lifecycle_1",
+          },
+          lifecycleEvents: [
+            {
+              kind: "background",
+              occurredAt: "2026-05-22T12:03:58.000Z",
+              message: "App backgrounded.",
+              retryable: false,
+            },
+            {
+              kind: "network_offline",
+              occurredAt: "2026-05-22 12:04:00",
+              message: "Network dropped.",
+              retryable: true,
+              interruptionCode: "android_screen_locked",
+              retryGuidance: "Wake the phone and retry sync.",
+              peerDeviceId: "device_peer_1",
+              runId: "sync_run_lifecycle_1",
+            },
+          ],
+          retryableInterruptionCode: "android_screen_locked",
+          retryableInterruptionPeerDeviceId: "device_peer_1",
+          retryGuidance: "Wake the phone and retry sync.",
+          lastSync: {
+            peerDeviceId: "device_peer_1",
+            status: "failed",
+            message: "Sync paused by lifecycle interruption.",
+            projectResults: [],
+            manifestErrors: [],
+            receivedArtifacts: [],
+            lastLifecycleEvent: {
+              kind: "network_offline",
+              occurredAt: "2026-05-22 12:04:00",
+              message: "Network dropped.",
+              retryable: true,
+              interruptionCode: "android_screen_locked",
+              retryGuidance: "Wake the phone and retry sync.",
+              peerDeviceId: "device_peer_1",
+              runId: "sync_run_lifecycle_1",
+            },
+            lifecycleEvents: [
+              {
+                kind: "network_offline",
+                occurredAt: "2026-05-22 12:04:00",
+                retryable: true,
+                interruptionCode: "android_screen_locked",
+                retryGuidance: "Wake the phone and retry sync.",
+                peerDeviceId: "device_peer_1",
+                runId: "sync_run_lifecycle_1",
+              },
+            ],
+            retryableInterruptionCode: "android_screen_locked",
+            retryableInterruptionPeerDeviceId: "device_peer_1",
+            retryGuidance: "Wake the phone and retry sync.",
+          },
+        };
+      }
+      return {};
+    });
+    const api = await loadMobileApi();
+
+    await expect(
+      api.recordSyncLifecycleEvent({
+        kind: "network_offline",
+        occurredAt: "2026-05-22T12:04:00.000Z",
+        message: "Network dropped.",
+      }),
+    ).resolves.toMatchObject({
+      active: true,
+      status: "listening",
+      last_lifecycle_event: {
+        kind: "network_offline",
+        occurred_at: "2026-05-22T12:04:00.000Z",
+        message: "Network dropped.",
+        retryable: true,
+        interruption_code: "android_screen_locked",
+        retry_guidance: "Wake the phone and retry sync.",
+        peer_device_id: "device_peer_1",
+        run_id: "sync_run_lifecycle_1",
+      },
+      lifecycle_events: [
+        expect.objectContaining({ kind: "background", retryable: false }),
+        expect.objectContaining({
+          kind: "network_offline",
+          retryable: true,
+          interruption_code: "android_screen_locked",
+        }),
+      ],
+      retryable_interruption_code: "android_screen_locked",
+      retryable_interruption_peer_device_id: "device_peer_1",
+      retry_guidance: "Wake the phone and retry sync.",
+      last_sync: {
+        status: "failed",
+        lifecycle_events: [
+          expect.objectContaining({
+            kind: "network_offline",
+            retryable: true,
+            interruption_code: "android_screen_locked",
+          }),
+        ],
+        retryable_interruption_code: "android_screen_locked",
+        retryable_interruption_peer_device_id: "device_peer_1",
+      },
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("sync_transport_record_lifecycle_event", {
+      payload: {
+        kind: "network_offline",
+        occurredAt: "2026-05-22T12:04:00.000Z",
+        message: "Network dropped.",
+      },
+	    });
+	  });
+
+	  it("keeps retry interruption cleared when native status returns explicit null fields", async () => {
+	    const { normalizeSyncTransportStatus } = await import("./api");
+
+	    expect(normalizeSyncTransportStatus({
+	      running: true,
+	      status: "listening",
+	      endpointHints: [],
+	      nearbyPeers: [],
+	      lastLifecycleEvent: {
+	        kind: "network_offline",
+	        occurredAt: "2026-05-22T12:04:00.000Z",
+	        retryable: true,
+	        interruptionCode: "lifecycle_interrupted_network_offline",
+	        retryGuidance: "Retry when the peer is reachable.",
+	        peerDeviceId: "device_peer_1",
+	        runId: "sync_run_old_interruption",
+	      },
+	      lifecycleEvents: [
+	        {
+	          kind: "network_offline",
+	          occurredAt: "2026-05-22T12:04:00.000Z",
+	          retryable: true,
+	          interruptionCode: "lifecycle_interrupted_network_offline",
+	          retryGuidance: "Retry when the peer is reachable.",
+	          peerDeviceId: "device_peer_1",
+	          runId: "sync_run_old_interruption",
+	        },
+	      ],
+	      retryableInterruptionCode: null,
+	      retryableInterruptionPeerDeviceId: null,
+	      retryGuidance: null,
+	    })).toMatchObject({
+	      retryable_interruption_code: null,
+	      retryable_interruption_peer_device_id: null,
+	      retry_guidance: null,
+	    });
+	  });
+	});

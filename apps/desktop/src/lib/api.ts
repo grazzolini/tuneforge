@@ -121,6 +121,21 @@ export type SyncTransportPhaseTiming = {
   throughput_bytes_per_second?: number | null;
 };
 export type SyncTransportTiming = Record<string, unknown> | Record<string, unknown>[];
+export type SyncLifecycleEventRequest = {
+  kind: string;
+  occurredAt?: string | null;
+  message?: string | null;
+};
+export type SyncTransportLifecycleEvent = {
+  kind: string;
+  occurred_at?: string | null;
+  message?: string | null;
+  retryable: boolean;
+  interruption_code?: string | null;
+  retry_guidance?: string | null;
+  peer_device_id?: string | null;
+  run_id?: string | null;
+};
 type SyncTransportDiagnosticField =
   | "credit_wait_ms_total"
   | "credit_wait_ms_max"
@@ -178,6 +193,11 @@ export type SyncTransportRunStatus = {
   max_active_streams?: number | null;
   credit_grants?: number | null;
   credit_revokes?: number | null;
+  last_lifecycle_event?: SyncTransportLifecycleEvent | null;
+  lifecycle_events?: SyncTransportLifecycleEvent[];
+  retryable_interruption_code?: string | null;
+  retryable_interruption_peer_device_id?: string | null;
+  retry_guidance?: string | null;
   error?: string | null;
   project_results: SyncTransportProjectResult[];
   manifest_errors: SyncTransportManifestError[];
@@ -255,6 +275,11 @@ export type SyncTransportStatus = {
   last_status?: string | null;
   last_error?: string | null;
   fallback_code?: string | null;
+  last_lifecycle_event?: SyncTransportLifecycleEvent | null;
+  lifecycle_events?: SyncTransportLifecycleEvent[];
+  retryable_interruption_code?: string | null;
+  retryable_interruption_peer_device_id?: string | null;
+  retry_guidance?: string | null;
   last_sync?: SyncTransportRunStatus | null;
   updated_at?: string | null;
 };
@@ -303,6 +328,26 @@ function firstStringField(records: Array<Record<string, unknown> | null>, keys: 
     }
   }
   return null;
+}
+
+function firstNullableStringField(records: Array<Record<string, unknown> | null>, keys: string[]) {
+  let present = false;
+  for (const record of records) {
+    if (!record) {
+      continue;
+    }
+    for (const key of keys) {
+      if (!Object.prototype.hasOwnProperty.call(record, key)) {
+        continue;
+      }
+      present = true;
+      const value = record[key];
+      if (typeof value === "string" && value.trim()) {
+        return { present, value: value.trim() };
+      }
+    }
+  }
+  return { present, value: null };
 }
 
 function firstBooleanField(records: Array<Record<string, unknown> | null>, keys: string[]) {
@@ -984,6 +1029,114 @@ function normalizedEndpointHints(endpointHints: string[] | null | undefined) {
   return normalized;
 }
 
+function normalizeSyncLifecycleEvent(value: unknown): SyncTransportLifecycleEvent | null {
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+  const kind = firstStringField([record], ["kind", "event", "type"]);
+  if (!kind) {
+    return null;
+  }
+  return {
+    kind: normalizeTransportStatusToken(kind),
+    occurred_at: dateTimeField(record, [
+      "occurred_at",
+      "occurredAt",
+      "timestamp",
+      "created_at",
+      "createdAt",
+      "updated_at",
+      "updatedAt",
+    ]),
+    message: firstStringField([record], ["message", "reason", "detail", "details"]),
+    retryable: firstBooleanField([record], ["retryable", "can_retry", "canRetry"]) ?? false,
+    interruption_code: firstStringField([
+      record,
+    ], [
+      "interruption_code",
+      "interruptionCode",
+      "retryable_interruption_code",
+      "retryableInterruptionCode",
+      "code",
+    ]),
+    retry_guidance: firstStringField([record], ["retry_guidance", "retryGuidance", "guidance"]),
+    peer_device_id: firstStringField([
+      record,
+    ], [
+      "peer_device_id",
+      "peerDeviceId",
+      "retryable_interruption_peer_device_id",
+      "retryableInterruptionPeerDeviceId",
+      "device_id",
+      "deviceId",
+    ]),
+    run_id: firstStringField([record], ["run_id", "runId", "sync_run_id", "syncRunId"]),
+  };
+}
+
+function lifecycleEventsField(record: Record<string, unknown>) {
+  return recordArrayField(record, ["lifecycle_events", "lifecycleEvents", "events"])
+    .map((item) => normalizeSyncLifecycleEvent(item))
+    .filter((item): item is SyncTransportLifecycleEvent => item !== null);
+}
+
+function lastLifecycleEventField(
+  record: Record<string, unknown>,
+  lifecycleEvents: SyncTransportLifecycleEvent[],
+) {
+  return normalizeSyncLifecycleEvent(record.last_lifecycle_event ?? record.lastLifecycleEvent ?? null) ??
+    lifecycleEvents[lifecycleEvents.length - 1] ??
+    null;
+}
+
+function syncLifecycleInterruptionFields(
+  record: Record<string, unknown>,
+  lifecycleEvents: SyncTransportLifecycleEvent[],
+  lastLifecycleEvent: SyncTransportLifecycleEvent | null,
+) {
+  const retryableLifecycleEvent = [
+    lastLifecycleEvent,
+    ...[...lifecycleEvents].reverse(),
+  ].find((event): event is SyncTransportLifecycleEvent => Boolean(event?.retryable));
+  const explicitCode = firstNullableStringField([
+    record,
+  ], [
+    "retryable_interruption_code",
+    "retryableInterruptionCode",
+    "interruption_code",
+    "interruptionCode",
+  ]);
+  const explicitPeerDeviceId = firstNullableStringField([
+    record,
+  ], [
+    "retryable_interruption_peer_device_id",
+    "retryableInterruptionPeerDeviceId",
+    "interruption_peer_device_id",
+    "interruptionPeerDeviceId",
+    "peer_device_id",
+    "peerDeviceId",
+  ]);
+  const explicitGuidance = firstNullableStringField([
+    record,
+  ], [
+    "retry_guidance",
+    "retryGuidance",
+    "retryable_interruption_guidance",
+    "retryableInterruptionGuidance",
+  ]);
+  const explicitInterruptionState =
+    explicitCode.present || explicitPeerDeviceId.present || explicitGuidance.present;
+  return {
+    retryable_interruption_code: explicitCode.value ??
+      (explicitInterruptionState ? null : retryableLifecycleEvent?.interruption_code ?? null),
+    retryable_interruption_peer_device_id: explicitPeerDeviceId.value ??
+      (explicitInterruptionState ? null : retryableLifecycleEvent?.peer_device_id ?? null),
+    retry_guidance: explicitGuidance.value ??
+      (explicitInterruptionState ? null : retryableLifecycleEvent?.retry_guidance ?? null),
+  };
+}
+
 const SYNC_PROJECT_RESULT_PROGRESS_STATES = new Set([
   "applying",
   "downloading",
@@ -1336,6 +1489,13 @@ export function normalizeSyncRunStatus(value: unknown): SyncTransportRunStatus |
     ...numericMetricsFromRecord(explicitRunMetricRecord),
     ...numericMetricsFromRecord(transferCountRecord),
   };
+  const lifecycleEvents = lifecycleEventsField(record);
+  const lastLifecycleEvent = lastLifecycleEventField(record, lifecycleEvents);
+  const lifecycleInterruptionFields = syncLifecycleInterruptionFields(
+    record,
+    lifecycleEvents,
+    lastLifecycleEvent,
+  );
   const durationMs =
     numberField(record, ["duration_ms", "durationMs", "elapsed_ms", "elapsedMs"]) ??
     durationMsFromDateTimes(runStartedAt, runCompletedAt);
@@ -1491,6 +1651,9 @@ export function normalizeSyncRunStatus(value: unknown): SyncTransportRunStatus |
     max_active_streams: maxActiveStreams,
     credit_grants: creditGrants,
     credit_revokes: creditRevokes,
+    last_lifecycle_event: lastLifecycleEvent,
+    lifecycle_events: lifecycleEvents,
+    ...lifecycleInterruptionFields,
     error: explicitError,
     project_results: projectResults,
     manifest_errors: manifestErrors,
@@ -1516,6 +1679,7 @@ export function normalizeSyncTransportStatus(value: unknown): SyncTransportStatu
       status: "unavailable",
       endpoint_hints: [],
       nearby_peers: [],
+      lifecycle_events: [],
       last_error: "Native sync transport returned an invalid status.",
     };
   }
@@ -1535,6 +1699,13 @@ export function normalizeSyncTransportStatus(value: unknown): SyncTransportStatu
     "updated_at",
     "updatedAt",
   ]);
+  const lifecycleEvents = lifecycleEventsField(record);
+  const lastLifecycleEvent = lastLifecycleEventField(record, lifecycleEvents);
+  const lifecycleInterruptionFields = syncLifecycleInterruptionFields(
+    record,
+    lifecycleEvents,
+    lastLifecycleEvent,
+  );
   return {
     active,
     status,
@@ -1572,6 +1743,9 @@ export function normalizeSyncTransportStatus(value: unknown): SyncTransportStatu
     last_status: firstStringField([record], ["last_status", "lastStatus"]),
     last_error: firstStringField([record], ["last_error", "lastError", "error"]),
     fallback_code: firstStringField([record], ["fallback_code", "fallbackCode"]),
+    last_lifecycle_event: lastLifecycleEvent,
+    lifecycle_events: lifecycleEvents,
+    ...lifecycleInterruptionFields,
     last_sync: normalizeSyncRunStatus(record.last_sync ?? record.lastSync ?? null),
     updated_at: firstStringField([record], ["updated_at", "updatedAt"]),
   };
@@ -1587,6 +1761,19 @@ async function startSyncListener() {
 
 async function stopSyncListener() {
   return normalizeSyncTransportStatus(await invokeDesktopNative<unknown>("sync_transport_stop_listener"));
+}
+
+async function recordSyncLifecycleEvent(event: SyncLifecycleEventRequest) {
+  const payload: Record<string, unknown> = { kind: event.kind };
+  if (event.occurredAt !== undefined) {
+    payload.occurredAt = event.occurredAt;
+  }
+  if (event.message !== undefined) {
+    payload.message = event.message;
+  }
+  return normalizeSyncTransportStatus(
+    await invokeDesktopNative<unknown>("sync_transport_record_lifecycle_event", { payload }),
+  );
 }
 
 async function syncTrustedPeerNow(deviceId: string, options?: SyncTransportSyncNowOptions) {
@@ -1673,6 +1860,7 @@ export type TuneForgeClient = {
   getSyncTransportStatus: () => Promise<SyncTransportStatus>;
   startSyncListener: () => Promise<SyncTransportStatus>;
   stopSyncListener: () => Promise<SyncTransportStatus>;
+  recordSyncLifecycleEvent: (event: SyncLifecycleEventRequest) => Promise<SyncTransportStatus>;
   syncTrustedPeerNow: (
     deviceId: string,
     options?: SyncTransportSyncNowOptions,
@@ -1926,6 +2114,7 @@ function createHttpTuneForgeClient(): TuneForgeClient {
     getSyncTransportStatus,
     startSyncListener,
     stopSyncListener,
+    recordSyncLifecycleEvent,
     syncTrustedPeerNow,
     streamArtifactUrl: (artifactId: string) => `${getApiBaseUrl()}/api/v1/artifacts/${artifactId}/stream`,
   };
@@ -2031,6 +2220,7 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     getSyncTransportStatus,
     startSyncListener,
     stopSyncListener,
+    recordSyncLifecycleEvent,
     syncTrustedPeerNow,
     streamArtifactUrl: (artifactId: string) => {
       const artifactPath = mobileArtifactPaths.get(artifactId);
@@ -2123,6 +2313,7 @@ export const api: TuneForgeClient = {
   getSyncTransportStatus: () => activeClient.getSyncTransportStatus(),
   startSyncListener: () => activeClient.startSyncListener(),
   stopSyncListener: () => activeClient.stopSyncListener(),
+  recordSyncLifecycleEvent: (event: SyncLifecycleEventRequest) => activeClient.recordSyncLifecycleEvent(event),
   syncTrustedPeerNow: (deviceId: string, options?: SyncTransportSyncNowOptions) =>
     activeClient.syncTrustedPeerNow(deviceId, options),
   streamArtifactUrl: (artifactId: string) => activeClient.streamArtifactUrl(artifactId),

@@ -1650,6 +1650,7 @@ mod desktop {
     const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
     const RECONCILIATION_PLAN_MANIFEST_CHUNK_SIZE: usize = 24;
     const RECONCILIATION_PLAN_DELETE_CHUNK_SIZE: usize = 24;
+    const LOCAL_MANIFEST_EXPORT_BATCH_SIZE: usize = 24;
     const READ_TIMEOUT: Duration = Duration::from_secs(45);
     const PROTOCOL_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(75);
     const STATUS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
@@ -1672,6 +1673,8 @@ mod desktop {
         "Bring TuneForge back to the foreground, then retry sync.";
     #[cfg(not(target_os = "android"))]
     const HTTP_TIMEOUT: Duration = Duration::from_secs(45);
+    #[cfg(not(target_os = "android"))]
+    const MANIFEST_EXPORT_HTTP_TIMEOUT: Duration = Duration::from_secs(300);
     #[cfg(not(target_os = "android"))]
     const BACKEND_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -1952,7 +1955,7 @@ mod desktop {
             update_status(&self.shared_status, |status| {
                 apply_sync_now_status_result(status, &result, &run_id);
             });
-            result
+            result.map_err(|failure| failure.sync_result.message)
         }
 
         fn run_sync_now(
@@ -1960,7 +1963,7 @@ mod desktop {
             payload: SyncTransportSyncNowRequest,
             run_id: String,
             run_cancel: RunCancellationToken,
-        ) -> Result<SyncTransportSyncResult, String> {
+        ) -> Result<SyncTransportSyncResult, SyncNowHardFailure> {
             let run_started_at = Utc::now();
             let run_started_instant = Instant::now();
             let requested_peer_device_id = payload.peer_device_id.clone();
@@ -1996,7 +1999,24 @@ mod desktop {
                     timings,
                 ));
             }
-            let client = BackendClient::new(&self.backend)?;
+            let client = BackendClient::new(&self.backend).map_err(|error| {
+                sync_now_hard_failure(
+                    error,
+                    &run_id,
+                    &requested_peer_device_id,
+                    &requested_peer_device_id,
+                    not_started_transport_evidence(),
+                    &run_started_at,
+                    run_started_instant,
+                    &[],
+                    0,
+                    &metrics,
+                    &timings,
+                    0,
+                    0,
+                    Vec::new(),
+                )
+            })?;
             let preflight = match client.sync_preflight() {
                 Ok(preflight) => preflight,
                 Err(_) => {
@@ -2095,11 +2115,31 @@ mod desktop {
             );
             let peer = client
                 .trusted_peer(&payload.peer_device_id)
-                .map_err(|error| format!("Could not load trusted sync peer: {error}"))?
-                .ok_or_else(|| {
-                    format!(
-                        "Trusted sync peer {} is not known or has been revoked.",
-                        payload.peer_device_id
+                .map_err(|error| format!("Could not load trusted sync peer: {error}"))
+                .and_then(|peer| {
+                    peer.ok_or_else(|| {
+                        format!(
+                            "Trusted sync peer {} is not known or has been revoked.",
+                            payload.peer_device_id
+                        )
+                    })
+                })
+                .map_err(|error| {
+                    sync_now_hard_failure(
+                        error,
+                        &run_id,
+                        &requested_peer_device_id,
+                        &requested_peer_device_id,
+                        not_started_transport_evidence(),
+                        &run_started_at,
+                        run_started_instant,
+                        &[],
+                        0,
+                        &metrics,
+                        &timings,
+                        0,
+                        0,
+                        Vec::new(),
                     )
                 })?;
             let preferred_transport = payload
@@ -2118,7 +2158,25 @@ mod desktop {
                 &selection_endpoint_hints,
                 &payload.peer_device_id,
                 local_iroh.is_some(),
-            )?;
+            )
+            .map_err(|error| {
+                sync_now_hard_failure(
+                    error,
+                    &run_id,
+                    &requested_peer_device_id,
+                    &requested_peer_device_id,
+                    not_started_transport_evidence(),
+                    &run_started_at,
+                    run_started_instant,
+                    &[],
+                    0,
+                    &metrics,
+                    &timings,
+                    0,
+                    0,
+                    Vec::new(),
+                )
+            })?;
             let mut transport_selection = transport_selection;
             let timer = SyncPhaseTimer::start("peer_connect");
             let mut connection = match connect_selected_transport(
@@ -2128,19 +2186,15 @@ mod desktop {
             ) {
                 Ok(connection) => connection,
                 Err(error) => {
-                    let TransportEvidence {
-                        selected_transport,
-                        attempted_transports,
-                        ..
-                    } = transport_selection.evidence();
+                    let transport_evidence = transport_selection.evidence();
                     if let Some(result) = lifecycle_interrupted_sync_result_for_run(
                         &self.shared_status,
                         &run_cancel,
                         &run_id,
                         &requested_peer_device_id,
                         &requested_peer_device_id,
-                        &selected_transport,
-                        attempted_transports,
+                        &transport_evidence.selected_transport,
+                        transport_evidence.attempted_transports.clone(),
                         &run_started_at,
                         run_started_instant,
                         &[],
@@ -2150,7 +2204,24 @@ mod desktop {
                     ) {
                         return Ok(result);
                     }
-                    return Err(error);
+                    let mut failure_timings = timings.clone();
+                    failure_timings.push(timer.finish());
+                    return Err(sync_now_hard_failure(
+                        error,
+                        &run_id,
+                        &requested_peer_device_id,
+                        &requested_peer_device_id,
+                        transport_evidence,
+                        &run_started_at,
+                        run_started_instant,
+                        &[],
+                        0,
+                        &metrics,
+                        &failure_timings,
+                        0,
+                        0,
+                        Vec::new(),
+                    ));
                 }
             };
             timings.push(timer.finish());
@@ -2167,19 +2238,15 @@ mod desktop {
             {
                 Ok(session) => session,
                 Err(error) => {
-                    let TransportEvidence {
-                        selected_transport,
-                        attempted_transports,
-                        ..
-                    } = transport_selection.evidence();
+                    let transport_evidence = transport_selection.evidence();
                     if let Some(result) = lifecycle_interrupted_sync_result_for_run(
                         &self.shared_status,
                         &run_cancel,
                         &run_id,
                         &requested_peer_device_id,
                         &requested_peer_device_id,
-                        &selected_transport,
-                        attempted_transports,
+                        &transport_evidence.selected_transport,
+                        transport_evidence.attempted_transports.clone(),
                         &run_started_at,
                         run_started_instant,
                         &[],
@@ -2189,10 +2256,46 @@ mod desktop {
                     ) {
                         return Ok(result);
                     }
-                    return Err(error);
+                    let mut failure_timings = timings.clone();
+                    failure_timings.push(timer.finish());
+                    return Err(sync_now_hard_failure(
+                        error,
+                        &run_id,
+                        &requested_peer_device_id,
+                        &requested_peer_device_id,
+                        transport_evidence,
+                        &run_started_at,
+                        run_started_instant,
+                        &[],
+                        0,
+                        &metrics,
+                        &failure_timings,
+                        0,
+                        0,
+                        Vec::new(),
+                    ));
                 }
             };
-            connection.set_established_read_timeout()?;
+            if let Err(error) = connection.set_established_read_timeout() {
+                let transport_evidence = transport_selection.evidence();
+                let failure_timings = sync_now_failure_timings_with_finished_timer(&timings, timer);
+                return Err(sync_now_hard_failure(
+                    error,
+                    &run_id,
+                    &requested_peer_device_id,
+                    &session.remote_device_id,
+                    transport_evidence,
+                    &run_started_at,
+                    run_started_instant,
+                    &[],
+                    0,
+                    &metrics,
+                    &failure_timings,
+                    0,
+                    0,
+                    Vec::new(),
+                ));
+            }
             timings.push(timer.finish());
             let connection = SharedPeerConnection::new(connection);
             attach_active_run_connection(&self.shared_status, &run_id, connection.clone());
@@ -2256,19 +2359,15 @@ mod desktop {
                 "manifest exchange",
                 &ProtocolMessage::ManifestOffer(local_offer.clone()),
             ) {
-                let TransportEvidence {
-                    selected_transport,
-                    attempted_transports,
-                    ..
-                } = transport_selection.evidence();
+                let transport_evidence = transport_selection.evidence();
                 if let Some(result) = lifecycle_interrupted_sync_result_for_run(
                     &self.shared_status,
                     &run_cancel,
                     &run_id,
                     &requested_peer_device_id,
                     &session.remote_device_id,
-                    &selected_transport,
-                    attempted_transports,
+                    &transport_evidence.selected_transport,
+                    transport_evidence.attempted_transports.clone(),
                     &run_started_at,
                     run_started_instant,
                     &[],
@@ -2278,26 +2377,39 @@ mod desktop {
                 ) {
                     return Ok(result);
                 }
-                return Err(error);
+                let mut failure_timings = timings.clone();
+                failure_timings.push(timer.finish());
+                return Err(sync_now_hard_failure(
+                    error,
+                    &run_id,
+                    &requested_peer_device_id,
+                    &session.remote_device_id,
+                    transport_evidence,
+                    &run_started_at,
+                    run_started_instant,
+                    &[],
+                    0,
+                    &metrics,
+                    &failure_timings,
+                    local_manifest_count,
+                    0,
+                    Vec::new(),
+                ));
             }
             let remote_message = match connection
                 .read_message_accepting_status_for_phase("manifest exchange", &progress)
             {
                 Ok(message) => message,
                 Err(error) => {
-                    let TransportEvidence {
-                        selected_transport,
-                        attempted_transports,
-                        ..
-                    } = transport_selection.evidence();
+                    let transport_evidence = transport_selection.evidence();
                     if let Some(result) = lifecycle_interrupted_sync_result_for_run(
                         &self.shared_status,
                         &run_cancel,
                         &run_id,
                         &requested_peer_device_id,
                         &session.remote_device_id,
-                        &selected_transport,
-                        attempted_transports,
+                        &transport_evidence.selected_transport,
+                        transport_evidence.attempted_transports.clone(),
                         &run_started_at,
                         run_started_instant,
                         &[],
@@ -2307,21 +2419,76 @@ mod desktop {
                     ) {
                         return Ok(result);
                     }
-                    return Err(error);
+                    let mut failure_timings = timings.clone();
+                    failure_timings.push(timer.finish());
+                    return Err(sync_now_hard_failure(
+                        error,
+                        &run_id,
+                        &requested_peer_device_id,
+                        &session.remote_device_id,
+                        transport_evidence,
+                        &run_started_at,
+                        run_started_instant,
+                        &[],
+                        0,
+                        &metrics,
+                        &failure_timings,
+                        local_manifest_count,
+                        0,
+                        Vec::new(),
+                    ));
                 }
             };
             let remote_offer = match remote_message {
                 ProtocolMessage::ManifestOffer(offer) => offer,
                 ProtocolMessage::Error(error) => {
-                    return Err(phase_context_error(
+                    let error = phase_context_error(
                         "manifest exchange",
                         format!("Sync peer returned an error: {}", error.message),
+                    );
+                    let transport_evidence = transport_selection.evidence();
+                    let mut failure_timings = timings.clone();
+                    failure_timings.push(timer.finish());
+                    return Err(sync_now_hard_failure(
+                        error,
+                        &run_id,
+                        &requested_peer_device_id,
+                        &session.remote_device_id,
+                        transport_evidence,
+                        &run_started_at,
+                        run_started_instant,
+                        &[],
+                        0,
+                        &metrics,
+                        &failure_timings,
+                        local_manifest_count,
+                        0,
+                        Vec::new(),
                     ));
                 }
                 other => {
-                    return Err(format!(
+                    let error = format!(
                         "Sync peer sent unexpected message during manifest exchange: {}",
                         other.kind()
+                    );
+                    let transport_evidence = transport_selection.evidence();
+                    let mut failure_timings = timings.clone();
+                    failure_timings.push(timer.finish());
+                    return Err(sync_now_hard_failure(
+                        error,
+                        &run_id,
+                        &requested_peer_device_id,
+                        &session.remote_device_id,
+                        transport_evidence,
+                        &run_started_at,
+                        run_started_instant,
+                        &[],
+                        0,
+                        &metrics,
+                        &failure_timings,
+                        local_manifest_count,
+                        0,
+                        Vec::new(),
                     ));
                 }
             };
@@ -2377,19 +2544,15 @@ mod desktop {
                 },
             ) {
                 finish_staged_remote_import_for_failure(prepared_remote_import);
-                let TransportEvidence {
-                    selected_transport,
-                    attempted_transports,
-                    ..
-                } = transport_selection.evidence();
+                let transport_evidence = transport_selection.evidence();
                 if let Some(result) = lifecycle_interrupted_sync_result_for_run(
                     &self.shared_status,
                     &run_cancel,
                     &run_id,
                     &requested_peer_device_id,
                     &session.remote_device_id,
-                    &selected_transport,
-                    attempted_transports,
+                    &transport_evidence.selected_transport,
+                    transport_evidence.attempted_transports.clone(),
                     &run_started_at,
                     run_started_instant,
                     &received_artifacts,
@@ -2399,7 +2562,25 @@ mod desktop {
                 ) {
                     return Ok(result);
                 }
-                return Err(error);
+                return Err(sync_now_hard_failure(
+                    error,
+                    &run_id,
+                    &requested_peer_device_id,
+                    &session.remote_device_id,
+                    transport_evidence,
+                    &run_started_at,
+                    run_started_instant,
+                    &received_artifacts,
+                    0,
+                    &metrics,
+                    &timings,
+                    local_manifest_count,
+                    remote_offer.project_manifests.len(),
+                    sync_manifest_errors(
+                        &local_offer.manifest_errors,
+                        &remote_offer.manifest_errors,
+                    ),
+                ));
             }
             let timer = SyncPhaseTimer::start("serve_artifact_requests");
             let served_artifact_requests = match serve_artifact_requests_until_done(
@@ -2412,19 +2593,15 @@ mod desktop {
                 Ok(served_artifact_requests) => served_artifact_requests,
                 Err(error) => {
                     finish_staged_remote_import_for_failure(prepared_remote_import);
-                    let TransportEvidence {
-                        selected_transport,
-                        attempted_transports,
-                        ..
-                    } = transport_selection.evidence();
+                    let transport_evidence = transport_selection.evidence();
                     if let Some(result) = lifecycle_interrupted_sync_result_for_run(
                         &self.shared_status,
                         &run_cancel,
                         &run_id,
                         &requested_peer_device_id,
                         &session.remote_device_id,
-                        &selected_transport,
-                        attempted_transports,
+                        &transport_evidence.selected_transport,
+                        transport_evidence.attempted_transports.clone(),
                         &run_started_at,
                         run_started_instant,
                         &received_artifacts,
@@ -2434,7 +2611,27 @@ mod desktop {
                     ) {
                         return Ok(result);
                     }
-                    return Err(error);
+                    let mut failure_timings = timings.clone();
+                    failure_timings.push(timer.finish());
+                    return Err(sync_now_hard_failure(
+                        error,
+                        &run_id,
+                        &requested_peer_device_id,
+                        &session.remote_device_id,
+                        transport_evidence,
+                        &run_started_at,
+                        run_started_instant,
+                        &received_artifacts,
+                        0,
+                        &metrics,
+                        &failure_timings,
+                        local_manifest_count,
+                        remote_offer.project_manifests.len(),
+                        sync_manifest_errors(
+                            &local_offer.manifest_errors,
+                            &remote_offer.manifest_errors,
+                        ),
+                    ));
                 }
             };
             timings.push(timer.finish());
@@ -2769,6 +2966,324 @@ mod desktop {
             phase_timings: Vec::new(),
             diagnostics: SyncTransportDiagnostics::default(),
         }
+    }
+
+    fn sync_failed_status_message(error: &str, failure_prefix: &str) -> String {
+        let mut message = error.trim();
+        let failure_sentence = format!("{failure_prefix}.");
+        if message == failure_sentence {
+            return failure_sentence;
+        }
+        let failure_detail_prefix = format!("{failure_prefix}:");
+        if let Some(stripped) = message.strip_prefix(&failure_detail_prefix) {
+            message = stripped.trim();
+        }
+        if message.is_empty() {
+            return failure_sentence;
+        }
+        let safe_message = if sync_now_failure_detail_is_sensitive(message) {
+            sync_now_failure_redacted_summary(message)
+        } else {
+            message.to_string()
+        };
+        format!("{failure_prefix}: {safe_message}")
+    }
+
+    fn sync_now_failed_status_message(error: &str) -> String {
+        sync_failed_status_message(error, "Sync now failed")
+    }
+
+    fn incoming_session_failed_status_message(error: &str) -> String {
+        sync_failed_status_message(error, "Sync session failed")
+    }
+
+    fn sync_transport_failure_prefix(message: &str) -> Option<&str> {
+        let (prefix, _) = message.split_once(':')?;
+        let prefix = prefix.trim();
+        if prefix.starts_with("Sync transport ")
+            && (prefix.ends_with(" failed") || prefix.ends_with(" stalled"))
+        {
+            return Some(prefix);
+        }
+        None
+    }
+
+    fn sync_now_failure_redacted_summary(message: &str) -> String {
+        if let Some(prefix) = sync_transport_failure_prefix(message) {
+            return format!("{prefix}: details redacted.");
+        }
+        "Sync transport failed: details redacted.".to_string()
+    }
+
+    fn sync_now_failure_detail_is_sensitive(message: &str) -> bool {
+        let detail = sync_transport_failure_prefix(message)
+            .and_then(|prefix| message.get(prefix.len() + 1..))
+            .map(str::trim)
+            .unwrap_or(message);
+        let lower = detail.to_ascii_lowercase();
+        if lower.contains("://")
+            || lower.contains("tuneforge-sync+")
+            || lower.contains("content_sha256")
+            || lower.contains("source_path")
+            || lower.contains("imported_path")
+            || lower.contains("endpoint_hint")
+            || lower.contains("endpoint_hints")
+            || lower.contains("endpointhint")
+            || lower.contains("endpointhints")
+            || lower.contains("project_id")
+            || lower.contains("projectid")
+            || lower.contains("artifact_id")
+            || lower.contains("artifactid")
+            || lower.contains("device_id")
+            || lower.contains("deviceid")
+        {
+            return true;
+        }
+        detail
+            .split_whitespace()
+            .map(|token| {
+                token
+                    .trim_matches(|ch: char| {
+                        matches!(
+                            ch,
+                            '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | ',' | ';'
+                        )
+                    })
+                    .trim_end_matches(|ch| matches!(ch, '.' | ':'))
+            })
+            .filter(|token| !token.is_empty())
+            .any(sync_now_failure_token_is_sensitive)
+    }
+
+    fn sync_now_failure_token_is_sensitive(token: &str) -> bool {
+        let lower = token.to_ascii_lowercase();
+        token.contains('/')
+            || token.contains('\\')
+            || token.parse::<SocketAddr>().is_ok()
+            || lower.starts_with("dev_")
+            || lower.starts_with("device_")
+            || lower.starts_with("proj_")
+            || lower.starts_with("art_")
+            || lower.starts_with("sync_")
+            || lower.starts_with("sha256")
+            || sync_now_failure_token_looks_like_hash(token)
+    }
+
+    fn sync_now_failure_token_looks_like_hash(token: &str) -> bool {
+        let value = token
+            .strip_prefix("sha256:")
+            .or_else(|| token.strip_prefix("sha256-"))
+            .unwrap_or(token);
+        value.len() >= 32 && value.chars().all(|ch| ch.is_ascii_hexdigit())
+    }
+
+    fn sync_now_failure_timings_with_finished_timer(
+        timings: &[SyncTransportTimingEvidence],
+        timer: SyncPhaseTimer,
+    ) -> Vec<SyncTransportTimingEvidence> {
+        let mut failure_timings = timings.to_vec();
+        failure_timings.push(timer.finish());
+        failure_timings
+    }
+
+    fn not_started_transport_evidence() -> TransportEvidence {
+        TransportEvidence {
+            selected_transport: NOT_STARTED_TRANSPORT_ID.to_string(),
+            fallback_reason: None,
+            fallback_code: None,
+            attempted_transports: Vec::new(),
+        }
+    }
+
+    fn sync_now_hard_failure(
+        error: String,
+        run_id: &str,
+        peer_device_id: &str,
+        remote_device_id: &str,
+        transport: TransportEvidence,
+        run_started_at: &DateTime<Utc>,
+        run_started_instant: Instant,
+        received_artifacts: &[SyncTransportTransferResult],
+        served_artifact_requests: u64,
+        metrics: &SyncRunMetrics,
+        phase_timings: &[SyncTransportTimingEvidence],
+        local_manifest_count: usize,
+        remote_manifest_count: usize,
+        manifest_errors: Vec<SyncTransportManifestError>,
+    ) -> SyncNowHardFailure {
+        let completed_at = Utc::now();
+        let received_artifacts = privacy_safe_hard_failure_transfers(received_artifacts);
+        let transfer_counts = transfer_counts(&received_artifacts);
+        let sync_result = SyncTransportSyncResult {
+            run_id: run_id.to_string(),
+            peer_device_id: peer_device_id.to_string(),
+            remote_device_id: remote_device_id.to_string(),
+            status: "failed".to_string(),
+            message: sync_now_failed_status_message(&error),
+            selected_transport: transport.selected_transport,
+            fallback_reason: transport.fallback_reason,
+            fallback_code: transport.fallback_code,
+            attempted_transports: transport.attempted_transports,
+            started_at: run_started_at.to_rfc3339(),
+            completed_at: completed_at.to_rfc3339(),
+            duration_ms: duration_millis(run_started_instant.elapsed()),
+            project_results: Vec::new(),
+            imported_projects: Vec::new(),
+            imported_project_count: 0,
+            skipped_project_count: 0,
+            failed_project_count: 0,
+            received_artifacts,
+            transfer_counts,
+            served_artifact_requests,
+            total_received_bytes: metrics.total_received_bytes,
+            total_served_bytes: metrics.total_served_bytes,
+            time_to_first_artifact_ms: metrics.time_to_first_artifact_ms(),
+            throughput_bytes_per_second: metrics
+                .throughput_bytes_per_second(run_started_instant.elapsed()),
+            scratch_peak_bytes: metrics.scratch_peak_bytes,
+            staging_peak_bytes: metrics.staging_peak_bytes,
+            max_active_streams: metrics.max_active_streams,
+            credit_grants: metrics.credit_grants,
+            credit_revokes: metrics.credit_revokes,
+            remote_manifest_count,
+            local_manifest_count,
+            manifest_errors: privacy_safe_hard_failure_manifest_errors(manifest_errors),
+            lifecycle_events: Vec::new(),
+            retryable_interruption_code: None,
+            retry_guidance: None,
+            phase_timings: privacy_safe_hard_failure_phase_timings(phase_timings),
+            diagnostics: metrics.diagnostics.clone(),
+        };
+        SyncNowHardFailure { error, sync_result }
+    }
+
+    fn incoming_session_hard_failure(
+        error: String,
+        run_id: &str,
+        peer_device_id: &str,
+        remote_device_id: &str,
+        transport: TransportEvidence,
+        run_started_at: &DateTime<Utc>,
+        run_started_instant: Instant,
+        received_artifacts: &[SyncTransportTransferResult],
+        served_artifact_requests: u64,
+        metrics: &SyncRunMetrics,
+        phase_timings: &[SyncTransportTimingEvidence],
+        local_manifest_count: usize,
+        remote_manifest_count: usize,
+        manifest_errors: Vec<SyncTransportManifestError>,
+    ) -> IncomingSessionHardFailure {
+        let completed_at = Utc::now();
+        let received_artifacts = privacy_safe_hard_failure_transfers(received_artifacts);
+        let transfer_counts = transfer_counts(&received_artifacts);
+        let sync_result = SyncTransportSyncResult {
+            run_id: run_id.to_string(),
+            peer_device_id: peer_device_id.to_string(),
+            remote_device_id: remote_device_id.to_string(),
+            status: "failed".to_string(),
+            message: incoming_session_failed_status_message(&error),
+            selected_transport: transport.selected_transport,
+            fallback_reason: transport.fallback_reason,
+            fallback_code: transport.fallback_code,
+            attempted_transports: transport.attempted_transports,
+            started_at: run_started_at.to_rfc3339(),
+            completed_at: completed_at.to_rfc3339(),
+            duration_ms: duration_millis(run_started_instant.elapsed()),
+            project_results: Vec::new(),
+            imported_projects: Vec::new(),
+            imported_project_count: 0,
+            skipped_project_count: 0,
+            failed_project_count: 0,
+            received_artifacts,
+            transfer_counts,
+            served_artifact_requests,
+            total_received_bytes: metrics.total_received_bytes,
+            total_served_bytes: metrics.total_served_bytes,
+            time_to_first_artifact_ms: metrics.time_to_first_artifact_ms(),
+            throughput_bytes_per_second: metrics
+                .throughput_bytes_per_second(run_started_instant.elapsed()),
+            scratch_peak_bytes: metrics.scratch_peak_bytes,
+            staging_peak_bytes: metrics.staging_peak_bytes,
+            max_active_streams: metrics.max_active_streams,
+            credit_grants: metrics.credit_grants,
+            credit_revokes: metrics.credit_revokes,
+            remote_manifest_count,
+            local_manifest_count,
+            manifest_errors: privacy_safe_hard_failure_manifest_errors(manifest_errors),
+            lifecycle_events: Vec::new(),
+            retryable_interruption_code: None,
+            retry_guidance: None,
+            phase_timings: privacy_safe_hard_failure_phase_timings(phase_timings),
+            diagnostics: metrics.diagnostics.clone(),
+        };
+        IncomingSessionHardFailure { error, sync_result }
+    }
+
+    fn privacy_safe_hard_failure_text(message: Option<&str>, redacted: &str) -> Option<String> {
+        message.map(|message| {
+            if sync_now_failure_detail_is_sensitive(message)
+                || message.to_ascii_lowercase().contains("backend http")
+            {
+                redacted.to_string()
+            } else {
+                message.to_string()
+            }
+        })
+    }
+
+    fn privacy_safe_hard_failure_transfers(
+        transfers: &[SyncTransportTransferResult],
+    ) -> Vec<SyncTransportTransferResult> {
+        transfers
+            .iter()
+            .enumerate()
+            .map(|(index, transfer)| SyncTransportTransferResult {
+                artifact_id: format!("artifact_{}", index + 1),
+                content_sha256: "[redacted_hash]".to_string(),
+                message: privacy_safe_hard_failure_text(
+                    transfer.message.as_deref(),
+                    "Transfer details redacted.",
+                ),
+                ..transfer.clone()
+            })
+            .collect()
+    }
+
+    fn privacy_safe_hard_failure_manifest_errors(
+        errors: Vec<SyncTransportManifestError>,
+    ) -> Vec<SyncTransportManifestError> {
+        errors
+            .into_iter()
+            .enumerate()
+            .map(|(index, error)| SyncTransportManifestError {
+                project_id: format!("project_{}", index + 1),
+                message: privacy_safe_hard_failure_text(
+                    Some(&error.message),
+                    "Manifest error details redacted.",
+                )
+                .unwrap_or_else(|| "Manifest error details redacted.".to_string()),
+            })
+            .collect()
+    }
+
+    fn privacy_safe_hard_failure_phase_timings(
+        timings: &[SyncTransportTimingEvidence],
+    ) -> Vec<SyncTransportTimingEvidence> {
+        timings
+            .iter()
+            .enumerate()
+            .map(|(index, timing)| SyncTransportTimingEvidence {
+                project_id: timing
+                    .project_id
+                    .as_ref()
+                    .map(|_| format!("project_{}", index + 1)),
+                artifact_id: timing
+                    .artifact_id
+                    .as_ref()
+                    .map(|_| format!("artifact_{}", index + 1)),
+                ..timing.clone()
+            })
+            .collect()
     }
 
     fn lifecycle_interrupted_sync_result(
@@ -3223,6 +3738,18 @@ mod desktop {
         retryable_interruption_peer_device_id: Option<String>,
         retry_guidance: Option<String>,
         active_runs: HashMap<String, ActiveSyncRun>,
+    }
+
+    #[derive(Clone, Debug)]
+    struct SyncNowHardFailure {
+        error: String,
+        sync_result: SyncTransportSyncResult,
+    }
+
+    #[derive(Clone, Debug)]
+    struct IncomingSessionHardFailure {
+        error: String,
+        sync_result: SyncTransportSyncResult,
     }
 
     #[derive(Clone)]
@@ -4346,25 +4873,39 @@ mod desktop {
             (result, _) => result,
         };
         update_status(&shared_status, |status| {
-            status.active_sessions = status.active_sessions.saturating_sub(1);
-            remove_active_run(status, &run_id);
-            clear_active_progress_for_run(status, &run_id);
-            match result {
-                Ok(result) => {
-                    status.last_status = Some(result.message);
-                    let sync_result = result.sync_result;
-                    if !sync_result_has_retryable_interruption(&sync_result) {
-                        clear_retryable_interruption(status);
-                    }
-                    status.last_sync = Some(sync_result);
-                    status.last_error = None;
-                }
-                Err(error) => {
-                    status.failed_sessions += 1;
-                    status.last_error = Some(error);
-                }
-            }
+            apply_incoming_session_status_result(status, result, &run_id);
         });
+    }
+
+    fn apply_incoming_session_status_result(
+        status: &mut SharedStatus,
+        result: Result<IncomingSessionResult, IncomingSessionHardFailure>,
+        run_id: &str,
+    ) {
+        status.active_sessions = status.active_sessions.saturating_sub(1);
+        remove_active_run(status, run_id);
+        clear_active_progress_for_run(status, run_id);
+        match result {
+            Ok(result) => {
+                status.last_status = Some(result.message);
+                let sync_result = result.sync_result;
+                if !sync_result_has_retryable_interruption(&sync_result) {
+                    clear_retryable_interruption(status);
+                }
+                status.last_sync = Some(sync_result);
+                status.last_error = None;
+            }
+            Err(failure) => {
+                let IncomingSessionHardFailure {
+                    error: _raw_error,
+                    sync_result,
+                } = failure;
+                status.failed_sessions += 1;
+                status.last_status = Some(sync_result.message.clone());
+                status.last_sync = Some(sync_result.clone());
+                status.last_error = Some(sync_result.message);
+            }
+        }
     }
 
     fn serve_incoming_session(
@@ -4378,16 +4919,95 @@ mod desktop {
         run_cancel: RunCancellationToken,
         run_started_at: DateTime<Utc>,
         run_started_instant: Instant,
-    ) -> Result<IncomingSessionResult, String> {
+    ) -> Result<IncomingSessionResult, IncomingSessionHardFailure> {
         let mut timings = Vec::new();
         let mut metrics = SyncRunMetrics::start(run_started_instant);
-        let client = BackendClient::new(&backend)?;
+        let transport_for_failure = transport.clone();
+        let client = BackendClient::new(&backend).map_err(|error| {
+            incoming_session_hard_failure(
+                error,
+                &run_id,
+                "unknown",
+                "unknown",
+                TransportSelection::single(transport_for_failure.clone()).evidence(),
+                &run_started_at,
+                run_started_instant,
+                &[],
+                0,
+                &metrics,
+                &timings,
+                0,
+                0,
+                Vec::new(),
+            )
+        })?;
         let timer = SyncPhaseTimer::start("peer_authentication");
-        let mut connection = SecurePeerConnection::connect_responder(stream, transport, iroh_data)?;
-        let session = authenticate_session(&mut connection, &client, None, &endpoint_hints)
-            .map_err(|error| phase_context_error("peer authentication", error))?;
+        let mut connection =
+            match SecurePeerConnection::connect_responder(stream, transport, iroh_data) {
+                Ok(connection) => connection,
+                Err(error) => {
+                    let failure_timings =
+                        sync_now_failure_timings_with_finished_timer(&timings, timer);
+                    return Err(incoming_session_hard_failure(
+                        error,
+                        &run_id,
+                        "unknown",
+                        "unknown",
+                        TransportSelection::single(transport_for_failure.clone()).evidence(),
+                        &run_started_at,
+                        run_started_instant,
+                        &[],
+                        0,
+                        &metrics,
+                        &failure_timings,
+                        0,
+                        0,
+                        Vec::new(),
+                    ));
+                }
+            };
+        let session = match authenticate_session(&mut connection, &client, None, &endpoint_hints) {
+            Ok(session) => session,
+            Err(error) => {
+                let failure_timings = sync_now_failure_timings_with_finished_timer(&timings, timer);
+                return Err(incoming_session_hard_failure(
+                    phase_context_error("peer authentication", error),
+                    &run_id,
+                    "unknown",
+                    "unknown",
+                    TransportSelection::single(transport_for_failure.clone()).evidence(),
+                    &run_started_at,
+                    run_started_instant,
+                    &[],
+                    0,
+                    &metrics,
+                    &failure_timings,
+                    0,
+                    0,
+                    Vec::new(),
+                ));
+            }
+        };
         update_active_run_peer(&shared_status, &run_id, session.remote_device_id.clone());
-        connection.set_established_read_timeout()?;
+        if let Err(error) = connection.set_established_read_timeout() {
+            let failure_timings = sync_now_failure_timings_with_finished_timer(&timings, timer);
+            return Err(incoming_session_hard_failure(
+                error,
+                &run_id,
+                &session.remote_device_id,
+                &session.remote_device_id,
+                TransportSelection::single(transport_for_failure.clone()).evidence(),
+                &run_started_at,
+                run_started_instant,
+                &[],
+                0,
+                &metrics,
+                &failure_timings,
+                0,
+                0,
+                Vec::new(),
+            ));
+        }
         timings.push(timer.finish());
         let connection = SharedPeerConnection::new(connection);
         attach_active_run_connection(&shared_status, &run_id, connection.clone());
@@ -4399,20 +5019,74 @@ mod desktop {
             run_cancel.clone(),
         );
         let timer = SyncPhaseTimer::start("manifest_exchange");
-        let remote_offer = match connection
-            .read_message_accepting_status_for_phase("manifest exchange", &progress)?
+        let remote_message = match connection
+            .read_message_accepting_status_for_phase("manifest exchange", &progress)
         {
+            Ok(message) => message,
+            Err(error) => {
+                let failure_timings = sync_now_failure_timings_with_finished_timer(&timings, timer);
+                return Err(incoming_session_hard_failure(
+                    error,
+                    &run_id,
+                    &session.remote_device_id,
+                    &session.remote_device_id,
+                    TransportSelection::single(connection.transport()).evidence(),
+                    &run_started_at,
+                    run_started_instant,
+                    &[],
+                    0,
+                    &metrics,
+                    &failure_timings,
+                    0,
+                    0,
+                    Vec::new(),
+                ));
+            }
+        };
+        let remote_offer = match remote_message {
             ProtocolMessage::ManifestOffer(offer) => offer,
             ProtocolMessage::Error(error) => {
-                return Err(phase_context_error(
-                    "manifest exchange",
-                    format!("Sync peer returned an error: {}", error.message),
+                let failure_timings = sync_now_failure_timings_with_finished_timer(&timings, timer);
+                return Err(incoming_session_hard_failure(
+                    phase_context_error(
+                        "manifest exchange",
+                        format!("Sync peer returned an error: {}", error.message),
+                    ),
+                    &run_id,
+                    &session.remote_device_id,
+                    &session.remote_device_id,
+                    TransportSelection::single(connection.transport()).evidence(),
+                    &run_started_at,
+                    run_started_instant,
+                    &[],
+                    0,
+                    &metrics,
+                    &failure_timings,
+                    0,
+                    0,
+                    Vec::new(),
                 ));
             }
             other => {
-                return Err(format!(
-                    "Sync peer sent unexpected first sync message: {}",
-                    other.kind()
+                let failure_timings = sync_now_failure_timings_with_finished_timer(&timings, timer);
+                return Err(incoming_session_hard_failure(
+                    format!(
+                        "Sync peer sent unexpected first sync message: {}",
+                        other.kind()
+                    ),
+                    &run_id,
+                    &session.remote_device_id,
+                    &session.remote_device_id,
+                    TransportSelection::single(connection.transport()).evidence(),
+                    &run_started_at,
+                    run_started_instant,
+                    &[],
+                    0,
+                    &metrics,
+                    &failure_timings,
+                    0,
+                    0,
+                    Vec::new(),
                 ));
             }
         };
@@ -4425,19 +5099,57 @@ mod desktop {
         };
         timings.push(timer.finish());
         let local_manifest_count = local_offer.project_manifests.len();
-        connection.send_message_for_phase(
+        if let Err(error) = connection.send_message_for_phase(
             "manifest exchange",
             &ProtocolMessage::ManifestOffer(local_offer.clone()),
-        )?;
+        ) {
+            return Err(incoming_session_hard_failure(
+                error,
+                &run_id,
+                &session.remote_device_id,
+                &session.remote_device_id,
+                TransportSelection::single(connection.transport()).evidence(),
+                &run_started_at,
+                run_started_instant,
+                &[],
+                0,
+                &metrics,
+                &timings,
+                local_manifest_count,
+                remote_offer.project_manifests.len(),
+                Vec::new(),
+            ));
+        }
 
         let timer = SyncPhaseTimer::start("serve_artifact_requests");
-        let served_artifact_requests = serve_artifact_requests_until_done(
+        let served_artifact_requests = match serve_artifact_requests_until_done(
             &client,
             &connection,
             &local_offer.project_manifests,
             &mut metrics,
             &progress,
-        )?;
+        ) {
+            Ok(served_artifact_requests) => served_artifact_requests,
+            Err(error) => {
+                let failure_timings = sync_now_failure_timings_with_finished_timer(&timings, timer);
+                return Err(incoming_session_hard_failure(
+                    error,
+                    &run_id,
+                    &session.remote_device_id,
+                    &session.remote_device_id,
+                    TransportSelection::single(connection.transport()).evidence(),
+                    &run_started_at,
+                    run_started_instant,
+                    &[],
+                    0,
+                    &metrics,
+                    &failure_timings,
+                    local_manifest_count,
+                    remote_offer.project_manifests.len(),
+                    Vec::new(),
+                ));
+            }
+        };
         timings.push(timer.finish());
         let transport_id = connection.transport_id();
         let prepared_remote_import = stage_remote_manifest_artifacts(
@@ -4457,8 +5169,24 @@ mod desktop {
                 phase: "responder_import".to_string(),
             },
         ) {
+            let received_artifacts = prepared_remote_import.received_artifacts.clone();
             finish_staged_remote_import_for_failure(Some(prepared_remote_import));
-            return Err(error);
+            return Err(incoming_session_hard_failure(
+                error,
+                &run_id,
+                &session.remote_device_id,
+                &session.remote_device_id,
+                TransportSelection::single(connection.transport()).evidence(),
+                &run_started_at,
+                run_started_instant,
+                &received_artifacts,
+                served_artifact_requests,
+                &metrics,
+                &timings,
+                local_manifest_count,
+                remote_offer.project_manifests.len(),
+                Vec::new(),
+            ));
         }
         let received_artifacts = prepared_remote_import.received_artifacts.clone();
         let imported_projects = finish_staged_remote_import(prepared_remote_import, &mut timings);
@@ -4685,7 +5413,7 @@ mod desktop {
 
     fn apply_sync_now_status_result(
         status: &mut SharedStatus,
-        result: &Result<SyncTransportSyncResult, String>,
+        result: &Result<SyncTransportSyncResult, SyncNowHardFailure>,
         run_id: &str,
     ) {
         match result {
@@ -4699,8 +5427,14 @@ mod desktop {
                 remove_active_run(status, &sync_result.run_id);
                 clear_active_progress_for_run(status, &sync_result.run_id);
             }
-            Err(error) => {
-                status.last_error = Some(error.clone());
+            Err(failure) => {
+                let SyncNowHardFailure {
+                    error: _raw_error,
+                    sync_result,
+                } = failure;
+                status.last_status = Some(sync_result.message.clone());
+                status.last_sync = Some(sync_result.clone());
+                status.last_error = Some(sync_result.message.clone());
                 remove_active_run(status, run_id);
                 clear_active_progress_for_run(status, run_id);
             }
@@ -5698,23 +6432,35 @@ mod desktop {
             };
         }
 
-        let body = json!({ "project_ids": project_ids });
-        match client.post_json_value("/api/v1/sync/projects/manifests", &body) {
-            Ok(response) => manifest_offer_from_batch_response(&response, project_ids),
-            Err(error) if client.manifest_batch_unavailable(&error) => {
-                load_local_project_manifests_one_by_one(client, project_ids)
+        let mut project_manifests = Vec::new();
+        let mut manifest_errors = Vec::new();
+        for project_id_batch in project_ids.chunks(LOCAL_MANIFEST_EXPORT_BATCH_SIZE) {
+            let body = json!({ "project_ids": project_id_batch });
+            match client.post_manifest_batch_json_value(&body) {
+                Ok(response) => {
+                    let batch_offer =
+                        manifest_offer_from_batch_response(&response, project_id_batch);
+                    project_manifests.extend(batch_offer.project_manifests);
+                    manifest_errors.extend(batch_offer.manifest_errors);
+                }
+                Err(error) if client.manifest_batch_unavailable(&error) => {
+                    return load_local_project_manifests_one_by_one(client, project_ids);
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    manifest_errors.extend(project_id_batch.iter().map(|project_id| {
+                        SyncTransportManifestError {
+                            project_id: project_id.clone(),
+                            message: message.clone(),
+                        }
+                    }));
+                }
             }
-            Err(error) => ManifestOffer {
-                metadata: Value::Null,
-                project_manifests: Vec::new(),
-                manifest_errors: project_ids
-                    .iter()
-                    .map(|project_id| SyncTransportManifestError {
-                        project_id: project_id.clone(),
-                        message: error.to_string(),
-                    })
-                    .collect(),
-            },
+        }
+        ManifestOffer {
+            metadata: Value::Null,
+            project_manifests,
+            manifest_errors,
         }
     }
 
@@ -5725,11 +6471,7 @@ mod desktop {
         let mut project_manifests = Vec::new();
         let mut manifest_errors = Vec::new();
         for project_id in project_ids {
-            let path = format!(
-                "/api/v1/sync/projects/{}/manifest",
-                percent_encode_path_segment(project_id)
-            );
-            match client.get_json_value(&path) {
+            match client.get_project_manifest_json_value(project_id) {
                 Ok(response) => {
                     if let Some(manifest) = response
                         .get("project_manifest")
@@ -6765,6 +7507,26 @@ mod desktop {
             .collect()
     }
 
+    fn record_iroh_batch_scheduler_transfer(
+        scheduler: &mut IrohGlobalProjectScheduler,
+        received_artifacts: &mut Vec<SyncTransportTransferResult>,
+        ready_projects: &mut Vec<StagedRemoteProject>,
+        ready_tombstone_project_ids: &mut Vec<String>,
+        apply_worker: &mut RemoteApplyWorker,
+        transfer: Result<SyncTransportTransferResult, TransferFailure>,
+        allow_project_apply: bool,
+    ) {
+        scheduler.record_artifact_transfer(transfer, received_artifacts);
+        ready_projects.extend(scheduler.drain_ready_projects());
+        if allow_project_apply {
+            enqueue_collected_iroh_ready_projects(
+                apply_worker,
+                ready_projects,
+                ready_tombstone_project_ids,
+            );
+        }
+    }
+
     fn stage_remote_manifest_iroh_artifacts(
         client: &BackendClient,
         connection: &SharedPeerConnection,
@@ -6884,15 +7646,15 @@ mod desktop {
                 progress,
                 apply_worker,
                 |transfer, allow_project_apply, apply_worker| {
-                    scheduler.record_artifact_transfer(transfer, received_artifacts);
-                    ready_projects.extend(scheduler.drain_ready_projects());
-                    if allow_project_apply {
-                        enqueue_collected_iroh_ready_projects(
-                            apply_worker,
-                            &mut ready_projects,
-                            &mut ready_tombstone_project_ids,
-                        );
-                    }
+                    record_iroh_batch_scheduler_transfer(
+                        &mut scheduler,
+                        received_artifacts,
+                        &mut ready_projects,
+                        &mut ready_tombstone_project_ids,
+                        apply_worker,
+                        transfer,
+                        allow_project_apply,
+                    );
                 },
             );
             if !can_apply_after_iroh {
@@ -8782,7 +9544,7 @@ mod desktop {
                             error.message,
                         );
                         if completed_artifact_ids.insert(artifact_id) {
-                            record_transfer(Err(failure), true, apply_worker);
+                            record_transfer(Err(failure), false, apply_worker);
                         }
                     } else {
                         fatal_error.get_or_insert(error.message);
@@ -9092,7 +9854,7 @@ mod desktop {
                     &mut completed_artifact_ids,
                     metrics,
                     timings,
-                    fatal_error.is_none(),
+                    false,
                     apply_worker,
                     record_transfer,
                 );
@@ -9362,7 +10124,7 @@ mod desktop {
                 &mut completed_artifact_ids,
                 metrics,
                 timings,
-                fatal_error.is_none(),
+                false,
                 apply_worker,
                 record_transfer,
             ),
@@ -9377,7 +10139,7 @@ mod desktop {
             &mut completed_artifact_ids,
             metrics,
             timings,
-            fatal_error.is_none(),
+            false,
             apply_worker,
             record_transfer,
         );
@@ -9390,7 +10152,7 @@ mod desktop {
             &mut completed_artifact_ids,
             metrics,
             timings,
-            fatal_error.is_none(),
+            false,
             apply_worker,
             record_transfer,
         );
@@ -9407,7 +10169,7 @@ mod desktop {
             pending,
             &mut completed_artifact_ids,
             &missing_message,
-            fatal_error.is_none(),
+            false,
             apply_worker,
             record_transfer,
         );
@@ -10975,6 +11737,31 @@ mod desktop {
             self.request_json_value("GET", path, None)
         }
 
+        fn get_project_manifest_json_value(&self, project_id: &str) -> Result<Value, BackendError> {
+            #[cfg(target_os = "android")]
+            {
+                return crate::mobile_backend::mobile_sync_transport_project_manifest_value(
+                    self.app.clone(),
+                    project_id.to_string(),
+                )
+                .map_err(BackendError::local);
+            }
+
+            #[cfg(not(target_os = "android"))]
+            {
+                let path = format!(
+                    "/api/v1/sync/projects/{}/manifest",
+                    percent_encode_path_segment(project_id)
+                );
+                self.request_json_value_with_timeout(
+                    "GET",
+                    &path,
+                    None,
+                    MANIFEST_EXPORT_HTTP_TIMEOUT,
+                )
+            }
+        }
+
         fn post_json_value(&self, path: &str, body: &Value) -> Result<Value, BackendError> {
             #[cfg(target_os = "android")]
             {
@@ -11006,6 +11793,24 @@ mod desktop {
 
             #[cfg(not(target_os = "android"))]
             self.request_json_value("POST", path, Some(body))
+        }
+
+        fn post_manifest_batch_json_value(&self, body: &Value) -> Result<Value, BackendError> {
+            #[cfg(target_os = "android")]
+            {
+                Err(BackendError::local(
+                    "Android mobile backend does not implement POST /api/v1/sync/projects/manifests."
+                        .to_string(),
+                ))
+            }
+
+            #[cfg(not(target_os = "android"))]
+            self.request_json_value_with_timeout(
+                "POST",
+                "/api/v1/sync/projects/manifests",
+                Some(body),
+                MANIFEST_EXPORT_HTTP_TIMEOUT,
+            )
         }
 
         fn manifest_batch_unavailable(&self, error: &BackendError) -> bool {
@@ -11047,7 +11852,7 @@ mod desktop {
             let mut bytes = Vec::new();
             response
                 .read_to_end(&mut bytes)
-                .map_err(|error| BackendError::local(error.to_string()))?;
+                .map_err(|error| backend_http_io_error(error, timeout))?;
             if bytes.is_empty() {
                 return Ok(Value::Null);
             }
@@ -11185,29 +11990,29 @@ mod desktop {
                 self.host,
                 body_bytes.len()
             )
-            .map_err(|error| BackendError::local(error.to_string()))?;
+            .map_err(|error| backend_http_io_error(error, timeout))?;
             if body.is_some() {
                 stream
                     .write_all(b"Content-Type: application/json\r\n")
-                    .map_err(|error| BackendError::local(error.to_string()))?;
+                    .map_err(|error| backend_http_io_error(error, timeout))?;
             }
             stream
                 .write_all(b"\r\n")
                 .and_then(|_| stream.write_all(&body_bytes))
-                .map_err(|error| BackendError::local(error.to_string()))?;
+                .map_err(|error| backend_http_io_error(error, timeout))?;
 
             let mut reader = BufReader::new(stream);
             let mut status_line = String::new();
             reader
                 .read_line(&mut status_line)
-                .map_err(|error| BackendError::local(error.to_string()))?;
+                .map_err(|error| backend_http_io_error(error, timeout))?;
             let status = parse_status_code(&status_line)?;
             let mut content_length = None;
             loop {
                 let mut line = String::new();
                 reader
                     .read_line(&mut line)
-                    .map_err(|error| BackendError::local(error.to_string()))?;
+                    .map_err(|error| backend_http_io_error(error, timeout))?;
                 if line == "\r\n" || line == "\n" || line.is_empty() {
                     break;
                 }
@@ -11257,11 +12062,26 @@ mod desktop {
                 }
             }
 
-            Err(BackendError::local(
-                last_error
-                    .map(|error| error.to_string())
-                    .unwrap_or_else(|| "Could not connect to backend.".to_string()),
+            Err(last_error
+                .map(|error| backend_http_io_error(error, timeout))
+                .unwrap_or_else(|| {
+                    BackendError::local("Could not connect to backend.".to_string())
+                }))
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn backend_http_io_error(error: io::Error, timeout: Duration) -> BackendError {
+        if matches!(
+            error.kind(),
+            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+        ) {
+            BackendError::local(format!(
+                "Local backend HTTP request timed out after {} seconds.",
+                timeout.as_secs()
             ))
+        } else {
+            BackendError::local(error.to_string())
         }
     }
 
@@ -11610,6 +12430,85 @@ mod desktop {
             }
         }
 
+        fn test_sync_now_hard_failure(
+            run_id: &str,
+            error: &str,
+            received_artifacts: Vec<SyncTransportTransferResult>,
+        ) -> SyncNowHardFailure {
+            let started_instant = Instant::now();
+            sync_now_hard_failure(
+                error.to_string(),
+                run_id,
+                "dev_peer",
+                "dev_remote",
+                TransportEvidence {
+                    selected_transport: TCP_TRANSPORT_ID.to_string(),
+                    fallback_reason: None,
+                    fallback_code: None,
+                    attempted_transports: vec![TCP_TRANSPORT_ID.to_string()],
+                },
+                &Utc::now(),
+                started_instant,
+                &received_artifacts,
+                2,
+                &SyncRunMetrics::start(started_instant),
+                &[SyncTransportTimingEvidence {
+                    phase: "reconciliation_staging".to_string(),
+                    project_id: Some("proj_one".to_string()),
+                    artifact_id: Some("art_one".to_string()),
+                    started_at: "2026-01-01T00:00:00Z".to_string(),
+                    completed_at: "2026-01-01T00:00:01Z".to_string(),
+                    duration_ms: 1_000,
+                }],
+                4,
+                5,
+                Vec::new(),
+            )
+        }
+
+        fn test_incoming_session_hard_failure(
+            run_id: &str,
+            error: &str,
+            received_artifacts: Vec<SyncTransportTransferResult>,
+        ) -> IncomingSessionHardFailure {
+            let started_instant = Instant::now();
+            let mut metrics = SyncRunMetrics::start(started_instant);
+            metrics.record_received_artifact_bytes(42);
+            metrics.record_served_artifact_bytes(84);
+            incoming_session_hard_failure(
+                error.to_string(),
+                run_id,
+                "device_peer_1",
+                "device_peer_1",
+                TransportEvidence {
+                    selected_transport: TCP_TRANSPORT_ID.to_string(),
+                    fallback_reason: None,
+                    fallback_code: None,
+                    attempted_transports: vec![TCP_TRANSPORT_ID.to_string()],
+                },
+                &Utc::now(),
+                started_instant,
+                &received_artifacts,
+                3,
+                &metrics,
+                &[SyncTransportTimingEvidence {
+                    phase: "serve_artifact_requests".to_string(),
+                    project_id: Some("proj_secret".to_string()),
+                    artifact_id: Some("art_secret".to_string()),
+                    started_at: "2026-01-01T00:00:00Z".to_string(),
+                    completed_at: "2026-01-01T00:00:01Z".to_string(),
+                    duration_ms: 1_000,
+                }],
+                4,
+                5,
+                vec![SyncTransportManifestError {
+                    project_id: "proj_secret".to_string(),
+                    message: "Backend HTTP 500 for project_id proj_secret at /tmp/secret.wav"
+                        .to_string(),
+                }],
+            )
+        }
+
         fn test_sha256(bytes: &[u8]) -> String {
             let digest = Sha256::digest(bytes);
             hex_digest(digest.as_ref())
@@ -11916,6 +12815,8 @@ mod desktop {
         struct TestBackendServer {
             port: u16,
             requests: Arc<Mutex<Vec<String>>>,
+            manifest_batch_requests: Arc<Mutex<Vec<Vec<String>>>>,
+            manifest_get_requests: Arc<Mutex<Vec<String>>>,
             data_root: PathBuf,
             stop_sender: Option<mpsc::Sender<()>>,
             handle: Option<JoinHandle<()>>,
@@ -11927,6 +12828,11 @@ mod desktop {
             staged_artifact_sizes: HashMap<String, u64>,
             artifact_files: HashMap<String, LocalArtifactFile>,
             staging_failure: Option<String>,
+            project_manifests: HashMap<String, Value>,
+            manifest_batch_status: Option<u16>,
+            manifest_batch_status_by_project_ids: HashMap<Vec<String>, u16>,
+            manifest_batch_requests: Arc<Mutex<Vec<Vec<String>>>>,
+            manifest_get_requests: Arc<Mutex<Vec<String>>>,
         }
 
         #[cfg(not(target_os = "android"))]
@@ -11939,7 +12845,14 @@ mod desktop {
                 staged_artifact_sizes: HashMap<String, u64>,
                 artifact_files: HashMap<String, LocalArtifactFile>,
             ) -> Self {
-                Self::start_with_responses(staged_artifact_sizes, artifact_files, None)
+                Self::start_with_responses(
+                    staged_artifact_sizes,
+                    artifact_files,
+                    None,
+                    HashMap::new(),
+                    None,
+                    HashMap::new(),
+                )
             }
 
             fn start_with_staging_failure(staging_failure: impl Into<String>) -> Self {
@@ -11947,6 +12860,50 @@ mod desktop {
                     HashMap::new(),
                     HashMap::new(),
                     Some(staging_failure.into()),
+                    HashMap::new(),
+                    None,
+                    HashMap::new(),
+                )
+            }
+
+            fn start_with_project_manifests(project_manifests: HashMap<String, Value>) -> Self {
+                Self::start_with_manifest_responses(project_manifests, None, HashMap::new())
+            }
+
+            fn start_with_project_manifests_and_batch_status(
+                project_manifests: HashMap<String, Value>,
+                manifest_batch_status: u16,
+            ) -> Self {
+                Self::start_with_manifest_responses(
+                    project_manifests,
+                    Some(manifest_batch_status),
+                    HashMap::new(),
+                )
+            }
+
+            fn start_with_project_manifests_and_batch_statuses(
+                project_manifests: HashMap<String, Value>,
+                manifest_batch_status_by_project_ids: HashMap<Vec<String>, u16>,
+            ) -> Self {
+                Self::start_with_manifest_responses(
+                    project_manifests,
+                    None,
+                    manifest_batch_status_by_project_ids,
+                )
+            }
+
+            fn start_with_manifest_responses(
+                project_manifests: HashMap<String, Value>,
+                manifest_batch_status: Option<u16>,
+                manifest_batch_status_by_project_ids: HashMap<Vec<String>, u16>,
+            ) -> Self {
+                Self::start_with_responses(
+                    HashMap::new(),
+                    HashMap::new(),
+                    None,
+                    project_manifests,
+                    manifest_batch_status,
+                    manifest_batch_status_by_project_ids,
                 )
             }
 
@@ -11954,6 +12911,9 @@ mod desktop {
                 staged_artifact_sizes: HashMap<String, u64>,
                 artifact_files: HashMap<String, LocalArtifactFile>,
                 staging_failure: Option<String>,
+                project_manifests: HashMap<String, Value>,
+                manifest_batch_status: Option<u16>,
+                manifest_batch_status_by_project_ids: HashMap<Vec<String>, u16>,
             ) -> Self {
                 let listener =
                     TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind test backend");
@@ -11965,6 +12925,8 @@ mod desktop {
                     .expect("test backend local addr")
                     .port();
                 let requests = Arc::new(Mutex::new(Vec::new()));
+                let manifest_batch_requests = Arc::new(Mutex::new(Vec::new()));
+                let manifest_get_requests = Arc::new(Mutex::new(Vec::new()));
                 let data_root =
                     env::temp_dir().join(format!("tuneforge-sync-backend-test-{}", random_nonce()));
                 fs::create_dir_all(data_root.join("sync").join("transport-tmp"))
@@ -11974,6 +12936,11 @@ mod desktop {
                     staged_artifact_sizes,
                     artifact_files,
                     staging_failure,
+                    project_manifests,
+                    manifest_batch_status,
+                    manifest_batch_status_by_project_ids,
+                    manifest_batch_requests: Arc::clone(&manifest_batch_requests),
+                    manifest_get_requests: Arc::clone(&manifest_get_requests),
                 });
                 let (stop_sender, stop_receiver) = mpsc::channel();
                 let handle = {
@@ -12001,6 +12968,8 @@ mod desktop {
                 Self {
                     port,
                     requests,
+                    manifest_batch_requests,
+                    manifest_get_requests,
                     data_root,
                     stop_sender: Some(stop_sender),
                     handle: Some(handle),
@@ -12011,6 +12980,20 @@ mod desktop {
                 self.requests
                     .lock()
                     .expect("read test backend requests")
+                    .clone()
+            }
+
+            fn manifest_batch_requests(&self) -> Vec<Vec<String>> {
+                self.manifest_batch_requests
+                    .lock()
+                    .expect("read test manifest batch requests")
+                    .clone()
+            }
+
+            fn manifest_get_requests(&self) -> Vec<String> {
+                self.manifest_get_requests
+                    .lock()
+                    .expect("read test manifest get requests")
                     .clone()
             }
 
@@ -12062,10 +13045,13 @@ mod desktop {
                     content_length = value.trim().parse().unwrap_or(0);
                 }
             }
-            if content_length > 0 {
+            let body_value = if content_length > 0 {
                 let mut body = vec![0_u8; content_length];
                 let _ = reader.read_exact(&mut body);
-            }
+                serde_json::from_slice::<Value>(&body).ok()
+            } else {
+                None
+            };
             if !path.is_empty() {
                 requests
                     .lock()
@@ -12073,12 +13059,85 @@ mod desktop {
                     .push(path.clone());
             }
             let (status, body) = if path == "/api/v1/sync/reconciliation/apply" {
-                ("200 OK", json!({ "actions": [] }).to_string())
+                ("200 OK".to_string(), json!({ "actions": [] }).to_string())
             } else if path == "/api/v1/health" {
                 (
-                    "200 OK",
+                    "200 OK".to_string(),
                     json!({ "data_root": responses.data_root.to_string_lossy() }).to_string(),
                 )
+            } else if path == "/api/v1/sync/projects/manifests" {
+                let project_ids = body_value
+                    .as_ref()
+                    .and_then(|value| {
+                        value
+                            .get("project_ids")
+                            .or_else(|| value.get("projectIds"))
+                            .and_then(Value::as_array)
+                    })
+                    .map(|ids| {
+                        ids.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                responses
+                    .manifest_batch_requests
+                    .lock()
+                    .expect("record test manifest batch request")
+                    .push(project_ids.clone());
+                if let Some(status) = responses
+                    .manifest_batch_status_by_project_ids
+                    .get(&project_ids)
+                    .copied()
+                    .or(responses.manifest_batch_status)
+                {
+                    (
+                        test_http_status_line(status),
+                        json!({ "detail": "test manifest batch failed" }).to_string(),
+                    )
+                } else {
+                    let mut project_manifests = Vec::new();
+                    let mut manifest_errors = Vec::new();
+                    for project_id in project_ids {
+                        if let Some(manifest) = responses.project_manifests.get(&project_id) {
+                            project_manifests.push(manifest.clone());
+                        } else {
+                            manifest_errors.push(json!({
+                                "project_id": project_id,
+                                "message": "test manifest missing",
+                            }));
+                        }
+                    }
+                    (
+                        "200 OK".to_string(),
+                        json!({
+                            "project_manifests": project_manifests,
+                            "manifest_errors": manifest_errors,
+                        })
+                        .to_string(),
+                    )
+                }
+            } else if let Some(project_id) = path
+                .strip_prefix("/api/v1/sync/projects/")
+                .and_then(|value| value.strip_suffix("/manifest"))
+            {
+                let project_id = percent_decode(project_id);
+                responses
+                    .manifest_get_requests
+                    .lock()
+                    .expect("record test manifest get request")
+                    .push(project_id.clone());
+                match responses.project_manifests.get(&project_id) {
+                    Some(manifest) => (
+                        "200 OK".to_string(),
+                        json!({ "project_manifest": manifest }).to_string(),
+                    ),
+                    None => (
+                        "404 Not Found".to_string(),
+                        json!({ "detail": "test manifest missing" }).to_string(),
+                    ),
+                }
             } else if path == "/api/v1/sync/artifacts/files/resolve" {
                 let records = responses
                     .artifact_files
@@ -12092,28 +13151,34 @@ mod desktop {
                         })
                     })
                     .collect::<Vec<_>>();
-                ("200 OK", json!({ "records": records }).to_string())
+                (
+                    "200 OK".to_string(),
+                    json!({ "records": records }).to_string(),
+                )
             } else if path == "/api/v1/sync/artifacts/staging" {
                 if let Some(message) = responses.staging_failure.as_deref() {
                     (
-                        "500 Internal Server Error",
+                        "500 Internal Server Error".to_string(),
                         json!({ "detail": message }).to_string(),
                     )
                 } else {
-                    ("200 OK", "{}".to_string())
+                    ("200 OK".to_string(), "{}".to_string())
                 }
             } else if let Some(content_sha256) =
                 path.strip_prefix("/api/v1/sync/artifacts/staging/")
             {
                 match responses.staged_artifact_sizes.get(content_sha256) {
-                    Some(size_bytes) => ("200 OK", json!({ "size_bytes": size_bytes }).to_string()),
+                    Some(size_bytes) => (
+                        "200 OK".to_string(),
+                        json!({ "size_bytes": size_bytes }).to_string(),
+                    ),
                     None => (
-                        "404 Not Found",
+                        "404 Not Found".to_string(),
                         json!({ "detail": "not staged" }).to_string(),
                     ),
                 }
             } else {
-                ("200 OK", "{}".to_string())
+                ("200 OK".to_string(), "{}".to_string())
             };
             let mut stream = reader.into_inner();
             let _ = write!(
@@ -12122,6 +13187,34 @@ mod desktop {
                 body.len(),
                 body
             );
+        }
+
+        #[cfg(not(target_os = "android"))]
+        fn test_http_status_line(status: u16) -> String {
+            match status {
+                200 => "200 OK".to_string(),
+                404 => "404 Not Found".to_string(),
+                405 => "405 Method Not Allowed".to_string(),
+                500 => "500 Internal Server Error".to_string(),
+                _ => format!("{status} Test Status"),
+            }
+        }
+
+        #[cfg(not(target_os = "android"))]
+        fn test_backend_client(backend: &TestBackendServer) -> BackendClient {
+            BackendClient {
+                host: "127.0.0.1".to_string(),
+                port: backend.port,
+                sync_transport_temp_root: Arc::new(Mutex::new(None)),
+            }
+        }
+
+        fn test_project_manifest(project_id: &str) -> Value {
+            json!({
+                "project": { "project_id": project_id },
+                "artifacts": [],
+                "entity_revisions": [],
+            })
         }
 
         struct TestStagingClient {
@@ -13872,15 +14965,17 @@ mod desktop {
                 active_progress_owner_run_id: Some("local_run".to_string()),
                 ..SharedStatus::default()
             };
-            let owned_result: Result<SyncTransportSyncResult, String> =
-                Err("outbound sync failed".to_string());
+            let owned_result: Result<SyncTransportSyncResult, SyncNowHardFailure> = Err(
+                test_sync_now_hard_failure("local_run", "outbound sync failed", Vec::new()),
+            );
 
             apply_sync_now_status_result(&mut owned_status, &owned_result, "local_run");
 
             assert_eq!(
                 owned_status.last_error.as_deref(),
-                Some("outbound sync failed")
+                Some("Sync now failed: outbound sync failed")
             );
+            assert!(owned_status.last_sync.is_some());
             assert!(owned_status.active_progress.is_none());
             assert!(owned_status.active_progress_owner_run_id.is_none());
 
@@ -13895,8 +14990,12 @@ mod desktop {
                 active_progress_owner_run_id: Some("inbound_local_run".to_string()),
                 ..SharedStatus::default()
             };
-            let unrelated_result: Result<SyncTransportSyncResult, String> =
-                Err("outbound sync failed".to_string());
+            let unrelated_result: Result<SyncTransportSyncResult, SyncNowHardFailure> =
+                Err(test_sync_now_hard_failure(
+                    "outbound_local_run",
+                    "outbound sync failed",
+                    Vec::new(),
+                ));
 
             apply_sync_now_status_result(
                 &mut unrelated_status,
@@ -13909,6 +15008,466 @@ mod desktop {
                 unrelated_status.active_progress_owner_run_id.as_deref(),
                 Some("inbound_local_run")
             );
+        }
+
+        #[test]
+        fn sync_now_hard_error_records_failed_last_sync_evidence() {
+            let error =
+                "Sync transport reconciliation staging failed: Could not write sync transport frame: connection lost";
+            let received_artifacts =
+                vec![test_transfer_result("art_one", "hash_one", 42, "received")];
+            let result: Result<SyncTransportSyncResult, SyncNowHardFailure> = Err(
+                test_sync_now_hard_failure("local_run", error, received_artifacts),
+            );
+            let mut status = SharedStatus::default();
+
+            apply_sync_now_status_result(&mut status, &result, "local_run");
+
+            let last_sync = status.last_sync.expect("hard failure records last sync");
+            let expected_message = format!("Sync now failed: {error}");
+            assert_eq!(
+                status.last_error.as_deref(),
+                Some(expected_message.as_str())
+            );
+            assert_eq!(
+                status.last_status.as_deref(),
+                Some(expected_message.as_str())
+            );
+            assert_eq!(last_sync.run_id, "local_run");
+            assert_eq!(last_sync.peer_device_id, "dev_peer");
+            assert_eq!(last_sync.remote_device_id, "dev_remote");
+            assert_eq!(last_sync.status, "failed");
+            assert_eq!(last_sync.message, expected_message);
+            assert_eq!(last_sync.selected_transport, TCP_TRANSPORT_ID);
+            assert_eq!(
+                last_sync.attempted_transports,
+                vec![TCP_TRANSPORT_ID.to_string()]
+            );
+            assert_eq!(last_sync.local_manifest_count, 4);
+            assert_eq!(last_sync.remote_manifest_count, 5);
+            assert_eq!(last_sync.served_artifact_requests, 2);
+            assert_eq!(last_sync.received_artifacts.len(), 1);
+            assert_eq!(last_sync.received_artifacts[0].artifact_id, "artifact_1");
+            assert_eq!(
+                last_sync.received_artifacts[0].content_sha256,
+                "[redacted_hash]"
+            );
+            assert_eq!(last_sync.transfer_counts.received, 1);
+            assert_eq!(last_sync.transfer_counts.received_bytes, 42);
+            assert_eq!(last_sync.phase_timings.len(), 1);
+            assert_eq!(
+                last_sync.phase_timings[0].project_id.as_deref(),
+                Some("project_1")
+            );
+            assert_eq!(
+                last_sync.phase_timings[0].artifact_id.as_deref(),
+                Some("artifact_1")
+            );
+        }
+
+        #[test]
+        fn sync_now_hard_error_sanitizes_exposed_status_fields() {
+            let raw_error = concat!(
+                "Sync transport artifact request/transfer failed: Could not read ",
+                "/Users/test/Music/Secret Demo.wav from device_peer_1 for proj_secret ",
+                "through tuneforge-sync+tcp://192.0.2.2:47619 with content_sha256 ",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            );
+            let result: Result<SyncTransportSyncResult, SyncNowHardFailure> = Err(
+                test_sync_now_hard_failure("sync_run_secret", raw_error, Vec::new()),
+            );
+            let mut status = SharedStatus::default();
+
+            apply_sync_now_status_result(&mut status, &result, "sync_run_secret");
+
+            let last_sync = status.last_sync.expect("hard failure records last sync");
+            let exposed_fields = [
+                status.last_error.as_deref().unwrap_or_default(),
+                status.last_status.as_deref().unwrap_or_default(),
+                last_sync.message.as_str(),
+            ];
+            for field in exposed_fields {
+                assert_eq!(
+                    field,
+                    "Sync now failed: Sync transport artifact request/transfer failed: details redacted."
+                );
+                assert!(!field.contains("/Users/test"));
+                assert!(!field.contains("Secret Demo.wav"));
+                assert!(!field.contains("device_peer_1"));
+                assert!(!field.contains("proj_secret"));
+                assert!(!field.contains("tuneforge-sync+tcp"));
+                assert!(!field.contains("192.0.2.2"));
+                assert!(!field.contains("0123456789abcdef"));
+            }
+        }
+
+        #[test]
+        fn sync_now_hard_error_sanitizes_partial_evidence() {
+            let raw_error = concat!(
+                "Sync transport reconciliation staging failed: backend body project_id PlainProjectAlpha ",
+                "artifactId PlainArtifactBeta deviceId PlainDeviceGamma endpointHints PlainEndpointDelta",
+            );
+            let started_instant = Instant::now();
+            let mut metrics = SyncRunMetrics::start(started_instant);
+            metrics.record_received_artifact_bytes(42);
+            let failure = sync_now_hard_failure(
+                raw_error.to_string(),
+                "sync_run_outgoing_secret",
+                "dev_peer",
+                "dev_remote",
+                TransportEvidence {
+                    selected_transport: TCP_TRANSPORT_ID.to_string(),
+                    fallback_reason: None,
+                    fallback_code: None,
+                    attempted_transports: vec![TCP_TRANSPORT_ID.to_string()],
+                },
+                &Utc::now(),
+                started_instant,
+                &[SyncTransportTransferResult {
+                    artifact_id: "art_secret".to_string(),
+                    content_sha256:
+                        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                            .to_string(),
+                    size_bytes: 42,
+                    started_at: "2026-01-01T00:00:00Z".to_string(),
+                    completed_at: "2026-01-01T00:00:01Z".to_string(),
+                    duration_ms: 1_000,
+                    throughput_bytes_per_second: 42.0,
+                    status: "received".to_string(),
+                    message: Some(
+                        "Backend response body artifact_id PlainArtifactBeta from projectId PlainProjectAlpha"
+                            .to_string(),
+                    ),
+                }],
+                2,
+                &metrics,
+                &[SyncTransportTimingEvidence {
+                    phase: "reconciliation_staging".to_string(),
+                    project_id: Some("proj_secret".to_string()),
+                    artifact_id: Some("art_secret".to_string()),
+                    started_at: "2026-01-01T00:00:00Z".to_string(),
+                    completed_at: "2026-01-01T00:00:01Z".to_string(),
+                    duration_ms: 1_000,
+                }],
+                4,
+                5,
+                vec![SyncTransportManifestError {
+                    project_id: "proj_manifest_secret".to_string(),
+                    message: "backend body device_id PlainDeviceGamma endpoint_hint PlainEndpointDelta"
+                        .to_string(),
+                }],
+            );
+
+            let serialized = serde_json::to_string(&failure.sync_result)
+                .expect("serialize outgoing failure evidence");
+
+            assert_eq!(
+                failure.sync_result.message,
+                "Sync now failed: Sync transport reconciliation staging failed: details redacted."
+            );
+            assert_eq!(
+                failure.sync_result.received_artifacts[0].artifact_id,
+                "artifact_1"
+            );
+            assert_eq!(
+                failure.sync_result.received_artifacts[0].content_sha256,
+                "[redacted_hash]"
+            );
+            assert_eq!(
+                failure.sync_result.received_artifacts[0].message.as_deref(),
+                Some("Transfer details redacted.")
+            );
+            assert_eq!(
+                failure.sync_result.manifest_errors[0].project_id,
+                "project_1"
+            );
+            assert_eq!(
+                failure.sync_result.manifest_errors[0].message,
+                "Manifest error details redacted."
+            );
+            assert_eq!(
+                failure.sync_result.phase_timings[0].project_id.as_deref(),
+                Some("project_1")
+            );
+            assert_eq!(
+                failure.sync_result.phase_timings[0].artifact_id.as_deref(),
+                Some("artifact_1")
+            );
+            for raw_value in [
+                "PlainProjectAlpha",
+                "PlainArtifactBeta",
+                "PlainDeviceGamma",
+                "PlainEndpointDelta",
+                "proj_secret",
+                "art_secret",
+                "0123456789abcdef",
+                "artifact_id",
+                "device_id",
+                "endpoint_hint",
+            ] {
+                assert!(
+                    !serialized.contains(raw_value),
+                    "outgoing hard failure evidence leaked {raw_value}: {serialized}"
+                );
+            }
+        }
+
+        #[test]
+        fn incoming_hard_error_records_failed_last_sync_evidence() {
+            let raw_error =
+                "Sync transport serve artifact requests failed: Could not write sync transport frame: connection lost";
+            let result = Err(test_incoming_session_hard_failure(
+                "listener_run",
+                raw_error,
+                Vec::new(),
+            ));
+            let mut status = SharedStatus {
+                active_sessions: 1,
+                active_progress: Some(SyncTransportActiveProgress {
+                    run_id: "listener_run".to_string(),
+                    phase: "serve_artifact_requests".to_string(),
+                    message: "Serving peer artifact requests.".to_string(),
+                    progress_at: "2026-01-01T00:00:15Z".to_string(),
+                    elapsed_ms: 15_000,
+                }),
+                active_progress_owner_run_id: Some("listener_run".to_string()),
+                ..SharedStatus::default()
+            };
+
+            apply_incoming_session_status_result(&mut status, result, "listener_run");
+
+            let last_sync = status
+                .last_sync
+                .expect("incoming hard failure records last sync");
+            let expected_message = format!("Sync session failed: {raw_error}");
+            assert_eq!(status.active_sessions, 0);
+            assert_eq!(status.failed_sessions, 1);
+            assert!(status.active_progress.is_none());
+            assert_eq!(
+                status.last_error.as_deref(),
+                Some(expected_message.as_str())
+            );
+            assert_eq!(
+                status.last_status.as_deref(),
+                Some(expected_message.as_str())
+            );
+            assert_eq!(last_sync.run_id, "listener_run");
+            assert_eq!(last_sync.peer_device_id, "device_peer_1");
+            assert_eq!(last_sync.remote_device_id, "device_peer_1");
+            assert_eq!(last_sync.status, "failed");
+            assert_eq!(last_sync.message, expected_message);
+            assert_eq!(last_sync.selected_transport, TCP_TRANSPORT_ID);
+            assert_eq!(last_sync.served_artifact_requests, 3);
+            assert_eq!(last_sync.total_received_bytes, 42);
+            assert_eq!(last_sync.total_served_bytes, 84);
+            assert_eq!(last_sync.local_manifest_count, 4);
+            assert_eq!(last_sync.remote_manifest_count, 5);
+            assert_eq!(last_sync.phase_timings.len(), 1);
+        }
+
+        #[test]
+        fn incoming_hard_error_sanitizes_exposed_evidence() {
+            let raw_error = concat!(
+                "Sync transport serve artifact requests failed: Could not open ",
+                "/Users/test/Music/Secret Listener Demo.wav for proj_secret ",
+                "through tuneforge-sync+tcp://192.0.2.2:47619 with artifact_id art_secret ",
+                "and content_sha256 ",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            );
+            let received_artifacts = vec![SyncTransportTransferResult {
+                artifact_id: "art_secret".to_string(),
+                content_sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                    .to_string(),
+                size_bytes: 42,
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                completed_at: "2026-01-01T00:00:01Z".to_string(),
+                duration_ms: 1_000,
+                throughput_bytes_per_second: 42.0,
+                status: "received".to_string(),
+                message: Some(
+                    "Fetched art_secret from /Users/test/Music/Secret Listener Demo.wav"
+                        .to_string(),
+                ),
+            }];
+            let result = Err(test_incoming_session_hard_failure(
+                "listener_secret_run",
+                raw_error,
+                received_artifacts,
+            ));
+            let mut status = SharedStatus {
+                active_sessions: 1,
+                ..SharedStatus::default()
+            };
+
+            apply_incoming_session_status_result(&mut status, result, "listener_secret_run");
+
+            let last_sync = status
+                .last_sync
+                .expect("incoming hard failure records last sync");
+            let serialized =
+                serde_json::to_string(&last_sync).expect("serialize incoming failure evidence");
+            let exposed_fields = [
+                status.last_error.as_deref().unwrap_or_default(),
+                status.last_status.as_deref().unwrap_or_default(),
+                last_sync.message.as_str(),
+            ];
+            for field in exposed_fields {
+                assert_eq!(
+                    field,
+                    "Sync session failed: Sync transport serve artifact requests failed: details redacted."
+                );
+            }
+            for raw_value in [
+                "/Users/test",
+                "Secret Listener Demo.wav",
+                "tuneforge-sync+tcp://",
+                "192.0.2.2",
+                "proj_secret",
+                "art_secret",
+                "0123456789abcdef",
+                "project_id",
+            ] {
+                assert!(
+                    !serialized.contains(raw_value),
+                    "incoming hard failure evidence leaked {raw_value}: {serialized}"
+                );
+            }
+            assert_eq!(last_sync.received_artifacts[0].artifact_id, "artifact_1");
+            assert_eq!(
+                last_sync.received_artifacts[0].content_sha256,
+                "[redacted_hash]"
+            );
+            assert_eq!(
+                last_sync.received_artifacts[0].message.as_deref(),
+                Some("Transfer details redacted.")
+            );
+            assert_eq!(last_sync.manifest_errors[0].project_id, "project_1");
+            assert_eq!(
+                last_sync.manifest_errors[0].message,
+                "Manifest error details redacted."
+            );
+        }
+
+        #[test]
+        fn sync_now_read_timeout_hard_failure_includes_peer_authentication_timing() {
+            let started_instant = Instant::now();
+            let timings = sync_now_failure_timings_with_finished_timer(
+                &[],
+                SyncPhaseTimer::start("peer_authentication"),
+            );
+            let failure = sync_now_hard_failure(
+                "Could not configure established sync transport read timeout: test failure"
+                    .to_string(),
+                "sync_run_timeout",
+                "dev_peer",
+                "dev_remote",
+                TransportEvidence {
+                    selected_transport: TCP_TRANSPORT_ID.to_string(),
+                    fallback_reason: None,
+                    fallback_code: None,
+                    attempted_transports: vec![TCP_TRANSPORT_ID.to_string()],
+                },
+                &Utc::now(),
+                started_instant,
+                &[],
+                0,
+                &SyncRunMetrics::start(started_instant),
+                &timings,
+                0,
+                0,
+                Vec::new(),
+            );
+
+            assert_eq!(failure.sync_result.phase_timings.len(), 1);
+            assert_eq!(
+                failure.sync_result.phase_timings[0].phase,
+                "peer_authentication"
+            );
+        }
+
+        #[test]
+        fn sync_now_failed_status_message_preserves_connection_lost_text() {
+            let error =
+                "Sync transport reconciliation staging failed: Could not write sync transport frame: connection lost";
+
+            assert_eq!(
+                sync_now_failed_status_message(error),
+                format!("Sync now failed: {error}")
+            );
+        }
+
+        #[test]
+        fn sync_now_failed_status_message_redacts_sensitive_details() {
+            let error = concat!(
+                "Sync transport artifact request/transfer failed: Could not read ",
+                "/Users/test/Music/Secret Demo.wav via ",
+                "tuneforge-sync+tcp://192.0.2.2:47619 for proj_secret ",
+                "with content_sha256 ",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            );
+
+            let message = sync_now_failed_status_message(error);
+
+            assert_eq!(
+                message,
+                "Sync now failed: Sync transport artifact request/transfer failed: details redacted."
+            );
+            assert!(!message.contains("/Users/test"));
+            assert!(!message.contains("tuneforge-sync+tcp"));
+            assert!(!message.contains("proj_secret"));
+            assert!(!message.contains("0123456789abcdef"));
+        }
+
+        #[test]
+        fn sync_now_failed_status_message_redacts_endpoint_with_trailing_colon() {
+            let error = "Could not connect to sync peer at 192.0.2.2:47619:";
+
+            let message = sync_now_failed_status_message(error);
+
+            assert_eq!(
+                message,
+                "Sync now failed: Sync transport failed: details redacted."
+            );
+            assert!(!message.contains("192.0.2.2"));
+            assert!(!message.contains("47619"));
+        }
+
+        #[test]
+        fn sync_now_failed_status_message_redacts_backend_body_keys_with_plain_values() {
+            let error = concat!(
+                "Backend response body project_id PlainProjectAlpha artifactId PlainArtifactBeta ",
+                "deviceId PlainDeviceGamma endpointHints PlainEndpointDelta endpoint_hint PlainEndpointEpsilon",
+            );
+
+            let message = sync_now_failed_status_message(error);
+
+            assert_eq!(
+                message,
+                "Sync now failed: Sync transport failed: details redacted."
+            );
+            for raw_value in [
+                "PlainProjectAlpha",
+                "PlainArtifactBeta",
+                "PlainDeviceGamma",
+                "PlainEndpointDelta",
+                "PlainEndpointEpsilon",
+            ] {
+                assert!(!message.contains(raw_value));
+            }
+        }
+
+        #[test]
+        fn sync_now_failed_status_message_redacts_non_phase_endpoint_and_ids() {
+            let error = "Could not connect to sync peer at 192.0.2.2:47619: device_peer_1 failed";
+
+            let message = sync_now_failed_status_message(error);
+
+            assert_eq!(
+                message,
+                "Sync now failed: Sync transport failed: details redacted."
+            );
+            assert!(!message.contains("192.0.2.2"));
+            assert!(!message.contains("device_peer_1"));
         }
 
         #[test]
@@ -15160,6 +16719,198 @@ mod desktop {
             assert_eq!(offer.manifest_errors[1].project_id, "proj_omitted");
         }
 
+        #[cfg(not(target_os = "android"))]
+        #[test]
+        fn large_local_manifest_export_batches_and_returns_all_manifests() {
+            let project_ids = (0..(LOCAL_MANIFEST_EXPORT_BATCH_SIZE * 2 + 1))
+                .map(|index| format!("proj_{index:02}"))
+                .collect::<Vec<_>>();
+            let project_manifests = project_ids
+                .iter()
+                .map(|project_id| (project_id.clone(), test_project_manifest(project_id)))
+                .collect::<HashMap<_, _>>();
+            let backend = TestBackendServer::start_with_project_manifests(project_manifests);
+            let client = test_backend_client(&backend);
+
+            let offer = load_local_project_manifests(&client, &project_ids);
+
+            assert!(offer.manifest_errors.is_empty());
+            assert_eq!(offer.project_manifests.len(), project_ids.len());
+            assert_eq!(
+                offer
+                    .project_manifests
+                    .iter()
+                    .map(manifest_project_id)
+                    .collect::<Vec<_>>(),
+                project_ids
+            );
+            let manifest_batches = backend.manifest_batch_requests();
+            assert_eq!(manifest_batches.len(), 3);
+            assert_eq!(manifest_batches[0].len(), LOCAL_MANIFEST_EXPORT_BATCH_SIZE);
+            assert_eq!(manifest_batches[1].len(), LOCAL_MANIFEST_EXPORT_BATCH_SIZE);
+            assert_eq!(manifest_batches[2].len(), 1);
+            assert_eq!(
+                manifest_batches
+                    .iter()
+                    .flatten()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                project_ids
+            );
+            assert!(backend.manifest_get_requests().is_empty());
+        }
+
+        #[cfg(not(target_os = "android"))]
+        #[test]
+        fn unavailable_manifest_batch_route_falls_back_to_single_project_exports() {
+            let project_ids = (0..(LOCAL_MANIFEST_EXPORT_BATCH_SIZE + 1))
+                .map(|index| format!("proj_{index:02}"))
+                .collect::<Vec<_>>();
+            let project_manifests = project_ids
+                .iter()
+                .map(|project_id| (project_id.clone(), test_project_manifest(project_id)))
+                .collect::<HashMap<_, _>>();
+            let backend = TestBackendServer::start_with_project_manifests_and_batch_status(
+                project_manifests,
+                404,
+            );
+            let client = test_backend_client(&backend);
+
+            let offer = load_local_project_manifests(&client, &project_ids);
+
+            assert!(offer.manifest_errors.is_empty());
+            assert_eq!(offer.project_manifests.len(), project_ids.len());
+            assert_eq!(
+                offer
+                    .project_manifests
+                    .iter()
+                    .map(manifest_project_id)
+                    .collect::<Vec<_>>(),
+                project_ids
+            );
+            assert_eq!(
+                backend.manifest_batch_requests(),
+                vec![project_ids[..LOCAL_MANIFEST_EXPORT_BATCH_SIZE].to_vec()]
+            );
+            assert_eq!(backend.manifest_get_requests(), project_ids);
+        }
+
+        #[cfg(not(target_os = "android"))]
+        #[test]
+        fn failed_manifest_batch_marks_only_that_batch() {
+            let project_ids = (0..(LOCAL_MANIFEST_EXPORT_BATCH_SIZE * 2 + 1))
+                .map(|index| format!("proj_{index:02}"))
+                .collect::<Vec<_>>();
+            let failed_batch = project_ids
+                [LOCAL_MANIFEST_EXPORT_BATCH_SIZE..LOCAL_MANIFEST_EXPORT_BATCH_SIZE * 2]
+                .to_vec();
+            let project_manifests = project_ids
+                .iter()
+                .map(|project_id| (project_id.clone(), test_project_manifest(project_id)))
+                .collect::<HashMap<_, _>>();
+            let mut manifest_batch_status_by_project_ids = HashMap::new();
+            manifest_batch_status_by_project_ids.insert(failed_batch.clone(), 500);
+            let backend = TestBackendServer::start_with_project_manifests_and_batch_statuses(
+                project_manifests,
+                manifest_batch_status_by_project_ids,
+            );
+            let client = test_backend_client(&backend);
+
+            let offer = load_local_project_manifests(&client, &project_ids);
+
+            let mut expected_manifest_project_ids =
+                project_ids[..LOCAL_MANIFEST_EXPORT_BATCH_SIZE].to_vec();
+            expected_manifest_project_ids
+                .extend_from_slice(&project_ids[LOCAL_MANIFEST_EXPORT_BATCH_SIZE * 2..]);
+            assert_eq!(
+                offer
+                    .project_manifests
+                    .iter()
+                    .map(manifest_project_id)
+                    .collect::<Vec<_>>(),
+                expected_manifest_project_ids
+            );
+            assert_eq!(
+                offer
+                    .manifest_errors
+                    .iter()
+                    .map(|error| error.project_id.clone())
+                    .collect::<Vec<_>>(),
+                failed_batch
+            );
+            assert!(offer
+                .manifest_errors
+                .iter()
+                .all(|error| error.message.contains("backend HTTP 500")));
+            let manifest_batches = backend.manifest_batch_requests();
+            assert_eq!(manifest_batches.len(), 3);
+            assert_eq!(
+                manifest_batches
+                    .iter()
+                    .flatten()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                project_ids
+            );
+            assert!(backend.manifest_get_requests().is_empty());
+        }
+
+        #[cfg(not(target_os = "android"))]
+        #[test]
+        fn manifest_timeout_io_errors_are_stable_and_privacy_safe() {
+            let sensitive_project_id = "proj_secret_123";
+            let sensitive_path = "/Users/example/Music/private/session.wav";
+            let sensitive_manifest_payload = r#"{"project":{"project_id":"proj_secret_123"},"source_path":"/Users/example/Music/private/session.wav"}"#;
+            let sensitive_request_path = "/api/v1/sync/projects/proj_secret_123/manifest";
+
+            for kind in [io::ErrorKind::TimedOut, io::ErrorKind::WouldBlock] {
+                let error = backend_http_io_error(
+                    io::Error::new(
+                        kind,
+                        format!(
+                            "{sensitive_project_id} {sensitive_path} {sensitive_manifest_payload} {sensitive_request_path}"
+                        ),
+                    ),
+                    MANIFEST_EXPORT_HTTP_TIMEOUT,
+                );
+                let message = error.to_string();
+
+                assert_eq!(
+                    message,
+                    "Local backend HTTP request timed out after 300 seconds."
+                );
+                assert_eq!(
+                    phase_context_error("local manifest export", message.clone()),
+                    "Sync transport local manifest export stalled: Local backend HTTP request timed out after 300 seconds."
+                );
+                for sensitive_value in [
+                    sensitive_project_id,
+                    sensitive_path,
+                    sensitive_manifest_payload,
+                    sensitive_request_path,
+                ] {
+                    assert!(
+                        !message.contains(sensitive_value),
+                        "timeout message leaked sensitive value: {message}"
+                    );
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "android"))]
+        #[test]
+        fn manifest_export_keeps_transfer_sensitive_constants_stable() {
+            assert_eq!(LOCAL_MANIFEST_EXPORT_BATCH_SIZE, 24);
+            assert_eq!(MANIFEST_EXPORT_HTTP_TIMEOUT, Duration::from_secs(300));
+            assert_eq!(HTTP_TIMEOUT, Duration::from_secs(45));
+            assert_eq!(BACKEND_PREFLIGHT_TIMEOUT, Duration::from_secs(3));
+            assert_eq!(IROH_ARTIFACT_PARALLELISM, 4);
+            assert_eq!(IROH_ARTIFACT_RECEIVE_BYTE_BUDGET, 4 * 1024 * 1024 * 1024);
+            assert_eq!(IROH_STREAM_RECEIVE_WINDOW_BYTES, 32 * 1024 * 1024);
+            assert_eq!(IROH_CONNECTION_RECEIVE_WINDOW_BYTES, 128 * 1024 * 1024);
+            assert_eq!(IROH_SEND_WINDOW_BYTES, 64 * 1024 * 1024);
+        }
+
         #[test]
         fn offered_artifacts_are_scoped_to_manifest_metadata() {
             let manifests = vec![json!({
@@ -16128,6 +17879,125 @@ mod desktop {
                     .collect::<Vec<_>>(),
                 vec!["art_two", "art_one"]
             );
+        }
+
+        #[test]
+        fn iroh_active_batch_stage_results_defer_apply_until_final_drain() {
+            let mut scheduler = IrohGlobalProjectScheduler::default();
+            let first = RemoteArtifact {
+                artifact_id: "art_one".to_string(),
+                project_id: "proj_one".to_string(),
+                content_sha256: "hash_one".to_string(),
+                size_bytes: 10,
+            };
+            let second = RemoteArtifact {
+                artifact_id: "art_two".to_string(),
+                project_id: "proj_two".to_string(),
+                content_sha256: "hash_two".to_string(),
+                size_bytes: 20,
+            };
+            let first_project =
+                scheduler.push_project(json!({ "project": { "project_id": "proj_one" } }));
+            let second_project =
+                scheduler.push_project(json!({ "project": { "project_id": "proj_two" } }));
+            scheduler
+                .add_pending_artifact(first_project, first.clone())
+                .expect("add first pending");
+            scheduler
+                .add_pending_artifact(second_project, second.clone())
+                .expect("add second pending");
+            scheduler.mark_project_discovered(first_project);
+            scheduler.mark_project_discovered(second_project);
+            let (task_sender, task_receiver) =
+                mpsc::sync_channel::<BackendWriteTask>(IROH_ARTIFACT_STAGING_QUEUE_CAPACITY);
+            let (_event_sender, event_receiver) = mpsc::channel::<BackendWriteEvent>();
+            let mut apply_worker = RemoteApplyWorker {
+                sender: Some(task_sender),
+                event_receiver,
+                handle: None,
+                queued_project_ids: Arc::new(Mutex::new(Vec::new())),
+                completed_project_ids: HashSet::new(),
+                enqueue_failures: Arc::new(Mutex::new(Vec::new())),
+                apply_cancelled: Arc::new(AtomicBool::new(false)),
+                project_results: Vec::new(),
+                pending_stage_jobs: 0,
+                pending_stage_bytes: 0,
+                staging_peak_bytes: 0,
+            };
+            let mut received_artifacts = Vec::new();
+            let mut ready_projects = Vec::new();
+            let mut ready_tombstone_project_ids = vec!["proj_deleted".to_string()];
+
+            record_iroh_batch_scheduler_transfer(
+                &mut scheduler,
+                &mut received_artifacts,
+                &mut ready_projects,
+                &mut ready_tombstone_project_ids,
+                &mut apply_worker,
+                Ok(test_transfer_result("art_one", "hash_one", 10, "received")),
+                false,
+            );
+
+            assert_eq!(
+                ready_projects
+                    .iter()
+                    .map(|project| manifest_project_id(&project.manifest))
+                    .collect::<Vec<_>>(),
+                vec!["proj_one"]
+            );
+            assert!(matches!(
+                task_receiver.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ));
+
+            record_iroh_batch_scheduler_transfer(
+                &mut scheduler,
+                &mut received_artifacts,
+                &mut ready_projects,
+                &mut ready_tombstone_project_ids,
+                &mut apply_worker,
+                Ok(test_transfer_result("art_two", "hash_two", 20, "received")),
+                false,
+            );
+
+            assert_eq!(ready_projects.len(), 2);
+            assert_eq!(ready_tombstone_project_ids, vec!["proj_deleted"]);
+            assert!(matches!(
+                task_receiver.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ));
+
+            enqueue_collected_iroh_ready_projects(
+                &mut apply_worker,
+                &mut ready_projects,
+                &mut ready_tombstone_project_ids,
+            );
+
+            let mut enqueued_project_ids = Vec::new();
+            for _ in 0..3 {
+                match task_receiver
+                    .try_recv()
+                    .expect("project apply was enqueued")
+                {
+                    BackendWriteTask::Apply { project_id, .. } => {
+                        enqueued_project_ids.push(project_id);
+                    }
+                    BackendWriteTask::StageIrohArtifact { .. } => {
+                        panic!("final drain should enqueue apply tasks only");
+                    }
+                }
+            }
+            assert_eq!(
+                enqueued_project_ids,
+                vec!["proj_one", "proj_two", "proj_deleted"]
+            );
+            assert!(ready_projects.is_empty());
+            assert!(ready_tombstone_project_ids.is_empty());
+            assert_eq!(received_artifacts.len(), 2);
+            assert!(matches!(
+                task_receiver.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ));
         }
 
         #[test]

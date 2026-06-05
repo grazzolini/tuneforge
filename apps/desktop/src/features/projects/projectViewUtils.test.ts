@@ -146,6 +146,9 @@ describe("findActiveLyricsIndex", () => {
 });
 
 describe("transposeChordSegment", () => {
+  type LabelOverride = Pick<ChordSegmentSchema, "label"> &
+    Partial<Pick<ChordSegmentSchema, "display_label" | "raw_label">>;
+
   it("transposes supported chord extensions", () => {
     const segment: ChordSegmentSchema = {
       bass_pitch_class: 4,
@@ -170,6 +173,61 @@ describe("transposeChordSegment", () => {
       root_pitch_class: 2,
       quality: "maj7",
     });
+  });
+
+  it.each<[string, LabelOverride]>([
+    ["label", { label: "D:maj/3" }],
+    ["display label", { display_label: "D:maj/3", label: "C6" }],
+    ["raw label", { label: "C6", raw_label: "D:maj/3" }],
+  ])("parses %s fallbacks before transposing", (_source, overrides) => {
+    const segment: ChordSegmentSchema = {
+      confidence: 0.9,
+      ...(overrides.display_label ? { display_label: overrides.display_label } : {}),
+      end_seconds: 4,
+      label: overrides.label,
+      pitch_class: null,
+      quality: "6",
+      ...(overrides.raw_label ? { raw_label: overrides.raw_label } : {}),
+      start_seconds: 0,
+    };
+
+    expect(
+      transposeChordSegment(segment, 2, {
+        activeKey: null,
+        mode: "sharps",
+      }),
+    ).toMatchObject({
+      bass_degree: "3",
+      bass_pitch_class: 8,
+      label: "E/G#",
+      pitch_class: 4,
+      root_pitch_class: 4,
+      quality: "major",
+    });
+  });
+
+  it.each<[string, LabelOverride & Partial<Pick<ChordSegmentSchema, "quality">>]>([
+    ["unsupported", { label: "C:13", quality: "13" }],
+    ["no-chord", { display_label: "D:maj/3", label: "N", raw_label: "D:maj/3" }],
+    ["raw unknown", { label: "H:maj", raw_label: "X" }],
+  ])("keeps %s fallback labels unchanged", (_source, overrides) => {
+    const segment: ChordSegmentSchema = {
+      confidence: 0.9,
+      ...(overrides.display_label ? { display_label: overrides.display_label } : {}),
+      end_seconds: 4,
+      label: overrides.label,
+      pitch_class: null,
+      quality: overrides.quality ?? null,
+      ...(overrides.raw_label ? { raw_label: overrides.raw_label } : {}),
+      start_seconds: 0,
+    };
+
+    expect(
+      transposeChordSegment(segment, 2, {
+        activeKey: null,
+        mode: "sharps",
+      }),
+    ).toBe(segment);
   });
 
   it("keeps unknown chord qualities as backend fallbacks", () => {

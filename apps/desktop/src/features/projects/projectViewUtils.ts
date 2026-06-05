@@ -1,8 +1,11 @@
 import type { ArtifactSchema, ChordSegmentSchema, JobSchema, LyricsSegmentSchema, LyricsWordSchema } from "../../lib/api";
 import { formatLocalDateTime } from "../../lib/datetime";
 import {
+  formatParsedChordLabel,
   formatChordLabel,
   isSupportedChordQuality,
+  parseChordLabel,
+  transposeChord,
   type EnharmonicDisplayMode,
   type MusicalKey,
   transposePitchClass,
@@ -318,7 +321,7 @@ export function transposeChordSegment(
     typeof segment.pitch_class !== "number" ||
     !isSupportedChordQuality(segment.quality)
   ) {
-    return segment;
+    return transposeChordSegmentFromLabel(segment, semitones, options) ?? segment;
   }
   const pitchClass = transposePitchClass(segment.pitch_class, semitones);
   const bassPitchClass =
@@ -332,6 +335,57 @@ export function transposeChordSegment(
     root_pitch_class: typeof segment.root_pitch_class === "number" ? pitchClass : segment.root_pitch_class,
     label: formatChordLabel(pitchClass, segment.quality, options, bassPitchClass),
   };
+}
+
+function transposeChordSegmentFromLabel(
+  segment: ChordSegmentSchema,
+  semitones: number,
+  options: { activeKey: MusicalKey | null; mode: EnharmonicDisplayMode },
+): ChordSegmentSchema | null {
+  if (isNoChordOrUnknownLabel(segment.label)) {
+    return null;
+  }
+
+  for (const label of chordSegmentLabelCandidates(segment)) {
+    const parsedChord = parseChordLabel(label);
+    if (!parsedChord) {
+      continue;
+    }
+    const transposedChord = transposeChord(parsedChord, semitones);
+    if (!transposedChord) {
+      continue;
+    }
+    return {
+      ...segment,
+      bass_degree: transposedChord.bassDegree ?? null,
+      bass_pitch_class: transposedChord.bassPitchClass,
+      label: formatParsedChordLabel(transposedChord, options),
+      pitch_class: transposedChord.rootPitchClass,
+      quality: transposedChord.quality,
+      root_pitch_class: transposedChord.rootPitchClass,
+    };
+  }
+
+  return null;
+}
+
+function chordSegmentLabelCandidates(segment: ChordSegmentSchema): string[] {
+  const labels = [segment.label, segment.display_label, segment.raw_label].filter(
+    (label): label is string => typeof label === "string" && label.trim().length > 0,
+  );
+  return Array.from(new Set(labels));
+}
+
+function isNoChordOrUnknownLabel(label: string): boolean {
+  const compactLabel = label.trim().replace(/\s+/g, "").toUpperCase();
+  return (
+    compactLabel === "N" ||
+    compactLabel === "NC" ||
+    compactLabel === "N.C." ||
+    compactLabel === "NO_CHORD" ||
+    compactLabel === "NO-CHORD" ||
+    compactLabel === "X"
+  );
 }
 
 export function findActiveChordIndex(timeline: ChordSegmentSchema[], playbackTimeSeconds: number) {

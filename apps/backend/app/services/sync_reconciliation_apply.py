@@ -617,8 +617,19 @@ def _import_entity_revision(
     if revision is None:
         return _result(action, APPLY_STATUS_SKIPPED, "Entity revision is not present in the project manifest.")
     existing_revision = session.get(SyncEntityRevision, revision.revision_id)
+    remote_state = _normalize_revision_state(revision.state)
     if existing_revision is not None:
         if _local_revision_content_sha256(existing_revision) == revision.content_sha256:
+            if _normalize_revision_state(existing_revision.state) != remote_state:
+                existing_revision.state = remote_state
+                existing_revision.updated_at = revision.updated_at
+                session.flush()
+                return _result(
+                    action,
+                    APPLY_STATUS_APPLIED,
+                    "Entity revision state was updated from the project manifest.",
+                    details={"revision_id": revision.revision_id, "project_id": project_id},
+                )
             return _result(action, APPLY_STATUS_SATISFIED, "Entity revision is already imported locally.")
         return _result(action, APPLY_STATUS_FAILED, "Entity revision conflicts with a local revision.")
 
@@ -632,7 +643,7 @@ def _import_entity_revision(
         author_device_id=revision.author_device_id,
         source_artifact_id=revision.source_artifact_id,
         content_sha256=revision.content_sha256,
-        state=_normalize_revision_state(revision.state),
+        state=remote_state,
         metadata_json=deepcopy(revision.metadata),
         payload_json=deepcopy(revision.payload),
         created_at=revision.created_at,
@@ -776,12 +787,16 @@ def _cleanup_imported_content_addressed_staging(
     pending_hashes: set[str] = set()
     imported_references: list[dict[str, Any]] = []
     for project_id, manifest in context.project_manifests_by_id.items():
-        artifact_hashes = _manifest_artifact_hashes(manifest)
-        if _project_is_imported(session, project_id):
-            imported_hashes.update(artifact_hashes)
-            imported_references.extend(_manifest_artifact_references(manifest))
-        else:
-            pending_hashes.update(artifact_hashes)
+        imported_project_hashes, pending_project_hashes, imported_project_references = (
+            _manifest_artifact_import_state(
+                session,
+                manifest,
+                project_id=project_id,
+            )
+        )
+        imported_hashes.update(imported_project_hashes)
+        imported_references.extend(imported_project_references)
+        pending_hashes.update(pending_project_hashes)
 
     cleanup_hashes = imported_hashes - pending_hashes
     cleanup_references = [
@@ -861,30 +876,45 @@ def _manifest_has_analysis_artifact(manifest: object) -> bool:
     )
 
 
-def _manifest_artifact_hashes(manifest: object) -> set[str]:
-    return {
-        content_sha256
-        for artifact in _list_field(manifest, "artifacts")
-        if (content_sha256 := _string_field(artifact, "content_sha256")) is not None
-    }
-
-
-def _manifest_artifact_references(manifest: object) -> list[dict[str, Any]]:
-    references: list[dict[str, Any]] = []
+def _manifest_artifact_import_state(
+    session: Session,
+    manifest: object,
+    *,
+    project_id: str,
+) -> tuple[set[str], set[str], list[dict[str, Any]]]:
+    imported_hashes: set[str] = set()
+    pending_hashes: set[str] = set()
+    imported_references: list[dict[str, Any]] = []
     for artifact in _list_field(manifest, "artifacts"):
-        content_sha256 = _string_field(artifact, "content_sha256")
-        project_id = _string_field(artifact, "project_id")
         artifact_id = _string_field(artifact, "artifact_id", "id")
-        if content_sha256 is None or project_id is None or artifact_id is None:
+        artifact_project_id = _string_field(artifact, "project_id")
+        content_sha256 = _string_field(artifact, "content_sha256")
+        size_bytes = _int_field(artifact, "size_bytes")
+        if (
+            artifact_id is None
+            or artifact_project_id != project_id
+            or content_sha256 is None
+            or size_bytes is None
+        ):
             continue
-        references.append(
+        local_artifact = session.get(Artifact, artifact_id)
+        if (
+            local_artifact is None
+            or local_artifact.project_id != project_id
+            or local_artifact.content_sha256 != content_sha256
+            or local_artifact.size_bytes != size_bytes
+        ):
+            pending_hashes.add(content_sha256)
+            continue
+        imported_hashes.add(content_sha256)
+        imported_references.append(
             {
                 "content_sha256": content_sha256,
                 "project_id": project_id,
                 "artifact_id": artifact_id,
             }
         )
-    return references
+    return imported_hashes, pending_hashes, imported_references
 
 
 def _tombstone_for_action(
@@ -1073,7 +1103,13 @@ def _staged_manifest_import_actions(
         for action in plan.actions
         if action.action_type == ACTION_IMPORT_PROJECT_MANIFEST and action.item_type == ITEM_PROJECT
     }
-    priority = _project_manifest_import_priority(plan)
+    planned_import_artifact_ids = {
+        action.item_id
+        for action in plan.actions
+        if action.action_type == ACTION_IMPORT_ARTIFACT_MANIFEST and action.item_type == ITEM_ARTIFACT
+    }
+    project_priority = _project_manifest_import_priority(plan)
+    artifact_priority = _artifact_manifest_import_priority(plan)
     actions: list[SyncReconciliationAction] = []
     for project_id in sorted(context.project_manifests_by_id):
         if context.scoped_project_ids and project_id not in context.scoped_project_ids:
@@ -1082,9 +1118,18 @@ def _staged_manifest_import_actions(
             continue
         if _project_has_blocking_apply_action(plan, project_id):
             continue
-        if _project_is_imported(session, project_id):
-            continue
         manifest = context.project_manifests_by_id[project_id]
+        if _project_is_imported(session, project_id):
+            actions.extend(
+                _staged_existing_project_artifact_actions(
+                    session,
+                    manifest,
+                    project_id=project_id,
+                    planned_import_artifact_ids=planned_import_artifact_ids,
+                    priority=artifact_priority,
+                )
+            )
+            continue
         actions.append(
             SyncReconciliationAction(
                 action_type=ACTION_IMPORT_PROJECT_MANIFEST,
@@ -1094,6 +1139,53 @@ def _staged_manifest_import_actions(
                 content_sha256=_manifest_source_sha256(manifest),
                 provider_device_id=None,
                 reason="Import project manifest using artifact content that is already staged locally.",
+                priority=project_priority,
+                details={
+                    "source": "sync_staged_artifacts",
+                    "staged_content_required": True,
+                },
+            )
+        )
+    return actions
+
+
+def _staged_existing_project_artifact_actions(
+    session: Session,
+    manifest: object,
+    *,
+    project_id: str,
+    planned_import_artifact_ids: set[str],
+    priority: int,
+) -> list[SyncReconciliationAction]:
+    actions: list[SyncReconciliationAction] = []
+    for artifact in _list_field(manifest, "artifacts"):
+        artifact_id = _string_field(artifact, "artifact_id", "id")
+        artifact_project_id = _string_field(artifact, "project_id")
+        content_sha256 = _string_field(artifact, "content_sha256")
+        size_bytes = _int_field(artifact, "size_bytes")
+        if (
+            artifact_id is None
+            or artifact_project_id != project_id
+            or artifact_id in planned_import_artifact_ids
+            or content_sha256 is None
+            or size_bytes is None
+        ):
+            continue
+        if session.get(Artifact, artifact_id) is not None:
+            continue
+        try:
+            require_staged_artifact(session, content_sha256=content_sha256, size_bytes=size_bytes)
+        except AppError:
+            continue
+        actions.append(
+            SyncReconciliationAction(
+                action_type=ACTION_IMPORT_ARTIFACT_MANIFEST,
+                item_type=ITEM_ARTIFACT,
+                item_id=artifact_id,
+                project_id=project_id,
+                content_sha256=content_sha256,
+                provider_device_id=None,
+                reason="Import artifact manifest using content that is already staged locally.",
                 priority=priority,
                 details={
                     "source": "sync_staged_artifacts",
@@ -1139,6 +1231,13 @@ def _project_manifest_import_priority(plan: SyncReconciliationPlan) -> int:
         if action.action_type == ACTION_IMPORT_PROJECT_MANIFEST:
             return action.priority
     return 30
+
+
+def _artifact_manifest_import_priority(plan: SyncReconciliationPlan) -> int:
+    for action in plan.actions:
+        if action.action_type == ACTION_IMPORT_ARTIFACT_MANIFEST:
+            return action.priority
+    return 40
 
 
 def _manifest_source_sha256(manifest: object) -> str | None:

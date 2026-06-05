@@ -30,7 +30,12 @@ from app.services.paths import project_root
 from app.services.projects import delete_project
 from app.services.sync_identity import source_hash_to_project_id
 from app.services.sync_manifest import export_project_manifest, import_staged_project_manifest
-from app.services.sync_revisions import CURRENT_REVISION_STATE, revision_payload_sha256, sanitize_revision_payload
+from app.services.sync_revisions import (
+    CURRENT_REVISION_STATE,
+    SUPERSEDED_REVISION_STATE,
+    revision_payload_sha256,
+    sanitize_revision_payload,
+)
 from app.services.sync_staging import stage_sync_artifact
 from app.services.sync_trust import get_or_create_local_identity
 from app.utils.hashing import file_sha256
@@ -2234,12 +2239,13 @@ def test_issue120_existing_project_imports_late_manifest_artifacts(
         assert late_artifact is not None
         session.delete(late_artifact)
         late_artifact_path.unlink()
-        _stage_manifest_content(
+        _stage_manifest_artifact_content(
             session,
             manifest,
             tmp_path=tmp_path,
             artifact_bytes=fixture.artifact_bytes,
             provider_device_id="peer-issue120-late-artifact",
+            artifact_id=fixture.stem_artifact_id,
         )
         session.commit()
 
@@ -2276,6 +2282,9 @@ def test_issue120_existing_project_imports_late_manifest_artifacts(
         restored_artifact = session.get(Artifact, fixture.stem_artifact_id)
         assert restored_artifact is not None
         assert Path(restored_artifact.path).exists()
+        assert restored_artifact.project_id == fixture.project_id
+        assert restored_artifact.type == "vocals"
+        assert restored_artifact.metadata_json == {"source_artifact_id": fixture.source_artifact_id}
         assert restored_artifact.content_sha256 == fixture.artifact_hashes[fixture.stem_artifact_id]
 
 
@@ -2299,12 +2308,13 @@ def test_issue120_late_manifest_copy_mismatch_does_not_persist_artifact(
         assert late_artifact is not None
         session.delete(late_artifact)
         late_artifact_path.unlink()
-        _stage_manifest_content(
+        _stage_manifest_artifact_content(
             session,
             manifest,
             tmp_path=tmp_path,
             artifact_bytes=fixture.artifact_bytes,
             provider_device_id="peer-issue120-copy-mismatch",
+            artifact_id=fixture.stem_artifact_id,
         )
         session.commit()
 
@@ -2345,6 +2355,167 @@ def test_issue120_late_manifest_copy_mismatch_does_not_persist_artifact(
 
     with SessionLocal() as session:
         assert session.get(Artifact, fixture.stem_artifact_id) is None
+        staged_artifact = session.get(
+            SyncStagedArtifact,
+            fixture.artifact_hashes[fixture.stem_artifact_id],
+        )
+        assert staged_artifact is not None
+        assert (get_settings().data_root / "sync" / "staging" / staged_artifact.relative_path).exists()
+
+
+def test_issue120_existing_project_imports_project_metadata_rename(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    peer_device_id = "peer-issue120-rename"
+    _ensure_identity_and_peers(peer_device_id)
+
+    old_revision_id = "rev_issue120_project_metadata_original"
+    rename_revision_id = "rev_issue120_project_metadata_rename"
+    remote_display_name = "Synced Delta Rename"
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(
+            session,
+            tmp_path,
+            slug="issue120-rename",
+            source_frames=132,
+        )
+        project = session.get(Project, fixture.project_id)
+        assert project is not None
+        project.display_name = "Local Delta Name"
+        local_updated_at = datetime(2026, 1, 1, tzinfo=UTC)
+        project.updated_at = local_updated_at
+        old_revision_payload = sanitize_revision_payload(
+            {
+                "project_id": fixture.project_id,
+                "display_name": project.display_name,
+                "source_key_override": project.source_key_override,
+                "source_sha256": project.source_sha256,
+                "duration_seconds": project.duration_seconds,
+                "sample_rate": project.sample_rate,
+                "channels": project.channels,
+            }
+        )
+        session.add(
+            SyncEntityRevision(
+                id=old_revision_id,
+                project_id=fixture.project_id,
+                entity_type="project_metadata",
+                entity_id=fixture.project_id,
+                revision_type="metadata_change",
+                base_revision_id=None,
+                author_device_id=peer_device_id,
+                source_artifact_id=None,
+                content_sha256=revision_payload_sha256(old_revision_payload),
+                state=CURRENT_REVISION_STATE,
+                metadata_json={},
+                payload_json=old_revision_payload,
+                created_at=local_updated_at,
+                updated_at=local_updated_at,
+            )
+        )
+        session.flush()
+        manifest = _jsonable_manifest(export_project_manifest(session, project_id=fixture.project_id))
+        remote_updated_at = datetime(2026, 1, 2, tzinfo=UTC).isoformat()
+        manifest["project"]["display_name"] = remote_display_name
+        manifest["project"]["updated_at"] = remote_updated_at
+        old_revision_manifest = _revision_by_id(manifest, old_revision_id)
+        old_revision_manifest["state"] = SUPERSEDED_REVISION_STATE
+        old_revision_manifest["updated_at"] = remote_updated_at
+        revision_payload = sanitize_revision_payload(
+            {
+                "project_id": fixture.project_id,
+                "display_name": remote_display_name,
+                "source_key_override": project.source_key_override,
+                "source_sha256": project.source_sha256,
+                "duration_seconds": project.duration_seconds,
+                "sample_rate": project.sample_rate,
+                "channels": project.channels,
+            }
+        )
+        manifest["entity_revisions"].append(
+            {
+                "revision_id": rename_revision_id,
+                "project_id": fixture.project_id,
+                "entity_type": "project_metadata",
+                "entity_id": fixture.project_id,
+                "revision_type": "metadata_change",
+                "base_revision_id": old_revision_id,
+                "author_device_id": peer_device_id,
+                "source_artifact_id": None,
+                "content_sha256": revision_payload_sha256(revision_payload),
+                "state": CURRENT_REVISION_STATE,
+                "metadata": {},
+                "payload": revision_payload,
+                "created_at": remote_updated_at,
+                "updated_at": remote_updated_at,
+            }
+        )
+        session.commit()
+
+    response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": _empty_remote_library(),
+            "project_manifests": [manifest],
+            "peer_inventory": [
+                {
+                    "device_id": peer_device_id,
+                    "available_content_sha256": _manifest_content_hashes([manifest]),
+                }
+            ],
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["failed_actions"] == 0
+    assert any(
+        result["action"]["action_type"] == "import_entity_revision"
+        and result["action"]["item_id"] == old_revision_id
+        and result["status"] == "applied"
+        for result in payload["results"]
+    )
+    assert any(
+        result["action"]["action_type"] == "import_entity_revision"
+        and result["action"]["item_id"] == rename_revision_id
+        and result["status"] == "applied"
+        for result in payload["results"]
+    )
+
+    with SessionLocal() as session:
+        project = session.get(Project, fixture.project_id)
+        old_revision = session.get(SyncEntityRevision, old_revision_id)
+        revision = session.get(SyncEntityRevision, rename_revision_id)
+        assert project is not None
+        assert old_revision is not None
+        assert revision is not None
+        assert project.display_name == remote_display_name
+        assert old_revision.state == SUPERSEDED_REVISION_STATE
+        assert revision.state == CURRENT_REVISION_STATE
+        assert revision.payload_json["display_name"] == remote_display_name
+        current_metadata_revisions = list(
+            session.scalars(
+                select(SyncEntityRevision).where(
+                    SyncEntityRevision.project_id == fixture.project_id,
+                    SyncEntityRevision.entity_type == "project_metadata",
+                    SyncEntityRevision.state.in_((CURRENT_REVISION_STATE, "current")),
+                )
+            )
+        )
+        assert [current.id for current in current_metadata_revisions] == [rename_revision_id]
+
+        exported_manifest = _jsonable_manifest(export_project_manifest(session, project_id=fixture.project_id))
+        exported_current_metadata_revisions = [
+            exported_revision
+            for exported_revision in exported_manifest["entity_revisions"]
+            if exported_revision["entity_type"] == "project_metadata"
+            and exported_revision["state"] in {CURRENT_REVISION_STATE, "current"}
+        ]
+        assert [revision["revision_id"] for revision in exported_current_metadata_revisions] == [
+            rename_revision_id
+        ]
 
 
 def test_issue120_remote_tombstone_from_trusted_peer_wins_over_stale_manifest(
@@ -2670,6 +2841,28 @@ def _stage_manifest_content(
             provider_device_id=provider_device_id,
             metadata={"artifact_id": artifact_id, "project_id": artifact["project_id"]},
         )
+
+
+def _stage_manifest_artifact_content(
+    session: Session,
+    manifest: dict[str, Any],
+    *,
+    tmp_path: Path,
+    artifact_bytes: dict[str, bytes],
+    provider_device_id: str,
+    artifact_id: str,
+) -> None:
+    artifact = _artifact_by_id(manifest, artifact_id)
+    source_path = tmp_path / "issue119-stage" / provider_device_id / artifact_id
+    _write_bytes(source_path, artifact_bytes[artifact_id])
+    stage_sync_artifact(
+        session,
+        source_path=source_path,
+        content_sha256=artifact["content_sha256"],
+        size_bytes=artifact["size_bytes"],
+        provider_device_id=provider_device_id,
+        metadata={"artifact_id": artifact_id, "project_id": artifact["project_id"]},
+    )
 
 
 def _delete_live_project(session: Session, fixture: Issue119ProjectFixture) -> None:

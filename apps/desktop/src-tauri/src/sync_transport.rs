@@ -1643,6 +1643,9 @@ mod desktop {
     const IROH_DATA_HEADER_MAX_BYTES: usize = 16 * 1024;
     const IROH_ARTIFACT_RECEIVE_CANCELLED: &str =
         "Iroh artifact stream receive was cancelled after batch control stopped the transfer.";
+    const UNAVAILABLE_ARTIFACT_TRANSFER_MESSAGE: &str =
+        "Requested artifact content is unavailable from the peer.";
+    const IROH_ARTIFACT_UNAVAILABLE_CONTENT_SHA256: &str = "artifact_unavailable";
     const IROH_STREAM_RECEIVE_WINDOW_BYTES: u32 = 32 * 1024 * 1024;
     const IROH_CONNECTION_RECEIVE_WINDOW_BYTES: u32 = 128 * 1024 * 1024;
     const IROH_SEND_WINDOW_BYTES: u64 = 64 * 1024 * 1024;
@@ -8711,6 +8714,12 @@ mod desktop {
         artifact_id: String,
         content_sha256: String,
         size_bytes: u64,
+        #[serde(default, skip_serializing_if = "is_false")]
+        unavailable: bool,
+    }
+
+    fn is_false(value: &bool) -> bool {
+        !*value
     }
 
     #[derive(Clone, Debug)]
@@ -10252,7 +10261,19 @@ mod desktop {
                 diagnostics.clone(),
             ));
         }
-        if header.content_sha256 != pending.artifact.content_sha256
+        if header.unavailable {
+            if header.content_sha256 != IROH_ARTIFACT_UNAVAILABLE_CONTENT_SHA256
+                || header.size_bytes != pending.artifact.size_bytes
+            {
+                return Err(known_iroh_receive_failure(
+                    &pending.artifact,
+                    transfer_timer,
+                    0,
+                    "Iroh artifact stream header did not match the requested artifact.".to_string(),
+                    diagnostics.clone(),
+                ));
+            }
+        } else if header.content_sha256 != pending.artifact.content_sha256
             || header.size_bytes != pending.artifact.size_bytes
         {
             return Err(known_iroh_receive_failure(
@@ -10301,6 +10322,15 @@ mod desktop {
                 ));
             }
         }
+        if header.unavailable {
+            return Err(known_iroh_receive_failure(
+                &pending.artifact,
+                transfer_timer,
+                0,
+                UNAVAILABLE_ARTIFACT_TRANSFER_MESSAGE.to_string(),
+                diagnostics.clone(),
+            ));
+        }
 
         if let Some(parent) = pending.temp_path.parent() {
             if let Err(error) = fs::create_dir_all(parent) {
@@ -10346,11 +10376,16 @@ mod desktop {
                 Ok(None) => {
                     diagnostics.record_receiver_read(read_started.elapsed());
                     let _ = fs::remove_file(&pending.temp_path);
+                    let message = if size_bytes == 0 {
+                        UNAVAILABLE_ARTIFACT_TRANSFER_MESSAGE.to_string()
+                    } else {
+                        "Iroh artifact stream ended before the requested size.".to_string()
+                    };
                     return Err(known_iroh_receive_failure(
                         &pending.artifact,
                         transfer_timer,
                         size_bytes,
-                        "Iroh artifact stream ended before the requested size.".to_string(),
+                        message,
                         diagnostics.clone(),
                     ));
                 }
@@ -10654,10 +10689,18 @@ mod desktop {
             }
             Ok(ProtocolMessage::Error(error)) => {
                 timings.push(timer.finish());
+                let message = phase_context_error("artifact request/transfer", error.message);
+                if error.code == "artifact_unavailable" {
+                    return Err(post_receive_transfer_failure(
+                        &artifact,
+                        transfer_timer.finish(0),
+                        message,
+                    ));
+                }
                 return Err(transfer_failure(
                     &artifact,
                     transfer_timer.finish(0),
-                    phase_context_error("artifact request/transfer", error.message),
+                    message,
                 ));
             }
             Ok(other) => {
@@ -10711,6 +10754,7 @@ mod desktop {
         };
         let mut hasher = Sha256::new();
         let mut size_bytes = 0_u64;
+        let mut receive_can_continue = false;
         let receive_result = loop {
             if let Some(message) = progress.interruption_message() {
                 break Err(message);
@@ -10750,6 +10794,7 @@ mod desktop {
                         || peer_size_bytes != artifact.size_bytes
                         || size_bytes != artifact.size_bytes
                     {
+                        receive_can_continue = true;
                         break Err(
                             "Received sync artifact bytes failed SHA-256 or size verification."
                                 .to_string(),
@@ -10758,6 +10803,9 @@ mod desktop {
                     break Ok(());
                 }
                 Ok(ArtifactTransferFrame::Message(ProtocolMessage::Error(error))) => {
+                    if error.code == "artifact_unavailable" {
+                        receive_can_continue = true;
+                    }
                     break Err(phase_context_error(
                         "artifact request/transfer",
                         error.message,
@@ -10779,6 +10827,13 @@ mod desktop {
             let cleanup_timer = SyncPhaseTimer::start_artifact("artifact_cleanup", &artifact);
             let _ = fs::remove_file(&temp_path);
             timings.push(cleanup_timer.finish());
+            if receive_can_continue {
+                return Err(post_receive_transfer_failure(
+                    &artifact,
+                    transfer_timing,
+                    error,
+                ));
+            }
             return Err(transfer_failure(&artifact, transfer_timing, error));
         }
         if let Some(message) = progress.interruption_message() {
@@ -10994,12 +11049,9 @@ mod desktop {
                                     return Ok(artifacts.len() as u64);
                                 }
                             }
-                            for artifact in &artifacts {
-                                send_artifact_response(
-                                    client, connection, artifact, metrics, progress,
-                                )?;
-                            }
-                            Ok(artifacts.len() as u64)
+                            send_artifact_batch_response(
+                                client, connection, &artifacts, metrics, progress,
+                            )
                         });
                     match result {
                         Ok(count) => served = served.saturating_add(count),
@@ -11043,7 +11095,7 @@ mod desktop {
         metrics: &mut SyncRunMetrics,
         progress: &ProgressReporter,
     ) -> Result<(), String> {
-        let local_files = client
+        let resolved = client
             .resolve_artifact_files(artifacts)
             .map_err(|error| phase_context_error("artifact request/transfer", error.to_string()))?;
         let _progress = progress.start_phase("artifact_transfer", "Transferring artifact content.");
@@ -11128,27 +11180,34 @@ mod desktop {
                     send_iroh_artifact_batch_abort(connection, batch_token, &message);
                     return Err(message);
                 }
-                let Some(local_file) = local_files.get(&artifact_id).cloned() else {
-                    let message = format!(
-                        "Backend artifact resolver omitted artifact {}.",
-                        artifact_id
-                    );
-                    send_iroh_artifact_batch_abort(connection, batch_token, &message);
-                    return Err(message);
+                let local_file = match resolved.files.get(&artifact_id).cloned() {
+                    Some(local_file) => Some(local_file),
+                    None if resolved.failures.contains_key(&artifact_id) => None,
+                    None => {
+                        let message = format!(
+                            "Backend artifact resolver omitted artifact {}.",
+                            artifact_id
+                        );
+                        send_iroh_artifact_batch_abort(connection, batch_token, &message);
+                        return Err(message);
+                    }
                 };
                 let data = iroh_data.clone();
                 let batch_token = batch_token.to_string();
                 let run_started_instant = metrics.started_instant;
                 let cancel = progress.cancel_token();
                 handles.push(thread::spawn(move || {
-                    stream_iroh_artifact_file(
-                        data,
-                        &batch_token,
-                        artifact,
-                        local_file,
-                        run_started_instant,
-                        cancel,
-                    )
+                    if let Some(local_file) = local_file {
+                        return stream_iroh_artifact_file(
+                            data,
+                            &batch_token,
+                            artifact,
+                            local_file,
+                            run_started_instant,
+                            cancel,
+                        );
+                    }
+                    stream_unavailable_iroh_artifact(data, &batch_token, artifact, cancel)
                 }));
             }
             for handle in handles {
@@ -11176,23 +11235,57 @@ mod desktop {
         )
     }
 
+    fn send_artifact_batch_response(
+        client: &BackendClient,
+        connection: &SharedPeerConnection,
+        artifacts: &[RemoteArtifact],
+        metrics: &mut SyncRunMetrics,
+        progress: &ProgressReporter,
+    ) -> Result<u64, String> {
+        let mut resolved = client
+            .resolve_artifact_files(artifacts)
+            .map_err(|error| phase_context_error("artifact request/transfer", error.to_string()))?;
+        let mut handled = 0_u64;
+        for artifact in artifacts {
+            if let Some(local_file) = resolved.files.remove(&artifact.artifact_id) {
+                send_artifact_response_from_file(
+                    connection, artifact, local_file, metrics, progress,
+                )?;
+                handled = handled.saturating_add(1);
+                continue;
+            }
+            if let Some(failure) = resolved.failures.get(&artifact.artifact_id) {
+                send_artifact_unavailable_with_message(connection, &failure.message)?;
+                handled = handled.saturating_add(1);
+                continue;
+            }
+            return Err(format!(
+                "Backend artifact resolver omitted artifact {}.",
+                artifact.artifact_id
+            ));
+        }
+        Ok(handled)
+    }
+
     struct StreamedIrohArtifact {
         size_bytes: u64,
         first_bytes_at: Option<Duration>,
         diagnostics: SyncTransportDiagnostics,
     }
 
-    fn stream_iroh_artifact_file(
+    fn stream_unavailable_iroh_artifact(
         iroh_data: IrohDataConnection,
         batch_token: &str,
         artifact: RemoteArtifact,
-        local_file: LocalArtifactFile,
-        run_started_instant: Instant,
         cancel: RunCancellationToken,
     ) -> Result<StreamedIrohArtifact, String> {
+        if let Some(interruption) = cancel.interruption() {
+            return Err(format!(
+                "Sync interrupted by lifecycle event {}. {}",
+                interruption.event.kind, interruption.guidance
+            ));
+        }
         let mut diagnostics = SyncTransportDiagnostics::default();
-        local_file.verify_matches(&artifact)?;
-        let mut file = local_file.open_file()?;
         let stream_open_started = Instant::now();
         let mut send = iroh_data.open_send_stream()?;
         diagnostics.record_stream_open(stream_open_started.elapsed());
@@ -11201,60 +11294,42 @@ mod desktop {
             &mut send,
             &IrohArtifactStreamHeader {
                 batch_token: batch_token.to_string(),
-                artifact_id: artifact.artifact_id.clone(),
-                content_sha256: artifact.content_sha256.clone(),
+                artifact_id: artifact.artifact_id,
+                content_sha256: IROH_ARTIFACT_UNAVAILABLE_CONTENT_SHA256.to_string(),
                 size_bytes: artifact.size_bytes,
+                unavailable: true,
             },
             &mut diagnostics,
         )?;
-        let mut buffer = [0_u8; ARTIFACT_CHUNK_SIZE];
-        let mut hasher = Sha256::new();
-        let mut actual_size = 0_u64;
-        let mut first_bytes_at = None;
-        loop {
-            if let Some(interruption) = cancel.interruption() {
-                return Err(format!(
-                    "Sync interrupted by lifecycle event {}. {}",
-                    interruption.event.kind, interruption.guidance
-                ));
-            }
-            let read = file.read(&mut buffer).map_err(|error| {
-                phase_context_error(
-                    "artifact request/transfer",
-                    format!("Could not read local artifact bytes: {error}"),
-                )
-            })?;
-            if read == 0 {
-                break;
-            }
-            if first_bytes_at.is_none() {
-                first_bytes_at = Some(run_started_instant.elapsed());
-            }
-            actual_size = actual_size.saturating_add(read as u64);
-            hasher.update(&buffer[..read]);
-            let write_started = Instant::now();
-            iroh_data.write_all(&mut send, &buffer[..read])?;
-            diagnostics.record_sender_write(write_started.elapsed());
-        }
         iroh_data.finish_send(&mut send)?;
-        let actual_sha256 = hex_digest(hasher.finalize().as_slice());
-        if actual_sha256 != artifact.content_sha256 || actual_size != artifact.size_bytes {
-            return Err(phase_context_error(
-                "artifact request/transfer",
-                "Local artifact bytes do not match the requested SHA-256 or size.".to_string(),
-            ));
-        }
         Ok(StreamedIrohArtifact {
-            size_bytes: actual_size,
-            first_bytes_at,
+            size_bytes: 0,
+            first_bytes_at: None,
             diagnostics,
         })
     }
 
-    fn send_artifact_response(
-        client: &BackendClient,
+    fn send_artifact_unavailable(connection: &SharedPeerConnection) -> Result<(), String> {
+        send_artifact_unavailable_with_message(connection, UNAVAILABLE_ARTIFACT_TRANSFER_MESSAGE)
+    }
+
+    fn send_artifact_unavailable_with_message(
+        connection: &SharedPeerConnection,
+        message: &str,
+    ) -> Result<(), String> {
+        connection.send_message_for_phase(
+            "artifact request/transfer",
+            &ProtocolMessage::Error(ProtocolError {
+                code: "artifact_unavailable".to_string(),
+                message: message.to_string(),
+            }),
+        )
+    }
+
+    fn send_artifact_response_from_file(
         connection: &SharedPeerConnection,
         artifact: &RemoteArtifact,
+        local_file: LocalArtifactFile,
         metrics: &mut SyncRunMetrics,
         progress: &ProgressReporter,
     ) -> Result<(), String> {
@@ -11262,15 +11337,17 @@ mod desktop {
             let _progress =
                 progress.start_phase("artifact_transfer", "Transferring artifact content.");
             progress.check_not_cancelled()?;
-            client.open_artifact_body(artifact).map_err(|error| {
-                phase_context_error(
-                    "artifact request/transfer",
-                    format!(
-                        "Could not read local artifact {}: {error}",
-                        artifact.artifact_id
-                    ),
-                )
-            })?
+            if local_file.verify_matches(artifact).is_err() {
+                send_artifact_unavailable(connection)?;
+                return Ok(());
+            }
+            match local_file.open_body() {
+                Ok(body) => body,
+                Err(_) => {
+                    send_artifact_unavailable(connection)?;
+                    return Ok(());
+                }
+            }
         };
         let _progress = progress.start_phase("artifact_transfer", "Transferring artifact content.");
         progress.check_not_cancelled()?;
@@ -11288,12 +11365,13 @@ mod desktop {
         let mut actual_size = 0_u64;
         loop {
             progress.check_not_cancelled()?;
-            let read = body.read(&mut buffer).map_err(|error| {
-                phase_context_error(
-                    "artifact request/transfer",
-                    format!("Could not stream local artifact bytes: {error}"),
-                )
-            })?;
+            let read = match body.read(&mut buffer) {
+                Ok(read) => read,
+                Err(_) => {
+                    send_artifact_unavailable(connection)?;
+                    return Ok(());
+                }
+            };
             if read == 0 {
                 break;
             }
@@ -11306,10 +11384,8 @@ mod desktop {
 
         let actual_sha256 = hex_digest(hasher.finalize().as_slice());
         if actual_sha256 != artifact.content_sha256 || actual_size != artifact.size_bytes {
-            return Err(phase_context_error(
-                "artifact request/transfer",
-                "Local artifact bytes do not match the requested SHA-256 or size.".to_string(),
-            ));
+            send_artifact_unavailable(connection)?;
+            return Ok(());
         }
         connection.send_message_for_phase(
             "artifact request/transfer",
@@ -11318,6 +11394,123 @@ mod desktop {
                 size_bytes: actual_size,
             },
         )
+    }
+
+    fn send_artifact_response(
+        client: &BackendClient,
+        connection: &SharedPeerConnection,
+        artifact: &RemoteArtifact,
+        metrics: &mut SyncRunMetrics,
+        progress: &ProgressReporter,
+    ) -> Result<(), String> {
+        let mut resolved = client
+            .resolve_artifact_files(std::slice::from_ref(artifact))
+            .map_err(|error| {
+                phase_context_error(
+                    "artifact request/transfer",
+                    format!(
+                        "Could not read local artifact {}: {error}",
+                        artifact.artifact_id
+                    ),
+                )
+            })?;
+        if let Some(failure) = resolved.failures.remove(&artifact.artifact_id) {
+            send_artifact_unavailable_with_message(connection, &failure.message)?;
+            return Ok(());
+        }
+        let local_file = resolved
+            .files
+            .remove(&artifact.artifact_id)
+            .ok_or_else(|| {
+                format!(
+                    "Backend artifact resolver omitted artifact {}.",
+                    artifact.artifact_id
+                )
+            })?;
+        send_artifact_response_from_file(connection, artifact, local_file, metrics, progress)
+    }
+
+    fn stream_iroh_artifact_file(
+        iroh_data: IrohDataConnection,
+        batch_token: &str,
+        artifact: RemoteArtifact,
+        local_file: LocalArtifactFile,
+        run_started_instant: Instant,
+        cancel: RunCancellationToken,
+    ) -> Result<StreamedIrohArtifact, String> {
+        let mut diagnostics = SyncTransportDiagnostics::default();
+        if local_file.verify_matches(&artifact).is_err() {
+            return stream_unavailable_iroh_artifact(iroh_data, batch_token, artifact, cancel);
+        }
+        let mut file = match local_file.open_file() {
+            Ok(file) => file,
+            Err(_) => {
+                return stream_unavailable_iroh_artifact(iroh_data, batch_token, artifact, cancel);
+            }
+        };
+        let stream_open_started = Instant::now();
+        let mut send = iroh_data.open_send_stream()?;
+        diagnostics.record_stream_open(stream_open_started.elapsed());
+        write_iroh_artifact_stream_header(
+            &iroh_data,
+            &mut send,
+            &IrohArtifactStreamHeader {
+                batch_token: batch_token.to_string(),
+                artifact_id: artifact.artifact_id.clone(),
+                content_sha256: artifact.content_sha256.clone(),
+                size_bytes: artifact.size_bytes,
+                unavailable: false,
+            },
+            &mut diagnostics,
+        )?;
+        let mut buffer = [0_u8; ARTIFACT_CHUNK_SIZE];
+        let mut hasher = Sha256::new();
+        let mut actual_size = 0_u64;
+        let mut first_bytes_at = None;
+        loop {
+            if let Some(interruption) = cancel.interruption() {
+                return Err(format!(
+                    "Sync interrupted by lifecycle event {}. {}",
+                    interruption.event.kind, interruption.guidance
+                ));
+            }
+            let read = match file.read(&mut buffer) {
+                Ok(read) => read,
+                Err(_) => {
+                    iroh_data.finish_send(&mut send)?;
+                    return Ok(StreamedIrohArtifact {
+                        size_bytes: actual_size,
+                        first_bytes_at,
+                        diagnostics,
+                    });
+                }
+            };
+            if read == 0 {
+                break;
+            }
+            if first_bytes_at.is_none() {
+                first_bytes_at = Some(run_started_instant.elapsed());
+            }
+            actual_size = actual_size.saturating_add(read as u64);
+            hasher.update(&buffer[..read]);
+            let write_started = Instant::now();
+            iroh_data.write_all(&mut send, &buffer[..read])?;
+            diagnostics.record_sender_write(write_started.elapsed());
+        }
+        iroh_data.finish_send(&mut send)?;
+        let actual_sha256 = hex_digest(hasher.finalize().as_slice());
+        if actual_sha256 != artifact.content_sha256 || actual_size != artifact.size_bytes {
+            return Ok(StreamedIrohArtifact {
+                size_bytes: actual_size,
+                first_bytes_at,
+                diagnostics,
+            });
+        }
+        Ok(StreamedIrohArtifact {
+            size_bytes: actual_size,
+            first_bytes_at,
+            diagnostics,
+        })
     }
 
     fn offered_artifacts(manifests: &[Value]) -> Vec<RemoteArtifact> {
@@ -11861,48 +12054,10 @@ mod desktop {
             })
         }
 
-        fn open_artifact_body(
-            &self,
-            artifact: &RemoteArtifact,
-        ) -> Result<BackendBody, BackendError> {
-            #[cfg(target_os = "android")]
-            {
-                let path = format!(
-                    "/api/v1/artifacts/{}/stream",
-                    percent_encode_path_segment(&artifact.artifact_id)
-                );
-                return self.get_body(&path);
-            }
-
-            #[cfg(not(target_os = "android"))]
-            {
-                let local_file = self
-                    .resolve_artifact_file(artifact)
-                    .map_err(|error| BackendError::local(error.to_string()))?;
-                local_file
-                    .verify_matches(artifact)
-                    .map_err(BackendError::local)?;
-                local_file.open_body().map_err(BackendError::local)
-            }
-        }
-
-        fn resolve_artifact_file(
-            &self,
-            artifact: &RemoteArtifact,
-        ) -> Result<LocalArtifactFile, BackendError> {
-            let mut files = self.resolve_artifact_files(std::slice::from_ref(artifact))?;
-            files.remove(&artifact.artifact_id).ok_or_else(|| {
-                BackendError::local(format!(
-                    "Backend artifact resolver omitted artifact {}.",
-                    artifact.artifact_id
-                ))
-            })
-        }
-
         fn resolve_artifact_files(
             &self,
             artifacts: &[RemoteArtifact],
-        ) -> Result<HashMap<String, LocalArtifactFile>, BackendError> {
+        ) -> Result<ArtifactFileResolveResult, BackendError> {
             #[cfg(target_os = "android")]
             {
                 let mut files = HashMap::new();
@@ -11923,7 +12078,10 @@ mod desktop {
                         },
                     );
                 }
-                return Ok(files);
+                return Ok(ArtifactFileResolveResult {
+                    files,
+                    failures: HashMap::new(),
+                });
             }
 
             #[cfg(not(target_os = "android"))]
@@ -11937,30 +12095,6 @@ mod desktop {
                     self.post_json_value("/api/v1/sync/artifacts/files/resolve", &body)?;
                 parse_artifact_file_resolve_response(&response, artifacts)
             }
-        }
-
-        #[cfg(target_os = "android")]
-        fn get_body(&self, path: &str) -> Result<BackendBody, BackendError> {
-            let artifact_id = path
-                .strip_prefix("/api/v1/artifacts/")
-                .and_then(|value| value.strip_suffix("/stream"))
-                .ok_or_else(|| {
-                    BackendError::local(format!(
-                        "Android mobile backend does not implement body stream {path}."
-                    ))
-                })?;
-            let artifact = crate::mobile_backend::mobile_sync_transport_artifact_file(
-                self.app.clone(),
-                &percent_decode(artifact_id),
-            )
-            .map_err(BackendError::local)?;
-            let file = File::open(&artifact.path).map_err(|error| {
-                BackendError::local(format!("Could not open mobile artifact file: {error}"))
-            })?;
-            Ok(BackendBody {
-                reader: Box::new(file),
-                remaining: Some(artifact.size_bytes),
-            })
         }
 
         #[cfg(not(target_os = "android"))]
@@ -12150,32 +12284,41 @@ mod desktop {
         }
     }
 
+    #[derive(Clone, Debug)]
+    struct ArtifactFileResolveFailure {
+        message: String,
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct ArtifactFileResolveResult {
+        files: HashMap<String, LocalArtifactFile>,
+        failures: HashMap<String, ArtifactFileResolveFailure>,
+    }
+
     fn parse_artifact_file_resolve_response(
         response: &Value,
         artifacts: &[RemoteArtifact],
-    ) -> Result<HashMap<String, LocalArtifactFile>, BackendError> {
+    ) -> Result<ArtifactFileResolveResult, BackendError> {
         let requested: HashMap<_, _> = artifacts
             .iter()
             .map(|artifact| (artifact.artifact_id.as_str(), artifact))
             .collect();
-        let errors = artifact_resolve_error_values(response)
-            .into_iter()
-            .filter_map(|error| {
-                let artifact_id = value_string(error, &["artifact_id", "artifactId"])?;
-                if !requested.contains_key(artifact_id.as_str()) {
-                    return None;
-                }
-                let message = value_string(error, &["message"]).unwrap_or_else(|| {
-                    "Backend could not resolve the local artifact file.".to_string()
-                });
-                Some(format!("{artifact_id}: {message}"))
-            })
-            .collect::<Vec<_>>();
-        if !errors.is_empty() {
-            return Err(BackendError::local(format!(
-                "Could not resolve local artifact files: {}",
-                errors.join("; ")
-            )));
+        let mut failures = HashMap::new();
+        for error in artifact_resolve_error_values(response) {
+            let artifact_id =
+                value_string(error, &["artifact_id", "artifactId"]).ok_or_else(|| {
+                    BackendError::local(
+                        "Artifact file resolver error omitted artifact_id.".to_string(),
+                    )
+                })?;
+            if requested.contains_key(artifact_id.as_str()) {
+                failures.insert(
+                    artifact_id,
+                    ArtifactFileResolveFailure {
+                        message: UNAVAILABLE_ARTIFACT_TRANSFER_MESSAGE.to_string(),
+                    },
+                );
+            }
         }
 
         let records = artifact_resolve_record_values(response);
@@ -12214,18 +12357,21 @@ mod desktop {
             local_file
                 .verify_matches(artifact)
                 .map_err(BackendError::local)?;
+            failures.remove(&local_file.artifact_id);
             files.insert(local_file.artifact_id.clone(), local_file);
         }
 
         for artifact in artifacts {
-            if !files.contains_key(&artifact.artifact_id) {
+            if !files.contains_key(&artifact.artifact_id)
+                && !failures.contains_key(&artifact.artifact_id)
+            {
                 return Err(BackendError::local(format!(
                     "Backend artifact resolver omitted artifact {}.",
                     artifact.artifact_id
                 )));
             }
         }
-        Ok(files)
+        Ok(ArtifactFileResolveResult { files, failures })
     }
 
     fn artifact_resolve_record_values(response: &Value) -> Vec<&Value> {
@@ -12720,10 +12866,33 @@ mod desktop {
                     artifact_id: artifact.artifact_id.clone(),
                     content_sha256: artifact.content_sha256.clone(),
                     size_bytes: artifact.size_bytes,
+                    unavailable: false,
                 },
                 &mut diagnostics,
             )?;
             iroh_data.write_all(&mut send, bytes)?;
+            iroh_data.finish_send(&mut send)
+        }
+
+        fn send_test_iroh_unavailable_artifact_stream(
+            iroh_data: &IrohDataConnection,
+            batch_token: &str,
+            artifact: &RemoteArtifact,
+        ) -> Result<(), String> {
+            let mut send = iroh_data.open_send_stream()?;
+            let mut diagnostics = SyncTransportDiagnostics::default();
+            write_iroh_artifact_stream_header(
+                iroh_data,
+                &mut send,
+                &IrohArtifactStreamHeader {
+                    batch_token: batch_token.to_string(),
+                    artifact_id: artifact.artifact_id.clone(),
+                    content_sha256: IROH_ARTIFACT_UNAVAILABLE_CONTENT_SHA256.to_string(),
+                    size_bytes: artifact.size_bytes,
+                    unavailable: true,
+                },
+                &mut diagnostics,
+            )?;
             iroh_data.finish_send(&mut send)
         }
 
@@ -12747,12 +12916,104 @@ mod desktop {
                 || header.artifact_id != artifact.artifact_id
                 || header.content_sha256 != artifact.content_sha256
                 || header.size_bytes != artifact.size_bytes
+                || header.unavailable
             {
                 return Err("test Iroh artifact stream header did not match credit".to_string());
             }
             let mut bytes = vec![0_u8; artifact.size_bytes as usize];
             read_iroh_artifact_stream_exact(iroh_data, &mut recv, &mut bytes, &cancel_receivers)?;
             Ok(bytes)
+        }
+
+        fn receive_test_iroh_unavailable_artifact_stream(
+            iroh_data: &IrohDataConnection,
+            batch_token: &str,
+            artifact: &RemoteArtifact,
+        ) -> Result<(), String> {
+            let mut recv = iroh_data
+                .accept_recv_stream_with_timeout(Duration::from_secs(5))?
+                .ok_or_else(|| "test peer did not receive Iroh artifact stream".to_string())?;
+            let cancel_receivers = AtomicBool::new(false);
+            let mut diagnostics = SyncTransportDiagnostics::default();
+            let header = read_iroh_artifact_stream_header(
+                iroh_data,
+                &mut recv,
+                &cancel_receivers,
+                &mut diagnostics,
+            )?;
+            if header.batch_token != batch_token
+                || header.artifact_id != artifact.artifact_id
+                || header.content_sha256 != IROH_ARTIFACT_UNAVAILABLE_CONTENT_SHA256
+                || header.size_bytes != artifact.size_bytes
+                || !header.unavailable
+            {
+                return Err("test Iroh artifact stream header did not match credit".to_string());
+            }
+            let mut byte = [0_u8; 1];
+            match iroh_data.read_with_timeout(&mut recv, &mut byte, Duration::from_secs(5))? {
+                IrohDataReadPoll::Data(0) | IrohDataReadPoll::EndOfStream => Ok(()),
+                IrohDataReadPoll::Data(read) => Err(format!(
+                    "unavailable Iroh artifact stream sent {read} unexpected byte(s)"
+                )),
+                IrohDataReadPoll::TimedOut => {
+                    Err("timed out waiting for unavailable Iroh artifact stream end".to_string())
+                }
+            }
+        }
+
+        fn receive_test_tcp_artifact(
+            peer: &mut SecurePeerConnection,
+            artifact: &RemoteArtifact,
+        ) -> Result<Vec<u8>, String> {
+            let start = read_message_accepting_status(
+                "artifact request/transfer",
+                || peer.read_message(),
+                |_| {},
+            )?;
+            match start {
+                ProtocolMessage::ArtifactStart {
+                    artifact_id,
+                    content_sha256,
+                    size_bytes,
+                } if artifact_id == artifact.artifact_id
+                    && content_sha256 == artifact.content_sha256
+                    && size_bytes == artifact.size_bytes => {}
+                other => {
+                    return Err(format!(
+                        "expected artifact start for {}, got {}",
+                        artifact.artifact_id,
+                        other.kind()
+                    ));
+                }
+            }
+
+            let mut bytes = Vec::new();
+            loop {
+                match peer.read_artifact_transfer_frame()? {
+                    ArtifactTransferFrame::Chunk(chunk) => bytes.extend(chunk),
+                    ArtifactTransferFrame::Message(ProtocolMessage::ArtifactEnd {
+                        content_sha256,
+                        size_bytes,
+                    }) => {
+                        if content_sha256 != artifact.content_sha256
+                            || size_bytes != artifact.size_bytes
+                            || test_sha256(&bytes) != artifact.content_sha256
+                        {
+                            return Err("test artifact response failed hash or size verification."
+                                .to_string());
+                        }
+                        return Ok(bytes);
+                    }
+                    ArtifactTransferFrame::Message(ProtocolMessage::Status { .. }) => {}
+                    ArtifactTransferFrame::Message(other) => {
+                        return Err(format!(
+                            "expected artifact bytes/end for {}, got {}",
+                            artifact.artifact_id,
+                            other.kind()
+                        ));
+                    }
+                }
+            }
         }
 
         fn try_read_test_iroh_artifact_stream_header(
@@ -12827,6 +13088,7 @@ mod desktop {
             data_root: PathBuf,
             staged_artifact_sizes: HashMap<String, u64>,
             artifact_files: HashMap<String, LocalArtifactFile>,
+            artifact_file_errors: HashMap<String, String>,
             staging_failure: Option<String>,
             project_manifests: HashMap<String, Value>,
             manifest_batch_status: Option<u16>,
@@ -12848,6 +13110,22 @@ mod desktop {
                 Self::start_with_responses(
                     staged_artifact_sizes,
                     artifact_files,
+                    None,
+                    HashMap::new(),
+                    None,
+                    HashMap::new(),
+                )
+            }
+
+            fn start_with_staged_artifacts_files_and_resolve_errors(
+                staged_artifact_sizes: HashMap<String, u64>,
+                artifact_files: HashMap<String, LocalArtifactFile>,
+                artifact_file_errors: HashMap<String, String>,
+            ) -> Self {
+                Self::start_with_responses_and_resolve_errors(
+                    staged_artifact_sizes,
+                    artifact_files,
+                    artifact_file_errors,
                     None,
                     HashMap::new(),
                     None,
@@ -12915,6 +13193,26 @@ mod desktop {
                 manifest_batch_status: Option<u16>,
                 manifest_batch_status_by_project_ids: HashMap<Vec<String>, u16>,
             ) -> Self {
+                Self::start_with_responses_and_resolve_errors(
+                    staged_artifact_sizes,
+                    artifact_files,
+                    HashMap::new(),
+                    staging_failure,
+                    project_manifests,
+                    manifest_batch_status,
+                    manifest_batch_status_by_project_ids,
+                )
+            }
+
+            fn start_with_responses_and_resolve_errors(
+                staged_artifact_sizes: HashMap<String, u64>,
+                artifact_files: HashMap<String, LocalArtifactFile>,
+                artifact_file_errors: HashMap<String, String>,
+                staging_failure: Option<String>,
+                project_manifests: HashMap<String, Value>,
+                manifest_batch_status: Option<u16>,
+                manifest_batch_status_by_project_ids: HashMap<Vec<String>, u16>,
+            ) -> Self {
                 let listener =
                     TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind test backend");
                 listener
@@ -12935,6 +13233,7 @@ mod desktop {
                     data_root: data_root.clone(),
                     staged_artifact_sizes,
                     artifact_files,
+                    artifact_file_errors,
                     staging_failure,
                     project_manifests,
                     manifest_batch_status,
@@ -13151,9 +13450,19 @@ mod desktop {
                         })
                     })
                     .collect::<Vec<_>>();
+                let errors = responses
+                    .artifact_file_errors
+                    .iter()
+                    .map(|(artifact_id, message)| {
+                        json!({
+                            "artifact_id": artifact_id,
+                            "message": message,
+                        })
+                    })
+                    .collect::<Vec<_>>();
                 (
                     "200 OK".to_string(),
-                    json!({ "records": records }).to_string(),
+                    json!({ "records": records, "errors": errors }).to_string(),
                 )
             } else if path == "/api/v1/sync/artifacts/staging" {
                 if let Some(message) = responses.staging_failure.as_deref() {
@@ -14249,6 +14558,219 @@ mod desktop {
                 "hash failure left transport temp files: {temp_files:?}"
             );
             assert_iroh_selection_has_no_tcp_fallback(&selection);
+        }
+
+        #[cfg(not(target_os = "android"))]
+        #[test]
+        fn iroh_zero_byte_unavailable_stream_fails_without_staging_and_continues() {
+            let empty_bytes = Vec::new();
+            let good_bytes = b"good streamed payload".to_vec();
+            let unavailable_artifact = RemoteArtifact {
+                artifact_id: "art_zero_unavailable".to_string(),
+                project_id: "proj_zero_unavailable".to_string(),
+                content_sha256: test_sha256(&empty_bytes),
+                size_bytes: 0,
+            };
+            let good_artifact = RemoteArtifact {
+                artifact_id: "art_good_after_zero".to_string(),
+                project_id: "proj_zero_unavailable".to_string(),
+                content_sha256: test_sha256(&good_bytes),
+                size_bytes: good_bytes.len() as u64,
+            };
+            let backend = TestBackendServer::start_with_staged_artifacts(HashMap::new());
+            let peer_unavailable = unavailable_artifact.clone();
+            let peer_good = good_artifact.clone();
+            let peer_good_bytes = good_bytes.clone();
+            let (connection, client_endpoint, peer_thread) =
+                spawn_test_iroh_sync_peer(move |mut peer, iroh_data| {
+                    let request = read_message_accepting_status(
+                        "artifact request/transfer",
+                        || peer.read_message(),
+                        |_| {},
+                    )?;
+                    let ProtocolMessage::ArtifactBatchRequest(request) = request else {
+                        return Err("expected Iroh artifact batch request".to_string());
+                    };
+                    if request.artifacts.len() != 2 {
+                        return Err(format!(
+                            "expected 2 artifact requests, got {}",
+                            request.artifacts.len()
+                        ));
+                    }
+                    let batch_token = request
+                        .batch_token
+                        .ok_or_else(|| "expected Iroh batch token".to_string())?;
+                    peer.send_message(&ProtocolMessage::ArtifactBatchStart {
+                        batch_token: batch_token.clone(),
+                        artifact_count: 2,
+                    })?;
+                    let mut sent = HashSet::new();
+                    while sent.len() < 2 {
+                        let credit = read_message_accepting_status(
+                            "artifact request/transfer",
+                            || peer.read_message(),
+                            |_| {},
+                        )?;
+                        let ProtocolMessage::ArtifactBatchCredit {
+                            batch_token: peer_batch_token,
+                            artifact_ids,
+                        } = credit
+                        else {
+                            return Err(format!(
+                                "expected Iroh batch credit, got {}",
+                                credit.kind()
+                            ));
+                        };
+                        if peer_batch_token != batch_token {
+                            return Err("Iroh batch credit token mismatch".to_string());
+                        }
+                        for artifact_id in artifact_ids {
+                            if !sent.insert(artifact_id.clone()) {
+                                return Err(format!(
+                                    "duplicate Iroh batch credit for {artifact_id}"
+                                ));
+                            }
+                            if artifact_id == peer_unavailable.artifact_id {
+                                send_test_iroh_unavailable_artifact_stream(
+                                    &iroh_data,
+                                    &batch_token,
+                                    &peer_unavailable,
+                                )?;
+                            } else if artifact_id == peer_good.artifact_id {
+                                send_test_iroh_artifact_stream(
+                                    &iroh_data,
+                                    &batch_token,
+                                    &peer_good,
+                                    &peer_good_bytes,
+                                )?;
+                            } else {
+                                return Err(format!(
+                                    "unexpected Iroh batch credit for {artifact_id}"
+                                ));
+                            }
+                        }
+                    }
+                    peer.send_message(&ProtocolMessage::ArtifactBatchEnd { batch_token })?;
+                    thread::sleep(Duration::from_millis(250));
+                    Ok(())
+                });
+            let client = BackendClient {
+                host: "127.0.0.1".to_string(),
+                port: backend.port,
+                sync_transport_temp_root: Arc::new(Mutex::new(None)),
+            };
+            let progress = test_progress("sync_iroh_zero_unavailable_test", &connection);
+            let mut apply_worker = RemoteApplyWorker::start(
+                &client,
+                "dev_peer",
+                &json!({ "projects": [{ "project_id": unavailable_artifact.project_id.clone() }] }),
+                IROH_TRANSPORT_ID,
+                progress.clone(),
+            );
+            let mut metrics = SyncRunMetrics::start(Instant::now());
+            let mut timings = Vec::new();
+            let mut received_artifacts = Vec::new();
+            let planned = PlannedRemoteProject {
+                project_id: unavailable_artifact.project_id.clone(),
+                manifest: Some(json!({
+                    "project": { "project_id": unavailable_artifact.project_id.clone() },
+                    "artifacts": [
+                        {
+                            "artifact_id": unavailable_artifact.artifact_id.clone(),
+                            "project_id": unavailable_artifact.project_id.clone(),
+                            "content_sha256": unavailable_artifact.content_sha256.clone(),
+                            "size_bytes": unavailable_artifact.size_bytes,
+                        },
+                        {
+                            "artifact_id": good_artifact.artifact_id.clone(),
+                            "project_id": good_artifact.project_id.clone(),
+                            "content_sha256": good_artifact.content_sha256.clone(),
+                            "size_bytes": good_artifact.size_bytes,
+                        }
+                    ]
+                })),
+                plan: json!({
+                    "actions": [
+                        {
+                            "action_type": "fetch_artifact_content",
+                            "provider_device_id": "dev_peer",
+                            "item_id": unavailable_artifact.artifact_id.clone(),
+                            "project_id": unavailable_artifact.project_id.clone(),
+                            "content_sha256": unavailable_artifact.content_sha256.clone()
+                        },
+                        {
+                            "action_type": "fetch_artifact_content",
+                            "provider_device_id": "dev_peer",
+                            "item_id": good_artifact.artifact_id.clone(),
+                            "project_id": good_artifact.project_id.clone(),
+                            "content_sha256": good_artifact.content_sha256.clone()
+                        }
+                    ]
+                }),
+            };
+
+            stage_remote_manifest_iroh_artifacts(
+                &client,
+                &connection,
+                connection
+                    .iroh_data_connection()
+                    .expect("test Iroh data connection"),
+                "dev_peer",
+                vec![planned],
+                &mut apply_worker,
+                &mut received_artifacts,
+                &mut metrics,
+                &mut timings,
+                &progress,
+            );
+            let project_results = apply_worker.finish(&mut timings);
+            let requests = backend.requests();
+            let temp_files = collect_test_files(&backend.transport_temp_root());
+            close_test_iroh_endpoint(&client_endpoint);
+            peer_thread
+                .join()
+                .expect("join Iroh zero unavailable peer")
+                .expect("Iroh zero unavailable peer completed");
+
+            let counts = transfer_counts(&received_artifacts);
+            assert_eq!(counts.received, 1);
+            assert_eq!(counts.failed, 1);
+            let unavailable_result = received_artifacts
+                .iter()
+                .find(|result| result.artifact_id == unavailable_artifact.artifact_id)
+                .expect("zero unavailable transfer result");
+            assert_eq!(unavailable_result.status, "failed");
+            assert!(unavailable_result
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains(UNAVAILABLE_ARTIFACT_TRANSFER_MESSAGE)));
+            let good_result = received_artifacts
+                .iter()
+                .find(|result| result.artifact_id == good_artifact.artifact_id)
+                .expect("good transfer result");
+            assert_eq!(good_result.status, "received");
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|path| path.as_str() == "/api/v1/sync/artifacts/staging")
+                    .count(),
+                1,
+                "zero unavailable artifact must not be staged: {requests:?}"
+            );
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|path| path.as_str() == "/api/v1/sync/reconciliation/apply")
+                    .count(),
+                0,
+                "failed zero-byte artifact must prevent project apply: {requests:?}"
+            );
+            assert!(
+                temp_files.is_empty(),
+                "zero unavailable transfer left temp files: {temp_files:?}"
+            );
+            assert_eq!(project_results.len(), 1);
+            assert_eq!(project_results[0].status, "failed");
         }
 
         #[cfg(not(target_os = "android"))]
@@ -15620,6 +16142,7 @@ mod desktop {
                 artifact_id: "art_one".to_string(),
                 content_sha256: "hash_one".to_string(),
                 size_bytes: 42,
+                unavailable: false,
             };
 
             let value = serde_json::to_value(header).expect("serialize iroh stream header");
@@ -15628,6 +16151,7 @@ mod desktop {
             assert_eq!(value.get("artifactId"), Some(&json!("art_one")));
             assert_eq!(value.get("contentSha256"), Some(&json!("hash_one")));
             assert_eq!(value.get("sizeBytes"), Some(&json!(42)));
+            assert!(value.get("unavailable").is_none());
             assert!(value.get("source_path").is_none());
             assert!(value.get("sourcePath").is_none());
         }
@@ -15834,6 +16358,326 @@ mod desktop {
                     .count(),
                 1
             );
+        }
+
+        #[cfg(not(target_os = "android"))]
+        #[test]
+        fn iroh_sender_maps_resolver_error_to_credited_artifact_without_dropping_good_stream() {
+            let unavailable_payload = b"unavailable credited payload".to_vec();
+            let good_payload = b"good credited payload".to_vec();
+            let unavailable_artifact = RemoteArtifact {
+                artifact_id: "art_unavailable".to_string(),
+                project_id: "proj_one".to_string(),
+                content_sha256: test_sha256(&unavailable_payload),
+                size_bytes: unavailable_payload.len() as u64,
+            };
+            let good_artifact = RemoteArtifact {
+                artifact_id: "art_good".to_string(),
+                project_id: "proj_one".to_string(),
+                content_sha256: test_sha256(&good_payload),
+                size_bytes: good_payload.len() as u64,
+            };
+            let source_root =
+                env::temp_dir().join(format!("tuneforge-sync-source-test-{}", random_nonce()));
+            fs::create_dir_all(&source_root).expect("create source root");
+            let good_path = source_root.join("good.bin");
+            fs::write(&good_path, &good_payload).expect("write good payload");
+            let backend = TestBackendServer::start_with_staged_artifacts_files_and_resolve_errors(
+                HashMap::new(),
+                HashMap::from([(
+                    good_artifact.artifact_id.clone(),
+                    LocalArtifactFile {
+                        artifact_id: good_artifact.artifact_id.clone(),
+                        source_path: good_path,
+                        content_sha256: good_artifact.content_sha256.clone(),
+                        size_bytes: good_artifact.size_bytes,
+                    },
+                )]),
+                HashMap::from([(
+                    unavailable_artifact.artifact_id.clone(),
+                    "/private/local/path/unavailable.wav missing".to_string(),
+                )]),
+            );
+            let peer_unavailable = unavailable_artifact.clone();
+            let peer_good = good_artifact.clone();
+            let peer_good_payload = good_payload.clone();
+            let (connection, client_endpoint, peer_thread) =
+                spawn_test_iroh_sync_peer(move |mut peer, iroh_data| {
+                    let batch_token = "batch_resolver_failure".to_string();
+                    peer.send_message(&ProtocolMessage::ArtifactBatchRequest(
+                        ArtifactBatchRequest {
+                            batch_token: Some(batch_token.clone()),
+                            artifacts: vec![
+                                peer_unavailable.artifact_request(),
+                                peer_good.artifact_request(),
+                            ],
+                        },
+                    ))?;
+                    let start = read_message_accepting_status(
+                        "artifact request/transfer",
+                        || peer.read_message(),
+                        |_| {},
+                    )?;
+                    match start {
+                        ProtocolMessage::ArtifactBatchStart {
+                            batch_token: peer_batch_token,
+                            artifact_count,
+                        } if peer_batch_token == batch_token && artifact_count == 2 => {}
+                        other => {
+                            return Err(format!(
+                                "expected artifact batch start, got {}",
+                                other.kind()
+                            ));
+                        }
+                    }
+                    peer.send_message(&ProtocolMessage::ArtifactBatchCredit {
+                        batch_token: batch_token.clone(),
+                        artifact_ids: vec![peer_unavailable.artifact_id.clone()],
+                    })?;
+                    receive_test_iroh_unavailable_artifact_stream(
+                        &iroh_data,
+                        &batch_token,
+                        &peer_unavailable,
+                    )?;
+                    peer.send_message(&ProtocolMessage::ArtifactBatchCredit {
+                        batch_token: batch_token.clone(),
+                        artifact_ids: vec![peer_good.artifact_id.clone()],
+                    })?;
+                    let good_bytes =
+                        receive_test_iroh_artifact_stream(&iroh_data, &batch_token, &peer_good)?;
+                    assert_eq!(good_bytes, peer_good_payload);
+                    let end = read_message_accepting_status(
+                        "artifact request/transfer",
+                        || peer.read_message(),
+                        |_| {},
+                    )?;
+                    match end {
+                        ProtocolMessage::ArtifactBatchEnd {
+                            batch_token: peer_batch_token,
+                        } if peer_batch_token == batch_token => {}
+                        other => {
+                            return Err(format!(
+                                "expected artifact batch end, got {}",
+                                other.kind()
+                            ));
+                        }
+                    }
+                    peer.send_message(&ProtocolMessage::PhaseDone {
+                        phase: "artifact_transfer".to_string(),
+                    })?;
+                    thread::sleep(Duration::from_millis(100));
+                    Ok(())
+                });
+            let client = BackendClient {
+                host: "127.0.0.1".to_string(),
+                port: backend.port,
+                sync_transport_temp_root: Arc::new(Mutex::new(None)),
+            };
+            let started = Instant::now();
+            let progress = ProgressReporter::new(
+                "sync_iroh_resolver_failure_sender_test".to_string(),
+                started,
+                Arc::new(Mutex::new(SharedStatus::default())),
+                connection.clone(),
+                RunCancellationToken::default(),
+            );
+            let mut metrics = SyncRunMetrics::start(started);
+            let served = serve_artifact_requests_until_done(
+                &client,
+                &connection,
+                &[json!({
+                    "project": { "project_id": "proj_one" },
+                    "artifacts": [
+                        {
+                            "artifact_id": unavailable_artifact.artifact_id,
+                            "project_id": unavailable_artifact.project_id,
+                            "content_sha256": unavailable_artifact.content_sha256,
+                            "size_bytes": unavailable_artifact.size_bytes,
+                        },
+                        {
+                            "artifact_id": good_artifact.artifact_id,
+                            "project_id": good_artifact.project_id,
+                            "content_sha256": good_artifact.content_sha256,
+                            "size_bytes": good_artifact.size_bytes,
+                        }
+                    ]
+                })],
+                &mut metrics,
+                &progress,
+            );
+            close_test_iroh_endpoint(&client_endpoint);
+            let peer_result = peer_thread.join().expect("join Iroh resolver failure peer");
+            let _ = fs::remove_dir_all(&source_root);
+
+            assert_eq!(peer_result, Ok(()));
+            assert_eq!(served.expect("serve mixed Iroh resolver batch"), 2);
+            assert_eq!(metrics.total_served_bytes, good_payload.len() as u64);
+        }
+
+        #[cfg(not(target_os = "android"))]
+        #[test]
+        fn iroh_sender_treats_post_resolver_missing_file_as_unavailable_stream() {
+            let missing_payload = b"missing credited payload".to_vec();
+            let good_payload = b"good credited payload".to_vec();
+            let missing_artifact = RemoteArtifact {
+                artifact_id: "art_missing_after_resolve".to_string(),
+                project_id: "proj_one".to_string(),
+                content_sha256: test_sha256(&missing_payload),
+                size_bytes: missing_payload.len() as u64,
+            };
+            let good_artifact = RemoteArtifact {
+                artifact_id: "art_good_after_resolve".to_string(),
+                project_id: "proj_one".to_string(),
+                content_sha256: test_sha256(&good_payload),
+                size_bytes: good_payload.len() as u64,
+            };
+            let source_root =
+                env::temp_dir().join(format!("tuneforge-sync-source-test-{}", random_nonce()));
+            fs::create_dir_all(&source_root).expect("create source root");
+            let missing_path = source_root.join("missing.bin");
+            let good_path = source_root.join("good.bin");
+            fs::write(&missing_path, &missing_payload).expect("write missing payload");
+            fs::remove_file(&missing_path).expect("remove missing payload after metadata");
+            fs::write(&good_path, &good_payload).expect("write good payload");
+            let backend = TestBackendServer::start_with_staged_artifacts_and_files(
+                HashMap::new(),
+                HashMap::from([
+                    (
+                        missing_artifact.artifact_id.clone(),
+                        LocalArtifactFile {
+                            artifact_id: missing_artifact.artifact_id.clone(),
+                            source_path: missing_path,
+                            content_sha256: missing_artifact.content_sha256.clone(),
+                            size_bytes: missing_artifact.size_bytes,
+                        },
+                    ),
+                    (
+                        good_artifact.artifact_id.clone(),
+                        LocalArtifactFile {
+                            artifact_id: good_artifact.artifact_id.clone(),
+                            source_path: good_path,
+                            content_sha256: good_artifact.content_sha256.clone(),
+                            size_bytes: good_artifact.size_bytes,
+                        },
+                    ),
+                ]),
+            );
+            let peer_missing = missing_artifact.clone();
+            let peer_good = good_artifact.clone();
+            let peer_good_payload = good_payload.clone();
+            let (connection, client_endpoint, peer_thread) =
+                spawn_test_iroh_sync_peer(move |mut peer, iroh_data| {
+                    let batch_token = "batch_missing_after_resolve".to_string();
+                    peer.send_message(&ProtocolMessage::ArtifactBatchRequest(
+                        ArtifactBatchRequest {
+                            batch_token: Some(batch_token.clone()),
+                            artifacts: vec![
+                                peer_missing.artifact_request(),
+                                peer_good.artifact_request(),
+                            ],
+                        },
+                    ))?;
+                    let start = read_message_accepting_status(
+                        "artifact request/transfer",
+                        || peer.read_message(),
+                        |_| {},
+                    )?;
+                    match start {
+                        ProtocolMessage::ArtifactBatchStart {
+                            batch_token: peer_batch_token,
+                            artifact_count,
+                        } if peer_batch_token == batch_token && artifact_count == 2 => {}
+                        other => {
+                            return Err(format!(
+                                "expected artifact batch start, got {}",
+                                other.kind()
+                            ));
+                        }
+                    }
+                    peer.send_message(&ProtocolMessage::ArtifactBatchCredit {
+                        batch_token: batch_token.clone(),
+                        artifact_ids: vec![peer_missing.artifact_id.clone()],
+                    })?;
+                    receive_test_iroh_unavailable_artifact_stream(
+                        &iroh_data,
+                        &batch_token,
+                        &peer_missing,
+                    )?;
+                    peer.send_message(&ProtocolMessage::ArtifactBatchCredit {
+                        batch_token: batch_token.clone(),
+                        artifact_ids: vec![peer_good.artifact_id.clone()],
+                    })?;
+                    let good_bytes =
+                        receive_test_iroh_artifact_stream(&iroh_data, &batch_token, &peer_good)?;
+                    assert_eq!(good_bytes, peer_good_payload);
+                    let end = read_message_accepting_status(
+                        "artifact request/transfer",
+                        || peer.read_message(),
+                        |_| {},
+                    )?;
+                    match end {
+                        ProtocolMessage::ArtifactBatchEnd {
+                            batch_token: peer_batch_token,
+                        } if peer_batch_token == batch_token => {}
+                        other => {
+                            return Err(format!(
+                                "expected artifact batch end, got {}",
+                                other.kind()
+                            ));
+                        }
+                    }
+                    peer.send_message(&ProtocolMessage::PhaseDone {
+                        phase: "artifact_transfer".to_string(),
+                    })?;
+                    thread::sleep(Duration::from_millis(100));
+                    Ok(())
+                });
+            let client = BackendClient {
+                host: "127.0.0.1".to_string(),
+                port: backend.port,
+                sync_transport_temp_root: Arc::new(Mutex::new(None)),
+            };
+            let started = Instant::now();
+            let progress = ProgressReporter::new(
+                "sync_iroh_missing_after_resolve_sender_test".to_string(),
+                started,
+                Arc::new(Mutex::new(SharedStatus::default())),
+                connection.clone(),
+                RunCancellationToken::default(),
+            );
+            let mut metrics = SyncRunMetrics::start(started);
+            let served = serve_artifact_requests_until_done(
+                &client,
+                &connection,
+                &[json!({
+                    "project": { "project_id": "proj_one" },
+                    "artifacts": [
+                        {
+                            "artifact_id": missing_artifact.artifact_id,
+                            "project_id": missing_artifact.project_id,
+                            "content_sha256": missing_artifact.content_sha256,
+                            "size_bytes": missing_artifact.size_bytes,
+                        },
+                        {
+                            "artifact_id": good_artifact.artifact_id,
+                            "project_id": good_artifact.project_id,
+                            "content_sha256": good_artifact.content_sha256,
+                            "size_bytes": good_artifact.size_bytes,
+                        }
+                    ]
+                })],
+                &mut metrics,
+                &progress,
+            );
+            close_test_iroh_endpoint(&client_endpoint);
+            let peer_result = peer_thread
+                .join()
+                .expect("join Iroh missing-after-resolve peer");
+            let _ = fs::remove_dir_all(&source_root);
+
+            assert_eq!(peer_result, Ok(()));
+            assert_eq!(served.expect("serve Iroh missing-after-resolve batch"), 2);
+            assert_eq!(metrics.total_served_bytes, good_payload.len() as u64);
         }
 
         #[cfg(not(target_os = "android"))]
@@ -16572,11 +17416,17 @@ mod desktop {
 
         #[test]
         fn artifact_file_resolver_response_maps_records_and_errors() {
-            let artifact = RemoteArtifact {
+            let first_artifact = RemoteArtifact {
                 artifact_id: "art_one".to_string(),
                 project_id: "proj_one".to_string(),
                 content_sha256: "hash_one".to_string(),
                 size_bytes: 42,
+            };
+            let second_artifact = RemoteArtifact {
+                artifact_id: "art_two".to_string(),
+                project_id: "proj_two".to_string(),
+                content_sha256: "hash_two".to_string(),
+                size_bytes: 84,
             };
             let response = json!({
                 "records": [{
@@ -16585,30 +17435,51 @@ mod desktop {
                     "content_sha256": "hash_one",
                     "size_bytes": 42
                 }],
-                "errors": []
-            });
-
-            let files =
-                parse_artifact_file_resolve_response(&response, std::slice::from_ref(&artifact))
-                    .expect("parse resolver response");
-
-            assert_eq!(files.len(), 1);
-            assert_eq!(
-                files.get("art_one").map(|file| file.source_path.as_path()),
-                Some(Path::new("/tmp/tuneforge/art_one.wav"))
-            );
-
-            let response = json!({
-                "records": [],
                 "errors": [{
-                    "artifact_id": "art_one",
-                    "message": "missing local file"
+                    "artifact_id": "art_two",
+                    "message": "/private/local/path/art_two.wav is missing"
                 }]
             });
-            let error = parse_artifact_file_resolve_response(&response, &[artifact])
-                .expect_err("surface resolver error");
 
-            assert!(error.to_string().contains("missing local file"));
+            let resolved =
+                parse_artifact_file_resolve_response(&response, &[first_artifact, second_artifact])
+                    .expect("parse resolver response");
+
+            assert_eq!(resolved.files.len(), 1);
+            assert_eq!(
+                resolved
+                    .files
+                    .get("art_one")
+                    .map(|file| file.source_path.as_path()),
+                Some(Path::new("/tmp/tuneforge/art_one.wav"))
+            );
+            let failure = resolved
+                .failures
+                .get("art_two")
+                .expect("resolver error maps to requested artifact");
+            assert_eq!(failure.message, UNAVAILABLE_ARTIFACT_TRANSFER_MESSAGE);
+            assert!(!failure.message.contains("/private/local/path"));
+        }
+
+        #[test]
+        fn artifact_file_resolver_omitted_requested_artifact_remains_backend_error() {
+            let artifact = RemoteArtifact {
+                artifact_id: "art_one".to_string(),
+                project_id: "proj_one".to_string(),
+                content_sha256: "hash_one".to_string(),
+                size_bytes: 42,
+            };
+            let response = json!({
+                "records": [],
+                "errors": []
+            });
+            let error = parse_artifact_file_resolve_response(&response, &[artifact])
+                .expect_err("surface omitted resolver entry");
+
+            assert!(error
+                .to_string()
+                .contains("Backend artifact resolver omitted artifact art_one."));
+            assert!(!error.to_string().contains("/tmp"));
         }
 
         #[test]
@@ -17007,6 +17878,284 @@ mod desktop {
             assert!(mismatch.contains("not offered"));
         }
 
+        #[cfg(not(target_os = "android"))]
+        #[test]
+        fn sender_batch_continues_after_local_artifact_hash_race() {
+            let expected_first_bytes = b"first artifact content".to_vec();
+            let changed_first_bytes = b"FIRST artifact content".to_vec();
+            assert_eq!(expected_first_bytes.len(), changed_first_bytes.len());
+            let second_bytes = b"second artifact content".to_vec();
+            let first_artifact = RemoteArtifact {
+                artifact_id: "art_changed".to_string(),
+                project_id: "proj_one".to_string(),
+                content_sha256: test_sha256(&expected_first_bytes),
+                size_bytes: expected_first_bytes.len() as u64,
+            };
+            let second_artifact = RemoteArtifact {
+                artifact_id: "art_good".to_string(),
+                project_id: "proj_one".to_string(),
+                content_sha256: test_sha256(&second_bytes),
+                size_bytes: second_bytes.len() as u64,
+            };
+            let source_root =
+                env::temp_dir().join(format!("tuneforge-sync-source-test-{}", random_nonce()));
+            fs::create_dir_all(&source_root).expect("create source root");
+            let first_path = source_root.join("changed.bin");
+            let second_path = source_root.join("good.bin");
+            fs::write(&first_path, &changed_first_bytes).expect("write changed payload");
+            fs::write(&second_path, &second_bytes).expect("write second payload");
+            let backend = TestBackendServer::start_with_staged_artifacts_and_files(
+                HashMap::new(),
+                HashMap::from([
+                    (
+                        first_artifact.artifact_id.clone(),
+                        LocalArtifactFile {
+                            artifact_id: first_artifact.artifact_id.clone(),
+                            source_path: first_path,
+                            content_sha256: first_artifact.content_sha256.clone(),
+                            size_bytes: first_artifact.size_bytes,
+                        },
+                    ),
+                    (
+                        second_artifact.artifact_id.clone(),
+                        LocalArtifactFile {
+                            artifact_id: second_artifact.artifact_id.clone(),
+                            source_path: second_path,
+                            content_sha256: second_artifact.content_sha256.clone(),
+                            size_bytes: second_artifact.size_bytes,
+                        },
+                    ),
+                ]),
+            );
+            let peer_first = first_artifact.clone();
+            let peer_second = second_artifact.clone();
+            let peer_changed_first_bytes = changed_first_bytes.clone();
+            let peer_second_bytes = second_bytes.clone();
+            let (connection, peer_thread) = spawn_test_sync_peer(move |mut peer| {
+                peer.send_message(&ProtocolMessage::ArtifactBatchRequest(
+                    ArtifactBatchRequest {
+                        batch_token: None,
+                        artifacts: vec![
+                            peer_first.artifact_request(),
+                            peer_second.artifact_request(),
+                        ],
+                    },
+                ))?;
+                let start = read_message_accepting_status(
+                    "artifact request/transfer",
+                    || peer.read_message(),
+                    |_| {},
+                )?;
+                match start {
+                    ProtocolMessage::ArtifactStart {
+                        artifact_id,
+                        content_sha256,
+                        size_bytes,
+                    } if artifact_id == peer_first.artifact_id
+                        && content_sha256 == peer_first.content_sha256
+                        && size_bytes == peer_first.size_bytes => {}
+                    other => {
+                        return Err(format!(
+                            "expected first artifact start, got {}",
+                            other.kind()
+                        ));
+                    }
+                }
+
+                let mut first_bytes = Vec::new();
+                loop {
+                    match peer.read_artifact_transfer_frame()? {
+                        ArtifactTransferFrame::Chunk(chunk) => first_bytes.extend(chunk),
+                        ArtifactTransferFrame::Message(ProtocolMessage::Error(error))
+                            if error.code == "artifact_unavailable" =>
+                        {
+                            break;
+                        }
+                        ArtifactTransferFrame::Message(ProtocolMessage::Status { .. }) => {}
+                        ArtifactTransferFrame::Message(other) => {
+                            return Err(format!(
+                                "expected first artifact unavailable, got {}",
+                                other.kind()
+                            ));
+                        }
+                    }
+                }
+                assert_eq!(first_bytes, peer_changed_first_bytes);
+
+                let second = receive_test_tcp_artifact(&mut peer, &peer_second)?;
+                assert_eq!(second, peer_second_bytes);
+                peer.send_message(&ProtocolMessage::PhaseDone {
+                    phase: "artifact_transfer".to_string(),
+                })?;
+                Ok(())
+            });
+            let client = BackendClient {
+                host: "127.0.0.1".to_string(),
+                port: backend.port,
+                sync_transport_temp_root: Arc::new(Mutex::new(None)),
+            };
+            let started = Instant::now();
+            let progress = ProgressReporter::new(
+                "sync_sender_hash_race_test".to_string(),
+                started,
+                Arc::new(Mutex::new(SharedStatus::default())),
+                connection.clone(),
+                RunCancellationToken::default(),
+            );
+            let mut metrics = SyncRunMetrics::start(started);
+            let served = serve_artifact_requests_until_done(
+                &client,
+                &connection,
+                &[json!({
+                    "project": { "project_id": "proj_one" },
+                    "artifacts": [
+                        {
+                            "artifact_id": first_artifact.artifact_id,
+                            "project_id": first_artifact.project_id,
+                            "content_sha256": first_artifact.content_sha256,
+                            "size_bytes": first_artifact.size_bytes,
+                        },
+                        {
+                            "artifact_id": second_artifact.artifact_id,
+                            "project_id": second_artifact.project_id,
+                            "content_sha256": second_artifact.content_sha256,
+                            "size_bytes": second_artifact.size_bytes,
+                        }
+                    ]
+                })],
+                &mut metrics,
+                &progress,
+            );
+            let peer_result = peer_thread.join().expect("join sender hash race peer");
+            let _ = fs::remove_dir_all(&source_root);
+
+            assert_eq!(peer_result, Ok(()));
+            assert_eq!(served.expect("serve batch after local hash race"), 2);
+            assert_eq!(
+                metrics.total_served_bytes,
+                (changed_first_bytes.len() + second_bytes.len()) as u64
+            );
+        }
+
+        #[cfg(not(target_os = "android"))]
+        #[test]
+        fn legacy_artifact_request_unavailable_keeps_serving_next_request() {
+            let unavailable_bytes = b"unavailable artifact content".to_vec();
+            let good_bytes = b"good artifact content".to_vec();
+            let unavailable_artifact = RemoteArtifact {
+                artifact_id: "art_unavailable".to_string(),
+                project_id: "proj_one".to_string(),
+                content_sha256: test_sha256(&unavailable_bytes),
+                size_bytes: unavailable_bytes.len() as u64,
+            };
+            let good_artifact = RemoteArtifact {
+                artifact_id: "art_good".to_string(),
+                project_id: "proj_one".to_string(),
+                content_sha256: test_sha256(&good_bytes),
+                size_bytes: good_bytes.len() as u64,
+            };
+            let source_root =
+                env::temp_dir().join(format!("tuneforge-sync-source-test-{}", random_nonce()));
+            fs::create_dir_all(&source_root).expect("create source root");
+            let good_path = source_root.join("good.bin");
+            fs::write(&good_path, &good_bytes).expect("write good payload");
+            let backend = TestBackendServer::start_with_staged_artifacts_files_and_resolve_errors(
+                HashMap::new(),
+                HashMap::from([(
+                    good_artifact.artifact_id.clone(),
+                    LocalArtifactFile {
+                        artifact_id: good_artifact.artifact_id.clone(),
+                        source_path: good_path,
+                        content_sha256: good_artifact.content_sha256.clone(),
+                        size_bytes: good_artifact.size_bytes,
+                    },
+                )]),
+                HashMap::from([(
+                    unavailable_artifact.artifact_id.clone(),
+                    "/private/local/path/unavailable.wav missing".to_string(),
+                )]),
+            );
+            let peer_unavailable = unavailable_artifact.clone();
+            let peer_good = good_artifact.clone();
+            let peer_good_bytes = good_bytes.clone();
+            let (connection, peer_thread) = spawn_test_sync_peer(move |mut peer| {
+                peer.send_message(&ProtocolMessage::ArtifactRequest(
+                    peer_unavailable.artifact_request(),
+                ))?;
+                let unavailable = read_message_accepting_status(
+                    "artifact request/transfer",
+                    || peer.read_message(),
+                    |_| {},
+                )?;
+                match unavailable {
+                    ProtocolMessage::Error(error) if error.code == "artifact_unavailable" => {
+                        assert_eq!(error.message, UNAVAILABLE_ARTIFACT_TRANSFER_MESSAGE);
+                    }
+                    other => {
+                        return Err(format!(
+                            "expected artifact unavailable, got {}",
+                            other.kind()
+                        ));
+                    }
+                }
+
+                peer.send_message(&ProtocolMessage::ArtifactRequest(
+                    peer_good.artifact_request(),
+                ))?;
+                let good = receive_test_tcp_artifact(&mut peer, &peer_good)?;
+                assert_eq!(good, peer_good_bytes);
+                peer.send_message(&ProtocolMessage::PhaseDone {
+                    phase: "artifact_transfer".to_string(),
+                })?;
+                Ok(())
+            });
+            let client = BackendClient {
+                host: "127.0.0.1".to_string(),
+                port: backend.port,
+                sync_transport_temp_root: Arc::new(Mutex::new(None)),
+            };
+            let started = Instant::now();
+            let progress = ProgressReporter::new(
+                "sync_legacy_artifact_request_unavailable_test".to_string(),
+                started,
+                Arc::new(Mutex::new(SharedStatus::default())),
+                connection.clone(),
+                RunCancellationToken::default(),
+            );
+            let mut metrics = SyncRunMetrics::start(started);
+            let served = serve_artifact_requests_until_done(
+                &client,
+                &connection,
+                &[json!({
+                    "project": { "project_id": "proj_one" },
+                    "artifacts": [
+                        {
+                            "artifact_id": unavailable_artifact.artifact_id,
+                            "project_id": unavailable_artifact.project_id,
+                            "content_sha256": unavailable_artifact.content_sha256,
+                            "size_bytes": unavailable_artifact.size_bytes,
+                        },
+                        {
+                            "artifact_id": good_artifact.artifact_id,
+                            "project_id": good_artifact.project_id,
+                            "content_sha256": good_artifact.content_sha256,
+                            "size_bytes": good_artifact.size_bytes,
+                        }
+                    ]
+                })],
+                &mut metrics,
+                &progress,
+            );
+            let peer_result = peer_thread
+                .join()
+                .expect("join legacy artifact request peer");
+            let _ = fs::remove_dir_all(&source_root);
+
+            assert_eq!(peer_result, Ok(()));
+            assert_eq!(served.expect("serve legacy requests after unavailable"), 2);
+            assert_eq!(metrics.total_served_bytes, good_bytes.len() as u64);
+        }
+
         #[test]
         fn artifact_batch_continues_after_post_receive_staging_failure() {
             let first_bytes = b"first artifact content".to_vec();
@@ -17131,6 +18280,125 @@ mod desktop {
             );
             assert_eq!(
                 staging_requests[1]
+                    .get("content_sha256")
+                    .and_then(Value::as_str),
+                Some(second_hash.as_str())
+            );
+        }
+
+        #[test]
+        fn artifact_batch_continues_after_peer_artifact_unavailable_error() {
+            let first_bytes = b"unavailable artifact content".to_vec();
+            let second_bytes = b"second artifact content".to_vec();
+            let first_hash = test_sha256(&first_bytes);
+            let second_hash = test_sha256(&second_bytes);
+            let artifacts = vec![
+                RemoteArtifact {
+                    artifact_id: "art_unavailable".to_string(),
+                    project_id: "proj_one".to_string(),
+                    content_sha256: first_hash,
+                    size_bytes: first_bytes.len() as u64,
+                },
+                RemoteArtifact {
+                    artifact_id: "art_two".to_string(),
+                    project_id: "proj_two".to_string(),
+                    content_sha256: second_hash.clone(),
+                    size_bytes: second_bytes.len() as u64,
+                },
+            ];
+            let peer_second_artifact = artifacts[1].clone();
+            let peer_second_bytes = second_bytes.clone();
+            let (connection, peer_thread) = spawn_test_sync_peer(move |mut peer| {
+                let request = read_message_accepting_status(
+                    "artifact request/transfer",
+                    || peer.read_message(),
+                    |_| {},
+                )?;
+                let ProtocolMessage::ArtifactBatchRequest(request) = request else {
+                    return Err("expected artifact batch request".to_string());
+                };
+                if request.artifacts.len() != 2 {
+                    return Err(format!(
+                        "expected 2 artifact requests, got {}",
+                        request.artifacts.len()
+                    ));
+                }
+                peer.send_message(&ProtocolMessage::Error(ProtocolError {
+                    code: "artifact_unavailable".to_string(),
+                    message: UNAVAILABLE_ARTIFACT_TRANSFER_MESSAGE.to_string(),
+                }))?;
+                peer.send_message(&ProtocolMessage::ArtifactStart {
+                    artifact_id: peer_second_artifact.artifact_id.clone(),
+                    content_sha256: peer_second_artifact.content_sha256.clone(),
+                    size_bytes: peer_second_artifact.size_bytes,
+                })?;
+                peer.send_artifact_chunk(&peer_second_bytes)?;
+                peer.send_message(&ProtocolMessage::ArtifactEnd {
+                    content_sha256: peer_second_artifact.content_sha256.clone(),
+                    size_bytes: peer_second_artifact.size_bytes,
+                })?;
+                peer.send_message(&ProtocolMessage::PhaseDone {
+                    phase: "artifact_batch_test".to_string(),
+                })
+            });
+            let client = TestStagingClient::new(vec![Ok(json!({}))]);
+            let pending = artifacts
+                .clone()
+                .into_iter()
+                .map(|artifact| PendingArtifactTransfer { artifact })
+                .collect::<Vec<_>>();
+            let started = Instant::now();
+            let progress = ProgressReporter::new(
+                "sync_test".to_string(),
+                started,
+                Arc::new(Mutex::new(SharedStatus::default())),
+                connection.clone(),
+                RunCancellationToken::default(),
+            );
+            let mut metrics = SyncRunMetrics::start(started);
+            let mut timings = Vec::new();
+
+            let results = request_and_stage_artifact_batch(
+                &client,
+                &connection,
+                "dev_peer",
+                pending,
+                &mut metrics,
+                &mut timings,
+                &progress,
+            );
+            let next_message = connection
+                .read_message_accepting_status_for_phase("artifact batch test", &progress);
+            peer_thread
+                .join()
+                .expect("join test sync peer")
+                .expect("test sync peer completed");
+            let next_message = next_message.expect("read message after artifact batch");
+
+            assert_eq!(results.len(), 2);
+            let first_error = results[0].as_ref().expect_err("first artifact unavailable");
+            assert!(first_error
+                .message
+                .contains(UNAVAILABLE_ARTIFACT_TRANSFER_MESSAGE));
+            assert!(!first_error.message.contains("/private/local/path"));
+            let second_result = results[1]
+                .as_ref()
+                .expect("second artifact is still received and staged");
+            assert_eq!(second_result.artifact_id, "art_two");
+            assert_eq!(second_result.status, "received");
+            match next_message {
+                ProtocolMessage::PhaseDone { phase } => {
+                    assert_eq!(phase, "artifact_batch_test");
+                }
+                other => panic!(
+                    "expected drained batch before phase_done, got {}",
+                    other.kind()
+                ),
+            }
+            let staging_requests = client.requests();
+            assert_eq!(staging_requests.len(), 1);
+            assert_eq!(
+                staging_requests[0]
                     .get("content_sha256")
                     .and_then(Value::as_str),
                 Some(second_hash.as_str())

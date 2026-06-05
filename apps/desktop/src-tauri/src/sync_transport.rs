@@ -1654,6 +1654,8 @@ mod desktop {
     const RECONCILIATION_PLAN_MANIFEST_CHUNK_SIZE: usize = 24;
     const RECONCILIATION_PLAN_DELETE_CHUNK_SIZE: usize = 24;
     const LOCAL_MANIFEST_EXPORT_BATCH_SIZE: usize = 24;
+    const RECONCILIATION_APPLY_BATCH_SIZE: usize = 24;
+    const RECONCILIATION_APPLY_BATCH_COALESCE_TIMEOUT: Duration = Duration::from_millis(10);
     const READ_TIMEOUT: Duration = Duration::from_secs(45);
     const PROTOCOL_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(75);
     const STATUS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
@@ -6627,11 +6629,16 @@ mod desktop {
         },
     }
 
+    struct QueuedRemoteApplyTask {
+        project_id: String,
+        task: RemoteApplyTask,
+    }
+
     enum BackendWriteEvent {
         Stage(IrohStageResult),
         Apply {
-            project_id: String,
-            result: SyncTransportProjectResult,
+            project_ids: Vec<String>,
+            results: Vec<SyncTransportProjectResult>,
             timings: Vec<SyncTransportTimingEvidence>,
         },
     }
@@ -6989,7 +6996,15 @@ mod desktop {
                 let progress = progress.clone();
                 let apply_cancelled = Arc::clone(&apply_cancelled);
                 move || {
-                    while let Ok(task) = receiver.recv() {
+                    let mut pending_task = None;
+                    loop {
+                        let task = match pending_task.take() {
+                            Some(task) => task,
+                            None => match receiver.recv() {
+                                Ok(task) => task,
+                                Err(_) => break,
+                            },
+                        };
                         let event = match task {
                             BackendWriteTask::StageIrohArtifact {
                                 received,
@@ -7029,43 +7044,47 @@ mod desktop {
                                 })
                             }
                             BackendWriteTask::Apply { project_id, task } => {
+                                let apply_tasks = collect_remote_apply_batch(
+                                    QueuedRemoteApplyTask { project_id, task },
+                                    &receiver,
+                                    &mut pending_task,
+                                );
+                                let project_ids = apply_tasks
+                                    .iter()
+                                    .map(|task| task.project_id.clone())
+                                    .collect::<Vec<_>>();
                                 let mut apply_timings = Vec::new();
-                                let result = if apply_cancelled.load(Ordering::SeqCst) {
-                                    failed_project_result(
-                                        &project_id,
-                                        "Remote sync import skipped after Iroh artifact transfer aborted.",
-                                    )
+                                let results = if apply_cancelled.load(Ordering::SeqCst) {
+                                    project_ids
+                                        .iter()
+                                        .map(|project_id| {
+                                            failed_project_result(
+                                                project_id,
+                                                "Remote sync import skipped after Iroh artifact transfer aborted.",
+                                            )
+                                        })
+                                        .collect()
                                 } else if let Some(message) = progress.interruption_message() {
-                                    failed_project_result(&project_id, &message)
+                                    project_ids
+                                        .iter()
+                                        .map(|project_id| {
+                                            failed_project_result(project_id, &message)
+                                        })
+                                        .collect()
                                 } else {
-                                    match task {
-                                        RemoteApplyTask::Project(project) => {
-                                            apply_staged_remote_manifest_project(
-                                                &client,
-                                                &peer_device_id,
-                                                &remote_metadata,
-                                                &project,
-                                                &transport_id,
-                                                &mut apply_timings,
-                                                &progress,
-                                            )
-                                        }
-                                        RemoteApplyTask::Tombstone(tombstone_project_id) => {
-                                            apply_remote_tombstone_project(
-                                                &client,
-                                                &peer_device_id,
-                                                &remote_metadata,
-                                                &tombstone_project_id,
-                                                &transport_id,
-                                                &mut apply_timings,
-                                                &progress,
-                                            )
-                                        }
-                                    }
+                                    apply_remote_ready_project_batch(
+                                        &client,
+                                        &peer_device_id,
+                                        &remote_metadata,
+                                        apply_tasks,
+                                        &transport_id,
+                                        &mut apply_timings,
+                                        &progress,
+                                    )
                                 };
                                 BackendWriteEvent::Apply {
-                                    project_id,
-                                    result,
+                                    project_ids,
+                                    results,
                                     timings: apply_timings,
                                 }
                             }
@@ -7152,13 +7171,13 @@ mod desktop {
                     stage_results.push(stage_result);
                 }
                 BackendWriteEvent::Apply {
-                    project_id,
-                    result,
+                    project_ids,
+                    results,
                     timings: mut apply_timings,
                 } => {
                     timings.append(&mut apply_timings);
-                    self.completed_project_ids.insert(project_id);
-                    self.project_results.push(result);
+                    self.completed_project_ids.extend(project_ids);
+                    self.project_results.extend(results);
                 }
             }
         }
@@ -7250,6 +7269,261 @@ mod desktop {
                 self.project_results.extend(failures.drain(..));
             }
             self.project_results
+        }
+    }
+
+    fn collect_remote_apply_batch(
+        first: QueuedRemoteApplyTask,
+        receiver: &mpsc::Receiver<BackendWriteTask>,
+        pending_task: &mut Option<BackendWriteTask>,
+    ) -> Vec<QueuedRemoteApplyTask> {
+        let mut tasks = vec![first];
+        while tasks.len() < RECONCILIATION_APPLY_BATCH_SIZE {
+            match receiver.recv_timeout(RECONCILIATION_APPLY_BATCH_COALESCE_TIMEOUT) {
+                Ok(BackendWriteTask::Apply { project_id, task }) => {
+                    tasks.push(QueuedRemoteApplyTask { project_id, task });
+                }
+                Ok(task @ BackendWriteTask::StageIrohArtifact { .. }) => {
+                    *pending_task = Some(task);
+                    break;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
+                    break;
+                }
+            }
+        }
+        tasks
+    }
+
+    fn apply_remote_ready_project_batch(
+        client: &BackendClient,
+        peer_device_id: &str,
+        remote_metadata: &Value,
+        tasks: Vec<QueuedRemoteApplyTask>,
+        transport_id: &str,
+        timings: &mut Vec<SyncTransportTimingEvidence>,
+        progress: &ProgressReporter,
+    ) -> Vec<SyncTransportProjectResult> {
+        let mut ordered_project_ids = Vec::with_capacity(tasks.len());
+        let mut backend_tasks = Vec::new();
+        let mut local_failures = HashMap::new();
+
+        for queued in tasks {
+            ordered_project_ids.push(queued.project_id.clone());
+            let transfer_failure_result = match &queued.task {
+                RemoteApplyTask::Project(project) => project
+                    .transfer_failure
+                    .as_deref()
+                    .map(|error| staged_transfer_failure_project_result(&project.manifest, error)),
+                RemoteApplyTask::Tombstone(_) => None,
+            };
+            if let Some(result) = transfer_failure_result {
+                local_failures.insert(queued.project_id.clone(), result);
+            } else {
+                backend_tasks.push(queued);
+            }
+        }
+
+        let mut backend_results = apply_remote_project_batch_with_split_on_error(
+            client,
+            peer_device_id,
+            remote_metadata,
+            backend_tasks,
+            transport_id,
+            timings,
+            progress,
+        )
+        .into_iter()
+        .map(|result| (result.project_id.clone(), result))
+        .collect::<HashMap<_, _>>();
+
+        ordered_project_ids
+            .into_iter()
+            .map(|project_id| {
+                local_failures
+                    .remove(&project_id)
+                    .or_else(|| backend_results.remove(&project_id))
+                    .unwrap_or_else(|| {
+                        failed_project_result(
+                            &project_id,
+                            "Backend apply response did not include this project.",
+                        )
+                    })
+            })
+            .collect()
+    }
+
+    fn apply_remote_project_batch_with_split_on_error(
+        client: &BackendClient,
+        peer_device_id: &str,
+        remote_metadata: &Value,
+        mut tasks: Vec<QueuedRemoteApplyTask>,
+        transport_id: &str,
+        timings: &mut Vec<SyncTransportTimingEvidence>,
+        progress: &ProgressReporter,
+    ) -> Vec<SyncTransportProjectResult> {
+        if tasks.is_empty() {
+            return Vec::new();
+        }
+
+        match apply_remote_project_batch(
+            client,
+            peer_device_id,
+            remote_metadata,
+            &tasks,
+            transport_id,
+            timings,
+            progress,
+        ) {
+            Ok(results) => results,
+            Err(_) if tasks.len() > 1 => {
+                let split_at = tasks.len() / 2;
+                let right_tasks = tasks.split_off(split_at);
+                let mut results = apply_remote_project_batch_with_split_on_error(
+                    client,
+                    peer_device_id,
+                    remote_metadata,
+                    tasks,
+                    transport_id,
+                    timings,
+                    progress,
+                );
+                results.extend(apply_remote_project_batch_with_split_on_error(
+                    client,
+                    peer_device_id,
+                    remote_metadata,
+                    right_tasks,
+                    transport_id,
+                    timings,
+                    progress,
+                ));
+                results
+            }
+            Err(error) => {
+                let message = phase_context_error("reconciliation apply", error.to_string());
+                vec![failed_project_result(&tasks[0].project_id, &message)]
+            }
+        }
+    }
+
+    fn apply_remote_project_batch(
+        client: &BackendClient,
+        peer_device_id: &str,
+        remote_metadata: &Value,
+        tasks: &[QueuedRemoteApplyTask],
+        transport_id: &str,
+        timings: &mut Vec<SyncTransportTimingEvidence>,
+        progress: &ProgressReporter,
+    ) -> Result<Vec<SyncTransportProjectResult>, BackendError> {
+        let mut project_ids = Vec::new();
+        let mut manifests = Vec::new();
+        let mut metadata_project_ids = Vec::new();
+        let mut available_content_sha256 = Vec::new();
+        let mut seen_project_ids = HashSet::new();
+        let mut seen_manifests = HashSet::new();
+        let mut seen_metadata_project_ids = HashSet::new();
+        let mut seen_content_sha256 = HashSet::new();
+
+        for queued in tasks {
+            match &queued.task {
+                RemoteApplyTask::Project(project) => {
+                    push_unique_string(
+                        &mut project_ids,
+                        &mut seen_project_ids,
+                        queued.project_id.clone(),
+                    );
+                    for manifest in apply_project_manifests_with_cleanup_context(
+                        &project.manifest,
+                        &project.cleanup_context_manifests,
+                    ) {
+                        push_apply_manifest_for_batch(
+                            &mut manifests,
+                            &mut metadata_project_ids,
+                            &mut seen_manifests,
+                            &mut seen_metadata_project_ids,
+                            manifest,
+                        );
+                    }
+                    for content_sha256 in &project.available_content_sha256 {
+                        push_unique_string(
+                            &mut available_content_sha256,
+                            &mut seen_content_sha256,
+                            content_sha256.clone(),
+                        );
+                    }
+                }
+                RemoteApplyTask::Tombstone(project_id) => {
+                    push_unique_string(&mut project_ids, &mut seen_project_ids, project_id.clone());
+                    push_unique_string(
+                        &mut metadata_project_ids,
+                        &mut seen_metadata_project_ids,
+                        project_id.clone(),
+                    );
+                }
+            }
+        }
+
+        let remote_metadata = remote_metadata_for_projects(remote_metadata, &metadata_project_ids);
+        let body = reconciliation_apply_body_with_project_ids(
+            peer_device_id,
+            &remote_metadata,
+            &manifests,
+            &available_content_sha256,
+            &project_ids,
+            transport_id,
+        );
+        let timer = SyncPhaseTimer::start("reconciliation_apply");
+        let response = {
+            let _progress =
+                progress.start_phase("reconciliation_apply", "Applying remote reconciliation.");
+            client.post_json_value("/api/v1/sync/reconciliation/apply", &body)
+        };
+        timings.push(timer.finish());
+        response.map(|response| map_project_apply_response(&project_ids, &response))
+    }
+
+    fn staged_transfer_failure_project_result(
+        manifest: &Value,
+        error: &str,
+    ) -> SyncTransportProjectResult {
+        let project_id = manifest_project_id(manifest);
+        let transfer_failures = HashMap::from([(project_id.clone(), error.to_string())]);
+        apply_failure_results(
+            std::slice::from_ref(manifest),
+            &transfer_failures,
+            "Could not stage all remote artifact content before import.",
+        )
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| {
+            failed_project_result(
+                &project_id,
+                "Could not stage all remote artifact content before import.",
+            )
+        })
+    }
+
+    fn push_apply_manifest_for_batch(
+        manifests: &mut Vec<Value>,
+        metadata_project_ids: &mut Vec<String>,
+        seen_manifests: &mut HashSet<String>,
+        seen_metadata_project_ids: &mut HashSet<String>,
+        manifest: Value,
+    ) {
+        let project_id = manifest_project_id(&manifest);
+        push_unique_string(
+            metadata_project_ids,
+            seen_metadata_project_ids,
+            project_id.clone(),
+        );
+        if seen_manifests.insert(project_id) {
+            manifests.push(manifest);
+        }
+    }
+
+    fn push_unique_string(values: &mut Vec<String>, seen: &mut HashSet<String>, value: String) {
+        if seen.insert(value.clone()) {
+            values.push(value);
         }
     }
 
@@ -7703,47 +7977,6 @@ mod desktop {
         }
     }
 
-    fn apply_remote_tombstone_project(
-        client: &BackendClient,
-        peer_device_id: &str,
-        remote_metadata: &Value,
-        project_id: &str,
-        transport_id: &str,
-        timings: &mut Vec<SyncTransportTimingEvidence>,
-        progress: &ProgressReporter,
-    ) -> SyncTransportProjectResult {
-        let remote_metadata = remote_metadata_for_project(remote_metadata, project_id);
-        let body = reconciliation_apply_body_with_project_ids(
-            peer_device_id,
-            &remote_metadata,
-            &[],
-            &[],
-            &[project_id.to_string()],
-            transport_id,
-        );
-        let timer = SyncPhaseTimer::start_project("reconciliation_apply", project_id);
-        let response = {
-            let _progress =
-                progress.start_phase("reconciliation_apply", "Applying remote reconciliation.");
-            client.post_json_value("/api/v1/sync/reconciliation/apply", &body)
-        };
-        timings.push(timer.finish());
-        match response {
-            Ok(response) => map_project_apply_response(&[project_id.to_string()], &response)
-                .pop()
-                .unwrap_or_else(|| {
-                    failed_project_result(
-                        project_id,
-                        "Backend apply response did not include this project.",
-                    )
-                }),
-            Err(error) => failed_project_result(
-                project_id,
-                &phase_context_error("reconciliation apply", error.to_string()),
-            ),
-        }
-    }
-
     fn stage_remote_manifest_project_artifacts(
         client: &BackendClient,
         connection: &SharedPeerConnection,
@@ -7790,61 +8023,6 @@ mod desktop {
         }
     }
 
-    fn apply_staged_remote_manifest_project(
-        client: &BackendClient,
-        peer_device_id: &str,
-        remote_metadata: &Value,
-        staged: &StagedRemoteProject,
-        transport_id: &str,
-        timings: &mut Vec<SyncTransportTimingEvidence>,
-        progress: &ProgressReporter,
-    ) -> SyncTransportProjectResult {
-        let project_id = manifest_project_id(&staged.manifest);
-        if let Some(error) = &staged.transfer_failure {
-            let transfer_failures = HashMap::from([(project_id.clone(), error.clone())]);
-            return apply_failure_results(
-                std::slice::from_ref(&staged.manifest),
-                &transfer_failures,
-                "Could not stage all remote artifact content before import.",
-            )
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| {
-                failed_project_result(
-                    &project_id,
-                    "Could not stage all remote artifact content before import.",
-                )
-            });
-        }
-
-        match apply_remote_manifest_project(
-            client,
-            peer_device_id,
-            remote_metadata,
-            &staged.manifest,
-            &staged.cleanup_context_manifests,
-            &staged.available_content_sha256,
-            transport_id,
-            timings,
-            progress,
-        ) {
-            Ok(result) => result,
-            Err(error) => apply_failure_results(
-                std::slice::from_ref(&staged.manifest),
-                &HashMap::new(),
-                &phase_context_error("reconciliation apply", error.to_string()),
-            )
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| {
-                failed_project_result(
-                    &project_id,
-                    "Sync transport reconciliation apply failed without a project result.",
-                )
-            }),
-        }
-    }
-
     fn plan_remote_manifest_chunk(
         client: &BackendClient,
         peer_device_id: &str,
@@ -7875,61 +8053,6 @@ mod desktop {
             transport_id,
         );
         client.post_json_value("/api/v1/sync/reconciliation/plan", &body)
-    }
-
-    fn apply_remote_manifest_project(
-        client: &BackendClient,
-        peer_device_id: &str,
-        remote_metadata: &Value,
-        manifest: &Value,
-        cleanup_context_manifests: &[Value],
-        available_content_sha256: &[String],
-        transport_id: &str,
-        timings: &mut Vec<SyncTransportTimingEvidence>,
-        progress: &ProgressReporter,
-    ) -> Result<SyncTransportProjectResult, BackendError> {
-        let project_id = manifest_project_id(manifest);
-        let manifests =
-            apply_project_manifests_with_cleanup_context(manifest, cleanup_context_manifests);
-        let manifest_project_ids = manifests
-            .iter()
-            .map(manifest_project_id)
-            .collect::<Vec<_>>();
-        let remote_metadata = remote_metadata_for_projects(remote_metadata, &manifest_project_ids);
-        let project_ids = vec![project_id.clone()];
-        let body = if cleanup_context_manifests.is_empty() {
-            reconciliation_apply_body(
-                peer_device_id,
-                &remote_metadata,
-                &manifests,
-                available_content_sha256,
-                transport_id,
-            )
-        } else {
-            reconciliation_apply_body_with_project_ids(
-                peer_device_id,
-                &remote_metadata,
-                &manifests,
-                available_content_sha256,
-                &project_ids,
-                transport_id,
-            )
-        };
-        let timer = SyncPhaseTimer::start_project("reconciliation_apply", &project_id);
-        let response = {
-            let _progress =
-                progress.start_phase("reconciliation_apply", "Applying remote reconciliation.");
-            client.post_json_value("/api/v1/sync/reconciliation/apply", &body)
-        };
-        timings.push(timer.finish());
-        let response = response?;
-        let mut results = map_batch_apply_response(std::slice::from_ref(manifest), &response);
-        Ok(results.pop().unwrap_or_else(|| {
-            failed_project_result(
-                &project_id,
-                "Backend apply response did not include this project.",
-            )
-        }))
     }
 
     fn apply_project_manifests_with_cleanup_context(
@@ -7995,6 +8118,7 @@ mod desktop {
         reconciliation_plan_body(peer_device_id, &remote_metadata, &[], &[], transport_id)
     }
 
+    #[cfg(test)]
     fn reconciliation_apply_body(
         peer_device_id: &str,
         remote_metadata: &Value,
@@ -8035,6 +8159,7 @@ mod desktop {
         })
     }
 
+    #[cfg(test)]
     fn remote_metadata_for_project(remote_metadata: &Value, project_id: &str) -> Value {
         remote_metadata_for_projects(remote_metadata, &[project_id.to_string()])
     }
@@ -8328,6 +8453,7 @@ mod desktop {
         }
     }
 
+    #[cfg(test)]
     fn map_batch_apply_response(
         manifests: &[Value],
         response: &Value,
@@ -13078,6 +13204,7 @@ mod desktop {
             requests: Arc<Mutex<Vec<String>>>,
             manifest_batch_requests: Arc<Mutex<Vec<Vec<String>>>>,
             manifest_get_requests: Arc<Mutex<Vec<String>>>,
+            request_bodies: Arc<Mutex<Vec<(String, Value)>>>,
             data_root: PathBuf,
             stop_sender: Option<mpsc::Sender<()>>,
             handle: Option<JoinHandle<()>>,
@@ -13095,6 +13222,7 @@ mod desktop {
             manifest_batch_status_by_project_ids: HashMap<Vec<String>, u16>,
             manifest_batch_requests: Arc<Mutex<Vec<Vec<String>>>>,
             manifest_get_requests: Arc<Mutex<Vec<String>>>,
+            apply_failure_project_ids: HashSet<String>,
         }
 
         #[cfg(not(target_os = "android"))]
@@ -13185,6 +13313,16 @@ mod desktop {
                 )
             }
 
+            fn start_with_apply_failure_project_ids(project_ids: HashSet<String>) -> Self {
+                Self::start_with_responses_and_apply_failures(
+                    HashMap::new(),
+                    HashMap::new(),
+                    HashMap::new(),
+                    None,
+                    project_ids,
+                )
+            }
+
             fn start_with_responses(
                 staged_artifact_sizes: HashMap<String, u64>,
                 artifact_files: HashMap<String, LocalArtifactFile>,
@@ -13213,6 +13351,47 @@ mod desktop {
                 manifest_batch_status: Option<u16>,
                 manifest_batch_status_by_project_ids: HashMap<Vec<String>, u16>,
             ) -> Self {
+                Self::start_with_responses_manifest_and_apply_failures(
+                    staged_artifact_sizes,
+                    artifact_files,
+                    artifact_file_errors,
+                    staging_failure,
+                    project_manifests,
+                    manifest_batch_status,
+                    manifest_batch_status_by_project_ids,
+                    HashSet::new(),
+                )
+            }
+
+            fn start_with_responses_and_apply_failures(
+                staged_artifact_sizes: HashMap<String, u64>,
+                artifact_files: HashMap<String, LocalArtifactFile>,
+                artifact_file_errors: HashMap<String, String>,
+                staging_failure: Option<String>,
+                apply_failure_project_ids: HashSet<String>,
+            ) -> Self {
+                Self::start_with_responses_manifest_and_apply_failures(
+                    staged_artifact_sizes,
+                    artifact_files,
+                    artifact_file_errors,
+                    staging_failure,
+                    HashMap::new(),
+                    None,
+                    HashMap::new(),
+                    apply_failure_project_ids,
+                )
+            }
+
+            fn start_with_responses_manifest_and_apply_failures(
+                staged_artifact_sizes: HashMap<String, u64>,
+                artifact_files: HashMap<String, LocalArtifactFile>,
+                artifact_file_errors: HashMap<String, String>,
+                staging_failure: Option<String>,
+                project_manifests: HashMap<String, Value>,
+                manifest_batch_status: Option<u16>,
+                manifest_batch_status_by_project_ids: HashMap<Vec<String>, u16>,
+                apply_failure_project_ids: HashSet<String>,
+            ) -> Self {
                 let listener =
                     TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind test backend");
                 listener
@@ -13225,6 +13404,7 @@ mod desktop {
                 let requests = Arc::new(Mutex::new(Vec::new()));
                 let manifest_batch_requests = Arc::new(Mutex::new(Vec::new()));
                 let manifest_get_requests = Arc::new(Mutex::new(Vec::new()));
+                let request_bodies = Arc::new(Mutex::new(Vec::new()));
                 let data_root =
                     env::temp_dir().join(format!("tuneforge-sync-backend-test-{}", random_nonce()));
                 fs::create_dir_all(data_root.join("sync").join("transport-tmp"))
@@ -13240,10 +13420,12 @@ mod desktop {
                     manifest_batch_status_by_project_ids,
                     manifest_batch_requests: Arc::clone(&manifest_batch_requests),
                     manifest_get_requests: Arc::clone(&manifest_get_requests),
+                    apply_failure_project_ids,
                 });
                 let (stop_sender, stop_receiver) = mpsc::channel();
                 let handle = {
                     let requests = Arc::clone(&requests);
+                    let request_bodies = Arc::clone(&request_bodies);
                     let responses = Arc::clone(&responses);
                     thread::spawn(move || loop {
                         if stop_receiver.try_recv().is_ok() {
@@ -13252,9 +13434,15 @@ mod desktop {
                         match listener.accept() {
                             Ok((stream, _addr)) => {
                                 let requests = Arc::clone(&requests);
+                                let request_bodies = Arc::clone(&request_bodies);
                                 let responses = Arc::clone(&responses);
                                 thread::spawn(move || {
-                                    handle_test_backend_stream(stream, &requests, &responses);
+                                    handle_test_backend_stream(
+                                        stream,
+                                        &requests,
+                                        &request_bodies,
+                                        &responses,
+                                    );
                                 });
                             }
                             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -13269,6 +13457,7 @@ mod desktop {
                     requests,
                     manifest_batch_requests,
                     manifest_get_requests,
+                    request_bodies,
                     data_root,
                     stop_sender: Some(stop_sender),
                     handle: Some(handle),
@@ -13296,6 +13485,16 @@ mod desktop {
                     .clone()
             }
 
+            fn request_bodies(&self, path: &str) -> Vec<Value> {
+                self.request_bodies
+                    .lock()
+                    .expect("read test backend request bodies")
+                    .iter()
+                    .filter(|(request_path, _)| request_path == path)
+                    .map(|(_, body)| body.clone())
+                    .collect()
+            }
+
             fn transport_temp_root(&self) -> PathBuf {
                 self.data_root.join("sync").join("transport-tmp")
             }
@@ -13319,6 +13518,7 @@ mod desktop {
         fn handle_test_backend_stream(
             stream: TcpStream,
             requests: &Arc<Mutex<Vec<String>>>,
+            request_bodies: &Arc<Mutex<Vec<(String, Value)>>>,
             responses: &TestBackendResponses,
         ) {
             let mut reader = BufReader::new(stream);
@@ -13344,7 +13544,7 @@ mod desktop {
                     content_length = value.trim().parse().unwrap_or(0);
                 }
             }
-            let body_value = if content_length > 0 {
+            let request_body = if content_length > 0 {
                 let mut body = vec![0_u8; content_length];
                 let _ = reader.read_exact(&mut body);
                 serde_json::from_slice::<Value>(&body).ok()
@@ -13356,16 +13556,41 @@ mod desktop {
                     .lock()
                     .expect("record test backend request")
                     .push(path.clone());
+                if let Some(body) = request_body.as_ref() {
+                    request_bodies
+                        .lock()
+                        .expect("record test backend request body")
+                        .push((path.clone(), body.clone()));
+                }
             }
             let (status, body) = if path == "/api/v1/sync/reconciliation/apply" {
-                ("200 OK".to_string(), json!({ "actions": [] }).to_string())
+                let project_ids = request_body
+                    .as_ref()
+                    .and_then(|body| body.get("project_ids"))
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect::<HashSet<_>>();
+                if responses
+                    .apply_failure_project_ids
+                    .iter()
+                    .any(|project_id| project_ids.contains(project_id.as_str()))
+                {
+                    (
+                        "500 Internal Server Error".to_string(),
+                        json!({ "detail": "apply refused requested project" }).to_string(),
+                    )
+                } else {
+                    ("200 OK".to_string(), json!({ "actions": [] }).to_string())
+                }
             } else if path == "/api/v1/health" {
                 (
                     "200 OK".to_string(),
                     json!({ "data_root": responses.data_root.to_string_lossy() }).to_string(),
                 )
             } else if path == "/api/v1/sync/projects/manifests" {
-                let project_ids = body_value
+                let project_ids = request_body
                     .as_ref()
                     .and_then(|value| {
                         value
@@ -13966,8 +14191,8 @@ mod desktop {
                         "Remote sync import worker drained without lifecycle cancellation."
                     };
                     let _ = event_sender.send(BackendWriteEvent::Apply {
-                        project_id: project_id.clone(),
-                        result: failed_project_result(&project_id, message),
+                        project_ids: vec![project_id.clone()],
+                        results: vec![failed_project_result(&project_id, message)],
                         timings: Vec::new(),
                     });
                 }
@@ -14990,6 +15215,44 @@ mod desktop {
             )
         }
 
+        fn test_no_transfer_staged_project(project_id: &str) -> StagedRemoteProject {
+            StagedRemoteProject {
+                manifest: json!({
+                    "project": { "project_id": project_id },
+                    "artifacts": []
+                }),
+                cleanup_context_manifests: Vec::new(),
+                available_content_sha256: Vec::new(),
+                transfer_failure: None,
+            }
+        }
+
+        fn test_transfer_failed_staged_project(
+            project_id: &str,
+            message: &str,
+        ) -> StagedRemoteProject {
+            StagedRemoteProject {
+                transfer_failure: Some(message.to_string()),
+                ..test_no_transfer_staged_project(project_id)
+            }
+        }
+
+        fn test_remote_metadata(project_ids: &[&str]) -> Value {
+            json!({
+                "projects": project_ids
+                    .iter()
+                    .map(|project_id| json!({ "project_id": project_id }))
+                    .collect::<Vec<_>>()
+            })
+        }
+
+        fn apply_request_count(requests: &[String]) -> usize {
+            requests
+                .iter()
+                .filter(|path| path.as_str() == "/api/v1/sync/reconciliation/apply")
+                .count()
+        }
+
         fn planned_project_with_fetch_artifact(
             project_id: &str,
             artifact: &RemoteArtifact,
@@ -15015,6 +15278,210 @@ mod desktop {
                     }]
                 }),
             }
+        }
+
+        #[cfg(not(target_os = "android"))]
+        #[test]
+        fn remote_apply_worker_batches_ready_no_transfer_projects() {
+            let backend = TestBackendServer::start_with_staged_artifacts(HashMap::new());
+            let client = test_backend_client(&backend);
+            let (connection, peer_thread) = spawn_test_sync_peer(|_| Ok(()));
+            let progress = test_progress("sync_batch_apply_ready_test", &connection);
+            let mut apply_worker = RemoteApplyWorker::start(
+                &client,
+                "dev_peer",
+                &test_remote_metadata(&["proj_one", "proj_two", "proj_three"]),
+                TCP_TRANSPORT_ID,
+                progress,
+            );
+
+            apply_worker.enqueue_project(test_no_transfer_staged_project("proj_one"));
+            apply_worker.enqueue_project(test_no_transfer_staged_project("proj_two"));
+            apply_worker.enqueue_project(test_no_transfer_staged_project("proj_three"));
+            let results = apply_worker.finish(&mut Vec::new());
+            peer_thread
+                .join()
+                .expect("join ready batch peer")
+                .expect("ready batch peer completed");
+
+            assert_eq!(apply_request_count(&backend.requests()), 1);
+            let apply_bodies = backend.request_bodies("/api/v1/sync/reconciliation/apply");
+            assert_eq!(apply_bodies.len(), 1);
+            let apply_body = &apply_bodies[0];
+            assert_eq!(
+                apply_body
+                    .get("project_manifests")
+                    .and_then(Value::as_array)
+                    .map(Vec::len),
+                Some(3)
+            );
+            assert_eq!(
+                apply_body.get("project_ids"),
+                Some(&json!(["proj_one", "proj_two", "proj_three"]))
+            );
+            assert_eq!(
+                apply_body
+                    .get("peer_inventory")
+                    .and_then(Value::as_array)
+                    .map(Vec::len),
+                Some(1)
+            );
+            assert_eq!(results.len(), 3);
+            assert!(results.iter().all(|result| result.status == "skipped"));
+            assert_eq!(
+                results
+                    .iter()
+                    .map(|result| result.project_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["proj_one", "proj_two", "proj_three"]
+            );
+        }
+
+        #[cfg(not(target_os = "android"))]
+        #[test]
+        fn remote_apply_worker_splits_backend_error_batch_and_isolates_failed_project() {
+            let backend = TestBackendServer::start_with_apply_failure_project_ids(HashSet::from([
+                "proj_bad".to_string(),
+            ]));
+            let client = test_backend_client(&backend);
+            let (connection, peer_thread) = spawn_test_sync_peer(|_| Ok(()));
+            let progress = test_progress("sync_batch_apply_split_error_test", &connection);
+            let mut apply_worker = RemoteApplyWorker::start(
+                &client,
+                "dev_peer",
+                &test_remote_metadata(&["proj_ok_one", "proj_bad", "proj_ok_two"]),
+                TCP_TRANSPORT_ID,
+                progress,
+            );
+
+            apply_worker.enqueue_project(test_no_transfer_staged_project("proj_ok_one"));
+            apply_worker.enqueue_project(test_no_transfer_staged_project("proj_bad"));
+            apply_worker.enqueue_project(test_no_transfer_staged_project("proj_ok_two"));
+            let results = apply_worker.finish(&mut Vec::new());
+            peer_thread
+                .join()
+                .expect("join split error batch peer")
+                .expect("split error batch peer completed");
+
+            let apply_bodies = backend.request_bodies("/api/v1/sync/reconciliation/apply");
+            assert!(
+                apply_bodies.len() > 1,
+                "backend apply error should split retry requests: {apply_bodies:?}"
+            );
+            let request_project_ids = apply_bodies
+                .iter()
+                .map(|body| {
+                    body.get("project_ids")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                request_project_ids.first(),
+                Some(&vec![
+                    "proj_ok_one".to_string(),
+                    "proj_bad".to_string(),
+                    "proj_ok_two".to_string()
+                ])
+            );
+            assert!(request_project_ids
+                .iter()
+                .any(|project_ids| project_ids == &vec!["proj_ok_one".to_string()]));
+            assert!(request_project_ids
+                .iter()
+                .any(|project_ids| project_ids == &vec!["proj_bad".to_string()]));
+            assert!(request_project_ids
+                .iter()
+                .any(|project_ids| project_ids == &vec!["proj_ok_two".to_string()]));
+
+            assert_eq!(results.len(), 3);
+            let ok_one = results
+                .iter()
+                .find(|result| result.project_id == "proj_ok_one")
+                .expect("first successful project result");
+            let bad = results
+                .iter()
+                .find(|result| result.project_id == "proj_bad")
+                .expect("failed project result");
+            let ok_two = results
+                .iter()
+                .find(|result| result.project_id == "proj_ok_two")
+                .expect("second successful project result");
+            assert_eq!(ok_one.status, "skipped");
+            assert_eq!(ok_two.status, "skipped");
+            assert_eq!(bad.status, "failed");
+            let bad_message = bad.message.as_deref().unwrap_or("");
+            assert!(bad_message.contains("apply refused requested project"));
+            assert!(!bad_message.contains("source_path"));
+            assert!(!bad_message.contains("/private/"));
+            assert_eq!(
+                results
+                    .iter()
+                    .filter(|result| result.status == "failed")
+                    .count(),
+                1
+            );
+        }
+
+        #[cfg(not(target_os = "android"))]
+        #[test]
+        fn remote_apply_worker_reports_transfer_failure_without_blocking_batch() {
+            let backend = TestBackendServer::start_with_staged_artifacts(HashMap::new());
+            let client = test_backend_client(&backend);
+            let (connection, peer_thread) = spawn_test_sync_peer(|_| Ok(()));
+            let progress = test_progress("sync_batch_apply_transfer_failure_test", &connection);
+            let mut apply_worker = RemoteApplyWorker::start(
+                &client,
+                "dev_peer",
+                &test_remote_metadata(&["proj_failed", "proj_ok_one", "proj_ok_two"]),
+                TCP_TRANSPORT_ID,
+                progress,
+            );
+
+            apply_worker.enqueue_project(test_transfer_failed_staged_project(
+                "proj_failed",
+                "stream failed",
+            ));
+            apply_worker.enqueue_project(test_no_transfer_staged_project("proj_ok_one"));
+            apply_worker.enqueue_project(test_no_transfer_staged_project("proj_ok_two"));
+            let results = apply_worker.finish(&mut Vec::new());
+            peer_thread
+                .join()
+                .expect("join transfer failure batch peer")
+                .expect("transfer failure batch peer completed");
+
+            assert_eq!(apply_request_count(&backend.requests()), 1);
+            assert_eq!(results.len(), 3);
+            let failed = results
+                .iter()
+                .find(|result| result.project_id == "proj_failed")
+                .expect("failed project result");
+            assert_eq!(failed.status, "failed");
+            assert!(failed
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("stream failed")));
+            assert!(results
+                .iter()
+                .filter(|result| result.project_id != "proj_failed")
+                .all(|result| result.status == "skipped"));
+        }
+
+        #[test]
+        fn reconciliation_apply_batching_does_not_change_iroh_transfer_limits() {
+            assert_eq!(IROH_ARTIFACT_PARALLELISM, 4);
+            assert_eq!(
+                IROH_ARTIFACT_STAGING_QUEUE_CAPACITY,
+                IROH_ARTIFACT_PARALLELISM * 2
+            );
+            assert_eq!(IROH_ARTIFACT_RECEIVE_BYTE_BUDGET, 4 * 1024 * 1024 * 1024);
+            assert_eq!(IROH_STREAM_RECEIVE_WINDOW_BYTES, 32 * 1024 * 1024);
+            assert_eq!(IROH_CONNECTION_RECEIVE_WINDOW_BYTES, 128 * 1024 * 1024);
+            assert_eq!(IROH_SEND_WINDOW_BYTES, 64 * 1024 * 1024);
         }
 
         #[cfg(not(target_os = "android"))]
@@ -15189,8 +15656,8 @@ mod desktop {
                         "Remote sync import worker drained without cancellation."
                     };
                     let _ = event_sender.send(BackendWriteEvent::Apply {
-                        project_id: project_id.clone(),
-                        result: failed_project_result(&project_id, message),
+                        project_ids: vec![project_id.clone()],
+                        results: vec![failed_project_result(&project_id, message)],
                         timings: Vec::new(),
                     });
                 }
@@ -18427,6 +18894,12 @@ mod desktop {
                     .and_then(Value::as_array)
                     .map(Vec::len),
                 Some(2)
+            );
+            assert_eq!(
+                body.get("peer_inventory")
+                    .and_then(Value::as_array)
+                    .map(Vec::len),
+                Some(1)
             );
             assert_eq!(
                 body.get("peer_inventory")

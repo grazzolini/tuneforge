@@ -56,9 +56,27 @@ export type ParsedPitch = {
 
 export type PitchLike = Pick<ParsedPitch, "octave" | "pitchClass">;
 
-export type ChordSpellingQuality = "major" | "minor" | "dim" | "7" | "maj7" | "m7";
+export type ChordSpellingQuality = ChordQuality;
 
-export type ChordDegree = "1" | "b3" | "3" | "b5" | "5" | "b7" | "7";
+export type ChordDegree =
+  | "1"
+  | "b2"
+  | "#1"
+  | "2"
+  | "#2"
+  | "b3"
+  | "3"
+  | "4"
+  | "#4"
+  | "b5"
+  | "5"
+  | "#5"
+  | "b6"
+  | "6"
+  | "#6"
+  | "bb7"
+  | "b7"
+  | "7";
 
 export type ChordToneDefinition = {
   degree: ChordDegree;
@@ -72,11 +90,13 @@ export type ChordQualityDefinition = {
 };
 
 export type ParsedChord = {
+  rawLabel?: string;
   root: string;
   rootPitchClass: number;
   quality: ChordSpellingQuality;
   bass: string | null;
   bassPitchClass: number | null;
+  bassDegree?: ChordDegree;
 };
 
 export type ChordTone = ChordToneDefinition & {
@@ -180,6 +200,27 @@ const ENHARMONIC_ALIASES: Record<string, number> = {
   Cb: 11,
 };
 
+const CHORD_DEGREE_INTERVALS: Record<ChordDegree, number> = {
+  "1": 0,
+  b2: 1,
+  "#1": 1,
+  "2": 2,
+  "#2": 3,
+  b3: 3,
+  "3": 4,
+  "4": 5,
+  "#4": 6,
+  b5: 6,
+  "5": 7,
+  "#5": 8,
+  b6: 8,
+  "6": 9,
+  "#6": 10,
+  bb7: 9,
+  b7: 10,
+  "7": 11,
+};
+
 export const CHORD_QUALITY_DEFINITIONS: Record<ChordSpellingQuality, ChordQualityDefinition> = {
   major: {
     label: "Major",
@@ -199,6 +240,24 @@ export const CHORD_QUALITY_DEFINITIONS: Record<ChordSpellingQuality, ChordQualit
       { degree: "5", interval: 7 },
     ],
   },
+  sus2: {
+    label: "Suspended 2",
+    suffix: "sus2",
+    tones: [
+      { degree: "1", interval: 0 },
+      { degree: "2", interval: 2 },
+      { degree: "5", interval: 7 },
+    ],
+  },
+  sus4: {
+    label: "Suspended 4",
+    suffix: "sus4",
+    tones: [
+      { degree: "1", interval: 0 },
+      { degree: "4", interval: 5 },
+      { degree: "5", interval: 7 },
+    ],
+  },
   dim: {
     label: "Diminished",
     suffix: "dim",
@@ -206,6 +265,15 @@ export const CHORD_QUALITY_DEFINITIONS: Record<ChordSpellingQuality, ChordQualit
       { degree: "1", interval: 0 },
       { degree: "b3", interval: 3 },
       { degree: "b5", interval: 6 },
+    ],
+  },
+  aug: {
+    label: "Augmented",
+    suffix: "aug",
+    tones: [
+      { degree: "1", interval: 0 },
+      { degree: "3", interval: 4 },
+      { degree: "#5", interval: 8 },
     ],
   },
   "7": {
@@ -238,9 +306,63 @@ export const CHORD_QUALITY_DEFINITIONS: Record<ChordSpellingQuality, ChordQualit
       { degree: "b7", interval: 10 },
     ],
   },
+  dim7: {
+    label: "Diminished 7",
+    suffix: "dim7",
+    tones: [
+      { degree: "1", interval: 0 },
+      { degree: "b3", interval: 3 },
+      { degree: "b5", interval: 6 },
+      { degree: "bb7", interval: 9 },
+    ],
+  },
+  hdim7: {
+    label: "Half-diminished 7",
+    suffix: "m7b5",
+    tones: [
+      { degree: "1", interval: 0 },
+      { degree: "b3", interval: 3 },
+      { degree: "b5", interval: 6 },
+      { degree: "b7", interval: 10 },
+    ],
+  },
 };
 
-const PARSED_CHORD_PATTERN = /^([A-G](?:#|b)?)(maj7|m7|dim|m|7)?(?:\/([A-G](?:#|b)?))?$/i;
+const NO_CHORD_LABELS = new Set(["N", "NC", "N.C.", "NO_CHORD", "NO-CHORD"]);
+const UNKNOWN_CHORD_LABELS = new Set(["X"]);
+const HARTE_CHORD_PATTERN = /^([A-G](?:#|b)?)(?::([^/]+))?(?:\/(.+))?$/i;
+const LEAD_SHEET_CHORD_PATTERN = /^([A-G](?:#|b)?)([^/]*)(?:\/(.+))?$/i;
+const CHORD_QUALITY_ALIASES: Record<string, ChordSpellingQuality> = {
+  "": "major",
+  maj: "major",
+  major: "major",
+  min: "minor",
+  minor: "minor",
+  m: "minor",
+  dim: "dim",
+  diminished: "dim",
+  aug: "aug",
+  augmented: "aug",
+  "+": "aug",
+  sus: "sus4",
+  sus2: "sus2",
+  sus4: "sus4",
+  "7": "7",
+  dom7: "7",
+  maj7: "maj7",
+  major7: "maj7",
+  min7: "m7",
+  minor7: "m7",
+  m7: "m7",
+  dim7: "dim7",
+  hdim7: "hdim7",
+  "half-diminished": "hdim7",
+  "half-diminished7": "hdim7",
+  "min7(b5)": "hdim7",
+  "m7(b5)": "hdim7",
+  min7b5: "hdim7",
+  m7b5: "hdim7",
+};
 
 export const DEFAULT_CHORD_DISPLAY_CONTEXT: ChordDisplayContext = {
   sourceKey: null,
@@ -418,6 +540,38 @@ const DUAL_PITCH_CLASSES = [
   "A#/Bb",
   "B",
 ] as const;
+
+const DIATONIC_LETTERS = ["C", "D", "E", "F", "G", "A", "B"] as const;
+type DiatonicLetter = (typeof DIATONIC_LETTERS)[number];
+const NATURAL_PITCH_CLASSES: Record<DiatonicLetter, number> = {
+  C: 0,
+  D: 2,
+  E: 4,
+  F: 5,
+  G: 7,
+  A: 9,
+  B: 11,
+};
+const CHORD_DEGREE_LETTER_OFFSETS: Record<ChordDegree, number> = {
+  "1": 0,
+  "#1": 0,
+  b2: 1,
+  "2": 1,
+  "#2": 1,
+  b3: 2,
+  "3": 2,
+  "4": 3,
+  "#4": 3,
+  b5: 4,
+  "5": 4,
+  "#5": 4,
+  b6: 5,
+  "6": 5,
+  "#6": 5,
+  bb7: 6,
+  b7: 6,
+  "7": 6,
+};
 
 const AUTO_KEY_FAMILIES: Record<KeyMode, readonly AccidentalFamily[]> = {
   major: ["neutral", "flat", "sharp", "flat", "sharp", "flat", "sharp", "sharp", "flat", "sharp", "flat", "sharp"],
@@ -773,21 +927,40 @@ export function parseChordLabel(label: string | null | undefined): ParsedChord |
     return null;
   }
 
-  const match = label.trim().match(PARSED_CHORD_PATTERN);
-  if (!match) {
+  const normalized = label.trim();
+  const compactLabel = normalized.replace(/\s+/g, "");
+  const compactUpper = compactLabel.toUpperCase();
+  if (!compactLabel || NO_CHORD_LABELS.has(compactUpper) || UNKNOWN_CHORD_LABELS.has(compactUpper)) {
     return null;
   }
 
-  const root = normalizeNoteName(match[1]);
+  const harteMatch = compactLabel.match(HARTE_CHORD_PATTERN);
+  if (harteMatch) {
+    const parsedChord = parseChordParts(harteMatch[1], harteMatch[2] ?? "", harteMatch[3]);
+    if (parsedChord) {
+      return withRawChordLabelWhenNeeded(label, parsedChord, compactLabel.includes(":"));
+    }
+  }
+
+  const leadSheetMatch = compactLabel.match(LEAD_SHEET_CHORD_PATTERN);
+  if (!leadSheetMatch) {
+    return null;
+  }
+
+  const parsedChord = parseChordParts(leadSheetMatch[1], leadSheetMatch[2] ?? "", leadSheetMatch[3]);
+  return parsedChord ? withRawChordLabelWhenNeeded(label, parsedChord, false) : null;
+}
+
+function parseChordParts(rootRaw: string, qualityRaw: string, bassRaw: string | undefined): ParsedChord | null {
+  const root = normalizeNoteName(rootRaw);
   const rootPitchClass = ENHARMONIC_ALIASES[root];
-  const quality = parseChordQualitySuffix(match[2] ?? "");
+  const quality = parseChordQualitySuffix(qualityRaw);
   if (rootPitchClass === undefined || !quality) {
     return null;
   }
 
-  const bass = match[3] ? normalizeNoteName(match[3]) : null;
-  const bassPitchClass = bass ? ENHARMONIC_ALIASES[bass] : null;
-  if (bass && bassPitchClass === undefined) {
+  const bass = parseChordBass(bassRaw, root, rootPitchClass, quality);
+  if (!bass) {
     return null;
   }
 
@@ -795,27 +968,31 @@ export function parseChordLabel(label: string | null | undefined): ParsedChord |
     root,
     rootPitchClass,
     quality,
-    bass,
-    bassPitchClass,
+    bass: bass.label,
+    bassPitchClass: bass.pitchClass,
+    ...(bass.degree ? { bassDegree: bass.degree } : {}),
   };
 }
 
 export function isChordSpellingQuality(quality: string | null | undefined): quality is ChordSpellingQuality {
-  return (
-    quality === "major" ||
-    quality === "minor" ||
-    quality === "dim" ||
-    quality === "7" ||
-    quality === "maj7" ||
-    quality === "m7"
-  );
+  return isSupportedChordQuality(quality);
 }
 
 export function formatParsedChordLabel(chord: ParsedChord, options: PitchFormatOptions = {}): string {
+  const resolvedOptions = resolveChordFormatOptions(chord, options);
+  if (chord.bass && typeof chord.bassPitchClass === "number" && chord.bassPitchClass !== chord.rootPitchClass) {
+    const rootLabel = formatChordLabel(chord.rootPitchClass, chord.quality, resolvedOptions);
+    const bassLabel =
+      hasExplicitPitchFormatOptions(options) || !isBassLabelForPitchClass(chord.bass, chord.bassPitchClass)
+        ? formatPitchClass(chord.bassPitchClass, resolvedOptions)
+        : chord.bass;
+    return `${rootLabel}/${bassLabel}`;
+  }
+
   return formatChordLabel(
     chord.rootPitchClass,
     chord.quality,
-    resolveChordFormatOptions(chord, options),
+    resolvedOptions,
     chord.bassPitchClass,
   );
 }
@@ -828,21 +1005,28 @@ export function spellChord(chord: ChordInput, options: PitchFormatOptions = {}):
 
   const chordOptions = resolveChordFormatOptions(parsedChord, options);
   const definition = CHORD_QUALITY_DEFINITIONS[parsedChord.quality];
+  if (!definition) {
+    return null;
+  }
   const tones = definition.tones.map((tone) => {
     const pitchClass = transposePitchClass(parsedChord.rootPitchClass, tone.interval);
     return {
       ...tone,
       pitchClass,
-      noteName: formatPitchClass(pitchClass, chordOptions),
+      noteName: spellChordTone(parsedChord.root, parsedChord.rootPitchClass, tone.degree, pitchClass, chordOptions),
     };
   });
 
   const bassNoteName =
-    typeof parsedChord.bassPitchClass === "number" ? formatPitchClass(parsedChord.bassPitchClass, chordOptions) : null;
+    typeof parsedChord.bassPitchClass === "number"
+      ? parsedChord.bass && !options.activeKey && !options.mode
+        ? parsedChord.bass
+        : formatPitchClass(parsedChord.bassPitchClass, chordOptions)
+      : null;
 
   return {
     ...parsedChord,
-    label: formatParsedChordLabel(parsedChord, chordOptions),
+    label: formatParsedChordLabel(parsedChord, options),
     tones,
     notes: tones.map((tone) => tone.noteName),
     bassNoteName,
@@ -966,47 +1150,109 @@ function parsePitchRequired(label: string): ParsedPitch {
 }
 
 function parseChordQualitySuffix(suffix: string): ChordSpellingQuality | null {
-  switch (suffix.toLowerCase()) {
-    case "":
-      return "major";
-    case "m":
-      return "minor";
-    case "dim":
-      return "dim";
-    case "7":
-      return "7";
-    case "maj7":
-      return "maj7";
-    case "m7":
-      return "m7";
-    default:
-      return null;
+  const compactSuffix = suffix.trim().replace(/\s+/g, "");
+  if (compactSuffix === "M7") {
+    return "maj7";
   }
+  return CHORD_QUALITY_ALIASES[compactSuffix.toLowerCase()] ?? null;
+}
+
+function parseChordBass(
+  bassRaw: string | undefined,
+  root: string,
+  rootPitchClass: number,
+  quality: ChordSpellingQuality,
+): { label: string | null; pitchClass: number | null; degree?: ChordDegree } | null {
+  if (!bassRaw) {
+    return { label: null, pitchClass: null };
+  }
+
+  const compactBass = bassRaw.trim().replace(/\s+/g, "");
+  if (!compactBass) {
+    return { label: null, pitchClass: null };
+  }
+
+  const note = normalizeNoteName(compactBass);
+  const notePitchClass = ENHARMONIC_ALIASES[note];
+  if (notePitchClass !== undefined) {
+    return { label: note, pitchClass: notePitchClass };
+  }
+
+  const degree = compactBass.toLowerCase();
+  if (!isChordDegree(degree)) {
+    return null;
+  }
+  const interval = CHORD_DEGREE_INTERVALS[degree];
+  const pitchClass = transposePitchClass(rootPitchClass, interval);
+  return {
+    label: spellPitchClassForDegree(root, rootPitchClass, degree, pitchClass, resolveChordFormatOptions({ quality, rootPitchClass })),
+    pitchClass,
+    degree,
+  };
+}
+
+function withRawChordLabelWhenNeeded(rawLabel: string, chord: ParsedChord, isHarteStyle: boolean): ParsedChord {
+  if (!shouldStoreRawChordLabel(rawLabel, chord, isHarteStyle)) {
+    return chord;
+  }
+  return {
+    rawLabel,
+    ...chord,
+  };
+}
+
+function shouldStoreRawChordLabel(rawLabel: string, chord: ParsedChord, isHarteStyle: boolean): boolean {
+  if (isHarteStyle || chord.bassDegree || isNewChordQuality(chord.quality)) {
+    return true;
+  }
+  return rawLabel.trim().replace(/\s+/g, "") !== formatParsedChordLabel(chord);
+}
+
+function isNewChordQuality(quality: ChordSpellingQuality): boolean {
+  return quality === "sus2" || quality === "sus4" || quality === "aug" || quality === "dim7" || quality === "hdim7";
 }
 
 function parseChordInput(chord: ChordInput): ParsedChord | null {
   if (typeof chord === "string") {
     return parseChordLabel(chord);
   }
+  if (!isChordSpellingQuality(chord.quality)) {
+    return null;
+  }
   return {
+    ...(chord.rawLabel ? { rawLabel: chord.rawLabel } : {}),
     root: chord.root,
     rootPitchClass: normalizePitchClass(chord.rootPitchClass),
     quality: chord.quality,
     bass: chord.bass,
     bassPitchClass: typeof chord.bassPitchClass === "number" ? normalizePitchClass(chord.bassPitchClass) : null,
+    ...(chord.bassDegree ? { bassDegree: chord.bassDegree } : {}),
   };
 }
 
 function transposeParsedChord(chord: ParsedChord, semitones: number): ParsedChord {
   const rootPitchClass = transposePitchClass(chord.rootPitchClass, semitones);
+  const chordOptions = resolveChordFormatOptions({ ...chord, rootPitchClass });
   const bassPitchClass =
-    typeof chord.bassPitchClass === "number" ? transposePitchClass(chord.bassPitchClass, semitones) : null;
+    typeof chord.bassPitchClass === "number"
+      ? chord.bassDegree
+        ? transposePitchClass(rootPitchClass, CHORD_DEGREE_INTERVALS[chord.bassDegree])
+        : transposePitchClass(chord.bassPitchClass, semitones)
+      : null;
+  const root = formatPitchClass(rootPitchClass, chordOptions);
   return {
-    root: formatPitchClass(rootPitchClass, resolveChordFormatOptions({ ...chord, rootPitchClass })),
+    ...(chord.rawLabel ? { rawLabel: chord.rawLabel } : {}),
+    root,
     rootPitchClass,
     quality: chord.quality,
-    bass: typeof bassPitchClass === "number" ? formatPitchClass(bassPitchClass) : null,
+    bass:
+      typeof bassPitchClass === "number"
+        ? chord.bassDegree
+          ? spellPitchClassForDegree(root, rootPitchClass, chord.bassDegree, bassPitchClass, chordOptions)
+          : formatPitchClass(bassPitchClass, chordOptions)
+        : null,
     bassPitchClass,
+    ...(chord.bassDegree ? { bassDegree: chord.bassDegree } : {}),
   };
 }
 
@@ -1020,9 +1266,26 @@ function resolveChordFormatOptions(
   return {
     activeKey: {
       pitchClass: normalizePitchClass(chord.rootPitchClass),
-      mode: chord.quality === "minor" || chord.quality === "m7" ? "minor" : "major",
+      mode: isMinorSpelledChordQuality(chord.quality) ? "minor" : "major",
     } satisfies MusicalKey,
   };
+}
+
+function isMinorSpelledChordQuality(quality: ChordSpellingQuality): boolean {
+  return quality === "minor" || quality === "m7" || quality === "dim" || quality === "dim7" || quality === "hdim7";
+}
+
+function isChordDegree(value: string): value is ChordDegree {
+  return Object.prototype.hasOwnProperty.call(CHORD_DEGREE_INTERVALS, value);
+}
+
+function hasExplicitPitchFormatOptions(options: PitchFormatOptions): boolean {
+  return Boolean(options.activeKey || options.mode);
+}
+
+function isBassLabelForPitchClass(label: string, pitchClass: number): boolean {
+  const labelPitchClass = ENHARMONIC_ALIASES[normalizeNoteName(label)];
+  return labelPitchClass !== undefined && labelPitchClass === normalizePitchClass(pitchClass);
 }
 
 function renderGuitarTemplate(
@@ -1176,6 +1439,61 @@ function getMutedStrings(
 ): readonly number[] {
   const playedStrings = new Set(playedNotes.map((note) => note.string));
   return profile.tuning.map((stringTuning) => stringTuning.string).filter((stringNumber) => !playedStrings.has(stringNumber));
+}
+
+function spellChordTone(
+  root: string,
+  rootPitchClass: number,
+  degree: ChordDegree,
+  pitchClass: number,
+  options: PitchFormatOptions,
+): string {
+  if (options.mode === "dual") {
+    return formatPitchClass(pitchClass, options);
+  }
+  return spellPitchClassForDegree(root, rootPitchClass, degree, pitchClass, options);
+}
+
+function spellPitchClassForDegree(
+  root: string,
+  rootPitchClass: number,
+  degree: ChordDegree,
+  pitchClass: number,
+  options: PitchFormatOptions = {},
+): string {
+  const rootLetter = normalizeNoteName(root)[0] as DiatonicLetter | undefined;
+  const rootLetterIndex = rootLetter ? DIATONIC_LETTERS.indexOf(rootLetter) : -1;
+  if (rootLetterIndex < 0) {
+    return formatPitchClass(pitchClass, options);
+  }
+
+  const targetLetter = DIATONIC_LETTERS[(rootLetterIndex + CHORD_DEGREE_LETTER_OFFSETS[degree]) % DIATONIC_LETTERS.length];
+  const naturalPitchClass = NATURAL_PITCH_CLASSES[targetLetter];
+  let accidentalOffset = normalizePitchClass(pitchClass - naturalPitchClass);
+  if (accidentalOffset > 6) {
+    accidentalOffset -= 12;
+  }
+
+  if (accidentalOffset < -2 || accidentalOffset > 2) {
+    return formatPitchClass(pitchClass, options);
+  }
+
+  return `${targetLetter}${formatAccidentalOffset(accidentalOffset)}`;
+}
+
+function formatAccidentalOffset(offset: number): string {
+  switch (offset) {
+    case -2:
+      return "bb";
+    case -1:
+      return "b";
+    case 1:
+      return "#";
+    case 2:
+      return "##";
+    default:
+      return "";
+  }
 }
 
 function normalizeNoteName(noteName: string): string {

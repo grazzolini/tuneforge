@@ -150,6 +150,56 @@ describe("chord parsing and spelling", () => {
     expect(parseChordLabel("Bdim")?.quality).toBe("dim");
   });
 
+  it("parses backend Harte-style labels into canonical chord symbols", () => {
+    expect(parseChordLabel("D:maj/3")).toMatchObject({
+      rawLabel: "D:maj/3",
+      root: "D",
+      rootPitchClass: 2,
+      quality: "major",
+      bass: "F#",
+      bassPitchClass: 6,
+      bassDegree: "3",
+    });
+    expect(formatParsedChordLabel(requireChord("D:maj/3"))).toBe("D/F#");
+
+    expect(parseChordLabel("C:min/5")).toMatchObject({
+      rawLabel: "C:min/5",
+      root: "C",
+      rootPitchClass: 0,
+      quality: "minor",
+      bass: "G",
+      bassPitchClass: 7,
+      bassDegree: "5",
+    });
+    expect(formatParsedChordLabel(requireChord("C:min/5"))).toBe("Cm/G");
+
+    expect(parseChordLabel("C:min7(b5)")).toMatchObject({
+      rawLabel: "C:min7(b5)",
+      root: "C",
+      rootPitchClass: 0,
+      quality: "hdim7",
+      bass: null,
+      bassPitchClass: null,
+    });
+    expect(formatParsedChordLabel(requireChord("C:min7(b5)"))).toBe("Cm7b5");
+  });
+
+  it("normalizes lead-sheet aliases without changing source-label truth", () => {
+    expect(parseChordLabel("Cmin")).toMatchObject({ rawLabel: "Cmin", quality: "minor" });
+    expect(parseChordLabel("Cminor")).toMatchObject({ rawLabel: "Cminor", quality: "minor" });
+    expect(parseChordLabel("Csus")).toMatchObject({ rawLabel: "Csus", quality: "sus4" });
+    expect(parseChordLabel("C+")).toMatchObject({ rawLabel: "C+", quality: "aug" });
+    expect(parseChordLabel("Cdim7")).toMatchObject({ rawLabel: "Cdim7", quality: "dim7" });
+    expect(parseChordLabel("Cm7b5")).toMatchObject({ rawLabel: "Cm7b5", quality: "hdim7" });
+
+    expect(formatParsedChordLabel(requireChord("Cmin"))).toBe("Cm");
+    expect(formatParsedChordLabel(requireChord("Cminor"))).toBe("Cm");
+    expect(formatParsedChordLabel(requireChord("Csus"))).toBe("Csus4");
+    expect(formatParsedChordLabel(requireChord("C+"))).toBe("Caug");
+    expect(formatParsedChordLabel(requireChord("Cdim7"))).toBe("Cdim7");
+    expect(formatParsedChordLabel(requireChord("Cm7b5"))).toBe("Cm7b5");
+  });
+
   it("spells requested chord qualities", () => {
     expect(requireChord("C").notes).toEqual(["C", "E", "G"]);
     expect(requireChord("Dm").notes).toEqual(["D", "F", "A"]);
@@ -169,10 +219,92 @@ describe("chord parsing and spelling", () => {
     expect(requireChord("G/D").bassNoteName).toBe("D");
   });
 
+  it("spells expanded chord qualities", () => {
+    expect(requireChord("Csus2").tones.map((tone) => `${tone.degree}:${tone.noteName}`)).toEqual([
+      "1:C",
+      "2:D",
+      "5:G",
+    ]);
+    expect(requireChord("Csus4").tones.map((tone) => `${tone.degree}:${tone.noteName}`)).toEqual([
+      "1:C",
+      "4:F",
+      "5:G",
+    ]);
+    expect(requireChord("Caug").tones.map((tone) => `${tone.degree}:${tone.noteName}`)).toEqual([
+      "1:C",
+      "3:E",
+      "#5:G#",
+    ]);
+    expect(requireChord("Cdim7").tones.map((tone) => `${tone.degree}:${tone.noteName}`)).toEqual([
+      "1:C",
+      "b3:Eb",
+      "b5:Gb",
+      "bb7:Bbb",
+    ]);
+    expect(requireChord("C:hdim7").tones.map((tone) => `${tone.degree}:${tone.noteName}`)).toEqual([
+      "1:C",
+      "b3:Eb",
+      "b5:Gb",
+      "b7:Bb",
+    ]);
+  });
+
+  it("uses key and display context for enharmonic chord spelling", () => {
+    expect(spellChord("F#:sus4", { activeKey: { pitchClass: 2, mode: "major" } })?.notes).toEqual([
+      "F#",
+      "B",
+      "C#",
+    ]);
+    expect(spellChord("Bb:7", { activeKey: { pitchClass: 3, mode: "major" } })?.notes).toEqual([
+      "Bb",
+      "D",
+      "F",
+      "Ab",
+    ]);
+    expect(formatParsedChordLabel(requireChord("Db:maj/3"), { mode: "sharps" })).toBe("C#/F");
+    expect(formatParsedChordLabel(requireChord("D#:min/5"), { mode: "flats" })).toBe("Ebm/Bb");
+  });
+
+  it("parses slash bass notes and degrees without guessing instrument voicings", () => {
+    expect(requireChord("D/F#")).toMatchObject({
+      root: "D",
+      rootPitchClass: 2,
+      quality: "major",
+      bass: "F#",
+      bassPitchClass: 6,
+      bassNoteName: "F#",
+    });
+    expect(requireChord("D:maj/3")).toMatchObject({
+      root: "D",
+      rootPitchClass: 2,
+      quality: "major",
+      bass: "F#",
+      bassPitchClass: 6,
+      bassDegree: "3",
+      bassNoteName: "F#",
+    });
+  });
+
   it("transposes chord labels by semitones", () => {
     expect(transposeChordLabel("C", 2)).toBe("D");
     expect(transposeChordLabel("G/D", 2)).toBe("A/E");
     expect(formatParsedChordLabel(requireChord("Cmaj7"), { mode: "flats" })).toBe("Cmaj7");
+  });
+
+  it("transposes slash bass notes and degree basses with the root", () => {
+    expect(transposeChordLabel("D/F#", 2, { mode: "sharps" })).toBe("E/G#");
+    expect(transposeChordLabel("D:maj/3", 2, { mode: "sharps" })).toBe("E/G#");
+    expect(transposeChordLabel("C:min/5", 2)).toBe("Dm/A");
+    expect(transposeChordLabel("Eb/Bb", -2, { mode: "flats" })).toBe("Db/Ab");
+  });
+
+  it("fails gracefully for no-chord, unknown, and unsupported labels", () => {
+    for (const label of ["", "N", "NC", "N.C.", "X", "Hmaj7", "C:13", "C/Garbage"]) {
+      expect(parseChordLabel(label)).toBeNull();
+      expect(spellChord(label)).toBeNull();
+      expect(transposeChordLabel(label, 2)).toBeNull();
+      expect(generateGuitarVoicings(label)).toEqual([]);
+    }
   });
 });
 

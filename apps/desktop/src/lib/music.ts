@@ -23,6 +23,11 @@ export type PitchFormatOptions = {
   mode?: EnharmonicDisplayMode;
 };
 
+export type Pitch = ParsedPitch;
+export type ParsedChordSymbol = ChordSpelling;
+export type GuitarStringProfile = GuitarStringTuning;
+export type GuitarVoicingPosition = GuitarVoicingNote;
+
 type AccidentalFamily = "sharp" | "flat" | "neutral";
 
 export type EnharmonicContext = {
@@ -39,6 +44,116 @@ export type FormattedMusicalLabel = {
   ariaLabel: string;
   primary: MusicalLabelPart;
   secondary: MusicalLabelPart | null;
+};
+
+export type ParsedPitch = {
+  pitchClass: number;
+  octave: number;
+  midi: number;
+  noteName: string;
+  label: string;
+};
+
+export type PitchLike = Pick<ParsedPitch, "octave" | "pitchClass">;
+
+export type ChordSpellingQuality = "major" | "minor" | "dim" | "7" | "maj7" | "m7";
+
+export type ChordDegree = "1" | "b3" | "3" | "b5" | "5" | "b7" | "7";
+
+export type ChordToneDefinition = {
+  degree: ChordDegree;
+  interval: number;
+};
+
+export type ChordQualityDefinition = {
+  label: string;
+  suffix: string;
+  tones: readonly ChordToneDefinition[];
+};
+
+export type ParsedChord = {
+  root: string;
+  rootPitchClass: number;
+  quality: ChordSpellingQuality;
+  bass: string | null;
+  bassPitchClass: number | null;
+};
+
+export type ChordTone = ChordToneDefinition & {
+  pitchClass: number;
+  noteName: string;
+};
+
+export type ChordSpelling = ParsedChord & {
+  label: string;
+  tones: readonly ChordTone[];
+  notes: readonly string[];
+  bassNoteName: string | null;
+};
+
+export type ChordInput = string | ParsedChord | ChordSpelling;
+
+export type ChordDisplayContext = {
+  sourceKey: MusicalKey | null;
+  transposeSemitones: number;
+  capoFret: number;
+  useCapoShapes: boolean;
+  canCapo: boolean;
+};
+
+export type GuitarFinger = 1 | 2 | 3 | 4;
+export type GuitarShapeFamily = "C" | "A" | "G" | "E" | "D";
+
+export type GuitarStringTuning = {
+  string: number;
+  openPitch: ParsedPitch;
+};
+
+export type GuitarProfile = {
+  id: "guitar";
+  label: string;
+  tuning: readonly GuitarStringTuning[];
+  frets: number;
+  canCapo: boolean;
+  canRetune: boolean;
+};
+
+export type GuitarVoicingTemplateNote = {
+  string: number;
+  fret: number;
+  finger?: GuitarFinger;
+};
+
+export type GuitarVoicingTemplate = {
+  id: string;
+  label: string;
+  shapeChordLabel: string;
+  shapeFamily: GuitarShapeFamily;
+  rank: number;
+  notes: readonly GuitarVoicingTemplateNote[];
+};
+
+export type GuitarVoicingNote = {
+  string: number;
+  fret: number;
+  soundingFret: number;
+  degree: ChordDegree;
+  note: string;
+  pitch: ParsedPitch;
+  finger?: GuitarFinger;
+};
+
+export type GuitarVoicing = {
+  id: string;
+  label: string;
+  chordLabel: string;
+  shapeChordLabel: string;
+  shapeFamily?: GuitarShapeFamily;
+  source: "common" | "generated";
+  rank: number;
+  capoFret: number;
+  mutedStrings: readonly number[];
+  notes: readonly GuitarVoicingNote[];
 };
 
 const ENHARMONIC_ALIASES: Record<string, number> = {
@@ -64,6 +179,227 @@ const ENHARMONIC_ALIASES: Record<string, number> = {
   B: 11,
   Cb: 11,
 };
+
+export const CHORD_QUALITY_DEFINITIONS: Record<ChordSpellingQuality, ChordQualityDefinition> = {
+  major: {
+    label: "Major",
+    suffix: "",
+    tones: [
+      { degree: "1", interval: 0 },
+      { degree: "3", interval: 4 },
+      { degree: "5", interval: 7 },
+    ],
+  },
+  minor: {
+    label: "Minor",
+    suffix: "m",
+    tones: [
+      { degree: "1", interval: 0 },
+      { degree: "b3", interval: 3 },
+      { degree: "5", interval: 7 },
+    ],
+  },
+  dim: {
+    label: "Diminished",
+    suffix: "dim",
+    tones: [
+      { degree: "1", interval: 0 },
+      { degree: "b3", interval: 3 },
+      { degree: "b5", interval: 6 },
+    ],
+  },
+  "7": {
+    label: "Dominant 7",
+    suffix: "7",
+    tones: [
+      { degree: "1", interval: 0 },
+      { degree: "3", interval: 4 },
+      { degree: "5", interval: 7 },
+      { degree: "b7", interval: 10 },
+    ],
+  },
+  maj7: {
+    label: "Major 7",
+    suffix: "maj7",
+    tones: [
+      { degree: "1", interval: 0 },
+      { degree: "3", interval: 4 },
+      { degree: "5", interval: 7 },
+      { degree: "7", interval: 11 },
+    ],
+  },
+  m7: {
+    label: "Minor 7",
+    suffix: "m7",
+    tones: [
+      { degree: "1", interval: 0 },
+      { degree: "b3", interval: 3 },
+      { degree: "5", interval: 7 },
+      { degree: "b7", interval: 10 },
+    ],
+  },
+};
+
+const PARSED_CHORD_PATTERN = /^([A-G](?:#|b)?)(maj7|m7|dim|m|7)?(?:\/([A-G](?:#|b)?))?$/i;
+
+export const DEFAULT_CHORD_DISPLAY_CONTEXT: ChordDisplayContext = {
+  sourceKey: null,
+  transposeSemitones: 0,
+  capoFret: 0,
+  useCapoShapes: false,
+  canCapo: true,
+};
+
+export const GUITAR_STANDARD_PROFILE: GuitarProfile = {
+  id: "guitar",
+  label: "Guitar",
+  tuning: [
+    { string: 6, openPitch: parsePitchRequired("E2") },
+    { string: 5, openPitch: parsePitchRequired("A2") },
+    { string: 4, openPitch: parsePitchRequired("D3") },
+    { string: 3, openPitch: parsePitchRequired("G3") },
+    { string: 2, openPitch: parsePitchRequired("B3") },
+    { string: 1, openPitch: parsePitchRequired("E4") },
+  ],
+  frets: 22,
+  canCapo: true,
+  canRetune: true,
+};
+
+export const INSTRUMENT_PROFILES = {
+  guitar: GUITAR_STANDARD_PROFILE,
+} as const;
+
+export const GUITAR_COMMON_VOICING_TEMPLATES: readonly GuitarVoicingTemplate[] = [
+  {
+    id: "c-open",
+    label: "C open",
+    shapeChordLabel: "C",
+    shapeFamily: "C",
+    rank: 10,
+    notes: [
+      { string: 5, fret: 3, finger: 3 },
+      { string: 4, fret: 2, finger: 2 },
+      { string: 3, fret: 0 },
+      { string: 2, fret: 1, finger: 1 },
+      { string: 1, fret: 0 },
+    ],
+  },
+  {
+    id: "g-open",
+    label: "G open",
+    shapeChordLabel: "G",
+    shapeFamily: "G",
+    rank: 10,
+    notes: [
+      { string: 6, fret: 3, finger: 2 },
+      { string: 5, fret: 2, finger: 1 },
+      { string: 4, fret: 0 },
+      { string: 3, fret: 0 },
+      { string: 2, fret: 0 },
+      { string: 1, fret: 3, finger: 3 },
+    ],
+  },
+  {
+    id: "g-over-d-open",
+    label: "G/D open",
+    shapeChordLabel: "G/D",
+    shapeFamily: "G",
+    rank: 12,
+    notes: [
+      { string: 4, fret: 0 },
+      { string: 3, fret: 0 },
+      { string: 2, fret: 0 },
+      { string: 1, fret: 3, finger: 3 },
+    ],
+  },
+  {
+    id: "am-open",
+    label: "Am open",
+    shapeChordLabel: "Am",
+    shapeFamily: "A",
+    rank: 10,
+    notes: [
+      { string: 5, fret: 0 },
+      { string: 4, fret: 2, finger: 2 },
+      { string: 3, fret: 2, finger: 3 },
+      { string: 2, fret: 1, finger: 1 },
+      { string: 1, fret: 0 },
+    ],
+  },
+  {
+    id: "f-e-barre",
+    label: "F E-shape barre",
+    shapeChordLabel: "F",
+    shapeFamily: "E",
+    rank: 10,
+    notes: [
+      { string: 6, fret: 1, finger: 1 },
+      { string: 5, fret: 3, finger: 3 },
+      { string: 4, fret: 3, finger: 4 },
+      { string: 3, fret: 2, finger: 2 },
+      { string: 2, fret: 1, finger: 1 },
+      { string: 1, fret: 1, finger: 1 },
+    ],
+  },
+  {
+    id: "f-partial",
+    label: "F partial",
+    shapeChordLabel: "F",
+    shapeFamily: "E",
+    rank: 20,
+    notes: [
+      { string: 4, fret: 3, finger: 3 },
+      { string: 3, fret: 2, finger: 2 },
+      { string: 2, fret: 1, finger: 1 },
+      { string: 1, fret: 1, finger: 1 },
+    ],
+  },
+  {
+    id: "cmaj7-open",
+    label: "Cmaj7 open",
+    shapeChordLabel: "Cmaj7",
+    shapeFamily: "C",
+    rank: 10,
+    notes: [
+      { string: 5, fret: 3, finger: 3 },
+      { string: 4, fret: 2, finger: 2 },
+      { string: 3, fret: 0 },
+      { string: 2, fret: 0 },
+      { string: 1, fret: 0 },
+    ],
+  },
+  {
+    id: "g7-open",
+    label: "G7 open",
+    shapeChordLabel: "G7",
+    shapeFamily: "G",
+    rank: 10,
+    notes: [
+      { string: 6, fret: 3, finger: 3 },
+      { string: 5, fret: 2, finger: 2 },
+      { string: 4, fret: 0 },
+      { string: 3, fret: 0 },
+      { string: 2, fret: 0 },
+      { string: 1, fret: 1, finger: 1 },
+    ],
+  },
+  {
+    id: "e-open",
+    label: "E open",
+    shapeChordLabel: "E",
+    shapeFamily: "E",
+    rank: 10,
+    notes: [
+      { string: 6, fret: 0 },
+      { string: 5, fret: 2, finger: 2 },
+      { string: 4, fret: 2, finger: 3 },
+      { string: 3, fret: 1, finger: 1 },
+      { string: 2, fret: 0 },
+      { string: 1, fret: 0 },
+    ],
+  },
+] as const;
 
 const SHARP_PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"] as const;
 const FLAT_PITCH_CLASSES = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"] as const;
@@ -378,6 +714,468 @@ export function semitoneDelta(source: MusicalKey, target: MusicalKey): number {
     return 0;
   }
   return upwardDistance <= 6 ? upwardDistance : upwardDistance - 12;
+}
+
+export function parsePitch(value: string | null | undefined): ParsedPitch | null {
+  if (!value) {
+    return null;
+  }
+
+  const match = value.trim().match(/^([A-G](?:#|b)?)(-?\d+)$/i);
+  if (!match) {
+    return null;
+  }
+
+  const noteName = normalizeNoteName(match[1]);
+  const pitchClass = ENHARMONIC_ALIASES[noteName];
+  const octave = Number(match[2]);
+  if (pitchClass === undefined || !Number.isInteger(octave)) {
+    return null;
+  }
+
+  const midi = pitchToMidi({ octave, pitchClass });
+  return {
+    pitchClass,
+    octave,
+    midi,
+    noteName,
+    label: `${noteName}${octave}`,
+  };
+}
+
+export function formatPitch(pitch: PitchLike, options: PitchFormatOptions = {}): string {
+  return `${formatPitchClass(pitch.pitchClass, options)}${pitch.octave}`;
+}
+
+export function pitchToMidi(pitch: PitchLike): number {
+  return (pitch.octave + 1) * 12 + normalizePitchClass(pitch.pitchClass);
+}
+
+export function midiToPitch(midi: number, options: PitchFormatOptions = {}): ParsedPitch | null {
+  if (!Number.isInteger(midi)) {
+    return null;
+  }
+
+  const pitchClass = normalizePitchClass(midi);
+  const octave = Math.floor(midi / 12) - 1;
+  const noteName = formatPitchClass(pitchClass, options);
+  return {
+    pitchClass,
+    octave,
+    midi,
+    noteName,
+    label: `${noteName}${octave}`,
+  };
+}
+
+export function parseChordLabel(label: string | null | undefined): ParsedChord | null {
+  if (!label) {
+    return null;
+  }
+
+  const match = label.trim().match(PARSED_CHORD_PATTERN);
+  if (!match) {
+    return null;
+  }
+
+  const root = normalizeNoteName(match[1]);
+  const rootPitchClass = ENHARMONIC_ALIASES[root];
+  const quality = parseChordQualitySuffix(match[2] ?? "");
+  if (rootPitchClass === undefined || !quality) {
+    return null;
+  }
+
+  const bass = match[3] ? normalizeNoteName(match[3]) : null;
+  const bassPitchClass = bass ? ENHARMONIC_ALIASES[bass] : null;
+  if (bass && bassPitchClass === undefined) {
+    return null;
+  }
+
+  return {
+    root,
+    rootPitchClass,
+    quality,
+    bass,
+    bassPitchClass,
+  };
+}
+
+export function isChordSpellingQuality(quality: string | null | undefined): quality is ChordSpellingQuality {
+  return (
+    quality === "major" ||
+    quality === "minor" ||
+    quality === "dim" ||
+    quality === "7" ||
+    quality === "maj7" ||
+    quality === "m7"
+  );
+}
+
+export function formatParsedChordLabel(chord: ParsedChord, options: PitchFormatOptions = {}): string {
+  return formatChordLabel(
+    chord.rootPitchClass,
+    chord.quality,
+    resolveChordFormatOptions(chord, options),
+    chord.bassPitchClass,
+  );
+}
+
+export function spellChord(chord: ChordInput, options: PitchFormatOptions = {}): ChordSpelling | null {
+  const parsedChord = parseChordInput(chord);
+  if (!parsedChord) {
+    return null;
+  }
+
+  const chordOptions = resolveChordFormatOptions(parsedChord, options);
+  const definition = CHORD_QUALITY_DEFINITIONS[parsedChord.quality];
+  const tones = definition.tones.map((tone) => {
+    const pitchClass = transposePitchClass(parsedChord.rootPitchClass, tone.interval);
+    return {
+      ...tone,
+      pitchClass,
+      noteName: formatPitchClass(pitchClass, chordOptions),
+    };
+  });
+
+  const bassNoteName =
+    typeof parsedChord.bassPitchClass === "number" ? formatPitchClass(parsedChord.bassPitchClass, chordOptions) : null;
+
+  return {
+    ...parsedChord,
+    label: formatParsedChordLabel(parsedChord, chordOptions),
+    tones,
+    notes: tones.map((tone) => tone.noteName),
+    bassNoteName,
+  };
+}
+
+export function transposeChord(chord: ChordInput, semitones: number): ParsedChord | null {
+  const parsedChord = parseChordInput(chord);
+  if (!parsedChord) {
+    return null;
+  }
+  return transposeParsedChord(parsedChord, semitones);
+}
+
+export function transposeChordLabel(
+  chord: ChordInput,
+  semitones: number,
+  options: PitchFormatOptions = {},
+): string | null {
+  const transposed = transposeChord(chord, semitones);
+  return transposed ? formatParsedChordLabel(transposed, options) : null;
+}
+
+export function resolveChordDisplayContext(
+  context: Partial<ChordDisplayContext> = {},
+  profile: Pick<GuitarProfile, "canCapo"> = GUITAR_STANDARD_PROFILE,
+): ChordDisplayContext {
+  const capoFret = Math.max(0, Math.trunc(context.capoFret ?? DEFAULT_CHORD_DISPLAY_CONTEXT.capoFret));
+  const canCapo = context.canCapo ?? profile.canCapo;
+  return {
+    sourceKey: context.sourceKey ?? DEFAULT_CHORD_DISPLAY_CONTEXT.sourceKey,
+    transposeSemitones: context.transposeSemitones ?? DEFAULT_CHORD_DISPLAY_CONTEXT.transposeSemitones,
+    capoFret,
+    useCapoShapes: context.useCapoShapes ?? DEFAULT_CHORD_DISPLAY_CONTEXT.useCapoShapes,
+    canCapo,
+  };
+}
+
+export function getCapoShapeSemitones(
+  context: Partial<ChordDisplayContext> = {},
+  profile: Pick<GuitarProfile, "canCapo"> = GUITAR_STANDARD_PROFILE,
+): number {
+  const resolvedContext = resolveChordDisplayContext(context, profile);
+  return resolvedContext.useCapoShapes && resolvedContext.canCapo ? -resolvedContext.capoFret : 0;
+}
+
+export function getCapoShapeChord(
+  chord: ChordInput,
+  context: Partial<ChordDisplayContext> = {},
+  profile: Pick<GuitarProfile, "canCapo"> = GUITAR_STANDARD_PROFILE,
+): ParsedChord | null {
+  const parsedChord = parseChordInput(chord);
+  if (!parsedChord) {
+    return null;
+  }
+  const resolvedContext = resolveChordDisplayContext(context, profile);
+  const soundingChord = transposeParsedChord(parsedChord, resolvedContext.transposeSemitones);
+  return transposeParsedChord(soundingChord, getCapoShapeSemitones(resolvedContext, profile));
+}
+
+export function generateGuitarVoicings(
+  chord: ChordInput,
+  profile: GuitarProfile = GUITAR_STANDARD_PROFILE,
+  context: Partial<ChordDisplayContext> = {},
+  options: PitchFormatOptions = {},
+): readonly GuitarVoicing[] {
+  const parsedChord = parseChordInput(chord);
+  if (!parsedChord) {
+    return [];
+  }
+
+  const resolvedContext = resolveChordDisplayContext(context, profile);
+  const soundingChord = transposeParsedChord(parsedChord, resolvedContext.transposeSemitones);
+  const shapeChord = transposeParsedChord(soundingChord, getCapoShapeSemitones(resolvedContext, profile));
+  const chordOptions = {
+    ...resolveChordFormatOptions(soundingChord, options),
+    activeKey: options.activeKey ?? resolvedContext.sourceKey ?? resolveChordFormatOptions(soundingChord).activeKey,
+  };
+  const soundingSpelling = spellChord(soundingChord, chordOptions);
+  const shapeLabel = formatParsedChordLabel(shapeChord, chordOptions);
+  if (!soundingSpelling) {
+    return [];
+  }
+
+  const commonVoicings = GUITAR_COMMON_VOICING_TEMPLATES.flatMap((template) => {
+    const templateChord = parseChordLabel(template.shapeChordLabel);
+    if (
+      !templateChord ||
+      templateChord.rootPitchClass !== shapeChord.rootPitchClass ||
+      templateChord.quality !== shapeChord.quality ||
+      templateChord.bassPitchClass !== shapeChord.bassPitchClass
+    ) {
+      return [];
+    }
+
+    const voicing = renderGuitarTemplate(template, soundingSpelling, shapeLabel, profile, resolvedContext, chordOptions);
+    return voicing ? [voicing] : [];
+  });
+
+  const generatedVoicing = generateFallbackGuitarVoicing(
+    soundingSpelling,
+    shapeLabel,
+    profile,
+    resolvedContext,
+    chordOptions,
+  );
+  return [...commonVoicings, ...(generatedVoicing ? [generatedVoicing] : [])].sort((left, right) => {
+    if (left.source !== right.source) {
+      return left.source === "common" ? -1 : 1;
+    }
+    return left.rank - right.rank;
+  });
+}
+
+function parsePitchRequired(label: string): ParsedPitch {
+  const pitch = parsePitch(label);
+  if (!pitch) {
+    throw new Error(`Invalid pitch label: ${label}`);
+  }
+  return pitch;
+}
+
+function parseChordQualitySuffix(suffix: string): ChordSpellingQuality | null {
+  switch (suffix.toLowerCase()) {
+    case "":
+      return "major";
+    case "m":
+      return "minor";
+    case "dim":
+      return "dim";
+    case "7":
+      return "7";
+    case "maj7":
+      return "maj7";
+    case "m7":
+      return "m7";
+    default:
+      return null;
+  }
+}
+
+function parseChordInput(chord: ChordInput): ParsedChord | null {
+  if (typeof chord === "string") {
+    return parseChordLabel(chord);
+  }
+  return {
+    root: chord.root,
+    rootPitchClass: normalizePitchClass(chord.rootPitchClass),
+    quality: chord.quality,
+    bass: chord.bass,
+    bassPitchClass: typeof chord.bassPitchClass === "number" ? normalizePitchClass(chord.bassPitchClass) : null,
+  };
+}
+
+function transposeParsedChord(chord: ParsedChord, semitones: number): ParsedChord {
+  const rootPitchClass = transposePitchClass(chord.rootPitchClass, semitones);
+  const bassPitchClass =
+    typeof chord.bassPitchClass === "number" ? transposePitchClass(chord.bassPitchClass, semitones) : null;
+  return {
+    root: formatPitchClass(rootPitchClass, resolveChordFormatOptions({ ...chord, rootPitchClass })),
+    rootPitchClass,
+    quality: chord.quality,
+    bass: typeof bassPitchClass === "number" ? formatPitchClass(bassPitchClass) : null,
+    bassPitchClass,
+  };
+}
+
+function resolveChordFormatOptions(
+  chord: Pick<ParsedChord, "quality" | "rootPitchClass">,
+  options: PitchFormatOptions = {},
+): PitchFormatOptions {
+  if (options.activeKey || options.mode) {
+    return options;
+  }
+  return {
+    activeKey: {
+      pitchClass: normalizePitchClass(chord.rootPitchClass),
+      mode: chord.quality === "minor" || chord.quality === "m7" ? "minor" : "major",
+    } satisfies MusicalKey,
+  };
+}
+
+function renderGuitarTemplate(
+  template: GuitarVoicingTemplate,
+  chord: ChordSpelling,
+  shapeChordLabel: string,
+  profile: GuitarProfile,
+  context: ChordDisplayContext,
+  options: PitchFormatOptions,
+): GuitarVoicing | null {
+  const notes = template.notes
+    .map((templateNote) => renderGuitarNote(templateNote, chord, profile, context, options))
+    .filter((note): note is GuitarVoicingNote => Boolean(note));
+  if (notes.length !== template.notes.length) {
+    return null;
+  }
+  if (!hasRequiredChordDegrees(chord, notes) || !hasRequiredBass(chord, notes)) {
+    return null;
+  }
+
+  return {
+    id: `${template.id}${context.capoFret > 0 ? `-capo-${context.capoFret}` : ""}`,
+    label: template.label,
+    chordLabel: chord.label,
+    shapeChordLabel,
+    shapeFamily: template.shapeFamily,
+    source: "common",
+    rank: template.rank,
+    capoFret: context.useCapoShapes && context.canCapo ? context.capoFret : 0,
+    mutedStrings: getMutedStrings(profile, template.notes),
+    notes,
+  };
+}
+
+function renderGuitarNote(
+  templateNote: GuitarVoicingTemplateNote,
+  chord: ChordSpelling,
+  profile: GuitarProfile,
+  context: ChordDisplayContext,
+  options: PitchFormatOptions,
+): GuitarVoicingNote | null {
+  const tuning = profile.tuning.find((stringTuning) => stringTuning.string === templateNote.string);
+  const capoFret = context.useCapoShapes && context.canCapo ? context.capoFret : 0;
+  const soundingFret = capoFret + templateNote.fret;
+  if (!tuning || soundingFret > profile.frets) {
+    return null;
+  }
+
+  const pitch = midiToPitch(tuning.openPitch.midi + soundingFret, options);
+  if (!pitch) {
+    return null;
+  }
+
+  const degree = getChordDegreeForPitchClass(chord, pitch.pitchClass);
+  if (!degree) {
+    return null;
+  }
+
+  return {
+    string: templateNote.string,
+    fret: templateNote.fret,
+    soundingFret,
+    degree,
+    note: pitch.label,
+    pitch,
+    ...(templateNote.finger ? { finger: templateNote.finger } : {}),
+  };
+}
+
+function generateFallbackGuitarVoicing(
+  chord: ChordSpelling,
+  shapeChordLabel: string,
+  profile: GuitarProfile,
+  context: ChordDisplayContext,
+  options: PitchFormatOptions,
+): GuitarVoicing | null {
+  const capoFret = context.useCapoShapes && context.canCapo ? context.capoFret : 0;
+  const maxShapeFret = Math.min(5, profile.frets - capoFret);
+  const notes = profile.tuning
+    .map((stringTuning) => {
+      const match = findLowestChordFret(stringTuning, chord, capoFret, maxShapeFret, options);
+      return match;
+    })
+    .filter((note): note is GuitarVoicingNote => Boolean(note));
+
+  if (notes.length < 3 || !hasRequiredChordDegrees(chord, notes) || !hasRequiredBass(chord, notes)) {
+    return null;
+  }
+
+  return {
+    id: `${chord.label.toLowerCase().replaceAll("/", "-")}-generated`,
+    label: `${chord.label} generated`,
+    chordLabel: chord.label,
+    shapeChordLabel,
+    source: "generated",
+    rank: 1000,
+    capoFret,
+    mutedStrings: getMutedStrings(profile, notes),
+    notes,
+  };
+}
+
+function findLowestChordFret(
+  tuning: GuitarStringTuning,
+  chord: ChordSpelling,
+  capoFret: number,
+  maxShapeFret: number,
+  options: PitchFormatOptions,
+): GuitarVoicingNote | null {
+  for (let fret = 0; fret <= maxShapeFret; fret += 1) {
+    const soundingFret = capoFret + fret;
+    const pitch = midiToPitch(tuning.openPitch.midi + soundingFret, options);
+    if (!pitch) {
+      return null;
+    }
+    const degree = getChordDegreeForPitchClass(chord, pitch.pitchClass);
+    if (degree) {
+      return {
+        string: tuning.string,
+        fret,
+        soundingFret,
+        degree,
+        note: pitch.label,
+        pitch,
+      };
+    }
+  }
+  return null;
+}
+
+function getChordDegreeForPitchClass(chord: ChordSpelling, pitchClass: number): ChordDegree | null {
+  return chord.tones.find((tone) => tone.pitchClass === normalizePitchClass(pitchClass))?.degree ?? null;
+}
+
+function hasRequiredChordDegrees(chord: ChordSpelling, notes: readonly GuitarVoicingNote[]): boolean {
+  const presentDegrees = new Set(notes.map((note) => note.degree));
+  return chord.tones.every((tone) => presentDegrees.has(tone.degree));
+}
+
+function hasRequiredBass(chord: ChordSpelling, notes: readonly GuitarVoicingNote[]): boolean {
+  if (typeof chord.bassPitchClass !== "number") {
+    return true;
+  }
+  const lowestNote = [...notes].sort((left, right) => left.pitch.midi - right.pitch.midi)[0];
+  return lowestNote?.pitch.pitchClass === chord.bassPitchClass;
+}
+
+function getMutedStrings(
+  profile: GuitarProfile,
+  playedNotes: readonly Pick<GuitarVoicingTemplateNote, "string">[],
+): readonly number[] {
+  const playedStrings = new Set(playedNotes.map((note) => note.string));
+  return profile.tuning.map((stringTuning) => stringTuning.string).filter((stringNumber) => !playedStrings.has(stringNumber));
 }
 
 function normalizeNoteName(noteName: string): string {

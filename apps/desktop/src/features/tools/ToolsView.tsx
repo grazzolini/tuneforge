@@ -46,11 +46,12 @@ import {
   calculateTunerInputLevel,
   type TunerPitchReading,
 } from "./tunerPitch";
+import { ChordDictionaryPage } from "./ChordDictionaryPage";
 
 const SYSTEM_INPUT_VOLUME_COMMIT_DELAY_MS = 180;
 
 type TunerStatus = "idle" | "starting" | "listening" | "unsupported" | "error";
-type ToolId = "tuner" | "metronome";
+type ToolId = "tuner" | "metronome" | "chord-dictionary";
 type CaptureBackend = "native" | "web";
 
 export function ToolsView() {
@@ -64,8 +65,13 @@ export function ToolsView() {
       nextSearchParams.delete("bpm");
       nextSearchParams.delete("followPlayback");
       nextSearchParams.delete("projectId");
-    } else {
+    } else if (tool === "metronome") {
       nextSearchParams.set("tool", "metronome");
+    } else {
+      nextSearchParams.set("tool", "chord-dictionary");
+      nextSearchParams.delete("bpm");
+      nextSearchParams.delete("followPlayback");
+      nextSearchParams.delete("projectId");
     }
     setSearchParams(nextSearchParams);
   }
@@ -84,6 +90,7 @@ export function ToolsView() {
         {[
           { id: "tuner", label: "Chromatic Tuner" },
           { id: "metronome", label: "Metronome" },
+          { id: "chord-dictionary", label: "Chord Dictionary" },
         ].map((tool) => (
           <button
             key={tool.id}
@@ -100,13 +107,23 @@ export function ToolsView() {
         ))}
       </div>
 
-      {activeTool === "tuner" ? <ChromaticTunerPage /> : <MetronomePage />}
+      {activeTool === "tuner" ? (
+        <ChromaticTunerPage />
+      ) : activeTool === "metronome" ? (
+        <MetronomePage />
+      ) : (
+        <ChordDictionaryPage />
+      )}
     </section>
   );
 }
 
 function readToolId(searchParams: URLSearchParams): ToolId {
-  return searchParams.get("tool") === "metronome" ? "metronome" : "tuner";
+  const tool = searchParams.get("tool");
+  if (tool === "metronome" || tool === "chord-dictionary") {
+    return tool;
+  }
+  return "tuner";
 }
 
 function ChromaticTunerPage() {

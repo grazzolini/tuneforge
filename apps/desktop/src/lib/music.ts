@@ -392,6 +392,56 @@ export const INSTRUMENT_PROFILES = {
   guitar: GUITAR_STANDARD_PROFILE,
 } as const;
 
+const GUITAR_TEMPLATE_STRINGS = [6, 5, 4, 3, 2, 1] as const;
+const GUITAR_TEMPLATE_QUALITY_SUFFIXES = {
+  major: "",
+  minor: "m",
+  "7": "7",
+  maj7: "maj7",
+  m7: "m7",
+  sus2: "sus2",
+  sus4: "sus4",
+  dim: "dim",
+} as const;
+type GuitarCommonTemplateQuality = keyof typeof GUITAR_TEMPLATE_QUALITY_SUFFIXES;
+
+type GuitarMoveableRoot = {
+  label: string;
+  offset: number;
+};
+
+const E_SHAPE_BARRE_ROOTS: readonly GuitarMoveableRoot[] = [
+  { label: "F", offset: 1 },
+  { label: "F#", offset: 2 },
+  { label: "G", offset: 3 },
+  { label: "Ab", offset: 4 },
+  { label: "A", offset: 5 },
+  { label: "Bb", offset: 6 },
+  { label: "B", offset: 7 },
+  { label: "C", offset: 8 },
+] as const;
+
+const A_SHAPE_BARRE_ROOTS: readonly GuitarMoveableRoot[] = [
+  { label: "Bb", offset: 1 },
+  { label: "B", offset: 2 },
+  { label: "C", offset: 3 },
+  { label: "C#", offset: 4 },
+  { label: "D", offset: 5 },
+  { label: "Eb", offset: 6 },
+  { label: "E", offset: 7 },
+  { label: "F", offset: 8 },
+] as const;
+
+const D_SHAPE_BARRE_ROOTS: readonly GuitarMoveableRoot[] = [
+  { label: "Eb", offset: 1 },
+  { label: "E", offset: 2 },
+  { label: "F", offset: 3 },
+  { label: "F#", offset: 4 },
+  { label: "G", offset: 5 },
+  { label: "Ab", offset: 6 },
+  { label: "A", offset: 7 },
+] as const;
+
 export const GUITAR_COMMON_VOICING_TEMPLATES: readonly GuitarVoicingTemplate[] = [
   {
     id: "c-open",
@@ -408,6 +458,91 @@ export const GUITAR_COMMON_VOICING_TEMPLATES: readonly GuitarVoicingTemplate[] =
     ],
   },
   {
+    id: "c-over-e-open",
+    label: "C/E open",
+    shapeChordLabel: "C/E",
+    shapeFamily: "C",
+    rank: 12,
+    notes: [
+      { string: 6, fret: 0 },
+      { string: 5, fret: 3, finger: 3 },
+      { string: 4, fret: 2, finger: 2 },
+      { string: 3, fret: 0 },
+      { string: 2, fret: 1, finger: 1 },
+      { string: 1, fret: 0 },
+    ],
+  },
+  {
+    id: "c-over-g-open",
+    label: "C/G open",
+    shapeChordLabel: "C/G",
+    shapeFamily: "C",
+    rank: 12,
+    notes: [
+      { string: 6, fret: 3, finger: 4 },
+      { string: 5, fret: 3, finger: 3 },
+      { string: 4, fret: 2, finger: 2 },
+      { string: 3, fret: 0 },
+      { string: 2, fret: 1, finger: 1 },
+      { string: 1, fret: 0 },
+    ],
+  },
+  {
+    id: "a-open",
+    label: "A open",
+    shapeChordLabel: "A",
+    shapeFamily: "A",
+    rank: 10,
+    notes: [
+      { string: 5, fret: 0 },
+      { string: 4, fret: 2, finger: 1 },
+      { string: 3, fret: 2, finger: 2 },
+      { string: 2, fret: 2, finger: 3 },
+      { string: 1, fret: 0 },
+    ],
+  },
+  {
+    id: "a-over-csharp-open",
+    label: "A/C# open",
+    shapeChordLabel: "A/C#",
+    shapeFamily: "A",
+    rank: 12,
+    notes: [
+      { string: 5, fret: 4, finger: 4 },
+      { string: 4, fret: 2, finger: 1 },
+      { string: 3, fret: 2, finger: 2 },
+      { string: 2, fret: 2, finger: 3 },
+      { string: 1, fret: 0 },
+    ],
+  },
+  {
+    id: "d-open",
+    label: "D open",
+    shapeChordLabel: "D",
+    shapeFamily: "D",
+    rank: 10,
+    notes: [
+      { string: 4, fret: 0 },
+      { string: 3, fret: 2, finger: 1 },
+      { string: 2, fret: 3, finger: 3 },
+      { string: 1, fret: 2, finger: 2 },
+    ],
+  },
+  {
+    id: "d-over-fsharp-open",
+    label: "D/F# open",
+    shapeChordLabel: "D/F#",
+    shapeFamily: "D",
+    rank: 12,
+    notes: [
+      { string: 6, fret: 2, finger: 1 },
+      { string: 4, fret: 0 },
+      { string: 3, fret: 2, finger: 2 },
+      { string: 2, fret: 3, finger: 4 },
+      { string: 1, fret: 2, finger: 3 },
+    ],
+  },
+  {
     id: "g-open",
     label: "G open",
     shapeChordLabel: "G",
@@ -419,6 +554,20 @@ export const GUITAR_COMMON_VOICING_TEMPLATES: readonly GuitarVoicingTemplate[] =
       { string: 4, fret: 0 },
       { string: 3, fret: 0 },
       { string: 2, fret: 0 },
+      { string: 1, fret: 3, finger: 3 },
+    ],
+  },
+  {
+    id: "g-over-b-open",
+    label: "G/B open",
+    shapeChordLabel: "G/B",
+    shapeFamily: "G",
+    rank: 12,
+    notes: [
+      { string: 5, fret: 2, finger: 1 },
+      { string: 4, fret: 0 },
+      { string: 3, fret: 0 },
+      { string: 2, fret: 3, finger: 2 },
       { string: 1, fret: 3, finger: 3 },
     ],
   },
@@ -446,6 +595,76 @@ export const GUITAR_COMMON_VOICING_TEMPLATES: readonly GuitarVoicingTemplate[] =
       { string: 4, fret: 2, finger: 2 },
       { string: 3, fret: 2, finger: 3 },
       { string: 2, fret: 1, finger: 1 },
+      { string: 1, fret: 0 },
+    ],
+  },
+  {
+    id: "dm-open",
+    label: "Dm open",
+    shapeChordLabel: "Dm",
+    shapeFamily: "D",
+    rank: 10,
+    notes: [
+      { string: 4, fret: 0 },
+      { string: 3, fret: 2, finger: 2 },
+      { string: 2, fret: 3, finger: 3 },
+      { string: 1, fret: 1, finger: 1 },
+    ],
+  },
+  {
+    id: "em-open",
+    label: "Em open",
+    shapeChordLabel: "Em",
+    shapeFamily: "E",
+    rank: 10,
+    notes: [
+      { string: 6, fret: 0 },
+      { string: 5, fret: 2, finger: 2 },
+      { string: 4, fret: 2, finger: 3 },
+      { string: 3, fret: 0 },
+      { string: 2, fret: 0 },
+      { string: 1, fret: 0 },
+    ],
+  },
+  {
+    id: "am7-open",
+    label: "Am7 open",
+    shapeChordLabel: "Am7",
+    shapeFamily: "A",
+    rank: 10,
+    notes: [
+      { string: 5, fret: 0 },
+      { string: 4, fret: 2, finger: 2 },
+      { string: 3, fret: 0 },
+      { string: 2, fret: 1, finger: 1 },
+      { string: 1, fret: 0 },
+    ],
+  },
+  {
+    id: "dm7-open",
+    label: "Dm7 open",
+    shapeChordLabel: "Dm7",
+    shapeFamily: "D",
+    rank: 10,
+    notes: [
+      { string: 4, fret: 0 },
+      { string: 3, fret: 2, finger: 2 },
+      { string: 2, fret: 1, finger: 1 },
+      { string: 1, fret: 1, finger: 1 },
+    ],
+  },
+  {
+    id: "em7-open",
+    label: "Em7 open",
+    shapeChordLabel: "Em7",
+    shapeFamily: "E",
+    rank: 10,
+    notes: [
+      { string: 6, fret: 0 },
+      { string: 5, fret: 2, finger: 2 },
+      { string: 4, fret: 0 },
+      { string: 3, fret: 0 },
+      { string: 2, fret: 0 },
       { string: 1, fret: 0 },
     ],
   },
@@ -492,6 +711,33 @@ export const GUITAR_COMMON_VOICING_TEMPLATES: readonly GuitarVoicingTemplate[] =
     ],
   },
   {
+    id: "amaj7-open",
+    label: "Amaj7 open",
+    shapeChordLabel: "Amaj7",
+    shapeFamily: "A",
+    rank: 10,
+    notes: [
+      { string: 5, fret: 0 },
+      { string: 4, fret: 2, finger: 2 },
+      { string: 3, fret: 1, finger: 1 },
+      { string: 2, fret: 2, finger: 3 },
+      { string: 1, fret: 0 },
+    ],
+  },
+  {
+    id: "dmaj7-open",
+    label: "Dmaj7 open",
+    shapeChordLabel: "Dmaj7",
+    shapeFamily: "D",
+    rank: 10,
+    notes: [
+      { string: 4, fret: 0 },
+      { string: 3, fret: 2, finger: 1 },
+      { string: 2, fret: 2, finger: 2 },
+      { string: 1, fret: 2, finger: 3 },
+    ],
+  },
+  {
     id: "g7-open",
     label: "G7 open",
     shapeChordLabel: "G7",
@@ -504,6 +750,47 @@ export const GUITAR_COMMON_VOICING_TEMPLATES: readonly GuitarVoicingTemplate[] =
       { string: 3, fret: 0 },
       { string: 2, fret: 0 },
       { string: 1, fret: 1, finger: 1 },
+    ],
+  },
+  {
+    id: "a7-open",
+    label: "A7 open",
+    shapeChordLabel: "A7",
+    shapeFamily: "A",
+    rank: 10,
+    notes: [
+      { string: 5, fret: 0 },
+      { string: 4, fret: 2, finger: 1 },
+      { string: 3, fret: 0 },
+      { string: 2, fret: 2, finger: 2 },
+      { string: 1, fret: 0 },
+    ],
+  },
+  {
+    id: "c7-open",
+    label: "C7 open",
+    shapeChordLabel: "C7",
+    shapeFamily: "C",
+    rank: 10,
+    notes: [
+      { string: 5, fret: 3, finger: 3 },
+      { string: 4, fret: 2, finger: 2 },
+      { string: 3, fret: 3, finger: 4 },
+      { string: 2, fret: 1, finger: 1 },
+      { string: 1, fret: 0 },
+    ],
+  },
+  {
+    id: "d7-open",
+    label: "D7 open",
+    shapeChordLabel: "D7",
+    shapeFamily: "D",
+    rank: 10,
+    notes: [
+      { string: 4, fret: 0 },
+      { string: 3, fret: 2, finger: 2 },
+      { string: 2, fret: 1, finger: 1 },
+      { string: 1, fret: 2, finger: 3 },
     ],
   },
   {
@@ -521,7 +808,333 @@ export const GUITAR_COMMON_VOICING_TEMPLATES: readonly GuitarVoicingTemplate[] =
       { string: 1, fret: 0 },
     ],
   },
+  {
+    id: "e7-open",
+    label: "E7 open",
+    shapeChordLabel: "E7",
+    shapeFamily: "E",
+    rank: 10,
+    notes: [
+      { string: 6, fret: 0 },
+      { string: 5, fret: 2, finger: 2 },
+      { string: 4, fret: 0 },
+      { string: 3, fret: 1, finger: 1 },
+      { string: 2, fret: 0 },
+      { string: 1, fret: 0 },
+    ],
+  },
+  {
+    id: "emaj7-open",
+    label: "Emaj7 open",
+    shapeChordLabel: "Emaj7",
+    shapeFamily: "E",
+    rank: 10,
+    notes: [
+      { string: 6, fret: 0 },
+      { string: 5, fret: 2, finger: 3 },
+      { string: 4, fret: 1, finger: 1 },
+      { string: 3, fret: 1, finger: 2 },
+      { string: 2, fret: 0 },
+      { string: 1, fret: 0 },
+    ],
+  },
+  {
+    id: "asus2-open",
+    label: "Asus2 open",
+    shapeChordLabel: "Asus2",
+    shapeFamily: "A",
+    rank: 10,
+    notes: [
+      { string: 5, fret: 0 },
+      { string: 4, fret: 2, finger: 1 },
+      { string: 3, fret: 2, finger: 2 },
+      { string: 2, fret: 0 },
+      { string: 1, fret: 0 },
+    ],
+  },
+  {
+    id: "asus4-open",
+    label: "Asus4 open",
+    shapeChordLabel: "Asus4",
+    shapeFamily: "A",
+    rank: 10,
+    notes: [
+      { string: 5, fret: 0 },
+      { string: 4, fret: 2, finger: 1 },
+      { string: 3, fret: 2, finger: 2 },
+      { string: 2, fret: 3, finger: 3 },
+      { string: 1, fret: 0 },
+    ],
+  },
+  {
+    id: "dsus2-open",
+    label: "Dsus2 open",
+    shapeChordLabel: "Dsus2",
+    shapeFamily: "D",
+    rank: 10,
+    notes: [
+      { string: 4, fret: 0 },
+      { string: 3, fret: 2, finger: 2 },
+      { string: 2, fret: 3, finger: 3 },
+      { string: 1, fret: 0 },
+    ],
+  },
+  {
+    id: "dsus4-open",
+    label: "Dsus4 open",
+    shapeChordLabel: "Dsus4",
+    shapeFamily: "D",
+    rank: 10,
+    notes: [
+      { string: 4, fret: 0 },
+      { string: 3, fret: 2, finger: 1 },
+      { string: 2, fret: 3, finger: 2 },
+      { string: 1, fret: 3, finger: 3 },
+    ],
+  },
+  {
+    id: "esus4-open",
+    label: "Esus4 open",
+    shapeChordLabel: "Esus4",
+    shapeFamily: "E",
+    rank: 10,
+    notes: [
+      { string: 6, fret: 0 },
+      { string: 5, fret: 2, finger: 1 },
+      { string: 4, fret: 2, finger: 2 },
+      { string: 3, fret: 2, finger: 3 },
+      { string: 2, fret: 0 },
+      { string: 1, fret: 0 },
+    ],
+  },
+  ...buildMoveableGuitarTemplates(),
 ] as const;
+
+type GuitarMoveableTemplateDefinition = {
+  id: string;
+  label: string;
+  shapeFamily: GuitarShapeFamily;
+  quality: GuitarCommonTemplateQuality;
+  baseFrets: readonly (number | null)[];
+  rank: number;
+  roots: readonly GuitarMoveableRoot[];
+};
+
+function buildMoveableGuitarTemplates(): readonly GuitarVoicingTemplate[] {
+  const definitions: readonly GuitarMoveableTemplateDefinition[] = [
+    {
+      id: "e-shape-barre",
+      label: "E-shape barre",
+      shapeFamily: "E",
+      quality: "major",
+      baseFrets: [0, 2, 2, 1, 0, 0],
+      rank: 30,
+      roots: E_SHAPE_BARRE_ROOTS,
+    },
+    {
+      id: "em-shape-barre",
+      label: "Em-shape barre",
+      shapeFamily: "E",
+      quality: "minor",
+      baseFrets: [0, 2, 2, 0, 0, 0],
+      rank: 32,
+      roots: E_SHAPE_BARRE_ROOTS,
+    },
+    {
+      id: "e7-shape-barre",
+      label: "E7-shape barre",
+      shapeFamily: "E",
+      quality: "7",
+      baseFrets: [0, 2, 0, 1, 0, 0],
+      rank: 34,
+      roots: E_SHAPE_BARRE_ROOTS,
+    },
+    {
+      id: "emaj7-shape-barre",
+      label: "Emaj7-shape barre",
+      shapeFamily: "E",
+      quality: "maj7",
+      baseFrets: [0, 2, 1, 1, 0, 0],
+      rank: 36,
+      roots: E_SHAPE_BARRE_ROOTS,
+    },
+    {
+      id: "em7-shape-barre",
+      label: "Em7-shape barre",
+      shapeFamily: "E",
+      quality: "m7",
+      baseFrets: [0, 2, 0, 0, 0, 0],
+      rank: 34,
+      roots: E_SHAPE_BARRE_ROOTS,
+    },
+    {
+      id: "esus4-shape-barre",
+      label: "Esus4-shape barre",
+      shapeFamily: "E",
+      quality: "sus4",
+      baseFrets: [0, 2, 2, 2, 0, 0],
+      rank: 38,
+      roots: E_SHAPE_BARRE_ROOTS,
+    },
+    {
+      id: "a-shape-barre",
+      label: "A-shape barre",
+      shapeFamily: "A",
+      quality: "major",
+      baseFrets: [null, 0, 2, 2, 2, 0],
+      rank: 31,
+      roots: A_SHAPE_BARRE_ROOTS,
+    },
+    {
+      id: "am-shape-barre",
+      label: "Am-shape barre",
+      shapeFamily: "A",
+      quality: "minor",
+      baseFrets: [null, 0, 2, 2, 1, 0],
+      rank: 33,
+      roots: A_SHAPE_BARRE_ROOTS,
+    },
+    {
+      id: "a7-shape-barre",
+      label: "A7-shape barre",
+      shapeFamily: "A",
+      quality: "7",
+      baseFrets: [null, 0, 2, 0, 2, 0],
+      rank: 35,
+      roots: A_SHAPE_BARRE_ROOTS,
+    },
+    {
+      id: "amaj7-shape-barre",
+      label: "Amaj7-shape barre",
+      shapeFamily: "A",
+      quality: "maj7",
+      baseFrets: [null, 0, 2, 1, 2, 0],
+      rank: 37,
+      roots: A_SHAPE_BARRE_ROOTS,
+    },
+    {
+      id: "am7-shape-barre",
+      label: "Am7-shape barre",
+      shapeFamily: "A",
+      quality: "m7",
+      baseFrets: [null, 0, 2, 0, 1, 0],
+      rank: 35,
+      roots: A_SHAPE_BARRE_ROOTS,
+    },
+    {
+      id: "asus2-shape-barre",
+      label: "Asus2-shape barre",
+      shapeFamily: "A",
+      quality: "sus2",
+      baseFrets: [null, 0, 2, 2, 0, 0],
+      rank: 38,
+      roots: A_SHAPE_BARRE_ROOTS,
+    },
+    {
+      id: "asus4-shape-barre",
+      label: "Asus4-shape barre",
+      shapeFamily: "A",
+      quality: "sus4",
+      baseFrets: [null, 0, 2, 2, 3, 0],
+      rank: 38,
+      roots: A_SHAPE_BARRE_ROOTS,
+    },
+    {
+      id: "d-shape-barre",
+      label: "D-shape barre",
+      shapeFamily: "D",
+      quality: "major",
+      baseFrets: [null, null, 0, 2, 3, 2],
+      rank: 43,
+      roots: D_SHAPE_BARRE_ROOTS,
+    },
+    {
+      id: "dm-shape-barre",
+      label: "Dm-shape barre",
+      shapeFamily: "D",
+      quality: "minor",
+      baseFrets: [null, null, 0, 2, 3, 1],
+      rank: 45,
+      roots: D_SHAPE_BARRE_ROOTS,
+    },
+    {
+      id: "d7-shape-barre",
+      label: "D7-shape barre",
+      shapeFamily: "D",
+      quality: "7",
+      baseFrets: [null, null, 0, 2, 1, 2],
+      rank: 47,
+      roots: D_SHAPE_BARRE_ROOTS,
+    },
+    {
+      id: "dmaj7-shape-barre",
+      label: "Dmaj7-shape barre",
+      shapeFamily: "D",
+      quality: "maj7",
+      baseFrets: [null, null, 0, 2, 2, 2],
+      rank: 47,
+      roots: D_SHAPE_BARRE_ROOTS,
+    },
+    {
+      id: "dm7-shape-barre",
+      label: "Dm7-shape barre",
+      shapeFamily: "D",
+      quality: "m7",
+      baseFrets: [null, null, 0, 2, 1, 1],
+      rank: 47,
+      roots: D_SHAPE_BARRE_ROOTS,
+    },
+    {
+      id: "dsus2-shape-barre",
+      label: "Dsus2-shape barre",
+      shapeFamily: "D",
+      quality: "sus2",
+      baseFrets: [null, null, 0, 2, 3, 0],
+      rank: 49,
+      roots: D_SHAPE_BARRE_ROOTS,
+    },
+    {
+      id: "dsus4-shape-barre",
+      label: "Dsus4-shape barre",
+      shapeFamily: "D",
+      quality: "sus4",
+      baseFrets: [null, null, 0, 2, 3, 3],
+      rank: 49,
+      roots: D_SHAPE_BARRE_ROOTS,
+    },
+  ];
+
+  return definitions.flatMap((definition) =>
+    definition.roots.map((root) => {
+      const shapeChordLabel = formatGuitarTemplateChordLabel(root.label, definition.quality);
+      return {
+        id: `${formatGuitarTemplateId(shapeChordLabel)}-${definition.id}`,
+        label: `${shapeChordLabel} ${definition.label}`,
+        shapeChordLabel,
+        shapeFamily: definition.shapeFamily,
+        rank: definition.rank + root.offset,
+        notes: definition.baseFrets.flatMap((fret, index) =>
+          typeof fret === "number" && typeof GUITAR_TEMPLATE_STRINGS[index] === "number"
+            ? [
+                {
+                  string: GUITAR_TEMPLATE_STRINGS[index],
+                  fret: fret + root.offset,
+                },
+              ]
+            : [],
+        ),
+      };
+    }),
+  );
+}
+
+function formatGuitarTemplateChordLabel(rootLabel: string, quality: GuitarCommonTemplateQuality): string {
+  return `${rootLabel}${GUITAR_TEMPLATE_QUALITY_SUFFIXES[quality]}`;
+}
+
+function formatGuitarTemplateId(label: string): string {
+  return label.toLowerCase().replaceAll("#", "sharp").replaceAll("/", "-");
+}
 
 const SHARP_PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"] as const;
 const FLAT_PITCH_CLASSES = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"] as const;
@@ -1087,6 +1700,27 @@ export function getCapoShapeChord(
   return transposeParsedChord(soundingChord, getCapoShapeSemitones(resolvedContext, profile));
 }
 
+const GUITAR_GENERATED_MAX_SHAPE_FRET = 12;
+const GUITAR_GENERATED_MAX_VOICINGS = 8;
+const GUITAR_GENERATED_MAX_FRET_SPAN = 4;
+const GUITAR_GENERATED_MAX_DISTINCT_FRETS = 4;
+const GUITAR_GENERATED_MAX_OPEN_POSITION_FRET = 5;
+
+type GuitarGeneratedCandidate = {
+  notes: readonly GuitarVoicingNote[];
+  mutedStrings: readonly number[];
+  score: number;
+  shapeKey: string;
+};
+
+type GuitarGeneratedFretStats = {
+  hasOpenString: boolean;
+  minFret: number;
+  maxFret: number;
+  span: number;
+  distinctFretCount: number;
+};
+
 export function generateGuitarVoicings(
   chord: ChordInput,
   profile: GuitarProfile = GUITAR_STANDARD_PROFILE,
@@ -1126,14 +1760,14 @@ export function generateGuitarVoicings(
     return voicing ? [voicing] : [];
   });
 
-  const generatedVoicing = generateFallbackGuitarVoicing(
+  const generatedVoicings = generateFallbackGuitarVoicings(
     soundingSpelling,
     shapeLabel,
     profile,
     resolvedContext,
     chordOptions,
   );
-  return [...commonVoicings, ...(generatedVoicing ? [generatedVoicing] : [])].sort((left, right) => {
+  return [...commonVoicings, ...generatedVoicings].sort((left, right) => {
     if (left.source !== right.source) {
       return left.source === "common" ? -1 : 1;
     }
@@ -1306,15 +1940,17 @@ function renderGuitarTemplate(
     return null;
   }
 
+  const capoFret = context.useCapoShapes && context.canCapo ? context.capoFret : 0;
+
   return {
-    id: `${template.id}${context.capoFret > 0 ? `-capo-${context.capoFret}` : ""}`,
+    id: `${template.id}${capoFret > 0 ? `-capo-${capoFret}` : ""}`,
     label: template.label,
     chordLabel: chord.label,
     shapeChordLabel,
     shapeFamily: template.shapeFamily,
     source: "common",
     rank: template.rank,
-    capoFret: context.useCapoShapes && context.canCapo ? context.capoFret : 0,
+    capoFret,
     mutedStrings: getMutedStrings(profile, template.notes),
     notes,
   };
@@ -1355,69 +1991,262 @@ function renderGuitarNote(
   };
 }
 
-function generateFallbackGuitarVoicing(
+function generateFallbackGuitarVoicings(
   chord: ChordSpelling,
   shapeChordLabel: string,
   profile: GuitarProfile,
   context: ChordDisplayContext,
   options: PitchFormatOptions,
-): GuitarVoicing | null {
+): readonly GuitarVoicing[] {
   const capoFret = context.useCapoShapes && context.canCapo ? context.capoFret : 0;
-  const maxShapeFret = Math.min(5, profile.frets - capoFret);
-  const notes = profile.tuning
-    .map((stringTuning) => {
-      const match = findLowestChordFret(stringTuning, chord, capoFret, maxShapeFret, options);
-      return match;
-    })
-    .filter((note): note is GuitarVoicingNote => Boolean(note));
-
-  if (notes.length < 3 || !hasRequiredChordDegrees(chord, notes) || !hasRequiredBass(chord, notes)) {
-    return null;
+  const maxShapeFret = Math.min(GUITAR_GENERATED_MAX_SHAPE_FRET, profile.frets - capoFret);
+  if (maxShapeFret < 0) {
+    return [];
   }
 
-  return {
-    id: `${chord.label.toLowerCase().replaceAll("/", "-")}-generated`,
-    label: `${chord.label} generated`,
-    chordLabel: chord.label,
-    shapeChordLabel,
-    source: "generated",
-    rank: 1000,
-    capoFret,
-    mutedStrings: getMutedStrings(profile, notes),
-    notes,
-  };
+  const playableFretsByString = profile.tuning.map((stringTuning) =>
+    findPlayableChordFrets(stringTuning, chord, capoFret, maxShapeFret, options),
+  );
+  const minPlayedStrings = Math.max(3, getRequiredGuitarPitchClassCount(chord));
+  const candidates = new Map<string, GuitarGeneratedCandidate>();
+
+  for (let startIndex = 0; startIndex < playableFretsByString.length; startIndex += 1) {
+    for (let endIndex = startIndex + minPlayedStrings - 1; endIndex < playableFretsByString.length; endIndex += 1) {
+      const stringOptions = playableFretsByString.slice(startIndex, endIndex + 1);
+      if (stringOptions.some((optionsForString) => optionsForString.length === 0)) {
+        continue;
+      }
+      collectGeneratedGuitarCandidates(stringOptions, 0, [], (notes) => {
+        addGeneratedGuitarCandidate(chord, profile, notes, candidates);
+      });
+    }
+  }
+
+  return [...candidates.values()]
+    .sort(compareGeneratedGuitarCandidates)
+    .slice(0, GUITAR_GENERATED_MAX_VOICINGS)
+    .map((candidate, index) => ({
+      id: formatGeneratedGuitarVoicingId(chord.label, index),
+      label: index === 0 ? `${chord.label} generated` : `${chord.label} generated ${index + 1}`,
+      chordLabel: chord.label,
+      shapeChordLabel,
+      source: "generated",
+      rank: 1000 + index,
+      capoFret,
+      mutedStrings: candidate.mutedStrings,
+      notes: candidate.notes,
+    }));
 }
 
-function findLowestChordFret(
+function findPlayableChordFrets(
   tuning: GuitarStringTuning,
   chord: ChordSpelling,
   capoFret: number,
   maxShapeFret: number,
   options: PitchFormatOptions,
-): GuitarVoicingNote | null {
+): readonly GuitarVoicingNote[] {
+  const matches: GuitarVoicingNote[] = [];
   for (let fret = 0; fret <= maxShapeFret; fret += 1) {
     const soundingFret = capoFret + fret;
     const pitch = midiToPitch(tuning.openPitch.midi + soundingFret, options);
     if (!pitch) {
-      return null;
+      continue;
     }
     const degree = getChordDegreeForPitchClass(chord, pitch.pitchClass);
     if (degree) {
-      return {
+      matches.push({
         string: tuning.string,
         fret,
         soundingFret,
         degree,
         note: pitch.label,
         pitch,
-      };
+      });
     }
+  }
+  return matches;
+}
+
+function collectGeneratedGuitarCandidates(
+  stringOptions: readonly (readonly GuitarVoicingNote[])[],
+  index: number,
+  selectedNotes: GuitarVoicingNote[],
+  onCandidate: (notes: readonly GuitarVoicingNote[]) => void,
+): void {
+  if (index >= stringOptions.length) {
+    onCandidate([...selectedNotes]);
+    return;
+  }
+
+  for (const note of stringOptions[index]) {
+    selectedNotes.push(note);
+    collectGeneratedGuitarCandidates(stringOptions, index + 1, selectedNotes, onCandidate);
+    selectedNotes.pop();
+  }
+}
+
+function addGeneratedGuitarCandidate(
+  chord: ChordSpelling,
+  profile: GuitarProfile,
+  notes: readonly GuitarVoicingNote[],
+  candidates: Map<string, GuitarGeneratedCandidate>,
+): void {
+  if (
+    notes.length < Math.max(3, getRequiredGuitarPitchClassCount(chord)) ||
+    !isAscendingSoundingGuitarOrder(notes) ||
+    !hasRequiredChordDegrees(chord, notes) ||
+    !hasRequiredBass(chord, notes) ||
+    !isPlayableGeneratedGuitarVoicing(notes)
+  ) {
+    return;
+  }
+
+  const mutedStrings = getMutedStrings(profile, notes);
+  const score = scoreGeneratedGuitarCandidate(chord, notes, mutedStrings);
+  const shapeKey = getGeneratedGuitarShapeKey(notes);
+  const existing = candidates.get(shapeKey);
+  if (!existing || score < existing.score) {
+    candidates.set(shapeKey, {
+      notes: [...notes],
+      mutedStrings,
+      score,
+      shapeKey,
+    });
+  }
+}
+
+function isAscendingSoundingGuitarOrder(notes: readonly GuitarVoicingNote[]): boolean {
+  for (let index = 1; index < notes.length; index += 1) {
+    if (notes[index].pitch.midi < notes[index - 1].pitch.midi) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isPlayableGeneratedGuitarVoicing(notes: readonly GuitarVoicingNote[]): boolean {
+  const stats = getGeneratedGuitarFretStats(notes);
+  if (stats.span > GUITAR_GENERATED_MAX_FRET_SPAN) {
+    return false;
+  }
+  if (stats.distinctFretCount > GUITAR_GENERATED_MAX_DISTINCT_FRETS) {
+    return false;
+  }
+  return !stats.hasOpenString || stats.maxFret <= GUITAR_GENERATED_MAX_OPEN_POSITION_FRET;
+}
+
+function scoreGeneratedGuitarCandidate(
+  chord: ChordSpelling,
+  notes: readonly GuitarVoicingNote[],
+  mutedStrings: readonly number[],
+): number {
+  const stats = getGeneratedGuitarFretStats(notes);
+  const lowestNote = getLowestGuitarNote(notes);
+  const explicitBass = typeof chord.bassPitchClass === "number";
+  const bassPenalty = explicitBass || lowestNote.pitch.pitchClass === chord.rootPitchClass ? 0 : 500;
+  const lowerStringBonus = notes[0]?.string >= 5 ? -8 : notes[0]?.string === 4 ? 0 : 8;
+  const openPositionBonus = stats.hasOpenString && stats.maxFret <= 4 ? -18 : 0;
+  const compactBarreBonus = !stats.hasOpenString && stats.minFret >= 1 && stats.minFret <= 5 ? -8 : 0;
+
+  return (
+    1000 +
+    bassPenalty +
+    mutedStrings.length * 12 +
+    stats.span * 20 +
+    stats.distinctFretCount * 8 +
+    stats.minFret * 2 +
+    stats.maxFret * 4 +
+    lowerStringBonus +
+    openPositionBonus +
+    compactBarreBonus
+  );
+}
+
+function compareGeneratedGuitarCandidates(
+  left: GuitarGeneratedCandidate,
+  right: GuitarGeneratedCandidate,
+): number {
+  return (
+    left.score - right.score ||
+    left.mutedStrings.length - right.mutedStrings.length ||
+    left.shapeKey.localeCompare(right.shapeKey)
+  );
+}
+
+function getGeneratedGuitarFretStats(notes: readonly GuitarVoicingNote[]): GuitarGeneratedFretStats {
+  const frettedNotes = notes.filter((note) => note.fret > 0);
+  const frets = frettedNotes.map((note) => note.fret);
+  const minFret = frets.length > 0 ? Math.min(...frets) : 0;
+  const maxFret = frets.length > 0 ? Math.max(...frets) : 0;
+  return {
+    hasOpenString: notes.some((note) => note.fret === 0),
+    minFret,
+    maxFret,
+    span: maxFret - minFret,
+    distinctFretCount: new Set(frets).size,
+  };
+}
+
+function getRequiredGuitarPitchClassCount(chord: ChordSpelling): number {
+  const requiredPitchClasses = new Set(chord.tones.map((tone) => tone.pitchClass));
+  if (typeof chord.bassPitchClass === "number") {
+    requiredPitchClasses.add(chord.bassPitchClass);
+  }
+  return requiredPitchClasses.size;
+}
+
+function getLowestGuitarNote(notes: readonly GuitarVoicingNote[]): GuitarVoicingNote {
+  return notes.reduce((lowestNote, note) => (note.pitch.midi < lowestNote.pitch.midi ? note : lowestNote), notes[0]);
+}
+
+function getGeneratedGuitarShapeKey(notes: readonly GuitarVoicingNote[]): string {
+  return notes.map((note) => `${note.string}:${note.fret}`).join("|");
+}
+
+function formatGeneratedGuitarVoicingId(chordLabel: string, index: number): string {
+  const baseId = chordLabel.toLowerCase().replaceAll("#", "sharp").replaceAll("/", "-").replace(/\s+/g, "-");
+  return index === 0 ? `${baseId}-generated` : `${baseId}-generated-${index + 1}`;
+}
+
+function getChordDegreeForPitchClass(chord: ChordSpelling, pitchClass: number): ChordDegree | null {
+  const normalizedPitchClass = normalizePitchClass(pitchClass);
+  const chordToneDegree = chord.tones.find((tone) => tone.pitchClass === normalizedPitchClass)?.degree;
+  if (chordToneDegree) {
+    return chordToneDegree;
+  }
+  if (typeof chord.bassPitchClass === "number" && normalizePitchClass(chord.bassPitchClass) === normalizedPitchClass) {
+    return chord.bassDegree ?? getChromaticDegreeForPitchClass(chord.rootPitchClass, normalizedPitchClass);
   }
   return null;
 }
 
-function getChordDegreeForPitchClass(chord: ChordSpelling, pitchClass: number): ChordDegree | null {
-  return chord.tones.find((tone) => tone.pitchClass === normalizePitchClass(pitchClass))?.degree ?? null;
+function getChromaticDegreeForPitchClass(rootPitchClass: number, pitchClass: number): ChordDegree {
+  switch (normalizePitchClass(pitchClass - rootPitchClass)) {
+    case 1:
+      return "b2";
+    case 2:
+      return "2";
+    case 3:
+      return "b3";
+    case 4:
+      return "3";
+    case 5:
+      return "4";
+    case 6:
+      return "b5";
+    case 7:
+      return "5";
+    case 8:
+      return "#5";
+    case 9:
+      return "6";
+    case 10:
+      return "b7";
+    case 11:
+      return "7";
+    default:
+      return "1";
+  }
 }
 
 function hasRequiredChordDegrees(chord: ChordSpelling, notes: readonly GuitarVoicingNote[]): boolean {

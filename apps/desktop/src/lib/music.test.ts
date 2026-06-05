@@ -103,6 +103,52 @@ function requireFirstVoicing(label: string, context: Partial<ChordDisplayContext
   return voicing;
 }
 
+function requireVoicings(label: string, context: Partial<ChordDisplayContext> = {}): readonly GuitarVoicing[] {
+  const voicings = generateGuitarVoicings(label, undefined, context);
+  if (voicings.length === 0) {
+    throw new Error(`Expected ${label} to produce voicings`);
+  }
+  return voicings;
+}
+
+function requireGeneratedVoicing(label: string, context: Partial<ChordDisplayContext> = {}): GuitarVoicing {
+  const voicing = requireVoicings(label, context).find((candidate) => candidate.source === "generated");
+  if (!voicing) {
+    throw new Error(`Expected ${label} to produce a generated voicing`);
+  }
+  return voicing;
+}
+
+function requireLowestNote(voicing: GuitarVoicing): GuitarVoicing["notes"][number] {
+  const lowest = [...voicing.notes].sort((left, right) => left.pitch.midi - right.pitch.midi)[0];
+  if (!lowest) {
+    throw new Error(`Expected ${voicing.chordLabel} voicing to include notes`);
+  }
+  return lowest;
+}
+
+function fretSpan(voicing: GuitarVoicing): number {
+  const frettedNotes = voicing.notes.map((note) => note.fret).filter((fret) => fret > 0);
+  if (frettedNotes.length <= 1) {
+    return 0;
+  }
+  return Math.max(...frettedNotes) - Math.min(...frettedNotes);
+}
+
+function expectVoicingCoversChord(label: string, voicing: GuitarVoicing): void {
+  const chord = requireChord(label);
+  const degrees = new Set(voicing.notes.map((note) => note.degree));
+  expect(chord.tones.map((tone) => tone.degree).filter((degree) => !degrees.has(degree))).toEqual([]);
+}
+
+function expectLowestBass(label: string, voicing: GuitarVoicing): void {
+  const chord = requireChord(label);
+  if (typeof chord.bassPitchClass !== "number") {
+    throw new Error(`Expected ${label} to include slash bass`);
+  }
+  expect(requireLowestNote(voicing).pitch.pitchClass).toBe(chord.bassPitchClass);
+}
+
 describe("pitch parsing and midi conversion", () => {
   it("parses pitch labels with octaves", () => {
     expect(parsePitch("C4")).toEqual({
@@ -309,6 +355,145 @@ describe("chord parsing and spelling", () => {
 });
 
 describe("guitar chord voicings", () => {
+  it("keeps common shapes ordered before generated alternatives", () => {
+    const voicings = requireVoicings("C");
+    const firstGeneratedIndex = voicings.findIndex((voicing) => voicing.source === "generated");
+    let lastCommonIndex = -1;
+    for (let index = voicings.length - 1; index >= 0; index -= 1) {
+      if (voicings[index]?.source === "common") {
+        lastCommonIndex = index;
+        break;
+      }
+    }
+
+    expect(voicings[0]?.source).toBe("common");
+    expect(firstGeneratedIndex).toBeGreaterThan(0);
+    expect(lastCommonIndex).toBeGreaterThanOrEqual(0);
+    expect(lastCommonIndex).toBeLessThan(firstGeneratedIndex);
+  });
+
+  it("prioritizes common CAGED open and barre shape families", () => {
+    for (const [label, shapeFamily] of [
+      ["C", "C"],
+      ["A", "A"],
+      ["G", "G"],
+      ["E", "E"],
+      ["D", "D"],
+    ] as const) {
+      expect(requireFirstVoicing(label)).toMatchObject({
+        source: "common",
+        shapeFamily,
+      });
+    }
+
+    for (const [label, shapeFamily] of [
+      ["F", "E"],
+      ["Bb", "A"],
+    ] as const) {
+      const voicing = requireFirstVoicing(label);
+      expect(voicing).toMatchObject({
+        source: "common",
+        shapeFamily,
+      });
+      expect(fretSpan(voicing)).toBeLessThanOrEqual(4);
+      expect(voicing.notes.length).toBeGreaterThanOrEqual(4);
+    }
+  });
+
+  it("generates playable voicings for supported V1 chord qualities", () => {
+    for (const label of ["C", "Am", "G7", "Cmaj7", "Am7", "Bdim", "Dsus2", "Dsus4"] as const) {
+      const voicing = requireFirstVoicing(label);
+      expectVoicingCoversChord(label, voicing);
+      expect(voicing.notes.length).toBeGreaterThanOrEqual(3);
+      expect(voicing.mutedStrings.length).toBeLessThanOrEqual(3);
+    }
+  });
+
+  it("prefers root-bass generated voicings for non-slash diminished chords when possible", () => {
+    for (const label of ["Bdim", "Cdim7"] as const) {
+      const chord = requireChord(label);
+      const voicing = requireFirstVoicing(label);
+
+      expect(voicing.source).toBe("generated");
+      expectVoicingCoversChord(label, voicing);
+      expect(requireLowestNote(voicing).pitch.pitchClass).toBe(chord.rootPitchClass);
+    }
+  });
+
+  it("keeps slash chord bass as the lowest sounding note across common and generated shapes", () => {
+    for (const label of ["G/D", "C/E", "D/F#", "Am/G"] as const) {
+      const voicing = requireFirstVoicing(label);
+      expectVoicingCoversChord(label, voicing);
+      expectLowestBass(label, voicing);
+    }
+  });
+
+  it("keeps capo display shape separate from sounding slash chord notes", () => {
+    const context: Partial<ChordDisplayContext> = {
+      sourceKey: { pitchClass: 6, mode: "major" },
+      capoFret: 2,
+      useCapoShapes: true,
+      canCapo: true,
+    };
+    const shapeChord = getCapoShapeChord("F#/A#", context);
+    expect(shapeChord ? formatParsedChordLabel(shapeChord, { mode: "sharps" }) : null).toBe("E/G#");
+
+    const voicing = requireFirstVoicing("F#/A#", context);
+    expect(voicing).toMatchObject({
+      chordLabel: "F#/A#",
+      shapeChordLabel: "E/G#",
+      capoFret: 2,
+    });
+    expect(voicing.shapeChordLabel).not.toBe(voicing.chordLabel);
+    expectVoicingCoversChord("F#/A#", voicing);
+    expectLowestBass("F#/A#", voicing);
+
+    const soundingPitchClasses = new Set(requireChord("F#/A#").tones.map((tone) => tone.pitchClass));
+    const shapeOnlyPitchClasses = requireChord("E/G#").tones
+      .map((tone) => tone.pitchClass)
+      .filter((pitchClass) => !soundingPitchClasses.has(pitchClass));
+    expect(voicing.notes.some((note) => shapeOnlyPitchClasses.includes(note.pitch.pitchClass))).toBe(false);
+  });
+
+  it("keeps common voicing ids aligned with effective capo state", () => {
+    const activeCapoContext: Partial<ChordDisplayContext> = {
+      sourceKey: { pitchClass: 6, mode: "major" },
+      capoFret: 2,
+      useCapoShapes: true,
+      canCapo: true,
+    };
+    const capoDisabledVoicing = requireFirstVoicing("F#", {
+      ...activeCapoContext,
+      useCapoShapes: false,
+    });
+    const cannotCapoVoicing = requireFirstVoicing("F#", {
+      ...activeCapoContext,
+      canCapo: false,
+    });
+    const activeCapoVoicing = requireFirstVoicing("F#", activeCapoContext);
+
+    expect(capoDisabledVoicing).toMatchObject({
+      id: "fsharp-e-shape-barre",
+      capoFret: 0,
+    });
+    expect(cannotCapoVoicing).toMatchObject({
+      id: "fsharp-e-shape-barre",
+      capoFret: 0,
+    });
+    expect(activeCapoVoicing).toMatchObject({
+      id: "e-open-capo-2",
+      capoFret: 2,
+    });
+  });
+
+  it("keeps generated fallback voicings playable for uncommon slash chords", () => {
+    const voicing = requireGeneratedVoicing("C#sus2/G#");
+    expectVoicingCoversChord("C#sus2/G#", voicing);
+    expectLowestBass("C#sus2/G#", voicing);
+    expect(fretSpan(voicing)).toBeLessThanOrEqual(4);
+    expect(voicing.mutedStrings.length).toBeLessThanOrEqual(2);
+  });
+
   it("ranks C major open shape first with exact sounding notes", () => {
     const voicing = requireFirstVoicing("C");
     expect(voicing).toMatchObject({

@@ -1,26 +1,69 @@
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import Any
 
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from alembic.script.revision import ResolutionError
 from alembic.util.exc import CommandError
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
+from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from alembic import command
 from app.config import Settings, ensure_data_dirs, get_settings
+
+SQLITE_BUSY_TIMEOUT_SECONDS = 30.0
+SQLITE_BUSY_TIMEOUT_MS = int(SQLITE_BUSY_TIMEOUT_SECONDS * 1000)
 
 
 class Base(DeclarativeBase):
     pass
 
 
-def _engine_for(settings: Settings):
-    return create_engine(settings.database_url, future=True)
+def _engine_for(settings: Settings) -> Engine:
+    engine = create_engine(
+        settings.database_url,
+        future=True,
+        **_engine_options_for(settings.database_url),
+    )
+    if _is_sqlite_database_url(settings.database_url):
+        _configure_sqlite_engine(
+            engine,
+            enable_wal=_sqlite_database_supports_wal(settings.database_url),
+        )
+    return engine
+
+
+def _engine_options_for(database_url: str) -> dict[str, Any]:
+    if not _is_sqlite_database_url(database_url):
+        return {}
+    return {"connect_args": {"timeout": SQLITE_BUSY_TIMEOUT_SECONDS}}
+
+
+def _is_sqlite_database_url(database_url: str) -> bool:
+    return make_url(database_url).drivername.startswith("sqlite")
+
+
+def _sqlite_database_supports_wal(database_url: str) -> bool:
+    database_path = make_url(database_url).database
+    return database_path not in {None, "", ":memory:"}
+
+
+def _configure_sqlite_engine(engine: Engine, *, enable_wal: bool) -> None:
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragmas(dbapi_connection: sqlite3.Connection, _connection_record: object) -> None:
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+            if enable_wal:
+                cursor.execute("PRAGMA journal_mode = WAL")
+        finally:
+            cursor.close()
 
 
 _engine = _engine_for(get_settings())

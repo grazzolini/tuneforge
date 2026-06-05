@@ -59,6 +59,7 @@ const SYNC_EVIDENCE_FILENAME_PATTERN = new RegExp(
   `\\b[^/\\\\\\s]+\\.(?:${SYNC_EVIDENCE_FILE_EXTENSIONS})\\b`,
   "gi",
 );
+const SYNC_NOW_FAILURE_ENDPOINT_TOKEN_PATTERN = /^(?:\d{1,3}\.){3}\d{1,3}:\d{1,5}$/;
 
 type PairingOutputKind = "offer" | "response";
 type PairingOutput = {
@@ -336,17 +337,102 @@ function retryableInterruptionText(interruption: RetryableSyncInterruption) {
   return interruption.guidance?.trim() || `${statusLabel(interruption.code)}. Retry when peer is reachable.`;
 }
 
+function syncTransportFailurePrefix(message: string) {
+  const separatorIndex = message.indexOf(":");
+  if (separatorIndex === -1) {
+    return null;
+  }
+  const prefix = message.slice(0, separatorIndex).trim();
+  return prefix.startsWith("Sync transport ") &&
+    (prefix.endsWith(" failed") || prefix.endsWith(" stalled"))
+    ? prefix
+    : null;
+}
+
+function syncNowFailureTokenLooksLikeHash(token: string) {
+  const value = token.replace(/^sha256[:-]/i, "");
+  return value.length >= 32 && /^[a-f0-9]+$/i.test(value);
+}
+
+function syncNowFailureTokenIsSensitive(token: string) {
+  const lower = token.toLowerCase();
+  return [
+    token.includes("/"),
+    token.includes("\\"),
+    SYNC_NOW_FAILURE_ENDPOINT_TOKEN_PATTERN.test(token),
+    lower.startsWith("dev_"),
+    lower.startsWith("device_"),
+    lower.startsWith("proj_"),
+    lower.startsWith("art_"),
+    lower.startsWith("sync_"),
+    lower.startsWith("sha256"),
+    syncNowFailureTokenLooksLikeHash(token),
+  ].some(Boolean);
+}
+
+function syncNowFailureDetailIsSensitive(message: string) {
+  const prefix = syncTransportFailurePrefix(message);
+  const detail = prefix ? message.slice(prefix.length + 1).trim() : message;
+  const lower = detail.toLowerCase();
+  if (
+    lower.includes("://") ||
+    lower.includes("tuneforge-sync+") ||
+    lower.includes("content_sha256") ||
+    lower.includes("source_path") ||
+    lower.includes("imported_path") ||
+    lower.includes("endpoint_hint") ||
+    lower.includes("endpoint_hints") ||
+    lower.includes("endpointhint") ||
+    lower.includes("endpointhints") ||
+    lower.includes("project_id") ||
+    lower.includes("projectid") ||
+    lower.includes("artifact_id") ||
+    lower.includes("artifactid") ||
+    lower.includes("device_id") ||
+    lower.includes("deviceid")
+  ) {
+    return true;
+  }
+  return detail
+    .split(/\s+/)
+    .map((token) => token.replace(/^["'()[\]{}<>,;]+|["'()[\]{}<>,;.:]+$/g, ""))
+    .filter(Boolean)
+    .some(syncNowFailureTokenIsSensitive);
+}
+
+function syncNowFailureRedactedSummary(message: string) {
+  const prefix = syncTransportFailurePrefix(message);
+  return prefix ? `${prefix}: details redacted.` : "Sync transport failed: details redacted.";
+}
+
+function syncNowFailureStatusMessage(message: string) {
+  let detail = message.trim();
+  if (detail === "Sync now failed.") {
+    return "Sync now failed.";
+  }
+  if (detail.startsWith("Sync now failed:")) {
+    detail = detail.slice("Sync now failed:".length).trim();
+  }
+  if (!detail) {
+    return "Sync now failed.";
+  }
+  const safeDetail = syncNowFailureDetailIsSensitive(detail)
+    ? syncNowFailureRedactedSummary(detail)
+    : detail;
+  return `Sync now failed: ${safeDetail}`;
+}
+
 function syncNowFailureText(error: unknown) {
   if (error instanceof Error) {
     const message = error.message.trim();
     if (message) {
-      return `Sync now failed: ${message}`;
+      return syncNowFailureStatusMessage(message);
     }
   }
   if (typeof error === "string") {
     const message = error.trim();
     if (message) {
-      return `Sync now failed: ${message}`;
+      return syncNowFailureStatusMessage(message);
     }
   }
   return "Sync now failed.";
@@ -1983,6 +2069,7 @@ export function ActivitySyncPanel() {
       setLastSyncMessage(syncNowFailureText(error));
       setLastSyncResult(null);
       setHiddenListenerSyncKey(listenerSyncKey);
+      void refreshSyncQueries();
     },
     onSettled: () => {
       setSyncNowPolling(false);

@@ -1859,6 +1859,235 @@ describe("Desktop app activity", () => {
     expect(screen.queryByRole("list", { name: "Last sync project results" })).not.toBeInTheDocument();
   });
 
+  it("enables evidence actions from failed listener last_sync after sync now rejects", async () => {
+    const user = userEvent.setup();
+    const error =
+      "Sync transport reconciliation staging failed: Could not write sync transport frame: connection lost";
+    const failedLastSync = syncRunStatus({
+      run_id: "sync_run_failed_evidence",
+      peer_device_id: "device_peer_1",
+      remote_device_id: "device_peer_1",
+      selected_transport: tcpTransportId,
+      attempted_transports: [tcpTransportId],
+      status: "failed",
+      message: `Sync now failed: ${error}`,
+      started_at: "2026-04-18T13:16:00.000Z",
+      completed_at: "2026-04-18T13:16:02.000Z",
+      duration_ms: 2000,
+      served_artifact_requests: 0,
+      local_manifest_count: 4,
+      remote_manifest_count: 5,
+      received_artifacts: [
+        {
+          artifact_id: "art_partial",
+          content_sha256: "sha256-partial",
+          size_bytes: 42,
+          status: "received",
+          message: "Received before connection lost.",
+          duration_ms: 1000,
+          throughput_bytes_per_second: 42,
+        },
+      ],
+    });
+    setSyncTrustedPeers([
+      {
+        device_id: "device_peer_1",
+        sync_group_id: "sync_group_local",
+        display_name: "Laptop Rig",
+        public_key: "pub_peer_1",
+        endpoint_hints: syncEndpointHints,
+        trusted_at: "2026-04-18T13:16:00.000Z",
+      },
+    ]);
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: syncEndpointHints,
+      last_sync: null,
+      last_error: null,
+    });
+    mockSyncTrustedPeerNow.mockImplementationOnce(async () => {
+      setSyncTransportStatus({
+        last_status: `Sync now failed: ${error}`,
+        last_error: `Sync now failed: ${error}`,
+        last_sync: failedLastSync,
+        updated_at: "2026-04-18T13:16:02.000Z",
+      });
+      throw error;
+    });
+
+    await openSyncTab(user);
+
+    expect(screen.getByRole("button", { name: "Copy Evidence" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Export Evidence" })).toBeDisabled();
+
+    const peers = await screen.findByRole("list", { name: "Trusted sync peers" });
+    const peerRow = within(peers).getByText("Laptop Rig").closest("li");
+    expect(peerRow).not.toBeNull();
+    await user.click(within(peerRow as HTMLElement).getByRole("button", { name: "Sync Now" }));
+
+    await waitFor(() => expect(mockSyncTrustedPeerNow).toHaveBeenCalledWith("device_peer_1"));
+    expect(await screen.findAllByText(`Sync now failed: ${error}`)).not.toHaveLength(0);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Copy Evidence" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Export Evidence" })).toBeEnabled();
+    });
+    expect(screen.getByRole("list", { name: "Last sync artifact transfers" })).toBeInTheDocument();
+  });
+
+  it("sanitizes raw sync now rejection before rendering failed listener evidence", async () => {
+    const user = userEvent.setup();
+    const rawPath = "/Users/test/Music/Secret Reject Demo.wav";
+    const rawEndpoint = "tuneforge-sync+tcp://192.0.2.2:47619";
+    const rawDeviceId = "device_secret_reject";
+    const rawProjectId = "proj_secret_reject";
+    const rawHash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const rawError = [
+      "Sync transport artifact request/transfer failed: Could not read",
+      rawPath,
+      "from",
+      rawDeviceId,
+      "for",
+      rawProjectId,
+      "via",
+      rawEndpoint,
+      "with content_sha256",
+      rawHash,
+    ].join(" ");
+    const safeMessage =
+      "Sync now failed: Sync transport artifact request/transfer failed: details redacted.";
+    const failedLastSync = syncRunStatus({
+      run_id: "sync_run_sanitized_failure",
+      peer_device_id: "device_peer_1",
+      remote_device_id: "device_peer_1",
+      selected_transport: tcpTransportId,
+      attempted_transports: [tcpTransportId],
+      status: "failed",
+      message: safeMessage,
+      started_at: "2026-04-18T13:16:00.000Z",
+      completed_at: "2026-04-18T13:16:02.000Z",
+      duration_ms: 2000,
+      served_artifact_requests: 0,
+      local_manifest_count: 4,
+      remote_manifest_count: 5,
+      received_artifacts: [
+        {
+          artifact_id: "art_visible_failure",
+          content_sha256: "sha256-visible-failure",
+          size_bytes: 42,
+          status: "received",
+          message: "Received before sanitized hard failure.",
+          duration_ms: 1000,
+          throughput_bytes_per_second: 42,
+        },
+      ],
+    });
+    setSyncTrustedPeers([
+      {
+        device_id: "device_peer_1",
+        sync_group_id: "sync_group_local",
+        display_name: "Laptop Rig",
+        public_key: "pub_peer_1",
+        endpoint_hints: syncEndpointHints,
+        trusted_at: "2026-04-18T13:16:00.000Z",
+      },
+    ]);
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: syncEndpointHints,
+      last_sync: null,
+      last_error: null,
+    });
+    mockSyncTrustedPeerNow.mockImplementationOnce(async () => {
+      setSyncTransportStatus({
+        last_status: safeMessage,
+        last_error: safeMessage,
+        last_sync: failedLastSync,
+        updated_at: "2026-04-18T13:16:02.000Z",
+      });
+      throw rawError;
+    });
+
+    await openSyncTab(user);
+
+    const peers = await screen.findByRole("list", { name: "Trusted sync peers" });
+    const peerRow = within(peers).getByText("Laptop Rig").closest("li");
+    expect(peerRow).not.toBeNull();
+    await user.click(within(peerRow as HTMLElement).getByRole("button", { name: "Sync Now" }));
+
+    await waitFor(() => expect(mockSyncTrustedPeerNow).toHaveBeenCalledWith("device_peer_1"));
+    expect(await screen.findAllByText(safeMessage)).not.toHaveLength(0);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Copy Evidence" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Export Evidence" })).toBeEnabled();
+    });
+    const visibleText = document.body.textContent ?? "";
+    [rawPath, "Secret Reject Demo.wav", rawEndpoint, "192.0.2.2", rawDeviceId, rawProjectId, rawHash]
+      .forEach((rawValue) => {
+        expect(visibleText).not.toContain(rawValue);
+      });
+
+    const exportedJson = await exportEvidenceFromCurrentSyncResult(user);
+    const serialized = JSON.stringify(exportedJson);
+    [rawPath, "Secret Reject Demo.wav", rawEndpoint, "192.0.2.2", rawDeviceId, rawProjectId, rawHash]
+      .forEach((rawValue) => {
+        expect(serialized).not.toContain(rawValue);
+      });
+  });
+
+  it("sanitizes backend body keys in raw sync now rejection text", async () => {
+    const user = userEvent.setup();
+    const rawProject = "PlainProjectAlpha";
+    const rawArtifact = "PlainArtifactBeta";
+    const rawDevice = "PlainDeviceGamma";
+    const rawEndpoint = "PlainEndpointDelta";
+    const rawError = [
+      "Backend response body:",
+      "project_id",
+      rawProject,
+      "artifactId",
+      rawArtifact,
+      "deviceId",
+      rawDevice,
+      "endpointHints",
+      rawEndpoint,
+    ].join(" ");
+    const safeMessage = "Sync now failed: Sync transport failed: details redacted.";
+    setSyncTrustedPeers([
+      {
+        device_id: "device_peer_1",
+        sync_group_id: "sync_group_local",
+        display_name: "Laptop Rig",
+        public_key: "pub_peer_1",
+        endpoint_hints: syncEndpointHints,
+        trusted_at: "2026-04-18T13:16:00.000Z",
+      },
+    ]);
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: syncEndpointHints,
+      last_sync: null,
+      last_error: null,
+    });
+    mockSyncTrustedPeerNow.mockRejectedValueOnce(rawError);
+
+    await openSyncTab(user);
+
+    const peers = await screen.findByRole("list", { name: "Trusted sync peers" });
+    const peerRow = within(peers).getByText("Laptop Rig").closest("li");
+    expect(peerRow).not.toBeNull();
+    await user.click(within(peerRow as HTMLElement).getByRole("button", { name: "Sync Now" }));
+
+    await waitFor(() => expect(mockSyncTrustedPeerNow).toHaveBeenCalledWith("device_peer_1"));
+    expect(await screen.findAllByText(safeMessage)).not.toHaveLength(0);
+    const visibleText = document.body.textContent ?? "";
+    [rawProject, rawArtifact, rawDevice, rawEndpoint].forEach((rawValue) => {
+      expect(visibleText).not.toContain(rawValue);
+    });
+  });
+
   it("normalizes sync run identity, timing, counters, and final project rows", () => {
     const normalized = normalizeSyncTransportStatus({
       running: true,

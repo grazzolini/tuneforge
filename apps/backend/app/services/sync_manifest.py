@@ -354,6 +354,36 @@ def resolve_artifact_file_sources(
             )
             continue
 
+        actual_sha256 = file_sha256(artifact_path)
+        if actual_sha256 is None:
+            errors.append(
+                _artifact_file_resolve_error(
+                    artifact_id=artifact.id,
+                    code="SYNC_ARTIFACT_FILE_UNREADABLE",
+                    message="Artifact file cannot be resolved because its file is not readable.",
+                    details={"project_id": artifact.project_id},
+                )
+            )
+            continue
+
+        if actual_sha256 != artifact.content_sha256:
+            errors.append(
+                _artifact_file_resolve_error(
+                    artifact_id=artifact.id,
+                    code="SYNC_ARTIFACT_FILE_HASH_MISMATCH",
+                    message=(
+                        "Artifact file cannot be resolved because its content SHA-256 "
+                        "no longer matches metadata."
+                    ),
+                    details={
+                        "project_id": artifact.project_id,
+                        "expected_sha256": artifact.content_sha256,
+                        "actual_sha256": actual_sha256,
+                    },
+                )
+            )
+            continue
+
         records.append(
             SyncArtifactFileRecord(
                 artifact_id=artifact.id,
@@ -765,50 +795,12 @@ def _export_artifact_manifest(artifact: Artifact) -> SyncArtifactManifest:
             details={"artifact_id": artifact.id, "project_id": artifact.project_id},
         )
 
-    artifact_path = Path(artifact.path).expanduser().resolve(strict=False)
-    actual_size = _file_size(artifact_path)
-    if actual_size is None:
-        raise AppError(
-            "SYNC_MANIFEST_ARTIFACT_FILE_UNREADABLE",
-            "Artifact cannot be exported because its file is not readable.",
-            details={"artifact_id": artifact.id, "project_id": artifact.project_id},
-        )
-    if actual_size != artifact.size_bytes:
-        raise AppError(
-            "SYNC_MANIFEST_ARTIFACT_SIZE_MISMATCH",
-            "Artifact cannot be exported because its file size no longer matches metadata.",
-            details={
-                "artifact_id": artifact.id,
-                "project_id": artifact.project_id,
-                "expected_size_bytes": artifact.size_bytes,
-                "actual_size_bytes": actual_size,
-            },
-        )
-
-    actual_sha256 = file_sha256(artifact_path)
-    if actual_sha256 is None:
-        raise AppError(
-            "SYNC_MANIFEST_ARTIFACT_FILE_UNREADABLE",
-            "Artifact cannot be exported because its file is not readable.",
-            details={"artifact_id": artifact.id, "project_id": artifact.project_id},
-        )
-    if actual_sha256 != artifact.content_sha256:
-        raise AppError(
-            "SYNC_MANIFEST_ARTIFACT_HASH_MISMATCH",
-            "Artifact cannot be exported because its content SHA-256 no longer matches metadata.",
-            details={
-                "artifact_id": artifact.id,
-                "project_id": artifact.project_id,
-                "expected_sha256": artifact.content_sha256,
-                "actual_sha256": actual_sha256,
-            },
-        )
+    _validate_export_artifact_relative_path(artifact, relative_path)
 
     if artifact.type == "source_audio":
         _validate_export_source_artifact(
             artifact=artifact,
             relative_path=relative_path,
-            artifact_path=artifact_path,
         )
 
     return SyncArtifactManifest(
@@ -865,6 +857,17 @@ def _export_entity_revision_manifest(revision: SyncEntityRevision) -> SyncEntity
         created_at=revision.created_at,
         updated_at=revision.updated_at,
     )
+
+
+def _validate_export_artifact_relative_path(artifact: Artifact, relative_path: str) -> None:
+    try:
+        _safe_relative_path(relative_path)
+    except AppError as exc:
+        raise AppError(
+            "SYNC_MANIFEST_RELATIVE_PATH_INVALID",
+            "Artifact cannot be exported because its relative path is invalid.",
+            details={"artifact_id": artifact.id, "project_id": artifact.project_id},
+        ) from exc
 
 
 def _import_entity_revisions(session: Session, manifest: SyncProjectManifest) -> None:
@@ -1429,7 +1432,6 @@ def _validate_export_source_artifact(
     *,
     artifact: Artifact,
     relative_path: str,
-    artifact_path: Path,
 ) -> None:
     if artifact.format != "wav":
         raise AppError(
@@ -1447,12 +1449,6 @@ def _validate_export_source_artifact(
                 "relative_path": relative_path,
             },
         )
-    _validate_wav_source_file(
-        artifact_id=artifact.id,
-        project_id=artifact.project_id,
-        relative_path=relative_path,
-        path=artifact_path,
-    )
 
 
 def _validate_wav_source_file(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,9 +19,6 @@ LOCAL_METADATA_PATH_KEYS = {
     "playback_path",
     "imported_path",
 }
-ANALYSIS_ARTIFACT_TYPE = "analysis_json"
-ANALYSIS_GENERATED_AT_KEY = "analysis_generated_at"
-
 
 @dataclass(frozen=True)
 class SyncMetadataProject:
@@ -182,30 +180,13 @@ def sanitize_sync_metadata(value: Any) -> Any:
 
 def artifact_sync_metadata(artifact: Artifact) -> dict[str, Any]:
     sanitized = sanitize_sync_metadata(artifact.metadata_json or {})
-    metadata = sanitized if isinstance(sanitized, dict) else {}
-    if artifact.type != ANALYSIS_ARTIFACT_TYPE or ANALYSIS_GENERATED_AT_KEY in metadata:
-        return metadata
-    generated_at = _artifact_file_mtime_iso(artifact)
-    if generated_at is None:
-        return metadata
-    return {
-        **metadata,
-        ANALYSIS_GENERATED_AT_KEY: generated_at,
-    }
+    return sanitized if isinstance(sanitized, dict) else {}
 
 
 def cast_metadata(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
     return cast(dict[str, Any], _sanitize_metadata(value))
-
-
-def _artifact_file_mtime_iso(artifact: Artifact) -> str | None:
-    try:
-        mtime = Path(artifact.path).expanduser().stat().st_mtime
-    except OSError:
-        return None
-    return datetime.fromtimestamp(mtime, UTC).isoformat()
 
 
 def _list_delete_tombstones(session: Session) -> list[SyncDeleteTombstone]:
@@ -292,11 +273,15 @@ def _as_utc(value: datetime) -> datetime:
 
 def _project_relative_artifact_path(artifact: Artifact) -> str | None:
     try:
-        root = project_root(artifact.project_id).resolve(strict=False)
-        artifact_path = Path(artifact.path).expanduser().resolve(strict=False)
+        root = _absolute_normalized_path(project_root(artifact.project_id))
+        artifact_path = _absolute_normalized_path(artifact.path)
         return artifact_path.relative_to(root).as_posix()
     except (OSError, RuntimeError, ValueError):
         return None
+
+
+def _absolute_normalized_path(path: str | Path) -> Path:
+    return Path(os.path.abspath(os.path.expanduser(os.fspath(path))))
 
 
 def _sanitize_metadata(value: Any) -> Any:

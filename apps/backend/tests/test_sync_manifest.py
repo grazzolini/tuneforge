@@ -632,6 +632,44 @@ def test_export_project_manifest_omits_local_paths_and_includes_sync_safe_fields
     }
 
 
+def test_export_project_manifest_uses_db_artifact_metadata_without_hashing_files(
+    client: object,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    del client
+    module = importlib.import_module("app.services.sync_manifest")
+    export_manifest, _ = _sync_manifest_services()
+
+    def fail_file_sha256(_path: Path) -> str | None:
+        raise AssertionError("manifest export must not hash artifact files")
+
+    def fail_file_size(_path: Path) -> int | None:
+        raise AssertionError("manifest export must not stat artifact files")
+
+    monkeypatch.setattr(module, "file_sha256", fail_file_sha256)
+    monkeypatch.setattr(module, "_file_size", fail_file_size)
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        (fixture.root / fixture.source_relative_path).unlink()
+        (fixture.root / fixture.stem_relative_path).write_bytes(b"changed after db metadata")
+
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+
+    artifacts = _artifacts_by_id(manifest)
+    assert (
+        artifacts["art_source_audio"]["content_sha256"]
+        == fixture.artifact_hashes["art_source_audio"]
+    )
+    assert (
+        artifacts["art_source_audio"]["size_bytes"]
+        == fixture.artifact_sizes["art_source_audio"]
+    )
+    assert artifacts["art_vocals"]["content_sha256"] == fixture.artifact_hashes["art_vocals"]
+    assert artifacts["art_vocals"]["size_bytes"] == fixture.artifact_sizes["art_vocals"]
+
+
 def test_export_project_manifest_includes_analysis_divergence_metadata(
     client: object,
     tmp_path: Path,
@@ -683,11 +721,13 @@ def test_export_project_manifest_includes_analysis_divergence_metadata(
     assert analysis_artifact["metadata"] == analysis_metadata
 
 
-def test_export_project_manifest_backfills_analysis_generated_at_from_file_mtime(
+def test_export_project_manifest_keeps_legacy_analysis_metadata_db_backed(
     client: object,
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     del client
+    module = importlib.import_module("app.services.sync_manifest")
     export_manifest, _ = _sync_manifest_services()
     with SessionLocal() as session:
         fixture = _create_project_with_artifacts(session, tmp_path)
@@ -702,7 +742,6 @@ def test_export_project_manifest_backfills_analysis_generated_at_from_file_mtime
             analysis_path,
             json.dumps({"project_id": fixture.project_id, **analysis_metadata}).encode("utf-8"),
         )
-        generated_at = datetime.fromtimestamp(analysis_path.stat().st_mtime, UTC).isoformat()
         session.add(
             Artifact(
                 id="art_legacy_analysis_json",
@@ -720,13 +759,32 @@ def test_export_project_manifest_backfills_analysis_generated_at_from_file_mtime
         )
         session.commit()
 
+        def fail_file_sha256(_path: Path) -> str | None:
+            raise AssertionError("manifest export must not hash artifact files")
+
+        def fail_file_size(_path: Path) -> int | None:
+            raise AssertionError("manifest export must not stat artifact files")
+
+        original_path_stat = Path.stat
+        blocked_stat_paths = {analysis_path}
+
+        def fail_artifact_path_stat(path: Path, *args: Any, **kwargs: Any) -> Any:
+            if path in blocked_stat_paths:
+                raise AssertionError("manifest export must not stat artifact files")
+            return original_path_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(module, "file_sha256", fail_file_sha256)
+        monkeypatch.setattr(module, "_file_size", fail_file_size)
+        monkeypatch.setattr(Path, "stat", fail_artifact_path_stat)
+
         manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+        batch = _to_plain(module.export_project_manifests(session, project_ids=[fixture.project_id]))
 
     analysis_artifact = _artifacts_by_id(manifest)["art_legacy_analysis_json"]
-    assert analysis_artifact["metadata"] == {
-        **analysis_metadata,
-        "analysis_generated_at": generated_at,
-    }
+    assert analysis_artifact["metadata"] == analysis_metadata
+    batch_manifest = batch["project_manifests"][0]
+    batch_artifact = _artifacts_by_id(batch_manifest)["art_legacy_analysis_json"]
+    assert batch_artifact["metadata"] == analysis_metadata
 
 
 def test_export_project_manifest_includes_entity_revisions_without_local_paths(
@@ -1958,6 +2016,32 @@ def test_sync_artifact_file_resolve_returns_ordered_records_and_errors(
     assert missing_error["status_code"] == 404
 
 
+def test_sync_artifact_file_resolve_hashes_only_selected_artifacts(
+    client: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    del client
+    module = importlib.import_module("app.services.sync_manifest")
+    hashed_paths: list[Path] = []
+
+    def spy_file_sha256(path: Path) -> str | None:
+        hashed_paths.append(path)
+        return file_sha256(path)
+
+    monkeypatch.setattr(module, "file_sha256", spy_file_sha256)
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        (fixture.root / fixture.source_relative_path).unlink()
+
+        result = module.resolve_artifact_file_sources(session, artifact_ids=["art_vocals"])
+
+    assert [record.artifact_id for record in result.records] == ["art_vocals"]
+    assert result.errors == []
+    assert hashed_paths == [(fixture.root / fixture.stem_relative_path).resolve(strict=False)]
+
+
 def test_sync_artifact_file_resolve_reports_per_artifact_file_errors(
     client: Any,
     tmp_path: Path,
@@ -2035,6 +2119,65 @@ def test_sync_artifact_file_resolve_reports_per_artifact_file_errors(
         "expected_size_bytes": mismatch_size + 1,
         "actual_size_bytes": mismatch_size,
     }
+
+
+def test_sync_artifact_file_resolve_reports_hash_and_deleted_errors_with_good_records(
+    client: Any,
+    tmp_path: Path,
+) -> None:
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        stem_path = fixture.root / fixture.stem_relative_path
+        stem_path.write_bytes(b"X" * len(stem_path.read_bytes()))
+        actual_stem_hash = file_sha256(stem_path)
+        assert actual_stem_hash is not None
+        assert actual_stem_hash != fixture.artifact_hashes["art_vocals"]
+
+        deleted_path = fixture.root / "stems" / "deleted.wav"
+        deleted_hash, deleted_size = _write_bytes(deleted_path, b"deleted artifact")
+        deleted_path.unlink()
+        session.add(
+            Artifact(
+                id="art_deleted_file",
+                project_id=fixture.project_id,
+                type="vocals",
+                format="wav",
+                path=str(deleted_path),
+                content_sha256=deleted_hash,
+                size_bytes=deleted_size,
+                generated_by="stems",
+                can_delete=True,
+                can_regenerate=True,
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/api/v1/sync/artifacts/files/resolve",
+        json={"artifact_ids": ["art_source_audio", "art_vocals", "art_deleted_file"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [record["artifact_id"] for record in payload["records"]] == ["art_source_audio"]
+    assert payload["records"][0]["content_sha256"] == fixture.artifact_hashes["art_source_audio"]
+    assert [error["artifact_id"] for error in payload["errors"]] == [
+        "art_vocals",
+        "art_deleted_file",
+    ]
+    assert [error["code"] for error in payload["errors"]] == [
+        "SYNC_ARTIFACT_FILE_HASH_MISMATCH",
+        "SYNC_ARTIFACT_FILE_UNREADABLE",
+    ]
+
+    hash_error = payload["errors"][0]
+    assert hash_error["details"] == {
+        "project_id": fixture.project_id,
+        "expected_sha256": fixture.artifact_hashes["art_vocals"],
+        "actual_sha256": actual_stem_hash,
+    }
+    for error in payload["errors"]:
+        assert "path" not in error["details"]
 
 
 def test_sync_project_manifest_api_round_trips_staged_import(

@@ -631,6 +631,8 @@ def _merge_staged_project_manifest(
         )
         _hydrate_current_entity_revisions(session, project, missing_revisions)
         hydrate_project_analysis_result_from_artifact(session, project.id)
+        if _stale_sync_status_can_be_cleared(session, project=project, manifest=manifest):
+            mark_project_sync_local(session, project)
     except OSError as exc:
         _cleanup_copied_artifacts(copied_paths, project_root_path)
         raise AppError(
@@ -653,6 +655,30 @@ def _merge_staged_project_manifest(
 
     session.flush()
     return project
+
+
+def _stale_sync_status_can_be_cleared(
+    session: Session,
+    *,
+    project: Project,
+    manifest: SyncProjectManifest,
+) -> bool:
+    if project.sync_status != "remote_available":
+        return False
+    required_artifact_ids = set(project.sync_required_artifact_ids)
+    manifest_artifact_ids = {artifact.artifact_id for artifact in manifest.artifacts}
+    if required_artifact_ids and not required_artifact_ids.issubset(manifest_artifact_ids):
+        return False
+    for manifest_artifact in manifest.artifacts:
+        artifact = session.get(Artifact, manifest_artifact.artifact_id)
+        if (
+            artifact is None
+            or artifact.project_id != project.id
+            or artifact.content_sha256 != manifest_artifact.content_sha256
+            or artifact.size_bytes != manifest_artifact.size_bytes
+        ):
+            return False
+    return True
 
 
 def _validate_existing_project_matches_manifest(
@@ -1870,14 +1896,9 @@ def _can_upgrade_project_placeholder(project: Project, manifest: SyncProjectMani
 
 
 def _is_project_placeholder(project: Project) -> bool:
-    for field_name in ("sync_status", "sync_state"):
-        value = getattr(project, field_name, None)
-        if isinstance(value, str) and value.strip().lower() != "local":
-            return True
-
     source_path = project.source_path.strip()
     imported_path = project.imported_path.strip()
-    if not source_path and not imported_path:
+    if not source_path or not imported_path:
         return True
     return source_path.startswith("sync-placeholder:") and imported_path.startswith("sync-placeholder:")
 

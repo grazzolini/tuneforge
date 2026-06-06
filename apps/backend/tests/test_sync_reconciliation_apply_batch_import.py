@@ -253,6 +253,70 @@ def test_issue200_repeated_apply_retry_reuses_staged_content_without_duplicate_r
     _assert_issue200_resume_counts(fixture.project_id, manifest, staged_count=0)
 
 
+def test_issue202_apply_clears_stale_remote_available_when_manifest_artifacts_are_local(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    peer_id = "peer-issue202-stale-local"
+    _ensure_identity_and_peers(peer_id)
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(
+            session,
+            tmp_path,
+            slug="issue202-stale-local",
+            source_frames=104,
+        )
+        manifest = _jsonable_manifest(export_project_manifest(session, project_id=fixture.project_id))
+        project = session.get(Project, fixture.project_id)
+        assert project is not None
+        project.sync_status = "remote_available"
+        project.sync_status_reason = "Waiting for manifest artifact content."
+        project.sync_required_artifact_ids_json = [
+            artifact["artifact_id"]
+            for artifact in manifest["artifacts"]
+        ]
+        project.sync_provider_device_ids_json = [peer_id]
+        session.commit()
+
+    response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": _empty_remote_library(),
+            "project_manifests": [manifest],
+            "peer_inventory": [
+                {
+                    "device_id": peer_id,
+                    "available_content_sha256": _manifest_content_hashes([manifest]),
+                }
+            ],
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["failed_actions"] == 0
+    import_results = [
+        result
+        for result in payload["results"]
+        if result["action"]["action_type"] == "import_project_manifest"
+        and result["action"]["project_id"] == fixture.project_id
+    ]
+    assert len(import_results) == 1
+    assert import_results[0]["status"] == "applied"
+
+    with SessionLocal() as session:
+        assert session.scalar(select(func.count()).select_from(SyncStagedArtifact)) == 0
+        project = session.get(Project, fixture.project_id)
+        assert project is not None
+        assert project.sync_status == "local"
+        assert project.sync_status_reason is None
+        assert project.sync_required_artifact_ids == []
+        assert project.sync_provider_device_ids == []
+        assert project.sync_conflict_count == 0
+
+
 def test_issue163_project_scoped_apply_ignores_unselected_remote_projects_and_reports_timing(
     client: TestClient,
     tmp_path: Path,

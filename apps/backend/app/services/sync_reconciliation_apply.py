@@ -755,6 +755,7 @@ def _missing_content_addressed_artifacts(
     missing: list[dict[str, Any]] = []
     for artifact in _list_field(manifest, "artifacts"):
         artifact_id = _string_field(artifact, "artifact_id", "id")
+        project_id = _string_field(artifact, "project_id")
         content_sha256 = _string_field(artifact, "content_sha256")
         size_bytes = _int_field(artifact, "size_bytes")
         if content_sha256 is None or size_bytes is None:
@@ -765,6 +766,14 @@ def _missing_content_addressed_artifacts(
                     "reason": "Artifact manifest does not include content_sha256 and size_bytes.",
                 }
             )
+            continue
+        if _local_artifact_satisfies_manifest(
+            session,
+            artifact_id=artifact_id,
+            project_id=project_id,
+            content_sha256=content_sha256,
+            size_bytes=size_bytes,
+        ):
             continue
         try:
             require_staged_artifact(session, content_sha256=content_sha256, size_bytes=size_bytes)
@@ -777,6 +786,25 @@ def _missing_content_addressed_artifacts(
                 }
             )
     return missing
+
+
+def _local_artifact_satisfies_manifest(
+    session: Session,
+    *,
+    artifact_id: str | None,
+    project_id: str | None,
+    content_sha256: str,
+    size_bytes: int,
+) -> bool:
+    if artifact_id is None or project_id is None:
+        return False
+    artifact = session.get(Artifact, artifact_id)
+    return (
+        artifact is not None
+        and artifact.project_id == project_id
+        and artifact.content_sha256 == content_sha256
+        and artifact.size_bytes == size_bytes
+    )
 
 
 def _cleanup_imported_content_addressed_staging(

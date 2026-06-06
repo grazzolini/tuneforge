@@ -105,6 +105,7 @@ _ACTION_PRIORITY = {
 }
 
 _MISSING = object()
+PROJECT_METADATA_ENTITY_TYPE = "project_metadata"
 
 
 @dataclass(frozen=True)
@@ -368,6 +369,7 @@ def plan_sync_reconciliation(
             and local_revision is not None
             and local_revision.project_id == revision.project_id
             and _local_revision_content_sha256(local_revision) == revision.content_sha256
+            and _local_revision_matches_remote_state(local_revision, revision)
         ):
             continue
         if (
@@ -376,6 +378,7 @@ def plan_sync_reconciliation(
             and revision.project_id not in planned_project_ids
             and _has_imported_local_project(local, revision.project_id)
             and revision.revision_id not in embedded_revision_import_ids
+            and revision.entity_type != PROJECT_METADATA_ENTITY_TYPE
             and not _is_deleted(
                 ITEM_ENTITY_REVISION,
                 revision.revision_id,
@@ -686,8 +689,32 @@ def _embedded_revision_chain_is_importable(
 
 
 def _remote_revision_is_current(revision: _RemoteEntityRevision) -> bool:
-    state = _str_field(revision.raw, "state")
-    return state is not None and state.lower() in {"active", "current"}
+    return _remote_revision_state(revision) == "active"
+
+
+def _local_revision_matches_remote_state(
+    local_revision: SyncEntityRevision,
+    remote_revision: _RemoteEntityRevision,
+) -> bool:
+    remote_state = _remote_revision_state(remote_revision)
+    if remote_state is None:
+        return True
+    return _normalize_revision_state(local_revision.state) == remote_state
+
+
+def _remote_revision_state(revision: _RemoteEntityRevision) -> str | None:
+    return _normalize_revision_state(_str_field(revision.raw, "state"))
+
+
+def _normalize_revision_state(state: str | None) -> str | None:
+    if state is None:
+        return None
+    normalized = state.strip().lower()
+    if not normalized:
+        return None
+    if normalized == "current":
+        return "active"
+    return normalized
 
 
 def _is_sync_project_placeholder(project: Project) -> bool:
@@ -1727,6 +1754,32 @@ def _plan_entity_revision(
             )
             return False
         if local_content_sha256 == revision.content_sha256:
+            if not _local_revision_matches_remote_state(local_revision, revision):
+                _upsert_item(
+                    items_by_key,
+                    SyncReconciliationItem(
+                        item_type=ITEM_ENTITY_REVISION,
+                        item_id=revision.revision_id,
+                        project_id=revision.project_id,
+                        status="remote_available",
+                        action_type=ACTION_IMPORT_ENTITY_REVISION,
+                        content_sha256=revision.content_sha256,
+                        reason="Entity revision state changed remotely.",
+                        details={"base_revision_id": revision.base_revision_id},
+                    ),
+                )
+                actions.append(
+                    _action(
+                        ACTION_IMPORT_ENTITY_REVISION,
+                        item_type=ITEM_ENTITY_REVISION,
+                        item_id=revision.revision_id,
+                        project_id=revision.project_id,
+                        content_sha256=revision.content_sha256,
+                        reason="Sync remote entity revision state.",
+                        details={"base_revision_id": revision.base_revision_id},
+                    )
+                )
+                return True
             _upsert_item(
                 items_by_key,
                 SyncReconciliationItem(

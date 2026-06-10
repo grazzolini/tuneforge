@@ -34,6 +34,197 @@ function expectTextVisible(text: RegExp | string) {
   expect(screen.getAllByText(text).length).toBeGreaterThan(0);
 }
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function getStandardDisplayString(stringNumber: number) {
+  return 7 - stringNumber;
+}
+
+function getShapeCard(label: string) {
+  const shapeLabel = screen
+    .getAllByRole("button", { name: label })
+    .find((button) => button.closest(".chord-shape-card"));
+  if (!shapeLabel) {
+    throw new Error(`Expected ${label} shape card`);
+  }
+
+  const shapeCard = shapeLabel.closest(".chord-shape-card");
+  if (!shapeCard) {
+    throw new Error(`Expected ${label} label inside a shape card`);
+  }
+  return shapeCard as HTMLElement;
+}
+
+function getStandardDiagram(label: string) {
+  const shapeCard = getShapeCard(label);
+  const diagram = within(shapeCard).getByRole("group", {
+    name: new RegExp(`${escapeRegExp(label)}.*standard guitar diagram`, "i"),
+  });
+
+  expect(diagram).toHaveClass("guitar-fretboard");
+  expect(diagram).toHaveClass("guitar-fretboard--standard");
+  expect(diagram).toHaveAttribute("data-string-orientation", "vertical");
+  expect(diagram).toHaveAttribute("data-fret-orientation", "horizontal");
+  expect(diagram.querySelector(".guitar-fretboard__board")).toBeInTheDocument();
+  expect(diagram.querySelector(".guitar-fretboard__numbers")).toBeInTheDocument();
+  expect(diagram.querySelector(".guitar-fretboard__strings")).toBeInTheDocument();
+  return diagram as HTMLElement;
+}
+
+function expectStandardStringLabels(diagram: HTMLElement) {
+  const expectedLabels = [
+    [6, "E"],
+    [5, "A"],
+    [4, "D"],
+    [3, "G"],
+    [2, "B"],
+    [1, "E"],
+  ] as const;
+  const stringLabels = Array.from(diagram.querySelectorAll(".guitar-fretboard__strings span"));
+
+  expect(stringLabels.map((label) => label.getAttribute("data-string"))).toEqual([
+    "6",
+    "5",
+    "4",
+    "3",
+    "2",
+    "1",
+  ]);
+
+  for (const [stringNumber, label] of expectedLabels) {
+    const stringLabel = within(diagram).getByLabelText(
+      new RegExp(`string\\s*${stringNumber}.*\\b${label}\\b`, "i"),
+    );
+    expect(stringLabel).toHaveAttribute("data-string", String(stringNumber));
+  }
+}
+
+function expectPlayableNote(
+  diagram: HTMLElement,
+  note: string,
+  stringNumber: number,
+  fret: number,
+) {
+  const noteButton = within(diagram).getByRole("button", {
+    name: `${note} string ${stringNumber} fret ${fret}`,
+  });
+
+  expect(noteButton).toHaveAttribute("data-string", String(stringNumber));
+  expect(noteButton).toHaveAttribute("data-fret", String(fret));
+  expect(noteButton).toHaveAttribute("data-note", note);
+  expect(noteButton).toHaveAttribute("data-note-kind", fret === 0 ? "open" : "fretted");
+  expect(noteButton).toHaveAttribute("title", note);
+  expect(noteButton.style.getPropertyValue("--string")).toBe(
+    String(getStandardDisplayString(stringNumber)),
+  );
+  expect(within(noteButton).getByText(note)).toHaveClass("guitar-fretboard__note-tooltip");
+  return noteButton as HTMLElement;
+}
+
+function expectActiveTooltipNotes(expectedNotes: string[]) {
+  const activeDots = Array.from(document.querySelectorAll(".guitar-fretboard__dot--tooltip-active"));
+  expect(activeDots.map((dot) => dot.getAttribute("data-note"))).toEqual(expectedNotes);
+  expect(document.querySelectorAll('.guitar-fretboard__dot[data-tooltip-active="true"]')).toHaveLength(
+    expectedNotes.length,
+  );
+}
+
+function expectOpenMarker(diagram: HTMLElement, stringNumber: number) {
+  const marker = within(diagram).getByLabelText(
+    new RegExp(`(?:open\\s*string\\s*${stringNumber}|string\\s*${stringNumber}\\s*open)`, "i"),
+  );
+  expect(marker).toHaveAttribute("data-string", String(stringNumber));
+  expect(marker).toHaveClass("guitar-fretboard__marker--open");
+  expect(marker.style.getPropertyValue("--string")).toBe(
+    String(getStandardDisplayString(stringNumber)),
+  );
+}
+
+function expectMutedMarker(diagram: HTMLElement, stringNumber: number) {
+  const marker = within(diagram).getByLabelText(
+    new RegExp(`(?:muted\\s*string\\s*${stringNumber}|string\\s*${stringNumber}\\s*muted)`, "i"),
+  );
+  expect(marker).toHaveAttribute("data-string", String(stringNumber));
+  expect(marker).toHaveClass("guitar-fretboard__marker--muted");
+  expect(marker.style.getPropertyValue("--string")).toBe(
+    String(getStandardDisplayString(stringNumber)),
+  );
+}
+
+function expectNoOpenMarker(diagram: HTMLElement, stringNumber: number) {
+  expect(
+    within(diagram).queryByLabelText(
+      new RegExp(`(?:open\\s*string\\s*${stringNumber}|string\\s*${stringNumber}\\s*open)`, "i"),
+    ),
+  ).not.toBeInTheDocument();
+}
+
+function expectNoMutedMarker(diagram: HTMLElement, stringNumber: number) {
+  expect(
+    within(diagram).queryByLabelText(
+      new RegExp(`(?:muted\\s*string\\s*${stringNumber}|string\\s*${stringNumber}\\s*muted)`, "i"),
+    ),
+  ).not.toBeInTheDocument();
+}
+
+function expectContinuousBarre(
+  diagram: HTMLElement,
+  {
+    fret,
+    fromString,
+    toString,
+  }: { fret: number; fromString: number; toString: number },
+) {
+  const barre = within(diagram).getByLabelText(
+    new RegExp(
+      `barre.*fret\\s*${fret}.*strings?\\s*${fromString}.*${toString}`,
+      "i",
+    ),
+  );
+
+  expect(barre).toHaveClass("guitar-fretboard__barre");
+  expect(barre).toHaveAttribute("data-barre-fret", String(fret));
+  expect(barre).toHaveAttribute("data-barre-from-string", String(fromString));
+  expect(barre).toHaveAttribute("data-barre-to-string", String(toString));
+  expect(barre.style.getPropertyValue("--barre-start-string")).toBe(String(fromString));
+  expect(barre.style.getPropertyValue("--barre-end-string")).toBe(String(toString));
+  expect(barre.style.getPropertyValue("--string-start")).toBe(
+    String(Math.min(getStandardDisplayString(fromString), getStandardDisplayString(toString))),
+  );
+  expect(barre.style.getPropertyValue("--string-end")).toBe(
+    String(Math.max(getStandardDisplayString(fromString), getStandardDisplayString(toString))),
+  );
+  return barre as HTMLElement;
+}
+
+function setNarrowViewport(width: number) {
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    value: width,
+  });
+  Object.defineProperty(document.documentElement, "clientWidth", {
+    configurable: true,
+    value: width,
+  });
+  window.dispatchEvent(new Event("resize"));
+}
+
+function getCommonChordCard(label: string) {
+  const chordCard = Array.from(document.querySelectorAll(".chord-family-card")).find(
+    (card) => card.querySelector("strong")?.textContent === label,
+  );
+  if (!chordCard) {
+    throw new Error(`Expected ${label} common chord card`);
+  }
+  return chordCard as HTMLElement;
+}
+
+function expectContainedHorizontalOverflow(element: HTMLElement, viewportWidth: number) {
+  expect(element.scrollWidth).toBeLessThanOrEqual(Math.max(element.clientWidth, viewportWidth));
+}
+
 describe("Desktop app tools chord dictionary", () => {
   beforeEach(resetAppTestHarness);
 
@@ -58,6 +249,165 @@ describe("Desktop app tools chord dictionary", () => {
       /Finger\s*3/,
       /Degree\s*1/,
     ]);
+  });
+
+  it("renders C open with standard vertical-string diagram semantics", async () => {
+    const user = userEvent.setup();
+    await renderChordDictionary();
+
+    const diagram = getStandardDiagram("C open");
+
+    expectStandardStringLabels(diagram);
+    expectPlayableNote(diagram, "C3", 5, 3);
+    expectPlayableNote(diagram, "E3", 4, 2);
+    const openStringNote = expectPlayableNote(diagram, "G3", 3, 0);
+    expectPlayableNote(diagram, "C4", 2, 1);
+    expectPlayableNote(diagram, "E4", 1, 0);
+    expectOpenMarker(diagram, 3);
+    expectOpenMarker(diagram, 1);
+    expectMutedMarker(diagram, 6);
+    expectNoOpenMarker(diagram, 6);
+    expectNoMutedMarker(diagram, 3);
+    expect(within(getShapeCard("C open")).getByText(/Common.*5 notes.*frets 0-3.*1 muted string/)).toBeInTheDocument();
+
+    await user.click(openStringNote);
+
+    await waitFor(() =>
+      expectInspectorToShow([/G3/, /String\s*3/, /Fret\s*0/, /Degree\s*5/]),
+    );
+    expectActiveTooltipNotes(["G3"]);
+  });
+
+  it("previews hovered and focused notes with one active tooltip", async () => {
+    const user = userEvent.setup();
+    await renderChordDictionary();
+
+    const diagram = getStandardDiagram("C open");
+    const selectedRoot = expectPlayableNote(diagram, "C3", 5, 3);
+    const previewNote = expectPlayableNote(diagram, "E3", 4, 2);
+
+    expect(selectedRoot).toHaveClass("guitar-fretboard__dot--tooltip-active");
+    expectActiveTooltipNotes(["C3"]);
+    expectInspectorToShow([/C3/, /String\s*5/, /Fret\s*3/]);
+
+    await user.hover(previewNote);
+
+    await waitFor(() => expectInspectorToShow([/E3/, /String\s*4/, /Fret\s*2/]));
+    expectActiveTooltipNotes(["E3"]);
+
+    await user.unhover(previewNote);
+
+    await waitFor(() => expectInspectorToShow([/C3/, /String\s*5/, /Fret\s*3/]));
+    expectActiveTooltipNotes(["C3"]);
+
+    previewNote.focus();
+
+    await waitFor(() => expectInspectorToShow([/E3/, /String\s*4/, /Fret\s*2/]));
+    expectActiveTooltipNotes(["E3"]);
+
+    previewNote.blur();
+
+    await waitFor(() => expectInspectorToShow([/C3/, /String\s*5/, /Fret\s*3/]));
+    expectActiveTooltipNotes(["C3"]);
+  });
+
+  it("renders F barre as one continuous E-shape barre with note buttons intact", async () => {
+    await renderChordDictionary();
+
+    changeChordSearch("F");
+
+    const diagram = getStandardDiagram("F E-shape barre");
+
+    expectStandardStringLabels(diagram);
+    const barre = expectContinuousBarre(diagram, { fret: 1, fromString: 6, toString: 1 });
+    const miniBarre = getCommonChordCard("F").querySelector(".mini-fretboard__barre");
+
+    expect(barre.style.getPropertyValue("--fret-position")).toBe("1");
+    expect(miniBarre).toBeInTheDocument();
+    expect((miniBarre as HTMLElement).style.getPropertyValue("--barre-start-string")).toBe("6");
+    expect((miniBarre as HTMLElement).style.getPropertyValue("--barre-end-string")).toBe("1");
+    expect((miniBarre as HTMLElement).style.getPropertyValue("--string-start")).toBe("1");
+    expect((miniBarre as HTMLElement).style.getPropertyValue("--string-end")).toBe("6");
+    expectPlayableNote(diagram, "F2", 6, 1);
+    expectPlayableNote(diagram, "C3", 5, 3);
+    expectPlayableNote(diagram, "F3", 4, 3);
+    expectPlayableNote(diagram, "A3", 3, 2);
+    expectPlayableNote(diagram, "C4", 2, 1);
+    expectPlayableNote(diagram, "F4", 1, 1);
+    expect(diagram.querySelector(".guitar-fretboard__marker--open")).not.toBeInTheDocument();
+    expect(diagram.querySelector(".guitar-fretboard__marker--muted")).not.toBeInTheDocument();
+    expect(within(getShapeCard("F E-shape barre")).getByText(/Common.*6 notes.*frets 1-3/)).toBeInTheDocument();
+  });
+
+  it("keeps C moved E-shape barre labelled by left fret numbers without position marker text", async () => {
+    const user = userEvent.setup();
+    await renderChordDictionary();
+
+    const shapeChoices = within(screen.getByRole("group", { name: "Guitar shape choices" }));
+    const movedShapeButton = shapeChoices.getByRole("button", { name: "C E-shape barre" });
+
+    await user.click(movedShapeButton);
+
+    const diagram = getStandardDiagram("C E-shape barre");
+    const movedShapeCard = getShapeCard("C E-shape barre");
+
+    expect(movedShapeButton).toHaveAttribute("aria-pressed", "true");
+    expect(diagram).toHaveAttribute("data-start-fret", "8");
+    expect(diagram.querySelector(".guitar-fretboard__position-marker")).not.toBeInTheDocument();
+    expect(within(diagram).queryByText(/8\s*fr/i)).not.toBeInTheDocument();
+    expect(movedShapeCard).toHaveTextContent(/Common.*6 notes.*frets 8-10/);
+    expect(movedShapeCard).not.toHaveTextContent(/8\s*fr/i);
+    expect(
+      Array.from(diagram.querySelectorAll(".guitar-fretboard__numbers span")).map(
+        (fretNumber) => fretNumber.textContent,
+      ),
+    ).toEqual(["8", "9", "10", "11"]);
+    const barre = expectContinuousBarre(diagram, { fret: 8, fromString: 6, toString: 1 });
+    const rootButton = expectPlayableNote(diagram, "C3", 6, 8);
+
+    expect(barre.style.getPropertyValue("--fret-position")).toBe("1");
+    expectPlayableNote(diagram, "G3", 5, 10);
+    expectPlayableNote(diagram, "C4", 4, 10);
+    expectPlayableNote(diagram, "E4", 3, 9);
+    expectPlayableNote(diagram, "G4", 2, 8);
+    expectPlayableNote(diagram, "C5", 1, 8);
+
+    await user.hover(rootButton);
+    expect(within(rootButton).getByText("C3")).toHaveClass("guitar-fretboard__note-tooltip");
+
+    await user.click(rootButton);
+
+    await waitFor(() =>
+      expectInspectorToShow([/C3/, /String\s*6/, /Fret\s*8/, /Degree\s*1/]),
+    );
+  });
+
+  it("keeps standard diagrams compact and labelled in a narrow layout", async () => {
+    setNarrowViewport(360);
+    await renderChordDictionary();
+
+    const diagram = getStandardDiagram("C open");
+    const shell = document.querySelector(".chord-dictionary-shell");
+    const panel = document.querySelector(".chord-dictionary-panel");
+    const mainPanel = document.querySelector(".chord-tool-main");
+    const shapeGrid = document.querySelector(".chord-shape-grid");
+    const shapeTabs = document.querySelector(".chord-shape-tabs");
+
+    expect(shapeGrid).toHaveAttribute("data-layout", "responsive");
+    expect(diagram).toHaveAttribute("data-layout", "compact");
+    expect(diagram.style.getPropertyValue("--display-frets")).toBe("4");
+    expect(shell).toBeInTheDocument();
+    expect(panel).toBeInTheDocument();
+    expect(mainPanel).toBeInTheDocument();
+    expect(shapeTabs).toBeInTheDocument();
+    expectContainedHorizontalOverflow(shell as HTMLElement, 360);
+    expectContainedHorizontalOverflow(panel as HTMLElement, 360);
+    expectContainedHorizontalOverflow(mainPanel as HTMLElement, 360);
+    expectContainedHorizontalOverflow(shapeGrid as HTMLElement, 360);
+    expectStandardStringLabels(diagram);
+    expectPlayableNote(diagram, "C3", 5, 3);
+    expectOpenMarker(diagram, 1);
+    expectMutedMarker(diagram, 6);
   });
 
   it("updates a supported slash-chord search with backed guitar spelling and shape data", async () => {
@@ -112,7 +462,12 @@ describe("Desktop app tools chord dictionary", () => {
       throw new Error("Expected a selectable E3 string 4 fret 2 note");
     }
 
+    noteButton.focus();
+    expect(noteButton).toHaveFocus();
+    expect(within(noteButton).getByText("E3")).toHaveClass("guitar-fretboard__note-tooltip");
+
     await user.click(noteButton);
+    expect(noteButton).toHaveFocus();
     await waitFor(() =>
       expectInspectorToShow([
         /E3/,

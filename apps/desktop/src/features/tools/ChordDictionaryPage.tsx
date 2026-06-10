@@ -21,18 +21,69 @@ import {
 type ChordDictionarySurface = "dictionary" | "follow";
 type NotePoint = {
   degree: string;
+  displayFret: number;
+  displayString: number;
   finger: string | null;
   fret: number;
   id: string;
+  isOpen: boolean;
   note: string;
   shapeNote?: string;
   string: number;
 };
+type GuitarStringView = {
+  displayString: number;
+  label: string;
+  string: number;
+};
+type GuitarStringMarker =
+  | {
+      degree: string;
+      displayString: number;
+      id: string;
+      kind: "open";
+      note: string;
+      noteId: string;
+      string: number;
+    }
+  | {
+      displayString: number;
+      id: string;
+      kind: "muted";
+      string: number;
+    }
+  | {
+      displayString: number;
+      id: string;
+      kind: "empty";
+      string: number;
+    };
+type GuitarBarreGroup = {
+  displayFret: number;
+  endDisplayString: number;
+  endString: number;
+  finger: string;
+  fret: number;
+  id: string;
+  noteIds: readonly string[];
+  startDisplayString: number;
+  startString: number;
+};
+type GuitarFretWindow = {
+  fretCount: number;
+  frets: readonly number[];
+  startFret: number;
+};
 type GuitarShape = {
+  barreGroups: readonly GuitarBarreGroup[];
+  fretWindow: GuitarFretWindow;
   id: string;
   label: string;
   meta: string;
+  mutedStrings: readonly number[];
   notes: NotePoint[];
+  stringMarkers: readonly GuitarStringMarker[];
+  strings: readonly GuitarStringView[];
 };
 
 const COMMON_CHORD_LABELS = ["C", "Dm", "Em", "F", "G", "Am", "Bdim"] as const;
@@ -91,6 +142,7 @@ export function ChordDictionaryPage() {
 function DictionarySurface() {
   const [activeChord, setActiveChord] = useState("C");
   const [activeShape, setActiveShape] = useState<string | null>(null);
+  const [previewNoteId, setPreviewNoteId] = useState<string | null>(null);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const displayContext = useMemo<Partial<ChordDisplayContext>>(
     () => ({
@@ -113,12 +165,13 @@ function DictionarySurface() {
           return [];
         }
         const voicings = generateGuitarVoicings(spelling, GUITAR_STANDARD_PROFILE, displayContext);
+        const voicing = voicings[0] ?? null;
         return {
           id: spelling.label,
           label: spelling.label,
           notes: spelling.notes.join(" "),
           quality: CHORD_QUALITY_DEFINITIONS[spelling.quality].label,
-          voicing: voicings[0] ?? null,
+          shape: voicing ? toGuitarShape(voicing, GUITAR_STANDARD_PROFILE) : null,
           voicingCount: voicings.length,
         };
       }),
@@ -129,7 +182,7 @@ function DictionarySurface() {
     [chordSpelling, displayContext],
   );
   const guitarShapes = useMemo(
-    () => guitarVoicings.map((voicing) => toGuitarShape(voicing)),
+    () => guitarVoicings.map((voicing) => toGuitarShape(voicing, GUITAR_STANDARD_PROFILE)),
     [guitarVoicings],
   );
   const resultKey = guitarShapes.map((shape) => shape.id).join("|");
@@ -137,11 +190,17 @@ function DictionarySurface() {
   const firstNoteId = guitarShapes[0]?.notes[0]?.id ?? null;
   useEffect(() => {
     setActiveShape(firstShapeId);
+    setPreviewNoteId(null);
     setSelectedNoteId(firstNoteId);
   }, [firstNoteId, firstShapeId, resultKey]);
   const selectedShape = guitarShapes.find((shape) => shape.id === activeShape) ?? guitarShapes[0] ?? null;
   const selectedNote =
     selectedShape?.notes.find((note) => note.id === selectedNoteId) ?? selectedShape?.notes[0] ?? null;
+  const previewNote = previewNoteId
+    ? guitarShapes.flatMap((shape) => shape.notes).find((note) => note.id === previewNoteId) ?? null
+    : null;
+  const displayedNote = previewNote ?? selectedNote;
+  const activeTooltipNoteId = previewNote?.id ?? selectedNote?.id ?? null;
   const selectedVoicing = guitarVoicings.find((voicing) => voicing.id === selectedShape?.id) ?? null;
   const sourceKeyLabel = displayContext.sourceKey
     ? formatKey(displayContext.sourceKey, "long")
@@ -149,7 +208,6 @@ function DictionarySurface() {
   const transposeLabel = `${displayContext.transposeSemitones ?? 0} semitones`;
   const capoLabel = displayContext.capoFret ? `Capo ${displayContext.capoFret}` : "No capo";
   const tuningLabel = formatGuitarTuning(GUITAR_STANDARD_PROFILE);
-  const stringLabels = getGuitarStringLabels(GUITAR_STANDARD_PROFILE);
 
   return (
     <div className="chord-dictionary">
@@ -159,7 +217,10 @@ function DictionarySurface() {
           <Music2 aria-hidden="true" />
           <input
             aria-label="Chord search"
-            onChange={(event) => setActiveChord(event.currentTarget.value)}
+            onChange={(event) => {
+              setActiveChord(event.currentTarget.value);
+              setPreviewNoteId(null);
+            }}
             placeholder="C major"
             value={activeChord}
           />
@@ -228,6 +289,7 @@ function DictionarySurface() {
                       )}
                       onClick={() => {
                         setActiveShape(shape.id);
+                        setPreviewNoteId(null);
                         setSelectedNoteId(shape.notes[0]?.id ?? null);
                       }}
                       type="button"
@@ -257,7 +319,7 @@ function DictionarySurface() {
                 copy="Type a supported chord symbol to show spelling, degrees, and guitar voicings."
               />
             ) : (
-              <div className="chord-shape-grid">
+              <div className="chord-shape-grid" data-layout="responsive">
                 {guitarShapes.map((shape) => (
                   <div
                     key={shape.id}
@@ -270,6 +332,7 @@ function DictionarySurface() {
                       className="chord-shape-card__label"
                       onClick={() => {
                         setActiveShape(shape.id);
+                        setPreviewNoteId(null);
                         setSelectedNoteId(shape.notes[0]?.id ?? null);
                       }}
                       type="button"
@@ -277,11 +340,15 @@ function DictionarySurface() {
                       {shape.label}
                     </button>
                     <GuitarFretboard
-                      maxFret={Math.max(...shape.notes.map((note) => note.fret), 4)}
+                      activeTooltipNoteId={activeTooltipNoteId}
                       notes={shape.notes}
                       selectedNoteId={selectedNoteId}
-                      onSelectNote={setSelectedNoteId}
-                      stringLabels={stringLabels}
+                      shape={shape}
+                      onPreviewNote={setPreviewNoteId}
+                      onSelectNote={(noteId) => {
+                        setPreviewNoteId(null);
+                        setSelectedNoteId(noteId);
+                      }}
                     />
                     <span className="chord-shape-card__meta">{shape.meta}</span>
                   </div>
@@ -290,7 +357,7 @@ function DictionarySurface() {
             )}
           </section>
 
-          {selectedNote ? <NoteInspector note={selectedNote} capoFret={displayContext.capoFret ?? 0} /> : null}
+          {displayedNote ? <NoteInspector note={displayedNote} capoFret={displayContext.capoFret ?? 0} /> : null}
 
           {chordSpelling ? (
             <section className="chord-section">
@@ -308,12 +375,15 @@ function DictionarySurface() {
                       "chord-family-card",
                       activeChord === chord.label && "chord-family-card--active",
                     )}
-                    onClick={() => setActiveChord(chord.label)}
+                    onClick={() => {
+                      setActiveChord(chord.label);
+                      setPreviewNoteId(null);
+                    }}
                     type="button"
                   >
                     <strong>{chord.label}</strong>
                     <span>{chord.quality}</span>
-                    <MiniFretboard notes={chord.voicing?.notes ?? []} />
+                    <MiniFretboard shape={chord.shape} />
                     <small>{chord.notes}</small>
                     <small>{formatCount(chord.voicingCount, "shape")}</small>
                   </button>
@@ -375,30 +445,211 @@ function DictionarySurface() {
   );
 }
 
-function toGuitarShape(voicing: GuitarVoicing): GuitarShape {
-  const frets = voicing.notes.map((note) => note.fret);
-  const minFret = Math.min(...frets);
-  const maxFret = Math.max(...frets);
+function toGuitarShape(voicing: GuitarVoicing, profile: typeof GUITAR_STANDARD_PROFILE): GuitarShape {
+  const strings = getGuitarStringViews(profile);
+  const displayStringByString = new Map(strings.map((string) => [string.string, string.displayString]));
+  const fretWindow = getGuitarFretWindow(voicing.notes);
   const sourceLabel = voicing.source === "common" ? "Common" : "Generated";
   const mutedLabel = voicing.mutedStrings.length > 0 ? ` · ${formatCount(voicing.mutedStrings.length, "muted string")}` : "";
+  const notes = voicing.notes.map((note) => {
+    const shapePitch =
+      voicing.capoFret > 0 ? midiToPitch(note.pitch.midi - voicing.capoFret)?.label : null;
+    return {
+      degree: note.degree,
+      displayFret: getDisplayFret(note.fret, fretWindow),
+      displayString: displayStringByString.get(note.string) ?? note.string,
+      finger: note.finger ? String(note.finger) : null,
+      fret: note.fret,
+      id: `${voicing.id}-${note.string}-${note.fret}`,
+      isOpen: note.fret === 0,
+      note: note.note,
+      shapeNote: shapePitch ?? undefined,
+      string: note.string,
+    };
+  });
+  const mutedStrings = [...voicing.mutedStrings];
+  const mutedStringSet = new Set(mutedStrings);
+  const frettedLabel = formatFretWindowLabel(notes);
   return {
+    barreGroups: getGuitarBarreGroups(notes, mutedStringSet, voicing.label.toLowerCase().includes("barre")),
+    fretWindow,
     id: voicing.id,
     label: voicing.label,
-    meta: `${sourceLabel} · ${formatCount(voicing.notes.length, "note")} · frets ${minFret}-${maxFret}${mutedLabel}`,
-    notes: voicing.notes.map((note) => {
-      const shapePitch =
-        voicing.capoFret > 0 ? midiToPitch(note.pitch.midi - voicing.capoFret)?.label : null;
-      return {
-        degree: note.degree,
-        finger: note.finger ? String(note.finger) : null,
-        fret: note.fret,
-        id: `${voicing.id}-${note.string}-${note.fret}`,
-        note: note.note,
-        shapeNote: shapePitch ?? undefined,
-        string: note.string,
-      };
-    }),
+    meta: `${sourceLabel} · ${formatCount(voicing.notes.length, "note")} · ${frettedLabel}${mutedLabel}`,
+    mutedStrings,
+    notes,
+    stringMarkers: getGuitarStringMarkers(strings, notes, mutedStringSet),
+    strings,
   };
+}
+
+function getGuitarStringViews(profile: typeof GUITAR_STANDARD_PROFILE): readonly GuitarStringView[] {
+  return profile.tuning
+    .slice()
+    .sort((left, right) => right.string - left.string)
+    .map((stringTuning, index) => ({
+      displayString: index + 1,
+      label: stringTuning.openPitch.noteName,
+      string: stringTuning.string,
+    }));
+}
+
+function getGuitarFretWindow(notes: readonly GuitarVoicing["notes"][number][]): GuitarFretWindow {
+  const frettedFrets = notes.map((note) => note.fret).filter((fret) => fret > 0);
+  const maxFret = frettedFrets.length > 0 ? Math.max(...frettedFrets) : 0;
+  const minFret = frettedFrets.length > 0 ? Math.min(...frettedFrets) : 0;
+  const hasOpenString = notes.some((note) => note.fret === 0);
+  const startFret = !hasOpenString && minFret > 1 ? minFret : 0;
+  const neededFrets = startFret > 0 ? maxFret - startFret + 1 : Math.max(maxFret, 4);
+  const fretCount = Math.max(4, neededFrets);
+  const firstFretNumber = startFret > 0 ? startFret : 1;
+  return {
+    fretCount,
+    frets: Array.from({ length: fretCount }, (_, index) => firstFretNumber + index),
+    startFret,
+  };
+}
+
+function getDisplayFret(fret: number, fretWindow: GuitarFretWindow) {
+  if (fret === 0) {
+    return 0;
+  }
+  return fretWindow.startFret > 0 ? fret - fretWindow.startFret + 1 : fret;
+}
+
+function formatFretWindowLabel(notes: readonly NotePoint[]) {
+  const frets = notes.map((note) => note.fret);
+  if (frets.length === 0) {
+    return "open strings";
+  }
+  const minFret = Math.min(...frets);
+  const maxFret = Math.max(...frets);
+  return minFret === maxFret ? `fret ${minFret}` : `frets ${minFret}-${maxFret}`;
+}
+
+function getGuitarStringMarkers(
+  strings: readonly GuitarStringView[],
+  notes: readonly NotePoint[],
+  mutedStrings: ReadonlySet<number>,
+): readonly GuitarStringMarker[] {
+  const openNotesByString = new Map(notes.filter((note) => note.isOpen).map((note) => [note.string, note]));
+  return strings.map((string) => {
+    const openNote = openNotesByString.get(string.string);
+    if (openNote) {
+      return {
+        degree: openNote.degree,
+        displayString: string.displayString,
+        id: `${openNote.id}-open-marker`,
+        kind: "open",
+        note: openNote.note,
+        noteId: openNote.id,
+        string: string.string,
+      };
+    }
+    if (mutedStrings.has(string.string)) {
+      return {
+        displayString: string.displayString,
+        id: `muted-string-${string.string}`,
+        kind: "muted",
+        string: string.string,
+      };
+    }
+    return {
+      displayString: string.displayString,
+      id: `empty-string-${string.string}`,
+      kind: "empty",
+      string: string.string,
+    };
+  });
+}
+
+function getGuitarBarreGroups(
+  notes: readonly NotePoint[],
+  mutedStrings: ReadonlySet<number>,
+  inferUnfingeredBarre: boolean,
+): readonly GuitarBarreGroup[] {
+  const groupedNotes = new Map<string, NotePoint[]>();
+  for (const note of notes) {
+    if (!note.finger || note.fret === 0) {
+      continue;
+    }
+    const key = `${note.finger}-${note.fret}`;
+    groupedNotes.set(key, [...(groupedNotes.get(key) ?? []), note]);
+  }
+
+  const barreGroups: GuitarBarreGroup[] = [];
+  for (const group of groupedNotes.values()) {
+    const barreGroup = makeGuitarBarreGroup(group, mutedStrings, group[0]?.finger ?? "fingered");
+    if (barreGroup) {
+      barreGroups.push(barreGroup);
+    }
+  }
+
+  if (inferUnfingeredBarre && barreGroups.length === 0) {
+    const frettedNotes = notes.filter((note) => note.fret > 0);
+    const lowestFret = frettedNotes.length > 0 ? Math.min(...frettedNotes.map((note) => note.fret)) : null;
+    const lowestFretNotes = lowestFret === null ? [] : frettedNotes.filter((note) => note.fret === lowestFret);
+    const inferredBarre = makeGuitarBarreGroup(lowestFretNotes, mutedStrings, "unfingered");
+    if (inferredBarre) {
+      barreGroups.push(inferredBarre);
+    }
+  }
+
+  return barreGroups.sort(
+    (left, right) =>
+      left.displayFret - right.displayFret ||
+      left.startDisplayString - right.startDisplayString ||
+      right.endDisplayString - left.endDisplayString,
+  );
+}
+
+function makeGuitarBarreGroup(
+  group: readonly NotePoint[],
+  mutedStrings: ReadonlySet<number>,
+  idPrefix: string,
+): GuitarBarreGroup | null {
+  if (group.length < 2) {
+    return null;
+  }
+  const sortedGroup = [...group].sort((left, right) => left.displayString - right.displayString);
+  const numericStrings = sortedGroup.map((note) => note.string);
+  const lowString = Math.min(...numericStrings);
+  const highString = Math.max(...numericStrings);
+  if (hasMutedStringBetween(lowString, highString, mutedStrings)) {
+    return null;
+  }
+  const displayStrings = sortedGroup.map((note) => note.displayString);
+  const startDisplayString = Math.min(...displayStrings);
+  const endDisplayString = Math.max(...displayStrings);
+  const firstNote = sortedGroup[0];
+  return {
+    displayFret: firstNote.displayFret,
+    endDisplayString,
+    endString: lowString,
+    finger: firstNote.finger ?? "",
+    fret: firstNote.fret,
+    id: `barre-${idPrefix}-${firstNote.fret}-${highString}-${lowString}`,
+    noteIds: sortedGroup.map((note) => note.id),
+    startDisplayString,
+    startString: highString,
+  };
+}
+
+function hasMutedStringBetween(
+  lowString: number,
+  highString: number,
+  mutedStrings: ReadonlySet<number>,
+) {
+  for (let string = lowString; string <= highString; string += 1) {
+    if (mutedStrings.has(string)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function formatNoteButtonLabel(note: NotePoint) {
+  return `${note.note} string ${note.string} fret ${note.fret}`;
 }
 
 function ContextChip({ icon, label }: { icon: "capo" | "instrument" | "key" | "shape" | "sound" | "transpose"; label: string }) {
@@ -412,18 +663,67 @@ function ContextChip({ icon, label }: { icon: "capo" | "instrument" | "key" | "s
   );
 }
 
-function MiniFretboard({ notes }: { notes: readonly GuitarVoicing["notes"][number][] }) {
-  const dots = notes.slice(0, 4).map((note) => ({
-    fret: Math.max(1, Math.min(4, note.fret + 1)),
-    string: Math.max(1, Math.min(6, note.string)),
-  }));
+function MiniFretboard({ shape }: { shape: GuitarShape | null }) {
+  if (!shape) {
+    return <span className="mini-fretboard" aria-hidden="true" />;
+  }
   return (
-    <span className="mini-fretboard" aria-hidden="true">
-      {dots.map((dot) => (
+    <span
+      className="mini-fretboard"
+      style={
+        {
+          "--display-frets": shape.fretWindow.fretCount,
+        } as CSSProperties
+      }
+      aria-hidden="true"
+    >
+      <span className="mini-fretboard__markers">
+        {shape.stringMarkers.map((marker) => (
+          <span
+            key={marker.id}
+            className={classNames(
+              "mini-fretboard__marker",
+              marker.kind === "open" && "mini-fretboard__marker--open",
+              marker.kind === "muted" && "mini-fretboard__marker--muted",
+            )}
+            style={{ "--string": marker.displayString } as CSSProperties}
+          >
+            {marker.kind === "open" ? "O" : marker.kind === "muted" ? "X" : ""}
+          </span>
+        ))}
+      </span>
+      {shape.barreGroups.map((barre) => (
         <span
-          key={`${dot.string}-${dot.fret}`}
+          key={barre.id}
+          className="mini-fretboard__barre"
+          style={
+            {
+              "--barre-end-string": barre.endString,
+              "--barre-fret": barre.fret,
+              "--barre-start-string": barre.startString,
+              "--end-string": barre.endDisplayString,
+              "--fret": barre.fret,
+              "--fret-position": barre.displayFret,
+              "--start-string": barre.startDisplayString,
+              "--string-end": barre.endDisplayString,
+              "--string-start": barre.startDisplayString,
+              "--visible-fret": barre.displayFret,
+            } as CSSProperties
+          }
+        />
+      ))}
+      {shape.notes.map((note) => (
+        <span
+          key={note.id}
           className="mini-fretboard__dot"
-          style={{ "--fret": dot.fret, "--string": dot.string } as CSSProperties}
+          style={
+            {
+              "--fret": note.fret,
+              "--fret-position": note.displayFret,
+              "--string": note.displayString,
+              "--visible-fret": note.displayFret,
+            } as CSSProperties
+          }
         />
       ))}
     </span>
@@ -431,54 +731,164 @@ function MiniFretboard({ notes }: { notes: readonly GuitarVoicing["notes"][numbe
 }
 
 function GuitarFretboard({
-  maxFret,
+  activeTooltipNoteId,
   notes,
+  onPreviewNote,
   onSelectNote,
   selectedNoteId,
-  stringLabels,
+  shape,
 }: {
-  maxFret: number;
+  activeTooltipNoteId: string | null;
   notes: readonly NotePoint[];
+  onPreviewNote: (noteId: string | null) => void;
   onSelectNote: (noteId: string | null) => void;
   selectedNoteId: string | null;
-  stringLabels: readonly string[];
+  shape: GuitarShape;
 }) {
-  const displayFrets = Math.max(4, Math.min(8, maxFret));
   return (
     <span
-      className="guitar-fretboard"
-      style={{ "--display-frets": displayFrets } as CSSProperties}
-      aria-label="Guitar fretboard"
+      className="guitar-fretboard guitar-fretboard--standard"
+      data-fret-orientation="horizontal"
+      data-layout="compact"
+      data-start-fret={shape.fretWindow.startFret}
+      data-string-orientation="vertical"
+      style={
+        {
+          "--display-frets": shape.fretWindow.fretCount,
+        } as CSSProperties
+      }
+      aria-label={`${shape.label} standard guitar diagram`}
       role="group"
     >
-      <span className="guitar-fretboard__numbers" aria-hidden="true">
-        {Array.from({ length: displayFrets + 1 }, (_, fret) => (
-          <span key={fret}>{fret}</span>
-        ))}
+      <span className="guitar-fretboard__markers" role="group" aria-label="String status markers">
+        {shape.stringMarkers.map((marker) =>
+          marker.kind === "open" ? (
+            <span
+              key={marker.id}
+              aria-label={`Open string ${marker.string}`}
+              className={classNames(
+                "guitar-fretboard__marker",
+                "guitar-fretboard__marker--open",
+                "guitar-fretboard__string-marker",
+                "guitar-fretboard__string-marker--open",
+              )}
+              data-string={marker.string}
+              role="img"
+              style={{ "--string": marker.displayString } as CSSProperties}
+            >
+              O
+            </span>
+          ) : marker.kind === "muted" ? (
+            <span
+              key={marker.id}
+              aria-label={`Muted string ${marker.string}`}
+              className="guitar-fretboard__marker guitar-fretboard__marker--muted guitar-fretboard__string-marker guitar-fretboard__string-marker--muted"
+              data-string={marker.string}
+              role="img"
+              style={{ "--string": marker.displayString } as CSSProperties}
+            >
+              X
+            </span>
+          ) : (
+            <span
+              key={marker.id}
+              aria-hidden="true"
+              className="guitar-fretboard__marker guitar-fretboard__marker--empty"
+              data-string={marker.string}
+              style={{ "--string": marker.displayString } as CSSProperties}
+            />
+          ),
+        )}
       </span>
       <span className="guitar-fretboard__board">
+        {shape.barreGroups.map((barre) => (
+          <span
+            key={barre.id}
+            aria-label={
+              barre.finger
+                ? `Barre finger ${barre.finger} fret ${barre.fret} strings ${barre.startString} to ${barre.endString}`
+                : `Barre fret ${barre.fret} strings ${barre.startString} to ${barre.endString}`
+            }
+            className="guitar-fretboard__barre"
+            data-barre-fret={barre.fret}
+            data-barre-from-string={barre.startString}
+            data-barre-to-string={barre.endString}
+            data-finger={barre.finger}
+            style={
+              {
+                "--barre-end-string": barre.endString,
+                "--barre-fret": barre.fret,
+                "--barre-start-string": barre.startString,
+                "--end-string": barre.endDisplayString,
+                "--fret": barre.fret,
+                "--fret-position": barre.displayFret,
+                "--start-string": barre.startDisplayString,
+                "--string-end": barre.endDisplayString,
+                "--string-start": barre.startDisplayString,
+                "--visible-fret": barre.displayFret,
+              } as CSSProperties
+            }
+          />
+        ))}
         {notes.map((note) => (
           <button
             key={note.id}
-            aria-label={`${note.note} string ${note.string} fret ${note.fret}`}
+            aria-label={formatNoteButtonLabel(note)}
             className={classNames(
               "guitar-fretboard__dot",
+              note.isOpen && "guitar-fretboard__dot--open",
+              shape.barreGroups.some((barre) => barre.noteIds.includes(note.id)) &&
+                "guitar-fretboard__dot--over-barre",
               selectedNoteId === note.id && "guitar-fretboard__dot--selected",
+              activeTooltipNoteId === note.id && "guitar-fretboard__dot--tooltip-active",
             )}
+            data-fret={note.fret}
+            data-note={note.note}
+            data-note-kind={note.isOpen ? "open" : "fretted"}
+            data-tooltip-active={activeTooltipNoteId === note.id ? "true" : "false"}
+            data-string={note.string}
+            onBlur={() => onPreviewNote(null)}
             onClick={(event) => {
               event.stopPropagation();
               onSelectNote(note.id);
             }}
-            style={{ "--fret": note.fret, "--string": note.string } as CSSProperties}
+            onFocus={() => onPreviewNote(note.id)}
+            onPointerEnter={() => onPreviewNote(note.id)}
+            onPointerLeave={() => onPreviewNote(null)}
+            style={
+              {
+                "--fret": note.fret,
+                "--fret-position": note.displayFret,
+                "--string": note.displayString,
+                "--visible-fret": note.displayFret,
+              } as CSSProperties
+            }
+            title={note.note}
             type="button"
           >
-            {note.finger}
+            <span className="guitar-fretboard__dot-finger" aria-hidden="true">
+              {note.finger}
+            </span>
+            <span className="guitar-fretboard__note-tooltip" aria-hidden="true">
+              {note.note}
+            </span>
           </button>
         ))}
       </span>
-      <span className="guitar-fretboard__strings" aria-hidden="true">
-        {stringLabels.map((label, index) => (
-          <span key={`${label}-${index}`}>{label}</span>
+      <span className="guitar-fretboard__numbers" aria-hidden="true">
+        {shape.fretWindow.frets.map((fret) => (
+          <span key={fret}>{fret}</span>
+        ))}
+      </span>
+      <span className="guitar-fretboard__strings">
+        {shape.strings.map((string) => (
+          <span
+            key={string.string}
+            aria-label={`String ${string.string} ${string.label}`}
+            data-string={string.string}
+          >
+            {string.label}
+          </span>
         ))}
       </span>
     </span>

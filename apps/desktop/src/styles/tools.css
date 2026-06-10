@@ -333,11 +333,17 @@
 
 .chord-dictionary-shell {
   max-width: min(100%, 1360px);
+  min-width: 0;
+  width: 100%;
+  overflow-x: clip;
 }
 
 .chord-dictionary-panel {
   display: grid;
   gap: 1rem;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: clip;
   border-color: color-mix(in srgb, var(--playback-accent) 18%, var(--panel-border));
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--panel-strong) 88%, transparent), transparent 48%),
@@ -469,6 +475,8 @@
 .chord-dictionary {
   display: grid;
   gap: 1rem;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .chord-dictionary-toolbar {
@@ -533,6 +541,8 @@
   align-items: center;
   flex-wrap: wrap;
   gap: 0.55rem;
+  min-width: 0;
+  max-width: 100%;
   min-height: 3rem;
   padding: 0.55rem 0.65rem;
   border: 1px solid color-mix(in srgb, var(--divider) 70%, transparent);
@@ -566,6 +576,8 @@
   grid-template-columns: minmax(0, 1fr) minmax(17rem, 21rem);
   gap: 1rem;
   align-items: start;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .chord-tool-main,
@@ -650,6 +662,12 @@
 
 .chord-section-heading {
   align-items: center;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.chord-section-heading > * {
+  min-width: 0;
 }
 
 .chord-card-row {
@@ -690,29 +708,25 @@
 }
 
 .mini-fretboard {
-  --mini-dot-size: 0.66rem;
-  --mini-string-inset: 8%;
+  --mini-display-frets: var(--display-frets, 4);
+  --mini-dot-size: 0.58rem;
+  --mini-string-inset: 10%;
   --mini-string-span: calc(100% - (2 * var(--mini-string-inset)));
 
   position: relative;
   display: block;
-  width: 4.7rem;
-  height: 5.25rem;
+  width: 4.25rem;
+  height: 5rem;
   margin: 0.15rem 0;
+  overflow: visible;
   border-top: 3px solid color-mix(in srgb, var(--text) 86%, transparent);
   background:
-    linear-gradient(
+    repeating-linear-gradient(
       to bottom,
-      transparent 0 20%,
-      color-mix(in srgb, var(--divider) 70%, transparent) 20% 21%,
-      transparent 21% 40%,
-      color-mix(in srgb, var(--divider) 70%, transparent) 40% 41%,
-      transparent 41% 60%,
-      color-mix(in srgb, var(--divider) 70%, transparent) 60% 61%,
-      transparent 61% 80%,
-      color-mix(in srgb, var(--divider) 70%, transparent) 80% 81%,
-      transparent 81%
-    );
+      color-mix(in srgb, var(--divider) 70%, transparent) 0 1px,
+      transparent 1px calc(100% / var(--mini-display-frets))
+    ),
+    color-mix(in srgb, var(--color-bg-inset) 74%, transparent);
 }
 
 .mini-fretboard::before {
@@ -771,20 +785,87 @@
 
 .mini-fretboard__dot {
   position: absolute;
-  z-index: 1;
+  z-index: 2;
   left: calc(
     var(--mini-string-inset) + ((var(--string) - 1) * (var(--mini-string-span) / 5)) -
       (var(--mini-dot-size) / 2)
   );
-  top: calc((var(--fret) - 0.55) * 20%);
+  top: calc(
+    ((var(--fret-position, var(--visible-fret, var(--fret))) - 0.5) * (100% / var(--mini-display-frets))) -
+      (var(--mini-dot-size) / 2)
+  );
   width: var(--mini-dot-size);
   height: var(--mini-dot-size);
   border-radius: 999px;
   background: var(--text);
 }
 
+.mini-fretboard__markers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.mini-fretboard__marker {
+  position: absolute;
+  z-index: 3;
+  left: calc(var(--mini-string-inset) + ((var(--string) - 1) * (var(--mini-string-span) / 5)) - 0.3rem);
+  top: -0.95rem;
+  display: grid;
+  width: 0.6rem;
+  height: 0.6rem;
+  place-items: center;
+  color: color-mix(in srgb, var(--muted) 90%, transparent);
+  font-size: 0;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.mini-fretboard__marker--open {
+  border: 1.5px solid currentColor;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+}
+
+.mini-fretboard__marker--muted::before,
+.mini-fretboard__marker--muted::after {
+  content: "";
+  position: absolute;
+  width: 0.62rem;
+  height: 1.5px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.mini-fretboard__marker--muted::before {
+  transform: rotate(45deg);
+}
+
+.mini-fretboard__marker--muted::after {
+  transform: rotate(-45deg);
+}
+
+.mini-fretboard__barre {
+  --mini-barre-fret-position: var(--fret-position, var(--visible-fret, var(--fret, var(--barre-fret, 1))));
+  --mini-barre-start: var(--string-start, var(--start-string, var(--barre-start-string, 1)));
+  --mini-barre-end: var(--string-end, var(--end-string, var(--barre-end-string, 6)));
+
+  position: absolute;
+  z-index: 1;
+  left: calc(
+    var(--mini-string-inset) + ((var(--mini-barre-start) - 1) * (var(--mini-string-span) / 5)) -
+      (var(--mini-dot-size) / 2)
+  );
+  top: calc(((var(--mini-barre-fret-position) - 0.5) * (100% / var(--mini-display-frets))) - (var(--mini-dot-size) / 2));
+  width: calc(((var(--mini-barre-end) - var(--mini-barre-start)) * (var(--mini-string-span) / 5)) + var(--mini-dot-size));
+  height: var(--mini-dot-size);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 88%, var(--panel));
+}
+
 .chord-shape-tab {
   min-height: 2rem;
+  min-width: 0;
   border-radius: 8px;
   padding: 0.34rem 0.65rem;
   color: var(--text);
@@ -794,7 +875,7 @@
 
 .chord-shape-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12.25rem), 1fr));
   gap: 0.75rem;
   min-width: 0;
 }
@@ -822,11 +903,28 @@
   font: inherit;
   font-weight: 900;
   text-align: left;
+  overflow-wrap: anywhere;
 }
 
 .guitar-fretboard {
+  --guitar-visible-frets: var(--display-frets, 4);
+  --guitar-board-height: clamp(8.8rem, calc(var(--guitar-visible-frets) * 1.9rem), 13.2rem);
+  --guitar-dot-size: 1.12rem;
+  --guitar-fret-row-size: calc(var(--guitar-board-height) / var(--display-frets));
+  --guitar-marker-row-height: 1.08rem;
+  --guitar-string-inset: 8%;
+  --guitar-string-span: calc(100% - (2 * var(--guitar-string-inset)));
+
+  position: relative;
   display: grid;
-  gap: 0.3rem;
+  grid-template-columns: minmax(1.45rem, auto) minmax(0, 1fr);
+  grid-template-areas:
+    ". markers"
+    "numbers board"
+    ". strings";
+  column-gap: 0.45rem;
+  row-gap: 0.32rem;
+  align-items: start;
   min-width: 0;
 }
 
@@ -837,20 +935,50 @@
   color: var(--muted);
   font-size: 0.72rem;
   font-weight: 800;
+  line-height: 1;
+}
+
+.guitar-fretboard__numbers {
+  grid-area: numbers;
+  flex-direction: column;
+  align-self: stretch;
+  height: var(--guitar-board-height);
+  padding-block: 0 0.08rem;
+  text-align: right;
+}
+
+.guitar-fretboard__numbers span {
+  display: block;
+  min-width: 1.25rem;
+  transform: translateY(-0.35em);
+}
+
+.guitar-fretboard__numbers span:first-child {
+  color: color-mix(in srgb, var(--muted) 72%, transparent);
+}
+
+.guitar-fretboard__strings {
+  grid-area: strings;
+  padding-inline: var(--guitar-string-inset, 8%);
+  text-align: center;
+}
+
+.guitar-fretboard__strings span {
+  min-width: 1.15rem;
 }
 
 .guitar-fretboard__board {
-  --guitar-dot-size: 1.35rem;
-  --guitar-string-inset: calc(var(--guitar-dot-size) / 2);
-  --guitar-string-span: calc(100% - (2 * var(--guitar-string-inset)));
-
   position: relative;
+  grid-area: board;
   display: block;
-  height: 8.6rem;
-  border-left: 4px solid color-mix(in srgb, var(--text) 82%, transparent);
+  width: 100%;
+  height: var(--guitar-board-height);
+  min-width: 0;
+  overflow: visible;
+  border-top: 4px solid color-mix(in srgb, var(--text) 82%, transparent);
   background:
     repeating-linear-gradient(
-      to right,
+      to bottom,
       color-mix(in srgb, var(--divider) 78%, transparent) 0 1px,
       transparent 1px calc(100% / var(--display-frets))
     ),
@@ -863,14 +991,14 @@
   inset: 0;
   background:
     linear-gradient(
-      to bottom,
+      to right,
       transparent calc(var(--guitar-string-inset) - 0.5px),
       color-mix(in srgb, var(--divider) 78%, transparent) calc(var(--guitar-string-inset) - 0.5px)
         calc(var(--guitar-string-inset) + 0.5px),
       transparent calc(var(--guitar-string-inset) + 0.5px)
     ),
     linear-gradient(
-      to bottom,
+      to right,
       transparent calc(var(--guitar-string-inset) + (var(--guitar-string-span) * 0.2) - 0.5px),
       color-mix(in srgb, var(--divider) 78%, transparent)
         calc(var(--guitar-string-inset) + (var(--guitar-string-span) * 0.2) - 0.5px)
@@ -878,7 +1006,7 @@
       transparent calc(var(--guitar-string-inset) + (var(--guitar-string-span) * 0.2) + 0.5px)
     ),
     linear-gradient(
-      to bottom,
+      to right,
       transparent calc(var(--guitar-string-inset) + (var(--guitar-string-span) * 0.4) - 0.5px),
       color-mix(in srgb, var(--divider) 78%, transparent)
         calc(var(--guitar-string-inset) + (var(--guitar-string-span) * 0.4) - 0.5px)
@@ -886,7 +1014,7 @@
       transparent calc(var(--guitar-string-inset) + (var(--guitar-string-span) * 0.4) + 0.5px)
     ),
     linear-gradient(
-      to bottom,
+      to right,
       transparent calc(var(--guitar-string-inset) + (var(--guitar-string-span) * 0.6) - 0.5px),
       color-mix(in srgb, var(--divider) 78%, transparent)
         calc(var(--guitar-string-inset) + (var(--guitar-string-span) * 0.6) - 0.5px)
@@ -894,7 +1022,7 @@
       transparent calc(var(--guitar-string-inset) + (var(--guitar-string-span) * 0.6) + 0.5px)
     ),
     linear-gradient(
-      to bottom,
+      to right,
       transparent calc(var(--guitar-string-inset) + (var(--guitar-string-span) * 0.8) - 0.5px),
       color-mix(in srgb, var(--divider) 78%, transparent)
         calc(var(--guitar-string-inset) + (var(--guitar-string-span) * 0.8) - 0.5px)
@@ -902,7 +1030,7 @@
       transparent calc(var(--guitar-string-inset) + (var(--guitar-string-span) * 0.8) + 0.5px)
     ),
     linear-gradient(
-      to bottom,
+      to right,
       transparent calc(100% - var(--guitar-string-inset) - 0.5px),
       color-mix(in srgb, var(--divider) 78%, transparent) calc(100% - var(--guitar-string-inset) - 0.5px)
         calc(100% - var(--guitar-string-inset) + 0.5px),
@@ -913,29 +1041,226 @@
 
 .guitar-fretboard__dot {
   position: absolute;
-  z-index: 1;
-  left: calc((var(--fret) - 0.5) * (100% / var(--display-frets)) - 0.72rem);
-  top: calc(
+  z-index: 2;
+  left: calc(
     var(--guitar-string-inset) + ((var(--string) - 1) * (var(--guitar-string-span) / 5)) -
+      (var(--guitar-dot-size) / 2)
+  );
+  top: calc(
+    ((var(--fret-position, var(--visible-fret, var(--fret))) - 0.5) * (100% / var(--display-frets))) -
       (var(--guitar-dot-size) / 2)
   );
   display: grid;
   width: var(--guitar-dot-size);
   height: var(--guitar-dot-size);
   place-items: center;
+  box-sizing: border-box;
   border: 1px solid color-mix(in srgb, white 42%, transparent);
   border-radius: 999px;
+  padding: 0;
   background: color-mix(in srgb, var(--text) 88%, var(--panel));
   color: var(--panel);
-  font-size: 0.78rem;
+  font-size: 0.72rem;
+  font-family: inherit;
   font-weight: 900;
+  line-height: 1;
+  text-align: center;
   cursor: pointer;
+}
+
+.guitar-fretboard__dot-finger {
+  display: grid;
+  grid-area: 1 / 1;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  line-height: 1;
+}
+
+.guitar-fretboard__note-tooltip {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 0.35rem);
+  left: 50%;
+  min-width: max-content;
+  padding: 0.16rem 0.34rem;
+  border: 1px solid color-mix(in srgb, var(--playback-accent) 42%, var(--divider));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel-strong) 94%, var(--panel));
+  color: var(--text);
+  font-size: 0.7rem;
+  font-weight: 900;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%) translateY(-0.12rem);
+  transition:
+    opacity 100ms ease,
+    transform 100ms ease;
+}
+
+.guitar-fretboard__dot--tooltip-active .guitar-fretboard__note-tooltip,
+.guitar-fretboard__dot[data-tooltip-active="true"] .guitar-fretboard__note-tooltip {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.guitar-fretboard__dot[style*="--fret: 0"],
+.guitar-fretboard__dot[style*="--fret:0"] {
+  top: -1.28rem;
+  width: 0.86rem;
+  height: 0.86rem;
+  border: 2px solid color-mix(in srgb, var(--text) 74%, transparent);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  color: transparent;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--panel) 86%, transparent);
+}
+
+.guitar-fretboard__dot--over-barre,
+.guitar-fretboard__dot--barre-overlay {
+  z-index: 3;
 }
 
 .guitar-fretboard__dot--selected {
   background: var(--playback-accent);
   color: var(--panel);
   box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--playback-accent) 22%, transparent);
+}
+
+.guitar-fretboard__dot--selected[style*="--fret: 0"],
+.guitar-fretboard__dot--selected[style*="--fret:0"] {
+  border-color: var(--playback-accent);
+  background: color-mix(in srgb, var(--panel) 82%, var(--playback-accent) 18%);
+  box-shadow: 0 0 0 0.18rem color-mix(in srgb, var(--playback-accent) 22%, transparent);
+}
+
+.guitar-fretboard__barre {
+  --barre-fret-position: var(--fret-position, var(--visible-fret, var(--fret, var(--barre-fret, 1))));
+  --barre-start: var(--string-start, var(--start-string, var(--barre-start-string, 1)));
+  --barre-end: var(--string-end, var(--end-string, var(--barre-end-string, 6)));
+
+  position: absolute;
+  z-index: 1;
+  left: calc(
+    var(--guitar-string-inset) + ((var(--barre-start) - 1) * (var(--guitar-string-span) / 5)) -
+      (var(--guitar-dot-size) / 2)
+  );
+  top: calc(
+    ((var(--barre-fret-position) - 0.5) * (100% / var(--display-frets))) -
+      (var(--guitar-dot-size) / 2)
+  );
+  display: grid;
+  width: var(
+    --barre-width,
+    calc(((var(--barre-end) - var(--barre-start)) * (var(--guitar-string-span) / 5)) + var(--guitar-dot-size))
+  );
+  height: var(--guitar-dot-size);
+  place-items: center;
+  border: 1px solid color-mix(in srgb, white 36%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 86%, var(--panel));
+  color: var(--panel);
+  font-size: 0.7rem;
+  font-weight: 900;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.guitar-fretboard__barre--selected {
+  background: var(--playback-accent);
+  box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--playback-accent) 20%, transparent);
+}
+
+.guitar-fretboard__markers {
+  position: relative;
+  grid-area: markers;
+  display: block;
+  height: var(--guitar-marker-row-height);
+  min-width: 0;
+  pointer-events: none;
+}
+
+.guitar-fretboard__marker,
+.guitar-fretboard__string-marker,
+.guitar-fretboard__open-marker,
+.guitar-fretboard__muted-marker {
+  position: absolute;
+  z-index: 3;
+  border: 0;
+  padding: 0;
+  left: calc(
+    var(--guitar-string-inset) + ((var(--string) - 1) * (var(--guitar-string-span) / 5)) -
+      0.43rem
+  );
+  top: 0.08rem;
+  display: grid;
+  width: 0.86rem;
+  height: 0.86rem;
+  place-items: center;
+  background: transparent;
+  color: color-mix(in srgb, var(--text) 82%, transparent);
+  font-size: 0;
+  font-weight: 900;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.guitar-fretboard__marker--empty {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.guitar-fretboard__marker--open,
+.guitar-fretboard__string-marker--open,
+.guitar-fretboard__open-marker {
+  border: 2px solid currentColor;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  color: color-mix(in srgb, var(--text) 74%, transparent);
+}
+
+.guitar-fretboard__marker--muted,
+.guitar-fretboard__string-marker--muted,
+.guitar-fretboard__muted-marker {
+  color: color-mix(in srgb, var(--muted) 88%, transparent);
+  pointer-events: none;
+}
+
+.guitar-fretboard__marker--muted::before,
+.guitar-fretboard__marker--muted::after,
+.guitar-fretboard__string-marker--muted::before,
+.guitar-fretboard__string-marker--muted::after,
+.guitar-fretboard__muted-marker::before,
+.guitar-fretboard__muted-marker::after {
+  content: "";
+  position: absolute;
+  width: 0.78rem;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.guitar-fretboard__marker--muted::before,
+.guitar-fretboard__string-marker--muted::before,
+.guitar-fretboard__muted-marker::before {
+  transform: rotate(45deg);
+}
+
+.guitar-fretboard__marker--muted::after,
+.guitar-fretboard__string-marker--muted::after,
+.guitar-fretboard__muted-marker::after {
+  transform: rotate(-45deg);
+}
+
+.guitar-fretboard__marker--selected,
+.guitar-fretboard__marker--open.guitar-fretboard__marker--selected {
+  color: var(--playback-accent);
+  box-shadow: 0 0 0 0.18rem color-mix(in srgb, var(--playback-accent) 22%, transparent);
+}
+
+.guitar-fretboard__marker:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .note-inspector {
@@ -1091,7 +1416,7 @@
   }
 
   .chord-card-row {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(8rem, 1fr));
   }
 
   .chord-field-row {
@@ -1110,11 +1435,45 @@
 
   .chord-search {
     grid-template-columns: auto minmax(0, 1fr);
+    width: 100%;
   }
 
   .chord-card-row,
   .note-inspector dl {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .chord-shape-tabs {
+    min-width: 0;
+    max-width: 100%;
+    width: 100%;
+  }
+
+  .chord-shape-tab {
+    flex: 1 1 7rem;
+  }
+
+  .chord-context-chip,
+  .chord-family-card small,
+  .chord-shape-card__meta {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .chord-shape-grid {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 10.75rem), 1fr));
+  }
+
+  .guitar-fretboard {
+    --guitar-board-height: clamp(8.5rem, calc(var(--guitar-visible-frets) * 1.75rem), 12rem);
+
+    grid-template-columns: minmax(1.25rem, auto) minmax(0, 1fr);
+    column-gap: 0.35rem;
+  }
+
+  .guitar-fretboard__board {
+    --guitar-dot-size: 1.04rem;
   }
 
   .note-inspector,
@@ -1124,6 +1483,54 @@
 
   .lyrics-follow-stage {
     padding: 2rem 1rem;
+  }
+}
+
+@media (max-width: 560px) {
+  .chord-dictionary-actions,
+  .chord-toolbar-cluster {
+    width: 100%;
+  }
+
+  .chord-icon-button,
+  .chord-pill {
+    flex: 1 1 auto;
+  }
+
+  .chord-field-row,
+  .chord-card-row,
+  .note-inspector dl {
+    grid-template-columns: 1fr;
+  }
+
+  .chord-shape-card {
+    padding: 0.62rem;
+  }
+
+  .chord-shape-tabs {
+    box-sizing: border-box;
+    flex-wrap: nowrap;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    padding-bottom: 0.1rem;
+  }
+
+  .chord-shape-tab {
+    flex: 0 0 auto;
+    min-width: min(8rem, 80vw);
+    max-width: 11rem;
+  }
+
+  .guitar-fretboard {
+    --guitar-string-inset: 10%;
+    --guitar-board-height: clamp(8.25rem, calc(var(--guitar-visible-frets) * 1.6rem), 11.4rem);
+  }
+
+  .guitar-fretboard__numbers,
+  .guitar-fretboard__strings {
+    font-size: 0.66rem;
   }
 }
 

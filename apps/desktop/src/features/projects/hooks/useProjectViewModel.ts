@@ -95,6 +95,7 @@ const TERMINAL_PROJECT_JOB_STATUSES = ["completed", "failed", "cancelled"] as co
 const ACTIVE_PROJECT_JOBS_LIMIT = 200;
 const PROJECT_HISTORY_JOBS_PAGE_SIZE = 50;
 const EMPTY_JOBS: JobSchema[] = [];
+const PROJECT_PLAYBACK_FALLBACK_NAME = "Project playback";
 
 type DeleteArtifactsRequest = {
   artifactIds: string[];
@@ -326,6 +327,8 @@ export function useProjectViewModel() {
     queryFn: async () => (await api.getProject(projectId)).project,
     enabled: Boolean(projectId),
   });
+  const projectPlaybackName =
+    projectQuery.data?.display_name?.trim() || PROJECT_PLAYBACK_FALLBACK_NAME;
   const analysisQuery = useQuery({
     queryKey: ["analysis", projectId],
     queryFn: async () => (await api.getAnalysis(projectId)).analysis,
@@ -967,7 +970,7 @@ export function useProjectViewModel() {
       projectId
         ? buildChordDictionaryFollowProjectContext({
             projectId,
-            projectName: projectQuery.data?.display_name ?? "Project",
+            projectName: projectPlaybackName,
             selectedPlaybackArtifactId: selectedPlaybackArtifact?.id ?? null,
             sourceKey: sourceKeyBasis,
             displayedKey: activeEnharmonicKeyContext,
@@ -984,7 +987,7 @@ export function useProjectViewModel() {
       displayedChordSemitones,
       displayedChords,
       projectId,
-      projectQuery.data?.display_name,
+      projectPlaybackName,
       selectedPlaybackArtifact?.id,
       sourceKeyBasis,
     ],
@@ -2233,7 +2236,7 @@ export function useProjectViewModel() {
 
     registerProjectSession({
       projectId,
-      projectName: projectQuery.data?.display_name ?? "Project",
+      projectName: projectPlaybackName,
       stageTitle,
       stageSummary,
       selectedPlaybackArtifactId: selectedPlaybackArtifact.id,
@@ -2264,8 +2267,8 @@ export function useProjectViewModel() {
     hydratedProjectId,
     isStemPlayback,
     projectId,
-    projectQuery.data?.display_name,
     projectQuery.data?.duration_seconds,
+    projectPlaybackName,
     precountClickCount,
     precountEnabled,
     precountLoopEnabled,

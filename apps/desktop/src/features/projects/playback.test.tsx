@@ -40,6 +40,7 @@ function makePlaybackSession(
     tempoTargetBpm: null,
     timingGrid: null,
     loopRange: null,
+    chordDictionaryFollowProject: null,
   };
 }
 

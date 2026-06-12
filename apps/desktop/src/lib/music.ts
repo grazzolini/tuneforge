@@ -1,3 +1,10 @@
+import {
+  INSTRUMENT_KNOWLEDGE_BUNDLE_V1,
+  type GuitarMoveableVoicingSeedDefinitionV1,
+  type GuitarVoicingSeedV1,
+  type InstrumentProfileV1,
+} from "./instrumentKnowledge";
+
 export type KeyMode = "major" | "minor";
 export type ChordQuality =
   | "major"
@@ -372,7 +379,7 @@ export const DEFAULT_CHORD_DISPLAY_CONTEXT: ChordDisplayContext = {
   canCapo: true,
 };
 
-export const GUITAR_STANDARD_PROFILE: GuitarProfile = {
+const FALLBACK_GUITAR_STANDARD_PROFILE: GuitarProfile = {
   id: "guitar",
   label: "Guitar",
   tuning: [
@@ -388,12 +395,20 @@ export const GUITAR_STANDARD_PROFILE: GuitarProfile = {
   canRetune: true,
 };
 
+export const GUITAR_STANDARD_PROFILE: GuitarProfile =
+  buildGuitarStandardProfile(INSTRUMENT_KNOWLEDGE_BUNDLE_V1.instrumentProfiles.guitar) ??
+  FALLBACK_GUITAR_STANDARD_PROFILE;
+
 export const INSTRUMENT_PROFILES = {
   guitar: GUITAR_STANDARD_PROFILE,
 } as const;
 
-const GUITAR_TEMPLATE_STRINGS = [6, 5, 4, 3, 2, 1] as const;
-const GUITAR_TEMPLATE_QUALITY_SUFFIXES = {
+const FALLBACK_GUITAR_TEMPLATE_STRINGS = [6, 5, 4, 3, 2, 1] as const;
+const GUITAR_TEMPLATE_STRINGS =
+  INSTRUMENT_KNOWLEDGE_BUNDLE_V1.instrumentProfiles.guitar?.fretboard?.stringOrder.length
+    ? INSTRUMENT_KNOWLEDGE_BUNDLE_V1.instrumentProfiles.guitar.fretboard.stringOrder
+    : FALLBACK_GUITAR_TEMPLATE_STRINGS;
+const GUITAR_TEMPLATE_QUALITY_SUFFIXES: Readonly<Record<ChordSpellingQuality, string>> = {
   major: "",
   minor: "m",
   "7": "7",
@@ -402,734 +417,114 @@ const GUITAR_TEMPLATE_QUALITY_SUFFIXES = {
   sus2: "sus2",
   sus4: "sus4",
   dim: "dim",
-} as const;
-type GuitarCommonTemplateQuality = keyof typeof GUITAR_TEMPLATE_QUALITY_SUFFIXES;
-
-type GuitarMoveableRoot = {
-  label: string;
-  offset: number;
+  aug: "aug",
+  dim7: "dim7",
+  hdim7: "m7b5",
 };
 
-const E_SHAPE_BARRE_ROOTS: readonly GuitarMoveableRoot[] = [
-  { label: "F", offset: 1 },
-  { label: "F#", offset: 2 },
-  { label: "G", offset: 3 },
-  { label: "Ab", offset: 4 },
-  { label: "A", offset: 5 },
-  { label: "Bb", offset: 6 },
-  { label: "B", offset: 7 },
-  { label: "C", offset: 8 },
-] as const;
+export const GUITAR_COMMON_VOICING_TEMPLATES: readonly GuitarVoicingTemplate[] = buildGuitarCommonVoicingTemplates();
 
-const A_SHAPE_BARRE_ROOTS: readonly GuitarMoveableRoot[] = [
-  { label: "Bb", offset: 1 },
-  { label: "B", offset: 2 },
-  { label: "C", offset: 3 },
-  { label: "C#", offset: 4 },
-  { label: "D", offset: 5 },
-  { label: "Eb", offset: 6 },
-  { label: "E", offset: 7 },
-  { label: "F", offset: 8 },
-] as const;
+function buildGuitarStandardProfile(profile: InstrumentProfileV1 | undefined): GuitarProfile | null {
+  if (!profile || profile.id !== "guitar" || !profile.fretboard || !profile.tuning?.length) {
+    return null;
+  }
 
-const D_SHAPE_BARRE_ROOTS: readonly GuitarMoveableRoot[] = [
-  { label: "Eb", offset: 1 },
-  { label: "E", offset: 2 },
-  { label: "F", offset: 3 },
-  { label: "F#", offset: 4 },
-  { label: "G", offset: 5 },
-  { label: "Ab", offset: 6 },
-  { label: "A", offset: 7 },
-] as const;
+  const tuning = profile.tuning.flatMap((stringTuning): GuitarStringTuning[] => {
+    try {
+      return [
+        {
+          string: stringTuning.string,
+          openPitch: parsePitchRequired(stringTuning.openPitch),
+        },
+      ];
+    } catch {
+      return [];
+    }
+  });
+  if (tuning.length !== profile.tuning.length) {
+    return null;
+  }
 
-export const GUITAR_COMMON_VOICING_TEMPLATES: readonly GuitarVoicingTemplate[] = [
-  {
-    id: "c-open",
-    label: "C open",
-    shapeChordLabel: "C",
-    shapeFamily: "C",
-    rank: 10,
-    notes: [
-      { string: 5, fret: 3, finger: 3 },
-      { string: 4, fret: 2, finger: 2 },
-      { string: 3, fret: 0 },
-      { string: 2, fret: 1, finger: 1 },
-      { string: 1, fret: 0 },
-    ],
-  },
-  {
-    id: "c-over-e-open",
-    label: "C/E open",
-    shapeChordLabel: "C/E",
-    shapeFamily: "C",
-    rank: 12,
-    notes: [
-      { string: 6, fret: 0 },
-      { string: 5, fret: 3, finger: 3 },
-      { string: 4, fret: 2, finger: 2 },
-      { string: 3, fret: 0 },
-      { string: 2, fret: 1, finger: 1 },
-      { string: 1, fret: 0 },
-    ],
-  },
-  {
-    id: "c-over-g-open",
-    label: "C/G open",
-    shapeChordLabel: "C/G",
-    shapeFamily: "C",
-    rank: 12,
-    notes: [
-      { string: 6, fret: 3, finger: 4 },
-      { string: 5, fret: 3, finger: 3 },
-      { string: 4, fret: 2, finger: 2 },
-      { string: 3, fret: 0 },
-      { string: 2, fret: 1, finger: 1 },
-      { string: 1, fret: 0 },
-    ],
-  },
-  {
-    id: "a-open",
-    label: "A open",
-    shapeChordLabel: "A",
-    shapeFamily: "A",
-    rank: 10,
-    notes: [
-      { string: 5, fret: 0 },
-      { string: 4, fret: 2, finger: 1 },
-      { string: 3, fret: 2, finger: 2 },
-      { string: 2, fret: 2, finger: 3 },
-      { string: 1, fret: 0 },
-    ],
-  },
-  {
-    id: "a-over-csharp-open",
-    label: "A/C# open",
-    shapeChordLabel: "A/C#",
-    shapeFamily: "A",
-    rank: 12,
-    notes: [
-      { string: 5, fret: 4, finger: 4 },
-      { string: 4, fret: 2, finger: 1 },
-      { string: 3, fret: 2, finger: 2 },
-      { string: 2, fret: 2, finger: 3 },
-      { string: 1, fret: 0 },
-    ],
-  },
-  {
-    id: "d-open",
-    label: "D open",
-    shapeChordLabel: "D",
-    shapeFamily: "D",
-    rank: 10,
-    notes: [
-      { string: 4, fret: 0 },
-      { string: 3, fret: 2, finger: 1 },
-      { string: 2, fret: 3, finger: 3 },
-      { string: 1, fret: 2, finger: 2 },
-    ],
-  },
-  {
-    id: "d-over-fsharp-open",
-    label: "D/F# open",
-    shapeChordLabel: "D/F#",
-    shapeFamily: "D",
-    rank: 12,
-    notes: [
-      { string: 6, fret: 2, finger: 1 },
-      { string: 4, fret: 0 },
-      { string: 3, fret: 2, finger: 2 },
-      { string: 2, fret: 3, finger: 4 },
-      { string: 1, fret: 2, finger: 3 },
-    ],
-  },
-  {
-    id: "g-open",
-    label: "G open",
-    shapeChordLabel: "G",
-    shapeFamily: "G",
-    rank: 10,
-    notes: [
-      { string: 6, fret: 3, finger: 2 },
-      { string: 5, fret: 2, finger: 1 },
-      { string: 4, fret: 0 },
-      { string: 3, fret: 0 },
-      { string: 2, fret: 0 },
-      { string: 1, fret: 3, finger: 3 },
-    ],
-  },
-  {
-    id: "g-over-b-open",
-    label: "G/B open",
-    shapeChordLabel: "G/B",
-    shapeFamily: "G",
-    rank: 12,
-    notes: [
-      { string: 5, fret: 2, finger: 1 },
-      { string: 4, fret: 0 },
-      { string: 3, fret: 0 },
-      { string: 2, fret: 3, finger: 2 },
-      { string: 1, fret: 3, finger: 3 },
-    ],
-  },
-  {
-    id: "g-over-d-open",
-    label: "G/D open",
-    shapeChordLabel: "G/D",
-    shapeFamily: "G",
-    rank: 12,
-    notes: [
-      { string: 4, fret: 0 },
-      { string: 3, fret: 0 },
-      { string: 2, fret: 0 },
-      { string: 1, fret: 3, finger: 3 },
-    ],
-  },
-  {
-    id: "am-open",
-    label: "Am open",
-    shapeChordLabel: "Am",
-    shapeFamily: "A",
-    rank: 10,
-    notes: [
-      { string: 5, fret: 0 },
-      { string: 4, fret: 2, finger: 2 },
-      { string: 3, fret: 2, finger: 3 },
-      { string: 2, fret: 1, finger: 1 },
-      { string: 1, fret: 0 },
-    ],
-  },
-  {
-    id: "dm-open",
-    label: "Dm open",
-    shapeChordLabel: "Dm",
-    shapeFamily: "D",
-    rank: 10,
-    notes: [
-      { string: 4, fret: 0 },
-      { string: 3, fret: 2, finger: 2 },
-      { string: 2, fret: 3, finger: 3 },
-      { string: 1, fret: 1, finger: 1 },
-    ],
-  },
-  {
-    id: "em-open",
-    label: "Em open",
-    shapeChordLabel: "Em",
-    shapeFamily: "E",
-    rank: 10,
-    notes: [
-      { string: 6, fret: 0 },
-      { string: 5, fret: 2, finger: 2 },
-      { string: 4, fret: 2, finger: 3 },
-      { string: 3, fret: 0 },
-      { string: 2, fret: 0 },
-      { string: 1, fret: 0 },
-    ],
-  },
-  {
-    id: "am7-open",
-    label: "Am7 open",
-    shapeChordLabel: "Am7",
-    shapeFamily: "A",
-    rank: 10,
-    notes: [
-      { string: 5, fret: 0 },
-      { string: 4, fret: 2, finger: 2 },
-      { string: 3, fret: 0 },
-      { string: 2, fret: 1, finger: 1 },
-      { string: 1, fret: 0 },
-    ],
-  },
-  {
-    id: "dm7-open",
-    label: "Dm7 open",
-    shapeChordLabel: "Dm7",
-    shapeFamily: "D",
-    rank: 10,
-    notes: [
-      { string: 4, fret: 0 },
-      { string: 3, fret: 2, finger: 2 },
-      { string: 2, fret: 1, finger: 1 },
-      { string: 1, fret: 1, finger: 1 },
-    ],
-  },
-  {
-    id: "em7-open",
-    label: "Em7 open",
-    shapeChordLabel: "Em7",
-    shapeFamily: "E",
-    rank: 10,
-    notes: [
-      { string: 6, fret: 0 },
-      { string: 5, fret: 2, finger: 2 },
-      { string: 4, fret: 0 },
-      { string: 3, fret: 0 },
-      { string: 2, fret: 0 },
-      { string: 1, fret: 0 },
-    ],
-  },
-  {
-    id: "f-e-barre",
-    label: "F E-shape barre",
-    shapeChordLabel: "F",
-    shapeFamily: "E",
-    rank: 10,
-    notes: [
-      { string: 6, fret: 1, finger: 1 },
-      { string: 5, fret: 3, finger: 3 },
-      { string: 4, fret: 3, finger: 4 },
-      { string: 3, fret: 2, finger: 2 },
-      { string: 2, fret: 1, finger: 1 },
-      { string: 1, fret: 1, finger: 1 },
-    ],
-  },
-  {
-    id: "f-partial",
-    label: "F partial",
-    shapeChordLabel: "F",
-    shapeFamily: "E",
-    rank: 20,
-    notes: [
-      { string: 4, fret: 3, finger: 3 },
-      { string: 3, fret: 2, finger: 2 },
-      { string: 2, fret: 1, finger: 1 },
-      { string: 1, fret: 1, finger: 1 },
-    ],
-  },
-  {
-    id: "cmaj7-open",
-    label: "Cmaj7 open",
-    shapeChordLabel: "Cmaj7",
-    shapeFamily: "C",
-    rank: 10,
-    notes: [
-      { string: 5, fret: 3, finger: 3 },
-      { string: 4, fret: 2, finger: 2 },
-      { string: 3, fret: 0 },
-      { string: 2, fret: 0 },
-      { string: 1, fret: 0 },
-    ],
-  },
-  {
-    id: "amaj7-open",
-    label: "Amaj7 open",
-    shapeChordLabel: "Amaj7",
-    shapeFamily: "A",
-    rank: 10,
-    notes: [
-      { string: 5, fret: 0 },
-      { string: 4, fret: 2, finger: 2 },
-      { string: 3, fret: 1, finger: 1 },
-      { string: 2, fret: 2, finger: 3 },
-      { string: 1, fret: 0 },
-    ],
-  },
-  {
-    id: "dmaj7-open",
-    label: "Dmaj7 open",
-    shapeChordLabel: "Dmaj7",
-    shapeFamily: "D",
-    rank: 10,
-    notes: [
-      { string: 4, fret: 0 },
-      { string: 3, fret: 2, finger: 1 },
-      { string: 2, fret: 2, finger: 2 },
-      { string: 1, fret: 2, finger: 3 },
-    ],
-  },
-  {
-    id: "g7-open",
-    label: "G7 open",
-    shapeChordLabel: "G7",
-    shapeFamily: "G",
-    rank: 10,
-    notes: [
-      { string: 6, fret: 3, finger: 3 },
-      { string: 5, fret: 2, finger: 2 },
-      { string: 4, fret: 0 },
-      { string: 3, fret: 0 },
-      { string: 2, fret: 0 },
-      { string: 1, fret: 1, finger: 1 },
-    ],
-  },
-  {
-    id: "a7-open",
-    label: "A7 open",
-    shapeChordLabel: "A7",
-    shapeFamily: "A",
-    rank: 10,
-    notes: [
-      { string: 5, fret: 0 },
-      { string: 4, fret: 2, finger: 1 },
-      { string: 3, fret: 0 },
-      { string: 2, fret: 2, finger: 2 },
-      { string: 1, fret: 0 },
-    ],
-  },
-  {
-    id: "c7-open",
-    label: "C7 open",
-    shapeChordLabel: "C7",
-    shapeFamily: "C",
-    rank: 10,
-    notes: [
-      { string: 5, fret: 3, finger: 3 },
-      { string: 4, fret: 2, finger: 2 },
-      { string: 3, fret: 3, finger: 4 },
-      { string: 2, fret: 1, finger: 1 },
-      { string: 1, fret: 0 },
-    ],
-  },
-  {
-    id: "d7-open",
-    label: "D7 open",
-    shapeChordLabel: "D7",
-    shapeFamily: "D",
-    rank: 10,
-    notes: [
-      { string: 4, fret: 0 },
-      { string: 3, fret: 2, finger: 2 },
-      { string: 2, fret: 1, finger: 1 },
-      { string: 1, fret: 2, finger: 3 },
-    ],
-  },
-  {
-    id: "e-open",
-    label: "E open",
-    shapeChordLabel: "E",
-    shapeFamily: "E",
-    rank: 10,
-    notes: [
-      { string: 6, fret: 0 },
-      { string: 5, fret: 2, finger: 2 },
-      { string: 4, fret: 2, finger: 3 },
-      { string: 3, fret: 1, finger: 1 },
-      { string: 2, fret: 0 },
-      { string: 1, fret: 0 },
-    ],
-  },
-  {
-    id: "e7-open",
-    label: "E7 open",
-    shapeChordLabel: "E7",
-    shapeFamily: "E",
-    rank: 10,
-    notes: [
-      { string: 6, fret: 0 },
-      { string: 5, fret: 2, finger: 2 },
-      { string: 4, fret: 0 },
-      { string: 3, fret: 1, finger: 1 },
-      { string: 2, fret: 0 },
-      { string: 1, fret: 0 },
-    ],
-  },
-  {
-    id: "emaj7-open",
-    label: "Emaj7 open",
-    shapeChordLabel: "Emaj7",
-    shapeFamily: "E",
-    rank: 10,
-    notes: [
-      { string: 6, fret: 0 },
-      { string: 5, fret: 2, finger: 3 },
-      { string: 4, fret: 1, finger: 1 },
-      { string: 3, fret: 1, finger: 2 },
-      { string: 2, fret: 0 },
-      { string: 1, fret: 0 },
-    ],
-  },
-  {
-    id: "asus2-open",
-    label: "Asus2 open",
-    shapeChordLabel: "Asus2",
-    shapeFamily: "A",
-    rank: 10,
-    notes: [
-      { string: 5, fret: 0 },
-      { string: 4, fret: 2, finger: 1 },
-      { string: 3, fret: 2, finger: 2 },
-      { string: 2, fret: 0 },
-      { string: 1, fret: 0 },
-    ],
-  },
-  {
-    id: "asus4-open",
-    label: "Asus4 open",
-    shapeChordLabel: "Asus4",
-    shapeFamily: "A",
-    rank: 10,
-    notes: [
-      { string: 5, fret: 0 },
-      { string: 4, fret: 2, finger: 1 },
-      { string: 3, fret: 2, finger: 2 },
-      { string: 2, fret: 3, finger: 3 },
-      { string: 1, fret: 0 },
-    ],
-  },
-  {
-    id: "dsus2-open",
-    label: "Dsus2 open",
-    shapeChordLabel: "Dsus2",
-    shapeFamily: "D",
-    rank: 10,
-    notes: [
-      { string: 4, fret: 0 },
-      { string: 3, fret: 2, finger: 2 },
-      { string: 2, fret: 3, finger: 3 },
-      { string: 1, fret: 0 },
-    ],
-  },
-  {
-    id: "dsus4-open",
-    label: "Dsus4 open",
-    shapeChordLabel: "Dsus4",
-    shapeFamily: "D",
-    rank: 10,
-    notes: [
-      { string: 4, fret: 0 },
-      { string: 3, fret: 2, finger: 1 },
-      { string: 2, fret: 3, finger: 2 },
-      { string: 1, fret: 3, finger: 3 },
-    ],
-  },
-  {
-    id: "esus4-open",
-    label: "Esus4 open",
-    shapeChordLabel: "Esus4",
-    shapeFamily: "E",
-    rank: 10,
-    notes: [
-      { string: 6, fret: 0 },
-      { string: 5, fret: 2, finger: 1 },
-      { string: 4, fret: 2, finger: 2 },
-      { string: 3, fret: 2, finger: 3 },
-      { string: 2, fret: 0 },
-      { string: 1, fret: 0 },
-    ],
-  },
-  ...buildMoveableGuitarTemplates(),
-] as const;
+  return {
+    id: "guitar",
+    label: profile.label,
+    tuning,
+    frets: profile.fretboard.frets,
+    canCapo: profile.fretboard.canCapo,
+    canRetune: profile.fretboard.canRetune,
+  };
+}
 
-type GuitarMoveableTemplateDefinition = {
-  id: string;
-  label: string;
-  shapeFamily: GuitarShapeFamily;
-  quality: GuitarCommonTemplateQuality;
-  baseFrets: readonly (number | null)[];
-  rank: number;
-  roots: readonly GuitarMoveableRoot[];
-};
+function buildGuitarCommonVoicingTemplates(): readonly GuitarVoicingTemplate[] {
+  const guitarSeeds = INSTRUMENT_KNOWLEDGE_BUNDLE_V1.voicingSeeds.guitar;
+  if (!guitarSeeds) {
+    return [];
+  }
 
-function buildMoveableGuitarTemplates(): readonly GuitarVoicingTemplate[] {
-  const definitions: readonly GuitarMoveableTemplateDefinition[] = [
-    {
-      id: "e-shape-barre",
-      label: "E-shape barre",
-      shapeFamily: "E",
-      quality: "major",
-      baseFrets: [0, 2, 2, 1, 0, 0],
-      rank: 30,
-      roots: E_SHAPE_BARRE_ROOTS,
-    },
-    {
-      id: "em-shape-barre",
-      label: "Em-shape barre",
-      shapeFamily: "E",
-      quality: "minor",
-      baseFrets: [0, 2, 2, 0, 0, 0],
-      rank: 32,
-      roots: E_SHAPE_BARRE_ROOTS,
-    },
-    {
-      id: "e7-shape-barre",
-      label: "E7-shape barre",
-      shapeFamily: "E",
-      quality: "7",
-      baseFrets: [0, 2, 0, 1, 0, 0],
-      rank: 34,
-      roots: E_SHAPE_BARRE_ROOTS,
-    },
-    {
-      id: "emaj7-shape-barre",
-      label: "Emaj7-shape barre",
-      shapeFamily: "E",
-      quality: "maj7",
-      baseFrets: [0, 2, 1, 1, 0, 0],
-      rank: 36,
-      roots: E_SHAPE_BARRE_ROOTS,
-    },
-    {
-      id: "em7-shape-barre",
-      label: "Em7-shape barre",
-      shapeFamily: "E",
-      quality: "m7",
-      baseFrets: [0, 2, 0, 0, 0, 0],
-      rank: 34,
-      roots: E_SHAPE_BARRE_ROOTS,
-    },
-    {
-      id: "esus4-shape-barre",
-      label: "Esus4-shape barre",
-      shapeFamily: "E",
-      quality: "sus4",
-      baseFrets: [0, 2, 2, 2, 0, 0],
-      rank: 38,
-      roots: E_SHAPE_BARRE_ROOTS,
-    },
-    {
-      id: "a-shape-barre",
-      label: "A-shape barre",
-      shapeFamily: "A",
-      quality: "major",
-      baseFrets: [null, 0, 2, 2, 2, 0],
-      rank: 31,
-      roots: A_SHAPE_BARRE_ROOTS,
-    },
-    {
-      id: "am-shape-barre",
-      label: "Am-shape barre",
-      shapeFamily: "A",
-      quality: "minor",
-      baseFrets: [null, 0, 2, 2, 1, 0],
-      rank: 33,
-      roots: A_SHAPE_BARRE_ROOTS,
-    },
-    {
-      id: "a7-shape-barre",
-      label: "A7-shape barre",
-      shapeFamily: "A",
-      quality: "7",
-      baseFrets: [null, 0, 2, 0, 2, 0],
-      rank: 35,
-      roots: A_SHAPE_BARRE_ROOTS,
-    },
-    {
-      id: "amaj7-shape-barre",
-      label: "Amaj7-shape barre",
-      shapeFamily: "A",
-      quality: "maj7",
-      baseFrets: [null, 0, 2, 1, 2, 0],
-      rank: 37,
-      roots: A_SHAPE_BARRE_ROOTS,
-    },
-    {
-      id: "am7-shape-barre",
-      label: "Am7-shape barre",
-      shapeFamily: "A",
-      quality: "m7",
-      baseFrets: [null, 0, 2, 0, 1, 0],
-      rank: 35,
-      roots: A_SHAPE_BARRE_ROOTS,
-    },
-    {
-      id: "asus2-shape-barre",
-      label: "Asus2-shape barre",
-      shapeFamily: "A",
-      quality: "sus2",
-      baseFrets: [null, 0, 2, 2, 0, 0],
-      rank: 38,
-      roots: A_SHAPE_BARRE_ROOTS,
-    },
-    {
-      id: "asus4-shape-barre",
-      label: "Asus4-shape barre",
-      shapeFamily: "A",
-      quality: "sus4",
-      baseFrets: [null, 0, 2, 2, 3, 0],
-      rank: 38,
-      roots: A_SHAPE_BARRE_ROOTS,
-    },
-    {
-      id: "d-shape-barre",
-      label: "D-shape barre",
-      shapeFamily: "D",
-      quality: "major",
-      baseFrets: [null, null, 0, 2, 3, 2],
-      rank: 43,
-      roots: D_SHAPE_BARRE_ROOTS,
-    },
-    {
-      id: "dm-shape-barre",
-      label: "Dm-shape barre",
-      shapeFamily: "D",
-      quality: "minor",
-      baseFrets: [null, null, 0, 2, 3, 1],
-      rank: 45,
-      roots: D_SHAPE_BARRE_ROOTS,
-    },
-    {
-      id: "d7-shape-barre",
-      label: "D7-shape barre",
-      shapeFamily: "D",
-      quality: "7",
-      baseFrets: [null, null, 0, 2, 1, 2],
-      rank: 47,
-      roots: D_SHAPE_BARRE_ROOTS,
-    },
-    {
-      id: "dmaj7-shape-barre",
-      label: "Dmaj7-shape barre",
-      shapeFamily: "D",
-      quality: "maj7",
-      baseFrets: [null, null, 0, 2, 2, 2],
-      rank: 47,
-      roots: D_SHAPE_BARRE_ROOTS,
-    },
-    {
-      id: "dm7-shape-barre",
-      label: "Dm7-shape barre",
-      shapeFamily: "D",
-      quality: "m7",
-      baseFrets: [null, null, 0, 2, 1, 1],
-      rank: 47,
-      roots: D_SHAPE_BARRE_ROOTS,
-    },
-    {
-      id: "dsus2-shape-barre",
-      label: "Dsus2-shape barre",
-      shapeFamily: "D",
-      quality: "sus2",
-      baseFrets: [null, null, 0, 2, 3, 0],
-      rank: 49,
-      roots: D_SHAPE_BARRE_ROOTS,
-    },
-    {
-      id: "dsus4-shape-barre",
-      label: "Dsus4-shape barre",
-      shapeFamily: "D",
-      quality: "sus4",
-      baseFrets: [null, null, 0, 2, 3, 3],
-      rank: 49,
-      roots: D_SHAPE_BARRE_ROOTS,
-    },
+  return [
+    ...guitarSeeds.common.flatMap((seed) => {
+      const template = buildCommonGuitarTemplate(seed);
+      return template ? [template] : [];
+    }),
+    ...buildMoveableGuitarTemplates(guitarSeeds.moveableDefinitions),
   ];
+}
 
-  return definitions.flatMap((definition) =>
-    definition.roots.map((root) => {
-      const shapeChordLabel = formatGuitarTemplateChordLabel(root.label, definition.quality);
+function buildCommonGuitarTemplate(seed: GuitarVoicingSeedV1): GuitarVoicingTemplate | null {
+  if (!seed.shapeFamily) {
+    return null;
+  }
+
+  const notes = seed.notes.map((note): GuitarVoicingTemplateNote => ({
+    string: note.string,
+    fret: note.fret,
+    ...(note.finger ? { finger: note.finger } : {}),
+  }));
+  return {
+    id: seed.id,
+    label: seed.label,
+    shapeChordLabel: seed.chordLabel,
+    shapeFamily: seed.shapeFamily,
+    rank: seed.rank,
+    notes,
+  };
+}
+
+function buildMoveableGuitarTemplates(
+  definitions: readonly GuitarMoveableVoicingSeedDefinitionV1[],
+): readonly GuitarVoicingTemplate[] {
+  return definitions.flatMap((definition) => {
+    const quality = definition.quality;
+    if (!isChordSpellingQuality(quality) || definition.baseFrets.length !== GUITAR_TEMPLATE_STRINGS.length) {
+      return [];
+    }
+
+    return definition.roots.map((root) => {
+      const shapeChordLabel = formatGuitarTemplateChordLabel(root.label, quality);
       return {
-        id: `${formatGuitarTemplateId(shapeChordLabel)}-${definition.id}`,
-        label: `${shapeChordLabel} ${definition.label}`,
+        id: formatGuitarTemplateId(shapeChordLabel) + "-" + definition.id,
+        label: shapeChordLabel + " " + definition.label,
         shapeChordLabel,
         shapeFamily: definition.shapeFamily,
         rank: definition.rank + root.offset,
-        notes: definition.baseFrets.flatMap((fret, index) =>
-          typeof fret === "number" && typeof GUITAR_TEMPLATE_STRINGS[index] === "number"
+        notes: definition.baseFrets.flatMap((fret, index): GuitarVoicingTemplateNote[] => {
+          const string = GUITAR_TEMPLATE_STRINGS[index];
+          return typeof fret === "number" && typeof string === "number"
             ? [
                 {
-                  string: GUITAR_TEMPLATE_STRINGS[index],
+                  string,
                   fret: fret + root.offset,
                 },
               ]
-            : [],
-        ),
+            : [];
+        }),
       };
-    }),
-  );
+    });
+  });
 }
 
-function formatGuitarTemplateChordLabel(rootLabel: string, quality: GuitarCommonTemplateQuality): string {
-  return `${rootLabel}${GUITAR_TEMPLATE_QUALITY_SUFFIXES[quality]}`;
+function formatGuitarTemplateChordLabel(rootLabel: string, quality: ChordSpellingQuality): string {
+  return rootLabel + GUITAR_TEMPLATE_QUALITY_SUFFIXES[quality];
 }
 
 function formatGuitarTemplateId(label: string): string {

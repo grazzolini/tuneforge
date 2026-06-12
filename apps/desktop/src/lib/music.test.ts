@@ -355,6 +355,20 @@ describe("chord parsing and spelling", () => {
 });
 
 describe("guitar chord voicings", () => {
+  it("preserves externalized guitar catalog runtime parity", () => {
+    expect(requireFirstVoicing("C").id).toBe("c-open");
+    expect(requireVoicings("F").map((voicing) => voicing.id).slice(0, 2)).toEqual(["f-e-barre", "f-partial"]);
+    expect(requireFirstVoicing("F#").id).toBe("fsharp-e-shape-barre");
+    expect(
+      requireFirstVoicing("F#", {
+        sourceKey: { pitchClass: 6, mode: "major" },
+        capoFret: 2,
+        useCapoShapes: true,
+        canCapo: true,
+      }).id,
+    ).toBe("e-open-capo-2");
+  });
+
   it("keeps common shapes ordered before generated alternatives", () => {
     const voicings = requireVoicings("C");
     const firstGeneratedIndex = voicings.findIndex((voicing) => voicing.source === "generated");

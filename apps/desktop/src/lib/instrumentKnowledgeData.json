@@ -1,0 +1,223 @@
+{
+  "schemaVersion": 1,
+  "bundleId": "tuneforge.instrument-knowledge.first-party",
+  "version": "1.0.0",
+  "harmonicDefinitions": {
+    "major": {
+      "id": "major",
+      "label": "Major",
+      "suffix": "",
+      "aliases": ["", "maj", "major"],
+      "tones": [
+        { "degree": "1", "interval": 0 },
+        { "degree": "3", "interval": 4 },
+        { "degree": "5", "interval": 7 }
+      ]
+    },
+    "minor": {
+      "id": "minor",
+      "label": "Minor",
+      "suffix": "m",
+      "aliases": ["min", "minor", "m"],
+      "tones": [
+        { "degree": "1", "interval": 0 },
+        { "degree": "b3", "interval": 3 },
+        { "degree": "5", "interval": 7 }
+      ]
+    },
+    "sus2": {
+      "id": "sus2",
+      "label": "Suspended 2",
+      "suffix": "sus2",
+      "aliases": ["sus2"],
+      "tones": [
+        { "degree": "1", "interval": 0 },
+        { "degree": "2", "interval": 2 },
+        { "degree": "5", "interval": 7 }
+      ]
+    },
+    "sus4": {
+      "id": "sus4",
+      "label": "Suspended 4",
+      "suffix": "sus4",
+      "aliases": ["sus", "sus4"],
+      "tones": [
+        { "degree": "1", "interval": 0 },
+        { "degree": "4", "interval": 5 },
+        { "degree": "5", "interval": 7 }
+      ]
+    },
+    "dim": {
+      "id": "dim",
+      "label": "Diminished",
+      "suffix": "dim",
+      "aliases": ["dim", "diminished"],
+      "tones": [
+        { "degree": "1", "interval": 0 },
+        { "degree": "b3", "interval": 3 },
+        { "degree": "b5", "interval": 6 }
+      ]
+    },
+    "aug": {
+      "id": "aug",
+      "label": "Augmented",
+      "suffix": "aug",
+      "aliases": ["aug", "augmented", "+"],
+      "tones": [
+        { "degree": "1", "interval": 0 },
+        { "degree": "3", "interval": 4 },
+        { "degree": "#5", "interval": 8 }
+      ]
+    },
+    "7": {
+      "id": "7",
+      "label": "Dominant 7",
+      "suffix": "7",
+      "aliases": ["7", "dom7"],
+      "tones": [
+        { "degree": "1", "interval": 0 },
+        { "degree": "3", "interval": 4 },
+        { "degree": "5", "interval": 7 },
+        { "degree": "b7", "interval": 10 }
+      ]
+    },
+    "maj7": {
+      "id": "maj7",
+      "label": "Major 7",
+      "suffix": "maj7",
+      "aliases": ["maj7", "major7"],
+      "tones": [
+        { "degree": "1", "interval": 0 },
+        { "degree": "3", "interval": 4 },
+        { "degree": "5", "interval": 7 },
+        { "degree": "7", "interval": 11 }
+      ]
+    },
+    "m7": {
+      "id": "m7",
+      "label": "Minor 7",
+      "suffix": "m7",
+      "aliases": ["min7", "minor7", "m7"],
+      "tones": [
+        { "degree": "1", "interval": 0 },
+        { "degree": "b3", "interval": 3 },
+        { "degree": "5", "interval": 7 },
+        { "degree": "b7", "interval": 10 }
+      ]
+    },
+    "dim7": {
+      "id": "dim7",
+      "label": "Diminished 7",
+      "suffix": "dim7",
+      "aliases": ["dim7"],
+      "tones": [
+        { "degree": "1", "interval": 0 },
+        { "degree": "b3", "interval": 3 },
+        { "degree": "b5", "interval": 6 },
+        { "degree": "bb7", "interval": 9 }
+      ]
+    },
+    "hdim7": {
+      "id": "hdim7",
+      "label": "Half-diminished 7",
+      "suffix": "m7b5",
+      "aliases": ["hdim7", "half-diminished", "half-diminished7", "min7(b5)", "m7(b5)", "min7b5", "m7b5"],
+      "tones": [
+        { "degree": "1", "interval": 0 },
+        { "degree": "b3", "interval": 3 },
+        { "degree": "b5", "interval": 6 },
+        { "degree": "b7", "interval": 10 }
+      ]
+    }
+  },
+  "instrumentProfiles": {
+    "guitar": {
+      "id": "guitar",
+      "label": "Guitar",
+      "family": "fretted-strings",
+      "executionLayer": "fretboard",
+      "tuning": [
+        { "string": 6, "openPitch": "E2" },
+        { "string": 5, "openPitch": "A2" },
+        { "string": 4, "openPitch": "D3" },
+        { "string": 3, "openPitch": "G3" },
+        { "string": 2, "openPitch": "B3" },
+        { "string": 1, "openPitch": "E4" }
+      ],
+      "fretboard": {
+        "frets": 22,
+        "stringOrder": [6, 5, 4, 3, 2, 1],
+        "canCapo": true,
+        "canRetune": true
+      }
+    }
+  },
+  "voicingSeeds": {
+    "guitar": {
+      "common": [
+        { "id": "c-open", "label": "C open", "chordLabel": "C", "shapeFamily": "C", "rank": 10, "notes": [{ "string": 5, "fret": 3, "finger": 3 }, { "string": 4, "fret": 2, "finger": 2 }, { "string": 3, "fret": 0 }, { "string": 2, "fret": 1, "finger": 1 }, { "string": 1, "fret": 0 }] },
+        { "id": "c-over-e-open", "label": "C/E open", "chordLabel": "C/E", "shapeFamily": "C", "rank": 12, "notes": [{ "string": 6, "fret": 0 }, { "string": 5, "fret": 3, "finger": 3 }, { "string": 4, "fret": 2, "finger": 2 }, { "string": 3, "fret": 0 }, { "string": 2, "fret": 1, "finger": 1 }, { "string": 1, "fret": 0 }] },
+        { "id": "c-over-g-open", "label": "C/G open", "chordLabel": "C/G", "shapeFamily": "C", "rank": 12, "notes": [{ "string": 6, "fret": 3, "finger": 4 }, { "string": 5, "fret": 3, "finger": 3 }, { "string": 4, "fret": 2, "finger": 2 }, { "string": 3, "fret": 0 }, { "string": 2, "fret": 1, "finger": 1 }, { "string": 1, "fret": 0 }] },
+        { "id": "a-open", "label": "A open", "chordLabel": "A", "shapeFamily": "A", "rank": 10, "notes": [{ "string": 5, "fret": 0 }, { "string": 4, "fret": 2, "finger": 1 }, { "string": 3, "fret": 2, "finger": 2 }, { "string": 2, "fret": 2, "finger": 3 }, { "string": 1, "fret": 0 }] },
+        { "id": "a-over-csharp-open", "label": "A/C# open", "chordLabel": "A/C#", "shapeFamily": "A", "rank": 12, "notes": [{ "string": 5, "fret": 4, "finger": 4 }, { "string": 4, "fret": 2, "finger": 1 }, { "string": 3, "fret": 2, "finger": 2 }, { "string": 2, "fret": 2, "finger": 3 }, { "string": 1, "fret": 0 }] },
+        { "id": "d-open", "label": "D open", "chordLabel": "D", "shapeFamily": "D", "rank": 10, "notes": [{ "string": 4, "fret": 0 }, { "string": 3, "fret": 2, "finger": 1 }, { "string": 2, "fret": 3, "finger": 3 }, { "string": 1, "fret": 2, "finger": 2 }] },
+        { "id": "d-over-fsharp-open", "label": "D/F# open", "chordLabel": "D/F#", "shapeFamily": "D", "rank": 12, "notes": [{ "string": 6, "fret": 2, "finger": 1 }, { "string": 4, "fret": 0 }, { "string": 3, "fret": 2, "finger": 2 }, { "string": 2, "fret": 3, "finger": 4 }, { "string": 1, "fret": 2, "finger": 3 }] },
+        { "id": "g-open", "label": "G open", "chordLabel": "G", "shapeFamily": "G", "rank": 10, "notes": [{ "string": 6, "fret": 3, "finger": 2 }, { "string": 5, "fret": 2, "finger": 1 }, { "string": 4, "fret": 0 }, { "string": 3, "fret": 0 }, { "string": 2, "fret": 0 }, { "string": 1, "fret": 3, "finger": 3 }] },
+        { "id": "g-over-b-open", "label": "G/B open", "chordLabel": "G/B", "shapeFamily": "G", "rank": 12, "notes": [{ "string": 5, "fret": 2, "finger": 1 }, { "string": 4, "fret": 0 }, { "string": 3, "fret": 0 }, { "string": 2, "fret": 3, "finger": 2 }, { "string": 1, "fret": 3, "finger": 3 }] },
+        { "id": "g-over-d-open", "label": "G/D open", "chordLabel": "G/D", "shapeFamily": "G", "rank": 12, "notes": [{ "string": 4, "fret": 0 }, { "string": 3, "fret": 0 }, { "string": 2, "fret": 0 }, { "string": 1, "fret": 3, "finger": 3 }] },
+        { "id": "am-open", "label": "Am open", "chordLabel": "Am", "shapeFamily": "A", "rank": 10, "notes": [{ "string": 5, "fret": 0 }, { "string": 4, "fret": 2, "finger": 2 }, { "string": 3, "fret": 2, "finger": 3 }, { "string": 2, "fret": 1, "finger": 1 }, { "string": 1, "fret": 0 }] },
+        { "id": "dm-open", "label": "Dm open", "chordLabel": "Dm", "shapeFamily": "D", "rank": 10, "notes": [{ "string": 4, "fret": 0 }, { "string": 3, "fret": 2, "finger": 2 }, { "string": 2, "fret": 3, "finger": 3 }, { "string": 1, "fret": 1, "finger": 1 }] },
+        { "id": "em-open", "label": "Em open", "chordLabel": "Em", "shapeFamily": "E", "rank": 10, "notes": [{ "string": 6, "fret": 0 }, { "string": 5, "fret": 2, "finger": 2 }, { "string": 4, "fret": 2, "finger": 3 }, { "string": 3, "fret": 0 }, { "string": 2, "fret": 0 }, { "string": 1, "fret": 0 }] },
+        { "id": "am7-open", "label": "Am7 open", "chordLabel": "Am7", "shapeFamily": "A", "rank": 10, "notes": [{ "string": 5, "fret": 0 }, { "string": 4, "fret": 2, "finger": 2 }, { "string": 3, "fret": 0 }, { "string": 2, "fret": 1, "finger": 1 }, { "string": 1, "fret": 0 }] },
+        { "id": "dm7-open", "label": "Dm7 open", "chordLabel": "Dm7", "shapeFamily": "D", "rank": 10, "notes": [{ "string": 4, "fret": 0 }, { "string": 3, "fret": 2, "finger": 2 }, { "string": 2, "fret": 1, "finger": 1 }, { "string": 1, "fret": 1, "finger": 1 }] },
+        { "id": "em7-open", "label": "Em7 open", "chordLabel": "Em7", "shapeFamily": "E", "rank": 10, "notes": [{ "string": 6, "fret": 0 }, { "string": 5, "fret": 2, "finger": 2 }, { "string": 4, "fret": 0 }, { "string": 3, "fret": 0 }, { "string": 2, "fret": 0 }, { "string": 1, "fret": 0 }] },
+        { "id": "f-e-barre", "label": "F E-shape barre", "chordLabel": "F", "shapeFamily": "E", "rank": 10, "notes": [{ "string": 6, "fret": 1, "finger": 1 }, { "string": 5, "fret": 3, "finger": 3 }, { "string": 4, "fret": 3, "finger": 4 }, { "string": 3, "fret": 2, "finger": 2 }, { "string": 2, "fret": 1, "finger": 1 }, { "string": 1, "fret": 1, "finger": 1 }] },
+        { "id": "f-partial", "label": "F partial", "chordLabel": "F", "shapeFamily": "E", "rank": 20, "notes": [{ "string": 4, "fret": 3, "finger": 3 }, { "string": 3, "fret": 2, "finger": 2 }, { "string": 2, "fret": 1, "finger": 1 }, { "string": 1, "fret": 1, "finger": 1 }] },
+        { "id": "cmaj7-open", "label": "Cmaj7 open", "chordLabel": "Cmaj7", "shapeFamily": "C", "rank": 10, "notes": [{ "string": 5, "fret": 3, "finger": 3 }, { "string": 4, "fret": 2, "finger": 2 }, { "string": 3, "fret": 0 }, { "string": 2, "fret": 0 }, { "string": 1, "fret": 0 }] },
+        { "id": "amaj7-open", "label": "Amaj7 open", "chordLabel": "Amaj7", "shapeFamily": "A", "rank": 10, "notes": [{ "string": 5, "fret": 0 }, { "string": 4, "fret": 2, "finger": 2 }, { "string": 3, "fret": 1, "finger": 1 }, { "string": 2, "fret": 2, "finger": 3 }, { "string": 1, "fret": 0 }] },
+        { "id": "dmaj7-open", "label": "Dmaj7 open", "chordLabel": "Dmaj7", "shapeFamily": "D", "rank": 10, "notes": [{ "string": 4, "fret": 0 }, { "string": 3, "fret": 2, "finger": 1 }, { "string": 2, "fret": 2, "finger": 2 }, { "string": 1, "fret": 2, "finger": 3 }] },
+        { "id": "g7-open", "label": "G7 open", "chordLabel": "G7", "shapeFamily": "G", "rank": 10, "notes": [{ "string": 6, "fret": 3, "finger": 3 }, { "string": 5, "fret": 2, "finger": 2 }, { "string": 4, "fret": 0 }, { "string": 3, "fret": 0 }, { "string": 2, "fret": 0 }, { "string": 1, "fret": 1, "finger": 1 }] },
+        { "id": "a7-open", "label": "A7 open", "chordLabel": "A7", "shapeFamily": "A", "rank": 10, "notes": [{ "string": 5, "fret": 0 }, { "string": 4, "fret": 2, "finger": 1 }, { "string": 3, "fret": 0 }, { "string": 2, "fret": 2, "finger": 2 }, { "string": 1, "fret": 0 }] },
+        { "id": "c7-open", "label": "C7 open", "chordLabel": "C7", "shapeFamily": "C", "rank": 10, "notes": [{ "string": 5, "fret": 3, "finger": 3 }, { "string": 4, "fret": 2, "finger": 2 }, { "string": 3, "fret": 3, "finger": 4 }, { "string": 2, "fret": 1, "finger": 1 }, { "string": 1, "fret": 0 }] },
+        { "id": "d7-open", "label": "D7 open", "chordLabel": "D7", "shapeFamily": "D", "rank": 10, "notes": [{ "string": 4, "fret": 0 }, { "string": 3, "fret": 2, "finger": 2 }, { "string": 2, "fret": 1, "finger": 1 }, { "string": 1, "fret": 2, "finger": 3 }] },
+        { "id": "e-open", "label": "E open", "chordLabel": "E", "shapeFamily": "E", "rank": 10, "notes": [{ "string": 6, "fret": 0 }, { "string": 5, "fret": 2, "finger": 2 }, { "string": 4, "fret": 2, "finger": 3 }, { "string": 3, "fret": 1, "finger": 1 }, { "string": 2, "fret": 0 }, { "string": 1, "fret": 0 }] },
+        { "id": "e7-open", "label": "E7 open", "chordLabel": "E7", "shapeFamily": "E", "rank": 10, "notes": [{ "string": 6, "fret": 0 }, { "string": 5, "fret": 2, "finger": 2 }, { "string": 4, "fret": 0 }, { "string": 3, "fret": 1, "finger": 1 }, { "string": 2, "fret": 0 }, { "string": 1, "fret": 0 }] },
+        { "id": "emaj7-open", "label": "Emaj7 open", "chordLabel": "Emaj7", "shapeFamily": "E", "rank": 10, "notes": [{ "string": 6, "fret": 0 }, { "string": 5, "fret": 2, "finger": 3 }, { "string": 4, "fret": 1, "finger": 1 }, { "string": 3, "fret": 1, "finger": 2 }, { "string": 2, "fret": 0 }, { "string": 1, "fret": 0 }] },
+        { "id": "asus2-open", "label": "Asus2 open", "chordLabel": "Asus2", "shapeFamily": "A", "rank": 10, "notes": [{ "string": 5, "fret": 0 }, { "string": 4, "fret": 2, "finger": 1 }, { "string": 3, "fret": 2, "finger": 2 }, { "string": 2, "fret": 0 }, { "string": 1, "fret": 0 }] },
+        { "id": "asus4-open", "label": "Asus4 open", "chordLabel": "Asus4", "shapeFamily": "A", "rank": 10, "notes": [{ "string": 5, "fret": 0 }, { "string": 4, "fret": 2, "finger": 1 }, { "string": 3, "fret": 2, "finger": 2 }, { "string": 2, "fret": 3, "finger": 3 }, { "string": 1, "fret": 0 }] },
+        { "id": "dsus2-open", "label": "Dsus2 open", "chordLabel": "Dsus2", "shapeFamily": "D", "rank": 10, "notes": [{ "string": 4, "fret": 0 }, { "string": 3, "fret": 2, "finger": 2 }, { "string": 2, "fret": 3, "finger": 3 }, { "string": 1, "fret": 0 }] },
+        { "id": "dsus4-open", "label": "Dsus4 open", "chordLabel": "Dsus4", "shapeFamily": "D", "rank": 10, "notes": [{ "string": 4, "fret": 0 }, { "string": 3, "fret": 2, "finger": 1 }, { "string": 2, "fret": 3, "finger": 2 }, { "string": 1, "fret": 3, "finger": 3 }] },
+        { "id": "esus4-open", "label": "Esus4 open", "chordLabel": "Esus4", "shapeFamily": "E", "rank": 10, "notes": [{ "string": 6, "fret": 0 }, { "string": 5, "fret": 2, "finger": 1 }, { "string": 4, "fret": 2, "finger": 2 }, { "string": 3, "fret": 2, "finger": 3 }, { "string": 2, "fret": 0 }, { "string": 1, "fret": 0 }] }
+      ],
+      "moveableDefinitions": [
+        { "id": "e-shape-barre", "label": "E-shape barre", "shapeFamily": "E", "quality": "major", "baseFrets": [0, 2, 2, 1, 0, 0], "rank": 30, "roots": [{ "label": "F", "offset": 1 }, { "label": "F#", "offset": 2 }, { "label": "G", "offset": 3 }, { "label": "Ab", "offset": 4 }, { "label": "A", "offset": 5 }, { "label": "Bb", "offset": 6 }, { "label": "B", "offset": 7 }, { "label": "C", "offset": 8 }] },
+        { "id": "em-shape-barre", "label": "Em-shape barre", "shapeFamily": "E", "quality": "minor", "baseFrets": [0, 2, 2, 0, 0, 0], "rank": 32, "roots": [{ "label": "F", "offset": 1 }, { "label": "F#", "offset": 2 }, { "label": "G", "offset": 3 }, { "label": "Ab", "offset": 4 }, { "label": "A", "offset": 5 }, { "label": "Bb", "offset": 6 }, { "label": "B", "offset": 7 }, { "label": "C", "offset": 8 }] },
+        { "id": "e7-shape-barre", "label": "E7-shape barre", "shapeFamily": "E", "quality": "7", "baseFrets": [0, 2, 0, 1, 0, 0], "rank": 34, "roots": [{ "label": "F", "offset": 1 }, { "label": "F#", "offset": 2 }, { "label": "G", "offset": 3 }, { "label": "Ab", "offset": 4 }, { "label": "A", "offset": 5 }, { "label": "Bb", "offset": 6 }, { "label": "B", "offset": 7 }, { "label": "C", "offset": 8 }] },
+        { "id": "emaj7-shape-barre", "label": "Emaj7-shape barre", "shapeFamily": "E", "quality": "maj7", "baseFrets": [0, 2, 1, 1, 0, 0], "rank": 36, "roots": [{ "label": "F", "offset": 1 }, { "label": "F#", "offset": 2 }, { "label": "G", "offset": 3 }, { "label": "Ab", "offset": 4 }, { "label": "A", "offset": 5 }, { "label": "Bb", "offset": 6 }, { "label": "B", "offset": 7 }, { "label": "C", "offset": 8 }] },
+        { "id": "em7-shape-barre", "label": "Em7-shape barre", "shapeFamily": "E", "quality": "m7", "baseFrets": [0, 2, 0, 0, 0, 0], "rank": 34, "roots": [{ "label": "F", "offset": 1 }, { "label": "F#", "offset": 2 }, { "label": "G", "offset": 3 }, { "label": "Ab", "offset": 4 }, { "label": "A", "offset": 5 }, { "label": "Bb", "offset": 6 }, { "label": "B", "offset": 7 }, { "label": "C", "offset": 8 }] },
+        { "id": "esus4-shape-barre", "label": "Esus4-shape barre", "shapeFamily": "E", "quality": "sus4", "baseFrets": [0, 2, 2, 2, 0, 0], "rank": 38, "roots": [{ "label": "F", "offset": 1 }, { "label": "F#", "offset": 2 }, { "label": "G", "offset": 3 }, { "label": "Ab", "offset": 4 }, { "label": "A", "offset": 5 }, { "label": "Bb", "offset": 6 }, { "label": "B", "offset": 7 }, { "label": "C", "offset": 8 }] },
+        { "id": "a-shape-barre", "label": "A-shape barre", "shapeFamily": "A", "quality": "major", "baseFrets": [null, 0, 2, 2, 2, 0], "rank": 31, "roots": [{ "label": "Bb", "offset": 1 }, { "label": "B", "offset": 2 }, { "label": "C", "offset": 3 }, { "label": "C#", "offset": 4 }, { "label": "D", "offset": 5 }, { "label": "Eb", "offset": 6 }, { "label": "E", "offset": 7 }, { "label": "F", "offset": 8 }] },
+        { "id": "am-shape-barre", "label": "Am-shape barre", "shapeFamily": "A", "quality": "minor", "baseFrets": [null, 0, 2, 2, 1, 0], "rank": 33, "roots": [{ "label": "Bb", "offset": 1 }, { "label": "B", "offset": 2 }, { "label": "C", "offset": 3 }, { "label": "C#", "offset": 4 }, { "label": "D", "offset": 5 }, { "label": "Eb", "offset": 6 }, { "label": "E", "offset": 7 }, { "label": "F", "offset": 8 }] },
+        { "id": "a7-shape-barre", "label": "A7-shape barre", "shapeFamily": "A", "quality": "7", "baseFrets": [null, 0, 2, 0, 2, 0], "rank": 35, "roots": [{ "label": "Bb", "offset": 1 }, { "label": "B", "offset": 2 }, { "label": "C", "offset": 3 }, { "label": "C#", "offset": 4 }, { "label": "D", "offset": 5 }, { "label": "Eb", "offset": 6 }, { "label": "E", "offset": 7 }, { "label": "F", "offset": 8 }] },
+        { "id": "amaj7-shape-barre", "label": "Amaj7-shape barre", "shapeFamily": "A", "quality": "maj7", "baseFrets": [null, 0, 2, 1, 2, 0], "rank": 37, "roots": [{ "label": "Bb", "offset": 1 }, { "label": "B", "offset": 2 }, { "label": "C", "offset": 3 }, { "label": "C#", "offset": 4 }, { "label": "D", "offset": 5 }, { "label": "Eb", "offset": 6 }, { "label": "E", "offset": 7 }, { "label": "F", "offset": 8 }] },
+        { "id": "am7-shape-barre", "label": "Am7-shape barre", "shapeFamily": "A", "quality": "m7", "baseFrets": [null, 0, 2, 0, 1, 0], "rank": 35, "roots": [{ "label": "Bb", "offset": 1 }, { "label": "B", "offset": 2 }, { "label": "C", "offset": 3 }, { "label": "C#", "offset": 4 }, { "label": "D", "offset": 5 }, { "label": "Eb", "offset": 6 }, { "label": "E", "offset": 7 }, { "label": "F", "offset": 8 }] },
+        { "id": "asus2-shape-barre", "label": "Asus2-shape barre", "shapeFamily": "A", "quality": "sus2", "baseFrets": [null, 0, 2, 2, 0, 0], "rank": 38, "roots": [{ "label": "Bb", "offset": 1 }, { "label": "B", "offset": 2 }, { "label": "C", "offset": 3 }, { "label": "C#", "offset": 4 }, { "label": "D", "offset": 5 }, { "label": "Eb", "offset": 6 }, { "label": "E", "offset": 7 }, { "label": "F", "offset": 8 }] },
+        { "id": "asus4-shape-barre", "label": "Asus4-shape barre", "shapeFamily": "A", "quality": "sus4", "baseFrets": [null, 0, 2, 2, 3, 0], "rank": 38, "roots": [{ "label": "Bb", "offset": 1 }, { "label": "B", "offset": 2 }, { "label": "C", "offset": 3 }, { "label": "C#", "offset": 4 }, { "label": "D", "offset": 5 }, { "label": "Eb", "offset": 6 }, { "label": "E", "offset": 7 }, { "label": "F", "offset": 8 }] },
+        { "id": "d-shape-barre", "label": "D-shape barre", "shapeFamily": "D", "quality": "major", "baseFrets": [null, null, 0, 2, 3, 2], "rank": 43, "roots": [{ "label": "Eb", "offset": 1 }, { "label": "E", "offset": 2 }, { "label": "F", "offset": 3 }, { "label": "F#", "offset": 4 }, { "label": "G", "offset": 5 }, { "label": "Ab", "offset": 6 }, { "label": "A", "offset": 7 }] },
+        { "id": "dm-shape-barre", "label": "Dm-shape barre", "shapeFamily": "D", "quality": "minor", "baseFrets": [null, null, 0, 2, 3, 1], "rank": 45, "roots": [{ "label": "Eb", "offset": 1 }, { "label": "E", "offset": 2 }, { "label": "F", "offset": 3 }, { "label": "F#", "offset": 4 }, { "label": "G", "offset": 5 }, { "label": "Ab", "offset": 6 }, { "label": "A", "offset": 7 }] },
+        { "id": "d7-shape-barre", "label": "D7-shape barre", "shapeFamily": "D", "quality": "7", "baseFrets": [null, null, 0, 2, 1, 2], "rank": 47, "roots": [{ "label": "Eb", "offset": 1 }, { "label": "E", "offset": 2 }, { "label": "F", "offset": 3 }, { "label": "F#", "offset": 4 }, { "label": "G", "offset": 5 }, { "label": "Ab", "offset": 6 }, { "label": "A", "offset": 7 }] },
+        { "id": "dmaj7-shape-barre", "label": "Dmaj7-shape barre", "shapeFamily": "D", "quality": "maj7", "baseFrets": [null, null, 0, 2, 2, 2], "rank": 47, "roots": [{ "label": "Eb", "offset": 1 }, { "label": "E", "offset": 2 }, { "label": "F", "offset": 3 }, { "label": "F#", "offset": 4 }, { "label": "G", "offset": 5 }, { "label": "Ab", "offset": 6 }, { "label": "A", "offset": 7 }] },
+        { "id": "dm7-shape-barre", "label": "Dm7-shape barre", "shapeFamily": "D", "quality": "m7", "baseFrets": [null, null, 0, 2, 1, 1], "rank": 47, "roots": [{ "label": "Eb", "offset": 1 }, { "label": "E", "offset": 2 }, { "label": "F", "offset": 3 }, { "label": "F#", "offset": 4 }, { "label": "G", "offset": 5 }, { "label": "Ab", "offset": 6 }, { "label": "A", "offset": 7 }] },
+        { "id": "dsus2-shape-barre", "label": "Dsus2-shape barre", "shapeFamily": "D", "quality": "sus2", "baseFrets": [null, null, 0, 2, 3, 0], "rank": 49, "roots": [{ "label": "Eb", "offset": 1 }, { "label": "E", "offset": 2 }, { "label": "F", "offset": 3 }, { "label": "F#", "offset": 4 }, { "label": "G", "offset": 5 }, { "label": "Ab", "offset": 6 }, { "label": "A", "offset": 7 }] },
+        { "id": "dsus4-shape-barre", "label": "Dsus4-shape barre", "shapeFamily": "D", "quality": "sus4", "baseFrets": [null, null, 0, 2, 3, 3], "rank": 49, "roots": [{ "label": "Eb", "offset": 1 }, { "label": "E", "offset": 2 }, { "label": "F", "offset": 3 }, { "label": "F#", "offset": 4 }, { "label": "G", "offset": 5 }, { "label": "Ab", "offset": 6 }, { "label": "A", "offset": 7 }] }
+      ]
+    }
+  },
+  "importAdapters": {
+    "observedGuitarGzip": {
+      "schemaVersion": 1,
+      "description": "Observed chord-label keyed gzip export shape. Positions are six guitar strings ordered 6 to 1.",
+      "stringOrder": [6, 5, 4, 3, 2, 1]
+    }
+  }
+}

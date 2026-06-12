@@ -440,12 +440,14 @@
 
 .analysis-action-row {
   display: flex;
+  gap: 0.8rem;
   margin-top: 0.85rem;
 }
 
 .analysis-stat__action {
+  flex: 1 1 0;
   justify-content: center;
-  width: 100%;
+  min-width: 0;
 }
 
 .meta-stat {

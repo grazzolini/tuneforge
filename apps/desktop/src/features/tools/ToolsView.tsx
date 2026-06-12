@@ -47,11 +47,11 @@ import {
   type TunerPitchReading,
 } from "./tunerPitch";
 import { ChordDictionaryPage } from "./ChordDictionaryPage";
+import { nextToolSearchParams, type ToolId } from "./toolRouting";
 
 const SYSTEM_INPUT_VOLUME_COMMIT_DELAY_MS = 180;
 
 type TunerStatus = "idle" | "starting" | "listening" | "unsupported" | "error";
-type ToolId = "tuner" | "metronome" | "chord-dictionary";
 type CaptureBackend = "native" | "web";
 
 export function ToolsView() {
@@ -59,21 +59,7 @@ export function ToolsView() {
   const activeTool = readToolId(searchParams);
 
   function handleSelectTool(tool: ToolId) {
-    const nextSearchParams = new URLSearchParams(searchParams);
-    if (tool === "tuner") {
-      nextSearchParams.delete("tool");
-      nextSearchParams.delete("bpm");
-      nextSearchParams.delete("followPlayback");
-      nextSearchParams.delete("projectId");
-    } else if (tool === "metronome") {
-      nextSearchParams.set("tool", "metronome");
-    } else {
-      nextSearchParams.set("tool", "chord-dictionary");
-      nextSearchParams.delete("bpm");
-      nextSearchParams.delete("followPlayback");
-      nextSearchParams.delete("projectId");
-    }
-    setSearchParams(nextSearchParams);
+    setSearchParams(nextToolSearchParams(searchParams, tool));
   }
 
   return (

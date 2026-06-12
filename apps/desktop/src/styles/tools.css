@@ -1372,8 +1372,89 @@
   min-height: 41rem;
 }
 
+.live-follow-page--active {
+  align-content: start;
+}
+
 .live-follow-topbar {
   align-items: center;
+}
+
+.live-follow-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(17rem, 22rem);
+  gap: 1rem;
+  align-items: start;
+  min-width: 0;
+}
+
+.live-follow-main,
+.live-follow-sidebar {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.live-current-chord,
+.live-next-chord {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
+  padding: 0.85rem;
+  border: 1px solid color-mix(in srgb, var(--divider) 76%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
+}
+
+.live-current-chord h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 3.4rem;
+  line-height: 0.95;
+}
+
+.live-next-chord strong {
+  color: var(--text);
+  font-size: 1.6rem;
+  line-height: 1.05;
+}
+
+.live-next-chord span {
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.live-follow-provenance {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin: 0;
+}
+
+.live-follow-provenance div {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+  padding: 0.55rem 0.6rem;
+  border: 1px solid color-mix(in srgb, var(--divider) 70%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-strong) 56%, transparent);
+}
+
+.live-follow-provenance dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.live-follow-provenance dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font-weight: 850;
+  overflow-wrap: anywhere;
 }
 
 .lyrics-follow-stage {
@@ -1411,7 +1492,8 @@
 
 
 @media (max-width: 1180px) {
-  .chord-tool-grid {
+  .chord-tool-grid,
+  .live-follow-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1420,6 +1502,10 @@
   }
 
   .chord-field-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .live-follow-provenance {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -1455,7 +1541,9 @@
 
   .chord-context-chip,
   .chord-family-card small,
-  .chord-shape-card__meta {
+  .chord-shape-card__meta,
+  .live-next-chord span,
+  .live-follow-provenance dd {
     min-width: 0;
     overflow-wrap: anywhere;
     white-space: normal;
@@ -1481,6 +1569,10 @@
     grid-template-columns: 1fr;
   }
 
+  .live-current-chord h3 {
+    font-size: 2.6rem;
+  }
+
   .lyrics-follow-stage {
     padding: 2rem 1rem;
   }
@@ -1499,7 +1591,8 @@
 
   .chord-field-row,
   .chord-card-row,
-  .note-inspector dl {
+  .note-inspector dl,
+  .live-follow-provenance {
     grid-template-columns: 1fr;
   }
 

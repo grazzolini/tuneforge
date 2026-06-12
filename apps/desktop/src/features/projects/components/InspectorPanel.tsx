@@ -22,6 +22,7 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
     handleDeleteAllStems,
     handleDeleteProject,
     handleDeleteSelectedPrimaryStems,
+    hasChordTimeline,
     hasTransformChange,
     higherTargetPreview,
     higherTargetShiftOptions,
@@ -37,6 +38,7 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
     projectSyncLockReason,
     referenceHz,
     retuneMode,
+    selectedPlaybackArtifact,
     selectedPrimaryStemArtifacts,
     selectedPrimaryStemDeleteLabel,
     setCentsOffset,
@@ -70,6 +72,9 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
   const editLockTitle = projectSyncLockReason ?? undefined;
   const tempoBpm = analysisQuery.data?.tempo_bpm;
   const canOpenMetronome = typeof tempoBpm === "number" && Number.isFinite(tempoBpm);
+  const canOpenChordDictionary = Boolean(
+    projectQuery.data?.id && selectedPlaybackArtifact && hasChordTimeline,
+  );
   const estimatedReferenceHz = analysisQuery.data?.estimated_reference_hz;
   const hasEstimatedReferenceHz =
     typeof estimatedReferenceHz === "number" && Number.isFinite(estimatedReferenceHz);
@@ -88,6 +93,12 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
     if (projectQuery.data?.id) {
       metronomeSearchParams.set("projectId", projectQuery.data.id);
     }
+  }
+  const chordDictionarySearchParams = new URLSearchParams();
+  if (canOpenChordDictionary && projectQuery.data?.id) {
+    chordDictionarySearchParams.set("tool", "chord-dictionary");
+    chordDictionarySearchParams.set("followPlayback", "1");
+    chordDictionarySearchParams.set("projectId", projectQuery.data.id);
   }
 
   return (
@@ -331,16 +342,27 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
             </strong>
           </div>
         </div>
-        {canOpenMetronome ? (
+        {canOpenMetronome || canOpenChordDictionary ? (
           <div className="analysis-action-row">
-            <Link
-              aria-label={`Follow on metronome at ${tempoBpm.toFixed(1)} BPM`}
-              className="button button--small analysis-stat__action"
-              onClick={() => void launchMetronome({ bpm: tempoBpm, followPlayback: true })}
-              to={`/tools?${metronomeSearchParams.toString()}`}
-            >
-              Follow on Metronome
-            </Link>
+            {canOpenMetronome ? (
+              <Link
+                aria-label={`Follow on metronome at ${tempoBpm.toFixed(1)} BPM`}
+                className="button button--small analysis-stat__action"
+                onClick={() => void launchMetronome({ bpm: tempoBpm, followPlayback: true })}
+                to={`/tools?${metronomeSearchParams.toString()}`}
+              >
+                Follow on Metronome
+              </Link>
+            ) : null}
+            {canOpenChordDictionary ? (
+              <Link
+                aria-label="Follow chords in Chord Dictionary"
+                className="button button--small analysis-stat__action"
+                to={`/tools?${chordDictionarySearchParams.toString()}`}
+              >
+                Chord Dictionary
+              </Link>
+            ) : null}
           </div>
         ) : null}
         <details className="details-block details-block--inset">

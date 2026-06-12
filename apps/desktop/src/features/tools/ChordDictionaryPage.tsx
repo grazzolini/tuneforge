@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   ArrowUpDown,
   AudioLines,
@@ -16,7 +17,15 @@ import {
   spellChord,
   type ChordDisplayContext,
   type GuitarVoicing,
+  type MusicalKey,
 } from "../../lib/music";
+import {
+  buildChordDictionaryFollowContext,
+  type ChordDictionaryFollowContext,
+  type ChordDictionaryFollowStatus,
+} from "../projects/chordDictionaryFollowContext";
+import { usePlayback } from "../projects/playback-context";
+import { useChordDictionaryFollowArm } from "./chordDictionaryFollowArm-context";
 
 type ChordDictionarySurface = "dictionary" | "follow";
 type NotePoint = {
@@ -93,7 +102,40 @@ function classNames(...values: Array<string | false | null | undefined>) {
 }
 
 export function ChordDictionaryPage() {
-  const [surface, setSurface] = useState<ChordDictionarySurface>("dictionary");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const routeFollowPlayback = searchParams.get("followPlayback") === "1";
+  const routeProjectId = searchParams.get("projectId");
+  const { manualFollowArmed, setManualFollowArmed } = useChordDictionaryFollowArm();
+  const { isPlaying, playbackTimeSeconds, session } = usePlayback();
+  const followArmed = routeFollowPlayback || manualFollowArmed;
+  const followProject = useMemo(() => {
+    if (!session) {
+      return null;
+    }
+    if (routeProjectId && session.projectId !== routeProjectId) {
+      return null;
+    }
+    return session.chordDictionaryFollowProject;
+  }, [routeProjectId, session]);
+  const followContext = useMemo(
+    () =>
+      buildChordDictionaryFollowContext({
+        followArmed,
+        playbackActive: isPlaying && Boolean(followProject),
+        playbackTimeSeconds,
+        project: followProject,
+      }),
+    [followArmed, followProject, isPlaying, playbackTimeSeconds],
+  );
+  const [surface, setSurface] = useState<ChordDictionarySurface>(() =>
+    followArmed ? "follow" : "dictionary",
+  );
+
+  useEffect(() => {
+    if (routeFollowPlayback) {
+      setSurface("follow");
+    }
+  }, [routeFollowPlayback, routeProjectId]);
 
   return (
     <div className="chord-dictionary-shell">
@@ -110,7 +152,17 @@ export function ChordDictionaryPage() {
                 "chord-icon-button",
                 surface === "dictionary" && "chord-icon-button--active",
               )}
-              onClick={() => setSurface("dictionary")}
+              onClick={() => {
+                setManualFollowArmed(false);
+                setSurface("dictionary");
+                if (routeFollowPlayback || routeProjectId) {
+                  const nextSearchParams = new URLSearchParams(searchParams);
+                  nextSearchParams.set("tool", "chord-dictionary");
+                  nextSearchParams.delete("followPlayback");
+                  nextSearchParams.delete("projectId");
+                  setSearchParams(nextSearchParams);
+                }
+              }}
               title="Dictionary"
               type="button"
             >
@@ -123,7 +175,10 @@ export function ChordDictionaryPage() {
                 "chord-icon-button",
                 surface === "follow" && "chord-icon-button--active",
               )}
-              onClick={() => setSurface("follow")}
+              onClick={() => {
+                setManualFollowArmed(true);
+                setSurface("follow");
+              }}
               title="Live follow"
               type="button"
             >
@@ -133,7 +188,11 @@ export function ChordDictionaryPage() {
           </div>
         </div>
 
-        {surface === "dictionary" ? <DictionarySurface /> : <LiveFollowSurface />}
+        {surface === "dictionary" ? (
+          <DictionarySurface />
+        ) : (
+          <LiveFollowSurface context={followContext} requestedProjectId={routeProjectId} />
+        )}
       </div>
     </div>
   );
@@ -936,33 +995,415 @@ function NoteInspector({ capoFret, note }: { capoFret: number; note: NotePoint }
   );
 }
 
-function LiveFollowSurface() {
+function LiveFollowSurface({
+  context,
+  requestedProjectId,
+}: {
+  context: ChordDictionaryFollowContext;
+  requestedProjectId: string | null;
+}) {
+  if (context.status !== "active") {
+    const showDictionaryFallback = context.status === "paused" || context.status === "follow-off";
+    return (
+      <div
+        className="live-follow-page live-follow-page--waiting"
+        data-follow-status={context.status}
+      >
+        <LiveFollowTopbar context={context} statusLabel={formatFollowStatusLabel(context.status)} />
+        <LiveFollowStatusCard context={context} requestedProjectId={requestedProjectId} />
+        {showDictionaryFallback ? <DictionarySurface /> : null}
+      </div>
+    );
+  }
+
+  return <LiveFollowActiveState context={context} />;
+}
+
+function LiveFollowActiveState({ context }: { context: ChordDictionaryFollowContext }) {
+  const currentChord = context.currentChord;
+  const project = context.project;
+  const [activeShape, setActiveShape] = useState<string | null>(null);
+  const [previewNoteId, setPreviewNoteId] = useState<string | null>(null);
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const displayContext = useMemo<Partial<ChordDisplayContext>>(
+    () => ({
+      canCapo: GUITAR_STANDARD_PROFILE.canCapo,
+      capoFret: Math.max(0, Math.trunc(project?.visualCapoSemitoneShift ?? 0)),
+      sourceKey: project?.displayedKey ?? null,
+      transposeSemitones: 0,
+      useCapoShapes: (project?.visualCapoSemitoneShift ?? 0) > 0,
+    }),
+    [project?.displayedKey, project?.visualCapoSemitoneShift],
+  );
+  const chordSpelling = useMemo(
+    () =>
+      currentChord
+        ? spellChord(currentChord.displayLabel, {
+            activeKey: project?.displayedKey ?? undefined,
+          })
+        : null,
+    [currentChord, project?.displayedKey],
+  );
+  const guitarVoicings = useMemo(
+    () =>
+      chordSpelling
+        ? generateGuitarVoicings(
+            chordSpelling,
+            GUITAR_STANDARD_PROFILE,
+            displayContext,
+            project?.displayedKey ? { activeKey: project.displayedKey } : {},
+          )
+        : [],
+    [chordSpelling, displayContext, project?.displayedKey],
+  );
+  const guitarShapes = useMemo(
+    () => guitarVoicings.map((voicing) => toGuitarShape(voicing, GUITAR_STANDARD_PROFILE)),
+    [guitarVoicings],
+  );
+  const resultKey = guitarShapes.map((shape) => shape.id).join("|");
+  const firstShapeId = guitarShapes[0]?.id ?? null;
+  const firstNoteId = guitarShapes[0]?.notes[0]?.id ?? null;
+
+  useEffect(() => {
+    setActiveShape(firstShapeId);
+    setPreviewNoteId(null);
+    setSelectedNoteId(firstNoteId);
+  }, [currentChord?.displayLabel, firstNoteId, firstShapeId, resultKey]);
+
+  if (!currentChord || !project) {
+    return (
+      <div className="live-follow-page live-follow-page--waiting" data-follow-status="no-project">
+        <LiveFollowTopbar context={context} statusLabel="No Project" />
+        <LiveFollowStatusCard context={context} requestedProjectId={null} />
+      </div>
+    );
+  }
+
+  const playbackSourceLabel = formatPlaybackProjectLabel(project.projectName);
+
+  if (!chordSpelling) {
+    return (
+      <LiveFollowChordIssue
+        context={context}
+        copy="The project timeline chord cannot be parsed by the chord dictionary, so no guitar voicing or note inspector is shown."
+        statusLabel="Unsupported"
+        title={`Unsupported chord: ${currentChord.displayLabel}`}
+      />
+    );
+  }
+
+  if (guitarShapes.length === 0) {
+    return (
+      <LiveFollowChordIssue
+        context={context}
+        copy="Chord spelling is supported, but the standard guitar model returned no voicings for this chord."
+        statusLabel="No Voicing"
+        title={`No guitar voicing for ${chordSpelling.label}`}
+      />
+    );
+  }
+
+  const selectedShape = guitarShapes.find((shape) => shape.id === activeShape) ?? guitarShapes[0] ?? null;
+  const selectedNote =
+    selectedShape?.notes.find((note) => note.id === selectedNoteId) ?? selectedShape?.notes[0] ?? null;
+  const previewNote = previewNoteId
+    ? guitarShapes.flatMap((shape) => shape.notes).find((note) => note.id === previewNoteId) ?? null
+    : null;
+  const displayedNote = previewNote ?? selectedNote;
+  const activeTooltipNoteId = previewNote?.id ?? selectedNote?.id ?? null;
+  const selectedVoicing = guitarVoicings.find((voicing) => voicing.id === selectedShape?.id) ?? null;
+  const capoFret = displayContext.capoFret ?? 0;
+
   return (
-    <div className="live-follow-page live-follow-page--waiting">
-      <div className="live-follow-topbar">
-        <div className="live-follow-controls" role="group" aria-label="Live chord display status">
-          <span className="chord-pill chord-pill--active">
-            <Music2 aria-hidden="true" />
-            <span>{GUITAR_STANDARD_PROFILE.label}</span>
-          </span>
-          <span className="chord-pill chord-pill--muted">
-            <AudioLines aria-hidden="true" />
-            <span>Waiting</span>
-          </span>
-        </div>
+    <div className="live-follow-page live-follow-page--active" data-follow-status="active">
+      <LiveFollowTopbar context={context} statusLabel="Live" />
+
+      <div className="chord-context-strip" aria-label="Live follow display context">
+        <ContextChip icon="instrument" label={GUITAR_STANDARD_PROFILE.label} />
+        <ContextChip icon="key" label={`Source ${formatOptionalKey(project.sourceKey)}`} />
+        <ContextChip icon="key" label={`Display ${formatOptionalKey(project.displayedKey)}`} />
+        <ContextChip
+          icon="transpose"
+          label={formatSemitoneContext(project.totalDisplayTransposeSemitones)}
+        />
+        <ContextChip icon="capo" label={capoFret > 0 ? `Capo ${capoFret}` : "No capo"} />
+        <ContextChip icon="sound" label={chordSpelling.label} />
+        {selectedVoicing?.shapeFamily ? (
+          <ContextChip icon="shape" label={`${selectedVoicing.shapeFamily} shape`} />
+        ) : null}
       </div>
 
+      <div className="live-follow-grid">
+        <main className="live-follow-main">
+          <section className="live-current-chord" aria-label="Current chord">
+            <p className="metric-label">Current chord</p>
+            <h3>{currentChord.displayLabel}</h3>
+            <dl className="live-follow-provenance">
+              <div>
+                <dt>Source chord</dt>
+                <dd>{currentChord.sourceLabel}</dd>
+              </div>
+              <div>
+                <dt>Display chord</dt>
+                <dd>{currentChord.displayLabel}</dd>
+              </div>
+              <div>
+                <dt>Segment</dt>
+                <dd>
+                  {formatFollowTime(currentChord.sourceSegment.start_seconds)} -{" "}
+                  {formatFollowTime(currentChord.sourceSegment.end_seconds)}
+                </dd>
+              </div>
+              <div>
+                <dt>Timeline</dt>
+                <dd>Detected/imported project chords</dd>
+              </div>
+              <div>
+                <dt>Playback source</dt>
+                <dd>{playbackSourceLabel}</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section className="chord-section" aria-label="Current guitar voicing">
+            <div className="chord-section-heading chord-section-heading--inline">
+              <div>
+                <p className="metric-label">{chordSpelling.notes.join(" ")}</p>
+                <h3>{chordSpelling.label} guitar shapes</h3>
+              </div>
+              <div className="chord-shape-tabs" role="group" aria-label="Live guitar shape choices">
+                {guitarShapes.map((shape) => (
+                  <button
+                    key={shape.id}
+                    aria-pressed={selectedShape?.id === shape.id}
+                    className={classNames(
+                      "chord-shape-tab",
+                      selectedShape?.id === shape.id && "chord-shape-tab--active",
+                    )}
+                    onClick={() => {
+                      setActiveShape(shape.id);
+                      setPreviewNoteId(null);
+                      setSelectedNoteId(shape.notes[0]?.id ?? null);
+                    }}
+                    type="button"
+                  >
+                    {shape.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <ChordSpellingSummary spelling={chordSpelling} />
+            <div className="chord-shape-grid" data-layout="responsive">
+              {guitarShapes.map((shape) => (
+                <div
+                  key={shape.id}
+                  className={classNames(
+                    "chord-shape-card",
+                    shape.id === activeShape && "chord-shape-card--active",
+                  )}
+                >
+                  <button
+                    className="chord-shape-card__label"
+                    onClick={() => {
+                      setActiveShape(shape.id);
+                      setPreviewNoteId(null);
+                      setSelectedNoteId(shape.notes[0]?.id ?? null);
+                    }}
+                    type="button"
+                  >
+                    {shape.label}
+                  </button>
+                  <GuitarFretboard
+                    activeTooltipNoteId={activeTooltipNoteId}
+                    notes={shape.notes}
+                    selectedNoteId={selectedNoteId}
+                    shape={shape}
+                    onPreviewNote={setPreviewNoteId}
+                    onSelectNote={(noteId) => {
+                      setPreviewNoteId(null);
+                      setSelectedNoteId(noteId);
+                    }}
+                  />
+                  <span className="chord-shape-card__meta">{shape.meta}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+        </main>
+
+        <aside className="live-follow-sidebar">
+          <section className="live-next-chord" aria-label="Next chord">
+            <p className="metric-label">Next chord</p>
+            {context.nextChord ? (
+              <>
+                <strong>{context.nextChord.displayLabel}</strong>
+                <span>
+                  Source {context.nextChord.sourceLabel} at{" "}
+                  {formatFollowTime(context.nextChord.sourceSegment.start_seconds)}
+                </span>
+              </>
+            ) : (
+              <>
+                <strong>End of timeline</strong>
+                <span>No later project chord is available.</span>
+              </>
+            )}
+          </section>
+          {displayedNote ? <NoteInspector note={displayedNote} capoFret={capoFret} /> : null}
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function LiveFollowTopbar({
+  context,
+  statusLabel,
+}: {
+  context: ChordDictionaryFollowContext;
+  statusLabel: string;
+}) {
+  return (
+    <div className="live-follow-topbar">
+      <div className="live-follow-controls" role="group" aria-label="Live chord display status">
+        <span className="chord-pill chord-pill--active">
+          <Music2 aria-hidden="true" />
+          <span>{GUITAR_STANDARD_PROFILE.label}</span>
+        </span>
+        <span
+          className={classNames(
+            "chord-pill",
+            context.status === "active" ? "chord-pill--active" : "chord-pill--muted",
+          )}
+        >
+          <AudioLines aria-hidden="true" />
+          <span>{statusLabel}</span>
+        </span>
+        {context.project ? (
+          <span className="chord-pill chord-pill--muted">
+            <span>{formatPlaybackProjectLabel(context.project.projectName)}</span>
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function LiveFollowStatusCard({
+  context,
+  requestedProjectId,
+}: {
+  context: ChordDictionaryFollowContext;
+  requestedProjectId: string | null;
+}) {
+  const statusCopy = getLiveFollowStatusCopy(context, requestedProjectId);
+  return (
+    <div className="lyrics-follow-stage lyrics-follow-stage--empty" role="status" aria-live="polite">
+      <div className="live-follow-empty">
+        <AudioLines aria-hidden="true" />
+        <h3>{statusCopy.title}</h3>
+        <p>{statusCopy.copy}</p>
+        {context.nextChord ? (
+          <p>
+            Next project chord: {context.nextChord.displayLabel} at{" "}
+            {formatFollowTime(context.nextChord.sourceSegment.start_seconds)}.
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function LiveFollowChordIssue({
+  context,
+  copy,
+  statusLabel,
+  title,
+}: {
+  context: ChordDictionaryFollowContext;
+  copy: string;
+  statusLabel: string;
+  title: string;
+}) {
+  return (
+    <div className="live-follow-page live-follow-page--waiting" data-follow-status="unsupported">
+      <LiveFollowTopbar context={context} statusLabel={statusLabel} />
       <div className="lyrics-follow-stage lyrics-follow-stage--empty" role="status" aria-live="polite">
         <div className="live-follow-empty">
           <AudioLines aria-hidden="true" />
-          <h3>Live Follow waiting for playback data</h3>
-          <p>
-            Project playback chord data is not connected yet. No progression, lyrics, shapes, or note previews are shown.
-          </p>
+          <h3>{title}</h3>
+          <p>{copy}</p>
+          {context.currentChord ? (
+            <p>
+              Source chord {context.currentChord.sourceLabel}; displayed as{" "}
+              {context.currentChord.displayLabel}.
+            </p>
+          ) : null}
         </div>
       </div>
     </div>
   );
+}
+
+function getLiveFollowStatusCopy(
+  context: ChordDictionaryFollowContext,
+  requestedProjectId: string | null,
+) {
+  switch (context.status) {
+    case "no-project":
+      return {
+        title: "No matching project playback",
+        copy: requestedProjectId
+          ? "Live Follow is armed from a project, but no matching playback session is active."
+          : "Live Follow needs an active project playback session before it can show song chords.",
+      };
+    case "follow-off":
+      return {
+        title: "Live Follow is off",
+        copy: "Chord Dictionary is not armed from project playback, so no live project chord is shown.",
+      };
+    case "paused":
+      return {
+        title: "Playback paused",
+        copy: "Paused playback returns to normal dictionary behavior. No stale live chord is shown.",
+      };
+    case "no-chord-timeline":
+      return {
+        title: "No project chord timeline",
+        copy: "The active playback session has no detected or imported chord timeline to follow.",
+      };
+    case "no-current-chord":
+      return {
+        title: "No current chord at playback time",
+        copy: `Playback is at ${formatFollowTime(context.playbackTimeSeconds)}, outside any current chord segment.`,
+      };
+    case "active":
+      return {
+        title: "Live chord active",
+        copy: "Project playback is providing the current chord.",
+      };
+  }
+}
+
+function formatFollowStatusLabel(status: ChordDictionaryFollowStatus) {
+  switch (status) {
+    case "no-project":
+      return "No Project";
+    case "follow-off":
+      return "Follow Off";
+    case "paused":
+      return "Paused";
+    case "no-chord-timeline":
+      return "No Timeline";
+    case "no-current-chord":
+      return "No Current Chord";
+    case "active":
+      return "Live";
+  }
+}
+
+function formatPlaybackProjectLabel(projectName: string) {
+  return projectName.trim() || "Project playback";
 }
 
 function ChordSpellingSummary({ spelling }: { spelling: NonNullable<ReturnType<typeof spellChord>> }) {
@@ -1004,6 +1445,29 @@ function formatGuitarRange(profile: typeof GUITAR_STANDARD_PROFILE) {
   const highestOpen = openPitches.reduce((highest, pitch) => (pitch.midi > highest.midi ? pitch : highest), openPitches[0]);
   const highestFretted = midiToPitch(highestOpen.midi + profile.frets);
   return `${lowestOpen.label} - ${highestFretted?.label ?? highestOpen.label}`;
+}
+
+function formatOptionalKey(key: MusicalKey | null) {
+  return key ? formatKey(key, "short") : "No key";
+}
+
+function formatSemitoneContext(semitones: number) {
+  if (semitones === 0) {
+    return "No transpose";
+  }
+  return `${semitones > 0 ? "+" : ""}${semitones} semitones`;
+}
+
+function formatFollowTime(seconds: number) {
+  if (!Number.isFinite(seconds)) {
+    return "0:00";
+  }
+  const clampedSeconds = Math.max(0, seconds);
+  const minutes = Math.floor(clampedSeconds / 60);
+  const remainder = Math.floor(clampedSeconds % 60)
+    .toString()
+    .padStart(2, "0");
+  return `${minutes}:${remainder}`;
 }
 
 function formatBooleanCapability(value: boolean) {

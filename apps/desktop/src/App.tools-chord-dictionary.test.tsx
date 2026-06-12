@@ -1,11 +1,196 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { MemoryRouter } from "react-router-dom";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ChordSegmentSchema } from "./lib/api";
 import { renderApp, resetAppTestHarness } from "./test/appTestHarness";
+import { ChordDictionaryPage } from "./features/tools/ChordDictionaryPage";
+import { ChordDictionaryFollowArmProvider } from "./features/tools/chordDictionaryFollowArm";
+import {
+  buildChordDictionaryFollowProjectContext,
+  type ChordDictionaryFollowProjectContext,
+} from "./features/projects/chordDictionaryFollowContext";
+import {
+  PlaybackContext,
+  type PlaybackContextValue,
+  type ProjectPlaybackSession,
+} from "./features/projects/playback-context";
 
 function renderChordDictionary() {
   renderApp(["/tools?tool=chord-dictionary"]);
   return screen.findByRole("heading", { name: "Chord Dictionary" });
+}
+
+const sourceTimeline: ChordSegmentSchema[] = [
+  {
+    confidence: 0.81,
+    end_seconds: 16,
+    label: "G",
+    pitch_class: 7,
+    quality: "major",
+    start_seconds: 0,
+  },
+  {
+    confidence: 0.79,
+    end_seconds: 32,
+    label: "D",
+    pitch_class: 2,
+    quality: "major",
+    start_seconds: 16,
+  },
+  {
+    confidence: 0.74,
+    end_seconds: 48,
+    label: "Em",
+    pitch_class: 4,
+    quality: "minor",
+    start_seconds: 32,
+  },
+];
+
+const displayedTimeline: ChordSegmentSchema[] = [
+  {
+    confidence: 0.81,
+    end_seconds: 16,
+    label: "A",
+    pitch_class: 9,
+    quality: "major",
+    start_seconds: 0,
+  },
+  {
+    confidence: 0.79,
+    end_seconds: 32,
+    label: "E",
+    pitch_class: 4,
+    quality: "major",
+    start_seconds: 16,
+  },
+  {
+    confidence: 0.74,
+    end_seconds: 48,
+    label: "F#m",
+    pitch_class: 6,
+    quality: "minor",
+    start_seconds: 32,
+  },
+];
+
+function makeFollowProject(
+  overrides: Partial<ChordDictionaryFollowProjectContext> = {},
+): ChordDictionaryFollowProjectContext {
+  return buildChordDictionaryFollowProjectContext({
+    authoritativeSourceTimeline: sourceTimeline,
+    displayedKey: { pitchClass: 9, mode: "major" },
+    displayedTimeline,
+    projectId: "proj_123",
+    projectName: "Demo Song",
+    selectedPlaybackArtifactId: "art_source",
+    sourceKey: { pitchClass: 7, mode: "major" },
+    totalDisplayTransposeSemitones: 2,
+    visualCapoSemitoneShift: 0,
+    ...overrides,
+  });
+}
+
+function makePlaybackSession(
+  project: ChordDictionaryFollowProjectContext,
+): ProjectPlaybackSession {
+  return {
+    artifactFormatsById: { art_source: "wav" },
+    artifactPathsById: { art_source: "/tmp/demo.wav" },
+    chordDictionaryFollowProject: project,
+    durationHintSeconds: 96,
+    isStemPlayback: false,
+    loopRange: null,
+    playbackArtifactIds: ["art_source"],
+    precountClickCount: 4,
+    precountEnabled: false,
+    precountLoopEnabled: false,
+    precountTempoBpm: null,
+    projectId: project.projectId,
+    projectName: project.projectName,
+    selectedPlaybackArtifactId: "art_source",
+    stageSummary: "Source mix",
+    stageTitle: "Source audio",
+    stemControls: {},
+    tempoOriginalBpm: null,
+    tempoTargetBpm: null,
+    timingGrid: null,
+    visibleStemArtifactIds: [],
+  };
+}
+
+function makePlaybackValue({
+  isPlaying = true,
+  playbackTimeSeconds = 6,
+  project = makeFollowProject(),
+}: {
+  isPlaying?: boolean;
+  playbackTimeSeconds?: number;
+  project?: ChordDictionaryFollowProjectContext | null;
+} = {}): PlaybackContextValue {
+  const session = project ? makePlaybackSession(project) : null;
+  return {
+    activateStemPlayback: vi.fn(async () => undefined),
+    dismissSession: vi.fn(),
+    getPlaybackSnapshot: () => ({
+      isPlaying,
+      isPrecounting: false,
+      playbackDurationSeconds: 96,
+      playbackTimeSeconds,
+      session,
+    }),
+    isPlaying,
+    isPrecounting: false,
+    pausePlayback: vi.fn(),
+    playPlayback: vi.fn(async () => undefined),
+    playbackDurationSeconds: 96,
+    playbackTimeSeconds,
+    primeWebAudioForGesture: vi.fn(async () => undefined),
+    registerProjectSession: vi.fn(),
+    seekBy: vi.fn(),
+    seekTo: vi.fn(),
+    session,
+    stopPlayback: vi.fn(),
+    togglePlayback: vi.fn(async () => undefined),
+  };
+}
+
+function renderChordDictionaryWithPlayback({
+  entry = "/tools?tool=chord-dictionary&followPlayback=1&projectId=proj_123",
+  playback = makePlaybackValue(),
+}: {
+  entry?: string;
+  playback?: PlaybackContextValue;
+} = {}) {
+  const view = renderChordDictionaryPlaybackHarness({ entry, playback });
+  return view.findHeading();
+}
+
+function renderChordDictionaryPlaybackHarness({
+  entry = "/tools?tool=chord-dictionary&followPlayback=1&projectId=proj_123",
+  playback = makePlaybackValue(),
+}: {
+  entry?: string;
+  playback?: PlaybackContextValue;
+} = {}) {
+  const renderTree = (playbackValue: PlaybackContextValue) => (
+    <MemoryRouter initialEntries={[entry]}>
+      <PlaybackContext.Provider value={playbackValue}>
+        <ChordDictionaryFollowArmProvider>
+          <ChordDictionaryPage />
+        </ChordDictionaryFollowArmProvider>
+      </PlaybackContext.Provider>
+    </MemoryRouter>
+  );
+
+  const view = render(renderTree(playback));
+  return {
+    findHeading: () => screen.findByRole("heading", { name: "Chord Dictionary" }),
+    rerenderWithPlayback: (nextPlayback: PlaybackContextValue) => {
+      view.rerender(renderTree(nextPlayback));
+    },
+  };
 }
 
 function getToolsScreen() {
@@ -496,6 +681,145 @@ describe("Desktop app tools chord dictionary", () => {
     expect(shapeButtons[1]).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("opens live follow from query params and renders the active project chord", async () => {
+    await renderChordDictionaryWithPlayback();
+
+    const viewToggle = screen.getByRole("group", { name: "Chord dictionary views" });
+    expect(within(viewToggle).getByRole("button", { name: "Dictionary" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(within(viewToggle).getByRole("button", { name: "Live Follow" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    const liveStatus = screen.getByRole("group", { name: "Live chord display status" });
+    expect(within(liveStatus).getByText("Live")).toBeInTheDocument();
+    expect(within(liveStatus).getByText("Demo Song")).toBeInTheDocument();
+
+    const currentChord = screen.getByLabelText("Current chord");
+    expect(within(currentChord).getByRole("heading", { name: "A" })).toBeInTheDocument();
+    expect(currentChord).toHaveTextContent(/Source chord\s*G/);
+    expect(currentChord).toHaveTextContent(/Display chord\s*A/);
+    expect(currentChord).toHaveTextContent(/Detected\/imported project chords/);
+    expect(currentChord).toHaveTextContent(/Playback source\s*Demo Song/);
+    expect(currentChord).not.toHaveTextContent("art_source");
+
+    expect(screen.getByRole("heading", { name: "A guitar shapes" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "A open" }).length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("Next chord")).toHaveTextContent(/E/);
+    expectInspectorToShow([/A2/, /String\s*5/, /Fret\s*0/, /Degree\s*1/]);
+    expect(screen.queryByRole("heading", { name: "C guitar shapes" })).not.toBeInTheDocument();
+  });
+
+  it("uses an honest generic playback source label without a project display name", async () => {
+    await renderChordDictionaryWithPlayback({
+      playback: makePlaybackValue({
+        project: makeFollowProject({ projectName: " " }),
+      }),
+    });
+
+    const liveStatus = screen.getByRole("group", { name: "Live chord display status" });
+    expect(within(liveStatus).getByText("Project playback")).toBeInTheDocument();
+
+    const currentChord = screen.getByLabelText("Current chord");
+    expect(currentChord).toHaveTextContent(/Playback source\s*Project playback/);
+    expect(currentChord).not.toHaveTextContent("art_source");
+  });
+
+  it("arms live follow from the Chord Dictionary page and follows future playback sessions", async () => {
+    const user = userEvent.setup();
+    const view = renderChordDictionaryPlaybackHarness({
+      entry: "/tools?tool=chord-dictionary",
+      playback: makePlaybackValue({ project: null }),
+    });
+
+    await view.findHeading();
+    await user.click(screen.getByRole("button", { name: "Live Follow" }));
+
+    const viewToggle = screen.getByRole("group", { name: "Chord dictionary views" });
+    expect(within(viewToggle).getByRole("button", { name: "Dictionary" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(within(viewToggle).getByRole("button", { name: "Live Follow" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByText("No matching project playback")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Current chord")).not.toBeInTheDocument();
+
+    view.rerenderWithPlayback(makePlaybackValue({ playbackTimeSeconds: 6 }));
+
+    expect(await screen.findByLabelText("Current chord")).toHaveTextContent(/Display chord\s*A/);
+    expect(screen.getByRole("heading", { name: "A guitar shapes" })).toBeInTheDocument();
+
+    view.rerenderWithPlayback(
+      makePlaybackValue({ isPlaying: false, playbackTimeSeconds: 6 }),
+    );
+
+    expect(screen.getByText("Playback paused")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Current chord")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "C guitar shapes" })).toBeInTheDocument();
+
+    view.rerenderWithPlayback(makePlaybackValue({ project: null }));
+
+    expect(screen.getByText("No matching project playback")).toBeInTheDocument();
+    expect(within(viewToggle).getByRole("button", { name: "Live Follow" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    view.rerenderWithPlayback(makePlaybackValue({ playbackTimeSeconds: 20 }));
+
+    expect(await screen.findByLabelText("Current chord")).toHaveTextContent(/Display chord\s*E/);
+    expect(screen.getByRole("heading", { name: "E guitar shapes" })).toBeInTheDocument();
+  });
+
+  it("does not show a stale current chord when followed playback is paused", async () => {
+    await renderChordDictionaryWithPlayback({
+      playback: makePlaybackValue({ isPlaying: false }),
+    });
+
+    const liveStatus = screen.getByRole("group", { name: "Live chord display status" });
+    expect(within(liveStatus).getByText("Paused")).toBeInTheDocument();
+    expect(screen.getByText("Playback paused")).toBeInTheDocument();
+    expect(screen.getByText(/No stale live chord is shown/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Current chord")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "A guitar shapes" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "C guitar shapes" })).toBeInTheDocument();
+    expectInspectorToShow([/C3/, /Degree\s*1/]);
+  });
+
+  it("keeps unsupported followed chords honest without guitar voicings", async () => {
+    const unsupportedTimeline: ChordSegmentSchema[] = [
+      {
+        confidence: 0.62,
+        end_seconds: 16,
+        label: "H13",
+        pitch_class: null,
+        quality: null,
+        start_seconds: 0,
+      },
+    ];
+    await renderChordDictionaryWithPlayback({
+      playback: makePlaybackValue({
+        project: makeFollowProject({
+          authoritativeSourceTimeline: unsupportedTimeline,
+          displayedTimeline: unsupportedTimeline,
+        }),
+      }),
+    });
+
+    const liveStatus = screen.getByRole("group", { name: "Live chord display status" });
+    expect(within(liveStatus).getByText("Unsupported")).toBeInTheDocument();
+    expect(screen.getByText("Unsupported chord: H13")).toBeInTheDocument();
+    expect(screen.getByText(/cannot be parsed by the chord dictionary/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Current guitar voicing")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Note inspector")).not.toBeInTheDocument();
+  });
+
   it("shows live follow as an honest waiting state without fake progression previews", async () => {
     const user = userEvent.setup();
     await renderChordDictionary();
@@ -514,9 +838,9 @@ describe("Desktop app tools chord dictionary", () => {
     const toolsScreen = within(getToolsScreen());
     const liveStatus = toolsScreen.getByRole("group", { name: "Live chord display status" });
     expect(within(liveStatus).getByText("Guitar")).toBeInTheDocument();
-    expect(within(liveStatus).getByText("Waiting")).toBeInTheDocument();
+    expect(within(liveStatus).getByText("No Project")).toBeInTheDocument();
     expect(within(liveStatus).queryByRole("button", { name: "Guitar" })).not.toBeInTheDocument();
-    expect(within(liveStatus).queryByRole("button", { name: "Waiting" })).not.toBeInTheDocument();
+    expect(within(liveStatus).queryByRole("button", { name: "No Project" })).not.toBeInTheDocument();
     expect(
       toolsScreen.getAllByText(
         /waiting|unavailable|inactive|no project|select a project|open a project/i,

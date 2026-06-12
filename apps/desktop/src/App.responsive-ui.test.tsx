@@ -32,6 +32,22 @@ describe("Desktop app responsive UI revamp", () => {
     expect(screen.getAllByRole("link", { name: "Settings" }).length).toBeGreaterThan(0);
   });
 
+  it("keeps sidebar Library navigation usable after entering Playback", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Playback" }));
+    expect(screen.getByRole("tab", { name: "Playback" })).toHaveAttribute("aria-selected", "true");
+
+    const sidebarNav = document.querySelector(".sidebar .nav");
+    expect(sidebarNav).not.toBeNull();
+    await user.click(within(sidebarNav as HTMLElement).getByRole("link", { name: "Library" }));
+
+    expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    expect(document.querySelector(".app-shell")).not.toHaveClass("app-shell--compact");
+  });
+
   it("splits project work into Studio and Analysis panels", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);

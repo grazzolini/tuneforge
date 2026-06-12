@@ -1,5 +1,6 @@
 import { createContext, useContext } from "react";
 import type { AnalysisTimingGrid } from "../../lib/timingGrid";
+import type { ChordDictionaryFollowProjectContext } from "./chordDictionaryFollowContext";
 import type { PlaybackLoopRange, StemControlState } from "./projectPlaybackState";
 
 export type ProjectPlaybackSession = {
@@ -23,6 +24,7 @@ export type ProjectPlaybackSession = {
   tempoTargetBpm: number | null;
   timingGrid: AnalysisTimingGrid | null;
   loopRange: PlaybackLoopRange | null;
+  chordDictionaryFollowProject: ChordDictionaryFollowProjectContext | null;
 };
 
 export type PlaybackSnapshot = {

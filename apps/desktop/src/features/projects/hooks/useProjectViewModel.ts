@@ -21,6 +21,10 @@ import {
 } from "../../../lib/timingGrid";
 import { usePlayback } from "../playback-context";
 import {
+  buildChordDictionaryFollowProjectContext,
+  type ChordDictionaryFollowProjectContext,
+} from "../chordDictionaryFollowContext";
+import {
   DEFAULT_PRECOUNT_CLICK_COUNT,
   MIN_PLAYBACK_LOOP_SECONDS,
   MAX_PRECOUNT_CLICK_COUNT,
@@ -806,7 +810,10 @@ export function useProjectViewModel() {
     () => normalizeAnalysisTimingGrid(analysisQuery.data?.timing),
     [analysisQuery.data?.timing],
   );
-  const detectedKey = parseKey(analysisQuery.data?.estimated_key);
+  const detectedKey = useMemo(
+    () => parseKey(analysisQuery.data?.estimated_key),
+    [analysisQuery.data?.estimated_key],
+  );
   const loopAlignmentMode = loopAlignmentModeOverride ?? defaultLoopAlignmentMode;
   const tempoOriginalBpm = normalizeTempoBpm(analysisQuery.data?.tempo_bpm);
   const tempoTargetBpmForPlayback = tempoOriginalBpm === null ? null : tempoTargetBpm;
@@ -821,11 +828,17 @@ export function useProjectViewModel() {
   const precountDisabledReason = canUsePrecount ? null : "Waiting for BPM analysis";
   const mobileCapabilities = mobileCapabilitiesQuery.data ?? null;
   const isMobileRuntime = mobileCapabilities !== null;
-  const sourceKeyOverride = parseStoredKey(projectQuery.data?.source_key_override);
+  const sourceKeyOverride = useMemo(
+    () => parseStoredKey(projectQuery.data?.source_key_override),
+    [projectQuery.data?.source_key_override],
+  );
   const sourceKeyBasis = sourceKeyOverride ?? detectedKey ?? null;
   const sourceKey = sourceKeyBasis ?? DEFAULT_KEY;
   const transposeSemitones = clampTargetTranspose(targetTransposeSemitones);
-  const targetKey = transposeKey(sourceKey, transposeSemitones);
+  const targetKey = useMemo(
+    () => transposeKey(sourceKey, transposeSemitones),
+    [sourceKey, transposeSemitones],
+  );
   const capoSemitones = clampTargetTranspose(capoTransposeSemitones);
   const hasTransformChange = retuneMode !== "off" || transposeSemitones !== 0;
   const isAnalysisRunning = Boolean(
@@ -922,13 +935,23 @@ export function useProjectViewModel() {
     selectedPlaybackArtifact,
     selectableArtifacts,
   );
-  const capoSourceKey = transposeKey(sourceKey, chordTransposeSemitones);
-  const capoKey = transposeKey(capoSourceKey, capoSemitones);
+  const capoSourceKey = useMemo(
+    () => transposeKey(sourceKey, chordTransposeSemitones),
+    [chordTransposeSemitones, sourceKey],
+  );
+  const capoKey = useMemo(
+    () => transposeKey(capoSourceKey, capoSemitones),
+    [capoSemitones, capoSourceKey],
+  );
   const displayedChordSemitones =
     chordTransposeSemitones + correctedSourceChordSemitones + capoSemitones;
-  const activeEnharmonicKeyContext = sourceKeyBasis
-    ? transposeKey(sourceKeyBasis, chordTransposeSemitones + capoSemitones)
-    : null;
+  const activeEnharmonicKeyContext = useMemo(
+    () =>
+      sourceKeyBasis
+        ? transposeKey(sourceKeyBasis, chordTransposeSemitones + capoSemitones)
+        : null,
+    [capoSemitones, chordTransposeSemitones, sourceKeyBasis],
+  );
   const displayedChords = useMemo(
     () =>
       (chordsQuery.data?.timeline ?? []).map((segment) =>
@@ -938,6 +961,33 @@ export function useProjectViewModel() {
         }),
       ),
     [activeEnharmonicKeyContext, chordsQuery.data?.timeline, displayedChordSemitones, enharmonicDisplayMode],
+  );
+  const chordDictionaryFollowProject = useMemo<ChordDictionaryFollowProjectContext | null>(
+    () =>
+      projectId
+        ? buildChordDictionaryFollowProjectContext({
+            projectId,
+            projectName: projectQuery.data?.display_name ?? "Project",
+            selectedPlaybackArtifactId: selectedPlaybackArtifact?.id ?? null,
+            sourceKey: sourceKeyBasis,
+            displayedKey: activeEnharmonicKeyContext,
+            totalDisplayTransposeSemitones: displayedChordSemitones,
+            visualCapoSemitoneShift: capoSemitones,
+            authoritativeSourceTimeline: chordsQuery.data?.timeline ?? [],
+            displayedTimeline: displayedChords,
+          })
+        : null,
+    [
+      activeEnharmonicKeyContext,
+      capoSemitones,
+      chordsQuery.data?.timeline,
+      displayedChordSemitones,
+      displayedChords,
+      projectId,
+      projectQuery.data?.display_name,
+      selectedPlaybackArtifact?.id,
+      sourceKeyBasis,
+    ],
   );
   const activeChordIndex = findActiveChordIndex(displayedChords, playbackTimeSeconds);
   const currentChord =
@@ -998,18 +1048,34 @@ export function useProjectViewModel() {
   const capoSelectionSummary = formatTargetSelectionSummary(capoSemitones);
   const sourceKeySelectorCurrentKey = sourceKeyOverride ?? detectedKey ?? sourceKey;
   const sourceKeySelectorCurrentBadge = sourceKeyOverride ? null : detectedKey ? "Original" : "No override";
-  const lowerTargetPreview =
-    transposeSemitones > MIN_TARGET_TRANSPOSE
-      ? transposeKey(sourceKey, transposeSemitones - 1)
-      : null;
-  const higherTargetPreview =
-    transposeSemitones < MAX_TARGET_TRANSPOSE
-      ? transposeKey(sourceKey, transposeSemitones + 1)
-      : null;
-  const lowerCapoPreview =
-    capoSemitones > MIN_TARGET_TRANSPOSE ? transposeKey(capoSourceKey, capoSemitones - 1) : null;
-  const higherCapoPreview =
-    capoSemitones < MAX_TARGET_TRANSPOSE ? transposeKey(capoSourceKey, capoSemitones + 1) : null;
+  const lowerTargetPreview = useMemo(
+    () =>
+      transposeSemitones > MIN_TARGET_TRANSPOSE
+        ? transposeKey(sourceKey, transposeSemitones - 1)
+        : null,
+    [sourceKey, transposeSemitones],
+  );
+  const higherTargetPreview = useMemo(
+    () =>
+      transposeSemitones < MAX_TARGET_TRANSPOSE
+        ? transposeKey(sourceKey, transposeSemitones + 1)
+        : null,
+    [sourceKey, transposeSemitones],
+  );
+  const lowerCapoPreview = useMemo(
+    () =>
+      capoSemitones > MIN_TARGET_TRANSPOSE
+        ? transposeKey(capoSourceKey, capoSemitones - 1)
+        : null,
+    [capoSemitones, capoSourceKey],
+  );
+  const higherCapoPreview = useMemo(
+    () =>
+      capoSemitones < MAX_TARGET_TRANSPOSE
+        ? transposeKey(capoSourceKey, capoSemitones + 1)
+        : null,
+    [capoSemitones, capoSourceKey],
+  );
   const targetShiftOptions = useMemo<TargetShiftOption[]>(
     () =>
       Array.from(
@@ -2190,9 +2256,11 @@ export function useProjectViewModel() {
       tempoTargetBpm: tempoTargetBpmForPlayback,
       timingGrid: analysisTimingGrid,
       loopRange,
+      chordDictionaryFollowProject,
     });
   }, [
     analysisTimingGrid,
+    chordDictionaryFollowProject,
     hydratedProjectId,
     isStemPlayback,
     projectId,

@@ -26,6 +26,16 @@ import {
 } from "../projects/chordDictionaryFollowContext";
 import { usePlayback } from "../projects/playback-context";
 import { useChordDictionaryFollowArm } from "./chordDictionaryFollowArm-context";
+import {
+  hasGlobalChordDictionaryPreferredShape,
+  hasProjectChordDictionaryPreferredShape,
+  resetGlobalChordDictionaryPreferredShape,
+  resetProjectChordDictionaryPreferredShape,
+  resolveChordDictionaryPreferredShapeId,
+  writeGlobalChordDictionaryPreferredShape,
+  writeProjectChordDictionaryPreferredShape,
+  type ChordDictionaryPreferenceContext,
+} from "./chordDictionaryPreferences";
 
 type ChordDictionarySurface = "dictionary" | "follow";
 type NotePoint = {
@@ -96,9 +106,66 @@ type GuitarShape = {
 };
 
 const COMMON_CHORD_LABELS = ["C", "Dm", "Em", "F", "G", "Am", "Bdim"] as const;
+const CHORD_DICTIONARY_INSTRUMENT_ID = GUITAR_STANDARD_PROFILE.id;
 
 function classNames(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
+}
+
+function formatPreferenceKeyLabel(key: MusicalKey | null | undefined) {
+  return key ? formatKey(key, "short") : null;
+}
+
+function buildShapePreferenceContext({
+  capoFret,
+  chordLabel,
+  displayedKey,
+  projectId,
+  sourceKey,
+  transposeSemitones,
+  useCapoShapes,
+}: {
+  capoFret: number | null;
+  chordLabel: string;
+  displayedKey: MusicalKey | null;
+  projectId: string | null;
+  sourceKey: MusicalKey | null;
+  transposeSemitones: number | null;
+  useCapoShapes: boolean | null;
+}): ChordDictionaryPreferenceContext {
+  return {
+    capoFret,
+    chordLabel,
+    displayedKeyLabel: formatPreferenceKeyLabel(displayedKey),
+    instrumentId: CHORD_DICTIONARY_INSTRUMENT_ID,
+    projectId,
+    sourceKeyLabel: formatPreferenceKeyLabel(sourceKey),
+    transposeSemitones,
+    useCapoShapes,
+  };
+}
+
+function promoteShapeToFirst<T extends { id: string }>(
+  shapes: readonly T[],
+  preferredShapeId: string | null,
+): readonly T[] {
+  const preferredShapeIndex = preferredShapeId
+    ? shapes.findIndex((shape) => shape.id === preferredShapeId)
+    : -1;
+  if (preferredShapeIndex <= 0) {
+    return shapes;
+  }
+
+  const preferredShape = shapes[preferredShapeIndex];
+  if (!preferredShape) {
+    return shapes;
+  }
+
+  return [
+    preferredShape,
+    ...shapes.slice(0, preferredShapeIndex),
+    ...shapes.slice(preferredShapeIndex + 1),
+  ];
 }
 
 export function ChordDictionaryPage() {
@@ -202,6 +269,7 @@ function DictionarySurface() {
   const [activeChord, setActiveChord] = useState("C");
   const [activeShape, setActiveShape] = useState<string | null>(null);
   const [previewNoteId, setPreviewNoteId] = useState<string | null>(null);
+  const [, setPreferenceRevision] = useState(0);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const displayContext = useMemo<Partial<ChordDisplayContext>>(
     () => ({
@@ -240,13 +308,52 @@ function DictionarySurface() {
     () => (chordSpelling ? generateGuitarVoicings(chordSpelling, GUITAR_STANDARD_PROFILE, displayContext) : []),
     [chordSpelling, displayContext],
   );
-  const guitarShapes = useMemo(
+  const generatedGuitarShapes = useMemo(
     () => guitarVoicings.map((voicing) => toGuitarShape(voicing, GUITAR_STANDARD_PROFILE)),
     [guitarVoicings],
+  );
+  const generatedShapeIds = useMemo(
+    () => generatedGuitarShapes.map((shape) => shape.id),
+    [generatedGuitarShapes],
+  );
+  const preferenceContext = useMemo(
+    () =>
+      chordSpelling
+        ? buildShapePreferenceContext({
+            capoFret: displayContext.capoFret ?? null,
+            chordLabel: chordSpelling.label,
+            displayedKey: null,
+            projectId: null,
+            sourceKey: displayContext.sourceKey ?? null,
+            transposeSemitones: displayContext.transposeSemitones ?? null,
+            useCapoShapes: displayContext.useCapoShapes ?? null,
+          })
+        : null,
+    [chordSpelling, displayContext],
+  );
+  const preferredShapeId = resolveChordDictionaryPreferredShapeId(
+    preferenceContext,
+    generatedShapeIds,
+  );
+  const hasGlobalShapePreference = hasGlobalChordDictionaryPreferredShape(
+    preferenceContext,
+    generatedShapeIds,
+  );
+  const guitarShapes = useMemo(
+    () => promoteShapeToFirst(generatedGuitarShapes, preferredShapeId),
+    [generatedGuitarShapes, preferredShapeId],
   );
   const resultKey = guitarShapes.map((shape) => shape.id).join("|");
   const firstShapeId = guitarShapes[0]?.id ?? null;
   const firstNoteId = guitarShapes[0]?.notes[0]?.id ?? null;
+  const bumpPreferenceRevision = () => setPreferenceRevision((revision) => revision + 1);
+  const selectShape = (shape: GuitarShape) => {
+    writeGlobalChordDictionaryPreferredShape(preferenceContext, shape.id);
+    bumpPreferenceRevision();
+    setActiveShape(shape.id);
+    setPreviewNoteId(null);
+    setSelectedNoteId(shape.notes[0]?.id ?? null);
+  };
   useEffect(() => {
     setActiveShape(firstShapeId);
     setPreviewNoteId(null);
@@ -337,25 +444,49 @@ function DictionarySurface() {
                 <h3>{chordSpelling ? `${chordSpelling.label} guitar shapes` : "Guitar shapes"}</h3>
               </div>
               {guitarShapes.length > 0 ? (
-                <div className="chord-shape-tabs" role="group" aria-label="Guitar shape choices">
-                  {guitarShapes.map((shape) => (
-                    <button
-                      key={shape.id}
-                      aria-pressed={selectedShape?.id === shape.id}
-                      className={classNames(
-                        "chord-shape-tab",
-                        selectedShape?.id === shape.id && "chord-shape-tab--active",
-                      )}
-                      onClick={() => {
-                        setActiveShape(shape.id);
-                        setPreviewNoteId(null);
-                        setSelectedNoteId(shape.notes[0]?.id ?? null);
-                      }}
-                      type="button"
+                <div className="chord-shape-controls">
+                  <div className="chord-shape-control-row">
+                    <div
+                      aria-describedby="dictionary-shape-preference-copy"
+                      aria-label="Global guitar shape preference choices"
+                      className="chord-shape-tabs"
+                      role="group"
                     >
-                      {shape.label}
-                    </button>
-                  ))}
+                      {guitarShapes.map((shape) => (
+                        <button
+                          key={shape.id}
+                          aria-pressed={selectedShape?.id === shape.id}
+                          className={classNames(
+                            "chord-shape-tab",
+                            selectedShape?.id === shape.id && "chord-shape-tab--active",
+                          )}
+                          onClick={() => selectShape(shape)}
+                          type="button"
+                        >
+                          {shape.label}
+                        </button>
+                      ))}
+                    </div>
+                    {hasGlobalShapePreference ? (
+                      <button
+                        aria-label="Clear this chord/instrument global preference"
+                        className="chord-reset-button"
+                        onClick={() => {
+                          resetGlobalChordDictionaryPreferredShape(preferenceContext);
+                          bumpPreferenceRevision();
+                        }}
+                        type="button"
+                      >
+                        Clear global preference
+                      </button>
+                    ) : null}
+                  </div>
+                  <p
+                    className="chord-shape-preference-copy"
+                    id="dictionary-shape-preference-copy"
+                  >
+                    Saves locally as global for this chord and instrument.
+                  </p>
                 </div>
               ) : null}
             </div>
@@ -389,11 +520,7 @@ function DictionarySurface() {
                   >
                     <button
                       className="chord-shape-card__label"
-                      onClick={() => {
-                        setActiveShape(shape.id);
-                        setPreviewNoteId(null);
-                        setSelectedNoteId(shape.notes[0]?.id ?? null);
-                      }}
+                      onClick={() => selectShape(shape)}
                       type="button"
                     >
                       {shape.label}
@@ -1024,6 +1151,7 @@ function LiveFollowActiveState({ context }: { context: ChordDictionaryFollowCont
   const project = context.project;
   const [activeShape, setActiveShape] = useState<string | null>(null);
   const [previewNoteId, setPreviewNoteId] = useState<string | null>(null);
+  const [, setPreferenceRevision] = useState(0);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const displayContext = useMemo<Partial<ChordDisplayContext>>(
     () => ({
@@ -1056,13 +1184,60 @@ function LiveFollowActiveState({ context }: { context: ChordDictionaryFollowCont
         : [],
     [chordSpelling, displayContext, project?.displayedKey],
   );
-  const guitarShapes = useMemo(
+  const generatedGuitarShapes = useMemo(
     () => guitarVoicings.map((voicing) => toGuitarShape(voicing, GUITAR_STANDARD_PROFILE)),
     [guitarVoicings],
+  );
+  const generatedShapeIds = useMemo(
+    () => generatedGuitarShapes.map((shape) => shape.id),
+    [generatedGuitarShapes],
+  );
+  const preferenceContext = useMemo(
+    () =>
+      chordSpelling
+        ? buildShapePreferenceContext({
+            capoFret: displayContext.capoFret ?? null,
+            chordLabel: chordSpelling.label,
+            displayedKey: project?.displayedKey ?? null,
+            projectId: project?.projectId ?? null,
+            sourceKey: project?.sourceKey ?? null,
+            transposeSemitones: project?.totalDisplayTransposeSemitones ?? null,
+            useCapoShapes: displayContext.useCapoShapes ?? null,
+          })
+        : null,
+    [
+      chordSpelling,
+      displayContext.capoFret,
+      displayContext.useCapoShapes,
+      project?.displayedKey,
+      project?.projectId,
+      project?.sourceKey,
+      project?.totalDisplayTransposeSemitones,
+    ],
+  );
+  const preferredShapeId = resolveChordDictionaryPreferredShapeId(
+    preferenceContext,
+    generatedShapeIds,
+  );
+  const hasProjectShapePreference = hasProjectChordDictionaryPreferredShape(
+    preferenceContext,
+    generatedShapeIds,
+  );
+  const guitarShapes = useMemo(
+    () => promoteShapeToFirst(generatedGuitarShapes, preferredShapeId),
+    [generatedGuitarShapes, preferredShapeId],
   );
   const resultKey = guitarShapes.map((shape) => shape.id).join("|");
   const firstShapeId = guitarShapes[0]?.id ?? null;
   const firstNoteId = guitarShapes[0]?.notes[0]?.id ?? null;
+  const bumpPreferenceRevision = () => setPreferenceRevision((revision) => revision + 1);
+  const selectShape = (shape: GuitarShape) => {
+    writeProjectChordDictionaryPreferredShape(preferenceContext, shape.id);
+    bumpPreferenceRevision();
+    setActiveShape(shape.id);
+    setPreviewNoteId(null);
+    setSelectedNoteId(shape.notes[0]?.id ?? null);
+  };
 
   useEffect(() => {
     setActiveShape(firstShapeId);
@@ -1171,25 +1346,49 @@ function LiveFollowActiveState({ context }: { context: ChordDictionaryFollowCont
                 <p className="metric-label">{chordSpelling.notes.join(" ")}</p>
                 <h3>{chordSpelling.label} guitar shapes</h3>
               </div>
-              <div className="chord-shape-tabs" role="group" aria-label="Live guitar shape choices">
-                {guitarShapes.map((shape) => (
-                  <button
-                    key={shape.id}
-                    aria-pressed={selectedShape?.id === shape.id}
-                    className={classNames(
-                      "chord-shape-tab",
-                      selectedShape?.id === shape.id && "chord-shape-tab--active",
-                    )}
-                    onClick={() => {
-                      setActiveShape(shape.id);
-                      setPreviewNoteId(null);
-                      setSelectedNoteId(shape.notes[0]?.id ?? null);
-                    }}
-                    type="button"
+              <div className="chord-shape-controls">
+                <div className="chord-shape-control-row">
+                  <div
+                    aria-describedby="live-shape-preference-copy"
+                    aria-label="Project guitar shape preference choices"
+                    className="chord-shape-tabs"
+                    role="group"
                   >
-                    {shape.label}
-                  </button>
-                ))}
+                    {guitarShapes.map((shape) => (
+                      <button
+                        key={shape.id}
+                        aria-pressed={selectedShape?.id === shape.id}
+                        className={classNames(
+                          "chord-shape-tab",
+                          selectedShape?.id === shape.id && "chord-shape-tab--active",
+                        )}
+                        onClick={() => selectShape(shape)}
+                        type="button"
+                      >
+                        {shape.label}
+                      </button>
+                    ))}
+                  </div>
+                  {hasProjectShapePreference ? (
+                    <button
+                      aria-label="Clear this project override and fall back to global or default"
+                      className="chord-reset-button"
+                      onClick={() => {
+                        resetProjectChordDictionaryPreferredShape(preferenceContext);
+                        bumpPreferenceRevision();
+                      }}
+                      type="button"
+                    >
+                      Clear project override
+                    </button>
+                  ) : null}
+                </div>
+                <p
+                  className="chord-shape-preference-copy"
+                  id="live-shape-preference-copy"
+                >
+                  Saves locally for this project chord and instrument; clear uses global/default.
+                </p>
               </div>
             </div>
             <ChordSpellingSummary spelling={chordSpelling} />
@@ -1204,11 +1403,7 @@ function LiveFollowActiveState({ context }: { context: ChordDictionaryFollowCont
                 >
                   <button
                     className="chord-shape-card__label"
-                    onClick={() => {
-                      setActiveShape(shape.id);
-                      setPreviewNoteId(null);
-                      setSelectedNoteId(shape.notes[0]?.id ?? null);
-                    }}
+                    onClick={() => selectShape(shape)}
                     type="button"
                   >
                     {shape.label}

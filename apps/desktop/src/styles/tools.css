@@ -370,11 +370,24 @@
 .chord-dictionary-actions,
 .chord-toolbar-cluster,
 .live-follow-controls,
+.chord-shape-control-row,
 .chord-shape-tabs {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   flex-wrap: wrap;
+}
+
+.chord-shape-controls {
+  display: grid;
+  justify-items: end;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.chord-shape-control-row {
+  justify-content: flex-end;
+  min-width: 0;
 }
 
 .chord-toolbar-cluster--end {
@@ -383,6 +396,7 @@
 
 .chord-icon-button,
 .chord-pill,
+.chord-reset-button,
 .chord-shape-tab {
   border: 1px solid color-mix(in srgb, var(--divider) 78%, transparent);
   background: color-mix(in srgb, var(--panel) 76%, var(--panel-strong) 24%);
@@ -394,16 +408,19 @@
 }
 
 .chord-icon-button,
+.chord-reset-button,
 .chord-shape-tab {
   cursor: pointer;
 }
 
 .chord-icon-button:hover,
+.chord-reset-button:hover,
 .chord-shape-tab:hover {
   border-color: color-mix(in srgb, var(--playback-accent) 42%, var(--divider));
 }
 
 .chord-icon-button:focus-visible,
+.chord-reset-button:focus-visible,
 .chord-shape-tab:focus-visible,
 .guitar-fretboard__dot:focus-visible,
 .chord-shape-card__label:focus-visible,
@@ -871,6 +888,25 @@
   color: var(--text);
   font-size: 0.82rem;
   font-weight: 850;
+}
+
+.chord-reset-button {
+  min-height: 2rem;
+  border-radius: 8px;
+  padding: 0.34rem 0.65rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
+.chord-shape-preference-copy {
+  max-width: min(100%, 32rem);
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 760;
+  line-height: 1.35;
+  text-align: right;
 }
 
 .chord-shape-grid {
@@ -1527,6 +1563,18 @@
   .chord-card-row,
   .note-inspector dl {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .chord-shape-controls {
+    justify-items: start;
+  }
+
+  .chord-shape-control-row {
+    justify-content: flex-start;
+  }
+
+  .chord-shape-preference-copy {
+    text-align: left;
   }
 
   .chord-shape-tabs {

@@ -1352,7 +1352,7 @@ where
     let error_shared = shared;
     device
         .build_output_stream(
-            config,
+            *config,
             move |output: &mut [T], _| {
                 if let Ok(mut shared) = data_shared.lock() {
                     render_shared_output_typed(&mut shared, output);

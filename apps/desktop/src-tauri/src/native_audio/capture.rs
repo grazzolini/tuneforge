@@ -559,7 +559,7 @@ where
     let mut pending_samples = Vec::with_capacity(INPUT_FRAME_SAMPLES + INPUT_FRAME_HOP_SAMPLES);
     device
         .build_input_stream(
-            config,
+            *config,
             move |data: &[T], _| {
                 process_interleaved_input(
                     data,
@@ -738,7 +738,7 @@ fn native_input_device_hash_source<'a>(
 ) -> &'a str {
     native_input_device_hash_source_for_platform(
         label,
-        cpal_id.map(|device_id| device_id.1.as_str()),
+        cpal_id.map(cpal::DeviceId::id),
         cfg!(target_os = "linux"),
     )
 }

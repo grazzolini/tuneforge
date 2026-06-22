@@ -150,6 +150,105 @@
         "canCapo": true,
         "canRetune": true
       }
+    },
+    "accordion": {
+      "id": "accordion",
+      "label": "Accordion",
+      "family": "free-reed",
+      "executionLayer": "button-board",
+      "keyboard": {
+        "keyCount": 41,
+        "lowestPitch": "F3",
+        "highestPitch": "A6",
+        "canTranspose": false
+      },
+      "buttonBoard": {
+        "layout": "stradella-120-bass",
+        "buttons": 120,
+        "rows": 6,
+        "columns": 20,
+        "canTranspose": false,
+        "stradella": {
+          "rootAxis": [
+            { "root": "B", "pitchClass": 11, "column": 1, "visualColumn": 0, "visualOrder": 0 },
+            { "root": "Gb", "pitchClass": 6, "column": 2, "visualColumn": 1, "visualOrder": 1 },
+            { "root": "Db", "pitchClass": 1, "column": 3, "visualColumn": 2, "visualOrder": 2 },
+            { "root": "Ab", "pitchClass": 8, "column": 4, "visualColumn": 3, "visualOrder": 3 },
+            { "root": "Eb", "pitchClass": 3, "column": 5, "visualColumn": 4, "visualOrder": 4 },
+            { "root": "Bb", "pitchClass": 10, "column": 6, "visualColumn": 5, "visualOrder": 5 },
+            { "root": "F", "pitchClass": 5, "column": 7, "visualColumn": 6, "visualOrder": 6 },
+            { "root": "C", "pitchClass": 0, "column": 8, "visualColumn": 7, "visualOrder": 7 },
+            { "root": "G", "pitchClass": 7, "column": 9, "visualColumn": 8, "visualOrder": 8 },
+            { "root": "D", "pitchClass": 2, "column": 10, "visualColumn": 9, "visualOrder": 9 },
+            { "root": "A", "pitchClass": 9, "column": 11, "visualColumn": 10, "visualOrder": 10 },
+            { "root": "E", "pitchClass": 4, "column": 12, "visualColumn": 11, "visualOrder": 11 },
+            { "root": "B", "pitchClass": 11, "column": 13, "visualColumn": 12, "visualOrder": 12 },
+            { "root": "Gb", "pitchClass": 6, "column": 14, "visualColumn": 13, "visualOrder": 13 },
+            { "root": "Db", "pitchClass": 1, "column": 15, "visualColumn": 14, "visualOrder": 14 },
+            { "root": "Ab", "pitchClass": 8, "column": 16, "visualColumn": 15, "visualOrder": 15 },
+            { "root": "Eb", "pitchClass": 3, "column": 17, "visualColumn": 16, "visualOrder": 16 },
+            { "root": "Bb", "pitchClass": 10, "column": 18, "visualColumn": 17, "visualOrder": 17 },
+            { "root": "F", "pitchClass": 5, "column": 19, "visualColumn": 18, "visualOrder": 18 },
+            { "root": "C", "pitchClass": 0, "column": 20, "visualColumn": 19, "visualOrder": 19 }
+          ],
+          "rows": [
+            {
+              "id": "counterbass",
+              "label": "Counterbass",
+              "kind": "bass",
+              "visualOrder": 0,
+              "visualColumnOffset": 0.5,
+              "visualYOffset": 0,
+              "visualYStep": 1
+            },
+            {
+              "id": "bass",
+              "label": "Bass",
+              "kind": "bass",
+              "visualOrder": 1,
+              "visualColumnOffset": 0,
+              "visualYOffset": 1,
+              "visualYStep": 1
+            },
+            {
+              "id": "major",
+              "label": "Major",
+              "kind": "chord",
+              "visualOrder": 2,
+              "visualColumnOffset": 0,
+              "visualYOffset": 2,
+              "visualYStep": 1
+            },
+            {
+              "id": "minor",
+              "label": "Minor",
+              "kind": "chord",
+              "visualOrder": 3,
+              "visualColumnOffset": 0,
+              "visualYOffset": 3,
+              "visualYStep": 1
+            },
+            {
+              "id": "seventh",
+              "label": "7",
+              "kind": "chord",
+              "visualOrder": 4,
+              "visualColumnOffset": 0,
+              "visualYOffset": 4,
+              "visualYStep": 1
+            },
+            {
+              "id": "diminished",
+              "label": "Dim",
+              "kind": "chord",
+              "visualOrder": 5,
+              "visualColumnOffset": 0,
+              "visualYOffset": 5,
+              "visualYStep": 1
+            }
+          ]
+        }
+      }
     }
   },
   "voicingSeeds": {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ACCORDION_STANDARD_PROFILE,
   formatParsedChordLabel,
   formatPitch,
   formatChordDisplay,
@@ -7,6 +8,7 @@ import {
   formatKey,
   formatKeyDisplay,
   formatPitchClass,
+  generateAccordionVoicings,
   generateGuitarVoicings,
   getCapoShapeChord,
   getEnharmonicContext,
@@ -16,6 +18,8 @@ import {
   pitchToMidi,
   spellChord,
   transposeChordLabel,
+  type AccordionLeftHandCandidate,
+  type AccordionVoicing,
   type ChordDisplayContext,
   type ChordSpelling,
   type GuitarVoicing,
@@ -111,6 +115,42 @@ function requireVoicings(label: string, context: Partial<ChordDisplayContext> = 
   return voicings;
 }
 
+function requireAccordionVoicing(label: string, key?: MusicalKey): AccordionVoicing {
+  const voicing = generateAccordionVoicings(label, key)[0];
+  if (!voicing) {
+    throw new Error(`Expected ${label} to produce an accordion voicing`);
+  }
+  return voicing;
+}
+
+function requireSelectedAccordionLeftHand(label: string, key?: MusicalKey): AccordionLeftHandCandidate {
+  const selected = requireAccordionVoicing(label, key).selectedLeftHandCandidate;
+  if (!selected) {
+    throw new Error(`Expected ${label} to produce an accordion left-hand candidate`);
+  }
+  return selected;
+}
+
+function findAccordionLeftHand(
+  label: string,
+  key: MusicalKey,
+  bassRoot: string,
+  chordRoot: string,
+  chordRow: AccordionLeftHandCandidate["chordButton"]["rowId"],
+): AccordionLeftHandCandidate {
+  const voicing = requireAccordionVoicing(label, key);
+  const candidate = voicing.leftHandCandidates.find(
+    (leftHand) =>
+      leftHand.bassButton.root === bassRoot &&
+      leftHand.chordButton.root === chordRoot &&
+      leftHand.chordButton.rowId === chordRow,
+  );
+  if (!candidate) {
+    throw new Error(`Expected ${label} to include ${bassRoot} bass + ${chordRoot} ${chordRow}`);
+  }
+  return candidate;
+}
+
 function requireGeneratedVoicing(label: string, context: Partial<ChordDisplayContext> = {}): GuitarVoicing {
   const voicing = requireVoicings(label, context).find((candidate) => candidate.source === "generated");
   if (!voicing) {
@@ -194,6 +234,7 @@ describe("chord parsing and spelling", () => {
     expect(parseChordLabel("Cmaj7")?.quality).toBe("maj7");
     expect(parseChordLabel("Am7")?.quality).toBe("m7");
     expect(parseChordLabel("Bdim")?.quality).toBe("dim");
+    expect(parseChordLabel("C7b5")?.quality).toBe("7b5");
   });
 
   it("parses backend Harte-style labels into canonical chord symbols", () => {
@@ -287,6 +328,12 @@ describe("chord parsing and spelling", () => {
       "b5:Gb",
       "bb7:Bbb",
     ]);
+    expect(requireChord("C7b5").tones.map((tone) => `${tone.degree}:${tone.noteName}`)).toEqual([
+      "1:C",
+      "3:E",
+      "b5:Gb",
+      "b7:Bb",
+    ]);
     expect(requireChord("C:hdim7").tones.map((tone) => `${tone.degree}:${tone.noteName}`)).toEqual([
       "1:C",
       "b3:Eb",
@@ -351,6 +398,129 @@ describe("chord parsing and spelling", () => {
       expect(transposeChordLabel(label, 2)).toBeNull();
       expect(generateGuitarVoicings(label)).toEqual([]);
     }
+  });
+});
+
+describe("accordion chord voicings", () => {
+  const cMajor: MusicalKey = { pitchClass: 0, mode: "major" };
+  const gMajor: MusicalKey = { pitchClass: 7, mode: "major" };
+
+  it("exports standard accordion profile with keyboard and Stradella board metadata", () => {
+    expect(ACCORDION_STANDARD_PROFILE).toMatchObject({
+      id: "accordion",
+      label: "Accordion",
+      family: "free-reed",
+      keyboard: {
+        keyCount: 41,
+        lowestPitch: { label: "F3", midi: 53 },
+        highestPitch: { label: "A6", midi: 93 },
+        canTranspose: false,
+      },
+      buttonBoard: {
+        layout: "stradella-120-bass",
+        buttons: 120,
+        rows: 6,
+        columns: 20,
+        canTranspose: false,
+      },
+    });
+    expect(ACCORDION_STANDARD_PROFILE.buttonBoard.stradella.rows.map((row) => row.id)).toEqual([
+      "counterbass",
+      "bass",
+      "major",
+      "minor",
+      "seventh",
+      "diminished",
+    ]);
+  });
+
+  it("selects exact C left hand as C bass plus C major", () => {
+    const voicing = requireAccordionVoicing("C", cMajor);
+    const selected = requireSelectedAccordionLeftHand("C", cMajor);
+
+    expect(voicing.regionRoot).toEqual({ pitchClass: 0, note: "C" });
+    expect(voicing.visibleStradellaButtons).toHaveLength(66);
+    expect(selected).toMatchObject({
+      quality: "exact",
+      bassButton: { rowId: "bass", root: "C" },
+      chordButton: { rowId: "major", root: "C" },
+      fingering: { bass: 4, chord: 3, label: "4-3" },
+      missingTones: [],
+      addedTones: [],
+    });
+  });
+
+  it("finds exact Cmaj7 left hand via C bass plus E minor", () => {
+    const selected = requireSelectedAccordionLeftHand("Cmaj7", cMajor);
+
+    expect(selected).toMatchObject({
+      quality: "exact",
+      bassButton: { rowId: "bass", root: "C" },
+      chordButton: { rowId: "minor", root: "E" },
+      fingering: { bass: 4, chord: 2, label: "4-2" },
+      missingTones: [],
+      addedTones: [],
+    });
+  });
+
+  it("searches the full Stradella board while keeping out-of-window chord roots visible", () => {
+    const voicing = requireAccordionVoicing("F#", cMajor);
+    const selected = requireSelectedAccordionLeftHand("F#", cMajor);
+
+    expect(voicing.regionRoot).toEqual({ pitchClass: 0, note: "C" });
+    expect(voicing.visibleStradellaButtons).toHaveLength(66);
+    expect(selected).toMatchObject({
+      quality: "exact",
+      bassButton: { rowId: "bass", root: "F#" },
+      chordButton: { rowId: "major", root: "F#" },
+      missingTones: [],
+      addedTones: [],
+    });
+    expect(voicing.visibleStradellaButtons).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ rowId: "bass", root: "C" }),
+        expect.objectContaining({ rowId: "bass", root: "F#" }),
+        expect.objectContaining({ rowId: "major", root: "F#" }),
+      ]),
+    );
+  });
+
+  it("reports dominant-flat-five Stradella omissions without fake empty labels", () => {
+    const cSevenFlatFive = findAccordionLeftHand("C7b5", cMajor, "C", "C", "seventh");
+
+    expect(cSevenFlatFive).toMatchObject({
+      quality: "approx",
+      missingTones: ["Gb"],
+      addedTones: [],
+      fingering: { bass: 4, chord: 2, label: "4-2" },
+    });
+  });
+
+  it("labels generated C right-hand options uniquely", () => {
+    const voicings = generateAccordionVoicings("C", cMajor);
+    const ids = voicings.map((voicing) => voicing.id);
+    const labels = voicings.map((voicing) => voicing.label);
+
+    expect(voicings.length).toBeGreaterThan(3);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(new Set(labels).size).toBe(labels.length);
+    expect(labels).toEqual(expect.arrayContaining(["C root", "C first inversion", "C second inversion"]));
+    expect(labels.some((label) => label.includes("right hand"))).toBe(false);
+  });
+
+  it("ranks right-hand inversions around C key root for C G Am F", () => {
+    expect(requireAccordionVoicing("C", cMajor).rightHandNotes.map((note) => note.note)).toEqual(["C4", "E4", "G4"]);
+    expect(requireAccordionVoicing("G", cMajor).rightHandNotes.map((note) => note.note)).toEqual(["G3", "B3", "D4"]);
+    expect(requireAccordionVoicing("Am", cMajor).rightHandNotes.map((note) => note.note)).toEqual(["A3", "C4", "E4"]);
+    expect(requireAccordionVoicing("F", cMajor).rightHandNotes.map((note) => note.note)).toEqual(["A3", "C4", "F4"]);
+  });
+
+  it("ranks right-hand inversions around G key root for G D Em C", () => {
+    expect(requireAccordionVoicing("G", gMajor).regionRoot).toEqual({ pitchClass: 7, note: "G" });
+    expect(requireAccordionVoicing("G", gMajor).rightHandNotes.map((note) => note.note)).toEqual(["G3", "B3", "D4"]);
+    expect(requireAccordionVoicing("D", gMajor).rightHandNotes.map((note) => note.note)).toEqual(["F#3", "A3", "D4"]);
+    expect(requireAccordionVoicing("Em", gMajor).rightHandNotes.map((note) => note.note)).toEqual(["G3", "B3", "E4"]);
+    expect(requireAccordionVoicing("C", gMajor).rightHandNotes.map((note) => note.note)).toEqual(["G3", "C4", "E4"]);
   });
 });
 

@@ -56,12 +56,39 @@ export type KeyboardProfileV1 = {
   canTranspose: boolean;
 };
 
+export type ButtonBoardStradellaRowIdV1 = "counterbass" | "bass" | "major" | "minor" | "seventh" | "diminished";
+export type ButtonBoardStradellaRowKindV1 = "bass" | "chord";
+
+export type ButtonBoardStradellaRootAxisEntryV1 = {
+  root: string;
+  pitchClass: number;
+  column: number;
+  visualColumn: number;
+  visualOrder: number;
+};
+
+export type ButtonBoardStradellaRowDefinitionV1 = {
+  id: ButtonBoardStradellaRowIdV1;
+  label: string;
+  kind: ButtonBoardStradellaRowKindV1;
+  visualOrder: number;
+  visualColumnOffset: number;
+  visualYOffset: number;
+  visualYStep: number;
+};
+
+export type ButtonBoardStradellaProfileV1 = {
+  rootAxis: readonly ButtonBoardStradellaRootAxisEntryV1[];
+  rows: readonly ButtonBoardStradellaRowDefinitionV1[];
+};
+
 export type ButtonBoardProfileV1 = {
   layout: string;
   buttons: number;
   rows?: number;
   columns?: number;
   canTranspose: boolean;
+  stradella?: ButtonBoardStradellaProfileV1;
 };
 
 export type InstrumentProfileV1 = {
@@ -224,6 +251,15 @@ const GUITAR_SHAPE_FAMILIES = new Set<GuitarShapeFamilyV1>(["C", "A", "G", "E", 
 const GUITAR_FINGERS = new Set<GuitarFingerV1>([1, 2, 3, 4]);
 const KEYBOARD_FINGERS = new Set<KeyboardFingerV1>([1, 2, 3, 4, 5]);
 const KEYBOARD_HANDS = new Set<KeyboardHandV1>(["left", "right"]);
+const STRADELLA_ROW_IDS = new Set<ButtonBoardStradellaRowIdV1>([
+  "counterbass",
+  "bass",
+  "major",
+  "minor",
+  "seventh",
+  "diminished",
+]);
+const STRADELLA_ROW_KINDS = new Set<ButtonBoardStradellaRowKindV1>(["bass", "chord"]);
 const DEFAULT_GUITAR_STRING_ORDER = [6, 5, 4, 3, 2, 1] as const;
 const DEFAULT_GUITAR_STRING_ORDER_SET = new Set<number>(DEFAULT_GUITAR_STRING_ORDER);
 
@@ -409,13 +445,98 @@ function normalizeButtonBoardProfile(input: unknown): ButtonBoardProfileV1 | nul
 
   const rows = isPositiveInteger(rawButtonBoard.rows) ? rawButtonBoard.rows : null;
   const columns = isPositiveInteger(rawButtonBoard.columns) ? rawButtonBoard.columns : null;
+  const stradella = normalizeButtonBoardStradellaProfile(rawButtonBoard.stradella);
   return {
     layout,
     buttons: rawButtonBoard.buttons,
     ...(rows ? { rows } : {}),
     ...(columns ? { columns } : {}),
     canTranspose: rawButtonBoard.canTranspose === true,
+    ...(stradella ? { stradella } : {}),
   };
+}
+
+function normalizeButtonBoardStradellaProfile(input: unknown): ButtonBoardStradellaProfileV1 | null {
+  const rawStradella = asRecord(input);
+  if (!rawStradella) {
+    return null;
+  }
+
+  const rootAxis = normalizeStradellaRootAxis(rawStradella.rootAxis);
+  const rows = normalizeStradellaRows(rawStradella.rows);
+  if (rootAxis.length === 0 || !hasCompleteStradellaRows(rows)) {
+    return null;
+  }
+
+  return { rootAxis, rows };
+}
+
+function normalizeStradellaRootAxis(input: unknown): readonly ButtonBoardStradellaRootAxisEntryV1[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+
+  return input.flatMap((rawEntry): ButtonBoardStradellaRootAxisEntryV1[] => {
+    const entry = asRecord(rawEntry);
+    const root = asNonEmptyString(entry?.root);
+    if (
+      !entry ||
+      !root ||
+      !isPitchClass(entry.pitchClass) ||
+      !isPositiveInteger(entry.column) ||
+      !isFiniteNumber(entry.visualColumn) ||
+      !isNonNegativeInteger(entry.visualOrder)
+    ) {
+      return [];
+    }
+
+    return [
+      {
+        root,
+        pitchClass: entry.pitchClass,
+        column: entry.column,
+        visualColumn: entry.visualColumn,
+        visualOrder: entry.visualOrder,
+      },
+    ];
+  });
+}
+
+function normalizeStradellaRows(input: unknown): readonly ButtonBoardStradellaRowDefinitionV1[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+
+  return input.flatMap((rawRow): ButtonBoardStradellaRowDefinitionV1[] => {
+    const row = asRecord(rawRow);
+    const id = normalizeStradellaRowId(row?.id);
+    const label = asNonEmptyString(row?.label);
+    const kind = normalizeStradellaRowKind(row?.kind);
+    if (
+      !row ||
+      !id ||
+      !label ||
+      !kind ||
+      !isNonNegativeInteger(row.visualOrder) ||
+      !isFiniteNumber(row.visualColumnOffset) ||
+      !isFiniteNumber(row.visualYOffset) ||
+      !isFiniteNumber(row.visualYStep)
+    ) {
+      return [];
+    }
+
+    return [
+      {
+        id,
+        label,
+        kind,
+        visualOrder: row.visualOrder,
+        visualColumnOffset: row.visualColumnOffset,
+        visualYOffset: row.visualYOffset,
+        visualYStep: row.visualYStep,
+      },
+    ];
+  });
 }
 
 function normalizeVoicingSeedGroups(input: unknown): InstrumentKnowledgeBundleV1["voicingSeeds"] {
@@ -806,6 +927,27 @@ function normalizeKeyboardHand(value: unknown): KeyboardHandV1 | null {
   return typeof value === "string" && KEYBOARD_HANDS.has(value as KeyboardHandV1) ? (value as KeyboardHandV1) : null;
 }
 
+function normalizeStradellaRowId(value: unknown): ButtonBoardStradellaRowIdV1 | null {
+  return typeof value === "string" && STRADELLA_ROW_IDS.has(value as ButtonBoardStradellaRowIdV1)
+    ? (value as ButtonBoardStradellaRowIdV1)
+    : null;
+}
+
+function normalizeStradellaRowKind(value: unknown): ButtonBoardStradellaRowKindV1 | null {
+  return typeof value === "string" && STRADELLA_ROW_KINDS.has(value as ButtonBoardStradellaRowKindV1)
+    ? (value as ButtonBoardStradellaRowKindV1)
+    : null;
+}
+
+function hasCompleteStradellaRows(rows: readonly ButtonBoardStradellaRowDefinitionV1[]): boolean {
+  if (rows.length !== STRADELLA_ROW_IDS.size) {
+    return false;
+  }
+
+  const ids = new Set(rows.map((row) => row.id));
+  return rows.every((row) => STRADELLA_ROW_IDS.has(row.id)) && ids.size === STRADELLA_ROW_IDS.size;
+}
+
 function normalizeGuitarShapeFamily(value: unknown): GuitarShapeFamilyV1 | null {
   return typeof value === "string" && GUITAR_SHAPE_FAMILIES.has(value as GuitarShapeFamilyV1)
     ? (value as GuitarShapeFamilyV1)
@@ -848,8 +990,16 @@ function isNonNegativeInteger(value: unknown): value is number {
   return isSafeInteger(value) && value >= 0;
 }
 
+function isPitchClass(value: unknown): value is number {
+  return isSafeInteger(value) && value >= 0 && value <= 11;
+}
+
 function isSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

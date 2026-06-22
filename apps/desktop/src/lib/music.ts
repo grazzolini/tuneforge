@@ -1,8 +1,12 @@
 import {
   INSTRUMENT_KNOWLEDGE_BUNDLE_V1,
+  type ButtonBoardStradellaProfileV1,
+  type ButtonBoardStradellaRowDefinitionV1,
+  type ButtonBoardStradellaRowIdV1,
   type GuitarMoveableVoicingSeedDefinitionV1,
   type GuitarVoicingSeedV1,
   type InstrumentProfileV1,
+  type KeyboardFingerV1,
 } from "./instrumentKnowledge";
 
 export type KeyMode = "major" | "minor";
@@ -10,6 +14,7 @@ export type ChordQuality =
   | "major"
   | "minor"
   | "7"
+  | "7b5"
   | "maj7"
   | "m7"
   | "sus2"
@@ -183,6 +188,102 @@ export type GuitarVoicing = {
   notes: readonly GuitarVoicingNote[];
 };
 
+export type AccordionStradellaRowId = ButtonBoardStradellaRowIdV1;
+export type AccordionLeftHandQuality = "exact" | "approx";
+export type AccordionLeftHandFinger = 2 | 3 | 4;
+
+export type AccordionProfile = {
+  id: "accordion";
+  label: string;
+  family: string;
+  keyboard: {
+    keyCount: number;
+    lowestPitch: ParsedPitch;
+    highestPitch: ParsedPitch;
+    canTranspose: boolean;
+  };
+  buttonBoard: {
+    layout: string;
+    buttons: number;
+    rows: number;
+    columns: number;
+    canTranspose: boolean;
+    stradella: ButtonBoardStradellaProfileV1;
+  };
+};
+
+export type AccordionStradellaButton = {
+  id: string;
+  side: "bass";
+  rowId: AccordionStradellaRowId;
+  rowLabel: string;
+  kind: "bass" | "chord";
+  label: string;
+  root: string;
+  pitchClass: number;
+  pitchClasses: readonly number[];
+  column: number;
+  row: number;
+  visualColumn: number;
+  visualOrder: number;
+  visualColumnOffset: number;
+  visualYOffset: number;
+  visualYStep: number;
+  visualX: number;
+  visualY: number;
+};
+
+export type AccordionLeftHandCandidate = {
+  id: string;
+  label: string;
+  quality: AccordionLeftHandQuality;
+  bassButton: AccordionStradellaButton;
+  chordButton: AccordionStradellaButton;
+  fingering: {
+    bass: AccordionLeftHandFinger;
+    chord: AccordionLeftHandFinger;
+    label: string;
+  };
+  missingTones: readonly string[];
+  addedTones: readonly string[];
+  rank: number;
+};
+
+export type AccordionKeyboardNote = {
+  id: string;
+  pitch: ParsedPitch;
+  note: string;
+  degree: ChordDegree;
+  hand: "right";
+  side: "treble";
+  finger?: KeyboardFingerV1;
+};
+
+export type AccordionRegionRoot = {
+  pitchClass: number;
+  note: string;
+};
+
+export type AccordionVoicing = {
+  id: string;
+  label: string;
+  chordLabel: string;
+  rank: number;
+  rightHandNotes: readonly AccordionKeyboardNote[];
+  leftHandCandidates: readonly AccordionLeftHandCandidate[];
+  selectedLeftHandCandidate: AccordionLeftHandCandidate | null;
+  visibleStradellaButtons: readonly AccordionStradellaButton[];
+  regionRoot: AccordionRegionRoot;
+};
+
+export type AccordionVoicingContext =
+  | MusicalKey
+  | {
+      activeKey?: MusicalKey | null;
+      regionKey?: MusicalKey | null;
+      currentChordRoot?: ChordInput | number | null;
+    };
+
 const ENHARMONIC_ALIASES: Record<string, number> = {
   C: 0,
   "B#": 0,
@@ -293,6 +394,16 @@ export const CHORD_QUALITY_DEFINITIONS: Record<ChordSpellingQuality, ChordQualit
       { degree: "b7", interval: 10 },
     ],
   },
+  "7b5": {
+    label: "Dominant 7 flat 5",
+    suffix: "7b5",
+    tones: [
+      { degree: "1", interval: 0 },
+      { degree: "3", interval: 4 },
+      { degree: "b5", interval: 6 },
+      { degree: "b7", interval: 10 },
+    ],
+  },
   maj7: {
     label: "Major 7",
     suffix: "maj7",
@@ -356,6 +467,8 @@ const CHORD_QUALITY_ALIASES: Record<string, ChordSpellingQuality> = {
   sus4: "sus4",
   "7": "7",
   dom7: "7",
+  "7b5": "7b5",
+  "7(b5)": "7b5",
   maj7: "maj7",
   major7: "maj7",
   min7: "m7",
@@ -399,8 +512,114 @@ export const GUITAR_STANDARD_PROFILE: GuitarProfile =
   buildGuitarStandardProfile(INSTRUMENT_KNOWLEDGE_BUNDLE_V1.instrumentProfiles.guitar) ??
   FALLBACK_GUITAR_STANDARD_PROFILE;
 
+const FALLBACK_ACCORDION_STRADELLA_PROFILE: ButtonBoardStradellaProfileV1 = {
+  rootAxis: [
+    { root: "B", pitchClass: 11, column: 1, visualColumn: 0, visualOrder: 0 },
+    { root: "Gb", pitchClass: 6, column: 2, visualColumn: 1, visualOrder: 1 },
+    { root: "Db", pitchClass: 1, column: 3, visualColumn: 2, visualOrder: 2 },
+    { root: "Ab", pitchClass: 8, column: 4, visualColumn: 3, visualOrder: 3 },
+    { root: "Eb", pitchClass: 3, column: 5, visualColumn: 4, visualOrder: 4 },
+    { root: "Bb", pitchClass: 10, column: 6, visualColumn: 5, visualOrder: 5 },
+    { root: "F", pitchClass: 5, column: 7, visualColumn: 6, visualOrder: 6 },
+    { root: "C", pitchClass: 0, column: 8, visualColumn: 7, visualOrder: 7 },
+    { root: "G", pitchClass: 7, column: 9, visualColumn: 8, visualOrder: 8 },
+    { root: "D", pitchClass: 2, column: 10, visualColumn: 9, visualOrder: 9 },
+    { root: "A", pitchClass: 9, column: 11, visualColumn: 10, visualOrder: 10 },
+    { root: "E", pitchClass: 4, column: 12, visualColumn: 11, visualOrder: 11 },
+    { root: "B", pitchClass: 11, column: 13, visualColumn: 12, visualOrder: 12 },
+    { root: "Gb", pitchClass: 6, column: 14, visualColumn: 13, visualOrder: 13 },
+    { root: "Db", pitchClass: 1, column: 15, visualColumn: 14, visualOrder: 14 },
+    { root: "Ab", pitchClass: 8, column: 16, visualColumn: 15, visualOrder: 15 },
+    { root: "Eb", pitchClass: 3, column: 17, visualColumn: 16, visualOrder: 16 },
+    { root: "Bb", pitchClass: 10, column: 18, visualColumn: 17, visualOrder: 17 },
+    { root: "F", pitchClass: 5, column: 19, visualColumn: 18, visualOrder: 18 },
+    { root: "C", pitchClass: 0, column: 20, visualColumn: 19, visualOrder: 19 },
+  ],
+  rows: [
+    {
+      id: "counterbass",
+      label: "Counterbass",
+      kind: "bass",
+      visualOrder: 0,
+      visualColumnOffset: 0.5,
+      visualYOffset: 0,
+      visualYStep: 1,
+    },
+    {
+      id: "bass",
+      label: "Bass",
+      kind: "bass",
+      visualOrder: 1,
+      visualColumnOffset: 0,
+      visualYOffset: 1,
+      visualYStep: 1,
+    },
+    {
+      id: "major",
+      label: "Major",
+      kind: "chord",
+      visualOrder: 2,
+      visualColumnOffset: 0,
+      visualYOffset: 2,
+      visualYStep: 1,
+    },
+    {
+      id: "minor",
+      label: "Minor",
+      kind: "chord",
+      visualOrder: 3,
+      visualColumnOffset: 0,
+      visualYOffset: 3,
+      visualYStep: 1,
+    },
+    {
+      id: "seventh",
+      label: "7",
+      kind: "chord",
+      visualOrder: 4,
+      visualColumnOffset: 0,
+      visualYOffset: 4,
+      visualYStep: 1,
+    },
+    {
+      id: "diminished",
+      label: "Dim",
+      kind: "chord",
+      visualOrder: 5,
+      visualColumnOffset: 0,
+      visualYOffset: 5,
+      visualYStep: 1,
+    },
+  ],
+};
+
+const FALLBACK_ACCORDION_STANDARD_PROFILE: AccordionProfile = {
+  id: "accordion",
+  label: "Accordion",
+  family: "free-reed",
+  keyboard: {
+    keyCount: 41,
+    lowestPitch: parsePitchRequired("F3"),
+    highestPitch: parsePitchRequired("A6"),
+    canTranspose: false,
+  },
+  buttonBoard: {
+    layout: "stradella-120-bass",
+    buttons: 120,
+    rows: 6,
+    columns: 20,
+    canTranspose: false,
+    stradella: FALLBACK_ACCORDION_STRADELLA_PROFILE,
+  },
+};
+
+export const ACCORDION_STANDARD_PROFILE: AccordionProfile =
+  buildAccordionStandardProfile(INSTRUMENT_KNOWLEDGE_BUNDLE_V1.instrumentProfiles.accordion) ??
+  FALLBACK_ACCORDION_STANDARD_PROFILE;
+
 export const INSTRUMENT_PROFILES = {
   guitar: GUITAR_STANDARD_PROFILE,
+  accordion: ACCORDION_STANDARD_PROFILE,
 } as const;
 
 const FALLBACK_GUITAR_TEMPLATE_STRINGS = [6, 5, 4, 3, 2, 1] as const;
@@ -412,6 +631,7 @@ const GUITAR_TEMPLATE_QUALITY_SUFFIXES: Readonly<Record<ChordSpellingQuality, st
   major: "",
   minor: "m",
   "7": "7",
+  "7b5": "7b5",
   maj7: "maj7",
   m7: "m7",
   sus2: "sus2",
@@ -452,6 +672,45 @@ function buildGuitarStandardProfile(profile: InstrumentProfileV1 | undefined): G
     frets: profile.fretboard.frets,
     canCapo: profile.fretboard.canCapo,
     canRetune: profile.fretboard.canRetune,
+  };
+}
+
+function buildAccordionStandardProfile(profile: InstrumentProfileV1 | undefined): AccordionProfile | null {
+  if (
+    !profile ||
+    profile.id !== "accordion" ||
+    !profile.keyboard ||
+    !profile.buttonBoard?.stradella ||
+    !profile.buttonBoard.rows ||
+    !profile.buttonBoard.columns
+  ) {
+    return null;
+  }
+
+  const lowestPitch = parsePitch(profile.keyboard.lowestPitch);
+  const highestPitch = parsePitch(profile.keyboard.highestPitch);
+  if (!lowestPitch || !highestPitch || lowestPitch.midi >= highestPitch.midi) {
+    return null;
+  }
+
+  return {
+    id: "accordion",
+    label: profile.label,
+    family: profile.family,
+    keyboard: {
+      keyCount: profile.keyboard.keyCount,
+      lowestPitch,
+      highestPitch,
+      canTranspose: profile.keyboard.canTranspose,
+    },
+    buttonBoard: {
+      layout: profile.buttonBoard.layout,
+      buttons: profile.buttonBoard.buttons,
+      rows: profile.buttonBoard.rows,
+      columns: profile.buttonBoard.columns,
+      canTranspose: profile.buttonBoard.canTranspose,
+      stradella: profile.buttonBoard.stradella,
+    },
   };
 }
 
@@ -842,6 +1101,7 @@ export function isSupportedChordQuality(quality: string | null | undefined): qua
     quality === "major" ||
     quality === "minor" ||
     quality === "7" ||
+    quality === "7b5" ||
     quality === "maj7" ||
     quality === "m7" ||
     quality === "sus2" ||
@@ -1170,6 +1430,637 @@ export function generateGuitarVoicings(
   });
 }
 
+const ACCORDION_VISIBLE_ROOT_RADIUS = 5;
+const ACCORDION_RIGHT_HAND_TARGET_MIDI = 60;
+const ACCORDION_RIGHT_HAND_MAX_VOICINGS = 6;
+const ACCORDION_BASS_ROW_IDS = new Set<AccordionStradellaRowId>(["counterbass", "bass"]);
+const ACCORDION_CHORD_ROW_IDS = new Set<AccordionStradellaRowId>(["major", "minor", "seventh", "diminished"]);
+
+type ResolvedAccordionContext = {
+  regionKey: MusicalKey | null;
+  currentChordRootPitchClass: number | null;
+};
+
+type AccordionRightHandCandidate = {
+  idSuffix: string;
+  label: string;
+  inversion: number;
+  notes: readonly AccordionKeyboardNote[];
+  score: number;
+};
+
+export function generateAccordionVoicings(
+  chord: ChordInput,
+  context: AccordionVoicingContext | null = null,
+  options: PitchFormatOptions = {},
+): readonly AccordionVoicing[] {
+  const parsedChord = parseChordInput(chord);
+  if (!parsedChord) {
+    return [];
+  }
+
+  const resolvedContext = resolveAccordionVoicingContext(context);
+  const regionRootPitchClass =
+    resolvedContext.regionKey?.pitchClass ?? resolvedContext.currentChordRootPitchClass ?? parsedChord.rootPitchClass;
+  const chordOptions = {
+    ...resolveChordFormatOptions(parsedChord, options),
+    activeKey: options.activeKey ?? resolvedContext.regionKey ?? options.activeKey,
+  };
+  const chordSpelling = spellChord(parsedChord, chordOptions);
+  if (!chordSpelling) {
+    return [];
+  }
+
+  const regionRoot: AccordionRegionRoot = {
+    pitchClass: normalizePitchClass(regionRootPitchClass),
+    note: formatPitchClass(regionRootPitchClass, chordOptions),
+  };
+  const allStradellaButtons = buildAllStradellaButtons(ACCORDION_STANDARD_PROFILE, chordOptions);
+  const leftHandCandidates = generateAccordionLeftHandCandidates(chordSpelling, allStradellaButtons, chordOptions);
+  const rightHandCandidates = generateAccordionRightHandCandidates(
+    chordSpelling,
+    ACCORDION_STANDARD_PROFILE,
+    regionRoot.pitchClass,
+    chordOptions,
+  );
+  const selectedLeftHandCandidate = leftHandCandidates[0] ?? null;
+  const visibleStradellaButtons = buildVisibleStradellaButtons(
+    ACCORDION_STANDARD_PROFILE,
+    regionRoot.pitchClass,
+    {
+      columns: [
+        selectedLeftHandCandidate?.bassButton.column ?? null,
+        selectedLeftHandCandidate?.chordButton.column ?? null,
+      ],
+      pitchClasses: [resolvedContext.currentChordRootPitchClass ?? parsedChord.rootPitchClass],
+    },
+    chordOptions,
+  );
+
+  return rightHandCandidates.map((candidate, index): AccordionVoicing => {
+    const rank = index + (selectedLeftHandCandidate?.rank ?? 1000);
+    return {
+      id: `accordion-${slugifyMusicId(chordSpelling.label)}-${candidate.idSuffix}`,
+      label: candidate.label,
+      chordLabel: chordSpelling.label,
+      rank,
+      rightHandNotes: candidate.notes,
+      leftHandCandidates,
+      selectedLeftHandCandidate,
+      visibleStradellaButtons,
+      regionRoot,
+    };
+  });
+}
+
+function resolveAccordionVoicingContext(context: AccordionVoicingContext | null): ResolvedAccordionContext {
+  if (!context) {
+    return { regionKey: null, currentChordRootPitchClass: null };
+  }
+  if (isMusicalKeyLike(context)) {
+    return { regionKey: context, currentChordRootPitchClass: null };
+  }
+
+  return {
+    regionKey: context.regionKey ?? context.activeKey ?? null,
+    currentChordRootPitchClass: resolveAccordionChordRootPitchClass(context.currentChordRoot),
+  };
+}
+
+function resolveAccordionChordRootPitchClass(input: ChordInput | number | null | undefined): number | null {
+  if (typeof input === "number") {
+    return Number.isFinite(input) ? normalizePitchClass(input) : null;
+  }
+  if (input === null || input === undefined) {
+    return null;
+  }
+
+  const parsedChord = parseChordInput(input);
+  return parsedChord ? parsedChord.rootPitchClass : null;
+}
+
+function isMusicalKeyLike(value: AccordionVoicingContext): value is MusicalKey {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "pitchClass" in value &&
+    typeof value.pitchClass === "number" &&
+    "mode" in value &&
+    (value.mode === "major" || value.mode === "minor")
+  );
+}
+
+function buildVisibleStradellaButtons(
+  profile: AccordionProfile,
+  regionRootPitchClass: number,
+  requiredRoots: {
+    columns?: readonly (number | null | undefined)[];
+    pitchClasses?: readonly (number | null | undefined)[];
+  },
+  options: PitchFormatOptions,
+): readonly AccordionStradellaButton[] {
+  const axisWindow = selectStradellaRootAxisWindow(
+    profile.buttonBoard.stradella,
+    regionRootPitchClass,
+    requiredRoots,
+  );
+  return buildStradellaButtons(profile, axisWindow, options);
+}
+
+function buildAllStradellaButtons(
+  profile: AccordionProfile,
+  options: PitchFormatOptions,
+): readonly AccordionStradellaButton[] {
+  return buildStradellaButtons(profile, profile.buttonBoard.stradella.rootAxis, options);
+}
+
+function buildStradellaButtons(
+  profile: AccordionProfile,
+  axisEntries: readonly ButtonBoardStradellaProfileV1["rootAxis"][number][],
+  options: PitchFormatOptions,
+): readonly AccordionStradellaButton[] {
+  return axisEntries.flatMap((axisEntry) =>
+    profile.buttonBoard.stradella.rows.flatMap((row) => renderStradellaButton(axisEntry, row, options)),
+  );
+}
+
+function selectStradellaRootAxisWindow(
+  stradella: ButtonBoardStradellaProfileV1,
+  regionRootPitchClass: number,
+  requiredRoots: {
+    columns?: readonly (number | null | undefined)[];
+    pitchClasses?: readonly (number | null | undefined)[];
+  } = {},
+): readonly ButtonBoardStradellaProfileV1["rootAxis"][number][] {
+  const axis = stradella.rootAxis;
+  if (axis.length <= ACCORDION_VISIBLE_ROOT_RADIUS * 2 + 1) {
+    return axis;
+  }
+
+  const windowSize = ACCORDION_VISIBLE_ROOT_RADIUS * 2 + 1;
+  const centerIndex = findStradellaAxisCenterIndex(axis, regionRootPitchClass);
+  const defaultStart = clampNumber(centerIndex - ACCORDION_VISIBLE_ROOT_RADIUS, 0, axis.length - windowSize);
+  const requiredPitchClasses = [
+    ...new Set(
+      (requiredRoots.pitchClasses ?? [])
+        .filter((pitchClass): pitchClass is number => typeof pitchClass === "number" && Number.isFinite(pitchClass))
+        .map(normalizePitchClass),
+    ),
+  ];
+  const requiredColumns = [
+    ...new Set(
+      (requiredRoots.columns ?? []).filter(
+        (column): column is number => typeof column === "number" && Number.isFinite(column),
+      ),
+    ),
+  ];
+  let start = defaultStart;
+
+  if (requiredPitchClasses.length > 0 || requiredColumns.length > 0) {
+    let bestScore = Number.POSITIVE_INFINITY;
+    for (let candidateStart = 0; candidateStart <= axis.length - windowSize; candidateStart += 1) {
+      const candidateEnd = candidateStart + windowSize;
+      const missingRequiredCount = requiredPitchClasses.filter(
+        (pitchClass) => !axisWindowContainsPitchClass(axis, candidateStart, candidateEnd, pitchClass),
+      ).length + requiredColumns.filter(
+        (column) => !axisWindowContainsColumn(axis, candidateStart, candidateEnd, column),
+      ).length;
+      const centerPenalty =
+        centerIndex >= candidateStart && centerIndex < candidateEnd
+          ? 0
+          : Math.min(Math.abs(centerIndex - candidateStart), Math.abs(centerIndex - candidateEnd + 1));
+      const score = missingRequiredCount * 10000 + centerPenalty * 1000 + Math.abs(candidateStart - defaultStart);
+      if (score < bestScore) {
+        bestScore = score;
+        start = candidateStart;
+      }
+    }
+  }
+
+  const end = Math.min(axis.length, start + windowSize);
+  return axis.slice(start, end);
+}
+
+function axisWindowContainsPitchClass(
+  axis: ButtonBoardStradellaProfileV1["rootAxis"],
+  start: number,
+  end: number,
+  pitchClass: number,
+): boolean {
+  const normalizedPitchClass = normalizePitchClass(pitchClass);
+  for (let index = start; index < end; index += 1) {
+    if (axis[index]?.pitchClass === normalizedPitchClass) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function axisWindowContainsColumn(
+  axis: ButtonBoardStradellaProfileV1["rootAxis"],
+  start: number,
+  end: number,
+  column: number,
+): boolean {
+  for (let index = start; index < end; index += 1) {
+    if (axis[index]?.column === column) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function findStradellaAxisCenterIndex(
+  axis: ButtonBoardStradellaProfileV1["rootAxis"],
+  regionRootPitchClass: number,
+): number {
+  const normalizedRoot = normalizePitchClass(regionRootPitchClass);
+  const midpoint = (axis.length - 1) / 2;
+  let bestIndex = 0;
+  let bestScore = Number.POSITIVE_INFINITY;
+
+  axis.forEach((entry, index) => {
+    if (entry.pitchClass !== normalizedRoot) {
+      return;
+    }
+    const leftRoom = index;
+    const rightRoom = axis.length - index - 1;
+    const missingWindow = Math.max(0, ACCORDION_VISIBLE_ROOT_RADIUS - leftRoom) + Math.max(0, ACCORDION_VISIBLE_ROOT_RADIUS - rightRoom);
+    const score = missingWindow * 100 + Math.abs(index - midpoint);
+    if (score < bestScore) {
+      bestIndex = index;
+      bestScore = score;
+    }
+  });
+
+  return bestScore === Number.POSITIVE_INFINITY ? Math.round(midpoint) : bestIndex;
+}
+
+function renderStradellaButton(
+  axisEntry: ButtonBoardStradellaProfileV1["rootAxis"][number],
+  row: ButtonBoardStradellaRowDefinitionV1,
+  options: PitchFormatOptions,
+): readonly AccordionStradellaButton[] {
+  const pitchClasses = getStradellaButtonPitchClasses(axisEntry.pitchClass, row.id);
+  if (pitchClasses.length === 0) {
+    return [];
+  }
+
+  const rootPitchClass = getStradellaButtonRootPitchClass(axisEntry.pitchClass, row.id);
+  const root = formatPitchClass(rootPitchClass, options);
+  const label = formatStradellaButtonLabel(root, row.id);
+  return [
+    {
+      id: `accordion-left-${row.id}-${axisEntry.column}`,
+      side: "bass",
+      rowId: row.id,
+      rowLabel: row.label,
+      kind: row.kind,
+      label,
+      root,
+      pitchClass: rootPitchClass,
+      pitchClasses,
+      column: axisEntry.column,
+      row: row.visualOrder + 1,
+      visualColumn: axisEntry.visualColumn,
+      visualOrder: row.visualOrder,
+      visualColumnOffset: row.visualColumnOffset,
+      visualYOffset: row.visualYOffset,
+      visualYStep: row.visualYStep,
+      visualX: axisEntry.visualColumn + row.visualColumnOffset,
+      visualY: row.visualYOffset,
+    },
+  ];
+}
+
+function getStradellaButtonRootPitchClass(axisPitchClass: number, rowId: AccordionStradellaRowId): number {
+  return rowId === "counterbass" ? transposePitchClass(axisPitchClass, 4) : normalizePitchClass(axisPitchClass);
+}
+
+function getStradellaButtonPitchClasses(axisPitchClass: number, rowId: AccordionStradellaRowId): readonly number[] {
+  const rootPitchClass = getStradellaButtonRootPitchClass(axisPitchClass, rowId);
+  switch (rowId) {
+    case "counterbass":
+    case "bass":
+      return [rootPitchClass];
+    case "major":
+      return [rootPitchClass, transposePitchClass(rootPitchClass, 4), transposePitchClass(rootPitchClass, 7)];
+    case "minor":
+      return [rootPitchClass, transposePitchClass(rootPitchClass, 3), transposePitchClass(rootPitchClass, 7)];
+    case "seventh":
+      return [rootPitchClass, transposePitchClass(rootPitchClass, 4), transposePitchClass(rootPitchClass, 10)];
+    case "diminished":
+      return [rootPitchClass, transposePitchClass(rootPitchClass, 3), transposePitchClass(rootPitchClass, 9)];
+  }
+}
+
+function formatStradellaButtonLabel(root: string, rowId: AccordionStradellaRowId): string {
+  switch (rowId) {
+    case "counterbass":
+      return `${root} counterbass`;
+    case "bass":
+      return `${root} bass`;
+    case "major":
+      return `${root}M`;
+    case "minor":
+      return `${root}m`;
+    case "seventh":
+      return `${root}7`;
+    case "diminished":
+      return `${root}dim`;
+  }
+}
+
+function generateAccordionLeftHandCandidates(
+  chord: ChordSpelling,
+  visibleButtons: readonly AccordionStradellaButton[],
+  options: PitchFormatOptions,
+): readonly AccordionLeftHandCandidate[] {
+  const bassButtons = visibleButtons.filter((button) => ACCORDION_BASS_ROW_IDS.has(button.rowId));
+  const chordButtons = visibleButtons.filter((button) => ACCORDION_CHORD_ROW_IDS.has(button.rowId));
+  const targetPitchClasses = getAccordionTargetPitchClasses(chord);
+  const candidates = new Map<string, AccordionLeftHandCandidate>();
+
+  for (const bassButton of bassButtons) {
+    for (const chordButton of chordButtons) {
+      const candidate = buildAccordionLeftHandCandidate(chord, bassButton, chordButton, targetPitchClasses, options);
+      const existing = candidates.get(candidate.id);
+      if (!existing || candidate.rank < existing.rank) {
+        candidates.set(candidate.id, candidate);
+      }
+    }
+  }
+
+  return [...candidates.values()]
+    .sort((left, right) => left.rank - right.rank || left.id.localeCompare(right.id))
+    .slice(0, 16);
+}
+
+function buildAccordionLeftHandCandidate(
+  chord: ChordSpelling,
+  bassButton: AccordionStradellaButton,
+  chordButton: AccordionStradellaButton,
+  targetPitchClasses: ReadonlySet<number>,
+  options: PitchFormatOptions,
+): AccordionLeftHandCandidate {
+  const generatedPitchClasses = new Set([bassButton.pitchClass, ...chordButton.pitchClasses].map(normalizePitchClass));
+  const missingPitchClasses = [...targetPitchClasses].filter((pitchClass) => !generatedPitchClasses.has(pitchClass));
+  const addedPitchClasses = [...generatedPitchClasses].filter((pitchClass) => !targetPitchClasses.has(pitchClass));
+  const quality: AccordionLeftHandQuality =
+    missingPitchClasses.length === 0 && addedPitchClasses.length === 0 ? "exact" : "approx";
+  const rank = scoreAccordionLeftHandCandidate(chord, bassButton, chordButton, missingPitchClasses, addedPitchClasses);
+  const fingering = getAccordionLeftHandFingering(chordButton.rowId);
+
+  return {
+    id: `${bassButton.id}-${chordButton.id}`,
+    label: `${bassButton.label} + ${chordButton.label}`,
+    quality,
+    bassButton,
+    chordButton,
+    fingering,
+    missingTones: missingPitchClasses.map((pitchClass) => formatMissingAccordionTone(chord, pitchClass, options)),
+    addedTones: addedPitchClasses.map((pitchClass) => formatPitchClass(pitchClass, options)),
+    rank,
+  };
+}
+
+function getAccordionTargetPitchClasses(chord: ChordSpelling): ReadonlySet<number> {
+  const targetPitchClasses = new Set(chord.tones.map((tone) => normalizePitchClass(tone.pitchClass)));
+  if (typeof chord.bassPitchClass === "number") {
+    targetPitchClasses.add(normalizePitchClass(chord.bassPitchClass));
+  }
+  return targetPitchClasses;
+}
+
+function scoreAccordionLeftHandCandidate(
+  chord: ChordSpelling,
+  bassButton: AccordionStradellaButton,
+  chordButton: AccordionStradellaButton,
+  missingPitchClasses: readonly number[],
+  addedPitchClasses: readonly number[],
+): number {
+  const exactPenalty = missingPitchClasses.length === 0 && addedPitchClasses.length === 0 ? 0 : 1000;
+  const bassTarget = chord.bassPitchClass ?? chord.rootPitchClass;
+  const bassPenalty = bassButton.pitchClass === normalizePitchClass(bassTarget) ? 0 : 40;
+  const counterbassPenalty = bassButton.rowId === "counterbass" ? 8 : 0;
+  const chordRootPenalty = chordButton.pitchClass === chord.rootPitchClass ? 0 : 4;
+  return (
+    exactPenalty +
+    missingPitchClasses.length * 120 +
+    addedPitchClasses.length * 80 +
+    bassPenalty +
+    counterbassPenalty +
+    chordRootPenalty +
+    chordButton.visualOrder
+  );
+}
+
+function getAccordionLeftHandFingering(rowId: AccordionStradellaRowId): AccordionLeftHandCandidate["fingering"] {
+  const chord: AccordionLeftHandFinger = rowId === "major" ? 3 : 2;
+  return {
+    bass: 4,
+    chord,
+    label: `4-${chord}`,
+  };
+}
+
+function formatMissingAccordionTone(chord: ChordSpelling, pitchClass: number, options: PitchFormatOptions): string {
+  const tone = chord.tones.find((chordTone) => chordTone.pitchClass === normalizePitchClass(pitchClass));
+  return tone?.noteName ?? formatPitchClass(pitchClass, options);
+}
+
+function generateAccordionRightHandCandidates(
+  chord: ChordSpelling,
+  profile: AccordionProfile,
+  regionRootPitchClass: number,
+  options: PitchFormatOptions,
+): readonly AccordionRightHandCandidate[] {
+  const candidates = new Map<string, AccordionRightHandCandidate>();
+  const anchorMidi = getAccordionRegionAnchorMidi(regionRootPitchClass);
+
+  for (let inversion = 0; inversion < chord.tones.length; inversion += 1) {
+    for (let baseMidi = profile.keyboard.lowestPitch.midi; baseMidi <= profile.keyboard.highestPitch.midi; baseMidi += 1) {
+      if (normalizePitchClass(baseMidi) !== chord.tones[inversion]?.pitchClass) {
+        continue;
+      }
+
+      const notes = renderAccordionRightHandInversion(chord, inversion, baseMidi, profile, options);
+      if (notes.length !== chord.tones.length) {
+        continue;
+      }
+
+      const shapeKey = notes.map((note) => note.pitch.midi).join("-");
+      const tonicRootBonus =
+        chord.rootPitchClass === normalizePitchClass(regionRootPitchClass) && inversion === 0 ? -20 : 0;
+      const score = scoreAccordionRightHandCandidate(notes, anchorMidi, inversion) + tonicRootBonus;
+      const existing = candidates.get(shapeKey);
+      if (!existing || score < existing.score) {
+        candidates.set(shapeKey, {
+          idSuffix: formatAccordionRightHandIdSuffix(inversion, 0, shapeKey),
+          label: formatAccordionRightHandLabel(chord.label, inversion, 0),
+          inversion,
+          notes,
+          score,
+        });
+      }
+    }
+  }
+
+  const rankedCandidates = [...candidates.values()]
+    .sort((left, right) => left.score - right.score || left.idSuffix.localeCompare(right.idSuffix))
+    .slice(0, ACCORDION_RIGHT_HAND_MAX_VOICINGS);
+  return withUniqueAccordionRightHandLabels(chord.label, rankedCandidates);
+}
+
+function withUniqueAccordionRightHandLabels(
+  chordLabel: string,
+  candidates: readonly AccordionRightHandCandidate[],
+): readonly AccordionRightHandCandidate[] {
+  const occurrencesByInversion = new Map<number, number>();
+  return candidates.map((candidate) => {
+    const occurrence = occurrencesByInversion.get(candidate.inversion) ?? 0;
+    occurrencesByInversion.set(candidate.inversion, occurrence + 1);
+    const shapeKey = candidate.notes.map((note) => note.pitch.midi).join("-");
+    return {
+      ...candidate,
+      idSuffix: formatAccordionRightHandIdSuffix(candidate.inversion, occurrence, shapeKey),
+      label: formatAccordionRightHandLabel(chordLabel, candidate.inversion, occurrence),
+    };
+  });
+}
+
+function formatAccordionRightHandIdSuffix(inversion: number, occurrence: number, shapeKey: string): string {
+  const inversionSlug = slugifyMusicId(formatAccordionInversionName(inversion));
+  return occurrence === 0
+    ? `rh-${inversionSlug}-${shapeKey}`
+    : `rh-${inversionSlug}-octave-${occurrence + 1}-${shapeKey}`;
+}
+
+function formatAccordionRightHandLabel(chordLabel: string, inversion: number, occurrence: number): string {
+  const registerPrefix = formatAccordionRegisterPrefix(occurrence);
+  return `${chordLabel} ${registerPrefix}${formatAccordionInversionName(inversion)}`;
+}
+
+function formatAccordionInversionName(inversion: number): string {
+  switch (inversion) {
+    case 0:
+      return "root";
+    case 1:
+      return "first inversion";
+    case 2:
+      return "second inversion";
+    case 3:
+      return "third inversion";
+    default:
+      return `${formatOrdinal(inversion + 1)} inversion`;
+  }
+}
+
+function formatAccordionRegisterPrefix(occurrence: number): string {
+  if (occurrence === 0) {
+    return "";
+  }
+  if (occurrence === 1) {
+    return "octave ";
+  }
+  return `${formatOrdinal(occurrence + 1)} octave `;
+}
+
+function formatOrdinal(value: number): string {
+  const moduloHundred = value % 100;
+  if (moduloHundred >= 11 && moduloHundred <= 13) {
+    return `${value}th`;
+  }
+  switch (value % 10) {
+    case 1:
+      return `${value}st`;
+    case 2:
+      return `${value}nd`;
+    case 3:
+      return `${value}rd`;
+    default:
+      return `${value}th`;
+  }
+}
+
+function renderAccordionRightHandInversion(
+  chord: ChordSpelling,
+  inversion: number,
+  baseMidi: number,
+  profile: AccordionProfile,
+  options: PitchFormatOptions,
+): readonly AccordionKeyboardNote[] {
+  const rotatedTones = [...chord.tones.slice(inversion), ...chord.tones.slice(0, inversion)];
+  const notes: AccordionKeyboardNote[] = [];
+  let previousMidi = baseMidi - 1;
+
+  rotatedTones.forEach((tone, index) => {
+    let midi = index === 0 ? baseMidi : previousMidi + 1;
+    while (normalizePitchClass(midi) !== tone.pitchClass) {
+      midi += 1;
+    }
+    previousMidi = midi;
+    if (midi < profile.keyboard.lowestPitch.midi || midi > profile.keyboard.highestPitch.midi) {
+      return;
+    }
+
+    const pitch = midiToPitch(midi, options);
+    if (!pitch) {
+      return;
+    }
+    const finger = getAccordionRightHandFinger(index, rotatedTones.length);
+    notes.push({
+      id: `accordion-rh-${index}-${midi}`,
+      pitch,
+      note: pitch.label,
+      degree: tone.degree,
+      hand: "right",
+      side: "treble",
+      ...(finger ? { finger } : {}),
+    });
+  });
+
+  return notes;
+}
+
+function getAccordionRightHandFinger(index: number, noteCount: number): KeyboardFingerV1 | null {
+  if (noteCount <= 3) {
+    return ([1, 3, 5] as const)[index] ?? null;
+  }
+  return ([1, 2, 3, 5] as const)[index] ?? null;
+}
+
+function scoreAccordionRightHandCandidate(
+  notes: readonly AccordionKeyboardNote[],
+  anchorMidi: number,
+  inversion: number,
+): number {
+  const averageDistance = notes.reduce((total, note) => total + Math.abs(note.pitch.midi - anchorMidi), 0) / notes.length;
+  const span = notes[notes.length - 1].pitch.midi - notes[0].pitch.midi;
+  const center = notes.reduce((total, note) => total + note.pitch.midi, 0) / notes.length;
+  return averageDistance * 10 + Math.abs(center - anchorMidi) * 2 + span + inversion * 0.25;
+}
+
+function getAccordionRegionAnchorMidi(regionRootPitchClass: number): number {
+  let bestMidi = ACCORDION_RIGHT_HAND_TARGET_MIDI;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (let midi = 48; midi <= 72; midi += 1) {
+    if (normalizePitchClass(midi) !== normalizePitchClass(regionRootPitchClass)) {
+      continue;
+    }
+    const distance = Math.abs(midi - ACCORDION_RIGHT_HAND_TARGET_MIDI);
+    if (distance < bestDistance) {
+      bestMidi = midi;
+      bestDistance = distance;
+    }
+  }
+  return bestMidi;
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
 function parsePitchRequired(label: string): ParsedPitch {
   const pitch = parsePitch(label);
   if (!pitch) {
@@ -1238,7 +2129,14 @@ function shouldStoreRawChordLabel(rawLabel: string, chord: ParsedChord, isHarteS
 }
 
 function isNewChordQuality(quality: ChordSpellingQuality): boolean {
-  return quality === "sus2" || quality === "sus4" || quality === "aug" || quality === "dim7" || quality === "hdim7";
+  return (
+    quality === "7b5" ||
+    quality === "sus2" ||
+    quality === "sus4" ||
+    quality === "aug" ||
+    quality === "dim7" ||
+    quality === "hdim7"
+  );
 }
 
 function parseChordInput(chord: ChordInput): ParsedChord | null {
@@ -1599,8 +2497,18 @@ function getGeneratedGuitarShapeKey(notes: readonly GuitarVoicingNote[]): string
 }
 
 function formatGeneratedGuitarVoicingId(chordLabel: string, index: number): string {
-  const baseId = chordLabel.toLowerCase().replaceAll("#", "sharp").replaceAll("/", "-").replace(/\s+/g, "-");
+  const baseId = slugifyMusicId(chordLabel);
   return index === 0 ? `${baseId}-generated` : `${baseId}-generated-${index + 1}`;
+}
+
+function slugifyMusicId(value: string): string {
+  return value
+    .toLowerCase()
+    .replaceAll("#", "sharp")
+    .replaceAll("/", "-")
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 function getChordDegreeForPitchClass(chord: ChordSpelling, pitchClass: number): ChordDegree | null {
@@ -1807,6 +2715,8 @@ function chordQualitySuffix(quality: ChordQuality): string {
       return "m";
     case "7":
       return "7";
+    case "7b5":
+      return "7b5";
     case "maj7":
       return "maj7";
     case "m7":

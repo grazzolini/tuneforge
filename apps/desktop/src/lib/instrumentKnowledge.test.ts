@@ -23,6 +23,40 @@ describe("instrument knowledge bundle", () => {
         canRetune: true,
       },
     });
+    expect(INSTRUMENT_KNOWLEDGE_BUNDLE_V1.instrumentProfiles.accordion).toMatchObject({
+      id: "accordion",
+      label: "Accordion",
+      family: "free-reed",
+      executionLayer: "button-board",
+      keyboard: {
+        keyCount: 41,
+        lowestPitch: "F3",
+        highestPitch: "A6",
+        canTranspose: false,
+      },
+      buttonBoard: {
+        layout: "stradella-120-bass",
+        buttons: 120,
+        rows: 6,
+        columns: 20,
+        canTranspose: false,
+      },
+    });
+    expect(INSTRUMENT_KNOWLEDGE_BUNDLE_V1.instrumentProfiles.accordion?.buttonBoard?.stradella).toMatchObject({
+      rows: [
+        { id: "counterbass", label: "Counterbass", kind: "bass", visualOrder: 0 },
+        { id: "bass", label: "Bass", kind: "bass", visualOrder: 1 },
+        { id: "major", label: "Major", kind: "chord", visualOrder: 2 },
+        { id: "minor", label: "Minor", kind: "chord", visualOrder: 3 },
+        { id: "seventh", label: "7", kind: "chord", visualOrder: 4 },
+        { id: "diminished", label: "Dim", kind: "chord", visualOrder: 5 },
+      ],
+    });
+    expect(
+      INSTRUMENT_KNOWLEDGE_BUNDLE_V1.instrumentProfiles.accordion?.buttonBoard?.stradella?.rootAxis
+        .slice(2, 13)
+        .map((entry) => entry.root),
+    ).toEqual(["Db", "Ab", "Eb", "Bb", "F", "C", "G", "D", "A", "E", "B"]);
     expect(INSTRUMENT_KNOWLEDGE_BUNDLE_V1.voicingSeeds.guitar?.common).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -254,6 +288,77 @@ describe("instrument knowledge bundle", () => {
       partial: { schemaVersion: 1 },
       invalid: { schemaVersion: 1 },
     });
+  });
+
+  it("drops malformed Stradella metadata without dropping accordion button-board profile", () => {
+    const bundle = normalizeInstrumentKnowledgeBundle({
+      schemaVersion: 1,
+      bundleId: "fixture",
+      version: "0.0.0",
+      instrumentProfiles: {
+        malformedAxis: {
+          id: "malformedAxis",
+          label: "Malformed axis accordion",
+          family: "free-reed",
+          executionLayer: "button-board",
+          buttonBoard: {
+            layout: "stradella-120-bass",
+            buttons: 120,
+            rows: 6,
+            columns: 20,
+            canTranspose: false,
+            stradella: {
+              rootAxis: [{ root: "C", pitchClass: "0", column: 8, visualColumn: 7, visualOrder: 7 }],
+              rows: [],
+            },
+          },
+        },
+        malformedRows: {
+          id: "malformedRows",
+          label: "Malformed rows accordion",
+          family: "free-reed",
+          executionLayer: "button-board",
+          buttonBoard: {
+            layout: "stradella-120-bass",
+            buttons: 120,
+            rows: 6,
+            columns: 20,
+            canTranspose: false,
+            stradella: {
+              rootAxis: [{ root: "C", pitchClass: 0, column: 8, visualColumn: 7, visualOrder: 7 }],
+              rows: [
+                {
+                  id: "bass",
+                  label: "Bass",
+                  kind: "bass",
+                  visualOrder: 1,
+                  visualColumnOffset: 0,
+                  visualYOffset: 1,
+                  visualYStep: 1,
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+
+    expect(bundle.instrumentProfiles.malformedAxis?.buttonBoard).toMatchObject({
+      layout: "stradella-120-bass",
+      buttons: 120,
+      rows: 6,
+      columns: 20,
+      canTranspose: false,
+    });
+    expect(bundle.instrumentProfiles.malformedAxis?.buttonBoard?.stradella).toBeUndefined();
+    expect(bundle.instrumentProfiles.malformedRows?.buttonBoard).toMatchObject({
+      layout: "stradella-120-bass",
+      buttons: 120,
+      rows: 6,
+      columns: 20,
+      canTranspose: false,
+    });
+    expect(bundle.instrumentProfiles.malformedRows?.buttonBoard?.stradella).toBeUndefined();
   });
 
   it("normalizes future non-guitar instrument profile and seed shapes from synthetic fixtures", () => {

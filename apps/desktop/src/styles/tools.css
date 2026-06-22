@@ -420,11 +420,15 @@
 }
 
 .chord-icon-button:focus-visible,
+.chord-instrument-button:focus-visible,
 .chord-reset-button:focus-visible,
 .chord-shape-tab:focus-visible,
 .guitar-fretboard__dot:focus-visible,
 .chord-shape-card__label:focus-visible,
-.chord-family-card:focus-visible {
+.chord-family-card:focus-visible,
+.accordion-stradella__button:focus-visible,
+.accordion-keyboard__key:focus-visible,
+.accordion-candidate-card:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
@@ -483,6 +487,43 @@
   color: var(--text);
   font-size: 0.9rem;
   font-weight: 850;
+}
+
+.chord-instrument-button {
+  border-color: color-mix(in srgb, var(--divider) 78%, transparent);
+  background: color-mix(in srgb, var(--panel) 76%, var(--panel-strong) 24%);
+  box-shadow: none;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    box-shadow 140ms ease,
+    color 140ms ease;
+}
+
+.chord-instrument-selector .chord-instrument-button[aria-pressed="false"],
+.chord-instrument-selector .chord-instrument-button[aria-pressed="false"].chord-pill--active,
+.chord-instrument-selector .chord-instrument-button[aria-pressed="false"].chord-instrument-button--active {
+  border-color: color-mix(in srgb, var(--divider) 78%, transparent);
+  background: color-mix(in srgb, var(--panel) 76%, var(--panel-strong) 24%);
+  box-shadow: none;
+  color: var(--muted);
+}
+
+.chord-instrument-selector .chord-instrument-button[aria-pressed="false"]:hover,
+.chord-instrument-selector .chord-instrument-button[aria-pressed="false"]:focus-visible {
+  border-color: color-mix(in srgb, var(--divider) 72%, var(--text));
+  background: color-mix(in srgb, var(--panel) 84%, var(--panel-strong));
+  box-shadow: none;
+  color: var(--text);
+}
+
+.chord-instrument-selector .chord-instrument-button[aria-pressed="true"],
+.chord-instrument-selector .chord-instrument-button--active[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--playback-accent) 72%, var(--divider));
+  background: color-mix(in srgb, var(--playback-accent) 24%, var(--panel-strong));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--playback-accent) 24%, transparent);
+  color: var(--text);
 }
 
 .chord-pill--muted {
@@ -1404,6 +1445,430 @@
   cursor: default;
 }
 
+.accordion-tool-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(18rem, 22rem);
+  gap: 1rem;
+  align-items: start;
+  min-width: 0;
+}
+
+.accordion-tool-main,
+.accordion-tool-sidebar {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.accordion-tool-main,
+.accordion-tool-sidebar,
+.accordion-position-card,
+.accordion-candidate-panel {
+  border: 1px solid color-mix(in srgb, var(--divider) 78%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-muted) 38%, transparent);
+}
+
+.accordion-tool-main,
+.accordion-tool-sidebar {
+  padding: 0.85rem;
+}
+
+.accordion-position-grid {
+  display: grid;
+  grid-template-columns: minmax(18rem, 0.85fr) minmax(24rem, 1.35fr);
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.accordion-position-card {
+  display: grid;
+  align-content: start;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 0.8rem;
+  overflow: hidden;
+}
+
+.accordion-position-card__heading,
+.accordion-candidate-card__title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.accordion-position-card__heading h4,
+.accordion-candidate-panel h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.98rem;
+}
+
+.accordion-match-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.45rem;
+  padding: 0.22rem 0.45rem;
+  border: 1px solid color-mix(in srgb, var(--divider) 74%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-strong) 72%, transparent);
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.accordion-match-badge--exact {
+  border-color: color-mix(in srgb, var(--playback-accent) 62%, var(--divider));
+  background: color-mix(in srgb, var(--playback-accent) 22%, var(--panel-strong));
+  color: color-mix(in srgb, var(--playback-accent) 54%, var(--text));
+}
+
+.accordion-stradella {
+  display: grid;
+  align-content: start;
+  gap: 0.4rem;
+  box-sizing: border-box;
+  inline-size: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+  padding-bottom: 0.15rem;
+}
+
+.accordion-stradella__headers,
+.accordion-stradella__board {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  inline-size: 100%;
+  min-width: 0;
+}
+
+.accordion-stradella__headers {
+  gap: 0.14rem;
+  color: var(--muted);
+  font-size: 0.58rem;
+  font-weight: 900;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.accordion-stradella__board {
+  grid-template-rows: repeat(var(--accordion-root-count, 12), 1.58rem);
+  gap: 0.16rem 0.14rem;
+  min-height: 18.5rem;
+  padding: 0.3rem;
+  border: 1px solid color-mix(in srgb, var(--divider) 72%, transparent);
+  border-radius: 8px;
+  background:
+    linear-gradient(90deg, transparent 0 49.75%, color-mix(in srgb, var(--divider) 20%, transparent) 49.75% 50.25%, transparent 50.25%),
+    color-mix(in srgb, var(--color-bg-inset) 74%, transparent);
+}
+
+.accordion-stradella__button {
+  box-sizing: border-box;
+  grid-column: var(--accordion-button-column);
+  grid-row: var(--accordion-button-row);
+  min-width: 0;
+  width: 100%;
+  min-height: 1.48rem;
+  border: 1px solid color-mix(in srgb, var(--divider) 78%, transparent);
+  border-radius: 999px;
+  padding: 0 0.08rem;
+  background:
+    radial-gradient(circle at 35% 28%, color-mix(in srgb, white 24%, transparent), transparent 42%),
+    color-mix(in srgb, var(--panel-strong) 80%, var(--surface-muted));
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.62rem;
+  font-weight: 900;
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: clip;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
+  white-space: nowrap;
+}
+
+.accordion-stradella__button:hover,
+.accordion-stradella__button:focus-visible {
+  z-index: 3;
+  border-color: color-mix(in srgb, var(--text) 54%, var(--divider));
+  transform: scale(1.12);
+}
+
+.accordion-stradella__button--bass,
+.accordion-stradella__button--counterbass {
+  background:
+    radial-gradient(circle at 35% 28%, color-mix(in srgb, white 18%, transparent), transparent 42%),
+    color-mix(in srgb, var(--panel) 82%, var(--panel-strong));
+}
+
+.accordion-stradella__button--counterbass::before {
+  content: attr(data-label);
+}
+
+.accordion-stradella__button--selected,
+.accordion-stradella__button--active {
+  border-color: color-mix(in srgb, var(--playback-accent) 72%, var(--divider));
+  background: var(--playback-accent);
+  color: var(--panel);
+  box-shadow: 0 0 0 0.18rem color-mix(in srgb, var(--playback-accent) 20%, transparent);
+}
+
+.accordion-keyboard {
+  --accordion-white-key-width: 10.8rem;
+  --accordion-white-key-height: 2.05rem;
+  --accordion-white-key-gap: 0rem;
+  --accordion-white-key-step: calc(var(--accordion-white-key-height) + var(--accordion-white-key-gap));
+  --accordion-black-key-width: 4.15rem;
+  --accordion-black-key-height: 1.08rem;
+  --accordion-black-key-offset: -0.22rem;
+  --accordion-keyboard-start-padding: 1.95rem;
+  --accordion-keyboard-top-padding: 0.22rem;
+  --accordion-keyboard-end-padding: 0.28rem;
+  --accordion-keyboard-bottom-padding: 0.22rem;
+
+  position: relative;
+  align-self: start;
+  justify-self: center;
+  box-sizing: border-box;
+  inline-size: fit-content;
+  max-inline-size: 100%;
+  min-width: 0;
+  padding:
+    var(--accordion-keyboard-top-padding)
+    var(--accordion-keyboard-end-padding)
+    var(--accordion-keyboard-bottom-padding)
+    var(--accordion-keyboard-start-padding);
+  overflow: visible;
+}
+
+.accordion-keyboard__white-keys {
+  display: grid;
+  grid-template-columns: var(--accordion-white-key-width);
+  grid-template-rows: repeat(var(--accordion-white-key-count, 15), var(--accordion-white-key-height));
+  gap: var(--accordion-white-key-gap) 0;
+  inline-size: var(--accordion-white-key-width);
+  min-width: 0;
+  min-height: calc(
+    (var(--accordion-white-key-count, 15) * var(--accordion-white-key-height)) +
+      ((var(--accordion-white-key-count, 15) - 1) * var(--accordion-white-key-gap))
+  );
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--divider) 82%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, white 94%, var(--panel-strong));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, white 40%, transparent),
+    0 0.1rem 0.22rem color-mix(in srgb, black 16%, transparent);
+}
+
+.accordion-keyboard__black-keys {
+  position: absolute;
+  inset-block-start: var(--accordion-keyboard-top-padding);
+  inset-inline-start: var(--accordion-keyboard-start-padding);
+  inline-size: var(--accordion-white-key-width);
+  block-size: calc(
+    (var(--accordion-white-key-count, 15) * var(--accordion-white-key-height)) +
+      ((var(--accordion-white-key-count, 15) - 1) * var(--accordion-white-key-gap))
+  );
+  min-width: 0;
+  pointer-events: none;
+}
+
+.accordion-keyboard__key {
+  position: relative;
+  display: grid;
+  align-content: center;
+  justify-items: end;
+  gap: 0.02rem;
+  box-sizing: border-box;
+  min-width: 0;
+  border: 0;
+  padding: 0.16rem 0.68rem 0.15rem calc(var(--accordion-black-key-width) + 0.52rem);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 900;
+  line-height: 1.05;
+  text-align: center;
+}
+
+.accordion-keyboard__key--white {
+  inline-size: var(--accordion-white-key-width);
+  block-size: var(--accordion-white-key-height);
+  min-height: 0;
+  border-radius: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--divider) 72%, transparent);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--divider) 45%, transparent) 0 1px, transparent 1px),
+    color-mix(in srgb, white 94%, var(--panel-strong));
+  color: color-mix(in srgb, var(--text) 92%, black);
+  box-shadow: none;
+}
+
+.accordion-keyboard__key--black {
+  position: absolute;
+  inset-block-start: calc(
+    ((var(--accordion-white-index) + 1) * var(--accordion-white-key-step)) -
+      (var(--accordion-white-key-gap) / 2) -
+      (var(--accordion-black-key-height) / 2)
+  );
+  inset-inline-start: var(--accordion-black-key-offset);
+  z-index: 2;
+  inline-size: var(--accordion-black-key-width);
+  block-size: var(--accordion-black-key-height);
+  min-height: 0;
+  border: 1px solid color-mix(in srgb, black 82%, var(--divider));
+  border-radius: 4px 4px 3px 3px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 10%, transparent), transparent 34%),
+    linear-gradient(90deg, color-mix(in srgb, black 86%, var(--panel-strong)), color-mix(in srgb, black 68%, var(--panel-strong)));
+  color: color-mix(in srgb, var(--text) 82%, white);
+  font-size: 0.56rem;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 10%, transparent),
+    0.16rem 0.12rem 0.2rem color-mix(in srgb, black 28%, transparent);
+  pointer-events: auto;
+}
+
+span.accordion-keyboard__key--black {
+  pointer-events: none;
+}
+
+.accordion-keyboard__key--active-tone {
+  border-color: color-mix(in srgb, var(--playback-accent) 72%, var(--divider));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--playback-accent) 78%, white), color-mix(in srgb, var(--playback-accent) 58%, white));
+  color: color-mix(in srgb, var(--panel) 92%, black);
+  cursor: pointer;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, white 32%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--panel) 18%, transparent);
+}
+
+.accordion-keyboard__key--black.accordion-keyboard__key--active-tone {
+  background: color-mix(in srgb, var(--playback-accent) 54%, black);
+  color: var(--text);
+}
+
+.accordion-keyboard__key--selected {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, white 32%, transparent),
+    0 0 0 0.22rem color-mix(in srgb, var(--playback-accent) 22%, transparent);
+}
+
+.accordion-keyboard__key strong,
+.accordion-keyboard__key span {
+  display: block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.accordion-keyboard__key span {
+  margin-top: 0.02rem;
+  font-size: 0.64rem;
+  line-height: 1;
+  opacity: 0.82;
+}
+
+.accordion-keyboard__key--black span {
+  font-size: 0.5rem;
+}
+
+.accordion-candidate-panel {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.8rem;
+}
+
+.accordion-candidate-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.accordion-candidate-card {
+  display: grid;
+  gap: 0.28rem;
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--divider) 76%, transparent);
+  border-radius: 8px;
+  padding: 0.65rem;
+  background: color-mix(in srgb, var(--panel) 74%, var(--panel-strong) 26%);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.accordion-candidate-card--active {
+  border-color: color-mix(in srgb, var(--playback-accent) 68%, var(--divider));
+  background: color-mix(in srgb, var(--playback-accent) 12%, var(--panel-strong));
+}
+
+.accordion-candidate-card strong {
+  font-size: 0.95rem;
+  overflow-wrap: anywhere;
+}
+
+.accordion-candidate-card span,
+.accordion-candidate-card small {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 790;
+  overflow-wrap: anywhere;
+}
+
+.accordion-candidate-card__title strong {
+  color: var(--text);
+}
+
+.accordion-candidate-card__diff {
+  display: grid;
+  gap: 0.16rem;
+}
+
+.accordion-candidate-diff {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid color-mix(in srgb, var(--playback-accent) 36%, var(--divider));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--playback-accent) 10%, var(--panel-strong));
+}
+
+.accordion-candidate-diff small {
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.accordion-note-inspector .note-inspector__badge {
+  width: 4.75rem;
+  height: 4.75rem;
+  border-radius: 8px;
+}
+
+.accordion-note-inspector {
+  align-items: start;
+}
+
+.accordion-note-inspector dl {
+  grid-template-columns: repeat(2, minmax(5.25rem, 1fr));
+  gap: 0.65rem 0.75rem;
+}
+
+.accordion-note-inspector dt,
+.accordion-note-inspector dd {
+  overflow-wrap: anywhere;
+}
+
 .live-follow-page {
   min-height: 41rem;
 }
@@ -1529,8 +1994,13 @@
 
 @media (max-width: 1180px) {
   .chord-tool-grid,
-  .live-follow-grid {
+  .live-follow-grid,
+  .accordion-tool-grid {
     grid-template-columns: 1fr;
+  }
+
+  .accordion-position-grid {
+    grid-template-columns: minmax(16rem, 0.9fr) minmax(20rem, 1.1fr);
   }
 
   .chord-card-row {
@@ -1550,9 +2020,14 @@
   .chord-dictionary-header,
   .chord-dictionary-toolbar,
   .chord-section-heading,
-  .live-follow-topbar {
+  .live-follow-topbar,
+  .accordion-position-card__heading {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .accordion-position-grid {
+    grid-template-columns: 1fr;
   }
 
   .chord-search {
@@ -1628,13 +2103,33 @@
 
 @media (max-width: 560px) {
   .chord-dictionary-actions,
-  .chord-toolbar-cluster {
+  .chord-toolbar-cluster,
+  .live-follow-controls {
     width: 100%;
   }
 
   .chord-icon-button,
   .chord-pill {
     flex: 1 1 auto;
+  }
+
+  .accordion-stradella__headers,
+  .accordion-stradella__board {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    min-width: 0;
+  }
+
+  .accordion-stradella__button {
+    min-height: 1.5rem;
+    font-size: 0.6rem;
+  }
+
+  .accordion-keyboard {
+    --accordion-white-key-width: 8.9rem;
+    --accordion-white-key-height: 1.86rem;
+    --accordion-black-key-width: 3.55rem;
+    --accordion-black-key-height: 1rem;
+    --accordion-keyboard-start-padding: 1.7rem;
   }
 
   .chord-field-row,

@@ -6,10 +6,14 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveBuildInfo, writeResolvedBuildInfoFile } from "./build-info.mjs";
-import { prepareDemucsModelRepo } from "./prepare-demucs-models.mjs";
+import {
+  packageOptionsFromEnvironmentOrArgv,
+  printModelBundleWarning,
+} from "./package-options.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(__filename);
@@ -21,7 +25,7 @@ const stagedBackendRoot = path.join(resourcesRoot, "backend");
 const stagedBackendSourceRoot = path.join(stagedBackendRoot, "src");
 const stagedPythonRoot = path.join(stagedBackendRoot, "python");
 const stagedSitePackagesRoot = path.join(stagedBackendRoot, "site-packages");
-const stagedDemucsModelRoot = path.join(stagedBackendRoot, "models", "demucs");
+const stagedModelBundleRoot = path.join(stagedBackendRoot, "models", "bundle");
 
 function requirePath(targetPath, description) {
   if (!existsSync(targetPath)) {
@@ -70,7 +74,40 @@ function shouldIncludeBundledSitePackage(sourcePath) {
 
 let sitePackagesRootForFilter = "";
 
+function run(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    cwd: options.cwd ?? workspaceRoot,
+    stdio: "inherit",
+    env: { ...process.env, ...options.env },
+  });
+
+  if (result.error?.code === "ENOENT") {
+    throw new Error(`Required command not found: ${command}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(`${command} exited with status ${result.status}`);
+  }
+}
+
+function prepareModelBundle(options) {
+  if (!options.modelBundle) {
+    return;
+  }
+
+  if (!process.env.TUNEFORGE_PACKAGE_OPTIONS) {
+    printModelBundleWarning();
+  }
+  const pythonPath = path.join(backendRoot, ".venv", "bin", "python");
+  requirePath(pythonPath, "Backend virtualenv Python");
+  const args = ["-m", "app.cli.prepare_model_bundle", "--output", stagedModelBundleRoot];
+  if (options.beatThis) {
+    args.push("--include-beat-this");
+  }
+  run(pythonPath, args, { cwd: backendRoot });
+}
+
 async function main() {
+  const packageOptions = packageOptionsFromEnvironmentOrArgv(process.argv.slice(2), { platform: "mac" });
   const venvConfigPath = path.join(backendRoot, ".venv", "pyvenv.cfg");
   const sitePackagesRoot = path.join(backendRoot, ".venv", "lib", "python3.11", "site-packages");
   requirePath(venvConfigPath, "Backend virtualenv config");
@@ -92,23 +129,23 @@ async function main() {
   copyInto(path.join(backendRoot, "pyproject.toml"), path.join(stagedBackendSourceRoot, "pyproject.toml"));
   copyInto(pythonInstallRoot, stagedPythonRoot, { dereference: true });
   copyInto(sitePackagesRoot, stagedSitePackagesRoot, { filter: shouldIncludeBundledSitePackage });
-  await prepareDemucsModelRepo({ destinationRoot: stagedDemucsModelRoot });
+  prepareModelBundle(packageOptions);
   writeResolvedBuildInfoFile(path.join(stagedBackendRoot, "version.json"), buildInfo);
+
+  const manifest = {
+    prepared_at: new Date().toISOString(),
+    python_root: path.relative(resourcesRoot, stagedPythonRoot),
+    site_packages: path.relative(resourcesRoot, stagedSitePackagesRoot),
+    backend_source: path.relative(resourcesRoot, stagedBackendSourceRoot),
+    version_info: path.relative(resourcesRoot, path.join(stagedBackendRoot, "version.json")),
+  };
+  if (packageOptions.modelBundle) {
+    manifest.model_bundle = path.relative(resourcesRoot, stagedModelBundleRoot);
+  }
 
   writeFileSync(
     path.join(stagedBackendRoot, "manifest.json"),
-    JSON.stringify(
-      {
-        prepared_at: new Date().toISOString(),
-        python_root: path.relative(resourcesRoot, stagedPythonRoot),
-        site_packages: path.relative(resourcesRoot, stagedSitePackagesRoot),
-        backend_source: path.relative(resourcesRoot, stagedBackendSourceRoot),
-        demucs_model_repo: path.relative(resourcesRoot, stagedDemucsModelRoot),
-        version_info: path.relative(resourcesRoot, path.join(stagedBackendRoot, "version.json")),
-      },
-      null,
-      2,
-    ),
+    JSON.stringify(manifest, null, 2),
   );
   writeFileSync(path.join(resourcesRoot, ".gitkeep"), "");
   writeFileSync(path.join(resourcesRoot, "placeholder.txt"), "Generated resources live here.\n");

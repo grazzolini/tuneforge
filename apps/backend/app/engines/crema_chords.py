@@ -108,6 +108,10 @@ def clear_crema_model_cache() -> None:
     _CREMA_MODEL = None
 
 
+def preload_crema_model() -> None:
+    _get_crema_model()
+
+
 def crema_model_metadata() -> dict[str, Any]:
     return {
         "backend_id": CREMA_BACKEND_ID,

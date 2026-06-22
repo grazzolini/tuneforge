@@ -231,6 +231,7 @@ fn spawn_packaged_backend(app: &AppHandle) -> Result<BackendRuntime, Box<dyn std
     let backend_search_path = build_backend_search_path()?;
     let ffmpeg_path = find_executable_in_path("ffmpeg", &backend_search_path);
     let ffprobe_path = find_executable_in_path("ffprobe", &backend_search_path);
+    let model_bundle_dir = bundled_backend_root.join("models").join("bundle");
 
     let mut command = Command::new(&python);
     command
@@ -255,13 +256,13 @@ fn spawn_packaged_backend(app: &AppHandle) -> Result<BackendRuntime, Box<dyn std
             "TUNEFORGE_VERSION_FILE",
             bundled_backend_root.join("version.json"),
         )
-        .env(
-            "TUNEFORGE_DEMUCS_MODEL_REPO",
-            bundled_backend_root.join("models").join("demucs"),
-        )
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+
+    if model_bundle_dir.exists() {
+        command.env("TUNEFORGE_MODEL_BUNDLE_DIR", model_bundle_dir);
+    }
 
     if env::var_os("TUNEFORGE_FFMPEG_PATH").is_none() {
         if let Some(path) = ffmpeg_path {

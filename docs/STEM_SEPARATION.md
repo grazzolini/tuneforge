@@ -19,11 +19,12 @@ runtime behavior and security boundaries for model loading.
 
 ## Model loading modes and trusted boundary
 
-Development uses Demucs' default Torch checkpoint cache when
+Development and default packaged builds use Demucs' default Torch checkpoint cache when
 `TUNEFORGE_DEMUCS_MODEL_REPO` is unset:
 
-- `pnpm setup:dev` preloads `htdemucs_6s` and `htdemucs_ft` into the Torch
-  checkpoint cache.
+- `pnpm setup:dev` verifies the expected `htdemucs_6s` and `htdemucs_ft`
+  checkpoint files by size and SHA-256, then preloads missing or invalid files
+  into the Torch checkpoint cache.
 - If the weights are not preloaded, the first stem job may download them through
   Demucs, then later runs reuse the cache.
 - Cache path precedence matches Torch: `$TORCH_HOME/hub/checkpoints`,
@@ -31,8 +32,10 @@ Development uses Demucs' default Torch checkpoint cache when
   `~/.cache/torch/hub/checkpoints`.
 - Availability in this mode only requires the local `demucs` package to be
   installed.
+- Packages built with `--model-bundle` seed this same cache from package
+  resources on startup, then Demucs still loads from the cache.
 
-Packaged builds and explicit offline/pinned setups use
+Explicit offline/pinned setups can use
 `TUNEFORGE_DEMUCS_MODEL_REPO`, which points to a local path containing Demucs
 model files and `manifest.json`. Backend behavior:
 

@@ -1,10 +1,10 @@
 import { Buffer } from "node:buffer";
-import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readDemucsModelManifest } from "./prepare-demucs-models.mjs";
+import { buildModelBundlePlan } from "./model-bundle-metadata.mjs";
+import { parsePackageOptions } from "./package-options.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(__filename);
@@ -15,28 +15,11 @@ const generatedRoot = path.join(flatpakRoot, "generated");
 const cargoLockPath = path.join(workspaceRoot, "apps", "desktop", "src-tauri", "Cargo.lock");
 const pnpmLockPath = path.join(workspaceRoot, "pnpm-lock.yaml");
 const uvLockPath = path.join(workspaceRoot, "apps", "backend", "uv.lock");
-const demucsModelRoot = path.join(workspaceRoot, "packaging", "demucs");
-const flatpakProfile = readProfileArg();
-const profilePythonExtras = flatpakProfile === "full" ? ["advanced-chords", "advanced-beats"] : [];
-const profileUsesLegacyNvidia = flatpakProfile === "full";
-
-function sha256File(filePath) {
-  const hash = createHash("sha256");
-  hash.update(readFileSync(filePath));
-  return hash.digest("hex");
-}
-
-function readProfileArg() {
-  const profileFlagIndex = process.argv.indexOf("--profile");
-  const profile =
-    profileFlagIndex === -1
-      ? process.env.FLATPAK_PROFILE ?? "standard"
-      : process.argv[profileFlagIndex + 1];
-  if (!["standard", "full"].includes(profile)) {
-    throw new Error(`Unsupported Flatpak profile: ${profile}`);
-  }
-  return profile;
-}
+const packageOptions = parsePackageOptions(process.argv.slice(2), { platform: "linux" });
+const selectedPythonExtras = [
+  ...(packageOptions.crema ? ["advanced-chords"] : []),
+  ...(packageOptions.beatThis ? ["advanced-beats"] : []),
+];
 
 function readRequiredFile(filePath) {
   return readFileSync(filePath, "utf8");
@@ -612,8 +595,8 @@ function mergeLegacyTorchPackages(packages) {
 }
 
 function generatePythonSources() {
-  let packages = resolvePythonRuntimePackages(parseUvLock(readRequiredFile(uvLockPath)), { extras: profilePythonExtras });
-  if (profileUsesLegacyNvidia) {
+  let packages = resolvePythonRuntimePackages(parseUvLock(readRequiredFile(uvLockPath)), { extras: selectedPythonExtras });
+  if (packageOptions.legacyNvidia) {
     packages = mergeLegacyTorchPackages(packages);
   }
   const sourceByUrl = new Map();
@@ -653,63 +636,29 @@ function generatePythonSources() {
   return packages.length;
 }
 
-function generateDemucsModelSources() {
-  const manifest = readDemucsModelManifest();
-  const modelMode = (modelId) => {
-    if (modelId === "htdemucs_6s") {
-      return "six_stems";
-    }
-    if (modelId === "htdemucs_ft") {
-      return "two_stems";
-    }
-    throw new Error(`Unsupported Demucs model id: ${modelId}`);
-  };
-  const sources = manifest.models.flatMap((model) =>
-    model.files.map((file) => ({
-      type: "file",
-      url: `${manifest.rootUrl}${file.fileName}`,
-      sha256: file.sha256,
-      dest: "demucs-models",
-      "dest-filename": file.fileName,
-    })),
-  );
-  const runtimeManifest = {
-    models: Object.fromEntries(
-      manifest.models.map((model) => [
-        model.id,
-        {
-          mode: modelMode(model.id),
-          yaml: model.yaml,
-          files: [
-            {
-              name: model.yaml,
-              size_bytes: statSync(path.join(demucsModelRoot, model.yaml)).size,
-              sha256: sha256File(path.join(demucsModelRoot, model.yaml)),
-            },
-            ...model.files.map((file) => ({
-              name: file.fileName,
-              size_bytes: file.size,
-              sha256: file.sha256,
-            })),
-          ],
-        },
-      ]),
-    ),
-  };
-
-  writeGeneratedJson("demucs-model-sources.json", sources);
-  writeGeneratedJson("demucs-model-manifest.json", runtimeManifest);
-  return sources.length;
+function generateModelBundleSources() {
+  if (!packageOptions.modelBundle) {
+    return 0;
+  }
+  const plan = buildModelBundlePlan({
+    includeBeatThis: packageOptions.beatThis,
+  });
+  writeGeneratedJson("model-bundle-sources.json", plan.sources);
+  writeGeneratedJson("model-bundle-manifest.json", {
+    ...plan.manifest,
+    prepared_at: new Date().toISOString(),
+  });
+  return plan.sources.length;
 }
 
 function main() {
   const cargoCount = generateCargoSources();
   const nodeCount = generateNodeSources();
   const pythonCount = generatePythonSources();
-  const demucsModelCount = generateDemucsModelSources();
+  const modelBundleCount = generateModelBundleSources();
 
   process.stdout.write(
-    `Generated ${flatpakProfile} Flatpak sources: ${cargoCount} Cargo crates, ${nodeCount} pnpm tarballs, ${pythonCount} Python packages, ${demucsModelCount} Demucs model files.\n`,
+    `Generated Flatpak sources: ${cargoCount} Cargo crates, ${nodeCount} pnpm tarballs, ${pythonCount} Python packages, ${modelBundleCount} model bundle files.\n`,
   );
 }
 

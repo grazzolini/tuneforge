@@ -109,8 +109,8 @@ TuneForge should keep lyrics local and project-owned.
 
 This evaluation checked whether TuneForge should integrate a local ML beat/downbeat/meter model for source-track timing
 analysis. The current direction is to keep the built-in heuristic as the source-track baseline, and use CPJKU Beat This
-`small0` as the optional full-profile Advanced Beat Analysis model after local-track bake-off evidence and explicit
-model-weight redistribution confirmation.
+`small0` as the optional Advanced Beat Analysis model after local-track bake-off evidence and explicit model-weight
+redistribution confirmation.
 
 Local-track baseline evidence from a read-only sample of 8 converted source WAVs in local app data: 8/8 completed,
 8/8 produced timing grids, median heuristic runtime was 12.686 seconds, median runtime ratio was 0.0531x track length,

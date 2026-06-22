@@ -65,18 +65,26 @@ pnpm setup:dev
 ```
 
 That command installs workspace dependencies, checks Tauri build prerequisites, syncs the backend
-Python environment, regenerates shared API contracts, and prepares the pinned local Demucs model repo.
-The first setup is heavy because it installs Demucs/Torch and downloads stem weights into
-`packaging/demucs/cache/`. Later backend launches use the prepared repo automatically, so stem
-generation does not download weights at runtime.
+Python environment, regenerates shared API contracts, and verifies/preloads the default local model
+caches. The first setup is heavy because it installs Demucs/Torch and downloads Demucs stem weights
+into the shared Torch checkpoint cache plus the default Whisper lyrics model into the TuneForge
+lyrics cache. Later worktrees verify file size and SHA-256 first, then skip model loaders/downloads
+when the cache is already valid.
 
-Skip model preparation when you only need non-stem development:
+Skip all model prewarm work when you only need non-ML development:
+
+```sh
+pnpm setup:dev -- --skip-model-prewarm
+```
+
+Skip only Demucs model prewarm when you only need non-stem development:
 
 ```sh
 pnpm setup:dev -- --skip-demucs-models
 ```
 
-Prepare models manually with `pnpm models:demucs:prepare`. Add `-- --cache-only` or set
+Prepare an explicit Demucs model repo for `TUNEFORGE_DEMUCS_MODEL_REPO` with
+`pnpm models:demucs:prepare`. Add `-- --cache-only` or set
 `TUNEFORGE_DEMUCS_CACHE_ONLY=1` to require already cached weights.
 
 To install the optional experimental crema/TensorFlow Advanced Chords backend for local desktop development:
@@ -86,6 +94,15 @@ pnpm setup:dev -- --advanced-chords
 ```
 
 `--crema` is accepted as an alias. Advanced Chords remains optional; default setup and mobile paths do not install crema or TensorFlow.
+
+To install the optional experimental beat-this Advanced Beat Analysis backend for local desktop development:
+
+```sh
+pnpm setup:dev -- --advanced-beats
+```
+
+That flag installs beat-this and verifies/preloads its `small0` checkpoint in the shared Torch
+checkpoint cache. Plain setup does not install beat-this.
 
 ### Linux legacy NVIDIA profile
 
@@ -151,8 +168,10 @@ Backend behavior is environment-driven. Full table is in [apps/backend/README.md
 | `TUNEFORGE_STEM_MODEL` | `htdemucs_6s` | Default Demucs stem model. |
 | `TUNEFORGE_STEM_DEVICE` | `auto` | `auto` / `cpu` / `mps` / `cuda`. |
 | `TUNEFORGE_DEMUCS_MODEL_REPO` | unset | Local Demucs model repo containing bundled weights/YAML. See `docs/STEM_SEPARATION.md`. |
+| `TUNEFORGE_MODEL_BUNDLE_DIR` | unset | Optional packaged model bundle used to seed normal model caches on startup. |
 | `TUNEFORGE_LYRICS_MODEL` | `turbo` | Whisper model for lyrics transcription. |
 | `TUNEFORGE_LYRICS_DEVICE` | `auto` | `auto` / `cpu` / `mps` / `cuda`. |
+| `TUNEFORGE_LYRICS_CACHE_DIR` | upstream Whisper cache | Override where Whisper model weights are cached. |
 
 Default data directory:
 
@@ -184,20 +203,25 @@ pnpm package:mac
 pnpm package:linux:flatpak
 ```
 
-For Linux local/dev packaging with Advanced Chords, Advanced Beat Analysis, legacy NVIDIA Torch, and shared host XDG data, use the full Flatpak profile:
+Pass independent package flags for optional backends, legacy NVIDIA Torch, or explicit model bundling:
 
 ```sh
-pnpm package:linux:flatpak:full
+pnpm package:mac -- --crema --beat-this --model-bundle
+pnpm package:linux -- --crema --beat-this --legacy-nvidia --model-bundle
 ```
+
+Linux Flatpak packages use host XDG data and model cache directories by default, so
+packaged runs share `~/.local/share/tuneforge`, `~/.cache/torch`, and `~/.cache/whisper`
+with development runs. Pass `--sandbox-data` to keep Flatpak app data private under
+`/var/data/tuneforge`.
 
 For faster Flatpak testing, skip the single-file bundle step:
 
 ```sh
 pnpm package:linux:flatpak -- --no-bundle
-pnpm package:linux:flatpak:full -- --no-bundle
 ```
 
-Packaged builds require host `ffmpeg` / `ffprobe`; Tuneforge does not bundle FFmpeg. See [Packaging](./docs/PACKAGING.md) for output paths, Flatpak profiles, local repo install commands, data-directory behavior, and size expectations.
+Packaged builds require host `ffmpeg` / `ffprobe`; Tuneforge does not bundle FFmpeg. See [Packaging](./docs/PACKAGING.md) for output paths, package flags, local repo install commands, data-directory behavior, and size expectations.
 
 ## CI
 

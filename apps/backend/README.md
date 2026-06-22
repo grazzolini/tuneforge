@@ -59,7 +59,7 @@ Advanced Beat Analysis is an experimental opt-in path backed by [`beat-this`](ht
 pnpm setup:dev -- --advanced-beats
 ```
 
-The backend loads `beat-this` lazily and uses its `small0` checkpoint on CPU. `pnpm setup:dev -- --advanced-beats` preloads the checkpoint; if it is not preloaded, the first Advanced Beat Analysis run may download it through `beat-this`. If the dependency is unavailable, the advanced settings option is disabled and Built-in Beat Analysis keeps working.
+The backend loads `beat-this` lazily and uses its `small0` checkpoint on CPU. `pnpm setup:dev -- --advanced-beats` verifies the checkpoint with size and SHA-256 before importing beat-this; if it is missing or invalid, setup preloads it. If the dependency is unavailable, the advanced settings option is disabled and Built-in Beat Analysis keeps working.
 
 `pnpm setup:dev -- --advanced-beats` may download the checkpoint into the local PyTorch cache during setup. To preload manually:
 
@@ -68,7 +68,7 @@ uv sync --python 3.11 --all-groups --extra advanced-beats
 uv run --python 3.11 python -c "from beat_this.inference import File2Beats; File2Beats(checkpoint_path='small0', device='cpu', dbn=False)"
 ```
 
-The preload is stored at `$TORCH_HOME/hub/checkpoints/beat_this-small0.ckpt` when `TORCH_HOME` is set, `$XDG_CACHE_HOME/torch/hub/checkpoints/beat_this-small0.ckpt` when `XDG_CACHE_HOME` is set, or `~/.cache/torch/hub/checkpoints/beat_this-small0.ckpt` by default.
+The preload is stored at `$TORCH_HOME/hub/checkpoints/beat_this-small0.ckpt` when `TORCH_HOME` is set, `$XDG_CACHE_HOME/torch/hub/checkpoints/beat_this-small0.ckpt` when `XDG_CACHE_HOME` is set, or `~/.cache/torch/hub/checkpoints/beat_this-small0.ckpt` by default. Warm setup skips beat-this import/download when that file already matches the expected size and SHA-256.
 
 ### Linux legacy NVIDIA profile
 
@@ -141,10 +141,11 @@ All configuration is environment-driven (see [`app/config.py`](./app/config.py))
 | `TUNEFORGE_FFPROBE_PATH` | `ffprobe` | Override the `ffprobe` binary location. |
 | `TUNEFORGE_STEM_MODEL` | `htdemucs_6s` | Default Demucs model used for stem separation. |
 | `TUNEFORGE_STEM_DEVICE` | `auto` | One of `auto`, `cpu`, `mps`, `cuda`. `auto` prefers compatible CUDA, then MPS, then CPU. |
-| `TUNEFORGE_DEMUCS_MODEL_REPO` | unset | Optional local Demucs model repo containing packaged `.yaml` and `.th` files. When unset, Demucs uses the Torch checkpoint cache. Packaged desktop builds set this to the bundled repo so stem weights are never downloaded at runtime. |
+| `TUNEFORGE_DEMUCS_MODEL_REPO` | unset | Optional local Demucs model repo containing packaged `.yaml` and `.th` files. When unset, Demucs uses the Torch checkpoint cache. |
+| `TUNEFORGE_MODEL_BUNDLE_DIR` | unset | Optional packaged model bundle directory. When set, backend startup seeds normal model caches from this directory before model loaders run. |
 | `TUNEFORGE_LYRICS_MODEL` | `turbo` | Whisper model used for lyrics generation. |
 | `TUNEFORGE_LYRICS_DEVICE` | `auto` | One of `auto`, `cpu`, `mps`, `cuda`. `auto` prefers compatible CUDA, then MPS, then CPU. |
-| `TUNEFORGE_LYRICS_CACHE_DIR` | `<data>/cache/lyrics` | Override where Whisper model weights are cached. |
+| `TUNEFORGE_LYRICS_CACHE_DIR` | upstream Whisper cache | Override where Whisper model weights are cached. By default this is `$XDG_CACHE_HOME/whisper` or `~/.cache/whisper`. |
 | `TUNEFORGE_DEFAULT_CHORD_BACKEND` | `tuneforge-fast` | Default chord backend for `backend: "default"`. Use `crema-advanced` only in desktop environments with optional dependencies installed. |
 | `TUNEFORGE_RUNTIME_PLATFORM` | `desktop` | Runtime platform marker. `android`, `ios`, or `mobile` disables the advanced chord backend. |
 
@@ -153,7 +154,7 @@ Default data directory:
 - macOS: `~/Library/Application Support/Tuneforge`
 - Linux: `~/.local/share/tuneforge`
 
-Lyrics models are downloaded on demand into the lyrics cache directory, then reused offline on later runs. In development, `pnpm setup:dev` preloads Demucs weights into the Torch checkpoint cache; if they are not preloaded, the first stem generation may download them through Demucs. The Torch cache path is `$TORCH_HOME/hub/checkpoints` when `TORCH_HOME` is set, `$XDG_CACHE_HOME/torch/hub/checkpoints` when `XDG_CACHE_HOME` is set, or `~/.cache/torch/hub/checkpoints` by default. Packaged desktop builds and explicit `TUNEFORGE_DEMUCS_MODEL_REPO` configurations use a local verified repo instead.
+Lyrics models are downloaded on demand into the lyrics cache directory, then reused offline on later runs. In development, `pnpm setup:dev` preloads Demucs and Whisper weights into their default caches; if they are not preloaded, first use may download them through the model loaders. The Torch cache path is `$TORCH_HOME/hub/checkpoints` when `TORCH_HOME` is set, `$XDG_CACHE_HOME/torch/hub/checkpoints` when `XDG_CACHE_HOME` is set, or `~/.cache/torch/hub/checkpoints` by default. Packaged desktop builds use these same caches by default. Packages built with `--model-bundle` seed those caches from package resources on startup.
 
 ## Chord backends
 

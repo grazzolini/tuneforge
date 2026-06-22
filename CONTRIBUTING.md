@@ -29,7 +29,8 @@ pnpm setup:dev
 ```
 
 This installs workspace dependencies, checks Tauri build prerequisites, syncs the backend Python
-environment, and regenerates shared API contracts.
+environment, regenerates shared API contracts, and verifies/preloads the default Demucs and Whisper
+model caches.
 
 To install the optional experimental crema/TensorFlow Advanced Chords backend for local desktop development:
 

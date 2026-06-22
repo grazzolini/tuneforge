@@ -10,7 +10,7 @@ Runs the standard developer setup:
   pnpm --filter @tuneforge/desktop exec playwright install chromium
   uv sync --python 3.11 --all-groups
   pnpm contracts:generate
-  preload Demucs model weights into the Torch cache
+  verify/preload model caches for selected local backends
 
 Options:
   --advanced-chords, --crema  Install the optional crema/TensorFlow chord backend.
@@ -18,6 +18,7 @@ Options:
                               Install the optional beat-this backend and preload small0.
   --legacy-nvidia             Use the Linux x86_64 legacy NVIDIA Torch profile.
   --skip-demucs-models        Skip preloading Demucs weights into the Torch cache.
+  --skip-model-prewarm        Skip all model cache verification/prewarm work.
   --skip-playwright-browsers  Skip installing Playwright's Chromium browser.
   --skip-pnpm-install         Skip workspace dependency installation.
   --skip-contracts            Skip OpenAPI contract generation.
@@ -29,6 +30,7 @@ advanced_chords=0
 advanced_beats=0
 legacy_nvidia=0
 skip_demucs_models=0
+skip_model_prewarm=0
 skip_playwright_browsers=0
 skip_pnpm_install=0
 skip_contracts=0
@@ -46,6 +48,9 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-demucs-models)
       skip_demucs_models=1
+      ;;
+    --skip-model-prewarm)
+      skip_model_prewarm=1
       ;;
     --skip-playwright-browsers)
       skip_playwright_browsers=1
@@ -152,34 +157,26 @@ else
   rm -f "${marker_file}"
 fi
 
-if [[ "${advanced_beats}" -eq 1 ]]; then
-  echo "Preloading beat-this small0 checkpoint..."
-  .venv/bin/python - <<'PY'
-from beat_this.inference import File2Beats
-
-File2Beats(checkpoint_path="small0", device="cpu", dbn=False)
-print("Preloaded beat-this small0 checkpoint.")
-PY
-fi
-
 if [[ "${skip_contracts}" -eq 0 ]]; then
   cd "${repo_root}"
   echo "Generating shared API contracts..."
   pnpm contracts:generate
 fi
 
-if [[ "${skip_demucs_models}" -eq 0 ]]; then
+if [[ "${skip_model_prewarm}" -eq 0 ]]; then
   cd "${backend_dir}"
-  echo "Preloading Demucs model weights into the Torch cache..."
-  .venv/bin/python - <<'PY'
-from app.engines.demucs_cache import preload_demucs_torch_cache
-
-for result in preload_demucs_torch_cache():
-    if result.cache_hit:
-        print(f"Demucs {result.model_id} checkpoint cache hit.")
-    else:
-        print(f"Preloaded Demucs {result.model_id} checkpoint(s).")
-PY
+  prewarm_args=()
+  if [[ "${skip_demucs_models}" -eq 1 ]]; then
+    prewarm_args+=(--skip-demucs)
+  fi
+  if [[ "${advanced_chords}" -eq 1 ]]; then
+    prewarm_args+=(--include-crema)
+  fi
+  if [[ "${advanced_beats}" -eq 1 ]]; then
+    prewarm_args+=(--include-beat-this)
+  fi
+  echo "Verifying and preloading model caches..."
+  .venv/bin/python -m app.cli.prewarm_models "${prewarm_args[@]}"
 fi
 
 echo "Setup complete."

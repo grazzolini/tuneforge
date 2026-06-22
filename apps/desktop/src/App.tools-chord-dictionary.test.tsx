@@ -4,7 +4,10 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChordSegmentSchema } from "./lib/api";
 import { renderApp, resetAppTestHarness } from "./test/appTestHarness";
-import { ChordDictionaryPage } from "./features/tools/ChordDictionaryPage";
+import {
+  AccordionCandidateList,
+  ChordDictionaryPage,
+} from "./features/tools/ChordDictionaryPage";
 import { ChordDictionaryFollowArmProvider } from "./features/tools/chordDictionaryFollowArm";
 import {
   buildChordDictionaryFollowProjectContext,
@@ -24,6 +27,128 @@ import {
 
 const DICTIONARY_SHAPE_GROUP_NAME = "Global guitar shape preference choices";
 const LIVE_SHAPE_GROUP_NAME = "Project guitar shape preference choices";
+
+function getDictionaryInstrumentSelector() {
+  const scopedSelector =
+    screen.queryByRole("group", { name: "Instrument status" }) ??
+    screen.queryByRole("group", { name: "Live instrument" });
+  if (scopedSelector) {
+    return scopedSelector as HTMLElement;
+  }
+
+  const instrumentGroups = screen.getAllByRole("group", { name: /instrument/i });
+  const instrumentSelector = instrumentGroups.find(
+    (group) =>
+      within(group).queryByRole("button", { name: "Guitar" }) ||
+      within(group).queryByRole("button", { name: "Accordion" }),
+  );
+
+  if (!instrumentSelector) {
+    throw new Error("Expected a dictionary instrument selector with Guitar and Accordion choices");
+  }
+
+  return instrumentSelector as HTMLElement;
+}
+
+function expectSelectedOrHighlighted(element: HTMLElement) {
+  const className = String(element.className);
+  const isSelected =
+    element.getAttribute("aria-pressed") === "true" ||
+    element.getAttribute("aria-selected") === "true" ||
+    element.getAttribute("aria-current") === "true" ||
+    element.getAttribute("data-selected") === "true" ||
+    element.getAttribute("data-highlighted") === "true" ||
+    className.includes("--active") ||
+    className.includes("--selected") ||
+    className.includes("is-active") ||
+    className.includes("is-selected");
+
+  expect(isSelected).toBe(true);
+}
+
+function getAccordionSurface(selectorRoot: HTMLElement, selectors: string) {
+  const surface = selectorRoot.querySelector(selectors);
+  if (!(surface instanceof HTMLElement)) {
+    throw new Error(`Expected accordion surface matching ${selectors}`);
+  }
+  return surface;
+}
+
+function getSelectedAccordionButton(
+  container: HTMLElement,
+  name: RegExp | string,
+): HTMLElement {
+  const buttons = within(container).getAllByRole("button", { name });
+  const selectedButton = buttons.find((button) => {
+    const className = String(button.className);
+    return (
+      button.getAttribute("aria-pressed") === "true" ||
+      button.getAttribute("aria-selected") === "true" ||
+      button.getAttribute("data-selected") === "true" ||
+      button.getAttribute("data-highlighted") === "true" ||
+      className.includes("--active") ||
+      className.includes("--selected") ||
+      className.includes("is-active") ||
+      className.includes("is-selected")
+    );
+  });
+
+  if (!selectedButton) {
+    throw new Error(`Expected selected accordion button named ${String(name)}`);
+  }
+
+  return selectedButton as HTMLElement;
+}
+
+function readNumericStyleVar(element: HTMLElement, name: string) {
+  const rawValue = element.style.getPropertyValue(name);
+  expect(rawValue).not.toBe("");
+  const value = Number(rawValue);
+  expect(Number.isFinite(value)).toBe(true);
+  return value;
+}
+
+function getAccordionKeyByMidi(keyboard: HTMLElement, midi: number, color: "black" | "white") {
+  const key = keyboard.querySelector(`[data-midi="${midi}"][data-key-color="${color}"]`);
+  if (!(key instanceof HTMLElement)) {
+    throw new Error(`Expected ${color} accordion keyboard key for MIDI ${midi}`);
+  }
+  return key;
+}
+
+async function selectAccordionDictionary() {
+  const user = userEvent.setup();
+  await renderChordDictionary();
+
+  const instrumentSelector = getDictionaryInstrumentSelector();
+  expect(within(instrumentSelector).getByRole("button", { name: "Guitar" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+
+  const accordionButton = within(instrumentSelector).getByRole("button", {
+    name: "Accordion",
+  });
+  await user.click(accordionButton);
+
+  await waitFor(() =>
+    expect(within(getDictionaryInstrumentSelector()).getByRole("button", { name: "Accordion" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    ),
+  );
+  expect(within(getDictionaryInstrumentSelector()).getByRole("button", { name: "Guitar" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  expect(within(getDictionaryInstrumentSelector()).getByRole("button", { name: "Accordion" })).toHaveClass(
+    "chord-instrument-button--active",
+  );
+  expect(within(getDictionaryInstrumentSelector()).getByRole("button", { name: "Guitar" })).not.toHaveClass(
+    "chord-instrument-button--active",
+  );
+  return user;
+}
 
 function renderChordDictionaryView() {
   const view = renderApp(["/tools?tool=chord-dictionary"]);
@@ -97,6 +222,17 @@ const cTimeline: ChordSegmentSchema[] = [
     end_seconds: 16,
     label: "C",
     pitch_class: 0,
+    quality: "major",
+    start_seconds: 0,
+  },
+];
+
+const fSharpTimeline: ChordSegmentSchema[] = [
+  {
+    confidence: 0.86,
+    end_seconds: 16,
+    label: "F#",
+    pitch_class: 6,
     quality: "major",
     start_seconds: 0,
   },
@@ -507,9 +643,14 @@ describe("Desktop app tools chord dictionary", () => {
     await renderChordDictionary();
 
     expect(screen.getByLabelText("Chord search")).toHaveValue("C");
-    const instrumentStatus = screen.getByRole("group", { name: "Instrument status" });
-    expect(within(instrumentStatus).getByText("Guitar")).toBeInTheDocument();
-    expect(within(instrumentStatus).queryByRole("button", { name: "Guitar" })).not.toBeInTheDocument();
+    const instrumentSelector = getDictionaryInstrumentSelector();
+    expect(within(instrumentSelector).getByRole("button", { name: "Guitar" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(
+      within(instrumentSelector).getByRole("button", { name: "Accordion" }),
+    ).toHaveAttribute("aria-pressed", "false");
     expectTextVisible("C E G");
     expect(
       screen.getAllByRole("button", { name: "C3 string 5 fret 3" }).length,
@@ -524,6 +665,277 @@ describe("Desktop app tools chord dictionary", () => {
       /Finger\s*3/,
       /Degree\s*1/,
     ]);
+  });
+
+  it("selects Accordion and renders C across left and right hand surfaces", async () => {
+    await selectAccordionDictionary();
+
+    expect(screen.getByRole("heading", { name: "C accordion positions" })).toBeInTheDocument();
+    expect(screen.getByText("Region C")).toBeInTheDocument();
+
+    const leftHand = screen.getByRole("group", { name: /Left hand/i });
+    const rightHand = screen.getByRole("group", { name: /Right hand/i });
+    expect(
+      Boolean(leftHand.compareDocumentPosition(rightHand) & Node.DOCUMENT_POSITION_FOLLOWING),
+    ).toBe(true);
+
+    const stradellaBoard = getAccordionSurface(
+      leftHand,
+      '[data-surface="stradella"], [data-surface="button-board"], .accordion-stradella, .accordion-button-board, .stradella-board',
+    );
+    const keyboard = getAccordionSurface(
+      rightHand,
+      '[data-surface="keyboard"], .accordion-keyboard, .piano-keyboard',
+    );
+
+    expect(stradellaBoard).toBeInTheDocument();
+    expect(keyboard).toBeInTheDocument();
+    expect(keyboard).toHaveAttribute("data-orientation", "vertical");
+    expect(keyboard).toHaveAttribute("data-black-offset", "true");
+    const whiteKeyCount = Number(keyboard.style.getPropertyValue("--accordion-white-key-count"));
+    expect(whiteKeyCount).toBeLessThanOrEqual(9);
+    const whiteKeyLayer = getAccordionSurface(keyboard, ".accordion-keyboard__white-keys");
+    const blackKeyLayer = getAccordionSurface(keyboard, ".accordion-keyboard__black-keys");
+    expect(keyboard.children[0]).toBe(whiteKeyLayer);
+    expect(keyboard.children[1]).toBe(blackKeyLayer);
+    expect(whiteKeyLayer.querySelectorAll(".accordion-keyboard__key--white")).toHaveLength(whiteKeyCount);
+    expect(blackKeyLayer.querySelectorAll(".accordion-keyboard__key--black").length).toBeGreaterThan(0);
+
+    const blackKey = keyboard.querySelector(
+      '[data-key-color="black"][data-key-position="black-overlay"]',
+    );
+    expect(blackKey).toBeInTheDocument();
+    expect((blackKey as HTMLElement).style.getPropertyValue("--accordion-white-index")).not.toBe("");
+    const whiteKeys = [...whiteKeyLayer.querySelectorAll<HTMLElement>('[data-key-color="white"]')];
+    const blackKeys = [...blackKeyLayer.querySelectorAll<HTMLElement>('[data-key-color="black"]')];
+    expect(whiteKeys.map((key) => key.dataset.midi)).toEqual([
+      "60",
+      "62",
+      "64",
+      "65",
+      "67",
+      "69",
+      "71",
+      "72",
+    ]);
+    expect(blackKeys.map((key) => key.dataset.midi)).toEqual(["61", "63", "66", "68", "70"]);
+    const cKey = getAccordionKeyByMidi(keyboard, 60, "white");
+    const cSharpKey = getAccordionKeyByMidi(keyboard, 61, "black");
+    const dKey = getAccordionKeyByMidi(keyboard, 62, "white");
+    const dSharpKey = getAccordionKeyByMidi(keyboard, 63, "black");
+    const eKey = getAccordionKeyByMidi(keyboard, 64, "white");
+    const fKey = getAccordionKeyByMidi(keyboard, 65, "white");
+    const fSharpKey = getAccordionKeyByMidi(keyboard, 66, "black");
+    const gKey = getAccordionKeyByMidi(keyboard, 67, "white");
+    const gSharpKey = getAccordionKeyByMidi(keyboard, 68, "black");
+    const aKey = getAccordionKeyByMidi(keyboard, 69, "white");
+    const aSharpKey = getAccordionKeyByMidi(keyboard, 70, "black");
+    const bKey = getAccordionKeyByMidi(keyboard, 71, "white");
+    const highCKey = getAccordionKeyByMidi(keyboard, 72, "white");
+    expect(whiteKeyLayer).toContainElement(cKey);
+    expect(whiteKeyLayer).toContainElement(dKey);
+    expect(blackKeyLayer).toContainElement(cSharpKey);
+    expect(cKey).toHaveClass("accordion-keyboard__key--white");
+    expect(cSharpKey).toHaveClass("accordion-keyboard__key--black");
+    expect(cKey.parentElement).toBe(whiteKeyLayer);
+    expect(cSharpKey.parentElement).toBe(blackKeyLayer);
+    const cWhiteIndex = readNumericStyleVar(cKey, "--accordion-white-index");
+    const cSharpBoundaryIndex = readNumericStyleVar(cSharpKey, "--accordion-white-index");
+    const dWhiteIndex = readNumericStyleVar(dKey, "--accordion-white-index");
+    const eWhiteIndex = readNumericStyleVar(eKey, "--accordion-white-index");
+    const fWhiteIndex = readNumericStyleVar(fKey, "--accordion-white-index");
+    const gWhiteIndex = readNumericStyleVar(gKey, "--accordion-white-index");
+    const aWhiteIndex = readNumericStyleVar(aKey, "--accordion-white-index");
+    const bWhiteIndex = readNumericStyleVar(bKey, "--accordion-white-index");
+    expect(cSharpBoundaryIndex).toBe(cWhiteIndex);
+    expect(dWhiteIndex).toBe(cWhiteIndex + 1);
+    expect(readNumericStyleVar(dSharpKey, "--accordion-white-index")).toBe(dWhiteIndex);
+    expect(readNumericStyleVar(eKey, "--accordion-white-index")).toBe(dWhiteIndex + 1);
+    expect(readNumericStyleVar(fSharpKey, "--accordion-white-index")).toBe(fWhiteIndex);
+    expect(readNumericStyleVar(gSharpKey, "--accordion-white-index")).toBe(gWhiteIndex);
+    expect(readNumericStyleVar(aSharpKey, "--accordion-white-index")).toBe(aWhiteIndex);
+    expect(readNumericStyleVar(highCKey, "--accordion-white-index")).toBe(bWhiteIndex + 1);
+    const blackBoundaryIndices = blackKeys.map((key) =>
+      readNumericStyleVar(key, "--accordion-white-index"),
+    );
+    expect(blackBoundaryIndices).toEqual([
+      cWhiteIndex,
+      dWhiteIndex,
+      fWhiteIndex,
+      gWhiteIndex,
+      aWhiteIndex,
+    ]);
+    expect(blackBoundaryIndices).not.toContain(eWhiteIndex);
+    expect(blackBoundaryIndices).not.toContain(bWhiteIndex);
+    expect(whiteKeys[cWhiteIndex]).toBe(cKey);
+    expect(whiteKeys[dWhiteIndex]).toBe(dKey);
+    expect(
+      keyboard.querySelector('[data-key-color="white"][data-key-position="white-surface-row"]'),
+    ).toBeInTheDocument();
+
+    expect(within(leftHand).getByText(/^C$/)).toBeInTheDocument();
+    expect(within(leftHand).getByText(/^CM$/)).toBeInTheDocument();
+
+    const selectedBass = getSelectedAccordionButton(
+      leftHand,
+      /(^C$|\bC bass\b|\bbass C\b)/i,
+    );
+    const selectedMajor = getSelectedAccordionButton(
+      leftHand,
+      /(^CM$|\bCM\b.*\bMaj(?:or)?\b|\bC maj(?:or)?\b|\bmaj(?:or)? C\b)/i,
+    );
+    const selectedRightKey = within(rightHand).getByRole("button", {
+      name: /C4 degree 1 accordion keyboard key/i,
+    });
+    const eRightKey = within(rightHand).getByRole("button", {
+      name: /E4 degree 3 accordion keyboard key/i,
+    });
+    const gRightKey = within(rightHand).getByRole("button", {
+      name: /G4 degree 5 accordion keyboard key/i,
+    });
+
+    expectSelectedOrHighlighted(selectedBass);
+    expectSelectedOrHighlighted(selectedMajor);
+    expect(selectedBass).toHaveClass("accordion-stradella__button--bass");
+    expect(selectedMajor).toHaveClass("accordion-stradella__button--major");
+    const bassColumn = readNumericStyleVar(selectedBass, "--accordion-button-column");
+    const bassRow = readNumericStyleVar(selectedBass, "--accordion-button-row");
+    const majorColumn = readNumericStyleVar(selectedMajor, "--accordion-button-column");
+    const majorRow = readNumericStyleVar(selectedMajor, "--accordion-button-row");
+    expect(majorColumn).toBeLessThan(bassColumn);
+    expect(majorRow).toBeGreaterThan(bassRow);
+    expectSelectedOrHighlighted(selectedRightKey);
+    expectSelectedOrHighlighted(eRightKey);
+    expectSelectedOrHighlighted(gRightKey);
+    const activeKeyboardMidi = [...keyboard.querySelectorAll(".accordion-keyboard__key--active-tone")]
+      .map((key) => (key as HTMLElement).dataset.midi)
+      .sort();
+    expect(activeKeyboardMidi).toEqual(["60", "64", "67"]);
+    expect([...blackKeyLayer.querySelectorAll(".accordion-keyboard__key--active-tone")]).toHaveLength(0);
+    expect(selectedRightKey).toHaveTextContent("C4");
+    expect(selectedRightKey).toHaveTextContent("1");
+    expect(eRightKey).toHaveTextContent("E4");
+    expect(eRightKey).toHaveTextContent("3");
+    expect(gRightKey).toHaveTextContent("G4");
+    expect(gRightKey).toHaveTextContent("5");
+  });
+
+  it("renders real accordion diff labels only for approximate candidates", async () => {
+    await selectAccordionDictionary();
+
+    expect(screen.queryByText(/Missing:\s*None/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Added:\s*None/i)).not.toBeInTheDocument();
+
+    changeChordSearch("C7b5");
+
+    await screen.findByRole("heading", { name: "C7b5 accordion positions" });
+    expect(screen.queryByLabelText("Accordion approximation differences")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Accordion left-hand candidates")).toHaveTextContent(
+      /C bass \+ C7[\s\S]*Missing:\s*Gb/i,
+    );
+
+    changeChordSearch("Csus4");
+
+    await screen.findByRole("heading", { name: "Csus4 accordion positions" });
+    const susApproximationDiff = await screen.findByLabelText(
+      "Accordion approximation differences",
+    );
+    expect(susApproximationDiff).not.toHaveTextContent(/Missing:/i);
+    expect(susApproximationDiff).toHaveTextContent(/Added:\s*(?!None\b).+/i);
+    const fMinorSusCandidate = screen
+      .getAllByRole("button", { name: /F bass \+ Cm/i })
+      .find((candidate) => candidate.textContent?.includes("Added: Eb"));
+    expect(fMinorSusCandidate).toBeDefined();
+    expect(fMinorSusCandidate as HTMLElement).not.toHaveTextContent(/Missing:/i);
+    expect(fMinorSusCandidate as HTMLElement).toHaveTextContent(/Added:\s*Eb/i);
+    expect(fMinorSusCandidate as HTMLElement).not.toHaveTextContent(/Added:\s*E(?:,|\b)/i);
+    expect(screen.queryByText(/Missing:\s*None/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Added:\s*None/i)).not.toBeInTheDocument();
+  });
+
+  it("renders accordion candidate added tones verbatim without inferred sus4 thirds", () => {
+    render(
+      <AccordionCandidateList
+        candidates={[
+          {
+            addedTones: ["Eb"],
+            buttons: [],
+            buttonIds: [],
+            detail: "C bass + Cm row",
+            fingering: null,
+            id: "c-sus-minor",
+            isExact: false,
+            label: "C bass + Cm",
+            missingTones: ["F"],
+            rank: 1,
+          },
+        ]}
+        selectedCandidateId="c-sus-minor"
+        onSelectCandidate={vi.fn()}
+      />,
+    );
+
+    const candidate = screen.getByRole("button", { name: /C bass \+ Cm/i });
+    expect(candidate).toHaveTextContent(/Missing:\s*F/i);
+    expect(candidate).toHaveTextContent(/Added:\s*Eb/i);
+    expect(candidate).not.toHaveTextContent(/Added:\s*E(?:,|\b)/i);
+
+    const selectedDiff = screen.getByLabelText("Accordion approximation differences");
+    expect(selectedDiff).toHaveTextContent(/Missing:\s*F/i);
+    expect(selectedDiff).toHaveTextContent(/Added:\s*Eb/i);
+    expect(selectedDiff).not.toHaveTextContent(/Added:\s*E(?:,|\b)/i);
+  });
+
+  it("keeps alternate full-board left-hand candidate buttons visible after selection", async () => {
+    const user = await selectAccordionDictionary();
+    changeChordSearch("C7b5");
+
+    await screen.findByRole("heading", { name: "C7b5 accordion positions" });
+    const candidatePanel = screen.getByLabelText("Accordion left-hand candidates");
+    const cSevenCandidates = within(candidatePanel).getAllByRole("button", {
+      name: /C bass \+ C7/i,
+    });
+    expect(cSevenCandidates.length).toBeGreaterThan(1);
+    await user.click(cSevenCandidates[cSevenCandidates.length - 1] as HTMLElement);
+
+    const leftHand = screen.getByRole("group", { name: /Left hand/i });
+    await waitFor(() => {
+      expectSelectedOrHighlighted(getSelectedAccordionButton(leftHand, /(^C$|\bC bass\b)/i));
+      expectSelectedOrHighlighted(getSelectedAccordionButton(leftHand, /(^C7$|\bC7\b)/i));
+      expectInspectorToShow([/Hand\s*Left|Left hand/i, /Surface\s*Stradella|Stradella/i]);
+    });
+  });
+
+  it("updates the accordion note inspector from left buttons and right keys", async () => {
+    const user = await selectAccordionDictionary();
+
+    const leftHand = screen.getByRole("group", { name: /Left hand/i });
+    const rightHand = screen.getByRole("group", { name: /Right hand/i });
+    const leftCButton = getSelectedAccordionButton(leftHand, /(^C$|\bC bass\b|\bbass C\b)/i);
+
+    await user.click(leftCButton);
+
+    await waitFor(() =>
+      expectInspectorToShow([
+        /C\d|Pitch\s*C/i,
+        /Hand\s*Left|Left hand/i,
+        /Side\s*(Left|Bass)|Bass side|Stradella/i,
+        /Surface\s*(Stradella|Button board|button-board)|Button board|button-board/i,
+        /Degree\s*1/i,
+      ]),
+    );
+
+    const rightCKey = getSelectedAccordionButton(rightHand, /\bC(4|5)?\b/i);
+    await user.click(rightCKey);
+
+    await waitFor(() =>
+      expectInspectorToShow([
+        /C\d|Pitch\s*C/i,
+        /Hand\s*Right|Right hand/i,
+        /Surface\s*Keyboard|Keyboard/i,
+        /Degree\s*1/i,
+      ]),
+    );
   });
 
   it("renders C open with standard vertical-string diagram semantics", async () => {
@@ -869,6 +1281,68 @@ describe("Desktop app tools chord dictionary", () => {
     expect(screen.queryByRole("heading", { name: "C guitar shapes" })).not.toBeInTheDocument();
   });
 
+  it("renders accordion positions from Live Follow project chord context", async () => {
+    const user = userEvent.setup();
+    await renderChordDictionaryWithPlayback({
+      playback: makePlaybackValue({
+        project: makeFollowProject({
+          authoritativeSourceTimeline: cTimeline,
+          displayedKey: { pitchClass: 0, mode: "major" },
+          displayedTimeline: cTimeline,
+          sourceKey: { pitchClass: 0, mode: "major" },
+          totalDisplayTransposeSemitones: 0,
+        }),
+      }),
+    });
+
+    await user.click(within(getDictionaryInstrumentSelector()).getByRole("button", { name: "Accordion" }));
+
+    await waitFor(() =>
+      expect(within(getDictionaryInstrumentSelector()).getByRole("button", { name: "Accordion" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      ),
+    );
+
+    const currentChord = screen.getByLabelText("Current chord");
+    expect(currentChord).toHaveTextContent(/Source chord\s*C/);
+    expect(currentChord).toHaveTextContent(/Display chord\s*C/);
+    expect(screen.getByRole("heading", { name: "C accordion positions" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: /Left hand/i })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: /Right hand/i })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "C guitar shapes" })).not.toBeInTheDocument();
+  });
+
+  it("renders out-of-window accordion roots in Live Follow without moving the key region", async () => {
+    const user = userEvent.setup();
+    await renderChordDictionaryWithPlayback({
+      playback: makePlaybackValue({
+        project: makeFollowProject({
+          authoritativeSourceTimeline: fSharpTimeline,
+          displayedKey: { pitchClass: 0, mode: "major" },
+          displayedTimeline: fSharpTimeline,
+          sourceKey: { pitchClass: 0, mode: "major" },
+          totalDisplayTransposeSemitones: 0,
+        }),
+      }),
+    });
+
+    await user.click(within(getDictionaryInstrumentSelector()).getByRole("button", { name: "Accordion" }));
+
+    await waitFor(() =>
+      expect(within(getDictionaryInstrumentSelector()).getByRole("button", { name: "Accordion" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      ),
+    );
+
+    expect(screen.getByLabelText("Current chord")).toHaveTextContent(/Display chord\s*F#/);
+    expect(screen.getByText("Region C")).toBeInTheDocument();
+    const leftHand = screen.getByRole("group", { name: /Left hand/i });
+    expectSelectedOrHighlighted(getSelectedAccordionButton(leftHand, /(^F#$|\bF# bass\b)/i));
+    expectSelectedOrHighlighted(getSelectedAccordionButton(leftHand, /(^F#M$|\bF#M\b)/i));
+  });
+
   it("uses a Dictionary global C shape preference for Live Follow when the project has no pick", async () => {
     writeGlobalChordDictionaryPreferredShape(
       makeDictionaryShapePreferenceContext({ chordLabel: "C" }),
@@ -1155,29 +1629,28 @@ describe("Desktop app tools chord dictionary", () => {
     expect(toolsScreen.queryByRole("button", { name: "G/D" })).not.toBeInTheDocument();
     expect(toolsScreen.queryByRole("button", { name: "Am/C" })).not.toBeInTheDocument();
     expect(toolsScreen.queryByRole("button", { name: "F/C" })).not.toBeInTheDocument();
-    expect(toolsScreen.queryByRole("button", { name: "Accordion" })).not.toBeInTheDocument();
   });
 
-  it("does not expose fake instrument, library, playback, or settings affordances", async () => {
+  it("exposes only real instrument choices without fake library, playback, or settings affordances", async () => {
     await renderChordDictionary();
 
     const toolsScreen = within(getToolsScreen());
-    const instrumentStatus = toolsScreen.getByRole("group", { name: "Instrument status" });
-    expect(within(instrumentStatus).getByText("Guitar")).toBeInTheDocument();
+    const instrumentSelector = getDictionaryInstrumentSelector();
+    expect(within(instrumentSelector).getByRole("button", { name: "Guitar" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     expect(
-      within(instrumentStatus).queryByRole("button", { name: "Guitar" }),
+      within(instrumentSelector).getByRole("button", { name: "Accordion" }),
+    ).toHaveAttribute("aria-pressed", "false");
+    expect(
+      within(instrumentSelector).queryByRole("button", { name: "Piano" }),
     ).not.toBeInTheDocument();
     expect(
-      within(instrumentStatus).queryByRole("button", { name: "Piano" }),
+      within(instrumentSelector).queryByRole("button", { name: "Organ" }),
     ).not.toBeInTheDocument();
     expect(
-      within(instrumentStatus).queryByRole("button", { name: "Accordion" }),
-    ).not.toBeInTheDocument();
-    expect(
-      within(instrumentStatus).queryByRole("button", { name: "Organ" }),
-    ).not.toBeInTheDocument();
-    expect(
-      within(instrumentStatus).queryByRole("button", { name: /48\s+More/i }),
+      within(instrumentSelector).queryByRole("button", { name: /48\s+More/i }),
     ).not.toBeInTheDocument();
     expect(
       toolsScreen.queryByRole("button", { name: /Toggle project follow/i }),

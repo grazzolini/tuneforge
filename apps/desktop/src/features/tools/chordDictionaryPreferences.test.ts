@@ -18,6 +18,11 @@ import {
 const SHAPE_IDS = ["c-open", "c-g-shape", "c-a-shape"] as const;
 const D_SHAPE_IDS = ["d-open", "d-a-shape-barre"] as const;
 const E_SHAPE_IDS = ["e-open", "e-a-shape-barre", "e-d-shape-barre"] as const;
+const ACCORDION_RIGHT_HAND_SHAPE_IDS = [
+  "accordion-c-right-close",
+  "accordion-c-right-first-inversion",
+  "accordion-c-right-spread",
+] as const;
 
 function makeContext(
   overrides: Partial<ChordDictionaryPreferenceContext> = {},
@@ -109,6 +114,67 @@ describe("chord dictionary preferences", () => {
     writeProjectChordDictionaryPreferredShape(projectContext, "c-a-shape");
 
     expect(resolveChordDictionaryPreferredShapeId(projectContext, SHAPE_IDS)).toBe("c-a-shape");
+  });
+
+  it("scopes accordion right-hand preferences under the accordion instrument", () => {
+    const accordionContext = makeContext({ instrumentId: "accordion" });
+    const accordionProjectContext = makeContext({
+      instrumentId: "accordion",
+      projectId: "project-accordion",
+    });
+    const guitarContext = makeContext();
+
+    writeGlobalChordDictionaryPreferredShape(
+      accordionContext,
+      "accordion-c-right-first-inversion",
+    );
+    writeProjectChordDictionaryPreferredShape(
+      accordionProjectContext,
+      "accordion-c-right-spread",
+    );
+
+    expect(
+      resolveChordDictionaryPreferredShapeId(
+        accordionContext,
+        ACCORDION_RIGHT_HAND_SHAPE_IDS,
+      ),
+    ).toBe("accordion-c-right-first-inversion");
+    expect(
+      resolveChordDictionaryPreferredShapeId(
+        accordionProjectContext,
+        ACCORDION_RIGHT_HAND_SHAPE_IDS,
+      ),
+    ).toBe("accordion-c-right-spread");
+    expect(resolveChordDictionaryPreferredShapeId(guitarContext, SHAPE_IDS)).toBe("c-open");
+
+    writeGlobalChordDictionaryPreferredShape(guitarContext, "c-g-shape");
+
+    expect(resolveChordDictionaryPreferredShapeId(guitarContext, SHAPE_IDS)).toBe("c-g-shape");
+    expect(
+      resolveChordDictionaryPreferredShapeId(
+        accordionContext,
+        ACCORDION_RIGHT_HAND_SHAPE_IDS,
+      ),
+    ).toBe("accordion-c-right-first-inversion");
+
+    const storedPreferences = JSON.parse(
+      window.localStorage.getItem(CHORD_DICTIONARY_PREFERENCES_STORAGE_KEY) ?? "{}",
+    ) as {
+      globalPreferredShapeIds?: Record<string, string>;
+      projectPreferredShapeIds?: Record<string, Record<string, string>>;
+    };
+
+    expect(storedPreferences.globalPreferredShapeIds?.[JSON.stringify(["accordion", "C"])]).toBe(
+      "accordion-c-right-first-inversion",
+    );
+    expect(storedPreferences.globalPreferredShapeIds?.[JSON.stringify(["guitar", "C"])]).toBe(
+      "c-g-shape",
+    );
+    expect(
+      storedPreferences.projectPreferredShapeIds?.["project-accordion"]?.[
+        JSON.stringify(["accordion", "C"])
+      ],
+    ).toBe("accordion-c-right-spread");
   });
 
   it("falls through project, global, and generated defaults for one displayed chord", () => {

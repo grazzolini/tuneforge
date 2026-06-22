@@ -5,7 +5,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from sqlalchemy import select
@@ -248,6 +248,7 @@ def plan_sync_reconciliation(
             ignored_remote_tombstones.append((tombstone, reason))
 
     fresh_remote_tombstones: list[_RemoteTombstone] = []
+    satisfied_tombstone_targets: set[tuple[str, str]] = set()
     remote_project_resurrection_windows = _project_resurrection_windows_for_tombstones(
         valid_remote_tombstones,
         local=local,
@@ -260,6 +261,7 @@ def plan_sync_reconciliation(
             local=local,
             remote=remote,
             include_remote=False,
+            include_remote_project_creation=True,
             project_resurrection_window=remote_project_resurrection_windows.get(tombstone.project_id),
         ):
             reason = (
@@ -270,6 +272,13 @@ def plan_sync_reconciliation(
             ignored_remote_tombstones.append(
                 (tombstone, reason)
             )
+        elif _remote_tombstone_already_satisfied(tombstone, local):
+            ignored_remote_tombstones.append(
+                (tombstone, "Delete tombstone is already applied locally.")
+            )
+            satisfied_tombstone_targets.add((tombstone.target_type, tombstone.target_id))
+            if tombstone.target_type == ITEM_PROJECT:
+                satisfied_tombstone_targets.add((ITEM_PROJECT, tombstone.project_id))
         else:
             fresh_remote_tombstones.append(tombstone)
     valid_remote_tombstones = fresh_remote_tombstones
@@ -325,6 +334,7 @@ def plan_sync_reconciliation(
             remote=remote,
             local=local,
             effective_tombstones=effective_tombstones,
+            satisfied_tombstone_targets=frozenset(satisfied_tombstone_targets),
             items_by_key=items_by_key,
             actions=actions,
         )
@@ -347,6 +357,7 @@ def plan_sync_reconciliation(
             local=local,
             effective_tombstones=effective_tombstones,
             planned_project_ids=planned_project_ids,
+            satisfied_tombstone_targets=frozenset(satisfied_tombstone_targets),
             items_by_key=items_by_key,
             actions=actions,
         )
@@ -409,6 +420,7 @@ def plan_sync_reconciliation(
             planned_revision_ids=frozenset(planned_revision_ids),
             planned_remote_revisions_by_id=planned_remote_revisions_by_id,
             planned_artifact_project_ids=planned_artifact_project_ids,
+            satisfied_tombstone_targets=frozenset(satisfied_tombstone_targets),
             items_by_key=items_by_key,
             actions=actions,
         ):
@@ -535,6 +547,24 @@ def _embedded_current_revision_missing_locally(
     return True
 
 
+def _embedded_current_revision_replaces_local(
+    revision: _RemoteEntityRevision,
+    local: _LocalState,
+) -> bool:
+    if revision.entity_type not in {"chords", "lyrics"}:
+        return False
+    if not _remote_revision_is_current(revision):
+        return False
+    local_revision = _local_current_revision_for_remote_entity(revision, local)
+    if local_revision is None:
+        return False
+    if local_revision.id == revision.revision_id:
+        return False
+    if _local_revision_content_sha256(local_revision) == revision.content_sha256:
+        return False
+    return _remote_revision_wins_lww(revision, local_revision)
+
+
 def _remote_lyrics_revision_has_segments(revision: _RemoteEntityRevision) -> bool:
     payload = _first_field(revision.raw, "payload", default={})
     return isinstance(payload, Mapping) and _lyrics_payload_has_segments(payload)
@@ -624,7 +654,10 @@ def _embedded_missing_current_revision_chain_ids(
             if revision.entity_type in {"chords", "lyrics"} and _remote_revision_is_current(revision)
         )
         for revision in _sorted_remote_entity_revisions(manifest_revisions_by_id.values()):
-            if not _embedded_current_revision_missing_locally(revision, local):
+            if not (
+                _embedded_current_revision_missing_locally(revision, local)
+                or _embedded_current_revision_replaces_local(revision, local)
+            ):
                 continue
             entity_key = (revision.project_id, revision.entity_type)
             if current_counts[entity_key] != 1:
@@ -1010,10 +1043,25 @@ def _plan_project(
     remote: _RemoteRequest,
     local: _LocalState,
     effective_tombstones: frozenset[tuple[str, str]],
+    satisfied_tombstone_targets: frozenset[tuple[str, str]],
     items_by_key: dict[tuple[str, str], SyncReconciliationItem],
     actions: list[SyncReconciliationAction],
 ) -> None:
     if _is_deleted(ITEM_PROJECT, project.project_id, project.project_id, effective_tombstones):
+        if (ITEM_PROJECT, project.project_id) in satisfied_tombstone_targets:
+            _upsert_item(
+                items_by_key,
+                SyncReconciliationItem(
+                    item_type=ITEM_PROJECT,
+                    item_id=project.project_id,
+                    project_id=project.project_id,
+                    status="noop",
+                    action_type=ACTION_NOOP,
+                    content_sha256=project.source_sha256,
+                    reason="Project delete tombstone is already applied locally.",
+                ),
+            )
+            return
         reason = "Project is covered by a sync delete tombstone."
         _upsert_item(
             items_by_key,
@@ -1411,10 +1459,25 @@ def _plan_artifact(
     local: _LocalState,
     effective_tombstones: frozenset[tuple[str, str]],
     planned_project_ids: frozenset[str],
+    satisfied_tombstone_targets: frozenset[tuple[str, str]],
     items_by_key: dict[tuple[str, str], SyncReconciliationItem],
     actions: list[SyncReconciliationAction],
 ) -> None:
     if _is_deleted(ITEM_ARTIFACT, artifact.artifact_id, artifact.project_id, effective_tombstones):
+        if (ITEM_ARTIFACT, artifact.artifact_id) in satisfied_tombstone_targets:
+            _upsert_item(
+                items_by_key,
+                SyncReconciliationItem(
+                    item_type=ITEM_ARTIFACT,
+                    item_id=artifact.artifact_id,
+                    project_id=artifact.project_id,
+                    status="noop",
+                    action_type=ACTION_NOOP,
+                    content_sha256=artifact.content_sha256,
+                    reason="Artifact delete tombstone is already applied locally.",
+                ),
+            )
+            return
         _upsert_item(
             items_by_key,
             SyncReconciliationItem(
@@ -1466,7 +1529,7 @@ def _plan_artifact(
     if local_artifact is not None:
         local_hash = _normalize_sha256(local_artifact.content_sha256)
         if local_hash != artifact.content_sha256:
-            generated_divergence = _generated_analysis_divergence(
+            generated_divergence = _generated_artifact_divergence(
                 local_artifact,
                 artifact,
                 local_hash=local_hash,
@@ -1502,7 +1565,7 @@ def _plan_artifact(
                                 status="missing_provider",
                                 content_sha256=artifact.content_sha256,
                                 reason=(
-                                    "Remote regenerable analysis_json is newer, but no trusted provider "
+                                    "Remote regenerable artifact is newer, but no trusted provider "
                                     "advertises its content."
                                 ),
                                 details={
@@ -1539,7 +1602,7 @@ def _plan_artifact(
                             project_id=artifact.project_id,
                             content_sha256=artifact.content_sha256,
                             provider_device_id=provider_device_id,
-                            reason="Fetch newer remote regenerable analysis_json artifact bytes.",
+                            reason="Fetch newer remote regenerable artifact bytes.",
                             details=details,
                         )
                     )
@@ -1551,7 +1614,7 @@ def _plan_artifact(
                             project_id=artifact.project_id,
                             content_sha256=artifact.content_sha256,
                             provider_device_id=provider_device_id,
-                            reason="Import newer remote regenerable analysis_json artifact manifest.",
+                            reason="Import newer remote regenerable artifact manifest.",
                             details=details,
                         )
                     )
@@ -1581,7 +1644,9 @@ def _plan_artifact(
                     local_artifact,
                     artifact,
                     local_content_sha256=local_hash,
-                    generated_divergence_reason="Artifact is not a regenerable analysis_json divergence candidate.",
+                    generated_divergence_reason=(
+                        "Artifact is not a supported regenerable generated divergence candidate."
+                    ),
                 ),
             )
             return
@@ -1612,7 +1677,7 @@ def _plan_artifact(
                 action_type=ACTION_FETCH_ARTIFACT_CONTENT if provider_device_id is not None else None,
                 content_sha256=artifact.content_sha256,
                 chosen_provider_device_id=provider_device_id,
-                reason="Local artifact metadata exists, but recorded size does not match remote metadata.",
+                reason="Local artifact metadata exists, but local artifact bytes are missing or truncated.",
             ),
         )
         if provider_device_id is not None:
@@ -1625,6 +1690,17 @@ def _plan_artifact(
                     content_sha256=artifact.content_sha256,
                     provider_device_id=provider_device_id,
                     reason="Fetch artifact bytes from the selected trusted provider.",
+                )
+            )
+            actions.append(
+                _action(
+                    ACTION_IMPORT_ARTIFACT_MANIFEST,
+                    item_type=ITEM_ARTIFACT,
+                    item_id=artifact.artifact_id,
+                    project_id=artifact.project_id,
+                    content_sha256=artifact.content_sha256,
+                    provider_device_id=provider_device_id,
+                    reason="Import artifact manifest after missing local bytes are fetched.",
                 )
             )
         return
@@ -1717,10 +1793,25 @@ def _plan_entity_revision(
     planned_revision_ids: frozenset[str],
     planned_remote_revisions_by_id: Mapping[str, _RemoteEntityRevision],
     planned_artifact_project_ids: Mapping[str, str],
+    satisfied_tombstone_targets: frozenset[tuple[str, str]],
     items_by_key: dict[tuple[str, str], SyncReconciliationItem],
     actions: list[SyncReconciliationAction],
 ) -> bool:
     if _is_deleted(ITEM_ENTITY_REVISION, revision.revision_id, revision.project_id, effective_tombstones):
+        if (ITEM_ENTITY_REVISION, revision.revision_id) in satisfied_tombstone_targets:
+            _upsert_item(
+                items_by_key,
+                SyncReconciliationItem(
+                    item_type=ITEM_ENTITY_REVISION,
+                    item_id=revision.revision_id,
+                    project_id=revision.project_id,
+                    status="noop",
+                    action_type=ACTION_NOOP,
+                    content_sha256=revision.content_sha256,
+                    reason="Entity revision delete tombstone is already applied locally.",
+                ),
+            )
+            return False
         _upsert_item(
             items_by_key,
             SyncReconciliationItem(
@@ -1877,23 +1968,47 @@ def _plan_entity_revision(
 
     divergent_revision = _divergent_local_revision(revision, local)
     if divergent_revision is not None:
-        _record_conflict(
+        details = _divergent_revision_lww_details(revision, divergent_revision)
+        if not _remote_revision_wins_lww(revision, divergent_revision):
+            _upsert_item(
+                items_by_key,
+                SyncReconciliationItem(
+                    item_type=ITEM_ENTITY_REVISION,
+                    item_id=revision.revision_id,
+                    project_id=revision.project_id,
+                    status="noop",
+                    action_type=ACTION_NOOP,
+                    content_sha256=revision.content_sha256,
+                    reason="Local entity revision is newer than the divergent remote revision.",
+                    details=details,
+                ),
+            )
+            return False
+        _upsert_item(
             items_by_key,
-            actions,
-            item_type=ITEM_ENTITY_REVISION,
-            item_id=revision.revision_id,
-            project_id=revision.project_id,
-            content_sha256=revision.content_sha256,
-            reason="Remote entity revision diverges from a local revision with the same base.",
-            details={
-                "base_revision_id": revision.base_revision_id,
-                "local_revision_id": divergent_revision.id,
-                "local_content_sha256": _local_revision_content_sha256(divergent_revision),
-                "stored_local_content_sha256": divergent_revision.content_sha256,
-                "remote_content_sha256": revision.content_sha256,
-            },
+            SyncReconciliationItem(
+                item_type=ITEM_ENTITY_REVISION,
+                item_id=revision.revision_id,
+                project_id=revision.project_id,
+                status="remote_available",
+                action_type=ACTION_IMPORT_ENTITY_REVISION,
+                content_sha256=revision.content_sha256,
+                reason="Remote entity revision is newer than the divergent local revision.",
+                details=details,
+            ),
         )
-        return False
+        actions.append(
+            _action(
+                ACTION_IMPORT_ENTITY_REVISION,
+                item_type=ITEM_ENTITY_REVISION,
+                item_id=revision.revision_id,
+                project_id=revision.project_id,
+                content_sha256=revision.content_sha256,
+                reason="Import newer divergent remote entity revision.",
+                details=details,
+            )
+        )
+        return True
 
     _upsert_item(
         items_by_key,
@@ -1932,6 +2047,55 @@ def _validate_remote_tombstone(tombstone: _RemoteTombstone, local: _LocalState) 
     if tombstone.author_device_id in local.trusted_device_ids:
         return True, ""
     return False, "Ignored remote tombstone from an untrusted or revoked author device."
+
+
+def _remote_tombstone_already_satisfied(tombstone: _RemoteTombstone, local: _LocalState) -> bool:
+    local_tombstone = _local_tombstone_for_remote_target(tombstone, local)
+    if local_tombstone is None:
+        return False
+    remote_deleted_at = _coerce_datetime(tombstone.deleted_at)
+    local_deleted_at = _coerce_datetime(local_tombstone.deleted_at)
+    if remote_deleted_at is None or local_deleted_at is None or local_deleted_at < remote_deleted_at:
+        return False
+    return not _local_tombstone_target_exists(
+        local,
+        target_type=tombstone.target_type,
+        target_id=tombstone.target_id,
+        project_id=tombstone.project_id,
+    )
+
+
+def _local_tombstone_for_remote_target(
+    tombstone: _RemoteTombstone,
+    local: _LocalState,
+) -> SyncDeleteTombstone | None:
+    for local_tombstone in local.tombstones:
+        if (
+            local_tombstone.sync_group_id == tombstone.sync_group_id
+            and _normalize_target_type(local_tombstone.target_type) == tombstone.target_type
+            and local_tombstone.target_id == tombstone.target_id
+        ):
+            return local_tombstone
+    return None
+
+
+def _local_tombstone_target_exists(
+    local: _LocalState,
+    *,
+    target_type: str,
+    target_id: str,
+    project_id: str,
+) -> bool:
+    if target_type == ITEM_PROJECT:
+        project = local.projects.get(target_id)
+        return project is not None and project.id == project_id
+    if target_type == ITEM_ARTIFACT:
+        artifact = local.artifacts.get(target_id)
+        return artifact is not None and artifact.project_id == project_id
+    if target_type == ITEM_ENTITY_REVISION:
+        revision = local.entity_revisions.get(target_id)
+        return revision is not None and revision.project_id == project_id
+    return False
 
 
 def _project_manifest_import_error(
@@ -2344,6 +2508,7 @@ def _effective_tombstone_targets(
             local=local,
             remote=remote,
             include_remote=False,
+            include_remote_project_creation=True,
             project_resurrection_window=remote_project_resurrection_windows.get(remote_tombstone.project_id),
         ):
             continue
@@ -2359,6 +2524,7 @@ def _tombstone_is_older_than_live_target(
     local: _LocalState,
     remote: _RemoteRequest,
     include_remote: bool,
+    include_remote_project_creation: bool = False,
     project_resurrection_window: tuple[datetime, datetime] | None = None,
 ) -> bool:
     target_type = _normalize_target_type(_str_field(tombstone, "target_type", default="") or "")
@@ -2374,6 +2540,7 @@ def _tombstone_is_older_than_live_target(
         local=local,
         remote=remote,
         include_remote=include_remote,
+        include_remote_project_creation=include_remote_project_creation,
         project_resurrection_window=project_resurrection_window,
     )
 
@@ -2387,6 +2554,7 @@ def _tombstone_fields_are_older_than_live_target(
     local: _LocalState,
     remote: _RemoteRequest,
     include_remote: bool,
+    include_remote_project_creation: bool = False,
     project_resurrection_window: tuple[datetime, datetime] | None = None,
 ) -> bool:
     tombstone_deleted_at = _coerce_datetime(deleted_at)
@@ -2406,6 +2574,13 @@ def _tombstone_fields_are_older_than_live_target(
         project_resurrection_window,
     ):
         return True
+    if _local_project_creation_supersedes_tombstone(
+        local,
+        target_type=target_type,
+        project_id=project_id,
+        tombstone_deleted_at=tombstone_deleted_at,
+    ):
+        return True
 
     if include_remote:
         remote_updated_at = _remote_live_target_updated_at(
@@ -2416,9 +2591,17 @@ def _tombstone_fields_are_older_than_live_target(
         )
         if remote_updated_at is not None and remote_updated_at > tombstone_deleted_at:
             return True
-        return remote_updated_at is not None and _tombstone_is_inside_project_resurrection_window(
+        if remote_updated_at is not None and _tombstone_is_inside_project_resurrection_window(
             tombstone_deleted_at,
             project_resurrection_window,
+        ):
+            return True
+    if include_remote or include_remote_project_creation:
+        return _remote_project_creation_supersedes_tombstone(
+            remote,
+            target_type=target_type,
+            project_id=project_id,
+            tombstone_deleted_at=tombstone_deleted_at,
         )
     return False
 
@@ -2538,6 +2721,41 @@ def _live_project_updated_at(
         if remote_updated_at is not None:
             candidates.append(remote_updated_at)
     return max(candidates) if candidates else None
+
+
+def _local_project_creation_supersedes_tombstone(
+    local: _LocalState,
+    *,
+    target_type: str,
+    project_id: str,
+    tombstone_deleted_at: datetime,
+) -> bool:
+    if target_type == ITEM_PROJECT:
+        return False
+    local_project = local.projects.get(project_id)
+    if local_project is None or local_project.sync_status == PROJECT_SYNC_STATUS_DELETED:
+        return False
+    project_created_at = _coerce_datetime(local_project.created_at)
+    return project_created_at is not None and project_created_at > tombstone_deleted_at
+
+
+def _remote_project_creation_supersedes_tombstone(
+    remote: _RemoteRequest,
+    *,
+    target_type: str,
+    project_id: str,
+    tombstone_deleted_at: datetime,
+) -> bool:
+    if target_type == ITEM_PROJECT:
+        return False
+    remote_project = remote.projects.get(project_id)
+    if remote_project is None:
+        return False
+    remote_status = _str_field(remote_project.raw, "sync_status", "sync_state")
+    if remote_status == PROJECT_SYNC_STATUS_DELETED:
+        return False
+    project_created_at = _coerce_datetime(_first_field(remote_project.raw, "created_at", default=None))
+    return project_created_at is not None and project_created_at > tombstone_deleted_at
 
 
 def _tombstone_is_inside_project_resurrection_window(
@@ -2906,7 +3124,81 @@ def _artifact_has_recorded_content(
 ) -> bool:
     if _normalize_sha256(artifact.content_sha256) != content_sha256:
         return False
-    return size_bytes is None or artifact.size_bytes == size_bytes
+    if size_bytes is not None and artifact.size_bytes != size_bytes:
+        return False
+    return _artifact_file_matches_recorded_size(artifact)
+
+
+def _artifact_file_matches_recorded_size(artifact: Artifact) -> bool:
+    try:
+        path = Path(artifact.path)
+        if not path.is_file():
+            return False
+        return artifact.size_bytes is None or path.stat().st_size == artifact.size_bytes
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _generated_artifact_divergence(
+    local_artifact: Artifact,
+    remote_artifact: _RemoteArtifact,
+    *,
+    local_hash: str | None,
+    local: _LocalState,
+    remote: _RemoteRequest,
+) -> _GeneratedAnalysisDivergence | None:
+    analysis_divergence = _generated_analysis_divergence(
+        local_artifact,
+        remote_artifact,
+        local_hash=local_hash,
+        local=local,
+        remote=remote,
+    )
+    if analysis_divergence is not None:
+        return analysis_divergence
+
+    local_type = _normalize_artifact_type(local_artifact.type)
+    remote_type = _normalize_artifact_type(remote_artifact.type)
+
+    if local_type != remote_type:
+        return None
+    if local_artifact.can_regenerate is not True or _remote_artifact_can_regenerate(remote_artifact) is not True:
+        return None
+    if local_artifact.project_id != remote_artifact.project_id:
+        return None
+
+    local_timestamp = _coerce_datetime(local_artifact.created_at)
+    remote_timestamp = _coerce_datetime(_first_field(remote_artifact.raw, "created_at", default=None))
+    if local_timestamp is None or remote_timestamp is None:
+        return None
+
+    keep_local = local_timestamp >= remote_timestamp
+    reason = (
+        "Local regenerable artifact generation timestamp is newer."
+        if keep_local
+        else "Remote regenerable artifact generation timestamp is newer."
+    )
+    details = _artifact_conflict_details(
+        local_artifact,
+        remote_artifact,
+        local_content_sha256=local_hash,
+    )
+    details.update(
+        {
+            "generated_divergence_candidate": True,
+            "generated_divergence_resolvable": True,
+            "resolution": "keep_local" if keep_local else "fetch_remote",
+            "resolution_reason": reason,
+            "local_resolution_timestamp": local_timestamp.isoformat(),
+            "remote_resolution_timestamp": remote_timestamp.isoformat(),
+        }
+    )
+    return _GeneratedAnalysisDivergence(
+        resolvable=True,
+        keep_local=keep_local,
+        reason=reason,
+        details=details,
+    )
 
 
 def _generated_analysis_divergence(
@@ -3418,6 +3710,76 @@ def _divergent_local_revision(
             continue
         return local_revision
     return None
+
+
+def _local_current_revision_for_remote_entity(
+    remote_revision: _RemoteEntityRevision,
+    local: _LocalState,
+) -> SyncEntityRevision | None:
+    key = (
+        remote_revision.project_id,
+        remote_revision.entity_type,
+        remote_revision.entity_id,
+    )
+    current_revision: SyncEntityRevision | None = None
+    for local_revision in local.entity_revisions_by_entity.get(key, ()):
+        if _normalize_revision_state(local_revision.state) != "active":
+            continue
+        if current_revision is None or _local_revision_lww_key(local_revision) > _local_revision_lww_key(
+            current_revision
+        ):
+            current_revision = local_revision
+    return current_revision
+
+
+def _remote_revision_wins_lww(
+    remote_revision: _RemoteEntityRevision,
+    local_revision: SyncEntityRevision,
+) -> bool:
+    return _remote_revision_lww_key(remote_revision) > _local_revision_lww_key(local_revision)
+
+
+def _remote_revision_lww_key(revision: _RemoteEntityRevision) -> tuple[datetime, str, str]:
+    timestamp = _coerce_datetime(_first_field(revision.raw, "updated_at", "created_at", default=None))
+    if timestamp is None:
+        timestamp = datetime.min.replace(tzinfo=UTC)
+    return (
+        timestamp,
+        _str_field(revision.raw, "author_device_id", default="") or "",
+        revision.revision_id,
+    )
+
+
+def _local_revision_lww_key(revision: SyncEntityRevision) -> tuple[datetime, str, str]:
+    return (
+        _coerce_datetime(revision.updated_at) or datetime.min.replace(tzinfo=UTC),
+        revision.author_device_id or "",
+        revision.id,
+    )
+
+
+def _divergent_revision_lww_details(
+    remote_revision: _RemoteEntityRevision,
+    local_revision: SyncEntityRevision,
+) -> dict[str, Any]:
+    local_updated_at, local_author_device_id, local_revision_id = _local_revision_lww_key(local_revision)
+    remote_updated_at, remote_author_device_id, remote_revision_id = _remote_revision_lww_key(remote_revision)
+    remote_wins = _remote_revision_lww_key(remote_revision) > _local_revision_lww_key(local_revision)
+    return {
+        "base_revision_id": remote_revision.base_revision_id,
+        "local_revision_id": local_revision.id,
+        "remote_revision_id": remote_revision.revision_id,
+        "local_content_sha256": _local_revision_content_sha256(local_revision),
+        "stored_local_content_sha256": local_revision.content_sha256,
+        "remote_content_sha256": remote_revision.content_sha256,
+        "local_updated_at": _datetime_detail(local_updated_at),
+        "remote_updated_at": _datetime_detail(remote_updated_at),
+        "local_author_device_id": local_author_device_id,
+        "remote_author_device_id": remote_author_device_id,
+        "local_lww_revision_id": local_revision_id,
+        "remote_lww_revision_id": remote_revision_id,
+        "resolution": "fetch_remote" if remote_wins else "keep_local",
+    }
 
 
 def _local_revision_content_sha256(revision: SyncEntityRevision) -> str | None:

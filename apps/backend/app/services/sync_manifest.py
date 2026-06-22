@@ -252,6 +252,7 @@ def export_project_manifest(session: Session, project_id: str) -> SyncProjectMan
             if not _live_target_supersedes_tombstone(
                 tombstone,
                 live_targets,
+                project_created_at=project.created_at,
                 project_resurrection_window=project_resurrection_window,
             )
         ],
@@ -785,12 +786,19 @@ def _live_target_supersedes_tombstone(
     tombstone: SyncDeleteTombstoneManifest,
     live_targets: dict[tuple[str, str], datetime],
     *,
+    project_created_at: datetime | None = None,
     project_resurrection_window: tuple[datetime, datetime] | None = None,
 ) -> bool:
+    tombstone_deleted_at = _as_utc(tombstone.deleted_at)
+    if (
+        tombstone.target_type != "project"
+        and project_created_at is not None
+        and _as_utc(project_created_at) > tombstone_deleted_at
+    ):
+        return True
     target_updated_at = live_targets.get((tombstone.target_type, tombstone.target_id))
     if target_updated_at is None:
         return False
-    tombstone_deleted_at = _as_utc(tombstone.deleted_at)
     if _as_utc(target_updated_at) > tombstone_deleted_at:
         return True
     return _tombstone_is_inside_project_resurrection_window(
@@ -973,6 +981,7 @@ def _import_delete_tombstones(
             )
         )
         if existing is not None:
+            _merge_newer_delete_tombstone(existing, tombstone)
             imported.append(existing)
             continue
         if session.get(SyncDeleteTombstone, tombstone.tombstone_id) is not None:
@@ -999,6 +1008,20 @@ def _import_delete_tombstones(
 
     session.flush()
     return imported
+
+
+def _merge_newer_delete_tombstone(
+    existing: SyncDeleteTombstone,
+    tombstone: SyncDeleteTombstoneManifest,
+) -> None:
+    if _as_utc(existing.deleted_at) >= _as_utc(tombstone.deleted_at):
+        return
+    existing.project_id = tombstone.project_id
+    existing.author_device_id = tombstone.author_device_id
+    existing.deleted_at = tombstone.deleted_at
+    existing.prior_metadata_json = deepcopy(tombstone.prior_metadata)
+    existing.created_at = tombstone.created_at
+    existing.updated_at = tombstone.updated_at
 
 
 def _apply_delete_tombstones(
@@ -1730,6 +1753,9 @@ def _manifest_target_supersedes_tombstone(
     project_resurrection_window: tuple[datetime, datetime] | None = None,
 ) -> bool:
     target_type = _normalize_tombstone_target_type(tombstone.target_type)
+    tombstone_deleted_at = _as_utc(tombstone.deleted_at)
+    if target_type != "project" and _as_utc(manifest.created_at) > tombstone_deleted_at:
+        return True
     target_updated_at = _manifest_target_updated_at(
         manifest,
         target_type=target_type,
@@ -1737,7 +1763,6 @@ def _manifest_target_supersedes_tombstone(
     )
     if target_updated_at is None:
         return False
-    tombstone_deleted_at = _as_utc(tombstone.deleted_at)
     if _as_utc(target_updated_at) > tombstone_deleted_at:
         return True
     return _tombstone_is_inside_project_resurrection_window(

@@ -663,9 +663,7 @@ def test_sync_metadata_omits_tombstones_superseded_by_live_targets(
 
     assert response.status_code == 200
     payload = response.json()
-    assert [tombstone["tombstone_id"] for tombstone in payload["delete_tombstones"]] == [
-        "tomb_deleted_artifact"
-    ]
+    assert payload["delete_tombstones"] == []
 
 
 def test_sync_preflight_does_not_recover_missing_hash_from_source_path(

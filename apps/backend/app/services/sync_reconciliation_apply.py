@@ -43,9 +43,15 @@ from app.services.sync_reconciliation import (
     SyncReconciliationPlan,
     plan_sync_reconciliation,
 )
-from app.services.sync_revisions import revision_payload_sha256, sanitize_revision_payload
+from app.services.sync_revisions import (
+    CURRENT_REVISION_STATE,
+    SUPERSEDED_REVISION_STATE,
+    revision_payload_sha256,
+    sanitize_revision_payload,
+)
 from app.services.sync_staging import cleanup_staged_artifacts, require_staged_artifact
 from app.services.sync_tombstones import apply_delete_tombstone
+from app.services.sync_trust import get_or_create_local_identity
 from app.utils.hashing import file_sha256
 
 APPLY_STATUS_APPLIED = "applied"
@@ -331,12 +337,12 @@ def _import_artifact_manifest(
             or existing_artifact.content_sha256 != artifact_manifest.content_sha256
             or existing_artifact.size_bytes != artifact_manifest.size_bytes
         )
-        overwrite_generated_analysis = _can_overwrite_generated_analysis_artifact(
+        overwrite_generated_artifact = _can_overwrite_generated_artifact(
             action,
             existing_artifact,
             artifact_manifest,
         )
-        if has_manifest_conflict and not overwrite_generated_analysis:
+        if has_manifest_conflict and not overwrite_generated_artifact:
             return _result(action, APPLY_STATUS_FAILED, "Artifact manifest conflicts with a local artifact.")
         existing_path = Path(existing_artifact.path)
         existing_resolved_path = existing_path.resolve(strict=False)
@@ -346,7 +352,7 @@ def _import_artifact_manifest(
             and file_sha256(existing_path) == artifact_manifest.content_sha256
         ):
             return _result(action, APPLY_STATUS_SATISFIED, "Artifact manifest is already imported locally.")
-        if overwrite_generated_analysis:
+        if overwrite_generated_artifact and artifact_manifest.type == "analysis_json":
             destination_path = _generated_analysis_overwrite_destination(project_id, existing_artifact)
             if _destination_conflicts_with_existing_artifact(
                 session,
@@ -359,6 +365,8 @@ def _import_artifact_manifest(
             ):
                 return _result(action, APPLY_STATUS_FAILED, "Artifact destination already exists locally.")
             destination_has_manifest_bytes = _copied_artifact_matches_manifest(destination_path, artifact_manifest)
+        elif overwrite_generated_artifact:
+            destination_path = existing_path
         else:
             destination_path = existing_path
     else:
@@ -424,6 +432,7 @@ def _import_artifact_manifest(
         )
     if artifact_manifest.type == "analysis_json":
         hydrate_project_analysis_result_from_artifact(session, project_id)
+    _retire_superseded_artifact_tombstone(session, artifact_manifest)
     session.flush()
     return _result(
         action,
@@ -433,25 +442,28 @@ def _import_artifact_manifest(
     )
 
 
-def _can_overwrite_generated_analysis_artifact(
+def _can_overwrite_generated_artifact(
     action: SyncReconciliationAction,
     existing_artifact: Artifact,
     artifact_manifest: SyncArtifactManifest,
 ) -> bool:
+    reason = action.details.get("resolution_reason")
+    if reason == "Remote analysis_json generation timestamp is newer.":
+        if action.details.get("artifact_type") != "analysis_json":
+            return False
+    elif reason != "Remote regenerable artifact generation timestamp is newer.":
+        return False
     return (
         action.item_type == ITEM_ARTIFACT
         and action.details.get("generated_divergence_candidate") is True
         and action.details.get("generated_divergence_resolvable") is True
         and action.details.get("resolution") == "fetch_remote"
-        and action.details.get("resolution_reason") == "Remote analysis_json generation timestamp is newer."
-        and action.details.get("artifact_type") == "analysis_json"
         and action.details.get("artifact_id") == artifact_manifest.artifact_id
         and action.details.get("remote_content_sha256") == artifact_manifest.content_sha256
         and action.content_sha256 == artifact_manifest.content_sha256
         and existing_artifact.id == artifact_manifest.artifact_id
         and existing_artifact.project_id == artifact_manifest.project_id
-        and existing_artifact.type == "analysis_json"
-        and artifact_manifest.type == "analysis_json"
+        and existing_artifact.type == artifact_manifest.type
         and existing_artifact.can_regenerate is True
         and artifact_manifest.can_regenerate is True
     )
@@ -582,6 +594,30 @@ def _update_existing_artifact_from_manifest(
     artifact.created_at = artifact_manifest.created_at
 
 
+def _retire_superseded_artifact_tombstone(
+    session: Session,
+    artifact_manifest: SyncArtifactManifest,
+) -> None:
+    sync_group_id = get_or_create_local_identity(session).sync_group_id
+    tombstone = session.scalar(
+        select(SyncDeleteTombstone).where(
+            SyncDeleteTombstone.sync_group_id == sync_group_id,
+            SyncDeleteTombstone.target_type == ITEM_ARTIFACT,
+            SyncDeleteTombstone.target_id == artifact_manifest.artifact_id,
+        )
+    )
+    if tombstone is None:
+        return
+    if _as_utc(artifact_manifest.created_at) > _as_utc(tombstone.deleted_at):
+        session.delete(tombstone)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def _copied_artifact_matches_manifest(path: Path, artifact_manifest: SyncArtifactManifest) -> bool:
     try:
         if not path.exists() or path.stat().st_size != artifact_manifest.size_bytes:
@@ -621,6 +657,7 @@ def _import_entity_revision(
     if existing_revision is not None:
         if _local_revision_content_sha256(existing_revision) == revision.content_sha256:
             if _normalize_revision_state(existing_revision.state) != remote_state:
+                _supersede_current_entity_revision_siblings(session, revision)
                 existing_revision.state = remote_state
                 existing_revision.updated_at = revision.updated_at
                 session.flush()
@@ -650,6 +687,7 @@ def _import_entity_revision(
         updated_at=revision.updated_at,
     )
     session.add(row)
+    _supersede_current_entity_revision_siblings(session, revision)
     _hydrate_current_entity_revisions(session, project, [revision])
     session.flush()
     return _result(
@@ -660,17 +698,50 @@ def _import_entity_revision(
     )
 
 
+def _supersede_current_entity_revision_siblings(
+    session: Session,
+    revision: Any,
+) -> None:
+    if _normalize_revision_state(revision.state) != CURRENT_REVISION_STATE:
+        return
+    siblings = session.scalars(
+        select(SyncEntityRevision).where(
+            SyncEntityRevision.project_id == revision.project_id,
+            SyncEntityRevision.entity_type == revision.entity_type,
+            SyncEntityRevision.entity_id == revision.entity_id,
+            SyncEntityRevision.id != revision.revision_id,
+            SyncEntityRevision.state.in_((CURRENT_REVISION_STATE, "current")),
+        )
+    )
+    for sibling in siblings:
+        sibling.state = SUPERSEDED_REVISION_STATE
+
+
 def _apply_delete_tombstone_action(
     session: Session,
     action: SyncReconciliationAction,
     context: _ApplyContext,
 ) -> SyncReconciliationApplyActionResult:
-    tombstone = _tombstone_for_action(session, action, context)
+    tombstone, already_persisted = _tombstone_for_action(session, action, context)
     if tombstone is None:
         return _result(
             action,
             APPLY_STATUS_SKIPPED,
             "Delete tombstone is not present in the apply request.",
+        )
+
+    if already_persisted and not _delete_tombstone_target_exists(session, tombstone):
+        return _result(
+            action,
+            APPLY_STATUS_SATISFIED,
+            "Delete tombstone is already applied locally.",
+            details={
+                "tombstone_id": tombstone.id,
+                "target_type": tombstone.target_type,
+                "target_id": tombstone.target_id,
+                "project_id": tombstone.project_id,
+                "persisted_tombstone": True,
+            },
         )
 
     apply_delete_tombstone(session, tombstone)
@@ -799,12 +870,36 @@ def _local_artifact_satisfies_manifest(
     if artifact_id is None or project_id is None:
         return False
     artifact = session.get(Artifact, artifact_id)
+    return artifact is not None and _artifact_matches_manifest_metadata(
+        artifact,
+        project_id=project_id,
+        content_sha256=content_sha256,
+        size_bytes=size_bytes,
+    ) and _artifact_file_matches_recorded_size(artifact)
+
+
+def _artifact_matches_manifest_metadata(
+    artifact: Artifact,
+    *,
+    project_id: str,
+    content_sha256: str,
+    size_bytes: int,
+) -> bool:
     return (
-        artifact is not None
-        and artifact.project_id == project_id
+        artifact.project_id == project_id
         and artifact.content_sha256 == content_sha256
         and artifact.size_bytes == size_bytes
     )
+
+
+def _artifact_file_matches_recorded_size(artifact: Artifact) -> bool:
+    try:
+        path = Path(artifact.path)
+        if not path.is_file():
+            return False
+        return artifact.size_bytes is None or path.stat().st_size == artifact.size_bytes
+    except (OSError, TypeError, ValueError):
+        return False
 
 
 def _cleanup_imported_content_addressed_staging(
@@ -926,12 +1021,12 @@ def _manifest_artifact_import_state(
         ):
             continue
         local_artifact = session.get(Artifact, artifact_id)
-        if (
-            local_artifact is None
-            or local_artifact.project_id != project_id
-            or local_artifact.content_sha256 != content_sha256
-            or local_artifact.size_bytes != size_bytes
-        ):
+        if local_artifact is None or not _artifact_matches_manifest_metadata(
+            local_artifact,
+            project_id=project_id,
+            content_sha256=content_sha256,
+            size_bytes=size_bytes,
+        ) or not _artifact_file_matches_recorded_size(local_artifact):
             pending_hashes.add(content_sha256)
             continue
         imported_hashes.add(content_sha256)
@@ -949,18 +1044,32 @@ def _tombstone_for_action(
     session: Session,
     action: SyncReconciliationAction,
     context: _ApplyContext,
-) -> SyncDeleteTombstone | None:
+) -> tuple[SyncDeleteTombstone | None, bool]:
     tombstone_id = _string_from_mapping(action.details, "tombstone_id")
     raw_tombstone = context.tombstones_by_id.get(tombstone_id) if tombstone_id is not None else None
     if raw_tombstone is None:
         raw_tombstone = context.tombstones_by_target.get((action.item_type, action.item_id))
     if raw_tombstone is None:
-        return None
+        return None, False
 
     raw_tombstone_id = _required_string(raw_tombstone, "tombstone_id", "id")
     persisted = session.get(SyncDeleteTombstone, raw_tombstone_id)
     if persisted is not None:
-        return persisted
+        return persisted, True
+
+    existing_target = session.scalar(
+        select(SyncDeleteTombstone).where(
+            SyncDeleteTombstone.sync_group_id == _required_string(raw_tombstone, "sync_group_id"),
+            SyncDeleteTombstone.target_type == _normalize_target_type(
+                _required_string(raw_tombstone, "target_type")
+            ),
+            SyncDeleteTombstone.target_id == _required_string(raw_tombstone, "target_id"),
+        )
+    )
+    if existing_target is not None:
+        _merge_remote_tombstone(existing_target, raw_tombstone)
+        session.flush()
+        return existing_target, True
 
     tombstone = SyncDeleteTombstone(
         id=raw_tombstone_id,
@@ -976,7 +1085,31 @@ def _tombstone_for_action(
     )
     session.add(tombstone)
     session.flush()
-    return tombstone
+    return tombstone, False
+
+
+def _merge_remote_tombstone(existing: SyncDeleteTombstone, raw_tombstone: object) -> None:
+    remote_deleted_at = _datetime_field(raw_tombstone, "deleted_at")
+    if remote_deleted_at is None or _as_utc(existing.deleted_at) >= remote_deleted_at:
+        return
+    existing.project_id = _required_string(raw_tombstone, "project_id")
+    existing.author_device_id = _required_string(raw_tombstone, "author_device_id")
+    existing.deleted_at = remote_deleted_at
+    existing.prior_metadata_json = _mapping_field(raw_tombstone, "prior_metadata", "prior_metadata_json") or {}
+    existing.updated_at = _datetime_field(raw_tombstone, "updated_at") or remote_deleted_at
+
+
+def _delete_tombstone_target_exists(session: Session, tombstone: SyncDeleteTombstone) -> bool:
+    if tombstone.target_type == ITEM_PROJECT:
+        project = session.get(Project, tombstone.target_id)
+        return project is not None and project.id == tombstone.project_id
+    if tombstone.target_type == ITEM_ARTIFACT:
+        artifact = session.get(Artifact, tombstone.target_id)
+        return artifact is not None and artifact.project_id == tombstone.project_id
+    if tombstone.target_type == ITEM_ENTITY_REVISION:
+        revision = session.get(SyncEntityRevision, tombstone.target_id)
+        return revision is not None and revision.project_id == tombstone.project_id
+    return False
 
 
 def _status_artifact_and_provider_ids(
@@ -1199,8 +1332,17 @@ def _staged_existing_project_artifact_actions(
             or size_bytes is None
         ):
             continue
-        if session.get(Artifact, artifact_id) is not None:
-            continue
+        local_artifact = session.get(Artifact, artifact_id)
+        if local_artifact is not None:
+            if not _artifact_matches_manifest_metadata(
+                local_artifact,
+                project_id=project_id,
+                content_sha256=content_sha256,
+                size_bytes=size_bytes,
+            ):
+                continue
+            if _artifact_file_matches_recorded_size(local_artifact):
+                continue
         try:
             require_staged_artifact(session, content_sha256=content_sha256, size_bytes=size_bytes)
         except AppError:

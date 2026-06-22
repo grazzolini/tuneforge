@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -315,6 +316,200 @@ def test_issue202_apply_clears_stale_remote_available_when_manifest_artifacts_ar
         assert project.sync_required_artifact_ids == []
         assert project.sync_provider_device_ids == []
         assert project.sync_conflict_count == 0
+
+
+def test_issue202_apply_restores_missing_existing_artifact_file_from_peer(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    peer_id = "peer-issue202-missing-file"
+    _ensure_identity_and_peers(peer_id)
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(
+            session,
+            tmp_path,
+            slug="issue202-missing-file",
+            source_frames=106,
+        )
+        manifest = _jsonable_manifest(export_project_manifest(session, project_id=fixture.project_id))
+        _stage_manifest_artifact_content(
+            session,
+            manifest,
+            tmp_path=tmp_path,
+            artifact_bytes=fixture.artifact_bytes,
+            provider_device_id=peer_id,
+            artifact_id=fixture.source_artifact_id,
+        )
+        source_artifact = session.get(Artifact, fixture.source_artifact_id)
+        assert source_artifact is not None
+        source_path = Path(source_artifact.path)
+        source_path.unlink()
+        session.commit()
+
+    response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": _empty_remote_library(),
+            "project_manifests": [manifest],
+            "peer_inventory": [
+                {
+                    "device_id": peer_id,
+                    "available_content_sha256": _manifest_content_hashes([manifest]),
+                }
+            ],
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["failed_actions"] == 0
+    assert any(
+        item["item_type"] == "artifact"
+        and item["item_id"] == fixture.source_artifact_id
+        and item["status"] == "missing_local_bytes"
+        for item in payload["plan"]["items"]
+    )
+    assert any(
+        result["action"]["action_type"] == "import_artifact_manifest"
+        and result["action"]["item_id"] == fixture.source_artifact_id
+        and result["status"] == "applied"
+        for result in payload["results"]
+    )
+
+    with SessionLocal() as session:
+        project = session.get(Project, fixture.project_id)
+        assert project is not None
+        assert project.sync_status == "local"
+        source_artifact = session.get(Artifact, fixture.source_artifact_id)
+        assert source_artifact is not None
+        restored_path = Path(source_artifact.path)
+        assert restored_path.exists()
+        assert file_sha256(restored_path) == fixture.artifact_hashes[fixture.source_artifact_id]
+        assert session.scalar(select(func.count()).select_from(SyncStagedArtifact)) == 0
+
+
+def test_issue202_apply_restores_missing_existing_artifact_file_from_staged_content_without_provider(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    peer_id = "peer-issue202-staged-repair"
+    _ensure_identity_and_peers(peer_id)
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(
+            session,
+            tmp_path,
+            slug="issue202-staged-repair",
+            source_frames=108,
+        )
+        manifest = _jsonable_manifest(export_project_manifest(session, project_id=fixture.project_id))
+        _stage_manifest_artifact_content(
+            session,
+            manifest,
+            tmp_path=tmp_path,
+            artifact_bytes=fixture.artifact_bytes,
+            provider_device_id=peer_id,
+            artifact_id=fixture.source_artifact_id,
+        )
+        source_artifact = session.get(Artifact, fixture.source_artifact_id)
+        assert source_artifact is not None
+        source_path = Path(source_artifact.path)
+        source_path.unlink()
+        session.commit()
+
+    response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": _empty_remote_library(),
+            "project_manifests": [manifest],
+            "peer_inventory": [],
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["failed_actions"] == 0
+    assert any(
+        item["item_type"] == "artifact"
+        and item["item_id"] == fixture.source_artifact_id
+        and item["status"] == "missing_local_bytes"
+        and item["chosen_provider_device_id"] is None
+        for item in payload["plan"]["items"]
+    )
+    assert not any(
+        result["action"]["action_type"] == "fetch_artifact_content"
+        and result["action"]["item_id"] == fixture.source_artifact_id
+        for result in payload["results"]
+    )
+    assert any(
+        result["action"]["action_type"] == "import_artifact_manifest"
+        and result["action"]["item_id"] == fixture.source_artifact_id
+        and result["status"] == "applied"
+        and result["action"]["details"]["source"] == "sync_staged_artifacts"
+        for result in payload["results"]
+    )
+
+    with SessionLocal() as session:
+        source_artifact = session.get(Artifact, fixture.source_artifact_id)
+        assert source_artifact is not None
+        restored_path = Path(source_artifact.path)
+        assert restored_path.exists()
+        assert file_sha256(restored_path) == fixture.artifact_hashes[fixture.source_artifact_id]
+        assert session.scalar(select(func.count()).select_from(SyncStagedArtifact)) == 0
+
+
+def test_issue202_cleanup_keeps_staged_bytes_when_existing_artifact_file_is_missing(
+    tmp_path: Path,
+) -> None:
+    peer_id = "peer-issue202-cleanup-missing"
+    _ensure_identity_and_peers(peer_id)
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(
+            session,
+            tmp_path,
+            slug="issue202-cleanup-missing",
+            source_frames=110,
+        )
+        manifest = _jsonable_manifest(export_project_manifest(session, project_id=fixture.project_id))
+        _stage_manifest_artifact_content(
+            session,
+            manifest,
+            tmp_path=tmp_path,
+            artifact_bytes=fixture.artifact_bytes,
+            provider_device_id=peer_id,
+            artifact_id=fixture.source_artifact_id,
+        )
+        source_artifact = session.get(Artifact, fixture.source_artifact_id)
+        assert source_artifact is not None
+        source_path = Path(source_artifact.path)
+        source_path.unlink()
+        source_hash = fixture.artifact_hashes[fixture.source_artifact_id]
+        staged_artifact = session.get(SyncStagedArtifact, source_hash)
+        assert staged_artifact is not None
+        staged_path = get_settings().data_root / "sync" / "staging" / staged_artifact.relative_path
+        assert staged_path.exists()
+
+        context = sync_reconciliation_apply_service._ApplyContext(
+            project_manifests_by_id={fixture.project_id: manifest},
+            tombstones_by_id={},
+            tombstones_by_target={},
+            scoped_project_ids=frozenset({fixture.project_id}),
+            staging_root=None,
+            use_content_addressed_staging=True,
+            include_timing_evidence=False,
+        )
+        details = sync_reconciliation_apply_service._cleanup_imported_content_addressed_staging(
+            session,
+            context,
+        )
+
+        assert details["pending_content_sha256_count"] == 1
+        assert session.get(SyncStagedArtifact, source_hash) is not None
+        assert staged_path.exists()
 
 
 def test_issue163_project_scoped_apply_ignores_unselected_remote_projects_and_reports_timing(
@@ -1577,6 +1772,151 @@ def test_issue163_existing_project_embedded_revision_drift_is_not_reported_as_co
     )
 
 
+def test_issue202_lww_apply_imports_newer_divergent_current_revision(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    peer_id = "peer-issue202-lww"
+    _ensure_identity_and_peers(peer_id)
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path, slug="issue202-lww", source_frames=80)
+        base_time = datetime(2026, 1, 1, tzinfo=UTC)
+        local_time = datetime(2026, 1, 2, tzinfo=UTC)
+        remote_time = datetime(2026, 1, 3, tzinfo=UTC)
+        base_revision_id = "rev_issue202_lww_base_chords"
+        local_revision_id = "rev_issue202_lww_local_chords"
+        remote_revision_id = "rev_issue202_lww_remote_chords"
+        base_payload = {
+            "project_id": fixture.project_id,
+            "timeline": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "C"}],
+        }
+        local_payload = {
+            "project_id": fixture.project_id,
+            "timeline": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "F"}],
+            "has_user_edits": True,
+        }
+        remote_payload = {
+            "project_id": fixture.project_id,
+            "timeline": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "G"}],
+            "has_user_edits": True,
+        }
+        session.add_all(
+            [
+                SyncEntityRevision(
+                    id=base_revision_id,
+                    project_id=fixture.project_id,
+                    entity_type="chords",
+                    entity_id=fixture.project_id,
+                    revision_type="manual",
+                    base_revision_id=None,
+                    author_device_id=peer_id,
+                    source_artifact_id=fixture.source_artifact_id,
+                    content_sha256=revision_payload_sha256(base_payload),
+                    state=SUPERSEDED_REVISION_STATE,
+                    metadata_json={},
+                    payload_json=base_payload,
+                    created_at=base_time,
+                    updated_at=base_time,
+                ),
+                SyncEntityRevision(
+                    id=local_revision_id,
+                    project_id=fixture.project_id,
+                    entity_type="chords",
+                    entity_id=fixture.project_id,
+                    revision_type="manual",
+                    base_revision_id=base_revision_id,
+                    author_device_id="local-device",
+                    source_artifact_id=fixture.source_artifact_id,
+                    content_sha256=revision_payload_sha256(local_payload),
+                    state=CURRENT_REVISION_STATE,
+                    metadata_json={},
+                    payload_json=local_payload,
+                    created_at=local_time,
+                    updated_at=local_time,
+                ),
+                ChordTimeline(
+                    project_id=fixture.project_id,
+                    source_artifact_id=fixture.source_artifact_id,
+                    segments_json=local_payload["timeline"],
+                    timeline_json=local_payload["timeline"],
+                    has_user_edits=True,
+                    updated_at=local_time,
+                ),
+            ]
+        )
+        session.commit()
+        manifest = _jsonable_manifest(export_project_manifest(session, project_id=fixture.project_id))
+        manifest["entity_revisions"] = [
+            {
+                "revision_id": base_revision_id,
+                "project_id": fixture.project_id,
+                "entity_type": "chords",
+                "entity_id": fixture.project_id,
+                "revision_type": "manual",
+                "base_revision_id": None,
+                "author_device_id": peer_id,
+                "source_artifact_id": fixture.source_artifact_id,
+                "content_sha256": revision_payload_sha256(base_payload),
+                "state": SUPERSEDED_REVISION_STATE,
+                "metadata": {},
+                "payload": base_payload,
+                "created_at": base_time.isoformat(),
+                "updated_at": base_time.isoformat(),
+            },
+            {
+                "revision_id": remote_revision_id,
+                "project_id": fixture.project_id,
+                "entity_type": "chords",
+                "entity_id": fixture.project_id,
+                "revision_type": "manual",
+                "base_revision_id": base_revision_id,
+                "author_device_id": peer_id,
+                "source_artifact_id": fixture.source_artifact_id,
+                "content_sha256": revision_payload_sha256(remote_payload),
+                "state": CURRENT_REVISION_STATE,
+                "metadata": {},
+                "payload": remote_payload,
+                "created_at": remote_time.isoformat(),
+                "updated_at": remote_time.isoformat(),
+            },
+        ]
+
+    response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": _empty_remote_library(),
+            "project_manifests": [manifest],
+            "peer_inventory": [
+                {
+                    "device_id": peer_id,
+                    "available_content_sha256": _manifest_content_hashes([manifest]),
+                }
+            ],
+            "project_ids": [fixture.project_id],
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["failed_actions"] == 0
+    revision_item = _plan_item(payload["plan"]["items"], "entity_revision", remote_revision_id)
+    assert revision_item["status"] == "remote_available"
+    assert revision_item["reason"] == "Remote entity revision is newer than the divergent local revision."
+
+    with SessionLocal() as session:
+        local_revision = session.get(SyncEntityRevision, local_revision_id)
+        remote_revision = session.get(SyncEntityRevision, remote_revision_id)
+        chords = session.get(ChordTimeline, fixture.project_id)
+        assert local_revision is not None
+        assert local_revision.state == SUPERSEDED_REVISION_STATE
+        assert remote_revision is not None
+        assert remote_revision.state == CURRENT_REVISION_STATE
+        assert chords is not None
+        assert chords.segments_json == remote_payload["timeline"]
+        assert chords.has_user_edits is True
+
+
 def test_issue163_newer_manifest_reimports_project_after_local_project_tombstone(
     client: TestClient,
     tmp_path: Path,
@@ -1633,6 +1973,101 @@ def test_issue163_newer_manifest_reimports_project_after_local_project_tombstone
         assert project.sync_status == "local"
         assert session.get(Artifact, fixture.source_artifact_id) is not None
         assert session.get(Artifact, fixture.stem_artifact_id) is not None
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(SyncDeleteTombstone)
+                .where(SyncDeleteTombstone.project_id == fixture.project_id)
+            )
+            == 0
+        )
+        exported_manifest = export_project_manifest(session, project_id=fixture.project_id)
+        assert exported_manifest.delete_tombstones == []
+
+
+def test_reimport_retire_older_child_tombstones_without_project_tombstone(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    _ensure_identity_and_peers("peer-reimport-child-tombstones")
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(
+            session,
+            tmp_path,
+            slug="reimport-child-tombstones",
+            source_frames=79,
+        )
+        session.add(
+            SyncEntityRevision(
+                id="rev_reimport_child_tombstone_chords",
+                project_id=fixture.project_id,
+                entity_type="chords",
+                entity_id=fixture.project_id,
+                revision_type="generated",
+                base_revision_id=None,
+                author_device_id="peer-reimport-child-tombstones",
+                source_artifact_id=fixture.source_artifact_id,
+                content_sha256=revision_payload_sha256({"timeline": [{"label": "C"}]}),
+                state=CURRENT_REVISION_STATE,
+                metadata_json={},
+                payload_json={"timeline": [{"label": "C"}]},
+                created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+            )
+        )
+        session.commit()
+        manifest = _jsonable_manifest(export_project_manifest(session, project_id=fixture.project_id))
+        delete_project(session, fixture.project_id)
+        project_tombstone = session.scalar(
+            select(SyncDeleteTombstone).where(
+                SyncDeleteTombstone.project_id == fixture.project_id,
+                SyncDeleteTombstone.target_type == "project",
+            )
+        )
+        assert project_tombstone is not None
+        deleted_at = project_tombstone.deleted_at.replace(microsecond=0)
+        session.delete(project_tombstone)
+        resurrected_at = deleted_at + timedelta(seconds=1)
+        manifest["project"]["created_at"] = resurrected_at.isoformat()
+        manifest["project"]["updated_at"] = resurrected_at.isoformat()
+        _stage_manifest_content(
+            session,
+            manifest,
+            tmp_path=tmp_path,
+            artifact_bytes=fixture.artifact_bytes,
+            provider_device_id="peer-reimport-child-tombstones",
+        )
+        session.commit()
+
+    response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": _empty_remote_library(),
+            "project_manifests": [manifest],
+            "peer_inventory": [
+                {
+                    "device_id": "peer-reimport-child-tombstones",
+                    "available_content_sha256": _manifest_content_hashes([manifest]),
+                }
+            ],
+            "project_ids": [fixture.project_id],
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["failed_actions"] == 0
+    assert payload["plan"]["summary"]["status_counts"]["deleted"] == 0
+    assert all(
+        item["status"] != "deleted"
+        for item in payload["plan"]["items"]
+    )
+
+    with SessionLocal() as session:
+        project = session.get(Project, fixture.project_id)
+        assert project is not None
+        assert project.sync_status == "local"
         assert (
             session.scalar(
                 select(func.count())
@@ -2674,6 +3109,235 @@ def test_issue120_remote_tombstone_from_trusted_peer_wins_over_stale_manifest(
         persisted_tombstone = session.get(SyncDeleteTombstone, tombstone["tombstone_id"])
         assert persisted_tombstone is not None
         assert persisted_tombstone.author_device_id == "peer-issue120-tombstone"
+
+
+@pytest.mark.parametrize(
+    ("slug", "source_artifact_type"),
+    [
+        ("regenerated-source-stem", "source_audio"),
+        ("regenerated-practice-mix-stem", "preview_mix"),
+    ],
+)
+def test_regenerated_stem_newer_than_local_tombstone_applies_without_conflict(
+    client: TestClient,
+    tmp_path: Path,
+    slug: str,
+    source_artifact_type: str,
+) -> None:
+    identity = _ensure_identity_and_peers("peer-regenerated-stem")
+    remote_regenerated_at = datetime(2026, 1, 3, tzinfo=UTC)
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(
+            session,
+            tmp_path,
+            slug=slug,
+            source_frames=132,
+        )
+        stem_artifact = session.get(Artifact, fixture.stem_artifact_id)
+        assert stem_artifact is not None
+        stem_source_artifact_id = fixture.source_artifact_id
+        if source_artifact_type == "preview_mix":
+            stem_source_artifact_id = f"art_{slug.replace('-', '_')}_preview_mix"
+            preview_hash, preview_size = _write_bytes(
+                fixture.root / "previews" / "practice-mix.wav",
+                b"practice mix bytes",
+            )
+            session.add(
+                Artifact(
+                    id=stem_source_artifact_id,
+                    project_id=fixture.project_id,
+                    type="preview_mix",
+                    format="wav",
+                    path=str(fixture.root / "previews" / "practice-mix.wav"),
+                    content_sha256=preview_hash,
+                    size_bytes=preview_size,
+                    generated_by="preview",
+                    can_delete=True,
+                    can_regenerate=True,
+                    metadata_json={"source_artifact_id": fixture.source_artifact_id},
+                    created_at=datetime(2026, 1, 2, tzinfo=UTC),
+                )
+            )
+        stem_metadata = {
+            "mode": "two_stems",
+            "stem_model": "htdemucs_ft",
+            "stem_model_label": "HTDemucs fine-tuned",
+            "stem_source": "vocals",
+            "source_artifact_id": stem_source_artifact_id,
+            "source_artifact_type": source_artifact_type,
+        }
+        stem_artifact.type = "vocal_stem"
+        stem_artifact.cache_key = f"stem:{stem_source_artifact_id}:vocals"
+        stem_artifact.metadata_json = stem_metadata
+        live_sibling_artifact_id: str | None = None
+        sibling_metadata: dict[str, Any] | None = None
+        if source_artifact_type == "source_audio":
+            live_sibling_artifact_id = f"art_{slug.replace('-', '_')}_instrumental_stem"
+            sibling_metadata = {
+                **stem_metadata,
+                "stem_source": "instrumental",
+                "source_artifact_type": "source_audio",
+            }
+            sibling_hash, sibling_size = _write_bytes(
+                fixture.root / "stems" / f"{slug}-instrumental.wav",
+                b"local instrumental before rebuild",
+            )
+            session.add(
+                Artifact(
+                    id=live_sibling_artifact_id,
+                    project_id=fixture.project_id,
+                    type="instrumental_stem",
+                    format="wav",
+                    path=str(fixture.root / "stems" / f"{slug}-instrumental.wav"),
+                    content_sha256=sibling_hash,
+                    size_bytes=sibling_size,
+                    generated_by="stems",
+                    can_delete=True,
+                    can_regenerate=True,
+                    cache_key=f"stem:{stem_source_artifact_id}:instrumental",
+                    metadata_json=sibling_metadata,
+                    created_at=datetime(2026, 1, 2, tzinfo=UTC),
+                )
+            )
+        session.flush()
+        manifest = _jsonable_manifest(export_project_manifest(session, project_id=fixture.project_id))
+        session.delete(stem_artifact)
+        Path(stem_artifact.path).unlink()
+        deleted_at = datetime(2026, 1, 1, 12, tzinfo=UTC)
+        session.add(
+            SyncDeleteTombstone(
+                id="tomb_local_deleted_regenerated_stem",
+                sync_group_id=identity["sync_group_id"],
+                project_id=fixture.project_id,
+                target_type="artifact",
+                target_id=fixture.stem_artifact_id,
+                author_device_id=identity["device_id"],
+                deleted_at=deleted_at,
+                prior_metadata_json={
+                    "artifact_id": fixture.stem_artifact_id,
+                    "type": "vocal_stem",
+                    "metadata": stem_metadata,
+                },
+                created_at=deleted_at,
+                updated_at=deleted_at,
+            )
+        )
+        remote_bytes = f"remotely regenerated {slug} bytes".encode()
+        remote_hash, remote_size = _write_bytes(
+            tmp_path / slug / "remote-vocals.wav",
+            remote_bytes,
+        )
+        remote_stem = _artifact_by_id(manifest, fixture.stem_artifact_id)
+        remote_stem.update(
+            {
+                "content_sha256": remote_hash,
+                "size_bytes": remote_size,
+                "created_at": remote_regenerated_at.isoformat(),
+                "metadata": stem_metadata,
+                "can_regenerate": True,
+            }
+        )
+        available_hashes = [remote_hash]
+        _stage_manifest_artifact_content(
+            session,
+            manifest,
+            tmp_path=tmp_path,
+            artifact_bytes={fixture.stem_artifact_id: remote_bytes},
+            provider_device_id="peer-regenerated-stem",
+            artifact_id=fixture.stem_artifact_id,
+        )
+        remote_sibling_hash: str | None = None
+        remote_sibling_size: int | None = None
+        if live_sibling_artifact_id is not None and sibling_metadata is not None:
+            remote_sibling_bytes = b"remotely regenerated sibling instrumental bytes"
+            remote_sibling_hash, remote_sibling_size = _write_bytes(
+                tmp_path / slug / "remote-instrumental.wav",
+                remote_sibling_bytes,
+            )
+            remote_sibling = _artifact_by_id(manifest, live_sibling_artifact_id)
+            remote_sibling.update(
+                {
+                    "content_sha256": remote_sibling_hash,
+                    "size_bytes": remote_sibling_size,
+                    "created_at": remote_regenerated_at.isoformat(),
+                    "metadata": sibling_metadata,
+                    "can_regenerate": True,
+                }
+            )
+            _stage_manifest_artifact_content(
+                session,
+                manifest,
+                tmp_path=tmp_path,
+                artifact_bytes={live_sibling_artifact_id: remote_sibling_bytes},
+                provider_device_id="peer-regenerated-stem",
+                artifact_id=live_sibling_artifact_id,
+            )
+            available_hashes.append(remote_sibling_hash)
+        session.commit()
+
+    response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": {
+                "projects": [manifest["project"]],
+                "artifacts": manifest["artifacts"],
+                "entity_revisions": [],
+                "delete_tombstones": [],
+            },
+            "project_manifests": [manifest],
+            "peer_inventory": [
+                {
+                    "device_id": "peer-regenerated-stem",
+                    "available_content_sha256": available_hashes,
+                }
+            ],
+            "project_ids": [fixture.project_id],
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["failed_actions"] == 0
+    assert payload["plan"]["summary"]["total_conflicts"] == 0
+    plan_item = _plan_item(payload["plan"]["items"], "artifact", fixture.stem_artifact_id)
+    assert plan_item["status"] == "remote_available"
+    if live_sibling_artifact_id is not None:
+        sibling_item = _plan_item(payload["plan"]["items"], "artifact", live_sibling_artifact_id)
+        assert sibling_item["status"] == "remote_available"
+        assert sibling_item["details"]["resolution"] == "fetch_remote"
+    assert all(
+        result["action"]["action_type"] != "record_conflict"
+        for result in payload["results"]
+    )
+    assert all(
+        result["action"]["action_type"] != "apply_delete_tombstone"
+        for result in payload["results"]
+    )
+    assert any(
+        result["action"]["action_type"] == "import_artifact_manifest"
+        and result["action"]["item_id"] == fixture.stem_artifact_id
+        and result["status"] == "applied"
+        for result in payload["results"]
+    )
+
+    with SessionLocal() as session:
+        artifact = session.get(Artifact, fixture.stem_artifact_id)
+        assert artifact is not None
+        assert artifact.type == "vocal_stem"
+        assert artifact.content_sha256 == remote_hash
+        assert artifact.size_bytes == remote_size
+        assert artifact.metadata_json["source_artifact_type"] == source_artifact_type
+        assert artifact.created_at.replace(tzinfo=UTC) == remote_regenerated_at
+        assert file_sha256(Path(artifact.path)) == remote_hash
+        if live_sibling_artifact_id is not None:
+            sibling = session.get(Artifact, live_sibling_artifact_id)
+            assert sibling is not None
+            assert sibling.content_sha256 == remote_sibling_hash
+            assert sibling.size_bytes == remote_sibling_size
+            assert sibling.created_at.replace(tzinfo=UTC) == remote_regenerated_at
+        assert session.get(SyncDeleteTombstone, "tomb_local_deleted_regenerated_stem") is None
 
 
 def _ensure_identity_and_peers(*peer_device_ids: str) -> dict[str, str]:

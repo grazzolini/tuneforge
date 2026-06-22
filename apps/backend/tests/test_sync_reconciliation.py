@@ -71,6 +71,10 @@ def test_artifact_classification_uses_recorded_metadata_and_trusted_provider_cho
         tmp_path / "size-mismatch.wav",
         b"size mismatch",
     )
+    missing_file_path = tmp_path / "missing-file.wav"
+    missing_file_hash, missing_file_size = _write_file(missing_file_path, b"missing file")
+    truncated_file_path = tmp_path / "truncated-file.wav"
+    truncated_file_hash, truncated_file_size = _write_file(truncated_file_path, b"full artifact content")
     remote_hash = _sha("remote")
     untrusted_hash = _sha("untrusted")
     missing_provider_hash = _sha("missing provider")
@@ -93,6 +97,22 @@ def test_artifact_classification_uses_recorded_metadata_and_trusted_provider_cho
     )
     _add_artifact(
         db_session,
+        artifact_id="art_missing_file",
+        project_id=project.id,
+        path=missing_file_path,
+        content_sha256=missing_file_hash,
+        size_bytes=missing_file_size,
+    )
+    _add_artifact(
+        db_session,
+        artifact_id="art_truncated_file",
+        project_id=project.id,
+        path=truncated_file_path,
+        content_sha256=truncated_file_hash,
+        size_bytes=truncated_file_size,
+    )
+    _add_artifact(
+        db_session,
         artifact_id="art_conflict",
         project_id=project.id,
         path=tmp_path / "conflict.wav",
@@ -100,6 +120,8 @@ def test_artifact_classification_uses_recorded_metadata_and_trusted_provider_cho
         size_bytes=(tmp_path / "conflict.wav").stat().st_size,
     )
     db_session.commit()
+    missing_file_path.unlink()
+    truncated_file_path.write_bytes(b"truncated")
 
     request = {
         "remote_library": {
@@ -113,6 +135,8 @@ def test_artifact_classification_uses_recorded_metadata_and_trusted_provider_cho
             "artifacts": [
                 _artifact_manifest(project.id, "art_identical", identical_hash, identical_size),
                 _artifact_manifest(project.id, "art_size_mismatch", size_mismatch_hash, size_mismatch_size + 1),
+                _artifact_manifest(project.id, "art_missing_file", missing_file_hash, missing_file_size),
+                _artifact_manifest(project.id, "art_truncated_file", truncated_file_hash, truncated_file_size),
                 _artifact_manifest(project.id, "art_remote_available", remote_hash, 64),
                 _artifact_manifest(project.id, "art_missing_provider", missing_provider_hash, 64),
                 _artifact_manifest(project.id, "art_conflict", _sha("remote conflict"), 64),
@@ -123,11 +147,21 @@ def test_artifact_classification_uses_recorded_metadata_and_trusted_provider_cho
         "peer_inventory": [
             {
                 "device_id": "peer-b",
-                "available_content_hashes": [size_mismatch_hash, remote_hash],
+                "available_content_hashes": [
+                    size_mismatch_hash,
+                    missing_file_hash,
+                    truncated_file_hash,
+                    remote_hash,
+                ],
             },
             {
                 "device_id": "peer-a",
-                "available_content_hashes": [size_mismatch_hash, remote_hash],
+                "available_content_hashes": [
+                    size_mismatch_hash,
+                    missing_file_hash,
+                    truncated_file_hash,
+                    remote_hash,
+                ],
             },
             {"device_id": "peer-revoked", "available_content_hashes": [untrusted_hash]},
             {"device_id": "peer-untrusted", "available_content_hashes": [untrusted_hash]},
@@ -146,6 +180,12 @@ def test_artifact_classification_uses_recorded_metadata_and_trusted_provider_cho
     missing_local = _item(plan, ITEM_ARTIFACT, "art_size_mismatch")
     assert missing_local.status == "missing_local_bytes"
     assert missing_local.chosen_provider_device_id == "peer-a"
+    missing_file = _item(plan, ITEM_ARTIFACT, "art_missing_file")
+    assert missing_file.status == "missing_local_bytes"
+    assert missing_file.chosen_provider_device_id == "peer-a"
+    truncated_file = _item(plan, ITEM_ARTIFACT, "art_truncated_file")
+    assert truncated_file.status == "missing_local_bytes"
+    assert truncated_file.chosen_provider_device_id == "peer-a"
     remote_available = _item(plan, ITEM_ARTIFACT, "art_remote_available")
     assert remote_available.status == "remote_available"
     assert remote_available.chosen_provider_device_id == "peer-a"
@@ -162,8 +202,12 @@ def test_artifact_classification_uses_recorded_metadata_and_trusted_provider_cho
         if action.action_type == ACTION_FETCH_ARTIFACT_CONTENT
     }
     assert fetch_actions["art_size_mismatch"].provider_device_id == "peer-a"
+    assert fetch_actions["art_missing_file"].provider_device_id == "peer-a"
+    assert fetch_actions["art_truncated_file"].provider_device_id == "peer-a"
     assert fetch_actions["art_remote_available"].provider_device_id == "peer-a"
     assert _action(plan, ACTION_RECORD_CONFLICT, ITEM_ARTIFACT, "art_conflict") is not None
+    assert _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, "art_missing_file") is not None
+    assert _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, "art_truncated_file") is not None
     assert _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, "art_duplicate_content") is not None
 
 
@@ -650,7 +694,222 @@ def test_older_remote_project_tombstone_does_not_delete_newer_local_project(
     assert _action(plan, ACTION_APPLY_DELETE_TOMBSTONE, ITEM_PROJECT, project_id) is None
 
 
-def test_entity_revision_ancestry_imports_descendants_and_conflicts_siblings(
+def test_repeated_project_tombstone_is_noop_after_local_delete_applied(
+    db_session: Session,
+) -> None:
+    _add_identity_and_peers(db_session)
+    source_hash = _sha("already deleted remote project")
+    project_id = source_hash_to_project_id(source_hash)
+    stale_at = datetime(2026, 1, 1, tzinfo=UTC)
+    deleted_at = datetime(2026, 1, 2, tzinfo=UTC)
+    db_session.add(
+        SyncDeleteTombstone(
+            id="tomb_known_project_delete",
+            sync_group_id="group-a",
+            project_id=project_id,
+            target_type=ITEM_PROJECT,
+            target_id=project_id,
+            author_device_id="peer-a",
+            deleted_at=deleted_at,
+            prior_metadata_json={"display_name": "Deleted Project"},
+            created_at=deleted_at,
+            updated_at=deleted_at,
+        )
+    )
+    db_session.commit()
+    remote_project = {
+        "project_id": project_id,
+        "display_name": "Deleted Project",
+        "source_sha256": source_hash,
+        "created_at": stale_at,
+        "updated_at": stale_at,
+    }
+    tombstone = _tombstone(
+        tombstone_id="tomb_known_project_delete",
+        project_id=project_id,
+        target_type=ITEM_PROJECT,
+        target_id=project_id,
+        author_device_id="peer-a",
+    )
+    tombstone["deleted_at"] = deleted_at
+    tombstone["created_at"] = deleted_at
+    tombstone["updated_at"] = deleted_at
+
+    plan = plan_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {
+                "projects": [remote_project],
+                "artifacts": [],
+                "entity_revisions": [],
+                "delete_tombstones": [tombstone],
+            },
+            "project_manifests": [],
+            "peer_inventory": [],
+        },
+    )
+
+    tombstone_item = _item(plan, ITEM_DELETE_TOMBSTONE, "tomb_known_project_delete")
+    assert tombstone_item.status == "noop"
+    assert tombstone_item.reason == "Delete tombstone is already applied locally."
+    project_item = _item(plan, ITEM_PROJECT, project_id)
+    assert project_item.status == "noop"
+    assert project_item.reason == "Project delete tombstone is already applied locally."
+    assert _action(plan, ACTION_APPLY_DELETE_TOMBSTONE, ITEM_PROJECT, project_id) is None
+    assert _action(plan, ACTION_UPSERT_PROJECT_STATUS, ITEM_PROJECT, project_id) is None
+    assert plan.summary.status_counts["deleted"] == 0
+
+
+def test_reimported_project_supersedes_older_child_tombstones_for_missing_old_ids(
+    db_session: Session,
+) -> None:
+    _add_identity_and_peers(db_session)
+    source_hash = _sha("reimported child tombstone source")
+    project_id = source_hash_to_project_id(source_hash)
+    deleted_at = datetime(2026, 1, 1, tzinfo=UTC)
+    reimported_at = datetime(2026, 1, 2, tzinfo=UTC)
+    project = _add_project(db_session, project_id, source_sha256=source_hash)
+    project.created_at = reimported_at
+    project.updated_at = reimported_at
+    db_session.add_all(
+        [
+            SyncDeleteTombstone(
+                id="tomb_old_local_artifact",
+                sync_group_id="group-a",
+                project_id=project_id,
+                target_type=ITEM_ARTIFACT,
+                target_id="art_old_deleted_stem",
+                author_device_id="dev-local",
+                deleted_at=deleted_at,
+                prior_metadata_json={"artifact_id": "art_old_deleted_stem"},
+                created_at=deleted_at,
+                updated_at=deleted_at,
+            ),
+            SyncDeleteTombstone(
+                id="tomb_old_local_revision",
+                sync_group_id="group-a",
+                project_id=project_id,
+                target_type=ITEM_ENTITY_REVISION,
+                target_id="rev_old_deleted_chords",
+                author_device_id="dev-local",
+                deleted_at=deleted_at,
+                prior_metadata_json={"revision_id": "rev_old_deleted_chords"},
+                created_at=deleted_at,
+                updated_at=deleted_at,
+            ),
+        ]
+    )
+    db_session.commit()
+    manifest = _project_manifest(project_id, source_hash)
+    manifest["project"]["created_at"] = reimported_at
+    manifest["project"]["updated_at"] = reimported_at
+    remote_artifact_tombstone = _tombstone(
+        tombstone_id="tomb_old_remote_artifact",
+        project_id=project_id,
+        target_type=ITEM_ARTIFACT,
+        target_id="art_old_deleted_stem",
+        author_device_id="peer-a",
+    )
+    remote_revision_tombstone = _tombstone(
+        tombstone_id="tomb_old_remote_revision",
+        project_id=project_id,
+        target_type=ITEM_ENTITY_REVISION,
+        target_id="rev_old_deleted_chords",
+        author_device_id="peer-a",
+    )
+    for tombstone in (remote_artifact_tombstone, remote_revision_tombstone):
+        tombstone["deleted_at"] = deleted_at
+        tombstone["created_at"] = deleted_at
+        tombstone["updated_at"] = deleted_at
+
+    plan = plan_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {
+                "projects": [manifest["project"]],
+                "artifacts": [],
+                "entity_revisions": [],
+                "delete_tombstones": [remote_artifact_tombstone, remote_revision_tombstone],
+            },
+            "project_manifests": [manifest],
+            "peer_inventory": [{"device_id": "peer-a", "available_content_hashes": [source_hash]}],
+        },
+    )
+
+    assert _item(plan, ITEM_PROJECT, project_id).status == "noop"
+    assert _item(plan, ITEM_DELETE_TOMBSTONE, "tomb_old_remote_artifact").status == "noop"
+    assert _item(plan, ITEM_DELETE_TOMBSTONE, "tomb_old_remote_revision").status == "noop"
+    assert all(item.status != "deleted" for item in plan.items)
+    assert _action(plan, ACTION_APPLY_DELETE_TOMBSTONE, ITEM_ARTIFACT, "art_old_deleted_stem") is None
+    assert (
+        _action(
+            plan,
+            ACTION_APPLY_DELETE_TOMBSTONE,
+            ITEM_ENTITY_REVISION,
+            "rev_old_deleted_chords",
+        )
+        is None
+    )
+
+
+def test_remote_reimported_project_supersedes_older_remote_child_tombstone_without_local_project(
+    db_session: Session,
+) -> None:
+    _add_identity_and_peers(db_session)
+    source_hash = _sha("remote reimported child tombstone source")
+    project_id = source_hash_to_project_id(source_hash)
+    deleted_at = datetime(2026, 1, 1, tzinfo=UTC)
+    reimported_at = datetime(2026, 1, 2, tzinfo=UTC)
+    newer_deleted_at = datetime(2026, 1, 3, tzinfo=UTC)
+    manifest = _project_manifest(project_id, source_hash)
+    manifest["project"]["created_at"] = reimported_at
+    manifest["project"]["updated_at"] = reimported_at
+    older_tombstone = _tombstone(
+        tombstone_id="tomb_older_remote_child",
+        project_id=project_id,
+        target_type=ITEM_ARTIFACT,
+        target_id="art_older_deleted_stem",
+        author_device_id="peer-a",
+    )
+    newer_tombstone = _tombstone(
+        tombstone_id="tomb_newer_remote_child",
+        project_id=project_id,
+        target_type=ITEM_ARTIFACT,
+        target_id="art_newer_deleted_stem",
+        author_device_id="peer-a",
+    )
+    older_tombstone["deleted_at"] = deleted_at
+    older_tombstone["created_at"] = deleted_at
+    older_tombstone["updated_at"] = deleted_at
+    newer_tombstone["deleted_at"] = newer_deleted_at
+    newer_tombstone["created_at"] = newer_deleted_at
+    newer_tombstone["updated_at"] = newer_deleted_at
+
+    plan = plan_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {
+                "projects": [manifest["project"]],
+                "artifacts": [],
+                "entity_revisions": [],
+                "delete_tombstones": [older_tombstone, newer_tombstone],
+            },
+            "project_manifests": [manifest],
+            "peer_inventory": [{"device_id": "peer-a", "available_content_hashes": [source_hash]}],
+        },
+    )
+
+    assert _item(plan, ITEM_PROJECT, project_id).status == "remote_available"
+    older_item = _item(plan, ITEM_DELETE_TOMBSTONE, "tomb_older_remote_child")
+    assert older_item.status == "noop"
+    assert older_item.reason == "Delete tombstone is older than a live sync target."
+    newer_item = _item(plan, ITEM_ARTIFACT, "art_newer_deleted_stem")
+    assert newer_item.status == "deleted"
+    assert _action(plan, ACTION_APPLY_DELETE_TOMBSTONE, ITEM_ARTIFACT, "art_older_deleted_stem") is None
+    assert _action(plan, ACTION_APPLY_DELETE_TOMBSTONE, ITEM_ARTIFACT, "art_newer_deleted_stem") is not None
+
+
+def test_entity_revision_ancestry_imports_descendants_and_lww_siblings(
     db_session: Session,
     tmp_path: Path,
 ) -> None:
@@ -715,8 +974,8 @@ def test_entity_revision_ancestry_imports_descendants_and_conflicts_siblings(
     assert grandchild.status == "remote_available"
     assert grandchild.action_type == ACTION_IMPORT_ENTITY_REVISION
     sibling = _item(plan, ITEM_ENTITY_REVISION, "rev_remote_sibling")
-    assert sibling.status == "conflicted"
-    assert sibling.action_type == ACTION_RECORD_CONFLICT
+    assert sibling.status == "remote_available"
+    assert sibling.action_type == ACTION_IMPORT_ENTITY_REVISION
     import_revision_action_ids = [
         action.item_id
         for action in plan.actions
@@ -725,7 +984,124 @@ def test_entity_revision_ancestry_imports_descendants_and_conflicts_siblings(
     assert import_revision_action_ids.index("rev_z_remote_descendant") < import_revision_action_ids.index(
         "rev_a_remote_grandchild"
     )
-    assert _action(plan, ACTION_RECORD_CONFLICT, ITEM_ENTITY_REVISION, "rev_remote_sibling") is not None
+    assert _action(plan, ACTION_IMPORT_ENTITY_REVISION, ITEM_ENTITY_REVISION, "rev_remote_sibling") is not None
+    assert _action(plan, ACTION_RECORD_CONFLICT, ITEM_ENTITY_REVISION, "rev_remote_sibling") is None
+
+
+def test_entity_revision_lww_imports_newer_same_base_sibling(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    del tmp_path
+    _add_identity_and_peers(db_session)
+    project = _add_project(db_session, "proj_revision_lww_remote", source_sha256=_sha("source"))
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    local_time = datetime(2026, 1, 2, tzinfo=UTC)
+    remote_time = datetime(2026, 1, 3, tzinfo=UTC)
+    _add_revision(
+        db_session,
+        project_id=project.id,
+        revision_id="rev_lww_remote_base",
+        content_sha256=_sha("base"),
+        base_revision_id=None,
+        created_at=base_time,
+        updated_at=base_time,
+    )
+    _add_revision(
+        db_session,
+        project_id=project.id,
+        revision_id="rev_lww_remote_local",
+        content_sha256=_revision_payload_sha("rev_lww_remote_local"),
+        base_revision_id="rev_lww_remote_base",
+        created_at=local_time,
+        updated_at=local_time,
+    )
+    db_session.commit()
+
+    plan = plan_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {
+                "projects": [{"project_id": project.id, "source_sha256": project.source_sha256}],
+                "entity_revisions": [
+                    _revision_manifest(
+                        project.id,
+                        revision_id="rev_lww_remote_newer",
+                        content_sha256=_revision_payload_sha("rev_lww_remote_newer"),
+                        base_revision_id="rev_lww_remote_base",
+                        created_at=remote_time,
+                        updated_at=remote_time,
+                    )
+                ],
+            }
+        },
+    )
+
+    item = _item(plan, ITEM_ENTITY_REVISION, "rev_lww_remote_newer")
+    assert item.status == "remote_available"
+    assert item.action_type == ACTION_IMPORT_ENTITY_REVISION
+    assert item.reason == "Remote entity revision is newer than the divergent local revision."
+    assert item.details["local_revision_id"] == "rev_lww_remote_local"
+    assert item.details["remote_revision_id"] == "rev_lww_remote_newer"
+    assert _action(plan, ACTION_IMPORT_ENTITY_REVISION, ITEM_ENTITY_REVISION, "rev_lww_remote_newer") is not None
+    assert _action(plan, ACTION_RECORD_CONFLICT, ITEM_ENTITY_REVISION, "rev_lww_remote_newer") is None
+
+
+def test_entity_revision_lww_keeps_newer_local_same_base_sibling(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    del tmp_path
+    _add_identity_and_peers(db_session)
+    project = _add_project(db_session, "proj_revision_lww_local", source_sha256=_sha("source"))
+    base_time = datetime(2026, 1, 1, tzinfo=UTC)
+    remote_time = datetime(2026, 1, 2, tzinfo=UTC)
+    local_time = datetime(2026, 1, 3, tzinfo=UTC)
+    _add_revision(
+        db_session,
+        project_id=project.id,
+        revision_id="rev_lww_local_base",
+        content_sha256=_sha("base"),
+        base_revision_id=None,
+        created_at=base_time,
+        updated_at=base_time,
+    )
+    _add_revision(
+        db_session,
+        project_id=project.id,
+        revision_id="rev_lww_local_current",
+        content_sha256=_revision_payload_sha("rev_lww_local_current"),
+        base_revision_id="rev_lww_local_base",
+        created_at=local_time,
+        updated_at=local_time,
+    )
+    db_session.commit()
+
+    plan = plan_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {
+                "projects": [{"project_id": project.id, "source_sha256": project.source_sha256}],
+                "entity_revisions": [
+                    _revision_manifest(
+                        project.id,
+                        revision_id="rev_lww_local_older_remote",
+                        content_sha256=_revision_payload_sha("rev_lww_local_older_remote"),
+                        base_revision_id="rev_lww_local_base",
+                        created_at=remote_time,
+                        updated_at=remote_time,
+                    )
+                ],
+            }
+        },
+    )
+
+    item = _item(plan, ITEM_ENTITY_REVISION, "rev_lww_local_older_remote")
+    assert item.status == "noop"
+    assert item.action_type == ACTION_NOOP
+    assert item.reason == "Local entity revision is newer than the divergent remote revision."
+    assert _action(plan, ACTION_IMPORT_ENTITY_REVISION, ITEM_ENTITY_REVISION, "rev_lww_local_older_remote") is None
+    assert _action(plan, ACTION_RECORD_CONFLICT, ITEM_ENTITY_REVISION, "rev_lww_local_older_remote") is None
 
 
 def test_existing_project_manifest_scoped_revision_does_not_create_standalone_conflict(
@@ -996,6 +1372,8 @@ def test_existing_project_keeps_intentional_no_lyrics_over_remote_embedded_lyric
         )
     )
     local_revision_id = f"rev_intentional_no_lyrics_{intentional_source}_{intentional_key}"
+    local_updated_at = datetime(2026, 1, 3, tzinfo=UTC)
+    remote_updated_at = datetime(2026, 1, 2, tzinfo=UTC)
     local_payload = {
         "revision_id": local_revision_id,
         "segments": [],
@@ -1009,6 +1387,8 @@ def test_existing_project_keeps_intentional_no_lyrics_over_remote_embedded_lyric
         base_revision_id=None,
         entity_type="lyrics",
         payload=local_payload,
+        created_at=local_updated_at,
+        updated_at=local_updated_at,
     )
     db_session.commit()
 
@@ -1026,6 +1406,8 @@ def test_existing_project_keeps_intentional_no_lyrics_over_remote_embedded_lyric
                 revision_id="rev_remote_current_lyrics_blocked_by_intentional_local",
                 entity_type="lyrics",
                 payload=remote_payload,
+                created_at=remote_updated_at,
+                updated_at=remote_updated_at,
             )
         ],
     )
@@ -1647,6 +2029,8 @@ def test_existing_project_skips_embedded_current_revision_when_local_revision_ex
         revision_id="rev_local_current_chords",
         content_sha256=_revision_payload_sha("rev_local_current_chords"),
         base_revision_id=None,
+        created_at=datetime(2026, 1, 3, tzinfo=UTC),
+        updated_at=datetime(2026, 1, 3, tzinfo=UTC),
     )
     db_session.commit()
 
@@ -1669,6 +2053,8 @@ def test_existing_project_skips_embedded_current_revision_when_local_revision_ex
                 entity_type="chords",
                 payload=base_payload,
                 state="superseded",
+                created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                updated_at=datetime(2026, 1, 1, tzinfo=UTC),
             ),
             _current_revision_manifest(
                 project_id,
@@ -1676,6 +2062,8 @@ def test_existing_project_skips_embedded_current_revision_when_local_revision_ex
                 entity_type="chords",
                 payload=remote_payload,
                 base_revision_id="rev_remote_base_chords",
+                created_at=datetime(2026, 1, 2, tzinfo=UTC),
+                updated_at=datetime(2026, 1, 2, tzinfo=UTC),
             )
         ],
     )
@@ -1702,6 +2090,96 @@ def test_existing_project_skips_embedded_current_revision_when_local_revision_ex
             ITEM_ENTITY_REVISION,
             revision_id,
         ) is None
+
+
+def test_existing_project_imports_newer_embedded_current_revision_chain(
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    _add_identity_and_peers(db_session)
+    source_hash, source_size = _write_file(tmp_path / "embedded-newer-revision-source.wav", b"source")
+    project_id = source_hash_to_project_id(source_hash)
+    _add_project(db_session, project_id, source_sha256=source_hash)
+    _add_artifact(
+        db_session,
+        artifact_id=f"art_source_{project_id}",
+        project_id=project_id,
+        path=tmp_path / "embedded-newer-revision-source.wav",
+        content_sha256=source_hash,
+        size_bytes=source_size,
+        artifact_type="source_audio",
+    )
+    _add_revision(
+        db_session,
+        project_id=project_id,
+        revision_id="rev_embedded_lww_local_chords",
+        content_sha256=_revision_payload_sha("rev_embedded_lww_local_chords"),
+        base_revision_id=None,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    db_session.commit()
+
+    base_payload = {
+        "revision_id": "rev_embedded_lww_remote_base_chords",
+        "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "C"}],
+    }
+    remote_payload = {
+        "revision_id": "rev_embedded_lww_remote_current_chords",
+        "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "G"}],
+    }
+    manifest = _project_manifest(
+        project_id,
+        source_hash,
+        source_size_bytes=source_size,
+        extra_revisions=[
+            _current_revision_manifest(
+                project_id,
+                revision_id="rev_embedded_lww_remote_base_chords",
+                entity_type="chords",
+                payload=base_payload,
+                state="superseded",
+                created_at=datetime(2026, 1, 2, tzinfo=UTC),
+                updated_at=datetime(2026, 1, 2, tzinfo=UTC),
+            ),
+            _current_revision_manifest(
+                project_id,
+                revision_id="rev_embedded_lww_remote_current_chords",
+                entity_type="chords",
+                payload=remote_payload,
+                base_revision_id="rev_embedded_lww_remote_base_chords",
+                created_at=datetime(2026, 1, 3, tzinfo=UTC),
+                updated_at=datetime(2026, 1, 3, tzinfo=UTC),
+            ),
+        ],
+    )
+
+    plan = plan_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {},
+            "project_manifests": [manifest],
+            "peer_inventory": [{"device_id": "peer-a", "available_content_hashes": [source_hash]}],
+        },
+    )
+
+    current_item = _item(plan, ITEM_ENTITY_REVISION, "rev_embedded_lww_remote_current_chords")
+    assert current_item.status == "remote_available"
+    assert current_item.action_type == ACTION_IMPORT_ENTITY_REVISION
+    import_revision_action_ids = [
+        action.item_id
+        for action in plan.actions
+        if action.action_type == ACTION_IMPORT_ENTITY_REVISION
+    ]
+    assert import_revision_action_ids.index("rev_embedded_lww_remote_base_chords") < import_revision_action_ids.index(
+        "rev_embedded_lww_remote_current_chords"
+    )
+    assert _action(
+        plan,
+        ACTION_RECORD_CONFLICT,
+        ITEM_ENTITY_REVISION,
+        "rev_embedded_lww_remote_current_chords",
+    ) is None
 
 
 @pytest.mark.parametrize(
@@ -2591,6 +3069,8 @@ def _add_revision(
     source_artifact_id: str | None = None,
     entity_type: str = "chords",
     payload: dict[str, Any] | None = None,
+    created_at: datetime | None = None,
+    updated_at: datetime | None = None,
 ) -> SyncEntityRevision:
     now = datetime.now(UTC)
     payload_json = {"revision_id": revision_id} if payload is None else payload
@@ -2607,8 +3087,8 @@ def _add_revision(
         state="current",
         metadata_json={},
         payload_json=payload_json,
-        created_at=now,
-        updated_at=now,
+        created_at=created_at or now,
+        updated_at=updated_at or now,
     )
     session.add(revision)
     session.flush()
@@ -2636,6 +3116,12 @@ def _seed_generated_analysis_divergence(
     source_size = 64
     stem_hash = _sha("generated analysis source stem")
     stem_size = 32
+    source_path = tmp_path / "source.wav"
+    stem_path = tmp_path / "drums.wav"
+    analysis_path = tmp_path / "analysis.json"
+    source_path.write_bytes(b"s" * source_size)
+    stem_path.write_bytes(b"d" * stem_size)
+    analysis_path.write_bytes(b"a" * 128)
     local_created_at = local_generated_at or datetime(2026, 1, 1, tzinfo=UTC)
     remote_created_at = remote_generated_at or datetime(2026, 1, 2, tzinfo=UTC)
     local_metadata = {"source_artifact_id": source_artifact_id}
@@ -2649,7 +3135,7 @@ def _seed_generated_analysis_divergence(
         session,
         artifact_id=source_artifact_id,
         project_id=project_id,
-        path=tmp_path / "source.wav",
+        path=source_path,
         content_sha256=source_hash,
         size_bytes=source_size,
         artifact_type="source_audio",
@@ -2659,7 +3145,7 @@ def _seed_generated_analysis_divergence(
         session,
         artifact_id=stem_artifact_id,
         project_id=project_id,
-        path=tmp_path / "drums.wav",
+        path=stem_path,
         content_sha256=stem_hash,
         size_bytes=stem_size,
         artifact_type="drums_stem",
@@ -2673,7 +3159,7 @@ def _seed_generated_analysis_divergence(
         session,
         artifact_id=analysis_artifact_id,
         project_id=project_id,
-        path=tmp_path / "analysis.json",
+        path=analysis_path,
         content_sha256=local_analysis_hash,
         size_bytes=128,
         artifact_type="analysis_json",
@@ -2812,8 +3298,12 @@ def _revision_manifest(
     revision_id: str,
     content_sha256: str,
     base_revision_id: str | None,
+    created_at: datetime | None = None,
+    updated_at: datetime | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(UTC)
+    created = created_at or now
+    updated = updated_at or created
     return {
         "revision_id": revision_id,
         "project_id": project_id,
@@ -2827,8 +3317,8 @@ def _revision_manifest(
         "state": "current",
         "metadata": {},
         "payload": {"revision_id": revision_id},
-        "created_at": now,
-        "updated_at": now,
+        "created_at": created,
+        "updated_at": updated,
     }
 
 
@@ -2843,8 +3333,12 @@ def _current_revision_manifest(
     content_sha256: str | None = None,
     source_artifact_id: str | None = None,
     state: str = "current",
+    created_at: datetime | None = None,
+    updated_at: datetime | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(UTC)
+    created = created_at or now
+    updated = updated_at or created
     return {
         "revision_id": revision_id,
         "project_id": project_id,
@@ -2858,8 +3352,8 @@ def _current_revision_manifest(
         "state": state,
         "metadata": {},
         "payload": payload,
-        "created_at": now,
-        "updated_at": now,
+        "created_at": created,
+        "updated_at": updated,
     }
 
 

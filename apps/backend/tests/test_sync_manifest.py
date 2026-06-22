@@ -867,6 +867,9 @@ def test_export_project_manifest_includes_delete_tombstones_without_local_paths(
 
     with SessionLocal() as session:
         fixture = _create_project_with_artifacts(session, tmp_path)
+        project = session.get(Project, fixture.project_id)
+        assert project is not None
+        child_deleted_at = project.created_at + timedelta(seconds=1)
         tombstones = [
             _fake_delete_tombstone(
                 tombstone_id="tomb_art_live_source",
@@ -886,6 +889,7 @@ def test_export_project_manifest_includes_delete_tombstones_without_local_paths(
                     "path": str(tmp_path / "local-preview.wav"),
                     "relative_path": "previews/mix.wav",
                 },
+                deleted_at=child_deleted_at,
             ),
             _fake_delete_tombstone(
                 tombstone_id="tomb_revision_deleted",
@@ -893,6 +897,7 @@ def test_export_project_manifest_includes_delete_tombstones_without_local_paths(
                 target_type="entity_revision",
                 target_id="rev_deleted",
                 prior_metadata={"entity_type": "section", "source_path": str(tmp_path / "tab.txt")},
+                deleted_at=child_deleted_at,
             ),
         ]
         monkeypatch.setattr(module, "_list_project_delete_tombstones", lambda *args, **kwargs: tombstones)
@@ -1414,12 +1419,12 @@ def test_import_staged_project_manifest_persists_delete_tombstones(
 ) -> None:
     export_manifest, import_manifest = _sync_manifest_services()
     staging_root = tmp_path / "staging"
-    timestamp = "2026-01-02T00:00:00+00:00"
 
     with SessionLocal() as session:
         fixture = _create_project_with_artifacts(session, tmp_path)
         sync_group_id = get_or_create_local_identity(session).sync_group_id
         manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+        timestamp = (manifest["project"]["created_at"] + timedelta(seconds=1)).isoformat()
         manifest["delete_tombstones"] = [
             {
                 "tombstone_id": "tomb_deleted_mix",
@@ -1497,12 +1502,12 @@ def test_import_staged_project_manifest_applies_delete_tombstones_to_existing_pr
     tmp_path: Path,
 ) -> None:
     export_manifest, import_manifest = _sync_manifest_services()
-    timestamp = "2026-01-02T00:00:00+00:00"
 
     with SessionLocal() as session:
         fixture = _create_project_with_artifacts(session, tmp_path)
         sync_group_id = get_or_create_local_identity(session).sync_group_id
         manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+        timestamp = (manifest["project"]["created_at"] + timedelta(seconds=1)).isoformat()
         deleted_path = fixture.root / "previews" / "deleted-mix.wav"
         deleted_hash, deleted_size = _write_bytes(deleted_path, b"deleted mix")
         session.add(
@@ -1543,6 +1548,79 @@ def test_import_staged_project_manifest_applies_delete_tombstones_to_existing_pr
         assert session.get(Artifact, "art_deleted_mix") is None
         assert not deleted_path.exists()
         assert session.get(SyncDeleteTombstone, "tomb_existing_deleted_mix") is not None
+
+
+def test_import_staged_project_manifest_merges_newer_same_target_tombstone_before_retire(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    export_manifest, import_manifest = _sync_manifest_services()
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        sync_group_id = get_or_create_local_identity(session).sync_group_id
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+        project_created_at = manifest["project"]["created_at"]
+        stale_deleted_at = project_created_at - timedelta(seconds=1)
+        remote_deleted_at = project_created_at + timedelta(seconds=1)
+        target_id = "art_newer_same_target_deleted_mix"
+        deleted_path = fixture.root / "previews" / "newer-same-target-deleted-mix.wav"
+        deleted_hash, deleted_size = _write_bytes(deleted_path, b"newer same target deleted mix")
+        session.add(
+            Artifact(
+                id=target_id,
+                project_id=fixture.project_id,
+                type="preview_mix",
+                format="wav",
+                path=str(deleted_path),
+                content_sha256=deleted_hash,
+                size_bytes=deleted_size,
+                generated_by="preview",
+                can_delete=True,
+                can_regenerate=True,
+                metadata_json={"source_artifact_id": "art_source_audio"},
+            )
+        )
+        session.add(
+            SyncDeleteTombstone(
+                id="tomb_existing_same_target_deleted_mix",
+                sync_group_id=sync_group_id,
+                project_id=fixture.project_id,
+                target_type="artifact",
+                target_id=target_id,
+                author_device_id="device_old",
+                deleted_at=stale_deleted_at,
+                prior_metadata_json={"type": "old_preview_mix"},
+                created_at=stale_deleted_at,
+                updated_at=stale_deleted_at,
+            )
+        )
+        session.flush()
+        manifest["delete_tombstones"] = [
+            {
+                "tombstone_id": "tomb_remote_newer_same_target_deleted_mix",
+                "sync_group_id": sync_group_id,
+                "project_id": fixture.project_id,
+                "target_type": "artifact",
+                "target_id": target_id,
+                "author_device_id": "device_alpha",
+                "deleted_at": remote_deleted_at.isoformat(),
+                "prior_metadata": {"type": "preview_mix", "remote": True},
+                "created_at": remote_deleted_at.isoformat(),
+                "updated_at": remote_deleted_at.isoformat(),
+            }
+        ]
+
+        import_manifest(session, manifest=manifest, staging_root=None)
+        session.commit()
+
+        assert session.get(Artifact, target_id) is None
+        assert not deleted_path.exists()
+        tombstone = session.get(SyncDeleteTombstone, "tomb_existing_same_target_deleted_mix")
+        assert tombstone is not None
+        assert tombstone.deleted_at == remote_deleted_at
+        assert tombstone.author_device_id == "device_alpha"
+        assert tombstone.prior_metadata_json == {"type": "preview_mix", "remote": True}
 
 
 def test_import_staged_project_manifest_imports_content_addressed_staging(

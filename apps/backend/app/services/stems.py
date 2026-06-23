@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.engines.stems import separate_sources, separate_two_stems
 from app.errors import AppError, JobCancelledError
-from app.models import Artifact, Project
+from app.models import Artifact, Project, utcnow
 from app.services.artifacts import refresh_artifact_file_metadata, register_artifact
 from app.services.paths import project_stems_dir
 from app.services.stem_models import (
@@ -196,6 +196,7 @@ def _upsert_stem_artifact(
     existing_artifact.can_delete = True
     existing_artifact.can_regenerate = True
     existing_artifact.metadata_json = metadata
+    existing_artifact.created_at = utcnow()
     session.flush()
     return existing_artifact
 

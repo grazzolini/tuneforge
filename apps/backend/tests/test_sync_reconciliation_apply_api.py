@@ -735,32 +735,31 @@ def test_reconciliation_apply_does_not_recreate_deleted_project_placeholder(
     stale_manifest["project"]["created_at"] = stale_at.isoformat()
     stale_manifest["project"]["updated_at"] = stale_at.isoformat()
 
-    response = client.post(
-        "/api/v1/sync/reconciliation/apply",
-        json={
-            "remote_library": {
-                "projects": [remote_project],
-                "artifacts": [],
-                "entity_revisions": [],
-                "delete_tombstones": [
-                    {
-                        "tombstone_id": "tomb_apply_project",
-                        "sync_group_id": identity.sync_group_id,
-                        "project_id": project_id,
-                        "target_type": "project",
-                        "target_id": project_id,
-                        "author_device_id": "peer-apply-project-delete",
-                        "deleted_at": deleted_at.isoformat(),
-                        "prior_metadata": {},
-                        "created_at": deleted_at.isoformat(),
-                        "updated_at": deleted_at.isoformat(),
-                    }
-                ],
-            },
-            "project_manifests": [stale_manifest],
-            "peer_inventory": [],
+    request_payload = {
+        "remote_library": {
+            "projects": [remote_project],
+            "artifacts": [],
+            "entity_revisions": [],
+            "delete_tombstones": [
+                {
+                    "tombstone_id": "tomb_apply_project",
+                    "sync_group_id": identity.sync_group_id,
+                    "project_id": project_id,
+                    "target_type": "project",
+                    "target_id": project_id,
+                    "author_device_id": "peer-apply-project-delete",
+                    "deleted_at": deleted_at.isoformat(),
+                    "prior_metadata": {},
+                    "created_at": deleted_at.isoformat(),
+                    "updated_at": deleted_at.isoformat(),
+                }
+            ],
         },
-    )
+        "project_manifests": [stale_manifest],
+        "peer_inventory": [],
+    }
+
+    response = client.post("/api/v1/sync/reconciliation/apply", json=request_payload)
 
     assert response.status_code == 200
     payload = response.json()
@@ -784,6 +783,25 @@ def test_reconciliation_apply_does_not_recreate_deleted_project_placeholder(
         assert tombstone is not None
         assert tombstone.target_type == "project"
         assert tombstone.target_id == project_id
+
+    repeat_response = client.post("/api/v1/sync/reconciliation/apply", json=request_payload)
+
+    assert repeat_response.status_code == 200
+    repeat_payload = repeat_response.json()
+    assert repeat_payload["summary"]["failed_actions"] == 0
+    assert repeat_payload["summary"]["applied_actions"] == 0
+    assert not any(
+        item["item_type"] == "project"
+        and item["item_id"] == project_id
+        and item["status"] == "deleted"
+        for item in repeat_payload["plan"]["items"]
+    )
+    assert not any(
+        result["action"]["action_type"] == "apply_delete_tombstone"
+        and result["action"]["item_type"] == "project"
+        and result["status"] == "applied"
+        for result in repeat_payload["results"]
+    )
 
 
 def _ensure_identity_and_peer(peer_device_id: str) -> Any:

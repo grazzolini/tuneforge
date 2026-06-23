@@ -97,6 +97,7 @@ def get_sync_metadata(session: Session) -> SyncMetadataResult:
             )
         )
     )
+    project_created_at = {project.id: project.created_at for project in projects}
     live_targets = _live_target_updated_at(projects, artifacts, entity_revisions)
     all_delete_tombstones = _list_delete_tombstones(session)
     project_resurrection_windows = _project_resurrection_windows_for_live_targets(
@@ -109,6 +110,7 @@ def get_sync_metadata(session: Session) -> SyncMetadataResult:
         if not _live_target_supersedes_tombstone(
             tombstone,
             live_targets,
+            project_created_at=project_created_at,
             project_resurrection_windows=project_resurrection_windows,
         )
     ]
@@ -220,12 +222,20 @@ def _live_target_supersedes_tombstone(
     tombstone: SyncDeleteTombstone,
     live_targets: dict[tuple[str, str], datetime],
     *,
+    project_created_at: dict[str, datetime],
     project_resurrection_windows: dict[str, tuple[datetime, datetime]],
 ) -> bool:
+    tombstone_deleted_at = _as_utc(tombstone.deleted_at)
+    created_at = project_created_at.get(tombstone.project_id)
+    if (
+        tombstone.target_type != "project"
+        and created_at is not None
+        and _as_utc(created_at) > tombstone_deleted_at
+    ):
+        return True
     target_updated_at = live_targets.get((tombstone.target_type, tombstone.target_id))
     if target_updated_at is None:
         return False
-    tombstone_deleted_at = _as_utc(tombstone.deleted_at)
     if _as_utc(target_updated_at) > tombstone_deleted_at:
         return True
     return _tombstone_is_inside_project_resurrection_window(

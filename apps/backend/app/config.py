@@ -7,6 +7,8 @@ from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse
 
+from app.utils.model_cache import whisper_cache_dir
+
 
 def _default_data_root() -> Path:
     override = os.environ.get("TUNEFORGE_DATA_DIR")
@@ -37,6 +39,7 @@ class Settings:
     stem_model: str
     stem_device: str
     demucs_model_repo: Path | None
+    model_bundle_dir: Path | None
     lyrics_model: str
     lyrics_device: str
     lyrics_cache_dir: Path
@@ -82,9 +85,18 @@ def get_settings() -> Settings:
             if os.environ.get("TUNEFORGE_DEMUCS_MODEL_REPO")
             else None
         ),
+        model_bundle_dir=(
+            Path(os.environ["TUNEFORGE_MODEL_BUNDLE_DIR"]).expanduser().resolve()
+            if os.environ.get("TUNEFORGE_MODEL_BUNDLE_DIR")
+            else None
+        ),
         lyrics_model=os.environ.get("TUNEFORGE_LYRICS_MODEL", "turbo"),
         lyrics_device=os.environ.get("TUNEFORGE_LYRICS_DEVICE", "auto"),
-        lyrics_cache_dir=Path(os.environ.get("TUNEFORGE_LYRICS_CACHE_DIR", str(cache_root / "lyrics"))),
+        lyrics_cache_dir=Path(
+            os.environ.get("TUNEFORGE_LYRICS_CACHE_DIR", str(whisper_cache_dir()))
+        )
+        .expanduser()
+        .resolve(),
         default_chord_backend=os.environ.get("TUNEFORGE_DEFAULT_CHORD_BACKEND", "tuneforge-fast"),
         runtime_platform=os.environ.get("TUNEFORGE_RUNTIME_PLATFORM", "desktop").strip().lower(),
         additional_cors_origins=_parse_additional_cors_origins(
@@ -101,6 +113,10 @@ def ensure_data_dirs(settings: Settings | None = None) -> None:
     current.projects_root.mkdir(parents=True, exist_ok=True)
     current.cache_root.mkdir(parents=True, exist_ok=True)
     current.lyrics_cache_dir.mkdir(parents=True, exist_ok=True)
+    if current.model_bundle_dir is not None:
+        from app.utils.model_bundle import seed_model_bundle_caches
+
+        seed_model_bundle_caches(current)
 
 
 def _parse_additional_cors_origins(value: str) -> tuple[str, ...]:

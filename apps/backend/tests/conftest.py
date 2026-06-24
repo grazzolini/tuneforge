@@ -62,6 +62,7 @@ def isolated_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("TUNEFORGE_HOST", "127.0.0.1")
     monkeypatch.setenv("TUNEFORGE_PORT", "8765")
     monkeypatch.setenv("TUNEFORGE_DEMUCS_MODEL_REPO", str(demucs_model_repo))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
     from app.config import get_settings
 
     get_settings.cache_clear()

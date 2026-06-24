@@ -14,13 +14,17 @@ finish-args:
   - --device=dri
   - --socket=pulseaudio
   - --share=network
+  - --filesystem=xdg-data/tuneforge:create
+  - --filesystem=xdg-cache/torch:create
+  - --filesystem=xdg-cache/whisper:create
   - --talk-name=org.freedesktop.portal.Desktop
   - --talk-name=org.freedesktop.portal.Documents
   - --env=TUNEFORGE_BUNDLED_BACKEND_ROOT=/app/lib/tuneforge/backend
-  - --env=TUNEFORGE_DATA_DIR=/var/data/tuneforge
+  - --env=TUNEFORGE_DATA_DIR=~/.local/share/tuneforge
   - --env=TUNEFORGE_FFMPEG_PATH=/app/bin/ffmpeg
   - --env=TUNEFORGE_FFPROBE_PATH=/app/bin/ffprobe
-  - --env=TUNEFORGE_DEMUCS_MODEL_REPO=/app/lib/tuneforge/backend/models/demucs
+  - --env=TORCH_HOME=~/.cache/torch
+  - --env=TUNEFORGE_LYRICS_CACHE_DIR=~/.cache/whisper
 cleanup:
   - /bin/pnpm
   - /bin/pnpx
@@ -233,17 +237,6 @@ modules:
         path: ../../apps/backend/pyproject.toml
         dest: apps/backend
       - generated/cargo-sources.json
-      - generated/demucs-model-sources.json
-      - type: file
-        path: generated/demucs-model-manifest.json
-        dest: demucs-models
-        dest-filename: manifest.json
-      - type: file
-        path: ../../packaging/demucs/htdemucs_6s.yaml
-        dest: demucs-models
-      - type: file
-        path: ../../packaging/demucs/htdemucs_ft.yaml
-        dest: demucs-models
       - type: file
         path: ffmpeg-wrapper.sh
         dest-filename: ffmpeg
@@ -277,8 +270,6 @@ modules:
       - cp -a apps/backend/alembic /app/lib/tuneforge/backend/src/alembic
       - install -Dm644 apps/backend/alembic.ini /app/lib/tuneforge/backend/src/alembic.ini
       - install -Dm644 apps/backend/pyproject.toml /app/lib/tuneforge/backend/src/pyproject.toml
-      - install -dm755 /app/lib/tuneforge/backend/models/demucs
-      - cp -a demucs-models/. /app/lib/tuneforge/backend/models/demucs/
       - install -Dm644 com.tuneforge.desktop.desktop /app/share/applications/com.tuneforge.desktop.desktop
       - install -Dm644 com.tuneforge.desktop.metainfo.xml /app/share/metainfo/com.tuneforge.desktop.metainfo.xml
       - install -Dm644 apps/desktop/src-tauri/icons/32x32.png /app/share/icons/hicolor/32x32/apps/com.tuneforge.desktop.png

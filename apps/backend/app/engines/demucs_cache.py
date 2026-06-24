@@ -3,13 +3,15 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-import torch
-
-from app.engines.demucs_worker import _trusted_demucs_checkpoint_loading
+from app.utils.model_cache import (
+    ExpectedModelFile,
+    InvalidModelFile,
+    invalid_model_files,
+    torch_checkpoint_dir,
+)
 
 DEFAULT_DEMUCS_MODEL_IDS = ("htdemucs_6s", "htdemucs_ft")
 
@@ -37,14 +39,11 @@ class DemucsPreloadResult:
 class InvalidDemucsCacheFile:
     file_name: str
     reason: str
+    path: Path
 
 
 def default_demucs_model_manifest_path() -> Path:
     return Path(__file__).resolve().parents[4] / "packaging" / "demucs" / "models.json"
-
-
-def torch_checkpoint_dir() -> Path:
-    return Path(torch.hub.get_dir()).expanduser().resolve() / "checkpoints"
 
 
 def preload_demucs_torch_cache(
@@ -71,6 +70,8 @@ def preload_demucs_torch_cache(
             results.append(DemucsPreloadResult(model_id=model.id, cache_hit=True))
             continue
 
+        from app.engines.demucs_worker import _trusted_demucs_checkpoint_loading
+
         with _trusted_demucs_checkpoint_loading():
             get_model_func(model.id)
 
@@ -83,6 +84,44 @@ def preload_demucs_torch_cache(
             raise RuntimeError(f"Demucs model cache is missing or invalid after preload for {model.id}: {details}")
         results.append(DemucsPreloadResult(model_id=model.id, cache_hit=False))
     return tuple(results)
+
+
+def invalid_demucs_torch_cache_files(
+    *,
+    manifest_path: Path | None = None,
+    checkpoint_dir: Path | None = None,
+    model_ids: Sequence[str] = DEFAULT_DEMUCS_MODEL_IDS,
+) -> tuple[InvalidModelFile, ...]:
+    return invalid_model_files(
+        expected_demucs_torch_cache_files(
+            manifest_path=manifest_path,
+            checkpoint_dir=checkpoint_dir,
+            model_ids=model_ids,
+        )
+    )
+
+
+def expected_demucs_torch_cache_files(
+    *,
+    manifest_path: Path | None = None,
+    checkpoint_dir: Path | None = None,
+    model_ids: Sequence[str] = DEFAULT_DEMUCS_MODEL_IDS,
+) -> tuple[ExpectedModelFile, ...]:
+    resolved_manifest_path = manifest_path or default_demucs_model_manifest_path()
+    resolved_checkpoint_dir = checkpoint_dir or torch_checkpoint_dir()
+    models = _read_manifest_models(resolved_manifest_path, model_ids=model_ids)
+    expected_files: list[ExpectedModelFile] = []
+    for model in models:
+        expected_files.extend(
+            ExpectedModelFile(
+                label=f"Demucs {model.id} {file.file_name}",
+                path=resolved_checkpoint_dir / file.file_name,
+                size=file.size,
+                sha256=file.sha256,
+            )
+            for file in model.files
+        )
+    return tuple(expected_files)
 
 
 def _read_manifest_models(manifest_path: Path, *, model_ids: Sequence[str]) -> tuple[DemucsCacheModel, ...]:
@@ -128,19 +167,26 @@ def _invalid_cache_files(checkpoint_dir: Path, model: DemucsCacheModel) -> tuple
     for expected_file in model.files:
         path = checkpoint_dir / expected_file.file_name
         if not path.is_file():
-            invalid_files.append(InvalidDemucsCacheFile(file_name=expected_file.file_name, reason="missing"))
+            invalid_files.append(
+                InvalidDemucsCacheFile(file_name=expected_file.file_name, reason="missing", path=path)
+            )
             continue
         if path.stat().st_size != expected_file.size:
-            invalid_files.append(InvalidDemucsCacheFile(file_name=expected_file.file_name, reason="size"))
+            invalid_files.append(
+                InvalidDemucsCacheFile(file_name=expected_file.file_name, reason="size", path=path)
+            )
             continue
-        if _sha256_file(path) != expected_file.sha256:
-            invalid_files.append(InvalidDemucsCacheFile(file_name=expected_file.file_name, reason="sha256"))
+        if invalid_model_files(
+            (
+                ExpectedModelFile(
+                    label=f"Demucs {model.id} {expected_file.file_name}",
+                    path=path,
+                    size=expected_file.size,
+                    sha256=expected_file.sha256,
+                ),
+            )
+        ):
+            invalid_files.append(
+                InvalidDemucsCacheFile(file_name=expected_file.file_name, reason="sha256", path=path)
+            )
     return tuple(invalid_files)
-
-
-def _sha256_file(path: Path) -> str:
-    digest = sha256()
-    with path.open("rb") as file:
-        while chunk := file.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()

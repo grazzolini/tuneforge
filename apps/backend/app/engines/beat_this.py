@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, cast
@@ -18,6 +19,12 @@ from app.engines.analysis import (
     _timing_beat_bar_index,
     analyze_track,
 )
+from app.utils.model_cache import (
+    ExpectedModelFile,
+    InvalidModelFile,
+    invalid_model_files,
+    torch_checkpoint_dir,
+)
 
 BEAT_THIS_CHECKPOINT = "small0"
 BEAT_THIS_SOURCE = "beat-this"
@@ -29,6 +36,22 @@ SUPPORTED_BEATS_PER_BAR = frozenset({3, 4, 6})
 File2BeatsCallable = Callable[[str], tuple[Any, Any]]
 
 
+@dataclass(frozen=True)
+class BeatThisCheckpointSpec:
+    file_name: str
+    sha256: str
+    size: int
+
+
+BEAT_THIS_CHECKPOINT_SPECS = {
+    BEAT_THIS_CHECKPOINT: BeatThisCheckpointSpec(
+        file_name="beat_this-small0.ckpt",
+        sha256="6074be2c4d490c5f6101fcc374a1ec72ae93456e23bb6019783b849f5dc7d47b",
+        size=8_451_101,
+    )
+}
+
+
 class BeatThisRuntimeError(RuntimeError):
     pass
 
@@ -37,6 +60,54 @@ def beat_this_dependency_status() -> tuple[bool, str | None]:
     if importlib.util.find_spec("beat_this") is None:
         return False, "Install the optional advanced-beats dependency to use Advanced Beat Analysis."
     return True, None
+
+
+def beat_this_checkpoint_cache_path(
+    checkpoint: str = BEAT_THIS_CHECKPOINT,
+    *,
+    checkpoint_dir: Path | None = None,
+) -> Path:
+    spec = BEAT_THIS_CHECKPOINT_SPECS.get(checkpoint)
+    file_name = spec.file_name if spec else f"beat_this-{checkpoint}.ckpt"
+    return (checkpoint_dir or torch_checkpoint_dir()) / file_name
+
+
+def expected_beat_this_checkpoint_file(
+    checkpoint: str = BEAT_THIS_CHECKPOINT,
+    *,
+    checkpoint_dir: Path | None = None,
+) -> ExpectedModelFile:
+    spec = BEAT_THIS_CHECKPOINT_SPECS.get(checkpoint)
+    path = beat_this_checkpoint_cache_path(checkpoint, checkpoint_dir=checkpoint_dir)
+    if spec is None:
+        return ExpectedModelFile(label=f"beat-this {checkpoint}", path=path, size=-1, sha256="")
+    return ExpectedModelFile(
+        label=f"beat-this {checkpoint}",
+        path=path,
+        size=spec.size,
+        sha256=spec.sha256,
+    )
+
+
+def invalid_beat_this_checkpoint_cache_files(
+    checkpoint: str = BEAT_THIS_CHECKPOINT,
+    *,
+    checkpoint_dir: Path | None = None,
+) -> tuple[InvalidModelFile, ...]:
+    expected_file = expected_beat_this_checkpoint_file(checkpoint, checkpoint_dir=checkpoint_dir)
+    if expected_file.size <= 0 or not expected_file.sha256:
+        return (
+            InvalidModelFile(
+                label=expected_file.label,
+                path=expected_file.path,
+                reason="unsupported-checkpoint",
+            ),
+        )
+    return invalid_model_files((expected_file,))
+
+
+def preload_beat_this_checkpoint(checkpoint: str = BEAT_THIS_CHECKPOINT) -> None:
+    _get_file2beats(checkpoint=checkpoint)
 
 
 def analyze_track_with_beat_this(

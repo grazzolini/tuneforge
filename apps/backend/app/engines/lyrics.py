@@ -13,6 +13,7 @@ from typing import Any, cast
 from fastapi import status
 
 from app.errors import AppError, JobCancelledError
+from app.utils.model_cache import ExpectedModelFile, InvalidModelFile, invalid_model_files
 from app.utils.torch_runtime import choose_torch_device, with_mps_fallback_env
 
 LYRICS_WORKER_CANCEL_TIMEOUT_SECONDS = 2.0
@@ -27,6 +28,87 @@ class LyricsTranscription:
     language: str | None
     segments: list[dict[str, Any]]
     language_override: str | None = None
+
+
+@dataclass(frozen=True)
+class WhisperModelCacheSpec:
+    file_name: str
+    sha256: str
+    size: int
+
+
+WHISPER_MODEL_CACHE_SPECS = {
+    "tiny.en": WhisperModelCacheSpec(
+        "tiny.en.pt",
+        "d3dd57d32accea0b295c96e26691aa14d8822fac7d9d27d5dc00b4ca2826dd03",
+        75_571_315,
+    ),
+    "tiny": WhisperModelCacheSpec(
+        "tiny.pt",
+        "65147644a518d12f04e32d6f3b26facc3f8dd46e5390956a9424a650c0ce22b9",
+        75_572_083,
+    ),
+    "base.en": WhisperModelCacheSpec(
+        "base.en.pt",
+        "25a8566e1d0c1e2231d1c762132cd20e0f96a85d16145c3a00adf5d1ac670ead",
+        145_261_783,
+    ),
+    "base": WhisperModelCacheSpec(
+        "base.pt",
+        "ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e",
+        145_262_807,
+    ),
+    "small.en": WhisperModelCacheSpec(
+        "small.en.pt",
+        "f953ad0fd29cacd07d5a9eda5624af0f6bcf2258be67c92b79389873d91e0872",
+        483_615_683,
+    ),
+    "small": WhisperModelCacheSpec(
+        "small.pt",
+        "9ecf779972d90ba49c06d968637d720dd632c55bbf19d441fb42bf17a411e794",
+        483_617_219,
+    ),
+    "medium.en": WhisperModelCacheSpec(
+        "medium.en.pt",
+        "d7440d1dc186f76616474e0ff0b3b6b879abc9d1a4926b7adfa41db2d497ab4f",
+        1_528_006_491,
+    ),
+    "medium": WhisperModelCacheSpec(
+        "medium.pt",
+        "345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1",
+        1_528_008_539,
+    ),
+    "large-v1": WhisperModelCacheSpec(
+        "large-v1.pt",
+        "e4b87e7e0bf463eb8e6956e646f1e277e901512310def2c24bf0e11bd3c28e9a",
+        3_086_999_982,
+    ),
+    "large-v2": WhisperModelCacheSpec(
+        "large-v2.pt",
+        "81f7c96c852ee8fc832187b0132e569d6c3065a3252ed18e56effd0b6a73e524",
+        3_086_999_982,
+    ),
+    "large-v3": WhisperModelCacheSpec(
+        "large-v3.pt",
+        "e5b1a55b89c1367dacf97e3e19bfd829a01529dbfdeefa8caeb59b3f1b81dadb",
+        3_087_371_615,
+    ),
+    "large": WhisperModelCacheSpec(
+        "large-v3.pt",
+        "e5b1a55b89c1367dacf97e3e19bfd829a01529dbfdeefa8caeb59b3f1b81dadb",
+        3_087_371_615,
+    ),
+    "large-v3-turbo": WhisperModelCacheSpec(
+        "large-v3-turbo.pt",
+        "aff26ae408abcba5fbf8813c21e62b0941638c5f6eebfb145be0c9839262a19a",
+        1_617_941_637,
+    ),
+    "turbo": WhisperModelCacheSpec(
+        "large-v3-turbo.pt",
+        "aff26ae408abcba5fbf8813c21e62b0941638c5f6eebfb145be0c9839262a19a",
+        1_617_941_637,
+    ),
+}
 
 
 def lyrics_transcription_to_payload(transcription: LyricsTranscription) -> dict[str, Any]:
@@ -95,6 +177,54 @@ def _load_runtime() -> tuple[Any, Any]:
     patch_whisper_timing_for_mps(whisper_timing)
 
     return torch, whisper
+
+
+def expected_whisper_model_cache_file(model_name: str, *, cache_dir: Path | None = None) -> ExpectedModelFile:
+    resolved_cache_dir = cache_dir or _default_lyrics_cache_dir()
+    spec = WHISPER_MODEL_CACHE_SPECS.get(model_name)
+    if spec is None:
+        return ExpectedModelFile(
+            label=f"Whisper {model_name}",
+            path=resolved_cache_dir / model_name,
+            size=-1,
+            sha256="",
+        )
+    return ExpectedModelFile(
+        label=f"Whisper {model_name}",
+        path=resolved_cache_dir / spec.file_name,
+        size=spec.size,
+        sha256=spec.sha256,
+    )
+
+
+def invalid_whisper_model_cache_files(
+    model_name: str,
+    *,
+    cache_dir: Path | None = None,
+) -> tuple[InvalidModelFile, ...]:
+    expected_file = expected_whisper_model_cache_file(model_name, cache_dir=cache_dir)
+    if expected_file.size <= 0 or not expected_file.sha256:
+        return (
+            InvalidModelFile(
+                label=expected_file.label,
+                path=expected_file.path,
+                reason="unsupported-model",
+            ),
+        )
+    return invalid_model_files((expected_file,))
+
+
+def preload_whisper_model(model_name: str, *, cache_dir: Path | None = None) -> None:
+    resolved_cache_dir = cache_dir or _default_lyrics_cache_dir()
+    resolved_cache_dir.mkdir(parents=True, exist_ok=True)
+    _, whisper_module = _load_runtime()
+    whisper_module.load_model(model_name, device="cpu", download_root=str(resolved_cache_dir))
+
+
+def _default_lyrics_cache_dir() -> Path:
+    from app.config import get_settings
+
+    return get_settings().lyrics_cache_dir
 
 
 CUDA_MODEL_FALLBACKS: dict[str, tuple[str, ...]] = {

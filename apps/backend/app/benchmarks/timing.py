@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
-import os
 import re
 import sys
 import time
@@ -614,14 +613,7 @@ def _checkpoint_cache_snapshot(checkpoint: str | None) -> dict[str, Any] | None:
 
 
 def _torch_checkpoint_cache_path(checkpoint: str) -> Path:
-    file_name = f"beat_this-{checkpoint}.ckpt"
-    torch_home = os.environ.get("TORCH_HOME")
-    if torch_home:
-        return Path(torch_home).expanduser() / "hub" / "checkpoints" / file_name
-    xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
-    if xdg_cache_home:
-        return Path(xdg_cache_home).expanduser() / "torch" / "hub" / "checkpoints" / file_name
-    return Path.home() / ".cache" / "torch" / "hub" / "checkpoints" / file_name
+    return beat_this_engine.beat_this_checkpoint_cache_path(checkpoint)
 
 
 def _checkpoint_cache_summary(

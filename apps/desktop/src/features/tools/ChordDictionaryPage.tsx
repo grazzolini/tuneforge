@@ -106,6 +106,12 @@ type AccordionKeyboardSlice = {
   keys: readonly AccordionKeyboardKeyView[];
   whiteKeyCount: number;
 };
+type CompactKeyboardWindow = {
+  endMidi: number;
+  startMidi: number;
+};
+const COMPACT_KEYBOARD_C_FAMILY_END_PITCH_CLASS = 4;
+const COMPACT_KEYBOARD_F_FAMILY_END_PITCH_CLASS = 11;
 type AccordionLeftHandCandidateView = {
   addedTones: readonly string[];
   buttons: readonly AccordionButtonView[];
@@ -133,7 +139,7 @@ type AccordionVoicingView = {
 };
 type AccordionStradellaRowIdView =
   | "diminished"
-  | "dominant7"
+  | "seventh"
   | "minor"
   | "major"
   | "bass"
@@ -203,7 +209,7 @@ const CHORD_DICTIONARY_INSTRUMENTS = [
 ] as const satisfies ReadonlyArray<{ id: ChordDictionaryInstrumentId; label: string }>;
 const ACCORDION_STRADDELLA_ROWS = [
   { id: "diminished", label: "Dim" },
-  { id: "dominant7", label: "7" },
+  { id: "seventh", label: "7" },
   { id: "minor", label: "Min" },
   { id: "major", label: "Maj" },
   { id: "bass", label: "Bass" },
@@ -927,8 +933,8 @@ function InstrumentSelector({
             "chord-pill",
             "chord-instrument-button",
             instrumentId === instrument.id && "chord-instrument-button--active",
-            instrumentId === instrument.id && "chord-pill--active",
           )}
+          data-selected={instrumentId === instrument.id ? "true" : "false"}
           onClick={() => onInstrumentChange(instrument.id)}
           type="button"
         >
@@ -1234,6 +1240,7 @@ function AccordionKeyboard({
     <div
       className="accordion-keyboard"
       data-black-offset="true"
+      data-layout="piano-vertical"
       data-orientation="vertical"
       data-surface="keyboard"
       style={{ "--accordion-white-key-count": slice.whiteKeyCount } as CSSProperties}
@@ -1497,12 +1504,16 @@ function toAccordionVoicingViews(voicings: readonly AccordionVoicing[]): readonl
     const rightHandNotes = readArray(record, ["rightHandNotes", "notes"]).flatMap((note, noteIndex) =>
       toAccordionKeyboardNoteView(note, id, noteIndex),
     );
-    const leftHandCandidates = readArray(record, ["leftHandCandidates", "candidates"]).flatMap(
+    const rawLeftHandCandidates = readArray(record, ["leftHandCandidates", "candidates"]).flatMap(
       (candidate, candidateIndex) => toAccordionCandidateView(candidate, id, candidateIndex),
     );
+    const leftHandCandidates = dedupeAccordionCandidateViews(rawLeftHandCandidates);
     const selectedCandidateRecord = asUnknownRecord(record.selectedLeftHandCandidate);
+    const rawSelectedCandidateId = readString(selectedCandidateRecord, ["id"]);
     const selectedCandidateId =
-      readString(selectedCandidateRecord, ["id"]) ?? leftHandCandidates[0]?.id ?? null;
+      rawSelectedCandidateId && leftHandCandidates.some((candidate) => candidate.id === rawSelectedCandidateId)
+        ? rawSelectedCandidateId
+        : leftHandCandidates[0]?.id ?? null;
     const chordLabel = readString(record, ["chordLabel"]) ?? "";
     const buttons = annotateAccordionButtonDegrees(
       normalizeAccordionButtonColumns(
@@ -1607,6 +1618,31 @@ function toAccordionCandidateView(
       rank: readNumber(record, ["rank"]) ?? candidateIndex,
     },
   ];
+}
+
+function dedupeAccordionCandidateViews(
+  candidates: readonly AccordionLeftHandCandidateView[],
+): readonly AccordionLeftHandCandidateView[] {
+  const seenOptions = new Set<string>();
+  return candidates.filter((candidate) => {
+    const visibleKey = getAccordionCandidateVisibleKey(candidate);
+    if (seenOptions.has(visibleKey)) {
+      return false;
+    }
+    seenOptions.add(visibleKey);
+    return true;
+  });
+}
+
+function getAccordionCandidateVisibleKey(candidate: AccordionLeftHandCandidateView): string {
+  return [
+    candidate.label,
+    candidate.detail,
+    candidate.fingering ?? "",
+    candidate.isExact ? "exact" : "approx",
+    candidate.missingTones.join(","),
+    candidate.addedTones.join(","),
+  ].join("\u0000");
 }
 
 function toAccordionButtonView(
@@ -1788,38 +1824,110 @@ function buildAccordionKeyboardSlice(
   }
 
   const noteByMidi = new Map(notes.map((note) => [note.midi, note]));
-  const minMidi = Math.min(...notes.map((note) => note.midi));
-  const maxMidi = Math.max(...notes.map((note) => note.midi));
-  let startMidi = minMidi;
-  while (normalizePitchClassView(startMidi) !== 0) {
-    startMidi -= 1;
-  }
-  let endMidi = maxMidi;
-  while (normalizePitchClassView(endMidi) !== 0) {
-    endMidi += 1;
-  }
-  if (endMidi - startMidi < 12) {
-    endMidi = startMidi + 12;
+  const window = buildCompactKeyboardWindow(notes.map((note) => note.midi));
+  if (!window) {
+    return { keys: [], whiteKeyCount: 0 };
   }
 
-  const keys: AccordionKeyboardKeyView[] = [];
+  const keysByPitch: Array<
+    Omit<AccordionKeyboardKeyView, "whiteIndex"> & {
+      lowerWhiteIndex: number;
+      whiteAscendingIndex: number | null;
+    }
+  > = [];
   let whiteIndex = 0;
-  for (let midi = startMidi; midi <= endMidi; midi += 1) {
+  for (let midi = window.startMidi; midi <= window.endMidi; midi += 1) {
     const pitch = midiToPitch(midi);
     const isBlack = isBlackPianoKey(midi);
-    keys.push({
+    keysByPitch.push({
       isBlack,
+      lowerWhiteIndex: isBlack ? Math.max(0, whiteIndex - 1) : whiteIndex,
       midi,
       note: noteByMidi.get(midi) ?? null,
       pitchLabel: pitch?.label ?? `MIDI ${midi}`,
-      whiteIndex: isBlack ? Math.max(0, whiteIndex - 1) : whiteIndex,
+      whiteAscendingIndex: isBlack ? null : whiteIndex,
     });
     if (!isBlack) {
       whiteIndex += 1;
     }
   }
 
-  return { keys, whiteKeyCount: whiteIndex };
+  const whiteKeyCount = whiteIndex;
+  const keys = keysByPitch.map(({ lowerWhiteIndex, whiteAscendingIndex, ...key }) => ({
+    ...key,
+    whiteIndex: key.isBlack
+      ? Math.max(0, whiteKeyCount - 2 - lowerWhiteIndex)
+      : whiteKeyCount - 1 - (whiteAscendingIndex ?? 0),
+  }));
+
+  return { keys, whiteKeyCount };
+}
+
+function buildCompactKeyboardWindow(activeMidis: readonly number[]): CompactKeyboardWindow | null {
+  if (activeMidis.length === 0) {
+    return null;
+  }
+
+  const lowestActiveMidi = Math.min(...activeMidis);
+  const highestActiveMidi = Math.max(...activeMidis);
+  const contextStartMidi = findCompactKeyboardWindowStartMidi(lowestActiveMidi);
+  const minimumContextEndMidi = Math.max(
+    lowestActiveMidi + 12,
+    findCompactKeyboardWindowEndMidi(lowestActiveMidi, contextStartMidi),
+  );
+
+  return {
+    startMidi: contextStartMidi,
+    endMidi: findNearestWhiteKeyAtOrAbove(Math.max(highestActiveMidi, minimumContextEndMidi)),
+  };
+}
+
+function findCompactKeyboardWindowStartMidi(lowestActiveMidi: number): number {
+  return getCompactKeyboardFamilyStartMidi(lowestActiveMidi);
+}
+
+function getCompactKeyboardFamilyStartMidi(midi: number): number {
+  const pitchClass = normalizePitchClassView(midi);
+  return midi - (pitchClass < 5 ? pitchClass : pitchClass - 5);
+}
+
+function findCompactKeyboardWindowEndMidi(lowestActiveMidi: number, contextStartMidi: number): number {
+  switch (getCompactKeyboardFamilyEndPitchClass(lowestActiveMidi)) {
+    case null:
+      return lowestActiveMidi + 12;
+    case COMPACT_KEYBOARD_C_FAMILY_END_PITCH_CLASS:
+      return getNextMidiForPitchClassAtOrAbove(contextStartMidi + 12, COMPACT_KEYBOARD_C_FAMILY_END_PITCH_CLASS);
+    case COMPACT_KEYBOARD_F_FAMILY_END_PITCH_CLASS:
+      return getNextMidiForPitchClassAtOrAbove(contextStartMidi + 12, COMPACT_KEYBOARD_F_FAMILY_END_PITCH_CLASS);
+  }
+  return lowestActiveMidi + 12;
+}
+
+function getCompactKeyboardFamilyEndPitchClass(lowestActiveMidi: number): number | null {
+  const pitchClass = normalizePitchClassView(lowestActiveMidi);
+  if (pitchClass >= 2 && pitchClass <= COMPACT_KEYBOARD_C_FAMILY_END_PITCH_CLASS) {
+    return COMPACT_KEYBOARD_C_FAMILY_END_PITCH_CLASS;
+  }
+  if (pitchClass >= 9) {
+    return COMPACT_KEYBOARD_F_FAMILY_END_PITCH_CLASS;
+  }
+  return null;
+}
+
+function getNextMidiForPitchClassAtOrAbove(midi: number, pitchClass: number): number {
+  let keyMidi = midi;
+  while (normalizePitchClassView(keyMidi) !== pitchClass) {
+    keyMidi += 1;
+  }
+  return keyMidi;
+}
+
+function findNearestWhiteKeyAtOrAbove(midi: number): number {
+  let keyMidi = midi;
+  while (isBlackPianoKey(keyMidi)) {
+    keyMidi += 1;
+  }
+  return keyMidi;
 }
 
 function findAccordionInspectorPoint(
@@ -2095,7 +2203,7 @@ function normalizeAccordionRowId(value: string | null): AccordionStradellaRowIdV
     return "diminished";
   }
   if (normalized === "7" || normalized === "seventh" || normalized === "dominant7") {
-    return "dominant7";
+    return "seventh";
   }
   if (normalized === "m" || normalized === "minor") {
     return "minor";
@@ -2132,7 +2240,7 @@ function formatAccordionButtonLabel(
       return `${noteLabel}M`;
     case "minor":
       return `${noteLabel}m`;
-    case "dominant7":
+    case "seventh":
       return `${noteLabel}7`;
     case "diminished":
       return `${noteLabel}dim`;

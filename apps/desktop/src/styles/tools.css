@@ -490,8 +490,8 @@
 }
 
 .chord-instrument-button {
-  border-color: color-mix(in srgb, var(--divider) 78%, transparent);
-  background: color-mix(in srgb, var(--panel) 76%, var(--panel-strong) 24%);
+  border-color: color-mix(in srgb, var(--divider) 70%, transparent);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
   box-shadow: none;
   cursor: pointer;
   transition:
@@ -502,12 +502,17 @@
 }
 
 .chord-instrument-selector .chord-instrument-button[aria-pressed="false"],
+.chord-instrument-selector .chord-instrument-button[data-selected="false"],
 .chord-instrument-selector .chord-instrument-button[aria-pressed="false"].chord-pill--active,
 .chord-instrument-selector .chord-instrument-button[aria-pressed="false"].chord-instrument-button--active {
-  border-color: color-mix(in srgb, var(--divider) 78%, transparent);
-  background: color-mix(in srgb, var(--panel) 76%, var(--panel-strong) 24%);
+  border-color: color-mix(in srgb, var(--divider) 62%, transparent);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
   box-shadow: none;
   color: var(--muted);
+}
+
+.chord-instrument-selector .chord-instrument-button[data-selected="false"] svg {
+  color: color-mix(in srgb, var(--muted) 78%, transparent);
 }
 
 .chord-instrument-selector .chord-instrument-button[aria-pressed="false"]:hover,
@@ -519,11 +524,18 @@
 }
 
 .chord-instrument-selector .chord-instrument-button[aria-pressed="true"],
+.chord-instrument-selector .chord-instrument-button[data-selected="true"],
 .chord-instrument-selector .chord-instrument-button--active[aria-pressed="true"] {
-  border-color: color-mix(in srgb, var(--playback-accent) 72%, var(--divider));
-  background: color-mix(in srgb, var(--playback-accent) 24%, var(--panel-strong));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--playback-accent) 24%, transparent);
+  border-color: color-mix(in srgb, var(--playback-accent) 82%, var(--text));
+  background: color-mix(in srgb, var(--playback-accent) 42%, var(--panel-strong));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--playback-accent) 38%, transparent),
+    0 0 0 0.16rem color-mix(in srgb, var(--playback-accent) 18%, transparent);
   color: var(--text);
+}
+
+.chord-instrument-selector .chord-instrument-button[data-selected="true"] svg {
+  color: color-mix(in srgb, var(--playback-accent) 72%, var(--text));
 }
 
 .chord-pill--muted {
@@ -1499,6 +1511,10 @@
   min-width: 0;
 }
 
+.accordion-candidate-card__title {
+  flex-wrap: nowrap;
+}
+
 .accordion-position-card__heading h4,
 .accordion-candidate-panel h4 {
   margin: 0;
@@ -1508,7 +1524,10 @@
 
 .accordion-match-badge {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
+  justify-content: center;
+  min-inline-size: max-content;
   min-height: 1.45rem;
   padding: 0.22rem 0.45rem;
   border: 1px solid color-mix(in srgb, var(--divider) 74%, transparent);
@@ -1518,7 +1537,9 @@
   font-size: 0.7rem;
   font-weight: 900;
   line-height: 1;
+  overflow-wrap: normal;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .accordion-match-badge--exact {
@@ -1623,23 +1644,23 @@
 }
 
 .accordion-keyboard {
-  --accordion-white-key-width: 10.8rem;
-  --accordion-white-key-height: 2.05rem;
+  --accordion-white-key-width: min(100%, 13.25rem);
+  --accordion-white-key-height: 2.42rem;
   --accordion-white-key-gap: 0rem;
   --accordion-white-key-step: calc(var(--accordion-white-key-height) + var(--accordion-white-key-gap));
-  --accordion-black-key-width: 4.15rem;
-  --accordion-black-key-height: 1.08rem;
-  --accordion-black-key-offset: -0.22rem;
-  --accordion-keyboard-start-padding: 1.95rem;
-  --accordion-keyboard-top-padding: 0.22rem;
-  --accordion-keyboard-end-padding: 0.28rem;
-  --accordion-keyboard-bottom-padding: 0.22rem;
+  --accordion-black-key-width: 6.35rem;
+  --accordion-black-key-height: 1.42rem;
+  --accordion-black-key-offset: 0.48rem;
+  --accordion-keyboard-start-padding: 0.72rem;
+  --accordion-keyboard-top-padding: 0.38rem;
+  --accordion-keyboard-end-padding: 0.36rem;
+  --accordion-keyboard-bottom-padding: 0.38rem;
 
   position: relative;
   align-self: start;
   justify-self: center;
   box-sizing: border-box;
-  inline-size: fit-content;
+  inline-size: min(100%, calc(var(--accordion-white-key-width) + var(--accordion-keyboard-start-padding) + var(--accordion-keyboard-end-padding)));
   max-inline-size: 100%;
   min-width: 0;
   padding:
@@ -1652,18 +1673,18 @@
 
 .accordion-keyboard__white-keys {
   display: grid;
-  grid-template-columns: var(--accordion-white-key-width);
-  grid-template-rows: repeat(var(--accordion-white-key-count, 15), var(--accordion-white-key-height));
+  grid-template-columns: minmax(0, var(--accordion-white-key-width));
+  grid-template-rows: repeat(var(--accordion-white-key-count, 8), var(--accordion-white-key-height));
   gap: var(--accordion-white-key-gap) 0;
   inline-size: var(--accordion-white-key-width);
   min-width: 0;
   min-height: calc(
-    (var(--accordion-white-key-count, 15) * var(--accordion-white-key-height)) +
-      ((var(--accordion-white-key-count, 15) - 1) * var(--accordion-white-key-gap))
+    (var(--accordion-white-key-count, 8) * var(--accordion-white-key-height)) +
+      ((var(--accordion-white-key-count, 8) - 1) * var(--accordion-white-key-gap))
   );
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--divider) 82%, transparent);
-  border-radius: 5px;
+  border-radius: 6px;
   background: color-mix(in srgb, white 94%, var(--panel-strong));
   box-shadow:
     inset 0 0 0 1px color-mix(in srgb, white 40%, transparent),
@@ -1676,8 +1697,8 @@
   inset-inline-start: var(--accordion-keyboard-start-padding);
   inline-size: var(--accordion-white-key-width);
   block-size: calc(
-    (var(--accordion-white-key-count, 15) * var(--accordion-white-key-height)) +
-      ((var(--accordion-white-key-count, 15) - 1) * var(--accordion-white-key-gap))
+    (var(--accordion-white-key-count, 8) * var(--accordion-white-key-height)) +
+      ((var(--accordion-white-key-count, 8) - 1) * var(--accordion-white-key-gap))
   );
   min-width: 0;
   pointer-events: none;
@@ -1692,26 +1713,32 @@
   box-sizing: border-box;
   min-width: 0;
   border: 0;
-  padding: 0.16rem 0.68rem 0.15rem calc(var(--accordion-black-key-width) + 0.52rem);
+  padding: 0.22rem 0.72rem 0.2rem calc(var(--accordion-black-key-width) + 0.9rem);
   color: var(--muted);
   font: inherit;
-  font-size: 0.74rem;
+  font-size: 0.76rem;
   font-weight: 900;
   line-height: 1.05;
   text-align: center;
 }
 
 .accordion-keyboard__key--white {
+  order: var(--accordion-white-index);
   inline-size: var(--accordion-white-key-width);
   block-size: var(--accordion-white-key-height);
   min-height: 0;
   border-radius: 0;
   border-bottom: 1px solid color-mix(in srgb, var(--divider) 72%, transparent);
   background:
-    linear-gradient(90deg, color-mix(in srgb, var(--divider) 45%, transparent) 0 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--divider) 34%, transparent) 0 1px, transparent 1px),
+    linear-gradient(180deg, color-mix(in srgb, white 98%, var(--panel-strong)) 0%, color-mix(in srgb, white 88%, var(--panel-strong)) 100%),
     color-mix(in srgb, white 94%, var(--panel-strong));
   color: color-mix(in srgb, var(--text) 92%, black);
   box-shadow: none;
+}
+
+.accordion-keyboard__key--white:first-child {
+  border-bottom: 0;
 }
 
 .accordion-keyboard__key--black {
@@ -1727,15 +1754,17 @@
   block-size: var(--accordion-black-key-height);
   min-height: 0;
   border: 1px solid color-mix(in srgb, black 82%, var(--divider));
-  border-radius: 4px 4px 3px 3px;
+  border-radius: 0 5px 5px 0;
+  justify-items: center;
+  padding: 0.12rem 0.46rem;
   background:
     linear-gradient(180deg, color-mix(in srgb, white 10%, transparent), transparent 34%),
-    linear-gradient(90deg, color-mix(in srgb, black 86%, var(--panel-strong)), color-mix(in srgb, black 68%, var(--panel-strong)));
-  color: color-mix(in srgb, var(--text) 82%, white);
-  font-size: 0.56rem;
+    linear-gradient(90deg, color-mix(in srgb, black 88%, var(--panel-strong)), color-mix(in srgb, black 68%, var(--panel-strong)));
+  color: color-mix(in srgb, white 88%, var(--panel));
+  font-size: 0.64rem;
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, white 10%, transparent),
-    0.16rem 0.12rem 0.2rem color-mix(in srgb, black 28%, transparent);
+    0.14rem 0.12rem 0.2rem color-mix(in srgb, black 28%, transparent);
   pointer-events: auto;
 }
 
@@ -1745,7 +1774,7 @@ span.accordion-keyboard__key--black {
 
 .accordion-keyboard__key--active-tone {
   border-color: color-mix(in srgb, var(--playback-accent) 72%, var(--divider));
-  background: linear-gradient(90deg, color-mix(in srgb, var(--playback-accent) 78%, white), color-mix(in srgb, var(--playback-accent) 58%, white));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--playback-accent) 74%, white), color-mix(in srgb, var(--playback-accent) 56%, white));
   color: color-mix(in srgb, var(--panel) 92%, black);
   cursor: pointer;
   box-shadow:
@@ -1754,8 +1783,11 @@ span.accordion-keyboard__key--black {
 }
 
 .accordion-keyboard__key--black.accordion-keyboard__key--active-tone {
-  background: color-mix(in srgb, var(--playback-accent) 54%, black);
-  color: var(--text);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 14%, transparent), transparent 36%),
+    linear-gradient(90deg, color-mix(in srgb, var(--playback-accent) 76%, black), color-mix(in srgb, var(--playback-accent) 58%, black));
+  color: color-mix(in srgb, white 96%, var(--panel));
+  text-shadow: 0 1px 0 color-mix(in srgb, black 42%, transparent);
 }
 
 .accordion-keyboard__key--selected {
@@ -1769,6 +1801,7 @@ span.accordion-keyboard__key--black {
   display: block;
   max-width: 100%;
   overflow-wrap: anywhere;
+  text-wrap: balance;
 }
 
 .accordion-keyboard__key span {
@@ -1779,7 +1812,7 @@ span.accordion-keyboard__key--black {
 }
 
 .accordion-keyboard__key--black span {
-  font-size: 0.5rem;
+  font-size: 0.58rem;
 }
 
 .accordion-candidate-panel {
@@ -1826,7 +1859,19 @@ span.accordion-keyboard__key--black {
 }
 
 .accordion-candidate-card__title strong {
+  flex: 1 1 auto;
+  min-width: 0;
   color: var(--text);
+}
+
+.accordion-candidate-card__title .accordion-match-badge {
+  font-size: 0.68rem;
+  overflow-wrap: normal;
+  white-space: nowrap;
+}
+
+.accordion-candidate-card__title .accordion-match-badge--exact {
+  color: color-mix(in srgb, var(--playback-accent) 54%, var(--text));
 }
 
 .accordion-candidate-card__diff {
@@ -2125,11 +2170,12 @@ span.accordion-keyboard__key--black {
   }
 
   .accordion-keyboard {
-    --accordion-white-key-width: 8.9rem;
-    --accordion-white-key-height: 1.86rem;
-    --accordion-black-key-width: 3.55rem;
-    --accordion-black-key-height: 1rem;
-    --accordion-keyboard-start-padding: 1.7rem;
+    --accordion-white-key-width: min(100%, 11.25rem);
+    --accordion-white-key-height: 2.16rem;
+    --accordion-black-key-width: 5.35rem;
+    --accordion-black-key-height: 1.26rem;
+    --accordion-black-key-offset: 0.38rem;
+    --accordion-keyboard-start-padding: 0.58rem;
   }
 
   .chord-field-row,

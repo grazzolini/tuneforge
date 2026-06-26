@@ -100,11 +100,14 @@ Important fields:
 - `type`
 - `status`
 - `progress`
+- `stage`
+- `stage_label`
 - `source_artifact_id`
 - `chord_backend`
 - `chord_source`
 - `error_message`
 - `runtime_device`
+- `runtime_detail`
 - `created_at`
 - `updated_at`
 

@@ -135,7 +135,118 @@ export function formatJobDuration(durationSeconds: number | null | undefined) {
   return formatPlaybackClock(durationSeconds);
 }
 
-export function formatJobStatusSummary(job: JobSchema) {
+type FormatJobStatusSummaryOptions = {
+  includeRuntimeDevice?: boolean;
+};
+
+const RUNTIME_LABEL_LIMIT = 160;
+const RUNTIME_DETAIL_LIMIT = 240;
+const SAFE_RUNTIME_DETAIL_PHRASES = new Set([
+  "CPU fallback after accelerator became unavailable.",
+  "CUDA failed, retrying CPU.",
+  "Demucs switched to CPU after the accelerator attempt failed.",
+  "Demucs switched to CPU because the requested accelerator is unavailable.",
+  "MPS failed, retrying CPU.",
+  "Whisper switched to CPU after the accelerator attempt failed.",
+  "Whisper switched to CPU because the requested accelerator is unavailable.",
+  "Whisper switched to a smaller model after CUDA memory pressure.",
+]);
+export function formatJobRuntimeDevice(device: string | null | undefined) {
+  const trimmed = typeof device === "string" ? device.trim() : "";
+  return trimmed ? trimmed.toUpperCase() : null;
+}
+
+function hasControlCharacter(value: string) {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 32 || code === 127) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function formatSafeRuntimeText(value: string | null | undefined, limit: number) {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed || trimmed.length > limit || hasControlCharacter(value ?? "")) {
+    return null;
+  }
+  const normalized = trimmed.replace(/\s+/g, " ");
+  if (/[\\/]/.test(normalized)) {
+    return null;
+  }
+  if (/(^|\s)\S+\.[a-z0-9]{1,8}(?=$|\s|[,;:!?])/i.test(normalized)) {
+    return null;
+  }
+  if (
+    /\b(stdout|stderr|traceback|stack trace)\b/i.test(normalized) ||
+    /^\s*(debug|info|warning|warn|error|critical|trace)\s*:/i.test(normalized) ||
+    /\[(debug|info|warning|warn|error|critical|trace)\]/i.test(normalized) ||
+    /\bFile "/.test(normalized) ||
+    /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/.test(normalized)
+  ) {
+    return null;
+  }
+  return normalized;
+}
+
+function formatJobRuntimeDetail(detail: string | null | undefined) {
+  const safeDetail = formatSafeRuntimeText(detail, RUNTIME_DETAIL_LIMIT);
+  if (!safeDetail || !SAFE_RUNTIME_DETAIL_PHRASES.has(safeDetail)) {
+    return null;
+  }
+  return safeDetail;
+}
+
+export function formatJobRuntimeSummary(job: JobSchema) {
+  const device = formatJobRuntimeDevice(job.runtime_device);
+  const detail = formatJobRuntimeDetail(job.runtime_detail);
+  return [
+    device,
+    detail && detail.toUpperCase() !== device ? detail : null,
+  ]
+    .filter(Boolean)
+    .join(" / ") || null;
+}
+
+function formatCompletedStageLabel(stageLabel: string) {
+  const savingMatch = /^Saving\s+(.+)$/i.exec(stageLabel);
+  return savingMatch ? `Saved ${savingMatch[1]}` : stageLabel;
+}
+
+function regexEscape(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function stripTrailingStageDevice(stageLabel: string, runtimeDevice: string | null) {
+  if (!runtimeDevice) {
+    return stageLabel;
+  }
+  return stageLabel.replace(new RegExp(`\\s+on\\s+${regexEscape(runtimeDevice)}\\.?$`, "i"), ".");
+}
+
+function stripTrailingStagePeriod(stageLabel: string) {
+  return stageLabel.replace(/\.$/, "");
+}
+
+export function formatJobStageLabel(job: JobSchema) {
+  const reportedLabel = formatSafeRuntimeText(job.stage_label, RUNTIME_LABEL_LIMIT);
+  if (reportedLabel) {
+    const stageLabel = stripTrailingStageDevice(reportedLabel, formatJobRuntimeDevice(job.runtime_device));
+    const displayLabel = job.status === "completed" ? formatCompletedStageLabel(stageLabel) : stageLabel;
+    return stripTrailingStagePeriod(displayLabel);
+  }
+  if (job.status === "pending") {
+    return "Waiting to start";
+  }
+  if (job.status === "running") {
+    return "Running";
+  }
+  return null;
+}
+
+export function formatJobStatusSummary(job: JobSchema, options: FormatJobStatusSummaryOptions = {}) {
+  const includeRuntimeDevice = options.includeRuntimeDevice ?? true;
   return [
     job.status,
     job.type === "analyze" ? formatBeatBackend(job.beat_backend) : null,
@@ -144,7 +255,7 @@ export function formatJobStatusSummary(job: JobSchema) {
     job.type === "chords" ? job.chord_source : null,
     job.type === "lyrics" ? formatLyricsSource(job.lyrics_source) : null,
     job.type === "stems" ? formatStemModel(job.stem_model_label ?? job.stem_model) : null,
-    typeof job.runtime_device === "string" ? job.runtime_device.toUpperCase() : null,
+    includeRuntimeDevice ? formatJobRuntimeDevice(job.runtime_device) : null,
     formatJobDuration(job.duration_seconds),
   ]
     .filter(Boolean)

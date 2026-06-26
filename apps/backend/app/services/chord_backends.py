@@ -188,6 +188,15 @@ def detect_with_chord_backend(source_path: Path, backend_id: str) -> ChordDetect
     return backend.detect(source_path)
 
 
+def chord_backend_runtime_device(backend_id: str) -> str | None:
+    resolved_backend_id = resolve_chord_backend_id(backend_id)
+    if resolved_backend_id == FAST_CHORD_BACKEND_ID:
+        return "cpu"
+    if resolved_backend_id == CREMA_CHORD_BACKEND_ID:
+        return crema_runtime_device()
+    return None
+
+
 def chord_backend_is_fast(backend_id: str) -> bool:
     return resolve_chord_backend_id(backend_id) == FAST_CHORD_BACKEND_ID
 

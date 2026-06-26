@@ -23,7 +23,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def _print_payload(payload: dict[str, Any]) -> None:
-    print(json.dumps(payload), flush=True)
+    print(json.dumps(payload, separators=(",", ":")), flush=True)
 
 
 def main() -> None:
@@ -35,6 +35,7 @@ def main() -> None:
             requested_device=args.requested_device,
             download_root=Path(args.download_root),
             language_override=args.language,
+            on_runtime_event=_print_payload,
         )
         _print_payload(
             {

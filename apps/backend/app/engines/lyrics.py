@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,12 @@ from typing import Any, cast
 from fastapi import status
 
 from app.errors import AppError, JobCancelledError
+from app.runtime_status import (
+    JobRuntimeStage,
+    is_runtime_event_payload,
+    parse_json_payload,
+    runtime_event_payload,
+)
 from app.utils.model_cache import ExpectedModelFile, InvalidModelFile, invalid_model_files
 from app.utils.torch_runtime import choose_torch_device, with_mps_fallback_env
 
@@ -361,15 +368,38 @@ def transcribe_project_lyrics_in_process(
     requested_device: str,
     download_root: Path,
     language_override: str | None = None,
+    on_runtime_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> LyricsTranscription:
     torch_module, whisper_module = _load_runtime()
     candidates = resolve_whisper_device_candidates(requested_device, torch_module=torch_module)
     errors: list[dict[str, str]] = []
 
+    requested_normalized = requested_device.strip().lower()
+    if requested_normalized in {"mps", "cuda"} and candidates == ["cpu"]:
+        _emit_lyrics_runtime_event(
+            on_runtime_event,
+            stage="fallback",
+            stage_label=f"Falling back from {requested_normalized.upper()} to CPU.",
+            runtime_device="cpu",
+            runtime_detail="Whisper switched to CPU because the requested accelerator is unavailable.",
+        )
+
     for device in candidates:
         model_candidates = resolve_whisper_model_candidates(model_name, device=device)
         for index, candidate_model in enumerate(model_candidates):
             try:
+                _emit_lyrics_runtime_event(
+                    on_runtime_event,
+                    stage="loading_model",
+                    stage_label=f"Loading Whisper model on {device.upper()}.",
+                    runtime_device=device,
+                )
+                _emit_lyrics_runtime_event(
+                    on_runtime_event,
+                    stage="processing",
+                    stage_label=f"Transcribing lyrics on {device.upper()}.",
+                    runtime_device=device,
+                )
                 return _transcribe_with_device(
                     source_path,
                     requested_device=requested_device,
@@ -390,7 +420,22 @@ def transcribe_project_lyrics_in_process(
                 )
                 if should_retry_smaller_cuda_model:
                     _clear_cuda_cache(torch_module)
+                    _emit_lyrics_runtime_event(
+                        on_runtime_event,
+                        stage="fallback",
+                        stage_label="Falling back to a smaller Whisper model on CUDA.",
+                        runtime_device="cuda",
+                        runtime_detail="Whisper switched to a smaller model after CUDA memory pressure.",
+                    )
                     continue
+                if device != "cpu" and "cpu" in candidates:
+                    _emit_lyrics_runtime_event(
+                        on_runtime_event,
+                        stage="fallback",
+                        stage_label=f"Falling back from {device.upper()} to CPU.",
+                        runtime_device="cpu",
+                        runtime_detail="Whisper switched to CPU after the accelerator attempt failed.",
+                    )
                 break
         if device == "cpu":
             break
@@ -412,9 +457,49 @@ def _worker_payload_from_stdout(stdout: str) -> dict[str, Any] | None:
             payload = json.loads(stripped)
         except json.JSONDecodeError:
             continue
-        if isinstance(payload, dict):
+        if isinstance(payload, dict) and not is_runtime_event_payload(payload):
             return payload
     return None
+
+
+def _emit_lyrics_runtime_event(
+    on_runtime_event: Callable[[dict[str, Any]], None] | None,
+    *,
+    stage: JobRuntimeStage,
+    stage_label: str,
+    runtime_device: str | None = None,
+    runtime_detail: str | None = None,
+    progress: int | None = None,
+) -> None:
+    payload = runtime_event_payload(
+        stage=stage,
+        stage_label=stage_label,
+        runtime_device=runtime_device,
+        runtime_detail=runtime_detail,
+        progress=progress,
+    )
+    if on_runtime_event is not None:
+        on_runtime_event(payload)
+
+
+def _start_output_reader(
+    pipe: Any,
+    lines: list[str],
+    on_payload: Callable[[dict[str, Any]], None] | None = None,
+) -> threading.Thread | None:
+    if pipe is None or not hasattr(pipe, "__iter__"):
+        return None
+
+    def read_lines() -> None:
+        for line in pipe:
+            lines.append(line)
+            payload = parse_json_payload(line.strip())
+            if payload is not None and on_payload is not None and is_runtime_event_payload(payload):
+                on_payload(payload)
+
+    thread = threading.Thread(target=read_lines, name="tuneforge-lyrics-output-reader", daemon=True)
+    thread.start()
+    return thread
 
 
 def _terminate_cancelled_worker(process: subprocess.Popen[str]) -> None:
@@ -466,6 +551,7 @@ def transcribe_project_lyrics(
     should_cancel: Callable[[], bool] | None = None,
     register_process: Callable[[subprocess.Popen[str]], None] | None = None,
     unregister_process: Callable[[], None] | None = None,
+    on_runtime_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> LyricsTranscription:
     if should_cancel and should_cancel():
         raise JobCancelledError()
@@ -495,6 +581,12 @@ def transcribe_project_lyrics(
     if register_process:
         register_process(process)
 
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    stdout_reader = _start_output_reader(getattr(process, "stdout", None), stdout_lines, on_runtime_event)
+    stderr_reader = _start_output_reader(getattr(process, "stderr", None), stderr_lines)
+    using_readers = stdout_reader is not None or stderr_reader is not None
+
     try:
         while process.poll() is None:
             if should_cancel and should_cancel():
@@ -505,7 +597,15 @@ def transcribe_project_lyrics(
             except subprocess.TimeoutExpired:
                 pass
 
-        stdout, stderr = process.communicate()
+        if using_readers:
+            if stdout_reader is not None:
+                stdout_reader.join(timeout=2)
+            if stderr_reader is not None:
+                stderr_reader.join(timeout=2)
+            stdout = "".join(stdout_lines)
+            stderr = "".join(stderr_lines)
+        else:
+            stdout, stderr = process.communicate()
         if should_cancel and should_cancel():
             raise JobCancelledError()
 

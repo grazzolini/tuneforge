@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -14,6 +15,7 @@ import soundfile as sf
 from fastapi import status
 
 from app.errors import AppError, JobCancelledError
+from app.runtime_status import is_runtime_event_payload, parse_json_payload
 from app.utils.torch_runtime import with_mps_fallback_env
 
 
@@ -130,6 +132,7 @@ def _run_demucs_worker(
     process: subprocess.Popen[str] | None = None
     stdout = ""
     stderr = ""
+    runtime_event_callback = getattr(on_progress, "runtime_event", None)
     try:
         try:
             process = subprocess.Popen(
@@ -141,6 +144,16 @@ def _run_demucs_worker(
             )
             if register_process:
                 register_process(process)
+
+            stdout_lines: list[str] = []
+            stderr_lines: list[str] = []
+            stdout_reader = _start_output_reader(
+                getattr(process, "stdout", None),
+                stdout_lines,
+                runtime_event_callback if callable(runtime_event_callback) else None,
+            )
+            stderr_reader = _start_output_reader(getattr(process, "stderr", None), stderr_lines)
+            using_readers = stdout_reader is not None or stderr_reader is not None
 
             progress = 15
             started_at = time.monotonic()
@@ -161,7 +174,15 @@ def _run_demucs_worker(
                     on_progress(progress)
                 time.sleep(0.25)
 
-            stdout, stderr = process.communicate()
+            if using_readers:
+                if stdout_reader is not None:
+                    stdout_reader.join(timeout=2)
+                if stderr_reader is not None:
+                    stderr_reader.join(timeout=2)
+                stdout = "".join(stdout_lines)
+                stderr = "".join(stderr_lines)
+            else:
+                stdout, stderr = process.communicate()
         finally:
             if unregister_process:
                 unregister_process()
@@ -188,7 +209,11 @@ def _run_demucs_worker(
             on_progress(98)
 
         metadata_line = next(
-            (line for line in reversed((stdout or "").splitlines()) if line.strip()),
+            (
+                line
+                for line in reversed((stdout or "").splitlines())
+                if line.strip() and not is_runtime_event_payload(parse_json_payload(line.strip()))
+            ),
             None,
         )
         if metadata_line:
@@ -205,6 +230,26 @@ def _run_demucs_worker(
     finally:
         if process and process.poll() is None:
             process.kill()
+
+
+def _start_output_reader(
+    pipe: object,
+    lines: list[str],
+    on_payload: Callable[[dict[str, object]], None] | None = None,
+) -> threading.Thread | None:
+    if pipe is None or not hasattr(pipe, "__iter__"):
+        return None
+
+    def read_lines() -> None:
+        for line in pipe:
+            lines.append(line)
+            payload = parse_json_payload(str(line).strip())
+            if payload is not None and on_payload is not None and is_runtime_event_payload(payload):
+                on_payload(payload)
+
+    thread = threading.Thread(target=read_lines, name="tuneforge-demucs-output-reader", daemon=True)
+    thread.start()
+    return thread
 
 
 def mix_audio_files(

@@ -3,6 +3,8 @@ import type { ChordSegmentSchema, JobSchema, LyricsSegmentSchema } from "../../l
 import {
   buildLeadSheetRows,
   findActiveLyricsIndex,
+  formatJobRuntimeSummary,
+  formatJobStageLabel,
   formatJobStatusSummary,
   transposeChordSegment,
 } from "./projectViewUtils";
@@ -15,6 +17,24 @@ function chord(startSeconds: number, endSeconds: number, label: string): ChordSe
     pitch_class: null,
     quality: null,
     start_seconds: startSeconds,
+  };
+}
+
+function testJob(overrides: Partial<JobSchema>): JobSchema {
+  return {
+    completed_at: "2026-04-18T13:16:02.000Z",
+    created_at: "2026-04-18T13:16:00.000Z",
+    duration_seconds: null,
+    error_message: null,
+    id: "job_test",
+    progress: 100,
+    project_id: "proj_123",
+    source_artifact_id: null,
+    started_at: "2026-04-18T13:16:00.000Z",
+    status: "completed",
+    type: "preview",
+    updated_at: "2026-04-18T13:16:02.000Z",
+    ...overrides,
   };
 }
 
@@ -249,7 +269,152 @@ describe("transposeChordSegment", () => {
   });
 });
 
+describe("formatJobStageLabel", () => {
+  it("uses reported labels and pending fallback copy", () => {
+    expect(formatJobStageLabel(testJob({ stage_label: "Separating stems.", status: "running" }))).toBe(
+      "Separating stems",
+    );
+    expect(formatJobStageLabel(testJob({ status: "pending", stage_label: null }))).toBe("Waiting to start");
+  });
+
+  it("uses neutral running fallback without promoting metadata", () => {
+    expect(formatJobStageLabel(testJob({ status: "running", stage_label: null }))).toBe("Running");
+  });
+
+  it("strips matching trailing device phrases from stage labels", () => {
+    expect(
+      formatJobStageLabel(
+        testJob({
+          runtime_device: "cpu",
+          stage_label: "Running advanced beat analysis on CPU.",
+          status: "running",
+        }),
+      ),
+    ).toBe("Running advanced beat analysis");
+    expect(
+      formatJobStageLabel(
+        testJob({
+          runtime_device: "mps",
+          stage_label: "Running advanced beat analysis on MPS",
+          status: "running",
+        }),
+      ),
+    ).toBe("Running advanced beat analysis");
+    expect(
+      formatJobStageLabel(
+        testJob({
+          runtime_device: "cuda",
+          stage_label: "Running advanced beat analysis on MPS.",
+          status: "running",
+        }),
+      ),
+    ).toBe("Running advanced beat analysis on MPS");
+    expect(
+      formatJobStageLabel(
+        testJob({
+          runtime_device: "cpu",
+          stage_label: "Checking CPU availability.",
+          status: "running",
+        }),
+      ),
+    ).toBe("Checking CPU availability");
+  });
+
+  it("drops unsafe reported stage labels and simplifies terminal stage labels", () => {
+    expect(formatJobStageLabel(testJob({ stage_label: "song.wav failed" }))).toBeNull();
+    expect(formatJobStageLabel(testJob({ stage_label: "stderr: song.wav failed" }))).toBeNull();
+    expect(
+      formatJobStageLabel(
+        testJob({
+          stage_label: "Saving lyrics.",
+          status: "completed",
+        }),
+      ),
+    ).toBe("Saved lyrics");
+    expect(
+      formatJobStageLabel(
+        testJob({
+          stage_label: "Saving chord timeline.",
+          status: "completed",
+        }),
+      ),
+    ).toBe("Saved chord timeline");
+    expect(
+      formatJobStageLabel(
+        testJob({
+          stage_label: "Separating stems.",
+          status: "failed",
+        }),
+      ),
+    ).toBe("Separating stems");
+  });
+
+  it("does not add terminal-stage copy when old jobs have null stage fields", () => {
+    expect(
+      formatJobStageLabel(
+        testJob({
+          runtime_detail: null,
+          runtime_device: null,
+          stage: null,
+          stage_label: null,
+        }),
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("formatJobRuntimeSummary", () => {
+  it("shows runtime device and concise fallback detail", () => {
+    expect(
+      formatJobRuntimeSummary(
+        testJob({
+          runtime_detail: "CPU fallback after accelerator became unavailable.",
+          runtime_device: "mps",
+        }),
+      ),
+    ).toBe("MPS / CPU fallback after accelerator became unavailable.");
+  });
+
+  it("omits unsafe or unknown runtime details", () => {
+    expect(
+      formatJobRuntimeSummary(
+        testJob({
+          runtime_detail: "/Users/example/Mix.wav",
+          runtime_device: "cpu",
+        }),
+      ),
+    ).toBe("CPU");
+    expect(
+      formatJobRuntimeSummary(
+        testJob({
+          runtime_detail: "song.wav failed",
+          runtime_device: "cpu",
+        }),
+      ),
+    ).toBe("CPU");
+    expect(
+      formatJobRuntimeSummary(
+        testJob({
+          runtime_detail: "Whisper found words that look like lyrics.",
+          runtime_device: "cpu",
+        }),
+      ),
+    ).toBe("CPU");
+  });
+});
+
 describe("formatJobStatusSummary", () => {
+  it("can omit runtime device when Activity renders runtime near stage", () => {
+    const job = testJob({
+      duration_seconds: 1.2,
+      lyrics_source: "vocals",
+      runtime_device: "mps",
+      type: "lyrics",
+    });
+
+    expect(formatJobStatusSummary(job, { includeRuntimeDevice: false })).toBe("completed / vocals / 1.2 s");
+  });
+
   it("includes beat backend and source beat input for analysis jobs", () => {
     const job: JobSchema = {
       beat_backend: "beat-this",

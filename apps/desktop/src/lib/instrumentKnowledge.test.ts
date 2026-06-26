@@ -497,7 +497,16 @@ describe("instrument knowledge bundle", () => {
         },
       ],
     });
-    expect(INSTRUMENT_KNOWLEDGE_BUNDLE_V1.instrumentProfiles.piano).toBeUndefined();
+    expect(INSTRUMENT_KNOWLEDGE_BUNDLE_V1.instrumentProfiles.piano).toMatchObject({
+      id: "piano",
+      executionLayer: "keyboard",
+      keyboard: {
+        keyCount: 88,
+        lowestPitch: "A0",
+        highestPitch: "C8",
+        canTranspose: false,
+      },
+    });
     expect(INSTRUMENT_KNOWLEDGE_BUNDLE_V1.voicingSeeds.piano).toBeUndefined();
   });
 });

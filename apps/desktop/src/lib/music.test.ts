@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   ACCORDION_STANDARD_PROFILE,
+  INSTRUMENT_PROFILES,
+  PIANO_STANDARD_PROFILE,
   formatParsedChordLabel,
   formatPitch,
   formatChordDisplay,
@@ -10,6 +12,7 @@ import {
   formatPitchClass,
   generateAccordionVoicings,
   generateGuitarVoicings,
+  generatePianoVoicings,
   getCapoShapeChord,
   getEnharmonicContext,
   midiToPitch,
@@ -25,6 +28,7 @@ import {
   type ChordSpelling,
   type GuitarVoicing,
   type MusicalKey,
+  type PianoVoicing,
 } from "./music";
 
 describe("enharmonic formatting", () => {
@@ -120,6 +124,30 @@ function requireAccordionVoicing(label: string, context: AccordionVoicingContext
   const voicing = generateAccordionVoicings(label, context)[0];
   if (!voicing) {
     throw new Error(`Expected ${label} to produce an accordion voicing`);
+  }
+  return voicing;
+}
+
+function requirePianoVoicings(label: string, context: MusicalKey | null = null): readonly PianoVoicing[] {
+  const voicings = generatePianoVoicings(label, context);
+  if (voicings.length === 0) {
+    throw new Error(`Expected ${label} to produce piano voicings`);
+  }
+  return voicings;
+}
+
+function requirePianoVoicing(label: string, context: MusicalKey | null = null): PianoVoicing {
+  const voicing = requirePianoVoicings(label, context)[0];
+  if (!voicing) {
+    throw new Error(`Expected ${label} to produce a piano voicing`);
+  }
+  return voicing;
+}
+
+function requirePianoInversion(label: string, inversionIndex: number): PianoVoicing {
+  const voicing = requirePianoVoicings(label).find((candidate) => candidate.inversion.index === inversionIndex);
+  if (!voicing) {
+    throw new Error(`Expected ${label} to include piano inversion ${inversionIndex}`);
   }
   return voicing;
 }
@@ -412,6 +440,155 @@ describe("chord parsing and spelling", () => {
       expect(transposeChordLabel(label, 2)).toBeNull();
       expect(generateGuitarVoicings(label)).toEqual([]);
     }
+  });
+});
+
+describe("piano chord voicings", () => {
+  it("exports standard piano profile with 88-key A0-C8 metadata", () => {
+    expect(PIANO_STANDARD_PROFILE).toMatchObject({
+      id: "piano",
+      label: "Piano",
+      family: "keyboards",
+      keyboard: {
+        keyCount: 88,
+        lowestPitch: { label: "A0", midi: 21 },
+        highestPitch: { label: "C8", midi: 108 },
+        canTranspose: false,
+      },
+    });
+    expect(INSTRUMENT_PROFILES.piano).toBe(PIANO_STANDARD_PROFILE);
+  });
+
+  it("generates C major root position with exact octave labels and degrees", () => {
+    const voicing = requirePianoInversion("C", 0);
+
+    expect(voicing).toMatchObject({
+      chordLabel: "C",
+      label: "C root position",
+      inversion: {
+        index: 0,
+        label: "root position",
+        bassDegree: "1",
+        isRootPosition: true,
+      },
+      regionRoot: { pitchClass: 0, note: "C" },
+    });
+    expect(voicing.notes.map(({ note, degree, pitch, handHint }) => ({ note, degree, pitch, handHint }))).toEqual([
+      {
+        note: "C4",
+        degree: "1",
+        pitch: { pitchClass: 0, octave: 4, midi: 60, noteName: "C", label: "C4" },
+        handHint: "right",
+      },
+      {
+        note: "E4",
+        degree: "3",
+        pitch: { pitchClass: 4, octave: 4, midi: 64, noteName: "E", label: "E4" },
+        handHint: "right",
+      },
+      {
+        note: "G4",
+        degree: "5",
+        pitch: { pitchClass: 7, octave: 4, midi: 67, noteName: "G", label: "G4" },
+        handHint: "right",
+      },
+    ]);
+  });
+
+  it("exposes exact pitch data for major, minor, and seventh chords inside range", () => {
+    for (const label of ["C", "Am", "G7", "Cmaj7", "Dm7"]) {
+      const voicing = requirePianoVoicing(label);
+      const chord = requireChord(label);
+      expect(new Set(voicing.notes.map((note) => note.degree))).toEqual(
+        new Set(chord.tones.map((tone) => tone.degree)),
+      );
+      expect(voicing.notes.map((note) => note.pitch.midi)).toEqual(
+        [...voicing.notes].map((note) => note.pitch.midi).sort((left, right) => left - right),
+      );
+      for (const note of voicing.notes) {
+        expect(note.pitch.label).toBe(note.note);
+        expect(note.pitch.label).toMatch(/^[A-G](?:#|b)?-?\d+$/);
+        expect(note.pitch.midi).toBeGreaterThanOrEqual(PIANO_STANDARD_PROFILE.keyboard.lowestPitch.midi);
+        expect(note.pitch.midi).toBeLessThanOrEqual(PIANO_STANDARD_PROFILE.keyboard.highestPitch.midi);
+      }
+    }
+  });
+
+  it("defaults unconstrained major and minor piano chords to root position across roots", () => {
+    const roots = ["C", "C#", "Db", "D", "D#", "Eb", "E", "F", "F#", "Gb", "G", "G#", "Ab", "A", "A#", "Bb", "B"];
+
+    for (const label of roots.flatMap((root) => [root, `${root}m`])) {
+      const voicings = requirePianoVoicings(label);
+      const chord = requireChord(label);
+
+      expect(voicings[0]?.rank).toBe(1);
+      expect(voicings[0]?.inversion).toMatchObject({
+        index: 0,
+        label: "root position",
+        bassDegree: "1",
+        isRootPosition: true,
+      });
+      expect(voicings[0]?.notes[0]?.degree).toBe("1");
+      expect(voicings[0]?.notes[0]?.pitch.pitchClass).toBe(chord.rootPitchClass);
+    }
+  });
+
+  it("keeps generated close inversions available after the root-position default", () => {
+    const cVoicings = requirePianoVoicings("C", { pitchClass: 0, mode: "major" });
+    expect(cVoicings.map((voicing) => voicing.rank)).toEqual([1, 2, 3]);
+    expect(cVoicings[0]?.inversion.index).toBe(0);
+    expect([...cVoicings].map((voicing) => voicing.inversion.index).sort()).toEqual([0, 1, 2]);
+
+    const gRegionVoicings = generatePianoVoicings("C", {
+      regionKey: { pitchClass: 7, mode: "major" },
+    });
+    expect(gRegionVoicings[0]).toMatchObject({
+      regionRoot: { pitchClass: 7, note: "G" },
+      inversion: { index: 2, label: "second inversion", bassDegree: "5" },
+    });
+    expect(gRegionVoicings[0]?.notes.map((note) => note.note)).toEqual(["G3", "C4", "E4"]);
+    expect(gRegionVoicings.find((voicing) => voicing.inversion.index === 0)?.notes.map((note) => note.note)).toEqual([
+      "C4",
+      "E4",
+      "G4",
+    ]);
+
+    const fRootVoicings = generatePianoVoicings("C", { currentChordRoot: "F" });
+    expect(fRootVoicings[0]?.regionRoot).toEqual({ pitchClass: 5, note: "F" });
+    expect(fRootVoicings[0]).toMatchObject({
+      inversion: { index: 1, label: "first inversion", bassDegree: "3" },
+    });
+    expect(fRootVoicings[0]?.notes.map((note) => note.note)).toEqual(["E4", "G4", "C5"]);
+  });
+
+  it("keeps supported slash bass as the lowest piano note", () => {
+    const cOverE = requirePianoVoicing("C/E");
+    expect(cOverE).toMatchObject({
+      chordLabel: "C/E",
+      inversion: { index: 1, label: "first inversion", bassDegree: "3", isRootPosition: false },
+    });
+    expect(cOverE.notes[0]).toMatchObject({
+      note: "E4",
+      degree: "3",
+      pitch: { pitchClass: 4 },
+    });
+
+    const gOverD = requirePianoVoicing("G/D");
+    expect(gOverD).toMatchObject({
+      chordLabel: "G/D",
+      inversion: { index: 2, label: "second inversion", bassDegree: "5", isRootPosition: false },
+    });
+    expect(gOverD.notes[0]).toMatchObject({
+      note: "D4",
+      degree: "5",
+      pitch: { pitchClass: 2 },
+    });
+  });
+
+  it("returns no piano voicings for unsupported chord symbols", () => {
+    expect(generatePianoVoicings("Cadd9")).toEqual([]);
+    expect(generatePianoVoicings("N.C.")).toEqual([]);
+    expect(generatePianoVoicings("C/F#")).toEqual([]);
   });
 });
 

@@ -249,6 +249,18 @@
           ]
         }
       }
+    },
+    "piano": {
+      "id": "piano",
+      "label": "Piano",
+      "family": "keyboards",
+      "executionLayer": "keyboard",
+      "keyboard": {
+        "keyCount": 88,
+        "lowestPitch": "A0",
+        "highestPitch": "C8",
+        "canTranspose": false
+      }
     }
   },
   "voicingSeeds": {

@@ -7,6 +7,7 @@ import {
   type GuitarVoicingSeedV1,
   type InstrumentProfileV1,
   type KeyboardFingerV1,
+  type KeyboardHandV1,
 } from "./instrumentKnowledge";
 
 export type KeyMode = "major" | "minor";
@@ -187,6 +188,58 @@ export type GuitarVoicing = {
   mutedStrings: readonly number[];
   notes: readonly GuitarVoicingNote[];
 };
+
+export type PianoProfile = {
+  id: "piano";
+  label: string;
+  family: string;
+  keyboard: {
+    keyCount: number;
+    lowestPitch: ParsedPitch;
+    highestPitch: ParsedPitch;
+    canTranspose: boolean;
+  };
+};
+
+export type PianoHandHint = KeyboardHandV1;
+
+export type PianoVoicingNote = {
+  id: string;
+  pitch: ParsedPitch;
+  note: string;
+  degree: ChordDegree;
+  handHint: PianoHandHint;
+};
+
+export type PianoRegionRoot = {
+  pitchClass: number;
+  note: string;
+};
+
+export type PianoVoicingInversion = {
+  index: number;
+  label: string;
+  bassDegree: ChordDegree;
+  isRootPosition: boolean;
+};
+
+export type PianoVoicing = {
+  id: string;
+  label: string;
+  chordLabel: string;
+  rank: number;
+  notes: readonly PianoVoicingNote[];
+  inversion: PianoVoicingInversion;
+  regionRoot: PianoRegionRoot;
+};
+
+export type PianoVoicingContext =
+  | MusicalKey
+  | {
+      activeKey?: MusicalKey | null;
+      regionKey?: MusicalKey | null;
+      currentChordRoot?: ChordInput | number | null;
+    };
 
 export type AccordionStradellaRowId = ButtonBoardStradellaRowIdV1;
 export type AccordionLeftHandQuality = "exact" | "approx";
@@ -512,6 +565,18 @@ export const GUITAR_STANDARD_PROFILE: GuitarProfile =
   buildGuitarStandardProfile(INSTRUMENT_KNOWLEDGE_BUNDLE_V1.instrumentProfiles.guitar) ??
   FALLBACK_GUITAR_STANDARD_PROFILE;
 
+const FALLBACK_PIANO_STANDARD_PROFILE: PianoProfile = {
+  id: "piano",
+  label: "Piano",
+  family: "keyboards",
+  keyboard: {
+    keyCount: 88,
+    lowestPitch: parsePitchRequired("A0"),
+    highestPitch: parsePitchRequired("C8"),
+    canTranspose: false,
+  },
+};
+
 const FALLBACK_ACCORDION_STRADELLA_PROFILE: ButtonBoardStradellaProfileV1 = {
   rootAxis: [
     { root: "B", pitchClass: 11, column: 1, visualColumn: 0, visualOrder: 0 },
@@ -617,9 +682,14 @@ export const ACCORDION_STANDARD_PROFILE: AccordionProfile =
   buildAccordionStandardProfile(INSTRUMENT_KNOWLEDGE_BUNDLE_V1.instrumentProfiles.accordion) ??
   FALLBACK_ACCORDION_STANDARD_PROFILE;
 
+export const PIANO_STANDARD_PROFILE: PianoProfile =
+  buildPianoStandardProfile(INSTRUMENT_KNOWLEDGE_BUNDLE_V1.instrumentProfiles.piano) ??
+  FALLBACK_PIANO_STANDARD_PROFILE;
+
 export const INSTRUMENT_PROFILES = {
   guitar: GUITAR_STANDARD_PROFILE,
   accordion: ACCORDION_STANDARD_PROFILE,
+  piano: PIANO_STANDARD_PROFILE,
 } as const;
 
 const FALLBACK_GUITAR_TEMPLATE_STRINGS = [6, 5, 4, 3, 2, 1] as const;
@@ -710,6 +780,30 @@ function buildAccordionStandardProfile(profile: InstrumentProfileV1 | undefined)
       columns: profile.buttonBoard.columns,
       canTranspose: profile.buttonBoard.canTranspose,
       stradella: profile.buttonBoard.stradella,
+    },
+  };
+}
+
+function buildPianoStandardProfile(profile: InstrumentProfileV1 | undefined): PianoProfile | null {
+  if (!profile || profile.id !== "piano" || !profile.keyboard) {
+    return null;
+  }
+
+  const lowestPitch = parsePitch(profile.keyboard.lowestPitch);
+  const highestPitch = parsePitch(profile.keyboard.highestPitch);
+  if (!lowestPitch || !highestPitch || lowestPitch.midi >= highestPitch.midi) {
+    return null;
+  }
+
+  return {
+    id: "piano",
+    label: profile.label,
+    family: profile.family,
+    keyboard: {
+      keyCount: profile.keyboard.keyCount,
+      lowestPitch,
+      highestPitch,
+      canTranspose: profile.keyboard.canTranspose,
     },
   };
 }
@@ -1428,6 +1522,286 @@ export function generateGuitarVoicings(
     }
     return left.rank - right.rank;
   });
+}
+
+const PIANO_REGION_TARGET_MIDI = 60;
+const PIANO_MAX_VOICINGS = 8;
+
+type ResolvedPianoContext = {
+  regionKey: MusicalKey | null;
+  currentChordRootPitchClass: number | null;
+};
+
+type PianoGeneratedCandidate = {
+  inversion: number;
+  notes: readonly PianoVoicingNote[];
+  score: number;
+  shapeKey: string;
+};
+
+export function generatePianoVoicings(
+  chord: ChordInput,
+  context: PianoVoicingContext | null = null,
+  options: PitchFormatOptions = {},
+): readonly PianoVoicing[] {
+  const parsedChord = parseChordInput(chord);
+  if (!parsedChord) {
+    return [];
+  }
+
+  const resolvedContext = resolvePianoVoicingContext(context);
+  const regionRootPitchClass =
+    resolvedContext.regionKey?.pitchClass ?? resolvedContext.currentChordRootPitchClass ?? 0;
+  const resolvedChordOptions = resolveChordFormatOptions(parsedChord, options);
+  const chordOptions = {
+    ...resolvedChordOptions,
+    activeKey: options.activeKey ?? resolvedContext.regionKey ?? resolvedChordOptions.activeKey,
+  };
+  const chordSpelling = spellChord(parsedChord, chordOptions);
+  if (!chordSpelling || !isPianoVoicingSupportedChord(chordSpelling)) {
+    return [];
+  }
+  const bassInversionConstraint = resolvePianoBassInversionConstraint(chordSpelling);
+  if (bassInversionConstraint === "unsupported") {
+    return [];
+  }
+  const preferRootPosition = bassInversionConstraint === null && !hasPianoVoicingRegionContext(resolvedContext);
+
+  const regionRoot: PianoRegionRoot = {
+    pitchClass: normalizePitchClass(regionRootPitchClass),
+    note: formatPitchClass(regionRootPitchClass, chordOptions),
+  };
+  return generatePianoCloseVoicingCandidates(
+    chordSpelling,
+    PIANO_STANDARD_PROFILE,
+    regionRoot.pitchClass,
+    chordOptions,
+    bassInversionConstraint,
+    preferRootPosition,
+  ).map((candidate, index): PianoVoicing => {
+    const inversionLabel = formatPianoInversionName(candidate.inversion);
+    const bassDegree = candidate.notes[0]?.degree ?? "1";
+    return {
+      id: `piano-${slugifyMusicId(chordSpelling.label)}-${slugifyMusicId(inversionLabel)}-${candidate.shapeKey}`,
+      label: `${chordSpelling.label} ${inversionLabel}`,
+      chordLabel: chordSpelling.label,
+      rank: index + 1,
+      notes: candidate.notes,
+      inversion: {
+        index: candidate.inversion,
+        label: inversionLabel,
+        bassDegree,
+        isRootPosition: candidate.inversion === 0,
+      },
+      regionRoot,
+    };
+  });
+}
+
+function resolvePianoVoicingContext(context: PianoVoicingContext | null): ResolvedPianoContext {
+  if (!context) {
+    return { regionKey: null, currentChordRootPitchClass: null };
+  }
+  if (isMusicalKeyLike(context)) {
+    return { regionKey: context, currentChordRootPitchClass: null };
+  }
+
+  return {
+    regionKey: context.regionKey ?? context.activeKey ?? null,
+    currentChordRootPitchClass: resolvePianoChordRootPitchClass(context.currentChordRoot),
+  };
+}
+
+function hasPianoVoicingRegionContext(context: ResolvedPianoContext): boolean {
+  return context.regionKey !== null || context.currentChordRootPitchClass !== null;
+}
+
+function resolvePianoChordRootPitchClass(input: ChordInput | number | null | undefined): number | null {
+  if (typeof input === "number") {
+    return Number.isFinite(input) ? normalizePitchClass(input) : null;
+  }
+  if (input === null || input === undefined) {
+    return null;
+  }
+
+  const parsedChord = parseChordInput(input);
+  return parsedChord ? parsedChord.rootPitchClass : null;
+}
+
+function isPianoVoicingSupportedChord(chord: ChordSpelling): boolean {
+  return chord.tones.length >= 3 && chord.tones.length <= 4;
+}
+
+function resolvePianoBassInversionConstraint(chord: ChordSpelling): number | "unsupported" | null {
+  if (typeof chord.bassPitchClass !== "number") {
+    return null;
+  }
+
+  const bassPitchClass = normalizePitchClass(chord.bassPitchClass);
+  const bassToneIndex = chord.tones.findIndex((tone) => normalizePitchClass(tone.pitchClass) === bassPitchClass);
+  return bassToneIndex === -1 ? "unsupported" : bassToneIndex;
+}
+
+function generatePianoCloseVoicingCandidates(
+  chord: ChordSpelling,
+  profile: PianoProfile,
+  regionRootPitchClass: number,
+  options: PitchFormatOptions,
+  bassInversionConstraint: number | null,
+  preferRootPosition: boolean,
+): readonly PianoGeneratedCandidate[] {
+  const targetMidi = getPianoRegionAnchorMidi(regionRootPitchClass, profile);
+  const candidates: PianoGeneratedCandidate[] = [];
+  const inversionIndexes =
+    typeof bassInversionConstraint === "number"
+      ? [bassInversionConstraint]
+      : chord.tones.map((_, inversion) => inversion);
+
+  for (const inversion of inversionIndexes) {
+    let bestCandidate: PianoGeneratedCandidate | null = null;
+    for (let baseMidi = profile.keyboard.lowestPitch.midi; baseMidi <= profile.keyboard.highestPitch.midi; baseMidi += 1) {
+      if (normalizePitchClass(baseMidi) !== chord.tones[inversion]?.pitchClass) {
+        continue;
+      }
+
+      const midiSequence = buildKeyboardRightHandInversionMidiSequence(
+        chord,
+        inversion,
+        baseMidi,
+        profile.keyboard.lowestPitch.midi,
+        profile.keyboard.highestPitch.midi,
+      );
+      const notes = renderPianoVoicingNotes(midiSequence, options);
+      if (notes.length !== chord.tones.length) {
+        continue;
+      }
+
+      const shapeKey = notes.map((note) => note.pitch.midi).join("-");
+      const score = scorePianoCloseVoicingCandidate(notes, targetMidi, inversion, chord.rootPitchClass, regionRootPitchClass);
+      if (!bestCandidate || score < bestCandidate.score) {
+        bestCandidate = {
+          inversion,
+          notes,
+          score,
+          shapeKey,
+        };
+      }
+    }
+
+    if (bestCandidate) {
+      candidates.push(bestCandidate);
+    }
+  }
+
+  return candidates
+    .sort((left, right) =>
+      comparePianoCloseVoicingCandidates(left, right, preferRootPosition),
+    )
+    .slice(0, PIANO_MAX_VOICINGS);
+}
+
+function comparePianoCloseVoicingCandidates(
+  left: PianoGeneratedCandidate,
+  right: PianoGeneratedCandidate,
+  preferRootPosition: boolean,
+): number {
+  if (preferRootPosition && left.inversion !== right.inversion) {
+    if (left.inversion === 0) {
+      return -1;
+    }
+    if (right.inversion === 0) {
+      return 1;
+    }
+  }
+
+  return left.score - right.score || left.shapeKey.localeCompare(right.shapeKey);
+}
+
+function renderPianoVoicingNotes(
+  midiSequence: ReadonlyArray<{ midi: number; tone: ChordTone }>,
+  options: PitchFormatOptions,
+): readonly PianoVoicingNote[] {
+  return midiSequence.flatMap(({ midi, tone }, index): PianoVoicingNote[] => {
+    const pitch = midiToPitch(midi, options);
+    if (!pitch) {
+      return [];
+    }
+
+    return [
+      {
+        id: `piano-note-${index}-${midi}`,
+        pitch,
+        note: pitch.label,
+        degree: tone.degree,
+        handHint: getPianoHandHint(midi),
+      },
+    ];
+  });
+}
+
+function scorePianoCloseVoicingCandidate(
+  notes: readonly PianoVoicingNote[],
+  targetMidi: number,
+  inversion: number,
+  chordRootPitchClass: number,
+  regionRootPitchClass: number,
+): number {
+  const lowestMidi = notes[0]?.pitch.midi ?? targetMidi;
+  const highestMidi = notes[notes.length - 1]?.pitch.midi ?? targetMidi;
+  const center = notes.reduce((total, note) => total + note.pitch.midi, 0) / notes.length;
+  const averageDistance = notes.reduce((total, note) => total + Math.abs(note.pitch.midi - targetMidi), 0) / notes.length;
+  const tonicRootBonus =
+    normalizePitchClass(chordRootPitchClass) === normalizePitchClass(regionRootPitchClass) && inversion === 0 ? -40 : 0;
+  return (
+    Math.abs(lowestMidi - targetMidi) * 20 +
+    Math.abs(center - targetMidi) * 3 +
+    averageDistance * 2 +
+    (highestMidi - lowestMidi) +
+    inversion * 0.5 +
+    tonicRootBonus
+  );
+}
+
+function getPianoRegionAnchorMidi(regionRootPitchClass: number, profile: PianoProfile): number {
+  const targetMidi = clampNumber(
+    PIANO_REGION_TARGET_MIDI,
+    profile.keyboard.lowestPitch.midi,
+    profile.keyboard.highestPitch.midi,
+  );
+  let bestMidi = targetMidi;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (let midi = profile.keyboard.lowestPitch.midi; midi <= profile.keyboard.highestPitch.midi; midi += 1) {
+    if (normalizePitchClass(midi) !== normalizePitchClass(regionRootPitchClass)) {
+      continue;
+    }
+    const distance = Math.abs(midi - targetMidi);
+    if (distance < bestDistance) {
+      bestMidi = midi;
+      bestDistance = distance;
+    }
+  }
+
+  return bestMidi;
+}
+
+function getPianoHandHint(midi: number): PianoHandHint {
+  return midi < PIANO_REGION_TARGET_MIDI ? "left" : "right";
+}
+
+function formatPianoInversionName(inversion: number): string {
+  switch (inversion) {
+    case 0:
+      return "root position";
+    case 1:
+      return "first inversion";
+    case 2:
+      return "second inversion";
+    case 3:
+      return "third inversion";
+    default:
+      return `${formatOrdinal(inversion + 1)} inversion`;
+  }
 }
 
 const ACCORDION_VISIBLE_ROOT_RADIUS = 5;

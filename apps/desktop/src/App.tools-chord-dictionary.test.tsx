@@ -40,11 +40,12 @@ function getDictionaryInstrumentSelector() {
   const instrumentSelector = instrumentGroups.find(
     (group) =>
       within(group).queryByRole("button", { name: "Guitar" }) ||
-      within(group).queryByRole("button", { name: "Accordion" }),
+      within(group).queryByRole("button", { name: "Accordion" }) ||
+      within(group).queryByRole("button", { name: "Piano" }),
   );
 
   if (!instrumentSelector) {
-    throw new Error("Expected a dictionary instrument selector with Guitar and Accordion choices");
+    throw new Error("Expected a dictionary instrument selector with Guitar, Accordion, and Piano choices");
   }
 
   return instrumentSelector as HTMLElement;
@@ -128,10 +129,39 @@ function getAccordionActiveKeyboardMidi(keyboard: HTMLElement) {
     .sort();
 }
 
+function getPianoKeyboard() {
+  const keyboard = document.querySelector('[data-instrument="piano"][data-surface="piano-keyboard"]');
+  if (!(keyboard instanceof HTMLElement)) {
+    throw new Error("Expected piano keyboard surface");
+  }
+  return keyboard;
+}
+
+function getPianoKeyByMidi(keyboard: HTMLElement, midi: number, color: "black" | "white") {
+  const key = keyboard.querySelector(`[data-midi="${midi}"][data-key-color="${color}"]`);
+  if (!(key instanceof HTMLElement)) {
+    throw new Error(`Expected ${color} piano key for MIDI ${midi}`);
+  }
+  return key;
+}
+
+function getPianoActiveKeyboardMidi(keyboard: HTMLElement) {
+  return [...keyboard.querySelectorAll<HTMLElement>(".piano-keyboard__key--active-tone")]
+    .map((key) => key.dataset.midi)
+    .sort();
+}
+
+function getPianoKeyboardMidiByColor(keyboard: HTMLElement, color: "black" | "white") {
+  return [...keyboard.querySelectorAll<HTMLElement>(`[data-key-color="${color}"]`)].map(
+    (key) => key.dataset.midi,
+  );
+}
+
 function expectAccordionInstrumentSelected() {
   const instrumentSelector = getDictionaryInstrumentSelector();
   const guitarButton = within(instrumentSelector).getByRole("button", { name: "Guitar" });
   const accordionButton = within(instrumentSelector).getByRole("button", { name: "Accordion" });
+  const pianoButton = within(instrumentSelector).getByRole("button", { name: "Piano" });
 
   expect(guitarButton).toHaveAttribute("aria-pressed", "false");
   expect(guitarButton).toHaveAttribute("data-selected", "false");
@@ -139,6 +169,25 @@ function expectAccordionInstrumentSelected() {
   expect(accordionButton).toHaveAttribute("aria-pressed", "true");
   expect(accordionButton).toHaveAttribute("data-selected", "true");
   expect(accordionButton).toHaveClass("chord-instrument-button--active");
+  expect(pianoButton).toHaveAttribute("aria-pressed", "false");
+  expect(pianoButton).toHaveAttribute("data-selected", "false");
+}
+
+function expectPianoInstrumentSelected() {
+  const instrumentSelector = getDictionaryInstrumentSelector();
+  const guitarButton = within(instrumentSelector).getByRole("button", { name: "Guitar" });
+  const accordionButton = within(instrumentSelector).getByRole("button", { name: "Accordion" });
+  const pianoButton = within(instrumentSelector).getByRole("button", { name: "Piano" });
+
+  expect(guitarButton).toHaveAttribute("aria-pressed", "false");
+  expect(guitarButton).toHaveAttribute("data-selected", "false");
+  expect(guitarButton).not.toHaveClass("chord-instrument-button--active");
+  expect(accordionButton).toHaveAttribute("aria-pressed", "false");
+  expect(accordionButton).toHaveAttribute("data-selected", "false");
+  expect(accordionButton).not.toHaveClass("chord-instrument-button--active");
+  expect(pianoButton).toHaveAttribute("aria-pressed", "true");
+  expect(pianoButton).toHaveAttribute("data-selected", "true");
+  expect(pianoButton).toHaveClass("chord-instrument-button--active");
 }
 
 async function selectAccordionDictionary() {
@@ -163,6 +212,28 @@ async function selectAccordionDictionary() {
     ),
   );
   expectAccordionInstrumentSelected();
+  return user;
+}
+
+async function selectPianoDictionary() {
+  const user = userEvent.setup();
+  await renderChordDictionary();
+
+  const instrumentSelector = getDictionaryInstrumentSelector();
+  expect(within(instrumentSelector).getByRole("button", { name: "Guitar" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+
+  await user.click(within(instrumentSelector).getByRole("button", { name: "Piano" }));
+
+  await waitFor(() =>
+    expect(within(getDictionaryInstrumentSelector()).getByRole("button", { name: "Piano" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    ),
+  );
+  expectPianoInstrumentSelected();
   return user;
 }
 
@@ -667,6 +738,9 @@ describe("Desktop app tools chord dictionary", () => {
     expect(
       within(instrumentSelector).getByRole("button", { name: "Accordion" }),
     ).toHaveAttribute("aria-pressed", "false");
+    expect(
+      within(instrumentSelector).getByRole("button", { name: "Piano" }),
+    ).toHaveAttribute("aria-pressed", "false");
     expectTextVisible("C E G");
     expect(
       screen.getAllByRole("button", { name: "C3 string 5 fret 3" }).length,
@@ -840,6 +914,101 @@ describe("Desktop app tools chord dictionary", () => {
     expect(eRightKey).toHaveTextContent("3");
     expect(gRightKey).toHaveTextContent("G4");
     expect(gRightKey).toHaveTextContent("5");
+  });
+
+  it("selects Piano and renders C major generated keys with octave labels", async () => {
+    await selectPianoDictionary();
+
+    expect(screen.getByRole("heading", { name: "C piano voicings" })).toBeInTheDocument();
+    expect(screen.getByText("A0-C8 range")).toBeInTheDocument();
+    expect(screen.getByText("Region C")).toBeInTheDocument();
+
+    const keyboard = getPianoKeyboard();
+    expect(keyboard).toHaveAttribute("data-layout", "compact-piano");
+    expect(keyboard).toHaveAttribute("data-surface", "piano-keyboard");
+    expect(Number(keyboard.style.getPropertyValue("--piano-white-key-count"))).toBe(15);
+    expect(getPianoKeyboardMidiByColor(keyboard, "white")).toHaveLength(15);
+    expect(getPianoKeyboardMidiByColor(keyboard, "black")).toHaveLength(10);
+    expect(getPianoActiveKeyboardMidi(keyboard)).toEqual(["60", "64", "67"]);
+
+    const cKey = getPianoKeyByMidi(keyboard, 60, "white");
+    const eKey = getPianoKeyByMidi(keyboard, 64, "white");
+    const gKey = getPianoKeyByMidi(keyboard, 67, "white");
+    expect(cKey).toHaveTextContent("C4");
+    expect(cKey).toHaveTextContent("1");
+    expect(eKey).toHaveTextContent("E4");
+    expect(eKey).toHaveTextContent("3");
+    expect(gKey).toHaveTextContent("G4");
+    expect(gKey).toHaveTextContent("5");
+    expectSelectedOrHighlighted(cKey);
+    expectSelectedOrHighlighted(eKey);
+    expectSelectedOrHighlighted(gKey);
+
+    expectInspectorToShow([
+      /Pitch\s*C4|C4/,
+      /Degree\s*1/,
+      /Hand hint\s*Right hand area|Right hand area/,
+      /not fingering/i,
+    ]);
+    expect(within(screen.getByLabelText("Note inspector")).queryByText(/^Finger$/i)).not.toBeInTheDocument();
+  });
+
+  it("switches Piano seventh-chord inversions without fake or empty key data", async () => {
+    const user = await selectPianoDictionary();
+
+    changeChordSearch("G7");
+
+    await screen.findByRole("heading", { name: "G7 piano voicings" });
+    const preferenceChoices = screen.getByRole("group", {
+      name: "Global piano voicing preference choices",
+    });
+    const preferenceButtons = within(preferenceChoices).getAllByRole("button");
+    expect(preferenceButtons.map((button) => button.textContent)).toEqual([
+      "G7 root position",
+      "G7 first inversion",
+      "G7 second inversion",
+      "G7 third inversion",
+    ]);
+    expect(preferenceButtons[0]).toHaveAttribute("aria-pressed", "true");
+
+    let keyboard = getPianoKeyboard();
+    expect(getPianoActiveKeyboardMidi(keyboard)).toEqual(["55", "59", "62", "65"]);
+    expect(getPianoKeyByMidi(keyboard, 55, "white")).toHaveTextContent("G3");
+    expect(getPianoKeyByMidi(keyboard, 59, "white")).toHaveTextContent("B3");
+    expect(getPianoKeyByMidi(keyboard, 62, "white")).toHaveTextContent("D4");
+    expect(getPianoKeyByMidi(keyboard, 65, "white")).toHaveTextContent("F4");
+    expect(screen.getByText("Chord tones")).toBeInTheDocument();
+    const voicingOrder = screen.getByLabelText("Current piano voicing order");
+    expect(within(voicingOrder).getByText("Voicing order")).toBeInTheDocument();
+    const voicingOrderItems = within(voicingOrder).getAllByRole("listitem");
+    expect(voicingOrderItems.map((item) => item.querySelector("strong")?.textContent)).toEqual([
+      "G3",
+      "B3",
+      "D4",
+      "F4",
+    ]);
+    expect(voicingOrderItems.map((item) => item.querySelector("small")?.textContent)).toEqual([
+      "1",
+      "3",
+      "5",
+      "b7",
+    ]);
+    expect(screen.queryByText(/Piano unavailable|No piano keyboard|returned no voicings/i)).not.toBeInTheDocument();
+
+    await user.click(within(preferenceChoices).getByRole("button", { name: "G7 first inversion" }));
+
+    await waitFor(() =>
+      expect(within(preferenceChoices).getByRole("button", { name: "G7 first inversion" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      ),
+    );
+    keyboard = getPianoKeyboard();
+    expect(getPianoActiveKeyboardMidi(keyboard)).toEqual(["59", "62", "65", "67"]);
+    expect(getPianoKeyByMidi(keyboard, 59, "white")).toHaveTextContent("B3");
+    expect(getPianoKeyByMidi(keyboard, 62, "white")).toHaveTextContent("D4");
+    expect(getPianoKeyByMidi(keyboard, 65, "white")).toHaveTextContent("F4");
+    expect(getPianoKeyByMidi(keyboard, 67, "white")).toHaveTextContent("G4");
   });
 
   it.each([
@@ -1765,6 +1934,43 @@ describe("Desktop app tools chord dictionary", () => {
     expect(screen.queryByRole("heading", { name: "C guitar shapes" })).not.toBeInTheDocument();
   });
 
+  it("renders piano voicings from Live Follow project chord context", async () => {
+    const user = userEvent.setup();
+    await renderChordDictionaryWithPlayback();
+
+    await user.click(within(getDictionaryInstrumentSelector()).getByRole("button", { name: "Piano" }));
+
+    await waitFor(() =>
+      expect(within(getDictionaryInstrumentSelector()).getByRole("button", { name: "Piano" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      ),
+    );
+    expectPianoInstrumentSelected();
+
+    const currentChord = screen.getByLabelText("Current chord");
+    expect(currentChord).toHaveTextContent(/Source chord\s*G/);
+    expect(currentChord).toHaveTextContent(/Display chord\s*A/);
+    expect(currentChord).toHaveTextContent(/Detected\/imported project chords/);
+    expect(currentChord).toHaveTextContent(/Playback source\s*Demo Song/);
+    expect(screen.getByRole("heading", { name: "A piano voicings" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Next chord")).toHaveTextContent(/E/);
+    expect(screen.getByText("Region A")).toBeInTheDocument();
+
+    const keyboard = getPianoKeyboard();
+    expect(getPianoActiveKeyboardMidi(keyboard)).toEqual(["57", "61", "64"]);
+    expect(getPianoKeyByMidi(keyboard, 57, "white")).toHaveTextContent("A3");
+    expect(getPianoKeyByMidi(keyboard, 61, "black")).toHaveTextContent("C#4");
+    expect(getPianoKeyByMidi(keyboard, 64, "white")).toHaveTextContent("E4");
+    expectInspectorToShow([/A3/, /Degree\s*1/, /Left hand area/, /not fingering/i]);
+    expect(screen.queryByRole("heading", { name: "A guitar shapes" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: /Left hand/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: /Right hand/i })).not.toBeInTheDocument();
+    expect(document.querySelector(".guitar-fretboard")).not.toBeInTheDocument();
+    expect(document.querySelector(".accordion-keyboard")).not.toBeInTheDocument();
+    expect(document.querySelector(".accordion-stradella")).not.toBeInTheDocument();
+  });
+
   it("renders out-of-window accordion roots in Live Follow without moving the key region", async () => {
     const user = userEvent.setup();
     await renderChordDictionaryWithPlayback({
@@ -2097,8 +2303,8 @@ describe("Desktop app tools chord dictionary", () => {
       within(instrumentSelector).getByRole("button", { name: "Accordion" }),
     ).toHaveAttribute("aria-pressed", "false");
     expect(
-      within(instrumentSelector).queryByRole("button", { name: "Piano" }),
-    ).not.toBeInTheDocument();
+      within(instrumentSelector).getByRole("button", { name: "Piano" }),
+    ).toHaveAttribute("aria-pressed", "false");
     expect(
       within(instrumentSelector).queryByRole("button", { name: "Organ" }),
     ).not.toBeInTheDocument();

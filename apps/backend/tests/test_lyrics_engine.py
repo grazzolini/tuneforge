@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
+from io import StringIO
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from app.db import SessionLocal
 from app.engines.lyrics import (
     LyricsTranscription,
+    _observe_whisper_tqdm_progress,
+    _start_output_reader,
     _transcribe_with_device,
     patch_whisper_timing_for_mps,
     resolve_whisper_device_candidates,
@@ -16,7 +21,10 @@ from app.engines.lyrics import (
     transcribe_project_lyrics,
     transcribe_project_lyrics_in_process,
 )
-from app.errors import JobCancelledError
+from app.errors import AppError, JobCancelledError
+from app.models import Job
+from app.runtime_status import JOB_RUNTIME_EVENT_TYPE, runtime_event_payload
+from app.services.jobs import InProcessJobRunner, JobExecutionContext
 
 
 def make_fake_torch(*, has_mps: bool, has_cuda: bool):
@@ -143,7 +151,11 @@ def test_transcribe_project_lyrics_falls_back_to_cpu(monkeypatch):
         download_root: Path,
         whisper_module: object,
         language_override: str | None = None,
+        on_runtime_event: object = None,
+        progress_min: int = 20,
+        progress_max: int = 85,
     ) -> LyricsTranscription:
+        del on_runtime_event, progress_min, progress_max
         attempted_devices.append(device)
         if device == "mps":
             raise RuntimeError("MPS kernel failed")
@@ -193,7 +205,11 @@ def test_transcribe_project_lyrics_retries_smaller_model_on_cuda_oom(monkeypatch
         download_root: Path,
         whisper_module: object,
         language_override: str | None = None,
+        on_runtime_event: object = None,
+        progress_min: int = 20,
+        progress_max: int = 85,
     ) -> LyricsTranscription:
+        del on_runtime_event, progress_min, progress_max
         attempts.append((device, model_name))
         if model_name == "turbo":
             raise RuntimeError("CUDA out of memory")
@@ -225,6 +241,125 @@ def test_transcribe_project_lyrics_retries_smaller_model_on_cuda_oom(monkeypatch
     assert result.device == "cuda"
     assert result.model == "small"
     assert result.requested_device == "auto"
+
+
+def test_transcribe_project_lyrics_retry_progress_advances_persisted_job(
+    client: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del client
+
+    class FakeProgressBar:
+        def __init__(self, *, total: int) -> None:
+            self.total = total
+            self.n = 0
+
+        def __enter__(self) -> FakeProgressBar:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def update(self, n: int = 1) -> None:
+            self.n += n
+
+    class FakeWhisper:
+        def __init__(self) -> None:
+            self.tqdm = SimpleNamespace(tqdm=FakeProgressBar)
+
+        def load_model(self, model_name: str, *, device: str, download_root: str) -> tuple[str, str]:
+            del download_root
+            return model_name, device
+
+        def transcribe(self, model: tuple[str, str], source_path: str, **kwargs: object) -> dict[str, object]:
+            del source_path, kwargs
+            _model_name, device = model
+            with self.tqdm.tqdm(total=100) as progress_bar:
+                if device == "mps":
+                    progress_bar.update(95)
+                    raise RuntimeError("MPS kernel failed")
+                progress_bar.update(5)
+            return {
+                "language": "en",
+                "segments": [{"start": 0.0, "end": 1.0, "text": "hello"}],
+            }
+
+    monkeypatch.setattr(
+        "app.engines.lyrics._load_runtime",
+        lambda: (make_fake_torch(has_mps=True, has_cuda=False), FakeWhisper()),
+    )
+    runner = InProcessJobRunner(SessionLocal)
+    with SessionLocal() as session:
+        job = runner.create_job(session, project_id=None, job_type="test", payload={})
+        job_id = job.id
+        job.status = "running"
+        session.commit()
+
+    persisted_progress: list[int] = []
+
+    def capture_runtime_event(payload: dict[str, object]) -> None:
+        with SessionLocal() as session:
+            context = JobExecutionContext(runner, job_id, session)
+            context.handle_runtime_event(payload)
+        if payload.get("progress") is None:
+            return
+        with SessionLocal() as session:
+            persisted_job = session.get(Job, job_id)
+            assert persisted_job is not None
+            persisted_progress.append(persisted_job.progress)
+
+    result = transcribe_project_lyrics_in_process(
+        Path("/tmp/fake.wav"),
+        model_name="turbo",
+        requested_device="auto",
+        download_root=Path("/tmp/lyrics-cache"),
+        on_runtime_event=capture_runtime_event,
+    )
+
+    assert result.device == "cpu"
+    assert result.segments[0]["text"] == "hello"
+    assert persisted_progress == [20, 50, 52, 53]
+    assert persisted_progress[-1] > persisted_progress[1]
+
+
+def test_observe_whisper_tqdm_progress_maps_updates_to_runtime_events(monkeypatch: pytest.MonkeyPatch):
+    class FakeProgressBar:
+        def __init__(self, *, total: int) -> None:
+            self.total = total
+            self.n = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def update(self, n: int = 1) -> None:
+            self.n += n
+
+    transcribe_module = ModuleType("fake_whisper_transcribe_progress")
+    transcribe_module.tqdm = SimpleNamespace(tqdm=FakeProgressBar)
+
+    def fake_transcribe() -> None:
+        return None
+
+    fake_transcribe.__module__ = transcribe_module.__name__
+    monkeypatch.setitem(sys.modules, transcribe_module.__name__, transcribe_module)
+    whisper_module = SimpleNamespace(transcribe=fake_transcribe, tqdm=SimpleNamespace(tqdm=object()))
+    original_tqdm = transcribe_module.tqdm.tqdm
+    events: list[dict[str, object]] = []
+
+    with _observe_whisper_tqdm_progress(whisper_module, on_runtime_event=events.append, device="cpu"):
+        with transcribe_module.tqdm.tqdm(total=10) as progress_bar:
+            progress_bar.update(1)
+            progress_bar.update(4)
+            progress_bar.update(5)
+
+    assert transcribe_module.tqdm.tqdm is original_tqdm
+    assert [event["progress"] for event in events] == [26, 52, 85]
+    assert {event["stage"] for event in events} == {"processing"}
+    assert {event["stage_label"] for event in events} == {"Transcribing lyrics on CPU."}
+    assert {event["runtime_device"] for event in events} == {"cpu"}
 
 
 def test_transcribe_with_device_omits_language_for_auto_detect():
@@ -341,6 +476,65 @@ def test_transcribe_project_lyrics_passes_language_override_to_worker(monkeypatc
     assert commands[0][-2:] == ["--language", "pt"]
     assert result.language == "pt"
     assert result.language_override == "pt"
+
+
+def test_lyrics_output_reader_streams_only_runtime_events():
+    runtime_payload = runtime_event_payload(
+        stage="processing",
+        stage_label="Transcribing lyrics on CPU.",
+        runtime_device="cpu",
+        progress=45,
+    )
+    pipe = StringIO(
+        "\n".join(
+            [
+                "debug: /Users/private/song.wav",
+                json.dumps({"text": "raw lyric that must not become status"}),
+                json.dumps(runtime_payload),
+                json.dumps({"type": JOB_RUNTIME_EVENT_TYPE, "stage_label": "/tmp/private.wav"}),
+            ]
+        )
+        + "\n"
+    )
+    lines: list[str] = []
+    events: list[dict[str, object]] = []
+
+    thread = _start_output_reader(pipe, lines, events.append)
+
+    assert thread is not None
+    thread.join(timeout=1)
+    assert events == [
+        runtime_payload,
+        {"type": JOB_RUNTIME_EVENT_TYPE, "stage_label": "/tmp/private.wav"},
+    ]
+    assert any("raw lyric" in line for line in lines)
+
+
+def test_transcribe_project_lyrics_failure_does_not_expose_raw_worker_output(monkeypatch):
+    class FakeProcess:
+        returncode = 1
+
+        def poll(self) -> int:
+            return self.returncode
+
+        def communicate(self) -> tuple[str, str]:
+            return "/Users/private/song.wav\nraw lyric", "stderr with private path"
+
+        def kill(self) -> None:
+            raise AssertionError("completed process should not be killed")
+
+    monkeypatch.setattr("app.engines.lyrics.subprocess.Popen", lambda *_args, **_kwargs: FakeProcess())
+
+    with pytest.raises(AppError) as exc_info:
+        transcribe_project_lyrics(
+            Path("/tmp/fake.wav"),
+            model_name="turbo",
+            requested_device="auto",
+            download_root=Path("/tmp/lyrics-cache"),
+        )
+
+    assert exc_info.value.message == "Lyrics generation failed."
+    assert exc_info.value.details == {}
 
 
 def test_transcribe_project_lyrics_cancels_subprocess(monkeypatch):

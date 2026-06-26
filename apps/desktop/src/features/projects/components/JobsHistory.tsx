@@ -1,5 +1,12 @@
 import { useProjectViewModelContext } from "./useProjectViewModelContext";
-import { artifactLabel, artifactSummary, formatArtifactTimestamp, formatJobStatusSummary } from "../projectViewUtils";
+import {
+  artifactLabel,
+  artifactSummary,
+  formatArtifactTimestamp,
+  formatJobProgressValue,
+  formatJobStageLabel,
+  formatJobStatusSummary,
+} from "../projectViewUtils";
 
 export function JobsHistory() {
   const {
@@ -69,19 +76,24 @@ export function JobsHistory() {
               className="job-list"
             >
               {hasJobs
-                ? visibleJobs.map((job) => (
-                    <li key={job.id}>
-                      <div>
-                        <strong>{job.type}</strong>
-                        <span>{formatJobStatusSummary(job)}</span>
-                      </div>
-                      <progress max={100} value={job.progress} />
-                      <small>{formatArtifactTimestamp(job.completed_at ?? job.updated_at)}</small>
-                      {job.error_message ? (
-                        <small className="inline-error">{job.error_message}</small>
-                      ) : null}
-                    </li>
-                  ))
+                ? visibleJobs.map((job) => {
+                    const progress = formatJobProgressValue(job);
+                    const stageLabel = formatJobStageLabel(job);
+                    return (
+                      <li key={job.id}>
+                        <div>
+                          <strong>{job.type}</strong>
+                          <span>{formatJobStatusSummary(job)}</span>
+                          {stageLabel ? <small>{stageLabel}</small> : null}
+                        </div>
+                        <progress aria-label={`${job.type} job progress`} max={100} value={progress} />
+                        <small>{formatArtifactTimestamp(job.completed_at ?? job.updated_at)}</small>
+                        {job.error_message ? (
+                          <small className="inline-error">{job.error_message}</small>
+                        ) : null}
+                      </li>
+                    );
+                  })
                 : null}
             </ul>
 

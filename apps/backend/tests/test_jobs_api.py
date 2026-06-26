@@ -210,6 +210,55 @@ def test_runtime_status_helper_updates_fields_and_drops_unsafe_detail(client: Te
         assert job.runtime_detail == safe_detail
 
 
+def test_runtime_event_progress_is_bounded_monotonic_and_private(client: TestClient) -> None:
+    runner = InProcessJobRunner(SessionLocal)
+    safe_detail = "Whisper switched to CPU after the accelerator attempt failed."
+    with SessionLocal() as session:
+        job = runner.create_job(session, project_id=None, job_type="test", payload={})
+        job_id = job.id
+        job.status = "running"
+        job.progress = 70
+        session.commit()
+
+    with SessionLocal() as session:
+        context = JobExecutionContext(runner, job_id, session)
+        context.handle_runtime_event(
+            runtime_event_payload(
+                stage="processing",
+                stage_label="/Users/private/song.wav",
+                runtime_device="cuda:0",
+                progress=-10,
+            )
+        )
+        context.handle_runtime_event(
+            runtime_event_payload(
+                stage="fallback",
+                stage_label="Falling back from CUDA to CPU.",
+                runtime_device="cpu",
+                runtime_detail=safe_detail,
+                progress=60,
+            )
+        )
+
+    with SessionLocal() as session:
+        job = session.get(Job, job_id)
+        assert job is not None
+        assert job.stage == "fallback"
+        assert job.stage_label == "Falling back from CUDA to CPU."
+        assert job.runtime_device == "cpu"
+        assert job.runtime_detail == safe_detail
+        assert job.progress == 70
+
+    with SessionLocal() as session:
+        context = JobExecutionContext(runner, job_id, session)
+        context.handle_runtime_event(runtime_event_payload(stage="processing", progress=250))
+
+    with SessionLocal() as session:
+        job = session.get(Job, job_id)
+        assert job is not None
+        assert job.progress == 100
+
+
 def test_jobs_api_drops_unsafe_runtime_text_before_exposure(client: TestClient) -> None:
     runner = InProcessJobRunner(SessionLocal)
     with SessionLocal() as session:

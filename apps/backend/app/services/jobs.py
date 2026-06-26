@@ -472,13 +472,18 @@ def _apply_runtime_status_fields(
     progress: int | None,
     runtime_device: object,
     runtime_detail: object,
+    monotonic_progress: bool = False,
 ) -> None:
     if stage is not None:
         job.stage = stage
     if stage_label is not None:
         job.stage_label = safe_runtime_label(stage_label)
     if progress is not None:
-        job.progress = min(100, max(0, progress))
+        bounded_progress = min(100, max(0, progress))
+        if monotonic_progress and job.status == "running":
+            job.progress = max(job.progress, bounded_progress)
+        else:
+            job.progress = bounded_progress
     if runtime_device is not _RUNTIME_UNSET:
         job.runtime_device = safe_runtime_device(runtime_device) if runtime_device is not None else None
     if runtime_detail is not _RUNTIME_UNSET:
@@ -541,6 +546,7 @@ class JobExecutionContext:
             progress=event.progress,
             runtime_device=event.runtime_device if event.runtime_device is not None else _RUNTIME_UNSET,
             runtime_detail=event.runtime_detail if event.runtime_detail is not None else _RUNTIME_UNSET,
+            monotonic_progress=True,
         )
 
     def progress_reporter(self) -> _JobProgressReporter:
@@ -698,6 +704,7 @@ class InProcessJobRunner:
         progress: int | None = None,
         runtime_device: object = _RUNTIME_UNSET,
         runtime_detail: object = _RUNTIME_UNSET,
+        monotonic_progress: bool = False,
     ) -> None:
         with self.session_factory() as session:
             job = session.get(Job, job_id)
@@ -710,6 +717,7 @@ class InProcessJobRunner:
                 progress=progress,
                 runtime_device=runtime_device,
                 runtime_detail=runtime_detail,
+                monotonic_progress=monotonic_progress,
             )
             session.commit()
 

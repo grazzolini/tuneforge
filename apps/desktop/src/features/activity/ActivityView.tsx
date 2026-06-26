@@ -10,6 +10,7 @@ import { usePreferences } from "../../lib/preferences";
 import { useBeatBackendActionSelection } from "../projects/hooks/useBeatBackendActionSelection";
 import { useChordBackendActionSelection } from "../projects/hooks/useChordBackendActionSelection";
 import {
+  formatJobProgressValue,
   formatJobRuntimeSummary,
   formatJobStageLabel,
   formatJobStatusSummary,
@@ -157,10 +158,6 @@ function formatJobDetails(job: JobSchema, { includeRuntimeDevice = true } = {}) 
   return summary.startsWith(statusPrefix) ? summary.slice(statusPrefix.length) : summary;
 }
 
-function progressValue(job: JobSchema) {
-  return Math.max(0, Math.min(100, Math.round(job.progress)));
-}
-
 function activeStageStatusLabel(stageLabel: string, runtimeSummary: string | null) {
   return runtimeSummary ? `Current stage: ${stageLabel}, ${runtimeSummary}` : `Current stage: ${stageLabel}`;
 }
@@ -295,7 +292,7 @@ function JobRow({
   const stageLabel = formatJobStageLabel(job);
   const runtimeSummary = stageLabel ? formatJobRuntimeSummary(job) : null;
   const details = formatJobDetails(job, { includeRuntimeDevice: !runtimeSummary });
-  const progress = progressValue(job);
+  const progress = formatJobProgressValue(job);
   const canCancel = CANCELABLE_JOB_STATUSES.has(job.status);
   const stageTone = TERMINAL_JOB_STATUSES.has(job.status) ? "terminal" : "active";
 

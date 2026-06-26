@@ -209,6 +209,10 @@ export function formatJobRuntimeSummary(job: JobSchema) {
     .join(" / ") || null;
 }
 
+export function formatJobProgressValue(job: Pick<JobSchema, "progress">) {
+  return Math.max(0, Math.min(100, Math.round(job.progress)));
+}
+
 function formatCompletedStageLabel(stageLabel: string) {
   const savingMatch = /^Saving\s+(.+)$/i.exec(stageLabel);
   return savingMatch ? `Saved ${savingMatch[1]}` : stageLabel;

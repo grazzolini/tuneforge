@@ -3573,6 +3573,37 @@ describe("Desktop app activity", () => {
     expect(within(row).queryByText("Default (6 stems model) / MPS")).not.toBeInTheDocument();
   });
 
+  it("shows lyrics transcription progress without raw runtime output", async () => {
+    setJobs([
+      job({
+        id: "job_lyrics_transcribing",
+        project_id: "proj_123",
+        type: "lyrics",
+        status: "running",
+        progress: 68,
+        stage_label: "Transcribing lyrics.",
+        lyrics_source: "vocals",
+        runtime_device: "cuda",
+        runtime_detail: "stderr: /Users/example/song.wav ETA 00:12",
+        started_at: "2026-04-18T13:22:00.000Z",
+        created_at: "2026-04-18T13:22:00.000Z",
+        updated_at: "2026-04-18T13:23:00.000Z",
+      }),
+    ]);
+
+    renderApp(["/activity"]);
+
+    const row = await screen.findByRole("article", { name: "lyrics running job" });
+    const progressBar = within(row).getByRole("progressbar", { name: "lyrics job progress" });
+
+    expect(within(row).getByText("Transcribing lyrics")).toHaveClass("activity-job-row__stage");
+    expect(within(row).getByText("68%")).toBeInTheDocument();
+    expect(progressBar).toHaveAttribute("value", "68");
+    expect(progressBar).toHaveAttribute("max", "100");
+    expect(within(row).getByText("CUDA")).toHaveClass("activity-job-row__runtime");
+    expect(row).not.toHaveTextContent(/stderr|song\.wav|ETA/i);
+  });
+
   it("does not duplicate device text when reported stages already include it", async () => {
     setJobs([
       job({

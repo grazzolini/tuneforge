@@ -199,6 +199,43 @@ describe("Desktop app project playback artifacts", () => {
     expect(within(stemError).getByText("Selected project stems failed.")).toBeInTheDocument();
   });
 
+  it("shows live lyrics transcription progress in project job history without raw runtime output", async () => {
+    const user = userEvent.setup();
+    setJobs([
+      {
+        id: "job_lyrics_transcribing",
+        project_id: "proj_123",
+        type: "lyrics",
+        status: "running",
+        progress: 68,
+        stage_label: "Transcribing lyrics.",
+        lyrics_source: "vocals",
+        runtime_device: "cuda",
+        runtime_detail: "stderr: /Users/example/song.wav ETA 00:12",
+        source_artifact_id: null,
+        error_message: null,
+        created_at: "2026-04-18T13:22:00.000Z",
+        updated_at: "2026-04-18T13:23:00.000Z",
+      },
+    ]);
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openAnalysisPanel(user);
+    await user.click(screen.getByText("Show raw artifacts and processing history"));
+    await expectProjectJobsRequested("proj_123");
+
+    const jobHistory = getJobsHistoryDetails();
+    const progressBar = await within(jobHistory).findByRole("progressbar", { name: "lyrics job progress" });
+
+    expect(within(jobHistory).getByText("Transcribing lyrics")).toBeInTheDocument();
+    expect(within(jobHistory).getByText("running / vocals / CUDA")).toBeInTheDocument();
+    expect(progressBar).toHaveAttribute("value", "68");
+    expect(progressBar).toHaveAttribute("max", "100");
+    expect(jobHistory).not.toHaveTextContent(/stderr|song\.wav|ETA/i);
+  });
+
   it("loads later project terminal job pages with scoped filters", async () => {
     const user = userEvent.setup();
     setJobs([

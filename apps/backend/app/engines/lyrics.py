@@ -6,9 +6,11 @@ import os
 import subprocess
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from types import TracebackType
 from typing import Any, cast
 
 from fastapi import status
@@ -24,6 +26,8 @@ from app.utils.model_cache import ExpectedModelFile, InvalidModelFile, invalid_m
 from app.utils.torch_runtime import choose_torch_device, with_mps_fallback_env
 
 LYRICS_WORKER_CANCEL_TIMEOUT_SECONDS = 2.0
+_WHISPER_TRANSCRIPTION_PROGRESS_MIN = 20
+_WHISPER_TRANSCRIPTION_PROGRESS_MAX = 85
 
 
 @dataclass(frozen=True)
@@ -320,6 +324,146 @@ def _clear_cuda_cache(torch_module: Any) -> None:
         empty_cache()
 
 
+def _whisper_transcription_progress(
+    current: object,
+    total: object,
+    *,
+    progress_min: int = _WHISPER_TRANSCRIPTION_PROGRESS_MIN,
+    progress_max: int = _WHISPER_TRANSCRIPTION_PROGRESS_MAX,
+) -> int | None:
+    current_float = _coerce_float(current)
+    total_float = _coerce_float(total)
+    if current_float is None or total_float is None or total_float <= 0:
+        return None
+    ratio = min(1.0, max(0.0, current_float / total_float))
+    bounded_min = min(_WHISPER_TRANSCRIPTION_PROGRESS_MAX, max(_WHISPER_TRANSCRIPTION_PROGRESS_MIN, progress_min))
+    bounded_max = min(_WHISPER_TRANSCRIPTION_PROGRESS_MAX, max(bounded_min, progress_max))
+    progress_range = bounded_max - bounded_min
+    return bounded_min + int(progress_range * ratio)
+
+
+def _whisper_attempt_progress_range(attempt_index: int, attempt_count: int) -> tuple[int, int]:
+    bounded_attempt_count = max(1, attempt_count)
+    bounded_attempt_index = min(max(0, attempt_index), bounded_attempt_count - 1)
+    progress_range = _WHISPER_TRANSCRIPTION_PROGRESS_MAX - _WHISPER_TRANSCRIPTION_PROGRESS_MIN
+    progress_min = _WHISPER_TRANSCRIPTION_PROGRESS_MIN + (
+        progress_range * bounded_attempt_index // bounded_attempt_count
+    )
+    progress_max = _WHISPER_TRANSCRIPTION_PROGRESS_MIN + (
+        progress_range * (bounded_attempt_index + 1) // bounded_attempt_count
+    )
+    return progress_min, progress_max
+
+
+def _whisper_tqdm_module(whisper_module: Any) -> Any | None:
+    transcribe = getattr(whisper_module, "transcribe", None)
+    transcribe_module_name = getattr(transcribe, "__module__", None)
+    if isinstance(transcribe_module_name, str):
+        transcribe_module = sys.modules.get(transcribe_module_name)
+        transcribe_tqdm_module = getattr(transcribe_module, "tqdm", None)
+        if transcribe_tqdm_module is not None:
+            return transcribe_tqdm_module
+    return getattr(whisper_module, "tqdm", None)
+
+
+class _WhisperProgressObserver:
+    def __init__(
+        self,
+        wrapped: Any,
+        *,
+        on_runtime_event: Callable[[dict[str, Any]], None],
+        device: str,
+        progress_min: int,
+        progress_max: int,
+    ) -> None:
+        self._wrapped = wrapped
+        self._on_runtime_event = on_runtime_event
+        self._device = device
+        self._progress_min = progress_min
+        self._progress_max = progress_max
+        self._last_progress: int | None = None
+
+    def __enter__(self) -> _WhisperProgressObserver:
+        enter = getattr(self._wrapped, "__enter__", None)
+        if callable(enter):
+            entered = enter()
+            if entered is not None:
+                self._wrapped = entered
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool | None:
+        exit_method = getattr(self._wrapped, "__exit__", None)
+        if callable(exit_method):
+            return cast(bool | None, exit_method(exc_type, exc, traceback))
+        return None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._wrapped, name)
+
+    def update(self, n: int | float = 1) -> Any:
+        result = self._wrapped.update(n)
+        self._emit_progress()
+        return result
+
+    def _emit_progress(self) -> None:
+        progress = _whisper_transcription_progress(
+            getattr(self._wrapped, "n", None),
+            getattr(self._wrapped, "total", None),
+            progress_min=self._progress_min,
+            progress_max=self._progress_max,
+        )
+        if progress is None or progress == self._last_progress:
+            return
+        self._last_progress = progress
+        _emit_lyrics_runtime_event(
+            self._on_runtime_event,
+            stage="processing",
+            stage_label=f"Transcribing lyrics on {self._device.upper()}.",
+            runtime_device=self._device,
+            progress=progress,
+        )
+
+
+@contextmanager
+def _observe_whisper_tqdm_progress(
+    whisper_module: Any,
+    *,
+    on_runtime_event: Callable[[dict[str, Any]], None] | None,
+    device: str,
+    progress_min: int = _WHISPER_TRANSCRIPTION_PROGRESS_MIN,
+    progress_max: int = _WHISPER_TRANSCRIPTION_PROGRESS_MAX,
+) -> Iterator[None]:
+    if on_runtime_event is None:
+        yield
+        return
+
+    tqdm_module = _whisper_tqdm_module(whisper_module)
+    original_tqdm = getattr(tqdm_module, "tqdm", None)
+    if tqdm_module is None or not callable(original_tqdm):
+        yield
+        return
+
+    def observed_tqdm(*args: Any, **kwargs: Any) -> _WhisperProgressObserver:
+        return _WhisperProgressObserver(
+            original_tqdm(*args, **kwargs),
+            on_runtime_event=on_runtime_event,
+            device=device,
+            progress_min=progress_min,
+            progress_max=progress_max,
+        )
+
+    tqdm_module.tqdm = observed_tqdm
+    try:
+        yield
+    finally:
+        tqdm_module.tqdm = original_tqdm
+
+
 def _transcribe_with_device(
     source_path: Path,
     *,
@@ -329,20 +473,30 @@ def _transcribe_with_device(
     download_root: Path,
     whisper_module: Any,
     language_override: str | None = None,
+    on_runtime_event: Callable[[dict[str, Any]], None] | None = None,
+    progress_min: int = _WHISPER_TRANSCRIPTION_PROGRESS_MIN,
+    progress_max: int = _WHISPER_TRANSCRIPTION_PROGRESS_MAX,
 ) -> LyricsTranscription:
     model = whisper_module.load_model(model_name, device=device, download_root=str(download_root))
     transcribe_kwargs: dict[str, Any] = {}
     if language_override is not None:
         transcribe_kwargs["language"] = language_override
-    result = whisper_module.transcribe(
-        model,
-        str(source_path),
-        verbose=False,
-        condition_on_previous_text=False,
-        word_timestamps=True,
-        fp16=device == "cuda",
-        **transcribe_kwargs,
-    )
+    with _observe_whisper_tqdm_progress(
+        whisper_module,
+        on_runtime_event=on_runtime_event,
+        device=device,
+        progress_min=progress_min,
+        progress_max=progress_max,
+    ):
+        result = whisper_module.transcribe(
+            model,
+            str(source_path),
+            verbose=False,
+            condition_on_previous_text=False,
+            word_timestamps=True,
+            fp16=device == "cuda",
+            **transcribe_kwargs,
+        )
     segments = _normalize_segments(result.get("segments", []))
     detected_language = result.get("language")
     language = (
@@ -372,6 +526,11 @@ def transcribe_project_lyrics_in_process(
 ) -> LyricsTranscription:
     torch_module, whisper_module = _load_runtime()
     candidates = resolve_whisper_device_candidates(requested_device, torch_module=torch_module)
+    attempt_count = sum(
+        len(resolve_whisper_model_candidates(model_name, device=device))
+        for device in candidates
+    )
+    attempt_index = 0
     errors: list[dict[str, str]] = []
 
     requested_normalized = requested_device.strip().lower()
@@ -387,6 +546,8 @@ def transcribe_project_lyrics_in_process(
     for device in candidates:
         model_candidates = resolve_whisper_model_candidates(model_name, device=device)
         for index, candidate_model in enumerate(model_candidates):
+            attempt_progress_min, attempt_progress_max = _whisper_attempt_progress_range(attempt_index, attempt_count)
+            attempt_index += 1
             try:
                 _emit_lyrics_runtime_event(
                     on_runtime_event,
@@ -399,6 +560,7 @@ def transcribe_project_lyrics_in_process(
                     stage="processing",
                     stage_label=f"Transcribing lyrics on {device.upper()}.",
                     runtime_device=device,
+                    progress=attempt_progress_min,
                 )
                 return _transcribe_with_device(
                     source_path,
@@ -408,6 +570,9 @@ def transcribe_project_lyrics_in_process(
                     download_root=download_root,
                     whisper_module=whisper_module,
                     language_override=language_override,
+                    on_runtime_event=on_runtime_event,
+                    progress_min=attempt_progress_min,
+                    progress_max=attempt_progress_max,
                 )
             except AppError:
                 raise
@@ -514,12 +679,7 @@ def _terminate_cancelled_worker(process: subprocess.Popen[str]) -> None:
             pass
 
 
-def _raise_worker_failure(
-    payload: dict[str, Any] | None,
-    *,
-    stdout: str,
-    stderr: str,
-) -> None:
+def _raise_worker_failure(payload: dict[str, Any] | None) -> None:
     error = payload.get("error") if payload else None
     if isinstance(error, dict):
         code = str(error.get("code", "PROCESSING_FAILED"))
@@ -537,7 +697,6 @@ def _raise_worker_failure(
         "PROCESSING_FAILED",
         "Lyrics generation failed.",
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        details={"stdout": stdout.strip(), "stderr": stderr.strip()},
     )
 
 
@@ -611,7 +770,7 @@ def transcribe_project_lyrics(
 
         payload = _worker_payload_from_stdout(stdout)
         if process.returncode != 0:
-            _raise_worker_failure(payload, stdout=stdout, stderr=stderr)
+            _raise_worker_failure(payload)
 
         transcription_payload = payload.get("transcription") if payload else None
         if not isinstance(transcription_payload, dict):

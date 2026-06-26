@@ -1,4 +1,14 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import {
+  Fragment,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type RefObject,
+} from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   ArrowUpDown,
@@ -258,6 +268,429 @@ function classNames(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
 }
 
+type FocusableElement = HTMLButtonElement | HTMLInputElement;
+type FocusableRef = RefObject<FocusableElement | null>;
+type ButtonRefMap = RefObject<Record<string, HTMLButtonElement | null>>;
+type ScrollContainerSnapshot = {
+  element: HTMLElement;
+  scrollLeft: number;
+  scrollTop: number;
+};
+type ViewportSnapshot = {
+  containers: ScrollContainerSnapshot[];
+  scrollX: number;
+  scrollY: number;
+};
+
+function focusElement(element: FocusableElement | null | undefined) {
+  element?.focus({ preventScroll: true });
+}
+
+function focusRef(ref: FocusableRef) {
+  focusElement(ref.current);
+}
+
+function setButtonRef(refs: ButtonRefMap, id: string, element: HTMLButtonElement | null) {
+  refs.current[id] = element;
+}
+
+function isRestorableScrollContainer(element: HTMLElement) {
+  const style = window.getComputedStyle(element);
+  const overflow = `${style.overflow} ${style.overflowX} ${style.overflowY}`;
+  return (
+    /(auto|scroll|overlay)/.test(overflow) ||
+    element.scrollTop !== 0 ||
+    element.scrollLeft !== 0 ||
+    element.scrollHeight > element.clientHeight ||
+    element.scrollWidth > element.clientWidth
+  );
+}
+
+function getScrollContainerSnapshots(element: HTMLElement) {
+  const snapshots: ScrollContainerSnapshot[] = [];
+  let current = element.parentElement;
+  while (current) {
+    if (isRestorableScrollContainer(current)) {
+      snapshots.push({
+        element: current,
+        scrollLeft: current.scrollLeft,
+        scrollTop: current.scrollTop,
+      });
+    }
+    current = current.parentElement;
+  }
+  return snapshots;
+}
+
+function captureViewportSnapshot(element: HTMLElement): ViewportSnapshot {
+  return {
+    containers: getScrollContainerSnapshots(element),
+    scrollX: window.scrollX,
+    scrollY: window.scrollY,
+  };
+}
+
+function restoreViewportSnapshot(snapshot: ViewportSnapshot) {
+  for (const container of snapshot.containers) {
+    if (!container.element.isConnected) {
+      continue;
+    }
+    container.element.scrollLeft = container.scrollLeft;
+    container.element.scrollTop = container.scrollTop;
+  }
+  if (typeof window.scrollTo === "function") {
+    window.scrollTo(snapshot.scrollX, snapshot.scrollY);
+  }
+}
+
+function getButtonGroupButtons(root: HTMLElement) {
+  return [...root.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
+}
+
+function handleButtonGroupKeyDown(
+  event: KeyboardEvent<HTMLElement>,
+  onEscapeFocus?: () => void,
+) {
+  if (event.key === "Escape") {
+    if (!onEscapeFocus) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    onEscapeFocus();
+    return;
+  }
+
+  if (!isLinearNavigationKey(event.key)) {
+    return;
+  }
+
+  const buttons = getButtonGroupButtons(event.currentTarget);
+  const target = event.target instanceof HTMLButtonElement ? event.target : null;
+  const currentIndex = target ? buttons.indexOf(target) : -1;
+  if (currentIndex === -1 || buttons.length === 0) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  const nextIndex = getLinearNavigationIndex(event.key, currentIndex, buttons.length);
+  focusElement(buttons[nextIndex] ?? null);
+}
+
+function isLinearNavigationKey(key: string) {
+  return key === "ArrowRight" || key === "ArrowDown" || key === "ArrowLeft" || key === "ArrowUp" || key === "Home" || key === "End";
+}
+
+function getLinearNavigationIndex(key: string, currentIndex: number, itemCount: number) {
+  if (itemCount <= 0) {
+    return currentIndex;
+  }
+  switch (key) {
+    case "ArrowRight":
+    case "ArrowDown":
+      return (currentIndex + 1) % itemCount;
+    case "ArrowLeft":
+    case "ArrowUp":
+      return (currentIndex - 1 + itemCount) % itemCount;
+    case "Home":
+      return 0;
+    case "End":
+      return itemCount - 1;
+    default:
+      return currentIndex;
+  }
+}
+
+function handleEscapeFocus(
+  event: KeyboardEvent<HTMLElement>,
+  onEscapeFocus?: () => void,
+) {
+  if (event.key !== "Escape" || !onEscapeFocus) {
+    return false;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  onEscapeFocus();
+  return true;
+}
+
+function focusSurfaceButtonByData(
+  root: HTMLElement | null,
+  dataKey: keyof HTMLElement["dataset"],
+  value: string,
+) {
+  const target = root
+    ? [...root.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) => button.dataset[dataKey] === value,
+      )
+    : null;
+  focusElement(target);
+}
+
+function getCircularNeighbor<T>(
+  items: readonly T[],
+  currentIndex: number,
+  direction: -1 | 1,
+) {
+  if (items.length === 0 || currentIndex < 0) {
+    return null;
+  }
+  return items[(currentIndex + direction + items.length) % items.length] ?? null;
+}
+
+function getClosestByFret(notes: readonly NotePoint[], displayFret: number) {
+  return [...notes].sort(
+    (left, right) =>
+      Math.abs(left.displayFret - displayFret) - Math.abs(right.displayFret - displayFret) ||
+      left.displayFret - right.displayFret ||
+      left.displayString - right.displayString,
+  )[0] ?? null;
+}
+
+function getGuitarNavigationTargetId(
+  notes: readonly NotePoint[],
+  currentNoteId: string,
+  key: string,
+) {
+  const sortedNotes = [...notes].sort(
+    (left, right) =>
+      left.displayString - right.displayString ||
+      left.displayFret - right.displayFret ||
+      left.string - right.string,
+  );
+  const currentIndex = sortedNotes.findIndex((note) => note.id === currentNoteId);
+  const currentNote = sortedNotes[currentIndex] ?? null;
+  if (!currentNote) {
+    return null;
+  }
+
+  if (key === "Home") {
+    return sortedNotes[0]?.id ?? null;
+  }
+  if (key === "End") {
+    return sortedNotes[sortedNotes.length - 1]?.id ?? null;
+  }
+  if (key === "ArrowLeft" || key === "ArrowRight") {
+    const sameString = sortedNotes.filter((note) => note.string === currentNote.string);
+    const sameStringTarget = key === "ArrowLeft"
+      ? sameString
+          .filter((note) => note.displayFret < currentNote.displayFret)
+          .sort((left, right) => right.displayFret - left.displayFret)[0]
+      : sameString
+          .filter((note) => note.displayFret > currentNote.displayFret)
+          .sort((left, right) => left.displayFret - right.displayFret)[0];
+    return (
+      sameStringTarget ??
+      getCircularNeighbor(sortedNotes, currentIndex, key === "ArrowLeft" ? -1 : 1)
+    )?.id ?? null;
+  }
+
+  if (key === "ArrowUp" || key === "ArrowDown") {
+    const stringTarget = key === "ArrowUp"
+      ? Math.max(
+          -Infinity,
+          ...sortedNotes
+            .filter((note) => note.displayString < currentNote.displayString)
+            .map((note) => note.displayString),
+        )
+      : Math.min(
+          Infinity,
+          ...sortedNotes
+            .filter((note) => note.displayString > currentNote.displayString)
+            .map((note) => note.displayString),
+        );
+    const rowTarget = Number.isFinite(stringTarget)
+      ? getClosestByFret(
+          sortedNotes.filter((note) => note.displayString === stringTarget),
+          currentNote.displayFret,
+        )
+      : null;
+    return (
+      rowTarget ??
+      getCircularNeighbor(sortedNotes, currentIndex, key === "ArrowUp" ? -1 : 1)
+    )?.id ?? null;
+  }
+
+  return null;
+}
+
+function getKeyboardNoteNavigationTargetId<
+  TNote extends { id: string; midi: number },
+>(
+  notes: readonly TNote[],
+  currentNoteId: string,
+  key: string,
+) {
+  const sortedNotes = [...notes].sort((left, right) => left.midi - right.midi);
+  const currentIndex = sortedNotes.findIndex((note) => note.id === currentNoteId);
+  if (currentIndex === -1) {
+    return null;
+  }
+  if (key === "Home") {
+    return sortedNotes[0]?.id ?? null;
+  }
+  if (key === "End") {
+    return sortedNotes[sortedNotes.length - 1]?.id ?? null;
+  }
+  const direction = key === "ArrowRight" || key === "ArrowUp" ? 1 : -1;
+  return getCircularNeighbor(sortedNotes, currentIndex, direction)?.id ?? null;
+}
+
+function getAccordionButtonNavigationTargetId(
+  buttons: readonly AccordionButtonView[],
+  currentButtonId: string,
+  key: string,
+) {
+  const sortedButtons = [...buttons].sort(
+    (left, right) =>
+      left.column - right.column ||
+      (ACCORDION_STRADDELLA_ROW_INDEX.get(left.rowId) ?? 0) -
+        (ACCORDION_STRADDELLA_ROW_INDEX.get(right.rowId) ?? 0),
+  );
+  const currentIndex = sortedButtons.findIndex((button) => button.id === currentButtonId);
+  const currentButton = sortedButtons[currentIndex] ?? null;
+  if (!currentButton) {
+    return null;
+  }
+  if (key === "Home") {
+    return sortedButtons[0]?.id ?? null;
+  }
+  if (key === "End") {
+    return sortedButtons[sortedButtons.length - 1]?.id ?? null;
+  }
+
+  const currentRowIndex = ACCORDION_STRADDELLA_ROW_INDEX.get(currentButton.rowId) ?? 0;
+  const rowMatch = key === "ArrowLeft" || key === "ArrowRight"
+    ? sortedButtons
+        .filter((button) => button.rowId === currentButton.rowId)
+        .filter((button) =>
+          key === "ArrowLeft"
+            ? button.column < currentButton.column
+            : button.column > currentButton.column,
+        )
+        .sort((left, right) =>
+          key === "ArrowLeft" ? right.column - left.column : left.column - right.column,
+        )[0]
+    : null;
+  const columnMatch = key === "ArrowUp" || key === "ArrowDown"
+    ? sortedButtons
+        .filter((button) => button.column === currentButton.column)
+        .filter((button) => {
+          const rowIndex = ACCORDION_STRADDELLA_ROW_INDEX.get(button.rowId) ?? 0;
+          return key === "ArrowUp" ? rowIndex < currentRowIndex : rowIndex > currentRowIndex;
+        })
+        .sort((left, right) => {
+          const leftRow = ACCORDION_STRADDELLA_ROW_INDEX.get(left.rowId) ?? 0;
+          const rightRow = ACCORDION_STRADDELLA_ROW_INDEX.get(right.rowId) ?? 0;
+          return key === "ArrowUp" ? rightRow - leftRow : leftRow - rightRow;
+        })[0]
+    : null;
+  return (
+    rowMatch ??
+    columnMatch ??
+    getCircularNeighbor(
+      sortedButtons,
+      currentIndex,
+      key === "ArrowLeft" || key === "ArrowUp" ? -1 : 1,
+    )
+  )?.id ?? null;
+}
+
+function toDescriptionId(prefix: string, id: string) {
+  return `${prefix}-${id.replace(/[^a-z0-9_-]+/gi, "-")}-description`;
+}
+
+function formatShapeChoiceDescription({
+  chordLabel,
+  index,
+  instrumentLabel,
+  shapeLabel,
+  total,
+  visibleContext,
+}: {
+  chordLabel: string;
+  index: number;
+  instrumentLabel: string;
+  shapeLabel: string;
+  total: number;
+  visibleContext: string;
+}) {
+  return `${chordLabel} ${instrumentLabel} ${shapeLabel}, choice ${index + 1} of ${total}. ${visibleContext}.`;
+}
+
+function formatGuitarNoteButtonDescription({
+  chordLabel,
+  note,
+  shape,
+  shapeIndex,
+  shapeCount,
+  tuningLabel,
+}: {
+  chordLabel: string;
+  note: NotePoint;
+  shape: GuitarShape;
+  shapeIndex: number;
+  shapeCount: number;
+  tuningLabel: string;
+}) {
+  const fingerLabel = note.finger ? ` Finger ${note.finger}.` : "";
+  return `${chordLabel} ${GUITAR_STANDARD_PROFILE.label}, ${shape.label} shape ${shapeIndex + 1} of ${shapeCount}, ${tuningLabel} tuning. ${note.note} degree ${note.degree}, string ${note.string}, fret ${note.fret}.${fingerLabel}`;
+}
+
+function formatPianoKeyDescription({
+  activeChord,
+  note,
+  voicing,
+  voicingIndex,
+  voicingCount,
+}: {
+  activeChord: string;
+  note: PianoNoteView;
+  voicing: PianoVoicingView;
+  voicingIndex: number;
+  voicingCount: number;
+}) {
+  return `${activeChord} ${PIANO_STANDARD_PROFILE.label}, ${voicing.label} voicing ${voicingIndex + 1} of ${voicingCount}, ${formatPianoRange(PIANO_STANDARD_PROFILE)} range. ${note.pitchLabel} degree ${note.degree}, ${formatPianoHandHint(note.handHint)}.`;
+}
+
+function formatAccordionKeyDescription({
+  activeChord,
+  note,
+  voicing,
+  voicingIndex,
+  voicingCount,
+}: {
+  activeChord: string;
+  note: AccordionKeyboardNoteView;
+  voicing: AccordionVoicingView;
+  voicingIndex: number;
+  voicingCount: number;
+}) {
+  const fingerLabel = note.finger ? ` Finger ${note.finger}.` : "";
+  return `${activeChord} ${ACCORDION_STANDARD_PROFILE.label}, ${voicing.label} voicing ${voicingIndex + 1} of ${voicingCount}. ${note.pitchLabel} degree ${note.degree}, ${note.side} ${note.surface}.${fingerLabel}`;
+}
+
+function formatAccordionButtonDescription({
+  activeChord,
+  button,
+  selectedCandidate,
+  voicing,
+  voicingIndex,
+  voicingCount,
+}: {
+  activeChord: string;
+  button: AccordionButtonView;
+  selectedCandidate: AccordionLeftHandCandidateView | null;
+  voicing: AccordionVoicingView;
+  voicingIndex: number;
+  voicingCount: number;
+}) {
+  const degreeLabel = button.degree ? ` degree ${button.degree}` : "";
+  const candidateLabel = selectedCandidate ? ` ${selectedCandidate.label}.` : "";
+  return `${activeChord} ${ACCORDION_STANDARD_PROFILE.label}, ${voicing.label} voicing ${voicingIndex + 1} of ${voicingCount}.${candidateLabel} ${button.pitchLabel}${degreeLabel}, ${button.side} ${button.surface}, ${button.rowLabel} row, column ${button.sourceColumn + 1}.`;
+}
+
 function getChordDictionaryInstrumentLabel(instrumentId: ChordDictionaryInstrumentId) {
   return (
     CHORD_DICTIONARY_INSTRUMENTS.find((instrument) => instrument.id === instrumentId)?.label ??
@@ -449,6 +882,19 @@ function DictionarySurface({
   const [selectedAccordionPointId, setSelectedAccordionPointId] = useState<string | null>(null);
   const [selectedPianoNoteId, setSelectedPianoNoteId] = useState<string | null>(null);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const pendingSearchViewportRef = useRef<ViewportSnapshot | null>(null);
+  const guitarShapeTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const accordionVoicingTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const pianoVoicingTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const focusSearchInput = () => focusRef(searchInputRef);
+  const preserveSearchViewport = () => {
+    const searchInput = searchInputRef.current;
+    if (!searchInput || document.activeElement !== searchInput) {
+      return;
+    }
+    pendingSearchViewportRef.current = captureViewportSnapshot(searchInput);
+  };
   const displayContext = useMemo<Partial<ChordDisplayContext>>(
     () => ({
       canCapo: GUITAR_STANDARD_PROFILE.canCapo,
@@ -721,6 +1167,16 @@ function DictionarySurface({
   const capoLabel = displayContext.capoFret ? `Capo ${displayContext.capoFret}` : "No capo";
   const tuningLabel = formatGuitarTuning(GUITAR_STANDARD_PROFILE);
 
+  useLayoutEffect(() => {
+    const pendingViewport = pendingSearchViewportRef.current;
+    if (!pendingViewport) {
+      return;
+    }
+    pendingSearchViewportRef.current = null;
+    focusSearchInput();
+    restoreViewportSnapshot(pendingViewport);
+  }, [accordionResultKey, activeChord, pianoResultKey, resultKey]);
+
   return (
     <div className="chord-dictionary">
       <div className="chord-dictionary-toolbar">
@@ -728,8 +1184,10 @@ function DictionarySurface({
           <span className="sr-only">Chord search</span>
           <Music2 aria-hidden="true" />
           <input
+            ref={searchInputRef}
             aria-label="Chord search"
             onChange={(event) => {
+              preserveSearchViewport();
               setActiveChord(event.currentTarget.value);
               setPreviewNoteId(null);
               setPreviewAccordionPointId(null);
@@ -764,11 +1222,13 @@ function DictionarySurface({
           hasGlobalPreference={hasGlobalPianoPreference}
           selectedVoicing={selectedPianoVoicing}
           unsupportedChord={unsupportedChord}
+          voicingButtonRefs={pianoVoicingTabRefs}
           voicings={pianoVoicingViews}
           onClearPreference={() => {
             resetGlobalChordDictionaryPreferredShape(pianoPreferenceContext);
             bumpPreferenceRevision();
           }}
+          onEscapeFocus={focusSearchInput}
           onPreviewNote={setPreviewPianoNoteId}
           onSelectNote={(noteId) => {
             setPreviewPianoNoteId(null);
@@ -786,11 +1246,13 @@ function DictionarySurface({
           selectedCandidate={selectedAccordionCandidate}
           selectedVoicing={selectedAccordionVoicing}
           unsupportedChord={unsupportedChord}
+          voicingButtonRefs={accordionVoicingTabRefs}
           voicings={accordionVoicingViews}
           onClearPreference={() => {
             resetGlobalChordDictionaryPreferredShape(accordionPreferenceContext);
             bumpPreferenceRevision();
           }}
+          onEscapeFocus={focusSearchInput}
           onPreviewPoint={setPreviewAccordionPointId}
           onSelectCandidate={(candidateId) => {
             setActiveAccordionCandidate(candidateId);
@@ -826,7 +1288,7 @@ function DictionarySurface({
 
       <div className="chord-tool-grid">
         <main className="chord-tool-main">
-          <div className="chord-field-row">
+          <div className="chord-field-row" data-layout="responsive">
             <div className="chord-field">
               <span>Instrument</span>
               <strong>{GUITAR_STANDARD_PROFILE.label}</strong>
@@ -858,22 +1320,40 @@ function DictionarySurface({
                       aria-describedby="dictionary-shape-preference-copy"
                       aria-label="Global guitar shape preference choices"
                       className="chord-shape-tabs"
+                      onKeyDown={(event) => handleButtonGroupKeyDown(event, focusSearchInput)}
                       role="group"
                     >
-                      {guitarShapes.map((shape) => (
-                        <button
-                          key={shape.id}
-                          aria-pressed={selectedShape?.id === shape.id}
-                          className={classNames(
-                            "chord-shape-tab",
-                            selectedShape?.id === shape.id && "chord-shape-tab--active",
-                          )}
-                          onClick={() => selectShape(shape)}
-                          type="button"
-                        >
-                          {shape.label}
-                        </button>
-                      ))}
+                      {guitarShapes.map((shape, shapeIndex) => {
+                        const descriptionId = toDescriptionId("dictionary-guitar-shape", shape.id);
+                        return (
+                          <Fragment key={shape.id}>
+                            <button
+                              ref={(element) => setButtonRef(guitarShapeTabRefs, shape.id, element)}
+                              aria-describedby={descriptionId}
+                              aria-label={shape.label}
+                              aria-pressed={selectedShape?.id === shape.id}
+                              className={classNames(
+                                "chord-shape-tab",
+                                selectedShape?.id === shape.id && "chord-shape-tab--active",
+                              )}
+                              onClick={() => selectShape(shape)}
+                              type="button"
+                            >
+                              {shape.label}
+                            </button>
+                            <span className="sr-only" id={descriptionId}>
+                              {formatShapeChoiceDescription({
+                                chordLabel: chordSpelling?.label ?? activeChord,
+                                index: shapeIndex,
+                                instrumentLabel: GUITAR_STANDARD_PROFILE.label,
+                                shapeLabel: shape.label,
+                                total: guitarShapes.length,
+                                visibleContext: `${tuningLabel} tuning`,
+                              })}
+                            </span>
+                          </Fragment>
+                        );
+                      })}
                     </div>
                     {hasGlobalShapePreference ? (
                       <button
@@ -918,7 +1398,9 @@ function DictionarySurface({
               />
             ) : (
               <div className="chord-shape-grid" data-layout="responsive">
-                {guitarShapes.map((shape) => (
+                {guitarShapes.map((shape, shapeIndex) => {
+                  const cardDescriptionId = toDescriptionId("dictionary-guitar-shape-card", shape.id);
+                  return (
                   <div
                     key={shape.id}
                     className={classNames(
@@ -927,26 +1409,47 @@ function DictionarySurface({
                     )}
                   >
                     <button
+                      aria-describedby={cardDescriptionId}
+                      aria-label={shape.label}
                       className="chord-shape-card__label"
                       onClick={() => selectShape(shape)}
                       type="button"
                     >
                       {shape.label}
+                      <span className="sr-only" id={cardDescriptionId}>
+                        {formatShapeChoiceDescription({
+                          chordLabel: chordSpelling?.label ?? activeChord,
+                          index: shapeIndex,
+                          instrumentLabel: GUITAR_STANDARD_PROFILE.label,
+                          shapeLabel: shape.label,
+                          total: guitarShapes.length,
+                          visibleContext: `${tuningLabel} tuning`,
+                        })}
+                      </span>
                     </button>
                     <GuitarFretboard
+                      activeChord={chordSpelling?.label ?? activeChord}
                       activeTooltipNoteId={activeTooltipNoteId}
                       notes={shape.notes}
                       selectedNoteId={selectedNoteId}
                       shape={shape}
+                      shapeCount={guitarShapes.length}
+                      shapeIndex={shapeIndex}
+                      tuningLabel={tuningLabel}
+                      onEscapeFocus={() =>
+                        focusElement(guitarShapeTabRefs.current[shape.id] ?? searchInputRef.current)
+                      }
                       onPreviewNote={setPreviewNoteId}
                       onSelectNote={(noteId) => {
+                        setActiveShape(shape.id);
                         setPreviewNoteId(null);
                         setSelectedNoteId(noteId);
                       }}
                     />
                     <span className="chord-shape-card__meta">{shape.meta}</span>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </section>
@@ -1052,7 +1555,12 @@ function InstrumentSelector({
   onInstrumentChange: (instrumentId: ChordDictionaryInstrumentId) => void;
 }) {
   return (
-    <div className="chord-toolbar-cluster chord-instrument-selector" role="group" aria-label={ariaLabel}>
+    <div
+      className="chord-toolbar-cluster chord-instrument-selector"
+      role="group"
+      aria-label={ariaLabel}
+      onKeyDown={handleButtonGroupKeyDown}
+    >
       {CHORD_DICTIONARY_INSTRUMENTS.map((instrument) => (
         <button
           key={instrument.id}
@@ -1081,11 +1589,13 @@ function PianoDictionaryContent({
   displayedNote,
   hasGlobalPreference,
   onClearPreference,
+  onEscapeFocus,
   onPreviewNote,
   onSelectNote,
   onSelectVoicing,
   selectedVoicing,
   unsupportedChord,
+  voicingButtonRefs,
   voicings,
 }: {
   activeChord: string;
@@ -1095,8 +1605,10 @@ function PianoDictionaryContent({
   hasGlobalPreference: boolean;
   selectedVoicing: PianoVoicingView | null;
   unsupportedChord: boolean;
+  voicingButtonRefs: ButtonRefMap;
   voicings: readonly PianoVoicingView[];
   onClearPreference: () => void;
+  onEscapeFocus: () => void;
   onPreviewNote: (noteId: string | null) => void;
   onSelectNote: (noteId: string) => void;
   onSelectVoicing: (voicing: PianoVoicingView) => void;
@@ -1141,22 +1653,40 @@ function PianoDictionaryContent({
                       aria-describedby="piano-voicing-preference-copy"
                       aria-label="Global piano voicing preference choices"
                       className="chord-shape-tabs"
+                      onKeyDown={(event) => handleButtonGroupKeyDown(event, onEscapeFocus)}
                       role="group"
                     >
-                      {voicings.map((voicing) => (
-                        <button
-                          key={voicing.id}
-                          aria-pressed={selectedVoicing.id === voicing.id}
-                          className={classNames(
-                            "chord-shape-tab",
-                            selectedVoicing.id === voicing.id && "chord-shape-tab--active",
-                          )}
-                          onClick={() => onSelectVoicing(voicing)}
-                          type="button"
-                        >
-                          {voicing.label}
-                        </button>
-                      ))}
+                      {voicings.map((voicing, voicingIndex) => {
+                        const descriptionId = toDescriptionId("dictionary-piano-voicing", voicing.id);
+                        return (
+                          <Fragment key={voicing.id}>
+                            <button
+                              ref={(element) => setButtonRef(voicingButtonRefs, voicing.id, element)}
+                              aria-describedby={descriptionId}
+                              aria-label={voicing.label}
+                              aria-pressed={selectedVoicing.id === voicing.id}
+                              className={classNames(
+                                "chord-shape-tab",
+                                selectedVoicing.id === voicing.id && "chord-shape-tab--active",
+                              )}
+                              onClick={() => onSelectVoicing(voicing)}
+                              type="button"
+                            >
+                              {voicing.label}
+                            </button>
+                            <span className="sr-only" id={descriptionId}>
+                              {formatShapeChoiceDescription({
+                                chordLabel: chordSpelling.label,
+                                index: voicingIndex,
+                                instrumentLabel: PIANO_STANDARD_PROFILE.label,
+                                shapeLabel: voicing.label,
+                                total: voicings.length,
+                                visibleContext: `${formatPianoRange(PIANO_STANDARD_PROFILE)} range`,
+                              })}
+                            </span>
+                          </Fragment>
+                        );
+                      })}
                     </div>
                     {hasGlobalPreference ? (
                       <button
@@ -1178,7 +1708,17 @@ function PianoDictionaryContent({
               <PianoVoicingPanel
                 activeChord={activeChord}
                 activeNoteId={activeNoteId}
+                voicingCount={voicings.length}
+                voicingIndex={Math.max(0, voicings.findIndex((voicing) => voicing.id === selectedVoicing.id))}
                 voicing={selectedVoicing}
+                onEscapeFocus={() => {
+                  const target = voicingButtonRefs.current[selectedVoicing.id] ?? null;
+                  if (target) {
+                    focusElement(target);
+                    return;
+                  }
+                  onEscapeFocus();
+                }}
                 onPreviewNote={onPreviewNote}
                 onSelectNote={onSelectNote}
               />
@@ -1202,13 +1742,19 @@ function PianoDictionaryContent({
 function PianoVoicingPanel({
   activeChord,
   activeNoteId,
+  onEscapeFocus,
   onPreviewNote,
   onSelectNote,
   voicing,
+  voicingCount,
+  voicingIndex,
 }: {
   activeChord: string;
   activeNoteId: string | null;
   voicing: PianoVoicingView;
+  voicingCount: number;
+  voicingIndex: number;
+  onEscapeFocus: () => void;
   onPreviewNote: (noteId: string | null) => void;
   onSelectNote: (noteId: string) => void;
 }) {
@@ -1234,6 +1780,10 @@ function PianoVoicingPanel({
           activeChord={activeChord}
           activeNoteId={activeNoteId}
           slice={voicing.keyboardSlice}
+          voicing={voicing}
+          voicingCount={voicingCount}
+          voicingIndex={voicingIndex}
+          onEscapeFocus={onEscapeFocus}
           onPreviewNote={onPreviewNote}
           onSelectNote={onSelectNote}
         />
@@ -1266,18 +1816,27 @@ function PianoVoicingOrder({ notes }: { notes: readonly PianoNoteView[] }) {
 function PianoKeyboard({
   activeChord,
   activeNoteId,
+  onEscapeFocus,
   onPreviewNote,
   onSelectNote,
   slice,
+  voicing,
+  voicingCount,
+  voicingIndex,
 }: {
   activeChord: string;
   activeNoteId: string | null;
   slice: PianoKeyboardSlice;
+  voicing: PianoVoicingView;
+  voicingCount: number;
+  voicingIndex: number;
+  onEscapeFocus: () => void;
   onPreviewNote: (noteId: string | null) => void;
   onSelectNote: (noteId: string) => void;
 }) {
   const whiteKeys = slice.keys.filter((key) => !key.isBlack);
   const blackKeys = slice.keys.filter((key) => key.isBlack);
+  const activeNotes = slice.keys.flatMap((key) => (key.note ? [key.note] : []));
 
   return (
     <div
@@ -1294,7 +1853,13 @@ function PianoKeyboard({
           <PianoKeyboardKey
             key={key.midi}
             activeNoteId={activeNoteId}
+            activeNotes={activeNotes}
+            activeChord={activeChord}
             keyView={key}
+            voicing={voicing}
+            voicingCount={voicingCount}
+            voicingIndex={voicingIndex}
+            onEscapeFocus={onEscapeFocus}
             onPreviewNote={onPreviewNote}
             onSelectNote={onSelectNote}
           />
@@ -1305,7 +1870,13 @@ function PianoKeyboard({
           <PianoKeyboardKey
             key={key.midi}
             activeNoteId={activeNoteId}
+            activeNotes={activeNotes}
+            activeChord={activeChord}
             keyView={key}
+            voicing={voicing}
+            voicingCount={voicingCount}
+            voicingIndex={voicingIndex}
+            onEscapeFocus={onEscapeFocus}
             onPreviewNote={onPreviewNote}
             onSelectNote={onSelectNote}
           />
@@ -1317,12 +1888,24 @@ function PianoKeyboard({
 
 function PianoKeyboardKey({
   activeNoteId,
+  activeNotes,
+  activeChord,
   keyView,
+  onEscapeFocus,
   onPreviewNote,
   onSelectNote,
+  voicing,
+  voicingCount,
+  voicingIndex,
 }: {
   activeNoteId: string | null;
+  activeNotes: readonly PianoNoteView[];
+  activeChord: string;
   keyView: PianoKeyboardKeyView;
+  voicing: PianoVoicingView;
+  voicingCount: number;
+  voicingIndex: number;
+  onEscapeFocus: () => void;
   onPreviewNote: (noteId: string | null) => void;
   onSelectNote: (noteId: string) => void;
 }) {
@@ -1348,18 +1931,41 @@ function PianoKeyboardKey({
     );
   }
 
+  const descriptionId = toDescriptionId("piano-key", note.id);
+
   return (
     <button
+      aria-describedby={descriptionId}
       aria-label={`${note.pitchLabel} degree ${note.degree} piano key`}
       className={className}
       data-degree={note.degree}
       data-hand-hint={note.handHint}
       data-key-color={keyView.isBlack ? "black" : "white"}
       data-midi={keyView.midi}
+      data-note-id={note.id}
       data-pitch-label={note.pitchLabel}
       onBlur={() => onPreviewNote(null)}
       onClick={() => onSelectNote(note.id)}
       onFocus={() => onPreviewNote(note.id)}
+      onKeyDown={(event) => {
+        if (handleEscapeFocus(event, onEscapeFocus)) {
+          return;
+        }
+        if (!isLinearNavigationKey(event.key)) {
+          return;
+        }
+        const targetId = getKeyboardNoteNavigationTargetId(activeNotes, note.id, event.key);
+        if (!targetId) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        focusSurfaceButtonByData(
+          event.currentTarget.closest<HTMLElement>('[data-surface="piano-keyboard"]'),
+          "noteId",
+          targetId,
+        );
+      }}
       onPointerEnter={() => onPreviewNote(note.id)}
       onPointerLeave={() => onPreviewNote(null)}
       style={style}
@@ -1368,6 +1974,15 @@ function PianoKeyboardKey({
     >
       <strong>{note.pitchLabel}</strong>
       <span>{note.degree}</span>
+      <span className="sr-only" id={descriptionId}>
+        {formatPianoKeyDescription({
+          activeChord,
+          note,
+          voicing,
+          voicingCount,
+          voicingIndex,
+        })}
+      </span>
     </button>
   );
 }
@@ -1471,6 +2086,7 @@ function AccordionDictionaryContent({
   displayedPoint,
   hasGlobalPreference,
   onClearPreference,
+  onEscapeFocus,
   onPreviewPoint,
   onSelectCandidate,
   onSelectPoint,
@@ -1478,6 +2094,7 @@ function AccordionDictionaryContent({
   selectedCandidate,
   selectedVoicing,
   unsupportedChord,
+  voicingButtonRefs,
   voicings,
 }: {
   activeChord: string;
@@ -1488,8 +2105,10 @@ function AccordionDictionaryContent({
   selectedCandidate: AccordionLeftHandCandidateView | null;
   selectedVoicing: AccordionVoicingView | null;
   unsupportedChord: boolean;
+  voicingButtonRefs: ButtonRefMap;
   voicings: readonly AccordionVoicingView[];
   onClearPreference: () => void;
+  onEscapeFocus: () => void;
   onPreviewPoint: (pointId: string | null) => void;
   onSelectCandidate: (candidateId: string) => void;
   onSelectPoint: (pointId: string) => void;
@@ -1531,22 +2150,42 @@ function AccordionDictionaryContent({
                       aria-describedby="accordion-voicing-preference-copy"
                       aria-label="Global accordion right-hand preference choices"
                       className="chord-shape-tabs"
+                      onKeyDown={(event) => handleButtonGroupKeyDown(event, onEscapeFocus)}
                       role="group"
                     >
-                      {voicings.map((voicing) => (
-                        <button
-                          key={voicing.id}
-                          aria-pressed={selectedVoicing.id === voicing.id}
-                          className={classNames(
-                            "chord-shape-tab",
-                            selectedVoicing.id === voicing.id && "chord-shape-tab--active",
-                          )}
-                          onClick={() => onSelectVoicing(voicing)}
-                          type="button"
-                        >
-                          {voicing.label}
-                        </button>
-                      ))}
+                      {voicings.map((voicing, voicingIndex) => {
+                        const descriptionId = toDescriptionId("dictionary-accordion-voicing", voicing.id);
+                        return (
+                          <Fragment key={voicing.id}>
+                            <button
+                              ref={(element) => setButtonRef(voicingButtonRefs, voicing.id, element)}
+                              aria-describedby={descriptionId}
+                              aria-label={voicing.label}
+                              aria-pressed={selectedVoicing.id === voicing.id}
+                              className={classNames(
+                                "chord-shape-tab",
+                                selectedVoicing.id === voicing.id && "chord-shape-tab--active",
+                              )}
+                              onClick={() => onSelectVoicing(voicing)}
+                              type="button"
+                            >
+                              {voicing.label}
+                            </button>
+                            <span className="sr-only" id={descriptionId}>
+                              {formatShapeChoiceDescription({
+                                chordLabel: chordSpelling.label,
+                                index: voicingIndex,
+                                instrumentLabel: ACCORDION_STANDARD_PROFILE.label,
+                                shapeLabel: voicing.label,
+                                total: voicings.length,
+                                visibleContext: voicing.regionRoot
+                                  ? `Region ${voicing.regionRoot}`
+                                  : "No key region",
+                              })}
+                            </span>
+                          </Fragment>
+                        );
+                      })}
                     </div>
                     {hasGlobalPreference ? (
                       <button
@@ -1573,6 +2212,16 @@ function AccordionDictionaryContent({
                 activePointId={activePointId}
                 selectedCandidate={selectedCandidate}
                 voicing={selectedVoicing}
+                voicingCount={voicings.length}
+                voicingIndex={Math.max(0, voicings.findIndex((voicing) => voicing.id === selectedVoicing.id))}
+                onEscapeFocus={() => {
+                  const target = voicingButtonRefs.current[selectedVoicing.id] ?? null;
+                  if (target) {
+                    focusElement(target);
+                    return;
+                  }
+                  onEscapeFocus();
+                }}
                 onPreviewPoint={onPreviewPoint}
                 onSelectPoint={onSelectPoint}
               />
@@ -1584,6 +2233,14 @@ function AccordionDictionaryContent({
           <AccordionCandidateList
             candidates={selectedVoicing.leftHandCandidates}
             selectedCandidateId={selectedCandidate?.id ?? null}
+            onEscapeFocus={() => {
+              const target = voicingButtonRefs.current[selectedVoicing.id] ?? null;
+              if (target) {
+                focusElement(target);
+                return;
+              }
+              onEscapeFocus();
+            }}
             onSelectCandidate={onSelectCandidate}
           />
           </aside>
@@ -1596,15 +2253,21 @@ function AccordionDictionaryContent({
 function AccordionVoicingPanel({
   activeChord,
   activePointId,
+  onEscapeFocus,
   onPreviewPoint,
   onSelectPoint,
   selectedCandidate,
   voicing,
+  voicingCount,
+  voicingIndex,
 }: {
   activeChord: string;
   activePointId: string | null;
   selectedCandidate: AccordionLeftHandCandidateView | null;
   voicing: AccordionVoicingView;
+  voicingCount: number;
+  voicingIndex: number;
+  onEscapeFocus: () => void;
   onPreviewPoint: (pointId: string | null) => void;
   onSelectPoint: (pointId: string) => void;
 }) {
@@ -1630,6 +2293,11 @@ function AccordionVoicingPanel({
             activePointId={activePointId}
             buttons={visibleButtons}
             selectedCandidate={selectedCandidate}
+            voicing={voicing}
+            voicingCount={voicingCount}
+            voicingIndex={voicingIndex}
+            activeChord={activeChord}
+            onEscapeFocus={onEscapeFocus}
             onPreviewPoint={onPreviewPoint}
             onSelectPoint={onSelectPoint}
           />
@@ -1651,6 +2319,10 @@ function AccordionVoicingPanel({
             activeChord={activeChord}
             activePointId={activePointId}
             slice={voicing.keyboardSlice}
+            voicing={voicing}
+            voicingCount={voicingCount}
+            voicingIndex={voicingIndex}
+            onEscapeFocus={onEscapeFocus}
             onPreviewPoint={onPreviewPoint}
             onSelectPoint={onSelectPoint}
           />
@@ -1666,15 +2338,25 @@ function AccordionVoicingPanel({
 }
 
 function AccordionStradellaLattice({
+  activeChord,
   activePointId,
   buttons,
+  onEscapeFocus,
   onPreviewPoint,
   onSelectPoint,
   selectedCandidate,
+  voicing,
+  voicingCount,
+  voicingIndex,
 }: {
+  activeChord: string;
   activePointId: string | null;
   buttons: readonly AccordionButtonView[];
   selectedCandidate: AccordionLeftHandCandidateView | null;
+  voicing: AccordionVoicingView;
+  voicingCount: number;
+  voicingIndex: number;
+  onEscapeFocus: () => void;
   onPreviewPoint: (pointId: string | null) => void;
   onSelectPoint: (pointId: string) => void;
 }) {
@@ -1699,9 +2381,11 @@ function AccordionStradellaLattice({
           const rowIndex = ACCORDION_STRADDELLA_ROW_INDEX.get(button.rowId) ?? 0;
           const isSelectedButton = selectedButtonIds.has(button.id);
           const isActiveButton = isSelectedButton || activePointId === button.id;
+          const descriptionId = toDescriptionId("accordion-stradella-button", button.id);
           return (
             <button
               key={button.id}
+              aria-describedby={descriptionId}
               aria-label={`${button.label} ${button.rowLabel} accordion button`}
               aria-pressed={isSelectedButton}
               className={classNames(
@@ -1711,12 +2395,34 @@ function AccordionStradellaLattice({
                 isActiveButton && "accordion-stradella__button--active",
               )}
               data-active={isActiveButton ? "true" : "false"}
+              data-button-id={button.id}
               data-label={button.label}
               data-selected={isSelectedButton ? "true" : "false"}
               data-row={button.rowId}
+              data-row-index={rowIndex}
+              data-source-column={button.sourceColumn}
               onBlur={() => onPreviewPoint(null)}
               onClick={() => onSelectPoint(button.id)}
               onFocus={() => onPreviewPoint(button.id)}
+              onKeyDown={(event) => {
+                if (handleEscapeFocus(event, onEscapeFocus)) {
+                  return;
+                }
+                if (!isLinearNavigationKey(event.key)) {
+                  return;
+                }
+                const targetId = getAccordionButtonNavigationTargetId(buttons, button.id, event.key);
+                if (!targetId) {
+                  return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                focusSurfaceButtonByData(
+                  event.currentTarget.closest<HTMLElement>('[data-surface="stradella"]'),
+                  "buttonId",
+                  targetId,
+                );
+              }}
               onPointerEnter={() => onPreviewPoint(button.id)}
               onPointerLeave={() => onPreviewPoint(null)}
               style={
@@ -1730,6 +2436,16 @@ function AccordionStradellaLattice({
               type="button"
             >
               {button.rowId === "counterbass" ? null : button.label}
+              <span className="sr-only" id={descriptionId}>
+                {formatAccordionButtonDescription({
+                  activeChord,
+                  button,
+                  selectedCandidate,
+                  voicing,
+                  voicingCount,
+                  voicingIndex,
+                })}
+              </span>
             </button>
           );
         })}
@@ -1741,18 +2457,27 @@ function AccordionStradellaLattice({
 function AccordionKeyboard({
   activeChord,
   activePointId,
+  onEscapeFocus,
   onPreviewPoint,
   onSelectPoint,
   slice,
+  voicing,
+  voicingCount,
+  voicingIndex,
 }: {
   activeChord: string;
   activePointId: string | null;
   slice: AccordionKeyboardSlice;
+  voicing: AccordionVoicingView;
+  voicingCount: number;
+  voicingIndex: number;
+  onEscapeFocus: () => void;
   onPreviewPoint: (pointId: string | null) => void;
   onSelectPoint: (pointId: string) => void;
 }) {
   const whiteKeys = slice.keys.filter((key) => !key.isBlack);
   const blackKeys = slice.keys.filter((key) => key.isBlack);
+  const activeNotes = slice.keys.flatMap((key) => (key.note ? [key.note] : []));
 
   return (
     <div
@@ -1770,7 +2495,13 @@ function AccordionKeyboard({
           <AccordionKeyboardKey
             key={key.midi}
             activePointId={activePointId}
+            activeChord={activeChord}
+            activeNotes={activeNotes}
             keyView={key}
+            voicing={voicing}
+            voicingCount={voicingCount}
+            voicingIndex={voicingIndex}
+            onEscapeFocus={onEscapeFocus}
             onPreviewPoint={onPreviewPoint}
             onSelectPoint={onSelectPoint}
           />
@@ -1781,7 +2512,13 @@ function AccordionKeyboard({
           <AccordionKeyboardKey
             key={key.midi}
             activePointId={activePointId}
+            activeChord={activeChord}
+            activeNotes={activeNotes}
             keyView={key}
+            voicing={voicing}
+            voicingCount={voicingCount}
+            voicingIndex={voicingIndex}
+            onEscapeFocus={onEscapeFocus}
             onPreviewPoint={onPreviewPoint}
             onSelectPoint={onSelectPoint}
           />
@@ -1793,12 +2530,24 @@ function AccordionKeyboard({
 
 function AccordionKeyboardKey({
   activePointId,
+  activeChord,
+  activeNotes,
   keyView,
+  onEscapeFocus,
   onPreviewPoint,
   onSelectPoint,
+  voicing,
+  voicingCount,
+  voicingIndex,
 }: {
   activePointId: string | null;
+  activeChord: string;
+  activeNotes: readonly AccordionKeyboardNoteView[];
   keyView: AccordionKeyboardKeyView;
+  voicing: AccordionVoicingView;
+  voicingCount: number;
+  voicingIndex: number;
+  onEscapeFocus: () => void;
   onPreviewPoint: (pointId: string | null) => void;
   onSelectPoint: (pointId: string) => void;
 }) {
@@ -1824,16 +2573,39 @@ function AccordionKeyboardKey({
     );
   }
 
+  const descriptionId = toDescriptionId("accordion-keyboard-key", note.id);
+
   return (
     <button
+      aria-describedby={descriptionId}
       aria-label={`${note.pitchLabel} degree ${note.degree} accordion keyboard key`}
       className={className}
       data-key-color={keyView.isBlack ? "black" : "white"}
       data-midi={keyView.midi}
+      data-note-id={note.id}
       data-key-position={keyView.isBlack ? "black-overlay" : "white-surface-row"}
       onBlur={() => onPreviewPoint(null)}
       onClick={() => onSelectPoint(note.id)}
       onFocus={() => onPreviewPoint(note.id)}
+      onKeyDown={(event) => {
+        if (handleEscapeFocus(event, onEscapeFocus)) {
+          return;
+        }
+        if (!isLinearNavigationKey(event.key)) {
+          return;
+        }
+        const targetId = getKeyboardNoteNavigationTargetId(activeNotes, note.id, event.key);
+        if (!targetId) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        focusSurfaceButtonByData(
+          event.currentTarget.closest<HTMLElement>('[data-surface="keyboard"]'),
+          "noteId",
+          targetId,
+        );
+      }}
       onPointerEnter={() => onPreviewPoint(note.id)}
       onPointerLeave={() => onPreviewPoint(null)}
       style={style}
@@ -1842,17 +2614,28 @@ function AccordionKeyboardKey({
     >
       <strong>{note.pitchLabel}</strong>
       <span>{note.degree}</span>
+      <span className="sr-only" id={descriptionId}>
+        {formatAccordionKeyDescription({
+          activeChord,
+          note,
+          voicing,
+          voicingCount,
+          voicingIndex,
+        })}
+      </span>
     </button>
   );
 }
 
 export function AccordionCandidateList({
   candidates,
+  onEscapeFocus,
   onSelectCandidate,
   selectedCandidateId,
 }: {
   candidates: readonly AccordionLeftHandCandidateView[];
   selectedCandidateId: string | null;
+  onEscapeFocus?: () => void;
   onSelectCandidate: (candidateId: string) => void;
 }) {
   if (candidates.length === 0) {
@@ -1875,12 +2658,17 @@ export function AccordionCandidateList({
   return (
     <section className="accordion-candidate-panel" aria-label="Accordion left-hand candidates">
       <h4>Left hand</h4>
-      <div className="accordion-candidate-list">
+      <div
+        className="accordion-candidate-list"
+        onKeyDown={(event) => handleButtonGroupKeyDown(event, onEscapeFocus)}
+      >
         {candidates.map((candidate) => {
           const isSelectedCandidate = selectedCandidateId === candidate.id;
+          const descriptionId = toDescriptionId("accordion-candidate", candidate.id);
           return (
             <button
               key={candidate.id}
+              aria-describedby={descriptionId}
               aria-pressed={isSelectedCandidate}
               className={classNames(
                 "accordion-candidate-card",
@@ -1912,6 +2700,9 @@ export function AccordionCandidateList({
                   ) : null}
                 </span>
               ) : null}
+              <span className="sr-only" id={descriptionId}>
+                {`Accordion left-hand candidate ${candidate.rank + 1}: ${candidate.label}. ${candidate.detail}. ${candidate.isExact ? "Exact match" : "Approximate match"}.`}
+              </span>
             </button>
           );
         })}
@@ -3166,19 +3957,29 @@ function MiniFretboard({ shape }: { shape: GuitarShape | null }) {
 }
 
 function GuitarFretboard({
+  activeChord,
   activeTooltipNoteId,
   notes,
+  onEscapeFocus,
   onPreviewNote,
   onSelectNote,
   selectedNoteId,
   shape,
+  shapeCount,
+  shapeIndex,
+  tuningLabel,
 }: {
+  activeChord: string;
   activeTooltipNoteId: string | null;
   notes: readonly NotePoint[];
+  onEscapeFocus: () => void;
   onPreviewNote: (noteId: string | null) => void;
   onSelectNote: (noteId: string | null) => void;
   selectedNoteId: string | null;
   shape: GuitarShape;
+  shapeCount: number;
+  shapeIndex: number;
+  tuningLabel: string;
 }) {
   return (
     <span
@@ -3193,6 +3994,7 @@ function GuitarFretboard({
         } as CSSProperties
       }
       aria-label={`${shape.label} standard guitar diagram`}
+      data-surface="guitar-fretboard"
       role="group"
     >
       <span className="guitar-fretboard__markers" role="group" aria-label="String status markers">
@@ -3265,50 +4067,84 @@ function GuitarFretboard({
             }
           />
         ))}
-        {notes.map((note) => (
-          <button
-            key={note.id}
-            aria-label={formatNoteButtonLabel(note)}
-            className={classNames(
-              "guitar-fretboard__dot",
-              note.isOpen && "guitar-fretboard__dot--open",
-              shape.barreGroups.some((barre) => barre.noteIds.includes(note.id)) &&
-                "guitar-fretboard__dot--over-barre",
-              selectedNoteId === note.id && "guitar-fretboard__dot--selected",
-              activeTooltipNoteId === note.id && "guitar-fretboard__dot--tooltip-active",
-            )}
-            data-fret={note.fret}
-            data-note={note.note}
-            data-note-kind={note.isOpen ? "open" : "fretted"}
-            data-tooltip-active={activeTooltipNoteId === note.id ? "true" : "false"}
-            data-string={note.string}
-            onBlur={() => onPreviewNote(null)}
-            onClick={(event) => {
-              event.stopPropagation();
-              onSelectNote(note.id);
-            }}
-            onFocus={() => onPreviewNote(note.id)}
-            onPointerEnter={() => onPreviewNote(note.id)}
-            onPointerLeave={() => onPreviewNote(null)}
-            style={
-              {
-                "--fret": note.fret,
-                "--fret-position": note.displayFret,
-                "--string": note.displayString,
-                "--visible-fret": note.displayFret,
-              } as CSSProperties
-            }
-            title={note.note}
-            type="button"
-          >
-            <span className="guitar-fretboard__dot-finger" aria-hidden="true">
-              {note.finger}
-            </span>
-            <span className="guitar-fretboard__note-tooltip" aria-hidden="true">
-              {note.note}
-            </span>
-          </button>
-        ))}
+        {notes.map((note) => {
+          const descriptionId = toDescriptionId("guitar-note", note.id);
+          return (
+            <button
+              key={note.id}
+              aria-describedby={descriptionId}
+              aria-label={formatNoteButtonLabel(note)}
+              className={classNames(
+                "guitar-fretboard__dot",
+                note.isOpen && "guitar-fretboard__dot--open",
+                shape.barreGroups.some((barre) => barre.noteIds.includes(note.id)) &&
+                  "guitar-fretboard__dot--over-barre",
+                selectedNoteId === note.id && "guitar-fretboard__dot--selected",
+                activeTooltipNoteId === note.id && "guitar-fretboard__dot--tooltip-active",
+              )}
+              data-fret={note.fret}
+              data-note={note.note}
+              data-note-id={note.id}
+              data-note-kind={note.isOpen ? "open" : "fretted"}
+              data-tooltip-active={activeTooltipNoteId === note.id ? "true" : "false"}
+              data-string={note.string}
+              onBlur={() => onPreviewNote(null)}
+              onClick={(event) => {
+                event.stopPropagation();
+                onSelectNote(note.id);
+              }}
+              onFocus={() => onPreviewNote(note.id)}
+              onKeyDown={(event) => {
+                if (handleEscapeFocus(event, onEscapeFocus)) {
+                  return;
+                }
+                if (!isLinearNavigationKey(event.key)) {
+                  return;
+                }
+                const targetId = getGuitarNavigationTargetId(notes, note.id, event.key);
+                if (!targetId) {
+                  return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                focusSurfaceButtonByData(
+                  event.currentTarget.closest<HTMLElement>('[data-surface="guitar-fretboard"]'),
+                  "noteId",
+                  targetId,
+                );
+              }}
+              onPointerEnter={() => onPreviewNote(note.id)}
+              onPointerLeave={() => onPreviewNote(null)}
+              style={
+                {
+                  "--fret": note.fret,
+                  "--fret-position": note.displayFret,
+                  "--string": note.displayString,
+                  "--visible-fret": note.displayFret,
+                } as CSSProperties
+              }
+              title={note.note}
+              type="button"
+            >
+              <span className="guitar-fretboard__dot-finger" aria-hidden="true">
+                {note.finger}
+              </span>
+              <span className="guitar-fretboard__note-tooltip" aria-hidden="true">
+                {note.note}
+              </span>
+              <span className="sr-only" id={descriptionId}>
+                {formatGuitarNoteButtonDescription({
+                  chordLabel: activeChord,
+                  note,
+                  shape,
+                  shapeCount,
+                  shapeIndex,
+                  tuningLabel,
+                })}
+              </span>
+            </button>
+          );
+        })}
       </span>
       <span className="guitar-fretboard__numbers" aria-hidden="true">
         {shape.fretWindow.frets.map((fret) => (
@@ -3442,6 +4278,7 @@ function LiveFollowPianoActiveState({
   const [previewNoteId, setPreviewNoteId] = useState<string | null>(null);
   const [, setPreferenceRevision] = useState(0);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const voicingTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const chordSpelling = useMemo(
     () =>
       currentChord
@@ -3646,22 +4483,40 @@ function LiveFollowPianoActiveState({
                     aria-describedby="live-piano-preference-copy"
                     aria-label="Project piano voicing preference choices"
                     className="chord-shape-tabs"
+                    onKeyDown={handleButtonGroupKeyDown}
                     role="group"
                   >
-                    {voicingViews.map((voicing) => (
-                      <button
-                        key={voicing.id}
-                        aria-pressed={selectedVoicing.id === voicing.id}
-                        className={classNames(
-                          "chord-shape-tab",
-                          selectedVoicing.id === voicing.id && "chord-shape-tab--active",
-                        )}
-                        onClick={() => selectVoicing(voicing)}
-                        type="button"
-                      >
-                        {voicing.label}
-                      </button>
-                    ))}
+                    {voicingViews.map((voicing, voicingIndex) => {
+                      const descriptionId = toDescriptionId("live-piano-voicing", voicing.id);
+                      return (
+                        <Fragment key={voicing.id}>
+                          <button
+                            ref={(element) => setButtonRef(voicingTabRefs, voicing.id, element)}
+                            aria-describedby={descriptionId}
+                            aria-label={voicing.label}
+                            aria-pressed={selectedVoicing.id === voicing.id}
+                            className={classNames(
+                              "chord-shape-tab",
+                              selectedVoicing.id === voicing.id && "chord-shape-tab--active",
+                            )}
+                            onClick={() => selectVoicing(voicing)}
+                            type="button"
+                          >
+                            {voicing.label}
+                          </button>
+                          <span className="sr-only" id={descriptionId}>
+                            {formatShapeChoiceDescription({
+                              chordLabel: chordSpelling.label,
+                              index: voicingIndex,
+                              instrumentLabel: PIANO_STANDARD_PROFILE.label,
+                              shapeLabel: voicing.label,
+                              total: voicingViews.length,
+                              visibleContext: `${formatPianoRange(PIANO_STANDARD_PROFILE)} range`,
+                            })}
+                          </span>
+                        </Fragment>
+                      );
+                    })}
                   </div>
                   {hasProjectPreference ? (
                     <button
@@ -3687,6 +4542,9 @@ function LiveFollowPianoActiveState({
               activeChord={currentChord.displayLabel}
               activeNoteId={activeNoteId}
               voicing={selectedVoicing}
+              voicingCount={voicingViews.length}
+              voicingIndex={Math.max(0, voicingViews.findIndex((voicing) => voicing.id === selectedVoicing.id))}
+              onEscapeFocus={() => focusElement(voicingTabRefs.current[selectedVoicing.id])}
               onPreviewNote={setPreviewNoteId}
               onSelectNote={(noteId) => {
                 setPreviewNoteId(null);
@@ -3741,6 +4599,7 @@ function LiveFollowActiveState({
   const [previewNoteId, setPreviewNoteId] = useState<string | null>(null);
   const [, setPreferenceRevision] = useState(0);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const shapeTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const displayContext = useMemo<Partial<ChordDisplayContext>>(
     () => ({
       canCapo: GUITAR_STANDARD_PROFILE.canCapo,
@@ -3956,22 +4815,40 @@ function LiveFollowActiveState({
                     aria-describedby="live-shape-preference-copy"
                     aria-label="Project guitar shape preference choices"
                     className="chord-shape-tabs"
+                    onKeyDown={handleButtonGroupKeyDown}
                     role="group"
                   >
-                    {guitarShapes.map((shape) => (
-                      <button
-                        key={shape.id}
-                        aria-pressed={selectedShape?.id === shape.id}
-                        className={classNames(
-                          "chord-shape-tab",
-                          selectedShape?.id === shape.id && "chord-shape-tab--active",
-                        )}
-                        onClick={() => selectShape(shape)}
-                        type="button"
-                      >
-                        {shape.label}
-                      </button>
-                    ))}
+                    {guitarShapes.map((shape, shapeIndex) => {
+                      const descriptionId = toDescriptionId("live-guitar-shape", shape.id);
+                      return (
+                        <Fragment key={shape.id}>
+                          <button
+                            ref={(element) => setButtonRef(shapeTabRefs, shape.id, element)}
+                            aria-describedby={descriptionId}
+                            aria-label={shape.label}
+                            aria-pressed={selectedShape?.id === shape.id}
+                            className={classNames(
+                              "chord-shape-tab",
+                              selectedShape?.id === shape.id && "chord-shape-tab--active",
+                            )}
+                            onClick={() => selectShape(shape)}
+                            type="button"
+                          >
+                            {shape.label}
+                          </button>
+                          <span className="sr-only" id={descriptionId}>
+                            {formatShapeChoiceDescription({
+                              chordLabel: chordSpelling.label,
+                              index: shapeIndex,
+                              instrumentLabel: GUITAR_STANDARD_PROFILE.label,
+                              shapeLabel: shape.label,
+                              total: guitarShapes.length,
+                              visibleContext: `${formatGuitarTuning(GUITAR_STANDARD_PROFILE)} tuning`,
+                            })}
+                          </span>
+                        </Fragment>
+                      );
+                    })}
                   </div>
                   {hasProjectShapePreference ? (
                     <button
@@ -3997,7 +4874,9 @@ function LiveFollowActiveState({
             </div>
             <ChordSpellingSummary spelling={chordSpelling} />
             <div className="chord-shape-grid" data-layout="responsive">
-              {guitarShapes.map((shape) => (
+              {guitarShapes.map((shape, shapeIndex) => {
+                const cardDescriptionId = toDescriptionId("live-guitar-shape-card", shape.id);
+                return (
                 <div
                   key={shape.id}
                   className={classNames(
@@ -4006,26 +4885,45 @@ function LiveFollowActiveState({
                   )}
                 >
                   <button
+                    aria-describedby={cardDescriptionId}
+                    aria-label={shape.label}
                     className="chord-shape-card__label"
                     onClick={() => selectShape(shape)}
                     type="button"
                   >
                     {shape.label}
+                    <span className="sr-only" id={cardDescriptionId}>
+                      {formatShapeChoiceDescription({
+                        chordLabel: chordSpelling.label,
+                        index: shapeIndex,
+                        instrumentLabel: GUITAR_STANDARD_PROFILE.label,
+                        shapeLabel: shape.label,
+                        total: guitarShapes.length,
+                        visibleContext: `${formatGuitarTuning(GUITAR_STANDARD_PROFILE)} tuning`,
+                      })}
+                    </span>
                   </button>
                   <GuitarFretboard
+                    activeChord={currentChord.displayLabel}
                     activeTooltipNoteId={activeTooltipNoteId}
                     notes={shape.notes}
                     selectedNoteId={selectedNoteId}
                     shape={shape}
+                    shapeCount={guitarShapes.length}
+                    shapeIndex={shapeIndex}
+                    tuningLabel={formatGuitarTuning(GUITAR_STANDARD_PROFILE)}
+                    onEscapeFocus={() => focusElement(shapeTabRefs.current[shape.id])}
                     onPreviewNote={setPreviewNoteId}
                     onSelectNote={(noteId) => {
+                      setActiveShape(shape.id);
                       setPreviewNoteId(null);
                       setSelectedNoteId(noteId);
                     }}
                   />
                   <span className="chord-shape-card__meta">{shape.meta}</span>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </section>
         </main>
@@ -4071,6 +4969,7 @@ function LiveFollowAccordionActiveState({
   const [previewPointId, setPreviewPointId] = useState<string | null>(null);
   const [, setPreferenceRevision] = useState(0);
   const [selectedPointId, setSelectedPointId] = useState<string | null>(null);
+  const voicingTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const chordSpelling = useMemo(
     () =>
       currentChord
@@ -4286,22 +5185,42 @@ function LiveFollowAccordionActiveState({
                     aria-describedby="live-accordion-preference-copy"
                     aria-label="Project accordion right-hand preference choices"
                     className="chord-shape-tabs"
+                    onKeyDown={handleButtonGroupKeyDown}
                     role="group"
                   >
-                    {voicingViews.map((voicing) => (
-                      <button
-                        key={voicing.id}
-                        aria-pressed={selectedVoicing.id === voicing.id}
-                        className={classNames(
-                          "chord-shape-tab",
-                          selectedVoicing.id === voicing.id && "chord-shape-tab--active",
-                        )}
-                        onClick={() => selectVoicing(voicing)}
-                        type="button"
-                      >
-                        {voicing.label}
-                      </button>
-                    ))}
+                    {voicingViews.map((voicing, voicingIndex) => {
+                      const descriptionId = toDescriptionId("live-accordion-voicing", voicing.id);
+                      return (
+                        <Fragment key={voicing.id}>
+                          <button
+                            ref={(element) => setButtonRef(voicingTabRefs, voicing.id, element)}
+                            aria-describedby={descriptionId}
+                            aria-label={voicing.label}
+                            aria-pressed={selectedVoicing.id === voicing.id}
+                            className={classNames(
+                              "chord-shape-tab",
+                              selectedVoicing.id === voicing.id && "chord-shape-tab--active",
+                            )}
+                            onClick={() => selectVoicing(voicing)}
+                            type="button"
+                          >
+                            {voicing.label}
+                          </button>
+                          <span className="sr-only" id={descriptionId}>
+                            {formatShapeChoiceDescription({
+                              chordLabel: chordSpelling.label,
+                              index: voicingIndex,
+                              instrumentLabel: ACCORDION_STANDARD_PROFILE.label,
+                              shapeLabel: voicing.label,
+                              total: voicingViews.length,
+                              visibleContext: voicing.regionRoot
+                                ? `Region ${voicing.regionRoot}`
+                                : "No key region",
+                            })}
+                          </span>
+                        </Fragment>
+                      );
+                    })}
                   </div>
                   {hasProjectPreference ? (
                     <button
@@ -4328,6 +5247,9 @@ function LiveFollowAccordionActiveState({
               activePointId={activePointId}
               selectedCandidate={selectedCandidate}
               voicing={selectedVoicing}
+              voicingCount={voicingViews.length}
+              voicingIndex={Math.max(0, voicingViews.findIndex((voicing) => voicing.id === selectedVoicing.id))}
+              onEscapeFocus={() => focusElement(voicingTabRefs.current[selectedVoicing.id])}
               onPreviewPoint={setPreviewPointId}
               onSelectPoint={(pointId) => {
                 setPreviewPointId(null);
@@ -4359,6 +5281,7 @@ function LiveFollowAccordionActiveState({
           <AccordionCandidateList
             candidates={selectedVoicing.leftHandCandidates}
             selectedCandidateId={selectedCandidate?.id ?? null}
+            onEscapeFocus={() => focusElement(voicingTabRefs.current[selectedVoicing.id])}
             onSelectCandidate={(candidateId) => {
               setActiveCandidate(candidateId);
               setPreviewPointId(null);

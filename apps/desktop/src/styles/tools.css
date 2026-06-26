@@ -732,14 +732,16 @@
 
 .chord-field-row {
   display: grid;
-  grid-template-columns: minmax(10rem, 1.25fr) minmax(12rem, 1.1fr) repeat(2, minmax(6rem, 0.55fr));
+  grid-template-columns: repeat(4, minmax(min(100%, 7rem), 1fr));
   gap: 0.7rem;
+  min-width: 0;
 }
 
 .chord-field {
   display: grid;
   justify-items: start;
   gap: 0.12rem;
+  min-width: 0;
   min-height: 3.2rem;
   padding: 0.6rem 0.72rem;
   border: 1px solid color-mix(in srgb, var(--divider) 70%, transparent);
@@ -757,6 +759,8 @@
 }
 
 .chord-field strong {
+  max-width: 100%;
+  overflow-wrap: anywhere;
   font-size: 0.95rem;
 }
 
@@ -2272,38 +2276,73 @@ span.piano-keyboard__key--black {
 }
 
 .live-follow-page {
-  min-height: 41rem;
+  min-height: 0;
+}
+
+.live-follow-page--active,
+.live-follow-page--waiting {
+  align-content: start;
 }
 
 .live-follow-page--active {
-  align-content: start;
+  gap: 0.7rem;
+  padding: 0.75rem;
 }
 
 .live-follow-topbar {
   align-items: center;
+  gap: 0.65rem;
+}
+
+.live-follow-page--active .live-follow-controls {
+  gap: 0.4rem;
+}
+
+.live-follow-page--active .chord-pill,
+.live-follow-page--active .chord-instrument-button {
+  min-height: 2.5rem;
+  padding: 0.48rem 0.66rem;
+  font-size: 0.84rem;
+}
+
+.live-follow-page--active .chord-context-strip {
+  gap: 0.4rem;
+  min-height: 0;
+  padding: 0.42rem 0.5rem;
+}
+
+.live-follow-page--active .chord-context-chip {
+  min-height: 1.85rem;
+  padding: 0.24rem 0.46rem;
+  font-size: 0.78rem;
 }
 
 .live-follow-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(17rem, 22rem);
-  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr) minmax(14rem, 18rem);
+  gap: 0.75rem;
   align-items: start;
   min-width: 0;
+}
+
+.live-follow-grid--accordion,
+.live-follow-grid--piano {
+  grid-template-columns: minmax(0, 1.25fr) minmax(14rem, 18rem);
 }
 
 .live-follow-main,
 .live-follow-sidebar {
   display: grid;
-  gap: 1rem;
+  gap: 0.75rem;
   min-width: 0;
 }
 
 .live-current-chord,
 .live-next-chord {
   display: grid;
-  gap: 0.45rem;
+  gap: 0.35rem;
   min-width: 0;
-  padding: 0.85rem;
+  padding: 0.68rem;
   border: 1px solid color-mix(in srgb, var(--divider) 76%, transparent);
   border-radius: 8px;
   background: color-mix(in srgb, var(--panel) 72%, transparent);
@@ -2312,26 +2351,28 @@ span.piano-keyboard__key--black {
 .live-current-chord h3 {
   margin: 0;
   color: var(--text);
-  font-size: 3.4rem;
-  line-height: 0.95;
+  font-size: 2.95rem;
+  line-height: 1;
+  overflow-wrap: anywhere;
 }
 
 .live-next-chord strong {
   color: var(--text);
-  font-size: 1.6rem;
+  font-size: 1.32rem;
   line-height: 1.05;
+  overflow-wrap: anywhere;
 }
 
 .live-next-chord span {
   color: var(--muted);
-  font-size: 0.88rem;
+  font-size: 0.8rem;
   font-weight: 800;
 }
 
 .live-follow-provenance {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.55rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 8.5rem), 1fr));
+  gap: 0.4rem;
   margin: 0;
 }
 
@@ -2339,7 +2380,7 @@ span.piano-keyboard__key--black {
   display: grid;
   gap: 0.12rem;
   min-width: 0;
-  padding: 0.55rem 0.6rem;
+  padding: 0.42rem 0.5rem;
   border: 1px solid color-mix(in srgb, var(--divider) 70%, transparent);
   border-radius: 8px;
   background: color-mix(in srgb, var(--panel-strong) 56%, transparent);
@@ -2347,7 +2388,7 @@ span.piano-keyboard__key--black {
 
 .live-follow-provenance dt {
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   font-weight: 800;
   text-transform: uppercase;
 }
@@ -2357,7 +2398,106 @@ span.piano-keyboard__key--black {
   margin: 0;
   color: var(--text);
   font-weight: 850;
+  font-size: 0.84rem;
   overflow-wrap: anywhere;
+}
+
+.live-follow-page--active .chord-section {
+  gap: 0.65rem;
+}
+
+.live-follow-page--active .chord-section-heading--inline {
+  gap: 0.65rem;
+}
+
+.live-follow-page--active .chord-spelling-summary {
+  gap: 0.35rem;
+}
+
+.live-follow-page--active .chord-spelling-summary span {
+  min-width: 3.35rem;
+  padding: 0.34rem 0.48rem;
+}
+
+.live-follow-page--active .chord-spelling-summary strong {
+  font-size: 0.94rem;
+}
+
+.live-follow-page--active .chord-spelling-summary small,
+.live-follow-page--active .chord-shape-preference-copy {
+  font-size: 0.72rem;
+}
+
+.live-follow-page--active .chord-shape-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 10.5rem), 1fr));
+  gap: 0.55rem;
+}
+
+.live-follow-page--active .chord-shape-card {
+  gap: 0.4rem;
+  padding: 0.6rem;
+}
+
+.live-follow-page--active .guitar-fretboard {
+  --guitar-board-height: clamp(8.1rem, calc(var(--guitar-visible-frets) * 1.7rem), 11.6rem);
+  --guitar-dot-size: 1.04rem;
+}
+
+.live-follow-page--active .note-inspector {
+  gap: 0.55rem;
+  align-items: start;
+  padding: 0.6rem;
+}
+
+.live-follow-page--active .note-inspector__badge {
+  width: 3.85rem;
+  height: 3.85rem;
+}
+
+.live-follow-page--active .note-inspector dl {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 5rem), 1fr));
+  gap: 0.45rem 0.55rem;
+}
+
+.live-follow-page--active .accordion-position-grid {
+  grid-template-columns: minmax(14rem, 0.85fr) minmax(17rem, 1.15fr);
+  gap: 0.55rem;
+}
+
+.live-follow-page--active .accordion-position-card,
+.live-follow-page--active .accordion-candidate-panel,
+.live-follow-page--active .piano-position-card,
+.live-follow-page--active .piano-facts-panel {
+  gap: 0.6rem;
+  padding: 0.65rem;
+}
+
+.live-follow-page--active .accordion-stradella__board {
+  grid-template-rows: repeat(var(--accordion-root-count, 12), 1.42rem);
+  min-height: 16.9rem;
+}
+
+.live-follow-page--active .accordion-keyboard {
+  --accordion-white-key-height: 2.16rem;
+  --accordion-black-key-height: 1.26rem;
+  --accordion-black-key-width: 5.4rem;
+}
+
+.live-follow-page--active .piano-keyboard {
+  --piano-white-key-width: 2.45rem;
+  --piano-keyboard-height: 9.35rem;
+  --piano-black-key-height: 5.5rem;
+}
+
+.live-follow-page--active .piano-voicing-order li {
+  min-inline-size: 3.25rem;
+  padding: 0.34rem 0.42rem;
+}
+
+.live-follow-page--active .piano-note-inspector .note-inspector__badge,
+.live-follow-page--active .accordion-note-inspector .note-inspector__badge {
+  width: 4.1rem;
+  height: 4.1rem;
 }
 
 .lyrics-follow-stage {
@@ -2417,6 +2557,14 @@ span.piano-keyboard__key--black {
   .live-follow-provenance {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .live-follow-page--active .live-follow-sidebar {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+  }
+
+  .live-follow-page--active .accordion-position-grid {
+    grid-template-columns: minmax(14rem, 0.9fr) minmax(17rem, 1.1fr);
+  }
 }
 
 @media (max-width: 760px) {
@@ -2446,10 +2594,12 @@ span.piano-keyboard__key--black {
 
   .chord-shape-controls {
     justify-items: start;
+    width: 100%;
   }
 
   .chord-shape-control-row {
     justify-content: flex-start;
+    width: 100%;
   }
 
   .chord-shape-preference-copy {
@@ -2497,11 +2647,33 @@ span.piano-keyboard__key--black {
   }
 
   .live-current-chord h3 {
-    font-size: 2.6rem;
+    font-size: 2.35rem;
   }
 
   .lyrics-follow-stage {
     padding: 2rem 1rem;
+  }
+
+  .live-follow-page--active {
+    gap: 0.62rem;
+    padding: 0.65rem;
+  }
+
+  .live-follow-page--active .live-follow-sidebar,
+  .live-follow-page--active .accordion-position-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .live-follow-page--active .chord-section-heading--inline {
+    align-items: stretch;
+  }
+
+  .live-follow-page--active .note-inspector {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .live-follow-page--active .chord-context-chip {
+    white-space: normal;
   }
 }
 
@@ -2515,6 +2687,11 @@ span.piano-keyboard__key--black {
   .chord-icon-button,
   .chord-pill {
     flex: 1 1 auto;
+  }
+
+  .live-follow-page--active .chord-pill,
+  .live-follow-page--active .chord-instrument-button {
+    justify-content: center;
   }
 
   .accordion-stradella__headers,
@@ -2547,6 +2724,38 @@ span.piano-keyboard__key--black {
   .note-inspector dl,
   .live-follow-provenance {
     grid-template-columns: 1fr;
+  }
+
+  .live-follow-page--active .live-follow-provenance,
+  .live-follow-page--active .note-inspector,
+  .live-follow-page--active .piano-note-inspector,
+  .live-follow-page--active .accordion-note-inspector {
+    grid-template-columns: 1fr;
+  }
+
+  .live-follow-page--active .chord-context-strip {
+    gap: 0.35rem;
+    padding: 0.4rem;
+  }
+
+  .live-follow-page--active .chord-context-chip {
+    flex: 1 1 9rem;
+    justify-content: center;
+    min-height: 2.2rem;
+    text-align: center;
+  }
+
+  .live-follow-page--active .live-current-chord,
+  .live-follow-page--active .live-next-chord {
+    padding: 0.58rem;
+  }
+
+  .live-follow-page--active .live-current-chord h3 {
+    font-size: 2.1rem;
+  }
+
+  .live-follow-page--active .live-next-chord strong {
+    font-size: 1.18rem;
   }
 
   .chord-shape-card {

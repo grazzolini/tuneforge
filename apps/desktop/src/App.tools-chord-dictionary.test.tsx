@@ -723,6 +723,104 @@ function expectContainedHorizontalOverflow(element: HTMLElement, viewportWidth: 
   expect(element.scrollWidth).toBeLessThanOrEqual(Math.max(element.clientWidth, viewportWidth));
 }
 
+function setWindowScrollPosition(scrollX: number, scrollY: number) {
+  Object.defineProperty(window, "scrollX", {
+    configurable: true,
+    value: scrollX,
+  });
+  Object.defineProperty(window, "scrollY", {
+    configurable: true,
+    value: scrollY,
+  });
+}
+
+function installWindowScrollMock() {
+  const scrollTo = vi.fn();
+  Object.defineProperty(window, "scrollTo", {
+    configurable: true,
+    value: scrollTo,
+  });
+  return scrollTo;
+}
+
+function getMainContent() {
+  const mainContent = document.querySelector(".main-content");
+  if (!(mainContent instanceof HTMLElement)) {
+    throw new Error("Expected app main content scroll container");
+  }
+  return mainContent;
+}
+
+function installElementScrollMock(
+  element: HTMLElement,
+  { scrollLeft = 0, scrollTop }: { scrollLeft?: number; scrollTop: number },
+) {
+  let currentScrollLeft = scrollLeft;
+  let currentScrollTop = scrollTop;
+  const scrollLeftSetter = vi.fn((value: number) => {
+    currentScrollLeft = value;
+  });
+  const scrollTopSetter = vi.fn((value: number) => {
+    currentScrollTop = value;
+  });
+
+  Object.defineProperty(element, "scrollLeft", {
+    configurable: true,
+    get: () => currentScrollLeft,
+    set: scrollLeftSetter,
+  });
+  Object.defineProperty(element, "scrollTop", {
+    configurable: true,
+    get: () => currentScrollTop,
+    set: scrollTopSetter,
+  });
+
+  return { scrollLeftSetter, scrollTopSetter };
+}
+
+function expectDescribedBy(element: HTMLElement, pattern: RegExp) {
+  const describedBy = element.getAttribute("aria-describedby");
+  expect(describedBy).toBeTruthy();
+  const description = describedBy
+    ?.split(/\s+/)
+    .map((id) => document.getElementById(id)?.textContent ?? "")
+    .join(" ");
+  expect(description).toMatch(pattern);
+}
+
+function getActiveShapeCard() {
+  const shapeCard = document.querySelector(".chord-shape-card--active");
+  if (!(shapeCard instanceof HTMLElement)) {
+    throw new Error("Expected an active chord shape card");
+  }
+  return shapeCard;
+}
+
+function getSelectedButton(group: HTMLElement) {
+  const button = within(group).getAllByRole("button").find(
+    (candidate) => candidate.getAttribute("aria-pressed") === "true",
+  );
+  if (!button) {
+    throw new Error("Expected a selected button");
+  }
+  return button as HTMLElement;
+}
+
+function expectInspectorMatchesGuitarNote(noteButton: HTMLElement) {
+  const note = noteButton.dataset.note;
+  const stringNumber = noteButton.dataset.string;
+  const fret = noteButton.dataset.fret;
+
+  expect(note).toBeTruthy();
+  expect(stringNumber).toBeTruthy();
+  expect(fret).toBeTruthy();
+  expectInspectorToShow([
+    new RegExp(escapeRegExp(note ?? "")),
+    new RegExp(`String\\s*${stringNumber ?? ""}`),
+    new RegExp(`Fret\\s*${fret ?? ""}`),
+  ]);
+}
+
 describe("Desktop app tools chord dictionary", () => {
   beforeEach(resetAppTestHarness);
 
@@ -1803,6 +1901,215 @@ describe("Desktop app tools chord dictionary", () => {
     expect(shapeButtons[1]).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("activates the owning Dictionary guitar shape when selecting a note in an inactive card", async () => {
+    const user = userEvent.setup();
+    await renderChordDictionary();
+
+    const shapeGroup = screen.getByRole("group", { name: DICTIONARY_SHAPE_GROUP_NAME });
+    const inactiveShapeButton = within(shapeGroup).getByRole("button", {
+      name: "C E-shape barre",
+    });
+    const inactiveShapeCard = getShapeCard("C E-shape barre");
+    const noteButton = expectPlayableNote(
+      getStandardDiagram("C E-shape barre"),
+      "C3",
+      6,
+      8,
+    );
+
+    expect(inactiveShapeButton).toHaveAttribute("aria-pressed", "false");
+    expect(inactiveShapeCard).not.toHaveClass("chord-shape-card--active");
+
+    await user.click(noteButton);
+
+    await waitFor(() => expect(inactiveShapeButton).toHaveAttribute("aria-pressed", "true"));
+    expect(inactiveShapeCard).toHaveClass("chord-shape-card--active");
+    expect(noteButton).toHaveClass("guitar-fretboard__dot--selected");
+    expectInspectorMatchesGuitarNote(noteButton);
+  });
+
+  it("preserves search focus and viewport while typing across instruments and live fallback", async () => {
+    const user = userEvent.setup();
+    const scrollTo = installWindowScrollMock();
+    const dictionaryView = renderChordDictionaryView();
+    await dictionaryView.findHeading();
+
+    const expectStableSearchChange = async (value: string, scrollY: number) => {
+      const elementScroll = installElementScrollMock(getMainContent(), {
+        scrollLeft: 6,
+        scrollTop: scrollY,
+      });
+      setWindowScrollPosition(8, scrollY + 1);
+      const input = screen.getByLabelText("Chord search");
+      input.focus();
+      fireEvent.change(input, { target: { value } });
+      expect(input).toHaveFocus();
+      await waitFor(() => expect(elementScroll.scrollTopSetter).toHaveBeenCalledWith(scrollY));
+      expect(elementScroll.scrollLeftSetter).toHaveBeenCalledWith(6);
+      expect(scrollTo).toHaveBeenLastCalledWith(8, scrollY + 1);
+    };
+
+    await expectStableSearchChange("D", 420);
+
+    await user.click(within(getDictionaryInstrumentSelector()).getByRole("button", { name: "Accordion" }));
+    await expectStableSearchChange("E", 512);
+
+    await user.click(within(getDictionaryInstrumentSelector()).getByRole("button", { name: "Piano" }));
+    await expectStableSearchChange("F", 640);
+
+    dictionaryView.unmount();
+    await renderChordDictionaryWithPlayback({
+      playback: makePlaybackValue({ isPlaying: false }),
+    });
+    expect(screen.getByText("Playback paused")).toBeInTheDocument();
+    setWindowScrollPosition(8, 720);
+    const input = screen.getByLabelText("Chord search");
+    input.focus();
+    fireEvent.change(input, { target: { value: "G" } });
+    expect(input).toHaveFocus();
+    expect(scrollTo).toHaveBeenLastCalledWith(8, 720);
+  });
+
+  it("supports keyboard-only guitar shape and fretboard note selection", async () => {
+    const user = userEvent.setup();
+    await renderChordDictionary();
+
+    const shapeGroup = screen.getByRole("group", { name: DICTIONARY_SHAPE_GROUP_NAME });
+    const initialShapeButtons = within(shapeGroup).getAllByRole("button");
+    initialShapeButtons[0]?.focus();
+
+    await user.keyboard("{ArrowRight}");
+    const focusedShapeButton = document.activeElement as HTMLElement;
+    expect(focusedShapeButton).toHaveClass("chord-shape-tab");
+    expect(focusedShapeButton).not.toBe(initialShapeButtons[0]);
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(focusedShapeButton).toHaveAttribute("aria-pressed", "true"));
+    expectDescribedBy(focusedShapeButton, /C .*Guitar.*choice .*tuning/i);
+
+    const activeShapeCard = getActiveShapeCard();
+    const noteButtons = within(activeShapeCard).getAllByRole("button", {
+      name: /string \d fret \d/i,
+    });
+    const firstNoteButton = noteButtons[0] as HTMLElement;
+    firstNoteButton.focus();
+
+    await user.keyboard("{ArrowRight}");
+    const focusedNote = document.activeElement as HTMLElement;
+    expect(focusedNote).toHaveAttribute("data-note-id");
+    expect(focusedNote).not.toBe(firstNoteButton);
+    await user.keyboard(" ");
+
+    await waitFor(() =>
+      expectInspectorToShow([
+        new RegExp(escapeRegExp(focusedNote.dataset.note ?? "")),
+        new RegExp(`String\\s*${focusedNote.dataset.string ?? ""}`),
+        new RegExp(`Fret\\s*${focusedNote.dataset.fret ?? ""}`),
+      ]),
+    );
+    expectDescribedBy(focusedNote, /Guitar.*shape .*degree .*string .*fret/i);
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(getSelectedButton(shapeGroup)).toHaveFocus());
+  });
+
+  it("supports keyboard-only piano voicing and key selection", async () => {
+    const user = await selectPianoDictionary();
+
+    changeChordSearch("G7");
+    await screen.findByRole("heading", { name: "G7 piano voicings" });
+    const voicingGroup = screen.getByRole("group", {
+      name: "Global piano voicing preference choices",
+    });
+    const voicingButtons = within(voicingGroup).getAllByRole("button");
+    voicingButtons[0]?.focus();
+
+    await user.keyboard("{ArrowRight}");
+    const focusedVoicing = document.activeElement as HTMLElement;
+    expect(focusedVoicing).toHaveTextContent("G7 first inversion");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(focusedVoicing).toHaveAttribute("aria-pressed", "true"));
+    expectDescribedBy(focusedVoicing, /G7 .*Piano.*choice .*range/i);
+
+    const keyboard = getPianoKeyboard();
+    const keyButtons = within(keyboard).getAllByRole("button", { name: /piano key/i });
+    keyButtons[0]?.focus();
+    await user.keyboard("{ArrowRight}");
+    const focusedKey = document.activeElement as HTMLElement;
+    expect(focusedKey).toHaveAttribute("data-note-id");
+    await user.keyboard("{Enter}");
+
+    await waitFor(() =>
+      expectInspectorToShow([
+        new RegExp(escapeRegExp(focusedKey.dataset.pitchLabel ?? "")),
+        new RegExp(`Degree\\s*${focusedKey.dataset.degree ?? ""}`),
+      ]),
+    );
+    expectDescribedBy(focusedKey, /Piano.*voicing .*range.*degree/i);
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(getSelectedButton(voicingGroup)).toHaveFocus());
+  });
+
+  it("supports keyboard-only accordion voicing, keys, left buttons, and candidates", async () => {
+    const user = await selectAccordionDictionary();
+
+    const voicingGroup = screen.getByRole("group", {
+      name: "Global accordion right-hand preference choices",
+    });
+    const voicingButtons = within(voicingGroup).getAllByRole("button");
+    voicingButtons[0]?.focus();
+    await user.keyboard("{ArrowRight}");
+    const focusedVoicing = document.activeElement as HTMLElement;
+    expect(focusedVoicing).toHaveClass("chord-shape-tab");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(focusedVoicing).toHaveAttribute("aria-pressed", "true"));
+    expectDescribedBy(focusedVoicing, /Accordion.*choice/i);
+
+    const rightHand = screen.getByRole("group", { name: /Right hand/i });
+    const keyboard = getAccordionSurface(
+      rightHand,
+      '[data-surface="keyboard"], .accordion-keyboard, .piano-keyboard',
+    );
+    const keyButtons = within(keyboard).getAllByRole("button", {
+      name: /accordion keyboard key/i,
+    });
+    keyButtons[0]?.focus();
+    await user.keyboard("{ArrowRight}");
+    const focusedKey = document.activeElement as HTMLElement;
+    expect(focusedKey).toHaveAttribute("data-note-id");
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expectInspectorToShow([
+        new RegExp(escapeRegExp(focusedKey.querySelector("strong")?.textContent ?? "")),
+        /Hand\s*Right|Right hand/i,
+      ]),
+    );
+    expectDescribedBy(focusedKey, /Accordion.*voicing .*degree/i);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(getSelectedButton(voicingGroup)).toHaveFocus());
+
+    const leftHand = screen.getByRole("group", { name: /Left hand/i });
+    const leftButton = getSelectedAccordionButton(leftHand, /(^C$|\bC bass\b|\bbass C\b)/i);
+    leftButton.focus();
+    await user.keyboard("{ArrowDown}");
+    const focusedLeftButton = document.activeElement as HTMLElement;
+    expect(focusedLeftButton.closest('[data-surface="stradella"]')).toBeInTheDocument();
+    await user.keyboard(" ");
+    await waitFor(() => expectInspectorToShow([/Hand\s*Left|Left hand/i, /Stradella/i]));
+    expectDescribedBy(focusedLeftButton, /Accordion.*Stradella.*row.*column/i);
+
+    changeChordSearch("Csus4");
+    await screen.findByRole("heading", { name: "Csus4 accordion positions" });
+    const candidatePanel = screen.getByLabelText("Accordion left-hand candidates");
+    const candidateButtons = within(candidatePanel).getAllByRole("button");
+    expect(candidateButtons.length).toBeGreaterThan(1);
+    candidateButtons[0]?.focus();
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(candidateButtons[1]);
+    await user.keyboard(" ");
+    await waitFor(() => expect(candidateButtons[1]).toHaveAttribute("aria-pressed", "true"));
+  });
+
   it("persists a dictionary shape choice globally and promotes it when reopened", async () => {
     const user = userEvent.setup();
     const view = renderChordDictionaryView();
@@ -2114,6 +2421,34 @@ describe("Desktop app tools chord dictionary", () => {
 
     await waitFor(() => expectFirstShapeChoice(LIVE_SHAPE_GROUP_NAME, "A D-shape barre"));
     expectFirstShapeCard("A D-shape barre");
+  });
+
+  it("activates the owning Live Follow guitar shape when keyboard-selecting an inactive-card note", async () => {
+    const user = userEvent.setup();
+    await renderChordDictionaryWithPlayback();
+
+    const shapeGroup = screen.getByRole("group", { name: LIVE_SHAPE_GROUP_NAME });
+    const inactiveShapeButton = within(shapeGroup).getByRole("button", {
+      name: "A D-shape barre",
+    });
+    const inactiveShapeCard = getShapeCard("A D-shape barre");
+    const noteButton = within(inactiveShapeCard).getAllByRole("button", {
+      name: /string \d fret \d/i,
+    })[0] as HTMLElement | undefined;
+    if (!noteButton) {
+      throw new Error("Expected a selectable Live Follow guitar note");
+    }
+
+    expect(inactiveShapeButton).toHaveAttribute("aria-pressed", "false");
+    expect(inactiveShapeCard).not.toHaveClass("chord-shape-card--active");
+
+    noteButton.focus();
+    await user.keyboard(" ");
+
+    await waitFor(() => expect(inactiveShapeButton).toHaveAttribute("aria-pressed", "true"));
+    expect(inactiveShapeCard).toHaveClass("chord-shape-card--active");
+    expect(noteButton).toHaveClass("guitar-fretboard__dot--selected");
+    expectInspectorMatchesGuitarNote(noteButton);
   });
 
   it("resets a Live Follow project E shape choice back to the global fallback", async () => {

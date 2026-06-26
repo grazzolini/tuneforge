@@ -162,7 +162,7 @@ describe("Desktop app project analysis mix", () => {
     await openStudioPanel(user);
     await user.click(screen.getByRole("button", { name: "Analyze Track" }));
 
-    expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123", { beat_backend: "built-in" });
+    expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123", { beat_backend: "beat-this" });
   });
 
   it("uses the selected default beat backend when analyzing track", async () => {
@@ -333,7 +333,7 @@ describe("Desktop app project analysis mix", () => {
     await user.click(screen.getByRole("button", { name: "Refresh Chords" }));
 
     expect(mockCreateChords).toHaveBeenCalledWith("proj_123", {
-      backend: "tuneforge-fast",
+      backend: "crema-advanced",
       force: true,
       overwrite_user_edits: false,
     });

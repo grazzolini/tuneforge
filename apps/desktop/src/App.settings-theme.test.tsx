@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FRONTEND_VERSION_INFO } from "./lib/buildInfo";
@@ -8,6 +8,8 @@ import {
   getByAriaKeyLabel,
   installMatchMediaMock,
   mockInvoke,
+  mockListBeatBackends,
+  mockListChordBackends,
   mockOpen,
   mockSave,
   queryByAriaKeyLabel,
@@ -98,8 +100,16 @@ describe("Desktop app settings theme", () => {
     expect(screen.queryByRole("button", { name: /^Collapse sources rail by default/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Project first/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^AutoUse lyrics \+ chords/ })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /^Built-in Beat Analysis/ })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /^Built-in Chords/ })).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Advanced Beat Analysis/ })).toHaveAttribute("aria-pressed", "true"),
+    );
+    expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toHaveAttribute("aria-pressed", "true");
+    expect(
+      within(screen.getByRole("group", { name: "Default beat analysis" })).getAllByRole("button")[0],
+    ).toHaveTextContent("Advanced Beat Analysis");
+    expect(
+      within(screen.getByRole("group", { name: "Default chord backend" })).getAllByRole("button")[0],
+    ).toHaveTextContent("Advanced Chords");
     expect(screen.getByRole("button", { name: /^Enable lyrics follow by default/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Enable chords follow by default/ })).toHaveAttribute("aria-pressed", "true");
     expect(window.localStorage.getItem("tuneforge.theme-preference")).toBe("system");
@@ -110,8 +120,8 @@ describe("Desktop app settings theme", () => {
       defaultSourcesRailCollapsed: false,
       defaultProjectWorkspace: "project",
       defaultPlaybackDisplayMode: "auto",
-      defaultBeatAnalysisBackend: "built-in",
-      defaultChordBackend: "tuneforge-fast",
+      defaultBeatAnalysisBackend: "beat-this",
+      defaultChordBackend: "crema-advanced",
       defaultLyricsFollowEnabled: true,
       defaultChordsFollowEnabled: true,
       defaultTunerInputDeviceId: null,
@@ -274,9 +284,13 @@ describe("Desktop app settings theme", () => {
     renderApp(["/settings"]);
 
     expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
+    expect(await screen.findByText("crema is not installed")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Built-in Chords/ })).not.toBeDisabled();
     expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toBeDisabled();
-    expect(await screen.findByText("crema is not installed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Built-in Chords/ })).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByText("Advanced Chords unavailable: crema is not installed. Using Built-in Chords fallback."),
+    ).toBeInTheDocument();
   });
 
   it("shows unavailable advanced beat backend and selects built-in fallback", async () => {
@@ -314,7 +328,111 @@ describe("Desktop app settings theme", () => {
       "true",
     );
     expect(screen.getByRole("button", { name: /^Advanced Beat Analysis/ })).toBeDisabled();
+    expect(
+      screen.getByText(
+        "Advanced Beat Analysis unavailable: beat-this is not installed. Using Built-in Beat Analysis fallback.",
+      ),
+    ).toBeInTheDocument();
     expect(screen.getAllByText("Built-in Beat Analysis").length).toBeGreaterThan(0);
+  });
+
+  it("keeps engine defaults neutral while registry availability is loading", async () => {
+    let resolveBeatBackends!: () => void;
+    let resolveChordBackends!: () => void;
+    mockListBeatBackends.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveBeatBackends = () => resolve({ backends: [] });
+        }),
+    );
+    mockListChordBackends.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveChordBackends = () => resolve({ backends: [] });
+        }),
+    );
+
+    renderApp(["/settings"]);
+
+    expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Advanced Beat Analysis/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getAllByText("Checking availability").length).toBeGreaterThanOrEqual(4);
+    expect(screen.queryByText(/Using Built-in .* fallback/)).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveBeatBackends();
+      resolveChordBackends();
+    });
+
+    await waitFor(() =>
+      expect(screen.getAllByText("Missing from backend registry").length).toBeGreaterThanOrEqual(4),
+    );
+    expect(screen.queryByText("Checking availability")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Advanced Beat Analysis/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText(/No beat analysis backend available/)).toBeInTheDocument();
+    expect(screen.getByText(/No chord backend available/)).toBeInTheDocument();
+  });
+
+  it("shows blocked state when no beat or chord backend is available", async () => {
+    setBeatBackends([
+      {
+        availability: "unavailable",
+        available: false,
+        desktopOnly: false,
+        experimental: false,
+        id: "built-in",
+        label: "Built-in Beat Analysis",
+        unavailable_reason: "built-in beat engine failed diagnostics",
+      },
+      {
+        availability: "unavailable",
+        available: false,
+        desktopOnly: true,
+        experimental: true,
+        id: "beat-this",
+        label: "Advanced Beat Analysis",
+        unavailable_reason: "beat-this is not installed",
+      },
+    ]);
+    setChordBackends([
+      {
+        availability: "unavailable",
+        available: false,
+        capabilities: {},
+        desktopOnly: false,
+        experimental: false,
+        id: "tuneforge-fast",
+        label: "Built-in Chords",
+        unavailable_reason: "built-in chord engine failed diagnostics",
+      },
+      {
+        availability: "unavailable",
+        available: false,
+        capabilities: {},
+        desktopOnly: true,
+        experimental: true,
+        id: "crema-advanced",
+        label: "Advanced Chords",
+        unavailable_reason: "crema is not installed",
+      },
+    ]);
+
+    renderApp(["/settings"]);
+
+    expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
+    expect(await screen.findByText("beat-this is not installed")).toBeInTheDocument();
+    expect(screen.getByText("built-in beat engine failed diagnostics")).toBeInTheDocument();
+    expect(screen.getByText("crema is not installed")).toBeInTheDocument();
+    expect(screen.getByText("built-in chord engine failed diagnostics")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Advanced Beat Analysis/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /^Built-in Beat Analysis/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /^Built-in Chords/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText(/No beat analysis backend available/)).toBeInTheDocument();
+    expect(screen.getByText(/No chord backend available/)).toBeInTheDocument();
+    expect(screen.queryByText(/Using Built-in .* fallback/)).not.toBeInTheDocument();
   });
 
   it("resets appearance, playback, and all settings independently", async () => {
@@ -337,7 +455,8 @@ describe("Desktop app settings theme", () => {
     expect(screen.getByRole("button", { name: /^Auto by key/ })).toHaveAttribute("aria-pressed", "true");
 
     await user.click(screen.getByRole("button", { name: "Reset Analysis Defaults" }));
-    expect(screen.getByRole("button", { name: /^Built-in Chords/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Advanced Beat Analysis/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toHaveAttribute("aria-pressed", "true");
 
     await user.click(screen.getByRole("button", { name: "Reset Playback Defaults" }));
     expect(screen.getByRole("button", { name: /^Project first/ })).toHaveAttribute("aria-pressed", "true");
@@ -360,7 +479,8 @@ describe("Desktop app settings theme", () => {
     expect(screen.getByRole("button", { name: /^Auto by key/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Project first/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^AutoUse lyrics \+ chords/ })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /^Built-in Chords/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Advanced Beat Analysis/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Enable lyrics follow by default/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Enable chords follow by default/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByLabelText("Default tuner")).toHaveValue("wide-arc");

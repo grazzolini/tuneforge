@@ -8,7 +8,11 @@ from typing import Any
 from app.benchmarks.chords import main as benchmark_main
 from app.engines.chord_labels import chord_label_to_segment, parse_chord_label
 from app.engines.crema_chords import crema_annotation_to_timeline, detect_crema_chord_timeline
-from app.services.chord_backends import list_chord_backend_infos, resolve_chord_backend
+from app.services.chord_backends import (
+    list_chord_backend_infos,
+    resolve_chord_backend,
+    resolve_chord_backend_id,
+)
 
 
 class FakeDataFrame:
@@ -134,6 +138,23 @@ def test_backend_registry_reports_fast_and_missing_crema(monkeypatch):
     assert backends["tuneforge-fast"]["capabilities"]["supports_sevenths"] is True
     assert backends["crema-advanced"]["availability"] == "unavailable"
     assert backends["crema-advanced"]["unavailable_reason"] == "crema is not installed"
+
+
+def test_default_chord_backend_prefers_crema_when_available(monkeypatch):
+    monkeypatch.setattr("app.services.chord_backends.crema_dependency_status", lambda **_kwargs: (True, None))
+
+    assert resolve_chord_backend_id("default") == "crema-advanced"
+    assert resolve_chord_backend_id(None) == "crema-advanced"
+
+
+def test_default_chord_backend_falls_back_when_crema_unavailable(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.chord_backends.crema_dependency_status",
+        lambda **_kwargs: (False, "crema is not installed"),
+    )
+
+    assert resolve_chord_backend_id("default") == "tuneforge-fast"
+    assert resolve_chord_backend_id(None) == "tuneforge-fast"
 
 
 def test_resolving_missing_advanced_backend_returns_structured_error(monkeypatch):

@@ -470,6 +470,11 @@ def test_import_project_enqueues_full_source_processing(
     sample_chord_audio_file: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
+    monkeypatch.setattr(
+        "app.services.chord_backends.crema_dependency_status",
+        lambda **_kwargs: (False, "crema is not installed"),
+    )
+
     def fake_separate_two_stems(
         source_path: Path,
         vocal_path: Path,
@@ -539,6 +544,7 @@ def test_import_project_enqueues_full_source_processing(
     ]
 
     assert analysis is not None
+    assert chords["backend"] == "tuneforge-fast"
     assert len([job for job in project_jobs if job["type"] == "chords"]) == 1
     assert len(chords["timeline"]) >= 3
     assert lyrics["segments"][0]["text"] == "Test lyric"

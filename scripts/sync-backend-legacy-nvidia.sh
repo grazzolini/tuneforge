@@ -8,17 +8,33 @@ Usage: pnpm sync:backend:legacy-nvidia [options]
 Recreates the backend environment with the Linux x86_64 legacy NVIDIA Torch profile.
 
 Options:
-  --advanced-chords, --crema  Install the optional crema/TensorFlow chord backend.
+  --advanced-chords, --crema  Include the default crema/TensorFlow chord backend.
+  --no-advanced-chords, --no-crema
+                              Skip the crema/TensorFlow chord backend.
+  --advanced-beats, --beat-this
+                              Include the default beat-this backend.
+  --no-advanced-beats, --no-beat-this
+                              Skip the beat-this backend.
   -h, --help                  Show this help.
 EOF
 }
 
-advanced_chords=0
+advanced_chords=1
+advanced_beats=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --advanced-chords | --crema)
       advanced_chords=1
+      ;;
+    --no-advanced-chords | --no-crema)
+      advanced_chords=0
+      ;;
+    --advanced-beats | --beat-this)
+      advanced_beats=1
+      ;;
+    --no-advanced-beats | --no-beat-this)
+      advanced_beats=0
       ;;
     --)
       ;;
@@ -56,6 +72,9 @@ cd "${backend_dir}"
 backend_sync_args=(sync --python 3.11 --all-groups)
 if [[ "${advanced_chords}" -eq 1 ]]; then
   backend_sync_args+=(--extra advanced-chords)
+fi
+if [[ "${advanced_beats}" -eq 1 ]]; then
+  backend_sync_args+=(--extra advanced-beats)
 fi
 
 rm -rf .venv

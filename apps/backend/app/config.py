@@ -97,7 +97,7 @@ def get_settings() -> Settings:
         )
         .expanduser()
         .resolve(),
-        default_chord_backend=os.environ.get("TUNEFORGE_DEFAULT_CHORD_BACKEND", "tuneforge-fast"),
+        default_chord_backend=os.environ.get("TUNEFORGE_DEFAULT_CHORD_BACKEND", "crema-advanced"),
         runtime_platform=os.environ.get("TUNEFORGE_RUNTIME_PLATFORM", "desktop").strip().lower(),
         additional_cors_origins=_parse_additional_cors_origins(
             os.environ.get("TUNEFORGE_ADDITIONAL_CORS_ORIGINS", "")

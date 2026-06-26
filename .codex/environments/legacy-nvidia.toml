@@ -5,7 +5,7 @@ name = "linux legacy nvidia"
 [setup]
 script = '''
 cd "$CODEX_WORKTREE_PATH"
-pnpm setup:dev -- --beat-this --crema --legacy-nvidia
+pnpm setup:dev -- --legacy-nvidia
 '''
 
 [[actions]]
@@ -14,19 +14,14 @@ icon = "run"
 command = "pnpm dev"
 
 [[actions]]
-name = "Advanced"
-icon = "tool"
-command = "pnpm setup:dev -- --beat-this --crema --legacy-nvidia"
-
-[[actions]]
 name = "Setup dev"
 icon = "tool"
-command = "pnpm setup:dev"
+command = "pnpm setup:dev -- --legacy-nvidia"
 
 [[actions]]
 name = "Legacy Nvidia Backend"
 icon = "tool"
-command = "pnpm sync:backend:legacy-nvidia -- --beat-this --crema"
+command = "pnpm sync:backend:legacy-nvidia"
 platform = "linux"
 
 [[actions]]

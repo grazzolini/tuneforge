@@ -1,18 +1,22 @@
 const OPTION_ALIASES = new Map([
-  ["--crema", "crema"],
-  ["--advanced-chords", "crema"],
-  ["--beat-this", "beatThis"],
-  ["--advanced-beats", "beatThis"],
-  ["--legacy-nvidia", "legacyNvidia"],
-  ["--model-bundle", "modelBundle"],
-  ["--no-bundle", "noBundle"],
-  ["--sandbox-data", "sandboxData"],
+  ["--crema", ["crema", true]],
+  ["--advanced-chords", ["crema", true]],
+  ["--no-crema", ["crema", false]],
+  ["--no-advanced-chords", ["crema", false]],
+  ["--beat-this", ["beatThis", true]],
+  ["--advanced-beats", ["beatThis", true]],
+  ["--no-beat-this", ["beatThis", false]],
+  ["--no-advanced-beats", ["beatThis", false]],
+  ["--legacy-nvidia", ["legacyNvidia", true]],
+  ["--model-bundle", ["modelBundle", true]],
+  ["--no-bundle", ["noBundle", true]],
+  ["--sandbox-data", ["sandboxData", true]],
 ]);
 
 export function defaultPackageOptions() {
   return {
-    crema: false,
-    beatThis: false,
+    crema: true,
+    beatThis: true,
     legacyNvidia: false,
     modelBundle: false,
     noBundle: false,
@@ -26,11 +30,12 @@ export function parsePackageOptions(argv, { platform } = {}) {
     if (arg === "--") {
       continue;
     }
-    const optionName = OPTION_ALIASES.get(arg);
-    if (!optionName) {
+    const option = OPTION_ALIASES.get(arg);
+    if (!option) {
       throw new Error(`Unknown option: ${arg}`);
     }
-    options[optionName] = true;
+    const [optionName, value] = option;
+    options[optionName] = value;
   }
   return validatePackageOptions(options, { platform });
 }
@@ -75,9 +80,13 @@ export function packageOptionsToGeneratorArgs(options) {
   const args = [];
   if (validated.crema) {
     args.push("--crema");
+  } else {
+    args.push("--no-crema");
   }
   if (validated.beatThis) {
     args.push("--beat-this");
+  } else {
+    args.push("--no-beat-this");
   }
   if (validated.legacyNvidia) {
     args.push("--legacy-nvidia");

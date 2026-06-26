@@ -146,7 +146,8 @@ metadata when available, otherwise local development resolves them with `git des
 `GET /api/v1/beat-backends`
 
 Returns available beat analysis backends. Built-in Beat Analysis is always expected to be available.
-Advanced Beat Analysis may be unavailable when optional desktop-only dependencies are not installed.
+Advanced Beat Analysis is the default desktop/dev/package engine, but may be unavailable when
+desktop-only dependencies are explicitly excluded, unsupported, or missing.
 
 ## Chord Backends
 
@@ -154,7 +155,7 @@ Advanced Beat Analysis may be unavailable when optional desktop-only dependencie
 
 `GET /api/v1/chord-backends`
 
-Returns available chord backends and capability metadata. Built-in chords are always expected to be available. Advanced Chords may be unavailable when optional desktop-only dependencies are not installed or the runtime platform is mobile.
+Returns available chord backends and capability metadata. Built-in chords are always expected to be available. Advanced Chords is the default desktop/dev/package engine, but may be unavailable when desktop-only dependencies are explicitly excluded, unsupported, missing, or the runtime platform is mobile.
 
 ## Stem Models
 

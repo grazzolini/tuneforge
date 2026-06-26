@@ -108,9 +108,8 @@ TuneForge should keep lyrics local and project-owned.
 ## Beat/Downbeat Model Evaluation
 
 This evaluation checked whether TuneForge should integrate a local ML beat/downbeat/meter model for source-track timing
-analysis. The current direction is to keep the built-in heuristic as the source-track baseline, and use CPJKU Beat This
-`small0` as the optional Advanced Beat Analysis model after local-track bake-off evidence and explicit model-weight
-redistribution confirmation.
+analysis. The current desktop direction is to use CPJKU Beat This `small0` as the default Advanced Beat Analysis
+model while keeping the built-in heuristic as the mobile/unsupported/unavailable fallback.
 
 Local-track baseline evidence from a read-only sample of 8 converted source WAVs in local app data: 8/8 completed,
 8/8 produced timing grids, median heuristic runtime was 12.686 seconds, median runtime ratio was 0.0531x track length,
@@ -122,11 +121,11 @@ all 3 backends without source paths in the benchmark output. Median warm runtime
 built-in analyzer, 0.006145x for `small0`, and 0.007968x for `final0`; `final0` was about 1.30x slower than `small0`
 and about 9.6x larger.
 
-Quality evidence does not justify switching the default or exposing a model-size setting yet. `final0` reduced large
-gap flags on some tracks, but it still showed tempo and meter risks on known benchmark cases. The benchmark now records
-single-anchor drift and Beat This alignment against the built-in grid for future bake-offs, but the current
-recommendation is to keep `small0` as the default optional model until listening checks show `final0` improves practice
-sync without tempo or meter regressions.
+Quality evidence does not justify switching the default checkpoint or exposing a model-size setting yet. `final0`
+reduced large gap flags on some tracks, but it still showed tempo and meter risks on known benchmark cases. The
+benchmark now records single-anchor drift and Beat This alignment against the built-in grid for future bake-offs, but
+the current recommendation is to keep `small0` as the default desktop model until listening checks show `final0`
+improves practice sync without tempo or meter regressions.
 
 Several candidates were kept as research-only or excluded because their upstream project activity, release freshness,
 or supported Python/ML stack did not fit a new desktop runtime dependency.

@@ -39,7 +39,7 @@ Roadmap items are grouped by track so related work can move independently.
 - Improve chord refresh UX around existing user edits and source-vs-stem analysis differences.
 - Add tab import as a correction aid for lyrics and chords where users have a trusted local tab source.
 - Keep capo-relative chord display as a presentation layer only. Audio pitch, tuning, and speed should remain unchanged.
-- Evaluate graduating Advanced Chords from optional to the desktop default once dependency, runtime, and packaging checks are complete.
+- Keep Advanced Chords as the desktop default while improving fallback quality for unsupported, mobile, or explicitly excluded dependency profiles.
 
 ## Lyrics
 
@@ -72,7 +72,7 @@ Roadmap items are grouped by track so related work can move independently.
 - Avoid bundling FFmpeg for licensing and distribution reasons.
 - Keep the Linux legacy NVIDIA profile documented for older `x86_64` CUDA-capable GPUs that need the opt-in PyTorch override.
 - Keep Android packaging optional/manual while mobile remains in transition.
-- Update packaged desktop dependency notices before bundling crema/TensorFlow by default.
+- Keep packaged desktop dependency notices current now that crema/TensorFlow and beat-this are default desktop dependency scope.
 
 ## Testing & Quality
 

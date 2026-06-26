@@ -83,8 +83,8 @@ Analysis is local and project-scoped:
 
 ### Chords and Harmony
 
-- Generate chord timelines from source audio with the built-in chord backend.
-- Allow optional desktop-only Advanced Chords when the optional crema/TensorFlow stack is installed.
+- Generate chord timelines from source audio with Advanced Chords on desktop/dev/package builds by default.
+- Keep built-in chord generation available when the desktop-only crema/TensorFlow stack is unavailable, unsupported, explicitly excluded, or disabled by the mobile runtime platform.
 - Store generated chord segments with timing, labels, confidence, pitch-class metadata, source kind, and user-edit state.
 - Preserve user-edited chord timelines unless overwrite is explicitly requested.
 - Future harmony work includes bar-based chord display, better beat/downbeat alignment, and tab-assisted correction.

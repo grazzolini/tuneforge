@@ -19,7 +19,8 @@ ChordBackendSpeed = Literal["fast", "medium", "slow"]
 
 FAST_CHORD_BACKEND_ID = "tuneforge-fast"
 CREMA_CHORD_BACKEND_ID = "crema-advanced"
-DEFAULT_CHORD_BACKEND_ID = FAST_CHORD_BACKEND_ID
+DEFAULT_CHORD_BACKEND_ID = CREMA_CHORD_BACKEND_ID
+FALLBACK_CHORD_BACKEND_ID = FAST_CHORD_BACKEND_ID
 
 
 @dataclass(frozen=True)
@@ -180,7 +181,7 @@ def resolve_chord_backend_id(requested_backend: str | None) -> str:
     availability = backend.availability()
     if availability.available:
         return backend.id
-    return DEFAULT_CHORD_BACKEND_ID
+    return FALLBACK_CHORD_BACKEND_ID
 
 
 def detect_with_chord_backend(source_path: Path, backend_id: str) -> ChordDetectionResult:

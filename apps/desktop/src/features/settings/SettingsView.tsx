@@ -179,32 +179,29 @@ const loopAlignmentOptions: ChoiceOption<LoopAlignmentMode>[] = [
 
 const fallbackBeatAnalysisBackendOptions: ChoiceOption<DefaultBeatAnalysisBackend>[] = [
   {
-    value: "built-in",
-    label: "Built-in Beat Analysis",
-    description: "Use the current local librosa heuristic for tempo and beat timing.",
-    status: "Default",
-  },
-  {
     value: "beat-this",
     label: "Advanced Beat Analysis",
-    description: "Use the optional beat-this ML model for experimental beat timing.",
-    disabled: true,
-    status: "Unavailable",
+    description: "Use the beat-this ML model for tempo and beat timing.",
+  },
+  {
+    value: "built-in",
+    label: "Built-in Beat Analysis",
+    description: "Use the local librosa heuristic for tempo and beat timing.",
+    status: "Fallback",
   },
 ];
 
 const fallbackChordBackendOptions: ChoiceOption<DefaultChordBackend>[] = [
   {
-    value: "tuneforge-fast",
-    label: "Built-in Chords",
-    description: "Default local detector with lightweight source and stem analysis.",
-  },
-  {
     value: "crema-advanced",
     label: "Advanced Chords",
-    description: "Experimental crema detector with sevenths and inversion labels.",
-    disabled: true,
-    status: "Unavailable",
+    description: "Use the crema detector with richer chord vocabulary and inversion labels.",
+  },
+  {
+    value: "tuneforge-fast",
+    label: "Built-in Chords",
+    description: "Use the local lightweight source and stem chord detector.",
+    status: "Fallback",
   },
 ];
 
@@ -356,49 +353,108 @@ function diagnosticVersionValue(value: string | undefined) {
 }
 
 function chordBackendOptions(backends: ChordBackendSchema[] | undefined): ChoiceOption<DefaultChordBackend>[] {
-  if (!backends?.length) {
-    return fallbackChordBackendOptions;
+  if (backends === undefined) {
+    return fallbackChordBackendOptions.map((option) => ({
+      ...option,
+      disabled: true,
+      status: "Checking availability",
+    }));
   }
 
   return fallbackChordBackendOptions.map((fallback) => {
     const backend = backends.find((candidate) => candidate.id === fallback.value);
     if (!backend) {
-      return fallback;
+      return {
+        ...fallback,
+        disabled: true,
+        status: "Missing from backend registry",
+      };
     }
     const unavailableReason = backend.available ? null : backend.unavailable_reason;
     return {
       value: fallback.value,
       label: backend.label,
-      description: backend.description,
+      description: fallback.description,
       disabled: !backend.available,
-      status: unavailableReason ?? (backend.experimental ? "Experimental" : undefined),
+      status: unavailableReason ?? (fallback.value === "tuneforge-fast" ? "Fallback" : undefined),
     };
   });
 }
 
 function beatBackendOptions(backends: BeatBackendSchema[] | undefined): ChoiceOption<DefaultBeatAnalysisBackend>[] {
-  if (!backends?.length) {
-    return fallbackBeatAnalysisBackendOptions;
+  if (backends === undefined) {
+    return fallbackBeatAnalysisBackendOptions.map((option) => ({
+      ...option,
+      disabled: true,
+      status: "Checking availability",
+    }));
   }
 
   return fallbackBeatAnalysisBackendOptions.map((fallback) => {
     const backend = backends.find((candidate) => candidate.id === fallback.value);
     if (!backend) {
-      return fallback;
+      return {
+        ...fallback,
+        disabled: true,
+        status: "Missing from backend registry",
+      };
     }
     const unavailableReason = backend.available ? null : backend.unavailable_reason;
     return {
       value: fallback.value,
       label: backend.label,
-      description: backend.description,
+      description: fallback.description,
       disabled: !backend.available,
-      status: unavailableReason ?? (backend.experimental ? "Experimental" : undefined),
+      status: unavailableReason ?? (fallback.value === "built-in" ? "Fallback" : undefined),
     };
   });
 }
 
-function effectiveChoiceValue<T extends string>(value: T, options: ChoiceOption<T>[], fallback: T) {
-  return options.some((option) => option.value === value && !option.disabled) ? value : fallback;
+function effectiveChoiceValue<T extends string>(
+  value: T,
+  options: ChoiceOption<T>[],
+  fallback: T,
+  availabilityResolved: boolean,
+) {
+  if (!availabilityResolved) {
+    return value;
+  }
+  if (options.some((option) => option.value === value && !option.disabled)) {
+    return value;
+  }
+  if (options.some((option) => option.value === fallback && !option.disabled)) {
+    return fallback;
+  }
+  return null;
+}
+
+function optionStatus<T extends string>(value: T, options: ChoiceOption<T>[]) {
+  return options.find((option) => option.value === value)?.status;
+}
+
+function fallbackNotice<T extends string>(
+  requestedValue: T,
+  effectiveValue: T | null,
+  options: ChoiceOption<T>[],
+  requestedLabel: (value: T) => string,
+  effectiveLabel: (value: T) => string,
+  availabilityResolved: boolean,
+  blockedPrefix: string,
+) {
+  if (!availabilityResolved) {
+    return null;
+  }
+  if (effectiveValue === null) {
+    const reasons = options
+      .map((option) => `${option.label}: ${option.status ?? "Unavailable"}`)
+      .join("; ");
+    return `${blockedPrefix}. ${reasons}.`;
+  }
+  if (requestedValue === effectiveValue) {
+    return null;
+  }
+  const reason = optionStatus(requestedValue, options) ?? "Unavailable";
+  return `${requestedLabel(requestedValue)} unavailable: ${reason}. Using ${effectiveLabel(effectiveValue)} fallback.`;
 }
 
 function stemModelOptions(models: StemModelSchema[] | undefined): ChoiceOption<DefaultStemModel>[] {
@@ -429,7 +485,7 @@ function ChoiceGroup<T extends string>({
   legend: string;
   onChange: (value: T) => void;
   options: ChoiceOption<T>[];
-  value: T;
+  value: T | null;
 }) {
   return (
     <fieldset className="settings-fieldset">
@@ -564,14 +620,41 @@ export function SettingsView() {
   const latestNativeFallbackCause =
     lastNativePlaybackError ?? nativeAudioSnapshotQuery.data?.fallbackReason ?? "None";
   const savedThemeOverrideCount = themeOverrideCount(themeOverrides);
+  const beatAvailabilityResolved = beatBackendsQuery.data?.backends !== undefined;
+  const chordAvailabilityResolved = chordBackendsQuery.data?.backends !== undefined;
   const beatBackendChoices = beatBackendOptions(beatBackendsQuery.data?.backends);
   const effectiveBeatAnalysisBackend = effectiveChoiceValue(
     defaultBeatAnalysisBackend,
     beatBackendChoices,
     "built-in",
+    beatAvailabilityResolved,
   );
   const chordBackendChoices = chordBackendOptions(chordBackendsQuery.data?.backends);
+  const effectiveChordBackend = effectiveChoiceValue(
+    defaultChordBackend,
+    chordBackendChoices,
+    "tuneforge-fast",
+    chordAvailabilityResolved,
+  );
   const stemModelChoices = stemModelOptions(stemModelsQuery.data?.models);
+  const beatFallbackNotice = fallbackNotice(
+    defaultBeatAnalysisBackend,
+    effectiveBeatAnalysisBackend,
+    beatBackendChoices,
+    beatAnalysisBackendLabel,
+    beatAnalysisBackendLabel,
+    beatAvailabilityResolved,
+    "No beat analysis backend available",
+  );
+  const chordFallbackNotice = fallbackNotice(
+    defaultChordBackend,
+    effectiveChordBackend,
+    chordBackendChoices,
+    chordBackendLabel,
+    chordBackendLabel,
+    chordAvailabilityResolved,
+    "No chord backend available",
+  );
 
   function handleResetAppearance() {
     setThemePreference(DEFAULT_THEME_PREFERENCE);
@@ -740,11 +823,19 @@ export function SettingsView() {
           </div>
           <div className="settings-overview__stat">
             <dt>Beat analysis</dt>
-            <dd>{beatAnalysisBackendLabel(effectiveBeatAnalysisBackend)}</dd>
+            <dd>
+              {effectiveBeatAnalysisBackend === null
+                ? "No available backend"
+                : beatAnalysisBackendLabel(effectiveBeatAnalysisBackend)}
+              {beatFallbackNotice ? <span>{beatFallbackNotice}</span> : null}
+            </dd>
           </div>
           <div className="settings-overview__stat">
             <dt>Chord backend</dt>
-            <dd>{chordBackendLabel(defaultChordBackend)}</dd>
+            <dd>
+              {effectiveChordBackend === null ? "No available backend" : chordBackendLabel(effectiveChordBackend)}
+              {chordFallbackNotice ? <span>{chordFallbackNotice}</span> : null}
+            </dd>
           </div>
           <div className="settings-overview__stat">
             <dt>Stem model</dt>
@@ -893,7 +984,7 @@ export function SettingsView() {
             legend="Default chord backend"
             onChange={setDefaultChordBackend}
             options={chordBackendChoices}
-            value={defaultChordBackend}
+            value={effectiveChordBackend}
           />
 
           <ChoiceGroup

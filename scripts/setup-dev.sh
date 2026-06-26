@@ -13,9 +13,13 @@ Runs the standard developer setup:
   verify/preload model caches for selected local backends
 
 Options:
-  --advanced-chords, --crema  Install the optional crema/TensorFlow chord backend.
+  --advanced-chords, --crema  Include the default crema/TensorFlow chord backend.
+  --no-advanced-chords, --no-crema
+                              Skip the crema/TensorFlow chord backend.
   --advanced-beats, --beat-this
-                              Install the optional beat-this backend and preload small0.
+                              Include the default beat-this backend and preload small0.
+  --no-advanced-beats, --no-beat-this
+                              Skip the beat-this backend and checkpoint prewarm.
   --legacy-nvidia             Use the Linux x86_64 legacy NVIDIA Torch profile.
   --skip-demucs-models        Skip preloading Demucs weights into the Torch cache.
   --skip-model-prewarm        Skip all model cache verification/prewarm work.
@@ -26,8 +30,8 @@ Options:
 EOF
 }
 
-advanced_chords=0
-advanced_beats=0
+advanced_chords=1
+advanced_beats=1
 legacy_nvidia=0
 skip_demucs_models=0
 skip_model_prewarm=0
@@ -40,8 +44,14 @@ while [[ $# -gt 0 ]]; do
     --advanced-chords | --crema)
       advanced_chords=1
       ;;
+    --no-advanced-chords | --no-crema)
+      advanced_chords=0
+      ;;
     --advanced-beats | --beat-this)
       advanced_beats=1
+      ;;
+    --no-advanced-beats | --no-beat-this)
+      advanced_beats=0
       ;;
     --legacy-nvidia)
       legacy_nvidia=1
@@ -176,7 +186,11 @@ if [[ "${skip_model_prewarm}" -eq 0 ]]; then
     prewarm_args+=(--include-beat-this)
   fi
   echo "Verifying and preloading model caches..."
-  .venv/bin/python -m app.cli.prewarm_models "${prewarm_args[@]}"
+  if [[ "${#prewarm_args[@]}" -gt 0 ]]; then
+    .venv/bin/python -m app.cli.prewarm_models "${prewarm_args[@]}"
+  else
+    .venv/bin/python -m app.cli.prewarm_models
+  fi
 fi
 
 echo "Setup complete."

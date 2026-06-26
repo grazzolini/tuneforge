@@ -103,7 +103,12 @@ def test_stem_signal_analysis_usability_rejects_raw_no_signal_with_usable_flag()
     assert stem_signal_analysis_usable(metadata) is False
 
 
-def test_chord_job_persists_timeline(client, sample_chord_audio_file: Path):
+def test_chord_job_persists_timeline(client, sample_chord_audio_file: Path, monkeypatch):
+    monkeypatch.setattr(
+        "app.services.chord_backends.crema_dependency_status",
+        lambda **_kwargs: (False, "crema is not installed"),
+    )
+
     project = client.post(
         "/api/v1/projects/import",
         json={"source_path": str(sample_chord_audio_file), "copy_into_project": True},
@@ -130,6 +135,7 @@ def test_chord_job_persists_timeline(client, sample_chord_audio_file: Path):
     ).json()["job"]
     final_job = wait_for_job(client, job["id"])
     assert final_job["status"] == "completed"
+    assert final_job["chord_backend"] == "tuneforge-fast"
     assert final_job["chord_backend_fallback_from"] == "crema-advanced"
     assert final_job["runtime_device"] == "cpu"
     assert final_job["duration_seconds"] is not None
@@ -596,6 +602,11 @@ def test_chord_refresh_preserves_user_edits_without_overwrite(
     sample_chord_audio_file: Path,
     monkeypatch,
 ):
+    monkeypatch.setattr(
+        "app.services.chord_backends.crema_dependency_status",
+        lambda **_kwargs: (False, "crema is not installed"),
+    )
+
     project = client.post(
         "/api/v1/projects/import",
         json={"source_path": str(sample_chord_audio_file), "copy_into_project": True},

@@ -354,8 +354,8 @@ describe("Desktop app library", () => {
     expect(mockImportProject).toHaveBeenCalledWith({
       source_path: "/tmp/new-song.mp4",
       copy_into_project: true,
-      beat_backend: "built-in",
-      chord_backend: "tuneforge-fast",
+      beat_backend: "beat-this",
+      chord_backend: "crema-advanced",
       stem_model: "htdemucs_6s",
     });
     expect(mockOpen).toHaveBeenCalledWith(
@@ -396,7 +396,7 @@ describe("Desktop app library", () => {
       expect(payload).toEqual(
         expect.objectContaining({
           copy_into_project: true,
-          beat_backend: "built-in",
+          beat_backend: "beat-this",
           chord_backend: "crema-advanced",
           stem_model: "htdemucs_ft",
         }),
@@ -649,7 +649,7 @@ describe("Desktop app library", () => {
     expect(mockImportProject).toHaveBeenCalledWith({
       source_path: "/tmp/new-song.mp4",
       copy_into_project: true,
-      beat_backend: "built-in",
+      beat_backend: "beat-this",
       chord_backend: "tuneforge-fast",
       stem_model: "htdemucs_6s",
       chord_backend_fallback_from: "crema-advanced",
@@ -677,7 +677,7 @@ describe("Desktop app library", () => {
       source_path: "/tmp/new-song.mp4",
       copy_into_project: true,
       beat_backend: "built-in",
-      chord_backend: "tuneforge-fast",
+      chord_backend: "crema-advanced",
       stem_model: "htdemucs_6s",
     });
   });

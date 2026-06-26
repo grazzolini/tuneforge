@@ -20,48 +20,73 @@ FastAPI backend for Tuneforge. It owns persistence, artifact management, audio a
 ## Setup
 
 ```sh
-uv sync --python 3.11 --all-groups
+uv sync --python 3.11 --all-groups --extra advanced-chords --extra advanced-beats
 ```
 
-From the workspace root, `pnpm setup:dev` also runs the full developer setup: `pnpm install`, backend sync, and shared contract generation.
+From the workspace root, `pnpm setup:dev` also runs the full developer setup: `pnpm install`,
+backend sync with default desktop advanced engine dependencies, model prewarm, and shared contract
+generation.
 
 ### Advanced Chords backend
 
-Built-in Chords is the default TuneForge chord backend. It uses TuneForge's built-in librosa/chroma/template pipeline and stays available on every supported backend path.
+Advanced Chords is the default desktop TuneForge chord backend when the desktop dependency stack is
+available. Built-in Chords uses TuneForge's built-in librosa/chroma/template pipeline and stays
+available as the fallback on every supported backend path.
 
-Advanced Chords is an experimental backend backed by [`crema`](https://github.com/bmcfee/crema). It can preserve richer chord labels from crema, including sevenths and inversion/slash-chord bass notes, but it pulls in TensorFlow/Keras and may start and run more slowly. It is still optional in the current setup, but it is being evaluated as a future desktop default. The optional extra pins the crema stack to TensorFlow/Keras 2.15, scikit-learn `<1.6`, and setuptools `<81` because crema 0.2.0 uses legacy model-loading, encoder, and `pkg_resources` APIs that are not compatible with newer releases.
+Advanced Chords is backed by [`crema`](https://github.com/bmcfee/crema). It can preserve richer
+chord labels from crema, including sevenths and inversion/slash-chord bass notes, but it pulls in
+TensorFlow/Keras and may start and run more slowly. The advanced dependency extra pins the crema
+stack because crema 0.2.0 uses legacy model-loading, encoder, and `pkg_resources` APIs that are not
+compatible with newer releases.
 
 The current mobile backend does not run the desktop Python/FastAPI stack and disables Advanced Chords through `TUNEFORGE_RUNTIME_PLATFORM`.
 
 Built-in Chords and Advanced Chords both analyze the source track first. When matching source stems exist, chord refresh also analyzes a non-vocal stem input and augments the source timeline, so chord jobs can report `source+stem`. For the 6 stems model, the non-vocal input is a temporary float mix of drums, bass, guitar, piano, and other that is deleted after analysis.
 
-For local desktop development:
+For local desktop development, plain setup includes Advanced Chords by default:
 
 ```sh
-uv sync --python 3.11 --all-groups --extra advanced-chords
+pnpm setup:dev
 ```
 
-From the workspace root:
+Opt out when testing built-in fallback behavior or unsupported profiles:
 
 ```sh
-pnpm setup:dev -- --advanced-chords
+pnpm setup:dev -- --no-crema
+pnpm setup:dev -- --no-advanced-chords
 ```
 
 If `crema`, TensorFlow, Keras, or JAMS are missing, `/api/v1/chord-backends` reports `crema-advanced` as unavailable and normal Built-in Chords detection keeps working.
 
 ### Advanced Beat Analysis backend
 
-Built-in Beat Analysis is the default timing-grid backend. It uses TuneForge's built-in librosa-derived beat tracker, sparse-gap stabilization, and downbeat heuristics.
+Advanced Beat Analysis is the default desktop timing-grid backend when the desktop dependency stack
+and `small0` checkpoint are available. Built-in Beat Analysis uses TuneForge's built-in
+librosa-derived beat tracker, sparse-gap stabilization, and downbeat heuristics, and stays available
+as the fallback.
 
-Advanced Beat Analysis is an experimental opt-in path backed by [`beat-this`](https://github.com/CPJKU/beat_this). It runs only when an analyze request uses `"beat_backend": "beat-this"`; import, manual analyze, and bulk analyze requests default to `"built-in"`. The `beat-this` dependency is not installed by default. For a local trial:
+Advanced Beat Analysis is backed by [`beat-this`](https://github.com/CPJKU/beat_this). It runs when
+an analyze request uses `"beat_backend": "beat-this"`; desktop preferences and desktop import flows
+select it by default when available. For the default desktop setup:
 
 ```sh
-pnpm setup:dev -- --advanced-beats
+pnpm setup:dev
 ```
 
-The backend loads `beat-this` lazily and uses its `small0` checkpoint on CPU. `pnpm setup:dev -- --advanced-beats` verifies the checkpoint with size and SHA-256 before importing beat-this; if it is missing or invalid, setup preloads it. If the dependency is unavailable, the advanced settings option is disabled and Built-in Beat Analysis keeps working.
+The backend loads `beat-this` lazily and uses its `small0` checkpoint on CPU. `pnpm setup:dev`
+verifies the checkpoint with size and SHA-256 before importing beat-this; if it is missing or
+invalid, setup preloads it. If the dependency or checkpoint is unavailable, the advanced settings
+option is disabled and Built-in Beat Analysis keeps working.
 
-`pnpm setup:dev -- --advanced-beats` may download the checkpoint into the local PyTorch cache during setup. To preload manually:
+`pnpm setup:dev` may download the checkpoint into the local PyTorch cache during setup. Opt out when
+testing built-in fallback behavior or unsupported profiles:
+
+```sh
+pnpm setup:dev -- --no-beat-this
+pnpm setup:dev -- --no-advanced-beats
+```
+
+To preload manually:
 
 ```sh
 uv sync --python 3.11 --all-groups --extra advanced-beats
@@ -90,12 +115,13 @@ From the workspace root, the helper command is:
 pnpm setup:dev -- --legacy-nvidia
 ```
 
-Use `pnpm setup:dev -- --legacy-nvidia --advanced-chords` to combine this profile with Advanced Chords.
-If you later switch profiles with the standalone helpers, pass the same optional extra there too:
+The legacy NVIDIA profile includes the default advanced desktop engines unless you pass opt-outs.
+If you later switch profiles with the standalone helpers, pass opt-outs only when you need the
+built-in fallback stack:
 
 ```sh
-pnpm sync:backend:legacy-nvidia -- --advanced-chords
-pnpm sync:backend:default -- --advanced-chords
+pnpm sync:backend:legacy-nvidia -- --no-crema
+pnpm sync:backend:default -- --no-crema
 ```
 
 This profile is an opt-in local override for Linux `x86_64`. The committed lockfile and the default macOS / Linux
@@ -146,7 +172,7 @@ All configuration is environment-driven (see [`app/config.py`](./app/config.py))
 | `TUNEFORGE_LYRICS_MODEL` | `turbo` | Whisper model used for lyrics generation. |
 | `TUNEFORGE_LYRICS_DEVICE` | `auto` | One of `auto`, `cpu`, `mps`, `cuda`. `auto` prefers compatible CUDA, then MPS, then CPU. |
 | `TUNEFORGE_LYRICS_CACHE_DIR` | upstream Whisper cache | Override where Whisper model weights are cached. By default this is `$XDG_CACHE_HOME/whisper` or `~/.cache/whisper`. |
-| `TUNEFORGE_DEFAULT_CHORD_BACKEND` | `tuneforge-fast` | Default chord backend for `backend: "default"`. Use `crema-advanced` only in desktop environments with optional dependencies installed. |
+| `TUNEFORGE_DEFAULT_CHORD_BACKEND` | `crema-advanced` | Default chord backend for `backend: "default"` on desktop. Built-in fallback remains available when crema is unavailable, unsupported, or explicitly excluded. |
 | `TUNEFORGE_RUNTIME_PLATFORM` | `desktop` | Runtime platform marker. `android`, `ios`, or `mobile` disables the advanced chord backend. |
 
 Default data directory:
@@ -154,7 +180,7 @@ Default data directory:
 - macOS: `~/Library/Application Support/Tuneforge`
 - Linux: `~/.local/share/tuneforge`
 
-Lyrics models are downloaded on demand into the lyrics cache directory, then reused offline on later runs. In development, `pnpm setup:dev` preloads Demucs and Whisper weights into their default caches; if they are not preloaded, first use may download them through the model loaders. The Torch cache path is `$TORCH_HOME/hub/checkpoints` when `TORCH_HOME` is set, `$XDG_CACHE_HOME/torch/hub/checkpoints` when `XDG_CACHE_HOME` is set, or `~/.cache/torch/hub/checkpoints` by default. Packaged desktop builds use these same caches by default. Packages built with `--model-bundle` seed those caches from package resources on startup.
+Lyrics models are downloaded on demand into the lyrics cache directory, then reused offline on later runs. In development, `pnpm setup:dev` preloads Demucs, Whisper, crema, and beat-this `small0` assets into their default caches; if they are not preloaded, first use may download them through the model loaders. The Torch cache path is `$TORCH_HOME/hub/checkpoints` when `TORCH_HOME` is set, `$XDG_CACHE_HOME/torch/hub/checkpoints` when `XDG_CACHE_HOME` is set, or `~/.cache/torch/hub/checkpoints` by default. Packaged desktop builds use these same caches by default. Packages built with `--model-bundle` seed Demucs and Whisper caches from package resources on startup, and also seed the beat-this `small0` checkpoint when beat-this dependencies are included.
 
 ## Chord backends
 
@@ -202,7 +228,7 @@ paths are safe to include in local research notes.
 
 ### Licensing note
 
-The crema package metadata on PyPI lists ISC, while the upstream repository and wheel license file show BSD-2-Clause terms. Both are permissive, but the mismatch should stay documented. The `crema-0.2.0` wheel includes its pretrained chord model files under `crema/models/chord/`, including `model.h5`, so packaged desktop builds that include Advanced Chords redistribute those model artifacts. Primary transitive licenses in the pinned stack include TensorFlow (Apache-2.0), Keras (Apache-2.0), TensorBoard (Apache-2.0), gRPC (Apache-2.0), Protobuf (BSD-3-Clause), h5py/HDF5 (BSD-style), and JAMS (ISC). Complete a fresh full inventory before making Advanced Chords part of the default packaged desktop environment.
+The crema package metadata on PyPI lists ISC, while the upstream repository and wheel license file show BSD-2-Clause terms. Both are permissive, but the mismatch should stay documented. The `crema-0.2.0` wheel includes its pretrained chord model files under `crema/models/chord/`, including `model.h5`, so standard packaged desktop builds redistribute those model artifacts unless Advanced Chords is explicitly excluded. Primary transitive licenses in the pinned stack include TensorFlow (Apache-2.0), Keras (Apache-2.0), TensorBoard (Apache-2.0), gRPC (Apache-2.0), Protobuf (BSD-3-Clause), h5py/HDF5 (BSD-style), and JAMS (ISC). Keep a fresh full inventory before release packaging.
 
 ## Migrations
 

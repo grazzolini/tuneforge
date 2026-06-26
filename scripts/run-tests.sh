@@ -23,6 +23,15 @@ sync_validation_start=${SECONDS}
 sync_validation_elapsed=$((SECONDS - sync_validation_start))
 printf '\n[tests] Sync validation harness tests finished in %ss\n' "${sync_validation_elapsed}"
 
+printf '\n[tests] Starting setup-dev script tests\n\n'
+setup_dev_start=${SECONDS}
+(
+  cd "${repo_root}"
+  bash scripts/setup-dev.test.sh
+)
+setup_dev_elapsed=$((SECONDS - setup_dev_start))
+printf '\n[tests] setup-dev script tests finished in %ss\n' "${setup_dev_elapsed}"
+
 printf '\n[tests] Starting Tauri shell tests\n\n'
 tauri_start=${SECONDS}
 (

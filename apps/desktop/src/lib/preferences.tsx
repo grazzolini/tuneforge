@@ -103,8 +103,8 @@ export const DEFAULT_NOTATION_PREFERENCES: NotationPreferences = {
 };
 
 export const DEFAULT_ANALYSIS_PREFERENCES: AnalysisPreferences = {
-  defaultBeatAnalysisBackend: "built-in",
-  defaultChordBackend: "tuneforge-fast",
+  defaultBeatAnalysisBackend: "beat-this",
+  defaultChordBackend: "crema-advanced",
   defaultStemModel: "htdemucs_6s",
 };
 

@@ -29,16 +29,22 @@ pnpm setup:dev
 ```
 
 This installs workspace dependencies, checks Tauri build prerequisites, syncs the backend Python
-environment, regenerates shared API contracts, and verifies/preloads the default Demucs and Whisper
-model caches.
+environment with default desktop Advanced Chords and Advanced Beat Analysis dependencies,
+regenerates shared API contracts, and verifies/preloads the default Demucs, Whisper, crema, and
+beat-this `small0` model caches.
 
-To install the optional experimental crema/TensorFlow Advanced Chords backend for local desktop development:
+Advanced Chords and Advanced Beat Analysis are default desktop/dev engines. Use opt-outs when you
+need a built-in-only or unsupported-platform dependency set:
 
 ```sh
-pnpm setup:dev -- --advanced-chords
+pnpm setup:dev -- --no-crema
+pnpm setup:dev -- --no-advanced-chords
+pnpm setup:dev -- --no-beat-this
+pnpm setup:dev -- --no-advanced-beats
 ```
 
-`--crema` is accepted as an alias. Default setup and mobile paths do not install crema or TensorFlow.
+Mobile paths must keep clear fallback/disabled states and must not require desktop-only crema,
+TensorFlow, or beat-this dependencies.
 
 For Linux `x86_64` machines with older NVIDIA GPUs that are unsupported by the default PyTorch build, you can opt into the backend's local legacy CUDA override instead:
 
@@ -54,17 +60,18 @@ pnpm sync:backend:default
 
 Both helper commands rebuild `apps/backend/.venv` from scratch so switching between the default and legacy CUDA stacks stays deterministic while still reusing the shared `uv` cache.
 
-To combine the legacy NVIDIA profile with Advanced Chords:
+To combine the legacy NVIDIA profile with the default advanced desktop engines:
 
 ```sh
-pnpm setup:dev -- --legacy-nvidia --advanced-chords
+pnpm setup:dev -- --legacy-nvidia
 ```
 
-If you later switch backend profiles directly, pass `--advanced-chords` / `--crema` to the sync helper too:
+If you later switch backend profiles directly, pass opt-outs only when you need the built-in-only
+fallback stack:
 
 ```sh
-pnpm sync:backend:legacy-nvidia -- --advanced-chords
-pnpm sync:backend:default -- --advanced-chords
+pnpm sync:backend:legacy-nvidia -- --no-crema
+pnpm sync:backend:default -- --no-crema
 ```
 
 ## Development Loop

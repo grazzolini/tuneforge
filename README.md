@@ -65,11 +65,13 @@ pnpm setup:dev
 ```
 
 That command installs workspace dependencies, checks Tauri build prerequisites, syncs the backend
-Python environment, regenerates shared API contracts, and verifies/preloads the default local model
-caches. The first setup is heavy because it installs Demucs/Torch and downloads Demucs stem weights
-into the shared Torch checkpoint cache plus the default Whisper lyrics model into the TuneForge
-lyrics cache. Later worktrees verify file size and SHA-256 first, then skip model loaders/downloads
-when the cache is already valid.
+Python environment with the default desktop advanced engine dependencies, regenerates shared API
+contracts, and verifies/preloads the default local model caches. The first setup is heavy because it
+installs Demucs/Torch, crema/TensorFlow Advanced Chords, and beat-this Advanced Beat Analysis, then
+downloads Demucs stem weights into the shared Torch checkpoint cache, the default Whisper lyrics
+model into the TuneForge lyrics cache, and the beat-this `small0` checkpoint into the shared Torch
+checkpoint cache. Later worktrees verify file size and SHA-256 first, then skip model
+loaders/downloads when the cache is already valid.
 
 Skip all model prewarm work when you only need non-ML development:
 
@@ -87,22 +89,19 @@ Prepare an explicit Demucs model repo for `TUNEFORGE_DEMUCS_MODEL_REPO` with
 `pnpm models:demucs:prepare`. Add `-- --cache-only` or set
 `TUNEFORGE_DEMUCS_CACHE_ONLY=1` to require already cached weights.
 
-To install the optional experimental crema/TensorFlow Advanced Chords backend for local desktop development:
+Advanced Chords and Advanced Beat Analysis are default desktop development engines. Opt out of one
+or both advanced dependency stacks when testing fallback behavior or mobile/unsupported profiles:
 
 ```sh
-pnpm setup:dev -- --advanced-chords
+pnpm setup:dev -- --no-crema
+pnpm setup:dev -- --no-advanced-chords
+pnpm setup:dev -- --no-beat-this
+pnpm setup:dev -- --no-advanced-beats
 ```
 
-`--crema` is accepted as an alias. Advanced Chords remains optional; default setup and mobile paths do not install crema or TensorFlow.
-
-To install the optional experimental beat-this Advanced Beat Analysis backend for local desktop development:
-
-```sh
-pnpm setup:dev -- --advanced-beats
-```
-
-That flag installs beat-this and verifies/preloads its `small0` checkpoint in the shared Torch
-checkpoint cache. Plain setup does not install beat-this.
+The built-in chord and beat backends remain available as fallbacks when advanced dependencies are
+missing, unsupported, or disabled. Mobile paths do not run the desktop Python/FastAPI stack and must
+keep clear disabled/fallback states instead of requiring crema, TensorFlow, or beat-this.
 
 ### Linux legacy NVIDIA profile
 
@@ -118,17 +117,19 @@ That command first performs the normal backend sync, then locally overrides `tor
 pnpm sync:backend:default
 ```
 
-To combine the legacy NVIDIA profile with Advanced Chords:
+To combine the legacy NVIDIA profile with the default Advanced Chords and Advanced Beat Analysis
+desktop stack:
 
 ```sh
-pnpm setup:dev -- --legacy-nvidia --advanced-chords
+pnpm setup:dev -- --legacy-nvidia
 ```
 
-The standalone backend sync helpers also accept `--advanced-chords` / `--crema` when switching profiles:
+Use the same opt-outs when switching profiles directly if you need a built-in-only backend
+environment:
 
 ```sh
-pnpm sync:backend:legacy-nvidia -- --advanced-chords
-pnpm sync:backend:default -- --advanced-chords
+pnpm sync:backend:legacy-nvidia -- --no-crema
+pnpm sync:backend:default -- --no-crema
 ```
 
 Both backend sync helpers recreate `apps/backend/.venv` from scratch to avoid stale mixed CUDA stacks when switching profiles. `uv` still reuses its shared cache, so after the first install, switching is usually much faster than a cold download. It is intended for cards like the GTX 1050 Ti. macOS, CI, and the default Linux setup remain unchanged.
@@ -203,12 +204,19 @@ pnpm package:mac
 pnpm package:linux:flatpak
 ```
 
-Pass independent package flags for optional backends, legacy NVIDIA Torch, or explicit model bundling:
+Plain package commands include crema Advanced Chords and beat-this Advanced Beat Analysis
+dependencies by default for desktop builds. Use opt-outs to build fallback packages, and keep
+`--model-bundle` separate when you explicitly want model weights copied into the package:
 
 ```sh
-pnpm package:mac -- --crema --beat-this --model-bundle
-pnpm package:linux -- --crema --beat-this --legacy-nvidia --model-bundle
+pnpm package:mac -- --no-crema --no-beat-this
+pnpm package:linux -- --no-advanced-chords --no-advanced-beats --legacy-nvidia
+pnpm package:mac -- --model-bundle
 ```
+
+`--model-bundle` stages Demucs and Whisper weights, and stages the beat-this `small0` checkpoint
+only when beat-this dependencies are included. It does not control whether advanced dependencies are
+installed.
 
 Linux Flatpak packages use host XDG data and model cache directories by default, so
 packaged runs share `~/.local/share/tuneforge`, `~/.cache/torch`, and `~/.cache/whisper`

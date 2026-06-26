@@ -4145,7 +4145,7 @@ describe("Desktop app activity", () => {
     });
 
     await waitFor(() =>
-      expect(mockBulkJobs).toHaveBeenCalledWith({ job_type: "analyze", beat_backend: "built-in" }),
+      expect(mockBulkJobs).toHaveBeenCalledWith({ job_type: "analyze", beat_backend: "beat-this" }),
     );
   });
 

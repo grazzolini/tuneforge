@@ -12,10 +12,12 @@ import {
   ACCORDION_STANDARD_PROFILE,
   CHORD_QUALITY_DEFINITIONS,
   GUITAR_STANDARD_PROFILE,
+  PIANO_STANDARD_PROFILE,
   formatKey,
   formatPitchClass,
   generateGuitarVoicings,
   generateAccordionVoicings,
+  generatePianoVoicings,
   midiToPitch,
   parsePitch,
   spellChord,
@@ -23,6 +25,8 @@ import {
   type ChordDisplayContext,
   type GuitarVoicing,
   type MusicalKey,
+  type PianoVoicing,
+  type PianoVoicingNote,
 } from "../../lib/music";
 import {
   buildChordDictionaryFollowContext,
@@ -43,7 +47,7 @@ import {
 } from "./chordDictionaryPreferences";
 
 type ChordDictionarySurface = "dictionary" | "follow";
-type ChordDictionaryInstrumentId = "guitar" | "accordion";
+type ChordDictionaryInstrumentId = "guitar" | "accordion" | "piano";
 type NotePoint = {
   degree: string;
   displayFret: number;
@@ -106,12 +110,41 @@ type AccordionKeyboardSlice = {
   keys: readonly AccordionKeyboardKeyView[];
   whiteKeyCount: number;
 };
+type PianoNoteView = {
+  degree: string;
+  handHint: PianoVoicingNote["handHint"];
+  id: string;
+  midi: number;
+  pitchLabel: string;
+};
+type PianoKeyboardKeyView = {
+  isBlack: boolean;
+  midi: number;
+  note: PianoNoteView | null;
+  pitchLabel: string;
+  whiteIndex: number;
+};
+type PianoKeyboardSlice = {
+  keys: readonly PianoKeyboardKeyView[];
+  whiteKeyCount: number;
+};
+type PianoVoicingView = {
+  chordLabel: string;
+  id: string;
+  inversion: PianoVoicing["inversion"];
+  keyboardSlice: PianoKeyboardSlice;
+  label: string;
+  notes: readonly PianoNoteView[];
+  rank: number;
+  regionRoot: PianoVoicing["regionRoot"];
+};
 type CompactKeyboardWindow = {
   endMidi: number;
   startMidi: number;
 };
 const COMPACT_KEYBOARD_C_FAMILY_END_PITCH_CLASS = 4;
 const COMPACT_KEYBOARD_F_FAMILY_END_PITCH_CLASS = 11;
+const PIANO_KEYBOARD_CONTEXT_SEMITONES = 24;
 type AccordionLeftHandCandidateView = {
   addedTones: readonly string[];
   buttons: readonly AccordionButtonView[];
@@ -203,9 +236,11 @@ type GuitarShape = {
 const COMMON_CHORD_LABELS = ["C", "Dm", "Em", "F", "G", "Am", "Bdim"] as const;
 const GUITAR_INSTRUMENT_ID = GUITAR_STANDARD_PROFILE.id;
 const ACCORDION_INSTRUMENT_ID = ACCORDION_STANDARD_PROFILE.id;
+const PIANO_INSTRUMENT_ID = PIANO_STANDARD_PROFILE.id;
 const CHORD_DICTIONARY_INSTRUMENTS = [
   { id: GUITAR_INSTRUMENT_ID, label: GUITAR_STANDARD_PROFILE.label },
   { id: ACCORDION_INSTRUMENT_ID, label: ACCORDION_STANDARD_PROFILE.label },
+  { id: PIANO_INSTRUMENT_ID, label: PIANO_STANDARD_PROFILE.label },
 ] as const satisfies ReadonlyArray<{ id: ChordDictionaryInstrumentId; label: string }>;
 const ACCORDION_STRADDELLA_ROWS = [
   { id: "diminished", label: "Dim" },
@@ -405,11 +440,14 @@ function DictionarySurface({
   const [activeChord, setActiveChord] = useState("C");
   const [activeShape, setActiveShape] = useState<string | null>(null);
   const [activeAccordionVoicing, setActiveAccordionVoicing] = useState<string | null>(null);
+  const [activePianoVoicing, setActivePianoVoicing] = useState<string | null>(null);
   const [activeAccordionCandidate, setActiveAccordionCandidate] = useState<string | null>(null);
   const [previewAccordionPointId, setPreviewAccordionPointId] = useState<string | null>(null);
+  const [previewPianoNoteId, setPreviewPianoNoteId] = useState<string | null>(null);
   const [previewNoteId, setPreviewNoteId] = useState<string | null>(null);
   const [, setPreferenceRevision] = useState(0);
   const [selectedAccordionPointId, setSelectedAccordionPointId] = useState<string | null>(null);
+  const [selectedPianoNoteId, setSelectedPianoNoteId] = useState<string | null>(null);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const displayContext = useMemo<Partial<ChordDisplayContext>>(
     () => ({
@@ -607,6 +645,75 @@ function DictionarySurface({
     : null;
   const displayedAccordionPoint = previewAccordionPoint ?? selectedAccordionPoint;
   const activeAccordionPointId = previewAccordionPoint?.id ?? selectedAccordionPoint?.id ?? null;
+  const pianoVoicings = useMemo(
+    () => (chordSpelling ? generatePianoVoicings(chordSpelling) : []),
+    [chordSpelling],
+  );
+  const generatedPianoVoicingViews = useMemo(
+    () => toPianoVoicingViews(pianoVoicings),
+    [pianoVoicings],
+  );
+  const generatedPianoVoicingIds = useMemo(
+    () => generatedPianoVoicingViews.map((voicing) => voicing.id),
+    [generatedPianoVoicingViews],
+  );
+  const pianoPreferenceContext = useMemo(
+    () =>
+      chordSpelling
+        ? buildShapePreferenceContext({
+            capoFret: null,
+            chordLabel: chordSpelling.label,
+            displayedKey: null,
+            instrumentId: PIANO_INSTRUMENT_ID,
+            projectId: null,
+            sourceKey: null,
+            transposeSemitones: null,
+            useCapoShapes: null,
+          })
+        : null,
+    [chordSpelling],
+  );
+  const preferredPianoVoicingId = resolveChordDictionaryPreferredShapeId(
+    pianoPreferenceContext,
+    generatedPianoVoicingIds,
+  );
+  const hasGlobalPianoPreference = hasGlobalChordDictionaryPreferredShape(
+    pianoPreferenceContext,
+    generatedPianoVoicingIds,
+  );
+  const pianoVoicingViews = useMemo(
+    () => promoteShapeToFirst(generatedPianoVoicingViews, preferredPianoVoicingId),
+    [generatedPianoVoicingViews, preferredPianoVoicingId],
+  );
+  const pianoResultKey = pianoVoicingViews.map((voicing) => voicing.id).join("|");
+  const firstPianoVoicingId = pianoVoicingViews[0]?.id ?? null;
+  const firstPianoNoteId = pianoVoicingViews[0]?.notes[0]?.id ?? null;
+  const selectPianoVoicing = (voicing: PianoVoicingView) => {
+    writeGlobalChordDictionaryPreferredShape(pianoPreferenceContext, voicing.id);
+    bumpPreferenceRevision();
+    setActivePianoVoicing(voicing.id);
+    setPreviewPianoNoteId(null);
+    setSelectedPianoNoteId(voicing.notes[0]?.id ?? null);
+  };
+  useEffect(() => {
+    setActivePianoVoicing(firstPianoVoicingId);
+    setPreviewPianoNoteId(null);
+    setSelectedPianoNoteId(firstPianoNoteId);
+  }, [firstPianoNoteId, firstPianoVoicingId, pianoResultKey]);
+  const selectedPianoVoicing =
+    pianoVoicingViews.find((voicing) => voicing.id === activePianoVoicing) ??
+    pianoVoicingViews[0] ??
+    null;
+  const selectedPianoNote =
+    selectedPianoVoicing?.notes.find((note) => note.id === selectedPianoNoteId) ??
+    selectedPianoVoicing?.notes[0] ??
+    null;
+  const previewPianoNote =
+    previewPianoNoteId && selectedPianoVoicing
+      ? selectedPianoVoicing.notes.find((note) => note.id === previewPianoNoteId) ?? null
+      : null;
+  const displayedPianoNote = previewPianoNote ?? selectedPianoNote;
+  const activePianoNoteId = previewPianoNote?.id ?? selectedPianoNote?.id ?? null;
   const sourceKeyLabel = displayContext.sourceKey
     ? formatKey(displayContext.sourceKey, "long")
     : "No source key";
@@ -626,6 +733,7 @@ function DictionarySurface({
               setActiveChord(event.currentTarget.value);
               setPreviewNoteId(null);
               setPreviewAccordionPointId(null);
+              setPreviewPianoNoteId(null);
             }}
             placeholder="C major"
             value={activeChord}
@@ -642,13 +750,33 @@ function DictionarySurface({
         <div className="chord-dictionary-status" role="status">
           <strong>{activeChord}</strong>
           <span>
-            Unsupported chord symbol. No backed spelling or{" "}
-            {instrumentId === ACCORDION_INSTRUMENT_ID ? "accordion voicings" : "guitar voicings"} available.
+            Unsupported chord symbol. No backed spelling or {getChordDictionaryInstrumentLabel(instrumentId).toLowerCase()} voicings available.
           </span>
         </div>
       ) : null}
 
-      {instrumentId === ACCORDION_INSTRUMENT_ID ? (
+      {instrumentId === PIANO_INSTRUMENT_ID ? (
+        <PianoDictionaryContent
+          activeChord={activeChord}
+          activeNoteId={activePianoNoteId}
+          chordSpelling={chordSpelling}
+          displayedNote={displayedPianoNote}
+          hasGlobalPreference={hasGlobalPianoPreference}
+          selectedVoicing={selectedPianoVoicing}
+          unsupportedChord={unsupportedChord}
+          voicings={pianoVoicingViews}
+          onClearPreference={() => {
+            resetGlobalChordDictionaryPreferredShape(pianoPreferenceContext);
+            bumpPreferenceRevision();
+          }}
+          onPreviewNote={setPreviewPianoNoteId}
+          onSelectNote={(noteId) => {
+            setPreviewPianoNoteId(null);
+            setSelectedPianoNoteId(noteId);
+          }}
+          onSelectVoicing={selectPianoVoicing}
+        />
+      ) : instrumentId === ACCORDION_INSTRUMENT_ID ? (
         <AccordionDictionaryContent
           activePointId={activeAccordionPointId}
           activeChord={activeChord}
@@ -943,6 +1071,396 @@ function InstrumentSelector({
         </button>
       ))}
     </div>
+  );
+}
+
+function PianoDictionaryContent({
+  activeChord,
+  activeNoteId,
+  chordSpelling,
+  displayedNote,
+  hasGlobalPreference,
+  onClearPreference,
+  onPreviewNote,
+  onSelectNote,
+  onSelectVoicing,
+  selectedVoicing,
+  unsupportedChord,
+  voicings,
+}: {
+  activeChord: string;
+  activeNoteId: string | null;
+  chordSpelling: NonNullable<ReturnType<typeof spellChord>> | null;
+  displayedNote: PianoNoteView | null;
+  hasGlobalPreference: boolean;
+  selectedVoicing: PianoVoicingView | null;
+  unsupportedChord: boolean;
+  voicings: readonly PianoVoicingView[];
+  onClearPreference: () => void;
+  onPreviewNote: (noteId: string | null) => void;
+  onSelectNote: (noteId: string) => void;
+  onSelectVoicing: (voicing: PianoVoicingView) => void;
+}) {
+  const soundLabel = chordSpelling?.label ?? "No supported chord";
+  const rangeLabel = formatPianoRange(PIANO_STANDARD_PROFILE);
+  const regionLabel = selectedVoicing?.regionRoot.note
+    ? `Region ${selectedVoicing.regionRoot.note}`
+    : "No key region";
+
+  return (
+    <>
+      <div className="chord-context-strip" aria-label="Piano display context">
+        <ContextChip icon="instrument" label={PIANO_STANDARD_PROFILE.label} />
+        <ContextChip icon="shape" label={`${rangeLabel} range`} />
+        <ContextChip icon="key" label={regionLabel} />
+        <ContextChip icon="sound" label={soundLabel} />
+      </div>
+
+      {!chordSpelling || unsupportedChord ? (
+        <EmptyDictionaryState
+          title="Unsupported chord"
+          copy="No spelling, piano keyboard, or note inspector data shown for this search."
+        />
+      ) : voicings.length === 0 || !selectedVoicing ? (
+        <EmptyDictionaryState
+          title={`Piano unavailable for ${chordSpelling.label}`}
+          copy="Chord spelling is supported, but the piano generator returned no voicings."
+        />
+      ) : (
+        <div className="piano-tool-grid">
+          <main className="piano-tool-main">
+            <section className="chord-section" aria-label={`${chordSpelling.label} piano voicings`}>
+              <div className="chord-section-heading chord-section-heading--inline">
+                <div>
+                  <p className="metric-label">{chordSpelling.notes.join(" ")}</p>
+                  <h3>{chordSpelling.label} piano voicings</h3>
+                </div>
+                <div className="chord-shape-controls chord-shape-controls--piano">
+                  <div className="chord-shape-control-row">
+                    <div
+                      aria-describedby="piano-voicing-preference-copy"
+                      aria-label="Global piano voicing preference choices"
+                      className="chord-shape-tabs"
+                      role="group"
+                    >
+                      {voicings.map((voicing) => (
+                        <button
+                          key={voicing.id}
+                          aria-pressed={selectedVoicing.id === voicing.id}
+                          className={classNames(
+                            "chord-shape-tab",
+                            selectedVoicing.id === voicing.id && "chord-shape-tab--active",
+                          )}
+                          onClick={() => onSelectVoicing(voicing)}
+                          type="button"
+                        >
+                          {voicing.label}
+                        </button>
+                      ))}
+                    </div>
+                    {hasGlobalPreference ? (
+                      <button
+                        aria-label="Clear this chord/instrument global preference"
+                        className="chord-reset-button"
+                        onClick={onClearPreference}
+                        type="button"
+                      >
+                        Clear global preference
+                      </button>
+                    ) : null}
+                  </div>
+                  <p className="chord-shape-preference-copy" id="piano-voicing-preference-copy">
+                    Saves locally as global for this chord and instrument.
+                  </p>
+                </div>
+              </div>
+              <ChordSpellingSummary spelling={chordSpelling} />
+              <PianoVoicingPanel
+                activeChord={activeChord}
+                activeNoteId={activeNoteId}
+                voicing={selectedVoicing}
+                onPreviewNote={onPreviewNote}
+                onSelectNote={onSelectNote}
+              />
+            </section>
+          </main>
+
+          <aside className="piano-tool-sidebar">
+            {displayedNote ? <PianoNoteInspector note={displayedNote} /> : null}
+            <PianoInstrumentFacts
+              chordLabel={chordSpelling.label}
+              selectedVoicing={selectedVoicing}
+              voicingCount={voicings.length}
+            />
+          </aside>
+        </div>
+      )}
+    </>
+  );
+}
+
+function PianoVoicingPanel({
+  activeChord,
+  activeNoteId,
+  onPreviewNote,
+  onSelectNote,
+  voicing,
+}: {
+  activeChord: string;
+  activeNoteId: string | null;
+  voicing: PianoVoicingView;
+  onPreviewNote: (noteId: string | null) => void;
+  onSelectNote: (noteId: string) => void;
+}) {
+  return (
+    <section
+      className="piano-position-card"
+      aria-label={`${voicing.label} piano voicing`}
+      data-instrument="piano"
+      role="group"
+    >
+      <div className="piano-position-card__heading">
+        <div>
+          <h4>{voicing.inversion.label}</h4>
+          <span>{formatCount(voicing.notes.length, "generated key")}</span>
+        </div>
+        <span className="accordion-match-badge accordion-match-badge--exact">
+          {voicing.regionRoot.note} region
+        </span>
+      </div>
+      <PianoVoicingOrder notes={voicing.notes} />
+      {voicing.keyboardSlice.keys.length > 0 ? (
+        <PianoKeyboard
+          activeChord={activeChord}
+          activeNoteId={activeNoteId}
+          slice={voicing.keyboardSlice}
+          onPreviewNote={onPreviewNote}
+          onSelectNote={onSelectNote}
+        />
+      ) : (
+        <EmptyDictionaryState
+          title="No piano keyboard"
+          copy="Piano data did not include generated pitch keys for this voicing."
+        />
+      )}
+    </section>
+  );
+}
+
+function PianoVoicingOrder({ notes }: { notes: readonly PianoNoteView[] }) {
+  return (
+    <div className="piano-voicing-order" aria-label="Current piano voicing order">
+      <span className="piano-voicing-order__label">Voicing order</span>
+      <ol>
+        {notes.map((note) => (
+          <li key={note.id}>
+            <strong>{note.pitchLabel}</strong>
+            <small>{note.degree}</small>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function PianoKeyboard({
+  activeChord,
+  activeNoteId,
+  onPreviewNote,
+  onSelectNote,
+  slice,
+}: {
+  activeChord: string;
+  activeNoteId: string | null;
+  slice: PianoKeyboardSlice;
+  onPreviewNote: (noteId: string | null) => void;
+  onSelectNote: (noteId: string) => void;
+}) {
+  const whiteKeys = slice.keys.filter((key) => !key.isBlack);
+  const blackKeys = slice.keys.filter((key) => key.isBlack);
+
+  return (
+    <div
+      className="piano-keyboard"
+      data-instrument="piano"
+      data-layout="compact-piano"
+      data-surface="piano-keyboard"
+      style={{ "--piano-white-key-count": slice.whiteKeyCount } as CSSProperties}
+      aria-label={`${activeChord} piano keyboard`}
+      role="group"
+    >
+      <div className="piano-keyboard__white-keys">
+        {whiteKeys.map((key) => (
+          <PianoKeyboardKey
+            key={key.midi}
+            activeNoteId={activeNoteId}
+            keyView={key}
+            onPreviewNote={onPreviewNote}
+            onSelectNote={onSelectNote}
+          />
+        ))}
+      </div>
+      <div className="piano-keyboard__black-keys" aria-hidden={blackKeys.length === 0 ? "true" : undefined}>
+        {blackKeys.map((key) => (
+          <PianoKeyboardKey
+            key={key.midi}
+            activeNoteId={activeNoteId}
+            keyView={key}
+            onPreviewNote={onPreviewNote}
+            onSelectNote={onSelectNote}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PianoKeyboardKey({
+  activeNoteId,
+  keyView,
+  onPreviewNote,
+  onSelectNote,
+}: {
+  activeNoteId: string | null;
+  keyView: PianoKeyboardKeyView;
+  onPreviewNote: (noteId: string | null) => void;
+  onSelectNote: (noteId: string) => void;
+}) {
+  const note = keyView.note;
+  const className = classNames(
+    "piano-keyboard__key",
+    keyView.isBlack ? "piano-keyboard__key--black" : "piano-keyboard__key--white",
+    note && "piano-keyboard__key--active-tone",
+    note?.id === activeNoteId && "piano-keyboard__key--selected",
+  );
+  const style = { "--piano-white-index": keyView.whiteIndex } as CSSProperties;
+
+  if (!note) {
+    return (
+      <span
+        aria-hidden="true"
+        className={className}
+        data-key-color={keyView.isBlack ? "black" : "white"}
+        data-midi={keyView.midi}
+        data-pitch-label={keyView.pitchLabel}
+        style={style}
+      />
+    );
+  }
+
+  return (
+    <button
+      aria-label={`${note.pitchLabel} degree ${note.degree} piano key`}
+      className={className}
+      data-degree={note.degree}
+      data-hand-hint={note.handHint}
+      data-key-color={keyView.isBlack ? "black" : "white"}
+      data-midi={keyView.midi}
+      data-pitch-label={note.pitchLabel}
+      onBlur={() => onPreviewNote(null)}
+      onClick={() => onSelectNote(note.id)}
+      onFocus={() => onPreviewNote(note.id)}
+      onPointerEnter={() => onPreviewNote(note.id)}
+      onPointerLeave={() => onPreviewNote(null)}
+      style={style}
+      title={note.pitchLabel}
+      type="button"
+    >
+      <strong>{note.pitchLabel}</strong>
+      <span>{note.degree}</span>
+    </button>
+  );
+}
+
+function PianoNoteInspector({ note }: { note: PianoNoteView }) {
+  return (
+    <section className="note-inspector piano-note-inspector" aria-label="Note inspector">
+      <div className="note-inspector__badge">
+        <strong>{note.pitchLabel}</strong>
+        <span>{note.degree}</span>
+      </div>
+      <div className="piano-note-inspector__body">
+        <dl>
+          <div>
+            <dt>Pitch</dt>
+            <dd>{note.pitchLabel}</dd>
+          </div>
+          <div>
+            <dt>Degree</dt>
+            <dd>{note.degree}</dd>
+          </div>
+          <div>
+            <dt>Hand hint</dt>
+            <dd>{formatPianoHandHint(note.handHint)}</dd>
+          </div>
+          <div>
+            <dt>Source</dt>
+            <dd>Generated pitch data</dd>
+          </div>
+        </dl>
+        <p>Hand hints describe keyboard area only, not fingering.</p>
+      </div>
+    </section>
+  );
+}
+
+function PianoInstrumentFacts({
+  chordLabel,
+  selectedVoicing,
+  voicingCount,
+}: {
+  chordLabel: string;
+  selectedVoicing: PianoVoicingView;
+  voicingCount: number;
+}) {
+  return (
+    <section className="piano-facts-panel" aria-label="Piano instrument facts">
+      <div className="chord-understanding-panel__header">
+        <div>
+          <p className="metric-label">Instrument</p>
+          <h3>{PIANO_STANDARD_PROFILE.label}</h3>
+        </div>
+        <SlidersHorizontal aria-hidden="true" />
+      </div>
+      <dl className="chord-fact-list">
+        <div>
+          <dt>Range</dt>
+          <dd>{formatPianoRange(PIANO_STANDARD_PROFILE)}</dd>
+        </div>
+        <div>
+          <dt>Keys</dt>
+          <dd>{formatCount(PIANO_STANDARD_PROFILE.keyboard.keyCount, "key")}</dd>
+        </div>
+        <div>
+          <dt>Region</dt>
+          <dd>{selectedVoicing.regionRoot.note}</dd>
+        </div>
+        <div>
+          <dt>Surface</dt>
+          <dd>88-key keyboard</dd>
+        </div>
+      </dl>
+      <div className="chord-accordion-list">
+        <div className="chord-accordion-row chord-accordion-row--static">
+          <span>
+            <strong>{formatCount(voicingCount, "voicing")}</strong>
+            <small>{chordLabel}</small>
+          </span>
+        </div>
+        <div className="chord-accordion-row chord-accordion-row--static">
+          <span>
+            <strong>{selectedVoicing.inversion.label}</strong>
+            <small>Bass degree {selectedVoicing.inversion.bassDegree}</small>
+          </span>
+        </div>
+        <div className="chord-accordion-row chord-accordion-row--static">
+          <span>
+            <strong>Hand hints</strong>
+            <small>Assistive keyboard areas, not fingering</small>
+          </span>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -1493,6 +2011,81 @@ function toGuitarShape(voicing: GuitarVoicing, profile: typeof GUITAR_STANDARD_P
   };
 }
 
+function toPianoVoicingViews(voicings: readonly PianoVoicing[]): readonly PianoVoicingView[] {
+  return voicings.flatMap((voicing): PianoVoicingView[] => {
+    const notes = voicing.notes.map((note) => toPianoNoteView(note, voicing.id));
+    if (notes.length === 0) {
+      return [];
+    }
+
+    return [
+      {
+        chordLabel: voicing.chordLabel,
+        id: voicing.id,
+        inversion: voicing.inversion,
+        keyboardSlice: buildPianoKeyboardSlice(notes),
+        label: voicing.label,
+        notes,
+        rank: voicing.rank,
+        regionRoot: voicing.regionRoot,
+      },
+    ];
+  });
+}
+
+function toPianoNoteView(note: PianoVoicingNote, voicingId: string): PianoNoteView {
+  return {
+    degree: note.degree,
+    handHint: note.handHint,
+    id: `${voicingId}-${note.id}`,
+    midi: note.pitch.midi,
+    pitchLabel: note.pitch.label,
+  };
+}
+
+function buildPianoKeyboardSlice(notes: readonly PianoNoteView[]): PianoKeyboardSlice {
+  if (notes.length === 0) {
+    return { keys: [], whiteKeyCount: 0 };
+  }
+
+  const noteByMidi = new Map(notes.map((note) => [note.midi, note]));
+  const window = buildPianoKeyboardWindow(notes.map((note) => note.midi));
+  if (!window) {
+    return { keys: [], whiteKeyCount: 0 };
+  }
+
+  const keysByPitch: Array<
+    Omit<PianoKeyboardKeyView, "whiteIndex"> & {
+      lowerWhiteIndex: number;
+      whiteAscendingIndex: number | null;
+    }
+  > = [];
+  let whiteIndex = 0;
+  for (let midi = window.startMidi; midi <= window.endMidi; midi += 1) {
+    const pitch = midiToPitch(midi);
+    const isBlack = isBlackPianoKey(midi);
+    keysByPitch.push({
+      isBlack,
+      lowerWhiteIndex: isBlack ? Math.max(0, whiteIndex - 1) : whiteIndex,
+      midi,
+      note: noteByMidi.get(midi) ?? null,
+      pitchLabel: pitch?.label ?? `MIDI ${midi}`,
+      whiteAscendingIndex: isBlack ? null : whiteIndex,
+    });
+    if (!isBlack) {
+      whiteIndex += 1;
+    }
+  }
+
+  const whiteKeyCount = whiteIndex;
+  const keys = keysByPitch.map(({ lowerWhiteIndex, whiteAscendingIndex, ...key }) => ({
+    ...key,
+    whiteIndex: key.isBlack ? lowerWhiteIndex : whiteAscendingIndex ?? 0,
+  }));
+
+  return { keys, whiteKeyCount };
+}
+
 function toAccordionVoicingViews(voicings: readonly AccordionVoicing[]): readonly AccordionVoicingView[] {
   return voicings.flatMap((voicing, voicingIndex): AccordionVoicingView[] => {
     const record = asUnknownRecord(voicing);
@@ -1882,6 +2475,44 @@ function buildCompactKeyboardWindow(activeMidis: readonly number[]): CompactKeyb
   };
 }
 
+function buildPianoKeyboardWindow(activeMidis: readonly number[]): CompactKeyboardWindow | null {
+  if (activeMidis.length === 0) {
+    return null;
+  }
+
+  const lowestActiveMidi = Math.min(...activeMidis);
+  const highestActiveMidi = Math.max(...activeMidis);
+  const lowestKeyboardMidi = PIANO_STANDARD_PROFILE.keyboard.lowestPitch.midi;
+  const highestKeyboardMidi = PIANO_STANDARD_PROFILE.keyboard.highestPitch.midi;
+  const activeMidpoint = (lowestActiveMidi + highestActiveMidi) / 2;
+  let startMidi = findNearestWhiteKeyAtOrBelow(
+    Math.floor(activeMidpoint - PIANO_KEYBOARD_CONTEXT_SEMITONES / 2),
+  );
+  let endMidi = findNearestWhiteKeyAtOrAbove(startMidi + PIANO_KEYBOARD_CONTEXT_SEMITONES);
+
+  if (startMidi < lowestKeyboardMidi) {
+    startMidi = findNearestWhiteKeyAtOrAbove(lowestKeyboardMidi);
+    endMidi = findNearestWhiteKeyAtOrAbove(startMidi + PIANO_KEYBOARD_CONTEXT_SEMITONES);
+  }
+
+  if (endMidi > highestKeyboardMidi) {
+    endMidi = findNearestWhiteKeyAtOrBelow(highestKeyboardMidi);
+    startMidi = findNearestWhiteKeyAtOrBelow(endMidi - PIANO_KEYBOARD_CONTEXT_SEMITONES);
+  }
+
+  if (lowestActiveMidi < startMidi) {
+    startMidi = findNearestWhiteKeyAtOrBelow(lowestActiveMidi);
+  }
+  if (highestActiveMidi > endMidi) {
+    endMidi = findNearestWhiteKeyAtOrAbove(highestActiveMidi);
+  }
+
+  return {
+    startMidi: Math.max(startMidi, lowestKeyboardMidi),
+    endMidi: Math.min(endMidi, highestKeyboardMidi),
+  };
+}
+
 function findCompactKeyboardWindowStartMidi(lowestActiveMidi: number): number {
   return getCompactKeyboardFamilyStartMidi(lowestActiveMidi);
 }
@@ -1926,6 +2557,14 @@ function findNearestWhiteKeyAtOrAbove(midi: number): number {
   let keyMidi = midi;
   while (isBlackPianoKey(keyMidi)) {
     keyMidi += 1;
+  }
+  return keyMidi;
+}
+
+function findNearestWhiteKeyAtOrBelow(midi: number): number {
+  let keyMidi = midi;
+  while (isBlackPianoKey(keyMidi)) {
+    keyMidi -= 1;
   }
   return keyMidi;
 }
@@ -2767,7 +3406,13 @@ function LiveFollowSurface({
     );
   }
 
-  return instrumentId === ACCORDION_INSTRUMENT_ID ? (
+  return instrumentId === PIANO_INSTRUMENT_ID ? (
+    <LiveFollowPianoActiveState
+      context={context}
+      instrumentId={instrumentId}
+      onInstrumentChange={onInstrumentChange}
+    />
+  ) : instrumentId === ACCORDION_INSTRUMENT_ID ? (
     <LiveFollowAccordionActiveState
       context={context}
       instrumentId={instrumentId}
@@ -2779,6 +3424,305 @@ function LiveFollowSurface({
       instrumentId={instrumentId}
       onInstrumentChange={onInstrumentChange}
     />
+  );
+}
+
+function LiveFollowPianoActiveState({
+  context,
+  instrumentId,
+  onInstrumentChange,
+}: {
+  context: ChordDictionaryFollowContext;
+  instrumentId: ChordDictionaryInstrumentId;
+  onInstrumentChange: (instrumentId: ChordDictionaryInstrumentId) => void;
+}) {
+  const currentChord = context.currentChord;
+  const project = context.project;
+  const [activeVoicing, setActiveVoicing] = useState<string | null>(null);
+  const [previewNoteId, setPreviewNoteId] = useState<string | null>(null);
+  const [, setPreferenceRevision] = useState(0);
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const chordSpelling = useMemo(
+    () =>
+      currentChord
+        ? spellChord(currentChord.displayLabel, {
+            activeKey: project?.displayedKey ?? undefined,
+          })
+        : null,
+    [currentChord, project?.displayedKey],
+  );
+  const pianoVoicings = useMemo(
+    () =>
+      chordSpelling
+        ? generatePianoVoicings(
+            chordSpelling,
+            {
+              activeKey: project?.displayedKey ?? null,
+              currentChordRoot: currentChord?.displayLabel ?? null,
+              regionKey: project?.displayedKey ?? null,
+            },
+            project?.displayedKey ? { activeKey: project.displayedKey } : {},
+          )
+        : [],
+    [chordSpelling, currentChord?.displayLabel, project?.displayedKey],
+  );
+  const generatedVoicingViews = useMemo(
+    () => toPianoVoicingViews(pianoVoicings),
+    [pianoVoicings],
+  );
+  const generatedVoicingIds = useMemo(
+    () => generatedVoicingViews.map((voicing) => voicing.id),
+    [generatedVoicingViews],
+  );
+  const preferenceContext = useMemo(
+    () =>
+      chordSpelling
+        ? buildShapePreferenceContext({
+            capoFret: null,
+            chordLabel: chordSpelling.label,
+            displayedKey: project?.displayedKey ?? null,
+            instrumentId: PIANO_INSTRUMENT_ID,
+            projectId: project?.projectId ?? null,
+            sourceKey: project?.sourceKey ?? null,
+            transposeSemitones: project?.totalDisplayTransposeSemitones ?? null,
+            useCapoShapes: null,
+          })
+        : null,
+    [
+      chordSpelling,
+      project?.displayedKey,
+      project?.projectId,
+      project?.sourceKey,
+      project?.totalDisplayTransposeSemitones,
+    ],
+  );
+  const preferredVoicingId = resolveChordDictionaryPreferredShapeId(
+    preferenceContext,
+    generatedVoicingIds,
+  );
+  const hasProjectPreference = hasProjectChordDictionaryPreferredShape(
+    preferenceContext,
+    generatedVoicingIds,
+  );
+  const voicingViews = useMemo(
+    () => promoteShapeToFirst(generatedVoicingViews, preferredVoicingId),
+    [generatedVoicingViews, preferredVoicingId],
+  );
+  const resultKey = voicingViews.map((voicing) => voicing.id).join("|");
+  const firstVoicingId = voicingViews[0]?.id ?? null;
+  const firstNoteId = voicingViews[0]?.notes[0]?.id ?? null;
+  const bumpPreferenceRevision = () => setPreferenceRevision((revision) => revision + 1);
+  const selectVoicing = (voicing: PianoVoicingView) => {
+    writeProjectChordDictionaryPreferredShape(preferenceContext, voicing.id);
+    bumpPreferenceRevision();
+    setActiveVoicing(voicing.id);
+    setPreviewNoteId(null);
+    setSelectedNoteId(voicing.notes[0]?.id ?? null);
+  };
+
+  useEffect(() => {
+    setActiveVoicing(firstVoicingId);
+    setPreviewNoteId(null);
+    setSelectedNoteId(firstNoteId);
+  }, [currentChord?.displayLabel, firstNoteId, firstVoicingId, resultKey]);
+
+  if (!currentChord || !project) {
+    return (
+      <div className="live-follow-page live-follow-page--waiting" data-follow-status="no-project">
+        <LiveFollowTopbar
+          context={context}
+          instrumentId={instrumentId}
+          statusLabel="No Project"
+          onInstrumentChange={onInstrumentChange}
+        />
+        <LiveFollowStatusCard context={context} requestedProjectId={null} />
+      </div>
+    );
+  }
+
+  if (!chordSpelling) {
+    return (
+      <LiveFollowChordIssue
+        context={context}
+        copy="The project timeline chord cannot be parsed by the chord dictionary, so no piano voicing or note inspector is shown."
+        instrumentId={instrumentId}
+        statusLabel="Unsupported"
+        title={`Unsupported chord: ${currentChord.displayLabel}`}
+        onInstrumentChange={onInstrumentChange}
+      />
+    );
+  }
+
+  if (voicingViews.length === 0) {
+    return (
+      <LiveFollowChordIssue
+        context={context}
+        copy="Chord spelling is supported, but the piano generator returned no voicings for this chord."
+        instrumentId={instrumentId}
+        statusLabel="No Voicing"
+        title={`Piano unavailable for ${chordSpelling.label}`}
+        onInstrumentChange={onInstrumentChange}
+      />
+    );
+  }
+
+  const selectedVoicing =
+    voicingViews.find((voicing) => voicing.id === activeVoicing) ?? voicingViews[0] ?? null;
+  if (!selectedVoicing) {
+    return null;
+  }
+
+  const selectedNote =
+    selectedVoicing.notes.find((note) => note.id === selectedNoteId) ??
+    selectedVoicing.notes[0] ??
+    null;
+  const previewNote = previewNoteId
+    ? selectedVoicing.notes.find((note) => note.id === previewNoteId) ?? null
+    : null;
+  const displayedNote = previewNote ?? selectedNote;
+  const activeNoteId = previewNote?.id ?? selectedNote?.id ?? null;
+  const playbackSourceLabel = formatPlaybackProjectLabel(project.projectName);
+
+  return (
+    <div className="live-follow-page live-follow-page--active" data-follow-status="active">
+      <LiveFollowTopbar
+        allowInstrumentSelection
+        context={context}
+        instrumentId={instrumentId}
+        statusLabel="Live"
+        onInstrumentChange={onInstrumentChange}
+      />
+
+      <div className="chord-context-strip" aria-label="Live follow piano display context">
+        <ContextChip icon="instrument" label={PIANO_STANDARD_PROFILE.label} />
+        <ContextChip icon="shape" label={`${formatPianoRange(PIANO_STANDARD_PROFILE)} range`} />
+        <ContextChip icon="key" label={`Source ${formatOptionalKey(project.sourceKey)}`} />
+        <ContextChip icon="key" label={`Display ${formatOptionalKey(project.displayedKey)}`} />
+        <ContextChip icon="key" label={`Region ${selectedVoicing.regionRoot.note}`} />
+        <ContextChip icon="sound" label={chordSpelling.label} />
+      </div>
+
+      <div className="live-follow-grid live-follow-grid--piano">
+        <main className="live-follow-main">
+          <section className="live-current-chord" aria-label="Current chord">
+            <p className="metric-label">Current chord</p>
+            <h3>{currentChord.displayLabel}</h3>
+            <dl className="live-follow-provenance">
+              <div>
+                <dt>Source chord</dt>
+                <dd>{currentChord.sourceLabel}</dd>
+              </div>
+              <div>
+                <dt>Display chord</dt>
+                <dd>{currentChord.displayLabel}</dd>
+              </div>
+              <div>
+                <dt>Segment</dt>
+                <dd>
+                  {formatFollowTime(currentChord.sourceSegment.start_seconds)} -{" "}
+                  {formatFollowTime(currentChord.sourceSegment.end_seconds)}
+                </dd>
+              </div>
+              <div>
+                <dt>Timeline</dt>
+                <dd>Detected/imported project chords</dd>
+              </div>
+              <div>
+                <dt>Playback source</dt>
+                <dd>{playbackSourceLabel}</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section className="chord-section" aria-label="Current piano voicing">
+            <div className="chord-section-heading chord-section-heading--inline">
+              <div>
+                <p className="metric-label">{chordSpelling.notes.join(" ")}</p>
+                <h3>{chordSpelling.label} piano voicings</h3>
+              </div>
+              <div className="chord-shape-controls chord-shape-controls--piano">
+                <div className="chord-shape-control-row">
+                  <div
+                    aria-describedby="live-piano-preference-copy"
+                    aria-label="Project piano voicing preference choices"
+                    className="chord-shape-tabs"
+                    role="group"
+                  >
+                    {voicingViews.map((voicing) => (
+                      <button
+                        key={voicing.id}
+                        aria-pressed={selectedVoicing.id === voicing.id}
+                        className={classNames(
+                          "chord-shape-tab",
+                          selectedVoicing.id === voicing.id && "chord-shape-tab--active",
+                        )}
+                        onClick={() => selectVoicing(voicing)}
+                        type="button"
+                      >
+                        {voicing.label}
+                      </button>
+                    ))}
+                  </div>
+                  {hasProjectPreference ? (
+                    <button
+                      aria-label="Clear this project override and fall back to global or default"
+                      className="chord-reset-button"
+                      onClick={() => {
+                        resetProjectChordDictionaryPreferredShape(preferenceContext);
+                        bumpPreferenceRevision();
+                      }}
+                      type="button"
+                    >
+                      Clear project override
+                    </button>
+                  ) : null}
+                </div>
+                <p className="chord-shape-preference-copy" id="live-piano-preference-copy">
+                  Saves locally for this project chord and instrument; clear uses global/default.
+                </p>
+              </div>
+            </div>
+            <ChordSpellingSummary spelling={chordSpelling} />
+            <PianoVoicingPanel
+              activeChord={currentChord.displayLabel}
+              activeNoteId={activeNoteId}
+              voicing={selectedVoicing}
+              onPreviewNote={setPreviewNoteId}
+              onSelectNote={(noteId) => {
+                setPreviewNoteId(null);
+                setSelectedNoteId(noteId);
+              }}
+            />
+          </section>
+        </main>
+
+        <aside className="live-follow-sidebar">
+          <section className="live-next-chord" aria-label="Next chord">
+            <p className="metric-label">Next chord</p>
+            {context.nextChord ? (
+              <>
+                <strong>{context.nextChord.displayLabel}</strong>
+                <span>
+                  Source {context.nextChord.sourceLabel} at{" "}
+                  {formatFollowTime(context.nextChord.sourceSegment.start_seconds)}
+                </span>
+              </>
+            ) : (
+              <>
+                <strong>End of timeline</strong>
+                <span>No later project chord is available.</span>
+              </>
+            )}
+          </section>
+          {displayedNote ? <PianoNoteInspector note={displayedNote} /> : null}
+          <PianoInstrumentFacts
+            chordLabel={chordSpelling.label}
+            selectedVoicing={selectedVoicing}
+            voicingCount={voicingViews.length}
+          />
+        </aside>
+      </div>
+    </div>
   );
 }
 
@@ -3611,6 +4555,7 @@ function formatPlaybackProjectLabel(projectName: string) {
 function ChordSpellingSummary({ spelling }: { spelling: NonNullable<ReturnType<typeof spellChord>> }) {
   return (
     <div className="chord-spelling-summary" aria-label={`${spelling.label} chord spelling`}>
+      <p className="chord-spelling-summary__label">Chord tones</p>
       {spelling.tones.map((tone) => (
         <span key={`${tone.degree}-${tone.noteName}`}>
           <strong>{tone.noteName}</strong>
@@ -3647,6 +4592,14 @@ function formatGuitarRange(profile: typeof GUITAR_STANDARD_PROFILE) {
   const highestOpen = openPitches.reduce((highest, pitch) => (pitch.midi > highest.midi ? pitch : highest), openPitches[0]);
   const highestFretted = midiToPitch(highestOpen.midi + profile.frets);
   return `${lowestOpen.label} - ${highestFretted?.label ?? highestOpen.label}`;
+}
+
+function formatPianoRange(profile: typeof PIANO_STANDARD_PROFILE) {
+  return `${profile.keyboard.lowestPitch.label}-${profile.keyboard.highestPitch.label}`;
+}
+
+function formatPianoHandHint(handHint: PianoVoicingNote["handHint"]) {
+  return handHint === "left" ? "Left hand area" : "Right hand area";
 }
 
 function formatOptionalKey(key: MusicalKey | null) {

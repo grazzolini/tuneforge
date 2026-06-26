@@ -385,9 +385,38 @@
   min-width: 0;
 }
 
+.chord-shape-controls--piano {
+  inline-size: min(100%, 42rem);
+  justify-items: stretch;
+}
+
 .chord-shape-control-row {
   justify-content: flex-end;
   min-width: 0;
+}
+
+.chord-shape-controls--piano .chord-shape-control-row {
+  align-items: stretch;
+  justify-content: flex-start;
+  inline-size: 100%;
+}
+
+.chord-shape-controls--piano .chord-shape-tabs {
+  flex: 1 1 16rem;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+}
+
+.chord-shape-controls--piano .chord-shape-tab {
+  flex: 1 1 8.75rem;
+  min-inline-size: min(100%, 7.75rem);
+  max-inline-size: none;
+  white-space: normal;
+}
+
+.chord-shape-controls--piano .chord-reset-button {
+  flex: 0 1 auto;
+  white-space: normal;
 }
 
 .chord-toolbar-cluster--end {
@@ -426,6 +455,7 @@
 .guitar-fretboard__dot:focus-visible,
 .chord-shape-card__label:focus-visible,
 .chord-family-card:focus-visible,
+.piano-keyboard__key:focus-visible,
 .accordion-stradella__button:focus-visible,
 .accordion-keyboard__key:focus-visible,
 .accordion-candidate-card:focus-visible {
@@ -494,11 +524,7 @@
   background: color-mix(in srgb, var(--panel) 88%, transparent);
   box-shadow: none;
   cursor: pointer;
-  transition:
-    border-color 140ms ease,
-    background 140ms ease,
-    box-shadow 140ms ease,
-    color 140ms ease;
+  transition: none;
 }
 
 .chord-instrument-selector .chord-instrument-button[aria-pressed="false"],
@@ -517,25 +543,62 @@
 
 .chord-instrument-selector .chord-instrument-button[aria-pressed="false"]:hover,
 .chord-instrument-selector .chord-instrument-button[aria-pressed="false"]:focus-visible {
-  border-color: color-mix(in srgb, var(--divider) 72%, var(--text));
-  background: color-mix(in srgb, var(--panel) 84%, var(--panel-strong));
+  border-color: color-mix(in srgb, var(--divider) 80%, var(--text) 20%);
+  background: color-mix(in srgb, var(--panel) 94%, var(--panel-strong));
   box-shadow: none;
-  color: var(--text);
+  color: color-mix(in srgb, var(--muted) 86%, var(--text));
+}
+
+.chord-instrument-selector .chord-instrument-button[aria-pressed="false"]:hover svg,
+.chord-instrument-selector .chord-instrument-button[aria-pressed="false"]:focus-visible svg {
+  color: color-mix(in srgb, var(--muted) 82%, transparent);
 }
 
 .chord-instrument-selector .chord-instrument-button[aria-pressed="true"],
 .chord-instrument-selector .chord-instrument-button[data-selected="true"],
 .chord-instrument-selector .chord-instrument-button--active[aria-pressed="true"] {
-  border-color: color-mix(in srgb, var(--playback-accent) 82%, var(--text));
-  background: color-mix(in srgb, var(--playback-accent) 42%, var(--panel-strong));
+  border-color: color-mix(in srgb, var(--playback-accent) 88%, var(--text));
+  background: color-mix(in srgb, var(--playback-accent) 56%, var(--panel));
   box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--playback-accent) 38%, transparent),
-    0 0 0 0.16rem color-mix(in srgb, var(--playback-accent) 18%, transparent);
+    inset 0 0 0 1px color-mix(in srgb, white 32%, transparent),
+    0 0 0 0.18rem color-mix(in srgb, var(--playback-accent) 24%, transparent);
   color: var(--text);
 }
 
 .chord-instrument-selector .chord-instrument-button[data-selected="true"] svg {
   color: color-mix(in srgb, var(--playback-accent) 72%, var(--text));
+}
+
+.chord-instrument-selector .chord-instrument-button[data-selected="false"],
+.chord-instrument-selector .chord-instrument-button[aria-pressed="false"],
+.chord-instrument-selector .chord-instrument-button[data-selected="false"].chord-pill--active,
+.chord-instrument-selector .chord-instrument-button[data-selected="false"].chord-instrument-button--active {
+  border-color: color-mix(in srgb, var(--divider) 62%, transparent);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  box-shadow: none;
+  color: var(--muted);
+}
+
+.chord-instrument-selector .chord-instrument-button[data-selected="false"] svg,
+.chord-instrument-selector .chord-instrument-button[aria-pressed="false"] svg {
+  color: color-mix(in srgb, var(--muted) 78%, transparent);
+}
+
+.chord-instrument-selector .chord-instrument-button[data-selected="false"]:hover,
+.chord-instrument-selector .chord-instrument-button[data-selected="false"]:focus-visible,
+.chord-instrument-selector .chord-instrument-button[aria-pressed="false"]:hover,
+.chord-instrument-selector .chord-instrument-button[aria-pressed="false"]:focus-visible {
+  border-color: color-mix(in srgb, var(--divider) 84%, var(--text));
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  box-shadow: none;
+  color: color-mix(in srgb, var(--muted) 88%, var(--text));
+}
+
+.chord-instrument-selector .chord-instrument-button[data-selected="false"]:hover svg,
+.chord-instrument-selector .chord-instrument-button[data-selected="false"]:focus-visible svg,
+.chord-instrument-selector .chord-instrument-button[aria-pressed="false"]:hover svg,
+.chord-instrument-selector .chord-instrument-button[aria-pressed="false"]:focus-visible svg {
+  color: color-mix(in srgb, var(--muted) 82%, transparent);
 }
 
 .chord-pill--muted {
@@ -707,6 +770,16 @@
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
+}
+
+.chord-spelling-summary__label {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
 }
 
 .chord-spelling-summary span {
@@ -1914,6 +1987,290 @@ span.accordion-keyboard__key--black {
   overflow-wrap: anywhere;
 }
 
+.piano-tool-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(18rem, 22rem);
+  gap: 1rem;
+  align-items: start;
+  min-width: 0;
+}
+
+.piano-tool-main,
+.piano-tool-sidebar {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.piano-tool-main,
+.piano-tool-sidebar,
+.piano-position-card,
+.piano-facts-panel {
+  border: 1px solid color-mix(in srgb, var(--divider) 78%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-muted) 38%, transparent);
+}
+
+.piano-tool-main,
+.piano-tool-sidebar,
+.piano-facts-panel {
+  padding: 0.85rem;
+}
+
+.piano-position-card {
+  display: grid;
+  gap: 0.85rem;
+  min-width: 0;
+  padding: 0.85rem;
+  overflow: hidden;
+}
+
+.piano-position-card__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.piano-position-card__heading h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.98rem;
+}
+
+.piano-position-card__heading span:not(.accordion-match-badge) {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.piano-voicing-order {
+  display: grid;
+  gap: 0.42rem;
+  min-width: 0;
+}
+
+.piano-voicing-order__label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.piano-voicing-order ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.piano-voicing-order li {
+  display: inline-grid;
+  justify-items: center;
+  min-inline-size: 3.75rem;
+  gap: 0.06rem;
+  padding: 0.42rem 0.48rem;
+  border: 1px solid color-mix(in srgb, var(--divider) 76%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 68%, var(--panel-strong) 32%);
+}
+
+.piano-voicing-order strong {
+  color: var(--text);
+  font-size: 0.92rem;
+  line-height: 1;
+}
+
+.piano-voicing-order small {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 850;
+}
+
+.piano-keyboard {
+  --piano-white-key-count: 8;
+  --piano-white-key-width: 2.85rem;
+  --piano-keyboard-height: 10.75rem;
+  --piano-black-key-height: 6.35rem;
+  --piano-black-key-width: clamp(0.9rem, calc((100% / var(--piano-white-key-count)) * 0.58), 1.65rem);
+
+  position: relative;
+  box-sizing: border-box;
+  inline-size: min(100%, calc(var(--piano-white-key-count) * var(--piano-white-key-width)));
+  min-width: 0;
+  padding-block-start: 0.4rem;
+  justify-self: start;
+  overflow: visible;
+}
+
+.piano-keyboard__white-keys {
+  display: grid;
+  grid-template-columns: repeat(var(--piano-white-key-count), minmax(0, 1fr));
+  min-width: 0;
+  block-size: var(--piano-keyboard-height);
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--divider) 82%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, white 92%, var(--panel-strong));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, white 40%, transparent),
+    0 0.16rem 0.3rem color-mix(in srgb, black 16%, transparent);
+}
+
+.piano-keyboard__black-keys {
+  position: absolute;
+  inset-block-start: 0.4rem;
+  inset-inline: 0;
+  block-size: var(--piano-black-key-height);
+  min-width: 0;
+  pointer-events: none;
+}
+
+.piano-keyboard__key {
+  box-sizing: border-box;
+  min-width: 0;
+  border: 0;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 900;
+  line-height: 1.05;
+  text-align: center;
+}
+
+.piano-keyboard__key--white {
+  display: grid;
+  align-content: end;
+  justify-items: center;
+  gap: 0.14rem;
+  min-height: 0;
+  padding: 0.45rem 0.18rem 0.62rem;
+  border-inline-end: 1px solid color-mix(in srgb, var(--divider) 72%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 98%, var(--panel-strong)) 0%, color-mix(in srgb, white 86%, var(--panel-strong)) 100%),
+    color-mix(in srgb, white 92%, var(--panel-strong));
+  color: color-mix(in srgb, var(--text) 92%, black);
+}
+
+.piano-keyboard__key--white:last-child {
+  border-inline-end: 0;
+}
+
+.piano-keyboard__key--black {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: calc(
+    ((var(--piano-white-index) + 1) * (100% / var(--piano-white-key-count))) -
+      (var(--piano-black-key-width) / 2)
+  );
+  z-index: 2;
+  display: grid;
+  align-content: end;
+  justify-items: center;
+  gap: 0.1rem;
+  inline-size: var(--piano-black-key-width);
+  block-size: var(--piano-black-key-height);
+  min-height: 0;
+  border: 1px solid color-mix(in srgb, black 82%, var(--divider));
+  border-radius: 0 0 5px 5px;
+  padding: 0.34rem 0.16rem 0.48rem;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 10%, transparent), transparent 34%),
+    linear-gradient(180deg, color-mix(in srgb, black 86%, var(--panel-strong)), color-mix(in srgb, black 66%, var(--panel-strong)));
+  color: color-mix(in srgb, white 88%, var(--panel));
+  pointer-events: auto;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 10%, transparent),
+    0 0.14rem 0.22rem color-mix(in srgb, black 30%, transparent);
+}
+
+span.piano-keyboard__key--black {
+  pointer-events: none;
+}
+
+.piano-keyboard__key--active-tone {
+  border-color: color-mix(in srgb, var(--playback-accent) 72%, var(--divider));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--playback-accent) 70%, white), color-mix(in srgb, var(--playback-accent) 54%, white));
+  color: color-mix(in srgb, black 88%, var(--playback-accent));
+  cursor: pointer;
+  text-shadow: 0 1px 0 color-mix(in srgb, white 36%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, white 34%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--panel) 20%, transparent);
+}
+
+.piano-keyboard__key--white.piano-keyboard__key--selected {
+  color: color-mix(in srgb, black 92%, var(--playback-accent));
+}
+
+.piano-keyboard__key--black.piano-keyboard__key--active-tone {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 14%, transparent), transparent 36%),
+    linear-gradient(180deg, color-mix(in srgb, var(--playback-accent) 76%, black), color-mix(in srgb, var(--playback-accent) 58%, black));
+  color: color-mix(in srgb, white 96%, var(--panel));
+  text-shadow: 0 1px 0 color-mix(in srgb, black 42%, transparent);
+}
+
+.piano-keyboard__key--selected {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, white 32%, transparent),
+    0 0 0 0.22rem color-mix(in srgb, var(--playback-accent) 22%, transparent);
+}
+
+.piano-keyboard__key strong,
+.piano-keyboard__key span {
+  display: block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.piano-keyboard__key strong {
+  font-size: 0.74rem;
+}
+
+.piano-keyboard__key span {
+  font-size: 0.62rem;
+  opacity: 0.9;
+}
+
+.piano-note-inspector {
+  align-items: start;
+}
+
+.piano-note-inspector .note-inspector__badge {
+  width: 4.9rem;
+  height: 4.9rem;
+  border-radius: 8px;
+}
+
+.piano-note-inspector__body {
+  display: grid;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.piano-note-inspector dl {
+  grid-template-columns: repeat(2, minmax(5.25rem, 1fr));
+  gap: 0.65rem 0.75rem;
+}
+
+.piano-note-inspector p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 780;
+  line-height: 1.35;
+}
+
+.piano-facts-panel {
+  display: grid;
+  gap: 1rem;
+}
+
 .live-follow-page {
   min-height: 41rem;
 }
@@ -2040,6 +2397,7 @@ span.accordion-keyboard__key--black {
 @media (max-width: 1180px) {
   .chord-tool-grid,
   .live-follow-grid,
+  .piano-tool-grid,
   .accordion-tool-grid {
     grid-template-columns: 1fr;
   }
@@ -2066,6 +2424,7 @@ span.accordion-keyboard__key--black {
   .chord-dictionary-toolbar,
   .chord-section-heading,
   .live-follow-topbar,
+  .piano-position-card__heading,
   .accordion-position-card__heading {
     align-items: stretch;
     flex-direction: column;
@@ -2178,6 +2537,11 @@ span.accordion-keyboard__key--black {
     --accordion-keyboard-start-padding: 0.58rem;
   }
 
+  .piano-keyboard {
+    --piano-keyboard-height: 8.75rem;
+    --piano-black-key-height: 5.35rem;
+  }
+
   .chord-field-row,
   .chord-card-row,
   .note-inspector dl,
@@ -2203,6 +2567,27 @@ span.accordion-keyboard__key--black {
     flex: 0 0 auto;
     min-width: min(8rem, 80vw);
     max-width: 11rem;
+  }
+
+  .chord-shape-controls--piano,
+  .chord-shape-controls--piano .chord-shape-control-row,
+  .chord-shape-controls--piano .chord-shape-tabs,
+  .chord-shape-controls--piano .chord-reset-button {
+    inline-size: 100%;
+  }
+
+  .chord-shape-controls--piano .chord-shape-control-row,
+  .chord-shape-controls--piano .chord-shape-tabs {
+    flex-wrap: wrap;
+    overflow-x: visible;
+    overscroll-behavior-x: auto;
+    padding-bottom: 0;
+  }
+
+  .chord-shape-controls--piano .chord-shape-tab {
+    flex: 1 1 8.6rem;
+    min-width: min(100%, 8rem);
+    max-width: none;
   }
 
   .guitar-fretboard {

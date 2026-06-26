@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.db import SessionLocal
 from app.errors import AppError
 from app.models import AnalysisResult, Artifact, Job, Project
+from app.runtime_status import runtime_event_payload
 from app.services.jobs import InProcessJobRunner, JobExecutionContext, JobExecutionResult
 
 _BASE_TIME = datetime(2026, 1, 1, tzinfo=UTC)
@@ -130,6 +131,9 @@ def test_bulk_jobs_creates_jobs_for_editable_projects(
     assert {job["project_id"] for job in created_jobs} == {"project_a", "project_b"}
     assert {job["type"] for job in created_jobs} == {"chords"}
     assert {job["status"] for job in created_jobs} == {"pending"}
+    assert {job["stage"] for job in created_jobs} == {"queued"}
+    assert {job["stage_label"] for job in created_jobs} == {"Waiting to start."}
+    assert {job["runtime_detail"] for job in created_jobs} == {None}
     assert set(enqueued) == {job["id"] for job in created_jobs}
 
     with SessionLocal() as session:
@@ -138,6 +142,111 @@ def test_bulk_jobs_creates_jobs_for_editable_projects(
         assert all(job.payload_json["force"] is True for job in jobs)
         assert all(job.payload_json["overwrite_user_edits"] is True for job in jobs)
         assert all(job.payload_json["chord_backend"] == "tuneforge-fast" for job in jobs)
+        assert all(job.stage == "queued" for job in jobs)
+        assert all(job.stage_label == "Waiting to start." for job in jobs)
+        assert all(job.runtime_detail is None for job in jobs)
+
+
+def test_jobs_schema_exposes_runtime_status_fields(client: TestClient) -> None:
+    runner = InProcessJobRunner(SessionLocal)
+    with SessionLocal() as session:
+        job = runner.create_job(session, project_id=None, job_type="test", payload={})
+        job_id = job.id
+        session.commit()
+
+    get_response = client.get(f"/api/v1/jobs/{job_id}")
+    assert get_response.status_code == 200
+    payload = get_response.json()["job"]
+    assert payload["stage"] == "queued"
+    assert payload["stage_label"] == "Waiting to start."
+    assert payload["runtime_detail"] is None
+
+    list_response = client.get("/api/v1/jobs")
+    assert list_response.status_code == 200
+    listed_job = next(job for job in list_response.json()["jobs"] if job["id"] == job_id)
+    assert listed_job["stage"] == "queued"
+    assert listed_job["stage_label"] == "Waiting to start."
+    assert listed_job["runtime_detail"] is None
+
+
+def test_runtime_status_helper_updates_fields_and_drops_unsafe_detail(client: TestClient) -> None:
+    runner = InProcessJobRunner(SessionLocal)
+    safe_detail = "Whisper switched to CPU after the accelerator attempt failed."
+    with SessionLocal() as session:
+        job = runner.create_job(session, project_id=None, job_type="test", payload={})
+        job_id = job.id
+        session.commit()
+
+    with SessionLocal() as session:
+        context = JobExecutionContext(runner, job_id, session)
+        context.handle_runtime_event(
+            runtime_event_payload(
+                stage="fallback",
+                stage_label="Falling back from MPS to CPU.",
+                runtime_device="MPS",
+                runtime_detail="/tmp/private/song.wav failed",
+                progress=42,
+            )
+        )
+
+    with SessionLocal() as session:
+        job = session.get(Job, job_id)
+        assert job is not None
+        assert job.stage == "fallback"
+        assert job.stage_label == "Falling back from MPS to CPU."
+        assert job.runtime_device == "mps"
+        assert job.runtime_detail is None
+        assert job.progress == 42
+
+    runner.update_runtime_status(
+        job_id,
+        runtime_detail=safe_detail,
+        stage_label="Falling back from MPS to CPU.",
+    )
+
+    with SessionLocal() as session:
+        job = session.get(Job, job_id)
+        assert job is not None
+        assert job.runtime_detail == safe_detail
+
+
+def test_jobs_api_drops_unsafe_runtime_text_before_exposure(client: TestClient) -> None:
+    runner = InProcessJobRunner(SessionLocal)
+    with SessionLocal() as session:
+        job = runner.create_job(session, project_id=None, job_type="test", payload={})
+        job_id = job.id
+        job.stage = "processing"
+        job.stage_label = "/Users/example/My Song.wav failed"
+        job.runtime_device = "MPS"
+        job.runtime_detail = "song.wav failed"
+        session.commit()
+
+    get_response = client.get(f"/api/v1/jobs/{job_id}")
+    assert get_response.status_code == 200
+    payload = get_response.json()["job"]
+    assert payload["stage"] == "processing"
+    assert payload["stage_label"] is None
+    assert payload["runtime_device"] == "mps"
+    assert payload["runtime_detail"] is None
+
+    list_response = client.get("/api/v1/jobs")
+    assert list_response.status_code == 200
+    listed_job = next(job for job in list_response.json()["jobs"] if job["id"] == job_id)
+    assert listed_job["stage_label"] is None
+    assert listed_job["runtime_detail"] is None
+
+    with SessionLocal() as session:
+        job = session.get(Job, job_id)
+        assert job is not None
+        job.stage_label = "MPS failed, retrying CPU."
+        job.runtime_detail = "MPS failed, retrying CPU."
+        session.commit()
+
+    safe_response = client.get(f"/api/v1/jobs/{job_id}")
+    assert safe_response.status_code == 200
+    safe_payload = safe_response.json()["job"]
+    assert safe_payload["stage_label"] == "MPS failed, retrying CPU."
+    assert safe_payload["runtime_detail"] == "MPS failed, retrying CPU."
 
 
 def test_bulk_lyrics_refreshes_existing_transcripts(
@@ -912,6 +1021,9 @@ def test_cancelled_pending_job_does_not_execute(client: TestClient) -> None:
         assert job is not None
         assert job.cancel_requested is True
         assert job.status == "cancelled"
+        assert job.stage == "queued"
+        assert job.stage_label == "Waiting to start."
+        assert job.runtime_detail is None
         assert job.started_at is None
         assert job.completed_at is not None
 
@@ -940,6 +1052,9 @@ def test_cancel_requested_before_handler_start_finishes_cancelled(client: TestCl
         assert job is not None
         assert job.cancel_requested is True
         assert job.status == "cancelled"
+        assert job.stage == "preparing"
+        assert job.stage_label == "Preparing job."
+        assert job.runtime_detail is None
         assert job.started_at is not None
         assert job.completed_at is not None
         assert job.duration_seconds is not None
@@ -949,11 +1064,18 @@ def test_cancel_requested_before_handler_start_finishes_cancelled(client: TestCl
 def test_running_cancelled_job_finishes_cancelled_when_handler_reports_failure(client: TestClient) -> None:
     runner = InProcessJobRunner(SessionLocal)
     handler_started = threading.Event()
+    fallback_detail = "Whisper switched to CPU after the accelerator attempt failed."
 
     def handler(context: JobExecutionContext, _session: Session, _job: Job) -> JobExecutionResult:
         handler_started.set()
         while not context.should_cancel():
             time.sleep(0.01)
+        context.update_runtime_status(
+            stage="fallback",
+            stage_label="Falling back from MPS to CPU.",
+            runtime_device="cpu",
+            runtime_detail=fallback_detail,
+        )
         raise AppError("PROCESSING_FAILED", "Subprocess exited after cancellation.")
 
     runner._handlers["test"] = handler
@@ -976,6 +1098,10 @@ def test_running_cancelled_job_finishes_cancelled_when_handler_reports_failure(c
         assert job.cancel_requested is True
         assert job.status == "cancelled"
         assert job.error_message is None
+        assert job.stage == "fallback"
+        assert job.stage_label == "Falling back from MPS to CPU."
+        assert job.runtime_device == "cpu"
+        assert job.runtime_detail == fallback_detail
         assert job.started_at is not None
         assert job.completed_at is not None
         assert job.duration_seconds is not None

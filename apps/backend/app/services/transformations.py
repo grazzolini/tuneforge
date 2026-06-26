@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.engines.transform import cents_from_reference, run_ffmpeg_transform, semitones_to_cents
-from app.errors import AppError
+from app.errors import AppError, JobCancelledError
 from app.models import Artifact, Project
 from app.services.analysis import analyze_project
 from app.services.artifacts import find_cached_artifact, register_artifact
@@ -39,6 +39,11 @@ def _reference_cents(session: Session, project: Project, target_reference_hz: fl
 
 def _preview_cache_key(project_id: str, payload: dict[str, Any]) -> str:
     return stable_hash({"project_id": project_id, **payload})
+
+
+def _ensure_not_cancelled(should_cancel: Callable[[], bool] | None) -> None:
+    if should_cancel and should_cancel():
+        raise JobCancelledError()
 
 
 def build_preview_plan(
@@ -159,6 +164,10 @@ def export_artifacts(
     artifact_ids: list[str],
     output_format: str,
     destination_path: str | None,
+    on_progress: Callable[[int], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+    register_process: Callable[[subprocess.Popen[str]], None] | None = None,
+    unregister_process: Callable[[], None] | None = None,
 ) -> Artifact:
     if len(artifact_ids) != 1:
         raise AppError("INVALID_REQUEST", "V1 export supports exactly one source artifact.")
@@ -170,7 +179,9 @@ def export_artifacts(
     root.mkdir(parents=True, exist_ok=True)
     target = root / f"{source_path.stem}.{output_format}"
     if artifact.format == output_format:
+        _ensure_not_cancelled(should_cancel)
         shutil.copy2(source_path, target)
+        _ensure_not_cancelled(should_cancel)
     else:
         sample_rate = project.sample_rate or 44100
         run_ffmpeg_transform(
@@ -179,6 +190,10 @@ def export_artifacts(
             sample_rate,
             0.0,
             output_format,
+            on_progress=on_progress,
+            should_cancel=should_cancel,
+            register_process=register_process,
+            unregister_process=unregister_process,
         )
     return register_artifact(
         session,

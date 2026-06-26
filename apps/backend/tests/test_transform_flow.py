@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import soundfile as sf
+from sqlalchemy import select
+
+from app.db import SessionLocal
+from app.errors import JobCancelledError
+from app.models import Artifact, Project
+from app.services.transformations import export_artifacts
 
 from .conftest import wait_for_job
 
@@ -130,3 +137,55 @@ def test_preview_mix_creation_does_not_auto_queue_stems(
         and job["type"] == "stems"
         and job["source_artifact_id"] == preview_artifact["id"]
     ]
+
+
+def test_same_format_export_cancelled_after_copy_skips_artifact_registration(client, tmp_path: Path):
+    source_path = tmp_path / "source.wav"
+    source_path.write_bytes(b"source audio bytes")
+    destination = tmp_path / "exports"
+
+    with SessionLocal() as session:
+        project = Project(
+            id="proj_export_cancel",
+            display_name="Export Cancel",
+            source_path=str(source_path),
+            imported_path=str(source_path),
+        )
+        source_artifact = Artifact(
+            id="art_preview",
+            project_id=project.id,
+            type="preview_mix",
+            format="wav",
+            path=str(source_path),
+            generated_by="test",
+            can_delete=True,
+            can_regenerate=True,
+            metadata_json={},
+        )
+        session.add_all([project, source_artifact])
+        session.commit()
+
+        cancel_checks = iter([False, True])
+
+        def should_cancel() -> bool:
+            return next(cancel_checks, True)
+
+        with pytest.raises(JobCancelledError):
+            export_artifacts(
+                session,
+                project=project,
+                artifact_ids=[source_artifact.id],
+                output_format="wav",
+                destination_path=str(destination),
+                should_cancel=should_cancel,
+            )
+
+        export_count = session.scalar(
+            select(Artifact).where(
+                Artifact.project_id == project.id,
+                Artifact.type == "export_mix",
+            )
+        )
+
+    assert (destination / "source.wav").exists()
+    assert export_count is None

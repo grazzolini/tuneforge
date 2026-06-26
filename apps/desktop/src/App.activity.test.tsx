@@ -3524,7 +3524,9 @@ describe("Desktop app activity", () => {
       "href",
       "/projects/proj_2",
     );
-    expect(within(rows[0]).getByText("Default (6 stems model) / MPS")).toBeInTheDocument();
+    expect(within(rows[0]).getByText("Running")).toHaveClass("activity-job-row__stage");
+    expect(within(rows[0]).getByText("MPS")).toHaveClass("activity-job-row__runtime");
+    expect(within(rows[0]).getByText("Default (6 stems model)")).toHaveClass("activity-job-row__details");
     expect(within(rows[1]).getByRole("link", { name: "Open Ambient Wash project" })).toHaveAttribute(
       "href",
       "/projects/proj_1",
@@ -3533,6 +3535,219 @@ describe("Desktop app activity", () => {
     expect(within(rows[1]).getByText("built-in / source")).toBeInTheDocument();
     expect(within(rows[2]).getByText("Queue #2")).toBeInTheDocument();
     expect(within(rows[2]).getByText("No project")).toBeInTheDocument();
+  });
+
+  it("shows reported running stages before progress with runtime metadata", async () => {
+    setJobs([
+      job({
+        id: "job_running_stage",
+        project_id: "proj_123",
+        type: "stems",
+        status: "running",
+        progress: 42,
+        stage_label: "Separating stems.",
+        stem_model: "htdemucs_6s",
+        stem_model_label: "Default (6 stems model)",
+        runtime_device: "mps",
+        runtime_detail: "CPU fallback after accelerator became unavailable.",
+        started_at: "2026-04-18T13:22:00.000Z",
+        created_at: "2026-04-18T13:22:00.000Z",
+        updated_at: "2026-04-18T13:23:00.000Z",
+      }),
+    ]);
+
+    renderApp(["/activity"]);
+
+    const row = await screen.findByRole("article", { name: "stems running job" });
+    const stage = within(row).getByText("Separating stems");
+    const rowText = row.textContent ?? "";
+
+    expect(stage).toHaveClass("activity-job-row__stage");
+    expect(stage.closest(".activity-job-row__stage-line")).toHaveClass("activity-job-row__stage-line--active");
+    expect(rowText.indexOf("Separating stems")).toBeLessThan(rowText.indexOf("42%"));
+    expect(within(row).getByRole("status", { name: /Current stage: Separating stems/ })).toBeInTheDocument();
+    expect(within(row).getByText("MPS / CPU fallback after accelerator became unavailable.")).toHaveClass(
+      "activity-job-row__runtime",
+    );
+    expect(within(row).getByText("Default (6 stems model)")).toBeInTheDocument();
+    expect(within(row).queryByText("Default (6 stems model) / MPS")).not.toBeInTheDocument();
+  });
+
+  it("does not duplicate device text when reported stages already include it", async () => {
+    setJobs([
+      job({
+        id: "job_running_stage_device",
+        project_id: "proj_123",
+        type: "analyze",
+        status: "running",
+        progress: 42,
+        beat_backend: "beat-this",
+        runtime_device: "cpu",
+        stage_label: "Running advanced beat analysis on CPU.",
+        started_at: "2026-04-18T13:22:00.000Z",
+        created_at: "2026-04-18T13:22:00.000Z",
+        updated_at: "2026-04-18T13:23:00.000Z",
+      }),
+    ]);
+
+    renderApp(["/activity"]);
+
+    const row = await screen.findByRole("article", { name: "analyze running job" });
+    expect(within(row).getByText("Running advanced beat analysis")).toHaveClass("activity-job-row__stage");
+    expect(within(row).getByText("CPU")).toHaveClass("activity-job-row__runtime");
+    expect(within(row).queryByText("Running advanced beat analysis on CPU.")).not.toBeInTheDocument();
+  });
+
+  it("drops unsafe runtime detail text in job rows", async () => {
+    setJobs([
+      job({
+        id: "job_running_unsafe_runtime_detail",
+        project_id: "proj_123",
+        type: "stems",
+        status: "running",
+        progress: 42,
+        stage_label: "Separating stems.",
+        runtime_device: "mps",
+        runtime_detail: "stderr: song.wav failed",
+        started_at: "2026-04-18T13:22:00.000Z",
+        created_at: "2026-04-18T13:22:00.000Z",
+        updated_at: "2026-04-18T13:23:00.000Z",
+      }),
+    ]);
+
+    renderApp(["/activity"]);
+
+    const row = await screen.findByRole("article", { name: "stems running job" });
+    expect(within(row).getByText("MPS")).toHaveClass("activity-job-row__runtime");
+    expect(within(row).queryByText(/song\.wav/)).not.toBeInTheDocument();
+  });
+
+  it("shows waiting fallback for pending jobs without a stage label", async () => {
+    setJobs([
+      job({
+        id: "job_pending_no_stage",
+        project_id: null,
+        type: "export",
+        status: "pending",
+        progress: 0,
+        runtime_detail: null,
+        runtime_device: null,
+        stage: null,
+        stage_label: null,
+        created_at: "2026-04-18T13:20:00.000Z",
+        updated_at: "2026-04-18T13:20:00.000Z",
+      }),
+    ]);
+
+    renderApp(["/activity"]);
+
+    const row = await screen.findByRole("article", { name: "export pending job" });
+    expect(within(row).getByText("Waiting to start")).toHaveClass("activity-job-row__stage");
+    expect(within(row).getByText("0%")).toBeInTheDocument();
+  });
+
+  it("shows terminal stage text without duplicating lifecycle status", async () => {
+    setJobs([
+      job({
+        id: "job_completed_stage",
+        project_id: "proj_123",
+        type: "lyrics",
+        status: "completed",
+        progress: 100,
+        duration_seconds: 1.8,
+        lyrics_source: "vocals",
+        runtime_device: "cpu",
+        stage_label: "Saving lyrics.",
+        completed_at: "2026-04-18T13:25:00.000Z",
+        created_at: "2026-04-18T13:24:58.200Z",
+        updated_at: "2026-04-18T13:25:00.000Z",
+      }),
+      job({
+        id: "job_failed_stage",
+        project_id: "proj_123",
+        type: "stems",
+        status: "failed",
+        progress: 45,
+        error_message: "Could not finish stems.",
+        runtime_device: "mps",
+        stage_label: "Separating stems.",
+        stem_model: "htdemucs_6s",
+        stem_model_label: "Default (6 stems model)",
+        created_at: "2026-04-18T13:21:00.000Z",
+        updated_at: "2026-04-18T13:23:00.000Z",
+      }),
+      job({
+        id: "job_cancelled_stage",
+        project_id: "proj_123",
+        type: "chords",
+        status: "cancelled",
+        progress: 35,
+        chord_backend: "crema-advanced",
+        chord_source: "source",
+        runtime_device: "cpu",
+        stage_label: "Detecting chords.",
+        created_at: "2026-04-18T13:20:00.000Z",
+        updated_at: "2026-04-18T13:22:00.000Z",
+      }),
+    ]);
+
+    renderApp(["/activity"]);
+
+    const completedRow = await screen.findByRole("article", { name: "lyrics completed job" });
+    const completedStage = within(completedRow).getByText("Saved lyrics");
+    expect(completedStage).toHaveClass("activity-job-row__stage");
+    expect(completedStage.closest(".activity-job-row__stage-line")).toHaveClass(
+      "activity-job-row__stage-line--terminal",
+    );
+    expect(within(completedRow).getByText("CPU")).toHaveClass("activity-job-row__runtime");
+    expect(within(completedRow).getByText("vocals / 1.8 s")).toBeInTheDocument();
+    expect(within(completedRow).queryByText("Completed.")).not.toBeInTheDocument();
+    expect(within(completedRow).queryByText(/Last stage:/)).not.toBeInTheDocument();
+    expect(within(completedRow).queryByText("Saving lyrics.")).not.toBeInTheDocument();
+
+    const failedRow = await screen.findByRole("article", { name: "stems failed job" });
+    const failedStage = within(failedRow).getByText("Separating stems");
+    expect(failedStage).toHaveClass("activity-job-row__stage");
+    expect(failedStage.closest(".activity-job-row__stage-line")).toHaveClass(
+      "activity-job-row__stage-line--terminal",
+    );
+    expect(within(failedRow).queryByText(/Last stage:/)).not.toBeInTheDocument();
+    expect(within(failedRow).getByText("Default (6 stems model)")).toBeInTheDocument();
+    expect(within(failedRow).getByRole("alert")).toHaveTextContent("Could not finish stems.");
+
+    const cancelledRow = await screen.findByRole("article", { name: "chords cancelled job" });
+    const cancelledStage = within(cancelledRow).getByText("Detecting chords");
+    expect(cancelledStage).toHaveClass("activity-job-row__stage");
+    expect(cancelledStage.closest(".activity-job-row__stage-line")).toHaveClass(
+      "activity-job-row__stage-line--terminal",
+    );
+    expect(within(cancelledRow).queryByText(/Last stage:/)).not.toBeInTheDocument();
+    expect(within(cancelledRow).getByText("advanced / source")).toBeInTheDocument();
+  });
+
+  it("renders old jobs with null stage and runtime fields", async () => {
+    setJobs([
+      job({
+        id: "job_old_null_fields",
+        project_id: "proj_123",
+        type: "preview",
+        status: "completed",
+        progress: 100,
+        runtime_detail: null,
+        runtime_device: null,
+        stage: null,
+        stage_label: null,
+        completed_at: "2026-04-18T13:25:00.000Z",
+        created_at: "2026-04-18T13:24:58.200Z",
+        updated_at: "2026-04-18T13:25:00.000Z",
+      }),
+    ]);
+
+    renderApp(["/activity"]);
+
+    const row = await screen.findByRole("article", { name: "preview completed job" });
+    expect(within(row).getByText("completed")).toBeInTheDocument();
+    expect(within(row).queryByText("Waiting to start")).not.toBeInTheDocument();
   });
 
   it("shows beat analysis backend, runtime, and duration on analysis jobs", async () => {

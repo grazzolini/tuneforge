@@ -9,7 +9,11 @@ import { useLazyLoadSentinel } from "../../lib/useLazyLoadSentinel";
 import { usePreferences } from "../../lib/preferences";
 import { useBeatBackendActionSelection } from "../projects/hooks/useBeatBackendActionSelection";
 import { useChordBackendActionSelection } from "../projects/hooks/useChordBackendActionSelection";
-import { formatJobStatusSummary } from "../projects/projectViewUtils";
+import {
+  formatJobRuntimeSummary,
+  formatJobStageLabel,
+  formatJobStatusSummary,
+} from "../projects/projectViewUtils";
 import { ActivitySyncPanel } from "./ActivitySyncPanel";
 
 const CANCELABLE_JOB_STATUSES = new Set(["pending", "running"]);
@@ -143,8 +147,8 @@ function formatTimestamp(value: string) {
   });
 }
 
-function formatJobDetails(job: JobSchema) {
-  const summary = formatJobStatusSummary(job);
+function formatJobDetails(job: JobSchema, { includeRuntimeDevice = true } = {}) {
+  const summary = formatJobStatusSummary(job, { includeRuntimeDevice });
   if (!summary || summary === job.status) {
     return null;
   }
@@ -155,6 +159,10 @@ function formatJobDetails(job: JobSchema) {
 
 function progressValue(job: JobSchema) {
   return Math.max(0, Math.min(100, Math.round(job.progress)));
+}
+
+function activeStageStatusLabel(stageLabel: string, runtimeSummary: string | null) {
+  return runtimeSummary ? `Current stage: ${stageLabel}, ${runtimeSummary}` : `Current stage: ${stageLabel}`;
 }
 
 function hasActiveJob(jobs: JobSchema[] | undefined) {
@@ -284,9 +292,12 @@ function JobRow({
   project: ProjectSchema | null;
 }) {
   const { job, queuePosition } = displayJob;
-  const details = formatJobDetails(job);
+  const stageLabel = formatJobStageLabel(job);
+  const runtimeSummary = stageLabel ? formatJobRuntimeSummary(job) : null;
+  const details = formatJobDetails(job, { includeRuntimeDevice: !runtimeSummary });
   const progress = progressValue(job);
   const canCancel = CANCELABLE_JOB_STATUSES.has(job.status);
+  const stageTone = TERMINAL_JOB_STATUSES.has(job.status) ? "terminal" : "active";
 
   return (
     <li className="activity-job-row">
@@ -302,6 +313,18 @@ function JobRow({
                 <span className="activity-job-row__queue-position">Queue #{queuePosition}</span>
               ) : null}
             </div>
+            {stageLabel ? (
+              <div
+                aria-label={canCancel ? activeStageStatusLabel(stageLabel, runtimeSummary) : undefined}
+                className={`activity-job-row__stage-line activity-job-row__stage-line--${stageTone}`}
+                role={canCancel ? "status" : undefined}
+              >
+                <strong className="activity-job-row__stage">{stageLabel}</strong>
+                {runtimeSummary ? (
+                  <span className="activity-job-row__runtime">{runtimeSummary}</span>
+                ) : null}
+              </div>
+            ) : null}
             <div className="activity-job-row__project">
               <span className="metric-label">Project</span>
               <JobProjectLink project={project} projectId={job.project_id} />

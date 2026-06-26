@@ -99,6 +99,7 @@ def generate_project_lyrics(
     should_cancel: Callable[[], bool] | None = None,
     register_process: Callable[[Popen[str]], None] | None = None,
     unregister_process: Callable[[], None] | None = None,
+    on_runtime_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> LyricsTranscript:
     _ensure_not_cancelled(should_cancel)
     existing = session.get(LyricsTranscript, project.id)
@@ -155,6 +156,7 @@ def generate_project_lyrics(
         should_cancel=should_cancel,
         register_process=register_process,
         unregister_process=unregister_process,
+        on_runtime_event=on_runtime_event,
     )
     _ensure_not_cancelled(should_cancel)
     if force:

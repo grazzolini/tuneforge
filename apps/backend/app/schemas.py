@@ -5,6 +5,13 @@ from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.runtime_status import (
+    JobRuntimeStage,
+    safe_runtime_detail,
+    safe_runtime_device,
+    safe_runtime_label,
+)
+
 SUPPORTED_CHORD_BACKENDS = {"default", "fast", "tuneforge-fast", "librosa", "advanced", "crema", "crema-advanced"}
 AnalysisBeatBackend = Literal["built-in", "beat-this"]
 SUPPORTED_STEM_MODELS = {
@@ -1213,6 +1220,8 @@ class JobSchema(BaseModel):
     type: str
     status: str
     progress: int
+    stage: JobRuntimeStage | None = None
+    stage_label: str | None = None
     source_artifact_id: str | None = None
     beat_backend: str | None = None
     beat_input: str | None = None
@@ -1224,11 +1233,27 @@ class JobSchema(BaseModel):
     stem_model_label: str | None = None
     error_message: str | None
     runtime_device: str | None = None
+    runtime_detail: str | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
     duration_seconds: float | None = None
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("stage_label", mode="before")
+    @classmethod
+    def sanitize_stage_label(cls, value: object) -> str | None:
+        return safe_runtime_label(value)
+
+    @field_validator("runtime_device", mode="before")
+    @classmethod
+    def sanitize_runtime_device(cls, value: object) -> str | None:
+        return safe_runtime_device(value)
+
+    @field_validator("runtime_detail", mode="before")
+    @classmethod
+    def sanitize_runtime_detail(cls, value: object) -> str | None:
+        return safe_runtime_detail(value)
 
 
 class JobResponse(BaseModel):

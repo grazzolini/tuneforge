@@ -13,10 +13,18 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.errors import AppError, JobCancelledError
 from app.models import Artifact, Job, Project, utcnow
+from app.runtime_status import (
+    JobRuntimeEvent,
+    JobRuntimeStage,
+    runtime_event_from_payload,
+    safe_runtime_detail,
+    safe_runtime_device,
+    safe_runtime_label,
+)
 from app.schemas import AnalysisRequest, BulkJobRequest, ChordRequest, LyricsGenerateRequest, StemRequest
 from app.services.analysis import analyze_project
 from app.services.beat_backends import beat_backend_runtime_device
-from app.services.chord_backends import resolve_chord_backend
+from app.services.chord_backends import chord_backend_runtime_device, resolve_chord_backend
 from app.services.chords import detect_project_chords, project_chord_detection_source
 from app.services.lyrics import generate_project_lyrics
 from app.services.projects import get_mutable_project, get_project
@@ -59,6 +67,18 @@ _ACTIVE_JOB_STATUSES = ("pending", "running")
 _BULK_ACTIVITY_JOB_TYPES = frozenset({"analyze", "chords", "lyrics", "stems"})
 _TERMINAL_JOB_STATUSES = ("completed", "cancelled", "failed")
 _PROCESS_TERMINATION_GRACE_SECONDS = 1.0
+_RUNTIME_UNSET = object()
+_QUEUED_STAGE_LABEL = "Waiting to start."
+_PREPARING_STAGE_LABELS = {
+    "analyze": "Preparing analysis.",
+    "chords": "Preparing chord detection.",
+    "lyrics": "Preparing lyrics transcription.",
+    "preview": "Preparing preview mix.",
+    "retune": "Preparing pitch adjustment.",
+    "transpose": "Preparing pitch adjustment.",
+    "stems": "Preparing stem separation.",
+    "export": "Preparing export.",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -444,18 +464,87 @@ def _as_utc_datetime(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
+def _apply_runtime_status_fields(
+    job: Job,
+    *,
+    stage: JobRuntimeStage | None,
+    stage_label: str | None,
+    progress: int | None,
+    runtime_device: object,
+    runtime_detail: object,
+) -> None:
+    if stage is not None:
+        job.stage = stage
+    if stage_label is not None:
+        job.stage_label = safe_runtime_label(stage_label)
+    if progress is not None:
+        job.progress = min(100, max(0, progress))
+    if runtime_device is not _RUNTIME_UNSET:
+        job.runtime_device = safe_runtime_device(runtime_device) if runtime_device is not None else None
+    if runtime_detail is not _RUNTIME_UNSET:
+        job.runtime_detail = safe_runtime_detail(runtime_detail) if runtime_detail is not None else None
+
+
 class JobExecutionContext:
     def __init__(self, runner: InProcessJobRunner, job_id: str, session: Session) -> None:
         self.runner = runner
         self.job_id = job_id
         self.session = session
+        self._owner_thread_id = threading.get_ident()
 
     def set_progress(self, progress: int) -> None:
-        job = self.session.get(Job, self.job_id)
-        if job is None:
+        self.update_runtime_status(progress=progress)
+
+    def update_runtime_status(
+        self,
+        *,
+        stage: JobRuntimeStage | None = None,
+        stage_label: str | None = None,
+        progress: int | None = None,
+        runtime_device: object = _RUNTIME_UNSET,
+        runtime_detail: object = _RUNTIME_UNSET,
+    ) -> None:
+        if threading.get_ident() == self._owner_thread_id:
+            job = self.session.get(Job, self.job_id)
+            if job is None or job.status in _TERMINAL_JOB_STATUSES:
+                return
+            _apply_runtime_status_fields(
+                job,
+                stage=stage,
+                stage_label=stage_label,
+                progress=progress,
+                runtime_device=runtime_device,
+                runtime_detail=runtime_detail,
+            )
+            self.session.commit()
             return
-        job.progress = progress
-        self.session.commit()
+        self.runner.update_runtime_status(
+            self.job_id,
+            stage=stage,
+            stage_label=stage_label,
+            progress=progress,
+            runtime_device=runtime_device,
+            runtime_detail=runtime_detail,
+        )
+
+    def handle_runtime_event(self, payload: dict[str, Any]) -> None:
+        event = runtime_event_from_payload(payload)
+        if event is None:
+            return
+        self.apply_runtime_event(event)
+
+    def apply_runtime_event(self, event: JobRuntimeEvent) -> None:
+        self.runner.update_runtime_status(
+            self.job_id,
+            stage=event.stage,
+            stage_label=event.stage_label,
+            progress=event.progress,
+            runtime_device=event.runtime_device if event.runtime_device is not None else _RUNTIME_UNSET,
+            runtime_detail=event.runtime_detail if event.runtime_detail is not None else _RUNTIME_UNSET,
+        )
+
+    def progress_reporter(self) -> _JobProgressReporter:
+        return _JobProgressReporter(self)
 
     def should_cancel(self) -> bool:
         return self.runner.is_cancel_requested(self.job_id)
@@ -469,6 +558,17 @@ class JobExecutionContext:
 
     def unregister_process(self) -> None:
         self.runner.unregister_process(self.job_id)
+
+
+class _JobProgressReporter:
+    def __init__(self, context: JobExecutionContext) -> None:
+        self._context = context
+
+    def __call__(self, progress: int) -> None:
+        self._context.set_progress(progress)
+
+    def runtime_event(self, payload: dict[str, Any]) -> None:
+        self._context.handle_runtime_event(payload)
 
 
 class InProcessJobRunner:
@@ -518,6 +618,9 @@ class InProcessJobRunner:
             type=job_type,
             status="pending",
             progress=0,
+            stage="queued",
+            stage_label=_QUEUED_STAGE_LABEL,
+            runtime_detail=None,
             payload_json=job_payload,
             result_artifact_ids_json=[],
             cancel_requested=False,
@@ -532,6 +635,7 @@ class InProcessJobRunner:
             for job in running_jobs:
                 job.status = "failed"
                 job.error_message = "Job interrupted during previous shutdown."
+                self._ensure_terminal_runtime_status(job)
                 self._mark_job_finished(job)
             session.commit()
 
@@ -549,7 +653,8 @@ class InProcessJobRunner:
             if job.status == "pending":
                 job.status = "cancelled"
                 job.progress = 0
-                job.completed_at = utcnow()
+                self._ensure_terminal_runtime_status(job)
+                self._mark_job_finished(job)
             session.commit()
             self._terminate_registered_process(job_id)
             session.refresh(job)
@@ -580,7 +685,32 @@ class InProcessJobRunner:
             if runtime_device is not None:
                 job.runtime_device = runtime_device
             if status in {"completed", "failed", "cancelled"}:
+                self._ensure_terminal_runtime_status(job)
                 self._mark_job_finished(job)
+            session.commit()
+
+    def update_runtime_status(
+        self,
+        job_id: str,
+        *,
+        stage: JobRuntimeStage | None = None,
+        stage_label: str | None = None,
+        progress: int | None = None,
+        runtime_device: object = _RUNTIME_UNSET,
+        runtime_detail: object = _RUNTIME_UNSET,
+    ) -> None:
+        with self.session_factory() as session:
+            job = session.get(Job, job_id)
+            if job is None or job.status in _TERMINAL_JOB_STATUSES:
+                return
+            _apply_runtime_status_fields(
+                job,
+                stage=stage,
+                stage_label=stage_label,
+                progress=progress,
+                runtime_device=runtime_device,
+                runtime_detail=runtime_detail,
+            )
             session.commit()
 
     def is_cancel_requested(self, job_id: str) -> bool:
@@ -628,6 +758,19 @@ class InProcessJobRunner:
         started_at = _as_utc_datetime(job.started_at)
         job.duration_seconds = max(0.0, (_as_utc_datetime(completed_at) - started_at).total_seconds())
 
+    def _ensure_terminal_runtime_status(self, job: Job) -> None:
+        if job.stage is None:
+            job.stage = "finalizing" if job.started_at is not None else "queued"
+        if job.stage_label is None:
+            if job.status == "cancelled":
+                job.stage_label = (
+                    "Cancelled before work finished." if job.started_at is not None else _QUEUED_STAGE_LABEL
+                )
+            elif job.status == "failed":
+                job.stage_label = "Job stopped before it could finish."
+            else:
+                job.stage_label = "Finishing job."
+
     def _execute_job(self, job_id: str) -> None:
         with self.session_factory() as session:
             job = session.get(Job, job_id)
@@ -635,8 +778,11 @@ class InProcessJobRunner:
                 return
             job.status = "running"
             job.progress = 5
+            job.stage = "preparing"
+            job.stage_label = _preparing_stage_label(job.type)
             job.error_message = None
             job.runtime_device = None
+            job.runtime_detail = None
             job.started_at = utcnow()
             job.completed_at = None
             job.duration_seconds = None
@@ -655,10 +801,13 @@ class InProcessJobRunner:
                     get_mutable_project(session, job.project_id)
                 context.ensure_not_cancelled()
                 result = handler(context, session, job)
+                session.refresh(job, attribute_names=["stage", "stage_label", "runtime_device", "runtime_detail"])
                 job.status = "completed"
                 job.progress = 100
                 job.result_artifact_ids_json = result.artifact_ids
-                job.runtime_device = result.runtime_device
+                if result.runtime_device is not None:
+                    job.runtime_device = result.runtime_device
+                self._ensure_terminal_runtime_status(job)
                 self._mark_job_finished(job)
                 session.commit()
         except JobCancelledError:
@@ -679,18 +828,29 @@ class InProcessJobRunner:
         payload = AnalysisRequest.model_validate(job.payload_json)
         job.payload_json = {**job.payload_json, "beat_backend": payload.beat_backend, "beat_input": "source"}
         session.flush()
-        context.set_progress(20)
+        runtime_device = beat_backend_runtime_device(payload.beat_backend)
+        context.update_runtime_status(
+            stage="processing",
+            stage_label=_analysis_stage_label(payload.beat_backend, runtime_device),
+            progress=20,
+            runtime_device=runtime_device,
+        )
         analyze_project(session, project, beat_backend=payload.beat_backend)
         job.payload_json = {
             **job.payload_json,
             "beat_backend": payload.beat_backend,
             "beat_input": "source",
         }
-        context.set_progress(90)
+        context.update_runtime_status(
+            stage="finalizing",
+            stage_label="Saving analysis results.",
+            progress=90,
+            runtime_device=runtime_device,
+        )
         artifact_ids = [artifact.id for artifact in project.artifacts if artifact.type == "analysis_json"]
         return JobExecutionResult(
             artifact_ids=artifact_ids,
-            runtime_device=beat_backend_runtime_device(payload.beat_backend),
+            runtime_device=runtime_device,
         )
 
     def _handle_preview(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
@@ -704,16 +864,32 @@ class InProcessJobRunner:
             output_format=payload.get("output_format", "wav"),
         )
         if cached:
-            context.set_progress(100)
+            context.update_runtime_status(
+                stage="finalizing",
+                stage_label="Using cached preview mix.",
+                progress=100,
+            )
             return JobExecutionResult(artifact_ids=[cached.id])
+        context.update_runtime_status(
+            stage="processing",
+            stage_label="Processing preview mix with FFmpeg.",
+            progress=20,
+            runtime_device="cpu",
+        )
         artifact = execute_transform_plan(
             session,
             project=project,
             plan=plan,
-            on_progress=context.set_progress,
+            on_progress=context.progress_reporter(),
             should_cancel=context.should_cancel,
             register_process=context.register_process,
             unregister_process=context.unregister_process,
+        )
+        context.update_runtime_status(
+            stage="finalizing",
+            stage_label="Saving preview mix.",
+            progress=90,
+            runtime_device="cpu",
         )
         return JobExecutionResult(artifact_ids=[artifact.id])
 
@@ -727,7 +903,13 @@ class InProcessJobRunner:
             "chord_source": project_chord_detection_source(project, backend=selected_backend.id),
         }
         session.flush()
-        context.set_progress(20)
+        runtime_device = chord_backend_runtime_device(selected_backend.id)
+        context.update_runtime_status(
+            stage="processing",
+            stage_label=_chord_stage_label(selected_backend.id, runtime_device),
+            progress=20,
+            runtime_device=runtime_device,
+        )
         chords = detect_project_chords(
             session,
             project,
@@ -738,17 +920,26 @@ class InProcessJobRunner:
             force=bool(job.payload_json.get("force", False)),
             overwrite_user_edits=bool(job.payload_json.get("overwrite_user_edits", False)),
         )
-        context.set_progress(90)
-        runtime_device = chords.metadata_json.get("runtime_device")
+        context.update_runtime_status(
+            stage="finalizing",
+            stage_label="Saving chord timeline.",
+            progress=90,
+            runtime_device=runtime_device,
+        )
+        result_runtime_device = chords.metadata_json.get("runtime_device")
         return JobExecutionResult(
             artifact_ids=[],
-            runtime_device=runtime_device if isinstance(runtime_device, str) else None,
+            runtime_device=result_runtime_device if isinstance(result_runtime_device, str) else runtime_device,
         )
 
     def _handle_lyrics(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")
         payload = LyricsGenerateRequest.model_validate(job.payload_json)
-        context.set_progress(15)
+        context.update_runtime_status(
+            stage="loading_model",
+            stage_label="Loading Whisper model.",
+            progress=15,
+        )
         lyrics = generate_project_lyrics(
             session,
             project=project,
@@ -757,6 +948,7 @@ class InProcessJobRunner:
             should_cancel=context.should_cancel,
             register_process=context.register_process,
             unregister_process=context.unregister_process,
+            on_runtime_event=context.handle_runtime_event,
         )
         job.payload_json = {
             **job.payload_json,
@@ -764,40 +956,76 @@ class InProcessJobRunner:
             "source_artifact_id": lyrics.source_artifact_id,
         }
         session.flush()
-        context.set_progress(90)
+        context.update_runtime_status(
+            stage="finalizing",
+            stage_label="Saving lyrics.",
+            progress=90,
+            runtime_device=lyrics.device,
+        )
         return JobExecutionResult(artifact_ids=[], runtime_device=lyrics.device)
 
     def _handle_single_transform(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")
         plan = build_single_transform_plan(session, project=project, transform_type=job.type, payload=job.payload_json)
+        context.update_runtime_status(
+            stage="processing",
+            stage_label=_transform_stage_label(job.type),
+            progress=20,
+            runtime_device="cpu",
+        )
         artifact = execute_transform_plan(
             session,
             project=project,
             plan=plan,
-            on_progress=context.set_progress,
+            on_progress=context.progress_reporter(),
             should_cancel=context.should_cancel,
             register_process=context.register_process,
             unregister_process=context.unregister_process,
+        )
+        context.update_runtime_status(
+            stage="finalizing",
+            stage_label="Saving transformed audio.",
+            progress=90,
+            runtime_device="cpu",
         )
         return JobExecutionResult(artifact_ids=[artifact.id])
 
     def _handle_export(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")
         payload = job.payload_json
-        context.set_progress(25)
+        context.update_runtime_status(
+            stage="writing",
+            stage_label="Writing export.",
+            progress=25,
+            runtime_device="cpu",
+        )
         artifact = export_artifacts(
             session,
             project=project,
             artifact_ids=list(payload.get("artifact_ids", [])),
             output_format=payload.get("output_format", "wav"),
             destination_path=payload.get("destination_path"),
+            on_progress=context.progress_reporter(),
+            should_cancel=context.should_cancel,
+            register_process=context.register_process,
+            unregister_process=context.unregister_process,
         )
-        context.set_progress(90)
+        context.update_runtime_status(
+            stage="finalizing",
+            stage_label="Saving export.",
+            progress=90,
+            runtime_device="cpu",
+        )
         return JobExecutionResult(artifact_ids=[artifact.id])
 
     def _handle_stems(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")
         payload = job.payload_json
+        context.update_runtime_status(
+            stage="loading_model",
+            stage_label="Loading Demucs model.",
+            progress=10,
+        )
         stem_result = generate_stems(
             session,
             project=project,
@@ -805,7 +1033,7 @@ class InProcessJobRunner:
             output_format=payload.get("output_format", "wav"),
             force=bool(payload.get("force", False)),
             stem_model=payload.get("stem_model") if isinstance(payload.get("stem_model"), str) else None,
-            on_progress=context.set_progress,
+            on_progress=context.progress_reporter(),
             should_cancel=context.should_cancel,
             register_process=context.register_process,
             unregister_process=context.unregister_process,
@@ -819,6 +1047,12 @@ class InProcessJobRunner:
             ),
             None,
         )
+        context.update_runtime_status(
+            stage="finalizing",
+            stage_label="Saving stems.",
+            progress=90,
+            runtime_device=runtime_device,
+        )
         return JobExecutionResult(
             artifact_ids=[artifact.id for artifact in artifacts],
             runtime_device=runtime_device,
@@ -829,6 +1063,36 @@ def _job_payload_for_create(*, job_type: str, payload: dict[str, Any]) -> dict[s
     if job_type == "analyze":
         return {**payload, "beat_input": "source"}
     return payload
+
+
+def _preparing_stage_label(job_type: str) -> str:
+    return _PREPARING_STAGE_LABELS.get(job_type, "Preparing job.")
+
+
+def _device_display_label(runtime_device: str | None) -> str | None:
+    if runtime_device is None:
+        return None
+    return runtime_device.upper()
+
+
+def _analysis_stage_label(beat_backend: str | None, runtime_device: str | None) -> str:
+    device_label = _device_display_label(runtime_device)
+    prefix = "Running advanced beat analysis" if beat_backend == "beat-this" else "Running beat analysis"
+    return f"{prefix} on {device_label}." if device_label else f"{prefix}."
+
+
+def _chord_stage_label(backend_id: str, runtime_device: str | None) -> str:
+    device_label = _device_display_label(runtime_device)
+    prefix = "Detecting advanced chords" if backend_id == "crema-advanced" else "Detecting chords"
+    return f"{prefix} on {device_label}." if device_label else f"{prefix}."
+
+
+def _transform_stage_label(job_type: str) -> str:
+    if job_type == "retune":
+        return "Processing retuned audio with FFmpeg."
+    if job_type == "transpose":
+        return "Processing transposed audio with FFmpeg."
+    return "Processing audio with FFmpeg."
 
 
 def _lyrics_job_source(source_kind: str | None) -> str | None:

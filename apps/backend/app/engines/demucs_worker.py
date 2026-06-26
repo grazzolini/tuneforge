@@ -13,6 +13,7 @@ from demucs.apply import apply_model
 from demucs.audio import AudioFile
 from demucs.pretrained import get_model
 
+from app.runtime_status import emit_runtime_event
 from app.utils.torch_runtime import choose_torch_device
 
 
@@ -58,12 +59,38 @@ def _trusted_demucs_checkpoint_loading() -> Iterator[None]:
         torch.load = original_load  # type: ignore[assignment]
 
 
-def main() -> None:
-    args = parse_args()
-    source_path = Path(args.source)
-    resolved_device = choose_torch_device(args.device, torch_module=torch)
+def _device_label(device: str) -> str:
+    return device.upper()
 
-    model_repo = Path(args.model_repo) if args.model_repo else None
+
+def _resolve_demucs_device(requested_device: str) -> str:
+    try:
+        return choose_torch_device(requested_device, torch_module=torch)
+    except RuntimeError:
+        normalized = requested_device.strip().lower()
+        if normalized in {"mps", "cuda"}:
+            emit_runtime_event(
+                stage="fallback",
+                stage_label=f"Falling back from {normalized.upper()} to CPU.",
+                runtime_device="cpu",
+                runtime_detail="Demucs switched to CPU because the requested accelerator is unavailable.",
+            )
+            return "cpu"
+        raise
+
+
+def _separate_with_device(
+    args: argparse.Namespace,
+    *,
+    source_path: Path,
+    device_name: str,
+    model_repo: Path | None,
+) -> list[str]:
+    emit_runtime_event(
+        stage="loading_model",
+        stage_label=f"Loading Demucs model on {_device_label(device_name)}.",
+        runtime_device=device_name,
+    )
     with _trusted_demucs_checkpoint_loading():
         model = get_model(args.model, repo=model_repo)
     samplerate = int(model.samplerate)
@@ -72,10 +99,20 @@ def main() -> None:
     if mix.dim() == 2:
         mix = mix.unsqueeze(0)
 
-    device = torch.device(resolved_device)
+    emit_runtime_event(
+        stage="processing",
+        stage_label=f"Separating stems on {_device_label(device_name)}.",
+        runtime_device=device_name,
+    )
+    device = torch.device(device_name)
     estimates = apply_model(model, mix, device=device, progress=False)
     estimates = estimates[0].cpu()
 
+    emit_runtime_event(
+        stage="writing",
+        stage_label="Writing separated stems.",
+        runtime_device=device_name,
+    )
     sources = list(model.sources)
     stem_outputs = _parse_stem_outputs(args.stem)
     written_sources: list[str] = []
@@ -103,6 +140,38 @@ def main() -> None:
         sf.write(vocal_path, vocals.transpose(0, 1).numpy(), samplerate)
         sf.write(instrumental_path, instrumental.transpose(0, 1).numpy(), samplerate)
         written_sources = ["vocals", "instrumental"]
+
+    return written_sources
+
+
+def main() -> None:
+    args = parse_args()
+    source_path = Path(args.source)
+    model_repo = Path(args.model_repo) if args.model_repo else None
+    resolved_device = _resolve_demucs_device(args.device)
+    try:
+        written_sources = _separate_with_device(
+            args,
+            source_path=source_path,
+            device_name=resolved_device,
+            model_repo=model_repo,
+        )
+    except Exception:
+        if resolved_device == "cpu":
+            raise
+        emit_runtime_event(
+            stage="fallback",
+            stage_label=f"Falling back from {resolved_device.upper()} to CPU.",
+            runtime_device="cpu",
+            runtime_detail="Demucs switched to CPU after the accelerator attempt failed.",
+        )
+        resolved_device = "cpu"
+        written_sources = _separate_with_device(
+            args,
+            source_path=source_path,
+            device_name=resolved_device,
+            model_repo=model_repo,
+        )
 
     print(
         json.dumps(

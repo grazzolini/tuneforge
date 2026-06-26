@@ -239,6 +239,33 @@ def test_lyrics_language_override_migration_adds_nullable_column() -> None:
     assert columns["language_override"][3] == 0
 
 
+def test_job_runtime_status_migration_skips_legacy_database_without_jobs_table() -> None:
+    settings = get_settings()
+    ensure_data_dirs(settings)
+
+    with sqlite3.connect(settings.database_path) as connection:
+        connection.execute("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)")
+        connection.execute(
+            "INSERT INTO alembic_version (version_num) VALUES (?)",
+            ("0020_lyrics_language_override",),
+        )
+
+    reconfigure_engine(settings)
+    run_migrations(settings)
+
+    with sqlite3.connect(settings.database_path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+
+    assert "jobs" not in tables
+    assert revision == "0021_job_runtime_status"
+
+
 def test_hash_storage_migration_backfills_existing_files(tmp_path: Path) -> None:
     settings = get_settings()
     ensure_data_dirs(settings)

@@ -136,6 +136,7 @@
 }
 
 .activity-job-row__title-line,
+.activity-job-row__stage-line,
 .activity-job-row__project,
 .activity-job-row__progress {
   display: flex;
@@ -147,6 +148,34 @@
 
 .activity-job-row__type {
   font-size: 1rem;
+}
+
+.activity-job-row__stage-line {
+  align-items: baseline;
+  gap: 0.55rem;
+}
+
+.activity-job-row__stage {
+  color: var(--text);
+  font-size: 1.04rem;
+  font-weight: 850;
+}
+
+.activity-job-row__runtime {
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 720;
+}
+
+.activity-job-row__stage-line--terminal {
+  gap: 0.3rem;
+}
+
+.activity-job-row__stage-line--terminal .activity-job-row__stage,
+.activity-job-row__stage-line--terminal .activity-job-row__runtime {
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 720;
 }
 
 .activity-job-row__status,

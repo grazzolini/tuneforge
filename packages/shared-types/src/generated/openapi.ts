@@ -1165,6 +1165,10 @@ export interface components {
             status: string;
             /** Progress */
             progress: number;
+            /** Stage */
+            stage?: ("queued" | "preparing" | "loading_model" | "processing" | "fallback" | "writing" | "finalizing") | null;
+            /** Stage Label */
+            stage_label?: string | null;
             /** Source Artifact Id */
             source_artifact_id?: string | null;
             /** Beat Backend */
@@ -1187,6 +1191,8 @@ export interface components {
             error_message: string | null;
             /** Runtime Device */
             runtime_device?: string | null;
+            /** Runtime Detail */
+            runtime_detail?: string | null;
             /** Started At */
             started_at?: string | null;
             /** Completed At */

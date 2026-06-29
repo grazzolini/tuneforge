@@ -28,7 +28,7 @@ base64 = "0.22.1"
 ed25519-dalek = "2.2.0"
 if-addrs = "0.15.0"
 iroh = "1.0.0-rc.0"
-iroh-blobs = { version = "0.101.0", features = ["fs-store"] }
+iroh-blobs = { version = "0.103.0", features = ["fs-store"] }
 rand = "0.10.1"
 sha2 = "0.11.0"
 snow = "0.10.0"
@@ -54,7 +54,7 @@ base64 = "0.22.1"
 ed25519-dalek = "2.2.0"
 if-addrs = "0.15.0"
 iroh = "1.0.0-rc.0"
-iroh-blobs = { version = "0.101.0", features = ["fs-store"] }
+iroh-blobs = { version = "0.103.0", features = ["fs-store"] }
 ndk-sys = { version = "0.6.0", features = ["media"] }
 rand = "0.10.1"
 rusqlite = { version = "0.40.0", features = ["bundled"] }

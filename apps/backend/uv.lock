@@ -1963,7 +1963,7 @@ requires-dist = [
     { name = "cryptography", specifier = ">=47.0.0,<50.0.0" },
     { name = "demucs", specifier = ">=4.0.1,<5.0.0" },
     { name = "fastapi", specifier = ">=0.115.12,<1.0.0" },
-    { name = "keras", marker = "extra == 'advanced-chords'", specifier = ">=2.15,<3.15" },
+    { name = "keras", marker = "extra == 'advanced-chords'", specifier = ">=2.15,<3.16" },
     { name = "librosa", specifier = ">=0.10.2.post1,<1.0.0" },
     { name = "numpy", specifier = ">=1.26.4,<3.0.0" },
     { name = "openai-whisper", specifier = ">=20250625,<20260000" },

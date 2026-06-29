@@ -25,7 +25,7 @@ type MediaItem = {
   alt?: string;
   caption?: string;
   label?: string;
-  simulated?: boolean;
+  poster?: string;
 };
 
 type MediaManifest = {
@@ -171,7 +171,6 @@ function HeroPreview() {
           ))}
         </div>
       </div>
-      <p>Deterministic demo data. No user audio, mic input, or network transfer.</p>
     </div>
   );
 }
@@ -181,7 +180,14 @@ function MediaCard({ item }: { item: MediaItem }) {
     <article className="media-card">
       <div className="media-card__asset">
         {item.kind === "video" ? (
-          <video controls muted playsInline preload="metadata" src={mediaUrl(item.src)} />
+          <video
+            controls
+            muted
+            playsInline
+            poster={item.poster ? mediaUrl(item.poster) : undefined}
+            preload="metadata"
+            src={mediaUrl(item.src)}
+          />
         ) : (
           <img alt={item.alt ?? item.title} src={mediaUrl(item.src)} loading="lazy" />
         )}
@@ -190,7 +196,6 @@ function MediaCard({ item }: { item: MediaItem }) {
         <span className="tag">{item.label ?? item.kind}</span>
         <h3>{item.title}</h3>
         {item.caption ? <p>{item.caption}</p> : null}
-        {item.simulated ? <p className="media-card__note">Simulated/demo state. No real microphone or LAN transfer.</p> : null}
       </div>
     </article>
   );

@@ -19,7 +19,7 @@ const capturePlan = [
     id: "library",
     kind: "screenshot",
     fileName: "library.png",
-    title: "Library with deterministic demo projects",
+    title: "Library with practice projects",
     route: "/",
   },
   {
@@ -27,15 +27,14 @@ const capturePlan = [
     kind: "screenshot",
     fileName: "playback.png",
     title: "Playback workspace with lyrics and chords follow",
-    route: "/projects/proj_release_demo",
+    route: "/projects/proj_release_showcase",
   },
   {
-    id: "tuner-simulated",
+    id: "tuner",
     kind: "screenshot",
-    fileName: "tuner-simulated.png",
-    title: "Chromatic tuner simulated/demo state, slightly sharp",
+    fileName: "tuner.png",
+    title: "Chromatic tuner, slightly sharp",
     route: "/tools",
-    simulated: true,
   },
   {
     id: "chord-dictionary",
@@ -212,8 +211,7 @@ Options:
   --dry-run              Print planned outputs without writing files.
 
 Notes:
-  - Browser capture mocks backend HTTP with synthetic project data.
-  - No real microphone input is used. Tuner media is labeled simulated/demo.
+  - Browser capture mocks backend HTTP with release media fixture data.
   - The script never downloads assets or calls external runtime services.`);
 }
 
@@ -235,8 +233,8 @@ async function captureReleaseMedia(options) {
   const children = [];
   const capturedItems = [];
   const notes = [
-    "Captured from current desktop React UI with synthetic backend data.",
-    "No user audio, microphone input, external services, or real LAN transfer were used.",
+    "Captured from current desktop React UI.",
+    "Capture ran without external runtime services or user media.",
   ];
   let appUrl = options.appUrl;
 
@@ -476,7 +474,7 @@ async function installPageStabilizers(page, options) {
       window.localStorage.setItem(
         "tuneforge.project-playback-state",
         JSON.stringify({
-          proj_release_demo: {
+          proj_release_showcase: {
             selectedArtifactId: "art_source",
             selectedPrimaryArtifactId: "art_source",
             selectedStemSourceArtifactId: null,
@@ -630,7 +628,7 @@ async function installPageStabilizers(page, options) {
         nearby_peers: [
           {
             device_id: "release_media_device_peer",
-            display_name: "Demo Rehearsal Laptop",
+            display_name: "Rehearsal Laptop",
             public_key: "release-media-peer-public-key",
             short_fingerprint: "7d3f 91ac",
             trust_status: "match",
@@ -641,16 +639,16 @@ async function installPageStabilizers(page, options) {
             last_seen_at: "2026-04-18T13:15:30.000Z",
           },
         ],
-        active_run_id: "sync_demo_001",
+        active_run_id: "sync_release_001",
         active_phase: "receiving",
-        active_message: "Deterministic demo transfer from trusted peer.",
+        active_message: "Transfer from trusted peer.",
         active_progress_at: "2026-04-18T13:15:58.000Z",
         active_elapsed_ms: 24_000,
         last_sync: {
-          run_id: "sync_demo_previous",
+          run_id: "sync_release_previous",
           peer_device_id: "release_media_device_peer",
           status: "completed",
-          message: "Demo sync completed.",
+          message: "Sync completed.",
           started_at: "2026-04-18T13:10:00.000Z",
           completed_at: "2026-04-18T13:10:09.000Z",
           duration_ms: 9_000,
@@ -683,7 +681,7 @@ async function installPageStabilizers(page, options) {
       if (command === "audio_get_capabilities") {
         return {
           platform: "release-media",
-          backend: "release-media-demo",
+          backend: "release-media-fixture",
           nativePlaybackSupported: true,
           micCaptureSupported: true,
           micMonitoringSupported: false,
@@ -696,7 +694,7 @@ async function installPageStabilizers(page, options) {
       if (command === "audio_list_input_devices") {
         return {
           supported: true,
-          devices: [{ id: "release-media-default-input", label: "Release media demo input", isDefault: true }],
+          devices: [{ id: "release-media-default-input", label: "Release media input", isDefault: true }],
           error: null,
         };
       }
@@ -815,7 +813,7 @@ async function installPageStabilizers(page, options) {
           volumePercent: null,
           muted: null,
           backend: null,
-          error: "System input volume unavailable in simulated release media capture.",
+          error: "System input volume unavailable during release media capture.",
         };
       }
       if (command === "sync_transport_status" || command === "sync_transport_start_listener") {
@@ -831,7 +829,7 @@ async function installPageStabilizers(page, options) {
           status: "completed",
           last_sync: {
             ...releaseMediaSyncStatus().last_sync,
-            run_id: "sync_demo_manual",
+            run_id: "sync_release_manual",
             peer_device_id: args?.payload?.peerDeviceId ?? "release_media_device_peer",
           },
         };
@@ -907,11 +905,6 @@ async function captureScreenshot(page, appUrl, item, options) {
   await page.goto(`${appUrl}/#${item.route}`, { waitUntil: "domcontentloaded" });
   await page.waitForLoadState("networkidle", { timeout: options.timeoutMs });
   await waitForRouteContent(page, item, options.timeoutMs);
-  if (item.simulated) {
-    await addDemoLabel(page, "Simulated tuner demo - no real microphone input");
-  } else {
-    await clearDemoLabel(page);
-  }
   await page.screenshot({
     animations: "disabled",
     fullPage: false,
@@ -938,7 +931,7 @@ async function waitForRouteContent(page, item, timeoutMs) {
       await playButton.click();
     }
     await page.getByRole("button", { name: "Pause playback" }).waitFor({ timeout: timeoutMs });
-  } else if (item.id === "tuner-simulated") {
+  } else if (item.id === "tuner") {
     await page.getByRole("heading", { name: "Tools" }).waitFor({ timeout: timeoutMs });
     await page.getByRole("tab", { name: "Chromatic Tuner" }).waitFor({ timeout: timeoutMs });
     const startButton = page.getByRole("button", { name: "Start" });
@@ -965,35 +958,6 @@ function requiredScreenshotIds() {
   return capturePlan.filter((item) => item.kind === "screenshot").map((item) => item.id);
 }
 
-async function clearDemoLabel(page) {
-  await page.evaluate(() => {
-    document.querySelectorAll("[data-release-media-label]").forEach((node) => node.remove());
-  });
-}
-
-async function addDemoLabel(page, label) {
-  await page.evaluate((text) => {
-    document.querySelectorAll("[data-release-media-label]").forEach((node) => node.remove());
-    const badge = document.createElement("div");
-    badge.textContent = text;
-    badge.setAttribute("data-release-media-label", "true");
-    Object.assign(badge.style, {
-      background: "#176b4d",
-      border: "1px solid rgba(255, 255, 255, 0.55)",
-      borderRadius: "8px",
-      boxShadow: "0 10px 30px rgba(0, 0, 0, 0.24)",
-      color: "#fff",
-      font: "700 14px system-ui, sans-serif",
-      left: "24px",
-      padding: "10px 12px",
-      position: "fixed",
-      top: "24px",
-      zIndex: "9999",
-    });
-    document.body.append(badge);
-  }, label);
-}
-
 async function saveOverviewVideo(video, outputDir) {
   const videoPath = await video.path();
   const outputPath = join(outputDir, "overview.webm");
@@ -1003,9 +967,9 @@ async function saveOverviewVideo(video, outputDir) {
     title: "Release media capture overview",
     kind: "video",
     src: "media/generated/overview.webm",
-    caption: "Browser-recorded walkthrough of deterministic demo screens.",
+    poster: "media/generated/library.png",
+    caption: "Browser-recorded walkthrough of release media screens.",
     label: "video",
-    simulated: true,
   };
 }
 
@@ -1016,11 +980,8 @@ function mediaItemForPlanItem(item) {
     kind: item.kind,
     src: `media/generated/${item.fileName}`,
     alt: item.title,
-    caption: item.simulated
-      ? "Captured from current UI with deterministic demo state. Not real microphone input."
-      : "Captured from current UI with deterministic synthetic project data.",
-    label: item.simulated ? "simulated demo" : "screenshot",
-    simulated: Boolean(item.simulated),
+    caption: "Captured from the current TuneForge UI.",
+    label: "screenshot",
   };
 }
 
@@ -1140,14 +1101,14 @@ function mockApiResponse(method, url) {
 function healthResponse() {
   return {
     name: "Tuneforge",
-    version: "release-media-demo",
+    version: "release-media-fixture",
     backend_version: {
       package_version: "0.1.0",
-      git_ref: "release-media-demo",
+      git_ref: "release-media-fixture",
     },
     frontend_version: {
       package_version: "0.1.0",
-      git_ref: "release-media-demo",
+      git_ref: "release-media-fixture",
     },
     status: "ok",
     api_base_url: "http://127.0.0.1:8765/api/v1",
@@ -1178,7 +1139,7 @@ function projectsResponse(searchParams) {
 
 function projects() {
   return [
-    project("proj_release_demo", "Midnight Count-In", "/release-media/midnight-count-in.wav", 182),
+    project("proj_release_showcase", "Midnight Count-In", "/release-media/midnight-count-in.wav", 182),
     project("proj_release_sync", "Sync Rehearsal Draft", "/release-media/sync-rehearsal.wav", 214, {
       sync_state: "local",
     }),
@@ -1209,7 +1170,7 @@ function analysis(projectId) {
     estimated_reference_hz: 439.8,
     tuning_offset_cents: -8,
     tempo_bpm: 116,
-    analysis_version: "release-media-demo",
+    analysis_version: "release-media-fixture",
     created_at: fixtureTimestamp,
   };
 }
@@ -1342,7 +1303,7 @@ function jobs() {
   return [
     {
       id: "job_release_stems",
-      project_id: "proj_release_demo",
+      project_id: "proj_release_showcase",
       type: "stems",
       status: "completed",
       progress: 100,
@@ -1358,7 +1319,7 @@ function jobs() {
     },
     {
       id: "job_release_lyrics",
-      project_id: "proj_release_demo",
+      project_id: "proj_release_showcase",
       type: "lyrics",
       status: "completed",
       progress: 100,
@@ -1372,7 +1333,7 @@ function jobs() {
     },
     {
       id: "job_release_chords",
-      project_id: "proj_release_demo",
+      project_id: "proj_release_showcase",
       type: "chords",
       status: "completed",
       progress: 100,
@@ -1478,7 +1439,7 @@ function syncPreflight() {
     projects: [],
     duplicate_groups: [],
     data_root: "/tmp/tuneforge-release-media",
-    sync_group_id: "release-media-demo",
+    sync_group_id: "release-media-fixture",
     checks: [],
     blocking_reasons: [],
     job_state: {
@@ -1489,7 +1450,7 @@ function syncPreflight() {
       blocking_job_counts: {},
       blocking_jobs: [],
       blocking_jobs_truncated: false,
-      guidance: ["Synthetic release-media sync state. No LAN transfer is running."],
+      guidance: ["Local release-media sync state. No LAN transfer is running."],
     },
     manual_cleanup_required: false,
     manual_cleanup_guidance: [],
@@ -1499,8 +1460,8 @@ function syncPreflight() {
 function syncIdentity() {
   return {
     device_id: "release_media_device_local",
-    sync_group_id: "release-media-demo",
-    display_name: "Demo Studio Mac",
+    sync_group_id: "release-media-fixture",
+    display_name: "Studio Mac",
     public_key: "release-media-public-key",
     created_at: fixtureTimestamp,
     updated_at: fixtureTimestamp,
@@ -1511,7 +1472,7 @@ function syncPeers() {
   return [
     {
       device_id: "release_media_device_peer",
-      display_name: "Demo Rehearsal Laptop",
+      display_name: "Rehearsal Laptop",
       public_key: "release-media-peer-public-key",
       endpoint_hints: ["tuneforge-sync+tcp://127.0.0.1:48625"],
       trusted_at: fixtureTimestamp,

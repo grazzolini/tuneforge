@@ -6,7 +6,14 @@ Think "AI-assisted song toolkit for the player at home" — but **fully local, s
 
 ## Status
 
-Pre-1.0. The desktop dev flow (`pnpm dev`) is the fastest way to iterate. Local macOS app/DMG packaging is available with `pnpm package:mac`; generated builds are unsigned, not notarized, and require `ffmpeg`/`ffprobe` on the host `PATH`.
+Pre-1.0. The desktop dev flow (`pnpm dev`) is the fastest way to iterate. Local macOS app/DMG and Linux Flatpak packaging are available, but generated builds are unsigned and not notarized. Development/source runs and macOS packages require `ffmpeg`/`ffprobe` on the host `PATH`; Flatpak uses `/app/bin/ffmpeg` and `/app/bin/ffprobe` wrappers backed by the Flatpak runtime sandbox.
+
+Current 1.0 release limits:
+
+- Desktop is the supported full workflow. Android/mobile remains a local-first companion path in progress.
+- Packages are local build artifacts, not signed distribution releases.
+- Model weights are cached locally and may download on first setup/use unless a package was built with `--model-bundle`.
+- Advanced Chords, Advanced Beat Analysis, GPU acceleration, loopback/browser playback smoke, and BlackHole or virtual-audio capture need manual or special coverage unless a specific CI job says otherwise.
 
 ## Features
 
@@ -41,6 +48,7 @@ Security reports follow the process in [SECURITY.md](./SECURITY.md). "There is n
 - [Stem separation](./docs/STEM_SEPARATION.md)
 - [Architecture](./docs/ARCHITECTURE.md)
 - [API](./docs/API.md)
+- [Native audio and playback QA](./docs/NATIVE_AUDIO.md)
 - [Packaging](./docs/PACKAGING.md)
 - [Roadmap](./docs/ROADMAP.md)
 - [Mobile architecture](./docs/MOBILE.md)
@@ -51,7 +59,7 @@ Security reports follow the process in [SECURITY.md](./SECURITY.md). "There is n
 - `pnpm` (version pinned in [package.json](./package.json))
 - [`uv`](https://docs.astral.sh/uv/)
 - Python 3.11
-- `ffmpeg` and `ffprobe` available on `PATH` (install via `brew install ffmpeg`, `apt install ffmpeg`, etc.)
+- `ffmpeg` and `ffprobe` available on `PATH` for development/source runs and macOS packages (install via `brew install ffmpeg`, `apt install ffmpeg`, etc.)
 - macOS system mic volume control uses the built-in CoreAudio API.
 - Linux system mic volume control uses `wpctl` or `pactl` for the active PipeWire/PulseAudio session.
 - Linux native tempo playback builds require Clang/libclang for `bindgen` (`sudo pacman -S clang`
@@ -229,7 +237,11 @@ For faster Flatpak testing, skip the single-file bundle step:
 pnpm package:linux:flatpak -- --no-bundle
 ```
 
-Packaged builds require host `ffmpeg` / `ffprobe`; Tuneforge does not bundle FFmpeg. See [Packaging](./docs/PACKAGING.md) for output paths, package flags, local repo install commands, data-directory behavior, and size expectations.
+macOS packaging writes a `.app` bundle and DMG. Flatpak packaging writes either a local `.flatpak`
+bundle or, with `--no-bundle`, a local repository install flow. Source distribution is the source
+checkout/archive; the package commands do not create a separate source tarball.
+
+macOS packages require host `ffmpeg` / `ffprobe`; Flatpak routes backend lookups to sandbox wrappers at `/app/bin/ffmpeg` and `/app/bin/ffprobe`. Tuneforge does not bundle FFmpeg. See [Packaging](./docs/PACKAGING.md) for output paths, package flags, local repo install commands, data-directory behavior, and size expectations.
 
 ## CI
 
@@ -237,6 +249,13 @@ GitHub Actions runs path-aware checks on pull requests and full checks on `main`
 
 - `backend`: `uv sync`, `ruff`, `mypy`, and FFmpeg-backed `pytest` only when backend/runtime paths require it
 - `desktop`: `pnpm install`, `pnpm contracts:generate`, generated-contract drift check, desktop `lint`, `typecheck`, `test`
+
+Manual or special coverage unless a workflow explicitly runs it:
+
+- local macOS packaging, Linux Flatpak packaging, and source/archive release checks
+- crema/TensorFlow Advanced Chords and beat-this Advanced Beat Analysis runtime/package checks
+- CUDA, MPS, and legacy NVIDIA GPU profiles
+- loopback browser playback E2E, Linux virtual-output capture, and macOS BlackHole capture
 
 ## Contributing
 

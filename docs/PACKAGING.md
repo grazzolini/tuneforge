@@ -1,6 +1,14 @@
 # Packaging
 
-Tuneforge packaging is currently intended for local unsigned desktop builds. Packaged builds launch the bundled backend locally, include the default desktop Advanced Chords and Advanced Beat Analysis dependency stacks, do not bundle external model weights by default, and still require host-installed `ffmpeg` and `ffprobe`; Tuneforge does not bundle FFmpeg.
+Tuneforge packaging is currently intended for local unsigned desktop builds. Packaged builds launch the bundled backend locally, include the default desktop Advanced Chords and Advanced Beat Analysis dependency stacks, and do not bundle external model weights by default. Tuneforge does not bundle FFmpeg: macOS packages use host-installed `ffmpeg` and `ffprobe`, while Flatpak routes backend lookups through sandbox wrappers at `/app/bin/ffmpeg` and `/app/bin/ffprobe`.
+
+## Release Artifact Truth
+
+- macOS packaging creates a local `.app` bundle and DMG. The app is unsigned and not notarized.
+- Linux Flatpak packaging creates either a single-file `.flatpak` bundle or, with `--no-bundle`, a local Flatpak repository install flow.
+- Source distribution is the repository checkout or source archive from version control. These package commands do not create a separate source tarball.
+- Packaging, model-bundle review, crema/TensorFlow, beat-this, CUDA/MPS/legacy NVIDIA GPU behavior, and install smoke checks are manual or special coverage unless a CI workflow explicitly runs them.
+- Release/default package commands must not use `--model-bundle`; publishable artifacts must not include Demucs, Whisper, or beat-this model weights unless redistribution has been explicitly reviewed.
 
 ## macOS
 
@@ -46,6 +54,8 @@ pnpm package:linux:flatpak -- --no-bundle
 ```
 
 The Flatpak build generates local dependency source manifests, builds inside the SDK sandbox, and installs the backend under `/app/lib/tuneforge/backend`. It bundles `pactl` for microphone volume control but does not bundle FFmpeg.
+
+Flatpak runtime lookups are not host `PATH` lookups. The manifest sets `TUNEFORGE_FFMPEG_PATH=/app/bin/ffmpeg` and `TUNEFORGE_FFPROBE_PATH=/app/bin/ffprobe`; those files are wrappers that search for `ffmpeg` and `ffprobe` inside the sandbox runtime/extension paths. If the runtime does not provide them, the Flatpak build or app reports the missing sandbox binary rather than falling back to the host shell.
 
 Plain Linux packages include crema Advanced Chords and beat-this Advanced Beat Analysis dependency
 stacks by default. Feature flags are independent:

@@ -61,6 +61,7 @@ apps/desktop/src-tauri/gen/
 
 # Generated / local data
 packages/shared-types/openapi.json
+apps/site/public/media/generated/
 stem-waveforms/
 data/
 *.sqlite3

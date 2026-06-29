@@ -8,6 +8,14 @@ The product direction is desktop-first with an active Android/mobile path. Deskt
 
 TuneForge is not a SaaS product, web service, or multi-user system. It has no account model, cloud backend, telemetry, or remote processing requirement.
 
+## 1.0 Release Scope and Limits
+
+- Desktop is the complete supported workflow for import, local analysis/generation, playback practice, and export.
+- Android/mobile remains an in-progress local companion path, not a replacement for desktop processing.
+- macOS and Linux packages are local unsigned build artifacts until release signing/notarization work exists.
+- Host-installed `ffmpeg` and `ffprobe` remain required; TuneForge does not bundle FFmpeg.
+- Advanced Chords, Advanced Beat Analysis, GPU acceleration, loopback/browser playback, BlackHole capture, and virtual-output capture require manual or special validation unless a CI workflow explicitly covers them.
+
 ## Product Goals
 
 - Import common audio and video containers into a local project workspace.
@@ -101,8 +109,9 @@ Capo-relative display is a harmonic presentation feature. It should not alter au
 
 ### Stems
 
-- Generate two-stem output on desktop with Demucs.
-- Store vocal and instrumental artifacts.
+- Generate desktop stems with Demucs, defaulting to the 6-stem `htdemucs_6s` model.
+- Also support the 2-stem `htdemucs_ft` model for vocals/instrumental workflows.
+- Store generated stem artifacts as project-local practice assets.
 - Allow practice playback against source audio or generated stems.
 - Keep mobile stems experimental until local acceleration, storage, and native media handling are proven.
 

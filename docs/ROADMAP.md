@@ -65,8 +65,9 @@ Roadmap items are grouped by track so related work can move independently.
 
 ## Packaging & Distribution
 
-- Keep macOS packaging available for local unsigned builds.
-- Create a Flatpak package for Linux.
+- Keep macOS app/DMG packaging available for local unsigned builds.
+- Keep Linux Flatpak packaging available for local unsigned builds and local repository installs.
+- Treat source distribution as the repository checkout or version-control source archive unless a dedicated source artifact is added.
 - Create package recipes for Arch Linux's pacman (`PKGBUILD`), rpm, and deb.
 - Document host-installed FFmpeg and FFprobe requirements clearly.
 - Avoid bundling FFmpeg for licensing and distribution reasons.
@@ -79,6 +80,7 @@ Roadmap items are grouped by track so related work can move independently.
 - Keep backend gates: Ruff, mypy, and pytest.
 - Keep desktop gates: lint, typecheck, and Vitest.
 - Keep OpenAPI contract drift checks in CI.
+- Keep release copy honest about manual/special checks for packaging, crema/TensorFlow, beat-this, GPU profiles, loopback browser E2E, BlackHole capture, and virtual-output capture.
 - Add focused tests when new timing artifacts, practice loops, mobile capability gates, or destructive-regeneration flows are introduced.
 - Prefer deterministic timing tests over wall-clock-dependent assertions.
 - Keep generated or ignored mobile build artifacts out of commits unless they are intentionally tracked.

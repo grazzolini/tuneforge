@@ -6,8 +6,8 @@ This package is generated-contract focused.
 
 - Source of truth is backend OpenAPI output, not manual edits.
 - Do not hand-edit:
-  - `openapi.json`
-  - `src/generated/openapi.ts`
+  - `openapi.json` (ignored local generator output; do not commit)
+  - `src/generated/openapi.ts` (committed generated contract; CI checks drift)
 - After backend API changes, regenerate from repo root:
   - `pnpm contracts:generate`
-- If generated output changes, commit it in the same PR as backend API changes.
+- If the generated TypeScript contract changes, commit `src/generated/openapi.ts` in the same PR as backend API changes.

@@ -17,7 +17,7 @@ Tuneforge is a local-first desktop app for musicians learning songs: stem separa
 - **Monorepo**: pnpm workspace.
 - **Backend**: `apps/backend` — FastAPI + SQLAlchemy 2 + Pydantic v2, Python 3.11, managed with `uv`. SQLite persistence, single-process job runner, audio engines (Demucs, FFmpeg, librosa-style analysis).
 - **Desktop**: `apps/desktop` — Tauri 2 (Rust) shell + React/Vite/TypeScript frontend, Vitest + Testing Library.
-- **Shared types**: `packages/shared-types` — TypeScript types generated from the backend OpenAPI schema. **Always regenerate after backend route/schema changes.**
+- **Shared types**: `packages/shared-types` — TypeScript types generated from the backend OpenAPI schema. **Always regenerate after backend route/schema changes.** The JSON export is local generator output; the generated TypeScript contract is committed.
 
 ## Hard Rules
 
@@ -77,7 +77,7 @@ When asked to implement a change:
    ```sh
    pnpm contracts:generate
    ```
-   Commit the resulting `packages/shared-types/src/generated/openapi.ts`. CI fails on drift.
+   Commit `packages/shared-types/src/generated/openapi.ts` if it changes. Keep `packages/shared-types/openapi.json` ignored and local. CI fails on TypeScript contract drift.
 6. **Verify Tauri compiles** if you touched anything in `apps/desktop/src-tauri/`:
    ```sh
    cd apps/desktop/src-tauri && cargo check
@@ -129,8 +129,8 @@ The following files are generated. **Do not edit by hand.**
 
 | File | Generator |
 | --- | --- |
-| `packages/shared-types/openapi.json` | `pnpm contracts:generate` (writes from backend OpenAPI export) |
-| `packages/shared-types/src/generated/openapi.ts` | `pnpm contracts:generate` |
+| `packages/shared-types/openapi.json` | `pnpm contracts:generate` (ignored local backend OpenAPI export; do not commit) |
+| `packages/shared-types/src/generated/openapi.ts` | `pnpm contracts:generate` (committed TypeScript contract; CI checks drift) |
 | `apps/desktop/src-tauri/gen/schemas/*` | Tauri build |
 | `apps/desktop/src-tauri/Cargo.lock` | cargo |
 | `pnpm-lock.yaml` | pnpm |

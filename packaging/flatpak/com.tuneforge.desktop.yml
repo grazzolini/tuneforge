@@ -31,7 +31,6 @@ cleanup:
   - /include
   - /lib/pnpm
   - /lib/pkgconfig
-  - /share/doc
   - /share/gtk-doc
   - /share/man
   - /share/pkgconfig
@@ -172,7 +171,14 @@ modules:
       - type: file
         path: ../../pnpm-workspace.yaml
       - type: file
+        path: ../../README.md
+      - type: file
         path: ../../LICENSE
+      - type: file
+        path: ../../THIRD_PARTY_NOTICES.md
+      - type: file
+        path: ../../docs/PACKAGING.md
+        dest: docs
       - type: file
         path: ../../scripts/build-info.mjs
         dest: scripts
@@ -272,6 +278,10 @@ modules:
       - install -Dm644 apps/backend/pyproject.toml /app/lib/tuneforge/backend/src/pyproject.toml
       - install -Dm644 com.tuneforge.desktop.desktop /app/share/applications/com.tuneforge.desktop.desktop
       - install -Dm644 com.tuneforge.desktop.metainfo.xml /app/share/metainfo/com.tuneforge.desktop.metainfo.xml
+      - install -Dm644 README.md /app/share/doc/tuneforge/README.md
+      - install -Dm644 LICENSE /app/share/doc/tuneforge/LICENSE
+      - install -Dm644 THIRD_PARTY_NOTICES.md /app/share/doc/tuneforge/THIRD_PARTY_NOTICES.md
+      - install -Dm644 docs/PACKAGING.md /app/share/doc/tuneforge/PACKAGING.md
       - install -Dm644 apps/desktop/src-tauri/icons/32x32.png /app/share/icons/hicolor/32x32/apps/com.tuneforge.desktop.png
       - install -Dm644 apps/desktop/src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/com.tuneforge.desktop.png
       - install -Dm644 apps/desktop/src-tauri/icons/512x512.png /app/share/icons/hicolor/512x512/apps/com.tuneforge.desktop.png

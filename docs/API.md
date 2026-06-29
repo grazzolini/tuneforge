@@ -61,6 +61,7 @@ describe current pagination behavior or explicit unpaginated exceptions.
 | Endpoint or payload | List field | Pagination decision |
 | --- | --- | --- |
 | `GET /api/v1/jobs` | `jobs` | Paginated growable list with `status`, `project_id`, and project-name `search` filters plus `sort_by`/`sort_order`. Default ordering is active-first and deterministic. |
+| `POST /api/v1/jobs/bulk` | `created_jobs`, `skipped` | Explicit unpaginated bounded bulk-action result. The response is bounded by the current project library and the requested job type. |
 | `GET /api/v1/projects` | `projects` | Paginated growable list. `search` filters the full matching collection before pagination. Default ordering is `updated_at DESC, id DESC`. Desktop Library consumers should lazy-load this list. |
 | `GET /api/v1/projects/{project_id}/artifacts` | `artifacts` | Explicit unpaginated bounded project inventory exception: source audio, generated stems, practice mixes, exports, and cache artifacts. Ordered by `created_at DESC`; no pagination. |
 | `GET /api/v1/projects/{project_id}/sections` | `sections` | Explicit unpaginated project document/song-structure exception. Sections are bounded by the song arrangement and must stay complete for editing and playback. |
@@ -71,6 +72,8 @@ describe current pagination behavior or explicit unpaginated exceptions.
 | `GET /api/v1/sync/metadata` | `projects`, `artifacts`, `delete_tombstones` | Explicit unpaginated sync snapshot exception. The payload is a complete sync inventory used by native sync and reconciliation, not an interactive scroll list. If scale requires chunking, it should be a sync protocol change rather than this generic pagination contract. |
 | `GET /api/v1/sync/preflight` | `projects`, `duplicate_groups`, `manual_cleanup_guidance` | Explicit unpaginated diagnostic exception. The response is a complete local-library health report. |
 | `GET /api/v1/sync/projects/{project_id}/manifest` | `entity_revisions`, `artifacts`, `delete_tombstones` | Explicit unpaginated manifest exception. The response is an atomic project export unit. |
+| `POST /api/v1/sync/projects/manifests` | `project_manifests`, `manifest_errors` | Explicit unpaginated batch manifest export result, bounded by the requested `project_ids`. |
+| `POST /api/v1/sync/artifacts/files/resolve` | `records`, `errors` | Explicit unpaginated artifact-file resolution result, bounded by the requested `artifact_ids`. |
 | `POST /api/v1/sync/reconciliation/plan` | `items`, `actions` | Explicit unpaginated planning exception. The response is a complete computed plan for the supplied sync inventory. |
 | `POST /api/v1/sync/reconciliation/apply` | `plan.items`, `plan.actions`, `results`, `timing_evidence` | Explicit unpaginated apply exception. Partial pages would make apply summaries and results incomplete. |
 | Project document payloads, including analysis timing, chords, lyrics, tab imports, and tab apply results | nested content arrays and result arrays | Explicit unpaginated document exceptions unless a future endpoint exposes them as standalone growable collections. These arrays are part of a single project document or edit result, not top-level list browsing. |
@@ -254,6 +257,24 @@ artifact bytes from that device. The payload submitted to this endpoint must ref
 issued `pairing_offer_id`; that local offer must still be unused, unexpired, and match the
 payload's `pairing_secret`.
 
+### Answer sync pairing offer
+
+`POST /api/v1/sync/pairing/responses`
+
+Answers a copied pairing offer, stores trust for the peer, and returns a signed response payload the
+offer creator can verify through the manual exchange.
+
+Request fields:
+
+- `offer` - copied pairing offer payload.
+- `endpoint_hints` - optional advisory endpoints, default `[]`.
+- `adopt_sync_group` - whether this install should adopt the offer's `sync_group_id`, default `false`.
+
+Response fields:
+
+- `pairing_response`
+- `trusted_peer`
+
 ### List trusted peers
 
 `GET /api/v1/sync/trusted-peers`
@@ -430,7 +451,48 @@ Planner statuses are `noop`, `identical_content`, `missing_local_bytes`, `remote
 `missing_provider`, `deleted`, and `conflicted`.
 
 Action types are `apply_delete_tombstone`, `import_project_manifest`, `import_entity_revision`,
-`fetch_artifact_content`, `import_artifact_manifest`, `record_conflict`, and `noop`.
+`fetch_artifact_content`, `import_artifact_manifest`, `upsert_project_status`, `record_conflict`,
+and `noop`.
+
+### Apply sync reconciliation
+
+`POST /api/v1/sync/reconciliation/apply`
+
+Computes a reconciliation plan and applies selected local state changes. This endpoint writes local
+project status, imports manifests/revisions, applies tombstones, records conflicts, and can consume
+staged artifact files prepared by the native sync layer.
+
+Request fields:
+
+- `remote_library`
+- `project_manifests`
+- `peer_inventory`
+- `staging_root`
+- `use_content_addressed_staging`
+- `project_ids`
+- `include_timing_evidence`
+
+Response fields:
+
+- `summary`
+- `plan`
+- `results`
+- `timing_evidence`
+
+### Sign sync transport handshake
+
+`POST /api/v1/sync/transport/handshake/sign`
+
+Signs a native sync transport handshake challenge with this install's local sync identity. This is
+metadata for the native sync transport; it does not expose FastAPI beyond loopback.
+
+Request fields:
+
+- `peer_device_id`
+- `challenge`
+
+Response fields include `protocol_version`, `challenge_type`, `local_device_id`, `peer_device_id`,
+`public_key`, `challenge`, `canonical_challenge_json`, `signature`, and `signed_at`.
 
 ### Export project sync manifest
 
@@ -450,6 +512,86 @@ Manifest paths are project-root relative and use portable path separators. The r
 `entity_revisions` carries durable sync records for project metadata, chords, lyrics, sections, regeneration events, and other editable or generated project entities. Each revision records `revision_id`, `project_id`, `entity_type`, `entity_id`, `revision_type`, optional `base_revision_id`, `author_device_id`, optional `source_artifact_id`, `content_sha256`, `state`, `metadata`, `payload`, `created_at`, and `updated_at`.
 
 `delete_tombstones` carries durable group-delete records for project, artifact, and entity revision targets so offline peers do not resurrect deleted records when they reconnect. Each tombstone records the author device, delete timestamp, target type, target ID, sync group/project context, and prior metadata needed for diagnostics.
+
+### Export project sync manifests
+
+`POST /api/v1/sync/projects/manifests`
+
+Exports manifests for multiple requested projects. Failures for individual projects are returned in
+`manifest_errors` instead of discarding successful exports.
+
+Request fields:
+
+- `project_ids`
+
+Response fields:
+
+- `project_manifests`
+- `manifest_errors`
+
+### Update project sync status
+
+`PATCH /api/v1/sync/projects/{project_id}/status`
+
+Updates local sync status metadata for a project placeholder or imported project.
+
+Request fields:
+
+- `sync_status`
+- `sync_status_reason`
+- `sync_required_artifact_ids`
+- `sync_provider_device_ids`
+- `sync_conflict_count`
+- `manifest`
+- `project`
+
+Provide either `manifest` or `project`, not both.
+
+Response wrapper:
+
+- `project`
+
+### Stage sync artifact file
+
+`POST /api/v1/sync/artifacts/staging`
+
+Stages a local artifact file for sync import/export handoff, verifies its SHA-256 and size, and
+returns the content-addressed staging record. This endpoint reads a local path supplied by the native
+sync layer and does not expose arbitrary file content over the API.
+
+Request fields:
+
+- `source_path`
+- `content_sha256`
+- `size_bytes`
+- `provider_device_id`
+- `metadata`
+
+Response fields include `content_sha256`, `size_bytes`, `relative_path`, `provider_device_id`,
+`metadata`, `verified_at`, `created_at`, and `updated_at`.
+
+### Resolve sync artifact files
+
+`POST /api/v1/sync/artifacts/files/resolve`
+
+Resolves project artifact IDs into local file records for the native sync layer.
+
+Request fields:
+
+- `artifact_ids`
+
+Response fields:
+
+- `records`
+- `errors`
+
+### Get staged sync artifact
+
+`GET /api/v1/sync/artifacts/staging/{content_sha256}`
+
+Returns the staging record for a previously staged artifact content hash.
+
+Response: `SyncStagedArtifactSchema`.
 
 ### Import staged project sync manifest
 
@@ -483,12 +625,17 @@ Request fields:
 - `source_path`
 - `copy_into_project`
 - `display_name`
+- `chord_backend`
+- `chord_backend_fallback_from`
 - `stem_model`
+- `beat_backend`
 
 Response: `ProjectResponse`.
 
 `stem_model` is optional. Desktop imports send the user's default stem model so automatic source stems match
-manual stem generation preferences; if omitted, the backend stem model default is used.
+manual stem generation preferences; if omitted, the backend stem model default is used. `beat_backend`
+defaults to `built-in`; desktop preferences may send `beat-this` when Advanced Beat Analysis is
+available. Chord backend fields follow the same validation as explicit chord generation.
 
 `source_path` records where the user imported the file from on this install. Sync treats it as local provenance, not a durable source of original bytes or an operational sync input. `copy_into_project=false` is accepted for compatibility, but new imports still create an app-managed operational WAV source artifact under the project root.
 
@@ -548,6 +695,7 @@ Request fields:
 
 - `include_tempo`
 - `force`
+- `beat_backend`
 
 Response: `JobResponse`.
 
@@ -627,6 +775,42 @@ Each segment currently accepts:
 - `text`
 
 Response: `LyricsResponse`.
+
+## Tab Imports
+
+### Create tab import proposals
+
+`POST /api/v1/projects/{project_id}/tabs/proposals`
+
+Parses pasted local tab/chord text and returns proposed lyrics, chord, or section edits for review.
+The endpoint stores proposals but does not apply them.
+
+Request fields:
+
+- `raw_text`
+
+Response: `TabImportResponse`.
+
+### Get tab import
+
+`GET /api/v1/projects/{project_id}/tabs/{tab_import_id}`
+
+Returns a stored tab import and its suggestion groups.
+
+Response: `TabImportResponse`.
+
+### Accept tab import suggestions
+
+`POST /api/v1/projects/{project_id}/tabs/{tab_import_id}/accept`
+
+Applies selected suggestions from a tab import to editable project documents.
+
+Request fields:
+
+- `accepted_suggestion_ids`
+
+Response: `TabImportApplyResponse`, including the updated tab import, accepted/ignored IDs, and any
+updated lyrics, chords, sections, or project metadata.
 
 ## Sections
 
@@ -796,6 +980,22 @@ Status ordering:
 - Jobs inside each status group use the same deterministic tie-breakers as activity ordering for that group.
 
 Response: `JobsResponse`.
+
+### Create bulk jobs
+
+`POST /api/v1/jobs/bulk`
+
+Queues the same project activity job for eligible projects in the local library.
+
+Request fields:
+
+- `job_type` - `analyze`, `chords`, `lyrics`, or `stems`.
+- `chord_backend`
+- `chord_backend_fallback_from`
+- `stem_model`
+- `beat_backend`
+
+Response: `BulkJobsResponse`, with `created_jobs`, `total_projects`, and `skipped`.
 
 ### Get job
 

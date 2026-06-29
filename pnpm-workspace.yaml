@@ -1,4 +1,4 @@
 packages:
   - apps/desktop
+  - apps/site
   - packages/shared-types
-

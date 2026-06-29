@@ -16,7 +16,9 @@ Use the root `AGENTS.md` for global product/safety constraints. This file adds d
 - `ARCHITECTURE.md`: architecture and component boundaries.
 - `SPEC.md`: product behavior/spec details.
 - `API.md`: API behavior and contracts.
+- `NATIVE_AUDIO.md`: native/Web Audio behavior and manual playback QA.
 - `PACKAGING.md`: desktop package commands, package flags, and local install notes.
 - `ROADMAP.md`: planned work and sequencing.
+- `STEM_SEPARATION.md`: Demucs models, cache/bundle behavior, and stem validation notes.
 - `MOBILE.md`: mobile-specific notes/constraints.
 - `REFERENCES.md`: external references and supporting material.

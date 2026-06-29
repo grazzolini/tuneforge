@@ -55,6 +55,15 @@ test("package option parser includes advanced dependencies by default", () => {
   ]);
 });
 
+test("release default package options do not bundle model weights", () => {
+  for (const platform of ["mac", "linux"]) {
+    const options = parsePackageOptions([], { platform });
+
+    assert.equal(options.modelBundle, false);
+    assert.equal(packageOptionsToGeneratorArgs(options).includes("--model-bundle"), false);
+  }
+});
+
 test("package option parser accepts advanced dependency opt-outs", () => {
   const options = parsePackageOptions(["--no-crema", "--no-beat-this"], { platform: "linux" });
 

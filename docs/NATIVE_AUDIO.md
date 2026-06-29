@@ -103,6 +103,10 @@ Audio is active.
 Use this matrix for local regressions against source, practice-mix, and stems.
 Run once with native playback selected per platform, then rerun with forced Web Audio.
 
+Coverage label: manual/special unless a CI workflow explicitly runs the same command and capture
+mode. The matrix, loopback browser smoke, Linux `--route-output`, macOS AVFoundation capture, and
+BlackHole capture are release checks, not default `pnpm test` coverage.
+
 | Check | Native macOS | Native Linux | Forced Web Audio (`VITE_TUNEFORGE_FORCE_WEB_AUDIO=1`) |
 | --- | --- | --- | --- |
 | Source playback | start/seek/pause/resume/stop works | start/seek/pause/resume/stop works | start/seek/pause/resume/stop works |

@@ -4,9 +4,9 @@ FastAPI backend for Tuneforge. It owns persistence, artifact management, audio a
 
 ## Layout
 
-- `app/api/routes/` — HTTP route handlers (projects, jobs, artifacts, health)
+- `app/api/routes/` — HTTP route handlers (projects, jobs, artifacts, health, sync, backend capability lists)
 - `app/services/` — orchestration, persistence, caching
-- `app/engines/` — pure computation: analysis, chord detection, stems (Demucs), transforms (FFmpeg / pitch)
+- `app/engines/` — pure computation: analysis, beat/chord detection, lyrics, stems (Demucs), transforms (FFmpeg / pitch)
 - `app/models.py` / `app/schemas.py` — SQLAlchemy ORM models and Pydantic request/response schemas
 - `app/errors.py` — central `AppError` exception and FastAPI error handlers
 - `alembic/` — database migrations, run automatically on startup
@@ -58,6 +58,10 @@ pnpm setup:dev -- --no-advanced-chords
 
 If `crema`, TensorFlow, Keras, or JAMS are missing, `/api/v1/chord-backends` reports `crema-advanced` as unavailable and normal Built-in Chords detection keeps working.
 
+Release coverage label: full crema/TensorFlow runtime, package inclusion, and model-artifact review
+are manual or special checks unless a CI workflow explicitly installs and exercises the advanced
+dependency stack. Built-in Chords fallback should stay available when that stack is missing.
+
 ### Advanced Beat Analysis backend
 
 Advanced Beat Analysis is the default desktop timing-grid backend when the desktop dependency stack
@@ -77,6 +81,9 @@ The backend loads `beat-this` lazily and uses its `small0` checkpoint on CPU. `p
 verifies the checkpoint with size and SHA-256 before importing beat-this; if it is missing or
 invalid, setup preloads it. If the dependency or checkpoint is unavailable, the advanced settings
 option is disabled and Built-in Beat Analysis keeps working.
+
+Release coverage label: full beat-this runtime and checkpoint behavior are manual or special checks
+unless a CI workflow explicitly installs the advanced beat dependency stack and exercises it.
 
 `pnpm setup:dev` may download the checkpoint into the local PyTorch cache during setup. Opt out when
 testing built-in fallback behavior or unsupported profiles:
@@ -128,6 +135,9 @@ This profile is an opt-in local override for Linux `x86_64`. The committed lockf
 setup stay unchanged. When the override is active, use the repository commands (`pnpm dev:backend`, `pnpm test`,
 `pnpm lint`, `pnpm contracts:generate`) so the backend keeps using the overridden `.venv` instead of asking `uv` to
 resync it.
+
+Release coverage label: CUDA, MPS, and legacy NVIDIA GPU behavior are manual or special checks
+unless a CI workflow explicitly runs on matching hardware/profile.
 
 Both backend sync helpers recreate `.venv` from scratch before installing packages. That avoids stale mixed CUDA stacks after switching between the default and legacy NVIDIA profiles, while still letting `uv` reuse its shared cache for faster reinstalls.
 

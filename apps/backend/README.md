@@ -24,8 +24,8 @@ uv sync --python 3.11 --all-groups --extra advanced-chords --extra advanced-beat
 ```
 
 From the workspace root, `pnpm setup:dev` also runs the full developer setup: `pnpm install`,
-backend sync with default desktop advanced engine dependencies, model prewarm, and shared contract
-generation.
+backend sync with default desktop advanced engine dependencies, model cache/asset verification with
+preload/download only for missing or invalid assets, and shared contract generation.
 
 ### Advanced Chords backend
 
@@ -93,14 +93,14 @@ pnpm setup:dev -- --no-beat-this
 pnpm setup:dev -- --no-advanced-beats
 ```
 
-To preload manually:
+To verify or preload manually:
 
 ```sh
 uv sync --python 3.11 --all-groups --extra advanced-beats
-uv run --python 3.11 python -c "from beat_this.inference import File2Beats; File2Beats(checkpoint_path='small0', device='cpu', dbn=False)"
+uv run --python 3.11 python -m app.cli.prewarm_models --skip-demucs --skip-whisper --include-beat-this
 ```
 
-The preload is stored at `$TORCH_HOME/hub/checkpoints/beat_this-small0.ckpt` when `TORCH_HOME` is set, `$XDG_CACHE_HOME/torch/hub/checkpoints/beat_this-small0.ckpt` when `XDG_CACHE_HOME` is set, or `~/.cache/torch/hub/checkpoints/beat_this-small0.ckpt` by default. Warm setup skips beat-this import/download when that file already matches the expected size and SHA-256.
+The preload is stored at `$TORCH_HOME/hub/checkpoints/beat_this-small0.ckpt` when `TORCH_HOME` is set, `$XDG_CACHE_HOME/torch/hub/checkpoints/beat_this-small0.ckpt` when `XDG_CACHE_HOME` is set, or `~/.cache/torch/hub/checkpoints/beat_this-small0.ckpt` by default. When that file already matches the expected size and SHA-256, setup only verifies it and skips beat-this import/download.
 
 ### Linux legacy NVIDIA profile
 
@@ -190,7 +190,7 @@ Default data directory:
 - macOS: `~/Library/Application Support/Tuneforge`
 - Linux: `~/.local/share/tuneforge`
 
-Lyrics models are downloaded on demand into the lyrics cache directory, then reused offline on later runs. In development, `pnpm setup:dev` preloads Demucs, Whisper, crema, and beat-this `small0` assets into their default caches; if they are not preloaded, first use may download them through the model loaders. The Torch cache path is `$TORCH_HOME/hub/checkpoints` when `TORCH_HOME` is set, `$XDG_CACHE_HOME/torch/hub/checkpoints` when `XDG_CACHE_HOME` is set, or `~/.cache/torch/hub/checkpoints` by default. Packaged desktop builds use these same caches by default. Packages built with `--model-bundle` seed Demucs and Whisper caches from package resources on startup, and also seed the beat-this `small0` checkpoint when beat-this dependencies are included.
+Lyrics models are downloaded on demand into the lyrics cache directory, then reused offline on later runs. In development, `pnpm setup:dev` verifies Demucs, Whisper, crema, and beat-this `small0` caches/assets, then preloads or downloads only missing, corrupt, or partial assets through the existing model loader paths. A successful setup verification means the local cache/assets are usable; runtime models may still load lazily on first use. The Torch cache path is `$TORCH_HOME/hub/checkpoints` when `TORCH_HOME` is set, `$XDG_CACHE_HOME/torch/hub/checkpoints` when `XDG_CACHE_HOME` is set, or `~/.cache/torch/hub/checkpoints` by default. Packaged desktop builds use these same caches by default. Packages built with `--model-bundle` seed Demucs and Whisper caches from package resources on startup, and also seed the beat-this `small0` checkpoint when beat-this dependencies are included.
 
 ## Chord backends
 

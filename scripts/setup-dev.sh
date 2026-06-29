@@ -10,19 +10,19 @@ Runs the standard developer setup:
   pnpm --filter @tuneforge/desktop exec playwright install chromium
   uv sync --python 3.11 --all-groups
   pnpm contracts:generate
-  verify/preload model caches for selected local backends
+  verify model caches and preload/download only missing or invalid assets
 
 Options:
   --advanced-chords, --crema  Include the default crema/TensorFlow chord backend.
   --no-advanced-chords, --no-crema
                               Skip the crema/TensorFlow chord backend.
   --advanced-beats, --beat-this
-                              Include the default beat-this backend and preload small0.
+                              Include the default beat-this backend and verify/preload small0.
   --no-advanced-beats, --no-beat-this
-                              Skip the beat-this backend and checkpoint prewarm.
+                              Skip the beat-this backend and checkpoint verification/preload.
   --legacy-nvidia             Use the Linux x86_64 legacy NVIDIA Torch profile.
-  --skip-demucs-models        Skip preloading Demucs weights into the Torch cache.
-  --skip-model-prewarm        Skip all model cache verification/prewarm work.
+  --skip-demucs-models        Skip Demucs model cache verification/preload.
+  --skip-model-prewarm        Skip all model cache verification/preload work.
   --skip-playwright-browsers  Skip installing Playwright's Chromium browser.
   --skip-pnpm-install         Skip workspace dependency installation.
   --skip-contracts            Skip OpenAPI contract generation.
@@ -185,7 +185,7 @@ if [[ "${skip_model_prewarm}" -eq 0 ]]; then
   if [[ "${advanced_beats}" -eq 1 ]]; then
     prewarm_args+=(--include-beat-this)
   fi
-  echo "Verifying and preloading model caches..."
+  echo "Verifying model caches; preloading missing or invalid assets only..."
   if [[ "${#prewarm_args[@]}" -gt 0 ]]; then
     .venv/bin/python -m app.cli.prewarm_models "${prewarm_args[@]}"
   else

@@ -163,6 +163,29 @@ def test_get_file2beats_initializes_beat_this_with_requested_checkpoint(monkeypa
     assert calls == [("final0", "cpu", False)]
 
 
+def test_detect_beat_this_timing_first_use_initializes_file2beats(monkeypatch) -> None:
+    calls: list[tuple[str, str, bool]] = []
+
+    class FakeFile2Beats:
+        def __init__(self, checkpoint_path: str, *, device: str, dbn: bool) -> None:
+            calls.append((checkpoint_path, device, dbn))
+
+        def __call__(self, _source_path: str):
+            return np.asarray([0.0, 0.5, 1.0, 1.5, 2.0]), np.asarray([0.0, 2.0])
+
+    _install_fake_beat_this(monkeypatch, FakeFile2Beats)
+    beat_this_engine._get_file2beats.cache_clear()
+
+    timing = beat_this_engine.detect_beat_this_timing(
+        Path("synthetic_beat_this.wav"),
+        duration_seconds=2.0,
+    )
+
+    assert timing is not None
+    assert timing["source"] == "beat-this"
+    assert calls == [("small0", "cpu", False)]
+
+
 def _install_fake_beat_this(monkeypatch, file2beats_class: type) -> None:
     beat_this_module = types.ModuleType("beat_this")
     beat_this_module.__path__ = []

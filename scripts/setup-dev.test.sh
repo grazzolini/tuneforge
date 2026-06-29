@@ -39,30 +39,49 @@ chmod +x \
   "${fixture}/apps/backend/.venv/bin/python"
 
 python_args_file="${fixture}/python-args"
-output_file="${fixture}/setup-output"
 
-if ! PATH="${fixture}/bin:${PATH}" \
-  SETUP_DEV_TEST_PYTHON_ARGS="${python_args_file}" \
-  /bin/bash "${fixture}/scripts/setup-dev.sh" \
-    --no-crema \
-    --no-beat-this \
-    --skip-contracts \
-    --skip-playwright-browsers \
-    --skip-pnpm-install > "${output_file}" 2>&1; then
-  cat "${output_file}" >&2
-  exit 1
-fi
+run_setup_dev() {
+  local label="$1"
+  shift
+  local output_file="${fixture}/setup-output-${label}"
 
-expected_args_file="${fixture}/expected-python-args"
-cat > "${expected_args_file}" <<'EOF'
--m
-app.cli.prewarm_models
-EOF
+  : > "${python_args_file}"
+  if ! PATH="${fixture}/bin:${PATH}" \
+    SETUP_DEV_TEST_PYTHON_ARGS="${python_args_file}" \
+    /bin/bash "${fixture}/scripts/setup-dev.sh" \
+      --skip-contracts \
+      --skip-playwright-browsers \
+      --skip-pnpm-install \
+      "$@" > "${output_file}" 2>&1; then
+    cat "${output_file}" >&2
+    exit 1
+  fi
+}
 
-if ! cmp -s "${expected_args_file}" "${python_args_file}"; then
-  echo "unexpected prewarm_models args" >&2
-  diff -u "${expected_args_file}" "${python_args_file}" >&2 || true
-  exit 1
-fi
+assert_python_args() {
+  local label="$1"
+  shift
+  local expected_args_file="${fixture}/expected-python-args-${label}"
 
-echo "setup-dev opt-out prewarm test passed"
+  printf '%s\n' "$@" > "${expected_args_file}"
+
+  if ! cmp -s "${expected_args_file}" "${python_args_file}"; then
+    echo "unexpected prewarm_models args for ${label}" >&2
+    diff -u "${expected_args_file}" "${python_args_file}" >&2 || true
+    exit 1
+  fi
+}
+
+run_setup_dev "default"
+assert_python_args "default" \
+  -m \
+  app.cli.prewarm_models \
+  --include-crema \
+  --include-beat-this
+
+run_setup_dev "opt-out" --no-crema --no-beat-this
+assert_python_args "opt-out" \
+  -m \
+  app.cli.prewarm_models
+
+echo "setup-dev prewarm arg tests passed"

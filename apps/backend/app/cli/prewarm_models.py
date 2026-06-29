@@ -10,7 +10,11 @@ from app.engines.beat_this import (
     invalid_beat_this_checkpoint_cache_files,
     preload_beat_this_checkpoint,
 )
-from app.engines.crema_chords import crema_dependency_status, preload_crema_model
+from app.engines.crema_chords import (
+    crema_dependency_status,
+    invalid_crema_model_asset_files,
+    preload_crema_model,
+)
 from app.engines.demucs_cache import (
     invalid_demucs_torch_cache_files,
     preload_demucs_torch_cache,
@@ -121,8 +125,19 @@ def _verify_or_prewarm_crema() -> None:
     available, reason = crema_dependency_status()
     if not available:
         raise RuntimeError(reason or "crema is unavailable")
+    invalid_files = invalid_crema_model_asset_files()
+    if not invalid_files:
+        sys.stdout.write("Crema model assets verified.\n")
+        return
+
+    sys.stdout.write(f"Crema model assets invalid: {format_invalid_model_files(invalid_files)}\n")
     preload_crema_model()
-    sys.stdout.write("Crema model verified.\n")
+    invalid_after_prewarm = invalid_crema_model_asset_files()
+    if invalid_after_prewarm:
+        raise RuntimeError(
+            f"Crema model assets remain invalid: {format_invalid_model_files(invalid_after_prewarm)}"
+        )
+    sys.stdout.write("Preloaded Crema model.\n")
 
 
 def _print_invalid_files(label: str, invalid_files: Sequence[InvalidModelFile]) -> None:

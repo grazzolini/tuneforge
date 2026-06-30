@@ -40,6 +40,7 @@ use super::{
         convert_interleaved_channels, decode_wav_sample, read_u16_le, read_u32_le,
         resample_interleaved,
     },
+    source_scope::PlaybackSourceScope,
     AUDIO_EVENT_ENDED, AUDIO_EVENT_ERROR, AUDIO_EVENT_POSITION, AUDIO_EVENT_STATE,
 };
 
@@ -1454,15 +1455,20 @@ fn load_playback_lanes(
     let mut lanes = Vec::new();
     let mut worker_control_senders = Vec::new();
     let mut worker_threads = Vec::new();
+    let mut source_scope = None;
 
     for lane in raw_lanes {
         let Some(source_path) = &lane.source_path else {
             continue;
         };
-        let path = PathBuf::from(source_path);
-        if !path.exists() {
-            return Err(format!("Native playback source is missing: {source_path}"));
+        if source_scope.is_none() {
+            source_scope = Some(PlaybackSourceScope::from_backend_config()?);
         }
+        let path = source_scope
+            .as_ref()
+            .expect("source scope initialized")
+            .validate(lane.artifact_id.as_deref(), source_path)
+            .map_err(|error| error.message().to_string())?;
 
         let capacity_samples = (sample_rate as usize)
             .saturating_mul(channels)

@@ -7,6 +7,8 @@ pub mod capture;
 pub mod decode;
 pub mod mixer;
 pub mod platform;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod source_scope;
 pub mod system_input;
 pub mod transport;
 

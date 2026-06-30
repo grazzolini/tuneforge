@@ -1,9 +1,10 @@
-use std::{fs, process::Child, sync::Mutex};
+use std::{process::Child, sync::Mutex};
 
 #[cfg(not(target_os = "android"))]
 use std::{
     env,
     ffi::OsString,
+    fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
@@ -12,10 +13,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(not(target_os = "android"))]
-use tauri::AppHandle;
-use tauri::{Manager, State};
+use tauri::{AppHandle, Manager, State};
 
+mod file_dialog_scope;
 mod mobile_backend;
 mod native_audio;
 mod sync_transport;
@@ -51,19 +51,40 @@ fn backend_base_url(runtime: State<'_, BackendRuntime>) -> String {
 }
 
 #[tauri::command]
-fn read_settings_snapshot_file(path: String) -> Result<String, String> {
-    fs::read_to_string(&path).map_err(|error| format!("Could not read settings file: {error}"))
+fn read_settings_snapshot_file(app: AppHandle) -> Result<Option<String>, String> {
+    file_dialog_scope::read_user_selected_json_file(&app, "Import Settings Snapshot")
 }
 
 #[tauri::command]
-fn write_settings_snapshot_file(path: String, contents: String) -> Result<(), String> {
-    fs::write(&path, contents).map_err(|error| format!("Could not write settings file: {error}"))
+fn write_settings_snapshot_file(
+    app: AppHandle,
+    default_file_name: String,
+    contents: String,
+) -> Result<bool, String> {
+    file_dialog_scope::write_user_selected_json_file(
+        &app,
+        "Export Settings Snapshot",
+        default_file_name,
+        "tuneforge-settings.json",
+        contents,
+        "settings snapshot",
+    )
 }
 
 #[tauri::command]
-fn write_sync_evidence_file(path: String, contents: String) -> Result<(), String> {
-    fs::write(&path, contents)
-        .map_err(|error| format!("Could not write sync evidence file: {error}"))
+fn write_sync_evidence_file(
+    app: AppHandle,
+    default_file_name: String,
+    contents: String,
+) -> Result<bool, String> {
+    file_dialog_scope::write_user_selected_json_file(
+        &app,
+        "Export Sync Evidence",
+        default_file_name,
+        "tuneforge-sync-evidence.json",
+        contents,
+        "sync evidence",
+    )
 }
 
 #[cfg(not(target_os = "android"))]

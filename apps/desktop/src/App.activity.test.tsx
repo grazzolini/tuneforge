@@ -14,7 +14,6 @@ import { encodePairingCode, pairingFingerprint } from "./features/activity/syncP
 import {
   mockCancelJob,
   mockConfirm,
-  mockSave,
   mockGetAnalysis,
   mockGetChords,
   mockGetLyrics,
@@ -3171,6 +3170,72 @@ describe("Desktop app activity", () => {
     expect(serialized).not.toContain("proj_display_name_fallback");
   });
 
+  it("marks partial or conflicted sync evidence as not OK", async () => {
+    const user = userEvent.setup();
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: listenerEndpointHints,
+      last_sync: syncRunStatus({
+        run_id: "sync_run_partial_truth",
+        session_id: "sync_session_partial_truth",
+        status: "completed_with_errors",
+        message: "Sync completed with project conflicts.",
+        failed_project_count: 1,
+        project_results: [
+          {
+            project_id: "proj_partial_truth",
+            status: "conflicted",
+            message: "Project had a conflict.",
+            failed_count: 1,
+          },
+        ],
+        received_artifacts: [
+          {
+            artifact_id: "art_partial_truth",
+            content_sha256: "sha256-partial-truth",
+            size_bytes: 42,
+            status: "failed",
+            message: "Artifact transfer failed.",
+          },
+        ],
+      }),
+    });
+
+    await openSyncTab(user);
+    const exportedJson = await exportEvidenceFromCurrentSyncResult(user);
+
+    expect(exportedJson.validation).toMatchObject({
+      ok: false,
+      issues: expect.arrayContaining([
+        "artifact_status_failed",
+        "failed_project_count",
+        "project_failed_count",
+        "project_status_conflicted",
+        "run_status_completed_with_errors",
+      ]),
+    });
+  });
+
+  it("sanitizes path-like listener errors before rendering", async () => {
+    const user = userEvent.setup();
+    const rawError = "Sync listener failed while opening /Users/test/private/Secret Demo.wav";
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: listenerEndpointHints,
+      last_error: rawError,
+      last_sync: null,
+    });
+
+    await openSyncTab(user);
+
+    expect(await screen.findByText("Sync listener error: details redacted.")).toBeInTheDocument();
+    expect(screen.queryByText(rawError)).not.toBeInTheDocument();
+    expect(document.body.textContent ?? "").not.toContain("/Users/test/private");
+    expect(document.body.textContent ?? "").not.toContain("Secret Demo.wav");
+  });
+
   it("copies privacy-safe evidence JSON from listener last_sync", async () => {
     const user = userEvent.setup();
     const writeText = vi.fn().mockResolvedValue(undefined);
@@ -3240,7 +3305,6 @@ describe("Desktop app activity", () => {
       configurable: true,
       value: {},
     });
-    mockSave.mockResolvedValue("/tmp/tuneforge-sync-evidence.json");
     setSyncTransportStatus({
       active: true,
       status: "listening",
@@ -3263,17 +3327,11 @@ describe("Desktop app activity", () => {
     await openSyncTab(user);
     await user.click(screen.getByRole("button", { name: "Export Evidence" }));
 
-    await waitFor(() =>
-      expect(mockSave).toHaveBeenCalledWith({
-        defaultPath: expect.stringMatching(/^tuneforge-sync-evidence-.+\.json$/),
-        filters: [{ name: "JSON", extensions: ["json"] }],
-      }),
-    );
     const mockInvoke = getMockInvoke();
     await waitFor(() =>
       expect(mockInvoke).toHaveBeenCalledWith("write_sync_evidence_file", {
         contents: expect.any(String),
-        path: "/tmp/tuneforge-sync-evidence.json",
+        defaultFileName: expect.stringMatching(/^tuneforge-sync-evidence-.+\.json$/),
       }),
     );
     const writeCall = mockInvoke.mock.calls.find(([command]) => command === "write_sync_evidence_file");
@@ -3289,6 +3347,111 @@ describe("Desktop app activity", () => {
     });
     expect(JSON.stringify(exportedJson)).not.toContain("proj_tauri_export");
     expect(JSON.stringify(exportedJson)).not.toContain("device_peer_1");
+  });
+
+  it("keeps canceled Tauri evidence export quiet", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+    const mockInvoke = getMockInvoke();
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    if (!defaultInvoke) {
+      throw new Error("Mock invoke implementation was not installed.");
+    }
+    mockInvoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "write_sync_evidence_file") {
+        return false;
+      }
+      return defaultInvoke(command, args);
+    });
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: listenerEndpointHints,
+      last_sync: syncRunStatus({
+        run_id: "sync_run_tauri_cancel",
+        session_id: "sync_session_tauri_cancel",
+        project_results: [
+          {
+            project_id: "proj_tauri_cancel",
+            status: "imported",
+            message: "Imported proj_tauri_cancel.",
+            imported_count: 1,
+          },
+        ],
+      }),
+    });
+
+    try {
+      await openSyncTab(user);
+      await user.click(screen.getByRole("button", { name: "Export Evidence" }));
+
+      await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith(
+        "write_sync_evidence_file",
+        expect.objectContaining({ defaultFileName: expect.any(String) }),
+      ));
+      expect(writeText).not.toHaveBeenCalled();
+      expect(screen.queryByText(/Sync evidence exported/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Could not export sync evidence/)).not.toBeInTheDocument();
+    } finally {
+      mockInvoke.mockImplementation(defaultInvoke);
+    }
+  });
+
+  it("shows retryable Tauri evidence export errors without native paths", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+    const mockInvoke = getMockInvoke();
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    if (!defaultInvoke) {
+      throw new Error("Mock invoke implementation was not installed.");
+    }
+    mockInvoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "write_sync_evidence_file") {
+        throw new Error("Could not write sync evidence file: /Users/test/private/sync.json");
+      }
+      return defaultInvoke(command, args);
+    });
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: listenerEndpointHints,
+      last_sync: syncRunStatus({
+        run_id: "sync_run_tauri_error",
+        session_id: "sync_session_tauri_error",
+        project_results: [
+          {
+            project_id: "proj_tauri_error",
+            status: "imported",
+            message: "Imported proj_tauri_error.",
+            imported_count: 1,
+          },
+        ],
+      }),
+    });
+
+    try {
+      await openSyncTab(user);
+      await user.click(screen.getByRole("button", { name: "Export Evidence" }));
+
+      expect(
+        await screen.findByText("Could not export sync evidence. Choose another location and try again."),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/\/Users\/test\/private/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Sync evidence exported/)).not.toBeInTheDocument();
+    } finally {
+      mockInvoke.mockImplementation(defaultInvoke);
+    }
   });
 
   it("exports the latest sync now result when listener last_sync is hidden", async () => {

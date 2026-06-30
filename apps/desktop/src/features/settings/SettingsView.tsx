@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { open, save } from "@tauri-apps/plugin-dialog";
 import { Link } from "react-router-dom";
 import { api, type BeatBackendSchema, type ChordBackendSchema, type StemModelSchema } from "../../lib/api";
 import { FRONTEND_VERSION_INFO } from "../../lib/buildInfo";
@@ -689,15 +688,7 @@ export function SettingsView() {
     setSnapshotStatus(null);
 
     try {
-      const path = await save({
-        defaultPath: `tuneforge-settings-${new Date().toISOString().slice(0, 10)}.json`,
-        filters: [{ name: "JSON", extensions: ["json"] }],
-      });
-
-      if (!path) {
-        return;
-      }
-
+      const defaultFileName = `tuneforge-settings-${new Date().toISOString().slice(0, 10)}.json`;
       const contents = serializeSettingsSnapshot({
         preferences: {
           defaultChordsFollowEnabled,
@@ -720,7 +711,11 @@ export function SettingsView() {
         themePreference,
       });
 
-      await writeSettingsSnapshotFile(path, contents);
+      const exported = await writeSettingsSnapshotFile(defaultFileName, contents);
+      if (!exported) {
+        return;
+      }
+
       setSnapshotStatus({ message: "Settings exported.", tone: "default" });
     } catch (error) {
       setSnapshotStatus({
@@ -737,17 +732,11 @@ export function SettingsView() {
     setSnapshotStatus(null);
 
     try {
-      const selected = await open({
-        filters: [{ name: "JSON", extensions: ["json"] }],
-        multiple: false,
-      });
-      const path = Array.isArray(selected) ? selected[0] : selected;
-
-      if (!path) {
+      const contents = await readSettingsSnapshotFile();
+      if (contents === null) {
         return;
       }
 
-      const contents = await readSettingsSnapshotFile(path);
       const snapshot = parseSettingsSnapshot(contents);
 
       replaceThemeState({

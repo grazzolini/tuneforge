@@ -64,7 +64,7 @@ def main() -> None:
                     "code": "PROCESSING_FAILED",
                     "message": "Lyrics generation failed.",
                     "status_code": 500,
-                    "details": {"message": str(exc)},
+                    "details": {},
                 },
             }
         )

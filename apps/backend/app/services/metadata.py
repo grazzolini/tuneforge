@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import status
 
 from app.config import get_settings
+from app.dependency_diagnostics import missing_host_tool_error
 from app.errors import AppError
 
 
@@ -36,17 +37,16 @@ def extract_audio_metadata(source_path: Path) -> dict[str, Any]:
     try:
         result = subprocess.run(command, check=True, capture_output=True, text=True)
     except FileNotFoundError as exc:
-        raise AppError(
-            "DEPENDENCY_MISSING",
-            "ffprobe is required for metadata extraction.",
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        raise missing_host_tool_error(
+            tool="ffprobe",
+            operation="metadata_extraction",
+            impact="inspect audio metadata before import",
         ) from exc
     except subprocess.CalledProcessError as exc:
         raise AppError(
             "UNSUPPORTED_AUDIO_FORMAT",
             "Could not read audio metadata from the provided file.",
             status_code=status.HTTP_400_BAD_REQUEST,
-            details={"stderr": exc.stderr.strip()},
         ) from exc
 
     payload = json.loads(result.stdout or "{}")
@@ -77,15 +77,14 @@ def normalize_audio_to_wav(source_path: Path, destination_path: Path) -> None:
     try:
         subprocess.run(command, check=True, capture_output=True, text=True)
     except FileNotFoundError as exc:
-        raise AppError(
-            "DEPENDENCY_MISSING",
-            "ffmpeg is required to normalize imported audio.",
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        raise missing_host_tool_error(
+            tool="ffmpeg",
+            operation="audio_import_normalization",
+            impact="prepare imported audio for local processing",
         ) from exc
     except subprocess.CalledProcessError as exc:
         raise AppError(
             "PROCESSING_FAILED",
             "Could not normalize imported audio to WAV.",
             status_code=status.HTTP_400_BAD_REQUEST,
-            details={"stderr": exc.stderr.strip()},
         ) from exc

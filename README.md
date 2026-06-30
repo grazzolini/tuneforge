@@ -111,6 +111,13 @@ The built-in chord and beat backends remain available as fallbacks when advanced
 missing, unsupported, or disabled. Mobile paths do not run the desktop Python/FastAPI stack and must
 keep clear disabled/fallback states instead of requiring crema, TensorFlow, or beat-this.
 
+Release diagnostics distinguish host tools from local model/cache dependencies. If an import or
+metadata error names `ffmpeg` or `ffprobe`, install FFmpeg on the host or set
+`TUNEFORGE_FFMPEG_PATH` / `TUNEFORGE_FFPROBE_PATH`; TuneForge does not bundle those binaries.
+Diagnostics that name Demucs, Whisper, crema, or beat-this refer to local runtime dependencies or
+model/checkpoint caches, which are prepared by setup/model prewarm or by packages built with
+`--model-bundle`.
+
 ### Linux legacy NVIDIA profile
 
 If you are on Linux `x86_64` with an older NVIDIA GPU that the default PyTorch build rejects at runtime, use the backend's opt-in legacy NVIDIA sync:

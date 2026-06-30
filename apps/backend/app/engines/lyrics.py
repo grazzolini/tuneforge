@@ -6,7 +6,7 @@ import os
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +15,12 @@ from typing import Any, cast
 
 from fastapi import status
 
+from app.dependency_diagnostics import (
+    cache_status_from_failure_text,
+    cache_status_from_invalid_files,
+    whisper_dependency_missing_error,
+    whisper_failure_error,
+)
 from app.errors import AppError, JobCancelledError
 from app.runtime_status import (
     JobRuntimeStage,
@@ -148,13 +154,12 @@ def lyrics_transcription_from_payload(payload: dict[str, Any]) -> LyricsTranscri
     )
 
 
-def _require_dependency(module_name: str, message: str) -> None:
+_SAFE_DIAGNOSTIC_DETAIL_KEYS = {"dependency", "operation", "remediation", "cache_status"}
+
+
+def _require_dependency(module_name: str, *, dependency: str) -> None:
     if importlib.util.find_spec(module_name) is None:
-        raise AppError(
-            "DEPENDENCY_MISSING",
-            message,
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
+        raise whisper_dependency_missing_error(dependency=dependency)
 
 
 def patch_whisper_timing_for_mps(timing_module: Any) -> None:
@@ -175,15 +180,18 @@ def patch_whisper_timing_for_mps(timing_module: Any) -> None:
 
 
 def _load_runtime() -> tuple[Any, Any]:
-    _require_dependency("torch", "PyTorch is required for lyrics generation. Install the backend dependencies first.")
-    _require_dependency(
-        "whisper",
-        "openai-whisper is required for lyrics generation. Install the backend dependencies first.",
-    )
+    _require_dependency("torch", dependency="pytorch")
+    _require_dependency("whisper", dependency="openai-whisper")
     os.environ.update(with_mps_fallback_env(os.environ))
-    import torch  # type: ignore[import-not-found]
-    import whisper  # type: ignore[import-not-found]
-    from whisper import timing as whisper_timing  # type: ignore[import-not-found]
+    try:
+        import torch  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise whisper_dependency_missing_error(dependency="pytorch") from exc
+    try:
+        import whisper  # type: ignore[import-not-found]
+        from whisper import timing as whisper_timing  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise whisper_dependency_missing_error(dependency="openai-whisper") from exc
 
     patch_whisper_timing_for_mps(whisper_timing)
 
@@ -531,7 +539,7 @@ def transcribe_project_lyrics_in_process(
         for device in candidates
     )
     attempt_index = 0
-    errors: list[dict[str, str]] = []
+    errors: list[Exception] = []
 
     requested_normalized = requested_device.strip().lower()
     if requested_normalized in {"mps", "cuda"} and candidates == ["cpu"]:
@@ -577,7 +585,7 @@ def transcribe_project_lyrics_in_process(
             except AppError:
                 raise
             except Exception as exc:  # pragma: no cover - defensive fallback around whisper runtime
-                errors.append({"device": device, "model": candidate_model, "message": str(exc)})
+                errors.append(exc)
                 should_retry_smaller_cuda_model = (
                     device == "cuda"
                     and index < len(model_candidates) - 1
@@ -605,11 +613,8 @@ def transcribe_project_lyrics_in_process(
         if device == "cpu":
             break
 
-    raise AppError(
-        "PROCESSING_FAILED",
-        "Lyrics generation failed.",
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        details={"errors": errors},
+    raise whisper_failure_error(
+        cache_status=_whisper_failure_cache_status(model_name, download_root=download_root, errors=errors)
     )
 
 
@@ -690,7 +695,7 @@ def _raise_worker_failure(payload: dict[str, Any] | None) -> None:
             code,
             message,
             status_code=status_code if isinstance(status_code, int) else status.HTTP_500_INTERNAL_SERVER_ERROR,
-            details=details if isinstance(details, dict) else {},
+            details=_safe_worker_error_details(details if isinstance(details, dict) else {}),
         )
 
     raise AppError(
@@ -778,7 +783,6 @@ def transcribe_project_lyrics(
                 "PROCESSING_FAILED",
                 "Lyrics generation failed.",
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                details={"stdout": stdout.strip(), "stderr": stderr.strip()},
             )
         return lyrics_transcription_from_payload(transcription_payload)
     finally:
@@ -786,3 +790,28 @@ def transcribe_project_lyrics(
             unregister_process()
         if process.poll() is None:
             process.kill()
+
+
+def _safe_worker_error_details(details: dict[str, Any]) -> dict[str, Any]:
+    return {key: details[key] for key in _SAFE_DIAGNOSTIC_DETAIL_KEYS if key in details}
+
+
+def _whisper_failure_cache_status(
+    model_name: str,
+    *,
+    download_root: Path,
+    errors: Sequence[Exception],
+) -> str | None:
+    invalid_files = invalid_whisper_model_cache_files(model_name, cache_dir=download_root)
+    invalid_cache_status = cache_status_from_invalid_files(invalid_files)
+    if invalid_cache_status == "unsupported":
+        return invalid_cache_status
+
+    text_status = cache_status_from_failure_text(errors)
+    if text_status is not None:
+        return text_status
+
+    failure_text = " ".join(str(error).lower() for error in errors)
+    if any(marker in failure_text for marker in ("cache", "checkpoint", "download", "model", "whisper")):
+        return invalid_cache_status
+    return None

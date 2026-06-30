@@ -11,6 +11,7 @@ import { useBeatBackendActionSelection } from "../projects/hooks/useBeatBackendA
 import { useChordBackendActionSelection } from "../projects/hooks/useChordBackendActionSelection";
 import {
   formatJobProgressValue,
+  formatJobErrorMessage,
   formatJobRuntimeSummary,
   formatJobStageLabel,
   formatJobStatusSummary,
@@ -292,6 +293,7 @@ function JobRow({
   const stageLabel = formatJobStageLabel(job);
   const runtimeSummary = stageLabel ? formatJobRuntimeSummary(job) : null;
   const details = formatJobDetails(job, { includeRuntimeDevice: !runtimeSummary });
+  const errorMessage = formatJobErrorMessage(job.error_message, job);
   const progress = formatJobProgressValue(job);
   const canCancel = CANCELABLE_JOB_STATUSES.has(job.status);
   const stageTone = TERMINAL_JOB_STATUSES.has(job.status) ? "terminal" : "active";
@@ -348,9 +350,9 @@ function JobRow({
 
         <JobTimestamps job={job} />
 
-        {job.error_message ? (
+        {errorMessage ? (
           <p className="activity-job-row__error" role="alert">
-            {job.error_message}
+            {errorMessage}
           </p>
         ) : null}
       </article>

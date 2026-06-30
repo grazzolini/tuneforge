@@ -3,6 +3,7 @@ import { MusicalChordLabel } from "../../../components/MusicalLabel";
 import type { TabSuggestionGroupSchema, TabSuggestionSchema } from "../../../lib/api";
 import type { LeadSheetChord, LeadSheetLyricsRow, LeadSheetRow } from "../projectViewUtils";
 import {
+  formatJobErrorMessage,
   formatPlaybackClock,
   hasTimedLyrics,
 } from "../projectViewUtils";
@@ -476,6 +477,8 @@ function LyricsPracticePanel() {
     return <LyricsEditor />;
   }
 
+  const lyricsErrorMessage = formatJobErrorMessage(lyricsJob?.error_message, lyricsJob);
+
   return (
     <div className="playback-practice-body">
       {hasLyricsTranscript ? (
@@ -530,10 +533,9 @@ function LyricsPracticePanel() {
             : "Lyrics could not be saved."}
         </p>
       ) : null}
-      {lyricsJob?.error_message ? <p className="inline-error">{lyricsJob.error_message}</p> : null}
+      {lyricsErrorMessage ? <p className="inline-error">{lyricsErrorMessage}</p> : null}
     </div>
   );
-
 }
 
 function LyricsEditor() {
@@ -615,6 +617,7 @@ function ChordsPracticePanel() {
     showSupportingCopy,
   } = useProjectViewModelContext();
   const handlePracticeTargetSpacePlayback = usePracticeTargetSpacePlayback();
+  const chordErrorMessage = formatJobErrorMessage(chordJob?.error_message, chordJob);
 
   return (
     <div className="playback-practice-body playback-practice-body--chords">
@@ -716,7 +719,7 @@ function ChordsPracticePanel() {
           <span className="artifact-meta">Follow keeps the active chord in view while playback moves.</span>
         </div>
       ) : null}
-      {chordJob?.error_message ? <p className="inline-error">{chordJob.error_message}</p> : null}
+      {chordErrorMessage ? <p className="inline-error">{chordErrorMessage}</p> : null}
     </div>
   );
 }
@@ -739,6 +742,8 @@ function CombinedLeadSheetPanel() {
   if (isEditingLyrics) {
     return <LyricsPracticePanel />;
   }
+
+  const lyricsErrorMessage = formatJobErrorMessage(lyricsJob?.error_message, lyricsJob);
 
   return (
     <div className="playback-practice-body">
@@ -789,7 +794,7 @@ function CombinedLeadSheetPanel() {
             : "Lyrics could not be saved."}
         </p>
       ) : null}
-      {lyricsJob?.error_message ? <p className="inline-error">{lyricsJob.error_message}</p> : null}
+      {lyricsErrorMessage ? <p className="inline-error">{lyricsErrorMessage}</p> : null}
     </div>
   );
 }

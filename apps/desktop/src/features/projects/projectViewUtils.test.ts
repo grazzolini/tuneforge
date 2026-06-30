@@ -3,6 +3,8 @@ import type { ChordSegmentSchema, JobSchema, LyricsSegmentSchema } from "../../l
 import {
   buildLeadSheetRows,
   findActiveLyricsIndex,
+  formatApiErrorMessage,
+  formatJobErrorMessage,
   formatJobRuntimeSummary,
   formatJobStageLabel,
   formatJobStatusSummary,
@@ -400,6 +402,74 @@ describe("formatJobRuntimeSummary", () => {
         }),
       ),
     ).toBe("CPU");
+  });
+});
+
+describe("dependency diagnostic formatting", () => {
+  it("marks host-tool import errors and removes raw output", () => {
+    const error = Object.assign(
+      new Error("ffmpeg is required to normalize imported audio. stderr: /Users/test/Music/Secret Demo.wav"),
+      {
+        code: "DEPENDENCY_MISSING",
+        details: {
+          dependency: "ffmpeg",
+          dependency_kind: "host_tool",
+          local_action: "Install FFmpeg and ensure ffmpeg is on PATH",
+          operation: "normalize imported audio",
+        },
+      },
+    );
+
+    const formatted = formatApiErrorMessage(error);
+
+    expect(formatted).toBe(
+      "ffmpeg is required to normalize imported audio. Host tool: ffmpeg. Next: Install FFmpeg and ensure ffmpeg is on PATH.",
+    );
+    expect(formatted).not.toMatch(/stderr|Secret Demo|Users|\.wav/i);
+  });
+
+  it("formats snake-case diagnostic operations as plain text", () => {
+    const error = Object.assign(new Error("ffmpeg is missing, so TuneForge cannot create output."), {
+      code: "DEPENDENCY_MISSING",
+      details: {
+        dependency: "ffmpeg",
+        operation: "audio_transform",
+        remediation: "Install FFmpeg locally and make sure this host-installed tool is available on PATH.",
+      },
+    });
+
+    expect(formatApiErrorMessage(error)).toBe(
+      "ffmpeg is missing, so TuneForge cannot create output. Host tool: ffmpeg. Operation: audio transform. Next: Install FFmpeg locally and make sure this host-installed tool is available on PATH.",
+    );
+  });
+
+  it("marks runtime dependency job errors and removes raw output", () => {
+    const formatted = formatJobErrorMessage(
+      "Demucs is required for stem separation. stderr: /Users/test/Music/Secret Demo.wav",
+      testJob({ type: "stems" }),
+    );
+
+    expect(formatted).toBe(
+      "Demucs is required for stem separation. Dependency: Demucs. Next: Install local backend stem dependencies, then retry stem separation.",
+    );
+    expect(formatted).not.toMatch(/stderr|Secret Demo|Users|\.wav/i);
+  });
+
+  it("keeps cache-specific job next actions when state is known", () => {
+    expect(
+      formatJobErrorMessage(
+        "Whisper model cache is unreadable, so TuneForge cannot generate lyrics.",
+        testJob({ type: "lyrics" }),
+      ),
+    ).toBe(
+      "Whisper model cache is unreadable, so TuneForge cannot generate lyrics. Model/cache: Whisper. Next: Fix local cache permissions or re-run setup from an account that can read the model cache.",
+    );
+  });
+
+  it("keeps non-dependency job errors unchanged", () => {
+    expect(formatJobErrorMessage("Could not finish stems.", testJob({ type: "stems" }))).toBe(
+      "Could not finish stems.",
+    );
   });
 });
 

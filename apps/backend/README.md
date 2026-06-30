@@ -169,7 +169,7 @@ All configuration is environment-driven (see [`app/config.py`](./app/config.py))
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `TUNEFORGE_HOST` | `127.0.0.1` | Bind address. **Do not change to a public address.** |
+| `TUNEFORGE_HOST` | `127.0.0.1` | Dev/test-only loopback override. Allowed values: `127.0.0.1` or `localhost`. |
 | `TUNEFORGE_PORT` | `8765` | Bind port. |
 | `TUNEFORGE_ADDITIONAL_CORS_ORIGINS` | unset | Comma-separated local HTTP origins to allow in addition to the desktop defaults. Only `http://127.0.0.1:<port>` and `http://localhost:<port>` are accepted. |
 | `TUNEFORGE_DATA_DIR` | OS-specific | Override for the data directory (database, projects, cache). |

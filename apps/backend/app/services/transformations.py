@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +45,49 @@ def _preview_cache_key(project_id: str, payload: dict[str, Any]) -> str:
 def _ensure_not_cancelled(should_cancel: Callable[[], bool] | None) -> None:
     if should_cancel and should_cancel():
         raise JobCancelledError()
+
+
+def _resolve_export_file_path(
+    artifact: Artifact,
+    *,
+    output_format: str,
+    destination_path: str | None,
+    destination_file_path: str | None,
+) -> Path:
+    if destination_file_path:
+        return Path(destination_file_path).expanduser().resolve()
+    source_path = Path(artifact.path)
+    root = (
+        Path(destination_path).expanduser().resolve()
+        if destination_path
+        else project_exports_dir(artifact.project_id)
+    )
+    return root / f"{source_path.stem}.{output_format}"
+
+
+def _new_sibling_temp_paths(target: Path, output_format: str) -> tuple[Path, Path]:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        dir=target.parent,
+        prefix="tuneforge-export-",
+        delete=False,
+    ) as temp_file:
+        temp_base_path = Path(temp_file.name)
+    temp_base_path.unlink(missing_ok=True)
+    return temp_base_path, temp_base_path.with_suffix(f".{output_format}")
+
+
+def ensure_export_destination_available(*, destination_file_path: str | None, overwrite_existing: bool) -> None:
+    if not destination_file_path or overwrite_existing:
+        return
+    target = Path(destination_file_path).expanduser().resolve()
+    if target.exists():
+        raise AppError(
+            "EXPORT_DESTINATION_EXISTS",
+            "Export destination already exists.",
+            status_code=status.HTTP_409_CONFLICT,
+            details={"destination_file_path": str(target)},
+        )
 
 
 def build_preview_plan(
@@ -164,6 +208,8 @@ def export_artifacts(
     artifact_ids: list[str],
     output_format: str,
     destination_path: str | None,
+    destination_file_path: str | None = None,
+    overwrite_existing: bool = False,
     on_progress: Callable[[int], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
     register_process: Callable[[subprocess.Popen[str]], None] | None = None,
@@ -175,26 +221,44 @@ def export_artifacts(
     if artifact is None or artifact.project_id != project.id:
         raise AppError("ARTIFACT_NOT_FOUND", "Artifact not found.", status_code=status.HTTP_404_NOT_FOUND)
     source_path = Path(artifact.path)
-    root = Path(destination_path).expanduser().resolve() if destination_path else project_exports_dir(project.id)
-    root.mkdir(parents=True, exist_ok=True)
-    target = root / f"{source_path.stem}.{output_format}"
-    if artifact.format == output_format:
-        _ensure_not_cancelled(should_cancel)
-        shutil.copy2(source_path, target)
-        _ensure_not_cancelled(should_cancel)
-    else:
-        sample_rate = project.sample_rate or 44100
-        run_ffmpeg_transform(
-            source_path,
-            target.with_suffix(""),
-            sample_rate,
-            0.0,
-            output_format,
-            on_progress=on_progress,
-            should_cancel=should_cancel,
-            register_process=register_process,
-            unregister_process=unregister_process,
+    target = _resolve_export_file_path(
+        artifact,
+        output_format=output_format,
+        destination_path=destination_path,
+        destination_file_path=destination_file_path,
+    )
+    ensure_export_destination_available(
+        destination_file_path=destination_file_path,
+        overwrite_existing=overwrite_existing,
+    )
+    temp_base_path, temp_path = _new_sibling_temp_paths(target, output_format)
+    try:
+        if artifact.format == output_format:
+            _ensure_not_cancelled(should_cancel)
+            shutil.copy2(source_path, temp_path)
+            _ensure_not_cancelled(should_cancel)
+        else:
+            sample_rate = project.sample_rate or 44100
+            run_ffmpeg_transform(
+                source_path,
+                temp_base_path,
+                sample_rate,
+                0.0,
+                output_format,
+                on_progress=on_progress,
+                should_cancel=should_cancel,
+                register_process=register_process,
+                unregister_process=unregister_process,
+            )
+            _ensure_not_cancelled(should_cancel)
+        ensure_export_destination_available(
+            destination_file_path=destination_file_path,
+            overwrite_existing=overwrite_existing,
         )
+        temp_path.replace(target)
+    finally:
+        temp_base_path.unlink(missing_ok=True)
+        temp_path.unlink(missing_ok=True)
     return register_artifact(
         session,
         project_id=project.id,

@@ -3,9 +3,11 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tansta
 import { useNavigate, useParams } from "react-router-dom";
 import { confirm, save } from "@tauri-apps/plugin-dialog";
 import {
+  ApiError,
   api,
   getProjectSyncSummary,
   type ArtifactSchema,
+  type ExportRequest,
   type JobSchema,
   type LyricsGenerateRequest,
   type LyricsResponse,
@@ -96,6 +98,11 @@ const ACTIVE_PROJECT_JOBS_LIMIT = 200;
 const PROJECT_HISTORY_JOBS_PAGE_SIZE = 50;
 const EMPTY_JOBS: JobSchema[] = [];
 const PROJECT_PLAYBACK_FALLBACK_NAME = "Project playback";
+const DESKTOP_EXPORT_FILTERS = [
+  { name: "WAV Audio", extensions: ["wav"] },
+  { name: "MP3 Audio", extensions: ["mp3"] },
+  { name: "FLAC Audio", extensions: ["flac"] },
+];
 
 type DeleteArtifactsRequest = {
   artifactIds: string[];
@@ -163,6 +170,24 @@ function formatLyricsLanguageMetadata(lyrics: LyricsResponse | undefined) {
     return `Override: ${overrideLabel}`;
   }
   return effectiveLabel ? `Language: ${effectiveLabel}` : null;
+}
+
+function supportedExportFormat(format: string | null | undefined) {
+  const normalizedFormat = format?.toLowerCase();
+  if (normalizedFormat === "mp3" || normalizedFormat === "flac" || normalizedFormat === "wav") {
+    return normalizedFormat;
+  }
+  return "wav";
+}
+
+function exportFormatFromFilePath(filePath: string) {
+  const fileName = filePath.split(/[\\/]/).pop() ?? filePath;
+  const extension = fileName.includes(".") ? fileName.split(".").pop() : null;
+  return supportedExportFormat(extension);
+}
+
+function isExportDestinationExistsError(error: unknown) {
+  return error instanceof ApiError && error.code === "EXPORT_DESTINATION_EXISTS";
 }
 
 function resolveDefaultPlaybackDisplayMode(
@@ -627,23 +652,49 @@ export function useProjectViewModel() {
       if (!exportArtifact) {
         throw new Error("Nothing available to export yet.");
       }
-      const suggestedFormat = exportArtifact.format;
+      const defaultExportName = projectQuery.data?.display_name ?? artifactLabel(exportArtifact);
+      const suggestedFormat = supportedExportFormat(exportArtifact.format);
       const exportTarget = await save({
-        defaultPath: `${projectQuery.data?.display_name ?? artifactLabel(exportArtifact)}.${suggestedFormat}`,
+        defaultPath: `${defaultExportName}.${suggestedFormat}`,
+        filters: DESKTOP_EXPORT_FILTERS,
       });
-      const destinationPath = exportTarget
-        ? exportTarget.slice(0, exportTarget.lastIndexOf("/"))
-        : undefined;
-      const extension = exportTarget?.split(".").pop()?.toLowerCase();
-      return api.createExport(projectId, {
+      if (exportTarget === null || exportTarget.length === 0) {
+        return null;
+      }
+      const exportRequest: ExportRequest = {
         artifact_ids: [exportArtifact.id],
         mixdown_mode: "copy",
-        output_format:
-          extension === "mp3" || extension === "flac" ? extension : "wav",
-        destination_path: destinationPath,
-      });
+        output_format: exportFormatFromFilePath(exportTarget),
+        destination_file_path: exportTarget,
+      };
+      try {
+        return await api.createExport(projectId, exportRequest);
+      } catch (error) {
+        if (!isExportDestinationExistsError(error)) {
+          throw error;
+        }
+        const shouldOverwrite = await confirm(
+          "A file already exists with that name. Replace it?",
+          {
+            title: "Replace existing export?",
+            kind: "warning",
+            okLabel: "Replace",
+            cancelLabel: "Cancel",
+          },
+        );
+        if (!shouldOverwrite) {
+          return null;
+        }
+        return api.createExport(projectId, {
+          ...exportRequest,
+          overwrite_existing: true,
+        });
+      }
     },
-    onSuccess: async () => {
+    onSuccess: async (response) => {
+      if (!response) {
+        return;
+      }
       await queryClient.invalidateQueries({ queryKey: ["jobs"] });
     },
   });

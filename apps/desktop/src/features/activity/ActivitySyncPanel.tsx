@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { save } from "@tauri-apps/plugin-dialog";
 import { QRCodeSVG } from "qrcode.react";
 import {
   api,
@@ -186,15 +185,14 @@ function downloadSyncEvidenceJson(fileName: string, json: string) {
 }
 
 async function saveSyncEvidenceJson(fileName: string, json: string) {
-  const path = await save({
-    defaultPath: fileName,
-    filters: [{ name: "JSON", extensions: ["json"] }],
-  });
-  if (!path) {
-    return false;
+  try {
+    return await invoke<boolean | null>("write_sync_evidence_file", {
+      contents: json,
+      defaultFileName: fileName,
+    }) === true;
+  } catch {
+    throw new Error("Could not export sync evidence. Choose another location and try again.");
   }
-  await invoke("write_sync_evidence_file", { contents: json, path });
-  return true;
 }
 
 function peerLabel(peer: SyncTrustedPeerSchema) {
@@ -438,6 +436,17 @@ function syncNowFailureText(error: unknown) {
   return "Sync now failed.";
 }
 
+function syncListenerLastErrorText(message: string | null | undefined) {
+  const detail = message?.trim();
+  if (!detail) {
+    return null;
+  }
+  if (syncNowFailureDetailIsSensitive(detail)) {
+    return "Sync listener error: details redacted.";
+  }
+  return detail;
+}
+
 function pluralize(count: number, singular: string, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
 }
@@ -595,6 +604,49 @@ function syncResultKey(status: SyncTransportRunStatus | null | undefined) {
 
 function positiveSyncCount(value: number | null | undefined) {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function syncEvidenceStatusIndicatesProblem(status: string | null | undefined) {
+  const normalized = status?.trim().toLowerCase();
+  return normalized === "failed" ||
+    normalized === "completed_with_errors" ||
+    normalized === "conflicted" ||
+    normalized === "error" ||
+    normalized === "errored";
+}
+
+function syncEvidenceValidation(
+  status: SyncTransportRunStatus,
+  mergedProjectResults: SyncTransportProjectResult[],
+  artifactStatusCounts: Record<string, number>,
+) {
+  const issues = new Set<string>();
+  if (syncEvidenceStatusIndicatesProblem(status.status)) {
+    issues.add(`run_status_${status.status}`);
+  }
+  if (positiveSyncCount(status.failed_project_count)) {
+    issues.add("failed_project_count");
+  }
+  for (const result of mergedProjectResults) {
+    if (syncEvidenceStatusIndicatesProblem(result.status)) {
+      issues.add(`project_status_${result.status}`);
+    }
+    if (positiveSyncCount(result.failed_count)) {
+      issues.add("project_failed_count");
+    }
+    if (positiveSyncCount(result.counters?.failed_count)) {
+      issues.add("project_counter_failed_count");
+    }
+  }
+  for (const [artifactStatus, count] of Object.entries(artifactStatusCounts)) {
+    if (positiveSyncCount(count) && syncEvidenceStatusIndicatesProblem(artifactStatus)) {
+      issues.add(`artifact_status_${artifactStatus}`);
+    }
+  }
+  return {
+    ok: issues.size === 0,
+    issues: Array.from(issues).sort(),
+  };
 }
 
 function syncProjectResultMutatedLocalCache(result: SyncTransportProjectResult) {
@@ -1353,6 +1405,7 @@ function buildSyncEvidenceExport(
   const retryableInterruptionCode =
     status.retryable_interruption_code ?? options.listenerRetryableInterruptionCode ?? null;
   const retryGuidance = status.retry_guidance ?? options.listenerRetryGuidance ?? null;
+  const validation = syncEvidenceValidation(status, mergedProjectResults, artifactStatusCounts);
 
   return {
     capturedAt: options.capturedAt,
@@ -1556,7 +1609,8 @@ function buildSyncEvidenceExport(
     },
     validation: {
       schema: "tuneforge-sync-evidence-v1",
-      ok: status.status !== "failed",
+      ok: validation.ok,
+      issues: validation.issues,
       ui_visible: true,
       privacySafe: true,
       redactionCounts: {
@@ -1725,6 +1779,7 @@ export function ActivitySyncPanel() {
     }
     return null;
   }, [listenerQuery.data, visibleSyncResult, peersById, trustedNearbyPeerByDeviceId]);
+  const listenerLastErrorMessage = syncListenerLastErrorText(listenerQuery.data?.last_error);
   const pairingInputValue = pairingCodeDraft.trim() || rawPairingPayloadDraft.trim();
   const decodedPairingInput = useMemo(() => {
     if (!pairingInputValue) {
@@ -2239,38 +2294,39 @@ export function ActivitySyncPanel() {
       setEvidenceMessage(null);
       return;
     }
-    let copied: boolean;
-    try {
-      copied = await copyToClipboard(evidence.json);
-    } catch {
-      copied = false;
-    }
+    setEvidenceError(null);
+    setEvidenceMessage(null);
 
     try {
       if (isTauri()) {
         const saved = await saveSyncEvidenceJson(evidence.fileName, evidence.json);
-        let message = "Sync evidence export canceled.";
-        if (saved) {
-          message = copied ? "Sync evidence exported and copied." : "Sync evidence exported.";
-        } else if (copied) {
-          message = "Sync evidence copied. Export canceled.";
+        if (!saved) {
+          return;
+        }
+
+        let copied: boolean;
+        try {
+          copied = await copyToClipboard(evidence.json);
+        } catch {
+          copied = false;
         }
         setEvidenceError(null);
-        setEvidenceMessage(message);
+        setEvidenceMessage(copied ? "Sync evidence exported and copied." : "Sync evidence exported.");
         return;
       }
 
+      let copied: boolean;
+      try {
+        copied = await copyToClipboard(evidence.json);
+      } catch {
+        copied = false;
+      }
       downloadSyncEvidenceJson(evidence.fileName, evidence.json);
       setEvidenceError(null);
       setEvidenceMessage(copied ? "Sync evidence exported and copied." : "Sync evidence exported.");
-    } catch {
-      if (copied) {
-        setEvidenceError("Could not export sync evidence file.");
-        setEvidenceMessage("Sync evidence copied.");
-        return;
-      }
+    } catch (error) {
       setEvidenceMessage(null);
-      setEvidenceError("Could not export sync evidence.");
+      setEvidenceError(error instanceof Error ? error.message : "Could not export sync evidence.");
     }
   }
 
@@ -2432,9 +2488,9 @@ export function ActivitySyncPanel() {
               Native sync transport is unavailable.
             </p>
           ) : null}
-          {listenerQuery.data?.last_error ? (
+          {listenerLastErrorMessage ? (
             <p className="activity-sync-alert activity-sync-alert--error" role="alert">
-              {listenerQuery.data.last_error}
+              {listenerLastErrorMessage}
             </p>
           ) : null}
           {retryableInterruption ? (

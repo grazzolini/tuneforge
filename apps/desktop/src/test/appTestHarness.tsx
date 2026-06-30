@@ -1051,24 +1051,21 @@ const {
     }
 
     if (command === "write_settings_snapshot_file") {
-      const path = String(args?.path ?? "");
-      state.snapshotFiles[path] = String(args?.contents ?? "");
-      return null;
+      const defaultFileName = String(args?.defaultFileName ?? "tuneforge-settings.json");
+      const contents = String(args?.contents ?? "");
+      state.snapshotFiles[defaultFileName] = contents;
+      state.snapshotFiles.__settings_snapshot__ = contents;
+      return true as boolean;
     }
 
     if (command === "write_sync_evidence_file") {
-      const path = String(args?.path ?? "");
-      state.snapshotFiles[path] = String(args?.contents ?? "");
-      return null;
+      const defaultFileName = String(args?.defaultFileName ?? "tuneforge-sync-evidence.json");
+      state.snapshotFiles[defaultFileName] = String(args?.contents ?? "");
+      return true as boolean;
     }
 
     if (command === "read_settings_snapshot_file") {
-      const path = String(args?.path ?? "");
-      const contents = state.snapshotFiles[path];
-      if (contents === undefined) {
-        throw new Error(`Missing snapshot file: ${path}`);
-      }
-      return contents;
+      return state.snapshotFiles.__settings_snapshot__ ?? null;
     }
 
     if (command === "get_system_default_input_volume") {

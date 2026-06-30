@@ -10,8 +10,6 @@ import {
   mockInvoke,
   mockListBeatBackends,
   mockListChordBackends,
-  mockOpen,
-  mockSave,
   queryByAriaKeyLabel,
   renderApp,
   setBeatBackends,
@@ -585,8 +583,6 @@ describe("Desktop app settings theme", () => {
 
   it("exports and imports a full settings snapshot", async () => {
     const user = userEvent.setup();
-    mockSave.mockResolvedValue("/tmp/tuneforge-settings.json");
-    mockOpen.mockResolvedValue("/tmp/tuneforge-settings.json");
 
     renderApp(["/settings"]);
 
@@ -612,7 +608,10 @@ describe("Desktop app settings theme", () => {
     await waitFor(() =>
       expect(mockInvoke).toHaveBeenCalledWith(
         "write_settings_snapshot_file",
-        expect.objectContaining({ path: "/tmp/tuneforge-settings.json" }),
+        expect.objectContaining({
+          contents: expect.any(String),
+          defaultFileName: expect.stringMatching(/^tuneforge-settings-\d{4}-\d{2}-\d{2}\.json$/),
+        }),
       ),
     );
     expect(screen.getByText("Settings exported.")).toBeInTheDocument();
@@ -627,6 +626,7 @@ describe("Desktop app settings theme", () => {
 
     await user.click(screen.getByRole("button", { name: "Import Settings" }));
 
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith("read_settings_snapshot_file"));
     await waitFor(() =>
       expect(document.documentElement).toHaveAttribute("data-theme", "dark"),
     );
@@ -637,5 +637,128 @@ describe("Desktop app settings theme", () => {
     expect(screen.getAllByText("Lyrics + chords").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Advanced Chords").length).toBeGreaterThan(0);
     expect(document.documentElement.style.getPropertyValue("--color-bg-app")).toBe("#123456");
+  });
+
+  it("keeps settings snapshot cancel quiet", async () => {
+    const user = userEvent.setup();
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    if (!defaultInvoke) {
+      throw new Error("Mock invoke implementation was not installed.");
+    }
+
+    renderApp(["/settings"]);
+
+    expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Export Settings" }));
+    await screen.findByText("Settings exported.");
+
+    mockInvoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "read_settings_snapshot_file") {
+        return null;
+      }
+      return defaultInvoke(command, args);
+    });
+
+    try {
+      await user.click(screen.getByRole("button", { name: "Import Settings" }));
+
+      await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith("read_settings_snapshot_file"));
+      expect(screen.queryByText("Settings exported.")).not.toBeInTheDocument();
+      expect(screen.queryByText("Settings imported.")).not.toBeInTheDocument();
+      expect(screen.queryByText(/Could not import settings/i)).not.toBeInTheDocument();
+    } finally {
+      mockInvoke.mockImplementation(defaultInvoke);
+    }
+  });
+
+  it("shows a parse error for empty settings snapshot files", async () => {
+    const user = userEvent.setup();
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    if (!defaultInvoke) {
+      throw new Error("Mock invoke implementation was not installed.");
+    }
+    mockInvoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "read_settings_snapshot_file") {
+        return "";
+      }
+      return defaultInvoke(command, args);
+    });
+
+    try {
+      renderApp(["/settings"]);
+
+      expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Import Settings" }));
+
+      expect(await screen.findByText("Could not parse the settings file.")).toBeInTheDocument();
+      expect(screen.queryByText("Settings imported.")).not.toBeInTheDocument();
+    } finally {
+      mockInvoke.mockImplementation(defaultInvoke);
+    }
+  });
+
+  it("rejects corrupt settings snapshots instead of reporting full success", async () => {
+    const user = userEvent.setup();
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    if (!defaultInvoke) {
+      throw new Error("Mock invoke implementation was not installed.");
+    }
+    mockInvoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "read_settings_snapshot_file") {
+        return JSON.stringify({
+          exportedAt: "2026-04-18T13:16:00.000Z",
+          kind: "tuneforge.settings",
+          preferences: {
+            informationDensity: "detailed",
+          },
+          themeOverrides: {},
+          themePreference: "dark",
+          version: 1,
+        });
+      }
+      return defaultInvoke(command, args);
+    });
+
+    try {
+      renderApp(["/settings"]);
+
+      expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Import Settings" }));
+
+      expect(await screen.findByText("Unsupported settings file.")).toBeInTheDocument();
+      expect(screen.queryByText("Settings imported.")).not.toBeInTheDocument();
+    } finally {
+      mockInvoke.mockImplementation(defaultInvoke);
+    }
+  });
+
+  it("shows retryable settings export errors without native paths", async () => {
+    const user = userEvent.setup();
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    if (!defaultInvoke) {
+      throw new Error("Mock invoke implementation was not installed.");
+    }
+
+    mockInvoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "write_settings_snapshot_file") {
+        throw new Error("Could not write settings file: /Users/test/private/settings.json");
+      }
+      return defaultInvoke(command, args);
+    });
+
+    try {
+      renderApp(["/settings"]);
+
+      expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Export Settings" }));
+
+      expect(
+        await screen.findByText("Could not export settings. Choose another location and try again."),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/\/Users\/test\/private/)).not.toBeInTheDocument();
+      expect(screen.queryByText("Settings exported.")).not.toBeInTheDocument();
+    } finally {
+      mockInvoke.mockImplementation(defaultInvoke);
+    }
   });
 });

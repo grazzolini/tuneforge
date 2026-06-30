@@ -170,7 +170,7 @@ Backend behavior is environment-driven. Full table is in [apps/backend/README.md
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `TUNEFORGE_HOST` | `127.0.0.1` | Bind address. Do not change to a public address. |
+| `TUNEFORGE_HOST` | `127.0.0.1` | Dev/test-only loopback override. Allowed values: `127.0.0.1` or `localhost`. |
 | `TUNEFORGE_PORT` | `8765` | Bind port. |
 | `TUNEFORGE_DATA_DIR` | OS-specific | Override the data directory. |
 | `TUNEFORGE_FFMPEG_PATH` / `TUNEFORGE_FFPROBE_PATH` | `ffmpeg` / `ffprobe` | Override binary lookup. |

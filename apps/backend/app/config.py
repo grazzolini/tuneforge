@@ -9,6 +9,9 @@ from urllib.parse import urlparse
 
 from app.utils.model_cache import whisper_cache_dir
 
+_ALLOWED_BACKEND_HOSTS = ("127.0.0.1", "localhost")
+_BACKEND_HOST_ERROR = "TUNEFORGE_HOST must be one of: 127.0.0.1, localhost."
+
 
 def _default_data_root() -> Path:
     override = os.environ.get("TUNEFORGE_DATA_DIR")
@@ -70,7 +73,7 @@ def get_settings() -> Settings:
         database_path=data_root / "app.sqlite",
         projects_root=data_root / "projects",
         cache_root=cache_root,
-        backend_host=os.environ.get("TUNEFORGE_HOST", "127.0.0.1"),
+        backend_host=_parse_backend_host(os.environ.get("TUNEFORGE_HOST", "127.0.0.1")),
         backend_port=int(os.environ.get("TUNEFORGE_PORT", "8765")),
         default_export_format="wav",
         supported_import_formats=("mp3", "wav", "flac", "m4a", "aac", "ogg", "mp4", "webm"),
@@ -117,6 +120,13 @@ def ensure_data_dirs(settings: Settings | None = None) -> None:
         from app.utils.model_bundle import seed_model_bundle_caches
 
         seed_model_bundle_caches(current)
+
+
+def _parse_backend_host(value: str) -> str:
+    host = value.strip()
+    if host not in _ALLOWED_BACKEND_HOSTS:
+        raise ValueError(_BACKEND_HOST_ERROR)
+    return host
 
 
 def _parse_additional_cors_origins(value: str) -> tuple[str, ...]:

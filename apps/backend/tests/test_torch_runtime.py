@@ -499,7 +499,7 @@ def test_model_cache_verifier_imports_no_ml_runtimes():
         "import json, sys; "
         "import app.cli.prewarm_models; "
         "print(json.dumps({name: name in sys.modules "
-        "for name in ['torch', 'whisper', 'beat_this', 'demucs']}))"
+        "for name in ['torch', 'whisper', 'beat_this', 'demucs', 'crema', 'tensorflow', 'keras']}))"
     )
     completed = subprocess.run(
         [sys.executable, "-c", script],
@@ -514,6 +514,9 @@ def test_model_cache_verifier_imports_no_ml_runtimes():
         "whisper": False,
         "beat_this": False,
         "demucs": False,
+        "crema": False,
+        "tensorflow": False,
+        "keras": False,
     }
 
 

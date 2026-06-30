@@ -394,6 +394,34 @@ def test_transcribe_with_device_omits_language_for_auto_detect():
     assert result.language_override is None
 
 
+def test_transcribe_with_device_first_use_loads_whisper_with_download_root(tmp_path: Path):
+    calls: list[tuple[str, str, str]] = []
+
+    class FakeWhisper:
+        def load_model(self, model_name: str, *, device: str, download_root: str) -> str:
+            calls.append((model_name, device, download_root))
+            return "model"
+
+        def transcribe(self, model: str, source_path: str, **kwargs: object) -> dict[str, object]:
+            del model, source_path, kwargs
+            return {
+                "language": "en",
+                "segments": [{"start": 0.0, "end": 1.0, "text": "hello"}],
+            }
+
+    result = _transcribe_with_device(
+        Path("/tmp/fake.wav"),
+        requested_device="auto",
+        model_name="tiny",
+        device="cpu",
+        download_root=tmp_path,
+        whisper_module=FakeWhisper(),
+    )
+
+    assert calls == [("tiny", "cpu", str(tmp_path))]
+    assert result.segments[0]["text"] == "hello"
+
+
 def test_transcribe_with_device_passes_language_override_and_falls_back_to_it():
     class FakeWhisper:
         def __init__(self) -> None:

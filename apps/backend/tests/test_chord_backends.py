@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import sys
 import warnings
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 from app.benchmarks.chords import main as benchmark_main
+from app.engines import crema_chords
 from app.engines.chord_labels import chord_label_to_segment, parse_chord_label
 from app.engines.crema_chords import crema_annotation_to_timeline, detect_crema_chord_timeline
 from app.services.chord_backends import (
@@ -108,6 +111,40 @@ def test_crema_detection_suppresses_known_runtime_noise(monkeypatch, capsys, rec
     captured = capsys.readouterr()
     assert captured.out == ""
     assert len(recwarn) == 0
+    assert timeline[0]["label"] == "C"
+
+
+def test_crema_first_feature_use_instantiates_chord_model(monkeypatch):
+    created: list[str] = []
+    predicted: list[str] = []
+
+    class FakeChordModel:
+        def __init__(self) -> None:
+            created.append("created")
+
+        def predict(self, filename: str) -> FakeAnnotation:
+            predicted.append(filename)
+            return FakeAnnotation([{"time": 0.0, "duration": 1.0, "value": "C:maj", "confidence": 0.9}])
+
+    crema_module = ModuleType("crema")
+    crema_module.__path__ = []
+    models_module = ModuleType("crema.models")
+    models_module.__path__ = []
+    chord_module = ModuleType("crema.models.chord")
+    chord_module.ChordModel = FakeChordModel
+    crema_module.models = models_module
+    models_module.chord = chord_module
+
+    crema_chords.clear_crema_model_cache()
+    monkeypatch.setattr(crema_chords, "_CREMA_MODEL", None)
+    monkeypatch.setitem(sys.modules, "crema", crema_module)
+    monkeypatch.setitem(sys.modules, "crema.models", models_module)
+    monkeypatch.setitem(sys.modules, "crema.models.chord", chord_module)
+
+    timeline = detect_crema_chord_timeline(Path("/tmp/first-use.wav"))
+
+    assert created == ["created"]
+    assert predicted == ["/tmp/first-use.wav"]
     assert timeline[0]["label"] == "C"
 
 

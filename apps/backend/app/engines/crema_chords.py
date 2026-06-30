@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import importlib.metadata
 import importlib.util
 import io
@@ -10,8 +12,10 @@ from pathlib import Path
 from typing import Any
 
 from app.engines.chord_labels import chord_label_to_segment
+from app.utils.model_cache import ExpectedModelFile, InvalidModelFile, invalid_model_files
 
 CREMA_BACKEND_ID = "crema-advanced"
+_CREMA_CHORD_MODEL_ASSET_PREFIX = "crema/models/chord/"
 _CREMA_MODEL: Any | None = None
 
 
@@ -112,6 +116,78 @@ def preload_crema_model() -> None:
     _get_crema_model()
 
 
+def invalid_crema_model_asset_files() -> tuple[InvalidModelFile, ...]:
+    try:
+        package_files = importlib.metadata.files("crema")
+    except importlib.metadata.PackageNotFoundError:
+        return (
+            InvalidModelFile(
+                label="Crema chord model assets",
+                path=Path("crema"),
+                reason="missing-distribution",
+            ),
+        )
+
+    if package_files is None:
+        return (
+            InvalidModelFile(
+                label="Crema chord model assets",
+                path=Path(_CREMA_CHORD_MODEL_ASSET_PREFIX),
+                reason="metadata-unavailable",
+            ),
+        )
+
+    expected_files: list[ExpectedModelFile] = []
+    invalid_metadata_files: list[InvalidModelFile] = []
+    for package_file in package_files:
+        package_path = str(package_file)
+        if not package_path.startswith(_CREMA_CHORD_MODEL_ASSET_PREFIX):
+            continue
+
+        file_path = Path(package_file.locate())
+        label = f"Crema {package_path}"
+        file_size = getattr(package_file, "size", None)
+        file_sha256 = _crema_metadata_sha256(getattr(package_file, "hash", None))
+        if not isinstance(file_size, int) or file_size <= 0:
+            invalid_metadata_files.append(
+                InvalidModelFile(
+                    label=label,
+                    path=file_path,
+                    reason="metadata-size",
+                )
+            )
+            continue
+        if file_sha256 is None:
+            invalid_metadata_files.append(
+                InvalidModelFile(
+                    label=label,
+                    path=file_path,
+                    reason="metadata-sha256",
+                    expected_size=file_size,
+                )
+            )
+            continue
+        expected_files.append(
+            ExpectedModelFile(
+                label=label,
+                path=file_path,
+                size=file_size,
+                sha256=file_sha256,
+            )
+        )
+
+    if not expected_files and not invalid_metadata_files:
+        return (
+            InvalidModelFile(
+                label="Crema chord model assets",
+                path=Path(_CREMA_CHORD_MODEL_ASSET_PREFIX),
+                reason="metadata-missing-assets",
+            ),
+        )
+
+    return (*invalid_metadata_files, *invalid_model_files(tuple(expected_files)))
+
+
 def crema_model_metadata() -> dict[str, Any]:
     return {
         "backend_id": CREMA_BACKEND_ID,
@@ -131,6 +207,19 @@ def _get_crema_model() -> Any:
 
             _CREMA_MODEL = ChordModel()
     return _CREMA_MODEL
+
+
+def _crema_metadata_sha256(file_hash: Any) -> str | None:
+    if getattr(file_hash, "mode", None) != "sha256":
+        return None
+    hash_value = getattr(file_hash, "value", None)
+    if not isinstance(hash_value, str) or not hash_value:
+        return None
+    padding = "=" * (-len(hash_value) % 4)
+    try:
+        return base64.urlsafe_b64decode(hash_value + padding).hex()
+    except (ValueError, binascii.Error):
+        return None
 
 
 @contextmanager

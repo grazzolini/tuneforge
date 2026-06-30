@@ -141,6 +141,7 @@ type FormatJobStatusSummaryOptions = {
 
 const RUNTIME_LABEL_LIMIT = 160;
 const RUNTIME_DETAIL_LIMIT = 240;
+const DIAGNOSTIC_TEXT_LIMIT = 320;
 const SAFE_RUNTIME_DETAIL_PHRASES = new Set([
   "CPU fallback after accelerator became unavailable.",
   "CUDA failed, retrying CPU.",
@@ -151,6 +152,43 @@ const SAFE_RUNTIME_DETAIL_PHRASES = new Set([
   "Whisper switched to CPU because the requested accelerator is unavailable.",
   "Whisper switched to a smaller model after CUDA memory pressure.",
 ]);
+
+type DependencyDiagnosticKind = "host_tool" | "model_cache" | "dependency";
+
+type DependencyDiagnosticInput = {
+  code?: string | null;
+  details?: unknown;
+  fallbackOperation?: string | null;
+  message: string | null | undefined;
+};
+
+const DETAIL_DEPENDENCY_KEYS = ["dependency", "tool", "package", "backend"] as const;
+const DETAIL_MODEL_KEYS = ["model"] as const;
+const DETAIL_KIND_KEYS = ["dependency_kind", "dependency_type", "diagnostic_kind"] as const;
+const DETAIL_OPERATION_KEYS = ["operation", "affected_operation", "context"] as const;
+const DETAIL_ACTION_KEYS = [
+  "local_action",
+  "next_action",
+  "recovery_hint",
+  "action",
+  "guidance",
+  "remediation",
+] as const;
+const OPERATION_LABELS: Record<string, string> = {
+  audio_import_normalization: "audio import normalization",
+  audio_transform: "audio transform",
+  lyrics_transcription: "lyrics generation",
+  metadata_extraction: "metadata extraction",
+  stem_separation: "stem separation",
+};
+const OPERATION_MESSAGE_PATTERNS: Record<string, RegExp> = {
+  "audio import normalization": /\b(audio import normalization|normalize imported audio)\b/i,
+  "audio transform": /\b(audio transform|create transformed audio|transformed audio)\b/i,
+  "lyrics generation": /\b(lyrics generation|lyrics transcription|generate lyrics)\b/i,
+  "metadata extraction": /\b(metadata extraction|inspect audio metadata)\b/i,
+  "stem separation": /\b(stem separation|separate stems)\b/i,
+};
+
 export function formatJobRuntimeDevice(device: string | null | undefined) {
   const trimmed = typeof device === "string" ? device.trim() : "";
   return trimmed ? trimmed.toUpperCase() : null;
@@ -188,6 +226,341 @@ function formatSafeRuntimeText(value: string | null | undefined, limit: number) 
     return null;
   }
   return normalized;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function formatDiagnosticText(value: string | null | undefined, limit = DIAGNOSTIC_TEXT_LIMIT) {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed || hasControlCharacter(trimmed)) {
+    return null;
+  }
+
+  let normalized = trimmed.replace(/\s+/g, " ");
+  const rawOutputIndex = normalized.search(/\b(stdout|stderr|traceback|stack trace)\b/i);
+  if (rawOutputIndex >= 0) {
+    normalized = normalized.slice(0, rawOutputIndex).trim();
+  }
+
+  normalized = normalized.replace(/\bfile:\/\/[^\s,;)"']+/gi, "[redacted path]");
+  normalized = normalized.replace(/\b[A-Za-z]:\\[^\s,;)"']+/g, "[redacted path]");
+  normalized = normalized.replace(
+    /(^|[\s(["'])\/(?:Users|home|private|tmp|var|Volumes|[^/\s]+\/)[^\s,;)"']+/g,
+    (_match, prefix: string) => `${prefix}[redacted path]`,
+  );
+  normalized = normalized.replace(
+    /\b[^\s\\/]+\.(wav|mp3|flac|m4a|aac|ogg|mp4|webm)\b/gi,
+    "[redacted file]",
+  );
+  normalized = normalized.replace(/\s+/g, " ").trim();
+
+  if (!normalized) {
+    return null;
+  }
+  return normalized.length > limit ? `${normalized.slice(0, limit - 3).trimEnd()}...` : normalized;
+}
+
+function detailText(details: unknown, keys: readonly string[]) {
+  if (!isRecord(details)) {
+    return null;
+  }
+  for (const key of keys) {
+    const value = details[key];
+    if (typeof value === "string") {
+      const formatted = formatDiagnosticText(value, 160);
+      if (formatted) {
+        return formatted;
+      }
+    }
+  }
+  return null;
+}
+
+function operationLabel(value: string) {
+  const normalized = value.trim().replace(/\s+/g, " ");
+  const key = normalized.toLowerCase().replace(/\s+/g, "_");
+  return OPERATION_LABELS[key] ?? normalized.replace(/_/g, " ");
+}
+
+function detailOperationText(details: unknown) {
+  const operation = detailText(details, DETAIL_OPERATION_KEYS);
+  return operation ? operationLabel(operation) : null;
+}
+
+function dependencyFromMessage(message: string | null | undefined) {
+  const normalized = message?.toLowerCase() ?? "";
+  if (/\bffprobe\b/.test(normalized)) {
+    return "ffprobe";
+  }
+  if (/\bffmpeg\b/.test(normalized)) {
+    return "ffmpeg";
+  }
+  if (/\bopenai-whisper\b/.test(normalized)) {
+    return "openai-whisper";
+  }
+  if (/\bwhisper\b/.test(normalized)) {
+    return "Whisper";
+  }
+  if (/\bdemucs\b/.test(normalized)) {
+    return "Demucs";
+  }
+  if (/\bbeat-this\b/.test(normalized)) {
+    return "beat-this";
+  }
+  if (/\bcrema\b|\badvanced chords\b/.test(normalized)) {
+    return "Advanced Chords";
+  }
+  if (/\btensorflow\b/.test(normalized)) {
+    return "TensorFlow";
+  }
+  if (/\bkeras\b/.test(normalized)) {
+    return "Keras";
+  }
+  return null;
+}
+
+function operationFromMessage(
+  message: string | null | undefined,
+  fallbackOperation: string | null | undefined,
+): string | null {
+  const normalized = message?.toLowerCase() ?? "";
+  if (normalized.includes("metadata extraction")) {
+    return "metadata extraction";
+  }
+  if (normalized.includes("normalize imported audio")) {
+    return "audio import normalization";
+  }
+  if (normalized.includes("stem separation")) {
+    return "stem separation";
+  }
+  if (normalized.includes("lyrics generation") || normalized.includes("lyrics transcription")) {
+    return "lyrics generation";
+  }
+  if (normalized.includes("advanced beat analysis")) {
+    return "advanced beat analysis";
+  }
+  if (normalized.includes("chord")) {
+    return "chord detection";
+  }
+  return fallbackOperation ?? null;
+}
+
+function dependencyKind(
+  dependency: string | null,
+  message: string | null | undefined,
+  details: unknown,
+): DependencyDiagnosticKind {
+  const explicitKind = detailText(details, DETAIL_KIND_KEYS)?.toLowerCase() ?? "";
+  if (/\b(host|tool|binary|path)\b/.test(explicitKind)) {
+    return "host_tool";
+  }
+  if (/\b(model|cache|checkpoint|download)\b/.test(explicitKind)) {
+    return "model_cache";
+  }
+
+  const normalizedDependency = dependency?.toLowerCase() ?? "";
+  if (normalizedDependency === "ffmpeg" || normalizedDependency === "ffprobe") {
+    return "host_tool";
+  }
+
+  const normalizedMessage = message?.toLowerCase() ?? "";
+  if (
+    /\b(model|cache|checkpoint|download|prewarm)\b/.test(normalizedMessage)
+  ) {
+    return "model_cache";
+  }
+  return "dependency";
+}
+
+function dependencyKindLabel(kind: DependencyDiagnosticKind) {
+  switch (kind) {
+    case "host_tool":
+      return "Host tool";
+    case "model_cache":
+      return "Model/cache";
+    default:
+      return "Dependency";
+  }
+}
+
+function defaultDependencyAction(dependency: string | null, kind: DependencyDiagnosticKind) {
+  const normalizedDependency = dependency?.toLowerCase() ?? "";
+  if (normalizedDependency === "ffmpeg") {
+    return "Install FFmpeg and ensure ffmpeg is on PATH";
+  }
+  if (normalizedDependency === "ffprobe") {
+    return "Install FFmpeg and ensure ffprobe is on PATH";
+  }
+  if (normalizedDependency === "demucs") {
+    if (kind === "model_cache") {
+      return "Run setup with model prewarm enabled, then retry stem separation";
+    }
+    return "Install local backend stem dependencies, then retry stem separation";
+  }
+  if (normalizedDependency === "whisper" || normalizedDependency === "openai-whisper") {
+    if (kind === "model_cache") {
+      return "Run setup with model prewarm enabled, then retry lyrics generation";
+    }
+    return "Install local backend lyrics dependencies, then retry lyrics generation";
+  }
+  if (normalizedDependency === "beat-this") {
+    return "Install Advanced Beat Analysis dependencies or switch to Built-in Beat Analysis";
+  }
+  if (normalizedDependency === "advanced chords" || normalizedDependency === "crema") {
+    return "Install Advanced Chords dependencies or switch to built-in chords";
+  }
+  if (kind === "model_cache") {
+    return "Run setup with model prewarm enabled, then retry";
+  }
+  return null;
+}
+
+function cacheActionFromMessage(
+  dependency: string | null,
+  message: string | null | undefined,
+): string | null {
+  const normalizedDependency = dependency?.toLowerCase() ?? "";
+  const normalizedMessage = message?.toLowerCase() ?? "";
+  const isDemucs = normalizedDependency === "demucs";
+  const isWhisper = normalizedDependency === "whisper" || normalizedDependency === "openai-whisper";
+  if (!isDemucs && !isWhisper) {
+    return null;
+  }
+  if (normalizedMessage.includes("download failed")) {
+    return "Check local network access for first-run model download, then retry setup";
+  }
+  if (normalizedMessage.includes("unreadable")) {
+    return "Fix local cache permissions or re-run setup from an account that can read the model cache";
+  }
+  if (normalizedMessage.includes("corrupt")) {
+    return isDemucs
+      ? "Re-run local setup to replace Demucs model assets, then retry stem separation"
+      : "Re-run local setup to replace the Whisper model asset, then retry lyrics generation";
+  }
+  if (normalizedMessage.includes("missing")) {
+    return isDemucs
+      ? "Re-run local setup to download Demucs model assets, then retry stem separation"
+      : "Re-run local setup to download the Whisper model asset, then retry lyrics generation";
+  }
+  if (isWhisper && normalizedMessage.includes("unsupported")) {
+    return "Choose a supported local Whisper model, then retry lyrics generation";
+  }
+  return null;
+}
+
+function hasActionInMessage(message: string) {
+  return /\b(install|run setup|retry|switch to|ensure|make .+ available)\b/i.test(message);
+}
+
+function asSentence(value: string) {
+  return /[.!?]$/.test(value) ? value : `${value}.`;
+}
+
+function messageMentions(value: string, candidate: string | null | undefined) {
+  if (!candidate) {
+    return false;
+  }
+  const operationPattern = OPERATION_MESSAGE_PATTERNS[candidate.toLowerCase()];
+  if (operationPattern?.test(value)) {
+    return true;
+  }
+  return value.toLowerCase().includes(candidate.toLowerCase());
+}
+
+function isDependencyDiagnostic(input: DependencyDiagnosticInput, dependency: string | null) {
+  const code = input.code?.toUpperCase() ?? "";
+  if (
+    code.includes("DEPENDENCY") ||
+    code.includes("BACKEND_UNAVAILABLE") ||
+    code.includes("BACKEND_FAILED")
+  ) {
+    return true;
+  }
+  if (detailText(input.details, DETAIL_DEPENDENCY_KEYS)) {
+    return true;
+  }
+  if (dependency && detailText(input.details, DETAIL_KIND_KEYS)) {
+    return true;
+  }
+  const message = input.message?.toLowerCase() ?? "";
+  return Boolean(
+    dependency &&
+      /\b(required|dependency|unavailable|missing|model|cache|checkpoint|download)\b/.test(message),
+  );
+}
+
+function formatDependencyDiagnostic(input: DependencyDiagnosticInput) {
+  const message = formatDiagnosticText(input.message);
+  const dependency =
+    detailText(input.details, DETAIL_DEPENDENCY_KEYS) ??
+    dependencyFromMessage(message) ??
+    detailText(input.details, DETAIL_MODEL_KEYS);
+  if (!isDependencyDiagnostic(input, dependency)) {
+    return null;
+  }
+
+  const kind = dependencyKind(dependency, message, input.details);
+  const operation = detailOperationText(input.details) ?? operationFromMessage(message, input.fallbackOperation);
+  const explicitAction = detailText(input.details, DETAIL_ACTION_KEYS);
+  const action =
+    explicitAction ?? cacheActionFromMessage(dependency, message) ?? defaultDependencyAction(dependency, kind);
+  const pieces = [asSentence(message ?? "A required dependency is unavailable.")];
+
+  if (dependency) {
+    pieces.push(`${dependencyKindLabel(kind)}: ${dependency}.`);
+  }
+  if (operation && !messageMentions(message ?? "", operation)) {
+    pieces.push(`Operation: ${operation}.`);
+  }
+  if (action && (explicitAction || !hasActionInMessage(message ?? ""))) {
+    pieces.push(`Next: ${asSentence(action)}`);
+  }
+
+  return pieces.join(" ");
+}
+
+export function formatApiErrorMessage(error: unknown, fallback = "The request failed.") {
+  const message = error instanceof Error && error.message.trim() ? error.message.trim() : fallback;
+  const code = isRecord(error) && typeof error.code === "string" ? error.code : null;
+  const details = isRecord(error) ? error.details : null;
+  return formatDependencyDiagnostic({ code, details, message }) ?? message;
+}
+
+function operationForJobType(type: string | null | undefined) {
+  switch (type) {
+    case "analyze":
+      return "analysis";
+    case "chords":
+      return "chord detection";
+    case "export":
+      return "export";
+    case "lyrics":
+      return "lyrics generation";
+    case "preview":
+      return "preview rendering";
+    case "stems":
+      return "stem separation";
+    default:
+      return null;
+  }
+}
+
+export function formatJobErrorMessage(
+  message: string | null | undefined,
+  job?: Pick<JobSchema, "type"> | null,
+) {
+  const trimmed = typeof message === "string" ? message.trim() : "";
+  if (!trimmed) {
+    return null;
+  }
+  return (
+    formatDependencyDiagnostic({
+      fallbackOperation: operationForJobType(job?.type),
+      message: trimmed,
+    }) ?? trimmed
+  );
 }
 
 function formatJobRuntimeDetail(detail: string | null | undefined) {

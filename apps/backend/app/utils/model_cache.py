@@ -77,7 +77,16 @@ def sha256_file(path: Path) -> str:
 
 
 def _invalid_model_file(expected_file: ExpectedModelFile) -> InvalidModelFile | None:
-    if not expected_file.path.is_file():
+    try:
+        is_file = expected_file.path.is_file()
+    except OSError:
+        return InvalidModelFile(
+            label=expected_file.label,
+            path=expected_file.path,
+            reason="unreadable",
+            expected_size=expected_file.size,
+        )
+    if not is_file:
         return InvalidModelFile(
             label=expected_file.label,
             path=expected_file.path,
@@ -85,7 +94,15 @@ def _invalid_model_file(expected_file: ExpectedModelFile) -> InvalidModelFile | 
             expected_size=expected_file.size,
         )
 
-    actual_size = expected_file.path.stat().st_size
+    try:
+        actual_size = expected_file.path.stat().st_size
+    except OSError:
+        return InvalidModelFile(
+            label=expected_file.label,
+            path=expected_file.path,
+            reason="unreadable",
+            expected_size=expected_file.size,
+        )
     if actual_size != expected_file.size:
         return InvalidModelFile(
             label=expected_file.label,
@@ -95,7 +112,17 @@ def _invalid_model_file(expected_file: ExpectedModelFile) -> InvalidModelFile | 
             actual_size=actual_size,
         )
 
-    if sha256_file(expected_file.path) != expected_file.sha256:
+    try:
+        actual_sha256 = sha256_file(expected_file.path)
+    except OSError:
+        return InvalidModelFile(
+            label=expected_file.label,
+            path=expected_file.path,
+            reason="unreadable",
+            expected_size=expected_file.size,
+            actual_size=actual_size,
+        )
+    if actual_sha256 != expected_file.sha256:
         return InvalidModelFile(
             label=expected_file.label,
             path=expected_file.path,

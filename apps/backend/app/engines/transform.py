@@ -6,6 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from app.config import get_settings
+from app.dependency_diagnostics import missing_host_tool_error
 from app.errors import AppError, JobCancelledError
 
 
@@ -56,7 +57,14 @@ def run_ffmpeg_transform(
         filter_graph,
         str(destination_path.with_suffix(f".{output_format}")),
     ]
-    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except FileNotFoundError as exc:
+        raise missing_host_tool_error(
+            tool="ffmpeg",
+            operation="audio_transform",
+            impact="create transformed audio",
+        ) from exc
     if register_process:
         register_process(proc)
     if on_progress:
@@ -77,12 +85,11 @@ def run_ffmpeg_transform(
         if unregister_process:
             unregister_process()
 
-    stdout, stderr = proc.communicate()
+    proc.communicate()
     if proc.returncode != 0:
         raise AppError(
             "PROCESSING_FAILED",
             "FFmpeg failed to produce the requested artifact.",
-            details={"stdout": stdout.strip(), "stderr": stderr.strip()},
         )
     if on_progress:
         on_progress(90)

@@ -4,6 +4,7 @@ import {
   artifactSummary,
   formatArtifactTimestamp,
   formatJobProgressValue,
+  formatJobErrorMessage,
   formatJobStageLabel,
   formatJobStatusSummary,
 } from "../projectViewUtils";
@@ -78,6 +79,7 @@ export function JobsHistory() {
               {hasJobs
                 ? visibleJobs.map((job) => {
                     const progress = formatJobProgressValue(job);
+                    const errorMessage = formatJobErrorMessage(job.error_message, job);
                     const stageLabel = formatJobStageLabel(job);
                     return (
                       <li key={job.id}>
@@ -88,9 +90,7 @@ export function JobsHistory() {
                         </div>
                         <progress aria-label={`${job.type} job progress`} max={100} value={progress} />
                         <small>{formatArtifactTimestamp(job.completed_at ?? job.updated_at)}</small>
-                        {job.error_message ? (
-                          <small className="inline-error">{job.error_message}</small>
-                        ) : null}
+                        {errorMessage ? <small className="inline-error">{errorMessage}</small> : null}
                       </li>
                     );
                   })

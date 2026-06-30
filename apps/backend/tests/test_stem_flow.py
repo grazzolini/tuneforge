@@ -11,8 +11,9 @@ from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
 from app.db import SessionLocal
+from app.dependency_diagnostics import demucs_dependency_missing_error
 from app.engines.stem_signal import STEM_SIGNAL_THRESHOLDS
-from app.errors import AppError, JobCancelledError
+from app.errors import JobCancelledError
 from app.models import Artifact, Job
 from app.services.artifacts import register_artifact
 from app.services.projects import get_project, import_project
@@ -1358,7 +1359,7 @@ def test_stem_artifact_unique_constraint_rejects_duplicates(client, sample_stere
 
 def test_stem_generation_reports_missing_dependency(client, sample_stereo_audio_file: Path, monkeypatch):
     def fake_separate_two_stems(*args, **kwargs):
-        raise AppError("DEPENDENCY_MISSING", "Demucs is required for stem separation.")
+        raise demucs_dependency_missing_error()
 
     monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
 
@@ -1373,7 +1374,10 @@ def test_stem_generation_reports_missing_dependency(client, sample_stereo_audio_
     ).json()["job"]
     final_job = wait_for_job(client, stem_job["id"])
     assert final_job["status"] == "failed"
-    assert final_job["error_message"] == "Demucs is required for stem separation."
+    assert final_job["error_message"] == (
+        "Demucs is unavailable, so TuneForge cannot separate stems. "
+        "Next: Install the local backend stem dependencies, then retry stem separation."
+    )
 
 
 def test_running_stem_cancel_after_subprocess_exit_marks_job_cancelled(

@@ -66,6 +66,7 @@ import {
   findActiveLyricsWordIndex,
   formatArtifactTimestamp,
   formatCapoShiftSummary,
+  formatJobErrorMessage,
   formatRetuneSummary,
   formatSemitoneShift,
   formatTargetSelectionSummary,
@@ -936,7 +937,7 @@ export function useProjectViewModel() {
   const hasVisibleStems = visibleStemArtifacts.length > 0;
   const stemErrorMessage =
     stemJob?.error_message && !dismissedStemJobIds.includes(stemJob.id)
-      ? stemJob.error_message
+      ? formatJobErrorMessage(stemJob.error_message, stemJob)
       : null;
   const visibleJobs = projectJobs;
   const tuningSummary = formatRetuneSummary(retuneMode, referenceHz, centsOffset);

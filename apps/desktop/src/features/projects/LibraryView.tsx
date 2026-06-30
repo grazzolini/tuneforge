@@ -7,6 +7,7 @@ import { api, getProjectSyncSummary, type ProjectSchema } from "../../lib/api";
 import { formatLocalDateTime, normalizeApiDateTime } from "../../lib/datetime";
 import { usePreferences } from "../../lib/preferences";
 import { useLazyLoadSentinel } from "../../lib/useLazyLoadSentinel";
+import { formatApiErrorMessage } from "./projectViewUtils";
 import { useBeatBackendActionSelection } from "./hooks/useBeatBackendActionSelection";
 import { useChordBackendActionSelection } from "./hooks/useChordBackendActionSelection";
 
@@ -117,7 +118,7 @@ type ImportNotice =
   | { kind: "error"; message: string };
 
 type BatchImportSummary = {
-  failures: Array<{ message: string; sourcePath: string }>;
+  failures: Array<{ message: string }>;
   importedCount: number;
   skippedCount: number;
   failedCount: number;
@@ -172,7 +173,7 @@ function formatBatchFailureSummary(failures: BatchImportSummary["failures"]) {
   const visibleFailures = failures.slice(0, 3);
   const hiddenFailureCount = failures.length - visibleFailures.length;
   const failureSummary = visibleFailures
-    .map((failure) => `${failure.sourcePath}: ${trimTrailingPeriod(failure.message)}`)
+    .map((failure) => trimTrailingPeriod(failure.message))
     .join("; ");
   return ` Failed: ${failureSummary}${hiddenFailureCount ? `; and ${hiddenFailureCount} more` : ""}.`;
 }
@@ -222,8 +223,7 @@ function getImportErrorNotice(error: unknown): ImportNotice {
 }
 
 function getImportErrorMessage(error: unknown) {
-  const message = error instanceof Error && error.message.trim() ? error.message.trim() : "The request failed.";
-  return message;
+  return formatApiErrorMessage(error);
 }
 
 function getImportNoticeClassName(importNotice: ImportNotice) {
@@ -336,7 +336,7 @@ export function LibraryView() {
             skippedCount += 1;
           } else {
             failedCount += 1;
-            failures.push({ sourcePath, message: getImportErrorMessage(error) });
+            failures.push({ message: getImportErrorMessage(error) });
           }
         }
       }

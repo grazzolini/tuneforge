@@ -12,8 +12,14 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
-from fastapi import status
 
+from app.dependency_diagnostics import (
+    cache_status_from_failure_text,
+    demucs_dependency_missing_error,
+    demucs_failure_error,
+    dependency_from_import_failure_text,
+    has_dependency_import_failure_text,
+)
 from app.errors import AppError, JobCancelledError
 from app.runtime_status import is_runtime_event_payload, parse_json_payload
 from app.utils.torch_runtime import with_mps_fallback_env
@@ -21,11 +27,7 @@ from app.utils.torch_runtime import with_mps_fallback_env
 
 def _require_demucs_dependency() -> None:
     if importlib.util.find_spec("demucs") is None:
-        raise AppError(
-            "DEPENDENCY_MISSING",
-            "Demucs is required for stem separation. Install the backend stem dependencies first.",
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
+        raise demucs_dependency_missing_error()
 
 
 def separate_two_stems(
@@ -190,20 +192,10 @@ def _run_demucs_worker(
         if process.returncode != 0:
             if should_cancel and should_cancel():
                 raise JobCancelledError()
-            raise AppError(
-                "PROCESSING_FAILED",
-                "Demucs failed to separate the track.",
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                details={"stdout": (stdout or "").strip(), "stderr": (stderr or "").strip()},
-            )
+            raise _demucs_worker_failure_error(stdout, stderr)
 
         if any(not output_path.exists() for output_path in expected_outputs):
-            raise AppError(
-                "PROCESSING_FAILED",
-                "Demucs completed without producing the expected stem files.",
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                details={"stdout": (stdout or "").strip(), "stderr": (stderr or "").strip()},
-            )
+            raise demucs_failure_error()
 
         if on_progress:
             on_progress(98)
@@ -230,6 +222,23 @@ def _run_demucs_worker(
     finally:
         if process and process.poll() is None:
             process.kill()
+
+
+def _demucs_worker_failure_error(stdout: str, stderr: str) -> AppError:
+    dependency = dependency_from_import_failure_text(
+        (stdout, stderr),
+        {
+            "demucs": "demucs",
+            "numpy": "numpy",
+            "soundfile": "soundfile",
+            "torch": "pytorch",
+        },
+    )
+    if dependency is not None:
+        return demucs_dependency_missing_error(dependency=dependency)
+    if has_dependency_import_failure_text((stdout, stderr)):
+        return demucs_dependency_missing_error()
+    return demucs_failure_error(cache_status=cache_status_from_failure_text((stdout, stderr)))
 
 
 def _start_output_reader(

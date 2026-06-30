@@ -11,6 +11,7 @@ from typing import Any, Literal, cast
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.dependency_diagnostics import safe_dependency_remediation
 from app.errors import AppError, JobCancelledError
 from app.models import Artifact, Job, Project, utcnow
 from app.runtime_status import (
@@ -79,6 +80,19 @@ _PREPARING_STAGE_LABELS = {
     "stems": "Preparing stem separation.",
     "export": "Preparing export.",
 }
+
+
+def _as_sentence(value: str) -> str:
+    stripped = value.strip()
+    return stripped if stripped.endswith((".", "!", "?")) else f"{stripped}."
+
+
+def _job_error_message(exc: AppError) -> str:
+    message = exc.message.strip() or "Job failed."
+    remediation = safe_dependency_remediation(exc.details)
+    if remediation is None or "next:" in message.lower():
+        return message
+    return f"{_as_sentence(message)} Next: {_as_sentence(remediation)}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -824,7 +838,7 @@ class InProcessJobRunner:
             if self.is_cancel_requested(job_id):
                 self.update_job(job_id, status="cancelled", error_message=None)
             else:
-                self.update_job(job_id, status="failed", error_message=exc.message)
+                self.update_job(job_id, status="failed", error_message=_job_error_message(exc))
         except Exception as exc:  # pragma: no cover - defensive fallback
             if self.is_cancel_requested(job_id):
                 self.update_job(job_id, status="cancelled", error_message=None)

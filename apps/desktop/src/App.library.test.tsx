@@ -492,7 +492,7 @@ describe("Desktop app library", () => {
     expect(mockGetProject).not.toHaveBeenCalled();
   });
 
-  it("summarizes failed batch imports with file and error details", async () => {
+  it("summarizes failed batch imports with error details", async () => {
     const user = userEvent.setup();
     mockOpen.mockResolvedValue(["/tmp/broken.wav", "/tmp/new-song.wav"]);
     mockImportProject.mockRejectedValueOnce(new Error("Unsupported codec."));
@@ -506,10 +506,43 @@ describe("Desktop app library", () => {
     const summary = await screen.findByRole("status");
     expect(
       within(summary).getByText(
-        "1 track imported, 0 duplicates skipped, 1 failed. Failed: /tmp/broken.wav: Unsupported codec.",
+        "1 track imported, 0 duplicates skipped, 1 failed. Failed: Unsupported codec.",
       ),
     ).toBeInTheDocument();
     expect(mockGetProject).not.toHaveBeenCalled();
+  });
+
+  it("summarizes dependency batch failures without raw output or paths", async () => {
+    const user = userEvent.setup();
+    mockOpen.mockResolvedValue(["/Users/test/Music/Secret Demo.wav", "/tmp/new-song.wav"]);
+    mockImportProject.mockRejectedValueOnce(
+      Object.assign(
+        new Error(
+          "ffmpeg is required to normalize imported audio. stderr: /Users/test/Music/Secret Demo.wav",
+        ),
+        {
+          code: "DEPENDENCY_MISSING",
+          details: {
+            dependency: "ffmpeg",
+            dependency_kind: "host_tool",
+            local_action: "Install FFmpeg and ensure ffmpeg is on PATH",
+            operation: "normalize imported audio",
+          },
+        },
+      ),
+    );
+
+    renderApp(["/"]);
+
+    expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Import Track(s)" }));
+
+    await waitFor(() => expect(mockImportProject).toHaveBeenCalledTimes(2));
+    const summary = await screen.findByRole("status");
+    expect(summary).toHaveTextContent(
+      "1 track imported, 0 duplicates skipped, 1 failed. Failed: ffmpeg is required to normalize imported audio. Host tool: ffmpeg. Next: Install FFmpeg and ensure ffmpeg is on PATH.",
+    );
+    expect(summary).not.toHaveTextContent(/stderr|Secret Demo|Users|\.wav/i);
   });
 
   it("shows duplicate import warning with a link to the existing project", async () => {
@@ -582,6 +615,37 @@ describe("Desktop app library", () => {
 
     await waitFor(() => expect(mockGetProject).toHaveBeenCalledWith("proj_123"));
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+  });
+
+  it("shows dependency import errors without raw output or paths", async () => {
+    const user = userEvent.setup();
+    mockOpen.mockResolvedValue("/Users/test/Music/Secret Demo.wav");
+    mockImportProject.mockRejectedValueOnce(
+      Object.assign(
+        new Error("ffprobe is required for metadata extraction. stdout: /Users/test/Music/Secret Demo.wav"),
+        {
+          code: "DEPENDENCY_MISSING",
+          details: {
+            dependency: "ffprobe",
+            dependency_kind: "host_tool",
+            local_action: "Install FFmpeg and ensure ffprobe is on PATH",
+            operation: "metadata extraction",
+          },
+        },
+      ),
+    );
+
+    renderApp(["/"]);
+
+    expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Import Track(s)" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "Could not import track. ffprobe is required for metadata extraction. Host tool: ffprobe. Next: Install FFmpeg and ensure ffprobe is on PATH.",
+    );
+    expect(alert).not.toHaveTextContent(/stdout|Secret Demo|Users|\.wav/i);
+    expect(within(alert).queryByRole("link", { name: "Open project" })).not.toBeInTheDocument();
   });
 
   it("uses the selected default chord backend and stem model when importing a track", async () => {

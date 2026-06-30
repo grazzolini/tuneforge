@@ -254,6 +254,36 @@ describe("Desktop app project playback artifacts", () => {
     expect(jobHistory).not.toHaveTextContent(/stderr|song\.wav|ETA/i);
   });
 
+  it("shows dependency job history errors without raw output or paths", async () => {
+    const user = userEvent.setup();
+    setJobs([
+      {
+        id: "job_stems_missing_demucs",
+        project_id: "proj_123",
+        type: "stems",
+        status: "failed",
+        progress: 15,
+        source_artifact_id: "art_source",
+        error_message: "Demucs is required for stem separation. stderr: /Users/test/Music/Secret Demo.wav",
+        created_at: "2026-04-18T13:16:00.000Z",
+        updated_at: "2026-04-18T13:16:00.000Z",
+      },
+    ]);
+
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openAnalysisPanel(user);
+    await user.click(screen.getByText("Show raw artifacts and processing history"));
+    await expectProjectJobsRequested("proj_123");
+
+    const jobHistory = getJobsHistoryDetails();
+    expect(jobHistory).toHaveTextContent(
+      "Demucs is required for stem separation. Dependency: Demucs. Next: Install local backend stem dependencies, then retry stem separation.",
+    );
+    expect(jobHistory).not.toHaveTextContent(/stderr|Secret Demo|Users|\.wav/i);
+  });
+
   it("loads later project terminal job pages with scoped filters", async () => {
     const user = userEvent.setup();
     setJobs([

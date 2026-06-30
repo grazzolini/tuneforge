@@ -3919,6 +3919,32 @@ describe("Desktop app activity", () => {
     expect(within(cancelledRow).getByText("advanced / source")).toBeInTheDocument();
   });
 
+  it("shows dependency job errors without raw output or paths", async () => {
+    setJobs([
+      job({
+        id: "job_stems_missing_demucs",
+        project_id: "proj_123",
+        type: "stems",
+        status: "failed",
+        progress: 45,
+        error_message: "Demucs is required for stem separation. stderr: /Users/test/Music/Secret Demo.wav",
+        stem_model: "htdemucs_6s",
+        stem_model_label: "Default (6 stems model)",
+        created_at: "2026-04-18T13:21:00.000Z",
+        updated_at: "2026-04-18T13:23:00.000Z",
+      }),
+    ]);
+
+    renderApp(["/activity"]);
+
+    const row = await screen.findByRole("article", { name: "stems failed job" });
+    const alert = within(row).getByRole("alert");
+    expect(alert).toHaveTextContent(
+      "Demucs is required for stem separation. Dependency: Demucs. Next: Install local backend stem dependencies, then retry stem separation.",
+    );
+    expect(alert).not.toHaveTextContent(/stderr|Secret Demo|Users|\.wav/i);
+  });
+
   it("renders old jobs with null stage and runtime fields", async () => {
     setJobs([
       job({

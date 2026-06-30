@@ -91,18 +91,18 @@ def test_configured_missing_model_repo_fails_stem_job(client, sample_stereo_audi
     monkeypatch.setenv("TUNEFORGE_DEMUCS_MODEL_REPO", str(tmp_path / "missing-demucs"))
     get_settings.cache_clear()
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project_id = _create_project_without_import_jobs(sample_stereo_audio_file)
     stem_job = client.post(
-        f"/api/v1/projects/{project['id']}/stems",
+        f"/api/v1/projects/{project_id}/stems",
         json={"mode": "stems", "stem_model": "htdemucs_6s", "output_format": "wav"},
     ).json()["job"]
     final_job = wait_for_job(client, stem_job["id"])
 
     assert final_job["status"] == "failed"
-    assert "Bundled Demucs model repo is missing" in final_job["error_message"]
+    assert final_job["error_message"] == (
+        "Bundled Demucs model assets are missing, so TuneForge cannot separate stems. "
+        "Next: Re-run local setup to download Demucs model assets, then retry stem separation."
+    )
 
 
 def test_configured_model_repo_requires_manifest(client, sample_stereo_audio_file, tmp_path, monkeypatch):
@@ -113,18 +113,18 @@ def test_configured_model_repo_requires_manifest(client, sample_stereo_audio_fil
     monkeypatch.setenv("TUNEFORGE_DEMUCS_MODEL_REPO", str(repo))
     get_settings.cache_clear()
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project_id = _create_project_without_import_jobs(sample_stereo_audio_file)
     stem_job = client.post(
-        f"/api/v1/projects/{project['id']}/stems",
+        f"/api/v1/projects/{project_id}/stems",
         json={"mode": "stems", "stem_model": "htdemucs_6s", "output_format": "wav"},
     ).json()["job"]
     final_job = wait_for_job(client, stem_job["id"])
 
     assert final_job["status"] == "failed"
-    assert final_job["error_message"] == "Bundled Demucs model manifest is missing"
+    assert final_job["error_message"] == (
+        "Bundled Demucs model manifest is missing, so TuneForge cannot separate stems. "
+        "Next: Re-run local setup to download Demucs model assets, then retry stem separation."
+    )
 
 
 def test_configured_model_repo_checks_manifest_sizes(client, sample_stereo_audio_file, tmp_path, monkeypatch):
@@ -136,18 +136,18 @@ def test_configured_model_repo_checks_manifest_sizes(client, sample_stereo_audio
     monkeypatch.setenv("TUNEFORGE_DEMUCS_MODEL_REPO", str(repo))
     get_settings.cache_clear()
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project_id = _create_project_without_import_jobs(sample_stereo_audio_file)
     stem_job = client.post(
-        f"/api/v1/projects/{project['id']}/stems",
+        f"/api/v1/projects/{project_id}/stems",
         json={"mode": "stems", "stem_model": "htdemucs_6s", "output_format": "wav"},
     ).json()["job"]
     final_job = wait_for_job(client, stem_job["id"])
 
     assert final_job["status"] == "failed"
-    assert final_job["error_message"] == "Bundled htdemucs_6s files have unexpected sizes: htdemucs_6s.yaml"
+    assert final_job["error_message"] == (
+        "Bundled htdemucs_6s model cache is corrupt. "
+        "Next: Re-run local setup to replace Demucs model assets, then retry stem separation."
+    )
 
 
 def test_configured_model_repo_checks_manifest_hashes(client, sample_stereo_audio_file, tmp_path, monkeypatch):
@@ -159,18 +159,18 @@ def test_configured_model_repo_checks_manifest_hashes(client, sample_stereo_audi
     monkeypatch.setenv("TUNEFORGE_DEMUCS_MODEL_REPO", str(repo))
     get_settings.cache_clear()
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project_id = _create_project_without_import_jobs(sample_stereo_audio_file)
     stem_job = client.post(
-        f"/api/v1/projects/{project['id']}/stems",
+        f"/api/v1/projects/{project_id}/stems",
         json={"mode": "stems", "stem_model": "htdemucs_6s", "output_format": "wav"},
     ).json()["job"]
     final_job = wait_for_job(client, stem_job["id"])
 
     assert final_job["status"] == "failed"
-    assert final_job["error_message"] == "Bundled htdemucs_6s files have unexpected hashes: htdemucs_6s.yaml"
+    assert final_job["error_message"] == (
+        "Bundled htdemucs_6s model cache is corrupt. "
+        "Next: Re-run local setup to replace Demucs model assets, then retry stem separation."
+    )
 
 
 def _write_six_stem_manifest(

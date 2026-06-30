@@ -61,6 +61,7 @@ from app.services.tabs import (
     get_tab_import,
     list_project_sections,
 )
+from app.services.transformations import ensure_export_destination_available
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -460,6 +461,10 @@ def project_export(
         artifact = session.get(Artifact, artifact_id)
         if artifact is None or artifact.project_id != project.id:
             raise AppError("ARTIFACT_NOT_FOUND", "Artifact does not belong to this project.", status_code=404)
+    ensure_export_destination_available(
+        destination_file_path=payload.destination_file_path,
+        overwrite_existing=payload.overwrite_existing,
+    )
     job = runner.create_job(
         session,
         project_id=project_id,

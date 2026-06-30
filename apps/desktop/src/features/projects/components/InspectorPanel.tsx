@@ -487,7 +487,7 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
           title={editLockTitle}
           type="button"
         >
-          {exportMutation.isPending ? "Queueing..." : "Export Selected Audio"}
+          {exportMutation.isPending ? "Preparing..." : "Export Selected Audio"}
         </button>
       </div>
 

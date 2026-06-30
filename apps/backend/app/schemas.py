@@ -1396,6 +1396,8 @@ class ExportRequest(BaseModel):
     mixdown_mode: str = "copy"
     output_format: str = "wav"
     destination_path: str | None = None
+    destination_file_path: str | None = None
+    overwrite_existing: bool = False
 
     @model_validator(mode="after")
     def validate_export(self) -> ExportRequest:

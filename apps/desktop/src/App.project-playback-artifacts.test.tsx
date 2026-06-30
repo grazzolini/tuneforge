@@ -16,6 +16,7 @@ import {
   setJobs,
   setProjectChords,
 } from "./test/appTestHarness";
+import { ApiError } from "./lib/api";
 import {
   ensureInspectorVisible,
   generateStems,
@@ -74,6 +75,23 @@ function terminalJob(index: number, overrides: Record<string, unknown> = {}) {
     updated_at: timestamp,
     ...overrides,
   };
+}
+
+function exportDestinationExistsError() {
+  return new ApiError({
+    code: "EXPORT_DESTINATION_EXISTS",
+    message: "Export destination already exists.",
+    details: {},
+  });
+}
+
+async function exportSelectedSourceAudio(user: ReturnType<typeof userEvent.setup>) {
+  expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+  await ensureInspectorVisible(user);
+  const sourceList = screen.getByRole("group", { name: "Source and mix list" });
+  await user.click(within(sourceList).getByRole("button", { name: /Source Track/i }));
+  await openAnalysisPanel(user);
+  await user.click(screen.getByRole("button", { name: "Export Selected Audio" }));
 }
 
 describe("Desktop app project playback artifacts", () => {
@@ -592,22 +610,96 @@ describe("Desktop app project playback artifacts", () => {
 
     renderApp(["/projects/proj_123"]);
 
-    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    await ensureInspectorVisible(user);
-    const sourceList = screen.getByRole("group", { name: "Source and mix list" });
-    await user.click(within(sourceList).getByRole("button", { name: /Source Track/i }));
-    await openAnalysisPanel(user);
-    await user.click(screen.getByRole("button", { name: "Export Selected Audio" }));
+    await exportSelectedSourceAudio(user);
 
-    expect(mockSave).toHaveBeenCalled();
+    expect(mockSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filters: expect.arrayContaining([
+          expect.objectContaining({ extensions: ["wav"] }),
+          expect.objectContaining({ extensions: ["mp3"] }),
+          expect.objectContaining({ extensions: ["flac"] }),
+        ]),
+      }),
+    );
     expect(mockCreateExport).toHaveBeenCalledWith(
       "proj_123",
       expect.objectContaining({
         artifact_ids: ["art_source"],
         output_format: "flac",
-        destination_path: "/tmp/exports",
+        destination_file_path: "/tmp/exports/demo-source.flac",
       }),
     );
+    expect(mockCreateExport.mock.calls[0]?.[1]).not.toHaveProperty("destination_path");
+  });
+
+  it("does not create an export when the save dialog is canceled", async () => {
+    const user = userEvent.setup();
+    mockSave.mockResolvedValue(null);
+
+    renderApp(["/projects/proj_123"]);
+
+    await exportSelectedSourceAudio(user);
+
+    expect(mockSave).toHaveBeenCalled();
+    expect(mockCreateExport).not.toHaveBeenCalled();
+  });
+
+  it("does not retry export when an existing destination warning is canceled", async () => {
+    const user = userEvent.setup();
+    mockSave.mockResolvedValue("/tmp/exports/demo-source.wav");
+    mockConfirm.mockResolvedValueOnce(false);
+    mockCreateExport.mockRejectedValueOnce(exportDestinationExistsError());
+
+    renderApp(["/projects/proj_123"]);
+
+    await exportSelectedSourceAudio(user);
+
+    await waitFor(() =>
+      expect(mockConfirm).toHaveBeenCalledWith(
+        expect.stringContaining("already exists"),
+        expect.objectContaining({
+          title: "Replace existing export?",
+          kind: "warning",
+          okLabel: "Replace",
+        }),
+      ),
+    );
+    expect(mockCreateExport).toHaveBeenCalledTimes(1);
+    expect(mockCreateExport.mock.calls[0]?.[1]).not.toHaveProperty("overwrite_existing");
+  });
+
+  it("retries export once with overwrite when an existing destination warning is approved", async () => {
+    const user = userEvent.setup();
+    mockSave.mockResolvedValue("/tmp/exports/demo-source.mp3");
+    mockConfirm.mockResolvedValueOnce(true);
+    mockCreateExport.mockRejectedValueOnce(exportDestinationExistsError());
+
+    renderApp(["/projects/proj_123"]);
+
+    await exportSelectedSourceAudio(user);
+
+    await waitFor(() => expect(mockCreateExport).toHaveBeenCalledTimes(2));
+    expect(mockCreateExport).toHaveBeenNthCalledWith(
+      1,
+      "proj_123",
+      expect.objectContaining({
+        artifact_ids: ["art_source"],
+        output_format: "mp3",
+        destination_file_path: "/tmp/exports/demo-source.mp3",
+      }),
+    );
+    expect(mockCreateExport.mock.calls[0]?.[1]).not.toHaveProperty("overwrite_existing");
+    expect(mockCreateExport).toHaveBeenNthCalledWith(
+      2,
+      "proj_123",
+      expect.objectContaining({
+        artifact_ids: ["art_source"],
+        output_format: "mp3",
+        destination_file_path: "/tmp/exports/demo-source.mp3",
+        overwrite_existing: true,
+      }),
+    );
+    expect(mockCreateExport.mock.calls[1]?.[1]).not.toHaveProperty("destination_path");
   });
 
   it("renames project from the title row", async () => {

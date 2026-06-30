@@ -1124,6 +1124,13 @@ export interface components {
             output_format?: string;
             /** Destination Path */
             destination_path?: string | null;
+            /** Destination File Path */
+            destination_file_path?: string | null;
+            /**
+             * Overwrite Existing
+             * @default false
+             */
+            overwrite_existing?: boolean;
         };
         /** HTTPValidationError */
         HTTPValidationError: {

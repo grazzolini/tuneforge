@@ -1013,6 +1013,8 @@ class InProcessJobRunner:
             artifact_ids=list(payload.get("artifact_ids", [])),
             output_format=payload.get("output_format", "wav"),
             destination_path=payload.get("destination_path"),
+            destination_file_path=payload.get("destination_file_path"),
+            overwrite_existing=bool(payload.get("overwrite_existing", False)),
             on_progress=context.progress_reporter(),
             should_cancel=context.should_cancel,
             register_process=context.register_process,

@@ -222,6 +222,9 @@ pnpm package:mac
 pnpm package:linux:flatpak
 ```
 
+Before marking an RC ready, follow the [Release Candidate Gate](./docs/PACKAGING.md#release-candidate-gate)
+and record package build plus packaged launch-smoke evidence from the built artifact.
+
 Plain package commands include crema Advanced Chords and beat-this Advanced Beat Analysis
 dependencies by default for desktop builds, but release/default package commands do not pass
 `--model-bundle`. Use opt-outs to build fallback packages, and keep `--model-bundle` separate

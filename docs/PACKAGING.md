@@ -14,6 +14,57 @@ See [Third-party notices](../THIRD_PARTY_NOTICES.md) for the dependency and mode
 - Default packages may still download Demucs, Whisper, or beat-this weights on first use when caches are missing. Fully offline operation requires host/sandbox FFmpeg access plus the relevant local caches or package assets to already exist.
 - Crema chord model files come from the crema dependency and ship with Advanced Chords unless that dependency stack is excluded; Demucs, Whisper, and beat-this external weights remain cache/download assets unless `--model-bundle` is explicitly passed.
 
+## Release Candidate Gate
+
+A release candidate is not ready to tag or publish until package build evidence and a
+packaged launch smoke pass are both recorded for each intended artifact. Missing build
+or smoke evidence fails the gate closed; do not substitute `pnpm dev`, a dev server, or
+an unpackaged Tauri run for packaged-artifact proof.
+
+Run the pre-tag checks from the intended release commit:
+
+```sh
+node scripts/check-release-version.mjs
+node scripts/release-license-inventory.mjs --check
+pnpm package:mac
+pnpm package:linux:flatpak
+```
+
+Run `pnpm package:mac` only on supported macOS release hosts, and run
+`pnpm package:linux:flatpak` only on supported Linux hosts with Flatpak packaging
+tooling. If an RC includes only one platform artifact, run and record the package
+command for that artifact.
+
+For the manual launch smoke, install or open the built package artifact and confirm:
+
+- the packaged app launches without a dev server;
+- the bundled backend starts and remains bound to `127.0.0.1`;
+- the UI loads and core navigation is usable;
+- Settings/About release identity is visible when that surface exists for the build;
+- observed behavior matches the package policy above: unsigned/not-notarized local
+  builds, no bundled FFmpeg, and no external Demucs, Whisper, or beat-this model
+  weights unless `--model-bundle` was explicitly reviewed and used.
+
+Record RC gate evidence with:
+
+- OS and version;
+- artifact type, such as macOS `.app`/DMG or Linux `.flatpak`;
+- commit SHA;
+- command run;
+- repo-relative output path, artifact filename/hash, or sanitized artifact identity;
+- launch-smoke checklist source, such as this manual checklist or a named release
+  checklist;
+- per-check proof for packaged launch without a dev server, backend startup,
+  `127.0.0.1` bind, UI load, core navigation, and Settings/About release identity
+  when that surface exists;
+- pass/fail result for each package build and launch-smoke check;
+- sanitized notes or log excerpt.
+
+Do not collapse launch-smoke evidence to a generic pass. Evidence must avoid user
+paths, audio contents, secrets, and raw private logs. This gate documents package-build
+and launch-smoke readiness only. It does not automate tag-to-release, release notes,
+signing, notarization, checksums, or GitHub Release upload.
+
 ## macOS
 
 Build the app bundle and DMG with:

@@ -238,6 +238,11 @@ describe("Desktop app library", () => {
     expect(await screen.findByText("Loading projects...")).toBeInTheDocument();
     resolveProjects();
     expect(await screen.findByRole("heading", { name: "No projects yet" })).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Import audio or video to create a local project. Processing stays on this device, and Activity shows queue progress.",
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByText("0 projects ready")).toBeInTheDocument();
 
     unmount();
@@ -405,8 +410,54 @@ describe("Desktop app library", () => {
 
     const summary = await screen.findByRole("status");
     expect(within(summary).getByText("2 tracks imported, 0 duplicates skipped, 0 failed.")).toBeInTheDocument();
+    expect(within(summary).getByRole("link", { name: "View Activity" })).toHaveAttribute(
+      "href",
+      "/activity",
+    );
     expect(screen.getByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
     expect(mockGetProject).not.toHaveBeenCalled();
+  });
+
+  it("shows truthful pending guidance while choosing files and importing selected tracks", async () => {
+    const user = userEvent.setup();
+    let resolveOpen!: (selection: string[]) => void;
+    let resolveImport!: () => void;
+    const pendingProject = { ...makeLibraryProject(90), source_key_override: null };
+    const pickerGuidanceText = "Choose audio or video to import.";
+    const selectedGuidanceText =
+      "Importing selected tracks locally. Local processing may continue in Activity.";
+    const openPromise = new Promise<string[]>((resolve) => {
+      resolveOpen = resolve;
+    });
+    const importPromise = new Promise<{ project: typeof pendingProject }>((resolve) => {
+      resolveImport = () => resolve({ project: pendingProject });
+    });
+    mockOpen.mockImplementation(async () => openPromise);
+    mockImportProject.mockImplementation(async () => importPromise);
+
+    renderApp(["/"]);
+
+    expect(await screen.findByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Import Track(s)" }));
+
+    const pickerGuidance = await screen.findByText(pickerGuidanceText);
+    expect(pickerGuidance.closest('[role="status"]')).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Choosing files..." })).toBeDisabled();
+    expect(screen.queryByText(selectedGuidanceText)).not.toBeInTheDocument();
+
+    act(() => {
+      resolveOpen(["/tmp/first-song.mp4", "/tmp/second-song.wav"]);
+    });
+
+    const selectedGuidance = await screen.findByText(selectedGuidanceText);
+    expect(selectedGuidance.closest('[role="status"]')).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Importing..." })).toBeDisabled();
+
+    resolveImport();
+    await waitFor(() => expect(mockImportProject).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText(selectedGuidanceText)).not.toBeInTheDocument());
+    const summary = await screen.findByRole("status");
+    expect(within(summary).getByText("2 tracks imported, 0 duplicates skipped, 0 failed.")).toBeInTheDocument();
   });
 
   it("deduplicates selected import paths before importing", async () => {
@@ -509,6 +560,10 @@ describe("Desktop app library", () => {
         "1 track imported, 0 duplicates skipped, 1 failed. Failed: Unsupported codec.",
       ),
     ).toBeInTheDocument();
+    expect(within(summary).getByRole("link", { name: "View Activity" })).toHaveAttribute(
+      "href",
+      "/activity",
+    );
     expect(mockGetProject).not.toHaveBeenCalled();
   });
 

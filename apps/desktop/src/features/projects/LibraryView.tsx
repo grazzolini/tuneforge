@@ -111,11 +111,28 @@ function ProjectCard({ project }: { project: ProjectSchema }) {
   );
 }
 
-type ImportNotice =
-  | { kind: "duplicate"; message: string; projectId: string }
-  | { kind: "summary"; message: string }
-  | { kind: "warning"; message: string }
-  | { kind: "error"; message: string };
+type ImportNotice = {
+  activityLink?: boolean;
+  message: string;
+} & (
+  | { kind: "duplicate"; projectId: string }
+  | { kind: "summary" }
+  | { kind: "warning" }
+  | { kind: "error" }
+);
+
+type ImportPendingPhase = "picker" | "selected";
+
+const importPendingCopy: Record<ImportPendingPhase, { buttonLabel: string; guidance: string }> = {
+  picker: {
+    buttonLabel: "Choosing files...",
+    guidance: "Choose audio or video to import.",
+  },
+  selected: {
+    buttonLabel: "Importing...",
+    guidance: "Importing selected tracks locally. Local processing may continue in Activity.",
+  },
+};
 
 type BatchImportSummary = {
   failures: Array<{ message: string }>;
@@ -248,6 +265,7 @@ export function LibraryView() {
   const { chordBackendForAction } = useChordBackendActionSelection();
   const [searchDraft, setSearchDraft] = useState("");
   const [importNotice, setImportNotice] = useState<ImportNotice | null>(null);
+  const [importPendingPhase, setImportPendingPhase] = useState<ImportPendingPhase | null>(null);
   const deferredSearch = useDeferredValue(searchDraft.trim());
   const showSubtitle = informationDensity !== "minimal";
 
@@ -291,6 +309,7 @@ export function LibraryView() {
       if (!selectedPaths.length) {
         return { kind: "none" } satisfies ImportMutationResult;
       }
+      setImportPendingPhase("selected");
       const { duplicateCount, uniquePaths } = getUniqueImportPaths(selectedPaths);
       if (uniquePaths.length > MAX_IMPORT_SELECTION) {
         return { kind: "selectionLimit" } satisfies ImportMutationResult;
@@ -348,6 +367,7 @@ export function LibraryView() {
     },
     onMutate: () => {
       setImportNotice(null);
+      setImportPendingPhase("picker");
     },
     onSuccess: async (result) => {
       if (result.kind === "none") {
@@ -369,12 +389,16 @@ export function LibraryView() {
         queryClient.invalidateQueries({ queryKey: ["jobs"] }),
       ]);
       setImportNotice({
+        activityLink: result.summary.importedCount > 0,
         kind: result.summary.failedCount ? "warning" : "summary",
         message: formatBatchImportNotice(result.summary),
       });
     },
     onError: (error) => {
       setImportNotice(getImportErrorNotice(error));
+    },
+    onSettled: () => {
+      setImportPendingPhase(null);
     },
   });
 
@@ -389,6 +413,7 @@ export function LibraryView() {
   const showEmptyState = !showInitialLoading && !isProjectsError && !projects.length;
   const showPaginationStatus = showList && !showInitialLoading && !showInitialError;
   const showRefetchError = isRefetchError && !isFetchNextPageError && projects.length > 0;
+  const pendingImportCopy = importPendingPhase ? importPendingCopy[importPendingPhase] : null;
   const { loadNextPage: fetchNextProjectPage, sentinelRef: loadMoreSentinelRef } =
     useLazyLoadSentinel({
       enabled: showPaginationStatus && !isFetching && !isProjectsError,
@@ -410,14 +435,21 @@ export function LibraryView() {
             </p>
           ) : null}
         </div>
-        <button
-          className="button button--primary"
-          onClick={() => importMutation.mutate()}
-          disabled={importMutation.isPending}
-        >
-          {importMutation.isPending ? "Importing..." : "Import Track(s)"}
-          <Upload aria-hidden="true" className="button__icon" />
-        </button>
+        <div className="screen__title-block">
+          <button
+            className="button button--primary"
+            onClick={() => importMutation.mutate()}
+            disabled={importMutation.isPending}
+          >
+            {pendingImportCopy ? pendingImportCopy.buttonLabel : "Import Track(s)"}
+            <Upload aria-hidden="true" className="button__icon" />
+          </button>
+          {pendingImportCopy ? (
+            <p className="screen__subtitle" role="status" aria-live="polite">
+              {pendingImportCopy.guidance}
+            </p>
+          ) : null}
+        </div>
       </div>
 
       {importNotice ? (
@@ -429,6 +461,11 @@ export function LibraryView() {
           {importNotice.kind === "duplicate" ? (
             <Link className="button button--ghost button--small" to={`/projects/${importNotice.projectId}`}>
               Open project
+            </Link>
+          ) : null}
+          {importNotice.activityLink ? (
+            <Link className="button button--ghost button--small" to="/activity">
+              View Activity
             </Link>
           ) : null}
         </div>
@@ -506,7 +543,7 @@ export function LibraryView() {
             <p>
               {deferredSearch
                 ? "Try a different name or clear the search."
-                : "Import a track to create the first playback-ready project."}
+                : "Import audio or video to create a local project. Processing stays on this device, and Activity shows queue progress."}
             </p>
           </div>
         ) : null}

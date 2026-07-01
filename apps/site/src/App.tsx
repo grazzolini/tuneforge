@@ -78,7 +78,7 @@ const packageRows = [
 ];
 
 const limitationRows = [
-  "Pre-1.0: local development and unsigned package builds are the supported paths today.",
+  "Local development and package builds keep the same local-only workflow; generated packages are unsigned and not notarized.",
   "No cloud sync, no account system, no telemetry, and no public backend exposure.",
   "FFmpeg and FFprobe are intentionally not bundled; development and macOS packages use host PATH, while Flatpak uses sandbox runtime wrappers.",
   "First heavy ML use may need local model downloads or existing caches.",
@@ -143,12 +143,12 @@ function useMediaManifest() {
 
 function HeroPreview() {
   return (
-    <div className="hero-preview" aria-label="Tuneforge interface summary">
+    <div className="hero-preview" aria-label="TuneForge interface summary">
       <div className="hero-preview__header">
         <span className="dot dot--red" />
         <span className="dot dot--yellow" />
         <span className="dot dot--green" />
-        <strong>Tuneforge local session</strong>
+        <strong>TuneForge local session</strong>
       </div>
       <div className="hero-preview__grid">
         <div className="hero-preview__timeline">
@@ -236,7 +236,7 @@ export function App() {
             <Music2 aria-hidden="true" />
           </span>
           <span>
-            <strong>Tuneforge</strong>
+            <strong>TuneForge</strong>
             <small>Local practice rig</small>
           </span>
         </a>
@@ -252,7 +252,7 @@ export function App() {
         <section className="hero-section" aria-labelledby="hero-title">
           <div className="hero-section__content">
             <p className="eyebrow">Local-first desktop app for musicians</p>
-            <h1 id="hero-title">Tuneforge</h1>
+            <h1 id="hero-title">TuneForge</h1>
             <p className="hero-section__lede">
               Split stems, inspect chords and lyrics, retune, transpose, rehearse, and export
               practice mixes without accounts, cloud processing, analytics, or telemetry.
@@ -328,7 +328,7 @@ export function App() {
         <section className="section section--split" id="packages" aria-labelledby="packages-title">
           <div className="section__header">
             <p className="eyebrow">Distribution status</p>
-            <h2 id="packages-title">Packages are local and unsigned today</h2>
+            <h2 id="packages-title">Packages are local and unsigned</h2>
             <p>
               Desktop packaging exists for local builds. The generated apps do not include FFmpeg or
               FFprobe; macOS uses host PATH and Flatpak uses sandbox runtime wrappers. macOS

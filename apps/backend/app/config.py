@@ -67,7 +67,7 @@ def get_settings() -> Settings:
     data_root = _default_data_root()
     cache_root = data_root / "cache"
     return Settings(
-        app_name="Tuneforge",
+        app_name="TuneForge",
         api_prefix="/api/v1",
         data_root=data_root,
         database_path=data_root / "app.sqlite",

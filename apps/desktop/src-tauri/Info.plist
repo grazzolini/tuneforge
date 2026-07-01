@@ -3,6 +3,6 @@
 <plist version="1.0">
 <dict>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Tuneforge uses the microphone for the chromatic tuner.</string>
+  <string>TuneForge uses the microphone for the chromatic tuner.</string>
 </dict>
 </plist>

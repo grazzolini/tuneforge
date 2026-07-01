@@ -32,7 +32,7 @@ if [[ "$(uname -s)" == "Linux" ]]; then
 
   if [[ -z "${LIBCLANG_PATH:-}" ]]; then
     cat >&2 <<'EOF'
-Tuneforge native tempo playback uses signalsmith-stretch, which runs bindgen during the Tauri build.
+TuneForge native tempo playback uses signalsmith-stretch, which runs bindgen during the Tauri build.
 bindgen requires libclang. Install Clang/libclang development files, then rerun this command.
 
 Arch:

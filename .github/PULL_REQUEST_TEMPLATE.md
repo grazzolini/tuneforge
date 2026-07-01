@@ -30,8 +30,8 @@
 - [ ] `pnpm typecheck` passes
 - [ ] `pnpm test` passes (desktop + Tauri shell + backend)
 - [ ] If backend routes or schemas changed, ran `pnpm contracts:generate` and committed the result
-- [ ] If release/package behavior changed or this PR prepares an RC, included RC gate evidence from
-  `docs/PACKAGING.md#release-candidate-gate` (package build plus packaged launch smoke with OS,
+- [ ] If release/package behavior changed or this PR prepares a release package, included Release Package Gate evidence from
+  `docs/PACKAGING.md#release-package-gate` (package build plus packaged launch smoke with OS,
   artifact type, commit SHA, and pass/fail evidence); when release/package behavior changed, also
   refreshed license/dependency inventory evidence, documented model-weight download/cache policy,
   and verified no model weights, cache dirs, or package artifacts were added

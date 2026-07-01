@@ -42,7 +42,7 @@ async function bootstrap() {
   }
 
   const root = ReactDOM.createRoot(rootElement);
-  root.render(<BootScreen title="Starting Tuneforge" />);
+  root.render(<BootScreen title="Starting TuneForge" />);
 
   try {
     await withTimeout(initializeApi(), 8000);
@@ -57,10 +57,10 @@ async function bootstrap() {
       </React.StrictMode>,
     );
   } catch (error) {
-    console.error("Tuneforge failed to initialize.", error);
+    console.error("TuneForge failed to initialize.", error);
     root.render(
       <BootScreen
-        title="Tuneforge could not start"
+        title="TuneForge could not start"
         message={formatBootError(error)}
       />,
     );

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default desktop capabilities for Tuneforge.",
+  "description": "Default desktop capabilities for TuneForge.",
   "windows": ["main"],
   "permissions": [
     "core:event:allow-listen",

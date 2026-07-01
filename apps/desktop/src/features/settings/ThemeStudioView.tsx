@@ -159,7 +159,7 @@ function ThemeStudioPreview({
         <div className="theme-studio-preview__shell">
           <aside className="theme-studio-preview__sidebar">
             <div className="brand">
-              <span className="brand__eyebrow">Tuneforge</span>
+              <span className="brand__eyebrow">TuneForge</span>
               <strong>Local Practice Rig</strong>
             </div>
             <div className="theme-studio-preview__nav" aria-label={`${mode} theme sample navigation`}>

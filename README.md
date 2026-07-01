@@ -1,6 +1,6 @@
-# Tuneforge
+# TuneForge
 
-Tuneforge is a local-first, open-source desktop app for musicians who want to learn, rehearse, and play along with songs. Drop in any track and Tuneforge will split it into vocals, drums, bass, guitar, piano, and other stems, work out the key, tempo, chord progression, and lyrics, and let you shift the pitch, retune to a reference frequency, follow the transcript during playback, and export a custom version to practice with.
+TuneForge is a local-first, open-source desktop app for musicians who want to learn, rehearse, and play along with songs. Drop in any track and TuneForge will split it into vocals, drums, bass, guitar, piano, and other stems, work out the key, tempo, chord progression, and lyrics, and let you shift the pitch, retune to a reference frequency, follow the transcript during playback, and export a custom version to practice with.
 
 Think "AI-assisted song toolkit for the player at home" — but **fully local, single-user, and with no cloud component**. Every track stays on your machine, no account, no upload.
 
@@ -8,9 +8,9 @@ Local-first does not mean first use is always offline: setup or first use can do
 
 ## Status
 
-Pre-1.0. The desktop dev flow (`pnpm dev`) is the fastest way to iterate. Local macOS app/DMG and Linux Flatpak packaging are available, but generated builds are unsigned and not notarized. Development/source runs and macOS packages require `ffmpeg`/`ffprobe` on the host `PATH`; Flatpak uses `/app/bin/ffmpeg` and `/app/bin/ffprobe` wrappers backed by the Flatpak runtime sandbox.
+The desktop workflow is the supported full TuneForge experience. The dev flow (`pnpm dev`) is the fastest way to iterate. Local macOS app/DMG and Linux Flatpak packaging are available, but generated builds are unsigned and not notarized. Development/source runs and macOS packages require `ffmpeg`/`ffprobe` on the host `PATH`; Flatpak uses `/app/bin/ffmpeg` and `/app/bin/ffprobe` wrappers backed by the Flatpak runtime sandbox.
 
-Current 1.0 release limits:
+Current release limits:
 
 - Desktop is the supported full workflow. Android/mobile remains a local-first companion path in progress.
 - Packages are local build artifacts, not signed distribution releases.
@@ -30,7 +30,7 @@ Current 1.0 release limits:
 
 ## Threat Model and Scope
 
-Tuneforge is **local-only by design**:
+TuneForge is **local-only by design**:
 
 - The backend binds to `127.0.0.1` only.
 - There is **no authentication, no authorization, and no per-user model**.
@@ -222,7 +222,7 @@ pnpm package:mac
 pnpm package:linux:flatpak
 ```
 
-Before marking an RC ready, follow the [Release Candidate Gate](./docs/PACKAGING.md#release-candidate-gate)
+Before publishing a release package, follow the [Release Package Gate](./docs/PACKAGING.md#release-package-gate)
 and record package build plus packaged launch-smoke evidence from the built artifact.
 
 Plain package commands include crema Advanced Chords and beat-this Advanced Beat Analysis
@@ -259,7 +259,7 @@ macOS packaging writes a `.app` bundle and DMG. Flatpak packaging writes either 
 bundle or, with `--no-bundle`, a local repository install flow. Source distribution is the source
 checkout/archive; the package commands do not create a separate source tarball.
 
-macOS packages require host `ffmpeg` / `ffprobe`; Flatpak routes backend lookups to sandbox wrappers at `/app/bin/ffmpeg` and `/app/bin/ffprobe`. Tuneforge does not bundle FFmpeg. See [Packaging](./docs/PACKAGING.md) for output paths, package flags, local repo install commands, data-directory behavior, and size expectations.
+macOS packages require host `ffmpeg` / `ffprobe`; Flatpak routes backend lookups to sandbox wrappers at `/app/bin/ffmpeg` and `/app/bin/ffprobe`. TuneForge does not bundle FFmpeg. See [Packaging](./docs/PACKAGING.md) for output paths, package flags, local repo install commands, data-directory behavior, and size expectations.
 
 ## CI
 

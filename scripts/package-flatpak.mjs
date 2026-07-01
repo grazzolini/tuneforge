@@ -166,7 +166,7 @@ function main() {
   const packageOptions = parsePackageOptions(process.argv.slice(2), { platform: "linux" });
   const skipBundle = packageOptions.noBundle || process.env.FLATPAK_NO_BUNDLE === "1";
   if (process.arch !== "x64") {
-    throw new Error("Tuneforge Flatpak packaging currently targets Linux x86_64 only.");
+    throw new Error("TuneForge Flatpak packaging currently targets Linux x86_64 only.");
   }
   if (!existsSync(baseManifestPath)) {
     throw new Error(`Flatpak manifest not found at ${baseManifestPath}`);

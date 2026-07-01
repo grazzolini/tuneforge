@@ -1,6 +1,6 @@
 {
   "name": "@tuneforge/shared-types",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "exports": {
@@ -16,4 +16,3 @@
     "openapi-typescript": "^7.6.1"
   }
 }
-

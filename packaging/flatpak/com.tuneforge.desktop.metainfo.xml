@@ -1,20 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
   <id>com.tuneforge.desktop</id>
-  <name>Tuneforge</name>
+  <name>TuneForge</name>
   <summary>Local-first music practice toolkit</summary>
   <developer id="com.tuneforge">
-    <name>Tuneforge contributors</name>
+    <name>TuneForge contributors</name>
   </developer>
   <metadata_license>MIT</metadata_license>
   <project_license>MIT</project_license>
   <description>
     <p>
-      Tuneforge helps musicians work locally with songs for practice, analysis,
+      TuneForge helps musicians work locally with songs for practice, analysis,
       lyrics transcription, stem separation, pitch shifts, retuning, and exports.
     </p>
     <p>
-      Tuneforge runs a loopback backend on the same machine and does not require
+      TuneForge runs a loopback backend on the same machine and does not require
       accounts or cloud services.
     </p>
   </description>
@@ -27,6 +27,6 @@
   </categories>
   <content_rating type="oars-1.1" />
   <releases>
-    <release version="0.1.0" date="2026-06-27" />
+    <release version="1.0.0" date="2026-06-27" />
   </releases>
 </component>

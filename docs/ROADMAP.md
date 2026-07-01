@@ -74,6 +74,7 @@ Roadmap items are grouped by track so related work can move independently.
 - Keep the Linux legacy NVIDIA profile documented for older `x86_64` CUDA-capable GPUs that need the opt-in PyTorch override.
 - Keep Android packaging optional/manual while mobile remains in transition.
 - Keep packaged desktop dependency notices current now that crema/TensorFlow and beat-this are default desktop dependency scope.
+- Keep release/package changes backed by fresh dependency/license inventory evidence, explicit model-weight download/cache policy, and verification that model weights, caches, and package build artifacts are not tracked.
 
 ## Testing & Quality
 
@@ -81,6 +82,7 @@ Roadmap items are grouped by track so related work can move independently.
 - Keep desktop gates: lint, typecheck, and Vitest.
 - Keep OpenAPI contract drift checks in CI.
 - Keep release copy honest about manual/special checks for packaging, crema/TensorFlow, beat-this, GPU profiles, loopback browser E2E, BlackHole capture, and virtual-output capture.
+- Keep release guidance explicit about what ships, what downloads or caches after use, and which host tools must be installed locally.
 - Add focused tests when new timing artifacts, practice loops, mobile capability gates, or destructive-regeneration flows are introduced.
 - Prefer deterministic timing tests over wall-clock-dependent assertions.
 - Keep generated or ignored mobile build artifacts out of commits unless they are intentionally tracked.

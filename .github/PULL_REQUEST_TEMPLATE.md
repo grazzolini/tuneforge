@@ -30,5 +30,6 @@
 - [ ] `pnpm typecheck` passes
 - [ ] `pnpm test` passes (desktop + Tauri shell + backend)
 - [ ] If backend routes or schemas changed, ran `pnpm contracts:generate` and committed the result
+- [ ] If release/package behavior changed, refreshed license/dependency inventory evidence, documented model-weight download/cache policy, and verified no model weights, cache dirs, or package artifacts were added
 - [ ] Updated relevant docs (README, backend README, THIRD_PARTY_NOTICES) if behavior changed
 - [ ] No secrets, credentials, or copyrighted audio added to the repository

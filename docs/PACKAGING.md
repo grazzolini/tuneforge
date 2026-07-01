@@ -1,6 +1,8 @@
 # Packaging
 
-Tuneforge packaging is currently intended for local unsigned desktop builds. Packaged builds launch the bundled backend locally, include the default desktop Advanced Chords and Advanced Beat Analysis dependency stacks, and do not bundle external model weights by default. Tuneforge does not bundle FFmpeg: macOS packages use host-installed `ffmpeg` and `ffprobe`, while Flatpak routes backend lookups through sandbox wrappers at `/app/bin/ffmpeg` and `/app/bin/ffprobe`.
+Tuneforge packaging is currently intended for local unsigned desktop builds. Packaged builds launch the bundled backend locally, include the default desktop Advanced Chords and Advanced Beat Analysis dependency stacks, and do not bundle external model weights by default. Crema's wheel-embedded chord model assets are the dependency-owned exception and may be included with Advanced Chords. Tuneforge does not bundle FFmpeg: macOS packages use host-installed `ffmpeg` and `ffprobe`, while Flatpak routes backend lookups through sandbox wrappers at `/app/bin/ffmpeg` and `/app/bin/ffprobe`.
+
+See [Third-party notices](../THIRD_PARTY_NOTICES.md) for the dependency and model-weight distribution policy.
 
 ## Release Artifact Truth
 
@@ -9,6 +11,8 @@ Tuneforge packaging is currently intended for local unsigned desktop builds. Pac
 - Source distribution is the repository checkout or source archive from version control. These package commands do not create a separate source tarball.
 - Packaging, model-bundle review, crema/TensorFlow, beat-this, CUDA/MPS/legacy NVIDIA GPU behavior, and install smoke checks are manual or special coverage unless a CI workflow explicitly runs them.
 - Release/default package commands must not use `--model-bundle`; publishable artifacts must not include Demucs, Whisper, or beat-this model weights unless redistribution has been explicitly reviewed.
+- Default packages may still download Demucs, Whisper, or beat-this weights on first use when caches are missing. Fully offline operation requires host/sandbox FFmpeg access plus the relevant local caches or package assets to already exist.
+- Crema chord model files come from the crema dependency and ship with Advanced Chords unless that dependency stack is excluded; Demucs, Whisper, and beat-this external weights remain cache/download assets unless `--model-bundle` is explicitly passed.
 
 ## macOS
 
@@ -37,7 +41,7 @@ Run packaging from a normal macOS shell so `hdiutil` can create the disk image. 
 
 The packaged backend checks the inherited `PATH` plus common Homebrew and MacPorts install locations when looking for `ffmpeg` and `ffprobe`. System microphone volume control uses the built-in CoreAudio API on macOS.
 
-By default, Demucs, Whisper, and beat-this weights are read from their normal caches and downloaded on first use if missing. `--model-bundle` stages required Demucs and Whisper weights into the package, and also stages the beat-this `small0` checkpoint when beat-this dependencies are included. On startup, bundled model files seed the normal caches; runtime loaders still use cache paths, not package resource paths. `--model-bundle` does not control dependency inclusion. The flag prints a warning because Demucs pretrained-weight redistribution is unclear/restricted upstream.
+By default, Demucs, Whisper, and beat-this weights are read from their normal caches and downloaded on first use if missing. Crema is the dependency-owned exception: its wheel-embedded chord model files are part of the crema package and ship when Advanced Chords is included. `--model-bundle` stages required Demucs and Whisper weights into the package, and also stages the beat-this `small0` checkpoint when beat-this dependencies are included. On startup, bundled model files seed the normal caches; runtime loaders still use cache paths, not package resource paths. `--model-bundle` does not control dependency inclusion. The flag prints a warning because Demucs pretrained-weight redistribution is unclear/restricted upstream.
 
 ## Linux Flatpak
 
@@ -71,6 +75,8 @@ pnpm package:linux -- --legacy-nvidia --model-bundle
 - `--legacy-nvidia` swaps in the legacy CUDA 12.6 PyTorch/torchaudio wheels and broader GPU device access.
 - `--model-bundle` includes required Demucs and Whisper weights, plus beat-this `small0` when beat-this dependencies are included.
 - `--sandbox-data` keeps app data under Flatpak-private `/var/data/tuneforge` instead of the host XDG data directory.
+
+Like macOS packages, plain Flatpak packages rely on normal Demucs, Whisper, and beat-this caches unless `--model-bundle` is explicitly passed. Advanced Chords uses crema package assets instead of a separate first-use model download; this is the dependency-owned Crema exception, not an external model-bundle source.
 
 By default, the Flatpak grants access to `xdg-data/tuneforge`, `xdg-cache/torch`, and
 `xdg-cache/whisper`. Packaged runs therefore use the same data root and model caches as

@@ -4,6 +4,8 @@ Tuneforge is a local-first, open-source desktop app for musicians who want to le
 
 Think "AI-assisted song toolkit for the player at home" — but **fully local, single-user, and with no cloud component**. Every track stays on your machine, no account, no upload.
 
+Local-first does not mean first use is always offline: setup or first use can download external ML model weights unless the required local caches already exist or a local/dev package was explicitly built with `--model-bundle`.
+
 ## Status
 
 Pre-1.0. The desktop dev flow (`pnpm dev`) is the fastest way to iterate. Local macOS app/DMG and Linux Flatpak packaging are available, but generated builds are unsigned and not notarized. Development/source runs and macOS packages require `ffmpeg`/`ffprobe` on the host `PATH`; Flatpak uses `/app/bin/ffmpeg` and `/app/bin/ffprobe` wrappers backed by the Flatpak runtime sandbox.
@@ -12,7 +14,7 @@ Current 1.0 release limits:
 
 - Desktop is the supported full workflow. Android/mobile remains a local-first companion path in progress.
 - Packages are local build artifacts, not signed distribution releases.
-- Model weights are cached locally and may download on first setup/use unless a package was built with `--model-bundle`.
+- Default packages do not include external Demucs, Whisper, or beat-this model weights. Those weights are cached locally and may download on first setup/use unless the caches already exist or a local/dev package was explicitly built with `--model-bundle`. Crema's wheel-embedded chord model assets are the dependency-owned exception and ship with Advanced Chords unless that stack is excluded.
 - Advanced Chords, Advanced Beat Analysis, GPU acceleration, loopback/browser playback smoke, and BlackHole or virtual-audio capture need manual or special coverage unless a specific CI job says otherwise.
 
 ## Features
@@ -45,6 +47,7 @@ Security reports follow the process in [SECURITY.md](./SECURITY.md). "There is n
 ## Documentation
 
 - [Product specification](./docs/SPEC.md)
+- [Third-party notices and release package policy](./THIRD_PARTY_NOTICES.md)
 - [Stem separation](./docs/STEM_SEPARATION.md)
 - [Architecture](./docs/ARCHITECTURE.md)
 - [API](./docs/API.md)
@@ -220,8 +223,9 @@ pnpm package:linux:flatpak
 ```
 
 Plain package commands include crema Advanced Chords and beat-this Advanced Beat Analysis
-dependencies by default for desktop builds. Use opt-outs to build fallback packages, and keep
-`--model-bundle` separate when you explicitly want model weights copied into the package:
+dependencies by default for desktop builds, but release/default package commands do not pass
+`--model-bundle`. Use opt-outs to build fallback packages, and keep `--model-bundle` separate
+for local/dev artifacts that explicitly copy model weights into the package:
 
 ```sh
 pnpm package:mac -- --no-crema --no-beat-this
@@ -231,7 +235,11 @@ pnpm package:mac -- --model-bundle
 
 `--model-bundle` stages Demucs and Whisper weights, and stages the beat-this `small0` checkpoint
 only when beat-this dependencies are included. It does not control whether advanced dependencies are
-installed.
+installed. Crema is the dependency-owned exception to the external model-weight rule: its
+wheel-embedded chord model files ship when Advanced Chords is included unless `--no-crema` /
+`--no-advanced-chords` is used. See
+[Third-party notices and release package policy](./THIRD_PARTY_NOTICES.md) for the dependency and
+model-weight policy.
 
 Linux Flatpak packages use host XDG data and model cache directories by default, so
 packaged runs share `~/.local/share/tuneforge`, `~/.cache/torch`, and `~/.cache/whisper`

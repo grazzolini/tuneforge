@@ -195,12 +195,13 @@ jobs:
           node-version: "22"
 
       - name: Test deterministic Node scripts
-        run: node --test scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/playback-smoke.test.mjs scripts/sync-validation.test.mjs
+        run: node --test scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/playback-smoke.test.mjs scripts/sync-validation.test.mjs scripts/release-license-inventory.test.mjs
 
       - name: Check release script syntax
         run: |
           node --check scripts/capture-release-media.mjs
           node --check scripts/check-release-version.mjs
+          node --check scripts/release-license-inventory.mjs
 
       - name: Check release version consistency
         run: node scripts/check-release-version.mjs

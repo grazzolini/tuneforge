@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=Tuneforge
+Name=TuneForge
 Comment=Local-first music practice toolkit
 Exec=tuneforge
 Icon=com.tuneforge.desktop

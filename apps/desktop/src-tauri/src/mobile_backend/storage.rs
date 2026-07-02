@@ -1371,7 +1371,7 @@ pub fn mobile_get_health(app: AppHandle) -> Result<HealthResponse, String> {
         git_ref: git_ref.clone(),
     };
     Ok(HealthResponse {
-        name: "Tuneforge Mobile".to_string(),
+        name: "TuneForge Mobile".to_string(),
         version: git_ref,
         backend_version: version_info.clone(),
         frontend_version: version_info,

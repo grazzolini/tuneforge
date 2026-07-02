@@ -163,12 +163,12 @@ function AppChrome() {
   return (
     <div className={`app-shell${compactChrome ? " app-shell--compact" : ""}`}>
       <aside className="sidebar">
-        <Link aria-label="Tuneforge library" className="brand" title="Tuneforge" to="/">
+        <Link aria-label="TuneForge library" className="brand" title="TuneForge" to="/">
           <span className="brand__mark" aria-hidden="true">
             <Music2 className="brand__icon" />
           </span>
           <span className="brand__copy">
-            <span className="brand__eyebrow">Tuneforge</span>
+            <span className="brand__eyebrow">TuneForge</span>
             <strong>Local Practice Rig</strong>
           </span>
         </Link>

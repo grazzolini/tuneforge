@@ -1,6 +1,6 @@
-# Tuneforge Backend
+# TuneForge Backend
 
-FastAPI backend for Tuneforge. It owns persistence, artifact management, audio analysis, transform orchestration, and the in-process background job queue.
+FastAPI backend for TuneForge. It owns persistence, artifact management, audio analysis, transform orchestration, and the in-process background job queue.
 
 ## Layout
 

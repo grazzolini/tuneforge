@@ -1,6 +1,6 @@
 # Packaging
 
-Tuneforge packaging is currently intended for local unsigned desktop builds. Packaged builds launch the bundled backend locally, include the default desktop Advanced Chords and Advanced Beat Analysis dependency stacks, and do not bundle external model weights by default. Crema's wheel-embedded chord model assets are the dependency-owned exception and may be included with Advanced Chords. Tuneforge does not bundle FFmpeg: macOS packages use host-installed `ffmpeg` and `ffprobe`, while Flatpak routes backend lookups through sandbox wrappers at `/app/bin/ffmpeg` and `/app/bin/ffprobe`.
+TuneForge packaging creates local unsigned desktop builds. Packaged builds launch the bundled backend locally, include the default desktop Advanced Chords and Advanced Beat Analysis dependency stacks, and do not bundle external model weights by default. Crema's wheel-embedded chord model assets are the dependency-owned exception and may be included with Advanced Chords. TuneForge does not bundle FFmpeg: macOS packages use host-installed `ffmpeg` and `ffprobe`, while Flatpak routes backend lookups through sandbox wrappers at `/app/bin/ffmpeg` and `/app/bin/ffprobe`.
 
 See [Third-party notices](../THIRD_PARTY_NOTICES.md) for the dependency and model-weight distribution policy.
 
@@ -14,9 +14,9 @@ See [Third-party notices](../THIRD_PARTY_NOTICES.md) for the dependency and mode
 - Default packages may still download Demucs, Whisper, or beat-this weights on first use when caches are missing. Fully offline operation requires host/sandbox FFmpeg access plus the relevant local caches or package assets to already exist.
 - Crema chord model files come from the crema dependency and ship with Advanced Chords unless that dependency stack is excluded; Demucs, Whisper, and beat-this external weights remain cache/download assets unless `--model-bundle` is explicitly passed.
 
-## Release Candidate Gate
+## Release Package Gate
 
-A release candidate is not ready to tag or publish until package build evidence and a
+A release package is not ready to publish until package build evidence and a
 packaged launch smoke pass are both recorded for each intended artifact. Missing build
 or smoke evidence fails the gate closed; do not substitute `pnpm dev`, a dev server, or
 an unpackaged Tauri run for packaged-artifact proof.
@@ -32,7 +32,7 @@ pnpm package:linux:flatpak
 
 Run `pnpm package:mac` only on supported macOS release hosts, and run
 `pnpm package:linux:flatpak` only on supported Linux hosts with Flatpak packaging
-tooling. If an RC includes only one platform artifact, run and record the package
+tooling. If a release includes only one platform artifact, run and record the package
 command for that artifact.
 
 For the manual launch smoke, install or open the built package artifact and confirm:
@@ -45,7 +45,7 @@ For the manual launch smoke, install or open the built package artifact and conf
   builds, no bundled FFmpeg, and no external Demucs, Whisper, or beat-this model
   weights unless `--model-bundle` was explicitly reviewed and used.
 
-Record RC gate evidence with:
+Record release gate evidence with:
 
 - OS and version;
 - artifact type, such as macOS `.app`/DMG or Linux `.flatpak`;
@@ -85,8 +85,8 @@ pnpm package:mac -- --model-bundle
 
 The generated artifacts are written under `apps/desktop/src-tauri/target/release/bundle/`:
 
-- `macos/Tuneforge.app`
-- `dmg/Tuneforge_<version>_<arch>.dmg`
+- `macos/TuneForge.app`
+- `dmg/TuneForge_<version>_<arch>.dmg`
 
 Run packaging from a normal macOS shell so `hdiutil` can create the disk image. The generated app is unsigned and not notarized.
 
@@ -133,7 +133,7 @@ By default, the Flatpak grants access to `xdg-data/tuneforge`, `xdg-cache/torch`
 `xdg-cache/whisper`. Packaged runs therefore use the same data root and model caches as
 `pnpm dev`: `~/.local/share/tuneforge`, `~/.cache/torch`, and `~/.cache/whisper`. Do
 not run the Flatpak app and `pnpm dev` against that shared library at the same time;
-SQLite is local and Tuneforge is not designed for concurrent backends writing the same
+SQLite is local and TuneForge is not designed for concurrent backends writing the same
 library.
 
 ## Flatpak Local Repo Installs

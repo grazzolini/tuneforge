@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Tuneforge has an opinionated scope: local-only, single-user, focused on learning, rehearsing, and playing along with songs.
+        TuneForge has an opinionated scope: local-only, single-user, focused on learning, rehearsing, and playing along with songs.
         Please make sure your idea fits before opening this. See [CONTRIBUTING.md](../CONTRIBUTING.md).
 
   - type: textarea
@@ -21,7 +21,7 @@ body:
     id: proposal
     attributes:
       label: Proposed solution
-      description: Describe what you would like Tuneforge to do.
+      description: Describe what you would like TuneForge to do.
     validations:
       required: true
 

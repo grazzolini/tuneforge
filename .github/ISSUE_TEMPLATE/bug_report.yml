@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a defect in Tuneforge.
+description: Report a defect in TuneForge.
 title: "[bug] "
 labels: ["bug"]
 body:
@@ -55,7 +55,7 @@ body:
   - type: input
     id: commit
     attributes:
-      label: Tuneforge commit or version
+      label: TuneForge commit or version
       description: Output of `git rev-parse --short HEAD` or the release version.
     validations:
       required: true

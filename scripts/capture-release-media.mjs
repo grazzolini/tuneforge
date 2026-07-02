@@ -1100,14 +1100,14 @@ function mockApiResponse(method, url) {
 
 function healthResponse() {
   return {
-    name: "Tuneforge",
+    name: "TuneForge",
     version: "release-media-fixture",
     backend_version: {
-      package_version: "0.1.0",
+      package_version: "1.0.0",
       git_ref: "release-media-fixture",
     },
     frontend_version: {
-      package_version: "0.1.0",
+      package_version: "1.0.0",
       git_ref: "release-media-fixture",
     },
     status: "ok",
@@ -1353,7 +1353,7 @@ function beatBackends() {
     {
       availability: "available",
       available: true,
-      description: "Tuneforge built-in beat detector.",
+      description: "TuneForge built-in beat detector.",
       desktopOnly: false,
       experimental: false,
       id: "built-in",
@@ -1389,7 +1389,7 @@ function chordBackends() {
         supportsNoChord: true,
         supportsSevenths: true,
       },
-      description: "Tuneforge built-in chord detector.",
+      description: "TuneForge built-in chord detector.",
       desktopOnly: false,
       experimental: false,
       id: "tuneforge-fast",

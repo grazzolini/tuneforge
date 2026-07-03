@@ -6607,8 +6607,8 @@ mod desktop {
 
     #[derive(Clone, Debug)]
     struct StagedRemoteProject {
-        manifest: Value,
-        cleanup_context_manifests: Vec<Value>,
+        manifest: Arc<Value>,
+        cleanup_context_manifests: Vec<Arc<Value>>,
         available_content_sha256: Vec<String>,
         transfer_failure: Option<String>,
     }
@@ -7432,16 +7432,20 @@ mod desktop {
                         &mut seen_project_ids,
                         queued.project_id.clone(),
                     );
-                    for manifest in apply_project_manifests_with_cleanup_context(
+                    push_apply_manifest_for_batch(
+                        &mut manifests,
+                        &mut metadata_project_ids,
+                        &mut seen_manifests,
+                        &mut seen_metadata_project_ids,
                         &project.manifest,
-                        &project.cleanup_context_manifests,
-                    ) {
+                    );
+                    for context_manifest in &project.cleanup_context_manifests {
                         push_apply_manifest_for_batch(
                             &mut manifests,
                             &mut metadata_project_ids,
                             &mut seen_manifests,
                             &mut seen_metadata_project_ids,
-                            manifest,
+                            context_manifest,
                         );
                     }
                     for content_sha256 in &project.available_content_sha256 {
@@ -7508,16 +7512,16 @@ mod desktop {
         metadata_project_ids: &mut Vec<String>,
         seen_manifests: &mut HashSet<String>,
         seen_metadata_project_ids: &mut HashSet<String>,
-        manifest: Value,
+        manifest: &Value,
     ) {
-        let project_id = manifest_project_id(&manifest);
+        let project_id = manifest_project_id(manifest);
         push_unique_string(
             metadata_project_ids,
             seen_metadata_project_ids,
             project_id.clone(),
         );
         if seen_manifests.insert(project_id) {
-            manifests.push(manifest);
+            manifests.push(manifest.clone());
         }
     }
 
@@ -7528,7 +7532,7 @@ mod desktop {
     }
 
     struct IrohScheduledRemoteProject {
-        manifest: Value,
+        manifest: Arc<Value>,
         transfers: Vec<SyncTransportTransferResult>,
         pending_artifacts: HashMap<String, RemoteArtifact>,
         transfer_failure: Option<String>,
@@ -7537,7 +7541,7 @@ mod desktop {
     }
 
     impl IrohScheduledRemoteProject {
-        fn new(manifest: Value) -> Self {
+        fn new(manifest: Arc<Value>) -> Self {
             Self {
                 manifest,
                 transfers: Vec::new(),
@@ -7607,14 +7611,14 @@ mod desktop {
 
         fn take_ready_project(
             &mut self,
-            cleanup_context_manifests: Vec<Value>,
+            cleanup_context_manifests: Vec<Arc<Value>>,
         ) -> Option<StagedRemoteProject> {
             if !self.is_ready() {
                 return None;
             }
             self.enqueued = true;
             Some(StagedRemoteProject {
-                manifest: self.manifest.clone(),
+                manifest: Arc::clone(&self.manifest),
                 cleanup_context_manifests,
                 available_content_sha256: available_content_sha256(&self.transfers),
                 transfer_failure: self.transfer_failure.clone(),
@@ -7630,7 +7634,7 @@ mod desktop {
     enum IrohRegisteredPlannedRemoteProject {
         Manifest {
             project_index: usize,
-            manifest: Value,
+            manifest: Arc<Value>,
             plan: Value,
         },
         Tombstone {
@@ -7646,7 +7650,12 @@ mod desktop {
     }
 
     impl IrohGlobalProjectScheduler {
+        #[cfg(test)]
         fn push_project(&mut self, manifest: Value) -> usize {
+            self.push_shared_project(Arc::new(manifest))
+        }
+
+        fn push_shared_project(&mut self, manifest: Arc<Value>) -> usize {
             let index = self.projects.len();
             self.projects
                 .push(IrohScheduledRemoteProject::new(manifest));
@@ -7738,12 +7747,12 @@ mod desktop {
             staged
         }
 
-        fn cleanup_context_manifests_for(&self, ready_index: usize) -> Vec<Value> {
+        fn cleanup_context_manifests_for(&self, ready_index: usize) -> Vec<Arc<Value>> {
             self.projects
                 .iter()
                 .enumerate()
                 .filter(|(index, project)| *index != ready_index && !project.enqueued)
-                .map(|(_, project)| project.manifest.clone())
+                .map(|(_, project)| Arc::clone(&project.manifest))
                 .collect()
         }
 
@@ -7769,7 +7778,8 @@ mod desktop {
             .into_iter()
             .map(|planned| match planned.manifest {
                 Some(manifest) => {
-                    let project_index = scheduler.push_project(manifest.clone());
+                    let manifest = Arc::new(manifest);
+                    let project_index = scheduler.push_shared_project(Arc::clone(&manifest));
                     IrohRegisteredPlannedRemoteProject::Manifest {
                         project_index,
                         manifest,
@@ -7835,7 +7845,7 @@ mod desktop {
                 } => {
                     let entries = planned_fetch_artifact_entries(
                         &plan,
-                        std::slice::from_ref(&manifest),
+                        std::slice::from_ref(manifest.as_ref()),
                         peer_device_id,
                     );
                     for entry in entries {
@@ -8016,7 +8026,7 @@ mod desktop {
         }
 
         StagedRemoteProject {
-            manifest: manifest.clone(),
+            manifest: Arc::new(manifest.clone()),
             cleanup_context_manifests: Vec::new(),
             available_content_sha256: available_content_sha256(&project_transfers),
             transfer_failure,
@@ -8055,18 +8065,19 @@ mod desktop {
         client.post_json_value("/api/v1/sync/reconciliation/plan", &body)
     }
 
+    #[cfg(test)]
     fn apply_project_manifests_with_cleanup_context(
-        manifest: &Value,
-        cleanup_context_manifests: &[Value],
+        manifest: &Arc<Value>,
+        cleanup_context_manifests: &[Arc<Value>],
     ) -> Vec<Value> {
         let project_id = manifest_project_id(manifest);
         let mut seen_project_ids = HashSet::from([project_id]);
         let mut manifests = Vec::with_capacity(cleanup_context_manifests.len() + 1);
-        manifests.push(manifest.clone());
+        manifests.push(manifest.as_ref().clone());
         for context_manifest in cleanup_context_manifests {
             let context_project_id = manifest_project_id(context_manifest);
             if seen_project_ids.insert(context_project_id) {
-                manifests.push(context_manifest.clone());
+                manifests.push(context_manifest.as_ref().clone());
             }
         }
         manifests
@@ -15217,10 +15228,10 @@ mod desktop {
 
         fn test_no_transfer_staged_project(project_id: &str) -> StagedRemoteProject {
             StagedRemoteProject {
-                manifest: json!({
+                manifest: Arc::new(json!({
                     "project": { "project_id": project_id },
                     "artifacts": []
-                }),
+                })),
                 cleanup_context_manifests: Vec::new(),
                 available_content_sha256: Vec::new(),
                 transfer_failure: None,
@@ -19849,8 +19860,21 @@ mod desktop {
             else {
                 panic!("expected first registered manifest project");
             };
-            let entries =
-                planned_fetch_artifact_entries(plan, std::slice::from_ref(manifest), "dev_peer");
+            let second_registered = registered_projects
+                .get(1)
+                .expect("registered pending project");
+            let IrohRegisteredPlannedRemoteProject::Manifest {
+                manifest: pending_registered_manifest,
+                ..
+            } = second_registered
+            else {
+                panic!("expected second registered manifest project");
+            };
+            let entries = planned_fetch_artifact_entries(
+                plan,
+                std::slice::from_ref(manifest.as_ref()),
+                "dev_peer",
+            );
 
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0].artifact.content_sha256, "hash_shared");
@@ -19874,7 +19898,12 @@ mod desktop {
             assert_eq!(received_artifacts[0].status, "already_staged");
             let staged = &ready[0];
             assert_eq!(manifest_project_id(&staged.manifest), "proj_ready");
+            assert!(Arc::ptr_eq(&staged.manifest, manifest));
             assert_eq!(staged.cleanup_context_manifests.len(), 1);
+            assert!(Arc::ptr_eq(
+                &staged.cleanup_context_manifests[0],
+                pending_registered_manifest
+            ));
             assert_eq!(
                 manifest_project_id(&staged.cleanup_context_manifests[0]),
                 "proj_pending"

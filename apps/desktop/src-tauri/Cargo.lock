@@ -1273,9 +1273,9 @@ dependencies = [
 
 [[package]]
 name = "dbus"
-version = "0.9.11"
+version = "0.9.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b942602992bb7acfd1f51c49811c58a610ef9181b6e66f3e519d79b540a3bf73"
+checksum = "3ab69f03cc8c4340c9c8e315114e1658e6775a9b16a04357973aa21cec22b32e"
 dependencies = [
  "libc",
  "libdbus-sys",
@@ -2458,7 +2458,7 @@ dependencies = [
  "idna",
  "ipnet",
  "jni 0.22.4",
- "rand 0.10.1",
+ "rand 0.10.2",
  "rustls",
  "thiserror 2.0.18",
  "tinyvec",
@@ -2480,7 +2480,7 @@ dependencies = [
  "jni 0.22.4",
  "once_cell",
  "prefix-trie",
- "rand 0.10.1",
+ "rand 0.10.2",
  "ring",
  "thiserror 2.0.18",
  "tinyvec",
@@ -2505,7 +2505,7 @@ dependencies = [
  "ndk-context",
  "once_cell",
  "parking_lot",
- "rand 0.10.1",
+ "rand 0.10.2",
  "resolv-conf",
  "rustls",
  "smallvec",
@@ -2837,7 +2837,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "log",
- "rand 0.10.1",
+ "rand 0.10.2",
  "tokio",
  "url",
  "xmltree",
@@ -2959,7 +2959,7 @@ dependencies = [
  "pin-project",
  "portable-atomic",
  "portmapper",
- "rand 0.10.1",
+ "rand 0.10.2",
  "reqwest",
  "rustc-hash 2.1.2",
  "rustls",
@@ -2989,7 +2989,7 @@ dependencies = [
  "ed25519-dalek 3.0.0-rc.0",
  "getrandom 0.4.2",
  "n0-error",
- "rand 0.10.1",
+ "rand 0.10.2",
  "serde",
  "url",
  "zeroize",
@@ -3024,7 +3024,7 @@ dependencies = [
  "nested_enum_utils",
  "noq",
  "postcard",
- "rand 0.10.1",
+ "rand 0.10.2",
  "range-collections",
  "redb",
  "ref-cast",
@@ -3051,7 +3051,7 @@ dependencies = [
  "n0-future",
  "ndk-context",
  "portable-atomic",
- "rand 0.10.1",
+ "rand 0.10.2",
  "rustls",
  "simple-dns",
  "strum",
@@ -3128,7 +3128,7 @@ dependencies = [
  "num_enum",
  "pin-project",
  "postcard",
- "rand 0.10.1",
+ "rand 0.10.2",
  "reqwest",
  "rustls",
  "rustls-pki-types",
@@ -3948,7 +3948,7 @@ dependencies = [
  "getrandom 0.4.2",
  "identity-hash",
  "lru-slab",
- "rand 0.10.1",
+ "rand 0.10.2",
  "rand_pcg 0.10.2",
  "ring",
  "rustc-hash 2.1.2",
@@ -4821,7 +4821,7 @@ dependencies = [
  "n0-future",
  "netwatch",
  "num_enum",
- "rand 0.10.1",
+ "rand 0.10.2",
  "serde",
  "smallvec",
  "socket2",
@@ -5070,9 +5070,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.10.1"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2e8e8bcc7961af1fdac401278c6a831614941f6164ee3bf4ce61b7edb162207"
+checksum = "c7f5fa3a058cd35567ef9bfa5e75732bee0f9e4c55fa90477bef2dfcdbc4be80"
 dependencies = [
  "chacha20 0.10.0",
  "getrandom 0.4.2",
@@ -6622,9 +6622,9 @@ checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
 
 [[package]]
 name = "tauri"
-version = "2.11.3"
+version = "2.11.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2616f96cb644bf2c5c456d9de4d5d5100e592d7424c74d8b55c5cb96e359e93"
+checksum = "667b20e2726d572dea2de7370da16e188eb06008faf9a92fab7cdc46791190b5"
 dependencies = [
  "anyhow",
  "bytes",
@@ -6834,9 +6834,9 @@ dependencies = [
 
 [[package]]
 name = "tauri-runtime-wry"
-version = "2.11.3"
+version = "2.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe41e015bf8fc4d6477ff4926a0ef769dc64ff34c7b0038b6f7cacae892acb5c"
+checksum = "4e6fac707727b7a2f48e4ded90976324267371073edbb415ffb73bb0458d203f"
 dependencies = [
  "gtk",
  "http",
@@ -7114,7 +7114,7 @@ dependencies = [
  "getrandom 0.4.2",
  "http",
  "httparse",
- "rand 0.10.1",
+ "rand 0.10.2",
  "ring",
  "rustls-pki-types",
  "sha1_smol",
@@ -7396,7 +7396,7 @@ dependencies = [
  "ndk-sys",
  "objc2",
  "objc2-foundation",
- "rand 0.10.1",
+ "rand 0.10.2",
  "rusqlite",
  "serde",
  "serde_json",

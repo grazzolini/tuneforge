@@ -30,7 +30,9 @@
 }
 
 .stage-surface--compact {
+  container: playback-transport / inline-size;
   gap: 0.85rem;
+  min-width: 0;
 }
 
 .project-stage-summary__copy {
@@ -138,6 +140,11 @@
   grid-template-columns: auto auto minmax(0, 1fr);
   gap: 1rem;
   align-items: end;
+  min-width: 0;
+}
+
+.transport > * {
+  min-width: 0;
 }
 
 .transport__controls {
@@ -145,6 +152,7 @@
   align-items: center;
   gap: 0.7rem;
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 .transport__button {
@@ -380,6 +388,7 @@
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
+  min-width: 0;
 }
 
 @keyframes transport-seek-shift-forward {
@@ -721,15 +730,97 @@
 
 .playback-transport-dock {
   --panel-padding: 0.9rem 1rem;
+  container: playback-transport / inline-size;
   position: sticky;
   bottom: 0.7rem;
   z-index: 2;
+  min-width: 0;
   border-color: color-mix(in srgb, var(--playback-accent) 22%, var(--divider) 78%);
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--component-transport-dock-bg) 92%, transparent), color-mix(in srgb, var(--panel) 92%, transparent)),
     radial-gradient(circle at top left, color-mix(in srgb, var(--playback-accent) 16%, transparent), transparent 38%);
   backdrop-filter: blur(18px);
   box-shadow: 0 18px 34px color-mix(in srgb, black 16%, transparent);
+}
+
+@container playback-transport (max-width: 42rem) {
+  .transport:not(.transport--compact) {
+    grid-template-columns: minmax(0, 17.4rem) minmax(8rem, 1fr);
+    align-items: center;
+    column-gap: 0.85rem;
+    row-gap: 0.7rem;
+  }
+
+  .transport:not(.transport--compact) .transport__controls {
+    flex-wrap: nowrap;
+    gap: 0.45rem;
+  }
+
+  .transport:not(.transport--compact) .transport__controls:has(.transport__loop-status) {
+    flex-wrap: wrap;
+  }
+
+  .transport:not(.transport--compact) .transport__loop-status {
+    flex-basis: 100%;
+    min-width: 0;
+  }
+
+  .transport:not(.transport--compact) .transport__button--play,
+  .transport:not(.transport--compact) .transport__button--stop {
+    --transport-button-size: 3.7rem;
+  }
+
+  .transport:not(.transport--compact) .transport__button--seek,
+  .transport:not(.transport--compact) .transport__button--loop {
+    --transport-button-size: 2.65rem;
+  }
+
+  .transport:not(.transport--compact) .transport__icon--playpause {
+    inline-size: 1.72rem;
+    block-size: 1.72rem;
+  }
+
+  .transport:not(.transport--compact) .transport__icon--stop,
+  .transport:not(.transport--compact) .transport__icon--loop,
+  .transport:not(.transport--compact) .transport__icon--seek {
+    inline-size: 1.52rem;
+    block-size: 1.52rem;
+  }
+
+  .transport:not(.transport--compact) .transport__tempo {
+    grid-column: 1;
+    justify-self: start;
+  }
+
+  .transport:not(.transport--compact) .transport__scrubber {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: center;
+    inline-size: 100%;
+  }
+}
+
+@container playback-transport (max-width: 27rem) {
+  .transport:not(.transport--compact) {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .transport:not(.transport--compact) .transport__controls {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .transport:not(.transport--compact) .transport__tempo {
+    grid-column: auto;
+    justify-self: start;
+  }
+
+  .transport:not(.transport--compact) .transport__scrubber {
+    grid-column: auto;
+    grid-row: auto;
+    inline-size: 100%;
+  }
 }
 
 .playback-follow-chip {

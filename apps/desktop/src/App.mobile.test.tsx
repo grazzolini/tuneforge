@@ -40,6 +40,34 @@ describe("Desktop app mobile capability gates", () => {
     expect(await screen.findByRole("button", { name: "Generate Stems" })).toBeDisabled();
   });
 
+  it("shows synced-stems guidance in mobile playback when local stems are unavailable", async () => {
+    const user = userEvent.setup();
+    mockGetMobileCapabilities.mockResolvedValue({
+      platform: "android",
+      mediaBackend: "android_media_codec",
+      isEmulator: false,
+      gpuBackend: null,
+      analysisAvailable: true,
+      basicChordsAvailable: true,
+      whisperAvailable: false,
+      stemSeparationAvailable: false,
+      generationTestingAvailable: false,
+      maxRecommendedModel: null,
+      cpuFallbackAllowed: false,
+    });
+
+    renderApp(["/projects/proj_123"]);
+
+    await user.click(await screen.findByRole("tab", { name: "Playback" }));
+
+    expect(
+      await screen.findByText(
+        "Stems are unavailable on this device. Sync desktop-generated stems to practice individual parts.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Generate stems from Project workspace for source track or selected mix.")).not.toBeInTheDocument();
+  });
+
   it("allows emulator lyrics flow testing while keeping stems disabled", async () => {
     mockGetMobileCapabilities.mockResolvedValue({
       platform: "android",

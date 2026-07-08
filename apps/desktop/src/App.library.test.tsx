@@ -327,6 +327,34 @@ describe("Desktop app library", () => {
         created_at: updatedAt,
         updated_at: updatedAt,
       },
+      {
+        id: "proj_synced",
+        display_name: "Synced Demo",
+        source_path: "/tmp/synced-demo.wav",
+        imported_path: "/tmp/projects/synced-demo.wav",
+        duration_seconds: 123,
+        sample_rate: 44100,
+        channels: 2,
+        created_at: updatedAt,
+        updated_at: updatedAt,
+        sync_status: "local",
+        sync_editable: true,
+        sync_status_reason: "Synced from desktop.",
+      },
+      {
+        id: "proj_unreadable",
+        display_name: "Unreadable Demo",
+        source_path: "/tmp/unreadable-demo.wav",
+        imported_path: "/tmp/projects/unreadable-demo.wav",
+        duration_seconds: 124,
+        sample_rate: 44100,
+        channels: 2,
+        created_at: updatedAt,
+        updated_at: updatedAt,
+        sync_status: "missing_local_bytes",
+        sync_editable: false,
+        sync_status_reason: "Staged artifact SHA-256 does not match manifest.",
+      },
     ]);
 
     renderApp(["/"]);
@@ -335,16 +363,22 @@ describe("Desktop app library", () => {
       "article",
     );
     const localCard = screen.getByRole("heading", { name: "Legacy Local", level: 2 }).closest("article");
+    const syncedCard = screen.getByRole("heading", { name: "Synced Demo", level: 2 }).closest("article");
+    const unreadableCard = screen.getByRole("heading", { name: "Unreadable Demo", level: 2 }).closest("article");
     expect(remoteCard).not.toBeNull();
     expect(localCard).not.toBeNull();
+    expect(syncedCard).not.toBeNull();
+    expect(unreadableCard).not.toBeNull();
 
-    expect(within(remoteCard as HTMLElement).getByText("Remote Available")).toBeInTheDocument();
+    expect(within(remoteCard as HTMLElement).getByText("Not on this device")).toBeInTheDocument();
     expect(
       within(remoteCard as HTMLElement).getByLabelText(
-        "Sync status: Remote Available. Download source audio before editing.",
+        "Sync status: Not on this device. Download source audio before editing.",
       ),
     ).toBeInTheDocument();
     expect(within(localCard as HTMLElement).queryByText("Local")).not.toBeInTheDocument();
+    expect(within(syncedCard as HTMLElement).getByText("Synced from desktop")).toBeInTheDocument();
+    expect(within(unreadableCard as HTMLElement).getByText("Unreadable")).toBeInTheDocument();
   });
 
   it("imports track from library and opens project", async () => {

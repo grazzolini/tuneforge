@@ -54,7 +54,7 @@ function ProjectCard({ project }: { project: ProjectSchema }) {
         <div className="project-card__title-block">
           <div className="project-card__title-row">
             <h2>{project.display_name}</h2>
-            {!syncSummary.isLocal || syncSummary.isLocked ? (
+            {syncSummary.showBadge ? (
               <span
                 aria-label={`Sync status: ${syncSummary.label}.${syncReason}`}
                 className={`sync-status-badge sync-status-badge--${syncSummary.state}`}

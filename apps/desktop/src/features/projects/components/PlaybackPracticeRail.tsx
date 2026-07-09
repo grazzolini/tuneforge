@@ -40,7 +40,9 @@ export function PlaybackPracticeRail() {
     handleSetPrecountClickCount,
     handleSetPrecountEnabled,
     handleSetPrecountLoopEnabled,
+    canGenerateStems,
     informationDensity,
+    isMobileRuntime,
     isStemPlayback,
     lowerCapoPreview,
     lowerCapoShiftOptions,
@@ -82,6 +84,10 @@ export function PlaybackPracticeRail() {
         ? `Original ${tempoOriginalBpm.toFixed(1)} BPM`
         : `${tempoTargetBpm.toFixed(0)} BPM (${tempoPlaybackRate.toFixed(3)}x)`
       : "Waiting for tempo analysis";
+  const stemEmptyCopy =
+    isMobileRuntime && !canGenerateStems
+      ? "Stems are unavailable on this device. Sync desktop-generated stems to practice individual parts."
+      : "Generate stems from Project workspace for source track or selected mix.";
   const loopAlignmentLabel = (mode: LoopAlignmentMode) => {
     if (mode === "beat") return "Beat";
     if (mode === "bar") return "Bar";
@@ -508,9 +514,7 @@ export function PlaybackPracticeRail() {
             </div>
           </>
         ) : (
-          <p className="artifact-meta">
-            Generate stems from Project workspace for source track or selected mix.
-          </p>
+          <p className="artifact-meta">{stemEmptyCopy}</p>
         )}
       </section>
       </div>

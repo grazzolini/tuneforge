@@ -48,10 +48,11 @@ use identity::{
 };
 use lyrics::find_whisper_model;
 use manifests::{
-    apply_delete_tombstone, import_entity_revisions, import_sync_project_manifest,
-    local_tombstone_superseded_by_live_target, normalize_tombstone_target_type,
-    record_local_delete_tombstone, update_project_sync_status, validate_manifest_delete_tombstones,
-    validate_project_manifest_identity, validate_remote_delete_tombstone,
+    apply_delete_tombstone, hydrate_imported_read_models, import_entity_revisions,
+    import_sync_project_manifest, local_tombstone_superseded_by_live_target,
+    normalize_tombstone_target_type, record_local_delete_tombstone, update_project_sync_status,
+    validate_manifest_delete_tombstones, validate_project_manifest_identity,
+    validate_remote_delete_tombstone,
 };
 
 pub use audio::{

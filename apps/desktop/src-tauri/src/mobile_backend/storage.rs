@@ -1,4 +1,43 @@
 use super::*;
+#[cfg(all(test, not(target_os = "android")))]
+use serde_json::json;
+
+#[cfg(all(test, not(target_os = "android")))]
+fn local_tombstone_superseded_by_live_target(
+    _connection: &Connection,
+    _tombstone: &SyncDeleteTombstoneSchema,
+) -> Result<bool, String> {
+    Ok(false)
+}
+
+#[cfg(all(test, not(target_os = "android")))]
+fn spawn_playback_proxy_generation(
+    _root: PathBuf,
+    _project_root: PathBuf,
+    _source_path: PathBuf,
+    _artifact_id: String,
+) {
+}
+
+#[cfg(all(test, not(target_os = "android")))]
+fn record_local_delete_tombstone(
+    _connection: &Connection,
+    _project_id: &str,
+    _target_type: &str,
+    _target_id: &str,
+    _prior_metadata: Value,
+) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(all(test, not(target_os = "android")))]
+fn ensure_source_playback_proxy_metadata(
+    _connection: &Connection,
+    _root: &Path,
+    _project_id: &str,
+) -> Result<(), String> {
+    Ok(())
+}
 
 #[derive(Clone, Debug)]
 pub struct MobileSyncTransportArtifactFile {
@@ -76,15 +115,19 @@ pub(super) const MOBILE_CORE_SCHEMA_SQL: &str = r#"
         estimated_reference_hz REAL,
         tuning_offset_cents REAL,
         tempo_bpm REAL,
+        timing_json TEXT,
         analysis_version TEXT NOT NULL,
         created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS chord_timelines (
         project_id TEXT PRIMARY KEY,
         source_segments_json TEXT NOT NULL,
+        segments_json TEXT NOT NULL DEFAULT '[]',
         timeline_json TEXT NOT NULL,
         backend TEXT,
         source_artifact_id TEXT,
+        source_kind TEXT NOT NULL DEFAULT 'generated',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
         has_user_edits INTEGER NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -367,6 +410,37 @@ pub(super) fn add_mobile_sync_columns(connection: &Connection) -> Result<(), Str
         "language_override",
         "TEXT",
     )?;
+    add_column_if_missing(connection, "analysis_results", "timing_json", "TEXT")?;
+    add_column_if_missing(
+        connection,
+        "chord_timelines",
+        "segments_json",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )?;
+    add_column_if_missing(
+        connection,
+        "chord_timelines",
+        "source_kind",
+        "TEXT NOT NULL DEFAULT 'generated'",
+    )?;
+    add_column_if_missing(
+        connection,
+        "chord_timelines",
+        "metadata_json",
+        "TEXT NOT NULL DEFAULT '{}'",
+    )?;
+    connection
+        .execute(
+            "UPDATE chord_timelines SET segments_json = timeline_json WHERE segments_json = '[]' AND timeline_json IS NOT NULL",
+            [],
+        )
+        .map_err(|error| error.to_string())?;
+    connection
+        .execute(
+            "UPDATE chord_timelines SET source_kind = 'user-edited' WHERE has_user_edits != 0 AND source_kind = 'generated'",
+            [],
+        )
+        .map_err(|error| error.to_string())?;
     add_column_if_missing(
         connection,
         "jobs",
@@ -894,15 +968,14 @@ pub(super) fn manifest_artifact_from_artifact(
         .as_ref()
         .ok_or_else(|| "Project artifact is missing content SHA-256 metadata.".to_string())
         .and_then(|value| normalize_sha256(value, "content_sha256"))?;
-    let actual_size = fs::metadata(&artifact.path)
-        .map_err(|_| "Project artifact file is missing.".to_string())?
-        .len() as i64;
+    let metadata = fs::metadata(&artifact.path)
+        .map_err(|_| "Project artifact file is missing.".to_string())?;
+    if !metadata.is_file() {
+        return Err("Project artifact path is not a file.".to_string());
+    }
+    let actual_size = metadata.len() as i64;
     if actual_size != artifact.size_bytes {
         return Err("Project artifact file size does not match its metadata.".to_string());
-    }
-    let actual_sha256 = file_sha256(Path::new(&artifact.path))?;
-    if actual_sha256 != content_sha256 {
-        return Err("Project artifact file SHA-256 does not match its metadata.".to_string());
     }
     Ok(SyncProjectManifestArtifactSchema {
         artifact_id: artifact.id,

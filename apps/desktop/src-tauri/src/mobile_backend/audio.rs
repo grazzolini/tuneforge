@@ -289,6 +289,7 @@ fn store_analysis_result(
         "estimated_reference_hz": Value::Null,
         "tuning_offset_cents": Value::Null,
         "tempo_bpm": Value::Null,
+        "timing": Value::Null,
         "analysis_version": analysis_version,
         "created_at": timestamp,
     });
@@ -307,9 +308,9 @@ fn store_analysis_result(
         .map_err(|error| error.to_string())?;
     connection
         .execute(
-            "INSERT INTO analysis_results (project_id, source_artifact_id, estimated_key, key_confidence, estimated_reference_hz, tuning_offset_cents, tempo_bpm, analysis_version, created_at)
-             VALUES (?1, ?2, ?3, ?4, NULL, NULL, NULL, ?5, ?6)
-             ON CONFLICT(project_id) DO UPDATE SET source_artifact_id = excluded.source_artifact_id, estimated_key = excluded.estimated_key, key_confidence = excluded.key_confidence, estimated_reference_hz = excluded.estimated_reference_hz, tuning_offset_cents = excluded.tuning_offset_cents, tempo_bpm = excluded.tempo_bpm, analysis_version = excluded.analysis_version, created_at = excluded.created_at",
+            "INSERT INTO analysis_results (project_id, source_artifact_id, estimated_key, key_confidence, estimated_reference_hz, tuning_offset_cents, tempo_bpm, timing_json, analysis_version, created_at)
+             VALUES (?1, ?2, ?3, ?4, NULL, NULL, NULL, NULL, ?5, ?6)
+             ON CONFLICT(project_id) DO UPDATE SET source_artifact_id = excluded.source_artifact_id, estimated_key = excluded.estimated_key, key_confidence = excluded.key_confidence, estimated_reference_hz = excluded.estimated_reference_hz, tuning_offset_cents = excluded.tuning_offset_cents, tempo_bpm = excluded.tempo_bpm, timing_json = excluded.timing_json, analysis_version = excluded.analysis_version, created_at = excluded.created_at",
             params![
                 project.id,
                 source_artifact.id,
@@ -362,12 +363,19 @@ fn store_analysis_result(
     Ok(analysis)
 }
 
-fn get_analysis_value(connection: &Connection, project_id: &str) -> Result<Option<Value>, String> {
+pub(super) fn get_analysis_value(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<Option<Value>, String> {
     connection
         .query_row(
-            "SELECT project_id, source_artifact_id, estimated_key, key_confidence, estimated_reference_hz, tuning_offset_cents, tempo_bpm, analysis_version, created_at FROM analysis_results WHERE project_id = ?1",
+            "SELECT project_id, source_artifact_id, estimated_key, key_confidence, estimated_reference_hz, tuning_offset_cents, tempo_bpm, timing_json, analysis_version, created_at FROM analysis_results WHERE project_id = ?1",
             params![project_id],
             |row| {
+                let timing_raw: Option<String> = row.get(7)?;
+                let timing = timing_raw
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
                 Ok(json!({
                     "project_id": row.get::<_, String>(0)?,
                     "source_artifact_id": row.get::<_, Option<String>>(1)?,
@@ -376,8 +384,9 @@ fn get_analysis_value(connection: &Connection, project_id: &str) -> Result<Optio
                     "estimated_reference_hz": row.get::<_, Option<f64>>(4)?,
                     "tuning_offset_cents": row.get::<_, Option<f64>>(5)?,
                     "tempo_bpm": row.get::<_, Option<f64>>(6)?,
-                    "analysis_version": row.get::<_, String>(7)?,
-                    "created_at": row.get::<_, String>(8)?,
+                    "timing": timing,
+                    "analysis_version": row.get::<_, String>(8)?,
+                    "created_at": row.get::<_, String>(9)?,
                 }))
             },
         )
@@ -397,9 +406,9 @@ fn store_chord_timeline(
     let timeline_json = serde_json::to_string(&timeline).map_err(|error| error.to_string())?;
     connection
         .execute(
-            "INSERT INTO chord_timelines (project_id, source_segments_json, timeline_json, backend, source_artifact_id, has_user_edits, created_at, updated_at)
-             VALUES (?1, ?2, ?3, 'mobile-cpu-basic', ?4, 0, ?5, ?5)
-             ON CONFLICT(project_id) DO UPDATE SET source_segments_json = excluded.source_segments_json, timeline_json = excluded.timeline_json, backend = excluded.backend, source_artifact_id = excluded.source_artifact_id, has_user_edits = excluded.has_user_edits, updated_at = excluded.updated_at",
+            "INSERT INTO chord_timelines (project_id, source_segments_json, segments_json, timeline_json, backend, source_artifact_id, source_kind, metadata_json, has_user_edits, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?3, 'mobile-cpu-basic', ?4, 'generated', '{}', 0, ?5, ?5)
+             ON CONFLICT(project_id) DO UPDATE SET source_segments_json = excluded.source_segments_json, segments_json = excluded.segments_json, timeline_json = excluded.timeline_json, backend = excluded.backend, source_artifact_id = excluded.source_artifact_id, source_kind = excluded.source_kind, metadata_json = excluded.metadata_json, has_user_edits = excluded.has_user_edits, updated_at = excluded.updated_at",
             params![
                 project.id,
                 timeline_json,
@@ -436,30 +445,35 @@ fn store_chord_timeline(
     Ok(response)
 }
 
-fn get_chord_response(
+pub(super) fn get_chord_response(
     connection: &Connection,
     project_id: String,
 ) -> Result<ChordResponse, String> {
     connection
         .query_row(
-            "SELECT project_id, source_segments_json, timeline_json, backend, source_artifact_id, has_user_edits, created_at, updated_at FROM chord_timelines WHERE project_id = ?1",
+            "SELECT project_id, source_segments_json, segments_json, timeline_json, backend, source_artifact_id, source_kind, metadata_json, has_user_edits, created_at, updated_at FROM chord_timelines WHERE project_id = ?1",
             params![project_id],
             |row| {
                 let source_segments_raw: String = row.get(1)?;
-                let timeline_raw: String = row.get(2)?;
+                let segments_raw: String = row.get(2)?;
+                let timeline_raw: String = row.get(3)?;
+                let metadata_raw: String = row.get(7)?;
                 let source_segments = serde_json::from_str(&source_segments_raw).unwrap_or_default();
-                let timeline = serde_json::from_str(&timeline_raw).unwrap_or_default();
+                let mut timeline: Vec<Value> = serde_json::from_str(&segments_raw).unwrap_or_default();
+                if timeline.is_empty() {
+                    timeline = serde_json::from_str(&timeline_raw).unwrap_or_default();
+                }
                 Ok(ChordResponse {
                     project_id: row.get(0)?,
                     source_segments,
                     timeline,
-                    backend: row.get(3)?,
-                    source_artifact_id: row.get(4)?,
-                    has_user_edits: row.get::<_, i64>(5)? != 0,
-                    source_kind: "generated".to_string(),
-                    metadata: json!({}),
-                    created_at: row.get(6)?,
-                    updated_at: row.get(7)?,
+                    backend: row.get(4)?,
+                    source_artifact_id: row.get(5)?,
+                    has_user_edits: row.get::<_, i64>(8)? != 0,
+                    source_kind: row.get(6)?,
+                    metadata: serde_json::from_str(&metadata_raw).unwrap_or_else(|_| json!({})),
+                    created_at: row.get(9)?,
+                    updated_at: row.get(10)?,
                 })
             },
         )

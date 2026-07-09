@@ -108,6 +108,7 @@ export type ProjectSyncSummary = {
   label: string;
   isLocal: boolean;
   isLocked: boolean;
+  showBadge: boolean;
   lockReason: string | null;
 };
 export type SyncTransportMetricMap = Record<string, number>;
@@ -297,8 +298,9 @@ const PROJECT_SYNC_STATE_LABELS: Record<string, string> = {
   missing: "Missing",
   missing_local_bytes: "Missing Bytes",
   missing_provider: "Missing Provider",
-  remote_available: "Remote Available",
+  remote_available: "Not on this device",
   syncing: "Syncing",
+  unreadable: "Unreadable",
 };
 const PROJECT_SYNC_LOCK_REASONS: Record<string, string> = {
   conflicted: "Resolve sync conflicts before editing this project.",
@@ -307,8 +309,9 @@ const PROJECT_SYNC_LOCK_REASONS: Record<string, string> = {
   missing: "Required project data is missing on this device.",
   missing_local_bytes: "Required project audio is missing on this device.",
   missing_provider: "No trusted synced device can provide the required project data.",
-  remote_available: "Required project data is available from another synced device and must be downloaded before editing.",
+  remote_available: "Project data is on another synced device. Download it here before editing.",
   syncing: "This project is still syncing required local data before edits are enabled.",
+  unreadable: "Project data exists here but cannot be read. Check the sync details before editing.",
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -809,7 +812,18 @@ function normalizeProjectSyncState(value: string | null) {
   return value?.toLowerCase().replace(/[\s-]+/g, "_") ?? "local";
 }
 
-function labelFromSyncState(state: string) {
+function syncReasonLooksUnreadable(reason: string | null) {
+  const normalized = reason?.toLowerCase() ?? "";
+  return /\b(unreadable|hash|sha-?256|checksum|decode|schema|malformed|corrupt)\b/.test(normalized);
+}
+
+function labelFromSyncState(state: string, reason: string | null) {
+  if (syncReasonLooksUnreadable(reason)) {
+    return PROJECT_SYNC_STATE_LABELS.unreadable;
+  }
+  if (state === "local" && reason?.trim().toLowerCase() === "synced from desktop.") {
+    return "Synced from desktop";
+  }
   return PROJECT_SYNC_STATE_LABELS[state] ??
     state
       .split("_")
@@ -834,6 +848,7 @@ export function getProjectSyncSummary(project: ProjectSchema | null | undefined)
       label: PROJECT_SYNC_STATE_LABELS.local,
       isLocal: true,
       isLocked: false,
+      showBadge: false,
       lockReason: null,
     };
   }
@@ -860,27 +875,28 @@ export function getProjectSyncSummary(project: ProjectSchema | null | undefined)
     ["sync_editable", "syncEditable", "can_edit", "editable", "is_editable", "canEdit"],
   );
   const isLocked = explicitLocked ?? (explicitEditable === null ? !isLocal : !explicitEditable);
-  const lockReason = isLocked
-    ? firstStringField(
-        [projectRecord, syncRecord],
-        [
-          "edit_lock_reason",
-          "lock_reason",
-          "sync_status_reason",
-          "syncStatusReason",
-          "sync_lock_reason",
-          "unavailable_reason",
-          "reason",
-          "message",
-        ],
-      ) ?? defaultProjectLockReason(state, isLocal)
-    : null;
+  const statusReason = firstStringField(
+    [projectRecord, syncRecord],
+    [
+      "edit_lock_reason",
+      "lock_reason",
+      "sync_status_reason",
+      "syncStatusReason",
+      "sync_lock_reason",
+      "unavailable_reason",
+      "reason",
+      "message",
+    ],
+  );
+  const label = labelFromSyncState(state, statusReason);
+  const lockReason = isLocked ? statusReason ?? defaultProjectLockReason(state, isLocal) : null;
 
   return {
     state,
-    label: labelFromSyncState(state),
+    label,
     isLocal,
     isLocked,
+    showBadge: !isLocal || isLocked || label !== PROJECT_SYNC_STATE_LABELS.local,
     lockReason,
   };
 }

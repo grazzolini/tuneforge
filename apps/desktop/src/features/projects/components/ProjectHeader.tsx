@@ -15,7 +15,7 @@ export function ProjectHeader() {
     setIsRenaming,
     showSupportingCopy,
   } = useProjectViewModelContext();
-  const showSyncStatus = !projectSyncSummary.isLocal || projectSyncSummary.isLocked;
+  const showSyncStatus = projectSyncSummary.showBadge;
   const syncReason = projectSyncLockReason ? ` ${projectSyncLockReason}` : "";
 
   return (

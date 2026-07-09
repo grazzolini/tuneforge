@@ -238,7 +238,7 @@ describe("Desktop app project analysis mix", () => {
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-    expect(screen.getByText("Remote Available")).toBeInTheDocument();
+    expect(screen.getByText("Not on this device")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("Download source audio before editing.");
 
     const renameButton = screen.getByRole("button", { name: "Rename" });

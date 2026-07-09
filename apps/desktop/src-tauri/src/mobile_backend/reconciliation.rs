@@ -678,7 +678,7 @@ fn persist_reconciliation_conflict(
     )
 }
 
-fn apply_reconciliation_action(
+pub(super) fn apply_reconciliation_action(
     connection: &Connection,
     root: &Path,
     action: SyncReconciliationActionSchema,
@@ -764,7 +764,21 @@ fn apply_reconciliation_action(
                     .ok_or_else(|| {
                         "Entity revision is not present in the apply request.".to_string()
                     })?;
-                import_entity_revisions(connection, std::slice::from_ref(revision))?;
+                connection
+                    .execute_batch("BEGIN IMMEDIATE")
+                    .map_err(|error| error.to_string())?;
+                let import_result = (|| -> Result<(), String> {
+                    import_entity_revisions(connection, std::slice::from_ref(revision))?;
+                    hydrate_imported_read_models(connection, &revision.project_id)
+                })();
+                if let Err(message) = import_result {
+                    let _ = connection.execute_batch("ROLLBACK");
+                    return Err(message);
+                }
+                if let Err(error) = connection.execute_batch("COMMIT") {
+                    let _ = connection.execute_batch("ROLLBACK");
+                    return Err(error.to_string());
+                }
                 Ok((
                     "applied",
                     "Entity revision was imported into the existing project.",

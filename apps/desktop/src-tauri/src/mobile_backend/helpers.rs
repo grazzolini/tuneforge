@@ -983,6 +983,253 @@ fn looks_like_transport_internal_value(value: &str) -> bool {
         || normalized.starts_with("blake3:")
 }
 
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+struct MobileChordRevisionPayload {
+    backend: String,
+    source_artifact_id: Option<String>,
+    source_segments: Vec<Value>,
+    segments: Vec<Value>,
+    timeline: Vec<Value>,
+    source_kind: String,
+    metadata: Value,
+    has_user_edits: bool,
+    created_at: String,
+    updated_at: String,
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+struct MobileAnalysisArtifactPayload {
+    project_id: Option<String>,
+    source_artifact_id: Option<String>,
+    estimated_key: Option<String>,
+    key_confidence: Option<f64>,
+    estimated_reference_hz: Option<f64>,
+    tuning_offset_cents: Option<f64>,
+    tempo_bpm: Option<f64>,
+    timing: Option<Value>,
+    analysis_version: String,
+    created_at: Option<String>,
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn require_payload_object<'a>(
+    payload: &'a Value,
+    context: &str,
+) -> Result<&'a serde_json::Map<String, Value>, String> {
+    payload
+        .as_object()
+        .ok_or_else(|| format!("{context} payload must be an object."))
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn payload_first<'a>(payload: &'a Value, names: &[&str]) -> Option<&'a Value> {
+    names.iter().find_map(|name| payload.get(*name))
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn payload_optional_string_field(
+    payload: &Value,
+    name: &str,
+    context: &str,
+) -> Result<Option<String>, String> {
+    require_payload_object(payload, context)?;
+    match payload.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(format!("{context} field must be a string or null: {name}.")),
+    }
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn payload_optional_float_field(
+    payload: &Value,
+    name: &str,
+    context: &str,
+) -> Result<Option<f64>, String> {
+    require_payload_object(payload, context)?;
+    match payload.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(value)) => value
+            .as_f64()
+            .map(Some)
+            .ok_or_else(|| format!("{context} field must be numeric or null: {name}.")),
+        Some(_) => Err(format!("{context} field must be numeric or null: {name}.")),
+    }
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn payload_bool_field(
+    payload: &Value,
+    name: &str,
+    default: bool,
+    context: &str,
+) -> Result<bool, String> {
+    require_payload_object(payload, context)?;
+    match payload.get(name) {
+        None | Some(Value::Null) => Ok(default),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(format!("{context} field must be a boolean or null: {name}.")),
+    }
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn payload_optional_timestamp_string(
+    payload: &Value,
+    name: &str,
+    context: &str,
+) -> Result<Option<String>, String> {
+    let value = payload_optional_string_field(payload, name, context)?;
+    if let Some(value) = &value {
+        chrono::DateTime::parse_from_rfc3339(&value.replace('Z', "+00:00"))
+            .map_err(|_| format!("{context} field must be an ISO-8601 timestamp: {name}."))?;
+    }
+    Ok(value)
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn payload_list_field(
+    payload: &Value,
+    names: &[&str],
+    default: Option<Vec<Value>>,
+    context: &str,
+) -> Result<Vec<Value>, String> {
+    require_payload_object(payload, context)?;
+    let value = payload_first(payload, names);
+    let Some(value) = value else {
+        return Ok(default.unwrap_or_default());
+    };
+    let Some(values) = value.as_array() else {
+        return Err(format!(
+            "{context} field must be a list of objects: {}.",
+            names[0]
+        ));
+    };
+    if values.iter().any(|item| !item.is_object()) {
+        return Err(format!(
+            "{context} field must be a list of objects: {}.",
+            names[0]
+        ));
+    }
+    Ok(values.clone())
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn payload_mapping_field(
+    payload: &Value,
+    names: &[&str],
+    default: Option<Value>,
+    context: &str,
+) -> Result<Value, String> {
+    require_payload_object(payload, context)?;
+    let value = payload_first(payload, names);
+    let Some(value) = value else {
+        return Ok(default.unwrap_or_else(|| serde_json::json!({})));
+    };
+    if !value.is_object() {
+        return Err(format!("{context} field must be an object: {}.", names[0]));
+    }
+    Ok(value.clone())
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn mobile_chord_revision_payload(
+    revision: &SyncProjectManifestEntityRevisionSchema,
+) -> Result<MobileChordRevisionPayload, String> {
+    let context = "Chord entity revision payload";
+    let segments = payload_list_field(
+        &revision.payload,
+        &["segments", "segments_json", "timeline"],
+        None,
+        context,
+    )?;
+    let timeline = payload_list_field(
+        &revision.payload,
+        &["timeline", "timeline_json"],
+        Some(segments.clone()),
+        context,
+    )?;
+    Ok(MobileChordRevisionPayload {
+        backend: payload_optional_string_field(&revision.payload, "backend", context)?
+            .unwrap_or_else(|| "default".to_string()),
+        source_artifact_id: payload_optional_string_field(
+            &revision.payload,
+            "source_artifact_id",
+            context,
+        )?
+        .or_else(|| revision.source_artifact_id.clone()),
+        source_segments: payload_list_field(
+            &revision.payload,
+            &["source_segments", "source_segments_json"],
+            None,
+            context,
+        )?,
+        segments,
+        timeline,
+        source_kind: payload_optional_string_field(&revision.payload, "source_kind", context)?
+            .unwrap_or_else(|| "generated".to_string()),
+        metadata: payload_mapping_field(
+            &revision.payload,
+            &["metadata", "metadata_json"],
+            Some(revision.metadata.clone()),
+            context,
+        )?,
+        has_user_edits: payload_bool_field(
+            &revision.payload,
+            "has_user_edits",
+            false,
+            context,
+        )?,
+        created_at: payload_optional_timestamp_string(&revision.payload, "created_at", context)?
+            .unwrap_or_else(|| revision.created_at.clone()),
+        updated_at: payload_optional_timestamp_string(&revision.payload, "updated_at", context)?
+            .unwrap_or_else(|| revision.updated_at.clone()),
+    })
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn mobile_analysis_artifact_payload(
+    payload: &Value,
+    artifact_metadata: &Value,
+) -> Result<MobileAnalysisArtifactPayload, String> {
+    let context = "Analysis artifact";
+    Ok(MobileAnalysisArtifactPayload {
+        project_id: payload_optional_string_field(payload, "project_id", context)?,
+        source_artifact_id: payload_optional_string_field(payload, "source_artifact_id", context)?,
+        estimated_key: payload_optional_string_field(payload, "estimated_key", context)?,
+        key_confidence: payload_optional_float_field(payload, "key_confidence", context)?,
+        estimated_reference_hz: payload_optional_float_field(
+            payload,
+            "estimated_reference_hz",
+            context,
+        )?,
+        tuning_offset_cents: payload_optional_float_field(
+            payload,
+            "tuning_offset_cents",
+            context,
+        )?,
+        tempo_bpm: payload_optional_float_field(payload, "tempo_bpm", context)?,
+        timing: match payload.get("timing") {
+            None | Some(Value::Null) => None,
+            Some(Value::Object(_)) => Some(payload_mapping_field(
+                payload,
+                &["timing"],
+                None,
+                context,
+            )?),
+            Some(_) => return Err("Analysis artifact field must be an object or null: timing.".to_string()),
+        },
+        analysis_version: payload_optional_string_field(payload, "analysis_version", context)?
+            .or_else(|| {
+                artifact_metadata
+                    .get("analysis_version")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+            })
+            .unwrap_or_else(|| "v3".to_string()),
+        created_at: payload_optional_timestamp_string(payload, "created_at", context)?,
+    })
+}
+
 
 #[cfg(test)]
 mod mobile_backend_tests {
@@ -1089,6 +1336,906 @@ mod mobile_backend_tests {
             created_at: "2026-05-22T12:00:00.000Z".to_string(),
             updated_at: "2026-05-22T12:00:00.000Z".to_string(),
         }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn mobile_storage_contract_root(slug: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "tuneforge-mobile-storage-{slug}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn write_mobile_contract_file(path: &std::path::Path, bytes: &[u8]) -> (String, i64) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, bytes).unwrap();
+        (storage::file_sha256(path).unwrap(), bytes.len() as i64)
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn insert_mobile_contract_project(
+        connection: &Connection,
+        project_id: &str,
+        source_sha256: &str,
+        source_path: &std::path::Path,
+    ) {
+        connection
+            .execute(
+                "INSERT INTO projects (id, display_name, source_key_override, source_sha256, source_path, imported_path, duration_seconds, sample_rate, channels, sync_status, sync_status_reason, sync_required_artifact_ids_json, sync_provider_device_ids_json, sync_conflict_count, sync_status_updated_at, created_at, updated_at)
+                 VALUES (?1, 'Desktop Sync Fixture', '2:major', ?2, ?3, ?3, 187.25, 48000, 2, 'local', NULL, '[]', '[]', 0, ?4, ?4, ?4)",
+                rusqlite::params![
+                    project_id,
+                    source_sha256,
+                    source_path.to_string_lossy().into_owned(),
+                    "2026-05-22T12:00:00.000Z",
+                ],
+            )
+            .unwrap();
+    }
+
+    #[cfg(not(target_os = "android"))]
+    struct MobileContractArtifact<'a> {
+        artifact_id: &'a str,
+        project_id: &'a str,
+        artifact_type: &'a str,
+        format: &'a str,
+        path: &'a std::path::Path,
+        content_sha256: &'a str,
+        size_bytes: i64,
+        generated_by: &'a str,
+        can_delete: bool,
+        can_regenerate: bool,
+        cache_key: Option<&'a str>,
+        metadata: Value,
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn insert_mobile_contract_artifact(
+        connection: &Connection,
+        artifact: MobileContractArtifact<'_>,
+    ) {
+        connection
+            .execute(
+                "INSERT INTO artifacts (id, project_id, type, format, path, content_sha256, size_bytes, generated_by, can_delete, can_regenerate, metadata_json, cache_key, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                rusqlite::params![
+                    artifact.artifact_id,
+                    artifact.project_id,
+                    artifact.artifact_type,
+                    artifact.format,
+                    artifact.path.to_string_lossy().into_owned(),
+                    artifact.content_sha256,
+                    artifact.size_bytes,
+                    artifact.generated_by,
+                    if artifact.can_delete { 1_i64 } else { 0_i64 },
+                    if artifact.can_regenerate { 1_i64 } else { 0_i64 },
+                    artifact.metadata.to_string(),
+                    artifact.cache_key,
+                    "2026-05-22T12:00:00.000Z",
+                ],
+            )
+            .unwrap();
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn insert_mobile_contract_revision(
+        connection: &Connection,
+        revision: &SyncProjectManifestEntityRevisionSchema,
+    ) {
+        connection
+            .execute(
+                "INSERT INTO sync_entity_revisions (id, project_id, entity_type, entity_id, revision_type, base_revision_id, author_device_id, source_artifact_id, content_sha256, state, metadata_json, payload_json, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                rusqlite::params![
+                    &revision.revision_id,
+                    &revision.project_id,
+                    &revision.entity_type,
+                    &revision.entity_id,
+                    &revision.revision_type,
+                    revision.base_revision_id.as_ref(),
+                    &revision.author_device_id,
+                    revision.source_artifact_id.as_ref(),
+                    &revision.content_sha256,
+                    &revision.state,
+                    revision.metadata.to_string(),
+                    revision.payload.to_string(),
+                    &revision.created_at,
+                    &revision.updated_at,
+                ],
+            )
+            .unwrap();
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn mobile_contract_revision(
+        revision_id: &str,
+        project_id: &str,
+        entity_type: &str,
+        revision_type: &str,
+        content_sha256: &str,
+        metadata: Value,
+        payload: Value,
+    ) -> SyncProjectManifestEntityRevisionSchema {
+        SyncProjectManifestEntityRevisionSchema {
+            revision_id: revision_id.to_string(),
+            project_id: project_id.to_string(),
+            entity_type: entity_type.to_string(),
+            entity_id: project_id.to_string(),
+            revision_type: revision_type.to_string(),
+            base_revision_id: None,
+            author_device_id: "device_desktop_fixture".to_string(),
+            source_artifact_id: Some("art_source_audio".to_string()),
+            content_sha256: content_sha256.to_string(),
+            state: "active".to_string(),
+            metadata,
+            payload,
+            created_at: "2026-05-22T12:00:00.000Z".to_string(),
+            updated_at: "2026-05-22T12:00:00.000Z".to_string(),
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn insert_mobile_contract_tombstone(connection: &Connection, project_id: &str) {
+        connection
+            .execute(
+                "INSERT INTO sync_delete_tombstones (id, sync_group_id, project_id, target_type, target_id, author_device_id, deleted_at, prior_metadata_json, created_at, updated_at)
+                 VALUES ('tomb_deleted_mix', 'sync_group_mobile_test', ?1, 'artifact', 'art_deleted_mix', 'device_desktop_fixture', ?2, ?3, ?3, ?3)",
+                rusqlite::params![
+                    project_id,
+                    "2026-05-22T12:01:00.000Z",
+                    json!({"type": "preview_mix", "stem_model": "htdemucs_ft"}).to_string(),
+                ],
+            )
+            .unwrap();
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn mobile_storage_reads_desktop_shaped_sync_fixture() {
+        let root = mobile_storage_contract_root("desktop-shaped-sync");
+        let connection = storage::db_at_root(&root).unwrap();
+        let source_bytes = b"tuneforge deterministic source wav fixture";
+        let source_sha256 = storage::hex_digest(&Sha256::digest(source_bytes));
+        let project_id = source_hash_to_project_id(&source_sha256).unwrap();
+        let project_root = storage::project_root_path(&root, &project_id).unwrap();
+        let source_path = project_root.join("source").join("source.wav");
+        let analysis_path = project_root.join("analysis").join("analysis.json");
+        let vocals_path = project_root.join("stems").join("vocals.wav");
+        let drums_path = project_root.join("stems").join("drums.wav");
+        let (source_content_sha256, source_size_bytes) =
+            write_mobile_contract_file(&source_path, source_bytes);
+        let (analysis_sha256, analysis_size_bytes) = write_mobile_contract_file(
+            &analysis_path,
+            br#"{"project_id":"fixture","tempo_bpm":132.25,"timing":{"beats_per_bar":4,"source":"remote-detected","beats":[{"time_seconds":0.0,"beat_in_bar":1}],"bars":[{"index":1,"start_seconds":0.0,"end_seconds":1.75}]}}"#,
+        );
+        let (vocals_sha256, vocals_size_bytes) =
+            write_mobile_contract_file(&vocals_path, b"deterministic vocals stem bytes");
+        let (drums_sha256, drums_size_bytes) =
+            write_mobile_contract_file(&drums_path, b"deterministic drums stem bytes");
+
+        insert_mobile_contract_project(&connection, &project_id, &source_sha256, &source_path);
+        insert_mobile_contract_artifact(
+            &connection,
+            MobileContractArtifact {
+                artifact_id: "art_source_audio",
+                project_id: &project_id,
+                artifact_type: "source_audio",
+                format: "wav",
+                path: &source_path,
+                content_sha256: &source_content_sha256,
+                size_bytes: source_size_bytes,
+                generated_by: "import",
+                can_delete: false,
+                can_regenerate: false,
+                cache_key: None,
+                metadata: json!({"original_name": "desktop-fixture.wav"}),
+            },
+        );
+        insert_mobile_contract_artifact(
+            &connection,
+            MobileContractArtifact {
+                artifact_id: "art_analysis_json",
+                project_id: &project_id,
+                artifact_type: "analysis_json",
+                format: "json",
+                path: &analysis_path,
+                content_sha256: &analysis_sha256,
+                size_bytes: analysis_size_bytes,
+                generated_by: "analysis",
+                can_delete: false,
+                can_regenerate: true,
+                cache_key: None,
+                metadata: json!({
+                    "analysis_version": "v4",
+                    "source_artifact_id": "art_source_audio",
+                    "timing_summary": {"beats_per_bar": 4, "source": "remote-detected"}
+                }),
+            },
+        );
+        insert_mobile_contract_artifact(
+            &connection,
+            MobileContractArtifact {
+                artifact_id: "art_vocals_stem",
+                project_id: &project_id,
+                artifact_type: "vocal_stem",
+                format: "wav",
+                path: &vocals_path,
+                content_sha256: &vocals_sha256,
+                size_bytes: vocals_size_bytes,
+                generated_by: "stems",
+                can_delete: true,
+                can_regenerate: true,
+                cache_key: Some("stem:art_source_audio:htdemucs_ft:vocals"),
+                metadata: json!({
+                    "source_artifact_id": "art_source_audio",
+                    "stem_model": "htdemucs_ft",
+                    "stem_name": "vocals",
+                    "stem_signal": {
+                        "active_duration_seconds": 185.0,
+                        "sample_rate": 48000,
+                        "channels": 2
+                    }
+                }),
+            },
+        );
+        insert_mobile_contract_artifact(
+            &connection,
+            MobileContractArtifact {
+                artifact_id: "art_drums_stem",
+                project_id: &project_id,
+                artifact_type: "drums_stem",
+                format: "wav",
+                path: &drums_path,
+                content_sha256: &drums_sha256,
+                size_bytes: drums_size_bytes,
+                generated_by: "stems",
+                can_delete: true,
+                can_regenerate: true,
+                cache_key: Some("stem:art_source_audio:htdemucs_ft:drums"),
+                metadata: json!({
+                    "source_artifact_id": "art_source_audio",
+                    "stem_model": "htdemucs_ft",
+                    "stem_name": "drums"
+                }),
+            },
+        );
+
+        let previous_chord_revision = SyncProjectManifestEntityRevisionSchema {
+            revision_id: "rev_chords_previous".to_string(),
+            state: "superseded".to_string(),
+            source_artifact_id: Some("art_source_audio".to_string()),
+            payload: json!({
+                "project_id": project_id,
+                "backend": "tuneforge-fast",
+                "source_kind": "generated",
+                "has_user_edits": false,
+                "source_segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "G"}],
+                "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "G"}],
+                "timeline": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "G"}]
+            }),
+            ..mobile_contract_revision(
+                "rev_chords_previous",
+                &project_id,
+                "chords",
+                "generated",
+                "1111111111111111111111111111111111111111111111111111111111111111",
+                json!({}),
+                json!({}),
+            )
+        };
+        let mut current_chord_revision = mobile_contract_revision(
+            "rev_chords_current",
+            &project_id,
+            "chords",
+            "user_edit",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            json!({"reviewed": true, "confidence": 0.88}),
+            json!({
+                "project_id": project_id,
+                "backend": "tuneforge-fast",
+                "source_kind": "user-edited",
+                "has_user_edits": true,
+                "source_segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "C"}],
+                "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "Am"}],
+                "timeline": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "Am"}]
+            }),
+        );
+        current_chord_revision.base_revision_id = Some("rev_chords_previous".to_string());
+        let lyrics_revision = mobile_contract_revision(
+            "rev_lyrics_current",
+            &project_id,
+            "lyrics",
+            "user_edit",
+            "3333333333333333333333333333333333333333333333333333333333333333",
+            json!({"edit_source": "desktop"}),
+            json!({
+                "project_id": project_id,
+                "backend": "whisper.cpp",
+                "source_artifact_id": "art_source_audio",
+                "source_kind": "user-edited",
+                "language": "en",
+                "language_override": "en",
+                "has_user_edits": true,
+                "source_segments": [
+                    {"start_seconds": 0.0, "end_seconds": 1.0, "text": "hello", "words": []}
+                ],
+                "segments": [
+                    {"start_seconds": 0.0, "end_seconds": 1.0, "text": "hello sync", "words": []}
+                ]
+            }),
+        );
+        insert_mobile_contract_revision(&connection, &previous_chord_revision);
+        insert_mobile_contract_revision(&connection, &current_chord_revision);
+        insert_mobile_contract_revision(&connection, &lyrics_revision);
+        insert_mobile_contract_tombstone(&connection, &project_id);
+
+        let manifest = storage::get_project_manifest(&connection, &root, &project_id).unwrap();
+        validate_sync_project_manifest_identity(&manifest).unwrap();
+        let reparsed_manifest: SyncProjectManifestSchema =
+            serde_json::from_value(serde_json::to_value(&manifest).unwrap()).unwrap();
+
+        assert_eq!(reparsed_manifest.project.project_id, project_id);
+        assert_eq!(reparsed_manifest.project.duration_seconds, Some(187.25));
+        assert_eq!(reparsed_manifest.project.sample_rate, Some(48_000));
+        assert_eq!(reparsed_manifest.project.channels, Some(2));
+
+        let artifacts_by_id = reparsed_manifest
+            .artifacts
+            .iter()
+            .map(|artifact| (artifact.artifact_id.as_str(), artifact))
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            artifacts_by_id["art_analysis_json"].metadata["timing_summary"]["source"],
+            "remote-detected"
+        );
+        assert_eq!(
+            artifacts_by_id["art_vocals_stem"].metadata["stem_signal"]["sample_rate"],
+            48_000
+        );
+        assert_eq!(
+            artifacts_by_id["art_drums_stem"].metadata["stem_name"],
+            "drums"
+        );
+        assert_eq!(
+            artifacts_by_id["art_source_audio"].relative_path,
+            "source/source.wav"
+        );
+
+        let revisions_by_id = reparsed_manifest
+            .entity_revisions
+            .iter()
+            .map(|revision| (revision.revision_id.as_str(), revision))
+            .collect::<std::collections::HashMap<_, _>>();
+        let chord_revision = revisions_by_id["rev_chords_current"];
+        assert_eq!(
+            chord_revision.base_revision_id.as_deref(),
+            Some("rev_chords_previous")
+        );
+        assert_eq!(chord_revision.metadata["reviewed"], true);
+        assert_eq!(chord_revision.payload["source_kind"], "user-edited");
+        assert_eq!(chord_revision.payload["has_user_edits"], true);
+        assert_eq!(chord_revision.payload["timeline"][0]["label"], "Am");
+
+        let lyrics_revision = revisions_by_id["rev_lyrics_current"];
+        assert_eq!(lyrics_revision.payload["source_kind"], "user-edited");
+        assert_eq!(lyrics_revision.payload["language_override"], "en");
+        assert_eq!(lyrics_revision.payload["segments"][0]["text"], "hello sync");
+        assert_eq!(lyrics_revision.metadata["edit_source"], "desktop");
+
+        assert_eq!(reparsed_manifest.delete_tombstones.len(), 1);
+        let tombstone = &reparsed_manifest.delete_tombstones[0];
+        assert_eq!(tombstone.tombstone_id, "tomb_deleted_mix");
+        assert_eq!(tombstone.target_type, "artifact");
+        assert_eq!(tombstone.target_id, "art_deleted_mix");
+        assert_eq!(tombstone.prior_metadata["stem_model"], "htdemucs_ft");
+
+        drop(connection);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn mobile_manifest_export_trusts_stored_artifact_hash_metadata() {
+        let root = mobile_storage_contract_root("manifest-export-stored-hash");
+        let connection = storage::db_at_root(&root).unwrap();
+        let source_bytes = b"tuneforge manifest export source bytes";
+        let source_sha256 = storage::hex_digest(&Sha256::digest(source_bytes));
+        let project_id = source_hash_to_project_id(&source_sha256).unwrap();
+        let project_root = storage::project_root_path(&root, &project_id).unwrap();
+        let source_path = project_root.join("source").join("source.wav");
+        let (_actual_content_sha256, source_size_bytes) =
+            write_mobile_contract_file(&source_path, source_bytes);
+        let stored_content_sha256 =
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+
+        insert_mobile_contract_project(&connection, &project_id, &source_sha256, &source_path);
+        insert_mobile_contract_artifact(
+            &connection,
+            MobileContractArtifact {
+                artifact_id: "art_source_audio",
+                project_id: &project_id,
+                artifact_type: "source_audio",
+                format: "wav",
+                path: &source_path,
+                content_sha256: stored_content_sha256,
+                size_bytes: source_size_bytes,
+                generated_by: "import",
+                can_delete: false,
+                can_regenerate: false,
+                cache_key: None,
+                metadata: json!({}),
+            },
+        );
+
+        let manifest = storage::get_project_manifest(&connection, &root, &project_id).unwrap();
+
+        assert_eq!(manifest.artifacts.len(), 1);
+        assert_eq!(manifest.artifacts[0].content_sha256, stored_content_sha256);
+        assert_eq!(manifest.artifacts[0].size_bytes, source_size_bytes);
+        assert_eq!(manifest.artifacts[0].relative_path, "source/source.wav");
+
+        drop(connection);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn mobile_manifest_export_rejects_non_file_artifact_path() {
+        let root = mobile_storage_contract_root("manifest-export-non-file");
+        let connection = storage::db_at_root(&root).unwrap();
+        let source_bytes = b"tuneforge manifest export directory source";
+        let source_sha256 = storage::hex_digest(&Sha256::digest(source_bytes));
+        let project_id = source_hash_to_project_id(&source_sha256).unwrap();
+        let project_root = storage::project_root_path(&root, &project_id).unwrap();
+        let source_path = project_root.join("source").join("source.wav");
+        std::fs::create_dir_all(&source_path).unwrap();
+        let directory_size = std::fs::metadata(&source_path).unwrap().len() as i64;
+
+        insert_mobile_contract_project(&connection, &project_id, &source_sha256, &source_path);
+        insert_mobile_contract_artifact(
+            &connection,
+            MobileContractArtifact {
+                artifact_id: "art_source_audio",
+                project_id: &project_id,
+                artifact_type: "source_audio",
+                format: "wav",
+                path: &source_path,
+                content_sha256: &source_sha256,
+                size_bytes: directory_size,
+                generated_by: "import",
+                can_delete: false,
+                can_regenerate: false,
+                cache_key: None,
+                metadata: json!({}),
+            },
+        );
+
+        let error = storage::get_project_manifest(&connection, &root, &project_id)
+            .err()
+            .expect("directory artifact path must not be exported");
+
+        assert_eq!(error, "Project artifact path is not a file.");
+
+        drop(connection);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn mobile_manifest_import_updates_revision_state_and_hydrates_read_models() {
+        let root = mobile_storage_contract_root("manifest-import-hydrates");
+        let connection = storage::db_at_root(&root).unwrap();
+        let source_bytes = b"tuneforge manifest import source bytes";
+        let source_sha256 = storage::hex_digest(&Sha256::digest(source_bytes));
+        let project_id = source_hash_to_project_id(&source_sha256).unwrap();
+        let project_root = storage::project_root_path(&root, &project_id).unwrap();
+        let source_path = project_root.join("source").join("source.wav");
+        let analysis_path = project_root.join("analysis").join("analysis.json");
+        let (source_content_sha256, source_size_bytes) =
+            write_mobile_contract_file(&source_path, source_bytes);
+        let analysis_payload = json!({
+            "project_id": project_id,
+            "source_artifact_id": "art_source_audio",
+            "estimated_key": "A minor",
+            "key_confidence": 0.91,
+            "tempo_bpm": 132.25,
+            "analysis_version": "desktop-v1",
+            "created_at": "2026-05-22T12:02:00.000Z",
+            "timing": {
+                "source": "desktop",
+                "beats": [{"time_seconds": 0.0}],
+                "bars": []
+            }
+        });
+        let analysis_bytes = serde_json::to_vec(&analysis_payload).unwrap();
+        let (analysis_sha256, analysis_size_bytes) = write_mobile_contract_file(
+            &analysis_path,
+            &analysis_bytes,
+        );
+
+        insert_mobile_contract_project(&connection, &project_id, &source_sha256, &source_path);
+        insert_mobile_contract_artifact(
+            &connection,
+            MobileContractArtifact {
+                artifact_id: "art_source_audio",
+                project_id: &project_id,
+                artifact_type: "source_audio",
+                format: "wav",
+                path: &source_path,
+                content_sha256: &source_content_sha256,
+                size_bytes: source_size_bytes,
+                generated_by: "sync",
+                can_delete: false,
+                can_regenerate: false,
+                cache_key: None,
+                metadata: json!({}),
+            },
+        );
+
+        let mut superseded_chords = mobile_contract_revision(
+            "rev_chords_previous",
+            &project_id,
+            "chords",
+            "generated",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            json!({}),
+            json!({
+                "backend": "desktop",
+                "source_kind": "generated",
+                "source_segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "G"}],
+                "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "G"}],
+                "timeline": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "G"}]
+            }),
+        );
+        superseded_chords.state = "active".to_string();
+        insert_mobile_contract_revision(&connection, &superseded_chords);
+
+        let mut imported_superseded_chords = superseded_chords.clone();
+        imported_superseded_chords.state = "superseded".to_string();
+        imported_superseded_chords.updated_at = "2026-05-22T12:03:00.000Z".to_string();
+        let mut current_chords = mobile_contract_revision(
+            "rev_chords_current",
+            &project_id,
+            "chords",
+            "user_edit",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            json!({"reviewed": true}),
+            json!({
+                "backend": "desktop",
+                "source_kind": "user-edited",
+                "has_user_edits": true,
+                "source_segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "C"}],
+                "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "Am"}],
+                "timeline": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "Am"}],
+                "metadata": {"reviewed": true},
+                "created_at": "2026-05-22T12:03:00.000Z",
+                "updated_at": "2026-05-22T12:04:00.000Z"
+            }),
+        );
+        current_chords.base_revision_id = Some("rev_chords_previous".to_string());
+        current_chords.state = "active".to_string();
+
+        let manifest = SyncProjectManifestSchema {
+            schema_version: SYNC_PROJECT_MANIFEST_SCHEMA_VERSION.to_string(),
+            exported_at: "2026-05-22T12:05:00.000Z".to_string(),
+            project: SyncProjectManifestProjectSchema {
+                project_id: project_id.clone(),
+                display_name: "Synced Chords".to_string(),
+                source_key_override: None,
+                source_sha256: source_sha256.clone(),
+                duration_seconds: Some(12.0),
+                sample_rate: Some(44_100),
+                channels: Some(2),
+                created_at: "2026-05-22T12:00:00.000Z".to_string(),
+                updated_at: "2026-05-22T12:05:00.000Z".to_string(),
+            },
+            entity_revisions: vec![imported_superseded_chords, current_chords],
+            artifacts: vec![
+                SyncProjectManifestArtifactSchema {
+                    artifact_id: "art_source_audio".to_string(),
+                    project_id: project_id.clone(),
+                    r#type: "source_audio".to_string(),
+                    format: "wav".to_string(),
+                    relative_path: "source/source.wav".to_string(),
+                    content_sha256: source_content_sha256,
+                    size_bytes: source_size_bytes,
+                    generated_by: "sync".to_string(),
+                    can_delete: false,
+                    can_regenerate: false,
+                    cache_key: None,
+                    metadata: json!({}),
+                    created_at: "2026-05-22T12:00:00.000Z".to_string(),
+                },
+                SyncProjectManifestArtifactSchema {
+                    artifact_id: "art_analysis_json".to_string(),
+                    project_id: project_id.clone(),
+                    r#type: "analysis_json".to_string(),
+                    format: "json".to_string(),
+                    relative_path: "analysis/analysis.json".to_string(),
+                    content_sha256: analysis_sha256,
+                    size_bytes: analysis_size_bytes,
+                    generated_by: "analysis".to_string(),
+                    can_delete: false,
+                    can_regenerate: true,
+                    cache_key: None,
+                    metadata: json!({"analysis_version": "desktop-v1"}),
+                    created_at: "2026-05-22T12:02:00.000Z".to_string(),
+                },
+            ],
+            delete_tombstones: Vec::new(),
+        };
+
+        manifests::import_sync_project_manifest(
+            &connection,
+            &root,
+            SyncProjectStagedImportRequest {
+                manifest,
+                staging_root: None,
+                use_content_addressed_staging: Some(true),
+            },
+        )
+        .unwrap();
+
+        let previous_state: String = connection
+            .query_row(
+                "SELECT state FROM sync_entity_revisions WHERE id = 'rev_chords_previous'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let active_chord_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sync_entity_revisions WHERE project_id = ?1 AND entity_type = 'chords' AND state IN ('active', 'current')",
+                rusqlite::params![&project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let chord_response = audio::get_chord_response(&connection, project_id.clone()).unwrap();
+        let analysis = audio::get_analysis_value(&connection, &project_id)
+            .unwrap()
+            .unwrap();
+        let project = storage::get_project_schema(&connection, &project_id).unwrap();
+
+        assert_eq!(previous_state, "superseded");
+        assert_eq!(active_chord_count, 1);
+        assert_eq!(chord_response.timeline[0]["label"], "Am");
+        assert_eq!(chord_response.source_kind, "user-edited");
+        assert!(chord_response.has_user_edits);
+        assert_eq!(analysis["estimated_key"], "A minor");
+        assert_eq!(analysis["tempo_bpm"], 132.25);
+        assert_eq!(analysis["timing"]["source"], "desktop");
+        assert_eq!(project.sync_status, "local");
+        assert_eq!(project.sync_status_reason.as_deref(), Some("Synced from desktop."));
+
+        drop(connection);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn mobile_reconciliation_import_revision_hydrates_chords_for_existing_project() {
+        let root = mobile_storage_contract_root("reconciliation-revision-hydrates");
+        let connection = storage::db_at_root(&root).unwrap();
+        let source_bytes = b"tuneforge reconciliation source bytes";
+        let source_sha256 = storage::hex_digest(&Sha256::digest(source_bytes));
+        let project_id = source_hash_to_project_id(&source_sha256).unwrap();
+        let project_root = storage::project_root_path(&root, &project_id).unwrap();
+        let source_path = project_root.join("source").join("source.wav");
+        let (source_content_sha256, source_size_bytes) =
+            write_mobile_contract_file(&source_path, source_bytes);
+
+        insert_mobile_contract_project(&connection, &project_id, &source_sha256, &source_path);
+        insert_mobile_contract_artifact(
+            &connection,
+            MobileContractArtifact {
+                artifact_id: "art_source_audio",
+                project_id: &project_id,
+                artifact_type: "source_audio",
+                format: "wav",
+                path: &source_path,
+                content_sha256: &source_content_sha256,
+                size_bytes: source_size_bytes,
+                generated_by: "sync",
+                can_delete: false,
+                can_regenerate: false,
+                cache_key: None,
+                metadata: json!({}),
+            },
+        );
+
+        let revision = mobile_contract_revision(
+            "rev_remote_chords",
+            &project_id,
+            "chords",
+            "user_edit",
+            "3333333333333333333333333333333333333333333333333333333333333333",
+            json!({"reviewed": true}),
+            json!({
+                "backend": "desktop",
+                "source_kind": "user-edited",
+                "has_user_edits": true,
+                "source_segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "F"}],
+                "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "Dm"}],
+                "timeline": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "Dm"}],
+                "metadata": {"reviewed": true},
+                "created_at": "2026-05-22T12:03:00.000Z",
+                "updated_at": "2026-05-22T12:04:00.000Z"
+            }),
+        );
+        assert!(audio::get_chord_response(&connection, project_id.clone())
+            .unwrap()
+            .timeline
+            .is_empty());
+
+        let action = SyncReconciliationActionSchema {
+            action_type: "import_entity_revision".to_string(),
+            item_type: "entity_revision".to_string(),
+            item_id: revision.revision_id.clone(),
+            project_id: Some(project_id.clone()),
+            content_sha256: Some(revision.content_sha256.clone()),
+            provider_device_id: None,
+            reason: Some("Import entity revision into the existing project.".to_string()),
+            priority: 50,
+            details: json!({}),
+        };
+        let payload = SyncReconciliationApplyRequest {
+            remote_library: SyncReconciliationRemoteLibrarySchema {
+                projects: Vec::new(),
+                artifacts: Vec::new(),
+                entity_revisions: vec![revision],
+                delete_tombstones: Vec::new(),
+            },
+            project_manifests: Vec::new(),
+            peer_inventory: Vec::new(),
+            staging_root: None,
+            use_content_addressed_staging: true,
+            project_ids: Vec::new(),
+            include_timing_evidence: false,
+        };
+
+        let result =
+            reconciliation::apply_reconciliation_action(&connection, &root, action, &payload);
+        let chord_response = audio::get_chord_response(&connection, project_id).unwrap();
+
+        assert_eq!(result.status, "applied");
+        assert_eq!(chord_response.timeline[0]["label"], "Dm");
+        assert_eq!(chord_response.source_kind, "user-edited");
+        assert!(chord_response.has_user_edits);
+
+        drop(connection);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn mobile_reconciliation_revision_import_rolls_back_when_hydration_fails() {
+        let root = mobile_storage_contract_root("reconciliation-revision-rollback");
+        let connection = storage::db_at_root(&root).unwrap();
+        let source_bytes = b"tuneforge reconciliation rollback source bytes";
+        let source_sha256 = storage::hex_digest(&Sha256::digest(source_bytes));
+        let project_id = source_hash_to_project_id(&source_sha256).unwrap();
+        let project_root = storage::project_root_path(&root, &project_id).unwrap();
+        let source_path = project_root.join("source").join("source.wav");
+        let (source_content_sha256, source_size_bytes) =
+            write_mobile_contract_file(&source_path, source_bytes);
+
+        insert_mobile_contract_project(&connection, &project_id, &source_sha256, &source_path);
+
+        let revision = mobile_contract_revision(
+            "rev_remote_chords_retry",
+            &project_id,
+            "chords",
+            "user_edit",
+            "4444444444444444444444444444444444444444444444444444444444444444",
+            json!({"reviewed": true}),
+            json!({
+                "backend": "desktop",
+                "source_artifact_id": "art_source_audio",
+                "source_kind": "user-edited",
+                "has_user_edits": true,
+                "source_segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "Bb"}],
+                "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "Gm"}],
+                "timeline": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "Gm"}],
+                "metadata": {"reviewed": true},
+                "created_at": "2026-05-22T12:03:00.000Z",
+                "updated_at": "2026-05-22T12:04:00.000Z"
+            }),
+        );
+        let action = SyncReconciliationActionSchema {
+            action_type: "import_entity_revision".to_string(),
+            item_type: "entity_revision".to_string(),
+            item_id: revision.revision_id.clone(),
+            project_id: Some(project_id.clone()),
+            content_sha256: Some(revision.content_sha256.clone()),
+            provider_device_id: None,
+            reason: Some("Import entity revision into the existing project.".to_string()),
+            priority: 50,
+            details: json!({}),
+        };
+        let payload = SyncReconciliationApplyRequest {
+            remote_library: SyncReconciliationRemoteLibrarySchema {
+                projects: Vec::new(),
+                artifacts: Vec::new(),
+                entity_revisions: vec![revision],
+                delete_tombstones: Vec::new(),
+            },
+            project_manifests: Vec::new(),
+            peer_inventory: Vec::new(),
+            staging_root: None,
+            use_content_addressed_staging: true,
+            project_ids: Vec::new(),
+            include_timing_evidence: false,
+        };
+
+        let failed_result = reconciliation::apply_reconciliation_action(
+            &connection,
+            &root,
+            action.clone(),
+            &payload,
+        );
+        let persisted_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sync_entity_revisions WHERE id = ?1",
+                rusqlite::params![&action.item_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(failed_result.status, "failed");
+        assert!(failed_result
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("source_artifact_id must belong"));
+        assert_eq!(persisted_count, 0);
+        assert!(audio::get_chord_response(&connection, project_id.clone())
+            .unwrap()
+            .timeline
+            .is_empty());
+
+        insert_mobile_contract_artifact(
+            &connection,
+            MobileContractArtifact {
+                artifact_id: "art_source_audio",
+                project_id: &project_id,
+                artifact_type: "source_audio",
+                format: "wav",
+                path: &source_path,
+                content_sha256: &source_content_sha256,
+                size_bytes: source_size_bytes,
+                generated_by: "sync",
+                can_delete: false,
+                can_regenerate: false,
+                cache_key: None,
+                metadata: json!({}),
+            },
+        );
+
+        let retry_result =
+            reconciliation::apply_reconciliation_action(&connection, &root, action, &payload);
+        let retry_persisted_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sync_entity_revisions WHERE id = 'rev_remote_chords_retry'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let chord_response = audio::get_chord_response(&connection, project_id).unwrap();
+
+        assert_eq!(retry_result.status, "applied");
+        assert_eq!(retry_persisted_count, 1);
+        assert_eq!(chord_response.timeline[0]["label"], "Gm");
+        assert_eq!(chord_response.source_kind, "user-edited");
+        assert!(chord_response.has_user_edits);
+
+        drop(connection);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1593,7 +2740,7 @@ mod mobile_backend_tests {
 
     #[test]
     fn mobile_sync_defaults_match_local_project_contract() {
-        assert_eq!(MOBILE_DB_VERSION, 3);
+        assert_eq!(MOBILE_DB_VERSION, 4);
         assert!(sync_editable(DEFAULT_SYNC_STATUS));
         assert!(!sync_editable("remote_available"));
         assert!(!sync_editable("conflicted"));
@@ -1601,6 +2748,85 @@ mod mobile_backend_tests {
         assert!(require_sync_editable_status("remote_available")
             .unwrap_err()
             .contains("locked by sync status"));
+    }
+
+    #[test]
+    fn mobile_chord_revision_payload_accepts_desktop_field_aliases() {
+        let revision = SyncProjectManifestEntityRevisionSchema {
+            revision_id: "rev_chords".to_string(),
+            project_id: "project".to_string(),
+            entity_type: "chords".to_string(),
+            entity_id: "chords-main".to_string(),
+            revision_type: "snapshot".to_string(),
+            base_revision_id: None,
+            author_device_id: "device_peer_1".to_string(),
+            source_artifact_id: Some("art_source".to_string()),
+            content_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            state: "active".to_string(),
+            metadata: json!({"reviewed": true}),
+            payload: json!({
+                "backend": "beat-this",
+                "source_segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "C"}],
+                "segments": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "G"}],
+                "timeline": [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "legacy"}],
+                "source_kind": "user-edited",
+                "has_user_edits": true,
+                "metadata": {"runtime_device": "cpu"},
+                "created_at": "2026-05-22T12:00:00.000Z",
+                "updated_at": "2026-05-22T12:01:00.000Z"
+            }),
+            created_at: "2026-05-22T11:00:00.000Z".to_string(),
+            updated_at: "2026-05-22T11:01:00.000Z".to_string(),
+        };
+
+        let payload = mobile_chord_revision_payload(&revision).unwrap();
+
+        assert_eq!(payload.backend, "beat-this");
+        assert_eq!(payload.source_artifact_id.as_deref(), Some("art_source"));
+        assert_eq!(payload.source_segments[0]["label"], "C");
+        assert_eq!(payload.segments[0]["label"], "G");
+        assert_eq!(payload.timeline[0]["label"], "legacy");
+        assert_eq!(payload.source_kind, "user-edited");
+        assert_eq!(payload.metadata["runtime_device"], "cpu");
+        assert!(payload.has_user_edits);
+        assert_eq!(payload.created_at, "2026-05-22T12:00:00.000Z");
+        assert_eq!(payload.updated_at, "2026-05-22T12:01:00.000Z");
+    }
+
+    #[test]
+    fn mobile_analysis_artifact_payload_preserves_timing() {
+        let payload = mobile_analysis_artifact_payload(
+            &json!({
+                "project_id": "project",
+                "source_artifact_id": "art_source",
+                "estimated_key": "C major",
+                "key_confidence": 0.9,
+                "estimated_reference_hz": 440.0,
+                "tuning_offset_cents": -1.5,
+                "tempo_bpm": 120.0,
+                "created_at": "2026-05-22T12:00:00.000Z",
+                "timing": {
+                    "beats_per_bar": 4,
+                    "source": "beat-this",
+                    "beats": [{"time_seconds": 0.0, "beat_index": 0}],
+                    "bars": []
+                }
+            }),
+            &json!({"analysis_version": "v3"}),
+        )
+        .unwrap();
+
+        assert_eq!(payload.project_id.as_deref(), Some("project"));
+        assert_eq!(payload.source_artifact_id.as_deref(), Some("art_source"));
+        assert_eq!(payload.estimated_key.as_deref(), Some("C major"));
+        assert_eq!(payload.key_confidence, Some(0.9));
+        assert_eq!(payload.estimated_reference_hz, Some(440.0));
+        assert_eq!(payload.tuning_offset_cents, Some(-1.5));
+        assert_eq!(payload.tempo_bpm, Some(120.0));
+        assert_eq!(payload.timing.unwrap()["source"], "beat-this");
+        assert_eq!(payload.analysis_version, "v3");
+        assert_eq!(payload.created_at.as_deref(), Some("2026-05-22T12:00:00.000Z"));
     }
 
     #[test]

@@ -50,6 +50,7 @@ from app.services.sync_revisions import (
     sanitize_revision_payload,
 )
 from app.services.sync_staging import cleanup_staged_artifacts, require_staged_artifact
+from app.services.sync_timestamps import parse_sync_datetime
 from app.services.sync_tombstones import apply_delete_tombstone
 from app.services.sync_trust import get_or_create_local_identity
 from app.utils.hashing import file_sha256
@@ -1626,17 +1627,12 @@ def _bool_field(source: object, name: str, *, default: bool) -> bool:
 
 def _datetime_field(source: object, name: str) -> datetime | None:
     value = _field(source, name, default=None)
-    if isinstance(value, datetime):
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC)
-    return None
+    if not isinstance(value, datetime | str):
+        return None
+    try:
+        return parse_sync_datetime(value)
+    except ValueError:
+        return None
 
 
 def _normalize_target_type(value: str) -> str:

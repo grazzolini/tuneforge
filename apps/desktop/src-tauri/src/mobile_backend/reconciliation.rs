@@ -1,28 +1,5 @@
 use super::*;
 
-const ACTION_APPLY_DELETE_TOMBSTONE: &str = "apply_delete_tombstone";
-const ACTION_IMPORT_PROJECT_MANIFEST: &str = "import_project_manifest";
-const ACTION_IMPORT_ENTITY_REVISION: &str = "import_entity_revision";
-const ACTION_FETCH_ARTIFACT_CONTENT: &str = "fetch_artifact_content";
-const ACTION_IMPORT_ARTIFACT_MANIFEST: &str = "import_artifact_manifest";
-const ACTION_UPSERT_PROJECT_STATUS: &str = "upsert_project_status";
-const ACTION_RECORD_CONFLICT: &str = "record_conflict";
-const ACTION_NOOP: &str = "noop";
-
-fn action_priority(action_type: &str) -> i64 {
-    match action_type {
-        ACTION_APPLY_DELETE_TOMBSTONE => 0,
-        ACTION_RECORD_CONFLICT => 10,
-        ACTION_UPSERT_PROJECT_STATUS => 15,
-        ACTION_FETCH_ARTIFACT_CONTENT => 20,
-        ACTION_IMPORT_PROJECT_MANIFEST => 30,
-        ACTION_IMPORT_ARTIFACT_MANIFEST => 40,
-        ACTION_IMPORT_ENTITY_REVISION => 50,
-        ACTION_NOOP => 100,
-        _ => 100,
-    }
-}
-
 fn reconciliation_action(
     action_type: &str,
     item_type: &str,
@@ -269,29 +246,15 @@ fn plan_sync_reconciliation_parts(
             ));
             continue;
         }
-        add_effective_tombstone_target(&mut effective_tombstone_targets, &tombstone);
-        let reason = "A valid delete tombstone wins over remote manifests.";
-        items.push(reconciliation_item(
-            &normalize_tombstone_target_type(&tombstone.target_type),
-            &tombstone.target_id,
-            Some(tombstone.project_id.clone()),
-            "deleted",
-            Some(ACTION_APPLY_DELETE_TOMBSTONE),
-            None,
-            None,
-            reason,
-            json!({"tombstone_id": tombstone.tombstone_id}),
-        ));
-        actions.push(reconciliation_action(
-            ACTION_APPLY_DELETE_TOMBSTONE,
-            &normalize_tombstone_target_type(&tombstone.target_type),
-            &tombstone.target_id,
-            Some(tombstone.project_id.clone()),
-            None,
-            None,
-            "Apply valid sync delete tombstone before imports or fetches.",
-            json!({"tombstone_id": tombstone.tombstone_id}),
-        ));
+        let (item, planned_actions, tombstone_is_effective) = plan_delete_tombstone_branch(
+            &tombstone,
+            local_tombstone_superseded_by_live_target(connection, &tombstone)?,
+        );
+        if tombstone_is_effective {
+            add_effective_tombstone_target(&mut effective_tombstone_targets, &tombstone);
+        }
+        items.push(item);
+        actions.extend(planned_actions);
     }
 
     for project in remote_projects_with_manifest_metadata(remote_library, manifests) {
@@ -1021,4 +984,80 @@ pub fn mobile_apply_sync_reconciliation(
         results,
         timing_evidence,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::{params, Connection};
+    use serde_json::json;
+    use std::path::Path;
+
+    fn insert_trusted_peer(connection: &Connection, device_id: &str) -> String {
+        migrate_mobile_db(connection).unwrap();
+        ensure_local_identity(connection).unwrap();
+        let identity = local_identity(connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO sync_trusted_peers (device_id, sync_group_id, display_name, public_key, trusted_at, created_at, updated_at)
+                 VALUES (?1, ?2, 'Peer', ?3, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                params![device_id, identity.sync_group_id, format!("pubkey_{device_id}")],
+            )
+            .unwrap();
+        identity.sync_group_id
+    }
+
+    #[test]
+    fn stale_live_tombstone_plans_noop_without_apply_action() {
+        let connection = Connection::open_in_memory().unwrap();
+        let sync_group_id = insert_trusted_peer(&connection, "device_peer_1");
+        let project_id = source_hash_to_project_id(
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        )
+        .unwrap();
+        let live_at = "2026-01-02T00:00:00Z";
+        connection
+            .execute(
+                "INSERT INTO projects (id, display_name, source_path, imported_path, sync_status, created_at, updated_at)
+                 VALUES (?1, 'Live', '', '', 'local', ?2, ?2)",
+                params![&project_id, live_at],
+            )
+            .unwrap();
+        let remote_library = SyncReconciliationRemoteLibrarySchema {
+            projects: Vec::new(),
+            artifacts: Vec::new(),
+            entity_revisions: Vec::new(),
+            delete_tombstones: vec![SyncDeleteTombstoneSchema {
+                tombstone_id: "tomb_plan_stale_project".to_string(),
+                sync_group_id,
+                project_id: project_id.to_string(),
+                target_type: "project".to_string(),
+                target_id: project_id.to_string(),
+                author_device_id: "device_peer_1".to_string(),
+                deleted_at: live_at.to_string(),
+                prior_metadata: json!({}),
+                created_at: live_at.to_string(),
+                updated_at: live_at.to_string(),
+            }],
+        };
+
+        let plan =
+            plan_sync_reconciliation_parts(&connection, Path::new(""), &remote_library, &[], &[])
+                .unwrap();
+
+        assert_eq!(plan.actions.len(), 0);
+        assert_eq!(plan.items.len(), 1);
+        let item = &plan.items[0];
+        assert_eq!(item.item_type, "project");
+        assert_eq!(item.item_id, project_id);
+        assert_eq!(item.status, "noop");
+        assert_eq!(item.action_type.as_deref(), Some(ACTION_NOOP));
+        assert_eq!(
+            item.reason.as_deref(),
+            Some("Delete tombstone is older than or equal to a live sync target.")
+        );
+        assert!(!plan.actions.iter().any(|action| {
+            action.action_type == ACTION_APPLY_DELETE_TOMBSTONE && action.item_id == project_id
+        }));
+    }
 }

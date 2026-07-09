@@ -27,6 +27,7 @@ from app.services.sync_reconciliation_apply import (
     apply_sync_reconciliation,
 )
 from app.services.sync_staging import stage_sync_artifact
+from app.services.sync_timestamps import parse_sync_datetime, sync_datetime_to_rfc3339
 from app.services.sync_trust import get_or_create_local_identity
 from app.utils.hashing import file_sha256
 
@@ -230,7 +231,7 @@ def export_sync_bundle(
     metadata = {
         "kind": SYNC_BUNDLE_KIND,
         "version": SYNC_BUNDLE_VERSION,
-        "exported_at": datetime.now(UTC).isoformat(),
+        "exported_at": sync_datetime_to_rfc3339(datetime.now(UTC)),
         "provider_device_id": provider_device_id,
         "project_manifests": _jsonable(project_entries),
         "blobs": _jsonable(blobs),
@@ -741,6 +742,20 @@ def _validate_bundle_metadata(metadata: Mapping[str, Any]) -> None:
                 "supported_version": SYNC_BUNDLE_VERSION,
             },
         )
+    exported_at = metadata.get("exported_at")
+    if exported_at is not None:
+        if not isinstance(exported_at, str | datetime):
+            raise AppError(
+                "SYNC_BUNDLE_EXPORTED_AT_INVALID",
+                "Sync bundle exported_at must be a valid sync timestamp.",
+            )
+        try:
+            parse_sync_datetime(exported_at)
+        except ValueError as exc:
+            raise AppError(
+                "SYNC_BUNDLE_EXPORTED_AT_INVALID",
+                "Sync bundle exported_at must be a valid sync timestamp.",
+            ) from exc
     _project_entries(metadata)
     _bundle_blob_entries(metadata)
     if not isinstance(metadata.get("content_sha256s"), list):
@@ -1212,7 +1227,7 @@ def _jsonable(value: Any) -> Any:
     if is_dataclass(value) and not isinstance(value, type):
         return _jsonable(asdict(cast(Any, value)))
     if isinstance(value, datetime):
-        return value.isoformat()
+        return sync_datetime_to_rfc3339(value)
     if isinstance(value, Path):
         return value.as_posix()
     if isinstance(value, Mapping):

@@ -41,6 +41,7 @@ from app.services.sync_reconciliation import (
     SyncReconciliationPlan,
     plan_sync_reconciliation,
 )
+from app.services.sync_reconciliation_apply import apply_sync_reconciliation
 from app.services.sync_revisions import revision_payload_sha256, sanitize_revision_payload
 
 
@@ -690,8 +691,93 @@ def test_older_remote_project_tombstone_does_not_delete_newer_local_project(
 
     tombstone_item = _item(plan, ITEM_DELETE_TOMBSTONE, "tomb_old_remote_project")
     assert tombstone_item.status == "noop"
-    assert "older than a live project" in tombstone_item.reason
+    assert "older than or equal to a live project" in tombstone_item.reason
     assert _action(plan, ACTION_APPLY_DELETE_TOMBSTONE, ITEM_PROJECT, project_id) is None
+
+
+def test_equal_legacy_utc_remote_project_tombstone_noops_against_live_project(
+    db_session: Session,
+) -> None:
+    _add_identity_and_peers(db_session)
+    source_hash = _sha("equal live project timestamp")
+    project_id = source_hash_to_project_id(source_hash)
+    project = _add_project(db_session, project_id, source_sha256=source_hash)
+    project.updated_at = datetime(2026, 1, 1, tzinfo=UTC)
+    db_session.flush()
+
+    plan = plan_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {
+                "projects": [],
+                "artifacts": [],
+                "entity_revisions": [],
+                "delete_tombstones": [
+                    {
+                        "tombstone_id": "tomb_equal_legacy_project",
+                        "sync_group_id": "group-a",
+                        "project_id": project_id,
+                        "target_type": ITEM_PROJECT,
+                        "target_id": project_id,
+                        "author_device_id": "peer-a",
+                        "deleted_at": "2026-01-01 00:00:00 UTC",
+                        "prior_metadata": {},
+                        "created_at": "2026-01-01T00:00:00",
+                        "updated_at": "2026-01-01 00:00:00 UTC",
+                    }
+                ],
+            },
+            "project_manifests": [],
+            "peer_inventory": [],
+        },
+    )
+
+    tombstone_item = _item(plan, ITEM_DELETE_TOMBSTONE, "tomb_equal_legacy_project")
+    assert tombstone_item.status == "noop"
+    assert tombstone_item.reason == "Project delete tombstone is older than or equal to a live project."
+    assert _action(plan, ACTION_APPLY_DELETE_TOMBSTONE, ITEM_PROJECT, project_id) is None
+
+
+def test_apply_reconciliation_persists_legacy_tombstone_timestamp(
+    db_session: Session,
+) -> None:
+    _add_identity_and_peers(db_session)
+    project_id = source_hash_to_project_id(_sha("legacy apply tombstone"))
+
+    result = apply_sync_reconciliation(
+        db_session,
+        {
+            "remote_library": {
+                "projects": [],
+                "artifacts": [],
+                "entity_revisions": [],
+                "delete_tombstones": [
+                    {
+                        "tombstone_id": "tomb_apply_legacy_artifact",
+                        "sync_group_id": "group-a",
+                        "project_id": project_id,
+                        "target_type": ITEM_ARTIFACT,
+                        "target_id": "art_apply_legacy_deleted",
+                        "author_device_id": "peer-a",
+                        "deleted_at": "2026-01-01 00:00:00 UTC",
+                        "prior_metadata": {},
+                        "created_at": "2026-01-01T00:00:00",
+                        "updated_at": "2026-01-01 00:00:00 UTC",
+                    }
+                ],
+            },
+            "project_manifests": [],
+            "peer_inventory": [],
+        },
+    )
+    db_session.flush()
+
+    tombstone = db_session.get(SyncDeleteTombstone, "tomb_apply_legacy_artifact")
+    assert result.summary.failed_actions == 0
+    assert tombstone is not None
+    assert tombstone.deleted_at == datetime(2026, 1, 1)
+    assert tombstone.created_at == datetime(2026, 1, 1)
+    assert tombstone.updated_at == datetime(2026, 1, 1)
 
 
 def test_repeated_project_tombstone_is_noop_after_local_delete_applied(
@@ -731,7 +817,7 @@ def test_repeated_project_tombstone_is_noop_after_local_delete_applied(
         target_id=project_id,
         author_device_id="peer-a",
     )
-    tombstone["deleted_at"] = deleted_at
+    tombstone["deleted_at"] = "2026-01-01 21:00:00-03:00"
     tombstone["created_at"] = deleted_at
     tombstone["updated_at"] = deleted_at
 
@@ -752,6 +838,7 @@ def test_repeated_project_tombstone_is_noop_after_local_delete_applied(
     tombstone_item = _item(plan, ITEM_DELETE_TOMBSTONE, "tomb_known_project_delete")
     assert tombstone_item.status == "noop"
     assert tombstone_item.reason == "Delete tombstone is already applied locally."
+    assert tombstone_item.details["deleted_at"] == "2026-01-02T00:00:00Z"
     project_item = _item(plan, ITEM_PROJECT, project_id)
     assert project_item.status == "noop"
     assert project_item.reason == "Project delete tombstone is already applied locally."
@@ -902,7 +989,7 @@ def test_remote_reimported_project_supersedes_older_remote_child_tombstone_witho
     assert _item(plan, ITEM_PROJECT, project_id).status == "remote_available"
     older_item = _item(plan, ITEM_DELETE_TOMBSTONE, "tomb_older_remote_child")
     assert older_item.status == "noop"
-    assert older_item.reason == "Delete tombstone is older than a live sync target."
+    assert older_item.reason == "Delete tombstone is older than or equal to a live sync target."
     newer_item = _item(plan, ITEM_ARTIFACT, "art_newer_deleted_stem")
     assert newer_item.status == "deleted"
     assert _action(plan, ACTION_APPLY_DELETE_TOMBSTONE, ITEM_ARTIFACT, "art_older_deleted_stem") is None

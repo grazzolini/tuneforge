@@ -3,7 +3,15 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from app.runtime_status import (
     JobRuntimeStage,
@@ -11,6 +19,7 @@ from app.runtime_status import (
     safe_runtime_device,
     safe_runtime_label,
 )
+from app.services.sync_timestamps import parse_sync_datetime, sync_datetime_to_rfc3339
 
 SUPPORTED_CHORD_BACKENDS = {"default", "fast", "tuneforge-fast", "librosa", "advanced", "crema", "crema-advanced"}
 AnalysisBeatBackend = Literal["built-in", "beat-this"]
@@ -38,6 +47,28 @@ SUPPORTED_LYRICS_LANGUAGE_OVERRIDES: set[LyricsLanguageOverride] = {
     "zh",
     "hi",
 }
+
+_SYNC_TIMESTAMP_FIELDS = (
+    "created_at",
+    "updated_at",
+    "deleted_at",
+    "exported_at",
+)
+
+
+class _SyncTimestampSchemaMixin:
+    @field_validator(*_SYNC_TIMESTAMP_FIELDS, mode="before", check_fields=False)
+    @classmethod
+    def parse_sync_timestamp(cls, value: Any) -> Any:
+        if isinstance(value, datetime | str):
+            return parse_sync_datetime(value)
+        return value
+
+    @field_serializer(*_SYNC_TIMESTAMP_FIELDS, when_used="json", check_fields=False)
+    def serialize_sync_timestamp(self, value: datetime | None) -> str | None:
+        if value is None:
+            return None
+        return sync_datetime_to_rfc3339(value)
 SIX_STEM_MODEL_ALIASES = {"6_stems", "six_stems", "htdemucs_6s"}
 TWO_STEM_MODEL_ALIASES = {"2_stems", "two_stems", "two_stem", "htdemucs_ft"}
 SyncProjectStatus = Literal[
@@ -85,7 +116,7 @@ class HealthResponse(BaseModel):
     preview_format: str
 
 
-class ProjectSchema(BaseModel):
+class ProjectSchema(_SyncTimestampSchemaMixin, BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
@@ -266,7 +297,7 @@ class SyncPreflightResponse(BaseModel):
     manual_cleanup_guidance: list[str]
 
 
-class SyncMetadataProjectSchema(BaseModel):
+class SyncMetadataProjectSchema(_SyncTimestampSchemaMixin, BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     project_id: str
@@ -280,7 +311,7 @@ class SyncMetadataProjectSchema(BaseModel):
     updated_at: datetime
 
 
-class SyncMetadataArtifactSchema(BaseModel):
+class SyncMetadataArtifactSchema(_SyncTimestampSchemaMixin, BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     artifact_id: str
@@ -298,7 +329,7 @@ class SyncMetadataArtifactSchema(BaseModel):
     created_at: datetime
 
 
-class SyncDeleteTombstoneSchema(BaseModel):
+class SyncDeleteTombstoneSchema(_SyncTimestampSchemaMixin, BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     tombstone_id: str = Field(validation_alias=AliasChoices("tombstone_id", "id"))
@@ -324,7 +355,7 @@ class SyncMetadataResponse(BaseModel):
     delete_tombstones: list[SyncDeleteTombstoneSchema] = Field(default_factory=list)
 
 
-class SyncProjectManifestProjectSchema(BaseModel):
+class SyncProjectManifestProjectSchema(_SyncTimestampSchemaMixin, BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     project_id: str
@@ -338,7 +369,7 @@ class SyncProjectManifestProjectSchema(BaseModel):
     updated_at: datetime
 
 
-class SyncProjectManifestArtifactSchema(BaseModel):
+class SyncProjectManifestArtifactSchema(_SyncTimestampSchemaMixin, BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     artifact_id: str
@@ -356,7 +387,7 @@ class SyncProjectManifestArtifactSchema(BaseModel):
     created_at: datetime
 
 
-class SyncProjectManifestEntityRevisionSchema(BaseModel):
+class SyncProjectManifestEntityRevisionSchema(_SyncTimestampSchemaMixin, BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     revision_id: str
@@ -375,7 +406,7 @@ class SyncProjectManifestEntityRevisionSchema(BaseModel):
     updated_at: datetime
 
 
-class SyncProjectManifestSchema(BaseModel):
+class SyncProjectManifestSchema(_SyncTimestampSchemaMixin, BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     schema_version: str
@@ -451,7 +482,7 @@ class SyncArtifactFileResolveResponse(BaseModel):
     errors: list[SyncArtifactFileResolveErrorSchema] = Field(default_factory=list)
 
 
-class SyncProjectStatusProjectMetadataSchema(BaseModel):
+class SyncProjectStatusProjectMetadataSchema(_SyncTimestampSchemaMixin, BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     project_id: str
@@ -511,7 +542,7 @@ class SyncArtifactStagingRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class SyncStagedArtifactSchema(BaseModel):
+class SyncStagedArtifactSchema(_SyncTimestampSchemaMixin, BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     content_sha256: str

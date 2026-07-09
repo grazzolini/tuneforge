@@ -59,10 +59,11 @@ mod storage;
 use self::storage::{
     app_data_root, create_completed_job, create_failed_job, db, db_at_root,
     ensure_mobile_project_dirs, file_sha256, find_existing_project_source, get_project_manifest,
-    get_project_schema, get_source_artifact, get_staged_artifact, new_id, project_root_path,
-    relative_artifact_path, require_sync_editable_project, row_artifact, row_delete_tombstone,
-    row_entity_revision, row_project, safe_relative_path, source_format, verify_staged_artifact,
-    ARTIFACT_COLUMNS, PROJECT_COLUMNS, SYNC_DELETE_TOMBSTONE_COLUMNS, SYNC_ENTITY_REVISION_COLUMNS,
+    get_project_schema, get_source_artifact, get_staged_artifact, migrate_mobile_db, new_id,
+    project_root_path, relative_artifact_path, require_sync_editable_project, row_artifact,
+    row_delete_tombstone, row_entity_revision, row_project, safe_relative_path, source_format,
+    verify_staged_artifact, ARTIFACT_COLUMNS, PROJECT_COLUMNS, SYNC_DELETE_TOMBSTONE_COLUMNS,
+    SYNC_ENTITY_REVISION_COLUMNS,
 };
 
 #[cfg(all(test, not(target_os = "android")))]
@@ -77,7 +78,8 @@ mod manifests;
 #[cfg(all(test, not(target_os = "android")))]
 use manifests::{
     apply_delete_tombstone, hydrate_imported_read_models, import_entity_revisions,
-    import_sync_project_manifest, update_project_sync_status, validate_manifest_delete_tombstones,
+    import_sync_project_manifest, local_tombstone_superseded_by_live_target,
+    update_project_sync_status, validate_manifest_delete_tombstones,
     validate_project_manifest_identity, validate_remote_delete_tombstone,
 };
 

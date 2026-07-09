@@ -151,6 +151,12 @@ def test_stage_sync_artifact_api_returns_record_without_absolute_path(
     assert payload["provider_device_id"] == "device-a"
     assert payload["metadata"] == {"role": "source"}
     assert payload["relative_path"] == "sync-artifacts/ab/cd/artifact.bin"
+    assert payload["verified_at"].endswith("Z")
+    assert payload["created_at"].endswith("Z")
+    assert payload["updated_at"].endswith("Z")
+    assert "+00:00" not in payload["verified_at"]
+    assert "+00:00" not in payload["created_at"]
+    assert "+00:00" not in payload["updated_at"]
     assert str(source_path) not in json.dumps(payload)
     assert str(tmp_path) not in json.dumps(payload)
     assert "resolved_path" not in payload

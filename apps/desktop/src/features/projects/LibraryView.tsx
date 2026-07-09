@@ -23,19 +23,26 @@ function formatDuration(durationSeconds: number | null | undefined) {
   return `${minutes}:${seconds}`;
 }
 
-function formatUpdatedAt(value: string) {
-  return formatLocalDateTime(value, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+function formatUpdatedAt(value: string | null) {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return { dateTime: null, label: "Unknown" };
+  }
+
+  return {
+    dateTime: normalizeApiDateTime(trimmed),
+    label: formatLocalDateTime(trimmed, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }),
+  };
 }
 
 function ProjectCard({ project }: { project: ProjectSchema }) {
   const { informationDensity } = usePreferences();
-  const updatedAtLabel = formatUpdatedAt(project.updated_at);
-  const normalizedUpdatedAt = normalizeApiDateTime(project.updated_at);
+  const updatedAt = formatUpdatedAt(project.updated_at);
   const fileType = project.source_path.split(".").pop()?.toUpperCase() ?? "Audio";
   const syncSummary = getProjectSyncSummary(project);
   const syncReason = syncSummary.lockReason ? ` ${syncSummary.lockReason}` : "";
@@ -70,7 +77,11 @@ function ProjectCard({ project }: { project: ProjectSchema }) {
         </div>
 
         <div className="project-library-row__cell project-library-row__cell--date">
-          <time dateTime={normalizedUpdatedAt}>{updatedAtLabel}</time>
+          {updatedAt.dateTime ? (
+            <time dateTime={updatedAt.dateTime}>{updatedAt.label}</time>
+          ) : (
+            <span>{updatedAt.label}</span>
+          )}
         </div>
 
         <div className="project-card__stats" role="list" aria-label={`${project.display_name} summary`}>

@@ -990,7 +990,7 @@ pub(super) fn manifest_artifact_from_artifact(
         can_regenerate: artifact.can_regenerate,
         cache_key: artifact.cache_key,
         metadata: sanitize_sync_manifest_value(&artifact.metadata),
-        created_at: artifact.created_at,
+        created_at: normalize_sync_timestamp_utc(&artifact.created_at, "artifact created_at")?,
     })
 }
 
@@ -1060,7 +1060,12 @@ pub(super) fn list_project_entity_revisions(
         .map_err(|error| error.to_string())?;
     let mut revisions = Vec::new();
     for row in rows {
-        revisions.push(row.map_err(|error| error.to_string())?);
+        let mut revision = row.map_err(|error| error.to_string())?;
+        revision.created_at =
+            normalize_sync_timestamp_utc(&revision.created_at, "revision created_at")?;
+        revision.updated_at =
+            normalize_sync_timestamp_utc(&revision.updated_at, "revision updated_at")?;
+        revisions.push(revision);
     }
     Ok(revisions)
 }
@@ -1079,7 +1084,13 @@ pub(super) fn list_project_delete_tombstones(
         .map_err(|error| error.to_string())?;
     let mut tombstones = Vec::new();
     for row in rows {
-        let tombstone = row.map_err(|error| error.to_string())?;
+        let mut tombstone = row.map_err(|error| error.to_string())?;
+        tombstone.deleted_at =
+            normalize_sync_timestamp_utc(&tombstone.deleted_at, "tombstone deleted_at")?;
+        tombstone.created_at =
+            normalize_sync_timestamp_utc(&tombstone.created_at, "tombstone created_at")?;
+        tombstone.updated_at =
+            normalize_sync_timestamp_utc(&tombstone.updated_at, "tombstone updated_at")?;
         if !local_tombstone_superseded_by_live_target(connection, &tombstone)? {
             tombstones.push(tombstone);
         }
@@ -1118,8 +1129,8 @@ pub(super) fn get_project_manifest(
             duration_seconds: project.duration_seconds,
             sample_rate: project.sample_rate,
             channels: project.channels,
-            created_at: project.created_at,
-            updated_at: project.updated_at,
+            created_at: normalize_sync_timestamp_utc(&project.created_at, "project created_at")?,
+            updated_at: normalize_sync_timestamp_utc(&project.updated_at, "project updated_at")?,
         },
         entity_revisions: list_project_entity_revisions(connection, project_id)?
             .into_iter()
@@ -1185,6 +1196,12 @@ pub(super) fn get_staged_artifact(
         .optional()
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Sync artifact has not been staged locally.".to_string())?;
+    let staged = SyncStagedArtifactSchema {
+        verified_at: normalize_sync_timestamp_utc(&staged.verified_at, "staged verified_at")?,
+        created_at: normalize_sync_timestamp_utc(&staged.created_at, "staged created_at")?,
+        updated_at: normalize_sync_timestamp_utc(&staged.updated_at, "staged updated_at")?,
+        ..staged
+    };
     let _ = verify_staged_artifact(root, &staged, expected_size_bytes)?;
     Ok(staged)
 }

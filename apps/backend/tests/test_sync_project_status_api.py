@@ -73,6 +73,10 @@ def test_sync_project_status_update_persists_status_fields(
     assert project["sync_required_artifact_ids"] == ["art_source", "art_stems"]
     assert project["sync_provider_device_ids"] == ["laptop-a"]
     assert project["sync_conflict_count"] == 2
+    assert project["created_at"].endswith("Z")
+    assert project["updated_at"].endswith("Z")
+    assert "+00:00" not in project["created_at"]
+    assert "+00:00" not in project["updated_at"]
 
     detail_response = client.get(f"/api/v1/projects/{project_id}")
     assert detail_response.status_code == 200

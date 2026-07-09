@@ -27,9 +27,12 @@ from app.models import (
     SyncDeleteTombstone,
     SyncEntityRevision,
 )
+from app.schemas import SyncMetadataResponse, SyncProjectManifestSchema
 from app.services.paths import project_root
 from app.services.sync_identity import source_hash_to_project_id
+from app.services.sync_metadata import get_sync_metadata
 from app.services.sync_revisions import CURRENT_REVISION_STATE
+from app.services.sync_timestamps import parse_sync_datetime, sync_datetime_to_rfc3339
 from app.services.sync_trust import get_or_create_local_identity
 from app.utils.hashing import file_sha256
 
@@ -45,6 +48,7 @@ LOCAL_PATH_KEYS = {
     "render_path",
     "source_path",
 }
+SYNC_TIMESTAMP_KEYS = {"created_at", "updated_at", "deleted_at", "exported_at"}
 
 
 @dataclass(frozen=True)
@@ -182,6 +186,37 @@ def _assert_no_local_path_keys(payload: dict[str, Any]) -> None:
         if key != "relative_path" and (key in LOCAL_PATH_KEYS or key.endswith("_path"))
     ]
     assert leaked_keys == []
+
+
+def _assert_utc_z_timestamp(value: Any) -> None:
+    assert isinstance(value, str)
+    assert value.endswith("Z")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    assert parsed.tzinfo is not None
+    assert parsed.astimezone(UTC) == parsed
+
+
+def _legacy_sqlite_timestamp(value: Any) -> str:
+    if isinstance(value, str):
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    else:
+        assert isinstance(value, datetime)
+        timestamp = value
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return timestamp.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
+def _rewrite_sync_timestamps_as_legacy_sqlite(value: Any) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in SYNC_TIMESTAMP_KEYS:
+                value[key] = _legacy_sqlite_timestamp(child)
+            else:
+                _rewrite_sync_timestamps_as_legacy_sqlite(child)
+    elif isinstance(value, list):
+        for child in value:
+            _rewrite_sync_timestamps_as_legacy_sqlite(child)
 
 
 def _artifacts_by_id(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -927,6 +962,138 @@ def test_export_project_manifest_includes_delete_tombstones_without_local_paths(
     assert "updated_at" in artifact_tombstone
 
 
+def test_export_manifest_and_metadata_omit_tombstone_equal_to_live_target(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    del client
+    export_manifest, _ = _sync_manifest_services()
+    equal_at = datetime(2026, 1, 1, tzinfo=UTC)
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        sync_group_id = get_or_create_local_identity(session).sync_group_id
+        project = session.get(Project, fixture.project_id)
+        source_artifact = session.get(Artifact, "art_source_audio")
+        assert project is not None
+        assert source_artifact is not None
+        project.created_at = datetime(2025, 12, 31, tzinfo=UTC)
+        project.updated_at = datetime(2025, 12, 31, 1, tzinfo=UTC)
+        source_artifact.created_at = equal_at
+        session.add(
+            SyncDeleteTombstone(
+                id="tomb_equal_live_artifact",
+                sync_group_id=sync_group_id,
+                project_id=fixture.project_id,
+                target_type="artifact",
+                target_id="art_source_audio",
+                author_device_id="device_alpha",
+                deleted_at=equal_at,
+                prior_metadata_json={"type": "source_audio"},
+                created_at=equal_at,
+                updated_at=equal_at,
+            )
+        )
+        session.commit()
+        session.expire_all()
+
+        manifest_payload = SyncProjectManifestSchema.model_validate(
+            export_manifest(session, project_id=fixture.project_id)
+        ).model_dump(mode="json")
+        metadata_payload = SyncMetadataResponse.model_validate(
+            get_sync_metadata(session)
+        ).model_dump(mode="json")
+
+    assert all(
+        tombstone["tombstone_id"] != "tomb_equal_live_artifact"
+        for tombstone in manifest_payload["delete_tombstones"]
+    )
+    assert all(
+        tombstone["tombstone_id"] != "tomb_equal_live_artifact"
+        for tombstone in metadata_payload["delete_tombstones"]
+    )
+
+
+def test_sync_boundaries_serialize_sqlite_naive_datetimes_as_utc_z(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    del client
+    export_manifest, _ = _sync_manifest_services()
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        sync_group_id = get_or_create_local_identity(session).sync_group_id
+        project = session.get(Project, fixture.project_id)
+        source_artifact = session.get(Artifact, "art_source_audio")
+        stem_artifact = session.get(Artifact, "art_vocals")
+        assert project is not None
+        assert source_artifact is not None
+        assert stem_artifact is not None
+
+        project.created_at = datetime(2026, 1, 1, 1, 2, 3, 123456)
+        project.updated_at = datetime(2026, 1, 1, 2, 3, 4, 234567)
+        source_artifact.created_at = datetime(2026, 1, 1, 3, 4, 5, 345678)
+        stem_artifact.created_at = datetime(2026, 1, 1, 4, 5, 6, 456789)
+        _add_entity_revision(
+            session,
+            revision_id="rev_naive_sqlite",
+            project_id=fixture.project_id,
+            entity_type="project_metadata",
+            entity_id=fixture.project_id,
+            payload={"display_name": "Naive SQLite Fixture"},
+            created_at=datetime(2026, 1, 1, 5, 6, 7, 567890),
+            updated_at=datetime(2026, 1, 1, 6, 7, 8, 678901),
+        )
+        session.add(
+            SyncDeleteTombstone(
+                id="tomb_naive_sqlite",
+                sync_group_id=sync_group_id,
+                project_id=fixture.project_id,
+                target_type="artifact",
+                target_id="art_deleted_naive",
+                author_device_id="device_alpha",
+                deleted_at=datetime(2026, 1, 1, 7, 8, 9, 789012),
+                prior_metadata_json={"type": "preview_mix"},
+                created_at=datetime(2026, 1, 1, 7, 8, 9, 789012),
+                updated_at=datetime(2026, 1, 1, 7, 8, 10, 890123),
+            )
+        )
+        session.commit()
+        session.expire_all()
+
+        manifest_payload = SyncProjectManifestSchema.model_validate(
+            export_manifest(session, project_id=fixture.project_id)
+        ).model_dump(mode="json")
+        metadata_payload = SyncMetadataResponse.model_validate(
+            get_sync_metadata(session)
+        ).model_dump(mode="json")
+
+    _assert_utc_z_timestamp(manifest_payload["exported_at"])
+    _assert_utc_z_timestamp(manifest_payload["project"]["created_at"])
+    _assert_utc_z_timestamp(manifest_payload["project"]["updated_at"])
+    for artifact in manifest_payload["artifacts"]:
+        _assert_utc_z_timestamp(artifact["created_at"])
+    for revision in manifest_payload["entity_revisions"]:
+        _assert_utc_z_timestamp(revision["created_at"])
+        _assert_utc_z_timestamp(revision["updated_at"])
+    tombstone = manifest_payload["delete_tombstones"][0]
+    assert tombstone["tombstone_id"] == "tomb_naive_sqlite"
+    _assert_utc_z_timestamp(tombstone["deleted_at"])
+    _assert_utc_z_timestamp(tombstone["created_at"])
+    _assert_utc_z_timestamp(tombstone["updated_at"])
+
+    metadata_project = metadata_payload["projects"][0]
+    _assert_utc_z_timestamp(metadata_project["created_at"])
+    _assert_utc_z_timestamp(metadata_project["updated_at"])
+    for artifact in metadata_payload["artifacts"]:
+        _assert_utc_z_timestamp(artifact["created_at"])
+    metadata_tombstone = metadata_payload["delete_tombstones"][0]
+    assert metadata_tombstone["tombstone_id"] == "tomb_naive_sqlite"
+    _assert_utc_z_timestamp(metadata_tombstone["deleted_at"])
+    _assert_utc_z_timestamp(metadata_tombstone["created_at"])
+    _assert_utc_z_timestamp(metadata_tombstone["updated_at"])
+
+
 @pytest.mark.parametrize("unportable_path", ["outside_project_root", "project_root_directory"])
 def test_export_project_manifest_rejects_unportable_artifact_paths(
     client: object,
@@ -1108,6 +1275,192 @@ def test_import_staged_project_manifest_rewrites_paths_preserves_hashes_and_skip
             session.scalars(select(Job.type).where(Job.project_id == fixture.project_id))
         )
         assert not job_types.intersection({"analyze", "chords"})
+
+
+def test_import_staged_project_manifest_accepts_legacy_sqlite_utc_timestamps(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    del client
+    export_manifest, import_manifest = _sync_manifest_services()
+    staging_root = tmp_path / "legacy-staging"
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        _add_project_entity_revisions(session, fixture)
+        sync_group_id = get_or_create_local_identity(session).sync_group_id
+        project = session.get(Project, fixture.project_id)
+        assert project is not None
+        project.created_at = datetime(2026, 1, 1, tzinfo=UTC)
+        project.updated_at = datetime(2026, 1, 1, 1, tzinfo=UTC)
+        session.add(
+            SyncDeleteTombstone(
+                id="tomb_legacy_sqlite",
+                sync_group_id=sync_group_id,
+                project_id=fixture.project_id,
+                target_type="artifact",
+                target_id="art_deleted_legacy",
+                author_device_id="device_alpha",
+                deleted_at=datetime(2026, 1, 3, 4, 5, 6, 123456, tzinfo=UTC),
+                prior_metadata_json={"type": "preview_mix"},
+                created_at=datetime(2026, 1, 3, 4, 5, 6, 123456, tzinfo=UTC),
+                updated_at=datetime(2026, 1, 3, 4, 5, 7, 234567, tzinfo=UTC),
+            )
+        )
+        session.commit()
+
+        manifest = SyncProjectManifestSchema.model_validate(
+            export_manifest(session, project_id=fixture.project_id)
+        ).model_dump(mode="json")
+        expected_project_created_at = datetime.fromisoformat(
+            manifest["project"]["created_at"].replace("Z", "+00:00")
+        ).replace(tzinfo=None)
+        expected_revision_updated_at = datetime.fromisoformat(
+            _entity_revisions_by_id(manifest)["rev_project_metadata_current"]["updated_at"].replace(
+                "Z",
+                "+00:00",
+            )
+        ).replace(tzinfo=None)
+        _rewrite_sync_timestamps_as_legacy_sqlite(manifest)
+        _stage_manifest_files(manifest, staging_root=staging_root, source_root=fixture.root)
+        _delete_live_project(session, fixture)
+
+        import_manifest(session, manifest=manifest, staging_root=staging_root)
+        session.commit()
+
+        imported_project = session.get(Project, fixture.project_id)
+        imported_revision = session.get(SyncEntityRevision, "rev_project_metadata_current")
+        imported_tombstone = session.get(SyncDeleteTombstone, "tomb_legacy_sqlite")
+
+    assert imported_project is not None
+    assert imported_project.created_at == expected_project_created_at
+    assert imported_revision is not None
+    assert imported_revision.updated_at == expected_revision_updated_at
+    assert imported_tombstone is not None
+    assert imported_tombstone.deleted_at == datetime(2026, 1, 3, 4, 5, 6, 123456)
+
+
+def test_import_staged_project_manifest_compares_tombstones_by_utc_instant(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    del client
+    export_manifest, import_manifest = _sync_manifest_services()
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        sync_group_id = get_or_create_local_identity(session).sync_group_id
+        project = session.get(Project, fixture.project_id)
+        assert project is not None
+        project.created_at = datetime(2026, 1, 1, tzinfo=UTC)
+        project.updated_at = datetime(2026, 1, 1, 1, tzinfo=UTC)
+        session.add(
+            SyncDeleteTombstone(
+                id="tomb_equal_local",
+                sync_group_id=sync_group_id,
+                project_id=fixture.project_id,
+                target_type="artifact",
+                target_id="art_deleted_equal",
+                author_device_id="device_local",
+                deleted_at=datetime(2026, 1, 2, 12, 0, 0),
+                prior_metadata_json={"side": "local"},
+                created_at=datetime(2026, 1, 2, 12, 0, 0),
+                updated_at=datetime(2026, 1, 2, 12, 0, 0),
+            )
+        )
+        session.commit()
+
+        manifest = SyncProjectManifestSchema.model_validate(
+            export_manifest(session, project_id=fixture.project_id)
+        ).model_dump(mode="json")
+        manifest["delete_tombstones"] = [
+            {
+                "tombstone_id": "tomb_equal_remote",
+                "sync_group_id": sync_group_id,
+                "project_id": fixture.project_id,
+                "target_type": "artifact",
+                "target_id": "art_deleted_equal",
+                "author_device_id": "device_remote",
+                "deleted_at": "2026-01-02T09:00:00-03:00",
+                "prior_metadata": {"side": "remote"},
+                "created_at": "2026-01-02T09:00:00-03:00",
+                "updated_at": "2026-01-02T09:00:00-03:00",
+            }
+        ]
+
+        import_manifest(session, manifest=manifest, staging_root=None)
+        session.commit()
+
+        tombstone = session.get(SyncDeleteTombstone, "tomb_equal_local")
+
+    assert tombstone is not None
+    assert tombstone.author_device_id == "device_local"
+    assert tombstone.prior_metadata_json == {"side": "local"}
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("2026-01-01T00:00:00Z", datetime(2026, 1, 1, tzinfo=UTC)),
+        (
+            "2026-01-01T00:00:00.123456+00:00",
+            datetime(2026, 1, 1, 0, 0, 0, 123456, tzinfo=UTC),
+        ),
+        (
+            "2026-01-01T00:00:00-03:00",
+            datetime(2026, 1, 1, 3, 0, 0, tzinfo=UTC),
+        ),
+        (
+            "2026-07-03T22:05:09.301876",
+            datetime(2026, 7, 3, 22, 5, 9, 301876, tzinfo=UTC),
+        ),
+        ("2026-01-01 00:00:00", datetime(2026, 1, 1, tzinfo=UTC)),
+        (
+            "2026-01-01 00:00:00.123456",
+            datetime(2026, 1, 1, 0, 0, 0, 123456, tzinfo=UTC),
+        ),
+        ("2026-01-01 00:00:00 UTC", datetime(2026, 1, 1, tzinfo=UTC)),
+        (
+            "2026-01-01 00:00:00.123456 UTC",
+            datetime(2026, 1, 1, 0, 0, 0, 123456, tzinfo=UTC),
+        ),
+        (
+            "2026-01-01 00:00:00-03:00",
+            datetime(2026, 1, 1, 3, 0, 0, tzinfo=UTC),
+        ),
+    ],
+)
+def test_parse_sync_datetime_accepts_contract_and_legacy_shapes(
+    value: str,
+    expected: datetime,
+) -> None:
+    assert parse_sync_datetime(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2026-01-01",
+        "20260101T000000Z",
+        "2026-01-01T00:00",
+        "2026-01-01 00:00",
+        "2026-01-01 00:00:00Z",
+    ],
+)
+def test_parse_sync_datetime_rejects_non_contract_shapes(value: str) -> None:
+    with pytest.raises(ValueError, match="RFC3339 datetime"):
+        parse_sync_datetime(value)
+
+
+def test_sync_datetime_to_rfc3339_normalizes_naive_and_offset_values() -> None:
+    assert (
+        sync_datetime_to_rfc3339(datetime(2026, 7, 3, 22, 5, 9, 301876))
+        == "2026-07-03T22:05:09.301876Z"
+    )
+    assert (
+        sync_datetime_to_rfc3339(parse_sync_datetime("2026-07-03T19:05:09.301876-03:00"))
+        == "2026-07-03T22:05:09.301876Z"
+    )
 
 
 def test_import_staged_project_manifest_upgrades_placeholder_and_clears_sync_lock(
@@ -1424,7 +1777,9 @@ def test_import_staged_project_manifest_persists_delete_tombstones(
         fixture = _create_project_with_artifacts(session, tmp_path)
         sync_group_id = get_or_create_local_identity(session).sync_group_id
         manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
-        timestamp = (manifest["project"]["created_at"] + timedelta(seconds=1)).isoformat()
+        timestamp = sync_datetime_to_rfc3339(
+            manifest["project"]["created_at"] + timedelta(seconds=1)
+        )
         manifest["delete_tombstones"] = [
             {
                 "tombstone_id": "tomb_deleted_mix",
@@ -1507,7 +1862,9 @@ def test_import_staged_project_manifest_applies_delete_tombstones_to_existing_pr
         fixture = _create_project_with_artifacts(session, tmp_path)
         sync_group_id = get_or_create_local_identity(session).sync_group_id
         manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
-        timestamp = (manifest["project"]["created_at"] + timedelta(seconds=1)).isoformat()
+        timestamp = sync_datetime_to_rfc3339(
+            manifest["project"]["created_at"] + timedelta(seconds=1)
+        )
         deleted_path = fixture.root / "previews" / "deleted-mix.wav"
         deleted_hash, deleted_size = _write_bytes(deleted_path, b"deleted mix")
         session.add(
@@ -1604,10 +1961,10 @@ def test_import_staged_project_manifest_merges_newer_same_target_tombstone_befor
                 "target_type": "artifact",
                 "target_id": target_id,
                 "author_device_id": "device_alpha",
-                "deleted_at": remote_deleted_at.isoformat(),
+                "deleted_at": sync_datetime_to_rfc3339(remote_deleted_at),
                 "prior_metadata": {"type": "preview_mix", "remote": True},
-                "created_at": remote_deleted_at.isoformat(),
-                "updated_at": remote_deleted_at.isoformat(),
+                "created_at": sync_datetime_to_rfc3339(remote_deleted_at),
+                "updated_at": sync_datetime_to_rfc3339(remote_deleted_at),
             }
         ]
 

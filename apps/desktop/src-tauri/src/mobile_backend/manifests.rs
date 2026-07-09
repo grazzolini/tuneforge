@@ -65,8 +65,16 @@ pub(super) fn create_project_placeholder(
 ) -> Result<(), String> {
     validate_project_source_identity(project_id, metadata.source_sha256.as_deref())?;
     let timestamp = now_iso();
-    let created_at = metadata.created_at.unwrap_or_else(|| timestamp.clone());
-    let updated_at = metadata.updated_at.unwrap_or_else(|| timestamp.clone());
+    let created_at = metadata
+        .created_at
+        .map(|value| normalize_sync_timestamp_utc(&value, "project created_at"))
+        .transpose()?
+        .unwrap_or_else(|| timestamp.clone());
+    let updated_at = metadata
+        .updated_at
+        .map(|value| normalize_sync_timestamp_utc(&value, "project updated_at"))
+        .transpose()?
+        .unwrap_or_else(|| timestamp.clone());
     connection
             .execute(
                 "INSERT INTO projects (id, display_name, source_key_override, source_sha256, source_path, imported_path, duration_seconds, sample_rate, channels, sync_status, sync_status_reason, sync_required_artifact_ids_json, sync_provider_device_ids_json, sync_conflict_count, sync_status_updated_at, created_at, updated_at)
@@ -238,8 +246,31 @@ pub(super) fn validate_manifest_delete_tombstones(
 pub(super) fn upsert_delete_tombstone(
     connection: &Connection,
     tombstone: &SyncDeleteTombstoneSchema,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let target_type = normalize_tombstone_target_type(&tombstone.target_type);
+    let deleted_at = normalize_sync_timestamp_utc(&tombstone.deleted_at, "tombstone deleted_at")?;
+    let created_at = normalize_sync_timestamp_utc(&tombstone.created_at, "tombstone created_at")?;
+    let updated_at = normalize_sync_timestamp_utc(&tombstone.updated_at, "tombstone updated_at")?;
+    let existing_deleted_at: Option<String> = connection
+        .query_row(
+            "SELECT deleted_at FROM sync_delete_tombstones WHERE sync_group_id = ?1 AND target_type = ?2 AND target_id = ?3",
+            params![
+                &tombstone.sync_group_id,
+                &target_type,
+                &tombstone.target_id
+            ],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if let Some(existing_deleted_at) = existing_deleted_at {
+        let existing_deleted_at =
+            parse_sync_timestamp_utc(&existing_deleted_at, "existing tombstone deleted_at")?;
+        let incoming_deleted_at = parse_sync_timestamp_utc(&deleted_at, "tombstone deleted_at")?;
+        if incoming_deleted_at <= existing_deleted_at {
+            return Ok(false);
+        }
+    }
     let prior_metadata_json = sanitize_sync_manifest_value(&tombstone.prior_metadata).to_string();
     connection
             .execute(
@@ -250,17 +281,17 @@ pub(super) fn upsert_delete_tombstone(
                     tombstone.tombstone_id,
                     tombstone.sync_group_id,
                     tombstone.project_id,
-                    target_type,
+                    &target_type,
                     tombstone.target_id,
                     tombstone.author_device_id,
-                    tombstone.deleted_at,
+                    deleted_at,
                     prior_metadata_json,
-                    tombstone.created_at,
-                    tombstone.updated_at,
+                    created_at,
+                    updated_at,
                 ],
             )
             .map_err(|error| error.to_string())?;
-    Ok(())
+    Ok(true)
 }
 
 pub(super) fn record_local_delete_tombstone(
@@ -284,7 +315,7 @@ pub(super) fn record_local_delete_tombstone(
         created_at: timestamp.clone(),
         updated_at: timestamp,
     };
-    upsert_delete_tombstone(connection, &tombstone)
+    upsert_delete_tombstone(connection, &tombstone).map(|_| ())
 }
 
 pub(super) fn apply_delete_tombstone(
@@ -292,7 +323,12 @@ pub(super) fn apply_delete_tombstone(
     tombstone: &SyncDeleteTombstoneSchema,
 ) -> Result<(), String> {
     validate_remote_delete_tombstone(connection, tombstone)?;
-    upsert_delete_tombstone(connection, tombstone)?;
+    if local_tombstone_superseded_by_live_target(connection, tombstone)? {
+        return Ok(());
+    }
+    if !upsert_delete_tombstone(connection, tombstone)? {
+        return Ok(());
+    }
     match normalize_tombstone_target_type(&tombstone.target_type).as_str() {
         "project" => {
             connection
@@ -377,7 +413,7 @@ pub(super) fn local_tombstone_superseded_by_live_target(
         };
     Ok(live_timestamp
         .as_deref()
-        .is_some_and(|live_at| sync_timestamp_is_newer(live_at, &tombstone.deleted_at)))
+        .is_some_and(|live_at| sync_timestamp_is_newer_or_equal(live_at, &tombstone.deleted_at)))
 }
 
 pub(super) fn validate_project_manifest_identity(
@@ -451,8 +487,8 @@ pub(super) fn import_entity_revisions(
                         revision.state,
                         revision.metadata.to_string(),
                         revision.payload.to_string(),
-                        revision.created_at,
-                        revision.updated_at,
+                        normalize_sync_timestamp_utc(&revision.created_at, "revision created_at")?,
+                        normalize_sync_timestamp_utc(&revision.updated_at, "revision updated_at")?,
                     ],
                 )
                 .map_err(|error| error.to_string())?;
@@ -701,6 +737,14 @@ pub(super) fn import_sync_project_manifest(
     let existing_project = get_project_schema(connection, &project_id).ok();
     let source_artifact = manifest_source_audio_artifact(&payload.manifest)?;
     let source_path = project_root.join(safe_relative_path(&source_artifact.relative_path)?);
+    let manifest_project_created_at = normalize_sync_timestamp_utc(
+        &payload.manifest.project.created_at,
+        "manifest project created_at",
+    )?;
+    let manifest_project_updated_at = normalize_sync_timestamp_utc(
+        &payload.manifest.project.updated_at,
+        "manifest project updated_at",
+    )?;
 
     let mut prepared_artifacts = Vec::new();
     for artifact in &payload.manifest.artifacts {
@@ -799,8 +843,8 @@ pub(super) fn import_sync_project_manifest(
                             payload.manifest.project.channels,
                             DEFAULT_SYNC_LIST_JSON,
                             &timestamp,
-                            &payload.manifest.project.created_at,
-                            &payload.manifest.project.updated_at,
+                            &manifest_project_created_at,
+                            &manifest_project_updated_at,
                         ],
                     )
                     .map_err(|error| error.to_string())?;
@@ -827,6 +871,8 @@ pub(super) fn import_sync_project_manifest(
             let artifact = &prepared.manifest;
             let destination_path = prepared.destination_path.to_string_lossy().into_owned();
             let metadata = sanitize_sync_manifest_value(&artifact.metadata).to_string();
+            let artifact_created_at =
+                normalize_sync_timestamp_utc(&artifact.created_at, "artifact created_at")?;
             if prepared.existing.is_some() {
                 connection
                         .execute(
@@ -843,7 +889,7 @@ pub(super) fn import_sync_project_manifest(
                                 if artifact.can_regenerate { 1_i64 } else { 0_i64 },
                                 &metadata,
                                 artifact.cache_key.as_ref(),
-                                &artifact.created_at,
+                                &artifact_created_at,
                                 &artifact.artifact_id,
                             ],
                         )
@@ -866,7 +912,7 @@ pub(super) fn import_sync_project_manifest(
                                 if artifact.can_regenerate { 1_i64 } else { 0_i64 },
                                 &metadata,
                                 artifact.cache_key.as_ref(),
-                                &artifact.created_at,
+                                &artifact_created_at,
                             ],
                         )
                         .map_err(|error| error.to_string())?;
@@ -922,8 +968,8 @@ pub fn mobile_get_sync_metadata(app: AppHandle) -> Result<SyncMetadataResponse, 
             duration_seconds: project.duration_seconds,
             sample_rate: project.sample_rate,
             channels: project.channels,
-            created_at: project.created_at,
-            updated_at: project.updated_at,
+            created_at: normalize_sync_timestamp_utc(&project.created_at, "project created_at")?,
+            updated_at: normalize_sync_timestamp_utc(&project.updated_at, "project updated_at")?,
         });
     }
 
@@ -952,7 +998,7 @@ pub fn mobile_get_sync_metadata(app: AppHandle) -> Result<SyncMetadataResponse, 
             can_regenerate: artifact.can_regenerate,
             cache_key: artifact.cache_key,
             metadata: sanitize_sync_manifest_value(&artifact.metadata),
-            created_at: artifact.created_at,
+            created_at: normalize_sync_timestamp_utc(&artifact.created_at, "artifact created_at")?,
         });
     }
 
@@ -966,7 +1012,13 @@ pub fn mobile_get_sync_metadata(app: AppHandle) -> Result<SyncMetadataResponse, 
         .map_err(|error| error.to_string())?;
     let mut delete_tombstones = Vec::new();
     for row in tombstone_rows {
-        let tombstone = row.map_err(|error| error.to_string())?;
+        let mut tombstone = row.map_err(|error| error.to_string())?;
+        tombstone.deleted_at =
+            normalize_sync_timestamp_utc(&tombstone.deleted_at, "tombstone deleted_at")?;
+        tombstone.created_at =
+            normalize_sync_timestamp_utc(&tombstone.created_at, "tombstone created_at")?;
+        tombstone.updated_at =
+            normalize_sync_timestamp_utc(&tombstone.updated_at, "tombstone updated_at")?;
         if !local_tombstone_superseded_by_live_target(&connection, &tombstone)? {
             delete_tombstones.push(tombstone);
         }
@@ -1009,4 +1061,210 @@ pub fn mobile_import_sync_project(
     Ok(SyncProjectImportResponse {
         project: import_sync_project_manifest(&connection, &root, payload)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::{params, Connection};
+    use serde_json::json;
+
+    fn insert_trusted_peer(connection: &Connection, device_id: &str) -> String {
+        migrate_mobile_db(connection).unwrap();
+        ensure_local_identity(connection).unwrap();
+        let identity = local_identity(connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO sync_trusted_peers (device_id, sync_group_id, display_name, public_key, trusted_at, created_at, updated_at)
+                 VALUES (?1, ?2, 'Peer', ?3, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                params![device_id, identity.sync_group_id, format!("pubkey_{device_id}")],
+            )
+            .unwrap();
+        identity.sync_group_id
+    }
+
+    fn tombstone_for(
+        sync_group_id: &str,
+        tombstone_id: &str,
+        project_id: &str,
+        target_type: &str,
+        target_id: &str,
+        deleted_at: &str,
+    ) -> SyncDeleteTombstoneSchema {
+        SyncDeleteTombstoneSchema {
+            tombstone_id: tombstone_id.to_string(),
+            sync_group_id: sync_group_id.to_string(),
+            project_id: project_id.to_string(),
+            target_type: target_type.to_string(),
+            target_id: target_id.to_string(),
+            author_device_id: "device_peer_1".to_string(),
+            deleted_at: deleted_at.to_string(),
+            prior_metadata: json!({}),
+            created_at: deleted_at.to_string(),
+            updated_at: deleted_at.to_string(),
+        }
+    }
+
+    fn insert_live_sync_targets(connection: &Connection, project_id: &str, live_at: &str) {
+        connection
+            .execute(
+                "INSERT INTO projects (id, display_name, source_path, imported_path, sync_status, created_at, updated_at)
+                 VALUES (?1, 'Live', '', '', 'local', ?2, ?2)",
+                params![project_id, live_at],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO artifacts (id, project_id, type, format, path, size_bytes, generated_by, can_delete, can_regenerate, metadata_json, created_at)
+                 VALUES ('art_live', ?1, 'preview_mix', 'wav', '/tmp/live.wav', 0, 'sync', 1, 1, '{}', ?2)",
+                params![project_id, live_at],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO sync_entity_revisions (id, project_id, entity_type, entity_id, revision_type, author_device_id, content_sha256, state, metadata_json, payload_json, created_at, updated_at)
+                 VALUES ('rev_live', ?1, 'lyrics', 'lyrics', 'snapshot', 'device_local', ?2, 'active', '{}', '{}', ?3, ?3)",
+                params![project_id, "a".repeat(64), live_at],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn stale_tombstone_apply_without_existing_tombstone_preserves_live_targets() {
+        let connection = Connection::open_in_memory().unwrap();
+        let sync_group_id = insert_trusted_peer(&connection, "device_peer_1");
+        let project_id = source_hash_to_project_id(
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        )
+        .unwrap();
+        let live_at = "2026-01-03T00:00:00Z";
+        let incoming_stale = "2026-01-01T00:00:00Z";
+
+        insert_live_sync_targets(&connection, &project_id, live_at);
+
+        for (target_type, target_id, incoming_deleted_at) in [
+            ("project", project_id.as_str(), incoming_stale),
+            ("artifact", "art_live", live_at),
+            ("entity_revision", "rev_live", incoming_stale),
+        ] {
+            let incoming = tombstone_for(
+                &sync_group_id,
+                &format!("tomb_incoming_no_existing_{target_type}"),
+                &project_id,
+                target_type,
+                target_id,
+                incoming_deleted_at,
+            );
+            apply_delete_tombstone(&connection, &incoming).unwrap();
+        }
+
+        let project_status: String = connection
+            .query_row(
+                "SELECT sync_status FROM projects WHERE id = ?1",
+                params![&project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let artifact_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM artifacts WHERE id = 'art_live' AND project_id = ?1",
+                params![&project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let revision_state: String = connection
+            .query_row(
+                "SELECT state FROM sync_entity_revisions WHERE id = 'rev_live' AND project_id = ?1",
+                params![&project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let tombstone_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM sync_delete_tombstones", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+
+        assert_eq!(project_status, "local");
+        assert_eq!(artifact_count, 1);
+        assert_eq!(revision_state, "active");
+        assert_eq!(tombstone_count, 0);
+    }
+
+    #[test]
+    fn stale_tombstone_apply_preserves_newer_live_targets() {
+        let connection = Connection::open_in_memory().unwrap();
+        let sync_group_id = insert_trusted_peer(&connection, "device_peer_1");
+        let project_id = source_hash_to_project_id(
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        )
+        .unwrap();
+        let live_at = "2026-01-03T00:00:00Z";
+        let existing_newer = "2026-01-02T00:00:00Z";
+        let incoming_stale = "2026-01-01T00:00:00Z";
+
+        insert_live_sync_targets(&connection, &project_id, live_at);
+
+        for (target_type, target_id, existing_deleted_at, incoming_deleted_at) in [
+            (
+                "project",
+                project_id.as_str(),
+                existing_newer,
+                incoming_stale,
+            ),
+            ("artifact", "art_live", existing_newer, incoming_stale),
+            (
+                "entity_revision",
+                "rev_live",
+                incoming_stale,
+                incoming_stale,
+            ),
+        ] {
+            let existing = tombstone_for(
+                &sync_group_id,
+                &format!("tomb_existing_{target_type}"),
+                &project_id,
+                target_type,
+                target_id,
+                existing_deleted_at,
+            );
+            assert!(upsert_delete_tombstone(&connection, &existing).unwrap());
+
+            let incoming = tombstone_for(
+                &sync_group_id,
+                &format!("tomb_incoming_{target_type}"),
+                &project_id,
+                target_type,
+                target_id,
+                incoming_deleted_at,
+            );
+            apply_delete_tombstone(&connection, &incoming).unwrap();
+        }
+
+        let project_status: String = connection
+            .query_row(
+                "SELECT sync_status FROM projects WHERE id = ?1",
+                params![&project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let artifact_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM artifacts WHERE id = 'art_live' AND project_id = ?1",
+                params![&project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let revision_state: String = connection
+            .query_row(
+                "SELECT state FROM sync_entity_revisions WHERE id = 'rev_live' AND project_id = ?1",
+                params![&project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(project_status, "local");
+        assert_eq!(artifact_count, 1);
+        assert_eq!(revision_state, "active");
+    }
 }

@@ -25,6 +25,7 @@ from app.models import (
 from app.services.sync_identity import source_hash_to_project_id
 from app.services.sync_manifest import _coerce_project_manifest
 from app.services.sync_revisions import revision_payload_sha256, sanitize_revision_payload
+from app.services.sync_timestamps import parse_sync_datetime, sync_datetime_to_rfc3339
 from app.services.sync_trust import LOCAL_IDENTITY_ID
 
 SYNC_RECONCILIATION_STATUSES = (
@@ -265,9 +266,9 @@ def plan_sync_reconciliation(
             project_resurrection_window=remote_project_resurrection_windows.get(tombstone.project_id),
         ):
             reason = (
-                "Project delete tombstone is older than a live project."
+                "Project delete tombstone is older than or equal to a live project."
                 if tombstone.target_type == ITEM_PROJECT
-                else "Delete tombstone is older than a live sync target."
+                else "Delete tombstone is older than or equal to a live sync target."
             )
             ignored_remote_tombstones.append(
                 (tombstone, reason)
@@ -2567,7 +2568,7 @@ def _tombstone_fields_are_older_than_live_target(
         target_id=target_id,
         project_id=project_id,
     )
-    if live_updated_at is not None and live_updated_at > tombstone_deleted_at:
+    if live_updated_at is not None and live_updated_at >= tombstone_deleted_at:
         return True
     if live_updated_at is not None and _tombstone_is_inside_project_resurrection_window(
         tombstone_deleted_at,
@@ -2589,7 +2590,7 @@ def _tombstone_fields_are_older_than_live_target(
             target_id=target_id,
             project_id=project_id,
         )
-        if remote_updated_at is not None and remote_updated_at > tombstone_deleted_at:
+        if remote_updated_at is not None and remote_updated_at >= tombstone_deleted_at:
             return True
         if remote_updated_at is not None and _tombstone_is_inside_project_resurrection_window(
             tombstone_deleted_at,
@@ -2736,7 +2737,7 @@ def _local_project_creation_supersedes_tombstone(
     if local_project is None or local_project.sync_status == PROJECT_SYNC_STATUS_DELETED:
         return False
     project_created_at = _coerce_datetime(local_project.created_at)
-    return project_created_at is not None and project_created_at > tombstone_deleted_at
+    return project_created_at is not None and project_created_at >= tombstone_deleted_at
 
 
 def _remote_project_creation_supersedes_tombstone(
@@ -2755,7 +2756,7 @@ def _remote_project_creation_supersedes_tombstone(
     if remote_status == PROJECT_SYNC_STATUS_DELETED:
         return False
     project_created_at = _coerce_datetime(_first_field(remote_project.raw, "created_at", default=None))
-    return project_created_at is not None and project_created_at > tombstone_deleted_at
+    return project_created_at is not None and project_created_at >= tombstone_deleted_at
 
 
 def _tombstone_is_inside_project_resurrection_window(
@@ -3983,27 +3984,23 @@ def _bool_field(source: object, *names: str) -> bool | None:
 
 
 def _sortable_datetime(value: object) -> str:
-    if isinstance(value, datetime):
-        return value.isoformat()
     if value is None:
         return ""
-    return str(value)
+    if not isinstance(value, datetime | str):
+        return ""
+    try:
+        return sync_datetime_to_rfc3339(parse_sync_datetime(value))
+    except ValueError:
+        return ""
 
 
 def _coerce_datetime(value: object) -> datetime | None:
-    if isinstance(value, datetime):
-        parsed = value
-    elif isinstance(value, str):
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    else:
+    if not isinstance(value, datetime | str):
         return None
-
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
+    try:
+        return parse_sync_datetime(value)
+    except ValueError:
+        return None
 
 
 def _stable_json(value: Mapping[str, Any]) -> str:

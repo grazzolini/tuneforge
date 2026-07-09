@@ -568,14 +568,164 @@ fn manifest_live_targets_covered_by_tombstones(
 }
 
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-fn sync_timestamp_is_newer(live_at: &str, deleted_at: &str) -> bool {
-    let Ok(live_at) = chrono::DateTime::parse_from_rfc3339(live_at) else {
+const ACTION_APPLY_DELETE_TOMBSTONE: &str = "apply_delete_tombstone";
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const ACTION_IMPORT_PROJECT_MANIFEST: &str = "import_project_manifest";
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const ACTION_IMPORT_ENTITY_REVISION: &str = "import_entity_revision";
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const ACTION_FETCH_ARTIFACT_CONTENT: &str = "fetch_artifact_content";
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const ACTION_IMPORT_ARTIFACT_MANIFEST: &str = "import_artifact_manifest";
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const ACTION_UPSERT_PROJECT_STATUS: &str = "upsert_project_status";
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const ACTION_RECORD_CONFLICT: &str = "record_conflict";
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const ACTION_NOOP: &str = "noop";
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const STALE_LIVE_TOMBSTONE_NOOP_REASON: &str =
+    "Delete tombstone is older than or equal to a live sync target.";
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn action_priority(action_type: &str) -> i64 {
+    match action_type {
+        ACTION_APPLY_DELETE_TOMBSTONE => 0,
+        ACTION_RECORD_CONFLICT => 10,
+        ACTION_UPSERT_PROJECT_STATUS => 15,
+        ACTION_FETCH_ARTIFACT_CONTENT => 20,
+        ACTION_IMPORT_PROJECT_MANIFEST => 30,
+        ACTION_IMPORT_ARTIFACT_MANIFEST => 40,
+        ACTION_IMPORT_ENTITY_REVISION => 50,
+        ACTION_NOOP => 100,
+        _ => 100,
+    }
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn plan_delete_tombstone_branch(
+    tombstone: &SyncDeleteTombstoneSchema,
+    superseded_by_live_target: bool,
+) -> (
+    SyncReconciliationItemSchema,
+    Vec<SyncReconciliationActionSchema>,
+    bool,
+) {
+    let target_type = normalize_tombstone_target_type(&tombstone.target_type);
+    if superseded_by_live_target {
+        return (
+            SyncReconciliationItemSchema {
+                item_type: target_type,
+                item_id: tombstone.target_id.clone(),
+                project_id: Some(tombstone.project_id.clone()),
+                status: "noop".to_string(),
+                action_type: Some(ACTION_NOOP.to_string()),
+                content_sha256: None,
+                chosen_provider_device_id: None,
+                reason: Some(STALE_LIVE_TOMBSTONE_NOOP_REASON.to_string()),
+                details: serde_json::json!({"tombstone_id": tombstone.tombstone_id}),
+            },
+            Vec::new(),
+            false,
+        );
+    }
+
+    let item = SyncReconciliationItemSchema {
+        item_type: target_type.clone(),
+        item_id: tombstone.target_id.clone(),
+        project_id: Some(tombstone.project_id.clone()),
+        status: "deleted".to_string(),
+        action_type: Some(ACTION_APPLY_DELETE_TOMBSTONE.to_string()),
+        content_sha256: None,
+        chosen_provider_device_id: None,
+        reason: Some("A valid delete tombstone wins over remote manifests.".to_string()),
+        details: serde_json::json!({"tombstone_id": tombstone.tombstone_id}),
+    };
+    let action = SyncReconciliationActionSchema {
+        action_type: ACTION_APPLY_DELETE_TOMBSTONE.to_string(),
+        item_type: target_type,
+        item_id: tombstone.target_id.clone(),
+        project_id: Some(tombstone.project_id.clone()),
+        content_sha256: None,
+        provider_device_id: None,
+        reason: Some("Apply valid sync delete tombstone before imports or fetches.".to_string()),
+        priority: action_priority(ACTION_APPLY_DELETE_TOMBSTONE),
+        details: serde_json::json!({"tombstone_id": tombstone.tombstone_id}),
+    };
+    (item, vec![action], true)
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn sync_timestamp_is_newer_or_equal(live_at: &str, deleted_at: &str) -> bool {
+    let Ok(live_at) = parse_sync_timestamp_utc(live_at, "live_at") else {
         return false;
     };
-    let Ok(deleted_at) = chrono::DateTime::parse_from_rfc3339(deleted_at) else {
+    let Ok(deleted_at) = parse_sync_timestamp_utc(deleted_at, "deleted_at") else {
         return false;
     };
-    live_at > deleted_at
+    live_at >= deleted_at
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn parse_sync_timestamp_utc(
+    value: &str,
+    field_name: &str,
+) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(format!("{field_name} must be an ISO-8601 timestamp."));
+    }
+    if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(value) {
+        return Ok(parsed.with_timezone(&chrono::Utc));
+    }
+    if let Ok(parsed) = chrono::DateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f%:z") {
+        return Ok(parsed.with_timezone(&chrono::Utc));
+    }
+    if let Ok(parsed) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f") {
+        return Ok(parsed.and_utc());
+    }
+    let sqlite_utc = value
+        .strip_suffix(" UTC")
+        .or_else(|| value.strip_suffix(" utc"))
+        .unwrap_or(value);
+    chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(sqlite_utc, "%Y-%m-%d %H:%M:%S%.f"))
+        .map(|parsed| parsed.and_utc())
+        .map_err(|_| format!("{field_name} must be an ISO-8601 timestamp."))
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn format_sync_timestamp_utc(value: chrono::DateTime<chrono::Utc>) -> String {
+    use chrono::Timelike as _;
+
+    let normalized = value
+        .with_nanosecond(value.timestamp_subsec_micros() * 1_000)
+        .unwrap_or(value);
+    normalized.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn normalize_sync_timestamp_utc(value: &str, field_name: &str) -> Result<String, String> {
+    parse_sync_timestamp_utc(value, field_name).map(format_sync_timestamp_utc)
+}
+
+fn deserialize_sync_timestamp<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    normalize_sync_timestamp_utc(&value, "timestamp").map_err(serde::de::Error::custom)
+}
+
+fn deserialize_optional_sync_timestamp<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    value
+        .map(|inner| normalize_sync_timestamp_utc(&inner, "timestamp"))
+        .transpose()
+        .map_err(serde::de::Error::custom)
 }
 
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
@@ -590,7 +740,7 @@ fn validate_delete_tombstone_required_fields(
         ("created_at", tombstone.created_at.as_str()),
         ("updated_at", tombstone.updated_at.as_str()),
     ] {
-        chrono::DateTime::parse_from_rfc3339(value).map_err(|_| {
+        parse_sync_timestamp_utc(value, field_name).map_err(|_| {
             format!("Remote delete tombstone {field_name} must be an ISO-8601 timestamp.")
         })?;
     }
@@ -1068,7 +1218,9 @@ fn payload_bool_field(
     match payload.get(name) {
         None | Some(Value::Null) => Ok(default),
         Some(Value::Bool(value)) => Ok(*value),
-        Some(_) => Err(format!("{context} field must be a boolean or null: {name}.")),
+        Some(_) => Err(format!(
+            "{context} field must be a boolean or null: {name}."
+        )),
     }
 }
 
@@ -1079,11 +1231,10 @@ fn payload_optional_timestamp_string(
     context: &str,
 ) -> Result<Option<String>, String> {
     let value = payload_optional_string_field(payload, name, context)?;
-    if let Some(value) = &value {
-        chrono::DateTime::parse_from_rfc3339(&value.replace('Z', "+00:00"))
-            .map_err(|_| format!("{context} field must be an ISO-8601 timestamp: {name}."))?;
-    }
-    Ok(value)
+    value
+        .map(|value| normalize_sync_timestamp_utc(&value, name))
+        .transpose()
+        .map_err(|_| format!("{context} field must be an ISO-8601 timestamp: {name}."))
 }
 
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
@@ -1173,12 +1324,7 @@ fn mobile_chord_revision_payload(
             Some(revision.metadata.clone()),
             context,
         )?,
-        has_user_edits: payload_bool_field(
-            &revision.payload,
-            "has_user_edits",
-            false,
-            context,
-        )?,
+        has_user_edits: payload_bool_field(&revision.payload, "has_user_edits", false, context)?,
         created_at: payload_optional_timestamp_string(&revision.payload, "created_at", context)?
             .unwrap_or_else(|| revision.created_at.clone()),
         updated_at: payload_optional_timestamp_string(&revision.payload, "updated_at", context)?
@@ -1202,21 +1348,16 @@ fn mobile_analysis_artifact_payload(
             "estimated_reference_hz",
             context,
         )?,
-        tuning_offset_cents: payload_optional_float_field(
-            payload,
-            "tuning_offset_cents",
-            context,
-        )?,
+        tuning_offset_cents: payload_optional_float_field(payload, "tuning_offset_cents", context)?,
         tempo_bpm: payload_optional_float_field(payload, "tempo_bpm", context)?,
         timing: match payload.get("timing") {
             None | Some(Value::Null) => None,
-            Some(Value::Object(_)) => Some(payload_mapping_field(
-                payload,
-                &["timing"],
-                None,
-                context,
-            )?),
-            Some(_) => return Err("Analysis artifact field must be an object or null: timing.".to_string()),
+            Some(Value::Object(_)) => {
+                Some(payload_mapping_field(payload, &["timing"], None, context)?)
+            }
+            Some(_) => {
+                return Err("Analysis artifact field must be an object or null: timing.".to_string())
+            }
         },
         analysis_version: payload_optional_string_field(payload, "analysis_version", context)?
             .or_else(|| {
@@ -1229,7 +1370,6 @@ fn mobile_analysis_artifact_payload(
         created_at: payload_optional_timestamp_string(payload, "created_at", context)?,
     })
 }
-
 
 #[cfg(test)]
 mod mobile_backend_tests {
@@ -1485,11 +1625,12 @@ mod mobile_backend_tests {
         connection
             .execute(
                 "INSERT INTO sync_delete_tombstones (id, sync_group_id, project_id, target_type, target_id, author_device_id, deleted_at, prior_metadata_json, created_at, updated_at)
-                 VALUES ('tomb_deleted_mix', 'sync_group_mobile_test', ?1, 'artifact', 'art_deleted_mix', 'device_desktop_fixture', ?2, ?3, ?3, ?3)",
+                 VALUES ('tomb_deleted_mix', 'sync_group_mobile_test', ?1, 'artifact', 'art_deleted_mix', 'device_desktop_fixture', ?2, ?3, ?4, ?4)",
                 rusqlite::params![
                     project_id,
                     "2026-05-22T12:01:00.000Z",
                     json!({"type": "preview_mix", "stem_model": "htdemucs_ft"}).to_string(),
+                    "2026-05-22T12:01:00.000Z",
                 ],
             )
             .unwrap();
@@ -1854,10 +1995,8 @@ mod mobile_backend_tests {
             }
         });
         let analysis_bytes = serde_json::to_vec(&analysis_payload).unwrap();
-        let (analysis_sha256, analysis_size_bytes) = write_mobile_contract_file(
-            &analysis_path,
-            &analysis_bytes,
-        );
+        let (analysis_sha256, analysis_size_bytes) =
+            write_mobile_contract_file(&analysis_path, &analysis_bytes);
 
         insert_mobile_contract_project(&connection, &project_id, &source_sha256, &source_path);
         insert_mobile_contract_artifact(
@@ -2011,7 +2150,10 @@ mod mobile_backend_tests {
         assert_eq!(analysis["tempo_bpm"], 132.25);
         assert_eq!(analysis["timing"]["source"], "desktop");
         assert_eq!(project.sync_status, "local");
-        assert_eq!(project.sync_status_reason.as_deref(), Some("Synced from desktop."));
+        assert_eq!(
+            project.sync_status_reason.as_deref(),
+            Some("Synced from desktop.")
+        );
 
         drop(connection);
         let _ = std::fs::remove_dir_all(&root);
@@ -2245,11 +2387,9 @@ mod mobile_backend_tests {
 
         assert_eq!(artifact_id.len(), 32);
         assert_eq!(suffix.len(), 28);
-        assert!(
-            suffix
-                .bytes()
-                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
-        );
+        assert!(suffix
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')));
     }
 
     #[test]
@@ -2545,6 +2685,84 @@ mod mobile_backend_tests {
     }
 
     #[test]
+    fn mobile_sync_timestamps_accept_legacy_sqlite_utc_and_normalize_to_z() {
+        assert_eq!(
+            normalize_sync_timestamp_utc("2026-07-03T22:05:09.301876", "tombstone deleted_at")
+                .unwrap(),
+            "2026-07-03T22:05:09.301876Z"
+        );
+        assert_eq!(
+            normalize_sync_timestamp_utc("2026-05-22 12:34:56.123456", "tombstone deleted_at")
+                .unwrap(),
+            "2026-05-22T12:34:56.123456Z"
+        );
+        assert_eq!(
+            normalize_sync_timestamp_utc("2026-05-22 12:34:56", "tombstone deleted_at").unwrap(),
+            "2026-05-22T12:34:56Z"
+        );
+        assert_eq!(
+            normalize_sync_timestamp_utc("2026-05-22 12:34:56 UTC", "tombstone deleted_at")
+                .unwrap(),
+            "2026-05-22T12:34:56Z"
+        );
+        assert_eq!(
+            normalize_sync_timestamp_utc(
+                "2026-05-22 09:34:56.123456-03:00",
+                "tombstone deleted_at"
+            )
+            .unwrap(),
+            "2026-05-22T12:34:56.123456Z"
+        );
+    }
+
+    #[test]
+    fn mobile_sync_timestamp_deserialize_reexports_legacy_tombstones_as_rfc3339_z() {
+        let tombstone: SyncDeleteTombstoneSchema = serde_json::from_value(json!({
+            "tombstone_id": "tomb_legacy",
+            "sync_group_id": "sync_group_1",
+            "project_id": "proj_1",
+            "target_type": "artifact",
+            "target_id": "art_1",
+            "author_device_id": "device_peer_1",
+            "deleted_at": "2026-05-22 12:34:56.123456",
+            "prior_metadata": {},
+            "created_at": "2026-05-22 12:34:55.000000",
+            "updated_at": "2026-05-22 12:34:56.123456"
+        }))
+        .unwrap();
+
+        assert_eq!(tombstone.deleted_at, "2026-05-22T12:34:56.123456Z");
+        assert_eq!(tombstone.created_at, "2026-05-22T12:34:55Z");
+        assert_eq!(tombstone.updated_at, "2026-05-22T12:34:56.123456Z");
+        assert!(serde_json::to_value(tombstone)
+            .unwrap()
+            .get("deleted_at")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.ends_with('Z')));
+    }
+
+    #[test]
+    fn mobile_sync_timestamp_deserialize_rejects_invalid_values() {
+        let error = match serde_json::from_value::<SyncDeleteTombstoneSchema>(json!({
+            "tombstone_id": "tomb_bad_timestamp",
+            "sync_group_id": "sync_group_1",
+            "project_id": "proj_1",
+            "target_type": "artifact",
+            "target_id": "art_1",
+            "author_device_id": "device_peer_1",
+            "deleted_at": "not a timestamp",
+            "prior_metadata": {},
+            "created_at": "2026-05-22T12:34:55Z",
+            "updated_at": "2026-05-22T12:34:56Z"
+        })) {
+            Ok(_) => panic!("expected invalid timestamp to fail"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("ISO-8601 timestamp"));
+    }
+
+    #[test]
     fn mobile_apply_scope_filters_plan_inputs_before_planning() {
         let selected_hash = "dededededededededededededededededededededededededededededededede";
         let unselected_hash = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
@@ -2667,15 +2885,76 @@ mod mobile_backend_tests {
     }
 
     #[test]
-    fn mobile_stale_tombstone_filter_detects_newer_live_target_timestamp() {
-        assert!(sync_timestamp_is_newer(
+    fn mobile_stale_tombstone_filter_detects_newer_or_equal_live_target_timestamp() {
+        assert!(sync_timestamp_is_newer_or_equal(
             "2026-01-02T00:00:00.000Z",
             "2026-01-01T00:00:00.000Z",
         ));
-        assert!(!sync_timestamp_is_newer(
+        assert!(sync_timestamp_is_newer_or_equal(
+            "2026-01-02T00:00:00.000Z",
+            "2026-01-02T00:00:00.000Z",
+        ));
+        assert!(sync_timestamp_is_newer_or_equal(
+            "2026-01-02T00:00:00.000Z",
+            "2026-01-01 23:59:59.999999",
+        ));
+        assert!(sync_timestamp_is_newer_or_equal(
+            "2026-01-02 00:00:00.000001",
+            "2026-01-02T00:00:00Z",
+        ));
+        assert!(!sync_timestamp_is_newer_or_equal(
             "2026-01-01T00:00:00.000Z",
             "2026-01-02T00:00:00.000Z",
         ));
+    }
+
+    #[test]
+    fn mobile_stale_tombstone_plan_entry_is_noop_without_apply_action() {
+        let project_id = source_hash_to_project_id(
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        )
+        .unwrap();
+        let tombstone = mobile_test_tombstone(
+            "tomb_plan_stale_project",
+            &project_id,
+            "project",
+            &project_id,
+        );
+
+        let (item, actions, tombstone_is_effective) =
+            plan_delete_tombstone_branch(&tombstone, true);
+
+        assert_eq!(item.item_type, "project");
+        assert_eq!(item.item_id, project_id);
+        assert_eq!(item.project_id.as_deref(), Some(project_id.as_str()));
+        assert_eq!(item.status, "noop");
+        assert_eq!(item.action_type.as_deref(), Some(ACTION_NOOP));
+        assert_eq!(
+            item.reason.as_deref(),
+            Some(STALE_LIVE_TOMBSTONE_NOOP_REASON)
+        );
+        assert!(!tombstone_is_effective);
+        assert!(actions.is_empty());
+        assert!(!actions
+            .iter()
+            .any(|action| action.action_type == ACTION_APPLY_DELETE_TOMBSTONE));
+    }
+
+    #[test]
+    fn mobile_sync_timestamp_normalizes_high_precision_to_backend_microseconds() {
+        assert_eq!(
+            normalize_sync_timestamp_utc("2026-05-22T12:34:56.123456789Z", "tombstone deleted_at")
+                .unwrap(),
+            "2026-05-22T12:34:56.123456Z"
+        );
+        assert_eq!(
+            normalize_sync_timestamp_utc(
+                "2026-05-22T09:34:56.123456789-03:00",
+                "tombstone deleted_at"
+            )
+            .unwrap(),
+            "2026-05-22T12:34:56.123456Z"
+        );
     }
 
     #[test]
@@ -2790,8 +3069,29 @@ mod mobile_backend_tests {
         assert_eq!(payload.source_kind, "user-edited");
         assert_eq!(payload.metadata["runtime_device"], "cpu");
         assert!(payload.has_user_edits);
-        assert_eq!(payload.created_at, "2026-05-22T12:00:00.000Z");
-        assert_eq!(payload.updated_at, "2026-05-22T12:01:00.000Z");
+        assert_eq!(payload.created_at, "2026-05-22T12:00:00Z");
+        assert_eq!(payload.updated_at, "2026-05-22T12:01:00Z");
+    }
+
+    #[test]
+    fn mobile_payload_timestamp_fields_normalize_legacy_naive_iso_t_to_z() {
+        let payload = json!({
+            "created_at": "2026-07-03T22:05:09.301876",
+            "updated_at": "2026-07-03T22:06:09.301876"
+        });
+
+        assert_eq!(
+            payload_optional_timestamp_string(&payload, "created_at", "Chord revision")
+                .unwrap()
+                .as_deref(),
+            Some("2026-07-03T22:05:09.301876Z")
+        );
+        assert_eq!(
+            payload_optional_timestamp_string(&payload, "updated_at", "Chord revision")
+                .unwrap()
+                .as_deref(),
+            Some("2026-07-03T22:06:09.301876Z")
+        );
     }
 
     #[test]
@@ -2826,7 +3126,7 @@ mod mobile_backend_tests {
         assert_eq!(payload.tempo_bpm, Some(120.0));
         assert_eq!(payload.timing.unwrap()["source"], "beat-this");
         assert_eq!(payload.analysis_version, "v3");
-        assert_eq!(payload.created_at.as_deref(), Some("2026-05-22T12:00:00.000Z"));
+        assert_eq!(payload.created_at.as_deref(), Some("2026-05-22T12:00:00Z"));
     }
 
     #[test]

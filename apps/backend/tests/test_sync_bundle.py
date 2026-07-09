@@ -88,6 +88,12 @@ def test_export_sync_bundle_creates_sync_safe_layout(
     assert result.content_sha256s == sorted(content_hashes)
     assert metadata["kind"] == "tuneforge.sync_bundle"
     assert metadata["version"] == "1"
+    _assert_utc_z_timestamp(metadata["exported_at"])
+    _assert_utc_z_timestamp(manifest["exported_at"])
+    _assert_utc_z_timestamp(manifest["project"]["created_at"])
+    _assert_utc_z_timestamp(manifest["project"]["updated_at"])
+    for artifact in manifest["artifacts"]:
+        _assert_utc_z_timestamp(artifact["created_at"])
     assert metadata["project_manifests"] == [
         {
             "content_sha256": file_sha256(manifest_path),
@@ -250,6 +256,81 @@ def test_import_sync_bundle_stages_blobs_and_imports_through_reconciliation(
     assert Path(stem_artifact.path).exists()
     assert source_artifact.content_sha256 == fixture.artifact_hashes[fixture.source_artifact_id]
     assert stem_artifact.content_sha256 == fixture.artifact_hashes[fixture.stem_artifact_id]
+
+
+def test_import_sync_bundle_noops_equal_legacy_tombstone_for_live_local_target(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    bundle_root = tmp_path / "bundle-legacy-equal-tombstone"
+    live_artifact_id = "art_bundle_live_equal_tombstone"
+    live_at = datetime(2026, 1, 1, tzinfo=UTC)
+    with SessionLocal() as session:
+        _ensure_trusted_peer(session, "peer-bundle-import")
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        sync_group_id = get_or_create_local_identity(session).sync_group_id
+        export_sync_bundle(
+            session,
+            bundle_root=bundle_root,
+            project_ids=[fixture.project_id],
+            provider_device_id="peer-bundle-import",
+        )
+        live_path = tmp_path / "live-equal-tombstone.wav"
+        live_hash, live_size = _write_bytes(live_path, b"live equal tombstone")
+        session.add(
+            Artifact(
+                id=live_artifact_id,
+                project_id=fixture.project_id,
+                type="preview_mix",
+                format="wav",
+                path=str(live_path),
+                content_sha256=live_hash,
+                size_bytes=live_size,
+                generated_by="test",
+                can_delete=True,
+                can_regenerate=False,
+                metadata_json={},
+                created_at=live_at,
+            )
+        )
+        session.commit()
+
+        manifest_path = bundle_root / "projects" / f"{fixture.project_id}.json"
+        manifest = _read_json(manifest_path)
+        manifest["delete_tombstones"] = [
+            {
+                "tombstone_id": "tomb_bundle_legacy_equal",
+                "sync_group_id": sync_group_id,
+                "project_id": fixture.project_id,
+                "target_type": "artifact",
+                "target_id": live_artifact_id,
+                "author_device_id": "peer-bundle-import",
+                "deleted_at": "2026-01-01 00:00:00 UTC",
+                "prior_metadata": {},
+                "created_at": "2026-01-01T00:00:00",
+                "updated_at": "2026-01-01 00:00:00 UTC",
+            }
+        ]
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        metadata_path = bundle_root / "bundle.json"
+        metadata = _read_json(metadata_path)
+        metadata["project_manifests"][0]["content_sha256"] = file_sha256(manifest_path)
+        metadata["project_manifests"][0]["size_bytes"] = manifest_path.stat().st_size
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+        result = import_sync_bundle(session, bundle_root=bundle_root)
+        session.commit()
+
+        live_artifact = session.get(Artifact, live_artifact_id)
+
+    assert result.apply_result.summary.failed_actions == 0
+    assert not any(
+        entry.action.action_type == "apply_delete_tombstone"
+        and entry.action.item_id == live_artifact_id
+        for entry in result.apply_result.results
+    )
+    assert live_artifact is not None
+    assert Path(live_artifact.path).exists()
 
 
 def test_import_sync_bundle_allows_override_to_trusted_inventory_provider_with_full_hashes(
@@ -722,7 +803,7 @@ def test_sync_bundle_preserves_revisions_and_tombstones_round_trip(
             "content_sha256": revision_payload_sha256(
                 {"display_name": "Bundle Synced Fixture"}
             ),
-            "created_at": "2026-01-01T00:00:00",
+            "created_at": "2026-01-01T00:00:00Z",
             "entity_id": fixture.project_id,
             "entity_type": "project_metadata",
             "metadata": {"reason": "bundle-round-trip"},
@@ -732,21 +813,21 @@ def test_sync_bundle_preserves_revisions_and_tombstones_round_trip(
             "revision_type": "edit",
             "source_artifact_id": None,
             "state": CURRENT_REVISION_STATE,
-            "updated_at": "2026-01-01T00:00:00",
+            "updated_at": "2026-01-01T00:00:00Z",
         }
     ]
     assert exported_manifest["delete_tombstones"] == [
         {
             "author_device_id": "device-alpha",
-            "created_at": "2026-01-02T00:00:00",
-            "deleted_at": "2026-01-02T00:00:00",
+            "created_at": "2026-01-02T00:00:00Z",
+            "deleted_at": "2026-01-02T00:00:00Z",
             "prior_metadata": {"type": "preview_mix"},
             "project_id": fixture.project_id,
             "sync_group_id": sync_group_id,
             "target_id": "art_bundle_deleted_preview",
             "target_type": "artifact",
             "tombstone_id": "tomb_bundle_deleted_artifact",
-            "updated_at": "2026-01-02T00:00:00",
+            "updated_at": "2026-01-02T00:00:00Z",
         }
     ]
     assert result.apply_result.summary.failed_actions == 0
@@ -956,6 +1037,14 @@ def _read_json(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert isinstance(payload, dict)
     return payload
+
+
+def _assert_utc_z_timestamp(value: Any) -> None:
+    assert isinstance(value, str)
+    assert value.endswith("Z")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    assert parsed.tzinfo is not None
+    assert parsed.astimezone(UTC) == parsed
 
 
 def _bundle_files(bundle_root: Path) -> set[str]:

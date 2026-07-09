@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Artifact, Project, SyncDeleteTombstone, SyncEntityRevision
 from app.services.paths import project_root
+from app.services.sync_timestamps import sync_datetime_as_utc
 
 LOCAL_METADATA_PATH_KEYS = {
     "path",
@@ -230,13 +231,13 @@ def _live_target_supersedes_tombstone(
     if (
         tombstone.target_type != "project"
         and created_at is not None
-        and _as_utc(created_at) > tombstone_deleted_at
+        and _as_utc(created_at) >= tombstone_deleted_at
     ):
         return True
     target_updated_at = live_targets.get((tombstone.target_type, tombstone.target_id))
     if target_updated_at is None:
         return False
-    if _as_utc(target_updated_at) > tombstone_deleted_at:
+    if _as_utc(target_updated_at) >= tombstone_deleted_at:
         return True
     return _tombstone_is_inside_project_resurrection_window(
         tombstone_deleted_at,
@@ -276,9 +277,7 @@ def _tombstone_is_inside_project_resurrection_window(
 
 
 def _as_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
+    return sync_datetime_as_utc(value)
 
 
 def _project_relative_artifact_path(artifact: Artifact) -> str | None:

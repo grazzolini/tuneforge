@@ -38,6 +38,7 @@ from app.services.sync_revisions import (
     revision_payload_sha256,
     sanitize_revision_payload,
 )
+from app.services.sync_timestamps import parse_sync_datetime, sync_datetime_as_utc
 from app.services.sync_tombstones import apply_delete_tombstone
 from app.services.sync_trust import get_or_create_local_identity
 from app.utils.hashing import file_sha256
@@ -793,13 +794,13 @@ def _live_target_supersedes_tombstone(
     if (
         tombstone.target_type != "project"
         and project_created_at is not None
-        and _as_utc(project_created_at) > tombstone_deleted_at
+        and _as_utc(project_created_at) >= tombstone_deleted_at
     ):
         return True
     target_updated_at = live_targets.get((tombstone.target_type, tombstone.target_id))
     if target_updated_at is None:
         return False
-    if _as_utc(target_updated_at) > tombstone_deleted_at:
+    if _as_utc(target_updated_at) >= tombstone_deleted_at:
         return True
     return _tombstone_is_inside_project_resurrection_window(
         tombstone_deleted_at,
@@ -1754,7 +1755,7 @@ def _manifest_target_supersedes_tombstone(
 ) -> bool:
     target_type = _normalize_tombstone_target_type(tombstone.target_type)
     tombstone_deleted_at = _as_utc(tombstone.deleted_at)
-    if target_type != "project" and _as_utc(manifest.created_at) > tombstone_deleted_at:
+    if target_type != "project" and _as_utc(manifest.created_at) >= tombstone_deleted_at:
         return True
     target_updated_at = _manifest_target_updated_at(
         manifest,
@@ -1763,7 +1764,7 @@ def _manifest_target_supersedes_tombstone(
     )
     if target_updated_at is None:
         return False
-    if _as_utc(target_updated_at) > tombstone_deleted_at:
+    if _as_utc(target_updated_at) >= tombstone_deleted_at:
         return True
     return _tombstone_is_inside_project_resurrection_window(
         tombstone_deleted_at,
@@ -1830,9 +1831,7 @@ def _tombstone_is_inside_project_resurrection_window(
 
 
 def _as_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
+    return sync_datetime_as_utc(value)
 
 
 def _manifest_live_targets(manifest: SyncProjectManifest) -> set[tuple[str, str]]:
@@ -2037,9 +2036,33 @@ def _coerce_project_manifest(manifest: SyncProjectManifest | Mapping[str, Any] |
         )
     project_manifest = replace(
         project_manifest,
+        exported_at=sync_datetime_as_utc(project_manifest.exported_at),
+        project=replace(
+            project_manifest.project,
+            created_at=sync_datetime_as_utc(project_manifest.project.created_at),
+            updated_at=sync_datetime_as_utc(project_manifest.project.updated_at),
+        ),
         entity_revisions=[
-            _normalize_entity_revision_manifest_payload(revision)
+            _normalize_entity_revision_manifest(
+                _normalize_entity_revision_manifest_payload(revision)
+            )
             for revision in project_manifest.entity_revisions
+        ],
+        artifacts=[
+            replace(
+                artifact,
+                created_at=sync_datetime_as_utc(artifact.created_at),
+            )
+            for artifact in project_manifest.artifacts
+        ],
+        delete_tombstones=[
+            replace(
+                tombstone,
+                deleted_at=sync_datetime_as_utc(tombstone.deleted_at),
+                created_at=sync_datetime_as_utc(tombstone.created_at),
+                updated_at=sync_datetime_as_utc(tombstone.updated_at),
+            )
+            for tombstone in project_manifest.delete_tombstones
         ],
     )
     _validate_project_manifest_identity(project_manifest)
@@ -2130,6 +2153,16 @@ def _normalize_entity_revision_manifest_payload(
         revision,
         payload=safe_payload,
         content_sha256=revision_payload_sha256(safe_payload),
+    )
+
+
+def _normalize_entity_revision_manifest(
+    revision: SyncEntityRevisionManifest,
+) -> SyncEntityRevisionManifest:
+    return replace(
+        revision,
+        created_at=sync_datetime_as_utc(revision.created_at),
+        updated_at=sync_datetime_as_utc(revision.updated_at),
     )
 
 
@@ -2232,10 +2265,10 @@ def _payload_datetime(payload: Mapping[str, Any], name: str) -> datetime | None:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value
+        return sync_datetime_as_utc(value)
     if isinstance(value, str):
         try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parse_sync_datetime(value)
         except ValueError as exc:
             raise _invalid_manifest(f"Entity revision payload field must be an ISO datetime: {name}.") from exc
     raise _invalid_manifest(f"Entity revision payload field must be a datetime or null: {name}.")
@@ -2356,10 +2389,10 @@ def _optional_float(source: Mapping[str, Any] | object, name: str) -> float | No
 def _required_datetime(source: Mapping[str, Any] | object, name: str) -> datetime:
     value = _field(source, name)
     if isinstance(value, datetime):
-        return value
+        return sync_datetime_as_utc(value)
     if isinstance(value, str):
         try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parse_sync_datetime(value)
         except ValueError as exc:
             raise _invalid_manifest(f"Project manifest field must be an ISO datetime: {name}.") from exc
     raise _invalid_manifest(f"Project manifest field must be a datetime: {name}.")
@@ -2370,10 +2403,10 @@ def _optional_datetime(source: Mapping[str, Any] | object, name: str) -> datetim
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value
+        return sync_datetime_as_utc(value)
     if isinstance(value, str):
         try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parse_sync_datetime(value)
         except ValueError as exc:
             raise _invalid_manifest(f"Project manifest field must be an ISO datetime: {name}.") from exc
     raise _invalid_manifest(f"Project manifest field must be a datetime or null: {name}.")

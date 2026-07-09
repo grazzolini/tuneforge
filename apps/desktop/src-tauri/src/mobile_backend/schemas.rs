@@ -373,7 +373,9 @@ pub struct SyncMetadataProjectSchema {
     duration_seconds: Option<f64>,
     sample_rate: Option<i64>,
     channels: Option<i64>,
+    #[serde(deserialize_with = "deserialize_sync_timestamp")]
     created_at: String,
+    #[serde(deserialize_with = "deserialize_sync_timestamp")]
     updated_at: String,
 }
 
@@ -392,6 +394,7 @@ pub struct SyncMetadataArtifactSchema {
     can_regenerate: bool,
     cache_key: Option<String>,
     metadata: Value,
+    #[serde(deserialize_with = "deserialize_sync_timestamp")]
     created_at: String,
 }
 
@@ -404,10 +407,13 @@ pub struct SyncDeleteTombstoneSchema {
     target_type: String,
     target_id: String,
     author_device_id: String,
+    #[serde(deserialize_with = "deserialize_sync_timestamp")]
     deleted_at: String,
     #[serde(default)]
     prior_metadata: Value,
+    #[serde(deserialize_with = "deserialize_sync_timestamp")]
     created_at: String,
+    #[serde(deserialize_with = "deserialize_sync_timestamp")]
     updated_at: String,
 }
 
@@ -428,7 +434,9 @@ pub struct SyncProjectManifestProjectSchema {
     duration_seconds: Option<f64>,
     sample_rate: Option<i64>,
     channels: Option<i64>,
+    #[serde(deserialize_with = "deserialize_sync_timestamp")]
     created_at: String,
+    #[serde(deserialize_with = "deserialize_sync_timestamp")]
     updated_at: String,
 }
 
@@ -448,6 +456,7 @@ pub struct SyncProjectManifestArtifactSchema {
     cache_key: Option<String>,
     #[serde(default)]
     metadata: Value,
+    #[serde(deserialize_with = "deserialize_sync_timestamp")]
     created_at: String,
 }
 
@@ -468,7 +477,9 @@ pub struct SyncProjectManifestEntityRevisionSchema {
     metadata: Value,
     #[serde(default)]
     payload: Value,
+    #[serde(deserialize_with = "deserialize_sync_timestamp")]
     created_at: String,
+    #[serde(deserialize_with = "deserialize_sync_timestamp")]
     updated_at: String,
 }
 
@@ -476,6 +487,7 @@ pub struct SyncProjectManifestEntityRevisionSchema {
 #[serde(rename_all = "snake_case")]
 pub struct SyncProjectManifestSchema {
     schema_version: String,
+    #[serde(deserialize_with = "deserialize_sync_timestamp")]
     exported_at: String,
     project: SyncProjectManifestProjectSchema,
     #[serde(default)]
@@ -500,7 +512,9 @@ pub struct SyncProjectStatusProjectMetadataSchema {
     duration_seconds: Option<f64>,
     sample_rate: Option<i64>,
     channels: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_sync_timestamp")]
     created_at: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_sync_timestamp")]
     updated_at: Option<String>,
 }
 

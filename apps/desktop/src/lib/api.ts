@@ -201,8 +201,11 @@ export type SyncTransportRunStatus = {
   retry_guidance?: string | null;
   error?: string | null;
   project_results: SyncTransportProjectResult[];
+  project_results_complete?: boolean;
   manifest_errors: SyncTransportManifestError[];
+  manifest_errors_complete?: boolean;
   received_artifacts: SyncTransportTransferResult[];
+  received_artifacts_complete?: boolean;
   served_artifact_requests?: number | null;
   local_manifest_count?: number | null;
   remote_manifest_count?: number | null;
@@ -210,7 +213,9 @@ export type SyncTransportRunStatus = {
   applied_project_count?: number | null;
   deleted_project_count?: number | null;
   skipped_project_count?: number | null;
+  conflicted_project_count?: number | null;
   failed_project_count?: number | null;
+  manifest_export_error_count?: number | null;
   total_project_count?: number | null;
 } & SyncTransportDiagnosticValues;
 export type SyncTransportProjectResult = {
@@ -1176,12 +1181,13 @@ const SYNC_PROJECT_RESULT_PROBLEM_STATES = new Set([
   "error",
   "failed",
 ]);
+const SYNC_MANIFEST_EXPORT_ERROR_STATUS = "manifest_export_error";
 
 function projectResultKey(result: SyncTransportProjectResult) {
   return result.project_id.trim() || "unknown";
 }
 
-function isFinalSyncProjectResult(result: SyncTransportProjectResult) {
+export function isFinalSyncProjectResult(result: SyncTransportProjectResult) {
   if (result.is_final !== null && result.is_final !== undefined) {
     return result.is_final;
   }
@@ -1251,7 +1257,7 @@ export function mergeSyncProjectResults(
     }
     const result: SyncTransportProjectResult = {
       project_id: key,
-      status: "failed",
+      status: SYNC_MANIFEST_EXPORT_ERROR_STATUS,
       message: error.message,
       is_final: true,
     };
@@ -1263,6 +1269,252 @@ export function mergeSyncProjectResults(
   });
 
   return Array.from(merged.values());
+}
+
+export function countSyncProjectResultsByStatus(projectResults: SyncTransportProjectResult[]) {
+  return projectResults.reduce<Record<string, number>>((counts, result) => {
+    counts[result.status] = (counts[result.status] ?? 0) + 1;
+    return counts;
+  }, {});
+}
+
+export function syncMessageShouldYieldToCanonicalSummary(message: string | null | undefined) {
+  const normalized = message?.trim();
+  if (!normalized) {
+    return false;
+  }
+  return /\b(?:imported|applied|deleted|skipped|failed|conflicted|received|served|offered)\s+\d+\b/i.test(normalized) ||
+    /\b\d+\s+(?:local|remote)\s+manifest\(s\)\b/i.test(normalized) ||
+    /\b\d+\s+manifest export error\(s\)\b/i.test(normalized) ||
+    /\b(?:project|artifact|manifest) request\(s\)\b/i.test(normalized) ||
+    /\bmanifest exchange completed\b/i.test(normalized) ||
+    /\b\d+\s+project results?\b/i.test(normalized) ||
+    /\bsync completed\b/i.test(normalized);
+}
+
+type SyncCanonicalSummaryCounts = {
+  localManifestCount: number | null;
+  remoteManifestCount: number | null;
+  importedProjectCount: number | null;
+  appliedProjectCount: number | null;
+  deletedProjectCount: number | null;
+  skippedProjectCount: number | null;
+  conflictedProjectCount: number | null;
+  failedProjectCount: number | null;
+  receivedArtifactCount: number | null;
+  reusedArtifactCount: number | null;
+  failedTransferCount: number | null;
+  hasCompleteTransferEvidence: boolean;
+  manifestExportErrorCount: number | null;
+};
+
+export type SyncRunCanonicalCounts = SyncCanonicalSummaryCounts & {
+  projectResultsByStatus: Record<string, number> | null;
+  totalProjectCount: number | null;
+};
+
+type SyncRunCanonicalCountParts = {
+  localManifestCount: number | null;
+  remoteManifestCount: number | null;
+  importedProjectCount: number | null;
+  appliedProjectCount: number | null;
+  deletedProjectCount: number | null;
+  skippedProjectCount: number | null;
+  conflictedProjectCount: number | null;
+  failedProjectCount: number | null;
+  totalProjectCount: number | null;
+  manifestExportErrorCount: number | null;
+  projectResults: SyncTransportProjectResult[];
+  projectResultsComplete: boolean;
+  manifestErrors: SyncTransportManifestError[];
+  manifestErrorsComplete: boolean;
+  receivedArtifacts: SyncTransportTransferResult[];
+  receivedArtifactsComplete: boolean;
+  transferCounts?: Record<string, number> | null;
+};
+
+export function syncCanonicalSummaryMessage(counts: SyncCanonicalSummaryCounts) {
+  const count = (value: number | null) => value ?? "unknown";
+  return `Exchanged ${count(counts.localManifestCount)} local and ${count(counts.remoteManifestCount)} remote manifest(s); final project outcomes: imported ${count(counts.importedProjectCount)}, applied ${count(counts.appliedProjectCount)}, deleted ${count(counts.deletedProjectCount)}, skipped ${count(counts.skippedProjectCount)}, conflicted ${count(counts.conflictedProjectCount)}, failed ${count(counts.failedProjectCount)}; transfers: received ${count(counts.receivedArtifactCount)}, reused/already staged ${count(counts.reusedArtifactCount)}, failed ${count(counts.failedTransferCount)}; manifest export errors (separate from final project outcomes): ${count(counts.manifestExportErrorCount)}.`;
+}
+
+function syncTransferCountValue(transferCounts: Record<string, number> | null | undefined, key: string) {
+  const value = transferCounts?.[key];
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function syncTransferCount(
+  receivedArtifacts: SyncTransportTransferResult[],
+  receivedArtifactsComplete: boolean,
+  transferCounts: Record<string, number> | null | undefined,
+  keys: string[],
+  statuses: string[],
+) {
+  for (const key of keys) {
+    const count = syncTransferCountValue(transferCounts, key);
+    if (count !== null) {
+      return count;
+    }
+  }
+  return receivedArtifactsComplete
+    ? receivedArtifacts.filter((artifact) => statuses.includes(artifact.status)).length
+    : null;
+}
+
+function hasSyncTransferCount(
+  transferCounts: Record<string, number> | null | undefined,
+  keys: string[],
+) {
+  return keys.some((key) => syncTransferCountValue(transferCounts, key) !== null);
+}
+
+function syncRunCanonicalCountsFromParts(parts: SyncRunCanonicalCountParts): SyncRunCanonicalCounts | null {
+  const finalProjectResults = mergeSyncProjectResults(parts.projectResults).filter(
+    (result) =>
+      result.status !== SYNC_MANIFEST_EXPORT_ERROR_STATUS && isFinalSyncProjectResult(result),
+  );
+  const rowProjectResultsByStatus = countSyncProjectResultsByStatus(finalProjectResults);
+  const hasProjectResults = finalProjectResults.length > 0;
+  const projectStatusCount = (statusKey: string, fallback: number | null) =>
+    hasProjectResults
+      ? rowProjectResultsByStatus[statusKey] ?? 0
+      : fallback ?? (parts.projectResultsComplete ? 0 : null);
+  const rawProjectCounts = [
+    projectStatusCount("imported", parts.importedProjectCount),
+    projectStatusCount("applied", parts.appliedProjectCount),
+    projectStatusCount("deleted", parts.deletedProjectCount),
+    projectStatusCount("skipped", parts.skippedProjectCount),
+    projectStatusCount("conflicted", parts.conflictedProjectCount),
+    projectStatusCount("failed", parts.failedProjectCount),
+  ];
+  const knownProjectCountTotal = rawProjectCounts.reduce<number>(
+    (total, count) => total + (count ?? 0),
+    0,
+  );
+  const suppliedTotalProjectCount = hasProjectResults ? finalProjectResults.length : parts.totalProjectCount;
+  const omittedProjectCountsAreZero = !hasProjectResults && suppliedTotalProjectCount !== null &&
+    knownProjectCountTotal === suppliedTotalProjectCount;
+  const finalProjectCounts = rawProjectCounts.map((count) =>
+    count ?? (omittedProjectCountsAreZero ? 0 : null)
+  );
+  const [
+    importedProjectCount,
+    appliedProjectCount,
+    deletedProjectCount,
+    skippedProjectCount,
+    conflictedProjectCount,
+    failedProjectCount,
+  ] = finalProjectCounts;
+  const totalProjectCount = suppliedTotalProjectCount ?? (
+    finalProjectCounts.every((count): count is number => count !== null)
+      ? finalProjectCounts.reduce((total, count) => total + count, 0)
+      : null
+  );
+  const aggregateProjectResultsByStatus = [
+    ["imported", importedProjectCount],
+    ["applied", appliedProjectCount],
+    ["deleted", deletedProjectCount],
+    ["skipped", skippedProjectCount],
+    ["conflicted", conflictedProjectCount],
+    ["failed", failedProjectCount],
+  ] as const;
+  const projectResultsByStatus = hasProjectResults
+    ? rowProjectResultsByStatus
+    : finalProjectCounts.every((count) => count !== null)
+      ? Object.fromEntries(
+        aggregateProjectResultsByStatus.filter(([, count]) => typeof count === "number" && count > 0),
+      ) as Record<string, number>
+      : null;
+  const concreteManifestExportErrorCount = Math.max(
+    parts.manifestErrors.length,
+    parts.projectResults.filter((result) => result.status === SYNC_MANIFEST_EXPORT_ERROR_STATUS).length,
+  );
+  const manifestExportErrorCount =
+    concreteManifestExportErrorCount > 0
+      ? concreteManifestExportErrorCount
+      : parts.manifestExportErrorCount ?? (parts.manifestErrorsComplete ? 0 : null);
+  const hasSummaryContext = [
+    parts.localManifestCount,
+    parts.remoteManifestCount,
+    importedProjectCount,
+    appliedProjectCount,
+    deletedProjectCount,
+    skippedProjectCount,
+    conflictedProjectCount,
+    failedProjectCount,
+    manifestExportErrorCount,
+  ].some((value) => value !== null && value !== undefined) ||
+    parts.receivedArtifacts.length > 0 ||
+    Object.keys(parts.transferCounts ?? {}).length > 0;
+  if (!hasSummaryContext) {
+    return null;
+  }
+  return {
+    localManifestCount: parts.localManifestCount,
+    remoteManifestCount: parts.remoteManifestCount,
+    importedProjectCount,
+    appliedProjectCount,
+    deletedProjectCount,
+    skippedProjectCount,
+    conflictedProjectCount,
+    failedProjectCount,
+    receivedArtifactCount: syncTransferCount(
+      parts.receivedArtifacts,
+      parts.receivedArtifactsComplete,
+      parts.transferCounts,
+      ["received", "received_count", "received_artifact_count"],
+      ["received"],
+    ),
+    reusedArtifactCount: syncTransferCount(
+      parts.receivedArtifacts,
+      parts.receivedArtifactsComplete,
+      parts.transferCounts,
+      ["already_staged", "reused", "reused_artifact_count"],
+      ["already_staged", "reused"],
+    ),
+    failedTransferCount: syncTransferCount(
+      parts.receivedArtifacts,
+      parts.receivedArtifactsComplete,
+      parts.transferCounts,
+      ["failed", "failed_transfer_count"],
+      ["failed"],
+    ),
+    hasCompleteTransferEvidence: parts.receivedArtifactsComplete || [
+      ["received", "received_count", "received_artifact_count"],
+      ["already_staged", "reused", "reused_artifact_count"],
+      ["failed", "failed_transfer_count"],
+    ].every((keys) => hasSyncTransferCount(parts.transferCounts, keys)),
+    manifestExportErrorCount,
+    projectResultsByStatus,
+    totalProjectCount,
+  };
+}
+
+export function syncRunCanonicalCounts(status: SyncTransportRunStatus) {
+  return syncRunCanonicalCountsFromParts({
+    localManifestCount: status.local_manifest_count ?? null,
+    remoteManifestCount: status.remote_manifest_count ?? null,
+    importedProjectCount: status.imported_project_count ?? null,
+    appliedProjectCount: status.applied_project_count ?? null,
+    deletedProjectCount: status.deleted_project_count ?? null,
+    skippedProjectCount: status.skipped_project_count ?? null,
+    conflictedProjectCount: status.conflicted_project_count ?? null,
+    failedProjectCount: status.failed_project_count ?? null,
+    totalProjectCount: status.total_project_count ?? null,
+    manifestExportErrorCount: status.manifest_export_error_count ?? null,
+    projectResults: status.project_results,
+    projectResultsComplete: status.project_results_complete ?? status.project_results.length > 0,
+    manifestErrors: status.manifest_errors,
+    manifestErrorsComplete: status.manifest_errors_complete ?? status.manifest_errors.length > 0,
+    receivedArtifacts: status.received_artifacts,
+    receivedArtifactsComplete: status.received_artifacts_complete ?? status.received_artifacts.length > 0,
+    transferCounts: status.transfer_counts,
+  });
+}
+
+export function syncRunCanonicalSummaryMessage(status: SyncTransportRunStatus) {
+  const counts = syncRunCanonicalCounts(status);
+  return counts?.hasCompleteTransferEvidence ? syncCanonicalSummaryMessage(counts) : null;
 }
 
 function normalizeSyncProjectResult(
@@ -1455,56 +1707,103 @@ export function normalizeSyncRunStatus(value: unknown): SyncTransportRunStatus |
   const runStartedAt = dateTimeField(record, ["started_at", "startedAt"]);
   const runCompletedAt = dateTimeField(record, ["completed_at", "completedAt", "finished_at", "finishedAt"]);
   const phaseTimings = phaseTimingField(record);
-  const manifestErrors = recordArrayField(record, ["manifest_errors", "manifestErrors"])
-    .map((item) => normalizeSyncManifestError(item))
-    .filter((item): item is SyncTransportManifestError => item !== null);
-  const importedProjectResults = recordArrayField(record, [
+  const projectResultKeys = [
     "project_results",
     "projectResults",
     "imported_projects",
     "importedProjects",
     "projects",
     "results",
-  ])
+  ];
+  const projectResultsComplete = projectResultKeys.some((key) => Array.isArray(record[key]));
+  const manifestErrorKeys = ["manifest_errors", "manifestErrors"];
+  const manifestErrorsComplete = manifestErrorKeys.some((key) => Array.isArray(record[key]));
+  const explicitManifestErrors = recordArrayField(record, manifestErrorKeys)
+    .map((item) => normalizeSyncManifestError(item))
+    .filter((item): item is SyncTransportManifestError => item !== null);
+  const importedProjectResults = recordArrayField(record, projectResultKeys)
     .map((item) => normalizeSyncProjectResult(item))
     .filter((item): item is SyncTransportProjectResult => item !== null)
     .map((result) => ({
       ...result,
       run_id: result.run_id ?? runId,
       session_id: result.session_id ?? sessionId,
-      started_at: result.started_at ?? runStartedAt,
-      completed_at: result.completed_at ?? runCompletedAt,
     }));
-  const finalProjectResultKeys = new Set(
-    importedProjectResults
-      .filter((result) => isFinalSyncProjectResult(result))
-      .map((result) => projectResultKey(result)),
+  const legacyManifestErrors = importedProjectResults.flatMap((result) =>
+    result.status === SYNC_MANIFEST_EXPORT_ERROR_STATUS && result.message
+      ? [{ project_id: result.project_id, message: result.message }]
+      : [],
   );
-  const uncoveredManifestErrorCount = manifestErrors.filter(
-    (error) => !finalProjectResultKeys.has(error.project_id.trim() || "unknown"),
-  ).length;
-  const projectResults = mergeSyncProjectResults(importedProjectResults, manifestErrors);
-  const receivedArtifacts = recordArrayField(record, ["received_artifacts", "receivedArtifacts", "artifacts"])
+  const manifestErrors = Array.from(
+    new Map(
+      [...explicitManifestErrors, ...legacyManifestErrors].map((error) => [
+        `${error.project_id}\0${error.message}`,
+        error,
+      ]),
+    ).values(),
+  );
+  const projectResults = mergeSyncProjectResults(
+    importedProjectResults.filter((result) => result.status !== SYNC_MANIFEST_EXPORT_ERROR_STATUS),
+  );
+  const receivedArtifactKeys = ["received_artifacts", "receivedArtifacts", "artifacts"];
+  const receivedArtifactsComplete = receivedArtifactKeys.some((key) => Array.isArray(record[key]));
+  const receivedArtifacts = recordArrayField(record, receivedArtifactKeys)
     .map((item) => normalizeSyncTransferResult(item))
     .filter((item): item is SyncTransportTransferResult => item !== null)
     .map((item) => enrichSyncTransferResult(item, phaseTimings));
   const localManifestCount = numberField(record, ["local_manifest_count", "localManifestCount"]);
   const remoteManifestCount = numberField(record, ["remote_manifest_count", "remoteManifestCount"]);
-  const importedProjectCount = numberField(record, ["imported_project_count", "importedProjectCount"]);
-  const appliedProjectCount = numberField(record, ["applied_project_count", "appliedProjectCount"]);
-  const deletedProjectCount = numberField(record, ["deleted_project_count", "deletedProjectCount"]);
-  const skippedProjectCount = numberField(record, ["skipped_project_count", "skippedProjectCount"]);
-  const failedProjectCount = numberField(record, ["failed_project_count", "failedProjectCount"]);
-  const totalProjectCount = numberField(record, ["total_project_count", "totalProjectCount", "project_count", "projectCount"]);
+  const explicitImportedProjectCount = numberField(record, ["imported_project_count", "importedProjectCount"]);
+  const explicitAppliedProjectCount = numberField(record, ["applied_project_count", "appliedProjectCount"]);
+  const explicitDeletedProjectCount = numberField(record, ["deleted_project_count", "deletedProjectCount"]);
+  const explicitSkippedProjectCount = numberField(record, ["skipped_project_count", "skippedProjectCount"]);
+  const explicitConflictedProjectCount = numberField(record, [
+    "conflicted_project_count",
+    "conflictedProjectCount",
+  ]);
+  const explicitFailedProjectCount = numberField(record, ["failed_project_count", "failedProjectCount"]);
+  const explicitManifestExportErrorCount = numberField(record, [
+    "manifest_export_error_count",
+    "manifestExportErrorCount",
+    "manifest_error_count",
+    "manifestErrorCount",
+  ]);
   const transferCountRecord = recordField(record, ["transfer_counts", "transferCounts"]);
   const explicitRunMetricRecord = recordField(record, ["counters", "counts", "metrics"]);
   const runMetricRecords = [record, transferCountRecord, explicitRunMetricRecord];
-  const diagnosticValues = syncTransportDiagnosticValues(runMetricRecords);
   const transferCounts = {
     ...numericMetricsFromRecord(record),
     ...numericMetricsFromRecord(explicitRunMetricRecord),
     ...numericMetricsFromRecord(transferCountRecord),
   };
+  const canonicalCounts = syncRunCanonicalCountsFromParts({
+    localManifestCount,
+    remoteManifestCount,
+    importedProjectCount: explicitImportedProjectCount,
+    appliedProjectCount: explicitAppliedProjectCount,
+    deletedProjectCount: explicitDeletedProjectCount,
+    skippedProjectCount: explicitSkippedProjectCount,
+    conflictedProjectCount: explicitConflictedProjectCount,
+    failedProjectCount: explicitFailedProjectCount,
+    totalProjectCount: numberField(record, ["total_project_count", "totalProjectCount", "project_count", "projectCount"]),
+    manifestExportErrorCount: explicitManifestExportErrorCount,
+    projectResults,
+    projectResultsComplete,
+    manifestErrors,
+    manifestErrorsComplete,
+    receivedArtifacts,
+    receivedArtifactsComplete,
+    transferCounts,
+  });
+  const importedProjectCount = canonicalCounts?.importedProjectCount ?? null;
+  const appliedProjectCount = canonicalCounts?.appliedProjectCount ?? null;
+  const deletedProjectCount = canonicalCounts?.deletedProjectCount ?? null;
+  const skippedProjectCount = canonicalCounts?.skippedProjectCount ?? null;
+  const conflictedProjectCount = canonicalCounts?.conflictedProjectCount ?? null;
+  const failedProjectCount = canonicalCounts?.failedProjectCount ?? null;
+  const manifestExportErrorCount = canonicalCounts?.manifestExportErrorCount ?? null;
+  const totalProjectCount = canonicalCounts?.totalProjectCount ?? null;
+  const diagnosticValues = syncTransportDiagnosticValues(runMetricRecords);
   const lifecycleEvents = lifecycleEventsField(record);
   const lastLifecycleEvent = lastLifecycleEventField(record, lifecycleEvents);
   const lifecycleInterruptionFields = syncLifecycleInterruptionFields(
@@ -1609,31 +1908,35 @@ export function normalizeSyncRunStatus(value: unknown): SyncTransportRunStatus |
     "credits_revoked",
     "creditsRevoked",
   ]);
-  const hasProjectProblems = projectResults.some((result) =>
-    SYNC_PROJECT_RESULT_PROBLEM_STATES.has(result.status),
-  );
+  const hasProjectProblems = (canonicalCounts?.failedProjectCount ?? 0) > 0 ||
+    (canonicalCounts?.conflictedProjectCount ?? 0) > 0 ||
+    Object.entries(canonicalCounts?.projectResultsByStatus ?? {}).some(
+      ([projectStatus, count]) => count > 0 && SYNC_PROJECT_RESULT_PROBLEM_STATES.has(projectStatus),
+    );
   const explicitError = firstStringField([record], ["error", "last_error", "lastError"]);
   const explicitStatus = firstStringField([record], ["status", "state"]);
+  const hasManifestErrors = (manifestExportErrorCount ?? 0) > 0;
   let status = normalizeTransportStatusToken(
-    explicitStatus ??
-      (uncoveredManifestErrorCount > 0 || hasProjectProblems ? "completed_with_errors" : "completed"),
+    explicitStatus ?? (hasManifestErrors || hasProjectProblems ? "completed_with_errors" : "completed"),
   );
+  if (status === "completed" && (hasManifestErrors || hasProjectProblems)) {
+    status = "completed_with_errors";
+  }
   if (
     status === "completed_with_errors" &&
     !explicitError &&
     !hasProjectProblems &&
-    uncoveredManifestErrorCount === 0
+    !hasManifestErrors
   ) {
     status = "completed";
   }
-  const summary =
-    localManifestCount !== null ||
-    remoteManifestCount !== null ||
-    importedProjectCount !== null ||
-    skippedProjectCount !== null ||
-    failedProjectCount !== null
-      ? `Exchanged ${localManifestCount ?? 0} local and ${remoteManifestCount ?? 0} remote manifest(s); imported ${importedProjectCount ?? 0} project(s), skipped ${skippedProjectCount ?? 0} project(s), failed ${failedProjectCount ?? 0} project(s), received ${receivedArtifacts.length} artifact(s).`
-      : null;
+  const summary = canonicalCounts?.hasCompleteTransferEvidence
+    ? syncCanonicalSummaryMessage(canonicalCounts)
+    : null;
+  const explicitMessage = firstStringField([record], ["message", "status_message", "statusMessage"]);
+  const message = explicitMessage && !(summary && syncMessageShouldYieldToCanonicalSummary(explicitMessage))
+    ? explicitMessage
+    : summary ?? explicitMessage;
   return {
     run_id: runId,
     session_id: sessionId,
@@ -1650,7 +1953,7 @@ export function normalizeSyncRunStatus(value: unknown): SyncTransportRunStatus |
       .filter((transport): transport is string => transport !== null),
     nearby_peers: nearbyPeersField(record),
     status,
-    message: firstStringField([record], ["message", "status_message", "statusMessage"]) ?? summary,
+    message,
     started_at: runStartedAt,
     completed_at: runCompletedAt,
     duration_seconds: durationSeconds,
@@ -1672,8 +1975,11 @@ export function normalizeSyncRunStatus(value: unknown): SyncTransportRunStatus |
     ...lifecycleInterruptionFields,
     error: explicitError,
     project_results: projectResults,
+    project_results_complete: projectResultsComplete,
     manifest_errors: manifestErrors,
+    manifest_errors_complete: manifestErrorsComplete,
     received_artifacts: receivedArtifacts,
+    received_artifacts_complete: receivedArtifactsComplete,
     served_artifact_requests: numberField(record, ["served_artifact_requests", "servedArtifactRequests"]),
     local_manifest_count: localManifestCount,
     remote_manifest_count: remoteManifestCount,
@@ -1681,7 +1987,9 @@ export function normalizeSyncRunStatus(value: unknown): SyncTransportRunStatus |
     applied_project_count: appliedProjectCount,
     deleted_project_count: deletedProjectCount,
     skipped_project_count: skippedProjectCount,
+    conflicted_project_count: conflictedProjectCount,
     failed_project_count: failedProjectCount,
+    manifest_export_error_count: manifestExportErrorCount,
     total_project_count: totalProjectCount,
     ...diagnosticValues,
   };

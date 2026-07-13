@@ -370,8 +370,11 @@ pub struct SyncTransportSyncResult {
     pub project_results: Vec<SyncTransportProjectResult>,
     pub imported_projects: Vec<SyncTransportProjectResult>,
     pub imported_project_count: usize,
+    pub applied_project_count: usize,
+    pub deleted_project_count: usize,
     pub skipped_project_count: usize,
     pub failed_project_count: usize,
+    pub conflicted_project_count: usize,
     pub received_artifacts: Vec<SyncTransportTransferResult>,
     pub transfer_counts: SyncTransportTransferCounts,
     pub served_artifact_requests: u64,
@@ -2693,11 +2696,16 @@ mod desktop {
                 run_id,
                 peer_device_id: payload.peer_device_id,
                 remote_device_id: session.remote_device_id,
-                status: sync_result_status(&manifest_errors, import_counts.failed),
+                status: sync_result_status(
+                    &manifest_errors,
+                    import_counts.failed,
+                    import_counts.conflicted,
+                ),
                 message: sync_result_message(
                     local_manifest_count,
                     remote_offer.project_manifests.len(),
                     &transfer_counts,
+                    manifest_errors.len(),
                     import_counts,
                 ),
                 selected_transport,
@@ -2710,8 +2718,11 @@ mod desktop {
                 project_results,
                 imported_projects,
                 imported_project_count: import_counts.imported,
+                applied_project_count: import_counts.applied,
+                deleted_project_count: import_counts.deleted,
                 skipped_project_count: import_counts.skipped,
                 failed_project_count: import_counts.failed,
+                conflicted_project_count: import_counts.conflicted,
                 received_artifacts,
                 transfer_counts,
                 served_artifact_requests,
@@ -2948,8 +2959,11 @@ mod desktop {
             project_results: Vec::new(),
             imported_projects: Vec::new(),
             imported_project_count: 0,
+            applied_project_count: 0,
+            deleted_project_count: 0,
             skipped_project_count: 0,
             failed_project_count: 0,
+            conflicted_project_count: 0,
             received_artifacts: Vec::new(),
             transfer_counts: SyncTransportTransferCounts::default(),
             served_artifact_requests: 0,
@@ -3135,8 +3149,11 @@ mod desktop {
             project_results: Vec::new(),
             imported_projects: Vec::new(),
             imported_project_count: 0,
+            applied_project_count: 0,
+            deleted_project_count: 0,
             skipped_project_count: 0,
             failed_project_count: 0,
+            conflicted_project_count: 0,
             received_artifacts,
             transfer_counts,
             served_artifact_requests,
@@ -3197,8 +3214,11 @@ mod desktop {
             project_results: Vec::new(),
             imported_projects: Vec::new(),
             imported_project_count: 0,
+            applied_project_count: 0,
+            deleted_project_count: 0,
             skipped_project_count: 0,
             failed_project_count: 0,
+            conflicted_project_count: 0,
             received_artifacts,
             transfer_counts,
             served_artifact_requests,
@@ -3327,8 +3347,11 @@ mod desktop {
             project_results: Vec::new(),
             imported_projects: Vec::new(),
             imported_project_count: 0,
+            applied_project_count: 0,
+            deleted_project_count: 0,
             skipped_project_count: 0,
             failed_project_count: 0,
+            conflicted_project_count: 0,
             received_artifacts,
             transfer_counts,
             served_artifact_requests,
@@ -5197,15 +5220,6 @@ mod desktop {
         let imported_projects = finish_staged_remote_import(prepared_remote_import, &mut timings);
         let import_counts = import_outcome_counts(&imported_projects);
 
-        let message = format!(
-            "Sync session with {} completed: served {} artifact request(s), imported {} project(s), skipped {} project(s), failed {} project(s), offered {} local manifest(s).",
-            session.remote_device_id,
-            served_artifact_requests,
-            import_counts.imported,
-            import_counts.skipped,
-            import_counts.failed,
-            local_manifest_count
-        );
         let manifest_errors =
             sync_manifest_errors(&local_offer.manifest_errors, &remote_offer.manifest_errors);
         let completed_at = Utc::now();
@@ -5227,11 +5241,16 @@ mod desktop {
             run_id,
             peer_device_id: session.remote_device_id.clone(),
             remote_device_id: session.remote_device_id,
-            status: sync_result_status(&manifest_errors, import_counts.failed),
+            status: sync_result_status(
+                &manifest_errors,
+                import_counts.failed,
+                import_counts.conflicted,
+            ),
             message: sync_result_message(
                 local_manifest_count,
                 remote_offer.project_manifests.len(),
                 &transfer_counts,
+                manifest_errors.len(),
                 import_counts,
             ),
             selected_transport,
@@ -5244,8 +5263,11 @@ mod desktop {
             project_results,
             imported_projects,
             imported_project_count: import_counts.imported,
+            applied_project_count: import_counts.applied,
+            deleted_project_count: import_counts.deleted,
             skipped_project_count: import_counts.skipped,
             failed_project_count: import_counts.failed,
+            conflicted_project_count: import_counts.conflicted,
             received_artifacts,
             transfer_counts,
             served_artifact_requests,
@@ -5270,7 +5292,7 @@ mod desktop {
         };
 
         Ok(IncomingSessionResult {
-            message,
+            message: sync_result.message.clone(),
             sync_result,
         })
     }
@@ -6661,8 +6683,11 @@ mod desktop {
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     struct ImportOutcomeCounts {
         imported: usize,
+        applied: usize,
+        deleted: usize,
         skipped: usize,
         failed: usize,
+        conflicted: usize,
     }
 
     fn stage_remote_manifest_artifacts(
@@ -8769,7 +8794,10 @@ mod desktop {
         for result in results {
             match result.status.as_str() {
                 "imported" => counts.imported += 1,
-                "failed" | "conflicted" => counts.failed += 1,
+                "applied" => counts.applied += 1,
+                "deleted" => counts.deleted += 1,
+                "failed" => counts.failed += 1,
+                "conflicted" => counts.conflicted += 1,
                 _ => counts.skipped += 1,
             }
         }
@@ -8779,8 +8807,9 @@ mod desktop {
     fn sync_result_status(
         manifest_errors: &[SyncTransportManifestError],
         failed_project_count: usize,
+        conflicted_project_count: usize,
     ) -> String {
-        if failed_project_count > 0 || !manifest_errors.is_empty() {
+        if failed_project_count > 0 || conflicted_project_count > 0 || !manifest_errors.is_empty() {
             "completed_with_errors"
         } else {
             "completed"
@@ -8812,16 +8841,21 @@ mod desktop {
         local_manifest_count: usize,
         remote_manifest_count: usize,
         transfer_counts: &SyncTransportTransferCounts,
+        manifest_error_count: usize,
         import_counts: ImportOutcomeCounts,
     ) -> String {
         format!(
-            "Exchanged {local_manifest_count} local and {remote_manifest_count} remote manifest(s); imported {} project(s), skipped {} project(s), failed {} project(s), received {} artifact(s), reused {} staged artifact(s), failed {} transfer(s).",
+            "Exchanged {local_manifest_count} local and {remote_manifest_count} remote manifest(s); final project outcomes: imported {}, applied {}, deleted {}, skipped {}, conflicted {}, failed {}; transfers: received {}, reused/already staged {}, failed {}; manifest export errors (separate from final project outcomes): {}.",
             import_counts.imported,
+            import_counts.applied,
+            import_counts.deleted,
             import_counts.skipped,
+            import_counts.conflicted,
             import_counts.failed,
             transfer_counts.received,
             transfer_counts.already_staged,
-            transfer_counts.failed
+            transfer_counts.failed,
+            manifest_error_count
         )
     }
 
@@ -17541,7 +17575,7 @@ mod desktop {
             let import_counts = import_outcome_counts(&project_results);
             assert_eq!(import_counts.failed, 4);
             assert_eq!(
-                sync_result_status(&[], import_counts.failed),
+                sync_result_status(&[], import_counts.failed, import_counts.conflicted),
                 "completed_with_errors"
             );
         }
@@ -20101,8 +20135,11 @@ mod desktop {
                 counts,
                 ImportOutcomeCounts {
                     imported: 1,
+                    applied: 0,
+                    deleted: 0,
                     skipped: 1,
-                    failed: 2,
+                    failed: 1,
+                    conflicted: 1,
                 }
             );
         }
@@ -20218,11 +20255,33 @@ mod desktop {
         }
 
         #[test]
-        fn sync_result_summary_distinguishes_import_skips_and_failures() {
+        fn sync_result_summary_reports_no_project_changes_without_errors() {
+            let counts = ImportOutcomeCounts::default();
+            assert_eq!(
+                sync_result_status(&[], counts.failed, counts.conflicted),
+                "completed"
+            );
+            assert_eq!(
+                sync_result_message(
+                    0,
+                    0,
+                    &SyncTransportTransferCounts::default(),
+                    0,
+                    counts,
+                ),
+                "Exchanged 0 local and 0 remote manifest(s); final project outcomes: imported 0, applied 0, deleted 0, skipped 0, conflicted 0, failed 0; transfers: received 0, reused/already staged 0, failed 0; manifest export errors (separate from final project outcomes): 0."
+            );
+        }
+
+        #[test]
+        fn sync_result_summary_distinguishes_failed_and_conflicted_projects() {
             let counts = ImportOutcomeCounts {
                 imported: 2,
+                applied: 1,
+                deleted: 1,
                 skipped: 1,
                 failed: 1,
+                conflicted: 1,
             };
             let transfer_counts = SyncTransportTransferCounts {
                 requested: 8,
@@ -20234,12 +20293,37 @@ mod desktop {
             };
 
             assert_eq!(
-                sync_result_status(&[], counts.failed),
+                sync_result_status(&[], counts.failed, counts.conflicted),
                 "completed_with_errors"
             );
-            let message = sync_result_message(4, 5, &transfer_counts, counts);
-            let expected = "Exchanged 4 local and 5 remote manifest(s); imported 2 project(s), skipped 1 project(s), failed 1 project(s), received 6 artifact(s), reused 1 staged artifact(s), failed 1 transfer(s).";
+            let message = sync_result_message(4, 5, &transfer_counts, 0, counts);
+            let expected = "Exchanged 4 local and 5 remote manifest(s); final project outcomes: imported 2, applied 1, deleted 1, skipped 1, conflicted 1, failed 1; transfers: received 6, reused/already staged 1, failed 1; manifest export errors (separate from final project outcomes): 0.";
             assert_eq!(message, expected);
+        }
+
+        #[test]
+        fn sync_result_summary_reports_manifest_errors_without_project_failures() {
+            let counts = ImportOutcomeCounts::default();
+            let transfer_counts = SyncTransportTransferCounts::default();
+            let manifest_errors = vec![
+                SyncTransportManifestError {
+                    project_id: "proj_local".to_string(),
+                    message: "Local manifest export failed: local".to_string(),
+                },
+                SyncTransportManifestError {
+                    project_id: "proj_peer".to_string(),
+                    message: "Peer manifest export failed: peer".to_string(),
+                },
+            ];
+
+            assert_eq!(
+                sync_result_status(&manifest_errors, counts.failed, counts.conflicted),
+                "completed_with_errors"
+            );
+            assert_eq!(
+                sync_result_message(1, 1, &transfer_counts, manifest_errors.len(), counts),
+                "Exchanged 1 local and 1 remote manifest(s); final project outcomes: imported 0, applied 0, deleted 0, skipped 0, conflicted 0, failed 0; transfers: received 0, reused/already staged 0, failed 0; manifest export errors (separate from final project outcomes): 2."
+            );
         }
 
         #[test]
@@ -20423,8 +20507,11 @@ mod desktop {
                 project_results: Vec::new(),
                 imported_projects: Vec::new(),
                 imported_project_count: 0,
+                applied_project_count: 0,
+                deleted_project_count: 0,
                 skipped_project_count: 0,
                 failed_project_count: 0,
+                conflicted_project_count: 0,
                 received_artifacts: Vec::new(),
                 transfer_counts: SyncTransportTransferCounts::default(),
                 served_artifact_requests: 1,
@@ -20497,6 +20584,7 @@ mod desktop {
             );
             assert_eq!(value.get("totalReceivedBytes"), Some(&json!(30)));
             assert_eq!(value.get("totalServedBytes"), Some(&json!(70)));
+            assert_eq!(value.get("conflictedProjectCount"), Some(&json!(0)));
             assert_eq!(value.get("timeToFirstArtifactMs"), Some(&json!(250)));
             assert_eq!(value.get("throughputBytesPerSecond"), Some(&json!(50.0)));
             assert_eq!(value.get("scratchPeakBytes"), Some(&json!(0)));
@@ -20555,8 +20643,11 @@ mod desktop {
                 project_results: Vec::new(),
                 imported_projects: Vec::new(),
                 imported_project_count: 0,
+                applied_project_count: 0,
+                deleted_project_count: 0,
                 skipped_project_count: 0,
                 failed_project_count: 0,
+                conflicted_project_count: 0,
                 received_artifacts: Vec::new(),
                 transfer_counts: SyncTransportTransferCounts::default(),
                 served_artifact_requests: 0,
@@ -20645,7 +20736,7 @@ mod desktop {
                 errors[1].message,
                 "Peer manifest export failed: peer failure"
             );
-            assert_eq!(sync_result_status(&errors, 0), "completed_with_errors");
+            assert_eq!(sync_result_status(&errors, 0, 0), "completed_with_errors");
         }
 
         #[test]

@@ -4,7 +4,12 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { QRCodeSVG } from "qrcode.react";
 import {
   api,
+  countSyncProjectResultsByStatus,
+  isFinalSyncProjectResult,
   mergeSyncProjectResults,
+  syncCanonicalSummaryMessage,
+  syncRunCanonicalCounts,
+  syncRunCanonicalSummaryMessage,
   type SyncPairingPayloadSchema,
   type SyncNearbyPeer,
   type SyncNearbyPeerTrustStatus,
@@ -42,6 +47,7 @@ const PROJECT_MUTATION_QUERY_KEYS = [
   ["jobs"],
 ] as const;
 const SYNC_PROJECT_MUTATION_STATUSES = new Set(["applied", "conflicted", "deleted", "imported"]);
+const SYNC_MANIFEST_EXPORT_ERROR_STATUS = "manifest_export_error";
 const SYNC_EVIDENCE_FILE_EXTENSIONS = "wav|mp3|flac|m4a|aac|ogg|aiff|aif|json|sqlite|db|txt|csv|log|zip|png|jpe?g";
 const SYNC_EVIDENCE_QUOTED_PATH_PATTERN = new RegExp(
   `(^|[\\s(])(["'])((?:file:\\/\\/(?:localhost)?(?:[A-Za-z]:[\\\\/]|\\/)?|[A-Za-z]:[\\\\/]|\\/)[^"'\\r\\n]*)\\2`,
@@ -58,6 +64,29 @@ const SYNC_EVIDENCE_FILENAME_PATTERN = new RegExp(
   `\\b[^/\\\\\\s]+\\.(?:${SYNC_EVIDENCE_FILE_EXTENSIONS})\\b`,
   "gi",
 );
+const SYNC_EVIDENCE_RAW_ID_TOKEN_PATTERN =
+  /\b(?:device|proj|art|session|run|project|artifact|sync)_[A-Za-z0-9][A-Za-z0-9._:-]*\b/gi;
+const SYNC_EVIDENCE_SAFE_PHASES = new Set([
+  "artifact_cleanup", "artifact_staging", "artifact_staging_check", "artifact_transfer", "initiator_import",
+  "local_manifest_export", "manifest_exchange", "peer_authentication", "peer_connect", "planning",
+  "reconciliation_apply", "reconciliation_apply_project", "reconciliation_plan", "reconciliation_staging",
+  "responder_import", "serve_artifact_requests",
+]);
+const SYNC_EVIDENCE_PHASE_ALIASES = new Map([
+  ["network_receive", "artifact_transfer"], ["staging_post", "artifact_staging"],
+  ["staging_apply_plan", "reconciliation_staging"], ["backend_staging", "artifact_staging"],
+]);
+const SYNC_EVIDENCE_PROBLEM_STATUSES = new Set(["failed", "completed_with_errors", "conflicted", "error", "errored"]);
+const SYNC_EVIDENCE_SAFE_RAW_TOKENS = new Set([
+  ...SYNC_EVIDENCE_SAFE_PHASES,
+  ...Array.from(SYNC_EVIDENCE_PROBLEM_STATUSES).flatMap((status) =>
+    [`run_status_${status}`, `project_status_${status}`, `artifact_status_${status}`]),
+  "failed_project_count", "conflicted_project_count", "manifest_export_error_count",
+  "project_failed_count", "project_counter_failed_count", "run_outcome",
+]);
+const SYNC_EVIDENCE_HASH_TOKEN_PATTERN =
+  /(?<![A-Za-z0-9])(?:sha(?:-?256)?|hash|checksum)[_:.-][A-Za-z0-9][A-Za-z0-9._:-]*\b|(?<![A-Za-z0-9])[a-f0-9]{32,}(?![A-Za-z0-9])/gi;
+const SYNC_EVIDENCE_SAFE_HASH_TOKENS = new Set(["checksum_mismatch", "hash_retry_pending", "sha256_mismatch"]);
 const SYNC_NOW_FAILURE_ENDPOINT_TOKEN_PATTERN = /^(?:\d{1,3}\.){3}\d{1,3}:\d{1,5}$/;
 
 type PairingOutputKind = "offer" | "response";
@@ -104,6 +133,12 @@ function statusLabel(value: string | null | undefined) {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function syncEvidencePhase(value: string | null | undefined) {
+  const rawPhase = value?.trim().toLowerCase() ?? null;
+  const phase = rawPhase ? SYNC_EVIDENCE_PHASE_ALIASES.get(rawPhase) ?? rawPhase : null;
+  return phase && SYNC_EVIDENCE_SAFE_PHASES.has(phase) ? phase : phase ? "phase_redacted" : null;
 }
 
 function statusClassName(value: string | null | undefined) {
@@ -278,9 +313,38 @@ function syncStatusText(status: SyncTransportRunStatus | null | undefined, peers
   const peer = status.peer_device_id ? peersById.get(status.peer_device_id) : null;
   const peerName = peer ? peerLabel(peer) : status.peer_device_id ?? "peer";
   if (status.error) {
-    return `${statusLabel(status.status)} for ${peerName}: ${status.error}`;
+    return `${statusLabel(status.status)} for ${peerName}: ${
+      syncVisibleNativeDetailText(status.error, "details redacted.") ?? "details redacted."
+    }`;
   }
-  return status.message ?? `${statusLabel(status.status)} for ${peerName}.`;
+  const canonicalSummary = syncRunCanonicalSummaryMessage(status);
+  const explicitMessage = status.message?.trim() || null;
+  if (["failed", "error", "errored"].includes(status.status.trim().toLowerCase()) && explicitMessage) {
+    return syncNowFailureStatusMessage(explicitMessage);
+  }
+  const canonicalCounts = syncRunCanonicalCounts(status);
+  const explicitMessageIsCanonical = Boolean(
+    explicitMessage && canonicalCounts && explicitMessage === syncCanonicalSummaryMessage(canonicalCounts),
+  );
+  const noProjectChanges = canonicalCounts &&
+    canonicalCounts.importedProjectCount === 0 &&
+    canonicalCounts.appliedProjectCount === 0 &&
+    canonicalCounts.deletedProjectCount === 0 &&
+    typeof canonicalCounts.skippedProjectCount === "number" &&
+    canonicalCounts.conflictedProjectCount === 0 &&
+    canonicalCounts.failedProjectCount === 0;
+  if (canonicalSummary && noProjectChanges) {
+    return `No project changes. ${canonicalSummary}`;
+  }
+  if (canonicalSummary) {
+    return canonicalSummary;
+  }
+  if (explicitMessage && (explicitMessageIsCanonical || !syncNowFailureDetailIsSensitive(explicitMessage))) {
+    return explicitMessage;
+  }
+  return explicitMessage
+    ? `${statusLabel(status.status)} for ${peerName}: details redacted.`
+    : `${statusLabel(status.status)} for ${peerName}.`;
 }
 
 function retryableLifecycleEvent(source: SyncRetrySource | null | undefined) {
@@ -332,7 +396,37 @@ function retryableInterruptionFromSource(
 }
 
 function retryableInterruptionText(interruption: RetryableSyncInterruption) {
-  return interruption.guidance?.trim() || `${statusLabel(interruption.code)}. Retry when peer is reachable.`;
+  return syncVisibleNativeDetailText(interruption.guidance, `${statusLabel(interruption.code)}. Retry when peer is reachable.`) ||
+    `${statusLabel(interruption.code)}. Retry when peer is reachable.`;
+}
+
+const SYNC_SAFE_LIBRARY_PREFLIGHT_ISSUES = new Set([
+  "missing source hash project",
+  "missing source hash projects",
+  "invalid source hash project",
+  "invalid source hash projects",
+  "duplicate source hash project",
+  "duplicate source hash projects",
+  "noncanonical project id",
+  "noncanonical project ids",
+]);
+
+const SYNC_SAFE_TRANSPORT_PHASES = new Set([
+  "artifact request/transfer",
+  "local manifest export",
+  "manifest exchange",
+  "reconciliation plan",
+  "reconciliation staging",
+  "serve artifact requests",
+]);
+
+function syncTransportFailurePrefixIsKnownSafe(prefix: string) {
+  const normalized = prefix.trim().toLowerCase();
+  if (normalized === "sync transport failed" || normalized === "sync transport stalled") {
+    return true;
+  }
+  const match = normalized.match(/^sync transport (.+) (failed|stalled)$/);
+  return Boolean(match && SYNC_SAFE_TRANSPORT_PHASES.has(match[1] ?? ""));
 }
 
 function syncTransportFailurePrefix(message: string) {
@@ -341,15 +435,18 @@ function syncTransportFailurePrefix(message: string) {
     return null;
   }
   const prefix = message.slice(0, separatorIndex).trim();
-  return prefix.startsWith("Sync transport ") &&
-    (prefix.endsWith(" failed") || prefix.endsWith(" stalled"))
-    ? prefix
-    : null;
+  return syncTransportFailurePrefixIsKnownSafe(prefix) ? prefix : null;
 }
 
-function syncNowFailureTokenLooksLikeHash(token: string) {
-  const value = token.replace(/^sha256[:-]/i, "");
-  return value.length >= 32 && /^[a-f0-9]+$/i.test(value);
+function syncEvidencePatternMatches(pattern: RegExp, value: string) {
+  pattern.lastIndex = 0;
+  const matches = pattern.test(value);
+  pattern.lastIndex = 0;
+  return matches;
+}
+
+function syncEvidenceHasUnsafeToken(value: string, pattern: RegExp, safeTokens: Set<string>) {
+  return (value.match(pattern) ?? []).some((token) => !safeTokens.has(token.toLowerCase()));
 }
 
 function syncNowFailureTokenIsSensitive(token: string) {
@@ -359,12 +456,8 @@ function syncNowFailureTokenIsSensitive(token: string) {
     token.includes("\\"),
     SYNC_NOW_FAILURE_ENDPOINT_TOKEN_PATTERN.test(token),
     lower.startsWith("dev_"),
-    lower.startsWith("device_"),
-    lower.startsWith("proj_"),
-    lower.startsWith("art_"),
-    lower.startsWith("sync_"),
-    lower.startsWith("sha256"),
-    syncNowFailureTokenLooksLikeHash(token),
+    syncEvidenceHasUnsafeToken(token, SYNC_EVIDENCE_RAW_ID_TOKEN_PATTERN, SYNC_EVIDENCE_SAFE_RAW_TOKENS),
+    syncEvidenceHasUnsafeToken(token, SYNC_EVIDENCE_HASH_TOKEN_PATTERN, SYNC_EVIDENCE_SAFE_HASH_TOKENS),
   ].some(Boolean);
 }
 
@@ -391,6 +484,15 @@ function syncNowFailureDetailIsSensitive(message: string) {
   ) {
     return true;
   }
+  if (syncEvidencePatternMatches(SYNC_EVIDENCE_FILENAME_PATTERN, detail)) {
+    return true;
+  }
+  if (
+    syncEvidenceHasUnsafeToken(detail, SYNC_EVIDENCE_RAW_ID_TOKEN_PATTERN, SYNC_EVIDENCE_SAFE_RAW_TOKENS) ||
+    syncEvidenceHasUnsafeToken(detail, SYNC_EVIDENCE_HASH_TOKEN_PATTERN, SYNC_EVIDENCE_SAFE_HASH_TOKENS)
+  ) {
+    return true;
+  }
   return detail
     .split(/\s+/)
     .map((token) => token.replace(/^["'()[\]{}<>,;]+|["'()[\]{}<>,;.:]+$/g, ""))
@@ -401,6 +503,37 @@ function syncNowFailureDetailIsSensitive(message: string) {
 function syncNowFailureRedactedSummary(message: string) {
   const prefix = syncTransportFailurePrefix(message);
   return prefix ? `${prefix}: details redacted.` : "Sync transport failed: details redacted.";
+}
+
+function syncLibraryPreflightDetailIsKnownSafe(detail: string) {
+  if (detail === "Library preflight failed.") {
+    return true;
+  }
+  const prefix = "Library preflight failed:";
+  if (!detail.startsWith(prefix) || !detail.endsWith(".")) {
+    return false;
+  }
+  const issues = detail.slice(prefix.length, -1).split(",");
+  return issues.length > 0 && issues.every((issue) => {
+    const match = issue.trim().match(/^\d+ (.+)$/);
+    return Boolean(match && SYNC_SAFE_LIBRARY_PREFLIGHT_ISSUES.has(match[1]?.toLowerCase() ?? ""));
+  });
+}
+
+function syncTransportRedactedDetailIsKnownSafe(detail: string) {
+  const prefix = syncTransportFailurePrefix(detail);
+  return Boolean(prefix && detail.slice(prefix.length + 1).trim().toLowerCase() === "details redacted.");
+}
+
+function syncNativeDetailIsKnownSafe(message: string) {
+  const detail = message.trim();
+  if (!detail || syncNowFailureDetailIsSensitive(detail)) {
+    return false;
+  }
+  return detail.toLowerCase() === "artifact_transfer: timed out reading from iroh sync stream." ||
+    /^sync completed with no project changes\.?$/i.test(detail) ||
+    syncLibraryPreflightDetailIsKnownSafe(detail) ||
+    syncTransportRedactedDetailIsKnownSafe(detail);
 }
 
 function syncNowFailureStatusMessage(message: string) {
@@ -414,10 +547,20 @@ function syncNowFailureStatusMessage(message: string) {
   if (!detail) {
     return "Sync now failed.";
   }
-  const safeDetail = syncNowFailureDetailIsSensitive(detail)
-    ? syncNowFailureRedactedSummary(detail)
-    : detail;
+  const safeDetail = syncNowFailureDetailIsSensitive(detail) ? syncNowFailureRedactedSummary(detail) : detail;
   return `Sync now failed: ${safeDetail}`;
+}
+
+function syncVisibleNativeDetailText(message: string | null | undefined, redactedText = "details redacted.") {
+  const detail = message?.trim();
+  if (!detail) {
+    return null;
+  }
+  if (syncNowFailureDetailIsSensitive(detail)) {
+    const redactedFailure = syncNowFailureRedactedSummary(detail);
+    return syncTransportFailurePrefix(detail) ? redactedFailure : redactedText;
+  }
+  return detail;
 }
 
 function syncNowFailureText(error: unknown) {
@@ -441,10 +584,7 @@ function syncListenerLastErrorText(message: string | null | undefined) {
   if (!detail) {
     return null;
   }
-  if (syncNowFailureDetailIsSensitive(detail)) {
-    return "Sync listener error: details redacted.";
-  }
-  return detail;
+  return syncVisibleNativeDetailText(detail, "Sync listener error: details redacted.");
 }
 
 function pluralize(count: number, singular: string, plural = `${singular}s`) {
@@ -598,21 +738,19 @@ function syncResultKey(status: SyncTransportRunStatus | null | undefined) {
     appliedProjects: status.applied_project_count,
     deletedProjects: status.deleted_project_count,
     skippedProjects: status.skipped_project_count,
+    conflictedProjects: status.conflicted_project_count,
     failedProjects: status.failed_project_count,
+    manifestExportErrors: status.manifest_export_error_count,
   });
 }
 
-function positiveSyncCount(value: number | null | undefined) {
+function positiveSyncCount(value: number | null | undefined): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
 function syncEvidenceStatusIndicatesProblem(status: string | null | undefined) {
   const normalized = status?.trim().toLowerCase();
-  return normalized === "failed" ||
-    normalized === "completed_with_errors" ||
-    normalized === "conflicted" ||
-    normalized === "error" ||
-    normalized === "errored";
+  return SYNC_EVIDENCE_PROBLEM_STATUSES.has(normalized ?? "");
 }
 
 function syncEvidenceValidation(
@@ -621,13 +759,33 @@ function syncEvidenceValidation(
   artifactStatusCounts: Record<string, number>,
 ) {
   const issues = new Set<string>();
+  const finalProjectResults = mergedProjectResults.filter(
+    (result) => result.status !== SYNC_MANIFEST_EXPORT_ERROR_STATUS && isFinalSyncProjectResult(result),
+  );
+  const projectResultCountByStatus = countSyncProjectResultsByStatus(finalProjectResults);
+  const hasFinalProjectResults = finalProjectResults.length > 0;
+  const failedProjectCount = hasFinalProjectResults
+    ? projectResultCountByStatus.failed ?? 0
+    : status.failed_project_count;
+  const conflictedProjectCount = hasFinalProjectResults
+    ? projectResultCountByStatus.conflicted ?? 0
+    : status.conflicted_project_count;
   if (syncEvidenceStatusIndicatesProblem(status.status)) {
     issues.add(`run_status_${status.status}`);
   }
-  if (positiveSyncCount(status.failed_project_count)) {
+  if (positiveSyncCount(failedProjectCount)) {
     issues.add("failed_project_count");
   }
-  for (const result of mergedProjectResults) {
+  if (positiveSyncCount(conflictedProjectCount)) {
+    issues.add("conflicted_project_count");
+  }
+  if (status.manifest_errors.length > 0) {
+    issues.add("manifest_export_error_count");
+  }
+  if (positiveSyncCount(status.manifest_export_error_count)) {
+    issues.add("manifest_export_error_count");
+  }
+  for (const result of finalProjectResults) {
     if (syncEvidenceStatusIndicatesProblem(result.status)) {
       issues.add(`project_status_${result.status}`);
     }
@@ -642,6 +800,11 @@ function syncEvidenceValidation(
     if (positiveSyncCount(count) && syncEvidenceStatusIndicatesProblem(artifactStatus)) {
       issues.add(`artifact_status_${artifactStatus}`);
     }
+  }
+  const receivedCount = syncRunMetricValue(status, "received");
+  if (status.received_artifacts_complete === true && receivedCount !== null &&
+    (artifactStatusCounts.received ?? 0) !== receivedCount) {
+    issues.add("received_artifact_count_mismatch");
   }
   return {
     ok: issues.size === 0,
@@ -736,32 +899,33 @@ function syncRunDurationSeconds(status: SyncTransportRunStatus) {
 }
 
 function syncRunProjectCounterText(status: SyncTransportRunStatus) {
-  const counters: string[] = [];
-  if (typeof status.imported_project_count === "number") {
-    counters.push(`${status.imported_project_count} imported`);
-  }
-  if (typeof status.applied_project_count === "number") {
-    counters.push(`${status.applied_project_count} applied`);
-  }
-  if (typeof status.deleted_project_count === "number") {
-    counters.push(`${status.deleted_project_count} deleted`);
-  }
-  if (typeof status.skipped_project_count === "number") {
-    counters.push(`${status.skipped_project_count} skipped`);
-  }
-  if (typeof status.failed_project_count === "number") {
-    counters.push(`${status.failed_project_count} failed`);
-  }
-  return counters.length ? counters.join(", ") : null;
-}
-
-function syncRunTotalTransferBytes(status: SyncTransportRunStatus) {
-  const receivedBytes = typeof status.total_received_bytes === "number" ? status.total_received_bytes : null;
-  const servedBytes = typeof status.total_served_bytes === "number" ? status.total_served_bytes : null;
-  if (receivedBytes === null && servedBytes === null) {
+  const counts = syncRunCanonicalCounts(status);
+  if (!counts) {
     return null;
   }
-  return (receivedBytes ?? 0) + (servedBytes ?? 0);
+  const counters: string[] = [];
+  if (typeof counts.importedProjectCount === "number") {
+    counters.push(`${counts.importedProjectCount} imported`);
+  }
+  if (typeof counts.appliedProjectCount === "number") {
+    counters.push(`${counts.appliedProjectCount} applied`);
+  }
+  if (typeof counts.deletedProjectCount === "number") {
+    counters.push(`${counts.deletedProjectCount} deleted`);
+  }
+  if (typeof counts.skippedProjectCount === "number") {
+    counters.push(`${counts.skippedProjectCount} skipped`);
+  }
+  if (typeof counts.conflictedProjectCount === "number") {
+    counters.push(`${counts.conflictedProjectCount} conflicted`);
+  }
+  if (typeof counts.failedProjectCount === "number") {
+    counters.push(`${counts.failedProjectCount} failed`);
+  }
+  if (typeof counts.manifestExportErrorCount === "number") {
+    counters.push(pluralize(counts.manifestExportErrorCount, "manifest export error"));
+  }
+  return counters.length ? counters.join(", ") : null;
 }
 
 function syncRunPeakText(label: string, bytes: number | null | undefined) {
@@ -953,15 +1117,16 @@ function syncRunSlowestPhaseText(status: SyncTransportRunStatus) {
     }
     const key = timing.phase.trim().toLowerCase();
     const current = phaseDurations.get(key);
+    const safePhase = syncEvidencePhase(timing.phase);
     phaseDurations.set(key, {
-      label: statusLabel(timing.phase),
+      label: safePhase === "phase_redacted" ? "Sync Phase" : statusLabel(safePhase),
       durationMs: (current?.durationMs ?? 0) + timing.duration_ms,
     });
   });
   const slowest = Array.from(phaseDurations.values())
     .sort((left, right) => right.durationMs - left.durationMs)[0];
   const formatted = formatDurationMs(slowest?.durationMs);
-  return slowest && formatted ? `Slowest ${slowest.label} ${formatted}` : null;
+  return slowest && formatted ? `Largest aggregate phase ${slowest.label} ${formatted}` : null;
 }
 
 function syncRunSummaryText(status: SyncTransportRunStatus | null | undefined) {
@@ -987,7 +1152,7 @@ function syncRunSummaryText(status: SyncTransportRunStatus | null | undefined) {
     parts.push(`Transport ${selectedTransport}`);
   }
   if (status.fallback_reason) {
-    parts.push(`Fallback: ${status.fallback_reason}`);
+    parts.push(`Fallback: ${syncVisibleNativeDetailText(status.fallback_reason, "details redacted.")}`);
   }
   if (status.fallback_code) {
     parts.push(`Fallback code ${status.fallback_code}`);
@@ -1000,13 +1165,22 @@ function syncRunSummaryText(status: SyncTransportRunStatus | null | undefined) {
   if (timeToFirstArtifact) {
     parts.push(`TTFA ${timeToFirstArtifact}`);
   }
-  const totalTransferBytes = formatByteCount(syncRunTotalTransferBytes(status));
-  if (totalTransferBytes) {
-    parts.push(`${totalTransferBytes} total`);
-  }
-  const throughput = formatThroughput(status.throughput_bytes_per_second);
-  if (throughput) {
-    parts.push(throughput);
+  const profile = syncRunEvidenceProfile(status);
+  if (profile.role === "no_op") {
+    parts.push("No transfers");
+  } else {
+    const received = formatByteCount(profile.totalReceivedBytes);
+    const sent = formatByteCount(profile.totalServedBytes);
+    const receiveRate = formatThroughput(profile.receiveThroughput);
+    const sendRate = formatThroughput(profile.sendThroughput);
+    if (profile.receiverActive && received) parts.push(`${received} received`);
+    if (profile.senderActive && sent) parts.push(`${sent} sent`);
+    if (profile.receiverActive && receiveRate) parts.push(`Receive ${receiveRate}`);
+    if (profile.senderActive && sendRate) parts.push(`Send ${sendRate}`);
+    if (!receiveRate && !sendRate && profile.aggregateThroughput !== null) {
+      const combinedRate = formatThroughput(profile.aggregateThroughput);
+      if (combinedRate) parts.push(`Combined ${combinedRate}`);
+    }
   }
   const slowestPhase = syncRunSlowestPhaseText(status);
   if (slowestPhase) {
@@ -1099,16 +1273,24 @@ type SyncEvidenceRedactionContext = {
   tokenReplacements: Array<[string, string]>;
 };
 
-function createEvidenceLabelMap(values: Array<string | null | undefined>, prefix: string) {
+function createEvidenceLabelMap(
+  values: Array<string | null | undefined>,
+  prefix: string,
+  separator = "_",
+  options: { preserveOrder?: boolean } = {},
+) {
   const labels = new Map<string, string>();
-  values
-    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-    .sort((left, right) => left.localeCompare(right))
-    .forEach((value) => {
-      if (!labels.has(value)) {
-        labels.set(value, `${prefix}_${labels.size + 1}`);
-      }
-    });
+  const usableValues = values.filter(
+    (value): value is string => typeof value === "string" && value.trim().length > 0,
+  );
+  const orderedValues = options.preserveOrder
+    ? usableValues
+    : [...usableValues].sort((left, right) => left.localeCompare(right));
+  orderedValues.forEach((value) => {
+    if (!labels.has(value)) {
+      labels.set(value, `${prefix}${separator}${labels.size + 1}`);
+    }
+  });
   return labels;
 }
 
@@ -1117,6 +1299,7 @@ function createSyncEvidenceRedactionContext(
   extraPeerDeviceIds: Array<string | null | undefined> = [],
   extraRunIds: Array<string | null | undefined> = [],
 ): SyncEvidenceRedactionContext {
+  const mergedProjectResults = mergeSyncProjectResults(status.project_results, status.manifest_errors);
   const peerLabels = createEvidenceLabelMap([
     status.peer_device_id,
     status.remote_device_id,
@@ -1126,21 +1309,20 @@ function createSyncEvidenceRedactionContext(
     ...extraPeerDeviceIds,
   ], "peer");
   const projectLabels = createEvidenceLabelMap([
-    ...status.project_results.map((result) => result.project_id),
-    ...status.manifest_errors.map((error) => error.project_id),
+    ...mergedProjectResults.map((result) => result.project_id),
     ...(status.phase_timings ?? []).map((timing) => timing.project_id),
-  ], "project");
+  ], "Project", " ", { preserveOrder: true });
   const artifactLabels = createEvidenceLabelMap([
     ...status.received_artifacts.map((artifact) => artifact.artifact_id),
     ...(status.phase_timings ?? []).map((timing) => timing.artifact_id),
-  ], "artifact");
+  ], "Artifact", " ", { preserveOrder: true });
   const runLabels = createEvidenceLabelMap([
     status.run_id,
     status.session_id,
     status.last_lifecycle_event?.run_id,
     ...(status.lifecycle_events ?? []).map((event) => event.run_id),
     ...extraRunIds,
-  ], "run");
+  ], "Run", " ");
   const tokenReplacements = [
     ...Array.from(peerLabels.entries()),
     ...Array.from(projectLabels.entries()),
@@ -1183,7 +1365,24 @@ function redactSyncEvidenceText(
     (_match, prefix: string) => `${prefix}[redacted_path]`,
   );
   redacted = redacted.replace(SYNC_EVIDENCE_FILENAME_PATTERN, "[redacted_filename]");
+  redacted = redacted.replace(SYNC_EVIDENCE_RAW_ID_TOKEN_PATTERN, (token) =>
+    SYNC_EVIDENCE_SAFE_RAW_TOKENS.has(token.toLowerCase()) ? token : "[redacted_id]");
+  redacted = redacted.replace(SYNC_EVIDENCE_HASH_TOKEN_PATTERN, (token) =>
+    SYNC_EVIDENCE_SAFE_HASH_TOKENS.has(token.toLowerCase()) ? token : "[redacted_hash]");
   return redacted;
+}
+
+function redactSyncEvidenceNativeDetailText(
+  value: string | null | undefined,
+  context: SyncEvidenceRedactionContext,
+) {
+  const detail = value?.trim();
+  if (!detail) {
+    return null;
+  }
+  return syncNativeDetailIsKnownSafe(detail)
+    ? redactSyncEvidenceText(detail, context)
+    : "details redacted.";
 }
 
 function syncEvidenceLifecycleEvent(
@@ -1196,10 +1395,10 @@ function syncEvidenceLifecycleEvent(
   return {
     kind: event.kind,
     occurredAt: event.occurred_at ?? null,
-    message: redactSyncEvidenceText(event.message, context),
+    message: redactSyncEvidenceNativeDetailText(event.message, context),
     retryable: event.retryable,
     interruptionCode: event.interruption_code ?? null,
-    retryGuidance: redactSyncEvidenceText(event.retry_guidance, context),
+    retryGuidance: redactSyncEvidenceNativeDetailText(event.retry_guidance, context),
     peer: event.peer_device_id ? context.peerLabels.get(event.peer_device_id) ?? "peer_1" : null,
     hasRunId: Boolean(event.run_id),
   };
@@ -1252,7 +1451,7 @@ function sumSyncPhaseDurations(status: SyncTransportRunStatus, matcher: RegExp) 
   return total > 0 ? total : null;
 }
 
-function syncRunTotalEvidenceBytes(status: SyncTransportRunStatus) {
+function syncRunTotalEvidenceBytes(status: SyncTransportRunStatus, receivedCount: number | null) {
   const directReceived = typeof status.total_received_bytes === "number" &&
     Number.isFinite(status.total_received_bytes)
     ? status.total_received_bytes
@@ -1260,12 +1459,14 @@ function syncRunTotalEvidenceBytes(status: SyncTransportRunStatus) {
   if (directReceived !== null) {
     return directReceived;
   }
-  const artifactBytes = status.received_artifacts.reduce((total, artifact) => (
-    typeof artifact.size_bytes === "number" && Number.isFinite(artifact.size_bytes)
-      ? total + artifact.size_bytes
-      : total
-  ), 0);
-  return artifactBytes > 0 ? artifactBytes : null;
+  const received = status.received_artifacts.filter((artifact) => artifact.status === "received");
+  const rowsComplete = receivedCount !== null
+    ? received.length === receivedCount : status.received_artifacts_complete === true;
+  if (!rowsComplete || received.some((artifact) =>
+    typeof artifact.size_bytes !== "number" || !Number.isFinite(artifact.size_bytes))) {
+    return null;
+  }
+  return received.reduce((total, artifact) => total + (artifact.size_bytes ?? 0), 0);
 }
 
 function throughputFromEvidenceBytes(bytes: number | null, durationMs: number | null) {
@@ -1275,41 +1476,213 @@ function throughputFromEvidenceBytes(bytes: number | null, durationMs: number | 
   return bytes / (durationMs / 1000);
 }
 
-function syncRunProjectApplyDurationMs(status: SyncTransportRunStatus) {
-  const directApply = sumSyncPhaseDurations(status, /reconciliation|apply/i);
-  if (directApply !== null) {
-    return directApply;
+type SyncApplyTimingEvidence = {
+  wallClockMs: number | null;
+  aggregateMs: number | null;
+  semantics: string;
+};
+
+type SyncApplyTimingEntry = {
+  startedAt: number | null;
+  completedAt: number | null;
+  durationMs: number | null;
+};
+
+function syncEvidenceTimestampMs(value: string | null | undefined) {
+  if (!value) {
+    return null;
   }
-  const projectDuration = status.project_results.reduce((durationMs, result) => {
-    if (!["applied", "deleted", "imported"].includes(result.status)) {
-      return durationMs;
+  const timestamp = new Date(normalizeApiDateTime(value)).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function syncRunWallClockDurationMs(status: SyncTransportRunStatus) {
+  const durationSeconds = syncRunDurationSeconds(status);
+  return durationSeconds === null ? null : Math.round(durationSeconds * 1000);
+}
+
+function isSyncApplyPhaseName(phase: string | null | undefined) {
+  const normalized = phase?.trim().toLowerCase().replace(/[\s-]+/g, "_") ?? "";
+  if (!normalized || /(^|_)(plan|planning|stage|staging)($|_)/.test(normalized)) {
+    return false;
+  }
+  return normalized === "apply" ||
+    normalized === "reconciliation_apply" ||
+    normalized.startsWith("apply_") ||
+    normalized.startsWith("reconciliation_apply_") ||
+    normalized.endsWith("_apply");
+}
+
+function syncRunApplyTimingEvidence(
+  status: SyncTransportRunStatus,
+  mergedProjectResults: SyncTransportProjectResult[],
+): SyncApplyTimingEvidence {
+  const phaseApplyEntries = (status.phase_timings ?? [])
+    .filter((timing) => isSyncApplyPhaseName(timing.phase))
+    .map<SyncApplyTimingEntry>((timing) => ({
+      startedAt: syncEvidenceTimestampMs(timing.started_at),
+      completedAt: syncEvidenceTimestampMs(timing.completed_at),
+      durationMs: typeof timing.duration_ms === "number" &&
+          Number.isFinite(timing.duration_ms) &&
+          timing.duration_ms >= 0
+        ? timing.duration_ms
+        : null,
+    }));
+  const projectApplyEntries = mergedProjectResults
+    .filter((result) => ["applied", "deleted", "imported"].includes(result.status))
+    .map<SyncApplyTimingEntry>((result) => ({
+      startedAt: syncEvidenceTimestampMs(result.started_at),
+      completedAt: syncEvidenceTimestampMs(result.completed_at),
+      durationMs: typeof result.duration_ms === "number" &&
+          Number.isFinite(result.duration_ms) &&
+          result.duration_ms >= 0
+        ? result.duration_ms
+        : null,
+    }));
+  const entries = phaseApplyEntries.length ? phaseApplyEntries : projectApplyEntries;
+  const aggregateDurations = entries.map((entry) => {
+    const intervalDuration = entry.startedAt !== null && entry.completedAt !== null &&
+        entry.completedAt >= entry.startedAt
+      ? entry.completedAt - entry.startedAt
+      : null;
+    if (entry.durationMs !== null && intervalDuration !== null &&
+        Math.abs(entry.durationMs - intervalDuration) > 1) {
+      return null;
     }
-    if (typeof result.duration_ms === "number" && Number.isFinite(result.duration_ms)) {
-      return durationMs + result.duration_ms;
+    if (entry.durationMs !== null && intervalDuration !== null) {
+      return Math.max(entry.durationMs, intervalDuration);
     }
-    if (result.started_at && result.completed_at) {
-      const startedAt = new Date(normalizeApiDateTime(result.started_at)).getTime();
-      const completedAt = new Date(normalizeApiDateTime(result.completed_at)).getTime();
-      if (Number.isFinite(startedAt) && Number.isFinite(completedAt) && completedAt >= startedAt) {
-        return durationMs + (completedAt - startedAt);
+    if (entry.durationMs !== null) {
+      return entry.durationMs;
+    }
+    return intervalDuration;
+  });
+  const aggregateMs = entries.length > 0 && aggregateDurations.every((duration) => duration !== null)
+    ? aggregateDurations.reduce((total, duration) => total + (duration ?? 0), 0)
+    : null;
+  let runStartedAt = syncEvidenceTimestampMs(status.started_at);
+  let runCompletedAt = syncEvidenceTimestampMs(status.completed_at);
+  const runDurationMs = syncRunWallClockDurationMs(status);
+  if (runDurationMs !== null) {
+    if (runStartedAt !== null && runCompletedAt === null) {
+      runCompletedAt = runStartedAt + runDurationMs;
+    } else if (runStartedAt === null && runCompletedAt !== null) {
+      runStartedAt = runCompletedAt - runDurationMs;
+    }
+  }
+  const intervalCandidates = entries
+    .map((entry) => {
+      if (entry.startedAt === null || entry.completedAt === null || entry.completedAt < entry.startedAt) {
+        return null;
       }
+      if (entry.durationMs !== null && Math.abs(entry.durationMs - (entry.completedAt - entry.startedAt)) > 1) {
+        return null;
+      }
+      return [entry.startedAt, entry.completedAt] as const;
+    });
+  if (entries.length > 0 && intervalCandidates.every(
+    (interval): interval is readonly [number, number] => interval !== null,
+  )) {
+    const intervals = intervalCandidates.slice().sort((left, right) => left[0] - right[0]);
+    let unionDurationMs = 0;
+    let [currentStart, currentEnd] = intervals[0]!;
+    intervals.slice(1).forEach(([startedAt, completedAt]) => {
+      if (startedAt <= currentEnd) {
+        currentEnd = Math.max(currentEnd, completedAt);
+        return;
+      }
+      unionDurationMs += currentEnd - currentStart;
+      currentStart = startedAt;
+      currentEnd = completedAt;
+    });
+    unionDurationMs += currentEnd - currentStart;
+    const firstStartedAt = intervals[0]![0];
+    const lastCompletedAt = intervals.reduce((latest, interval) => Math.max(latest, interval[1]), firstStartedAt);
+    const runBoundsDurationMs = runStartedAt !== null && runCompletedAt !== null
+      ? runCompletedAt - runStartedAt
+      : null;
+    const runBoundsConsistent = runBoundsDurationMs === null || (
+      runBoundsDurationMs >= 0 &&
+      runDurationMs !== null &&
+      Math.abs(runBoundsDurationMs - runDurationMs) <= 1
+    );
+    const intervalsWithinRunBounds = intervals.every(([startedAt, completedAt]) =>
+      (runStartedAt === null || startedAt >= runStartedAt) &&
+      (runCompletedAt === null || completedAt <= runCompletedAt)
+    );
+    const unionWithinRunDuration = runDurationMs !== null &&
+      unionDurationMs <= runDurationMs &&
+      lastCompletedAt - firstStartedAt <= runDurationMs;
+    if (runBoundsConsistent && intervalsWithinRunBounds && unionWithinRunDuration) {
+      return {
+        wallClockMs: unionDurationMs,
+        aggregateMs,
+        semantics: "wall_clock_interval_union_bounded_to_run",
+      };
     }
-    return durationMs;
-  }, 0);
-  return projectDuration > 0 ? projectDuration : null;
+  }
+
+  if (aggregateMs !== null) {
+    return {
+      wallClockMs: null,
+      aggregateMs,
+      semantics: "aggregate_only",
+    };
+  }
+  return {
+    wallClockMs: null,
+    aggregateMs: null,
+    semantics: "not_reported",
+  };
 }
 
 function syncRunTransferCountsEvidence(
   status: SyncTransportRunStatus,
   artifactStatusCounts: Record<string, number>,
 ) {
+  const artifactsComplete = status.received_artifacts_complete ?? status.received_artifacts.length > 0;
+  const inferredCount = (statusKey: string) => artifactsComplete ? artifactStatusCounts[statusKey] ?? 0 : null;
   return {
-    requested: syncRunMetricValue(status, "requested") ?? status.received_artifacts.length,
-    received: syncRunMetricValue(status, "received") ?? artifactStatusCounts.received ?? 0,
-    skipped: syncRunMetricValue(status, "skipped") ?? syncRunMetricValue(status, "already_local") ?? 0,
-    already_staged: syncRunMetricValue(status, "already_staged") ?? artifactStatusCounts.already_staged ?? 0,
-    failed: syncRunMetricValue(status, "failed") ?? artifactStatusCounts.failed ?? 0,
-    retried: syncRunMetricValue(status, "retried") ?? syncRunMetricValue(status, "retries") ?? 0,
+    requested: syncRunMetricValue(status, "requested") ?? (artifactsComplete ? status.received_artifacts.length : null),
+    received: syncRunMetricValue(status, "received") ?? inferredCount("received"),
+    skipped: syncRunMetricValue(status, "skipped") ?? syncRunMetricValue(status, "already_local") ??
+      inferredCount("skipped"),
+    already_staged: syncRunMetricValue(status, "already_staged") ?? inferredCount("already_staged"),
+    failed: syncRunMetricValue(status, "failed") ?? inferredCount("failed"),
+    retried: syncRunMetricValue(status, "retried") ?? syncRunMetricValue(status, "retries") ??
+      (artifactsComplete ? 0 : null),
+  };
+}
+
+function syncRunEvidenceProfile(status: SyncTransportRunStatus) {
+  const artifactStatusCounts = status.received_artifacts.reduce<Record<string, number>>((counts, artifact) => {
+    counts[artifact.status] = (counts[artifact.status] ?? 0) + 1;
+    return counts;
+  }, {});
+  const transferCounts = syncRunTransferCountsEvidence(status, artifactStatusCounts);
+  const canonicalCounts = syncRunCanonicalCounts(status);
+  const mutationCounts = [canonicalCounts?.importedProjectCount, canonicalCounts?.appliedProjectCount,
+    canonicalCounts?.deletedProjectCount];
+  const mutationCount = mutationCounts.every((count): count is number => typeof count === "number")
+    ? mutationCounts.reduce((total, count) => total + count, 0) : null;
+  const totalReceivedBytes = syncRunTotalEvidenceBytes(status, syncRunMetricValue(status, "received")) ??
+    (transferCounts.received === 0 ? 0 : null);
+  const totalServedBytes = typeof status.total_served_bytes === "number" && Number.isFinite(status.total_served_bytes)
+    ? status.total_served_bytes : status.served_artifact_requests === 0 ? 0 : null;
+  const receiverCounts = Object.values(transferCounts);
+  const receiverActive = receiverCounts.some(positiveSyncCount) || positiveSyncCount(mutationCount) ||
+    positiveSyncCount(totalReceivedBytes);
+  const senderActive = positiveSyncCount(status.served_artifact_requests) || positiveSyncCount(totalServedBytes);
+  const noOp = receiverCounts.every((count) => count === 0) && mutationCount === 0 &&
+    totalReceivedBytes === 0 && status.served_artifact_requests === 0 && totalServedBytes === 0;
+  const role = receiverActive && senderActive ? "bidirectional" : receiverActive
+    ? "receiver_or_import" : senderActive ? "sender_only" : noOp ? "no_op" : "unknown";
+  const durationMs = status.duration_ms ?? (typeof status.duration_seconds === "number" ? status.duration_seconds * 1000 : null);
+  return {
+    role, receiverActive, senderActive, transferCounts, totalReceivedBytes, totalServedBytes,
+    receiveThroughput: receiverActive ? throughputFromEvidenceBytes(totalReceivedBytes, durationMs) : null,
+    sendThroughput: senderActive ? throughputFromEvidenceBytes(totalServedBytes, durationMs) : null,
+    aggregateThroughput: status.throughput_bytes_per_second ?? null,
   };
 }
 
@@ -1359,6 +1732,9 @@ function buildSyncEvidenceExport(
   ]);
   const projectAppearances = syncEvidenceProjectCadence(status);
   const mergedProjectResults = mergeSyncProjectResults(status.project_results, status.manifest_errors);
+  const finalProjectResults = mergedProjectResults.filter(
+    (result) => result.status !== SYNC_MANIFEST_EXPORT_ERROR_STATUS && isFinalSyncProjectResult(result),
+  );
   const artifactStatusCounts = status.received_artifacts.reduce<Record<string, number>>((counts, artifact) => {
     counts[artifact.status] = (counts[artifact.status] ?? 0) + 1;
     return counts;
@@ -1367,36 +1743,54 @@ function buildSyncEvidenceExport(
     counts[result.project_id] = (counts[result.project_id] ?? 0) + 1;
     return counts;
   }, {});
-  const projectResultCountByStatus = mergedProjectResults.reduce<Record<string, number>>((counts, result) => {
-    counts[result.status] = (counts[result.status] ?? 0) + 1;
-    return counts;
-  }, {});
+  const projectResultCountByStatus = countSyncProjectResultsByStatus(finalProjectResults);
+  const canonicalCounts = syncRunCanonicalCounts(status);
+  const evidenceProjectResultsByStatus = canonicalCounts
+    ? canonicalCounts.projectResultsByStatus
+    : projectResultCountByStatus;
+  const evidenceImportedProjectCount = canonicalCounts?.importedProjectCount ?? null;
+  const evidenceAppliedProjectCount = canonicalCounts?.appliedProjectCount ?? null;
+  const evidenceDeletedProjectCount = canonicalCounts?.deletedProjectCount ?? null;
+  const evidenceSkippedProjectCount = canonicalCounts?.skippedProjectCount ?? null;
+  const evidenceConflictedProjectCount = canonicalCounts?.conflictedProjectCount ?? null;
+  const evidenceFailedProjectCount = canonicalCounts?.failedProjectCount ?? null;
+  const evidenceManifestExportErrorCount = canonicalCounts?.manifestExportErrorCount ?? null;
+  const evidenceTotalProjectCount = canonicalCounts?.totalProjectCount ?? null;
+  const profile = syncRunEvidenceProfile(status);
+  const evidenceTransferCounts = profile.transferCounts;
+  const redactedStatusMessage = redactSyncEvidenceText(status.message, redactionContext);
   const retryIndicators = {
     duplicateProjectEvents: Object.values(projectRetryCount).some((count) => count > 1),
-    messageMentionsRetry: Boolean(
-      redactSyncEvidenceText(status.message, redactionContext)?.match(/\bretry|retried\b/i),
-    ),
+    messageMentionsRetry: Boolean(redactedStatusMessage?.match(/\bretry|retried\b/i)),
   };
+  const reusedArtifacts = positiveSyncCount(evidenceTransferCounts.already_staged);
+  const reusedProjectArtifacts = mergedProjectResults.some((result) => positiveSyncCount(result.reused_artifact_count));
   const reuseIndicators = {
-    reusedArtifacts: status.received_artifacts.some((artifact) => artifact.status === "already_staged"),
-    reusedProjectArtifacts: mergedProjectResults.some((result) => (result.reused_artifact_count ?? 0) > 0),
-    messageMentionsReuse: Boolean(
-      redactSyncEvidenceText(status.message, redactionContext)?.match(/\breused?|reuse\b/i),
-    ),
+    reusedArtifacts,
+    reusedProjectArtifacts,
+    messageMentionsReuse: (reusedArtifacts || reusedProjectArtifacts) &&
+      Boolean(redactedStatusMessage?.match(/\breused?|reuse\b/i)),
   };
-  const totalEvidenceBytes = syncRunTotalEvidenceBytes(status);
   const stagingDurationMs = sumSyncPhaseDurations(status, /staging|stage/i) ??
     syncRunMetricValue(status, "staging_post_ms_total");
-  const applyDurationMs = syncRunProjectApplyDurationMs(status);
+  const applyTimingEvidence = syncRunApplyTimingEvidence(status, mergedProjectResults);
   const durationMs = status.duration_ms ?? (
     typeof status.duration_seconds === "number" ? Math.round(status.duration_seconds * 1000) : null
   );
-  const importedProjectCount = status.imported_project_count ??
-    status.project_results.filter((result) => ["applied", "deleted", "imported"].includes(result.status)).length;
-  const projectImportsPerMinute = durationMs && durationMs > 0
-    ? importedProjectCount / (durationMs / 60000)
+  const mutationCounts = [
+    evidenceImportedProjectCount,
+    evidenceAppliedProjectCount,
+    evidenceDeletedProjectCount,
+  ];
+  const mutatedProjectCount = mutationCounts.every((count): count is number => count !== null)
+    ? mutationCounts.reduce((total, count) => total + count, 0)
     : null;
-  const evidenceTransferCounts = syncRunTransferCountsEvidence(status, artifactStatusCounts);
+  const projectImportsPerMinute = durationMs && durationMs > 0 && evidenceImportedProjectCount !== null
+    ? evidenceImportedProjectCount / (durationMs / 60000)
+    : null;
+  const projectMutationsPerMinute = durationMs && durationMs > 0 && mutatedProjectCount !== null
+    ? mutatedProjectCount / (durationMs / 60000)
+    : null;
   const evidenceLifecycleEvents = [
     ...options.listenerLifecycleEvents,
     ...(status.lifecycle_events ?? []),
@@ -1417,10 +1811,10 @@ function buildSyncEvidenceExport(
       listenerUpdatedAt: options.listenerUpdatedAt ?? null,
     },
     run: {
-      label: "run_1",
+      label: "Run 1",
       status: status.status,
-      message: redactSyncEvidenceText(status.message, redactionContext),
-      error: redactSyncEvidenceText(status.error, redactionContext),
+      message: redactSyncEvidenceNativeDetailText(status.message, redactionContext),
+      error: redactSyncEvidenceNativeDetailText(status.error, redactionContext),
       startedAt: status.started_at ?? null,
       completedAt: status.completed_at ?? null,
       durationMs: status.duration_ms ?? null,
@@ -1441,18 +1835,32 @@ function buildSyncEvidenceExport(
       attempted: status.attempted_transports ?? [],
       attemptedLabels: (status.attempted_transports ?? []).map((transport) => transportLabel(transport) ?? transport),
       fallback_code: status.fallback_code ?? null,
-      fallback_reason: redactSyncEvidenceText(status.fallback_reason, redactionContext),
+      fallback_reason: redactSyncEvidenceNativeDetailText(status.fallback_reason, redactionContext),
       fallback: {
         code: status.fallback_code ?? null,
-        reason: redactSyncEvidenceText(status.fallback_reason, redactionContext),
+        reason: redactSyncEvidenceNativeDetailText(status.fallback_reason, redactionContext),
       },
     },
     metrics: {
-      network_receive_throughput_bytes_per_second: status.throughput_bytes_per_second ?? null,
-      backend_staging_throughput_bytes_per_second: throughputFromEvidenceBytes(totalEvidenceBytes, stagingDurationMs),
-      reconciliation_apply_ms: applyDurationMs,
+      network_receive_throughput_bytes_per_second: profile.receiveThroughput,
+      network_send_throughput_bytes_per_second: profile.sendThroughput,
+      backend_staging_throughput_bytes_per_second: throughputFromEvidenceBytes(
+        profile.totalReceivedBytes,
+        stagingDurationMs,
+      ),
+      reconciliation_apply_ms: applyTimingEvidence.wallClockMs,
+      reconciliation_apply_aggregate_ms: applyTimingEvidence.aggregateMs,
+      reconciliation_apply_timing: {
+        wallClockField: "reconciliation_apply_ms",
+        aggregateField: "reconciliation_apply_aggregate_ms",
+        semantics: applyTimingEvidence.semantics,
+      },
       project_imports_per_minute: projectImportsPerMinute,
+      project_mutations_per_minute: projectMutationsPerMinute,
       project_availability_gap_ms: syncProjectAvailabilityGapMs(projectAppearances),
+      total_received_bytes: profile.totalReceivedBytes,
+      total_served_bytes: profile.totalServedBytes,
+      received_artifacts_complete: status.received_artifacts_complete ?? null,
       ttfa_ms: status.time_to_first_artifact_ms ?? null,
       transfer_counts: evidenceTransferCounts,
       timeToFirstArtifactMs: status.time_to_first_artifact_ms ?? null,
@@ -1463,14 +1871,16 @@ function buildSyncEvidenceExport(
         servedArtifactRequests: status.served_artifact_requests ?? null,
         localManifestCount: status.local_manifest_count ?? null,
         remoteManifestCount: status.remote_manifest_count ?? null,
-        importedProjectCount: status.imported_project_count ?? null,
-        appliedProjectCount: status.applied_project_count ?? null,
-        deletedProjectCount: status.deleted_project_count ?? null,
-        skippedProjectCount: status.skipped_project_count ?? null,
-        failedProjectCount: status.failed_project_count ?? null,
-        totalProjectCount: status.total_project_count ?? null,
+        importedProjectCount: evidenceImportedProjectCount,
+        appliedProjectCount: evidenceAppliedProjectCount,
+        deletedProjectCount: evidenceDeletedProjectCount,
+        skippedProjectCount: evidenceSkippedProjectCount,
+        conflictedProjectCount: evidenceConflictedProjectCount,
+        failedProjectCount: evidenceFailedProjectCount,
+        totalProjectCount: evidenceTotalProjectCount,
+        manifestExportErrorCount: evidenceManifestExportErrorCount,
       },
-      projectResultsByStatus: projectResultCountByStatus,
+      projectResultsByStatus: evidenceProjectResultsByStatus,
       retryIndicators,
       reuseIndicators,
       maxActiveStreams: syncRunEvidenceValue(status, "max_active_streams", [
@@ -1507,11 +1917,11 @@ function buildSyncEvidenceExport(
         )
         : null;
       return {
-        label: redactionContext.projectLabels.get(result.project_id) ?? "project_1",
+        label: redactionContext.projectLabels.get(result.project_id) ?? "Project 1",
         status: result.status,
-        phase: result.phase ?? null,
+        phase: syncEvidencePhase(result.phase),
         action: result.action ?? null,
-        message: redactSyncEvidenceText(result.message, redactionContext),
+        message: redactSyncEvidenceNativeDetailText(result.message, redactionContext),
         isFinal: result.is_final ?? null,
         startedAt: result.started_at ?? null,
         completedAt: result.completed_at ?? null,
@@ -1538,9 +1948,9 @@ function buildSyncEvidenceExport(
       };
     }),
     artifacts: status.received_artifacts.map((artifact) => ({
-      label: redactionContext.artifactLabels.get(artifact.artifact_id) ?? "artifact_1",
+      label: redactionContext.artifactLabels.get(artifact.artifact_id) ?? "Artifact 1",
       status: artifact.status,
-      message: redactSyncEvidenceText(artifact.message, redactionContext),
+      message: statusLabel(artifact.status),
       sizeBytes: artifact.size_bytes ?? null,
       startedAt: artifact.started_at ?? null,
       completedAt: artifact.completed_at ?? null,
@@ -1552,32 +1962,32 @@ function buildSyncEvidenceExport(
       events: syncEvidenceLifecycleEvents(evidenceLifecycleEvents, redactionContext),
       lastLifecycleEvent: syncEvidenceLifecycleEvent(lastLifecycleEvent, redactionContext),
       retryableInterruptionCode,
-      retryGuidance: redactSyncEvidenceText(retryGuidance, redactionContext),
+      retryGuidance: redactSyncEvidenceNativeDetailText(retryGuidance, redactionContext),
       listener: {
         active: options.listenerActive,
         status: options.listenerStatus,
-        activePhase: options.listenerActivePhase ?? null,
-        activeMessage: redactSyncEvidenceText(options.listenerActiveMessage, redactionContext),
+        activePhase: syncEvidencePhase(options.listenerActivePhase),
+        activeMessage: redactSyncEvidenceNativeDetailText(options.listenerActiveMessage, redactionContext),
         activeProgressAt: options.listenerActiveProgressAt ?? null,
         activeElapsedMs: options.listenerActiveElapsedMs ?? null,
-        lastStatus: redactSyncEvidenceText(options.listenerLastStatus, redactionContext),
+        lastStatus: redactSyncEvidenceNativeDetailText(options.listenerLastStatus, redactionContext),
         hasLastError: Boolean(options.listenerLastError),
         updatedAt: options.listenerUpdatedAt ?? null,
         lastLifecycleEvent: syncEvidenceLifecycleEvent(options.listenerLastLifecycleEvent, redactionContext),
         retryableInterruptionCode: options.listenerRetryableInterruptionCode ?? null,
-        retryGuidance: redactSyncEvidenceText(options.listenerRetryGuidance, redactionContext),
+        retryGuidance: redactSyncEvidenceNativeDetailText(options.listenerRetryGuidance, redactionContext),
       },
       run: {
         lastLifecycleEvent: syncEvidenceLifecycleEvent(status.last_lifecycle_event, redactionContext),
         retryableInterruptionCode: status.retryable_interruption_code ?? null,
-        retryGuidance: redactSyncEvidenceText(status.retry_guidance, redactionContext),
+        retryGuidance: redactSyncEvidenceNativeDetailText(status.retry_guidance, redactionContext),
       },
       phaseTimings: (status.phase_timings ?? []).map((timing, index) => ({
         label: `phase_${index + 1}`,
-        phase: timing.phase ?? null,
-        project: timing.project_id ? redactionContext.projectLabels.get(timing.project_id) ?? "project_1" : null,
+        phase: syncEvidencePhase(timing.phase),
+        project: timing.project_id ? redactionContext.projectLabels.get(timing.project_id) ?? "Project 1" : null,
         artifact: timing.artifact_id
-          ? redactionContext.artifactLabels.get(timing.artifact_id) ?? "artifact_1"
+          ? redactionContext.artifactLabels.get(timing.artifact_id) ?? "Artifact 1"
           : null,
         startedAt: timing.started_at ?? null,
         completedAt: timing.completed_at ?? null,
@@ -1609,7 +2019,9 @@ function buildSyncEvidenceExport(
     },
     validation: {
       schema: "tuneforge-sync-evidence-v1",
+      scope: "run_outcome",
       ok: validation.ok,
+      outcomeOk: validation.ok,
       issues: validation.issues,
       ui_visible: true,
       privacySafe: true,
@@ -1636,13 +2048,15 @@ function syncProjectResultList(status: SyncTransportRunStatus | null | undefined
     return null;
   }
   return (
-    <ul className="activity-sync-project-results" aria-label="Last sync project results">
+    <ul className="activity-sync-project-results" aria-label="Last sync project evidence">
       {results.map((result, index) => (
         <li
           className={`activity-sync-project-result activity-sync-project-result--${statusClassName(result.status)}`}
           key={`${result.project_id}-${result.status}-${index}`}
         >
-          <span className="activity-sync-project-result__status">{statusLabel(result.status)}</span>
+          <span className="activity-sync-project-result__status">
+            {statusLabel(result.status)}{isFinalSyncProjectResult(result) ? "" : " (event)"}
+          </span>
           <span className="activity-sync-project-result__project" title={result.project_id}>
             {syncProjectIdLabel(result.project_id)}
           </span>
@@ -1754,9 +2168,13 @@ export function ActivitySyncPanel() {
   const listenerSyncResult = listenerQuery.data?.last_sync ?? null;
   const listenerSyncKey = useMemo(() => syncResultKey(listenerSyncResult), [listenerSyncResult]);
   const showListenerSyncResult = listenerSyncResult !== null && listenerSyncKey !== hiddenListenerSyncKey;
+  const listenerLastStatus = syncVisibleNativeDetailText(
+    listenerQuery.data?.last_status,
+    "Sync listener status: details redacted.",
+  );
   const lastSyncStatus = listenerSyncResult
     ? syncStatusText(listenerSyncResult, peersById)
-    : listenerQuery.data?.last_status ?? syncStatusText(listenerSyncResult, peersById);
+    : listenerLastStatus ?? syncStatusText(listenerSyncResult, peersById);
   const visibleSyncResult = showListenerSyncResult ? listenerSyncResult : lastSyncResult;
   const displayedLastSyncMessage = !showListenerSyncResult
     ? lastSyncMessage ?? lastSyncStatus
@@ -2335,10 +2753,14 @@ export function ActivitySyncPanel() {
   const pairingInputInvalid = Boolean(pairingInputValue && decodedPairingInput.error);
   const trustedPeers = peersQuery.data ?? [];
   const lastListenerUpdatedAt = formatTimestamp(listenerQuery.data?.updated_at);
-  const currentSyncPhase = listenerQuery.data?.active_phase
-    ? statusLabel(listenerQuery.data.active_phase)
-    : null;
-  const currentSyncMessage = listenerQuery.data?.active_message?.trim() || null;
+  const currentSyncPhaseValue = syncEvidencePhase(listenerQuery.data?.active_phase);
+  const currentSyncPhase = currentSyncPhaseValue === "phase_redacted"
+    ? "Sync Phase"
+    : currentSyncPhaseValue ? statusLabel(currentSyncPhaseValue) : null;
+  const currentSyncMessage = syncVisibleNativeDetailText(
+    listenerQuery.data?.active_message,
+    "details redacted.",
+  );
   const currentSyncProgressAt = formatTimestamp(listenerQuery.data?.active_progress_at);
   const currentSyncElapsed = formatDurationMs(listenerQuery.data?.active_elapsed_ms);
   const currentSyncDetails = [
@@ -2447,7 +2869,9 @@ export function ActivitySyncPanel() {
             </div>
             <div>
               <dt>Device</dt>
-              <dd>{identityQuery.data?.display_name || identityQuery.data?.device_id || "Checking identity"}</dd>
+              <dd>
+                {identityQuery.data?.display_name || identityQuery.data?.device_id || "Checking identity"}
+              </dd>
             </div>
             <div>
               <dt>Endpoints</dt>

@@ -1,6 +1,7 @@
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { SYNC_PRIVACY_SAFE_OPERATIONAL_TOKENS, SYNC_PRIVACY_SAFE_PHASES } from "./sync-privacy-token-cases.mjs";
 
 const SCHEMA_VERSION = "v1";
 const TOP_LEVEL_KEYS = [
@@ -29,6 +30,23 @@ const ENDPOINT_VALUE_PATTERN = /\b(localhost|(?:\d{1,3}\.){3}\d{1,3}|[a-f0-9:]{2
 const FILE_NAME_PATTERN = /\b[^/\s]+\.(?:wav|mp3|m4a|flac|aac|ogg|opus|json|sqlite|db|log|txt|csv|zip|png|jpe?g)\b/i;
 const PAIRING_KEY_PATTERN = /(pair(ing)?|qr|invite|secret|token|public_?key|private_?key|payload)/i;
 const RAW_ID_KEY_PATTERN = /(?:^|[_-])(id|ids|device_id|peer_id|project_id|artifact_id|run_id|session_id|listener_id)$/i;
+const RAW_ID_TOKEN_PATTERN =
+  /\b(?:device|proj|art|session|run|project|artifact|sync)_[A-Za-z0-9][A-Za-z0-9._:-]*\b/i;
+const SAFE_OPERATIONAL_TOKEN_SET = new Set(SYNC_PRIVACY_SAFE_OPERATIONAL_TOKENS.map((token) => token.toLowerCase()));
+const SAFE_PHASE_SET = new Set(SYNC_PRIVACY_SAFE_PHASES);
+const LEGACY_PHASE_ALIASES = new Map([["network_receive", "artifact_transfer"],
+  ["staging_post", "artifact_staging"], ["staging_apply_plan", "reconciliation_staging"],
+  ["backend_staging", "artifact_staging"]]);
+const ROLE_NETWORK_REQUIREMENTS = {
+  receiver_or_import: [["networkReceiveThroughputBytesPerSecond", "totalReceivedBytes", "receive"]],
+  sender_only: [["networkSendThroughputBytesPerSecond", "totalServedBytes", "send"]],
+  bidirectional: [["networkReceiveThroughputBytesPerSecond", "totalReceivedBytes", "receive"],
+    ["networkSendThroughputBytesPerSecond", "totalServedBytes", "send"]],
+  no_op: [],
+  unknown: [],
+};
+const HASH_TOKEN_PATTERN =
+  /(?<![A-Za-z0-9])(?:sha(?:-?256)?|hash|checksum)[_:.-][A-Za-z0-9][A-Za-z0-9._:-]*\b|(?<![A-Za-z0-9])[a-f0-9]{32,}(?![A-Za-z0-9])/i;
 const SUSPICIOUS_CONTENT_KEY_PATTERN = /(audio|file|bytes|blob|content|payload|waveform|sample)/i;
 const PATH_FILE_EXTENSION_PATTERN = "wav|mp3|m4a|flac|aac|ogg|opus|json|sqlite|db|log|txt|csv|zip|png|jpe?g";
 const ABSOLUTE_PATH_VALUE_PATTERN = new RegExp(
@@ -36,12 +54,12 @@ const ABSOLUTE_PATH_VALUE_PATTERN = new RegExp(
   "i",
 );
 const PHASE_CATEGORY_PATTERNS = [
-  { category: "reconciliation_apply", pattern: /(reconciliation|apply)/i },
   { category: "staging", pattern: /(staging|stage|temp|hash|write)/i },
   { category: "lifecycle", pattern: /(pause|resume|restart|listener|lifecycle|start|stop)/i },
   { category: "ui_visibility", pattern: /(visible|visibility|ui|hydrate|render)/i },
-  { category: "network", pattern: /(network|transport|receive|recv|send|serve|read|download|upload)/i },
+  { category: "network", pattern: /(network|transport|transfer|receive|recv|send|serve|read|download|upload)/i },
 ];
+const MANIFEST_EXPORT_ERROR_STATUS = "manifest_export_error";
 const TRANSFER_COUNT_KEYS = new Set([
   "requested",
   "requested_artifacts",
@@ -61,6 +79,16 @@ const PROJECT_MUTATION_COUNT_ALIASES = {
   imported: [["imported"], ["importedProjectCount"], ["imported_project_count"]],
   applied: [["applied"], ["appliedProjectCount"], ["applied_project_count"]],
   deleted: [["deleted"], ["deletedProjectCount"], ["deleted_project_count"]],
+};
+const PROJECT_COUNT_ALIASES = {
+  imported: [["importedProjectCount"], ["imported_project_count"]],
+  applied: [["appliedProjectCount"], ["applied_project_count"]],
+  deleted: [["deletedProjectCount"], ["deleted_project_count"]],
+  skipped: [["skippedProjectCount"], ["skipped_project_count"]],
+  conflicted: [["conflictedProjectCount"], ["conflicted_project_count"]],
+  failed: [["failedProjectCount"], ["failed_project_count"]],
+  total: [["totalProjectCount"], ["total_project_count"]],
+  manifestExportErrors: [["manifestErrorCount"], ["manifest_error_count"], ["manifestExportErrorCount"], ["manifest_export_error_count"]],
 };
 
 function usage() {
@@ -175,7 +203,8 @@ function readAggregateProjectMutationCount(scope) {
 function inferLocalProjectMutationCount(projects) {
   if (Array.isArray(projects)) {
     return projects.filter(
-      (entry) => isPlainObject(entry) && LOCAL_PROJECT_MUTATION_STATUSES.has(entry.status),
+      (entry) => isPlainObject(entry) && entry.isFinal !== false && entry.is_final !== false &&
+        LOCAL_PROJECT_MUTATION_STATUSES.has(entry.status),
     ).length;
   }
   if (isPlainObject(projects)) {
@@ -236,6 +265,123 @@ function isIsoTimestamp(value) {
   return /^\d{4}-\d{2}-\d{2}T/.test(value) && !Number.isNaN(Date.parse(value));
 }
 
+function timestampMs(value) {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value)) ? Date.parse(value) : null;
+}
+
+function durationMsFromEvidenceRun(run) {
+  if (!isPlainObject(run)) {
+    return null;
+  }
+  const durationMs = asFiniteNumber(findAliasValue(run, [
+    ["durationMs"],
+    ["duration_ms"],
+    ["elapsedMs"],
+    ["elapsed_ms"],
+  ]));
+  if (durationMs !== null) {
+    return durationMs;
+  }
+  const durationSeconds = asFiniteNumber(findAliasValue(run, [
+    ["durationSeconds"],
+    ["duration_seconds"],
+    ["elapsedSeconds"],
+    ["elapsed_seconds"],
+  ]));
+  if (durationSeconds !== null) {
+    return durationSeconds * 1000;
+  }
+  const startedAt = timestampMs(run.startedAt ?? run.started_at);
+  const completedAt = timestampMs(run.completedAt ?? run.completed_at ?? run.finishedAt ?? run.finished_at);
+  return startedAt !== null && completedAt !== null && completedAt >= startedAt
+    ? completedAt - startedAt
+    : null;
+}
+
+function countFinalProjectsByStatus(projects) {
+  if (!Array.isArray(projects)) {
+    return {};
+  }
+  return projects.reduce((counts, project) => {
+    if (
+      isPlainObject(project) &&
+      typeof project.status === "string" &&
+      project.status &&
+      project.isFinal !== false &&
+      project.is_final !== false &&
+      project.status !== MANIFEST_EXPORT_ERROR_STATUS
+    ) {
+      counts[project.status] = (counts[project.status] ?? 0) + 1;
+    }
+    return counts;
+  }, {});
+}
+
+function hasProjectResultsByStatusMetrics(metrics) {
+  return isPlainObject(metrics.projectResultsByStatus) || isPlainObject(metrics.project_results_by_status);
+}
+
+function projectResultsByStatusFromMetrics(metrics) {
+  const counts = {};
+  for (const scope of [metrics.projectResultsByStatus, metrics.project_results_by_status]) {
+    if (!isPlainObject(scope)) {
+      continue;
+    }
+    for (const [status, count] of Object.entries(scope)) {
+      const normalizedCount = asNonNegativeInteger(count);
+      if (normalizedCount !== null) {
+        counts[status] = normalizedCount;
+      }
+    }
+  }
+  return counts;
+}
+
+function authoritativeProjectResultsByStatus(evidence) {
+  const metrics = isPlainObject(evidence.metrics) ? evidence.metrics : {};
+  const projectResultsByStatus = countFinalProjectsByStatus(evidence.projects);
+  if (Object.keys(projectResultsByStatus).length > 0) {
+    return {
+      projectResultsByStatus,
+      hasAuthoritativeProjectStatusMap: true,
+    };
+  }
+  const metricProjectResultsByStatus = projectResultsByStatusFromMetrics(metrics);
+  if (hasProjectResultsByStatusMetrics(metrics)) {
+    return {
+      projectResultsByStatus: metricProjectResultsByStatus,
+      hasAuthoritativeProjectStatusMap: true,
+    };
+  }
+  return {
+    projectResultsByStatus,
+    hasAuthoritativeProjectStatusMap: false,
+  };
+}
+
+function sumTrueProjectResultCounts(projectResultsByStatus) {
+  return Object.entries(projectResultsByStatus).reduce((total, [status, count]) => (
+    status === MANIFEST_EXPORT_ERROR_STATUS ? total : total + count
+  ), 0);
+}
+
+function projectCountFieldValue(metrics, status) {
+  return maxNonNull(projectCountCandidateValues(metrics, status).map(({ value }) => value));
+}
+
+function readProjectCountFromMetrics(metrics, status, projectResultsByStatus, hasAuthoritativeStatusMap) {
+  if (status === "manifestExportErrors") {
+    return projectCountFieldValue(metrics, status);
+  }
+  if (hasAuthoritativeStatusMap) {
+    if (status === "total") {
+      return sumTrueProjectResultCounts(projectResultsByStatus);
+    }
+    return projectResultsByStatus[status] ?? 0;
+  }
+  return projectCountFieldValue(metrics, status);
+}
+
 function collectPhaseTimings(evidence) {
   const phaseSets = [
     evidence?.run?.phaseTimings,
@@ -257,7 +403,7 @@ function collectPhaseTimings(evidence) {
       const phase = asString(entry.phase ?? entry.name ?? entry.label);
       const durationMs = asFiniteNumber(entry.durationMs ?? entry.duration_ms ?? entry.totalMs ?? entry.total_ms);
       if (phase && durationMs !== null) {
-        collected.push({ phase, durationMs });
+        collected.push({ phase: LEGACY_PHASE_ALIASES.get(phase) ?? phase, durationMs });
       }
     }
   }
@@ -265,11 +411,14 @@ function collectPhaseTimings(evidence) {
 }
 
 function canonicalizeEvidence(evidence) {
+  const run = isPlainObject(evidence.run) ? evidence.run : {};
   const metrics = isPlainObject(evidence.metrics) ? evidence.metrics : {};
   const transport = isPlainObject(evidence.transport) ? evidence.transport : {};
   const lifecycle = isPlainObject(evidence.lifecycle) ? evidence.lifecycle : {};
   const storage = isPlainObject(evidence.storage) ? evidence.storage : {};
   const validation = isPlainObject(evidence.validation) ? evidence.validation : {};
+  const { projectResultsByStatus, hasAuthoritativeProjectStatusMap } =
+    authoritativeProjectResultsByStatus(evidence);
 
   const transferCountCandidates = collectTransferCountCandidates(
     metrics.transfer_counts,
@@ -316,13 +465,13 @@ function canonicalizeEvidence(evidence) {
     ["servedArtifactRequests"],
     ["served_artifact_requests"],
   ]));
-  const totalServedBytes = asFiniteNumber(findAliasValue(metrics, [
-    ["diagnostics", "total_served_bytes"],
-    ["diagnostics", "totalServedBytes"],
-    ["total_served_bytes"],
-    ["totalServedBytes"],
-    ["served_bytes"],
-    ["servedBytes"],
+  const reportedServedBytes = asFiniteNumber(findAliasValue(metrics, [
+    ["diagnostics", "total_served_bytes"], ["diagnostics", "totalServedBytes"],
+    ["total_served_bytes"], ["totalServedBytes"], ["served_bytes"], ["servedBytes"],
+  ]));
+  const reportedReceivedBytes = asFiniteNumber(findAliasValue(metrics, [
+    ["diagnostics", "total_received_bytes"], ["diagnostics", "totalReceivedBytes"],
+    ["total_received_bytes"], ["totalReceivedBytes"], ["received_bytes"], ["receivedBytes"],
   ]));
   const projectMutationMetricScopes = [
     metrics.transferCounts,
@@ -340,27 +489,75 @@ function canonicalizeEvidence(evidence) {
     inferLocalProjectMutationCount(evidence.projects),
     aggregateProjectMutationCount,
   ]);
-  const senderOnly = received === 0 &&
-    localProjectMutationCount === 0 &&
-    servedArtifactRequests !== null &&
-    servedArtifactRequests > 0 &&
-    totalServedBytes !== null &&
-    totalServedBytes > 0;
+  const projectCounts = {
+    imported: readProjectCountFromMetrics(metrics, "imported", projectResultsByStatus, hasAuthoritativeProjectStatusMap),
+    applied: readProjectCountFromMetrics(metrics, "applied", projectResultsByStatus, hasAuthoritativeProjectStatusMap),
+    deleted: readProjectCountFromMetrics(metrics, "deleted", projectResultsByStatus, hasAuthoritativeProjectStatusMap),
+    skipped: readProjectCountFromMetrics(metrics, "skipped", projectResultsByStatus, hasAuthoritativeProjectStatusMap),
+    conflicted: readProjectCountFromMetrics(metrics, "conflicted", projectResultsByStatus, hasAuthoritativeProjectStatusMap),
+    failed: readProjectCountFromMetrics(metrics, "failed", projectResultsByStatus, hasAuthoritativeProjectStatusMap),
+    total: readProjectCountFromMetrics(metrics, "total", projectResultsByStatus, hasAuthoritativeProjectStatusMap),
+    manifestExportErrors: readProjectCountFromMetrics(metrics, "manifestExportErrors", projectResultsByStatus, hasAuthoritativeProjectStatusMap),
+  };
+  const receivedArtifactRows = Array.isArray(evidence.artifacts) ? evidence.artifacts
+    .filter((artifact) => isPlainObject(artifact) && artifact.status === "received") : [];
+  const receivedArtifactSizes = receivedArtifactRows
+    .map((artifact) => asFiniteNumber(artifact.sizeBytes ?? artifact.size_bytes));
+  const receivedArtifactsComplete = run.received_artifacts_complete === true ||
+    metrics.received_artifacts_complete === true;
+  const receivedArtifactCountMismatch = receivedArtifactsComplete && received !== null &&
+    receivedArtifactRows.length !== received;
+  const artifactRowsComplete = received !== null ? receivedArtifactRows.length === received
+    : receivedArtifactsComplete;
+  const artifactReceivedBytes = artifactRowsComplete && receivedArtifactSizes.every((size) => size !== null)
+    ? receivedArtifactSizes.reduce((total, size) => total + size, 0) : null;
+  const totalReceivedBytes = reportedReceivedBytes ?? artifactReceivedBytes ?? (received === 0 ? 0 : null);
+  const totalServedBytes = reportedServedBytes ?? (servedArtifactRequests === 0 ? 0 : null);
+  const receiverCounts = [requested, received, skipped, alreadyStaged, failed, retried];
+  const receiverActive = receiverCounts.some((count) => (count ?? 0) > 0) ||
+    (localProjectMutationCount ?? 0) > 0 || (totalReceivedBytes ?? 0) > 0;
+  const senderActive = (servedArtifactRequests ?? 0) > 0 || (totalServedBytes ?? 0) > 0;
+  const noOp = receiverCounts.every((count) => count === 0) && localProjectMutationCount === 0 &&
+    servedArtifactRequests === 0 && totalReceivedBytes === 0 && totalServedBytes === 0;
+  const runRole = receiverActive && senderActive ? "bidirectional" : senderActive ? "sender_only"
+    : receiverActive ? "receiver_or_import" : noOp ? "no_op" : "unknown";
+  const aggregateNetworkThroughput = asFiniteNumber(findAliasValue(metrics,
+    [["throughput_bytes_per_second"], ["throughputBytesPerSecond"]]));
+  const reportedReceiveThroughput = asFiniteNumber(findAliasValue(metrics, [
+    ["network_receive_throughput_bytes_per_second"], ["receive_throughput_bytes_per_second"],
+    ["transport_receive_throughput_bytes_per_second"],
+  ]));
+  const reportedSendThroughput = asFiniteNumber(findAliasValue(metrics, [
+    ["network_send_throughput_bytes_per_second"], ["send_throughput_bytes_per_second"],
+    ["transport_send_throughput_bytes_per_second"],
+  ]));
+  const runDurationMs = durationMsFromEvidenceRun(run);
+  const deriveRate = (bytes) => bytes !== null && runDurationMs !== null && runDurationMs > 0
+    ? bytes / (runDurationMs / 1000) : null;
+  const legacyBidirectionalAggregate = runRole === "bidirectional" && reportedSendThroughput === null &&
+    reportedReceiveThroughput === aggregateNetworkThroughput;
+  const oneWayAggregate = (runRole === "receiver_or_import" && totalServedBytes === 0) ||
+    (runRole === "sender_only" && totalReceivedBytes === 0)
+    ? aggregateNetworkThroughput : null;
+  const networkReceiveThroughput = receiverActive ? legacyBidirectionalAggregate
+    ? deriveRate(totalReceivedBytes)
+    : reportedReceiveThroughput ?? oneWayAggregate ?? deriveRate(totalReceivedBytes) : null;
+  const networkSendThroughput = senderActive
+    ? reportedSendThroughput ?? (runRole === "sender_only" ? reportedReceiveThroughput : null) ??
+      oneWayAggregate ?? deriveRate(totalServedBytes)
+    : null;
+  const combinedNetworkBytes = totalReceivedBytes !== null && totalServedBytes !== null
+    ? totalReceivedBytes + totalServedBytes : null;
 
   return {
-    runRole: senderOnly
-      ? "sender_only"
-      : received > 0 || localProjectMutationCount > 0
-        ? "receiver_or_import"
-        : "unknown",
+    runRole,
+    runDurationMs,
     selectedTransport,
     candidateTransports,
-    networkReceiveThroughputBytesPerSecond: asFiniteNumber(findAliasValue(metrics, [
-      ["network_receive_throughput_bytes_per_second"],
-      ["receive_throughput_bytes_per_second"],
-      ["transport_receive_throughput_bytes_per_second"],
-      ["throughput_bytes_per_second"],
-    ])),
+    networkReceiveThroughputBytesPerSecond: networkReceiveThroughput,
+    networkSendThroughputBytesPerSecond: networkSendThroughput,
+    aggregateNetworkThroughputBytesPerSecond: aggregateNetworkThroughput,
+    combinedNetworkBytes,
     backendStagingThroughputBytesPerSecond: asFiniteNumber(findAliasValue(metrics, [
       ["backend_staging_throughput_bytes_per_second"],
       ["staging_throughput_bytes_per_second"],
@@ -370,9 +567,22 @@ function canonicalizeEvidence(evidence) {
       ["apply_ms"],
       ["reconciliation", "apply_ms"],
     ])),
+    reconciliationApplyAggregateMs: asFiniteNumber(findAliasValue(metrics, [
+      ["reconciliation_apply_aggregate_ms"],
+      ["apply_aggregate_ms"],
+      ["reconciliation", "apply_aggregate_ms"],
+    ])),
+    reconciliationApplyTimingSemantics: asString(findAliasValue(metrics, [
+      ["reconciliation_apply_timing", "semantics"],
+      ["reconciliationApplyTiming", "semantics"],
+    ])),
     projectImportsPerMinute: asFiniteNumber(findAliasValue(metrics, [
       ["project_imports_per_minute"],
       ["projects_per_minute"],
+    ])),
+    projectMutationsPerMinute: asFiniteNumber(findAliasValue(metrics, [
+      ["project_mutations_per_minute"],
+      ["project_mutation_cadence_per_minute"],
     ])),
     projectAvailabilityGapMs: asFiniteNumber(findAliasValue(metrics, [
       ["project_availability_gap_ms"],
@@ -391,8 +601,12 @@ function canonicalizeEvidence(evidence) {
       failed,
       retried,
     },
+    projectResultsByStatus,
+    projectCounts,
     servedArtifactRequests,
+    totalReceivedBytes,
     totalServedBytes,
+    receivedArtifactCountMismatch,
     importedProjectCount,
     localProjectMutationCount,
     fallbackReason: asString(
@@ -427,11 +641,16 @@ function canonicalizeEvidence(evidence) {
       : validation.ui_visible === true || lifecycle.ui_visible === true
         ? true
         : null,
-    validationPassed: validation.ok === false || validation.valid === false
+    validationScope: asString(validation.scope),
+    runOutcomeOk: validation.outcomeOk === false || validation.outcome_ok === false
       ? false
-      : validation.ok === true || validation.valid === true
+      : validation.outcomeOk === true || validation.outcome_ok === true
         ? true
-        : null,
+        : validation.ok === false || validation.valid === false
+          ? false
+          : validation.ok === true || validation.valid === true
+            ? true
+            : null,
     bottleneckHint,
   };
 }
@@ -454,23 +673,34 @@ function validateTopLevel(evidence, errors) {
 
 function validateRequiredMetrics(evidence, errors) {
   const normalized = canonicalizeEvidence(evidence);
-  const requiresReceiverMetrics = normalized.runRole !== "sender_only";
-  if (normalized.networkReceiveThroughputBytesPerSecond === null) {
-    errors.push("Missing required metric: network receive throughput.");
+  const hasExplicitAggregateOnlyApplyTiming =
+    normalized.reconciliationApplyMs === null &&
+    normalized.reconciliationApplyAggregateMs !== null &&
+    normalized.reconciliationApplyTimingSemantics === "aggregate_only";
+  const aggregateFallback = normalized.runRole === "bidirectional" &&
+    normalized.aggregateNetworkThroughputBytesPerSecond !== null;
+  for (const [rateField, bytesField, direction] of ROLE_NETWORK_REQUIREMENTS[normalized.runRole]) {
+    if (normalized[bytesField] !== null && normalized[rateField] === null && !aggregateFallback) {
+      errors.push(`Missing required metric: network ${direction} throughput.`);
+    }
   }
-  if (requiresReceiverMetrics && normalized.backendStagingThroughputBytesPerSecond === null) {
+  if (normalized.totalReceivedBytes > 0 && normalized.backendStagingThroughputBytesPerSecond === null) {
     errors.push("Missing required metric: backend staging throughput.");
   }
-  if (requiresReceiverMetrics && normalized.reconciliationApplyMs === null) {
+  if (
+    ["receiver_or_import", "bidirectional"].includes(normalized.runRole) &&
+    normalized.reconciliationApplyMs === null &&
+    !hasExplicitAggregateOnlyApplyTiming
+  ) {
     errors.push("Missing required metric: reconciliation apply time.");
   }
-  if (normalized.projectImportsPerMinute === null) {
+  if (normalized.importedProjectCount > 0 && normalized.projectImportsPerMinute === null) {
     errors.push("Missing required metric: project import cadence (projects per minute).");
   }
-  if (requiresReceiverMetrics && normalized.projectAvailabilityGapMs === null) {
+  if (normalized.importedProjectCount > 0 && normalized.projectAvailabilityGapMs === null) {
     errors.push("Missing required metric: project import cadence gap.");
   }
-  if (normalized.ttfaMs === null) {
+  if ((normalized.totalReceivedBytes ?? 0) + (normalized.totalServedBytes ?? 0) > 0 && normalized.ttfaMs === null) {
     errors.push("Missing required metric: TTFA.");
   }
   for (const [key, value] of Object.entries(normalized.transferCounts)) {
@@ -483,6 +713,125 @@ function validateRequiredMetrics(evidence, errors) {
   }
 }
 
+function validateTimingConsistency(evidence, errors) {
+  const normalized = canonicalizeEvidence(evidence);
+  for (const [field, value] of [
+    ["run duration", normalized.runDurationMs],
+    ["reconciliation_apply_ms", normalized.reconciliationApplyMs],
+    ["reconciliation_apply_aggregate_ms", normalized.reconciliationApplyAggregateMs],
+    ["project_availability_gap_ms", normalized.projectAvailabilityGapMs],
+    ["ttfa_ms", normalized.ttfaMs],
+    ["network receive throughput", normalized.networkReceiveThroughputBytesPerSecond],
+    ["network send throughput", normalized.networkSendThroughputBytesPerSecond],
+    ["aggregate network throughput", normalized.aggregateNetworkThroughputBytesPerSecond],
+  ]) {
+    if (value !== null && value < 0) {
+      errors.push(`${field} must be non-negative.`);
+    }
+  }
+  if (collectPhaseTimings(evidence).some(({ durationMs }) => durationMs < 0)) {
+    errors.push("Phase timing durations must be non-negative.");
+  }
+  for (const [field, value] of [["received", normalized.totalReceivedBytes],
+    ["served", normalized.totalServedBytes], ["combined", normalized.combinedNetworkBytes]]) {
+    if (value !== null && value < 0) errors.push(`${field} byte total must be non-negative.`);
+  }
+  if (normalized.receivedArtifactCountMismatch) {
+    errors.push("Complete received artifact rows disagree with authoritative received count.");
+  }
+  if (
+    normalized.reconciliationApplyTimingSemantics === "aggregate_only" &&
+    normalized.reconciliationApplyMs !== null
+  ) {
+    errors.push("aggregate_only semantics require reconciliation_apply_ms to be null.");
+  }
+  if (
+    normalized.reconciliationApplyMs !== null &&
+    normalized.reconciliationApplyAggregateMs !== null &&
+    normalized.reconciliationApplyAggregateMs < normalized.reconciliationApplyMs
+  ) {
+    errors.push("reconciliation_apply_aggregate_ms must be at least reconciliation_apply_ms.");
+  }
+  if (
+    normalized.reconciliationApplyMs !== null &&
+    normalized.runDurationMs !== null &&
+    normalized.reconciliationApplyMs > normalized.runDurationMs
+  ) {
+    errors.push("reconciliation_apply_ms exceeds run wall-clock duration.");
+  }
+  for (const [rate, bytes, direction] of [
+    [normalized.networkReceiveThroughputBytesPerSecond, normalized.totalReceivedBytes, "network receive"],
+    [normalized.networkSendThroughputBytesPerSecond, normalized.totalServedBytes, "network send"],
+    [normalized.aggregateNetworkThroughputBytesPerSecond, normalized.combinedNetworkBytes, "aggregate network"],
+  ]) {
+    if (rate > 0 && !(bytes > 0)) errors.push(`Positive ${direction} throughput requires positive ${direction === "network receive" ? "received" : direction === "network send" ? "served" : "combined"} bytes.`);
+  }
+}
+
+function projectCountCandidateValues(metrics, status) {
+  const aliases = PROJECT_COUNT_ALIASES[status];
+  if (!aliases) {
+    return [];
+  }
+  const scopes = [
+    ["transferCounts", metrics.transferCounts],
+    ["transfer_counts", metrics.transfer_counts],
+    ["metrics", metrics],
+  ];
+  return scopes.flatMap(([scopeName, scope]) => {
+    if (!isPlainObject(scope)) {
+      return [];
+    }
+    return aliases.flatMap((alias) => {
+      const value = asNonNegativeInteger(getNestedValue(scope, alias));
+      return value === null ? [] : [{ fieldName: `${scopeName}.${alias.join(".")}`, value }];
+    });
+  });
+}
+
+function validateProjectCountConsistency(evidence, errors) {
+  const metrics = isPlainObject(evidence.metrics) ? evidence.metrics : {};
+  const concreteProjectResultsByStatus = countFinalProjectsByStatus(evidence.projects);
+  const metricProjectResultsByStatus = projectResultsByStatusFromMetrics(metrics);
+  if (Object.keys(concreteProjectResultsByStatus).length > 0 && hasProjectResultsByStatusMetrics(metrics)) {
+    const statuses = new Set([
+      ...Object.keys(concreteProjectResultsByStatus),
+      ...Object.keys(metricProjectResultsByStatus),
+    ]);
+    for (const status of statuses) {
+      if ((metricProjectResultsByStatus[status] ?? 0) !== (concreteProjectResultsByStatus[status] ?? 0)) {
+        errors.push(`metrics.projectResultsByStatus.${status} disagrees with projects.${status}.`);
+      }
+    }
+  }
+  const { projectResultsByStatus, hasAuthoritativeProjectStatusMap } =
+    authoritativeProjectResultsByStatus(evidence);
+  const statuses = ["imported", "applied", "deleted", "skipped", "conflicted", "failed"];
+  for (const status of [...statuses, "total", "manifestExportErrors"]) {
+    const candidates = projectCountCandidateValues(metrics, status);
+    if (new Set(candidates.map(({ value }) => value)).size > 1) {
+      errors.push(`${status} project count fields disagree.`);
+    }
+  }
+  if (!hasAuthoritativeProjectStatusMap) {
+    return;
+  }
+  for (const status of statuses) {
+    const expected = projectResultsByStatus[status] ?? 0;
+    for (const { fieldName, value } of projectCountCandidateValues(metrics, status)) {
+      if (value !== expected) {
+        errors.push(`${fieldName} disagrees with projectResultsByStatus.${status}.`);
+      }
+    }
+  }
+  const totalExpected = sumTrueProjectResultCounts(projectResultsByStatus);
+  for (const { fieldName, value } of projectCountCandidateValues(metrics, "total")) {
+    if (value !== totalExpected) {
+      errors.push(`${fieldName} disagrees with projectResultsByStatus total.`);
+    }
+  }
+}
+
 function validateScenario(evidence, expectedScenario, errors) {
   if (!expectedScenario) {
     return;
@@ -490,6 +839,11 @@ function validateScenario(evidence, expectedScenario, errors) {
   if (evidence.scenario !== expectedScenario) {
     errors.push(`Scenario mismatch: expected ${expectedScenario}, got ${String(evidence.scenario)}`);
   }
+}
+
+function hasUnsafeOperationalToken(value, pattern) {
+  return (value.match(new RegExp(pattern.source, "gi")) ?? [])
+    .some((token) => !SAFE_OPERATIONAL_TOKEN_SET.has(token.toLowerCase()));
 }
 
 function inspectPrivacy(value, trail, errors) {
@@ -511,6 +865,10 @@ function inspectPrivacy(value, trail, errors) {
     }
   }
   if (typeof value === "string") {
+    const phase = LEGACY_PHASE_ALIASES.get(value) ?? value;
+    if (/(?:^|[_-])phase$|Phase$/.test(key) && phase !== "phase_redacted" && !SAFE_PHASE_SET.has(phase)) {
+      errors.push(`Privacy guard: unknown phase at ${trail.join(".")}`);
+    }
     if (ABSOLUTE_PATH_VALUE_PATTERN.test(value)) {
       errors.push(`Privacy guard: absolute path at ${trail.join(".")}`);
     }
@@ -519,6 +877,12 @@ function inspectPrivacy(value, trail, errors) {
     }
     if (FILE_NAME_PATTERN.test(value)) {
       errors.push(`Privacy guard: filename-like value at ${trail.join(".")}`);
+    }
+    if (hasUnsafeOperationalToken(value, RAW_ID_TOKEN_PATTERN)) {
+      errors.push(`Privacy guard: raw identifier token at ${trail.join(".")}`);
+    }
+    if (hasUnsafeOperationalToken(value, HASH_TOKEN_PATTERN)) {
+      errors.push(`Privacy guard: hash-like token at ${trail.join(".")}`);
     }
     if (
       (SUSPICIOUS_CONTENT_KEY_PATTERN.test(key) || /^data:/i.test(value)) &&
@@ -549,25 +913,51 @@ export function validateEvidence(evidence, { scenario } = {}) {
   validateTopLevel(evidence, errors);
   if (isPlainObject(evidence)) {
     validateRequiredMetrics(evidence, errors);
+    validateTimingConsistency(evidence, errors);
+    validateProjectCountConsistency(evidence, errors);
     validateScenario(evidence, scenario, errors);
     inspectPrivacy(evidence, [], errors);
   }
   return {
     ok: errors.length === 0,
+    schemaPrivacyOk: errors.length === 0,
     schemaVersion: SCHEMA_VERSION,
     errors,
     normalized: isPlainObject(evidence) ? canonicalizeEvidence(evidence) : null,
   };
 }
 
+function normalizedPhaseName(phase) {
+  return phase.trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
+
+function isReconciliationApplyPhase(phase) {
+  const normalized = normalizedPhaseName(phase);
+  if (!normalized || /(^|_)(plan|planning|stage|staging)($|_)/.test(normalized)) {
+    return false;
+  }
+  return normalized === "apply" ||
+    normalized === "reconciliation_apply" ||
+    normalized.startsWith("apply_") ||
+    normalized.startsWith("reconciliation_apply_") ||
+    normalized.endsWith("_apply");
+}
+
+function phaseCategory(phase) {
+  if (isReconciliationApplyPhase(phase)) {
+    return "reconciliation_apply";
+  }
+  return PHASE_CATEGORY_PATTERNS.find((item) => item.pattern.test(phase))?.category ?? null;
+}
+
 function phaseCategoryScore(phaseTimings) {
   const scores = new Map();
   for (const entry of phaseTimings) {
-    const matched = PHASE_CATEGORY_PATTERNS.find((item) => item.pattern.test(entry.phase));
-    if (!matched) {
+    const category = phaseCategory(entry.phase);
+    if (!category) {
       continue;
     }
-    scores.set(matched.category, (scores.get(matched.category) ?? 0) + entry.durationMs);
+    scores.set(category, (scores.get(category) ?? 0) + entry.durationMs);
   }
   return Array.from(scores.entries()).sort((left, right) => right[1] - left[1])[0] ?? null;
 }
@@ -583,9 +973,9 @@ export function summarizeEvidence(evidence) {
   } else if (normalized.uiVisible === false) {
     bottleneck = "ui_visibility";
     reasons.push("ui_not_visible");
-  } else if (normalized.validationPassed === false) {
+  } else if (normalized.runOutcomeOk === false) {
     bottleneck = "incomplete_evidence";
-    reasons.push("validation_flag_failed");
+    reasons.push("run_outcome_failed");
   } else if (normalized.fallbackCode || normalized.fallbackReason) {
     bottleneck = "lifecycle";
     reasons.push("fallback_used");
@@ -625,6 +1015,8 @@ export function summarizeEvidence(evidence) {
 
   return {
     ok: validation.ok,
+    schemaPrivacyOk: validation.schemaPrivacyOk,
+    runOutcomeOk: normalized?.runOutcomeOk ?? null,
     schemaVersion: SCHEMA_VERSION,
     scenario: evidence?.scenario ?? null,
     source: evidence?.source ?? null,
@@ -650,11 +1042,35 @@ function compareMetric(candidate, control, key, preferredDirection) {
   return { metric: key, candidate: candidateValue, control: controlValue, winner };
 }
 
+function networkComparisonValue(metrics) {
+  if (!metrics) return null;
+  if (metrics.runRole === "receiver_or_import") return metrics.networkReceiveThroughputBytesPerSecond;
+  if (metrics.runRole === "sender_only") return metrics.networkSendThroughputBytesPerSecond;
+  if (metrics.runRole === "no_op") return 0;
+  if (metrics.runRole === "bidirectional") {
+    return metrics.aggregateNetworkThroughputBytesPerSecond ?? (
+      metrics.networkReceiveThroughputBytesPerSecond !== null &&
+      metrics.networkSendThroughputBytesPerSecond !== null
+        ? metrics.networkReceiveThroughputBytesPerSecond + metrics.networkSendThroughputBytesPerSecond
+        : null
+    );
+  }
+  return metrics.aggregateNetworkThroughputBytesPerSecond;
+}
+
 export function compareEvidence(candidateEvidence, controlEvidence) {
   const candidateSummary = summarizeEvidence(candidateEvidence);
   const controlSummary = summarizeEvidence(controlEvidence);
+  const networkComparable = candidateSummary.metrics?.runRole === controlSummary.metrics?.runRole;
+  const candidateNetwork = networkComparable ? networkComparisonValue(candidateSummary.metrics) : null;
+  const controlNetwork = networkComparable ? networkComparisonValue(controlSummary.metrics) : null;
   const comparisons = [
-    compareMetric(candidateSummary.metrics, controlSummary.metrics, "networkReceiveThroughputBytesPerSecond", "higher"),
+    compareMetric(
+      { networkThroughputBytesPerSecond: candidateNetwork },
+      { networkThroughputBytesPerSecond: controlNetwork },
+      "networkThroughputBytesPerSecond",
+      "higher",
+    ),
     compareMetric(candidateSummary.metrics, controlSummary.metrics, "backendStagingThroughputBytesPerSecond", "higher"),
     compareMetric(candidateSummary.metrics, controlSummary.metrics, "reconciliationApplyMs", "lower"),
     compareMetric(candidateSummary.metrics, controlSummary.metrics, "projectImportsPerMinute", "higher"),

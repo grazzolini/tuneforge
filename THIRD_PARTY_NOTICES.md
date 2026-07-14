@@ -15,6 +15,14 @@ This file is the source of truth for dependency and model-weight distribution po
 - Crema chord model files are the dependency-owned exception to the external model-weight rule: they are wheel-embedded assets inside the published crema package, ship with default desktop packages when Advanced Chords is included, and are removed only when Advanced Chords is excluded with `--no-crema` / `--no-advanced-chords`.
 - Tuneforge does not add cloud processing, accounts, telemetry, or track uploads for these features. Local-first does not mean first use is always offline.
 
+## Build and Development Dependencies
+
+### TypeScript / @typescript/typescript6
+
+- **License:** Apache-2.0
+- **Source:** <https://github.com/microsoft/TypeScript>
+- **Notes:** Microsoft's TypeScript 7 CLI and official `@typescript/typescript6` compatibility package are build/development-only toolchain dependencies. They are not bundled into Tuneforge runtime artifacts.
+
 ## Runtime Dependencies (bundled or required)
 
 ### Demucs

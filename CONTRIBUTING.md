@@ -74,6 +74,15 @@ pnpm sync:backend:legacy-nvidia -- --no-crema
 pnpm sync:backend:default -- --no-crema
 ```
 
+### TypeScript Split Toolchain
+
+Tuneforge intentionally uses a split TypeScript toolchain. The desktop and site CLI compile with
+TypeScript 7, while root tooling and the desktop/shared-types programmatic API consumers use
+Microsoft's official `@typescript/typescript6` compatibility package through the `typescript`
+alias. TypeScript 7.0 does not expose the programmatic compiler API required by tools such as
+`typescript-eslint` and `openapi-typescript`. This is not a full single-major migration; remove the
+TypeScript 6 alias only after those ecosystem consumers support the TypeScript 7 API.
+
 ## Development Loop
 
 Two terminals:

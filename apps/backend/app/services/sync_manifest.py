@@ -31,7 +31,12 @@ from app.schemas import SUPPORTED_LYRICS_LANGUAGE_OVERRIDES
 from app.services.artifacts import register_artifact
 from app.services.paths import ensure_project_dirs, project_root
 from app.services.sync_identity import source_hash_to_project_id
-from app.services.sync_metadata import artifact_sync_metadata, project_relative_artifact_path, sanitize_sync_metadata
+from app.services.sync_metadata import (
+    artifact_sync_metadata,
+    is_syncable_artifact_type,
+    project_relative_artifact_path,
+    sanitize_sync_metadata,
+)
 from app.services.sync_project_status import mark_project_sync_local
 from app.services.sync_revisions import (
     CURRENT_REVISION_STATE,
@@ -208,15 +213,24 @@ def export_project_manifest(session: Session, project_id: str) -> SyncProjectMan
             status_code=status.HTTP_404_NOT_FOUND,
         )
     source_sha256 = _required_source_sha256(project)
-    artifacts = list(
-        session.scalars(
+    artifacts = [
+        artifact
+        for artifact in session.scalars(
             select(Artifact)
             .where(Artifact.project_id == project.id)
             .order_by(Artifact.created_at.asc(), Artifact.id.asc())
         )
-    )
+        if is_syncable_artifact_type(artifact.type)
+    ]
     entity_revisions = _list_project_entity_revisions(session, project_id=project.id)
-    delete_tombstones = _list_project_delete_tombstones(session, project_id=project.id)
+    delete_tombstones = [
+        tombstone
+        for tombstone in _list_project_delete_tombstones(
+            session,
+            project_id=project.id,
+        )
+        if _is_syncable_delete_tombstone(tombstone)
+    ]
     live_targets = _live_target_updated_at(project, artifacts, entity_revisions)
     exported_tombstones = [
         _export_delete_tombstone_manifest(tombstone)
@@ -768,6 +782,14 @@ def _list_project_delete_tombstones(
             )
         )
     )
+
+
+def _is_syncable_delete_tombstone(tombstone: object) -> bool:
+    if _attr(tombstone, "target_type") != "artifact":
+        return True
+    prior_metadata = sanitize_sync_metadata(_tombstone_prior_metadata(tombstone))
+    artifact_type = prior_metadata.get("type") if isinstance(prior_metadata, Mapping) else None
+    return is_syncable_artifact_type(artifact_type)
 
 
 def _live_target_updated_at(

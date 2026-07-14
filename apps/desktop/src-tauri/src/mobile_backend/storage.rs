@@ -54,6 +54,24 @@ pub(super) const JOB_COLUMNS: &str = "id, project_id, type, status, progress, so
 pub(super) const SYNC_STAGED_ARTIFACT_COLUMNS: &str = "content_sha256, size_bytes, relative_path, provider_device_id, metadata_json, verified_at, created_at, updated_at";
 pub(super) const SYNC_ENTITY_REVISION_COLUMNS: &str = "id, project_id, entity_type, entity_id, revision_type, base_revision_id, author_device_id, source_artifact_id, content_sha256, state, metadata_json, payload_json, created_at, updated_at";
 pub(super) const SYNC_DELETE_TOMBSTONE_COLUMNS: &str = "id, sync_group_id, project_id, target_type, target_id, author_device_id, deleted_at, prior_metadata_json, created_at, updated_at";
+
+pub(super) fn is_syncable_artifact_type(artifact_type: &str) -> bool {
+    artifact_type != "export_mix"
+}
+
+pub(super) fn is_syncable_delete_tombstone(tombstone: &SyncDeleteTombstoneSchema) -> bool {
+    !tombstone
+        .target_type
+        .trim()
+        .eq_ignore_ascii_case("artifact")
+        || tombstone
+            .prior_metadata
+            .get("type")
+            .and_then(Value::as_str)
+            .map(is_syncable_artifact_type)
+            .unwrap_or(true)
+}
+
 pub(super) const MOBILE_CORE_SCHEMA_SQL: &str = r#"
     CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
@@ -1091,7 +1109,9 @@ pub(super) fn list_project_delete_tombstones(
             normalize_sync_timestamp_utc(&tombstone.created_at, "tombstone created_at")?;
         tombstone.updated_at =
             normalize_sync_timestamp_utc(&tombstone.updated_at, "tombstone updated_at")?;
-        if !local_tombstone_superseded_by_live_target(connection, &tombstone)? {
+        if is_syncable_delete_tombstone(&tombstone)
+            && !local_tombstone_superseded_by_live_target(connection, &tombstone)?
+        {
             tombstones.push(tombstone);
         }
     }
@@ -1115,6 +1135,7 @@ pub(super) fn get_project_manifest(
     let source_sha256 = project_source_sha256(&project)?;
     let artifacts = list_project_artifacts(connection, project_id)?
         .into_iter()
+        .filter(|artifact| is_syncable_artifact_type(&artifact.r#type))
         .map(|artifact| manifest_artifact_from_artifact(root, artifact))
         .collect::<Result<Vec<_>, _>>()?;
     source_audio_artifact_for_project(&artifacts, project_id)?;

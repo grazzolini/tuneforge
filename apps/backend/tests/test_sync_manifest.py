@@ -667,6 +667,114 @@ def test_export_project_manifest_omits_local_paths_and_includes_sync_safe_fields
     }
 
 
+def test_manifest_and_metadata_exclude_external_exports_but_keep_app_assets(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    del client
+    module = importlib.import_module("app.services.sync_manifest")
+    export_manifest, _ = _sync_manifest_services()
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        project = session.get(Project, fixture.project_id)
+        assert project is not None
+        preview_path = fixture.root / "previews" / "practice.wav"
+        preview_hash, preview_size = _write_bytes(preview_path, b"practice preview")
+        external_export_path = tmp_path / "exports" / "missing-export.wav"
+        export_hash = hashlib.sha256(b"missing export").hexdigest()
+        deleted_at = project.created_at + timedelta(seconds=1)
+        sync_group_id = get_or_create_local_identity(session).sync_group_id
+        session.add_all(
+            [
+                Artifact(
+                    id="art_practice_preview",
+                    project_id=fixture.project_id,
+                    type="preview_mix",
+                    format="wav",
+                    path=str(preview_path),
+                    content_sha256=preview_hash,
+                    size_bytes=preview_size,
+                    generated_by="ffmpeg",
+                    can_delete=True,
+                    can_regenerate=True,
+                    metadata_json={"kind": "practice"},
+                ),
+                Artifact(
+                    id="art_external_export",
+                    project_id=fixture.project_id,
+                    type="export_mix",
+                    format="wav",
+                    path=str(external_export_path),
+                    content_sha256=export_hash,
+                    size_bytes=len(b"missing export"),
+                    generated_by="ffmpeg",
+                    can_delete=True,
+                    can_regenerate=False,
+                    metadata_json={"source_artifact_id": "art_source_audio"},
+                ),
+                SyncDeleteTombstone(
+                    id="tomb_deleted_preview",
+                    sync_group_id=sync_group_id,
+                    project_id=fixture.project_id,
+                    target_type="artifact",
+                    target_id="art_deleted_preview",
+                    author_device_id="device_alpha",
+                    deleted_at=deleted_at,
+                    prior_metadata_json={"type": "preview_mix"},
+                    created_at=deleted_at,
+                    updated_at=deleted_at,
+                ),
+                SyncDeleteTombstone(
+                    id="tomb_deleted_export",
+                    sync_group_id=sync_group_id,
+                    project_id=fixture.project_id,
+                    target_type="artifact",
+                    target_id="art_deleted_export",
+                    author_device_id="device_alpha",
+                    deleted_at=deleted_at,
+                    prior_metadata_json={"type": "export_mix"},
+                    created_at=deleted_at,
+                    updated_at=deleted_at,
+                ),
+            ]
+        )
+        session.commit()
+
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+        batch = _to_plain(
+            module.export_project_manifests(
+                session,
+                project_ids=[fixture.project_id],
+            )
+        )
+        metadata = SyncMetadataResponse.model_validate(
+            get_sync_metadata(session)
+        ).model_dump(mode="json")
+        export_history = session.get(Artifact, "art_external_export")
+        export_tombstone = session.get(SyncDeleteTombstone, "tomb_deleted_export")
+
+    expected_artifact_ids = {
+        "art_source_audio",
+        "art_vocals",
+        "art_practice_preview",
+    }
+    assert set(_artifacts_by_id(manifest)) == expected_artifact_ids
+    assert {artifact["artifact_id"] for artifact in metadata["artifacts"]} == (
+        expected_artifact_ids
+    )
+    assert [
+        tombstone["tombstone_id"] for tombstone in manifest["delete_tombstones"]
+    ] == ["tomb_deleted_preview"]
+    assert [
+        tombstone["tombstone_id"] for tombstone in metadata["delete_tombstones"]
+    ] == ["tomb_deleted_preview"]
+    assert batch["manifest_errors"] == []
+    assert export_history is not None
+    assert export_history.path == str(external_export_path)
+    assert export_tombstone is not None
+
+
 def test_export_project_manifest_uses_db_artifact_metadata_without_hashing_files(
     client: object,
     monkeypatch: pytest.MonkeyPatch,

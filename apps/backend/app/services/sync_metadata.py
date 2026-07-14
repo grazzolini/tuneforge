@@ -21,6 +21,11 @@ LOCAL_METADATA_PATH_KEYS = {
     "imported_path",
 }
 
+
+def is_syncable_artifact_type(artifact_type: object) -> bool:
+    return artifact_type != "export_mix"
+
+
 @dataclass(frozen=True)
 class SyncMetadataProject:
     project_id: str
@@ -80,15 +85,17 @@ def get_sync_metadata(session: Session) -> SyncMetadataResult:
             .order_by(Project.created_at.asc(), Project.id.asc())
         )
     )
-    artifacts = list(
-        session.scalars(
+    artifacts = [
+        artifact
+        for artifact in session.scalars(
             select(Artifact).order_by(
                 Artifact.project_id.asc(),
                 Artifact.created_at.asc(),
                 Artifact.id.asc(),
             )
         )
-    )
+        if is_syncable_artifact_type(artifact.type)
+    ]
     entity_revisions = list(
         session.scalars(
             select(SyncEntityRevision).order_by(
@@ -100,7 +107,11 @@ def get_sync_metadata(session: Session) -> SyncMetadataResult:
     )
     project_created_at = {project.id: project.created_at for project in projects}
     live_targets = _live_target_updated_at(projects, artifacts, entity_revisions)
-    all_delete_tombstones = _list_delete_tombstones(session)
+    all_delete_tombstones = [
+        tombstone
+        for tombstone in _list_delete_tombstones(session)
+        if _is_syncable_delete_tombstone(tombstone)
+    ]
     project_resurrection_windows = _project_resurrection_windows_for_live_targets(
         projects,
         all_delete_tombstones,
@@ -203,6 +214,14 @@ def _list_delete_tombstones(session: Session) -> list[SyncDeleteTombstone]:
                 SyncDeleteTombstone.id.asc(),
             )
         )
+    )
+
+
+def _is_syncable_delete_tombstone(tombstone: SyncDeleteTombstone) -> bool:
+    if tombstone.target_type != "artifact":
+        return True
+    return is_syncable_artifact_type(
+        cast_metadata(tombstone.prior_metadata_json).get("type")
     )
 
 

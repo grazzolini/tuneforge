@@ -1927,6 +1927,159 @@ mod mobile_backend_tests {
 
     #[cfg(not(target_os = "android"))]
     #[test]
+    fn mobile_sync_outputs_exclude_export_mix_history() {
+        let root = mobile_storage_contract_root("sync-excludes-export-mix");
+        let connection = storage::db_at_root(&root).unwrap();
+        let source_bytes = b"tuneforge sync source bytes";
+        let source_sha256 = storage::hex_digest(&Sha256::digest(source_bytes));
+        let project_id = source_hash_to_project_id(&source_sha256).unwrap();
+        let project_root = storage::project_root_path(&root, &project_id).unwrap();
+        let source_path = project_root.join("source").join("source.wav");
+        let preview_path = project_root.join("previews").join("preview.wav");
+        let practice_path = project_root.join("previews").join("practice.wav");
+        let missing_export_path = root
+            .parent()
+            .unwrap()
+            .join(format!(
+                "{project_id}-{}-missing-export.wav",
+                std::process::id()
+            ));
+        let (source_content_sha256, source_size_bytes) =
+            write_mobile_contract_file(&source_path, source_bytes);
+        let (preview_sha256, preview_size_bytes) =
+            write_mobile_contract_file(&preview_path, b"preview mix bytes");
+        let (practice_sha256, practice_size_bytes) =
+            write_mobile_contract_file(&practice_path, b"practice mix bytes");
+        let export_sha256 = "e".repeat(64);
+
+        insert_mobile_contract_project(&connection, &project_id, &source_sha256, &source_path);
+        for artifact in [
+            MobileContractArtifact {
+                artifact_id: "art_source_audio",
+                project_id: &project_id,
+                artifact_type: "source_audio",
+                format: "wav",
+                path: &source_path,
+                content_sha256: &source_content_sha256,
+                size_bytes: source_size_bytes,
+                generated_by: "import",
+                can_delete: false,
+                can_regenerate: false,
+                cache_key: None,
+                metadata: json!({}),
+            },
+            MobileContractArtifact {
+                artifact_id: "art_preview_mix",
+                project_id: &project_id,
+                artifact_type: "preview_mix",
+                format: "wav",
+                path: &preview_path,
+                content_sha256: &preview_sha256,
+                size_bytes: preview_size_bytes,
+                generated_by: "preview",
+                can_delete: true,
+                can_regenerate: true,
+                cache_key: Some("preview-cache-key"),
+                metadata: json!({"kind": "preview"}),
+            },
+            MobileContractArtifact {
+                artifact_id: "art_practice_mix",
+                project_id: &project_id,
+                artifact_type: "preview_mix",
+                format: "wav",
+                path: &practice_path,
+                content_sha256: &practice_sha256,
+                size_bytes: practice_size_bytes,
+                generated_by: "stems",
+                can_delete: true,
+                can_regenerate: true,
+                cache_key: Some("practice-cache-key"),
+                metadata: json!({"kind": "practice_mix"}),
+            },
+            MobileContractArtifact {
+                artifact_id: "art_export_mix",
+                project_id: &project_id,
+                artifact_type: "export_mix",
+                format: "wav",
+                path: &missing_export_path,
+                content_sha256: &export_sha256,
+                size_bytes: 123,
+                generated_by: "export",
+                can_delete: true,
+                can_regenerate: false,
+                cache_key: None,
+                metadata: json!({"destination": "external"}),
+            },
+        ] {
+            insert_mobile_contract_artifact(&connection, artifact);
+        }
+        for (id, target_id, artifact_type) in [
+            (
+                "tomb_export_mix",
+                "art_deleted_export_mix",
+                "export_mix",
+            ),
+            (
+                "tomb_preview_mix",
+                "art_deleted_preview_mix",
+                "preview_mix",
+            ),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO sync_delete_tombstones (id, sync_group_id, project_id, target_type, target_id, author_device_id, deleted_at, prior_metadata_json, created_at, updated_at)
+                     VALUES (?1, 'sync_group_mobile_test', ?2, 'artifact', ?3, 'device_mobile_test', '2026-07-14T12:00:00.000Z', ?4, '2026-07-14T12:00:00.000Z', '2026-07-14T12:00:00.000Z')",
+                    params![id, &project_id, target_id, json!({"type": artifact_type}).to_string()],
+                )
+                .unwrap();
+        }
+
+        let manifest = storage::get_project_manifest(&connection, &root, &project_id).unwrap();
+        let metadata = manifests::get_sync_metadata(&connection, &root).unwrap();
+        let manifest_artifact_ids = manifest
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.artifact_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        let metadata_artifact_ids = metadata
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.artifact_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+
+        for artifact_ids in [&manifest_artifact_ids, &metadata_artifact_ids] {
+            assert_eq!(artifact_ids.len(), 3);
+            assert!(artifact_ids.contains("art_source_audio"));
+            assert!(artifact_ids.contains("art_preview_mix"));
+            assert!(artifact_ids.contains("art_practice_mix"));
+            assert!(!artifact_ids.contains("art_export_mix"));
+        }
+        for tombstones in [&manifest.delete_tombstones, &metadata.delete_tombstones] {
+            assert_eq!(tombstones.len(), 1);
+            assert_eq!(tombstones[0].tombstone_id, "tomb_preview_mix");
+            assert_eq!(tombstones[0].target_id, "art_deleted_preview_mix");
+        }
+        let stored_export_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM artifacts WHERE id = 'art_export_mix'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_export_count, 1);
+        let stored_tombstone_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM sync_delete_tombstones", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(stored_tombstone_count, 2);
+
+        drop(connection);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
     fn mobile_manifest_export_rejects_non_file_artifact_path() {
         let root = mobile_storage_contract_root("manifest-export-non-file");
         let connection = storage::db_at_root(&root).unwrap();

@@ -946,9 +946,10 @@ pub(super) fn import_sync_project_manifest(
     get_project_schema(connection, &project_id)
 }
 
-pub fn mobile_get_sync_metadata(app: AppHandle) -> Result<SyncMetadataResponse, String> {
-    let connection = db(&app)?;
-    let root = app_data_root(&app)?;
+pub(super) fn get_sync_metadata(
+    connection: &Connection,
+    root: &Path,
+) -> Result<SyncMetadataResponse, String> {
     let mut projects_statement = connection
             .prepare(&format!(
                 "SELECT {PROJECT_COLUMNS} FROM projects WHERE sync_status != 'deleted' ORDER BY created_at ASC, id ASC"
@@ -984,7 +985,10 @@ pub fn mobile_get_sync_metadata(app: AppHandle) -> Result<SyncMetadataResponse, 
     let mut artifacts = Vec::new();
     for row in artifact_rows {
         let artifact = row.map_err(|error| error.to_string())?;
-        let relative_path = relative_artifact_path(&root, &artifact);
+        if !super::storage::is_syncable_artifact_type(&artifact.r#type) {
+            continue;
+        }
+        let relative_path = relative_artifact_path(root, &artifact);
         artifacts.push(SyncMetadataArtifactSchema {
             artifact_id: artifact.id.clone(),
             project_id: artifact.project_id.clone(),
@@ -1019,7 +1023,9 @@ pub fn mobile_get_sync_metadata(app: AppHandle) -> Result<SyncMetadataResponse, 
             normalize_sync_timestamp_utc(&tombstone.created_at, "tombstone created_at")?;
         tombstone.updated_at =
             normalize_sync_timestamp_utc(&tombstone.updated_at, "tombstone updated_at")?;
-        if !local_tombstone_superseded_by_live_target(&connection, &tombstone)? {
+        if super::storage::is_syncable_delete_tombstone(&tombstone)
+            && !local_tombstone_superseded_by_live_target(connection, &tombstone)?
+        {
             delete_tombstones.push(tombstone);
         }
     }
@@ -1028,6 +1034,12 @@ pub fn mobile_get_sync_metadata(app: AppHandle) -> Result<SyncMetadataResponse, 
         artifacts,
         delete_tombstones,
     })
+}
+
+pub fn mobile_get_sync_metadata(app: AppHandle) -> Result<SyncMetadataResponse, String> {
+    let connection = db(&app)?;
+    let root = app_data_root(&app)?;
+    get_sync_metadata(&connection, &root)
 }
 
 pub fn mobile_get_sync_project_manifest(

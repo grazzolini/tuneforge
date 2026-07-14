@@ -116,6 +116,82 @@ def test_export_sync_bundle_creates_sync_safe_layout(
     _assert_no_raw_app_data_entries(manifest)
 
 
+def test_export_sync_bundle_excludes_export_mix_from_blobs_and_inventory(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    del client
+    bundle_root = tmp_path / "bundle-with-export-history"
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        preview_path = fixture.root / "previews" / "practice.wav"
+        preview_hash, preview_size = _write_bytes(preview_path, b"bundle practice preview")
+        export_contents = b"missing external export"
+        export_hash = hashlib.sha256(export_contents).hexdigest()
+        session.add_all(
+            [
+                Artifact(
+                    id="art_bundle_practice_preview",
+                    project_id=fixture.project_id,
+                    type="preview_mix",
+                    format="wav",
+                    path=str(preview_path),
+                    content_sha256=preview_hash,
+                    size_bytes=preview_size,
+                    generated_by="ffmpeg",
+                    can_delete=True,
+                    can_regenerate=True,
+                    metadata_json={"kind": "practice"},
+                ),
+                Artifact(
+                    id="art_bundle_external_export",
+                    project_id=fixture.project_id,
+                    type="export_mix",
+                    format="wav",
+                    path=str(tmp_path / "exports" / "missing.wav"),
+                    content_sha256=export_hash,
+                    size_bytes=len(export_contents),
+                    generated_by="ffmpeg",
+                    can_delete=True,
+                    can_regenerate=False,
+                    metadata_json={"source_artifact_id": fixture.source_artifact_id},
+                ),
+            ]
+        )
+        session.commit()
+
+        result = export_sync_bundle(
+            session,
+            bundle_root=bundle_root,
+            project_ids=[fixture.project_id],
+            provider_device_id="peer-bundle-export",
+        )
+
+    metadata = _read_json(bundle_root / "bundle.json")
+    manifest = _read_json(bundle_root / "projects" / f"{fixture.project_id}.json")
+    artifact_ids = {artifact["artifact_id"] for artifact in manifest["artifacts"]}
+    expected_hashes = {*fixture.artifact_hashes.values(), preview_hash}
+
+    assert artifact_ids == {
+        fixture.source_artifact_id,
+        fixture.stem_artifact_id,
+        "art_bundle_practice_preview",
+    }
+    assert result.content_sha256s == sorted(expected_hashes)
+    assert export_hash not in result.content_sha256s
+    assert metadata["content_sha256s"] == sorted(expected_hashes)
+    assert metadata["peer_inventory"] == [
+        {
+            "device_id": "peer-bundle-export",
+            "available_content_sha256": sorted(expected_hashes),
+        }
+    ]
+    assert not (bundle_root / "blobs" / "sha256" / export_hash[:2] / export_hash).exists()
+    assert (
+        bundle_root / "blobs" / "sha256" / preview_hash[:2] / preview_hash
+    ).is_file()
+
+
 @pytest.mark.parametrize(
     ("relative_path", "is_dir"),
     [

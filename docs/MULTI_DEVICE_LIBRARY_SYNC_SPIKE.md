@@ -6,7 +6,7 @@ This is an exploration report, not an implementation plan. The goal is to decide
 
 The model should not be "mobile paired to one desktop." It should be "N trusted TuneForge installs in one sync group." Any peer can import tracks, edit durable project data after the project's minimum usable set is available and verified locally, generate artifacts, provide verified artifact bytes to other peers, go offline, and later catch up. Some peers are more capable than others, but no peer should be the permanent authority for the library.
 
-This report assumes the mobile backend will converge with the desktop backend model: projects, jobs, artifacts, analysis, lyrics, chords, stems, exports, and sync-facing contracts should eventually have equivalent behavior even if the engines behind them differ by platform.
+This report assumes the mobile backend will converge with the desktop backend model: projects, jobs, artifacts, analysis, lyrics, chords, stems, exports, and sync-facing contracts should eventually have equivalent behavior even if the engines behind them differ by platform. Export APIs and local history remain available on each device, but `export_mix` rows are not syncable library data.
 
 Remote processing is intentionally out of scope for the sync spike. It may become a separate capability scheduler later, but the sync model should not assume "mobile asks desktop" or any fixed executor relationship.
 
@@ -46,9 +46,9 @@ Useful v1 behavior should be:
 - A user imports a track on macOS desktop and sees the synced project appear on Linux desktop and mobile.
 - A group can contain at least three peers, for example macOS desktop, Linux desktop, and Android mobile.
 - Any two online peers can continue syncing while a third peer is offline.
-- Source audio, generated stems, saved mixes, exports, lyrics, chords, analysis, and sections sync as library data.
+- Source audio, generated stems, saved practice mixes, previews, lyrics, chords, analysis, and sections sync as library data.
 - Rebuilding chords, lyrics, stems, mixes, or other generated library outputs on one peer creates new durable library state that syncs to the other peers.
-- Deleting a project, stem, mix, export, or other synced library artifact on one peer should delete it from the sync group, not only from that local device.
+- Deleting a project, stem, practice mix, preview, or other synced library artifact on one peer should delete it from the sync group, not only from that local device.
 - Importing the same source track by SHA-256 into a library that already has it should fail hard with an "already imported" message and a pointer to the existing project.
 - App preferences, theme, local playback defaults, device settings, local model paths, acceleration preferences, and local debugging state do not sync.
 - Mobile joins the same sync group as a normal peer, with constrained runtime capabilities but without a special mobile-to-desktop library model.
@@ -62,12 +62,17 @@ With backend parity assumed, the syncable library should include durable project
 
 - Project records: canonical project ID, display name, source key override, duration, sample rate, channels, timestamps, source hash, and project revision metadata.
 - Source files: original imported source plus any normalized working source required by the receiving runtime.
-- Artifacts: source audio, stems, saved practice mixes, previews, exports, analysis JSON snapshots, and future timing artifacts.
+- Artifacts: source audio, stems, saved practice mixes, previews, analysis JSON snapshots, and future timing artifacts.
 - Analysis: key, tuning, tempo, timing grids, source artifact link, analysis version, and timestamps.
 - Chords: generated source segments, edited timeline, backend metadata, source kind, source artifact link, revision metadata, and user-edit flag.
 - Lyrics: generated source segments, edited segments, backend/model metadata, source artifact link, revision metadata, and user-edit flag.
 - Sections and accepted tab-assisted corrections where they become durable library data.
 - Job history as historical status, not as active work to resume on another device.
+
+Export mixes are external deliverables, not durable syncable project content. Keep their artifact rows,
+paths, formats, and metadata as local history. Exclude them from manifests, sync metadata,
+provider inventory, transfer counts, and missing-artifact diagnostics. A missing external export must not
+create a sync warning or failure.
 
 The library should exclude local app state:
 
@@ -168,7 +173,7 @@ Conflict handling should be conservative:
 Delete behavior should be group-oriented for v1:
 
 - Deleting a project means deleting it from the sync group.
-- Deleting a stem, saved mix, export, or generated artifact means deleting that artifact from the sync group.
+- Deleting a stem, saved practice mix, preview, or other synced generated artifact means deleting that artifact from the sync group.
 - Delete operations should create durable tombstones so offline peers do not resurrect deleted records when they reconnect.
 - Tombstones should include author device, timestamp, target ID, target type, and enough prior metadata to make UI diagnostics possible.
 - Local-only artifact eviction can be deferred. For v1, a visible delete action should mean group delete, not "free local space only."
@@ -208,7 +213,8 @@ Regeneration rules:
 
 - Rebuilding chords creates a new chord entity revision with generation metadata, source artifact relation, author device, and content hash.
 - Rebuilding lyrics creates a new lyrics entity revision with backend/model metadata, source artifact relation, author device, and content hash.
-- Rebuilding stems, mixes, previews, or exports creates new artifact state with generation metadata, source artifact relation, author device, byte size, and `content_sha256`.
+- Rebuilding stems, practice mixes, or previews creates new syncable artifact state with generation metadata, source artifact relation, author device, byte size, and `content_sha256`.
+- Exporting a mix creates a local external deliverable and local history only. It does not create syncable artifact state.
 - If regenerated output has the same SHA-256 as the existing output, it can dedupe and remain semantically identical.
 - If regenerated output differs, the new output should sync as the current replacement when the user explicitly ran a rebuild/replace operation.
 - If two peers rebuild the same entity or artifact concurrently from the same base, the receiver should mark a conflict or keep both branches rather than guessing which is correct.
@@ -297,7 +303,7 @@ Benefits:
 
 - Rust-native peer-to-peer transport model.
 - QUIC streams can carry TuneForge-specific protocols.
-- Content-addressed blob transfer maps well to source files, WAV stems, exports, previews, and analysis snapshots.
+- Content-addressed blob transfer maps well to source files, WAV stems, practice mixes, previews, and analysis snapshots.
 - Blob integrity verification and range/streaming transfer are directly relevant to large audio artifacts.
 - Avoids adopting a generic folder-sync model as the product semantics.
 
@@ -750,7 +756,7 @@ Project:
 - Show artifact-level progress for large transfers only when relevant.
 - Disable edits while the project is still syncing its minimum usable set.
 - Link conflicts to the affected lyrics/chords/sections/artifacts.
-- Rebuild actions for chords, lyrics, stems, mixes, previews, and exports should make clear that rebuilt outputs become synced library state.
+- Rebuild actions for chords, lyrics, stems, practice mixes, and previews should make clear that rebuilt outputs become synced library state.
 - Delete actions should make clear that deleting a synced project or artifact deletes it from the sync group, not just from the current device.
 
 Notifications:

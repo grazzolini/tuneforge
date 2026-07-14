@@ -245,6 +245,18 @@ jobs:
         if: needs.ci-scope.outputs.site == 'true'
         run: pnpm install --frozen-lockfile --ignore-scripts
 
+      - name: Verify site TypeScript compiler
+        if: needs.ci-scope.outputs.site == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(pnpm --filter @tuneforge/site exec tsc --version)"
+          printf '%s\n' "${version}"
+          if [[ "${version}" != Version\ 7.* ]]; then
+            echo "Expected @tuneforge/site tsc to report Version 7.x; got: ${version}" >&2
+            exit 1
+          fi
+
       - name: Type-check site
         if: needs.ci-scope.outputs.site == 'true'
         run: pnpm --filter @tuneforge/site typecheck
@@ -385,6 +397,18 @@ jobs:
       - name: Install dependencies
         if: needs.ci-scope.outputs.desktop == 'true'
         run: pnpm install --frozen-lockfile
+
+      - name: Verify desktop TypeScript compiler
+        if: needs.ci-scope.outputs.desktop == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(pnpm --filter @tuneforge/desktop exec tsc --version)"
+          printf '%s\n' "${version}"
+          if [[ "${version}" != Version\ 7.* ]]; then
+            echo "Expected @tuneforge/desktop tsc to report Version 7.x; got: ${version}" >&2
+            exit 1
+          fi
 
       - name: Sync backend dependencies for OpenAPI generation
         if: needs.ci-scope.outputs.desktop == 'true'

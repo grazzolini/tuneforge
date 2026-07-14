@@ -3,7 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MobileCapabilities } from "@tuneforge/shared-types";
 import {
+  mergeSyncProjectResults,
   normalizeSyncTransportStatus,
+  syncRunCanonicalCounts,
   type JobSchema,
   type ProjectSchema,
   type SyncPairingPayloadSchema,
@@ -58,6 +60,45 @@ const nearbyIrohEndpointHint = `${irohTransportId}://device_peer_1?direct=192.16
 const nearbyTcpEndpointHint = `${tcpTransportId}://192.168.1.58:48625?device_id=device_peer_1&v=1`;
 const syncEndpointHints = [irohEndpointHint, tcpEndpointHint];
 const listenerEndpointHints = [irohEndpointHint, listenerTcpEndpointHint];
+
+type CanonicalSummaryCounts = Partial<Record<
+  "local" | "remote" | "imported" | "applied" | "deleted" | "skipped" | "conflicted" | "failed" |
+  "received" | "reused" | "failedTransfers" | "manifestErrors",
+  number | "unknown"
+>>;
+
+function canonicalSummary(overrides: CanonicalSummaryCounts = {}) {
+  const counts = {
+    local: "unknown",
+    remote: "unknown",
+    imported: 0,
+    applied: 0,
+    deleted: 0,
+    skipped: 0,
+    conflicted: 0,
+    failed: 0,
+    received: 0,
+    reused: 0,
+    failedTransfers: 0,
+    manifestErrors: 0,
+    ...overrides,
+  };
+  return `Exchanged ${counts.local} local and ${counts.remote} remote manifest(s); final project outcomes: imported ${counts.imported}, applied ${counts.applied}, deleted ${counts.deleted}, skipped ${counts.skipped}, conflicted ${counts.conflicted}, failed ${counts.failed}; transfers: received ${counts.received}, reused/already staged ${counts.reused}, failed ${counts.failedTransfers}; manifest export errors (separate from final project outcomes): ${counts.manifestErrors}.`;
+}
+
+const defaultSyncNowCanonicalSummary = canonicalSummary({
+  local: 2,
+  remote: 4,
+  applied: 1,
+  skipped: 1,
+  conflicted: 1,
+  failed: 1,
+  received: 1,
+  manifestErrors: 1,
+});
+const importedNoRemoteCanonicalSummary = canonicalSummary({ imported: 1 });
+const importedOneRemoteCanonicalSummary = canonicalSummary({ local: 0, remote: 1, imported: 1 });
+const listenerAppliedCanonicalSummary = canonicalSummary({ imported: 1, applied: 1, deleted: 1, conflicted: 1 });
 const androidCapabilities: MobileCapabilities = {
   platform: "android",
   mediaBackend: "android_media_codec",
@@ -134,6 +175,17 @@ function pairingPayload(overrides: Partial<SyncPairingPayloadSchema> = {}): Sync
 }
 
 function syncRunStatus(overrides: Partial<SyncTransportRunStatus> = {}): SyncTransportRunStatus {
+  const hasCompleteAccounting = [
+    "project_results",
+    "manifest_errors",
+    "imported_project_count",
+    "applied_project_count",
+    "deleted_project_count",
+    "skipped_project_count",
+    "conflicted_project_count",
+    "failed_project_count",
+    "manifest_export_error_count",
+  ].some((key) => Object.prototype.hasOwnProperty.call(overrides, key));
   return {
     peer_device_id: "device_peer_1",
     remote_device_id: "device_peer_1",
@@ -145,6 +197,13 @@ function syncRunStatus(overrides: Partial<SyncTransportRunStatus> = {}): SyncTra
     project_results: [],
     manifest_errors: [],
     received_artifacts: [],
+    ...(hasCompleteAccounting
+      ? {
+          project_results_complete: true,
+          manifest_errors_complete: true,
+          received_artifacts_complete: true,
+        }
+      : {}),
     ...overrides,
   };
 }
@@ -321,6 +380,20 @@ async function exportEvidenceFromCurrentSyncResult(user: ReturnType<typeof userE
     clickSpy.mockRestore();
     setTimeoutSpy.mockRestore();
   }
+}
+
+type SyncEvidenceValidationResult = {
+  ok: boolean;
+  schemaPrivacyOk: boolean;
+  errors: string[];
+};
+
+async function validateExportedEvidence(evidence: unknown): Promise<SyncEvidenceValidationResult> {
+  // @ts-expect-error JS validator has no TypeScript declaration.
+  const validator = await import("../../../scripts/sync-validation.mjs") as {
+    validateEvidence: (value: unknown) => SyncEvidenceValidationResult;
+  };
+  return validator.validateEvidence(evidence);
 }
 
 function setDocumentVisibility(value: DocumentVisibilityState) {
@@ -691,36 +764,31 @@ describe("Desktop app activity", () => {
     await openSyncTab(user);
 
     await user.click(screen.getByRole("button", { name: "Start Listener" }));
-    expect(await screen.findByText("Listening")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Create Pairing Offer" }));
-    expect(await screen.findByLabelText("Local pairing code")).toBeInTheDocument();
-
     await user.click(screen.getByText("Advanced"));
-    expect((screen.getByLabelText("Local pairing offer raw JSON") as HTMLTextAreaElement).value).toContain(
-      '"signature": "pair_signature_1"',
-    );
+    expect((await screen.findByLabelText("Local pairing offer raw JSON") as HTMLTextAreaElement).value)
+      .toContain('"signature": "pair_signature_1"');
     await user.click(screen.getByRole("button", { name: "Copy Raw Offer" }));
     expect(writeText).toHaveBeenLastCalledWith(expect.stringContaining('"signature": "pair_signature_1"'));
 
     fireEvent.change(screen.getByLabelText("Peer pairing code"), {
-      target: { value: encodePairingCode(pairingPayload({ device_id: "stale_device" })) },
+      target: { value: encodePairingCode(pairingPayload({ device_id: "device_stale" })) },
     });
-    expect(screen.getByLabelText("Peer pairing confirmation")).toHaveTextContent("stale_device");
+    expect(screen.getByLabelText("Peer pairing confirmation")).toHaveTextContent("device_stale");
+
     fireEvent.change(screen.getByLabelText("Pasted raw JSON payload"), {
       target: { value: JSON.stringify(payload) },
     });
     expect(screen.getByLabelText("Peer pairing code")).toHaveValue("");
     expect(screen.getByLabelText("Peer pairing confirmation")).toHaveTextContent(pairingFingerprint(payload));
-    expect(screen.getByLabelText(/Adopt peer sync group for third-device join/)).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Adopt peer sync group for third-device join" }))
+      .not.toBeChecked();
     await user.click(screen.getByRole("button", { name: "Answer Offer" }));
-
-    await waitFor(() =>
-      expect(mockAnswerSyncPairingOffer).toHaveBeenCalledWith({
-        offer: expect.objectContaining({ device_id: "device_peer_1" }),
-        endpoint_hints: listenerEndpointHints,
-        adopt_sync_group: false,
-      }),
-    );
+    await waitFor(() => expect(mockAnswerSyncPairingOffer).toHaveBeenCalledWith({
+      offer: expect.objectContaining({ device_id: "device_peer_1" }),
+      endpoint_hints: listenerEndpointHints,
+      adopt_sync_group: false,
+    }));
   });
 
   it("hides QR scanning on desktop", async () => {
@@ -1329,14 +1397,13 @@ describe("Desktop app activity", () => {
     expect(within(laptopRow as HTMLElement).getByText("A1B2-C3D4-E5F6-7890")).toBeInTheDocument();
     expect(within(laptopRow as HTMLElement).getByText("Trusted")).toBeInTheDocument();
     expect(
-      within(laptopRow as HTMLElement).getByText((content) => content.includes(nearbyIrohEndpointHint)),
+      within(laptopRow as HTMLElement).getByText([nearbyIrohEndpointHint, nearbyTcpEndpointHint].join(", ")),
     ).toBeInTheDocument();
     expect(within(laptopRow as HTMLElement).getByText(/Apr 18/)).toBeInTheDocument();
     expect(within(guestRow as HTMLElement).getByText("Unknown")).toBeInTheDocument();
     expect(within(guestRow as HTMLElement).getByRole("button", { name: "Pair Required" })).toBeDisabled();
     expect(within(mismatchRow as HTMLElement).getByText("Trust mismatch")).toBeInTheDocument();
     expect(within(mismatchRow as HTMLElement).getByRole("button", { name: "Trust Mismatch" })).toBeDisabled();
-
     await user.click(within(laptopRow as HTMLElement).getByRole("button", { name: "Sync Now" }));
 
     await waitFor(() =>
@@ -1363,6 +1430,7 @@ describe("Desktop app activity", () => {
     const peers = await screen.findByRole("list", { name: "Trusted sync peers" });
     const peerRow = within(peers).getByText("Laptop Rig").closest("li");
     expect(peerRow).not.toBeNull();
+    expect(within(peerRow as HTMLElement).getByText("device_peer_1")).toBeInTheDocument();
     expect(within(peerRow as HTMLElement).getByText(syncEndpointHints.join(", "))).toBeInTheDocument();
     const preflightSection = screen.getByRole("heading", { name: "Local Readiness" }).closest("section");
     expect(preflightSection).not.toBeNull();
@@ -1376,10 +1444,11 @@ describe("Desktop app activity", () => {
     expect(mockGetSyncPreflight.mock.invocationCallOrder[0]).toBeLessThan(
       mockSyncTrustedPeerNow.mock.invocationCallOrder[0],
     );
-    expect(await screen.findAllByText("Manifest exchange completed with 4 project results.")).not.toHaveLength(0);
+    expect(await screen.findAllByText(defaultSyncNowCanonicalSummary)).not.toHaveLength(0);
+    expect(screen.queryByText("Manifest exchange completed with 4 project results.")).not.toBeInTheDocument();
     expect(screen.getByText(/Transport Iroh/)).toBeInTheDocument();
 
-    const projectResults = await screen.findByRole("list", { name: "Last sync project results" });
+    const projectResults = await screen.findByRole("list", { name: "Last sync project evidence" });
     const resultRows = within(projectResults).getAllByRole("listitem");
     expect(resultRows).toHaveLength(4);
     expect(within(resultRows[0]).getByText("Applied")).toBeInTheDocument();
@@ -1388,6 +1457,7 @@ describe("Desktop app activity", () => {
     expect(within(resultRows[1]).getByText("Skipped")).toBeInTheDocument();
     expect(within(resultRows[1]).getByText("proj_up_to_date")).toBeInTheDocument();
     expect(within(resultRows[2]).getByText("Conflicted")).toBeInTheDocument();
+    expect(within(resultRows[2]).getByText("proj_conflict")).toBeInTheDocument();
     expect(within(resultRows[2]).getByText("Local lyrics conflict with the trusted peer revision.")).toBeInTheDocument();
     expect(within(resultRows[3]).getByText("Failed")).toBeInTheDocument();
     expect(within(resultRows[3]).getByText("proj_missing_audio")).toBeInTheDocument();
@@ -1447,8 +1517,8 @@ describe("Desktop app activity", () => {
     await user.click(within(peerRow as HTMLElement).getByRole("button", { name: "Sync Now" }));
 
     await waitFor(() => expect(mockSyncTrustedPeerNow).toHaveBeenCalledWith("device_peer_1"));
-    expect(await screen.findAllByText("Applied and imported project data.")).not.toHaveLength(0);
-    const projectResults = await screen.findByRole("list", { name: "Last sync project results" });
+    expect(await screen.findAllByText(canonicalSummary({ imported: 1, applied: 1 }))).not.toHaveLength(0);
+    const projectResults = await screen.findByRole("list", { name: "Last sync project evidence" });
     const resultRows = within(projectResults).getAllByRole("listitem");
     expect(resultRows).toHaveLength(2);
     expect(within(resultRows[0]).getByText("Applied")).toBeInTheDocument();
@@ -1523,9 +1593,9 @@ describe("Desktop app activity", () => {
       await queryClient.invalidateQueries({ queryKey: ["sync", "listener"] });
     });
     await waitFor(() => expect(mockGetSyncTransportStatus.mock.calls.length).toBeGreaterThan(listenerStatusCalls));
-    expect(await screen.findAllByText("Listener applied cached project data.")).not.toHaveLength(0);
+    expect(await screen.findAllByText(listenerAppliedCanonicalSummary)).not.toHaveLength(0);
 
-    const projectResults = await screen.findByRole("list", { name: "Last sync project results" });
+    const projectResults = await screen.findByRole("list", { name: "Last sync project evidence" });
     const resultRows = within(projectResults).getAllByRole("listitem");
     expect(resultRows).toHaveLength(4);
     expect(within(resultRows[0]).getByText("Applied")).toBeInTheDocument();
@@ -1598,7 +1668,8 @@ describe("Desktop app activity", () => {
 
     await waitFor(() => expect(mockGetSyncPreflight).toHaveBeenCalled());
     await waitFor(() => expect(mockSyncTrustedPeerNow).toHaveBeenCalledWith("device_peer_1"));
-    expect(await screen.findAllByText("Manifest exchange completed with 4 project results.")).not.toHaveLength(0);
+    expect(await screen.findAllByText(defaultSyncNowCanonicalSummary)).not.toHaveLength(0);
+    expect(screen.queryByText("Manifest exchange completed with 4 project results.")).not.toBeInTheDocument();
   });
 
   it("hides preflight job details and cancel controls while showing compact job summary", async () => {
@@ -1724,8 +1795,11 @@ describe("Desktop app activity", () => {
             message: "Entity revision manifest content_sha256 must match payload.",
           },
         ],
+        project_results_complete: true,
         manifest_errors: [],
+        manifest_errors_complete: true,
         received_artifacts: [],
+        received_artifacts_complete: true,
         served_artifact_requests: 0,
         local_manifest_count: 0,
         remote_manifest_count: 2,
@@ -1734,20 +1808,19 @@ describe("Desktop app activity", () => {
 
     await openSyncTab(user);
 
+    expect(await screen.findByText(canonicalSummary({ local: 0, remote: 2, conflicted: 1 }))).toBeInTheDocument();
     expect(
-      await screen.findByText(
+      screen.queryByText(
         "Exchanged 0 local and 2 remote manifest(s); imported 0 project(s), skipped 0 project(s), failed 2 project(s), received 16 artifact(s).",
       ),
-    ).toBeInTheDocument();
+    ).not.toBeInTheDocument();
     expect(screen.getByText(/Transport Iroh/)).toBeInTheDocument();
-    const projectResults = await screen.findByRole("list", { name: "Last sync project results" });
+    const projectResults = await screen.findByRole("list", { name: "Last sync project evidence" });
     const resultRows = within(projectResults).getAllByRole("listitem");
     expect(resultRows).toHaveLength(1);
     expect(within(resultRows[0]).getByText("Conflicted")).toBeInTheDocument();
     expect(within(resultRows[0]).getByText("proj_conflicted")).toBeInTheDocument();
-    expect(
-      within(resultRows[0]).getByText("Entity revision manifest content_sha256 must match payload."),
-    ).toBeInTheDocument();
+    expect(within(resultRows[0]).getByText("Entity revision manifest content_sha256 must match payload.")).toBeInTheDocument();
   });
 
   it("shows partial planner failures from native status without transport fallback", async () => {
@@ -1776,19 +1849,22 @@ describe("Desktop app activity", () => {
             message: "Imported from trusted peer.",
           },
         ],
+        project_results_complete: true,
         manifest_errors: [],
+        manifest_errors_complete: true,
         received_artifacts: [],
+        received_artifacts_complete: true,
       },
     });
 
     await openSyncTab(user);
 
-    expect(await screen.findByText("Completed With Errors for device_peer_1.")).toBeInTheDocument();
+    expect(await screen.findByText(canonicalSummary({ imported: 1, failed: 1 }))).toBeInTheDocument();
     expect(screen.getByText(/Transport Iroh/)).toBeInTheDocument();
-    expect(screen.getByText(/1 imported, 0 skipped, 1 failed/)).toBeInTheDocument();
+    expect(screen.getByText(/1 imported, 0 applied, 0 deleted, 0 skipped, 0 conflicted, 1 failed/)).toBeInTheDocument();
     expect(screen.queryByText(/Fallback/)).not.toBeInTheDocument();
 
-    const projectResults = await screen.findByRole("list", { name: "Last sync project results" });
+    const projectResults = await screen.findByRole("list", { name: "Last sync project evidence" });
     const resultRows = within(projectResults).getAllByRole("listitem");
     expect(resultRows).toHaveLength(2);
     expect(within(resultRows[0]).getByText("Failed")).toBeInTheDocument();
@@ -1831,17 +1907,20 @@ describe("Desktop app activity", () => {
             message: "Previous listener result.",
           },
         ],
+        project_results_complete: true,
         manifest_errors: [],
+        manifest_errors_complete: true,
         received_artifacts: [],
+        received_artifacts_complete: true,
       },
     });
-    mockSyncTrustedPeerNow.mockRejectedValueOnce(
-      "artifact_transfer: Timed out reading from Iroh sync stream.",
-    );
+    const safeFailure = "artifact_transfer: Timed out reading from Iroh sync stream; " +
+      "checksum_mismatch hash_retry_pending sha256_mismatch.";
+    mockSyncTrustedPeerNow.mockRejectedValueOnce(safeFailure);
 
     await openSyncTab(user);
 
-    expect(await screen.findByText("Listener import completed before failed sync now.")).toBeInTheDocument();
+    expect(await screen.findByText(importedNoRemoteCanonicalSummary)).toBeInTheDocument();
     expect(screen.getByText("proj_listener_previous")).toBeInTheDocument();
 
     const peers = await screen.findByRole("list", { name: "Trusted sync peers" });
@@ -1851,11 +1930,11 @@ describe("Desktop app activity", () => {
 
     await waitFor(() => expect(mockSyncTrustedPeerNow).toHaveBeenCalledWith("device_peer_1"));
     expect(
-      await screen.findAllByText("Sync now failed: artifact_transfer: Timed out reading from Iroh sync stream."),
+      await screen.findAllByText(`Sync now failed: ${safeFailure}`),
     ).not.toHaveLength(0);
     expect(screen.queryByText("Listener import completed before failed sync now.")).not.toBeInTheDocument();
-    expect(screen.queryByText("proj_listener_previous")).not.toBeInTheDocument();
-    expect(screen.queryByRole("list", { name: "Last sync project results" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Previous listener result.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Last sync project evidence" })).not.toBeInTheDocument();
   });
 
   it("enables evidence actions from failed listener last_sync after sync now rejects", async () => {
@@ -1926,12 +2005,45 @@ describe("Desktop app activity", () => {
     await user.click(within(peerRow as HTMLElement).getByRole("button", { name: "Sync Now" }));
 
     await waitFor(() => expect(mockSyncTrustedPeerNow).toHaveBeenCalledWith("device_peer_1"));
-    expect(await screen.findAllByText(`Sync now failed: ${error}`)).not.toHaveLength(0);
+    expect(
+      await screen.findAllByText(`Sync now failed: ${error}`),
+    ).not.toHaveLength(0);
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Copy Evidence" })).toBeEnabled();
       expect(screen.getByRole("button", { name: "Export Evidence" })).toBeEnabled();
     });
     expect(screen.getByRole("list", { name: "Last sync artifact transfers" })).toBeInTheDocument();
+  });
+
+  it("sanitizes raw passive listener last_error details", async () => {
+    const user = userEvent.setup();
+    const privateValues = [
+      "/Users/test/Music/Passive Secret.wav",
+      "proj_passive_secret",
+      "tuneforge-sync+tcp://192.0.2.8:47619",
+      "checksum_deadbeefcafebabe",
+      "checksum_mismatch_shadow",
+      "hash_retry_pending_shadow",
+      "sha256_mismatch_shadow",
+      "content_sha256_deadbeefcafebabefeedface01234567",
+      "content.hash_deadbeefcafebabefeedface01234567",
+      "content-hash_deadbeefcafebabefeedface01234567",
+      "abcdefabcdefabcdefabcdefabcdefab_checksum_mismatch",
+    ];
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: syncEndpointHints,
+      last_error: `Sync transport artifact request/transfer failed: ${privateValues.join(" ")}`,
+      last_sync: null,
+    });
+
+    await openSyncTab(user);
+
+    expect(await screen.findByText("Sync transport artifact request/transfer failed: details redacted."))
+      .toBeInTheDocument();
+    const visibleText = document.body.textContent ?? "";
+    privateValues.forEach((privateValue) => expect(visibleText).not.toContain(privateValue));
   });
 
   it("sanitizes raw sync now rejection before rendering failed listener evidence", async () => {
@@ -2212,15 +2324,17 @@ describe("Desktop app activity", () => {
       fallback_reason: "Iroh endpoint was unavailable; used TCP.",
       fallback_code: "stale_iroh_hint",
       attempted_transports: ["iroh", "tcp"],
-      status: "completed",
+      status: "completed_with_errors",
       started_at: "2026-04-18T13:16:00.000Z",
       duration_ms: 1250,
       total_received_bytes: 3_000_000,
       total_served_bytes: 1_000_000,
       time_to_first_artifact_ms: 650,
       throughput_bytes_per_second: 3_200_000,
-      imported_project_count: 1,
-      skipped_project_count: 1,
+      imported_project_count: 0,
+      applied_project_count: 1,
+      deleted_project_count: 1,
+      skipped_project_count: 0,
       failed_project_count: 0,
     });
     expect(normalized.endpoint_hints).toEqual(syncEndpointHints);
@@ -2281,6 +2395,81 @@ describe("Desktop app activity", () => {
       status: "deleted",
       deleted_count: 1,
     });
+  });
+
+  it("normalizes legacy failed counts without hiding conflicted projects", () => {
+    const normalized = normalizeSyncTransportStatus({
+      active: true,
+      status: "listening",
+      lastSync: {
+        localManifestCount: 1,
+        remoteManifestCount: 1,
+        skippedProjectCount: 1,
+        failedProjectCount: 2,
+        projectResults: [
+          {
+            projectId: "proj_conflicted_legacy",
+            status: "conflicted",
+            message: "Local lyrics conflict with the trusted peer revision.",
+          },
+          {
+            projectId: "proj_failed_legacy",
+            status: "failed",
+            message: "Peer manifest export failed before transfer.",
+          },
+          {
+            projectId: "proj_skipped_legacy",
+            status: "skipped",
+            message: "Already up to date.",
+          },
+        ],
+        manifestErrors: [],
+        receivedArtifacts: [],
+      },
+    });
+
+    expect(normalized.last_sync).toMatchObject({
+      skipped_project_count: 1,
+      conflicted_project_count: 1,
+      failed_project_count: 1,
+      message:
+        canonicalSummary({ local: 1, remote: 1, skipped: 1, conflicted: 1, failed: 1 }),
+    });
+    expect(normalized.last_sync?.project_results).toEqual([
+      expect.objectContaining({ project_id: "proj_conflicted_legacy", status: "conflicted" }),
+      expect.objectContaining({ project_id: "proj_failed_legacy", status: "failed" }),
+      expect.objectContaining({ project_id: "proj_skipped_legacy", status: "skipped" }),
+    ]);
+  });
+
+  it.each([
+    { label: "failed", inputStatus: undefined, expectedStatus: "completed_with_errors",
+      counts: { failed_project_count: 2, total_project_count: 2 }, expectedMap: { failed: 2 } },
+    { label: "conflicted", inputStatus: "completed_with_errors", expectedStatus: "completed_with_errors",
+      counts: { conflicted_project_count: 1, total_project_count: 1 }, expectedMap: { conflicted: 1 } },
+    { label: "skipped", inputStatus: "completed", expectedStatus: "completed",
+      counts: { skipped_project_count: 3, total_project_count: 3 }, expectedMap: { skipped: 3 } },
+    {
+      label: "no-op",
+      inputStatus: "completed",
+      expectedStatus: "completed",
+      counts: { imported_project_count: 0, applied_project_count: 0, deleted_project_count: 0,
+        skipped_project_count: 0, conflicted_project_count: 0, failed_project_count: 0, total_project_count: 0 },
+      expectedMap: {},
+    },
+  ])("normalizes no-row aggregate $label accounting", ({ inputStatus, expectedStatus, counts, expectedMap }) => {
+    const lastSync = normalizeSyncTransportStatus({
+      active: true,
+      status: "listening",
+      last_sync: {
+        status: inputStatus,
+        received_artifacts: [],
+        ...counts,
+      },
+    }).last_sync;
+
+    expect(lastSync?.status).toBe(expectedStatus);
+    expect(syncRunCanonicalCounts(lastSync!)?.projectResultsByStatus).toEqual(expectedMap);
   });
 
   it("requests auto transport for native sync now runs and normalizes native Iroh IDs", async () => {
@@ -2425,6 +2614,32 @@ describe("Desktop app activity", () => {
     });
 
     expect(legacyPayload.last_sync?.time_to_first_artifact_ms).toBe(800);
+  });
+
+  it("counts only successful received artifact rows in canonical summaries", () => {
+    const normalized = normalizeSyncTransportStatus({
+      active: true,
+      status: "listening",
+      last_sync: {
+        local_manifest_count: 1,
+        remote_manifest_count: 1,
+        imported_project_count: 0,
+        applied_project_count: 0,
+        deleted_project_count: 0,
+        skipped_project_count: 0,
+        conflicted_project_count: 0,
+        failed_project_count: 1,
+        received_artifacts: [
+          { artifact_id: "art_received", status: "received" },
+          { artifact_id: "art_failed", status: "failed" },
+          { artifact_id: "art_reused", status: "already_staged" },
+        ],
+      },
+    });
+
+    expect(normalized.last_sync?.message).toContain(
+      "transfers: received 1, reused/already staged 1, failed 1",
+    );
   });
 
   it("normalizes Iroh flow-control evidence from snake and camel metrics", () => {
@@ -2608,13 +2823,55 @@ describe("Desktop app activity", () => {
     });
 
     expect(normalized.last_sync?.status).toBe("completed_with_errors");
-    expect(normalized.last_sync?.project_results).toEqual([
+    expect(normalized.last_sync?.failed_project_count).toBe(0);
+    expect(normalized.last_sync?.manifest_export_error_count).toBe(1);
+    expect(normalized.last_sync?.message).toContain(
+      "manifest export errors (separate from final project outcomes): 1",
+    );
+    expect(mergeSyncProjectResults(
+      normalized.last_sync?.project_results ?? [],
+      normalized.last_sync?.manifest_errors ?? [],
+    )).toEqual([
       expect.objectContaining({
         project_id: "proj_staging",
-        status: "failed",
+        status: "manifest_export_error",
         message: "Peer manifest export failed before apply.",
       }),
     ]);
+  });
+
+  it("preserves unknown legacy sync accounting instead of fabricating zero counts", () => {
+    const normalized = normalizeSyncTransportStatus({
+      active: true,
+      status: "listening",
+      last_sync: {
+        status: "completed",
+        message: "Legacy sync completed.",
+        local_manifest_count: 1,
+      },
+    });
+    const lastSync = normalized.last_sync;
+
+    expect(lastSync).not.toBeNull();
+    expect(lastSync).toMatchObject({
+      project_results_complete: false,
+      manifest_errors_complete: false,
+      received_artifacts_complete: false,
+      imported_project_count: null,
+      failed_project_count: null,
+      manifest_export_error_count: null,
+      message: "Legacy sync completed.",
+    });
+    expect(syncRunCanonicalCounts(lastSync!)).toMatchObject({
+      importedProjectCount: null,
+      failedProjectCount: null,
+      receivedArtifactCount: null,
+      reusedArtifactCount: null,
+      failedTransferCount: null,
+      manifestExportErrorCount: null,
+      totalProjectCount: null,
+      hasCompleteTransferEvidence: false,
+    });
   });
 
   it("shows final retry and delete catch-up rows without obsolete failures", async () => {
@@ -2736,16 +2993,20 @@ describe("Desktop app activity", () => {
 
     await openSyncTab(user);
 
-    expect(await screen.findByText("Retry completed after staged bytes were reused.")).toBeInTheDocument();
+    expect(
+      await screen.findByText(canonicalSummary({ applied: 1, deleted: 1, received: 1, manifestErrors: 2 })),
+    ).toBeInTheDocument();
     expect(screen.getByText(/Run sync_run_retry_2/)).toBeInTheDocument();
     expect(screen.getByText(/Duration 1\.4 s/)).toBeInTheDocument();
     expect(screen.getByText(/Transport TCP/)).toBeInTheDocument();
     expect(screen.getByText(/Fallback: Iroh endpoint was unavailable; used TCP\./)).toBeInTheDocument();
-    expect(screen.getByText(/1 imported, 1 skipped, 0 failed/)).toBeInTheDocument();
+    expect(screen.getByText(/0 imported, 1 applied, 1 deleted, 0 skipped, 0 conflicted, 0 failed/)).toBeInTheDocument();
     expect(screen.getByText(/TTFA 450 ms/)).toBeInTheDocument();
-    expect(screen.getByText(/4\.0 MB total/)).toBeInTheDocument();
-    expect(screen.getByText(/2\.5 MB\/s/)).toBeInTheDocument();
-    expect(screen.getByText(/Slowest Backend Staging 900 ms/)).toBeInTheDocument();
+    expect(screen.getByText(/3\.0 MB received/)).toBeInTheDocument();
+    expect(screen.getByText(/1\.0 MB sent/)).toBeInTheDocument();
+    expect(screen.getByText(/Receive 2\.1 MB\/s/)).toBeInTheDocument();
+    expect(screen.getByText(/Send 714 KB\/s/)).toBeInTheDocument();
+    expect(screen.getByText(/Largest aggregate phase Artifact Staging 900 ms/)).toBeInTheDocument();
     expect(screen.getByText(/Scratch peak 64 MB/)).toBeInTheDocument();
     expect(screen.getByText(/Staging peak 12 MB/)).toBeInTheDocument();
     expect(screen.getByText(/Max 8 streams/)).toBeInTheDocument();
@@ -2756,7 +3017,7 @@ describe("Desktop app activity", () => {
     );
     expect(diagnosticsSummary).not.toHaveTextContent(/\+\d+ more/);
 
-    const projectResults = await screen.findByRole("list", { name: "Last sync project results" });
+    const projectResults = await screen.findByRole("list", { name: "Last sync project evidence" });
     const resultRows = within(projectResults).getAllByRole("listitem");
     expect(resultRows).toHaveLength(2);
     expect(within(resultRows[0]).getByText("Applied")).toBeInTheDocument();
@@ -2785,6 +3046,11 @@ describe("Desktop app activity", () => {
 
   it("exports privacy-safe evidence from listener last_sync", async () => {
     const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
     setSyncTransportStatus({
       active: true,
       status: "listening",
@@ -2902,6 +3168,7 @@ describe("Desktop app activity", () => {
           {
             project_id: "proj_export_alpha",
             status: "applied",
+            phase: "backend_staging_shadow",
             message: "Retry imported proj_export_alpha from '/Users/test/Music/Secret Demo.wav'.",
             is_final: true,
             started_at: "2026-04-18T13:16:00.500Z",
@@ -2913,7 +3180,7 @@ describe("Desktop app activity", () => {
         manifest_errors: [],
         phase_timings: [
           {
-            phase: "artifact_transfer",
+            phase: "network_receive",
             project_id: "proj_export_alpha",
             artifact_id: "art_export_alpha",
             started_at: "2026-04-18T13:16:00.200Z",
@@ -2921,6 +3188,8 @@ describe("Desktop app activity", () => {
             duration_ms: 450,
             throughput_bytes_per_second: 2_000_000,
           },
+          { phase: "staging_post", duration_ms: null },
+          { phase: "staging_apply_plan", duration_ms: null },
         ],
         received_artifacts: [
           {
@@ -2948,6 +3217,14 @@ describe("Desktop app activity", () => {
 
     await openSyncTab(user);
 
+    await user.click(screen.getByRole("button", { name: "Copy Evidence" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledOnce());
+    const copiedSerialized = writeText.mock.calls[0]?.[0];
+    expect(typeof copiedSerialized).toBe("string");
+    expect(JSON.parse(copiedSerialized as string)).toMatchObject({
+      scenario: "listener-last-sync",
+      validation: { privacySafe: true },
+    });
     expect(screen.getByRole("button", { name: "Export Evidence" })).toBeEnabled();
     const exportedJson = await exportEvidenceFromCurrentSyncResult(user);
 
@@ -2972,7 +3249,7 @@ describe("Desktop app activity", () => {
       listenerStatus: "listening",
     });
     expect(exportedJson.run).toMatchObject({
-      label: "run_1",
+      label: "Run 1",
       peer: "peer_1",
       remotePeer: "peer_1",
       hasRunId: true,
@@ -2984,12 +3261,18 @@ describe("Desktop app activity", () => {
       attempted: [irohTransportId, tcpTransportId],
       fallback: {
         code: "stale_iroh_hint",
-        reason: expect.stringContaining("[redacted_endpoint]"),
+        reason: "details redacted.",
       },
     });
     expect(exportedJson.metrics).toMatchObject({
       timeToFirstArtifactMs: 650,
       throughputBytesPerSecond: 3_200_000,
+      network_receive_throughput_bytes_per_second: 800_000,
+      network_send_throughput_bytes_per_second: 7_200_000,
+      total_received_bytes: 1_000_000,
+      total_served_bytes: 9_000_000,
+      project_imports_per_minute: 0,
+      project_mutations_per_minute: 48,
       retryIndicators: {
         duplicateProjectEvents: true,
         messageMentionsRetry: true,
@@ -3008,8 +3291,9 @@ describe("Desktop app activity", () => {
     );
     expect(exportedJson.projects).toEqual([
       expect.objectContaining({
-        label: "project_1",
+        label: "Project 1",
         status: "applied",
+        phase: "phase_redacted",
         counts: expect.objectContaining({
           applied: 2,
           reusedArtifacts: 1,
@@ -3022,13 +3306,13 @@ describe("Desktop app activity", () => {
     ]);
     expect(exportedJson.artifacts).toEqual([
       expect.objectContaining({
-        label: "artifact_1",
+        label: "Artifact 1",
         status: "received",
         throughputBytesPerSecond: 2_000_000,
         reused: false,
       }),
       expect.objectContaining({
-        label: "artifact_2",
+        label: "Artifact 2",
         status: "already_staged",
         reused: true,
       }),
@@ -3052,12 +3336,12 @@ describe("Desktop app activity", () => {
         kind: "network_offline",
         retryable: true,
         interruptionCode: "network_offline",
-        retryGuidance: expect.stringContaining("peer_1"),
+        retryGuidance: "details redacted.",
         peer: "peer_1",
         hasRunId: true,
       }),
       retryableInterruptionCode: "network_offline",
-      retryGuidance: expect.stringContaining("peer_1"),
+      retryGuidance: "details redacted.",
       listener: {
         active: true,
         status: "listening",
@@ -3079,9 +3363,12 @@ describe("Desktop app activity", () => {
       phaseTimings: [
         expect.objectContaining({
           label: "phase_1",
-          project: "project_1",
-          artifact: "artifact_1",
+          phase: "artifact_transfer",
+          project: "Project 1",
+          artifact: "Artifact 1",
         }),
+        expect.objectContaining({ phase: "artifact_staging" }),
+        expect.objectContaining({ phase: "reconciliation_staging" }),
       ],
     });
     expect(exportedJson.storage).toMatchObject({
@@ -3100,26 +3387,65 @@ describe("Desktop app activity", () => {
       },
     });
 
-    const serialized = JSON.stringify(exportedJson);
-    expect(serialized).toContain("peer_1");
-    expect(serialized).toContain("project_1");
-    expect(serialized).toContain("artifact_1");
-    expect(serialized).not.toContain("device_peer_1");
-    expect(serialized).not.toContain("sync_run_export_listener");
-    expect(serialized).not.toContain("proj_export_alpha");
-    expect(serialized).not.toContain("art_export_alpha");
-    expect(serialized).not.toContain("sha256-export-alpha");
-    expect(serialized).not.toContain("Studio Desktop");
-    expect(serialized).not.toContain("endpoint_hints");
-    expect(serialized).not.toContain("Mix.wav");
-    expect(serialized).not.toContain("Secret Demo.wav");
-    expect(serialized).not.toContain("C:\\Users");
-    expect(serialized).not.toContain("C:\\\\Users");
-    expect(serialized).not.toContain("file://");
-    expect(serialized).not.toContain("/Users/test/Music");
-    expect(serialized).not.toContain("/tmp/demo.wav");
-    expect(serialized).not.toContain("tuneforge-sync+tcp://192.168.1.42:48625");
+    [copiedSerialized as string, JSON.stringify(exportedJson)].forEach((serialized) => {
+      expect(serialized).toContain("peer_1");
+      expect(serialized).toContain("Project 1");
+      expect(serialized).toContain("Artifact 1");
+      [
+        "device_peer_1",
+        "sync_run_export_listener",
+        "proj_export_alpha",
+        "art_export_alpha",
+        "sha256-export-alpha",
+        "Studio Desktop",
+        "endpoint_hints",
+        "Mix.wav",
+        "Secret Demo.wav",
+        "C:\\Users",
+        "C:\\\\Users",
+        "file://",
+        "/Users/test/Music",
+        "/tmp/demo.wav",
+        "tuneforge-sync+tcp://192.168.1.42:48625",
+      ].forEach((privateValue) => expect(serialized).not.toContain(privateValue));
+    });
   });
+
+  it.each([
+    [0, 0, false], [2, 2, true], [2, 0, false],
+  ])("exports message reuse %i with numeric reuse %i as %s", async (messageCount, reuseCount, expected) => {
+    const user = userEvent.setup();
+    setSyncTransportStatus({ active: true, status: "listening", endpoint_hints: listenerEndpointHints,
+      last_sync: syncRunStatus({ message: canonicalSummary({ local: 1, remote: 0, reused: messageCount }),
+        project_results: [], received_artifacts: Array.from({ length: reuseCount }, (_, index) => ({
+          artifact_id: `art_reuse_${index}`, status: "already_staged" })) }) });
+
+    await openSyncTab(user);
+    const exportedJson = await exportEvidenceFromCurrentSyncResult(user);
+    expect(exportedJson.metrics).toMatchObject({ reuseIndicators: { messageMentionsReuse: expected } });
+  });
+
+  it.each([[2, false, null], [1, false, 100], [2, true, null]])(
+    "exports received bytes for count %i complete %s as %s", async (receivedCount, complete, expected) => {
+      const user = userEvent.setup();
+      setSyncTransportStatus({ active: true, status: "listening", endpoint_hints: listenerEndpointHints,
+        last_sync: syncRunStatus({ duration_ms: 1000, transfer_counts: { received: receivedCount },
+          received_artifacts_complete: complete, received_artifacts: [
+            { artifact_id: "art_received", status: "received", size_bytes: 100 },
+            { artifact_id: "art_failed", status: "failed", size_bytes: 900 }] }) });
+      await openSyncTab(user);
+      const exportedJson = await exportEvidenceFromCurrentSyncResult(user);
+      expect(exportedJson.metrics).toMatchObject({ total_received_bytes: expected,
+        received_artifacts_complete: complete });
+      const issues = (exportedJson.validation as { issues: string[] }).issues;
+      expect(issues.includes("received_artifact_count_mismatch")).toBe(complete);
+      if (complete) {
+        expect(exportedJson.validation).toMatchObject({ ok: false });
+        expect((await validateExportedEvidence(exportedJson)).errors.join(" "))
+          .toMatch(/Complete received artifact rows disagree with authoritative received count/);
+      }
+    },
+  );
 
   it("does not export UI fallback listener status with trusted peer display names", async () => {
     const user = userEvent.setup();
@@ -3157,7 +3483,7 @@ describe("Desktop app activity", () => {
 
     await openSyncTab(user);
 
-    expect(await screen.findByText("Completed for Laptop Rig.")).toBeInTheDocument();
+    expect(await screen.findByText(importedNoRemoteCanonicalSummary)).toBeInTheDocument();
     const exportedJson = await exportEvidenceFromCurrentSyncResult(user);
     const serialized = JSON.stringify(exportedJson);
     expect(exportedJson.lifecycle).toMatchObject({
@@ -3170,7 +3496,7 @@ describe("Desktop app activity", () => {
     expect(serialized).not.toContain("proj_display_name_fallback");
   });
 
-  it("marks partial or conflicted sync evidence as not OK", async () => {
+  it("exports privacy-safe reviewer status corpus", async () => {
     const user = userEvent.setup();
     setSyncTransportStatus({
       active: true,
@@ -3179,8 +3505,14 @@ describe("Desktop app activity", () => {
       last_sync: syncRunStatus({
         run_id: "sync_run_partial_truth",
         session_id: "sync_session_partial_truth",
-        status: "completed_with_errors",
+        status: "failed",
         message: "Sync completed with project conflicts.",
+        duration_ms: 1000,
+        throughput_bytes_per_second: 0,
+        total_received_bytes: 0,
+        total_served_bytes: 0,
+        served_artifact_requests: 0,
+        transfer_counts: { requested: 1, received: 0, skipped: 0, already_staged: 0, failed: 1, retried: 0 },
         failed_project_count: 1,
         project_results: [
           {
@@ -3188,6 +3520,7 @@ describe("Desktop app activity", () => {
             status: "conflicted",
             message: "Project had a conflict.",
             failed_count: 1,
+            counters: { failed_count: 1 },
           },
         ],
         received_artifacts: [
@@ -3195,10 +3528,11 @@ describe("Desktop app activity", () => {
             artifact_id: "art_partial_truth",
             content_sha256: "sha256-partial-truth",
             size_bytes: 42,
-            status: "failed",
-            message: "Artifact transfer failed.",
+            status: "error",
+            message: "Artifact content_sha256_deadbeefcafebabefeedface01234567 failed.",
           },
         ],
+        phase_timings: [{ phase: "reconciliation_apply_project", duration_ms: 0 }],
       }),
     });
 
@@ -3208,95 +3542,712 @@ describe("Desktop app activity", () => {
     expect(exportedJson.validation).toMatchObject({
       ok: false,
       issues: expect.arrayContaining([
-        "artifact_status_failed",
-        "failed_project_count",
+        "artifact_status_error",
+        "conflicted_project_count",
         "project_failed_count",
+        "project_counter_failed_count",
         "project_status_conflicted",
-        "run_status_completed_with_errors",
+        "run_status_failed",
       ]),
     });
+    expect(JSON.stringify(exportedJson)).not.toContain("content_sha256_deadbeefcafebabefeedface01234567");
+    const validation = await validateExportedEvidence(exportedJson);
+    expect(validation).toMatchObject({ ok: true, schemaPrivacyOk: true });
   });
 
-  it("sanitizes path-like listener errors before rendering", async () => {
+  it("preserves incomplete no-row legacy project accounting through export", async () => {
     const user = userEvent.setup();
-    const rawError = "Sync listener failed while opening /Users/test/private/Secret Demo.wav";
+    const normalized = normalizeSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: listenerEndpointHints,
+      last_sync: {
+        selected_transport: irohTransportId,
+        attempted_transports: [irohTransportId],
+        duration_ms: 1000, throughput_bytes_per_second: 1000, time_to_first_artifact_ms: 0,
+        served_artifact_requests: 1, total_served_bytes: 1000,
+        imported_project_count: 0, failed_project_count: 1, total_project_count: 2,
+        received_artifacts: [],
+      },
+    });
+    const canonicalCounts = syncRunCanonicalCounts(normalized.last_sync!);
+
+    expect(normalized.last_sync).toMatchObject({ status: "completed_with_errors", imported_project_count: 0,
+      applied_project_count: null, failed_project_count: 1, total_project_count: 2 });
+    expect(canonicalCounts?.projectResultsByStatus).toBeNull();
+    setSyncTransportStatus(normalized);
+
+    await openSyncTab(user);
+    const exportedJson = await exportEvidenceFromCurrentSyncResult(user);
+    expect(exportedJson.metrics).toMatchObject({
+      network_receive_throughput_bytes_per_second: null,
+      network_send_throughput_bytes_per_second: 1000,
+      projectResultsByStatus: null,
+      transferCounts: { importedProjectCount: 0, appliedProjectCount: null,
+        failedProjectCount: 1, totalProjectCount: 2 },
+    });
+    const validation = await validateExportedEvidence(exportedJson);
+    expect(validation.errors).toEqual([]);
+    expect(validation).toMatchObject({ ok: true, schemaPrivacyOk: true });
+  });
+
+  it("exports no-row aggregate project outcomes with matching status buckets", async () => {
+    const user = userEvent.setup();
     setSyncTransportStatus({
       active: true,
       status: "listening",
       endpoint_hints: listenerEndpointHints,
-      last_error: rawError,
-      last_sync: null,
+      last_sync: syncRunStatus({
+        status: "completed_with_errors",
+        duration_ms: 1000, throughput_bytes_per_second: 1000, time_to_first_artifact_ms: 0,
+        served_artifact_requests: 1, total_served_bytes: 1000,
+        imported_project_count: 0, applied_project_count: 0, deleted_project_count: 0,
+        skipped_project_count: 2, conflicted_project_count: 1, failed_project_count: 1, total_project_count: 4,
+        project_results: [],
+      }),
     });
 
     await openSyncTab(user);
+    const exportedJson = await exportEvidenceFromCurrentSyncResult(user);
 
-    expect(await screen.findByText("Sync listener error: details redacted.")).toBeInTheDocument();
-    expect(screen.queryByText(rawError)).not.toBeInTheDocument();
-    expect(document.body.textContent ?? "").not.toContain("/Users/test/private");
-    expect(document.body.textContent ?? "").not.toContain("Secret Demo.wav");
+    expect(exportedJson.projects).toEqual([]);
+    expect(exportedJson.metrics).toMatchObject({
+      projectResultsByStatus: { skipped: 2, conflicted: 1, failed: 1 },
+      transferCounts: { skippedProjectCount: 2, conflictedProjectCount: 1,
+        failedProjectCount: 1, totalProjectCount: 4 },
+    });
+    expect(exportedJson.validation).toMatchObject({
+      outcomeOk: false,
+      issues: expect.arrayContaining([
+        "conflicted_project_count", "failed_project_count", "run_status_completed_with_errors",
+      ]),
+    });
+    expect(await validateExportedEvidence(exportedJson)).toMatchObject({ ok: true, schemaPrivacyOk: true });
   });
 
-  it("copies privacy-safe evidence JSON from listener last_sync", async () => {
+  it("excludes non-final project events from exported final outcome accounting", async () => {
     const user = userEvent.setup();
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
     setSyncTransportStatus({
       active: true,
       status: "listening",
       endpoint_hints: listenerEndpointHints,
-      last_status: "Listener imported proj_copy_alpha from device_peer_1.",
       last_sync: syncRunStatus({
-        run_id: "sync_run_copy_listener",
-        session_id: "sync_session_copy_listener",
-        peer_device_id: "device_peer_1",
-        remote_device_id: "device_peer_1",
-        selected_transport: tcpTransportId,
-        attempted_transports: [tcpTransportId],
         status: "completed",
-        message: 'Imported "/Users/test/Music/Secret Demo.wav" for proj_copy_alpha with art_copy_alpha.',
+        duration_ms: 1000, throughput_bytes_per_second: 1000, time_to_first_artifact_ms: 0,
+        served_artifact_requests: 1, total_served_bytes: 1000,
+        project_results: [
+          { project_id: "proj_progress_failure", status: "failed", is_final: false },
+          { project_id: "proj_final_skip", status: "skipped", is_final: true },
+        ],
+      }),
+    });
+
+    await openSyncTab(user);
+    const projectEvidence = await screen.findByRole("list", { name: "Last sync project evidence" });
+    expect(within(projectEvidence).getByText("Failed (event)")).toBeInTheDocument();
+    expect(within(projectEvidence).getByText("Skipped")).toBeInTheDocument();
+    const exportedJson = await exportEvidenceFromCurrentSyncResult(user);
+
+    expect(exportedJson.projects).toEqual(expect.arrayContaining([
+      expect.objectContaining({ status: "failed", isFinal: false }),
+      expect.objectContaining({ status: "skipped", isFinal: true }),
+    ]));
+    expect(exportedJson.metrics).toMatchObject({
+      projectResultsByStatus: { skipped: 1 },
+      transferCounts: { failedProjectCount: 0, skippedProjectCount: 1, totalProjectCount: 1 },
+    });
+    expect(exportedJson.validation).toMatchObject({ outcomeOk: true, issues: [] });
+    expect(await validateExportedEvidence(exportedJson)).toMatchObject({ ok: true, schemaPrivacyOk: true });
+  });
+
+  it("exports mixed failed and conflicted listener evidence with consistent counts", async () => {
+    const user = userEvent.setup();
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: listenerEndpointHints,
+      last_sync: syncRunStatus({
+        run_id: "sync_run_mixed_counts",
+        session_id: "sync_session_mixed_counts",
+        status: "completed_with_errors",
+        message: "Sync completed with failed and conflicted project results.",
+        started_at: "2026-04-18T13:16:00.000Z",
+        completed_at: "2026-04-18T13:16:00.600Z",
+        duration_ms: 600,
+        throughput_bytes_per_second: 4000,
+        imported_project_count: 0,
+        applied_project_count: 0,
+        deleted_project_count: 0,
+        skipped_project_count: 1,
+        conflicted_project_count: 1,
+        failed_project_count: 2,
         project_results: [
           {
-            project_id: "proj_copy_alpha",
-            status: "imported",
-            message: "Imported proj_copy_alpha from file:///Users/test/Music/Secret%20Demo.wav.",
-            imported_count: 1,
+            project_id: "proj_mixed_conflict",
+            status: "conflicted",
+            message: "Lyrics conflict requires manual review.",
+          },
+          {
+            project_id: "proj_mixed_failed",
+            status: "failed",
+            message: "Manifest export failed before transfer.",
+          },
+          {
+            project_id: "proj_mixed_skipped",
+            status: "skipped",
+            message: "Already up to date.",
           },
         ],
-        received_artifacts: [
+        manifest_errors: [
           {
-            artifact_id: "art_copy_alpha",
-            content_sha256: "sha256-copy-alpha",
-            size_bytes: 1_000_000,
-            status: "received",
-            message: "Fetched art_copy_alpha from Secret Demo.wav",
+            project_id: "proj_mixed_failed",
+            message: "Manifest export failed before transfer.",
+          },
+        ],
+        phase_timings: [
+          {
+            phase: "reconciliation_apply_project",
+            started_at: "2026-04-18T13:16:00.000Z",
+            completed_at: "2026-04-18T13:16:00.500Z",
+            duration_ms: 500,
+          },
+          {
+            phase: "reconciliation_apply_project",
+            started_at: "2026-04-18T13:16:00.100Z",
+            completed_at: "2026-04-18T13:16:00.600Z",
+            duration_ms: 500,
           },
         ],
       }),
     });
 
     await openSyncTab(user);
-    await user.click(screen.getByRole("button", { name: "Copy Evidence" }));
 
-    await waitFor(() => expect(writeText).toHaveBeenCalledOnce());
-    const copiedJson = JSON.parse(writeText.mock.calls[0]?.[0] as string) as Record<string, unknown>;
-    expect(await screen.findByText("Sync evidence copied.")).toBeInTheDocument();
-    expect(copiedJson.validation).toMatchObject({
-      schema: "tuneforge-sync-evidence-v1",
-      privacySafe: true,
+    expect(
+      await screen.findByText(canonicalSummary({ skipped: 1, conflicted: 1, failed: 1, manifestErrors: 1 })),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Sync completed with failed and conflicted project results.")).not.toBeInTheDocument();
+    expect(screen.getByText(/1 skipped, 1 conflicted, 1 failed/)).toBeInTheDocument();
+    expect(screen.getByText(/Largest aggregate phase Reconciliation Apply Project 1\.0 s/)).toBeInTheDocument();
+
+    const exportedJson = await exportEvidenceFromCurrentSyncResult(user);
+
+    expect(exportedJson.metrics).toMatchObject({
+      reconciliation_apply_ms: 600,
+      reconciliation_apply_aggregate_ms: 1000,
+      reconciliation_apply_timing: {
+        semantics: "wall_clock_interval_union_bounded_to_run",
+      },
+      projectResultsByStatus: {
+        conflicted: 1,
+        failed: 1,
+        skipped: 1,
+      },
+      transferCounts: {
+        skippedProjectCount: 1,
+        conflictedProjectCount: 1,
+        failedProjectCount: 1,
+        totalProjectCount: 3,
+        manifestExportErrorCount: 1,
+      },
     });
-    const serialized = JSON.stringify(copiedJson);
-    expect(serialized).toContain("project_1");
-    expect(serialized).toContain("artifact_1");
-    expect(serialized).not.toContain("device_peer_1");
-    expect(serialized).not.toContain("proj_copy_alpha");
-    expect(serialized).not.toContain("art_copy_alpha");
-    expect(serialized).not.toContain("sha256-copy-alpha");
-    expect(serialized).not.toContain("Secret Demo.wav");
-    expect(serialized).not.toContain("/Users/test/Music");
-    expect(serialized).not.toContain("file://");
+    expect(exportedJson.validation).toMatchObject({
+      ok: false,
+      issues: expect.arrayContaining([
+        "conflicted_project_count",
+        "failed_project_count",
+        "manifest_export_error_count",
+        "project_status_conflicted",
+        "project_status_failed",
+      ]),
+    });
+    const serialized = JSON.stringify(exportedJson);
+    expect(serialized).not.toContain("proj_mixed_conflict");
+    expect(serialized).not.toContain("proj_mixed_failed");
+  });
+
+  it("does not treat run bounds as source project apply timing", async () => {
+    const user = userEvent.setup();
+    const normalized = normalizeSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: listenerEndpointHints,
+      last_sync: {
+        status: "completed",
+        selected_transport: irohTransportId, attempted_transports: [irohTransportId],
+        started_at: "2026-04-18T13:16:00.000Z", completed_at: "2026-04-18T13:16:00.600Z",
+        duration_ms: 600, throughput_bytes_per_second: 1000, total_received_bytes: 100,
+        total_served_bytes: 0, served_artifact_requests: 0,
+        time_to_first_artifact_ms: 100,
+        project_results: [{ project_id: "proj_legacy_apply", status: "applied" }],
+        received_artifacts: [{ artifact_id: "art_legacy_apply", size_bytes: 100,
+          status: "received", duration_ms: 100 }],
+        phase_timings: [{ phase: "staging_post", project_id: "proj_legacy_apply",
+          started_at: "2026-04-18T13:16:00.000Z", completed_at: "2026-04-18T13:16:00.100Z",
+          duration_ms: 100 }],
+      },
+    });
+
+    expect(normalized.last_sync?.project_results[0]).toMatchObject({
+      project_id: "proj_legacy_apply", started_at: null, completed_at: null,
+    });
+    setSyncTransportStatus(normalized);
+    await openSyncTab(user);
+    expect(screen.getByText("proj_legacy_apply")).toBeInTheDocument();
+    expect(screen.getByText("Applied")).toBeInTheDocument();
+
+    const exportedJson = await exportEvidenceFromCurrentSyncResult(user);
+    expect(exportedJson.metrics).toMatchObject({
+      reconciliation_apply_ms: null,
+      reconciliation_apply_aggregate_ms: null,
+      reconciliation_apply_timing: { semantics: "not_reported" },
+    });
+    const validation = await validateExportedEvidence(exportedJson);
+    expect(validation).toMatchObject({ ok: false, schemaPrivacyOk: false });
+    expect(validation.errors).toEqual(["Missing required metric: reconciliation apply time."]);
+  });
+
+  it.each([
+    {
+      label: "duration-only entries",
+      phaseTimings: [
+        { phase: "reconciliation_apply_project", duration_ms: 500 },
+        { phase: "reconciliation_apply_project", duration_ms: 500 },
+      ],
+      wallClockMs: null, aggregateMs: 1000, semantics: "aggregate_only", assertUi: true, validatorErrors: [],
+    },
+    {
+      label: "mixed timestamped and duration-only entries",
+      phaseTimings: [
+        { phase: "reconciliation_apply_project", started_at: "2026-04-18T13:16:00.000Z",
+          completed_at: "2026-04-18T13:16:00.300Z", duration_ms: 300 },
+        { phase: "reconciliation_apply_project", duration_ms: 200 },
+      ],
+      wallClockMs: null, aggregateMs: 500, semantics: "aggregate_only", assertUi: false, validatorErrors: [],
+    },
+    {
+      label: "contradictory interval durations",
+      phaseTimings: [
+        { phase: "reconciliation_apply_project", started_at: "2026-04-18T13:16:00.100Z",
+          completed_at: "2026-04-18T13:16:00.300Z", duration_ms: 500 },
+      ],
+      wallClockMs: null, aggregateMs: null, semantics: "not_reported", assertUi: false,
+      validatorErrors: ["Missing required metric: reconciliation apply time."],
+    },
+    {
+      label: "out-of-run intervals",
+      phaseTimings: [
+        { phase: "reconciliation_apply_project", started_at: "2026-04-18T13:15:59.900Z",
+          completed_at: "2026-04-18T13:16:00.200Z", duration_ms: 300 },
+      ],
+      wallClockMs: null, aggregateMs: 300, semantics: "aggregate_only", assertUi: false, validatorErrors: [],
+    },
+    {
+      label: "interval-derived aggregate duration",
+      phaseTimings: [
+        { phase: "reconciliation_apply_project", started_at: "2026-04-18T13:16:00.100Z",
+          completed_at: "2026-04-18T13:16:00.400Z" },
+      ],
+      wallClockMs: 300, aggregateMs: 300, semantics: "wall_clock_interval_union_bounded_to_run",
+      assertUi: false, validatorErrors: [],
+    },
+    {
+      label: "tolerated explicit duration below interval",
+      phaseTimings: [
+        { phase: "reconciliation_apply_project", started_at: "2026-04-18T13:16:00.100Z",
+          completed_at: "2026-04-18T13:16:00.400Z", duration_ms: 299 },
+      ],
+      wallClockMs: 300, aggregateMs: 300, semantics: "wall_clock_interval_union_bounded_to_run",
+      assertUi: false, validatorErrors: [],
+    },
+    {
+      label: "tolerated explicit duration above interval",
+      phaseTimings: [
+        { phase: "reconciliation_apply_project", started_at: "2026-04-18T13:16:00.100Z",
+          completed_at: "2026-04-18T13:16:00.400Z", duration_ms: 301 },
+      ],
+      wallClockMs: 300, aggregateMs: 301, semantics: "wall_clock_interval_union_bounded_to_run",
+      assertUi: false, validatorErrors: [],
+    },
+    {
+      label: "uncovered aggregate entries",
+      phaseTimings: [
+        { phase: "reconciliation_apply_project", duration_ms: 200 },
+        { phase: "reconciliation_apply_project" },
+      ],
+      wallClockMs: null, aggregateMs: null, semantics: "not_reported", assertUi: false,
+      validatorErrors: ["Missing required metric: reconciliation apply time."],
+    },
+  ])("exports truthful apply timing for $label", async ({
+    phaseTimings, wallClockMs, aggregateMs, semantics, assertUi, validatorErrors,
+  }) => {
+    const user = userEvent.setup();
+    setSyncTransportStatus(normalizeSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: listenerEndpointHints,
+      last_sync: {
+        status: "completed",
+        selected_transport: irohTransportId,
+        attempted_transports: [irohTransportId],
+        started_at: "2026-04-18T13:16:00.000Z",
+        completed_at: "2026-04-18T13:16:00.600Z",
+        duration_ms: 600,
+        throughput_bytes_per_second: 1000,
+        total_received_bytes: 100,
+        total_served_bytes: 0,
+        served_artifact_requests: 0,
+        time_to_first_artifact_ms: 100,
+        project_results: [{ project_id: "proj_timing_truth", status: "skipped",
+          started_at: "2026-04-18T13:16:00.000Z", completed_at: "2026-04-18T13:16:00.600Z" }],
+        received_artifacts: [{ artifact_id: "art_timing_truth", size_bytes: 100,
+          status: "received", duration_ms: 100 }],
+        phase_timings: [
+          { phase: "staging_post", project_id: "proj_timing_truth",
+            started_at: "2026-04-18T13:16:00.000Z", completed_at: "2026-04-18T13:16:00.100Z",
+            duration_ms: 100 },
+          ...phaseTimings,
+        ],
+      },
+    }));
+
+    await openSyncTab(user);
+    if (assertUi) {
+      expect(screen.getByText(/Largest aggregate phase Reconciliation Apply Project 1\.0 s/)).toBeInTheDocument();
+    }
+    const exportedJson = await exportEvidenceFromCurrentSyncResult(user);
+
+    expect(exportedJson.metrics).toMatchObject({
+      reconciliation_apply_ms: wallClockMs,
+      reconciliation_apply_aggregate_ms: aggregateMs,
+      reconciliation_apply_timing: { semantics },
+    });
+    const validation = await validateExportedEvidence(exportedJson);
+    expect(validation.errors).toEqual(validatorErrors);
+    expect(validation).toMatchObject({
+      ok: validatorErrors.length === 0,
+      schemaPrivacyOk: validatorErrors.length === 0,
+    });
+  });
+
+  it("exports omitted legacy accounting as unknown rather than zero", async () => {
+    const user = userEvent.setup();
+    setSyncTransportStatus(normalizeSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: listenerEndpointHints,
+      last_sync: {
+        status: "completed",
+        message: "Legacy sync completed.",
+        selected_transport: "iroh",
+        duration_ms: 1000,
+        throughput_bytes_per_second: 0,
+        total_received_bytes: 0,
+        total_served_bytes: 0,
+        served_artifact_requests: 0,
+      },
+    }));
+
+    await openSyncTab(user);
+    expect(await screen.findByText("Legacy sync completed.")).toBeInTheDocument();
+    const exportedJson = await exportEvidenceFromCurrentSyncResult(user);
+    const metrics = exportedJson.metrics as {
+      transfer_counts: Record<string, number | null>;
+      transferCounts: Record<string, number | null>;
+    };
+
+    expect(metrics.transfer_counts).toEqual({
+      requested: null,
+      received: null,
+      skipped: null,
+      already_staged: null,
+      failed: null,
+      retried: null,
+    });
+    expect(metrics.transferCounts).toMatchObject({
+      importedProjectCount: null,
+      appliedProjectCount: null,
+      deletedProjectCount: null,
+      skippedProjectCount: null,
+      conflictedProjectCount: null,
+      failedProjectCount: null,
+      totalProjectCount: null,
+      manifestExportErrorCount: null,
+    });
+  });
+
+  it("exports manifest-only listener errors outside failed project counts", async () => {
+    const user = userEvent.setup();
+    const normalized = normalizeSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: listenerEndpointHints,
+      last_sync: syncRunStatus({
+        run_id: "sync_run_manifest_only",
+        session_id: "sync_session_manifest_only",
+        status: "completed_with_errors",
+        message: null,
+        local_manifest_count: 1,
+        remote_manifest_count: 1,
+        imported_project_count: 0,
+        applied_project_count: 0,
+        deleted_project_count: 0,
+        skipped_project_count: 0,
+        conflicted_project_count: 0,
+        failed_project_count: 0,
+        manifest_export_error_count: 0,
+        duration_ms: 1000,
+        throughput_bytes_per_second: 1000,
+        time_to_first_artifact_ms: 0,
+        served_artifact_requests: 1,
+        total_served_bytes: 1000,
+        project_results: [],
+        manifest_errors: [
+          {
+            project_id: "proj_manifest_only",
+            message: "Peer manifest export failed before apply.",
+          },
+        ],
+      }),
+    });
+    expect(normalized.last_sync?.manifest_export_error_count).toBe(1);
+    expect(normalized.last_sync?.message).toBe(canonicalSummary({ local: 1, remote: 1, manifestErrors: 1 }));
+    setSyncTransportStatus(normalized);
+
+    await openSyncTab(user);
+
+    expect(await screen.findByText(`No project changes. ${canonicalSummary({
+      local: 1,
+      remote: 1,
+      manifestErrors: 1,
+    })}`))
+      .toBeInTheDocument();
+    expect(screen.getByText(/0 skipped, 0 conflicted, 0 failed, 1 manifest export error/)).toBeInTheDocument();
+    const projectResults = await screen.findByRole("list", { name: "Last sync project evidence" });
+    expect(within(projectResults).getByText("Manifest Export Error")).toBeInTheDocument();
+
+    const exportedJson = await exportEvidenceFromCurrentSyncResult(user);
+
+    expect(exportedJson.metrics).toMatchObject({
+      projectResultsByStatus: {
+      },
+      transferCounts: {
+        failedProjectCount: 0,
+        conflictedProjectCount: 0,
+        totalProjectCount: 0,
+        manifestExportErrorCount: 1,
+      },
+    });
+    expect(exportedJson.validation).toMatchObject({
+      scope: "run_outcome",
+      ok: false,
+      outcomeOk: false,
+      issues: expect.arrayContaining([
+        "manifest_export_error_count",
+      ]),
+    });
+    expect((exportedJson.validation as { issues: string[] }).issues)
+      .not.toContain("project_status_manifest_export_error");
+    const validation = await validateExportedEvidence(exportedJson);
+    expect(validation).toMatchObject({ ok: true, schemaPrivacyOk: true });
+  });
+
+  it("exports multiple manifest errors for one project outside final outcome buckets", async () => {
+    const user = userEvent.setup();
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: listenerEndpointHints,
+      last_sync: syncRunStatus({
+        status: "completed_with_errors",
+        duration_ms: 1000,
+        throughput_bytes_per_second: 1000,
+        time_to_first_artifact_ms: 0,
+        served_artifact_requests: 1,
+        total_served_bytes: 1000,
+        manifest_export_error_count: 2,
+        project_results_complete: true,
+        received_artifacts_complete: true,
+        manifest_errors: [
+          { project_id: "proj_manifest_repeat", message: "Local manifest export failed." },
+          { project_id: "proj_manifest_repeat", message: "Peer manifest export failed." },
+        ],
+      }),
+    });
+
+    await openSyncTab(user);
+    const exportedJson = await exportEvidenceFromCurrentSyncResult(user);
+    const metrics = exportedJson.metrics as {
+      projectResultsByStatus: Record<string, number>;
+      transferCounts: Record<string, number>;
+      total_served_bytes: number;
+    };
+
+    expect(exportedJson.projects).toEqual([
+      expect.objectContaining({ label: "Project 1", status: "manifest_export_error" }),
+    ]);
+    expect(metrics.projectResultsByStatus).toEqual({});
+    expect(metrics.total_served_bytes).toBe(1000);
+    expect(metrics.transferCounts).toMatchObject({
+      failedProjectCount: 0,
+      totalProjectCount: 0,
+      manifestExportErrorCount: 2,
+    });
+    expect(metrics.transferCounts).not.toHaveProperty("manifestErrorCount");
+    expect((exportedJson.validation as { issues: string[] }).issues)
+      .not.toContain("project_status_manifest_export_error");
+    const validation = await validateExportedEvidence(exportedJson);
+    expect(validation.errors).toEqual([]);
+    expect(validation).toMatchObject({ ok: true, schemaPrivacyOk: true });
+  });
+
+  it("exports overlapping failed projects and manifest errors with validator-consistent status buckets", async () => {
+    const user = userEvent.setup();
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: listenerEndpointHints,
+      last_sync: syncRunStatus({
+        run_id: "sync_run_overlap_manifest_error",
+        session_id: "sync_session_overlap_manifest_error",
+        status: "completed_with_errors",
+        message: null,
+        started_at: "2026-04-18T13:16:00.000Z",
+        completed_at: "2026-04-18T13:16:01.000Z",
+        duration_ms: 1000,
+        time_to_first_artifact_ms: 100,
+        throughput_bytes_per_second: 1000,
+        total_received_bytes: 1000,
+        total_served_bytes: 0,
+        served_artifact_requests: 0,
+        failed_project_count: 1,
+        manifest_export_error_count: 1,
+        project_results: [
+          {
+            project_id: "proj_overlap_private",
+            status: "failed",
+            message: "Project failed after manifest export warning.",
+            is_final: true,
+            started_at: "2026-04-18T13:16:00.200Z",
+            completed_at: "2026-04-18T13:16:00.900Z",
+            failed_count: 1,
+          },
+        ],
+        manifest_errors: [
+          {
+            project_id: "proj_overlap_private",
+            message: "Manifest export failed for overlapping project.",
+          },
+        ],
+        phase_timings: [
+          {
+            phase: "staging_post",
+            started_at: "2026-04-18T13:16:00.000Z",
+            completed_at: "2026-04-18T13:16:00.200Z",
+            duration_ms: 200,
+          },
+          {
+            phase: "reconciliation_apply",
+            project_id: "proj_overlap_private",
+            started_at: "2026-04-18T13:16:00.200Z",
+            completed_at: "2026-04-18T13:16:00.500Z",
+            duration_ms: 300,
+          },
+        ],
+        received_artifacts: [
+          {
+            artifact_id: "art_overlap_private",
+            size_bytes: 1000,
+            status: "received",
+            duration_ms: 100,
+          },
+        ],
+      }),
+    });
+
+    await openSyncTab(user);
+    const exportedJson = await exportEvidenceFromCurrentSyncResult(user);
+    const exportedMetrics = exportedJson.metrics as {
+      projectResultsByStatus?: Record<string, number>;
+      transferCounts?: Record<string, number>;
+    };
+
+    expect(exportedJson.projects).toEqual([
+      expect.objectContaining({
+        label: "Project 1",
+        status: "failed",
+      }),
+    ]);
+    expect(exportedMetrics.projectResultsByStatus).toEqual({ failed: 1 });
+    expect(exportedMetrics.transferCounts).toMatchObject({
+      failedProjectCount: 1,
+      totalProjectCount: 1,
+      manifestExportErrorCount: 1,
+    });
+    expect((exportedJson.validation as { issues: string[] }).issues)
+      .not.toContain("project_status_manifest_export_error");
+    const validation = await validateExportedEvidence(exportedJson);
+    expect(validation).toMatchObject({ ok: true, schemaPrivacyOk: true });
+    expect(JSON.stringify(exportedJson)).not.toContain("proj_overlap_private");
+  });
+
+  it("exports no-change listener sync evidence as successful", async () => {
+    const user = userEvent.setup();
+    setSyncTransportStatus({
+      active: true,
+      status: "listening",
+      endpoint_hints: listenerEndpointHints,
+      last_sync: syncRunStatus({
+        run_id: "sync_run_no_change",
+        session_id: "sync_session_no_change",
+        status: "completed",
+        message: "Sync completed with no project changes.",
+        started_at: "2026-04-18T13:16:00.000Z",
+        completed_at: "2026-04-18T13:16:01.000Z",
+        duration_ms: 1000,
+        throughput_bytes_per_second: 0,
+        imported_project_count: 0,
+        applied_project_count: 0,
+        deleted_project_count: 0,
+        skipped_project_count: 2,
+        conflicted_project_count: 0,
+        failed_project_count: 0,
+        total_project_count: 2,
+        received_artifacts_complete: true,
+        project_results: [],
+      }),
+    });
+
+    await openSyncTab(user);
+
+    expect(await screen.findByText(`No project changes. ${canonicalSummary({ skipped: 2 })}`)).toBeInTheDocument();
+    expect(screen.queryByText("Sync completed with no project changes.")).not.toBeInTheDocument();
+    expect(screen.getByText(/2 skipped, 0 conflicted, 0 failed/)).toBeInTheDocument();
+
+    const exportedJson = await exportEvidenceFromCurrentSyncResult(user);
+
+    expect(exportedJson.validation).toMatchObject({
+      scope: "run_outcome",
+      ok: true,
+      outcomeOk: true,
+      issues: [],
+    });
+    expect(exportedJson.metrics).toMatchObject({
+      network_receive_throughput_bytes_per_second: null,
+      network_send_throughput_bytes_per_second: null,
+      project_imports_per_minute: 0,
+      projectResultsByStatus: {
+        skipped: 2,
+      },
+      transferCounts: {
+        skippedProjectCount: 2,
+        conflictedProjectCount: 0,
+        failedProjectCount: 0,
+        totalProjectCount: 2,
+        manifestExportErrorCount: 0,
+      },
+    });
+    expect(exportedJson.projects).toEqual([]);
   });
 
   it("exports evidence through the Tauri save command when available", async () => {
@@ -3340,7 +4291,7 @@ describe("Desktop app activity", () => {
     expect(await screen.findByText(/Sync evidence exported/)).toBeInTheDocument();
     expect(exportedJson.scenario).toBe("listener-last-sync");
     expect(exportedJson.run).toMatchObject({
-      label: "run_1",
+      label: "Run 1",
       hasRunId: true,
       hasSessionId: true,
       status: "completed",
@@ -3512,7 +4463,7 @@ describe("Desktop app activity", () => {
     expect(peerRow).not.toBeNull();
     await user.click(within(peerRow as HTMLElement).getByRole("button", { name: "Sync Now" }));
 
-    expect(await screen.findAllByText("Sync now imported proj_now_result.")).not.toHaveLength(0);
+    expect(await screen.findByText("proj_now_result")).toBeInTheDocument();
     const exportedJson = await exportEvidenceFromCurrentSyncResult(user);
 
     expect(exportedJson.scenario).toBe("sync-now-result");
@@ -3532,7 +4483,7 @@ describe("Desktop app activity", () => {
     });
     expect(exportedJson.projects).toEqual([
       expect.objectContaining({
-        label: "project_1",
+        label: "Project 1",
         status: "imported",
         counts: expect.objectContaining({
           imported: 1,
@@ -3571,8 +4522,11 @@ describe("Desktop app activity", () => {
             message: "Old listener result.",
           },
         ],
+        project_results_complete: true,
         manifest_errors: [],
+        manifest_errors_complete: true,
         received_artifacts: [],
+        received_artifacts_complete: true,
         served_artifact_requests: 0,
         local_manifest_count: 0,
         remote_manifest_count: 1,
@@ -3585,7 +4539,8 @@ describe("Desktop app activity", () => {
     expect(peerRow).not.toBeNull();
     await user.click(within(peerRow as HTMLElement).getByRole("button", { name: "Sync Now" }));
 
-    expect(await screen.findAllByText("Manifest exchange completed with 4 project results.")).not.toHaveLength(0);
+    expect(await screen.findAllByText(defaultSyncNowCanonicalSummary)).not.toHaveLength(0);
+    expect(screen.queryByText("Manifest exchange completed with 4 project results.")).not.toBeInTheDocument();
     expect(screen.getByText("proj_imported")).toBeInTheDocument();
 
     setSyncTransportStatus({
@@ -3604,8 +4559,11 @@ describe("Desktop app activity", () => {
             message: "New listener result.",
           },
         ],
+        project_results_complete: true,
         manifest_errors: [],
+        manifest_errors_complete: true,
         received_artifacts: [],
+        received_artifacts_complete: true,
         served_artifact_requests: 0,
         local_manifest_count: 0,
         remote_manifest_count: 1,
@@ -3616,7 +4574,7 @@ describe("Desktop app activity", () => {
     });
     await user.click(screen.getByRole("button", { name: "Answer Offer" }));
 
-    expect(await screen.findByText("Listener import completed after sync now.")).toBeInTheDocument();
+    expect(await screen.findByText(importedOneRemoteCanonicalSummary)).toBeInTheDocument();
     expect(screen.getByText("proj_listener_new")).toBeInTheDocument();
     expect(screen.queryByText("proj_imported")).not.toBeInTheDocument();
   });

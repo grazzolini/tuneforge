@@ -10,6 +10,37 @@ import {
   summarizeEvidence,
   validateEvidence,
 } from "./sync-validation.mjs";
+import {
+  SYNC_PRIVACY_HASH_TOKENS,
+  SYNC_PRIVACY_RAW_ID_TOKENS,
+  SYNC_PRIVACY_SAFE_OPERATIONAL_TOKENS,
+} from "./sync-privacy-token-cases.mjs";
+
+const RECEIVER_TRANSFER_COUNTS = {
+  requested: 8,
+  received: 8,
+  skipped: 0,
+  already_staged: 0,
+  failed: 0,
+  retried: 0,
+};
+const ZERO_TRANSFER_COUNTS = Object.fromEntries(
+  Object.keys(RECEIVER_TRANSFER_COUNTS).map((key) => [key, 0]),
+);
+
+function makeReceiverMetrics(overrides = {}) {
+  return {
+    network_receive_throughput_bytes_per_second: 2_000_000,
+    total_received_bytes: 8_000_000,
+    backend_staging_throughput_bytes_per_second: 1_500_000,
+    reconciliation_apply_ms: 300,
+    project_imports_per_minute: 12,
+    project_availability_gap_ms: 5_000,
+    ttfa_ms: 900,
+    transfer_counts: { ...RECEIVER_TRANSFER_COUNTS },
+    ...overrides,
+  };
+}
 
 function makeEvidence(overrides = {}) {
   return {
@@ -21,6 +52,7 @@ function makeEvidence(overrides = {}) {
       phase_timings: [
         { phase: "network_receive", duration_ms: 1200 },
         { phase: "staging_post", duration_ms: 400 },
+        { phase: "backend_staging", duration_ms: 1 },
         { phase: "reconciliation_apply", duration_ms: 300 },
       ],
     },
@@ -30,22 +62,7 @@ function makeEvidence(overrides = {}) {
       fallback_code: null,
       fallback_reason: null,
     },
-    metrics: {
-      network_receive_throughput_bytes_per_second: 2_000_000,
-      backend_staging_throughput_bytes_per_second: 1_500_000,
-      reconciliation_apply_ms: 300,
-      project_imports_per_minute: 12,
-      project_availability_gap_ms: 5_000,
-      ttfa_ms: 900,
-      transfer_counts: {
-        requested: 8,
-        received: 8,
-        skipped: 0,
-        already_staged: 0,
-        failed: 0,
-        retried: 0,
-      },
-    },
+    metrics: makeReceiverMetrics(),
     projects: {
       imported: 2,
       labels: ["project-1", "project-2"],
@@ -77,6 +94,23 @@ function makeEvidence(overrides = {}) {
   };
 }
 
+function makeProjectAccountingEvidence({
+  projectResultsByStatus,
+  projectCounts,
+  projects = [],
+  metricOverrides = {},
+}) {
+  return makeEvidence({
+    metrics: makeReceiverMetrics({
+      project_imports_per_minute: 0,
+      ...metricOverrides,
+      transferCounts: projectCounts,
+      projectResultsByStatus,
+    }),
+    projects,
+  });
+}
+
 function makeSenderOnlyEvidence(overrides = {}) {
   const transferCounts = {
     requested: 0,
@@ -94,7 +128,7 @@ function makeSenderOnlyEvidence(overrides = {}) {
       listenerStatus: "listening",
     },
     run: {
-      label: "run_1",
+      label: "Run 1",
       status: "completed",
       message: "Exchanged 1 local and 0 remote manifest(s); imported 0 project(s), received 0 artifact(s).",
     },
@@ -107,6 +141,7 @@ function makeSenderOnlyEvidence(overrides = {}) {
     },
     metrics: {
       network_receive_throughput_bytes_per_second: 42_409_204.7,
+      throughputBytesPerSecond: 42_409_204.7,
       backend_staging_throughput_bytes_per_second: null,
       reconciliation_apply_ms: null,
       project_imports_per_minute: 0,
@@ -151,6 +186,24 @@ function makeSenderOnlyEvidence(overrides = {}) {
   });
 }
 
+function makeNoOpEvidence() {
+  const evidence = makeSenderOnlyEvidence();
+  Object.assign(evidence.metrics, { network_send_throughput_bytes_per_second: null,
+    throughputBytesPerSecond: 0, project_imports_per_minute: null, ttfa_ms: null });
+  Object.assign(evidence.metrics.transferCounts, { servedArtifactRequests: 0 });
+  Object.assign(evidence.metrics.diagnostics, { total_received_bytes: 0, total_served_bytes: 0 });
+  return evidence;
+}
+
+function makeReceiverMutationEvidence(overrides) {
+  const evidence = makeSenderOnlyEvidence(overrides);
+  evidence.metrics.network_send_throughput_bytes_per_second = null;
+  Object.assign(evidence.metrics, { network_receive_throughput_bytes_per_second: 0, throughputBytesPerSecond: 0 });
+  evidence.metrics.transferCounts.servedArtifactRequests = 0;
+  evidence.metrics.diagnostics.total_served_bytes = 0;
+  return evidence;
+}
+
 test("validateEvidence passes valid scenario evidence", () => {
   const result = validateEvidence(makeEvidence(), { scenario: "desktop-to-desktop" });
   assert.equal(result.ok, true);
@@ -162,9 +215,76 @@ test("validateEvidence passes sender-only evidence without receiver metrics", ()
   assert.equal(result.ok, true);
   assert.deepEqual(result.errors, []);
   assert.equal(result.normalized.runRole, "sender_only");
+  assert.equal(result.normalized.networkReceiveThroughputBytesPerSecond, null);
+  assert.equal(result.normalized.networkSendThroughputBytesPerSecond, 42_409_204.7);
   assert.equal(result.normalized.backendStagingThroughputBytesPerSecond, null);
   assert.equal(result.normalized.reconciliationApplyMs, null);
   assert.equal(result.normalized.projectAvailabilityGapMs, null);
+});
+
+test("validateEvidence accepts true no-op evidence without work metrics", () => {
+  const result = validateEvidence(makeNoOpEvidence(), { scenario: "listener-last-sync" });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.schemaPrivacyOk, true);
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.normalized.runRole, "no_op");
+  for (const metric of ["networkReceiveThroughputBytesPerSecond", "networkSendThroughputBytesPerSecond",
+    "backendStagingThroughputBytesPerSecond", "reconciliationApplyMs", "projectImportsPerMinute",
+    "projectAvailabilityGapMs", "ttfaMs"]) {
+    assert.equal(result.normalized[metric], null, metric);
+  }
+});
+
+test("validateEvidence requires positive byte proof for positive throughput", () => {
+  for (const [bytes, ok] of [[null, false], [0, false], [-1, false], [8_000_000, true]]) {
+    const result = validateEvidence(makeEvidence({ metrics: makeReceiverMetrics(
+      { total_received_bytes: bytes, total_served_bytes: 0 }) }));
+    assert.equal(result.ok, ok, String(bytes));
+    if (!ok) assert.match(result.errors.join(" "), /Positive network receive throughput requires positive/);
+    if (bytes === -1) assert.match(result.errors.join(" "), /received byte total.*combined byte total/);
+  }
+  for (const bytes of [null, -1]) {
+    const sender = makeSenderOnlyEvidence(); sender.metrics.diagnostics.total_served_bytes = bytes;
+    const errors = validateEvidence(sender).errors.join(" ");
+    assert.match(errors, /Positive network send throughput requires positive/);
+    if (bytes === -1) assert.match(errors, /served byte total/);
+  }
+  const aggregate = makeEvidence({ metrics: makeReceiverMetrics({ throughputBytesPerSecond: 1 }) });
+  assert.match(validateEvidence(aggregate).errors.join(" "), /Positive aggregate network throughput requires positive/);
+});
+
+test("validateEvidence remaps legacy bidirectional aggregate receive throughput", () => {
+  const evidence = makeEvidence();
+  evidence.run.durationMs = 1_000;
+  Object.assign(evidence.metrics, { total_received_bytes: 100, total_served_bytes: 200,
+    network_receive_throughput_bytes_per_second: 300, throughputBytesPerSecond: 300,
+    transferCounts: { servedArtifactRequests: 1 } });
+  const result = validateEvidence(evidence);
+  assert.equal(result.ok, true);
+  assert.deepEqual([result.normalized.networkReceiveThroughputBytesPerSecond,
+    result.normalized.networkSendThroughputBytesPerSecond,
+    result.normalized.aggregateNetworkThroughputBytesPerSecond], [100, 200, 300]);
+  delete evidence.metrics.network_receive_throughput_bytes_per_second;
+  delete evidence.run.durationMs;
+  const genericOnly = validateEvidence(evidence).normalized;
+  assert.deepEqual([genericOnly.networkReceiveThroughputBytesPerSecond,
+    genericOnly.networkSendThroughputBytesPerSecond], [null, null]);
+});
+
+test("validateEvidence trusts received artifact rows only when complete or count-matched", () => {
+  for (const [receivedCount, complete, expected] of [[2, false, null], [1, false, 100], [2, true, null]]) {
+    const mismatch = receivedCount === 2 && complete;
+    const evidence = makeEvidence({ artifacts: [{ status: "received", sizeBytes: 100 },
+      { status: "failed", sizeBytes: 900 }], run: { ...makeEvidence().run, received_artifacts_complete: complete },
+      metrics: makeReceiverMetrics({ total_received_bytes: null,
+        network_receive_throughput_bytes_per_second: mismatch ? null : 2_000_000,
+        transfer_counts: { ...RECEIVER_TRANSFER_COUNTS, received: receivedCount } }) });
+    const result = validateEvidence(evidence);
+    assert.equal(result.normalized.totalReceivedBytes, expected);
+    if (mismatch) assert.match(result.errors.join(" "),
+      /Complete received artifact rows disagree with authoritative received count/);
+  }
 });
 
 test("validateEvidence reads nested counts when transfer_counts is diagnostic", () => {
@@ -184,17 +304,40 @@ test("validateEvidence reads nested counts when transfer_counts is diagnostic", 
   assert.equal(result.normalized.transferCounts.received, 0);
 });
 
+test("validateEvidence preserves schema-v1 byte and directional rate aliases", () => {
+  const cases = [
+    ...["served_bytes", "servedBytes"].map((alias) => [alias, "served", "totalServedBytes", 227_671_416]),
+    ...["received_bytes", "receivedBytes"].map((alias) => [alias, "received", "totalReceivedBytes", 8_000_000]),
+    ...["receive_throughput_bytes_per_second", "transport_receive_throughput_bytes_per_second"]
+      .map((alias) => [alias, "receive", "networkReceiveThroughputBytesPerSecond", 1234]),
+    ...["send_throughput_bytes_per_second", "transport_send_throughput_bytes_per_second"]
+      .map((alias) => [alias, "send", "networkSendThroughputBytesPerSecond", 1234]),
+    ["throughput_bytes_per_second", "receive", "networkReceiveThroughputBytesPerSecond", 1234],
+    ["throughputBytesPerSecond", "send", "networkSendThroughputBytesPerSecond", 4321],
+  ];
+  for (const [alias, kind, field, expected] of cases) {
+    const evidence = ["served", "send"].includes(kind) ? makeSenderOnlyEvidence() : makeEvidence();
+    if (kind === "served") delete evidence.metrics.diagnostics.total_served_bytes;
+    else if (kind === "received") delete evidence.metrics.total_received_bytes;
+    else delete evidence.metrics[`network_${kind}_throughput_bytes_per_second`];
+    if (alias === "throughput_bytes_per_second") evidence.metrics.total_served_bytes = 0;
+    if (alias === "throughputBytesPerSecond") delete evidence.metrics.network_receive_throughput_bytes_per_second;
+    evidence.metrics[alias] = expected;
+    const result = validateEvidence(evidence);
+    assert.equal(result.ok, true, alias);
+    assert.equal(result.normalized[field], expected, alias);
+  }
+});
+
 test("validateEvidence treats local project mutations as receiver/import evidence", () => {
   for (const status of ["imported", "applied", "deleted"]) {
-    const result = validateEvidence(makeSenderOnlyEvidence({
-      projects: [{ label: "project_1", status }],
+    const result = validateEvidence(makeReceiverMutationEvidence({
+      projects: [{ label: "Project 1", status }],
     }));
     assert.equal(result.ok, false, status);
     assert.equal(result.normalized.runRole, "receiver_or_import", status);
     assert.equal(result.normalized.localProjectMutationCount, 1, status);
-    assert.match(result.errors.join(" "), /backend staging throughput/, status);
     assert.match(result.errors.join(" "), /reconciliation apply time/, status);
-    assert.match(result.errors.join(" "), /project import cadence gap/, status);
   }
 });
 
@@ -213,15 +356,13 @@ test("validateEvidence treats aggregate project mutations as receiver/import evi
   ];
 
   for (const [name, mutateMetrics] of cases) {
-    const evidence = makeSenderOnlyEvidence({ projects: [] });
+    const evidence = makeReceiverMutationEvidence({ projects: [] });
     mutateMetrics(evidence.metrics);
     const result = validateEvidence(evidence);
     assert.equal(result.ok, false, name);
     assert.equal(result.normalized.runRole, "receiver_or_import", name);
     assert.equal(result.normalized.localProjectMutationCount, 1, name);
-    assert.match(result.errors.join(" "), /backend staging throughput/, name);
     assert.match(result.errors.join(" "), /reconciliation apply time/, name);
-    assert.match(result.errors.join(" "), /project import cadence gap/, name);
   }
 });
 
@@ -243,7 +384,6 @@ test("validateEvidence fails scenario mismatch and missing metrics", () => {
   const result = validateEvidence(evidence, { scenario: "desktop-to-desktop" });
   assert.equal(result.ok, false);
   assert.match(result.errors.join(" "), /Scenario mismatch/);
-  assert.match(result.errors.join(" "), /network receive throughput/);
 });
 
 test("validateEvidence still requires receiver metrics for receiver evidence", () => {
@@ -288,6 +428,217 @@ test("validateEvidence still requires receiver metrics for receiver evidence", (
   assert.doesNotMatch(result.errors.join(" "), /Missing required transfer count/);
 });
 
+test("validateEvidence bounds wall-clock apply timing but not aggregate work", () => {
+  const valid = validateEvidence(makeEvidence({
+    run: { durationMs: 1_000 },
+    metrics: makeReceiverMetrics({
+      reconciliation_apply_ms: 900,
+      reconciliation_apply_aggregate_ms: 1_500,
+    }),
+  }));
+  assert.equal(valid.ok, true);
+  assert.equal(valid.normalized.reconciliationApplyAggregateMs, 1_500);
+
+  const invalid = validateEvidence(makeEvidence({
+    run: { durationMs: 1_000 },
+    metrics: makeReceiverMetrics({ reconciliation_apply_ms: 1_200 }),
+  }));
+  assert.equal(invalid.ok, false);
+  assert.match(invalid.errors.join(" "), /reconciliation_apply_ms exceeds run wall-clock duration/);
+});
+
+test("validateEvidence rejects impossible timing evidence", () => {
+  const cases = [
+    ["run duration", (evidence) => { evidence.run.durationMs = -1; }],
+    ["reconciliation_apply_ms", (evidence) => { evidence.metrics.reconciliation_apply_ms = -1; }],
+    ["reconciliation_apply_aggregate_ms", (evidence) => {
+      evidence.metrics.reconciliation_apply_aggregate_ms = -1;
+    }],
+    ["project_availability_gap_ms", (evidence) => { evidence.metrics.project_availability_gap_ms = -1; }],
+    ["ttfa_ms", (evidence) => { evidence.metrics.ttfa_ms = -1; }],
+    ["Phase timing durations", (evidence) => { evidence.run.phase_timings[0].duration_ms = -1; }],
+  ];
+  for (const [expectedError, mutate] of cases) {
+    const evidence = makeEvidence({ run: { ...makeEvidence().run, durationMs: 1_000 } });
+    mutate(evidence);
+    assert.match(validateEvidence(evidence).errors.join(" "), new RegExp(`${expectedError} must be non-negative`));
+  }
+
+  const aggregateOnlyWithWallClock = makeEvidence({
+    metrics: makeReceiverMetrics({
+      reconciliation_apply_ms: 300,
+      reconciliation_apply_aggregate_ms: 500,
+      reconciliation_apply_timing: { semantics: "aggregate_only" },
+    }),
+  });
+  assert.match(
+    validateEvidence(aggregateOnlyWithWallClock).errors.join(" "),
+    /aggregate_only semantics require reconciliation_apply_ms to be null/,
+  );
+
+  const aggregateBelowWallClock = makeEvidence({
+    metrics: makeReceiverMetrics({
+      reconciliation_apply_ms: 500,
+      reconciliation_apply_aggregate_ms: 300,
+    }),
+  });
+  assert.match(
+    validateEvidence(aggregateBelowWallClock).errors.join(" "),
+    /reconciliation_apply_aggregate_ms must be at least reconciliation_apply_ms/,
+  );
+});
+
+test("validateEvidence accepts exporter-shaped aggregate-only timing", () => {
+  const evidence = makeEvidence();
+  evidence.run.durationMs = 1_000;
+  evidence.run.phaseTimings = [
+    { phase: "reconciliation_apply", durationMs: 750 },
+    { phase: "reconciliation_apply", durationMs: 750 },
+  ];
+  Object.assign(evidence.metrics, makeReceiverMetrics({
+    project_imports_per_minute: 0,
+    reconciliation_apply_ms: null,
+    reconciliation_apply_aggregate_ms: 1_500,
+    reconciliation_apply_timing: { semantics: "aggregate_only" },
+    transfer_counts: ZERO_TRANSFER_COUNTS,
+    projectResultsByStatus: { skipped: 2 },
+    transferCounts: { skippedProjectCount: 2, totalProjectCount: 2 },
+  }));
+  evidence.projects = [
+    { label: "Project 1", status: "skipped" },
+    { label: "Project 2", status: "skipped" },
+  ];
+  evidence.validation = { ...evidence.validation, scope: "run_outcome", outcomeOk: true, privacySafe: true };
+  const result = validateEvidence(evidence);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.schemaPrivacyOk, true);
+  assert.equal(result.normalized.reconciliationApplyMs, null);
+  assert.equal(result.normalized.reconciliationApplyAggregateMs, 1_500);
+  assert.equal(result.normalized.reconciliationApplyTimingSemantics, "aggregate_only");
+  assert.equal(result.normalized.projectCounts.skipped, 2);
+  assert.equal(result.normalized.validationScope, "run_outcome");
+  assert.equal(result.normalized.runOutcomeOk, true);
+});
+
+test("validateEvidence still requires wall-clock apply timing without aggregate-only semantics", () => {
+  for (const timing of [
+    { reconciliation_apply_ms: null },
+    { reconciliation_apply_ms: null, reconciliation_apply_aggregate_ms: 1_500 },
+  ]) {
+    const result = validateEvidence(makeEvidence({ metrics: makeReceiverMetrics(timing) }));
+    assert.equal(result.ok, false);
+    assert.match(result.errors.join(" "), /Missing required metric: reconciliation apply time/);
+  }
+});
+
+test("validateEvidence keeps failed and conflicted project counts separate", () => {
+  const result = validateEvidence(makeProjectAccountingEvidence({
+    projectResultsByStatus: { failed: 1, conflicted: 1, skipped: 1 },
+    projectCounts: {
+      failedProjectCount: 1,
+      conflictedProjectCount: 1,
+      skippedProjectCount: 1,
+      totalProjectCount: 3,
+    },
+    projects: [
+      { label: "Project 1", status: "failed" },
+      { label: "Project 2", status: "conflicted" },
+      { label: "Project 3", status: "skipped" },
+    ],
+  }));
+
+  assert.equal(result.ok, true);
+  assert.equal(result.normalized.transferCounts.failed, 0);
+  assert.equal(result.normalized.projectCounts.failed, 1);
+  assert.equal(result.normalized.projectCounts.conflicted, 1);
+});
+
+test("validateEvidence excludes explicitly non-final project rows from final accounting", () => {
+  const result = validateEvidence(makeProjectAccountingEvidence({
+    projectResultsByStatus: { skipped: 1 },
+    projectCounts: { skippedProjectCount: 1, totalProjectCount: 1 },
+    projects: [
+      { label: "Project 1", status: "failed", isFinal: false },
+      { label: "Project 2", status: "skipped", isFinal: true },
+    ],
+  }));
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.normalized.projectResultsByStatus, { skipped: 1 });
+  assert.equal(result.normalized.projectCounts.failed, 0);
+});
+
+test("validateEvidence accepts aggregate-only project status evidence when counts agree", () => {
+  const result = validateEvidence(makeProjectAccountingEvidence({
+    projectResultsByStatus: { failed: 1, conflicted: 1 },
+    projectCounts: { failedProjectCount: 1, conflictedProjectCount: 1, totalProjectCount: 2 },
+  }));
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.normalized.projectResultsByStatus, { failed: 1, conflicted: 1 });
+  assert.equal(result.normalized.projectCounts.total, 2);
+});
+
+test("validateEvidence keeps manifest errors explicit and outside failed project totals", () => {
+  const manifestOnly = validateEvidence(makeProjectAccountingEvidence({
+    projectResultsByStatus: {},
+    projectCounts: {
+      failedProjectCount: 0,
+      totalProjectCount: 0,
+      manifestExportErrorCount: 2,
+    },
+    projects: [{ label: "Project 1", status: "manifest_export_error" }],
+  }));
+  assert.equal(manifestOnly.ok, true);
+  assert.deepEqual(manifestOnly.normalized.projectResultsByStatus, {});
+  assert.equal(manifestOnly.normalized.projectCounts.failed, 0);
+  assert.equal(manifestOnly.normalized.projectCounts.total, 0);
+  assert.equal(manifestOnly.normalized.projectCounts.manifestExportErrors, 2);
+
+  const overlap = validateEvidence(makeProjectAccountingEvidence({
+    projectResultsByStatus: { failed: 1 },
+    projectCounts: { failedProjectCount: 1, totalProjectCount: 1, manifestExportErrorCount: 1 },
+    projects: [
+      { label: "Project 1", status: "failed" },
+      { label: "Project 1", status: "manifest_export_error" },
+    ],
+  }));
+  assert.equal(overlap.ok, true);
+  assert.equal(overlap.normalized.projectCounts.failed, 1);
+  assert.equal(overlap.normalized.projectCounts.manifestExportErrors, 1);
+});
+
+test("validateEvidence rejects inconsistent project maps and count claims", () => {
+  const evidence = makeProjectAccountingEvidence({
+    projectResultsByStatus: { failed: 1 },
+    projectCounts: { failedProjectCount: 1, totalProjectCount: 1 },
+  });
+  evidence.metrics.failedProjectCount = 2;
+  const result = validateEvidence(evidence);
+
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join(" "), /failed project count fields disagree/);
+  assert.match(result.errors.join(" "), /failedProjectCount disagrees with projectResultsByStatus\.failed/);
+});
+
+test("validateEvidence validates manifest count aliases independently", () => {
+  const evidence = makeProjectAccountingEvidence({
+    projectResultsByStatus: {},
+    projectCounts: {
+      failedProjectCount: 0,
+      totalProjectCount: 0,
+      manifestErrorCount: 2,
+      manifestExportErrorCount: 1,
+    },
+    projects: [{ label: "Project 1", status: "manifest_export_error" }],
+  });
+  const result = validateEvidence(evidence);
+
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join(" "), /manifestExportErrors project count fields disagree/);
+});
+
 test("summarizeEvidence classifies network bottleneck from phase timings", () => {
   const summary = summarizeEvidence(makeEvidence({
     run: {
@@ -299,6 +650,21 @@ test("summarizeEvidence classifies network bottleneck from phase timings", () =>
     },
   }));
   assert.equal(summary.bottleneck, "network");
+});
+
+test("summarizeEvidence does not classify planning phases as reconciliation apply", () => {
+  const summary = summarizeEvidence(makeEvidence({
+    run: {
+      phase_timings: [
+        { phase: "reconciliation_plan", duration_ms: 5_000 },
+        { phase: "staging_apply_plan", duration_ms: 4_000 },
+        { phase: "network_receive", duration_ms: 1_000 },
+      ],
+    },
+  }));
+
+  assert.equal(summary.bottleneck, "staging");
+  assert.deepEqual(summary.reasons, ["phase:staging"]);
 });
 
 test("validateEvidence rejects privacy leaks", () => {
@@ -329,6 +695,64 @@ test("validateEvidence rejects privacy leaks", () => {
   assert.match(result.errors.join(" "), /filename-like value/);
   assert.match(result.errors.join(" "), /disallowed key/);
   assert.match(result.errors.join(" "), /raw identifier/);
+});
+
+test("validateEvidence allows operational status tokens", () => {
+  const evidence = makeEvidence({
+    run: {
+      label: "Run 1",
+      status: "completed",
+      message: `${SYNC_PRIVACY_SAFE_OPERATIONAL_TOKENS.join(" ")} ` +
+        "prefix_checksum_mismatch prefix.hash_retry_pending prefix-sha256_mismatch",
+    },
+    validation: {
+      ok: false,
+      issues: SYNC_PRIVACY_SAFE_OPERATIONAL_TOKENS.filter((token) => token !== "artifact_transfer"),
+      ui_visible: true,
+    },
+  });
+  const result = validateEvidence(evidence);
+  const summary = summarizeEvidence(evidence);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.schemaPrivacyOk, true);
+  assert.equal(result.normalized.validationScope, null);
+  assert.equal(result.normalized.runOutcomeOk, false);
+  assert.equal(summary.schemaPrivacyOk, true);
+  assert.equal(summary.runOutcomeOk, false);
+  assert.deepEqual(summary.reasons, ["run_outcome_failed"]);
+});
+
+test("validateEvidence rejects near-miss phase identifiers", () => {
+  for (const token of ["artifact_shadow", "artifact_transfer_shadow", "artifact_staging_shadow", "artifact_cleanup_shadow"]) {
+    const result = validateEvidence(makeEvidence({ run: { label: "Run 1", message: token } }));
+    assert.equal(result.ok, false, token);
+    assert.match(result.errors.join(" "), /raw identifier token/, token);
+  }
+  for (const phase of ["network_receive_shadow", "staging_post_shadow", "staging_apply_plan_shadow",
+    "backend_staging_shadow"]) {
+    const result = validateEvidence(makeEvidence({ run: { phase_timings: [{ phase, duration_ms: 1 }] } }));
+    assert.equal(result.ok, false, phase);
+    assert.match(result.errors.join(" "), /unknown phase/, phase);
+  }
+});
+
+test("validateEvidence rejects raw identifier and hash tokens in free text", () => {
+  const result = validateEvidence(makeEvidence({
+    run: {
+      label: "Run 1",
+      status: "completed",
+      message: `Completed with ${SYNC_PRIVACY_RAW_ID_TOKENS.join(" ")} ${SYNC_PRIVACY_HASH_TOKENS.join(" ")}.`,
+      error: `Checksum failed for ${SYNC_PRIVACY_RAW_ID_TOKENS[4]}.`,
+    },
+    lifecycle: {
+      note: "Retry guidance available.",
+      ui_visible: true,
+    },
+  }));
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join(" "), /raw identifier token/);
+  assert.match(result.errors.join(" "), /hash-like token/);
 });
 
 test("validateEvidence rejects embedded path variants", () => {
@@ -415,6 +839,7 @@ test("compareEvidence compares candidate against Syncthing-like control without 
     source: "tuneforge-sync+iroh",
     metrics: {
       network_receive_throughput_bytes_per_second: 2_400_000,
+      total_received_bytes: 8_000_000,
       backend_staging_throughput_bytes_per_second: 1_700_000,
       reconciliation_apply_ms: 280,
       project_imports_per_minute: 14,
@@ -434,6 +859,7 @@ test("compareEvidence compares candidate against Syncthing-like control without 
     source: "syncthing-control",
     metrics: {
       network_receive_throughput_bytes_per_second: 2_100_000,
+      total_received_bytes: 8_000_000,
       backend_staging_throughput_bytes_per_second: 1_600_000,
       reconciliation_apply_ms: 400,
       project_imports_per_minute: 11,

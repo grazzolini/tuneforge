@@ -8,7 +8,14 @@ import pytest
 
 from app.config import ensure_data_dirs, get_settings
 from app.db import SessionLocal, reconfigure_engine, run_migrations
-from app.models import Artifact, ChordTimeline, LyricsTranscript, Project, SyncDeleteTombstone
+from app.models import (
+    AnalysisResult,
+    Artifact,
+    ChordTimeline,
+    LyricsTranscript,
+    Project,
+    SyncDeleteTombstone,
+)
 from app.services.paths import project_root
 from app.services.project_storage import queue_project_storage_reconciliation
 from app.services.projects import delete_project
@@ -22,12 +29,12 @@ def _prepare_database() -> None:
     run_migrations(settings)
 
 
-def _project(project_id: str, imported_path: Path) -> Project:
+def _project(project_id: str, imported_path: Path, *, source_path: Path | None = None) -> Project:
     return Project(
         id=project_id,
         display_name="Storage Test",
         source_sha256="a" * 64,
-        source_path=str(imported_path),
+        source_path=str(source_path or imported_path),
         imported_path=str(imported_path),
     )
 
@@ -60,6 +67,9 @@ def test_reconciliation_preserves_live_ownership_and_never_follows_symlinks(
     _prepare_database()
     project_id = "proj_storage_ownership"
     root = project_root(project_id)
+    source_audio = root / "source" / "source.wav"
+    imported_audio = root / "source" / "imported.wav"
+    original_copy = root / "source" / "original-copy.wav"
     owned_audio = root / "previews" / "owned.wav"
     missing_audio = root / "previews" / "missing.wav"
     analysis_json = root / "analysis" / "analysis.json"
@@ -77,6 +87,9 @@ def test_reconciliation_preserves_live_ownership_and_never_follows_symlinks(
     cross_project_file = root / "previews" / "cross-project.wav"
 
     for path in (
+        source_audio,
+        imported_audio,
+        original_copy,
         owned_audio,
         analysis_json,
         chords_json,
@@ -96,28 +109,33 @@ def test_reconciliation_preserves_live_ownership_and_never_follows_symlinks(
     linked_parent.symlink_to(linked_target, target_is_directory=True)
 
     with SessionLocal() as session:
-        session.add(_project(project_id, owned_audio))
+        session.add(_project(project_id, imported_audio, source_path=source_audio))
         session.add(_project("proj_cross_owner", external_file))
+        source_artifact = _artifact(
+            "art_owned_audio",
+            project_id,
+            owned_audio,
+            artifact_type="source_audio",
+        )
+        source_artifact.metadata_json = {"original_copy_path": str(original_copy)}
         session.add_all(
             [
-                _artifact("art_owned_audio", project_id, owned_audio),
+                source_artifact,
                 _artifact("art_missing_audio", project_id, missing_audio),
-                _artifact(
-                    "art_analysis_json",
-                    project_id,
-                    analysis_json,
-                    artifact_type="analysis_json",
-                ),
                 _artifact("art_external", project_id, external_file),
                 _artifact("art_linked", project_id, linked_parent / "file.wav"),
                 _artifact("art_cross_owner", "proj_cross_owner", cross_project_file),
             ]
         )
+        session.add(AnalysisResult(project_id=project_id))
         session.add(ChordTimeline(project_id=project_id))
         session.add(LyricsTranscript(project_id=project_id))
         queue_project_storage_reconciliation(session, project_id)
         session.commit()
 
+    assert source_audio.exists()
+    assert imported_audio.exists()
+    assert original_copy.exists()
     assert owned_audio.exists()
     assert analysis_json.exists()
     assert chords_json.exists()

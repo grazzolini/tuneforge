@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -10,6 +12,14 @@ import numpy as np
 import pytest
 import soundfile as sf
 from fastapi.testclient import TestClient
+
+# Test modules import app.db during collection, before fixtures run. Force that
+# collection-time engine onto disposable storage instead of the user's app data.
+_TEST_BOOTSTRAP_DIRECTORY = tempfile.TemporaryDirectory(prefix="tuneforge-pytest-")
+_TEST_BOOTSTRAP_ROOT = Path(_TEST_BOOTSTRAP_DIRECTORY.name).resolve()
+_TEST_BOOTSTRAP_DATA_ROOT = _TEST_BOOTSTRAP_ROOT / "data"
+os.environ["TUNEFORGE_DATA_DIR"] = str(_TEST_BOOTSTRAP_DATA_ROOT)
+os.environ["XDG_CACHE_HOME"] = str(_TEST_BOOTSTRAP_ROOT / "xdg-cache")
 
 _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 
@@ -22,6 +32,25 @@ _TEST_DEMUCS_MODEL_FILES = (
     "92cfc3b6-ef3bcb9c.th",
     "04573f0d-f3cf25b2.th",
 )
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    _ = session
+    from app.config import ensure_data_dirs, get_settings
+    from app.db import reconfigure_engine, run_migrations
+
+    settings = get_settings()
+    ensure_data_dirs(settings)
+    reconfigure_engine(settings)
+    run_migrations(settings)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    _ = session, exitstatus
+    from app.db import get_engine
+
+    get_engine().dispose()
+    _TEST_BOOTSTRAP_DIRECTORY.cleanup()
 
 
 @pytest.fixture(autouse=True)

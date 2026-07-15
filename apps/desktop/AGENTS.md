@@ -10,6 +10,16 @@ Use the root `AGENTS.md` for global rules. This file adds desktop-specific guida
 - Use generated contracts from `@tuneforge/shared-types` for backend-facing types.
 - Prefer user-visible behavior tests (Vitest + Testing Library), not implementation details.
 
+## Release media
+
+- For material user-visible changes, evaluate whether the release-media capture catalog needs a
+  deterministic screenshot or short silent video. Follow the catalog selection and validation
+  rules in the root `AGENTS.md`.
+- Prefer screenshots for stable UI states and videos for time-based behavior. Do not add duplicate,
+  trivial, hardware-dependent, or non-deterministic coverage.
+- Capture synthetic fixture data only; never use user files, copyrighted audio, accounts, or
+  external services.
+
 ## Tauri conventions
 
 - Keep `src-tauri/src/main.rs` minimal; backend business logic stays in Python.

@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BadgeCheck,
+  ChevronLeft,
+  ChevronRight,
   CircleAlert,
   Code2,
   Download,
@@ -11,10 +13,12 @@ import {
   Mic,
   Music2,
   PackageCheck,
+  Play,
   ShieldOff,
   SlidersHorizontal,
   Video,
   Wrench,
+  X,
 } from "lucide-react";
 
 type MediaItem = {
@@ -100,6 +104,77 @@ function mediaUrl(src: string) {
   return `${base}${src.replace(/^\/+/, "")}`;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isOptionalString(value: unknown) {
+  return value === undefined || typeof value === "string";
+}
+
+function parseMediaItem(value: unknown): MediaItem | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const { alt, caption, id, kind, label, poster, src, title } = value;
+  if (
+    typeof id !== "string" ||
+    !id ||
+    typeof title !== "string" ||
+    !title ||
+    (kind !== "screenshot" && kind !== "video") ||
+    typeof src !== "string" ||
+    !src ||
+    !isOptionalString(alt) ||
+    !isOptionalString(caption) ||
+    !isOptionalString(label) ||
+    !isOptionalString(poster) ||
+    (kind === "screenshot" && (typeof alt !== "string" || !alt)) ||
+    (kind === "video" && (typeof poster !== "string" || !poster))
+  ) {
+    return null;
+  }
+
+  return { id, title, kind, src, alt, caption, label, poster };
+}
+
+function parseMediaManifest(value: unknown): MediaManifest | null {
+  if (!isRecord(value) || !Array.isArray(value.items)) {
+    return null;
+  }
+
+  const { generatedAt, notes, schemaVersion, source, status } = value;
+  if (
+    schemaVersion !== 1 ||
+    (status !== "pending" && status !== "partial" && status !== "captured") ||
+    (generatedAt !== null && typeof generatedAt !== "string") ||
+    typeof source !== "string" ||
+    (notes !== undefined && (!Array.isArray(notes) || !notes.every((note) => typeof note === "string")))
+  ) {
+    return null;
+  }
+
+  const items = value.items.map(parseMediaItem);
+  if (items.some((item) => item === null)) {
+    return null;
+  }
+
+  const parsedItems = items as MediaItem[];
+  if (new Set(parsedItems.map((item) => item.id)).size !== parsedItems.length) {
+    return null;
+  }
+
+  return {
+    schemaVersion,
+    status,
+    generatedAt,
+    source,
+    items: parsedItems,
+    notes: notes as string[] | undefined,
+  };
+}
+
 function useMediaManifest() {
   const [manifest, setManifest] = useState<MediaManifest>(defaultManifest);
   const [loaded, setLoaded] = useState(false);
@@ -117,12 +192,11 @@ function useMediaManifest() {
         if (!response.ok) {
           throw new Error(`Media manifest returned ${response.status}.`);
         }
-        const data = (await response.json()) as MediaManifest;
-        setManifest({
-          ...defaultManifest,
-          ...data,
-          items: Array.isArray(data.items) ? data.items : [],
-        });
+        const data = parseMediaManifest(await response.json());
+        if (!data) {
+          throw new Error("Media manifest is malformed.");
+        }
+        setManifest(data);
       } catch {
         if (!controller.signal.aborted) {
           setManifest(defaultManifest);
@@ -175,19 +249,26 @@ function HeroPreview() {
   );
 }
 
-function MediaCard({ item }: { item: MediaItem }) {
+function MediaCard({
+  buttonRef,
+  item,
+  onOpen,
+}: {
+  buttonRef: (node: HTMLButtonElement | null) => void;
+  item: MediaItem;
+  onOpen: () => void;
+}) {
   return (
     <article className="media-card">
       <div className="media-card__asset">
         {item.kind === "video" ? (
-          <video
-            controls
-            muted
-            playsInline
-            poster={item.poster ? mediaUrl(item.poster) : undefined}
-            preload="metadata"
-            src={mediaUrl(item.src)}
-          />
+          <>
+            <img alt={item.alt ?? ""} src={mediaUrl(item.poster ?? "")} loading="lazy" />
+            <span className="media-card__play" aria-hidden="true">
+              <Play />
+              Watch video
+            </span>
+          </>
         ) : (
           <img alt={item.alt ?? item.title} src={mediaUrl(item.src)} loading="lazy" />
         )}
@@ -197,28 +278,158 @@ function MediaCard({ item }: { item: MediaItem }) {
         <h3>{item.title}</h3>
         {item.caption ? <p>{item.caption}</p> : null}
       </div>
+      <button
+        aria-label={`Open ${item.title} in gallery`}
+        className="media-card__launcher"
+        onClick={onOpen}
+        ref={buttonRef}
+        type="button"
+      />
     </article>
   );
 }
 
-function MediaFallback({ manifest }: { manifest: MediaManifest }) {
+function MediaViewer({
+  activeIndex,
+  items,
+  onClose,
+  onNavigate,
+}: {
+  activeIndex: number;
+  items: MediaItem[];
+  onClose: () => void;
+  onNavigate: (step: number) => void;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const item = items[activeIndex];
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (dialog && !dialog.open) {
+      dialog.showModal();
+    }
+  }, []);
+
+  function pauseVideo() {
+    videoRef.current?.pause();
+  }
+
+  function close() {
+    pauseVideo();
+    dialogRef.current?.close();
+  }
+
+  function navigate(step: number) {
+    pauseVideo();
+    onNavigate(step);
+  }
+
+  return (
+    <dialog
+      aria-describedby={item.caption ? "media-viewer-caption" : undefined}
+      aria-labelledby="media-viewer-title"
+      className="media-viewer"
+      onCancel={pauseVideo}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) {
+          close();
+        }
+      }}
+      onClose={onClose}
+      onKeyDown={(event) => {
+        const video = videoRef.current;
+        const isArrowKey = event.key === "ArrowLeft" || event.key === "ArrowRight";
+        const isVideoControlEvent =
+          video && (event.target === video || document.activeElement === video);
+        if (isArrowKey && isVideoControlEvent) {
+          return;
+        }
+
+        if (event.key === "ArrowLeft") {
+          event.preventDefault();
+          navigate(-1);
+        } else if (event.key === "ArrowRight") {
+          event.preventDefault();
+          navigate(1);
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          close();
+        }
+      }}
+      ref={dialogRef}
+    >
+      <div className="media-viewer__panel">
+        <header className="media-viewer__header">
+          <span className="media-viewer__counter">
+            {activeIndex + 1} of {items.length}
+          </span>
+          <div>
+            <span className="tag">{item.label ?? item.kind}</span>
+            <h2 id="media-viewer-title">{item.title}</h2>
+          </div>
+          <button
+            aria-label="Close gallery"
+            autoFocus
+            className="media-viewer__close"
+            onClick={close}
+            type="button"
+          >
+            <X aria-hidden="true" />
+          </button>
+        </header>
+
+        <div className="media-viewer__stage">
+          {item.kind === "video" ? (
+            <video
+              controls
+              muted
+              playsInline
+              poster={mediaUrl(item.poster ?? "")}
+              preload="metadata"
+              ref={videoRef}
+              src={mediaUrl(item.src)}
+              tabIndex={0}
+            />
+          ) : (
+            <img alt={item.alt ?? item.title} src={mediaUrl(item.src)} />
+          )}
+        </div>
+
+        <footer className="media-viewer__footer">
+          <button onClick={() => navigate(-1)} type="button">
+            <ChevronLeft aria-hidden="true" />
+            Previous
+          </button>
+          <p id="media-viewer-caption">{item.caption ?? "TuneForge release media"}</p>
+          <button onClick={() => navigate(1)} type="button">
+            Next
+            <ChevronRight aria-hidden="true" />
+          </button>
+        </footer>
+      </div>
+    </dialog>
+  );
+}
+
+function MediaFallback() {
   return (
     <div className="media-fallback">
       <Video aria-hidden="true" />
       <div>
-        <h3>Release media not captured yet</h3>
+        <h3>Release preview unavailable</h3>
         <p>
-          The site is ready for generated screenshots and video, but this checkout has only the
-          placeholder manifest. Capture output will appear from <code>apps/site/public/media/generated</code>.
+          Screenshots and video are unavailable right now. Explore the latest release or browse the
+          project while the gallery is refreshed.
         </p>
-        <pre>{`node scripts/capture-release-media.mjs --run`}</pre>
-        {manifest.notes?.length ? (
-          <ul>
-            {manifest.notes.map((note) => (
-              <li key={note}>{note}</li>
-            ))}
-          </ul>
-        ) : null}
+        <div className="media-fallback__links">
+          <a className="button button--primary" href={`${repoUrl}/releases`}>
+            View releases
+          </a>
+          <a className="button" href={repoUrl}>
+            Browse repository
+          </a>
+        </div>
       </div>
     </div>
   );
@@ -227,6 +438,28 @@ function MediaFallback({ manifest }: { manifest: MediaManifest }) {
 export function App() {
   const { loaded, manifest } = useMediaManifest();
   const mediaItems = useMemo(() => manifest.items.filter((item) => item.src), [manifest.items]);
+  const [activeMediaIndex, setActiveMediaIndex] = useState<number | null>(null);
+  const mediaButtonsRef = useRef<Array<HTMLButtonElement | null>>([]);
+  const lastTriggerRef = useRef<HTMLButtonElement | null>(null);
+
+  function openMedia(index: number) {
+    lastTriggerRef.current = mediaButtonsRef.current[index] ?? null;
+    setActiveMediaIndex(index);
+  }
+
+  function closeMedia() {
+    setActiveMediaIndex(null);
+    queueMicrotask(() => lastTriggerRef.current?.focus());
+  }
+
+  function navigateMedia(step: number) {
+    setActiveMediaIndex((current) => {
+      if (current === null) {
+        return current;
+      }
+      return (current + step + mediaItems.length) % mediaItems.length;
+    });
+  }
 
   return (
     <div className="site-shell">
@@ -310,18 +543,29 @@ export function App() {
               <p className="eyebrow">Screenshots and video</p>
               <h2 id="media-title">Release media</h2>
             </div>
-            <span className={`status-pill status-pill--${manifest.status}`}>
-              {loaded ? manifest.status : "loading"}
+            <span className="status-pill" aria-live="polite">
+              {loaded
+                ? `${mediaItems.length} media ${mediaItems.length === 1 ? "item" : "items"}`
+                : "Loading media"}
             </span>
           </div>
           {mediaItems.length ? (
             <div className="media-grid">
-              {mediaItems.map((item) => (
-                <MediaCard item={item} key={item.id} />
+              {mediaItems.map((item, index) => (
+                <MediaCard
+                  buttonRef={(node) => {
+                    mediaButtonsRef.current[index] = node;
+                  }}
+                  item={item}
+                  key={item.id}
+                  onOpen={() => openMedia(index)}
+                />
               ))}
             </div>
+          ) : loaded ? (
+            <MediaFallback />
           ) : (
-            <MediaFallback manifest={manifest} />
+            <p className="media-loading">Loading release media…</p>
           )}
         </section>
 
@@ -391,6 +635,14 @@ export function App() {
           Built from repository content and generated media only.
         </span>
       </footer>
+      {activeMediaIndex !== null && mediaItems[activeMediaIndex] ? (
+        <MediaViewer
+          activeIndex={activeMediaIndex}
+          items={mediaItems}
+          onClose={closeMedia}
+          onNavigate={navigateMedia}
+        />
+      ) : null}
     </div>
   );
 }

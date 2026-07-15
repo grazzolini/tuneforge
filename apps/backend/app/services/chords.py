@@ -92,6 +92,7 @@ def detect_project_chords(
     record_chord_revision(session, chords=existing, revision_type="generated")
 
     chord_path = project_analysis_dir(project.id) / "chords.json"
+    chord_path.parent.mkdir(parents=True, exist_ok=True)
     chord_path.write_text(
         json.dumps(
             {

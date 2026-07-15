@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,7 +14,8 @@ from app.errors import AppError
 from app.models import Artifact, Project, SyncDeleteTombstone, SyncEntityRevision, utcnow
 from app.services.artifacts import register_artifact
 from app.services.metadata import extract_audio_metadata, normalize_audio_to_wav
-from app.services.paths import ensure_project_dirs, project_root, project_source_dir
+from app.services.paths import ensure_project_dirs, project_source_dir
+from app.services.project_storage import queue_project_storage_reconciliation
 from app.services.sync_identity import source_hash_to_project_id
 from app.services.sync_project_status import require_project_sync_editable
 from app.services.sync_revisions import record_project_metadata_revision
@@ -136,10 +136,8 @@ def _discard_deleted_project_placeholder(
         return
 
     for project in placeholders:
-        root = project_root(project.id)
         session.delete(project)
-        if root.exists():
-            shutil.rmtree(root, ignore_errors=True)
+        queue_project_storage_reconciliation(session, project.id)
     session.flush()
 
 
@@ -238,12 +236,13 @@ def import_project(
         can_regenerate=False,
     )
 
+    queue_project_storage_reconciliation(session, project.id)
+
     return project
 
 
 def delete_project(session: Session, project_id: str) -> None:
     project = get_mutable_project(session, project_id)
-    root = project_root(project.id)
     deleted_at = utcnow()
     record_project_delete_tombstone(session, project, deleted_at=deleted_at)
     for artifact in list(session.scalars(select(Artifact).where(Artifact.project_id == project.id))):
@@ -254,8 +253,7 @@ def delete_project(session: Session, project_id: str) -> None:
         record_entity_revision_delete_tombstone(session, revision, deleted_at=deleted_at)
     session.delete(project)
     session.flush()
-    if root.exists():
-        shutil.rmtree(root, ignore_errors=True)
+    queue_project_storage_reconciliation(session, project.id)
 
 
 def update_project(session: Session, project_id: str, *, updates: dict[str, str | None]) -> Project:

@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-import shutil
 from collections.abc import Mapping
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Artifact, Project, SyncDeleteTombstone, SyncEntityRevision, utcnow
-from app.services.paths import project_root
+from app.services.project_storage import queue_project_storage_reconciliation
 from app.services.sync_revisions import sanitize_revision_payload
 from app.services.sync_trust import get_or_create_local_identity
 from app.utils.ids import new_id
@@ -110,21 +108,18 @@ def apply_delete_tombstone(session: Session, tombstone: SyncDeleteTombstone) -> 
         project = session.get(Project, tombstone.target_id)
         if project is None or project.id != tombstone.project_id:
             return
-        root = project_root(project.id)
         session.delete(project)
         session.flush()
-        if root.exists():
-            shutil.rmtree(root, ignore_errors=True)
+        queue_project_storage_reconciliation(session, project.id)
         return
 
     if tombstone.target_type == ARTIFACT_TARGET_TYPE:
         artifact = session.get(Artifact, tombstone.target_id)
         if artifact is None or artifact.project_id != tombstone.project_id:
             return
-        artifact_path = Path(artifact.path)
         session.delete(artifact)
-        _cleanup_artifact_path(artifact_path)
         session.flush()
+        queue_project_storage_reconciliation(session, artifact.project_id)
         return
 
     if tombstone.target_type == ENTITY_REVISION_TARGET_TYPE:
@@ -178,12 +173,3 @@ def _record_delete_tombstone(
     session.add(tombstone)
     session.flush()
     return tombstone
-
-
-def _cleanup_artifact_path(path: Path) -> None:
-    if path.exists():
-        path.unlink(missing_ok=True)
-    try:
-        path.parent.rmdir()
-    except OSError:
-        pass

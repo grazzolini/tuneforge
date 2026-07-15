@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.errors import AppError
 from app.models import Artifact, Job
+from app.services.project_storage import queue_project_storage_reconciliation
 from app.services.stem_models import STEM_ARTIFACT_TYPES
 from app.services.sync_tombstones import record_artifact_delete_tombstone
 from app.utils.hashing import file_sha256
@@ -98,19 +99,8 @@ def prune_project_artifacts(
         Artifact.id != keep_artifact_id,
     )
     for artifact in session.scalars(stmt):
-        artifact_path = Path(artifact.path)
         session.delete(artifact)
-        if artifact_path.exists():
-            artifact_path.unlink(missing_ok=True)
-
-
-def _cleanup_artifact_path(path: Path) -> None:
-    if path.exists():
-        path.unlink(missing_ok=True)
-    try:
-        path.parent.rmdir()
-    except OSError:
-        pass
+    queue_project_storage_reconciliation(session, project_id)
 
 
 def _has_pending_audio_job(session: Session, *, project_id: str) -> bool:
@@ -146,8 +136,8 @@ def delete_project_artifact(session: Session, *, project_id: str, artifact_id: s
         )
     if artifact.type in STEM_ARTIFACT_TYPES:
         record_artifact_delete_tombstone(session, artifact)
-        _cleanup_artifact_path(Path(artifact.path))
         session.delete(artifact)
+        queue_project_storage_reconciliation(session, project_id)
         return
     if artifact.type != "preview_mix":
         raise AppError("INVALID_REQUEST", "Only saved practice mixes and stem tracks can be deleted.")
@@ -164,9 +154,8 @@ def delete_project_artifact(session: Session, *, project_id: str, artifact_id: s
 
     for stem in related_stems:
         record_artifact_delete_tombstone(session, stem)
-        _cleanup_artifact_path(Path(stem.path))
         session.delete(stem)
 
     record_artifact_delete_tombstone(session, artifact)
-    _cleanup_artifact_path(Path(artifact.path))
     session.delete(artifact)
+    queue_project_storage_reconciliation(session, project_id)

@@ -87,6 +87,7 @@ def _write_lyrics_snapshot(
     }
 
     lyrics_path = project_analysis_dir(project_id) / "lyrics.json"
+    lyrics_path.parent.mkdir(parents=True, exist_ok=True)
     lyrics_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 

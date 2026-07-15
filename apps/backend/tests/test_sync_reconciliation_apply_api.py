@@ -702,7 +702,7 @@ def test_reconciliation_apply_applies_trusted_delete_tombstone(
         assert tombstone.target_type == "artifact"
         assert tombstone.target_id == "art_apply_deleted"
         assert tombstone.author_device_id == "peer-apply-delete"
-    assert not artifact_path.exists()
+    assert artifact_path.read_bytes() == b"delete me"
 
 
 def test_reconciliation_apply_does_not_recreate_deleted_project_placeholder(

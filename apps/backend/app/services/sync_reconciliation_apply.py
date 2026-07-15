@@ -17,6 +17,7 @@ from app.errors import AppError
 from app.models import Artifact, Project, SyncDeleteTombstone, SyncEntityRevision
 from app.services.artifacts import register_artifact
 from app.services.paths import project_root
+from app.services.project_storage import queue_project_storage_reconciliation
 from app.services.sync_manifest import (
     SyncArtifactManifest,
     _coerce_project_manifest,
@@ -160,6 +161,14 @@ def apply_sync_reconciliation(
             details=cleanup_details,
         )
     summary = _summarize_apply_results(plan, results)
+    for result in results:
+        if result.status != APPLY_STATUS_APPLIED:
+            continue
+        project_id = result.action.project_id
+        if project_id is None and result.action.item_type == ITEM_PROJECT:
+            project_id = result.action.item_id
+        if project_id is not None:
+            queue_project_storage_reconciliation(session, project_id)
     _record_timing(
         timing_evidence,
         phase=TIMING_PHASE_APPLY,

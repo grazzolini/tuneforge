@@ -1148,6 +1148,23 @@ struct MobileChordRevisionPayload {
 }
 
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+struct MobileLyricsRevisionPayload {
+    backend: String,
+    source_artifact_id: Option<String>,
+    source_kind: String,
+    requested_device: Option<String>,
+    device: Option<String>,
+    model_name: Option<String>,
+    language: Option<String>,
+    language_override: Option<String>,
+    source_segments: Vec<Value>,
+    segments: Vec<Value>,
+    has_user_edits: bool,
+    created_at: String,
+    updated_at: String,
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 struct MobileAnalysisArtifactPayload {
     project_id: Option<String>,
     source_artifact_id: Option<String>,
@@ -1221,6 +1238,21 @@ fn payload_bool_field(
         Some(_) => Err(format!(
             "{context} field must be a boolean or null: {name}."
         )),
+    }
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn payload_bool_field_with_missing_default(
+    payload: &Value,
+    name: &str,
+    default: bool,
+    context: &str,
+) -> Result<bool, String> {
+    require_payload_object(payload, context)?;
+    match payload.get(name) {
+        None => Ok(default),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(format!("{context} field must be a boolean: {name}.")),
     }
 }
 
@@ -1333,6 +1365,59 @@ fn mobile_chord_revision_payload(
 }
 
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn mobile_lyrics_revision_payload(
+    revision: &SyncProjectManifestEntityRevisionSchema,
+) -> Result<MobileLyricsRevisionPayload, String> {
+    let context = "Lyrics entity revision payload";
+    Ok(MobileLyricsRevisionPayload {
+        backend: payload_optional_string_field(&revision.payload, "backend", context)?
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "openai-whisper".to_string()),
+        source_artifact_id: payload_optional_string_field(
+            &revision.payload,
+            "source_artifact_id",
+            context,
+        )?
+        .filter(|value| !value.is_empty())
+        .or_else(|| revision.source_artifact_id.clone()),
+        source_kind: payload_optional_string_field(&revision.payload, "source_kind", context)?
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "ai".to_string()),
+        requested_device: payload_optional_string_field(
+            &revision.payload,
+            "requested_device",
+            context,
+        )?,
+        device: payload_optional_string_field(&revision.payload, "device", context)?,
+        model_name: payload_optional_string_field(&revision.payload, "model_name", context)?,
+        language: payload_optional_string_field(&revision.payload, "language", context)?,
+        language_override: payload_lyrics_language_override(&revision.payload)?,
+        source_segments: payload_list_field(
+            &revision.payload,
+            &["source_segments", "source_segments_json"],
+            None,
+            context,
+        )?,
+        segments: payload_list_field(
+            &revision.payload,
+            &["segments", "segments_json"],
+            None,
+            context,
+        )?,
+        has_user_edits: payload_bool_field_with_missing_default(
+            &revision.payload,
+            "has_user_edits",
+            false,
+            context,
+        )?,
+        created_at: payload_optional_timestamp_string(&revision.payload, "created_at", context)?
+            .unwrap_or_else(|| revision.created_at.clone()),
+        updated_at: payload_optional_timestamp_string(&revision.payload, "updated_at", context)?
+            .unwrap_or_else(|| revision.updated_at.clone()),
+    })
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 fn mobile_analysis_artifact_payload(
     payload: &Value,
     artifact_metadata: &Value,
@@ -1369,6 +1454,64 @@ fn mobile_analysis_artifact_payload(
             .unwrap_or_else(|| "v3".to_string()),
         created_at: payload_optional_timestamp_string(payload, "created_at", context)?,
     })
+}
+
+#[cfg(any(target_os = "android", test))]
+fn mobile_lyrics_response(
+    connection: &rusqlite::Connection,
+    project_id: String,
+) -> Result<LyricsResponse, String> {
+    use rusqlite::OptionalExtension;
+
+    connection
+        .query_row(
+            "SELECT project_id, backend, source_artifact_id, source_kind, requested_device, device, model_name, language, language_override, source_segments_json, segments_json, has_user_edits, created_at, updated_at FROM lyrics_transcripts WHERE project_id = ?1",
+            rusqlite::params![project_id],
+            |row| {
+                let source_segments_raw: String = row.get(9)?;
+                let segments_raw: String = row.get(10)?;
+                let source_segments =
+                    serde_json::from_str(&source_segments_raw).unwrap_or_default();
+                let segments = serde_json::from_str(&segments_raw).unwrap_or_default();
+                Ok(LyricsResponse {
+                    project_id: row.get(0)?,
+                    backend: row.get(1)?,
+                    source_artifact_id: row.get(2)?,
+                    source_kind: row.get(3)?,
+                    requested_device: row.get(4)?,
+                    device: row.get(5)?,
+                    model_name: row.get(6)?,
+                    language: row.get(7)?,
+                    language_override: row.get(8)?,
+                    source_segments,
+                    segments,
+                    has_user_edits: row.get::<_, i64>(11)? != 0,
+                    created_at: row.get(12)?,
+                    updated_at: row.get(13)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .map(Ok)
+        .unwrap_or_else(|| {
+            Ok(LyricsResponse {
+                project_id,
+                backend: None,
+                source_artifact_id: None,
+                source_kind: None,
+                requested_device: None,
+                device: None,
+                model_name: None,
+                language: None,
+                language_override: None,
+                source_segments: Vec::new(),
+                segments: Vec::new(),
+                has_user_edits: false,
+                created_at: None,
+                updated_at: None,
+            })
+        })
 }
 
 #[cfg(test)]
@@ -1618,6 +1761,165 @@ mod mobile_backend_tests {
             created_at: "2026-05-22T12:00:00.000Z".to_string(),
             updated_at: "2026-05-22T12:00:00.000Z".to_string(),
         }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn mobile_lyrics_row_count(connection: &Connection, project_id: &str) -> i64 {
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM lyrics_transcripts WHERE project_id = ?1",
+                rusqlite::params![project_id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn mobile_generation_job_count(connection: &Connection, project_id: &str) -> i64 {
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE project_id = ?1 AND type IN ('analyze', 'chords', 'lyrics')",
+                rusqlite::params![project_id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn mobile_desktop_lyrics_payload(source_text: &str, current_text: &str) -> Value {
+        json!({
+            "project_id": "desktop-project",
+            "backend": "whisper.cpp",
+            "source_kind": "user-edited",
+            "requested_device": "cpu",
+            "device": "cpu",
+            "model_name": "ggml-large-v3",
+            "language": "en",
+            "language_override": "en",
+            "source_segments": [{
+                "start_seconds": 0.0,
+                "end_seconds": 1.25,
+                "text": source_text,
+                "words": [{
+                    "text": source_text,
+                    "start_seconds": 0.1,
+                    "end_seconds": 1.0,
+                    "confidence": 0.91
+                }]
+            }],
+            "segments": [{
+                "start_seconds": 0.0,
+                "end_seconds": 1.25,
+                "text": current_text,
+                "words": [{
+                    "text": current_text,
+                    "start_seconds": 0.1,
+                    "end_seconds": 1.0,
+                    "confidence": 0.95
+                }]
+            }],
+            "has_user_edits": source_text != current_text
+        })
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn mobile_lyrics_revision(
+        revision_id: &str,
+        project_id: &str,
+        state: &str,
+        source_artifact_id: Option<&str>,
+        payload: Value,
+    ) -> SyncProjectManifestEntityRevisionSchema {
+        let content_sha256 = storage::hex_digest(&Sha256::digest(payload.to_string().as_bytes()));
+        SyncProjectManifestEntityRevisionSchema {
+            revision_id: revision_id.to_string(),
+            project_id: project_id.to_string(),
+            entity_type: "lyrics".to_string(),
+            entity_id: project_id.to_string(),
+            revision_type: "user_edit".to_string(),
+            base_revision_id: None,
+            author_device_id: "device_desktop_fixture".to_string(),
+            source_artifact_id: source_artifact_id.map(ToString::to_string),
+            content_sha256,
+            state: state.to_string(),
+            metadata: json!({"origin": "desktop"}),
+            payload,
+            created_at: "2026-05-22T12:03:00Z".to_string(),
+            updated_at: "2026-05-22T12:04:00Z".to_string(),
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn mobile_lyrics_import_fixture(
+        slug: &str,
+    ) -> (
+        std::path::PathBuf,
+        Connection,
+        String,
+        SyncProjectManifestSchema,
+    ) {
+        let root = mobile_storage_contract_root(slug);
+        let connection = storage::db_at_root(&root).unwrap();
+        let source_bytes = format!("tuneforge lyrics sync fixture {slug}").into_bytes();
+        let source_sha256 = storage::hex_digest(&Sha256::digest(&source_bytes));
+        let project_id = source_hash_to_project_id(&source_sha256).unwrap();
+        let source_path = storage::project_root_path(&root, &project_id)
+            .unwrap()
+            .join("source")
+            .join("source.wav");
+        let (source_content_sha256, source_size_bytes) =
+            write_mobile_contract_file(&source_path, &source_bytes);
+        insert_mobile_contract_project(&connection, &project_id, &source_sha256, &source_path);
+        insert_mobile_contract_artifact(
+            &connection,
+            MobileContractArtifact {
+                artifact_id: "art_source_audio",
+                project_id: &project_id,
+                artifact_type: "source_audio",
+                format: "wav",
+                path: &source_path,
+                content_sha256: &source_content_sha256,
+                size_bytes: source_size_bytes,
+                generated_by: "sync",
+                can_delete: false,
+                can_regenerate: false,
+                cache_key: None,
+                metadata: json!({}),
+            },
+        );
+        let manifest = SyncProjectManifestSchema {
+            schema_version: SYNC_PROJECT_MANIFEST_SCHEMA_VERSION.to_string(),
+            exported_at: "2026-05-22T12:05:00Z".to_string(),
+            project: SyncProjectManifestProjectSchema {
+                project_id: project_id.clone(),
+                display_name: "Synced Lyrics".to_string(),
+                source_key_override: None,
+                source_sha256,
+                duration_seconds: Some(12.0),
+                sample_rate: Some(44_100),
+                channels: Some(2),
+                created_at: "2026-05-22T12:00:00Z".to_string(),
+                updated_at: "2026-05-22T12:05:00Z".to_string(),
+            },
+            entity_revisions: Vec::new(),
+            artifacts: vec![SyncProjectManifestArtifactSchema {
+                artifact_id: "art_source_audio".to_string(),
+                project_id: project_id.clone(),
+                r#type: "source_audio".to_string(),
+                format: "wav".to_string(),
+                relative_path: "source/source.wav".to_string(),
+                content_sha256: source_content_sha256,
+                size_bytes: source_size_bytes,
+                generated_by: "sync".to_string(),
+                can_delete: false,
+                can_regenerate: false,
+                cache_key: None,
+                metadata: json!({}),
+                created_at: "2026-05-22T12:00:00Z".to_string(),
+            }],
+            delete_tombstones: Vec::new(),
+        };
+        (root, connection, project_id, manifest)
     }
 
     #[cfg(not(target_os = "android"))]
@@ -2138,13 +2440,15 @@ mod mobile_backend_tests {
             "source_artifact_id": "art_source_audio",
             "estimated_key": "A minor",
             "key_confidence": 0.91,
+            "estimated_reference_hz": null,
+            "tuning_offset_cents": -2.75,
             "tempo_bpm": 132.25,
             "analysis_version": "desktop-v1",
             "created_at": "2026-05-22T12:02:00.000Z",
             "timing": {
                 "source": "desktop",
-                "beats": [{"time_seconds": 0.0}],
-                "bars": []
+                "beats": [{"time_seconds": 0.0}, {"time_seconds": 0.453}],
+                "bars": [{"start_seconds": 0.0, "beat_count": 4}]
             }
         });
         let analysis_bytes = serde_json::to_vec(&analysis_payload).unwrap();
@@ -2213,6 +2517,85 @@ mod mobile_backend_tests {
         current_chords.base_revision_id = Some("rev_chords_previous".to_string());
         current_chords.state = "active".to_string();
 
+        let mut superseded_lyrics = mobile_lyrics_revision(
+            "rev_lyrics_previous",
+            &project_id,
+            "superseded",
+            Some("art_source_audio"),
+            json!({
+                "backend": "whisper.cpp",
+                "source_kind": "ai",
+                "requested_device": "cpu",
+                "device": "cpu",
+                "model_name": "ggml-base",
+                "language": "en",
+                "language_override": "en",
+                "source_segments": [{
+                    "start_seconds": 0.0,
+                    "end_seconds": 1.0,
+                    "text": "old",
+                    "words": [{"text": "old", "start_seconds": 0.1, "end_seconds": 0.9}]
+                }],
+                "segments": [{
+                    "start_seconds": 0.0,
+                    "end_seconds": 1.0,
+                    "text": "old",
+                    "words": [{"text": "old", "start_seconds": 0.1, "end_seconds": 0.9}]
+                }],
+                "has_user_edits": false
+            }),
+        );
+        superseded_lyrics.updated_at = "2026-05-22T12:03:00.000Z".to_string();
+        let mut current_lyrics = mobile_lyrics_revision(
+            "rev_lyrics_current",
+            &project_id,
+            "active",
+            Some("art_source_audio"),
+            json!({
+                "backend": "whisper.cpp",
+                "source_kind": "user-edited",
+                "requested_device": null,
+                "device": "cpu",
+                "model_name": null,
+                "language": "en",
+                "language_override": null,
+                "source_segments": [{
+                    "start_seconds": 0.0,
+                    "end_seconds": 1.25,
+                    "text": "hello",
+                    "words": [{
+                        "text": "hello",
+                        "start_seconds": 0.12,
+                        "end_seconds": 0.88,
+                        "confidence": 0.91
+                    }]
+                }],
+                "segments": [{
+                    "start_seconds": 0.0,
+                    "end_seconds": 1.25,
+                    "text": "hello sync",
+                    "words": [
+                        {
+                            "text": "hello",
+                            "start_seconds": 0.12,
+                            "end_seconds": 0.6,
+                            "confidence": 0.96
+                        },
+                        {
+                            "text": "sync",
+                            "start_seconds": 0.62,
+                            "end_seconds": 1.1,
+                            "confidence": null
+                        }
+                    ]
+                }],
+                "has_user_edits": true,
+                "created_at": "2026-05-22T12:03:00.000Z",
+                "updated_at": "2026-05-22T12:04:00.000Z"
+            }),
+        );
+        current_lyrics.base_revision_id = Some("rev_lyrics_previous".to_string());
+
         let manifest = SyncProjectManifestSchema {
             schema_version: SYNC_PROJECT_MANIFEST_SCHEMA_VERSION.to_string(),
             exported_at: "2026-05-22T12:05:00.000Z".to_string(),
@@ -2227,7 +2610,12 @@ mod mobile_backend_tests {
                 created_at: "2026-05-22T12:00:00.000Z".to_string(),
                 updated_at: "2026-05-22T12:05:00.000Z".to_string(),
             },
-            entity_revisions: vec![imported_superseded_chords, current_chords],
+            entity_revisions: vec![
+                imported_superseded_chords,
+                current_chords,
+                superseded_lyrics,
+                current_lyrics,
+            ],
             artifacts: vec![
                 SyncProjectManifestArtifactSchema {
                     artifact_id: "art_source_audio".to_string(),
@@ -2263,7 +2651,7 @@ mod mobile_backend_tests {
             delete_tombstones: Vec::new(),
         };
 
-        manifests::import_sync_project_manifest(
+        let imported_project = manifests::import_sync_project_manifest(
             &connection,
             &root,
             SyncProjectStagedImportRequest {
@@ -2292,6 +2680,7 @@ mod mobile_backend_tests {
         let analysis = audio::get_analysis_value(&connection, &project_id)
             .unwrap()
             .unwrap();
+        let lyrics = mobile_lyrics_response(&connection, project_id.clone()).unwrap();
         let project = storage::get_project_schema(&connection, &project_id).unwrap();
 
         assert_eq!(previous_state, "superseded");
@@ -2301,15 +2690,60 @@ mod mobile_backend_tests {
         assert!(chord_response.has_user_edits);
         assert_eq!(analysis["estimated_key"], "A minor");
         assert_eq!(analysis["tempo_bpm"], 132.25);
+        assert_eq!(analysis["estimated_reference_hz"], Value::Null);
+        assert_eq!(analysis["tuning_offset_cents"], -2.75);
         assert_eq!(analysis["timing"]["source"], "desktop");
+        assert_eq!(analysis["timing"]["beats"][1]["time_seconds"], 0.453);
+        assert_eq!(analysis["timing"]["bars"][0]["beat_count"], 4);
+        assert_eq!(lyrics.backend.as_deref(), Some("whisper.cpp"));
+        assert_eq!(lyrics.requested_device, None);
+        assert_eq!(lyrics.model_name, None);
+        assert_eq!(lyrics.language_override, None);
+        assert_eq!(lyrics.source_segments[0]["words"][0]["text"], "hello");
+        assert_eq!(lyrics.segments[0]["text"], "hello sync");
+        assert_eq!(lyrics.segments[0]["words"][1]["text"], "sync");
+        assert_eq!(lyrics.segments[0]["words"][1]["confidence"], Value::Null);
+        assert!(lyrics.has_user_edits);
+        assert_eq!(mobile_generation_job_count(&connection, &project_id), 0);
         assert_eq!(project.sync_status, "local");
         assert_eq!(
             project.sync_status_reason.as_deref(),
             Some("Synced from desktop.")
         );
+        assert_eq!(imported_project.sync_status, "local");
+        assert_eq!(
+            imported_project.sync_status_reason.as_deref(),
+            Some("Synced from desktop.")
+        );
 
         drop(connection);
-        let _ = std::fs::remove_dir_all(&root);
+        let reopened = storage::db_at_root(&root).unwrap();
+        let reopened_analysis = audio::get_analysis_value(&reopened, &project_id)
+            .unwrap()
+            .unwrap();
+        let reopened_chords = audio::get_chord_response(&reopened, project_id.clone()).unwrap();
+        let reopened_lyrics = mobile_lyrics_response(&reopened, project_id.clone()).unwrap();
+        let reopened_project = storage::get_project_schema(&reopened, &project_id).unwrap();
+
+        assert_eq!(reopened_analysis, analysis);
+        assert_eq!(reopened_chords.timeline[0]["label"], "Am");
+        assert!(reopened_chords.has_user_edits);
+        assert_eq!(reopened_lyrics.source_segments, lyrics.source_segments);
+        assert_eq!(reopened_lyrics.segments, lyrics.segments);
+        assert_eq!(reopened_lyrics.created_at, lyrics.created_at);
+        assert_eq!(reopened_lyrics.updated_at, lyrics.updated_at);
+        assert_eq!(mobile_generation_job_count(&reopened, &project_id), 0);
+        assert_eq!(
+            reopened_project.sync_status_reason.as_deref(),
+            Some("Synced from desktop.")
+        );
+
+        drop(reopened);
+        if std::env::var_os("TUNEFORGE_KEEP_ANDROID_FIXTURE").is_some() {
+            eprintln!("kept Android fixture at {}", root.display());
+        } else {
+            let _ = std::fs::remove_dir_all(&root);
+        }
     }
 
     #[cfg(not(target_os = "android"))]
@@ -3180,6 +3614,552 @@ mod mobile_backend_tests {
         assert!(require_sync_editable_status("remote_available")
             .unwrap_err()
             .contains("locked by sync status"));
+    }
+
+    #[test]
+    fn mobile_lyrics_revision_payload_preserves_desktop_fields_aliases_and_nulls() {
+        let mut revision = mobile_lyrics_revision(
+            "rev_lyrics_parser",
+            "project",
+            "active",
+            Some("art_source"),
+            json!({
+                "backend": "whisper.cpp",
+                "source_kind": "user-edited",
+                "requested_device": null,
+                "device": "cpu",
+                "model_name": null,
+                "language": "pt",
+                "language_override": null,
+                "source_segments_json": [{
+                    "start_seconds": 0.0,
+                    "end_seconds": 1.0,
+                    "text": "ola",
+                    "words": [{"text": "ola", "start_seconds": 0.1, "end_seconds": 0.9}]
+                }],
+                "segments_json": [{
+                    "start_seconds": 0.0,
+                    "end_seconds": 1.0,
+                    "text": "olá",
+                    "words": [{"text": "olá", "start_seconds": 0.1, "end_seconds": 0.9}]
+                }],
+                "has_user_edits": true,
+                "created_at": "2026-05-22T09:03:00-03:00"
+            }),
+        );
+        revision.updated_at = "2026-05-22T12:04:00Z".to_string();
+
+        let parsed = mobile_lyrics_revision_payload(&revision).unwrap();
+
+        assert_eq!(parsed.backend, "whisper.cpp");
+        assert_eq!(parsed.source_artifact_id.as_deref(), Some("art_source"));
+        assert_eq!(parsed.source_kind, "user-edited");
+        assert_eq!(parsed.requested_device, None);
+        assert_eq!(parsed.device.as_deref(), Some("cpu"));
+        assert_eq!(parsed.model_name, None);
+        assert_eq!(parsed.language.as_deref(), Some("pt"));
+        assert_eq!(parsed.language_override, None);
+        assert_eq!(parsed.source_segments[0]["words"][0]["text"], "ola");
+        assert_eq!(parsed.segments[0]["text"], "olá");
+        assert!(parsed.has_user_edits);
+        assert_eq!(parsed.created_at, "2026-05-22T12:03:00Z");
+        assert_eq!(parsed.updated_at, "2026-05-22T12:04:00Z");
+    }
+
+    #[test]
+    fn mobile_lyrics_revision_payload_defaults_backend_compatible_fields() {
+        let revision = mobile_lyrics_revision(
+            "rev_lyrics_defaults",
+            "project",
+            "active",
+            None,
+            json!({}),
+        );
+
+        let parsed = mobile_lyrics_revision_payload(&revision).unwrap();
+
+        assert_eq!(parsed.backend, "openai-whisper");
+        assert_eq!(parsed.source_kind, "ai");
+        assert!(parsed.source_segments.is_empty());
+        assert!(parsed.segments.is_empty());
+        assert!(!parsed.has_user_edits);
+    }
+
+    #[test]
+    fn mobile_lyrics_revision_payload_matches_backend_empty_and_null_semantics() {
+        let revision = mobile_lyrics_revision(
+            "rev_lyrics_empty_strings",
+            "project",
+            "active",
+            Some("art_source"),
+            json!({
+                "backend": "",
+                "source_artifact_id": "",
+                "source_kind": ""
+            }),
+        );
+
+        let parsed = mobile_lyrics_revision_payload(&revision).unwrap();
+
+        assert_eq!(parsed.backend, "openai-whisper");
+        assert_eq!(parsed.source_artifact_id.as_deref(), Some("art_source"));
+        assert_eq!(parsed.source_kind, "ai");
+
+        let null_edits = mobile_lyrics_revision(
+            "rev_lyrics_null_edits",
+            "project",
+            "active",
+            None,
+            json!({"has_user_edits": null}),
+        );
+        assert!(mobile_lyrics_revision_payload(&null_edits)
+            .err()
+            .expect("explicit null edit state must fail")
+            .contains("field must be a boolean: has_user_edits"));
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn mobile_manifest_import_hydrates_current_lyrics_and_persists_on_reopen() {
+        let (root, connection, project_id, mut manifest) =
+            mobile_lyrics_import_fixture("lyrics-current-persists");
+        let superseded = mobile_lyrics_revision(
+            "rev_lyrics_previous",
+            &project_id,
+            "superseded",
+            Some("art_source_audio"),
+            mobile_desktop_lyrics_payload("old", "old"),
+        );
+        let current_payload = mobile_desktop_lyrics_payload("hello", "hello sync");
+        let expected_source_segments = current_payload["source_segments"].clone();
+        let expected_segments = current_payload["segments"].clone();
+        let current = mobile_lyrics_revision(
+            "rev_lyrics_current",
+            &project_id,
+            "active",
+            Some("art_source_audio"),
+            current_payload,
+        );
+        manifest.entity_revisions = vec![superseded, current];
+
+        manifests::import_sync_project_manifest(
+            &connection,
+            &root,
+            SyncProjectStagedImportRequest {
+                manifest,
+                staging_root: None,
+                use_content_addressed_staging: Some(true),
+            },
+        )
+        .unwrap();
+
+        let lyrics = mobile_lyrics_response(&connection, project_id.clone()).unwrap();
+        assert_eq!(lyrics.backend.as_deref(), Some("whisper.cpp"));
+        assert_eq!(lyrics.source_artifact_id.as_deref(), Some("art_source_audio"));
+        assert_eq!(lyrics.source_kind.as_deref(), Some("user-edited"));
+        assert_eq!(lyrics.requested_device.as_deref(), Some("cpu"));
+        assert_eq!(lyrics.device.as_deref(), Some("cpu"));
+        assert_eq!(lyrics.model_name.as_deref(), Some("ggml-large-v3"));
+        assert_eq!(lyrics.language.as_deref(), Some("en"));
+        assert_eq!(lyrics.language_override.as_deref(), Some("en"));
+        assert_eq!(lyrics.source_segments, expected_source_segments.as_array().unwrap().clone());
+        assert_eq!(lyrics.segments, expected_segments.as_array().unwrap().clone());
+        assert!(lyrics.has_user_edits);
+        assert_eq!(lyrics.created_at.as_deref(), Some("2026-05-22T12:03:00Z"));
+        assert_eq!(lyrics.updated_at.as_deref(), Some("2026-05-22T12:04:00Z"));
+        assert_eq!(mobile_generation_job_count(&connection, &project_id), 0);
+
+        drop(connection);
+        let reopened = storage::db_at_root(&root).unwrap();
+        let reopened_lyrics = mobile_lyrics_response(&reopened, project_id.clone()).unwrap();
+        assert_eq!(reopened_lyrics.segments, lyrics.segments);
+        assert_eq!(reopened_lyrics.updated_at, lyrics.updated_at);
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn mobile_manifest_import_distinguishes_empty_and_absent_lyrics() {
+        let (empty_root, empty_connection, empty_project_id, mut empty_manifest) =
+            mobile_lyrics_import_fixture("lyrics-empty");
+        empty_manifest.entity_revisions = vec![mobile_lyrics_revision(
+            "rev_lyrics_empty",
+            &empty_project_id,
+            "active",
+            Some("art_source_audio"),
+            json!({
+                "backend": "whisper.cpp",
+                "source_kind": "ai",
+                "requested_device": null,
+                "device": null,
+                "model_name": null,
+                "language": null,
+                "language_override": null,
+                "source_segments": [],
+                "segments": [],
+                "has_user_edits": false
+            }),
+        )];
+        manifests::import_sync_project_manifest(
+            &empty_connection,
+            &empty_root,
+            SyncProjectStagedImportRequest {
+                manifest: empty_manifest,
+                staging_root: None,
+                use_content_addressed_staging: Some(true),
+            },
+        )
+        .unwrap();
+        let empty_lyrics =
+            mobile_lyrics_response(&empty_connection, empty_project_id.clone()).unwrap();
+        assert_eq!(mobile_lyrics_row_count(&empty_connection, &empty_project_id), 1);
+        assert!(empty_lyrics.source_segments.is_empty());
+        assert!(empty_lyrics.segments.is_empty());
+        assert!(!empty_lyrics.has_user_edits);
+        assert_eq!(mobile_generation_job_count(&empty_connection, &empty_project_id), 0);
+
+        let (absent_root, absent_connection, absent_project_id, absent_manifest) =
+            mobile_lyrics_import_fixture("lyrics-absent");
+        manifests::import_sync_project_manifest(
+            &absent_connection,
+            &absent_root,
+            SyncProjectStagedImportRequest {
+                manifest: absent_manifest,
+                staging_root: None,
+                use_content_addressed_staging: Some(true),
+            },
+        )
+        .unwrap();
+        let absent_lyrics =
+            mobile_lyrics_response(&absent_connection, absent_project_id.clone()).unwrap();
+        assert_eq!(mobile_lyrics_row_count(&absent_connection, &absent_project_id), 0);
+        assert!(absent_lyrics.source_segments.is_empty());
+        assert!(absent_lyrics.segments.is_empty());
+        assert_eq!(absent_lyrics.backend, None);
+        assert_eq!(mobile_generation_job_count(&absent_connection, &absent_project_id), 0);
+
+        drop(empty_connection);
+        drop(absent_connection);
+        let _ = std::fs::remove_dir_all(&empty_root);
+        let _ = std::fs::remove_dir_all(&absent_root);
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn mobile_reconciliation_removes_stale_lyrics_when_current_revision_is_superseded() {
+        let (root, connection, project_id, mut active_manifest) =
+            mobile_lyrics_import_fixture("lyrics-superseded-reconciliation");
+        active_manifest.entity_revisions = vec![mobile_lyrics_revision(
+            "rev_lyrics_current",
+            &project_id,
+            "active",
+            Some("art_source_audio"),
+            mobile_desktop_lyrics_payload("hello", "hello sync"),
+        )];
+        let mut superseded_revision = active_manifest.entity_revisions[0].clone();
+        superseded_revision.state = "superseded".to_string();
+        superseded_revision.updated_at = "2026-05-22T12:06:00Z".to_string();
+
+        manifests::import_sync_project_manifest(
+            &connection,
+            &root,
+            SyncProjectStagedImportRequest {
+                manifest: active_manifest,
+                staging_root: None,
+                use_content_addressed_staging: Some(true),
+            },
+        )
+        .unwrap();
+        assert_eq!(mobile_lyrics_row_count(&connection, &project_id), 1);
+
+        let result = reconciliation::apply_reconciliation_action(
+            &connection,
+            &root,
+            SyncReconciliationActionSchema {
+                action_type: "import_entity_revision".to_string(),
+                item_type: "entity_revision".to_string(),
+                item_id: superseded_revision.revision_id.clone(),
+                project_id: Some(project_id.clone()),
+                content_sha256: Some(superseded_revision.content_sha256.clone()),
+                provider_device_id: None,
+                reason: Some("Import superseded lyrics revision state.".to_string()),
+                priority: 50,
+                details: json!({}),
+            },
+            &SyncReconciliationApplyRequest {
+                remote_library: SyncReconciliationRemoteLibrarySchema {
+                    projects: Vec::new(),
+                    artifacts: Vec::new(),
+                    entity_revisions: vec![superseded_revision],
+                    delete_tombstones: Vec::new(),
+                },
+                project_manifests: Vec::new(),
+                peer_inventory: Vec::new(),
+                staging_root: None,
+                use_content_addressed_staging: true,
+                project_ids: Vec::new(),
+                include_timing_evidence: false,
+            },
+        );
+
+        let lyrics = mobile_lyrics_response(&connection, project_id.clone()).unwrap();
+        assert_eq!(result.status, "applied");
+        assert_eq!(mobile_lyrics_row_count(&connection, &project_id), 0);
+        assert_eq!(lyrics.backend, None);
+        assert!(lyrics.source_segments.is_empty());
+        assert!(lyrics.segments.is_empty());
+        assert_eq!(mobile_generation_job_count(&connection, &project_id), 0);
+
+        drop(connection);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn mobile_reconciliation_preserves_unrevisioned_lyrics_for_unrelated_import() {
+        let (root, connection, project_id, mut manifest) =
+            mobile_lyrics_import_fixture("lyrics-unrelated-reconciliation");
+        manifest.entity_revisions = vec![mobile_lyrics_revision(
+            "rev_lyrics_local_seed",
+            &project_id,
+            "active",
+            Some("art_source_audio"),
+            mobile_desktop_lyrics_payload("local", "local edit"),
+        )];
+        manifests::import_sync_project_manifest(
+            &connection,
+            &root,
+            SyncProjectStagedImportRequest {
+                manifest,
+                staging_root: None,
+                use_content_addressed_staging: Some(true),
+            },
+        )
+        .unwrap();
+        let local_lyrics = mobile_lyrics_response(&connection, project_id.clone()).unwrap();
+        connection
+            .execute(
+                "DELETE FROM sync_entity_revisions WHERE project_id = ?1",
+                rusqlite::params![&project_id],
+            )
+            .unwrap();
+
+        let mut metadata_revision = mobile_lyrics_revision(
+            "rev_project_metadata",
+            &project_id,
+            "active",
+            None,
+            json!({"display_name": "Unrelated metadata"}),
+        );
+        metadata_revision.entity_type = "project_metadata".to_string();
+        metadata_revision.revision_type = "metadata_change".to_string();
+        let result = reconciliation::apply_reconciliation_action(
+            &connection,
+            &root,
+            SyncReconciliationActionSchema {
+                action_type: "import_entity_revision".to_string(),
+                item_type: "entity_revision".to_string(),
+                item_id: metadata_revision.revision_id.clone(),
+                project_id: Some(project_id.clone()),
+                content_sha256: Some(metadata_revision.content_sha256.clone()),
+                provider_device_id: None,
+                reason: Some("Import unrelated project metadata revision.".to_string()),
+                priority: 50,
+                details: json!({}),
+            },
+            &SyncReconciliationApplyRequest {
+                remote_library: SyncReconciliationRemoteLibrarySchema {
+                    projects: Vec::new(),
+                    artifacts: Vec::new(),
+                    entity_revisions: vec![metadata_revision],
+                    delete_tombstones: Vec::new(),
+                },
+                project_manifests: Vec::new(),
+                peer_inventory: Vec::new(),
+                staging_root: None,
+                use_content_addressed_staging: true,
+                project_ids: Vec::new(),
+                include_timing_evidence: false,
+            },
+        );
+
+        let preserved = mobile_lyrics_response(&connection, project_id.clone()).unwrap();
+        assert_eq!(result.status, "applied");
+        assert_eq!(mobile_lyrics_row_count(&connection, &project_id), 1);
+        assert_eq!(preserved.source_segments, local_lyrics.source_segments);
+        assert_eq!(preserved.segments, local_lyrics.segments);
+        assert_eq!(preserved.updated_at, local_lyrics.updated_at);
+        assert_eq!(mobile_generation_job_count(&connection, &project_id), 0);
+
+        drop(connection);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn mobile_manifest_lyrics_hydration_failures_roll_back() {
+        for (slug, revisions, expected_error) in [
+            (
+                "lyrics-duplicate",
+                vec![
+                    mobile_lyrics_revision(
+                        "rev_lyrics_a",
+                        "PROJECT_ID",
+                        "active",
+                        Some("art_source_audio"),
+                        mobile_desktop_lyrics_payload("a", "a"),
+                    ),
+                    mobile_lyrics_revision(
+                        "rev_lyrics_b",
+                        "PROJECT_ID",
+                        "current",
+                        Some("art_source_audio"),
+                        mobile_desktop_lyrics_payload("b", "b"),
+                    ),
+                ],
+                "multiple current lyrics revisions",
+            ),
+            (
+                "lyrics-foreign-source",
+                vec![mobile_lyrics_revision(
+                    "rev_lyrics_foreign",
+                    "PROJECT_ID",
+                    "active",
+                    Some("art_foreign"),
+                    mobile_desktop_lyrics_payload("a", "a"),
+                )],
+                "source_artifact_id must belong",
+            ),
+        ] {
+            let (root, connection, project_id, mut manifest) = mobile_lyrics_import_fixture(slug);
+            manifest.entity_revisions = revisions
+                .into_iter()
+                .map(|mut revision| {
+                    revision.project_id = project_id.clone();
+                    revision.entity_id = project_id.clone();
+                    revision
+                })
+                .collect();
+            let error = manifests::import_sync_project_manifest(
+                &connection,
+                &root,
+                SyncProjectStagedImportRequest {
+                    manifest,
+                    staging_root: None,
+                    use_content_addressed_staging: Some(true),
+                },
+            )
+            .err()
+            .expect("invalid lyrics manifest must fail");
+            let revision_count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_entity_revisions WHERE project_id = ?1",
+                    rusqlite::params![&project_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(error.contains(expected_error), "unexpected error: {error}");
+            assert_eq!(revision_count, 0);
+            assert_eq!(mobile_lyrics_row_count(&connection, &project_id), 0);
+            assert_eq!(mobile_generation_job_count(&connection, &project_id), 0);
+            let project = storage::get_project_schema(&connection, &project_id).unwrap();
+            assert_eq!(project.sync_status, "local");
+            assert_eq!(project.sync_status_reason, None);
+            drop(connection);
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn mobile_reconciliation_lyrics_import_rolls_back_malformed_then_hydrates_valid() {
+        let (root, connection, project_id, _) =
+            mobile_lyrics_import_fixture("lyrics-reconciliation");
+        let malformed = mobile_lyrics_revision(
+            "rev_lyrics_malformed",
+            &project_id,
+            "active",
+            Some("art_source_audio"),
+            json!({
+                "source_segments": [],
+                "segments": "invalid"
+            }),
+        );
+        let action_for = |revision: &SyncProjectManifestEntityRevisionSchema| {
+            SyncReconciliationActionSchema {
+                action_type: "import_entity_revision".to_string(),
+                item_type: "entity_revision".to_string(),
+                item_id: revision.revision_id.clone(),
+                project_id: Some(project_id.clone()),
+                content_sha256: Some(revision.content_sha256.clone()),
+                provider_device_id: None,
+                reason: Some("Import lyrics revision into the existing project.".to_string()),
+                priority: 50,
+                details: json!({}),
+            }
+        };
+        let payload_for = |revision: SyncProjectManifestEntityRevisionSchema| {
+            SyncReconciliationApplyRequest {
+                remote_library: SyncReconciliationRemoteLibrarySchema {
+                    projects: Vec::new(),
+                    artifacts: Vec::new(),
+                    entity_revisions: vec![revision],
+                    delete_tombstones: Vec::new(),
+                },
+                project_manifests: Vec::new(),
+                peer_inventory: Vec::new(),
+                staging_root: None,
+                use_content_addressed_staging: true,
+                project_ids: Vec::new(),
+                include_timing_evidence: false,
+            }
+        };
+
+        let malformed_result = reconciliation::apply_reconciliation_action(
+            &connection,
+            &root,
+            action_for(&malformed),
+            &payload_for(malformed),
+        );
+        assert_eq!(malformed_result.status, "failed");
+        assert!(malformed_result
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("field must be a list of objects: segments"));
+        assert_eq!(mobile_lyrics_row_count(&connection, &project_id), 0);
+
+        let valid = mobile_lyrics_revision(
+            "rev_lyrics_valid",
+            &project_id,
+            "active",
+            Some("art_source_audio"),
+            mobile_desktop_lyrics_payload("hello", "hello synced"),
+        );
+        let valid_result = reconciliation::apply_reconciliation_action(
+            &connection,
+            &root,
+            action_for(&valid),
+            &payload_for(valid),
+        );
+        let revision_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sync_entity_revisions WHERE project_id = ?1",
+                rusqlite::params![&project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(valid_result.status, "applied");
+        assert_eq!(revision_count, 1);
+        assert_eq!(
+            mobile_lyrics_response(&connection, project_id.clone()).unwrap().segments[0]["text"],
+            "hello synced"
+        );
+        assert_eq!(mobile_generation_job_count(&connection, &project_id), 0);
+
+        drop(connection);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

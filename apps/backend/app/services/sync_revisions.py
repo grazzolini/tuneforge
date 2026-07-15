@@ -111,6 +111,8 @@ def record_lyrics_revision(
             "has_user_edits": lyrics.has_user_edits,
             "source_segments": lyrics.source_segments_json or [],
             "segments": lyrics.segments_json or [],
+            "created_at": lyrics.created_at,
+            "updated_at": lyrics.updated_at,
         }
     )
     return _record_entity_revision(

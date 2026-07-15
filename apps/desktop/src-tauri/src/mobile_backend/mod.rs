@@ -57,14 +57,20 @@ pub use stubs::*;
 mod storage;
 #[cfg(all(test, not(target_os = "android")))]
 use self::storage::{
-    app_data_root, create_completed_job, create_failed_job, db, db_at_root,
-    ensure_mobile_project_dirs, file_sha256, find_existing_project_source, get_project_manifest,
-    get_project_schema, get_source_artifact, get_staged_artifact, migrate_mobile_db, new_id,
-    project_root_path, relative_artifact_path, require_sync_editable_project, row_artifact,
-    row_delete_tombstone, row_entity_revision, row_project, safe_relative_path, source_format,
-    verify_staged_artifact, ARTIFACT_COLUMNS, PROJECT_COLUMNS, SYNC_DELETE_TOMBSTONE_COLUMNS,
-    SYNC_ENTITY_REVISION_COLUMNS,
+    app_data_root, create_completed_job, create_failed_job, db, db_at_root, file_sha256,
+    find_existing_project_source, get_project_manifest, get_project_schema, get_source_artifact,
+    get_staged_artifact, migrate_mobile_db, new_id, project_cleanup_root_path, project_root_path,
+    relative_artifact_path, require_sync_editable_project, row_artifact, row_delete_tombstone,
+    row_entity_revision, row_project, safe_relative_path, source_format, verify_staged_artifact,
+    ARTIFACT_COLUMNS, PROJECT_COLUMNS, SYNC_DELETE_TOMBSTONE_COLUMNS, SYNC_ENTITY_REVISION_COLUMNS,
 };
+
+#[cfg(all(test, not(target_os = "android")))]
+#[allow(dead_code)]
+#[path = "storage_cleanup.rs"]
+mod storage_cleanup;
+#[cfg(all(test, not(target_os = "android")))]
+use storage_cleanup::reconcile_project_storage_after_commit;
 
 #[cfg(all(test, not(target_os = "android")))]
 #[allow(dead_code)]

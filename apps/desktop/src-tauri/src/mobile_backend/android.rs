@@ -38,10 +38,13 @@ mod manifests;
 mod reconciliation;
 #[path = "storage.rs"]
 mod storage;
+#[path = "storage_cleanup.rs"]
+mod storage_cleanup;
 #[path = "transport_bridge.rs"]
 mod transport_bridge;
 
 use self::storage::*;
+use self::storage_cleanup::reconcile_project_storage_after_commit;
 use audio::{ensure_source_playback_proxy_metadata, spawn_playback_proxy_generation};
 use identity::{
     active_trusted_device_ids, ensure_local_identity, local_identity, trim_optional_string,

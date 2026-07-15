@@ -1,3 +1,7 @@
+use super::storage_cleanup::{
+    capture_owned_project_file, cleanup_owned_project_files, prepare_owned_project_file,
+    project_storage_mutation_guard, require_owned_project_file,
+};
 use super::*;
 
 pub(super) fn normalize_sync_status(value: &str) -> Result<String, String> {
@@ -343,17 +347,6 @@ pub(super) fn apply_delete_tombstone(
                     .map_err(|error| error.to_string())?;
         }
         "artifact" => {
-            let artifact_path: Option<String> = connection
-                .query_row(
-                    "SELECT path FROM artifacts WHERE id = ?1 AND project_id = ?2",
-                    params![tombstone.target_id, tombstone.project_id],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(|error| error.to_string())?;
-            if let Some(path) = artifact_path {
-                let _ = fs::remove_file(path);
-            }
             connection
                 .execute(
                     "DELETE FROM artifacts WHERE id = ?1 AND project_id = ?2",
@@ -699,12 +692,6 @@ pub(super) fn artifact_file_matches(path: &Path, content_sha256: &str, size_byte
     metadata.len() as i64 == size_bytes && file_sha256(path).ok().as_deref() == Some(content_sha256)
 }
 
-pub(super) fn cleanup_copied_artifacts(paths: &[PathBuf]) {
-    for path in paths {
-        let _ = fs::remove_file(path);
-    }
-}
-
 pub(super) fn import_sync_project_manifest(
     connection: &Connection,
     root: &Path,
@@ -798,33 +785,45 @@ pub(super) fn import_sync_project_manifest(
         });
     }
 
-    ensure_mobile_project_dirs(root, &project_id)?;
+    let storage_guard = project_storage_mutation_guard();
     let mut copied_paths = Vec::new();
     for prepared in &prepared_artifacts {
+        prepare_owned_project_file(root, &project_root, &prepared.destination_path)?;
         let Some(staged_path) = &prepared.staged_path else {
             continue;
         };
-        if let Some(parent) = prepared.destination_path.parent() {
-            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
-        fs::copy(staged_path, &prepared.destination_path).map_err(|error| {
-            cleanup_copied_artifacts(&copied_paths);
-            error.to_string()
-        })?;
+        fs::copy(staged_path, &prepared.destination_path)
+            .inspect_err(|_| cleanup_owned_project_files(&copied_paths))
+            .map_err(|error| error.to_string())?;
+        let copied = capture_owned_project_file(root, &project_root, &prepared.destination_path)?;
+        copied_paths.push(copied);
         if !artifact_file_matches(
             &prepared.destination_path,
             &prepared.manifest.content_sha256,
             prepared.manifest.size_bytes,
         ) {
-            cleanup_copied_artifacts(&copied_paths);
+            cleanup_owned_project_files(&copied_paths);
             return Err("A copied artifact file does not match its manifest.".to_string());
         }
-        copied_paths.push(prepared.destination_path.clone());
+        if let Err(message) =
+            require_owned_project_file(copied_paths.last().expect("copied artifact was recorded"))
+        {
+            cleanup_owned_project_files(&copied_paths);
+            return Err(message);
+        }
     }
 
-    connection
-        .execute_batch("BEGIN IMMEDIATE")
-        .map_err(|error| error.to_string())?;
+    for copied in &copied_paths {
+        if let Err(message) = require_owned_project_file(copied) {
+            cleanup_owned_project_files(&copied_paths);
+            return Err(message);
+        }
+    }
+
+    if let Err(error) = connection.execute_batch("BEGIN IMMEDIATE") {
+        cleanup_owned_project_files(&copied_paths);
+        return Err(error.to_string());
+    }
     let db_result = (|| -> Result<(), String> {
         let source_path_string = source_path.to_string_lossy().into_owned();
         if existing_project.is_none() {
@@ -935,14 +934,16 @@ pub(super) fn import_sync_project_manifest(
 
     if let Err(message) = db_result {
         let _ = connection.execute_batch("ROLLBACK");
-        cleanup_copied_artifacts(&copied_paths);
+        cleanup_owned_project_files(&copied_paths);
         return Err(message);
     }
     if let Err(error) = connection.execute_batch("COMMIT") {
         let _ = connection.execute_batch("ROLLBACK");
-        cleanup_copied_artifacts(&copied_paths);
+        cleanup_owned_project_files(&copied_paths);
         return Err(error.to_string());
     }
+    drop(storage_guard);
+    reconcile_project_storage_after_commit(connection, root, &project_id);
     get_project_schema(connection, &project_id)
 }
 
@@ -1059,9 +1060,10 @@ pub fn mobile_update_sync_project_status(
     payload: SyncProjectStatusUpdateRequest,
 ) -> Result<SyncProjectStatusUpdateResponse, String> {
     let connection = db(&app)?;
-    Ok(SyncProjectStatusUpdateResponse {
-        project: update_project_sync_status(&connection, &project_id, payload)?,
-    })
+    let root = app_data_root(&app)?;
+    let project = update_project_sync_status(&connection, &project_id, payload)?;
+    reconcile_project_storage_after_commit(&connection, &root, &project_id);
+    Ok(SyncProjectStatusUpdateResponse { project })
 }
 
 pub fn mobile_import_sync_project(

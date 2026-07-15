@@ -6,7 +6,7 @@ static FAILED_PROJECTS: OnceLock<Mutex<HashMap<PathBuf, HashSet<String>>>> = Onc
 static STORAGE_MUTATIONS: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum EntryKind {
+pub(super) enum EntryKind {
     Directory,
     File,
     Symlink,
@@ -14,16 +14,16 @@ enum EntryKind {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct EntryIdentity {
-    kind: EntryKind,
+pub(super) struct EntryIdentity {
+    pub(super) kind: EntryKind,
     #[cfg(unix)]
-    device: u64,
+    pub(super) device: u64,
     #[cfg(unix)]
-    inode: u64,
+    pub(super) inode: u64,
     #[cfg(not(unix))]
-    length: u64,
+    pub(super) length: u64,
     #[cfg(not(unix))]
-    modified: Option<std::time::SystemTime>,
+    pub(super) modified: Option<std::time::SystemTime>,
 }
 
 #[derive(Debug)]
@@ -156,7 +156,7 @@ pub(super) fn require_owned_project_file(file: &OwnedProjectFile) -> Result<(), 
     require_stable_directory(parent, &parent_identity)
 }
 
-fn ensure_owned_directory(data_root: &Path, directory: &Path) -> Result<(), String> {
+pub(super) fn ensure_owned_directory(data_root: &Path, directory: &Path) -> Result<(), String> {
     let data_root = lexical_absolute(data_root)?;
     let directory = lexical_absolute(directory)?;
     let relative = directory
@@ -466,7 +466,10 @@ fn remove_directory(
     fs::remove_dir(path).map_err(|error| error.to_string())
 }
 
-fn require_stable_directory(path: &Path, expected: &EntryIdentity) -> Result<(), String> {
+pub(super) fn require_stable_directory(
+    path: &Path,
+    expected: &EntryIdentity,
+) -> Result<(), String> {
     let current = path_identity(path)?;
     if current.as_ref() != Some(expected) || expected.kind != EntryKind::Directory {
         return Err("Mobile storage parent changed before cleanup.".to_string());
@@ -474,7 +477,7 @@ fn require_stable_directory(path: &Path, expected: &EntryIdentity) -> Result<(),
     Ok(())
 }
 
-fn path_identity(path: &Path) -> Result<Option<EntryIdentity>, String> {
+pub(super) fn path_identity(path: &Path) -> Result<Option<EntryIdentity>, String> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -509,7 +512,7 @@ fn path_identity(path: &Path) -> Result<Option<EntryIdentity>, String> {
     }
 }
 
-fn lexical_absolute(path: &Path) -> Result<PathBuf, String> {
+pub(super) fn lexical_absolute(path: &Path) -> Result<PathBuf, String> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {

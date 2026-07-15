@@ -944,6 +944,7 @@ pub(super) fn import_sync_project_manifest(
     }
     drop(storage_guard);
     reconcile_project_storage_after_commit(connection, root, &project_id);
+    reconcile_staged_artifacts_after_commit(connection, root);
     get_project_schema(connection, &project_id)
 }
 

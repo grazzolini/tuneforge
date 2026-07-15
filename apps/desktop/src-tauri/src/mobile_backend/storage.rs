@@ -1,3 +1,8 @@
+use super::staging_cleanup::{
+    merge_staging_metadata, prepare_staging_destination, public_staging_metadata,
+    register_staged_reference, remove_staging_file_if_unchanged, replace_staging_file,
+    staging_file_matches, staging_mutation_guard,
+};
 use super::*;
 #[cfg(all(test, not(target_os = "android")))]
 use serde_json::json;
@@ -627,7 +632,9 @@ pub(super) fn row_staged_artifact(row: &Row<'_>) -> rusqlite::Result<SyncStagedA
         size_bytes: row.get(1)?,
         relative_path: row.get(2)?,
         provider_device_id: row.get(3)?,
-        metadata: serde_json::from_str(&metadata_raw).unwrap_or_else(|_| json!({})),
+        metadata: public_staging_metadata(
+            serde_json::from_str(&metadata_raw).unwrap_or_else(|_| json!({})),
+        ),
         verified_at: row.get(5)?,
         created_at: row.get(6)?,
         updated_at: row.get(7)?,
@@ -1232,6 +1239,7 @@ pub(super) fn stage_sync_artifact(
     root: &Path,
     payload: SyncArtifactStagingRequest,
 ) -> Result<SyncStagedArtifactSchema, String> {
+    let _guard = staging_mutation_guard();
     if payload.size_bytes < 0 {
         return Err("Sync staged artifact size_bytes must be non-negative.".to_string());
     }
@@ -1251,23 +1259,30 @@ pub(super) fn stage_sync_artifact(
                 .to_string(),
         );
     }
-    let relative_path = sync_staging_relative_path(&content_sha256)?;
-    let destination_path = staged_artifact_path(root, &relative_path)?;
-    let needs_copy = match fs::metadata(&destination_path) {
-        Ok(existing_metadata) if existing_metadata.len() as i64 == payload.size_bytes => {
-            file_sha256(&destination_path)? != content_sha256
-        }
-        Ok(_) => true,
-        Err(_) => true,
-    };
-    if needs_copy {
-        if let Some(parent) = destination_path.parent() {
-            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
-        fs::copy(&source_path, &destination_path).map_err(|error| error.to_string())?;
-    }
+    let existing_metadata = connection
+        .query_row(
+            "SELECT metadata_json FROM sync_staged_artifacts WHERE content_sha256 = ?1",
+            params![&content_sha256],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let merged_metadata = merge_staging_metadata(existing_metadata.as_deref(), payload.metadata)?;
+    let (relative_path, destination_path) = prepare_staging_destination(root, &content_sha256)?;
+    let installed_identity =
+        if staging_file_matches(root, &destination_path, &content_sha256, payload.size_bytes) {
+            None
+        } else {
+            Some(replace_staging_file(
+                root,
+                &source_path,
+                &destination_path,
+                &content_sha256,
+                payload.size_bytes,
+            )?)
+        };
     let timestamp = now_iso();
-    connection
+    if let Err(error) = connection
         .execute(
             "INSERT INTO sync_staged_artifacts (content_sha256, size_bytes, relative_path, provider_device_id, metadata_json, verified_at, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?6)
@@ -1277,11 +1292,18 @@ pub(super) fn stage_sync_artifact(
                 payload.size_bytes,
                 relative_path,
                 payload.provider_device_id,
-                payload.metadata.to_string(),
+                merged_metadata.to_string(),
                 timestamp,
             ],
         )
-        .map_err(|error| error.to_string())?;
+    {
+        if existing_metadata.is_none() {
+            if let Some(identity) = installed_identity {
+                let _ = remove_staging_file_if_unchanged(root, &destination_path, &identity);
+            }
+        }
+        return Err(error.to_string());
+    }
     get_staged_artifact(
         connection,
         root,
@@ -1306,6 +1328,27 @@ pub fn mobile_get_sync_staged_artifact(
     let connection = db(&app)?;
     let root = app_data_root(&app)?;
     get_staged_artifact(&connection, &root, &content_sha256, None)
+}
+
+pub fn mobile_register_sync_staged_reference(
+    app: AppHandle,
+    content_sha256: String,
+    size_bytes: u64,
+    project_id: String,
+    artifact_id: String,
+) -> Result<bool, String> {
+    let connection = db(&app)?;
+    let root = app_data_root(&app)?;
+    let size_bytes = i64::try_from(size_bytes)
+        .map_err(|_| "Sync staged artifact size exceeds mobile storage limits.".to_string())?;
+    register_staged_reference(
+        &connection,
+        &root,
+        &content_sha256,
+        &project_id,
+        &artifact_id,
+        Some(size_bytes),
+    )
 }
 
 pub(super) fn can_upgrade_project_placeholder(

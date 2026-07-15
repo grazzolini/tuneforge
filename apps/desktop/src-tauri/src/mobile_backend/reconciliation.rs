@@ -742,6 +742,7 @@ pub(super) fn apply_reconciliation_action(
                     let _ = connection.execute_batch("ROLLBACK");
                     return Err(error.to_string());
                 }
+                reconcile_project_storage_after_commit(connection, root, &revision.project_id);
                 Ok((
                     "applied",
                     "Entity revision was imported into the existing project.",
@@ -764,7 +765,18 @@ pub(super) fn apply_reconciliation_action(
                         .ok_or_else(|| {
                             "Delete tombstone is not present in the apply request.".to_string()
                         })?;
-                apply_delete_tombstone(connection, &tombstone)?;
+                connection
+                    .execute_batch("BEGIN IMMEDIATE")
+                    .map_err(|error| error.to_string())?;
+                if let Err(message) = apply_delete_tombstone(connection, &tombstone) {
+                    let _ = connection.execute_batch("ROLLBACK");
+                    return Err(message);
+                }
+                if let Err(error) = connection.execute_batch("COMMIT") {
+                    let _ = connection.execute_batch("ROLLBACK");
+                    return Err(error.to_string());
+                }
+                reconcile_project_storage_after_commit(connection, root, &tombstone.project_id);
                 Ok((
                     "applied",
                     "Delete tombstone was applied through the mobile sync tombstone service.",
@@ -842,6 +854,7 @@ pub(super) fn apply_reconciliation_action(
                         project: status_project,
                     },
                 )?;
+                reconcile_project_storage_after_commit(connection, root, project_id);
                 Ok((
                     "applied",
                     "Project sync status was updated through the mobile sync status service.",
@@ -850,6 +863,7 @@ pub(super) fn apply_reconciliation_action(
             }
             ACTION_RECORD_CONFLICT => {
                 let project = persist_reconciliation_conflict(connection, &action, payload)?;
+                reconcile_project_storage_after_commit(connection, root, &project.id);
                 Ok((
                     "applied",
                     "Project conflict status was recorded through the mobile sync status service.",

@@ -343,7 +343,9 @@ fn run_lyrics_job(
     let duration_seconds = started.elapsed().as_secs_f64();
     match result {
         Ok(()) => {
-            let _ = complete_running_job(&connection, &job_id, duration_seconds);
+            if complete_running_job(&connection, &job_id, duration_seconds).is_ok() {
+                reconcile_project_storage_after_commit(&connection, &root, &project.id);
+            }
         }
         Err(message) => {
             let _ = fail_running_job(&connection, &job_id, &message, duration_seconds);
@@ -405,14 +407,10 @@ pub fn mobile_submit_lyrics(
                 segments: Vec::new(),
             },
         )?;
-        return Ok(JobResponse {
-            job: create_completed_job(
-                &connection,
-                &project_id,
-                "lyrics",
-                Some(source_artifact.id),
-            )?,
-        });
+        let job =
+            create_completed_job(&connection, &project_id, "lyrics", Some(source_artifact.id))?;
+        reconcile_project_storage_after_commit(&connection, &root, &project_id);
+        return Ok(JobResponse { job });
     }
     let model = match find_whisper_model(&root) {
         Some(model) => model,
@@ -456,7 +454,9 @@ pub fn mobile_update_lyrics(
     let connection = db(&app)?;
     let root = app_data_root(&app)?;
     let _ = require_sync_editable_project(&connection, &project_id)?;
-    update_lyrics_transcript(&connection, &root, project_id, &payload)
+    let response = update_lyrics_transcript(&connection, &root, project_id.clone(), &payload)?;
+    reconcile_project_storage_after_commit(&connection, &root, &project_id);
+    Ok(response)
 }
 
 fn empty_lyrics(project_id: String) -> LyricsResponse {

@@ -1,3 +1,7 @@
+use super::storage_cleanup::{
+    capture_owned_project_file, cleanup_owned_project_files, move_owned_project_file,
+    prepare_owned_project_file, project_storage_mutation_guard,
+};
 use super::*;
 
 struct MobileAudioFeatures {
@@ -34,27 +38,82 @@ fn read_audio_features(path: &Path) -> Result<MobileAudioFeatures, String> {
     })
 }
 
-fn create_playback_proxy_if_needed(project_root: &Path, source_path: &Path) -> Option<PathBuf> {
+fn install_playback_proxy(
+    connection: &Connection,
+    root: &Path,
+    project_root: &Path,
+    source_path: &Path,
+    artifact_id: &str,
+) -> Result<Option<PathBuf>, String> {
     let format = source_format(source_path);
     if !matches!(format.as_str(), "webm" | "mkv" | "mka") {
-        return None;
-    }
-
-    let audio = read_mobile_audio(source_path).ok()?;
-    if audio.samples.is_empty() || audio.sample_rate == 0 {
-        return None;
+        return Ok(None);
     }
 
     let playback_dir = project_root.join("playback");
-    fs::create_dir_all(&playback_dir).ok()?;
     let playback_path = playback_dir.join("source-playback.wav");
-    write_mono_pcm_wav(&playback_path, &audio).ok()?;
-    Some(playback_path)
-}
+    let decoded = if playback_path.is_file() {
+        None
+    } else {
+        let audio = match read_mobile_audio(source_path) {
+            Ok(audio) if !audio.samples.is_empty() && audio.sample_rate != 0 => audio,
+            _ => return Ok(None),
+        };
+        Some(audio)
+    };
 
-fn existing_playback_proxy_path(project_root: &Path) -> Option<PathBuf> {
-    let playback_path = project_root.join("playback").join("source-playback.wav");
-    playback_path.is_file().then_some(playback_path)
+    let _storage_guard = project_storage_mutation_guard();
+    let playback_path = prepare_owned_project_file(root, project_root, &playback_path)?;
+    let pending = if playback_path.is_file() {
+        None
+    } else {
+        let Some(audio) = decoded else {
+            return Ok(None);
+        };
+        let temporary_path = playback_dir.join(format!(".{}.wav", new_id("playback")));
+        let temporary_path = prepare_owned_project_file(root, project_root, &temporary_path)?;
+        if write_mono_pcm_wav(&temporary_path, &audio).is_err() {
+            if let Ok(file) = capture_owned_project_file(root, project_root, &temporary_path) {
+                cleanup_owned_project_files(std::slice::from_ref(&file));
+            }
+            return Ok(None);
+        }
+        Some(capture_owned_project_file(
+            root,
+            project_root,
+            &temporary_path,
+        )?)
+    };
+
+    connection
+        .execute_batch("BEGIN IMMEDIATE")
+        .map_err(|error| error.to_string())?;
+    let mut published = None;
+    let publish_result = (|| -> Result<(), String> {
+        attach_playback_proxy_metadata(connection, artifact_id, &playback_path)?;
+        if let Some(pending) = &pending {
+            published = Some(move_owned_project_file(pending, &playback_path)?);
+        }
+        Ok(())
+    })();
+    if let Err(message) = publish_result {
+        let _ = connection.execute_batch("ROLLBACK");
+        if let Some(published) = published.as_ref() {
+            cleanup_owned_project_files(std::slice::from_ref(published));
+        }
+        if let Some(pending) = pending.as_ref() {
+            cleanup_owned_project_files(std::slice::from_ref(pending));
+        }
+        return Err(message);
+    }
+    if let Err(error) = connection.execute_batch("COMMIT") {
+        let _ = connection.execute_batch("ROLLBACK");
+        if let Some(published) = published.as_ref() {
+            cleanup_owned_project_files(std::slice::from_ref(published));
+        }
+        return Err(error.to_string());
+    }
+    Ok(Some(playback_path))
 }
 
 pub(super) fn spawn_playback_proxy_generation(
@@ -68,14 +127,26 @@ pub(super) fn spawn_playback_proxy_generation(
     }
 
     thread::spawn(move || {
-        let Some(playback_path) = create_playback_proxy_if_needed(&project_root, &source_path)
-        else {
-            return;
-        };
         let Ok(connection) = db_at_root(&root) else {
             return;
         };
-        let _ = attach_playback_proxy_metadata(&connection, &artifact_id, &playback_path);
+        if let Ok(project_id) = connection.query_row(
+            "SELECT project_id FROM artifacts WHERE id = ?1",
+            params![artifact_id],
+            |row| row.get::<_, String>(0),
+        ) {
+            if install_playback_proxy(
+                &connection,
+                &root,
+                &project_root,
+                &source_path,
+                &artifact_id,
+            )
+            .is_ok_and(|path| path.is_some())
+            {
+                reconcile_project_storage_after_commit(&connection, &root, &project_id);
+            }
+        }
     });
 }
 
@@ -121,11 +192,16 @@ pub(super) fn ensure_source_playback_proxy_metadata(
     }
 
     let project_root = project_root_path(root, project_id)?;
-    let playback_path = existing_playback_proxy_path(&project_root).or_else(|| {
-        create_playback_proxy_if_needed(&project_root, Path::new(&project.imported_path))
-    });
-    if let Some(playback_path) = playback_path {
-        attach_playback_proxy_metadata(connection, &source_artifact.id, &playback_path)?;
+    if install_playback_proxy(
+        connection,
+        root,
+        &project_root,
+        Path::new(&project.imported_path),
+        &source_artifact.id,
+    )?
+    .is_some()
+    {
+        reconcile_project_storage_after_commit(connection, root, project_id);
     }
     Ok(())
 }
@@ -512,14 +588,14 @@ pub fn mobile_submit_analyze(app: AppHandle, project_id: String) -> Result<JobRe
         }
     };
     store_analysis_result(&connection, &root, &project, &source_artifact, &features)?;
-    Ok(JobResponse {
-        job: create_completed_job(
-            &connection,
-            &project_id,
-            "analyze",
-            Some(source_artifact.id),
-        )?,
-    })
+    let job = create_completed_job(
+        &connection,
+        &project_id,
+        "analyze",
+        Some(source_artifact.id),
+    )?;
+    reconcile_project_storage_after_commit(&connection, &root, &project_id);
+    Ok(JobResponse { job })
 }
 
 pub fn mobile_get_analysis(app: AppHandle, project_id: String) -> Result<AnalysisResponse, String> {
@@ -549,9 +625,9 @@ pub fn mobile_submit_chords(
         }
     };
     store_chord_timeline(&connection, &root, &project, &source_artifact, &features)?;
-    Ok(JobResponse {
-        job: create_completed_job(&connection, &project_id, "chords", Some(source_artifact.id))?,
-    })
+    let job = create_completed_job(&connection, &project_id, "chords", Some(source_artifact.id))?;
+    reconcile_project_storage_after_commit(&connection, &root, &project_id);
+    Ok(JobResponse { job })
 }
 
 pub fn mobile_get_chords(app: AppHandle, project_id: String) -> Result<ChordResponse, String> {

@@ -1347,7 +1347,10 @@ pub(super) fn discard_deleted_project_placeholders(
     project_id: &str,
     source_sha256: &str,
 ) -> Result<(), String> {
-    let placeholder_ids = {
+    connection
+        .execute_batch("BEGIN IMMEDIATE")
+        .map_err(|error| error.to_string())?;
+    let delete_result = (|| -> Result<Vec<String>, String> {
         let mut statement = connection
             .prepare(
                 "SELECT id FROM projects WHERE sync_status = 'deleted' AND (id = ?1 OR source_sha256 = ?2) ORDER BY created_at ASC, id ASC",
@@ -1362,16 +1365,25 @@ pub(super) fn discard_deleted_project_placeholders(
         for row in rows {
             placeholder_ids.push(row.map_err(|error| error.to_string())?);
         }
-        placeholder_ids
-    };
-
-    for placeholder_id in placeholder_ids {
-        delete_project_rows(connection, &placeholder_id)?;
-        if let Ok(project_root) = project_root_path(root, &placeholder_id) {
-            if project_root.exists() {
-                let _ = fs::remove_dir_all(project_root);
-            }
+        drop(statement);
+        for placeholder_id in &placeholder_ids {
+            delete_project_rows(connection, placeholder_id)?;
         }
+        Ok(placeholder_ids)
+    })();
+    let placeholder_ids = match delete_result {
+        Ok(placeholder_ids) => placeholder_ids,
+        Err(message) => {
+            let _ = connection.execute_batch("ROLLBACK");
+            return Err(message);
+        }
+    };
+    if let Err(error) = connection.execute_batch("COMMIT") {
+        let _ = connection.execute_batch("ROLLBACK");
+        return Err(error.to_string());
+    }
+    for placeholder_id in &placeholder_ids {
+        reconcile_project_storage_after_commit(connection, root, placeholder_id);
     }
     Ok(())
 }
@@ -1722,6 +1734,7 @@ pub fn mobile_import_project(
         )
         .map_err(|error| error.to_string())?;
 
+    reconcile_project_storage_after_commit(&connection, &root, &project_id);
     spawn_playback_proxy_generation(root, project_root, imported_path, source_artifact_id);
 
     Ok(ProjectResponse { project })
@@ -1754,79 +1767,75 @@ pub fn mobile_update_project(
 
 pub fn mobile_delete_project(app: AppHandle, project_id: String) -> Result<DeleteResponse, String> {
     let connection = db(&app)?;
-    let project = require_sync_editable_project(&connection, &project_id)?;
     let root = app_data_root(&app)?;
-    let project_root = project_cleanup_root_path(&root, &project_id)?;
-    let artifacts = list_project_artifacts(&connection, &project_id)?;
-    for artifact in &artifacts {
-        record_local_delete_tombstone(
-            &connection,
-            &project_id,
-            "artifact",
-            &artifact.id,
-            json!({
-                "project_id": artifact.project_id,
-                "type": artifact.r#type,
-                "content_sha256": artifact.content_sha256,
-                "size_bytes": artifact.size_bytes,
-            }),
-        )?;
-    }
-    for revision in list_project_entity_revisions(&connection, &project_id)? {
-        record_local_delete_tombstone(
-            &connection,
-            &project_id,
-            "entity_revision",
-            &revision.revision_id,
-            json!({
-                "project_id": revision.project_id,
-                "entity_type": revision.entity_type,
-                "entity_id": revision.entity_id,
-                "content_sha256": revision.content_sha256,
-            }),
-        )?;
-    }
-    record_local_delete_tombstone(
-        &connection,
-        &project_id,
-        "project",
-        &project_id,
-        json!({
-            "project_id": project.id,
-            "display_name": project.display_name,
-            "source_sha256": project.source_sha256,
-        }),
-    )?;
     connection
-        .execute(
+        .execute_batch("BEGIN IMMEDIATE")
+        .map_err(|error| error.to_string())?;
+    let delete_result = (|| -> Result<(), String> {
+        let project = require_sync_editable_project(&connection, &project_id)?;
+        let artifacts = list_project_artifacts(&connection, &project_id)?;
+        let revisions = list_project_entity_revisions(&connection, &project_id)?;
+        for artifact in &artifacts {
+            record_local_delete_tombstone(
+                &connection,
+                &project_id,
+                "artifact",
+                &artifact.id,
+                json!({
+                    "project_id": artifact.project_id,
+                    "type": artifact.r#type,
+                    "content_sha256": artifact.content_sha256,
+                    "size_bytes": artifact.size_bytes,
+                }),
+            )?;
+        }
+        for revision in &revisions {
+            record_local_delete_tombstone(
+                &connection,
+                &project_id,
+                "entity_revision",
+                &revision.revision_id,
+                json!({
+                    "project_id": revision.project_id,
+                    "entity_type": revision.entity_type,
+                    "entity_id": revision.entity_id,
+                    "content_sha256": revision.content_sha256,
+                }),
+            )?;
+        }
+        record_local_delete_tombstone(
+            &connection,
+            &project_id,
+            "project",
+            &project_id,
+            json!({
+                "project_id": project.id,
+                "display_name": project.display_name,
+                "source_sha256": project.source_sha256,
+            }),
+        )?;
+        for sql in [
             "DELETE FROM jobs WHERE project_id = ?1",
-            params![project_id],
-        )
-        .map_err(|error| error.to_string())?;
-    connection
-        .execute(
             "DELETE FROM artifacts WHERE project_id = ?1",
-            params![project_id],
-        )
-        .map_err(|error| error.to_string())?;
-    connection
-        .execute(
             "DELETE FROM lyrics_transcripts WHERE project_id = ?1",
-            params![project_id],
-        )
-        .map_err(|error| error.to_string())?;
-    connection
-        .execute(
             "DELETE FROM sync_entity_revisions WHERE project_id = ?1",
-            params![project_id],
-        )
-        .map_err(|error| error.to_string())?;
-    connection
-        .execute("DELETE FROM projects WHERE id = ?1", params![project_id])
-        .map_err(|error| error.to_string())?;
-    if project_root.exists() {
-        fs::remove_dir_all(project_root).map_err(|error| error.to_string())?;
+            "DELETE FROM projects WHERE id = ?1",
+        ] {
+            connection
+                .execute(sql, params![project_id])
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    })();
+    if let Err(message) = delete_result {
+        let _ = connection.execute_batch("ROLLBACK");
+        return Err(message);
     }
+    if let Err(error) = connection.execute_batch("COMMIT") {
+        let _ = connection.execute_batch("ROLLBACK");
+        return Err(error.to_string());
+    }
+    reconcile_project_storage_after_commit(&connection, &root, &project_id);
     Ok(DeleteResponse { deleted: true })
 }
 
@@ -1859,37 +1868,52 @@ pub fn mobile_delete_artifact(
     artifact_id: String,
 ) -> Result<DeleteResponse, String> {
     let connection = db(&app)?;
-    let _ = require_sync_editable_project(&connection, &project_id)?;
-    let artifact = connection
-        .query_row(
-            &format!("SELECT {ARTIFACT_COLUMNS} FROM artifacts WHERE id = ?1 AND project_id = ?2"),
-            params![artifact_id, project_id],
-            row_artifact,
-        )
-        .optional()
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "Artifact does not belong to this project.".to_string())?;
-    if !artifact.can_delete {
-        return Err("This artifact cannot be deleted.".to_string());
-    }
-    record_local_delete_tombstone(
-        &connection,
-        &project_id,
-        "artifact",
-        &artifact.id,
-        json!({
-            "project_id": artifact.project_id,
-            "type": artifact.r#type,
-            "content_sha256": artifact.content_sha256,
-            "size_bytes": artifact.size_bytes,
-        }),
-    )?;
-    if Path::new(&artifact.path).exists() {
-        fs::remove_file(&artifact.path).map_err(|error| error.to_string())?;
-    }
+    let root = app_data_root(&app)?;
     connection
-        .execute("DELETE FROM artifacts WHERE id = ?1", params![artifact.id])
+        .execute_batch("BEGIN IMMEDIATE")
         .map_err(|error| error.to_string())?;
+    let delete_result = (|| -> Result<(), String> {
+        let _ = require_sync_editable_project(&connection, &project_id)?;
+        let artifact = connection
+            .query_row(
+                &format!(
+                    "SELECT {ARTIFACT_COLUMNS} FROM artifacts WHERE id = ?1 AND project_id = ?2"
+                ),
+                params![artifact_id, project_id],
+                row_artifact,
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Artifact does not belong to this project.".to_string())?;
+        if !artifact.can_delete {
+            return Err("This artifact cannot be deleted.".to_string());
+        }
+        record_local_delete_tombstone(
+            &connection,
+            &project_id,
+            "artifact",
+            &artifact.id,
+            json!({
+                "project_id": artifact.project_id,
+                "type": artifact.r#type,
+                "content_sha256": artifact.content_sha256,
+                "size_bytes": artifact.size_bytes,
+            }),
+        )?;
+        connection
+            .execute("DELETE FROM artifacts WHERE id = ?1", params![artifact.id])
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    })();
+    if let Err(message) = delete_result {
+        let _ = connection.execute_batch("ROLLBACK");
+        return Err(message);
+    }
+    if let Err(error) = connection.execute_batch("COMMIT") {
+        let _ = connection.execute_batch("ROLLBACK");
+        return Err(error.to_string());
+    }
+    reconcile_project_storage_after_commit(&connection, &root, &project_id);
     Ok(DeleteResponse { deleted: true })
 }
 

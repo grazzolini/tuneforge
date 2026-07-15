@@ -100,6 +100,33 @@ pnpm dev
 
 The backend serves on `http://127.0.0.1:8765/api/v1`. The Tauri dev shell connects to it.
 
+## Release Media
+
+The GitHub Pages site presents screenshots and video generated from deterministic synthetic app
+states. Its release-media capture catalog is an explicit list in
+`scripts/capture-release-media.mjs`; it does not crawl every route automatically.
+
+When a material user-visible feature changes, evaluate whether it belongs in the catalog. Add media
+only when the feature is visually distinct, useful to site visitors, and deterministic:
+
+- Use a screenshot for a stable state.
+- Use a short silent video for behavior over time, such as playback, sync progress, or tuner
+  movement.
+- Skip backend-only, duplicate, trivial, hardware-dependent, or non-deterministic states.
+
+Use synthetic fixtures only. Never capture user files, copyrighted audio, accounts, or external
+services. Each catalog entry must use a fixed viewport and theme, wait for a semantic ready state,
+and provide meaningful visitor-facing metadata. Video entries also need a poster image.
+
+Generate the complete set locally, then inspect every screenshot, video, poster, and manifest entry:
+
+```sh
+node scripts/capture-release-media.mjs --run
+```
+
+Do not use `--allow-partial` for final validation. Generated output under
+`apps/site/public/media/generated/` is local build material and must never be committed.
+
 ## Before You Open a PR
 
 Run all of these locally and make sure they pass:

@@ -1,12 +1,24 @@
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
 from app.config import ensure_data_dirs, get_settings
 from app.db import (
     SQLITE_BUSY_TIMEOUT_MS,
     SQLITE_BUSY_TIMEOUT_SECONDS,
     _engine_for,
     _engine_options_for,
+    get_engine,
 )
+
+_COLLECTION_DATABASE_NAME = get_engine().url.database
+assert _COLLECTION_DATABASE_NAME is not None
+_COLLECTION_DATABASE_PATH = Path(_COLLECTION_DATABASE_NAME).resolve()
+
+
+def test_collection_database_uses_temporary_test_storage() -> None:
+    assert _COLLECTION_DATABASE_PATH.is_relative_to(Path(tempfile.gettempdir()).resolve())
 
 
 def test_sqlite_engine_sets_driver_busy_timeout() -> None:

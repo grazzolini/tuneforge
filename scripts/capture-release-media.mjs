@@ -14,50 +14,114 @@ const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 const defaultOutputDir = resolve(repoRoot, "apps/site/public/media/generated");
 const fixtureTimestamp = "2026-04-18T13:16:00.000Z";
 const childTailLines = 40;
-const capturePlan = [
+const releaseMediaCaptureCatalog = [
   {
     id: "library",
+    enabled: true,
     kind: "screenshot",
     fileName: "library.png",
     title: "Library with practice projects",
+    caption: "A local practice library with analysis-ready projects.",
+    alt: "TuneForge library showing three synthetic practice projects",
+    fixture: "release-showcase-v1",
     route: "/",
+    prepare: noPreparation,
+    ready: readyLibrary,
+    capture: captureScreenshotEntry,
   },
   {
     id: "playback",
+    enabled: true,
     kind: "screenshot",
     fileName: "playback.png",
     title: "Playback workspace with lyrics and chords follow",
+    caption: "Playback keeps synthetic lyrics and chords in view while the song moves.",
+    alt: "TuneForge playback workspace following lyrics and chords for Midnight Count-In",
+    fixture: "release-showcase-v1",
     route: "/projects/proj_release_showcase",
+    prepare: preparePlayback,
+    ready: readyPlayback,
+    capture: captureScreenshotEntry,
   },
   {
     id: "tuner",
+    enabled: true,
     kind: "screenshot",
     fileName: "tuner.png",
     title: "Chromatic tuner, slightly sharp",
+    caption: "The chromatic tuner reading a deterministic 442 Hz synthetic tone.",
+    alt: "TuneForge chromatic tuner showing an A at 442 hertz, slightly sharp",
+    fixture: "release-showcase-v1",
     route: "/tools",
+    prepare: prepareTuner,
+    ready: readyTuner,
+    capture: captureScreenshotEntry,
   },
   {
     id: "chord-dictionary",
+    enabled: true,
     kind: "screenshot",
     fileName: "chord-dictionary.png",
     title: "Chord dictionary reference screen",
+    caption: "A built-in chord reference for quick practice checks.",
+    alt: "TuneForge chord dictionary reference screen",
+    fixture: "release-showcase-v1",
     route: "/tools?tool=chord-dictionary",
+    prepare: noPreparation,
+    ready: readyChordDictionary,
+    capture: captureScreenshotEntry,
   },
   {
     id: "jobs",
+    enabled: true,
     kind: "screenshot",
     fileName: "jobs.png",
     title: "Activity jobs screen",
+    caption: "Completed local analysis jobs for the synthetic release project.",
+    alt: "TuneForge activity screen showing completed synthetic analysis jobs",
+    fixture: "release-showcase-v1",
     route: "/activity",
+    prepare: noPreparation,
+    ready: readyJobs,
+    capture: captureScreenshotEntry,
   },
   {
     id: "settings",
+    enabled: true,
     kind: "screenshot",
     fileName: "settings.png",
     title: "Settings screen",
+    caption: "Local processing and practice preferences in the TuneForge control room.",
+    alt: "TuneForge settings control room",
+    fixture: "release-showcase-v1",
     route: "/settings",
+    prepare: noPreparation,
+    ready: readySettings,
+    capture: captureScreenshotEntry,
+  },
+  {
+    id: "overview-video",
+    enabled: true,
+    kind: "video",
+    fileName: "overview.webm",
+    title: "Release media capture overview",
+    caption: "A short, silent walkthrough of current TuneForge screens.",
+    fixture: "release-showcase-v1",
+    route: "/",
+    posterId: "library",
+    recordingItemIds: [
+      "library",
+      "playback",
+      "tuner",
+      "chord-dictionary",
+      "jobs",
+      "settings",
+    ],
+    record: recordOverviewVideo,
   },
 ];
+
+validateReleaseMediaCatalog(releaseMediaCaptureCatalog);
 
 if (isDirectRun()) {
   try {
@@ -197,16 +261,16 @@ Usage:
   node scripts/capture-release-media.mjs --manifest-only
 
 Options:
-  --run                  Capture screenshots and an overview video.
+  --run                  Capture every enabled release-media catalog entry.
   --app-url=<url>        Use an already running desktop Vite app. Defaults to starting one.
   --output-dir=<path>    Output directory. Defaults to apps/site/public/media/generated.
   --viewport=1920x980    Browser viewport for deterministic screenshots.
   --theme=<mode>         Theme to capture: dark, light, or system. Defaults to dark.
   --headed               Show the browser while capturing.
-  --no-video             Skip overview WebM recording.
+  --no-video             Intentionally capture screenshots only.
   --timeout-ms=<ms>      Startup and selector timeout. Defaults to 45000.
   --video-hold-ms=<ms>   Hold each captured screen in the overview video. Defaults to 1800.
-  --allow-partial        Write a partial manifest without failing when screenshots miss.
+  --allow-partial        Write a partial manifest without failing when media items miss.
   --manifest-only        Write a placeholder manifest without media files.
   --dry-run              Print planned outputs without writing files.
 
@@ -217,11 +281,8 @@ Notes:
 
 function printPlan(options) {
   console.log("[capture-release-media] Dry run. Planned outputs:");
-  for (const item of capturePlan) {
+  for (const item of expectedCatalogEntries(releaseMediaCaptureCatalog, options)) {
     console.log(`- ${join(options.outputDir, item.fileName)} (${item.title})`);
-  }
-  if (options.recordVideo) {
-    console.log(`- ${join(options.outputDir, "overview.webm")} (browser-recorded overview)`);
   }
   console.log(`- ${join(options.outputDir, "manifest.json")} (capture manifest)`);
 }
@@ -249,71 +310,63 @@ async function captureReleaseMedia(options) {
     }
 
     const browser = await chromium.launch({ headless: !options.headed });
-    const context = await browser.newContext({
-      colorScheme: options.theme === "light" ? "light" : "dark",
-      deviceScaleFactor: 1,
-      reducedMotion: "reduce",
-      recordVideo: options.recordVideo
-        ? { dir: options.outputDir, size: options.viewport }
-        : undefined,
-      viewport: options.viewport,
-    });
-    await context.route("**/*", async (route) => {
-      const handled = await maybeFulfillMockApi(route);
-      if (!handled) {
-        await route.continue();
+    try {
+      const screenshots = expectedCatalogEntries(releaseMediaCaptureCatalog, options)
+        .filter((item) => item.kind === "screenshot");
+      const screenshotItems = await captureCatalogScreenshots({
+        appUrl,
+        browser,
+        catalog: releaseMediaCaptureCatalog,
+        entries: screenshots,
+        notes,
+        options,
+      });
+      capturedItems.push(...screenshotItems);
+
+      const videos = expectedCatalogEntries(releaseMediaCaptureCatalog, options)
+        .filter((item) => item.kind === "video");
+      for (const entry of videos) {
+        try {
+          const item = await captureCatalogVideo({
+            appUrl,
+            browser,
+            catalog: releaseMediaCaptureCatalog,
+            entry,
+            options,
+          });
+          capturedItems.push(item);
+        } catch (error) {
+          const message = errorMessage(error);
+          notes.push(`${entry.id} capture skipped: ${message}`);
+          console.warn(`[capture-release-media] ${entry.id} skipped: ${message}`);
+        }
       }
-    });
-
-    const page = await context.newPage();
-    await installPageStabilizers(page, options);
-
-    for (const item of capturePlan) {
-      try {
-        await captureScreenshot(page, appUrl, item, options);
-        capturedItems.push(mediaItemForPlanItem(item));
-      } catch (error) {
-        notes.push(`${item.id} capture skipped: ${errorMessage(error)}`);
-        console.warn(`[capture-release-media] ${item.id} skipped: ${errorMessage(error)}`);
-      }
-    }
-
-    const video = options.recordVideo ? page.video() : null;
-
-    await context.close();
-    await browser.close();
-
-    const videoItem = video ? await saveOverviewVideo(video, options.outputDir) : null;
-    if (videoItem) {
-      capturedItems.push(videoItem);
+    } finally {
+      await browser.close();
     }
   } finally {
     await stopChildren(children);
   }
 
-  const missingRequiredScreenshots = requiredScreenshotIds().filter((id) =>
-    !capturedItems.some((item) => item.id === id),
+  const accounting = captureAccounting(
+    releaseMediaCaptureCatalog,
+    capturedItems,
+    options,
   );
-  if (missingRequiredScreenshots.length) {
-    notes.push(`Required screenshots missing: ${missingRequiredScreenshots.join(", ")}.`);
+  if (accounting.missingIds.length) {
+    notes.push(`Required media missing: ${accounting.missingIds.join(", ")}.`);
   }
 
-  const status = capturedItems.length === capturePlan.length + (options.recordVideo ? 1 : 0)
-      ? "captured"
-      : capturedItems.length
-        ? "partial"
-        : "pending";
-
   await writeManifest(options.outputDir, {
-    status,
+    status: accounting.status,
     items: capturedItems,
     notes,
   });
   console.log(`[capture-release-media] Wrote ${capturedItems.length} media item(s) to ${options.outputDir}.`);
 
-  if (!options.allowPartial && missingRequiredScreenshots.length) {
+  if (!options.allowPartial && accounting.missingIds.length) {
     throw new Error(
-      `Required screenshot capture failed: ${missingRequiredScreenshots.join(", ")}. ` +
+      `Required media capture failed: ${accounting.missingIds.join(", ")}. ` +
         "Manifest was written for debugging; rerun with --allow-partial to keep exit 0.",
     );
   }
@@ -449,8 +502,9 @@ async function waitForHttp(url, { child, timeoutMs }) {
   throw new Error(`Timed out waiting for ${url}: ${errorMessage(lastError)}\n${child.tail()}`);
 }
 
-async function installPageStabilizers(page, options) {
-  await page.addInitScript(({ theme }) => {
+async function installPageStabilizers(page, options, captureKind) {
+  const motionPolicy = captureMotionPolicy(captureKind);
+  await page.addInitScript(({ animatePlayback, theme }) => {
     const fixedNow = Date.parse("2026-04-18T13:16:00.000Z");
     let callbackId = 1;
     const callbacks = new Map();
@@ -601,6 +655,10 @@ async function installPageStabilizers(page, options) {
         window.clearInterval(playbackPositionTimer);
       }
       emitPlaybackPosition();
+      if (!animatePlayback) {
+        playbackPositionTimer = null;
+        return;
+      }
       playbackPositionTimer = window.setInterval(() => {
         const nextPosition = Math.min(
           playbackSnapshot.durationSeconds,
@@ -898,96 +956,303 @@ async function installPageStabilizers(page, options) {
         }
       },
     };
-  }, { theme: options.theme });
+  }, { animatePlayback: motionPolicy.animatePlayback, theme: options.theme });
 }
 
-async function captureScreenshot(page, appUrl, item, options) {
-  await page.goto(`${appUrl}/#${item.route}`, { waitUntil: "domcontentloaded" });
-  await page.waitForLoadState("networkidle", { timeout: options.timeoutMs });
-  await waitForRouteContent(page, item, options.timeoutMs);
+function captureMotionPolicy(captureKind) {
+  if (captureKind !== "screenshot" && captureKind !== "video") {
+    throw new Error(`Unsupported capture kind ${captureKind}.`);
+  }
+  return { animatePlayback: captureKind === "video" };
+}
+
+async function createCaptureContext(browser, options, { recordVideo = false } = {}) {
+  const context = await browser.newContext({
+    colorScheme: options.theme === "light" ? "light" : "dark",
+    deviceScaleFactor: 1,
+    reducedMotion: "reduce",
+    recordVideo: recordVideo
+      ? { dir: options.outputDir, size: options.viewport }
+      : undefined,
+    viewport: options.viewport,
+  });
+  await context.route("**/*", async (route) => {
+    const handled = await maybeFulfillMockApi(route);
+    if (!handled) {
+      await route.continue();
+    }
+  });
+  return context;
+}
+
+async function captureCatalogScreenshots({ appUrl, browser, catalog, entries, notes, options }) {
+  if (!entries.length) {
+    return [];
+  }
+
+  const capturedItems = [];
+  const context = await createCaptureContext(browser, options);
+  try {
+    const page = await context.newPage();
+    await installPageStabilizers(page, options, "screenshot");
+    for (const entry of entries) {
+      try {
+        await entry.capture({ appUrl, entry, options, page });
+        capturedItems.push(manifestItemForCatalogEntry(entry, catalog));
+      } catch (error) {
+        const message = errorMessage(error);
+        notes.push(`${entry.id} capture skipped: ${message}`);
+        console.warn(`[capture-release-media] ${entry.id} skipped: ${message}`);
+      }
+    }
+  } finally {
+    await context.close();
+  }
+  return capturedItems;
+}
+
+async function captureScreenshotEntry({ appUrl, entry, options, page }) {
+  await prepareCatalogEntry(page, appUrl, entry, options.timeoutMs, "screenshot");
+  await settleScreenshotPaint(page);
   await page.screenshot({
     animations: "disabled",
     fullPage: false,
-    path: join(options.outputDir, item.fileName),
+    path: join(options.outputDir, entry.fileName),
   });
-  if (options.recordVideo && options.videoHoldMs > 0) {
-    await sleep(options.videoHoldMs);
+}
+
+async function settleScreenshotPaint(page) {
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+    await new Promise((resolveFrame) => {
+      window.requestAnimationFrame(() => window.requestAnimationFrame(resolveFrame));
+    });
+  });
+}
+
+async function captureCatalogVideo({ appUrl, browser, catalog, entry, options }) {
+  const context = await createCaptureContext(browser, options, { recordVideo: true });
+  let video = null;
+  try {
+    const page = await context.newPage();
+    await installPageStabilizers(page, options, "video");
+    video = page.video();
+    await entry.record({ appUrl, catalog, entry, options, page });
+  } finally {
+    await context.close();
   }
-}
 
-async function waitForRouteContent(page, item, timeoutMs) {
-  if (item.id === "library") {
-    await page.getByRole("heading", { name: "Practice Projects" }).waitFor({ timeout: timeoutMs });
-    await page.getByText(/3 projects ready/i).waitFor({ timeout: timeoutMs });
-    await page.getByRole("link", { name: /Open Midnight Count-In project/i }).waitFor({ timeout: timeoutMs });
-  } else if (item.id === "playback") {
-    await page.getByRole("heading", { name: "Midnight Count-In" }).waitFor({ timeout: timeoutMs });
-    await page.getByRole("tab", { name: "Playback" }).waitFor({ timeout: timeoutMs });
-    await page.getByRole("heading", { name: "Lyrics + chords" }).waitFor({ timeout: timeoutMs });
-    await page.locator(".lead-sheet").waitFor({ timeout: timeoutMs });
-    await page.locator(".lead-sheet-word .lyrics-word", { hasText: /^Count$/ }).waitFor({ timeout: timeoutMs });
-    const playButton = page.getByRole("button", { name: "Play playback" });
-    if (await playButton.count()) {
-      await playButton.click();
-    }
-    await page.getByRole("button", { name: "Pause playback" }).waitFor({ timeout: timeoutMs });
-  } else if (item.id === "tuner") {
-    await page.getByRole("heading", { name: "Tools" }).waitFor({ timeout: timeoutMs });
-    await page.getByRole("tab", { name: "Chromatic Tuner" }).waitFor({ timeout: timeoutMs });
-    const startButton = page.getByRole("button", { name: "Start" });
-    if (await startButton.count()) {
-      await startButton.click();
-    }
-    await page.locator(".tuner-readout__note", { hasText: /^A$/ }).waitFor({ timeout: timeoutMs });
-    await page.getByText(/442\.00 Hz -> target 440\.00 Hz/i).waitFor({ timeout: timeoutMs });
-  } else if (item.id === "chord-dictionary") {
-    await page.getByRole("heading", { name: "Tools" }).waitFor({ timeout: timeoutMs });
-    await page.getByRole("heading", { name: "Chord Dictionary" }).waitFor({ timeout: timeoutMs });
-    await page.getByRole("tab", { name: "Chord Dictionary" }).waitFor({ timeout: timeoutMs });
-  } else if (item.id === "jobs") {
-    await page.getByRole("heading", { name: "Activity" }).waitFor({ timeout: timeoutMs });
-    await page.getByRole("tab", { name: "Jobs" }).waitFor({ timeout: timeoutMs });
-    await page.getByRole("heading", { name: "Jobs" }).waitFor({ timeout: timeoutMs });
-    await page.getByText(/Transcript ready/i).waitFor({ timeout: timeoutMs });
-  } else if (item.id === "settings") {
-    await page.getByRole("heading", { name: "Control Room" }).waitFor({ timeout: timeoutMs });
+  if (!video) {
+    throw new Error(`${entry.id} did not create a browser video.`);
   }
-}
-
-function requiredScreenshotIds() {
-  return capturePlan.filter((item) => item.kind === "screenshot").map((item) => item.id);
-}
-
-async function saveOverviewVideo(video, outputDir) {
   const videoPath = await video.path();
-  const outputPath = join(outputDir, "overview.webm");
-  await rename(videoPath, outputPath);
-  return {
-    id: "overview-video",
-    title: "Release media capture overview",
-    kind: "video",
-    src: "media/generated/overview.webm",
-    poster: "media/generated/library.png",
-    caption: "Browser-recorded walkthrough of release media screens.",
-    label: "video",
-  };
+  await rename(videoPath, join(options.outputDir, entry.fileName));
+  return manifestItemForCatalogEntry(entry, catalog);
 }
 
-function mediaItemForPlanItem(item) {
+async function prepareCatalogEntry(page, appUrl, entry, timeoutMs, captureKind) {
+  await page.goto(`${appUrl}/#${entry.route}`, { waitUntil: "domcontentloaded" });
+  await page.waitForLoadState("networkidle", { timeout: timeoutMs });
+  await entry.prepare({ captureKind, page, timeoutMs });
+  await entry.ready({ captureKind, page, timeoutMs });
+}
+
+async function noPreparation() {}
+
+async function preparePlayback({ captureKind, page, timeoutMs }) {
+  if (captureKind === "screenshot") {
+    return;
+  }
+  const playButton = page.getByRole("button", { name: "Play playback" });
+  await playButton.waitFor({ timeout: timeoutMs });
+  await playButton.click();
+}
+
+async function prepareTuner({ page, timeoutMs }) {
+  const startButton = page.getByRole("button", { name: "Start" });
+  await startButton.waitFor({ timeout: timeoutMs });
+  await startButton.click();
+}
+
+async function readyLibrary({ page, timeoutMs }) {
+  await page.getByRole("heading", { name: "Practice Projects" }).waitFor({ timeout: timeoutMs });
+  await page.getByText(/3 projects ready/i).waitFor({ timeout: timeoutMs });
+  await page.getByRole("link", { name: /Open Midnight Count-In project/i })
+    .waitFor({ timeout: timeoutMs });
+}
+
+async function readyPlayback({ captureKind, page, timeoutMs }) {
+  await page.getByRole("heading", { name: "Midnight Count-In" }).waitFor({ timeout: timeoutMs });
+  await page.getByRole("tab", { name: "Playback" }).waitFor({ timeout: timeoutMs });
+  await page.getByRole("heading", { name: "Lyrics + chords" }).waitFor({ timeout: timeoutMs });
+  await page.locator(".lead-sheet").waitFor({ timeout: timeoutMs });
+  await page.locator(".lead-sheet-word .lyrics-word", { hasText: /^Count$/ })
+    .waitFor({ timeout: timeoutMs });
+  if (captureKind === "screenshot") {
+    await page.getByRole("button", { name: "Play playback" }).waitFor({ timeout: timeoutMs });
+    const position = page.getByLabel("Playback position");
+    await position.waitFor({ timeout: timeoutMs });
+    const value = Number(await position.inputValue());
+    if (value !== 0) {
+      throw new Error(`Playback screenshot must stay stopped at 0 seconds; received ${value}.`);
+    }
+  } else {
+    await page.getByRole("button", { name: "Pause playback" }).waitFor({ timeout: timeoutMs });
+  }
+}
+
+async function readyTuner({ page, timeoutMs }) {
+  await page.getByRole("heading", { name: "Tools" }).waitFor({ timeout: timeoutMs });
+  await page.getByRole("tab", { name: "Chromatic Tuner" }).waitFor({ timeout: timeoutMs });
+  await page.locator(".tuner-readout__note", { hasText: /^A$/ }).waitFor({ timeout: timeoutMs });
+  await page.getByText(/442\.00 Hz -> target 440\.00 Hz/i).waitFor({ timeout: timeoutMs });
+}
+
+async function readyChordDictionary({ page, timeoutMs }) {
+  await page.getByRole("heading", { name: "Tools" }).waitFor({ timeout: timeoutMs });
+  await page.getByRole("heading", { name: "Chord Dictionary" }).waitFor({ timeout: timeoutMs });
+  await page.getByRole("tab", { name: "Chord Dictionary" }).waitFor({ timeout: timeoutMs });
+}
+
+async function readyJobs({ page, timeoutMs }) {
+  await page.getByRole("heading", { name: "Activity" }).waitFor({ timeout: timeoutMs });
+  await page.getByRole("tab", { name: "Jobs" }).waitFor({ timeout: timeoutMs });
+  await page.getByRole("heading", { name: "Jobs" }).waitFor({ timeout: timeoutMs });
+  await page.getByText(/Transcript ready/i).waitFor({ timeout: timeoutMs });
+}
+
+async function readySettings({ page, timeoutMs }) {
+  await page.getByRole("heading", { name: "Control Room" }).waitFor({ timeout: timeoutMs });
+}
+
+async function recordOverviewVideo({ appUrl, catalog, entry, options, page }) {
+  for (const itemId of entry.recordingItemIds) {
+    const item = catalog.find((candidate) => candidate.id === itemId);
+    if (!item || item.kind !== "screenshot") {
+      throw new Error(`${entry.id} references unavailable recording item ${itemId}.`);
+    }
+    await prepareCatalogEntry(page, appUrl, item, options.timeoutMs, "video");
+    if (options.videoHoldMs > 0) {
+      await sleep(options.videoHoldMs);
+    }
+  }
+}
+
+function validateReleaseMediaCatalog(catalog) {
+  if (!Array.isArray(catalog) || catalog.length === 0) {
+    throw new Error("Release-media capture catalog must contain at least one entry.");
+  }
+
+  const ids = new Set();
+  const fileNames = new Set();
+  for (const entry of catalog) {
+    for (const field of ["id", "fileName", "title", "caption", "fixture", "route"]) {
+      if (typeof entry[field] !== "string" || !entry[field].trim()) {
+        throw new Error(`Release-media entry ${entry.id ?? "<unknown>"} requires ${field}.`);
+      }
+    }
+    if (entry.enabled !== true && entry.enabled !== false) {
+      throw new Error(`Release-media entry ${entry.id} requires a boolean enabled value.`);
+    }
+    if (ids.has(entry.id)) {
+      throw new Error(`Release-media capture catalog has duplicate id ${entry.id}.`);
+    }
+    if (fileNames.has(entry.fileName)) {
+      throw new Error(`Release-media capture catalog has duplicate file ${entry.fileName}.`);
+    }
+    ids.add(entry.id);
+    fileNames.add(entry.fileName);
+
+    if (entry.kind === "screenshot") {
+      if (typeof entry.alt !== "string" || !entry.alt.trim()) {
+        throw new Error(`Screenshot ${entry.id} requires alt text.`);
+      }
+      for (const callback of ["prepare", "ready", "capture"]) {
+        if (typeof entry[callback] !== "function") {
+          throw new Error(`Screenshot ${entry.id} requires a ${callback} callback.`);
+        }
+      }
+    } else if (entry.kind === "video") {
+      if (typeof entry.posterId !== "string" || !entry.posterId.trim()) {
+        throw new Error(`Video ${entry.id} requires posterId.`);
+      }
+      if (typeof entry.record !== "function") {
+        throw new Error(`Video ${entry.id} requires a record callback.`);
+      }
+    } else {
+      throw new Error(`Release-media entry ${entry.id} has unsupported kind ${entry.kind}.`);
+    }
+  }
+
+  for (const entry of catalog.filter((candidate) => candidate.kind === "video")) {
+    const poster = catalog.find((candidate) => candidate.id === entry.posterId);
+    if (!poster || poster.kind !== "screenshot" || !poster.enabled) {
+      throw new Error(`Video ${entry.id} requires an enabled screenshot poster.`);
+    }
+    if (entry.recordingItemIds !== undefined) {
+      if (!Array.isArray(entry.recordingItemIds) || entry.recordingItemIds.length === 0) {
+        throw new Error(`Video ${entry.id} recordingItemIds must be a non-empty array.`);
+      }
+      for (const itemId of entry.recordingItemIds) {
+        const item = catalog.find((candidate) => candidate.id === itemId);
+        if (!item || item.kind !== "screenshot" || !item.enabled) {
+          throw new Error(`Video ${entry.id} references invalid recording item ${itemId}.`);
+        }
+      }
+    }
+  }
+
+  return catalog;
+}
+
+function manifestItemForCatalogEntry(entry, catalog = releaseMediaCaptureCatalog) {
+  const item = {
+    id: entry.id,
+    title: entry.title,
+    kind: entry.kind,
+    src: `media/generated/${entry.fileName}`,
+  };
+  if (entry.kind === "screenshot") {
+    item.alt = entry.alt;
+  } else {
+    const poster = catalog.find((candidate) => candidate.id === entry.posterId);
+    if (!poster) {
+      throw new Error(`${entry.id} references unknown poster ${entry.posterId}.`);
+    }
+    item.poster = `media/generated/${poster.fileName}`;
+  }
+  item.caption = entry.caption;
+  item.label = entry.kind;
+  return item;
+}
+
+function expectedCatalogEntries(catalog = releaseMediaCaptureCatalog, { recordVideo = true } = {}) {
+  return catalog.filter((entry) => entry.enabled && (recordVideo || entry.kind !== "video"));
+}
+
+function captureAccounting(catalog, capturedItems, options = {}) {
+  const expectedIds = expectedCatalogEntries(catalog, options).map((entry) => entry.id);
+  const capturedIds = new Set(capturedItems.map((item) => item.id));
+  const missingIds = expectedIds.filter((id) => !capturedIds.has(id));
   return {
-    id: item.id,
-    title: item.title,
-    kind: item.kind,
-    src: `media/generated/${item.fileName}`,
-    alt: item.title,
-    caption: "Captured from the current TuneForge UI.",
-    label: "screenshot",
+    expectedIds,
+    missingIds,
+    status: missingIds.length === 0
+      ? "captured"
+      : capturedIds.size > 0
+        ? "partial"
+        : "pending",
   };
 }
 
 async function writeManifest(outputDir, { status, items, notes }) {
   await mkdir(outputDir, { recursive: true });
-  const manifest = {
+  const manifest = buildManifest({ status, items, notes });
+  await writeFile(join(outputDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+}
+
+function buildManifest({ status, items, notes }) {
+  return {
     schemaVersion: 1,
     status,
     generatedAt: generatedAt(),
@@ -996,7 +1261,6 @@ async function writeManifest(outputDir, { status, items, notes }) {
     items,
     notes,
   };
-  await writeFile(join(outputDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 }
 
 function generatedAt() {
@@ -1396,6 +1660,25 @@ function chordBackends() {
       label: "Built-in Chords",
       unavailable_reason: null,
     },
+    {
+      availability: "available",
+      available: true,
+      capabilities: {
+        desktopOnly: true,
+        estimatedSpeed: "slow",
+        experimental: true,
+        supportsConfidence: true,
+        supportsInversions: true,
+        supportsNoChord: true,
+        supportsSevenths: true,
+      },
+      description: "Optional crema chord detector with richer chord vocabulary and inversion estimates.",
+      desktopOnly: true,
+      experimental: true,
+      id: "crema-advanced",
+      label: "Advanced Chords",
+      unavailable_reason: null,
+    },
   ];
 }
 
@@ -1490,3 +1773,15 @@ function sleep(ms) {
 function errorMessage(error) {
   return error instanceof Error && error.message ? error.message : String(error);
 }
+
+export {
+  buildManifest,
+  captureAccounting,
+  captureMotionPolicy,
+  chordBackends,
+  expectedCatalogEntries,
+  manifestItemForCatalogEntry,
+  parseOptions,
+  releaseMediaCaptureCatalog,
+  validateReleaseMediaCatalog,
+};

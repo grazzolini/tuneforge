@@ -123,6 +123,23 @@ When asked to implement a change:
 - Prefer updating existing docs under `docs/` instead of adding near-duplicate pages.
 - Link docs with relative paths and keep section anchors stable where practical.
 
+## Release Media
+
+- Evaluate material user-visible features for coverage in the release-media capture catalog in
+  `scripts/capture-release-media.mjs`. The catalog is an explicit code list, not route discovery.
+- Add media only when the state is visually distinct, useful to visitors, and deterministic. Use a
+  screenshot for a stable state and a short silent video for behavior over time, such as playback,
+  sync progress, or tuner movement.
+- Skip backend-only, duplicate, trivial, hardware-dependent, or non-deterministic states.
+- Use synthetic fixtures only. Never capture user files, copyrighted audio, accounts, or external
+  services.
+- Every entry needs a semantic ready-state assertion, fixed viewport and theme, meaningful title,
+  caption, and alt text, plus a poster for video. Keep its metadata, fixture preparation, readiness,
+  and capture behavior together in the catalog.
+- Run `node scripts/capture-release-media.mjs --run` and inspect every generated screenshot, video,
+  poster, and manifest entry before finishing. Do not use `--allow-partial` for final validation.
+- Never commit generated media under `apps/site/public/media/generated/`.
+
 ## Generated Artifacts
 
 The following files are generated. **Do not edit by hand.**

@@ -30,6 +30,7 @@ from app.models import (
 from app.schemas import SUPPORTED_LYRICS_LANGUAGE_OVERRIDES
 from app.services.artifacts import register_artifact
 from app.services.paths import ensure_project_dirs, project_root
+from app.services.project_storage import queue_project_storage_reconciliation
 from app.services.sync_identity import source_hash_to_project_id
 from app.services.sync_metadata import (
     artifact_sync_metadata,
@@ -564,6 +565,7 @@ def import_staged_project_manifest(
         _cleanup_copied_artifacts(copied_paths, root)
         raise
 
+    queue_project_storage_reconciliation(session, project.id)
     return project
 
 
@@ -670,6 +672,7 @@ def _merge_staged_project_manifest(
         raise
 
     session.flush()
+    queue_project_storage_reconciliation(session, project.id)
     return project
 
 

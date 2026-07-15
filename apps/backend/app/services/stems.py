@@ -16,6 +16,7 @@ from app.errors import AppError, JobCancelledError
 from app.models import Artifact, Project, utcnow
 from app.services.artifacts import refresh_artifact_file_metadata, register_artifact
 from app.services.paths import project_stems_dir
+from app.services.project_storage import queue_project_storage_reconciliation
 from app.services.stem_models import (
     STEM_ARTIFACT_TYPES,
     TWO_STEMS_MODEL_ID,
@@ -186,9 +187,6 @@ def _upsert_stem_artifact(
         )
 
     old_path = Path(existing_artifact.path)
-    if old_path != path:
-        _cleanup_artifact_path(old_path)
-
     existing_artifact.format = artifact_format
     existing_artifact.path = str(path)
     refresh_artifact_file_metadata(existing_artifact, path)
@@ -198,6 +196,8 @@ def _upsert_stem_artifact(
     existing_artifact.metadata_json = metadata
     existing_artifact.created_at = utcnow()
     session.flush()
+    if old_path != path:
+        queue_project_storage_reconciliation(session, project_id)
     return existing_artifact
 
 
@@ -226,8 +226,8 @@ def _prune_extra_stem_artifacts(
     ):
         if artifact.id not in keep_ids:
             record_artifact_delete_tombstone(session, artifact)
-            _cleanup_artifact_path(Path(artifact.path))
             session.delete(artifact)
+    queue_project_storage_reconciliation(session, project_id)
 
 
 def _separate_with_model(

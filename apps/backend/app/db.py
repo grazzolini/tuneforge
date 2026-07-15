@@ -71,6 +71,31 @@ SessionLocal = sessionmaker(autoflush=False, expire_on_commit=False, class_=Sess
 SessionLocal.configure(bind=_engine)
 
 
+@event.listens_for(Session, "before_commit")
+def _prepare_project_storage_reconciliations(session: Session) -> None:
+    if session.get_nested_transaction() is not None:
+        return
+    from app.services.project_storage import prepare_project_storage_reconciliations
+
+    prepare_project_storage_reconciliations(session)
+
+
+@event.listens_for(Session, "after_commit")
+def _drain_project_storage_reconciliations(session: Session) -> None:
+    if session.get_nested_transaction() is not None:
+        return
+    from app.services.project_storage import drain_project_storage_reconciliations
+
+    drain_project_storage_reconciliations(session)
+
+
+@event.listens_for(Session, "after_rollback")
+def _discard_project_storage_reconciliations(session: Session) -> None:
+    from app.services.project_storage import discard_project_storage_reconciliations
+
+    discard_project_storage_reconciliations(session)
+
+
 class UnknownDatabaseRevisionError(RuntimeError):
     pass
 

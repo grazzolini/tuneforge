@@ -28,6 +28,7 @@ from app.services.beat_backends import beat_backend_runtime_device
 from app.services.chord_backends import chord_backend_runtime_device, resolve_chord_backend
 from app.services.chords import detect_project_chords, project_chord_detection_source
 from app.services.lyrics import generate_project_lyrics
+from app.services.project_storage import queue_project_storage_reconciliation
 from app.services.projects import get_mutable_project, get_project
 from app.services.stem_models import (
     STEM_ARTIFACT_TYPES,
@@ -831,6 +832,8 @@ class InProcessJobRunner:
                     job.runtime_device = result.runtime_device
                 self._ensure_terminal_runtime_status(job)
                 self._mark_job_finished(job)
+                if job.project_id is not None and job.type != "export":
+                    queue_project_storage_reconciliation(session, job.project_id)
                 session.commit()
         except JobCancelledError:
             self.update_job(job_id, status="cancelled", error_message=None)

@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import Artifact, ChordTimeline, LyricsTranscript, Project
+from app.models import AnalysisResult, Artifact, ChordTimeline, LyricsTranscript, Project
 from app.services.paths import project_root
 
 logger = logging.getLogger(__name__)
@@ -52,9 +52,9 @@ def prepare_project_storage_reconciliations(session: Session) -> None:
         return
 
     session.flush()
-    artifact_paths = tuple(session.scalars(select(Artifact.path)))
+    artifacts = tuple(session.scalars(select(Artifact)))
     plans = [
-        _build_reconciliation(session, project_id, artifact_paths=artifact_paths)
+        _build_reconciliation(session, project_id, artifacts=artifacts)
         for project_id in sorted(project_ids)
     ]
     session.info[_PREPARED_RECONCILIATIONS] = plans
@@ -91,7 +91,7 @@ def _build_reconciliation(
     session: Session,
     project_id: str,
     *,
-    artifact_paths: tuple[str, ...],
+    artifacts: tuple[Artifact, ...],
 ) -> ProjectStorageReconciliation:
     settings = get_settings()
     root = _lexical_absolute(project_root(project_id))
@@ -103,12 +103,20 @@ def _build_reconciliation(
     project = session.get(Project, project_id)
     delete_project_root = project is None or project.sync_status == "deleted"
     owned_paths: set[Path] = set()
-    for artifact_path in artifact_paths:
-        relative = _relative_path(_lexical_absolute(Path(artifact_path)), root)
-        if relative is not None and relative.parts:
-            owned_paths.add(relative)
+    for artifact in artifacts:
+        _add_owned_path(owned_paths, artifact.path, root)
+        if artifact.type == "source_audio":
+            original_copy_path = artifact.metadata_json.get("original_copy_path")
+            if isinstance(original_copy_path, str):
+                _add_owned_path(owned_paths, original_copy_path, root)
 
     if not delete_project_root:
+        if project is None:
+            raise RuntimeError("Live project reconciliation requires a project row.")
+        _add_owned_path(owned_paths, project.source_path, root)
+        _add_owned_path(owned_paths, project.imported_path, root)
+        if session.get(AnalysisResult, project_id) is not None:
+            owned_paths.add(Path("analysis") / "analysis.json")
         if session.get(ChordTimeline, project_id) is not None:
             owned_paths.add(Path("analysis") / "chords.json")
         if session.get(LyricsTranscript, project_id) is not None:
@@ -123,6 +131,12 @@ def _build_reconciliation(
         owned_paths=frozenset(owned_paths),
         delete_project_root=delete_project_root,
     )
+
+
+def _add_owned_path(owned_paths: set[Path], raw_path: str, root: Path) -> None:
+    relative = _relative_path(_lexical_absolute(Path(raw_path)), root)
+    if relative is not None and relative.parts:
+        owned_paths.add(relative)
 
 
 def reconcile_project_storage(plan: ProjectStorageReconciliation) -> None:

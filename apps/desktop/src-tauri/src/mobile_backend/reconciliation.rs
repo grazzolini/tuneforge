@@ -967,6 +967,11 @@ pub fn mobile_apply_sync_reconciliation(
         &scoped_payload.project_manifests,
         &scoped_payload.peer_inventory,
     )?;
+    staging_cleanup::register_manifest_staged_references(
+        &connection,
+        &root,
+        &payload.project_manifests,
+    )?;
     let started = Instant::now();
     let mut results = Vec::new();
     for action in plan.actions.iter().cloned() {
@@ -977,6 +982,7 @@ pub fn mobile_apply_sync_reconciliation(
             &scoped_payload,
         ));
     }
+    reconcile_staged_artifacts_after_commit(&connection, &root);
     let summary = summarize_apply_results(plan.actions.len(), &results);
     let timing_evidence = if payload.include_timing_evidence {
         vec![SyncReconciliationTimingEvidenceSchema {

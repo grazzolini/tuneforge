@@ -36,6 +36,8 @@ mod lyrics;
 mod manifests;
 #[path = "reconciliation.rs"]
 mod reconciliation;
+#[path = "staging_cleanup.rs"]
+mod staging_cleanup;
 #[path = "storage.rs"]
 mod storage;
 #[path = "storage_cleanup.rs"]
@@ -43,6 +45,7 @@ mod storage_cleanup;
 #[path = "transport_bridge.rs"]
 mod transport_bridge;
 
+use self::staging_cleanup::reconcile_staged_artifacts_after_commit;
 use self::storage::*;
 use self::storage_cleanup::reconcile_project_storage_after_commit;
 use audio::{ensure_source_playback_proxy_metadata, spawn_playback_proxy_generation};
@@ -77,8 +80,9 @@ pub use reconciliation::{mobile_apply_sync_reconciliation, mobile_plan_sync_reco
 pub use storage::{
     mobile_cancel_job, mobile_delete_artifact, mobile_delete_project, mobile_get_health,
     mobile_get_job, mobile_get_project, mobile_get_sync_staged_artifact, mobile_import_project,
-    mobile_list_artifacts, mobile_list_jobs, mobile_list_projects, mobile_stage_sync_artifact,
-    mobile_submit_export, mobile_sync_transport_artifact_file, mobile_update_project,
+    mobile_list_artifacts, mobile_list_jobs, mobile_list_projects,
+    mobile_register_sync_staged_reference, mobile_stage_sync_artifact, mobile_submit_export,
+    mobile_sync_transport_artifact_file, mobile_update_project,
 };
 pub use transport_bridge::{
     mobile_sync_transport_create_pairing_offer_value, mobile_sync_transport_local_identity_value,

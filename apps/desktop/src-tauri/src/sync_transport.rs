@@ -9043,6 +9043,15 @@ mod desktop {
         results
     }
 
+    #[cfg(target_os = "android")]
+    fn already_staged_artifact_result(
+        client: &BackendClient,
+        artifact: &RemoteArtifact,
+    ) -> Result<bool, String> {
+        client.register_staged_artifact_reference(artifact)
+    }
+
+    #[cfg(not(target_os = "android"))]
     fn already_staged_artifact_result(
         client: &BackendClient,
         artifact: &RemoteArtifact,
@@ -9060,7 +9069,7 @@ mod desktop {
                             .to_string(),
                     );
                 }
-                Ok(true)
+                client.register_staged_artifact_reference(artifact)
             }
             Err(error) if error.status == Some(404) => Ok(false),
             Err(error) => Err(format!(
@@ -11814,6 +11823,28 @@ mod desktop {
     }
 
     impl BackendClient {
+        fn register_staged_artifact_reference(
+            &self,
+            artifact: &RemoteArtifact,
+        ) -> Result<bool, String> {
+            #[cfg(target_os = "android")]
+            {
+                return crate::mobile_backend::mobile_register_sync_staged_reference(
+                    self.app.clone(),
+                    artifact.content_sha256.clone(),
+                    artifact.size_bytes,
+                    artifact.project_id.clone(),
+                    artifact.artifact_id.clone(),
+                );
+            }
+
+            #[cfg(not(target_os = "android"))]
+            {
+                let _ = artifact;
+                Ok(true)
+            }
+        }
+
         fn new(access: &BackendAccess) -> Result<Self, String> {
             #[cfg(target_os = "android")]
             {

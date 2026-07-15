@@ -35,10 +35,10 @@ include!("helpers.rs");
 mod android;
 #[cfg(target_os = "android")]
 pub use android::{
-    mobile_sign_transport_handshake, mobile_sync_transport_artifact_file,
-    mobile_sync_transport_create_pairing_offer_value, mobile_sync_transport_local_identity_value,
-    mobile_sync_transport_metadata_value, mobile_sync_transport_project_manifest_value,
-    mobile_sync_transport_reconciliation_apply_value,
+    mobile_register_sync_staged_reference, mobile_sign_transport_handshake,
+    mobile_sync_transport_artifact_file, mobile_sync_transport_create_pairing_offer_value,
+    mobile_sync_transport_local_identity_value, mobile_sync_transport_metadata_value,
+    mobile_sync_transport_project_manifest_value, mobile_sync_transport_reconciliation_apply_value,
     mobile_sync_transport_reconciliation_plan_value,
     mobile_sync_transport_refresh_peer_endpoint_hints_value,
     mobile_sync_transport_stage_artifact_value, mobile_sync_transport_staged_artifact_value,
@@ -71,6 +71,13 @@ use self::storage::{
 mod storage_cleanup;
 #[cfg(all(test, not(target_os = "android")))]
 use storage_cleanup::reconcile_project_storage_after_commit;
+
+#[cfg(all(test, not(target_os = "android")))]
+#[allow(dead_code)]
+#[path = "staging_cleanup.rs"]
+mod staging_cleanup;
+#[cfg(all(test, not(target_os = "android")))]
+use staging_cleanup::reconcile_staged_artifacts_after_commit;
 
 #[cfg(all(test, not(target_os = "android")))]
 #[allow(dead_code)]

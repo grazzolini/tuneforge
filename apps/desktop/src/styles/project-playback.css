@@ -1738,8 +1738,24 @@
 }
 
 @media (max-width: 720px) {
+  .project-screen--playback {
+    height: auto;
+    overflow: visible;
+  }
+
   .playback-workspace--practice {
-    grid-template-rows: minmax(0, 2.75rem) minmax(0, 1fr) auto;
+    flex: 0 0 auto;
+    grid-template-rows: minmax(0, 2.75rem) auto auto;
+    overflow: visible;
+  }
+
+  .playback-workspace--focus {
+    grid-template-rows: auto auto;
+  }
+
+  .playback-practice-surface {
+    height: auto;
+    overflow: visible;
   }
 
   .playback-practice-rail {
@@ -1747,8 +1763,9 @@
   }
 
   .playback-practice-surface__header {
-    max-height: 4.25rem;
-    overflow: auto;
+    flex: 0 0 auto;
+    max-height: none;
+    overflow: visible;
   }
 
   .playback-practice-surface__header h2 {
@@ -1756,23 +1773,76 @@
   }
 
   .playback-practice-surface__controls {
-    align-items: flex-start;
-    flex-direction: row;
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    padding-bottom: 0.15rem;
+    align-items: stretch;
+    flex-direction: column;
+    overflow: visible;
+    padding-bottom: 0;
+  }
+
+  .playback-practice-body {
+    flex: 0 0 auto;
+    min-block-size: 15rem;
   }
 
   .playback-mode-toggle,
   .playback-practice-actions {
-    flex: 0 0 auto;
+    width: 100%;
+  }
+
+  .playback-mode-toggle__button {
+    flex: 1;
+  }
+
+  .playback-practice-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .playback-mode-toggle__button,
   .playback-practice-actions .button,
   .playback-follow-chip {
+    min-block-size: 3rem;
     padding: 0.38rem 0.6rem;
     font-size: 0.78rem;
+  }
+
+  .lead-sheet-chord {
+    display: inline-grid;
+    min-inline-size: 3rem;
+    min-block-size: 3rem;
+    padding-inline: 0.55rem;
+    place-items: center;
+  }
+
+  .lead-sheet-chord .musical-label--chord-chip {
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+  }
+
+  .lead-sheet-chord .musical-label--chord-chip .musical-label__primary,
+  .lead-sheet-chord .musical-label--chord-chip .musical-label__secondary {
+    overflow: visible;
+    text-align: center;
+    text-overflow: clip;
+  }
+
+  .lead-sheet {
+    flex: 0 0 15rem;
+    block-size: 15rem;
+    min-block-size: 15rem;
+  }
+
+  .lead-sheet-lyrics-line {
+    padding-top: 3.25rem;
+  }
+
+  .lead-sheet-lyrics-line__floating-chords {
+    height: 3rem;
+  }
+
+  .lead-sheet-word__chords {
+    min-height: 3rem;
   }
 
   .transport--compact {
@@ -1780,7 +1850,7 @@
   }
 }
 
-@media (max-height: 760px) {
+@media (max-height: 760px) and (min-width: 721px) {
   .lead-sheet,
   .lyrics-theater--practice {
     min-height: 26rem;

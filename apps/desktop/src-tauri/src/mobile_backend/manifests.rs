@@ -615,6 +615,53 @@ fn hydrate_chord_revision(
     Ok(())
 }
 
+fn hydrate_lyrics_revision(
+    connection: &Connection,
+    revision: &SyncProjectManifestEntityRevisionSchema,
+) -> Result<(), String> {
+    let parsed = mobile_lyrics_revision_payload(revision)?;
+    if let Some(source_artifact_id) = &parsed.source_artifact_id {
+        if !source_artifact_belongs_to_project(
+            connection,
+            &revision.project_id,
+            source_artifact_id,
+        )? {
+            return Err(
+                "Lyrics revision source_artifact_id must belong to the manifest project."
+                    .to_string(),
+            );
+        }
+    }
+    let source_segments_json =
+        serde_json::to_string(&parsed.source_segments).map_err(|error| error.to_string())?;
+    let segments_json =
+        serde_json::to_string(&parsed.segments).map_err(|error| error.to_string())?;
+    connection
+        .execute(
+            "INSERT INTO lyrics_transcripts (project_id, backend, source_artifact_id, source_kind, requested_device, device, model_name, language, language_override, source_segments_json, segments_json, has_user_edits, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             ON CONFLICT(project_id) DO UPDATE SET backend = excluded.backend, source_artifact_id = excluded.source_artifact_id, source_kind = excluded.source_kind, requested_device = excluded.requested_device, device = excluded.device, model_name = excluded.model_name, language = excluded.language, language_override = excluded.language_override, source_segments_json = excluded.source_segments_json, segments_json = excluded.segments_json, has_user_edits = excluded.has_user_edits, created_at = excluded.created_at, updated_at = excluded.updated_at",
+            params![
+                &revision.project_id,
+                parsed.backend,
+                parsed.source_artifact_id,
+                parsed.source_kind,
+                parsed.requested_device,
+                parsed.device,
+                parsed.model_name,
+                parsed.language,
+                parsed.language_override,
+                source_segments_json,
+                segments_json,
+                if parsed.has_user_edits { 1_i64 } else { 0_i64 },
+                parsed.created_at,
+                parsed.updated_at,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 pub(super) fn hydrate_imported_read_models(
     connection: &Connection,
     project_id: &str,
@@ -640,6 +687,43 @@ pub(super) fn hydrate_imported_read_models(
         }
         hydrate_chord_revision(connection, &row.map_err(|error| error.to_string())?)?;
         hydrated_chords = true;
+    }
+    let lyrics_revision_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sync_entity_revisions WHERE project_id = ?1 AND entity_type IN ('lyrics', 'lyrics_transcript')",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let lyrics_revisions = {
+        let mut statement = connection
+            .prepare(
+                &format!(
+                    "SELECT {SYNC_ENTITY_REVISION_COLUMNS} FROM sync_entity_revisions WHERE project_id = ?1 AND state IN ('active', 'current') AND entity_type IN ('lyrics', 'lyrics_transcript') ORDER BY created_at ASC, id ASC"
+                ),
+            )
+            .map_err(|error| error.to_string())?;
+        let revisions = statement
+            .query_map(params![project_id], row_entity_revision)
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        revisions
+    };
+    match lyrics_revisions.as_slice() {
+        [] if lyrics_revision_count > 0 => {
+            connection
+                .execute(
+                    "DELETE FROM lyrics_transcripts WHERE project_id = ?1",
+                    params![project_id],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        [] => {}
+        [revision] => hydrate_lyrics_revision(connection, revision)?,
+        _ => {
+            return Err("Project manifest contains multiple current lyrics revisions.".to_string())
+        }
     }
     hydrate_analysis_result_from_artifact(connection, project_id)
 }

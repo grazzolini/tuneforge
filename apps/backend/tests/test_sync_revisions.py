@@ -191,6 +191,12 @@ def test_lyrics_and_section_revisions_are_listed_as_current_project_entities(
     assert lyrics_revision.revision_type == "user_edit"
     assert lyrics_revision.payload_json["has_user_edits"] is True
     assert lyrics_revision.payload_json["language_override"] == "en"
+    assert lyrics_revision.payload_json["created_at"] == lyrics.created_at.replace(
+        tzinfo=UTC
+    ).isoformat()
+    assert lyrics_revision.payload_json["updated_at"] == lyrics.updated_at.replace(
+        tzinfo=UTC
+    ).isoformat()
     assert section_revision.entity_type == SECTION_ENTITY_TYPE
     assert section_revision.payload_json["metadata"] == {"color": "blue"}
     _assert_sync_safe(section_revision.payload_json, tmp_path)

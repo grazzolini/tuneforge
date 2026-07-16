@@ -47,38 +47,7 @@ fn get_lyrics_response(
     connection: &Connection,
     project_id: String,
 ) -> Result<LyricsResponse, String> {
-    connection
-        .query_row(
-            "SELECT project_id, backend, source_artifact_id, source_kind, requested_device, device, model_name, language, language_override, source_segments_json, segments_json, has_user_edits, created_at, updated_at FROM lyrics_transcripts WHERE project_id = ?1",
-            params![project_id],
-            |row| {
-                let source_segments_raw: String = row.get(9)?;
-                let segments_raw: String = row.get(10)?;
-                let source_segments =
-                    serde_json::from_str(&source_segments_raw).unwrap_or_default();
-                let segments = serde_json::from_str(&segments_raw).unwrap_or_default();
-                Ok(LyricsResponse {
-                    project_id: row.get(0)?,
-                    backend: row.get(1)?,
-                    source_artifact_id: row.get(2)?,
-                    source_kind: row.get(3)?,
-                    requested_device: row.get(4)?,
-                    device: row.get(5)?,
-                    model_name: row.get(6)?,
-                    language: row.get(7)?,
-                    language_override: row.get(8)?,
-                    source_segments,
-                    segments,
-                    has_user_edits: row.get::<_, i64>(11)? != 0,
-                    created_at: row.get(12)?,
-                    updated_at: row.get(13)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(|error| error.to_string())?
-        .map(Ok)
-        .unwrap_or_else(|| Ok(empty_lyrics(project_id)))
+    mobile_lyrics_response(connection, project_id)
 }
 
 fn write_lyrics_snapshot(root: &Path, lyrics: &LyricsResponse) -> Result<(), String> {
@@ -457,23 +426,4 @@ pub fn mobile_update_lyrics(
     let response = update_lyrics_transcript(&connection, &root, project_id.clone(), &payload)?;
     reconcile_project_storage_after_commit(&connection, &root, &project_id);
     Ok(response)
-}
-
-fn empty_lyrics(project_id: String) -> LyricsResponse {
-    LyricsResponse {
-        project_id,
-        backend: None,
-        source_artifact_id: None,
-        source_kind: None,
-        requested_device: None,
-        device: None,
-        model_name: None,
-        language: None,
-        language_override: None,
-        source_segments: Vec::new(),
-        segments: Vec::new(),
-        has_user_edits: false,
-        created_at: None,
-        updated_at: None,
-    }
 }

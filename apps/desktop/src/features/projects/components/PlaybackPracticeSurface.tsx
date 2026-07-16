@@ -56,6 +56,7 @@ function PlaybackModeHeader() {
     handleSetLyricsFollowEnabled,
     handleTogglePlaybackDisplayLane,
     hasLyricsTranscript,
+    hasTimedLyricsTranscript,
     isEditingLyrics,
     isLyricsRunning,
     isTabImportOpen,
@@ -140,9 +141,13 @@ function PlaybackModeHeader() {
             {lyricsSelected ? (
               <>
                 <button
-                  aria-pressed={lyricsFollowEnabled}
-                  className={`chip playback-follow-chip${lyricsFollowEnabled ? " chip--active" : ""}`}
+                  aria-pressed={hasTimedLyricsTranscript && lyricsFollowEnabled}
+                  className={`chip playback-follow-chip${hasTimedLyricsTranscript && lyricsFollowEnabled ? " chip--active" : ""}`}
+                  disabled={!hasTimedLyricsTranscript}
                   onClick={() => handleSetLyricsFollowEnabled(!lyricsFollowEnabled)}
+                  title={
+                    hasTimedLyricsTranscript ? undefined : "Lyrics Follow requires timed lyrics."
+                  }
                   type="button"
                 >
                   Lyrics Follow
@@ -466,10 +471,14 @@ function LyricsPracticePanel() {
     hasLyricsTranscript,
     hasTimedLyricsTranscript,
     isEditingLyrics,
+    isMobileRuntime,
+    lyricsPracticeStatus,
+    lyricsPracticeRefreshFailed,
     lyricsJob,
     lyricsSaveMutation,
     lyricsSegmentRefs,
     lyricsTheaterRef,
+    practiceModeFallbackMessage,
     showSupportingCopy,
   } = useProjectViewModelContext();
 
@@ -481,7 +490,7 @@ function LyricsPracticePanel() {
 
   return (
     <div className="playback-practice-body">
-      {hasLyricsTranscript ? (
+      {lyricsPracticeStatus === "available" ? (
         <div
           className="lead-sheet lead-sheet--lyrics-only"
           role="group"
@@ -513,7 +522,10 @@ function LyricsPracticePanel() {
           <div aria-hidden="true" className="lead-sheet__edge" />
         </div>
       ) : (
-        <EmptyPracticeState copy="Generate a lyrics pass to keep transcription and playback together while you practice." />
+        <EmptyPracticeState
+          copy={practiceLaneStateCopy("lyrics", lyricsPracticeStatus, isMobileRuntime)}
+          announce
+        />
       )}
 
       {hasLyricsTranscript && !hasTimedLyricsTranscript ? (
@@ -525,6 +537,12 @@ function LyricsPracticePanel() {
         <div className="chord-context">
           <span className="artifact-meta">Follow keeps the active lyric in view while playback moves.</span>
         </div>
+      ) : null}
+      {practiceModeFallbackMessage ? (
+        <PracticeContextMessage copy={practiceModeFallbackMessage} />
+      ) : null}
+      {lyricsPracticeRefreshFailed ? (
+        <PracticeContextMessage copy="Lyrics couldn’t be refreshed; showing available lyrics." />
       ) : null}
       {lyricsSaveMutation.error ? (
         <p className="inline-error">
@@ -614,10 +632,26 @@ function ChordsPracticePanel() {
     handleSeekTo,
     hasChordTimeline,
     nextChord,
+    practiceModeFallbackMessage,
+    chordsPracticeStatus,
+    chordsPracticeRefreshFailed,
+    isMobileRuntime,
     showSupportingCopy,
   } = useProjectViewModelContext();
   const handlePracticeTargetSpacePlayback = usePracticeTargetSpacePlayback();
   const chordErrorMessage = formatJobErrorMessage(chordJob?.error_message, chordJob);
+
+  if (chordsPracticeStatus !== "available") {
+    return (
+      <div className="playback-practice-body playback-practice-body--chords">
+        <EmptyPracticeState
+          copy={practiceLaneStateCopy("chords", chordsPracticeStatus, isMobileRuntime)}
+          announce
+        />
+        {chordErrorMessage ? <p className="inline-error">{chordErrorMessage}</p> : null}
+      </div>
+    );
+  }
 
   return (
     <div className="playback-practice-body playback-practice-body--chords">
@@ -719,6 +753,12 @@ function ChordsPracticePanel() {
           <span className="artifact-meta">Follow keeps the active chord in view while playback moves.</span>
         </div>
       ) : null}
+      {practiceModeFallbackMessage ? (
+        <PracticeContextMessage copy={practiceModeFallbackMessage} />
+      ) : null}
+      {chordsPracticeRefreshFailed ? (
+        <PracticeContextMessage copy="Chords couldn’t be refreshed; showing available chords." />
+      ) : null}
       {chordErrorMessage ? <p className="inline-error">{chordErrorMessage}</p> : null}
     </div>
   );
@@ -729,13 +769,17 @@ function CombinedLeadSheetPanel() {
     combinedLeadSheetRef,
     combinedLeadSheetRowRefs,
     combinedLeadSheetRows,
+    chordsPracticeStatus,
+    chordsPracticeRefreshFailed,
     displayedChords,
     displayedLyrics,
-    hasChordTimeline,
-    hasLyricsTranscript,
     isEditingLyrics,
+    isMobileRuntime,
     lyricsJob,
+    lyricsPracticeStatus,
+    lyricsPracticeRefreshFailed,
     lyricsSaveMutation,
+    practiceModeFallbackMessage,
     showSupportingCopy,
   } = useProjectViewModelContext();
 
@@ -747,7 +791,7 @@ function CombinedLeadSheetPanel() {
 
   return (
     <div className="playback-practice-body">
-      {hasLyricsTranscript || hasChordTimeline ? (
+      {lyricsPracticeStatus === "available" || chordsPracticeStatus === "available" ? (
         <div
           className="lead-sheet"
           role="group"
@@ -767,18 +811,44 @@ function CombinedLeadSheetPanel() {
           <div aria-hidden="true" className="lead-sheet__edge" />
         </div>
       ) : (
-        <EmptyPracticeState copy="Generate lyrics and chords to build a timed lead sheet." />
+        <EmptyPracticeState
+          copy={combinedPracticeStateCopy(
+            lyricsPracticeStatus,
+            chordsPracticeStatus,
+            isMobileRuntime,
+          )}
+          announce
+        />
       )}
 
-      {!hasLyricsTranscript && hasChordTimeline ? (
-        <div className="chord-context">
-          <span className="artifact-meta">Lyrics are missing, so combined mode shows chord rows only.</span>
-        </div>
+      {chordsPracticeStatus === "available" && lyricsPracticeStatus !== "available" ? (
+        <PracticeContextMessage
+          copy={partialPracticeStateCopy(
+            "lyrics",
+            lyricsPracticeStatus,
+            "chords",
+            isMobileRuntime,
+          )}
+        />
       ) : null}
-      {hasLyricsTranscript && !hasChordTimeline ? (
-        <div className="chord-context">
-          <span className="artifact-meta">Chords are missing, so combined mode shows lyrics only.</span>
-        </div>
+      {lyricsPracticeStatus === "available" && chordsPracticeStatus !== "available" ? (
+        <PracticeContextMessage
+          copy={partialPracticeStateCopy(
+            "chords",
+            chordsPracticeStatus,
+            "lyrics",
+            isMobileRuntime,
+          )}
+        />
+      ) : null}
+      {practiceModeFallbackMessage ? (
+        <PracticeContextMessage copy={practiceModeFallbackMessage} />
+      ) : null}
+      {lyricsPracticeRefreshFailed ? (
+        <PracticeContextMessage copy="Lyrics couldn’t be refreshed; showing available lyrics." />
+      ) : null}
+      {chordsPracticeRefreshFailed ? (
+        <PracticeContextMessage copy="Chords couldn’t be refreshed; showing available chords." />
       ) : null}
       {displayedLyrics.length > 0 && displayedChords.length > 0 && showSupportingCopy ? (
         <div className="chord-context">
@@ -937,10 +1007,87 @@ function LeadSheetChordButton({ chord }: { chord: LeadSheetChord }) {
   );
 }
 
-function EmptyPracticeState({ copy }: { copy: string }) {
+function EmptyPracticeState({ copy, announce = false }: { copy: string; announce?: boolean }) {
   return (
-    <div className="chord-lane-empty playback-practice-empty">
+    <div
+      aria-atomic={announce ? "true" : undefined}
+      className="chord-lane-empty playback-practice-empty"
+      role={announce ? "status" : undefined}
+    >
       <p className="artifact-meta">{copy}</p>
     </div>
   );
+}
+
+function PracticeContextMessage({ copy }: { copy: string }) {
+  return (
+    <div aria-atomic="true" className="chord-context" role="status">
+      <span className="artifact-meta">{copy}</span>
+    </div>
+  );
+}
+
+function practiceLaneStateCopy(
+  lane: "lyrics" | "chords",
+  status: ReturnType<typeof useProjectViewModelContext>["lyricsPracticeStatus"],
+  isMobileRuntime: boolean,
+) {
+  const label = lane === "lyrics" ? "Lyrics" : "Chords";
+  if (status === "loading") {
+    return "Loading practice data…";
+  }
+  if (status === "error") {
+    return isMobileRuntime
+      ? `${label} couldn’t be loaded on this device.`
+      : `${label} couldn’t be loaded.`;
+  }
+  return isMobileRuntime
+    ? `No ${lane} on this device. Sync them from desktop, or use available Project tools.`
+    : `No ${lane} are available for this project. Use Project tools to generate them.`;
+}
+
+function partialPracticeStateCopy(
+  lane: "lyrics" | "chords",
+  status: ReturnType<typeof useProjectViewModelContext>["lyricsPracticeStatus"],
+  visibleLane: "lyrics" | "chords",
+  isMobileRuntime: boolean,
+) {
+  if (status === "loading") {
+    return "Loading practice data…";
+  }
+  const label = lane === "lyrics" ? "Lyrics" : "Chords";
+  if (status === "error") {
+    return `${label} couldn’t be loaded; showing ${visibleLane}.`;
+  }
+  return isMobileRuntime
+    ? `No ${lane} on this device; showing ${visibleLane}.`
+    : `No ${lane} are available; showing ${visibleLane}.`;
+}
+
+function combinedPracticeStateCopy(
+  lyricsStatus: ReturnType<typeof useProjectViewModelContext>["lyricsPracticeStatus"],
+  chordsStatus: ReturnType<typeof useProjectViewModelContext>["chordsPracticeStatus"],
+  isMobileRuntime: boolean,
+) {
+  if (lyricsStatus === "loading" || chordsStatus === "loading") {
+    return "Loading practice data…";
+  }
+  if (lyricsStatus === "empty" && chordsStatus === "empty") {
+    return isMobileRuntime
+      ? "No lyrics or chords on this device. Sync them from desktop, or use available Project tools."
+      : "No lyrics or chords are available for this project. Use Project tools to generate them.";
+  }
+  if (lyricsStatus === "error" && chordsStatus === "error") {
+    return isMobileRuntime
+      ? "Lyrics and chords couldn’t be loaded on this device."
+      : "Lyrics and chords couldn’t be loaded.";
+  }
+  if (lyricsStatus === "error") {
+    return isMobileRuntime
+      ? "Lyrics couldn’t be loaded. No chords are available on this device."
+      : "Lyrics couldn’t be loaded. No chords are available.";
+  }
+  return isMobileRuntime
+    ? "Chords couldn’t be loaded. No lyrics are available on this device."
+    : "Chords couldn’t be loaded. No lyrics are available.";
 }

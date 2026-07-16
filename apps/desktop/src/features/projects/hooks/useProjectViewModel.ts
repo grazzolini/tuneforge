@@ -93,6 +93,8 @@ import {
 } from "../playbackTempo";
 
 type PlaybackDisplayModeSource = "default" | "stored" | "user";
+type PracticeLaneStatus = "loading" | "available" | "empty" | "error";
+type PracticeLane = "lyrics" | "chords";
 const ACTIVE_PROJECT_JOB_STATUSES = ["running", "pending"] as const;
 const TERMINAL_PROJECT_JOB_STATUSES = ["completed", "failed", "cancelled"] as const;
 const ACTIVE_PROJECT_JOBS_LIMIT = 200;
@@ -211,6 +213,46 @@ function resolveDefaultPlaybackDisplayMode(
   return "combined";
 }
 
+function practiceModeFallbackCopy(
+  lane: PracticeLane,
+  status: PracticeLaneStatus,
+  isMobileRuntime: boolean,
+) {
+  if (status === "available") {
+    return null;
+  }
+  if (status === "loading") {
+    return "Loading practice data…";
+  }
+  const laneLabel = lane === "lyrics" ? "Lyrics" : "Chords";
+  const visibleLane = lane === "lyrics" ? "chords" : "lyrics";
+  return status === "error"
+    ? `${laneLabel} couldn’t be loaded; showing ${visibleLane}.`
+    : isMobileRuntime
+      ? `No ${lane} on this device; showing ${visibleLane}.`
+      : `No ${lane} are available; showing ${visibleLane}.`;
+}
+
+function resolvePracticeLaneStatus({
+  hasUsableContent,
+  isError,
+  isFetching,
+  isPending,
+}: {
+  hasUsableContent: boolean;
+  isError: boolean;
+  isFetching: boolean;
+  isPending: boolean;
+}): PracticeLaneStatus {
+  if (hasUsableContent) {
+    return "available";
+  }
+  if (isPending || isFetching) {
+    return "loading";
+  }
+  return isError ? "error" : "empty";
+}
+
 function clampPlaybackLoopPoint(value: number, durationSeconds: number) {
   const point = Number.isFinite(value) ? Math.max(0, value) : 0;
   return durationSeconds > 0 ? Math.min(durationSeconds, point) : point;
@@ -290,6 +332,7 @@ export function useProjectViewModel() {
     null,
   );
   const persistedStemSourceArtifactId = useRef<string | null>(null);
+  const practiceModeResolvedProjectId = useRef<string | null>(null);
   const wasPlayingRef = useRef(isPlaying);
   const targetSelectorRef = useRef<HTMLDivElement | null>(null);
   const targetOptionRefs = useRef<Record<number, HTMLButtonElement | null>>({});
@@ -330,8 +373,13 @@ export function useProjectViewModel() {
   const [activeWorkspace, setActiveWorkspace] = useState(defaultProjectWorkspace);
   const [activeProjectPanel, setActiveProjectPanel] = useState<ProjectPanelMode>("studio");
   const [playbackDisplayMode, setPlaybackDisplayMode] = useState<PlaybackDisplayMode>("combined");
+  const [persistedPlaybackDisplayMode, setPersistedPlaybackDisplayMode] =
+    useState<PlaybackDisplayMode>("combined");
   const [playbackDisplayModeSource, setPlaybackDisplayModeSource] =
     useState<PlaybackDisplayModeSource>("default");
+  const [practiceModeFallbackLane, setPracticeModeFallbackLane] = useState<PracticeLane | null>(
+    null,
+  );
   const [stemControls, setStemControls] = useState<Record<string, StemControlState>>({});
   const [dismissedStemJobIds, setDismissedStemJobIds] = useState<string[]>([]);
   const [isEditingLyrics, setIsEditingLyrics] = useState(false);
@@ -1060,6 +1108,27 @@ export function useProjectViewModel() {
   );
   const hasLyricsTranscript = displayedLyrics.length > 0;
   const hasTimedLyricsTranscript = displayedLyrics.some((segment) => hasTimedLyrics(segment));
+  const chordsPracticeStatus = resolvePracticeLaneStatus({
+    hasUsableContent: hasChordTimeline,
+    isError: chordsQuery.isError,
+    isFetching: chordsQuery.isFetching,
+    isPending: chordsQuery.isPending,
+  });
+  const lyricsPracticeStatus = resolvePracticeLaneStatus({
+    hasUsableContent: hasLyricsTranscript,
+    isError: lyricsQuery.isError,
+    isFetching: lyricsQuery.isFetching,
+    isPending: lyricsQuery.isPending,
+  });
+  const chordsPracticeRefreshFailed = chordsQuery.isRefetchError && hasChordTimeline;
+  const lyricsPracticeRefreshFailed = lyricsQuery.isRefetchError && hasLyricsTranscript;
+  const practiceModeFallbackMessage = practiceModeFallbackLane
+    ? practiceModeFallbackCopy(
+        practiceModeFallbackLane,
+        practiceModeFallbackLane === "lyrics" ? lyricsPracticeStatus : chordsPracticeStatus,
+        isMobileRuntime,
+      )
+    : null;
   const lyricsLanguageMetadata = formatLyricsLanguageMetadata(lyricsQuery.data);
   const activeLyricsIndex = findActiveLyricsIndex(displayedLyrics, playbackTimeSeconds);
   const activeLyricsSegment =
@@ -1224,7 +1293,9 @@ export function useProjectViewModel() {
 
   function handleSetPlaybackDisplayMode(displayMode: PlaybackDisplayMode) {
     setPlaybackDisplayMode(displayMode);
+    setPersistedPlaybackDisplayMode(displayMode);
     setPlaybackDisplayModeSource("user");
+    setPracticeModeFallbackLane(null);
   }
 
   function handleTogglePlaybackDisplayLane(lane: "lyrics" | "chords") {
@@ -1858,19 +1929,21 @@ export function useProjectViewModel() {
   useEffect(() => {
     const storedPlaybackState = readProjectPlaybackState(projectId);
     const hasStoredPlayback = hasProjectPlaybackState(projectId);
+    const initialPlaybackDisplayMode = hasStoredPlayback
+      ? storedPlaybackState.playbackDisplayMode
+      : resolveDefaultPlaybackDisplayMode(defaultPlaybackDisplayMode, false, false);
     pendingPreviewSelection.current = null;
     persistedStemSourceArtifactId.current = storedPlaybackState.selectedStemSourceArtifactId;
+    practiceModeResolvedProjectId.current = null;
     setSelectedArtifactId(storedPlaybackState.selectedArtifactId);
     setSelectedPrimaryArtifactId(storedPlaybackState.selectedPrimaryArtifactId);
     setActiveWorkspace(
       hasStoredPlayback ? storedPlaybackState.activeWorkspace : defaultProjectWorkspace,
     );
     setActiveProjectPanel(storedPlaybackState.activeProjectPanel);
-    setPlaybackDisplayMode(
-      hasStoredPlayback
-        ? storedPlaybackState.playbackDisplayMode
-        : resolveDefaultPlaybackDisplayMode(defaultPlaybackDisplayMode, false, false),
-    );
+    setPlaybackDisplayMode(initialPlaybackDisplayMode);
+    setPersistedPlaybackDisplayMode(initialPlaybackDisplayMode);
+    setPracticeModeFallbackLane(null);
     setCapoTransposeSemitones(storedPlaybackState.capoTransposeSemitones);
     setPrecountEnabled(storedPlaybackState.precountEnabled);
     setPrecountLoopEnabled(storedPlaybackState.precountLoopEnabled);
@@ -1921,24 +1994,59 @@ export function useProjectViewModel() {
   useEffect(() => {
     if (
       hydratedProjectId !== projectId ||
-      playbackDisplayModeSource !== "default"
+      playbackDisplayModeSource === "user" ||
+      practiceModeResolvedProjectId.current === projectId ||
+      lyricsPracticeStatus === "loading" ||
+      chordsPracticeStatus === "loading"
     ) {
       return;
     }
 
-    setPlaybackDisplayMode(
-      resolveDefaultPlaybackDisplayMode(
+    practiceModeResolvedProjectId.current = projectId;
+
+    if (playbackDisplayModeSource === "default") {
+      const resolvedDisplayMode = resolveDefaultPlaybackDisplayMode(
         defaultPlaybackDisplayMode,
-        hasLyricsTranscript,
-        hasChordTimeline,
-      ),
-    );
+        lyricsPracticeStatus === "available",
+        chordsPracticeStatus === "available",
+      );
+      setPlaybackDisplayMode(resolvedDisplayMode);
+      setPersistedPlaybackDisplayMode(resolvedDisplayMode);
+      if (defaultPlaybackDisplayMode === "auto") {
+        if (resolvedDisplayMode === "lyrics" && chordsPracticeStatus !== "available") {
+          setPracticeModeFallbackLane("chords");
+        } else if (resolvedDisplayMode === "chords" && lyricsPracticeStatus !== "available") {
+          setPracticeModeFallbackLane("lyrics");
+        }
+      }
+      return;
+    }
+
+    if (
+      persistedPlaybackDisplayMode === "lyrics" &&
+      lyricsPracticeStatus !== "available" &&
+      chordsPracticeStatus === "available"
+    ) {
+      setPlaybackDisplayMode("chords");
+      setPracticeModeFallbackLane("lyrics");
+      return;
+    }
+
+    if (
+      persistedPlaybackDisplayMode === "chords" &&
+      chordsPracticeStatus !== "available" &&
+      lyricsPracticeStatus === "available"
+    ) {
+      setPlaybackDisplayMode("lyrics");
+      setPracticeModeFallbackLane("chords");
+    }
   }, [
+    chordsPracticeStatus,
     defaultPlaybackDisplayMode,
-    hasChordTimeline,
-    hasLyricsTranscript,
     hydratedProjectId,
+    lyricsPracticeStatus,
     playbackDisplayModeSource,
+    persistedPlaybackDisplayMode,
     projectId,
   ]);
 
@@ -2047,7 +2155,7 @@ export function useProjectViewModel() {
       selectedStemSourceArtifactId,
       activeWorkspace,
       activeProjectPanel,
-      playbackDisplayMode,
+      playbackDisplayMode: persistedPlaybackDisplayMode,
       capoTransposeSemitones: capoSemitones,
       precountEnabled,
       precountLoopEnabled,
@@ -2070,7 +2178,7 @@ export function useProjectViewModel() {
     lyricsFollowEnabled,
     loopRange,
     loopAlignmentModeOverride,
-    playbackDisplayMode,
+    persistedPlaybackDisplayMode,
     precountClickCount,
     precountEnabled,
     precountLoopEnabled,
@@ -2141,6 +2249,7 @@ export function useProjectViewModel() {
       activeWorkspace !== "playback" ||
       playbackDisplayMode !== "lyrics" ||
       !lyricsFollowEnabled ||
+      !hasTimedLyricsTranscript ||
       !isPlaying ||
       isEditingLyrics ||
       activeLyricsIndex < 0
@@ -2189,6 +2298,7 @@ export function useProjectViewModel() {
     displayedLyrics,
     isEditingLyrics,
     isPlaying,
+    hasTimedLyricsTranscript,
     lyricsFollowEnabled,
     playbackDisplayMode,
   ]);
@@ -2198,6 +2308,7 @@ export function useProjectViewModel() {
       activeWorkspace !== "playback" ||
       playbackDisplayMode !== "combined" ||
       !lyricsFollowEnabled ||
+      !hasTimedLyricsTranscript ||
       !isPlaying ||
       isEditingLyrics
     ) {
@@ -2238,6 +2349,7 @@ export function useProjectViewModel() {
   }, [
     activeWorkspace,
     combinedLeadSheetRows,
+    hasTimedLyricsTranscript,
     isEditingLyrics,
     isPlaying,
     lyricsFollowEnabled,
@@ -2372,6 +2484,8 @@ export function useProjectViewModel() {
     chordSegmentRefs,
     chordTimelineRef,
     chordsFollowEnabled,
+    chordsPracticeStatus,
+    chordsPracticeRefreshFailed,
     combinedLeadSheetRef,
     combinedLeadSheetRowRefs,
     combinedLeadSheetRows,
@@ -2468,6 +2582,8 @@ export function useProjectViewModel() {
     mobileCapabilities,
     mobileGenerationMessage,
     lyricsFollowEnabled,
+    lyricsPracticeStatus,
+    lyricsPracticeRefreshFailed,
     lyricsLanguageMetadata,
     lyricsLanguageOptions: LYRICS_LANGUAGE_OPTIONS,
     lyricsDraft,
@@ -2478,6 +2594,7 @@ export function useProjectViewModel() {
     lyricsTheaterRef,
     nextChord,
     playbackDisplayMode,
+    practiceModeFallbackMessage,
     playbackDurationSeconds,
     playbackTransportRef,
     playbackTimeSeconds,

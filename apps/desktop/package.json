@@ -18,12 +18,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@tanstack/react-query": "^5.101.2",
+    "@tanstack/react-query": "^5.101.3",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-barcode-scanner": "~2.4.5",
-    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
     "@tuneforge/shared-types": "workspace:*",
-    "lucide-react": "^1.24.0",
+    "lucide-react": "^1.25.0",
     "openapi-fetch": "^0.17.0",
     "qrcode.react": "^4.2.0",
     "react": "^19.2.7",
@@ -47,8 +47,8 @@
     "jsdom": "^29.1.1",
     "playwright": "^1.61.1",
     "typescript": "npm:@typescript/typescript6@~6.0.2",
-    "typescript-eslint": "^8.63.0",
-    "vite": "^8.1.4",
+    "typescript-eslint": "^8.64.0",
+    "vite": "^8.1.5",
     "vitest": "^4.1.10"
   }
 }

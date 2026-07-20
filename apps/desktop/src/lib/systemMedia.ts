@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { setPowerInhibitionActivity } from "./powerInhibition";
 
 export const SYSTEM_MEDIA_CONTROL_EVENT = "system-media://control";
 
@@ -39,14 +40,10 @@ export function clearSystemMediaState() {
   return invoke<void>("system_media_clear_state");
 }
 
-export function setSystemMediaIdleInhibition(active: boolean) {
-  return invoke<void>("system_media_set_idle_inhibition", { active });
-}
-
 export async function releaseSystemMediaControls() {
   await Promise.all([
     clearSystemMediaState(),
-    setSystemMediaIdleInhibition(false),
+    setPowerInhibitionActivity("playback", false),
   ]);
 }
 

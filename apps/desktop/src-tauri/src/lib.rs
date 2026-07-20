@@ -18,6 +18,7 @@ use tauri::{AppHandle, Manager, State};
 mod file_dialog_scope;
 mod mobile_backend;
 mod native_audio;
+pub mod power_inhibition;
 mod sync_transport;
 mod system_media;
 
@@ -368,14 +369,17 @@ pub fn run() {
             } else {
                 spawn_packaged_backend(app.handle())?
             };
+            let power_inhibition = power_inhibition::PowerInhibitionState::new();
             let sync_transport = sync_transport::SyncTransportState::new(
                 runtime.base_url.clone(),
                 app.handle().clone(),
+                power_inhibition.clone(),
             );
             app.manage(runtime);
             app.manage(native_audio::NativeAudioState::new());
             app.manage(sync_transport);
             app.manage(system_media::SystemMediaState::new(app.handle().clone()));
+            app.manage(power_inhibition);
             #[cfg(target_os = "linux")]
             install_linux_media_permission_handler(app.handle())?;
             Ok(())
@@ -404,7 +408,9 @@ pub fn run() {
             native_audio::audio_set_monitor,
             system_media::system_media_update_state,
             system_media::system_media_clear_state,
-            system_media::system_media_set_idle_inhibition,
+            power_inhibition::system_media_set_idle_inhibition,
+            power_inhibition::power_inhibition_set_activity,
+            power_inhibition::power_inhibition_status,
             sync_transport::sync_transport_start_listener,
             sync_transport::sync_transport_stop_listener,
             sync_transport::sync_transport_status,
@@ -457,6 +463,8 @@ pub fn run() {
         if let tauri::RunEvent::Exit = event {
             let sync_transport = app_handle.state::<sync_transport::SyncTransportState>();
             sync_transport.shutdown();
+            let power_inhibition = app_handle.state::<power_inhibition::PowerInhibitionState>();
+            power_inhibition.shutdown();
             let runtime = app_handle.state::<BackendRuntime>();
             runtime.shutdown();
         }

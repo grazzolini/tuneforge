@@ -2,10 +2,13 @@ import { useEffect, useRef, type RefObject } from "react";
 import {
   clearSystemMediaState,
   listenSystemMediaControls,
-  setSystemMediaIdleInhibition,
   updateSystemMediaState,
   type SystemMediaControlEvent,
 } from "../../lib/systemMedia";
+import {
+  setPowerInhibitionActivity,
+  updateBrowserWakeLockStatus,
+} from "../../lib/powerInhibition";
 import type { ProjectPlaybackSession } from "./playback-context";
 import { isInteractiveTarget } from "./playbackUtils";
 
@@ -45,16 +48,32 @@ export function useWebPlaybackWakeLock({
   backend,
   isPlaying,
 }: Pick<PlaybackMediaControls, "backend" | "isPlaying">) {
+  const generationRef = useRef(0);
+  const pendingReleaseGenerationRef = useRef<number | null>(null);
   useEffect(() => {
-    if (backend !== "web" || !isPlaying || typeof navigator === "undefined") {
+    const ownsWakeLock = backend === "web" && isPlaying && typeof navigator !== "undefined";
+    const generation = ownsWakeLock ? ++generationRef.current : generationRef.current;
+    const publish = (status: Parameters<typeof updateBrowserWakeLockStatus>[0]) => {
+      if (generationRef.current === generation) {
+        updateBrowserWakeLockStatus(status);
+      }
+    };
+    if (!ownsWakeLock) {
       return;
     }
 
     let sentinel: WakeLockSentinelLike | null = null;
     let sentinelReleaseHandler: (() => void) | null = null;
+    let requestInFlight = false;
     let cancelled = false;
     const wakeLock = (navigator as NavigatorWithWakeLock).wakeLock;
     if (!wakeLock) {
+      publish({
+        phase: "unsupported",
+        backend: null,
+        screenProtected: false,
+        errorMessage: "Screen Wake Lock is unavailable in this browser.",
+      });
       return;
     }
 
@@ -67,16 +86,69 @@ export function useWebPlaybackWakeLock({
     }
 
     async function acquireWakeLock() {
-      if (cancelled || sentinel || document.visibilityState === "hidden") {
+      if (cancelled || sentinel || requestInFlight || document.visibilityState === "hidden") {
         return;
       }
+      requestInFlight = true;
+      publish({
+        phase: "acquiring",
+        backend: null,
+        screenProtected: false,
+        errorMessage: null,
+      });
       try {
         const nextSentinel = await wakeLock?.request("screen") ?? null;
         if (cancelled) {
-          void nextSentinel?.release().catch(() => undefined);
+          if (nextSentinel) {
+            pendingReleaseGenerationRef.current = generation;
+            publish({
+              phase: "releasing",
+              backend: "browser-screen-wake-lock",
+              screenProtected: true,
+              errorMessage: null,
+            });
+            void nextSentinel.release()
+              .then(() => {
+                if (pendingReleaseGenerationRef.current === generation) {
+                  pendingReleaseGenerationRef.current = null;
+                }
+                publish({
+                  phase: "inactive",
+                  backend: null,
+                  screenProtected: false,
+                  errorMessage: null,
+                });
+              })
+              .catch(() => {
+                if (pendingReleaseGenerationRef.current === generation) {
+                  pendingReleaseGenerationRef.current = null;
+                }
+                publish({
+                  phase: "release-failed",
+                  backend: "browser-screen-wake-lock",
+                  screenProtected: true,
+                  errorMessage: "Screen Wake Lock release could not be confirmed.",
+                });
+              });
+          }
+          return;
+        }
+        if (!nextSentinel) {
+          publish({
+            phase: "failed",
+            backend: null,
+            screenProtected: false,
+            errorMessage: "Screen Wake Lock could not be confirmed.",
+          });
           return;
         }
         sentinel = nextSentinel;
+        publish({
+          phase: "active",
+          backend: "browser-screen-wake-lock",
+          screenProtected: true,
+          errorMessage: null,
+        });
         sentinelReleaseHandler = () => {
           if (sentinel !== nextSentinel) {
             return;
@@ -84,11 +156,29 @@ export function useWebPlaybackWakeLock({
           clearSentinel();
           if (!cancelled && document.visibilityState === "visible") {
             void acquireWakeLock();
+          } else {
+            publish({
+              phase: "inactive",
+              backend: null,
+              screenProtected: false,
+              errorMessage: null,
+            });
           }
         };
         sentinel?.addEventListener?.("release", sentinelReleaseHandler);
       } catch {
         clearSentinel();
+        if (cancelled || generationRef.current !== generation) {
+          return;
+        }
+        publish({
+          phase: "failed",
+          backend: null,
+          screenProtected: false,
+          errorMessage: "Screen Wake Lock could not be enabled.",
+        });
+      } finally {
+        requestInFlight = false;
       }
     }
 
@@ -107,10 +197,78 @@ export function useWebPlaybackWakeLock({
       const activeSentinel = sentinel;
       clearSentinel();
       if (activeSentinel) {
-        void activeSentinel.release().catch(() => undefined);
+        pendingReleaseGenerationRef.current = generation;
+        publish({
+          phase: "releasing",
+          backend: "browser-screen-wake-lock",
+          screenProtected: true,
+          errorMessage: null,
+        });
+        void activeSentinel.release()
+          .then(() => {
+            if (pendingReleaseGenerationRef.current === generation) {
+              pendingReleaseGenerationRef.current = null;
+            }
+            publish({
+              phase: "inactive",
+              backend: null,
+              screenProtected: false,
+              errorMessage: null,
+            });
+          })
+          .catch(() => {
+            if (pendingReleaseGenerationRef.current === generation) {
+              pendingReleaseGenerationRef.current = null;
+            }
+            publish({
+              phase: "release-failed",
+              backend: "browser-screen-wake-lock",
+              screenProtected: true,
+              errorMessage: "Screen Wake Lock release could not be confirmed.",
+            });
+          });
+      } else {
+        pendingReleaseGenerationRef.current = null;
+        publish({
+          phase: "inactive",
+          backend: null,
+          screenProtected: false,
+          errorMessage: null,
+        });
       }
     };
   }, [backend, isPlaying]);
+}
+
+export function usePlaybackPowerProtection(isPlaying: boolean) {
+  const ownsPowerProtectionRef = useRef(false);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+
+    if (isPlaying && !ownsPowerProtectionRef.current) {
+      ownsPowerProtectionRef.current = true;
+      void setPowerInhibitionActivity("playback", true);
+      return;
+    }
+
+    if (!isPlaying && ownsPowerProtectionRef.current) {
+      ownsPowerProtectionRef.current = false;
+      void setPowerInhibitionActivity("playback", false);
+    }
+  }, [isPlaying]);
+
+  useEffect(
+    () => () => {
+      if (ownsPowerProtectionRef.current) {
+        void setPowerInhibitionActivity("playback", false);
+        ownsPowerProtectionRef.current = false;
+      }
+    },
+    [],
+  );
 }
 
 export function useSystemPlaybackMediaControls({
@@ -127,12 +285,12 @@ export function useSystemPlaybackMediaControls({
   stopPlayback,
 }: PlaybackMediaControls) {
   const ownsSystemControlsRef = useRef(false);
+  usePlaybackPowerProtection(isPlaying);
 
   useEffect(() => {
     if (backend === "none" || !isTauriRuntime()) {
       if (ownsSystemControlsRef.current) {
         void clearSystemMediaState().catch(() => undefined);
-        void setSystemMediaIdleInhibition(false).catch(() => undefined);
         ownsSystemControlsRef.current = false;
       }
       return;
@@ -141,7 +299,6 @@ export function useSystemPlaybackMediaControls({
     if (!session) {
       if (ownsSystemControlsRef.current) {
         void clearSystemMediaState().catch(() => undefined);
-        void setSystemMediaIdleInhibition(false).catch(() => undefined);
         ownsSystemControlsRef.current = false;
       }
       return;
@@ -239,27 +396,10 @@ export function useSystemPlaybackMediaControls({
     stopPlayback,
   ]);
 
-  useEffect(() => {
-    if (!ownsSystemControlsRef.current) {
-      return;
-    }
-
-    if (backend !== "native" || !isPlaying) {
-      void setSystemMediaIdleInhibition(false).catch(() => undefined);
-      return;
-    }
-
-    void setSystemMediaIdleInhibition(true).catch(() => undefined);
-    return () => {
-      void setSystemMediaIdleInhibition(false).catch(() => undefined);
-    };
-  }, [backend, isPlaying]);
-
   useEffect(
     () => () => {
       if (ownsSystemControlsRef.current) {
         void clearSystemMediaState().catch(() => undefined);
-        void setSystemMediaIdleInhibition(false).catch(() => undefined);
         ownsSystemControlsRef.current = false;
       }
     },

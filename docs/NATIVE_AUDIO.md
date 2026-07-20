@@ -32,14 +32,16 @@ Playback also owns media-key controls and wake prevention through the active bac
 - TuneForge registers one desktop system-media adapter with the OS for media keys and headset
   controls. That adapter does not choose the audio engine; it routes play/pause/stop/seek events to
   the current playback owner.
-- Native playback owns the transport only after a matching native session confirms playback, and uses
-  native idle/display inhibition while playing.
+- Native playback owns the transport only after a matching native session confirms playback, and
+  requests OS power protection while playing. User intent or an in-flight start does not count as
+  confirmed protection.
 - Web Audio/HTML media playback owns the transport only after a `playing` event or confirmed media
   progress,
   including `VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` and native fallback. It uses the browser Screen Wake
-  Lock while playing.
+  Lock while playing. Browser Screen Wake Lock protects the visible screen only; it does not claim
+  native background protection.
 - Native fallback is an explicit ownership transfer. TuneForge clears system media state and native
-  idle inhibition, starts the Web Audio path at the fallback position, then re-registers system
+  power protection, starts the Web Audio path at the fallback position, then re-registers system
   media state for the Web Audio owner and acquires the browser wake lock. Diagnostics keep the
   native fallback reason.
 - Failed native prepare/play attempts before audio starts never activate native transport ownership.
@@ -97,11 +99,16 @@ Settings -> Local Data -> Show diagnostics reports:
 - active native session lane count
 - native playback buffer health per lane, including fill level, underrun count, worker errors, and
   the last worker error when present
+- current power-protection phase, confirmed backend, active reasons, and separately confirmed screen
+  and background coverage
+- current browser Screen Wake Lock phase plus latest safe power-protection error and last confirmed
+  native backend
 
 Current state is live and starts as `Not playing` / `None` after reload. Only last-confirmed path and
 redacted failures are restored from local storage. A native failure does not claim Web fallback
 until Web playback is confirmed, and `android-null` is always reported as unavailable. Diagnostic
-reasons omit local paths, URLs, artifact IDs, and session IDs.
+reasons omit local paths, URLs, artifact IDs, and session IDs. Active power state is never restored
+from local storage; only a safe historical backend and error may survive reload.
 
 When `VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` is active, diagnostics report the build-time override and
 `Web Audio forced` policy while continuing to report native capability independently.
@@ -140,9 +147,15 @@ BlackHole capture are release checks, not default `pnpm test` coverage.
 | Tempo control | tempo change applies and stays stable | tempo change applies and stays stable | tempo change applies and stays stable |
 | Metronome follow | follows active track tempo while BPM changes | follows active track tempo while BPM changes | follows active track tempo while BPM changes |
 | Media keys / headset controls | system media controls play/pause/stop/seek native transport only | MPRIS controls play/pause/stop/seek native transport only | system media controls play/pause/stop/seek browser transport only |
-| Wake prevention | native display idle inhibition while playing; released on pause/stop/end/fallback | desktop idle inhibition while playing; released on pause/stop/end/fallback | Screen Wake Lock while playing; released on pause/stop/end |
+| Wake prevention | native display idle inhibition while playing; released on pause/stop/end/fallback | portal or logind inhibition while playing; released on pause/stop/end/fallback | Screen Wake Lock while playing; released on pause/stop/end |
 | Native runtime fallback ownership | system state/inhibition clear before Web Audio starts at fallback position, then system controls route to Web Audio | same | not applicable; web owns controls from start |
 | Fallback + no output device | falls back (or errors and recovers) without crash when no native output exists | same | same |
+
+For manual Linux inhibition validation, record distro, desktop/session, and package type. Start
+confirmed native playback and verify TuneForge appears in the desktop inhibitor detector. Pause,
+stop, natural end, playback failure, fallback, and app exit must each clear it. Repeat one
+start/stop cycle to detect a leaked handle. Settings diagnostics must name the same live backend
+(`xdg-desktop-portal` or `systemd-logind`) and return to `Inactive` after release.
 
 ## Local-only Playwright Smoke Harness
 

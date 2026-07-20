@@ -1,7 +1,8 @@
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readPlaybackLiveDiagnostics } from "./lib/playbackDiagnostics";
+import { readBrowserWakeLockStatus } from "./lib/powerInhibition";
 import {
   deferNextMockSystemMediaControlListen,
   emitMockNativePlaybackError,
@@ -10,6 +11,7 @@ import {
   findAudioByArtifactId,
   getMockInvoke,
   getMockMediaSession,
+  getMockSystemMediaControlListenerCount,
   getMockWakeLock,
   markAudioReady,
   rejectMockSystemMediaCommand,
@@ -19,6 +21,13 @@ import {
   setMockNativeAudioState,
 } from "./test/appTestHarness";
 
+let usePlaybackPowerProtection: typeof import("./features/projects/playbackEffects").usePlaybackPowerProtection;
+let useWebPlaybackWakeLock: typeof import("./features/projects/playbackEffects").useWebPlaybackWakeLock;
+
+beforeAll(async () => {
+  ({ usePlaybackPowerProtection, useWebPlaybackWakeLock } = await import("./features/projects/playbackEffects"));
+});
+
 async function openPlaybackWorkspace(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("tab", { name: "Playback" }));
 }
@@ -26,7 +35,7 @@ async function openPlaybackWorkspace(user: ReturnType<typeof userEvent.setup>) {
 function mockTauriRuntime() {
   Object.defineProperty(window, "__TAURI_INTERNALS__", {
     configurable: true,
-    value: {},
+    value: { invoke: getMockInvoke() },
   });
 
   return () => {
@@ -56,16 +65,24 @@ function hasSystemMediaPlaybackState(playbackState: "playing" | "paused") {
   });
 }
 
-function hasNativeIdleInhibition(active: boolean) {
-  return invokeCalls("system_media_set_idle_inhibition").some(([, args]) => {
-    return (args as { active?: boolean } | undefined)?.active === active;
+function hasNativePowerProtection(active: boolean) {
+  return invokeCalls("power_inhibition_set_activity").some(([, args]) => {
+    const payload = args as { active?: boolean; reason?: string } | undefined;
+    return payload?.reason === "playback" && payload.active === active;
   });
+}
+
+function nativePowerProtectionCallCount(active: boolean) {
+  return invokeCalls("power_inhibition_set_activity").filter(([, args]) => {
+    const payload = args as { active?: boolean; reason?: string } | undefined;
+    return payload?.reason === "playback" && payload.active === active;
+  }).length;
 }
 
 function expectNoSystemMediaCommandCalls() {
   expect(invokeCalls("system_media_update_state")).toHaveLength(0);
   expect(invokeCalls("system_media_clear_state")).toHaveLength(0);
-  expect(invokeCalls("system_media_set_idle_inhibition")).toHaveLength(0);
+  expect(invokeCalls("power_inhibition_set_activity")).toHaveLength(0);
 }
 
 function expectNoNativePlaybackCommandCalls() {
@@ -91,12 +108,15 @@ async function waitForWebOwnerControls() {
   await waitFor(() => {
     expect(hasSystemMediaPlaybackState("playing")).toBe(true);
   });
+  await waitFor(() => expect(getMockSystemMediaControlListenerCount()).toBeGreaterThan(0));
   await waitFor(() => expect(getMockWakeLock().request).toHaveBeenCalledWith("screen"));
+  await waitFor(() => expect(hasNativePowerProtection(true)).toBe(true));
 }
 
 async function waitForNativeControls() {
   await waitFor(() => expect(hasSystemMediaPlaybackState("playing")).toBe(true));
-  await waitFor(() => expect(hasNativeIdleInhibition(true)).toBe(true));
+  await waitFor(() => expect(getMockSystemMediaControlListenerCount()).toBeGreaterThan(0));
+  await waitFor(() => expect(hasNativePowerProtection(true)).toBe(true));
 }
 
 async function startForcedWebPlayback(user: ReturnType<typeof userEvent.setup>) {
@@ -120,6 +140,28 @@ async function startForcedWebPlayback(user: ReturnType<typeof userEvent.setup>) 
   return restoreTauriRuntime;
 }
 
+function WebPlaybackWakeLockHarness({
+  backend = "web",
+  isPlaying,
+}: {
+  backend?: "native" | "web";
+  isPlaying: boolean;
+}) {
+  useWebPlaybackWakeLock({ backend, isPlaying });
+  return null;
+}
+
+function PlaybackPowerProtectionHarness({
+  backend,
+  isPlaying,
+}: {
+  backend: "native" | "web";
+  isPlaying: boolean;
+}) {
+  usePlaybackPowerProtection(isPlaying);
+  return <span data-testid="playback-power-backend">{backend}</span>;
+}
+
 describe("Desktop app project media controls", () => {
   beforeEach(resetAppTestHarness);
   afterEach(() => {
@@ -127,14 +169,14 @@ describe("Desktop app project media controls", () => {
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
-  it("uses system media controls and browser wake lock when Web Audio is forced", async () => {
+  it("uses system controls with native power protection and supplemental browser wake lock when Web Audio is forced", async () => {
     const user = userEvent.setup();
     const restoreTauriRuntime = await startForcedWebPlayback(user);
 
     await waitForWebOwnerControls();
     expect(getMockMediaSession().actionHandlers.size).toBe(0);
     expect(getMockMediaSession().setActionHandler).not.toHaveBeenCalled();
-    expect(hasNativeIdleInhibition(true)).toBe(false);
+    expect(hasNativePowerProtection(true)).toBe(true);
     expectNoNativePlaybackCommandCalls();
 
     act(() => {
@@ -197,7 +239,28 @@ describe("Desktop app project media controls", () => {
     restoreTauriRuntime();
   });
 
-  it("uses native controls and native idle inhibition after native playback starts", async () => {
+  it("keeps native power protection stable when the active playback backend changes", async () => {
+    const restoreTauriRuntime = mockTauriRuntime();
+    const view = render(<PlaybackPowerProtectionHarness backend="native" isPlaying />);
+    await waitFor(() => expect(nativePowerProtectionCallCount(true)).toBe(1));
+    const releaseCount = nativePowerProtectionCallCount(false);
+
+    view.rerender(<PlaybackPowerProtectionHarness backend="web" isPlaying />);
+    expect(screen.getByTestId("playback-power-backend")).toHaveTextContent("web");
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(nativePowerProtectionCallCount(true)).toBe(1);
+    expect(nativePowerProtectionCallCount(false)).toBe(releaseCount);
+    view.unmount();
+    await waitFor(() => {
+      expect(nativePowerProtectionCallCount(false)).toBeGreaterThan(releaseCount);
+    });
+    restoreTauriRuntime();
+  });
+
+  it("uses native controls and power protection only after native playback starts", async () => {
     const restoreTauriRuntime = mockTauriRuntime();
     const user = userEvent.setup();
     setMockNativeAudioState({
@@ -223,7 +286,7 @@ describe("Desktop app project media controls", () => {
       emitMockSystemMediaPlaybackControl({ action: "pause" });
     });
     await waitFor(() => expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument());
-    await waitFor(() => expect(hasNativeIdleInhibition(false)).toBe(true));
+    await waitFor(() => expect(hasNativePowerProtection(false)).toBe(true));
 
     restoreTauriRuntime();
   });
@@ -343,7 +406,7 @@ describe("Desktop app project media controls", () => {
     markAudioReady(sourceAudio);
     await waitFor(() => expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument());
     await waitForWebOwnerControls();
-    expect(hasNativeIdleInhibition(true)).toBe(false);
+    expect(hasNativePowerProtection(true)).toBe(true);
     restoreTauriRuntime();
   });
 
@@ -410,6 +473,7 @@ describe("Desktop app project media controls", () => {
     });
     await waitFor(() => expect(screen.getByLabelText("Playback position")).toHaveValue("42"));
 
+    const releaseCount = nativePowerProtectionCallCount(false);
     act(() => {
       emitMockNativePlaybackError({
         sessionId,
@@ -423,7 +487,9 @@ describe("Desktop app project media controls", () => {
       nativeBufferHealth: [],
     });
 
-    await waitFor(() => expect(hasNativeIdleInhibition(false)).toBe(true));
+    await waitFor(() => {
+      expect(nativePowerProtectionCallCount(false)).toBeGreaterThan(releaseCount);
+    });
     await waitFor(() => {
       expect(invokeCalls("system_media_clear_state").length).toBeGreaterThan(0);
     });
@@ -600,6 +666,7 @@ describe("Desktop app project media controls", () => {
       await openPlaybackWorkspace(user);
       await user.click(screen.getByRole("button", { name: "Play playback" }));
       await waitFor(() => expect(nativePlayBlock.release).not.toBeNull());
+      expect(hasNativePowerProtection(true)).toBe(false);
 
       const sessionId = latestNativeSessionId();
       act(() => {
@@ -629,15 +696,192 @@ describe("Desktop app project media controls", () => {
     }
   });
 
-  it("pause releases the Web Audio wake lock without touching native idle inhibition", async () => {
+  it("pause releases both native power protection and the supplemental Web Audio wake lock", async () => {
     const user = userEvent.setup();
     const restoreTauriRuntime = await startForcedWebPlayback(user);
     await waitForWebOwnerControls();
+    const releaseCount = nativePowerProtectionCallCount(false);
 
     await user.click(screen.getByRole("button", { name: "Pause playback" }));
     await waitFor(() => expect(getMockWakeLock().sentinels[0]?.release).toHaveBeenCalled());
-    expect(hasNativeIdleInhibition(true)).toBe(false);
+    await waitFor(() => {
+      expect(nativePowerProtectionCallCount(false)).toBeGreaterThan(releaseCount);
+    });
 
+    restoreTauriRuntime();
+  });
+
+  it("reports Web Audio wake lock release failure after pause", async () => {
+    const user = userEvent.setup();
+    const restoreTauriRuntime = await startForcedWebPlayback(user);
+    await waitForWebOwnerControls();
+    getMockWakeLock().sentinels[0]?.release.mockRejectedValueOnce(new Error("release failed"));
+
+    await user.click(screen.getByRole("button", { name: "Pause playback" }));
+
+    await waitFor(() => {
+      expect(readBrowserWakeLockStatus()).toMatchObject({
+        phase: "release-failed",
+        backend: "browser-screen-wake-lock",
+        screenProtected: true,
+      });
+    });
+    restoreTauriRuntime();
+  });
+
+  it("ignores stale Web Audio release failure after a new owner starts", async () => {
+    const view = render(<WebPlaybackWakeLockHarness isPlaying />);
+    await waitFor(() => expect(getMockWakeLock().request).toHaveBeenCalledTimes(1));
+    let rejectRelease: (reason?: unknown) => void = () => undefined;
+    getMockWakeLock().sentinels[0]!.release.mockImplementationOnce(
+      () => new Promise<void>((_resolve, reject) => {
+        rejectRelease = reject;
+      }),
+    );
+
+    view.rerender(<WebPlaybackWakeLockHarness isPlaying={false} />);
+    view.rerender(<WebPlaybackWakeLockHarness isPlaying />);
+    await waitFor(() => expect(getMockWakeLock().request).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      rejectRelease(new Error("stale release failed"));
+      await Promise.resolve();
+    });
+
+    expect(readBrowserWakeLockStatus()).toMatchObject({
+      phase: "active",
+      backend: "browser-screen-wake-lock",
+      screenProtected: true,
+    });
+    view.unmount();
+  });
+
+  it("coalesces pending browser Wake Lock requests and releases a late sentinel", async () => {
+    const pendingSentinel = {
+      released: false,
+      release: vi.fn(async () => {
+        pendingSentinel.released = true;
+      }),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchRelease: vi.fn(),
+    };
+    let resolveRequest: (sentinel: typeof pendingSentinel) => void = () => undefined;
+    getMockWakeLock().request.mockImplementationOnce(
+      () => new Promise((resolve) => {
+        resolveRequest = resolve;
+      }),
+    );
+    const view = render(<WebPlaybackWakeLockHarness isPlaying />);
+    await waitFor(() => expect(getMockWakeLock().request).toHaveBeenCalledTimes(1));
+
+    fireEvent(document, new Event("visibilitychange"));
+    fireEvent(document, new Event("visibilitychange"));
+    fireEvent.focus(window);
+    expect(getMockWakeLock().request).toHaveBeenCalledTimes(1);
+
+    view.rerender(<WebPlaybackWakeLockHarness backend="native" isPlaying />);
+    await act(async () => {
+      resolveRequest(pendingSentinel);
+      await Promise.resolve();
+    });
+
+    expect(pendingSentinel.release).toHaveBeenCalledTimes(1);
+    expect(getMockWakeLock().request).toHaveBeenCalledTimes(1);
+    expect(readBrowserWakeLockStatus()).toMatchObject({
+      phase: "inactive",
+      backend: null,
+      screenProtected: false,
+    });
+    view.unmount();
+  });
+
+  it("releases native power protection on stop, natural end, and unmount", async () => {
+    const restoreTauriRuntime = mockTauriRuntime();
+    const user = userEvent.setup();
+    setMockNativeAudioState({
+      capabilities: {
+        nativePlaybackSupported: true,
+        fallbackRequired: false,
+        fallbackReason: null,
+        backend: "desktop-cpal",
+      },
+    });
+    const view = renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitForNativeControls();
+
+    let releaseCount = nativePowerProtectionCallCount(false);
+    await user.click(screen.getByRole("button", { name: "Stop playback" }));
+    await waitFor(() => {
+      expect(nativePowerProtectionCallCount(false)).toBeGreaterThan(releaseCount);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitForNativeControls();
+    releaseCount = nativePowerProtectionCallCount(false);
+    const sessionId = latestNativeSessionId();
+    act(() => {
+      emitMockNativePlaybackPosition({
+        sessionId,
+        positionSeconds: 182,
+        durationSeconds: 182,
+        state: "stopped",
+      });
+    });
+    await waitFor(() => {
+      expect(nativePowerProtectionCallCount(false)).toBeGreaterThan(releaseCount);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitForNativeControls();
+    releaseCount = nativePowerProtectionCallCount(false);
+    view.unmount();
+    await waitFor(() => {
+      expect(nativePowerProtectionCallCount(false)).toBeGreaterThan(releaseCount);
+    });
+    restoreTauriRuntime();
+  });
+
+  it("records supplemental browser Wake Lock acquisition failures while retaining native protection", async () => {
+    const user = userEvent.setup();
+    getMockWakeLock().request.mockRejectedValueOnce(new Error("denied"));
+    const restoreTauriRuntime = await startForcedWebPlayback(user);
+
+    await waitFor(() => {
+      expect(readBrowserWakeLockStatus()).toMatchObject({
+        phase: "failed",
+        screenProtected: false,
+      });
+    });
+    expect(hasNativePowerProtection(true)).toBe(true);
+    expect(screen.queryByText("Screen Wake Lock could not be enabled.")).not.toBeInTheDocument();
+
+    restoreTauriRuntime();
+  });
+
+  it("ignores a pending browser Wake Lock rejection after playback pauses", async () => {
+    const user = userEvent.setup();
+    let rejectRequest: (reason?: unknown) => void = () => undefined;
+    getMockWakeLock().request.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => {
+        rejectRequest = reject;
+      }),
+    );
+    const restoreTauriRuntime = await startForcedWebPlayback(user);
+    await waitFor(() => expect(getMockWakeLock().request).toHaveBeenCalledWith("screen"));
+
+    await user.click(screen.getByRole("button", { name: "Pause playback" }));
+    await waitFor(() => expect(readBrowserWakeLockStatus().phase).toBe("inactive"));
+    await act(async () => {
+      rejectRequest(new Error("late denial"));
+      await Promise.resolve();
+    });
+
+    expect(readBrowserWakeLockStatus().phase).toBe("inactive");
+    expect(screen.queryByText("Screen Wake Lock could not be enabled.")).not.toBeInTheDocument();
     restoreTauriRuntime();
   });
 });

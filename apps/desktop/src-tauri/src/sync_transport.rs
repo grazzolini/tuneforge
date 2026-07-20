@@ -1591,6 +1591,9 @@ mod desktop {
         SyncTransportSyncResult, SyncTransportTimingEvidence, SyncTransportTransferCounts,
         SyncTransportTransferResult,
     };
+    use crate::power_inhibition::{
+        PowerInhibitionGuard, PowerInhibitionReason, PowerInhibitionState,
+    };
     use chrono::{DateTime, Utc};
     use iroh::{
         endpoint::{
@@ -1677,8 +1680,6 @@ mod desktop {
         "Restore the device state, then retry sync.";
     const LIFECYCLE_INTERRUPTION_NETWORK_GUIDANCE: &str =
         "Restore network connectivity, then retry sync.";
-    const LIFECYCLE_INTERRUPTION_FOREGROUND_GUIDANCE: &str =
-        "Bring TuneForge back to the foreground, then retry sync.";
     #[cfg(not(target_os = "android"))]
     const HTTP_TIMEOUT: Duration = Duration::from_secs(45);
     #[cfg(not(target_os = "android"))]
@@ -1686,19 +1687,214 @@ mod desktop {
     #[cfg(not(target_os = "android"))]
     const BACKEND_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(3);
 
+    trait SyncInhibitionGuard: Send {}
+
+    impl SyncInhibitionGuard for PowerInhibitionGuard {}
+
+    trait SyncPowerManager: Send + Sync {
+        fn acquire_scoped(
+            &self,
+            reason: PowerInhibitionReason,
+        ) -> Option<Box<dyn SyncInhibitionGuard>>;
+
+        fn data_sync_timeout_epoch(&self) -> u64 {
+            0
+        }
+    }
+
+    impl SyncPowerManager for PowerInhibitionState {
+        fn acquire_scoped(
+            &self,
+            reason: PowerInhibitionReason,
+        ) -> Option<Box<dyn SyncInhibitionGuard>> {
+            PowerInhibitionState::acquire_scoped(self, reason)
+                .ok()
+                .map(|guard| Box::new(guard) as Box<dyn SyncInhibitionGuard>)
+        }
+
+        fn data_sync_timeout_epoch(&self) -> u64 {
+            PowerInhibitionState::data_sync_timeout_epoch(self)
+        }
+    }
+
+    #[derive(Clone)]
+    struct SyncPowerInhibition {
+        manager: Arc<dyn SyncPowerManager>,
+    }
+
+    impl SyncPowerInhibition {
+        fn new(manager: PowerInhibitionState) -> Self {
+            Self {
+                manager: Arc::new(manager),
+            }
+        }
+
+        #[cfg(test)]
+        fn with_manager(manager: Arc<dyn SyncPowerManager>) -> Self {
+            Self { manager }
+        }
+
+        fn acquire(&self, reason: PowerInhibitionReason) -> Option<Box<dyn SyncInhibitionGuard>> {
+            self.manager.acquire_scoped(reason)
+        }
+
+        fn data_sync_timeout_epoch(&self) -> u64 {
+            self.manager.data_sync_timeout_epoch()
+        }
+    }
+
+    struct ListenerPowerLease {
+        guard: Mutex<Option<Box<dyn SyncInhibitionGuard>>>,
+    }
+
+    impl ListenerPowerLease {
+        fn acquire(power: &SyncPowerInhibition) -> Self {
+            Self {
+                guard: Mutex::new(power.acquire(PowerInhibitionReason::SyncListener)),
+            }
+        }
+
+        fn release(&self) {
+            let guard = self
+                .guard
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+            drop(guard);
+        }
+    }
+
+    #[derive(Clone)]
+    struct ActiveTransferReservations {
+        power: SyncPowerInhibition,
+        guards: Arc<Mutex<HashMap<String, Box<dyn SyncInhibitionGuard>>>>,
+        shutdown: Arc<AtomicBool>,
+    }
+
+    impl ActiveTransferReservations {
+        fn new(power: SyncPowerInhibition) -> Self {
+            Self {
+                power,
+                guards: Arc::new(Mutex::new(HashMap::new())),
+                shutdown: Arc::new(AtomicBool::new(false)),
+            }
+        }
+
+        fn reserve(&self, run_id: &str) -> ActiveTransferReservation {
+            let timeout_baseline = self.power.data_sync_timeout_epoch();
+            let mut active = false;
+            if !self.shutdown.load(Ordering::SeqCst) {
+                let acquired = self.power.acquire(PowerInhibitionReason::SyncTransfer);
+                let mut guards = self
+                    .guards
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let unneeded =
+                    if !self.shutdown.load(Ordering::SeqCst) && !guards.contains_key(run_id) {
+                        if let Some(guard) = acquired {
+                            guards.insert(run_id.to_string(), guard);
+                            active = true;
+                        }
+                        None
+                    } else {
+                        acquired
+                    };
+                drop(guards);
+                drop(unneeded);
+            }
+            ActiveTransferReservation {
+                reservations: self.clone(),
+                run_id: run_id.to_string(),
+                active,
+                timeout_baseline,
+                timeout_watcher_stop: Arc::new(AtomicBool::new(false)),
+            }
+        }
+
+        fn release(&self, run_id: &str) {
+            let guard = self
+                .guards
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(run_id);
+            drop(guard);
+        }
+
+        fn shutdown(&self) {
+            self.shutdown.store(true, Ordering::SeqCst);
+            let guards = self
+                .guards
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .drain()
+                .map(|(_, guard)| guard)
+                .collect::<Vec<_>>();
+            drop(guards);
+        }
+    }
+
+    struct ActiveTransferReservation {
+        reservations: ActiveTransferReservations,
+        run_id: String,
+        active: bool,
+        timeout_baseline: u64,
+        timeout_watcher_stop: Arc<AtomicBool>,
+    }
+
+    impl ActiveTransferReservation {
+        fn watch_timeout(&self, cancel: RunCancellationToken) {
+            if !self.active {
+                return;
+            }
+            let power = self.reservations.power.clone();
+            let baseline = self.timeout_baseline;
+            let stop = Arc::clone(&self.timeout_watcher_stop);
+            let run_id = self.run_id.clone();
+            thread::spawn(move || {
+                while !stop.load(Ordering::SeqCst) && !cancel.is_cancelled() {
+                    if power.data_sync_timeout_epoch() > baseline {
+                        cancel.interrupt(android_data_sync_timeout_interruption(run_id));
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(250));
+                }
+            });
+        }
+    }
+
+    impl Drop for ActiveTransferReservation {
+        fn drop(&mut self) {
+            self.timeout_watcher_stop.store(true, Ordering::SeqCst);
+            if self.active {
+                self.reservations.release(&self.run_id);
+            }
+        }
+    }
+
     #[derive(Clone)]
     pub struct SyncTransportState {
         backend: BackendAccess,
         listener: Arc<Mutex<Option<ListenerHandle>>>,
         shared_status: Arc<Mutex<SharedStatus>>,
+        power_inhibition: SyncPowerInhibition,
+        active_transfer_reservations: ActiveTransferReservations,
     }
 
     impl SyncTransportState {
-        pub fn new(base_url: String, app: AppHandle) -> Self {
+        pub fn new(
+            base_url: String,
+            app: AppHandle,
+            power_inhibition: PowerInhibitionState,
+        ) -> Self {
+            let power_inhibition = SyncPowerInhibition::new(power_inhibition);
             Self {
                 backend: BackendAccess { base_url, app },
                 listener: Arc::new(Mutex::new(None)),
                 shared_status: Arc::new(Mutex::new(SharedStatus::default())),
+                active_transfer_reservations: ActiveTransferReservations::new(
+                    power_inhibition.clone(),
+                ),
+                power_inhibition,
             }
         }
 
@@ -1706,14 +1902,13 @@ mod desktop {
             &self,
             payload: SyncTransportStartListenerRequest,
         ) -> Result<SyncTransportStatus, String> {
-            {
-                let guard = self
-                    .listener
-                    .lock()
-                    .map_err(|_| "Sync transport listener state is unavailable.".to_string())?;
-                if guard.is_some() {
-                    return Ok(self.status());
-                }
+            let mut listener_slot = self
+                .listener
+                .lock()
+                .map_err(|_| "Sync transport listener state is unavailable.".to_string())?;
+            if listener_slot.is_some() {
+                drop(listener_slot);
+                return Ok(self.status());
             }
 
             let client = BackendClient::new(&self.backend)?;
@@ -1759,6 +1954,10 @@ mod desktop {
             let tcp_stop = Arc::clone(&stop);
             let backend = self.backend.clone();
             let shared_status = Arc::clone(&self.shared_status);
+            let active_transfer_reservations = self.active_transfer_reservations.clone();
+            let listener_power_inhibition =
+                Arc::new(ListenerPowerLease::acquire(&self.power_inhibition));
+            let tcp_listener_power_inhibition = Arc::clone(&listener_power_inhibition);
             let tcp_endpoint_hints_for_sessions = endpoint_hints.clone();
             let tcp_thread = thread::spawn(move || {
                 accept_loop(
@@ -1767,7 +1966,9 @@ mod desktop {
                     tcp_stop,
                     shared_status,
                     tcp_endpoint_hints_for_sessions,
+                    active_transfer_reservations,
                 );
+                tcp_listener_power_inhibition.release();
             });
             let iroh_thread = iroh_transport.as_ref().map(|transport| {
                 let transport = transport.clone();
@@ -1775,8 +1976,16 @@ mod desktop {
                 let shared_status = Arc::clone(&self.shared_status);
                 let iroh_stop = Arc::clone(&stop);
                 let endpoint_hints = endpoint_hints.clone();
+                let active_transfer_reservations = self.active_transfer_reservations.clone();
                 thread::spawn(move || {
-                    iroh_accept_loop(transport, backend, iroh_stop, shared_status, endpoint_hints);
+                    iroh_accept_loop(
+                        transport,
+                        backend,
+                        iroh_stop,
+                        shared_status,
+                        endpoint_hints,
+                        active_transfer_reservations,
+                    );
                 })
             });
             let mut discovery_error = None;
@@ -1801,14 +2010,10 @@ mod desktop {
                 tcp_thread: Some(tcp_thread),
                 iroh_thread,
                 discovery_thread,
+                _power_inhibition: listener_power_inhibition,
             };
-            {
-                let mut guard = self
-                    .listener
-                    .lock()
-                    .map_err(|_| "Sync transport listener state is unavailable.".to_string())?;
-                *guard = Some(handle);
-            }
+            *listener_slot = Some(handle);
+            drop(listener_slot);
             update_status(&self.shared_status, |status| {
                 status.last_status = Some(match discovery_error {
                     Some(error) => {
@@ -1870,6 +2075,7 @@ mod desktop {
 
         pub fn shutdown(&self) {
             let _ = self.stop_listener();
+            self.active_transfer_reservations.shutdown();
         }
 
         fn status(&self) -> SyncTransportStatus {
@@ -1959,7 +2165,28 @@ mod desktop {
                 &run_id,
                 Some(payload.peer_device_id.clone()),
             );
-            let result = self.run_sync_now(payload, run_id.clone(), run_cancel);
+            let power_inhibition = self.active_transfer_reservations.reserve(&run_id);
+            power_inhibition.watch_timeout(run_cancel.clone());
+            let result = self.run_sync_now(payload, run_id.clone(), run_cancel.clone());
+            let result = match (result, run_cancel.interruption()) {
+                (Ok(mut sync_result), Some(interruption)) => {
+                    sync_result.status = "failed".to_string();
+                    sync_result.message = format!(
+                        "Sync interrupted by lifecycle event {}. {}",
+                        interruption.event.kind, interruption.guidance
+                    );
+                    if !sync_result.lifecycle_events.iter().any(|event| {
+                        event.kind == interruption.event.kind
+                            && event.occurred_at == interruption.event.occurred_at
+                    }) {
+                        sync_result.lifecycle_events.push(interruption.event);
+                    }
+                    sync_result.retryable_interruption_code = Some(interruption.code);
+                    sync_result.retry_guidance = Some(interruption.guidance);
+                    Ok(sync_result)
+                }
+                (result, _) => result,
+            };
             update_status(&self.shared_status, |status| {
                 apply_sync_now_status_result(status, &result, &run_id);
             });
@@ -3742,6 +3969,7 @@ mod desktop {
         tcp_thread: Option<JoinHandle<()>>,
         iroh_thread: Option<JoinHandle<()>>,
         discovery_thread: Option<JoinHandle<()>>,
+        _power_inhibition: Arc<ListenerPowerLease>,
     }
 
     struct IncomingSessionResult {
@@ -3833,6 +4061,27 @@ mod desktop {
                 .lock()
                 .ok()
                 .and_then(|interruption| interruption.clone())
+        }
+    }
+
+    fn android_data_sync_timeout_interruption(run_id: String) -> LifecycleInterruptionEvidence {
+        const CODE: &str = "android_data_sync_timeout";
+        const GUIDANCE: &str = "Bring TuneForge to the foreground, then retry sync.";
+        LifecycleInterruptionEvidence {
+            code: CODE.to_string(),
+            guidance: GUIDANCE.to_string(),
+            event: SyncTransportLifecycleEvent {
+                kind: CODE.to_string(),
+                occurred_at: Utc::now().to_rfc3339(),
+                message: Some(
+                    "Android stopped this sync after its background time limit.".to_string(),
+                ),
+                retryable: true,
+                interruption_code: Some(CODE.to_string()),
+                retry_guidance: Some(GUIDANCE.to_string()),
+                peer_device_id: None,
+                run_id: Some(run_id),
+            },
         }
     }
 
@@ -4296,12 +4545,6 @@ mod desktop {
         match kind {
             "sleep" => Some("lifecycle_interrupted_sleep"),
             "network_offline" | "networkoffline" => Some("lifecycle_interrupted_network_offline"),
-            "android_background" | "androidbackground" => {
-                Some("lifecycle_interrupted_android_background")
-            }
-            "android_screen_lock" | "androidscreenlock" => {
-                Some("lifecycle_interrupted_android_screen_lock")
-            }
             _ => None,
         }
     }
@@ -4309,10 +4552,6 @@ mod desktop {
     fn lifecycle_retry_guidance(kind: &str) -> &'static str {
         match kind {
             "network_offline" | "networkoffline" => LIFECYCLE_INTERRUPTION_NETWORK_GUIDANCE,
-            "android_background"
-            | "androidbackground"
-            | "android_screen_lock"
-            | "androidscreenlock" => LIFECYCLE_INTERRUPTION_FOREGROUND_GUIDANCE,
             _ => LIFECYCLE_INTERRUPTION_DEFAULT_GUIDANCE,
         }
     }
@@ -4579,6 +4818,7 @@ mod desktop {
         stop: Arc<AtomicBool>,
         shared_status: Arc<Mutex<SharedStatus>>,
         endpoint_hints: Vec<String>,
+        active_transfer_reservations: ActiveTransferReservations,
     ) {
         while !stop.load(Ordering::SeqCst) {
             match listener.accept() {
@@ -4586,6 +4826,7 @@ mod desktop {
                     let backend = backend.clone();
                     let shared_status = Arc::clone(&shared_status);
                     let endpoint_hints = endpoint_hints.clone();
+                    let active_transfer_reservations = active_transfer_reservations.clone();
                     update_status(&shared_status, |status| {
                         status.accepted_sessions += 1;
                         status.last_status =
@@ -4601,6 +4842,7 @@ mod desktop {
                             None,
                             shared_status,
                             endpoint_hints,
+                            active_transfer_reservations,
                         ),
                         Err(error) => {
                             update_status(&shared_status, |status| {
@@ -4631,6 +4873,7 @@ mod desktop {
         stop: Arc<AtomicBool>,
         shared_status: Arc<Mutex<SharedStatus>>,
         endpoint_hints: Vec<String>,
+        active_transfer_reservations: ActiveTransferReservations,
     ) {
         tauri::async_runtime::block_on(async move {
             while !stop.load(Ordering::SeqCst) {
@@ -4639,6 +4882,7 @@ mod desktop {
                         let backend = backend.clone();
                         let shared_status = Arc::clone(&shared_status);
                         let endpoint_hints = endpoint_hints.clone();
+                        let active_transfer_reservations = active_transfer_reservations.clone();
                         update_status(&shared_status, |status| {
                             status.accepted_sessions += 1;
                             status.last_status =
@@ -4685,6 +4929,7 @@ mod desktop {
                                             Some(iroh_data),
                                             session_status,
                                             endpoint_hints,
+                                            active_transfer_reservations,
                                         );
                                     });
                                     if let Err(error) = join.await {
@@ -4839,11 +5084,14 @@ mod desktop {
         iroh_data: Option<IrohDataConnection>,
         shared_status: Arc<Mutex<SharedStatus>>,
         endpoint_hints: Vec<String>,
+        active_transfer_reservations: ActiveTransferReservations,
     ) {
         let run_id = sync_run_id();
         let run_started_at = Utc::now();
         let run_started_instant = Instant::now();
         let run_cancel = register_active_run(&shared_status, &run_id, None);
+        let power_inhibition = active_transfer_reservations.reserve(&run_id);
+        power_inhibition.watch_timeout(run_cancel.clone());
         record_active_progress(
             &shared_status,
             &run_id,
@@ -4872,6 +5120,23 @@ mod desktop {
             run_started_instant,
         );
         let result = match (result, run_cancel.interruption()) {
+            (Ok(mut result), Some(interruption)) => {
+                result.sync_result.status = "failed".to_string();
+                result.sync_result.message = format!(
+                    "Sync interrupted by lifecycle event {}. {}",
+                    interruption.event.kind, interruption.guidance
+                );
+                result.message = result.sync_result.message.clone();
+                if !result.sync_result.lifecycle_events.iter().any(|event| {
+                    event.kind == interruption.event.kind
+                        && event.occurred_at == interruption.event.occurred_at
+                }) {
+                    result.sync_result.lifecycle_events.push(interruption.event);
+                }
+                result.sync_result.retryable_interruption_code = Some(interruption.code);
+                result.sync_result.retry_guidance = Some(interruption.guidance);
+                Ok(result)
+            }
             (Err(_), Some(interruption)) => {
                 let peer_device_id = interruption
                     .event
@@ -12753,11 +13018,224 @@ mod desktop {
     mod tests {
         use super::*;
         use std::collections::VecDeque;
+        use std::sync::atomic::AtomicU64;
+
+        #[derive(Default)]
+        struct TestPowerCounts {
+            active: Mutex<BTreeMap<PowerInhibitionReason, usize>>,
+            timeout_epoch: AtomicU64,
+        }
+
+        impl TestPowerCounts {
+            fn active(&self, reason: PowerInhibitionReason) -> usize {
+                self.active
+                    .lock()
+                    .expect("test power counts")
+                    .get(&reason)
+                    .copied()
+                    .unwrap_or_default()
+            }
+        }
+
+        struct TestPowerGuard {
+            counts: Arc<TestPowerCounts>,
+            reason: PowerInhibitionReason,
+        }
+
+        impl SyncInhibitionGuard for TestPowerGuard {}
+
+        impl Drop for TestPowerGuard {
+            fn drop(&mut self) {
+                let mut active = self.counts.active.lock().expect("test power counts");
+                let count = active.entry(self.reason).or_default();
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    active.remove(&self.reason);
+                }
+            }
+        }
+
+        struct TestPowerManager {
+            counts: Arc<TestPowerCounts>,
+        }
+
+        impl SyncPowerManager for TestPowerManager {
+            fn acquire_scoped(
+                &self,
+                reason: PowerInhibitionReason,
+            ) -> Option<Box<dyn SyncInhibitionGuard>> {
+                *self
+                    .counts
+                    .active
+                    .lock()
+                    .expect("test power counts")
+                    .entry(reason)
+                    .or_default() += 1;
+                Some(Box::new(TestPowerGuard {
+                    counts: Arc::clone(&self.counts),
+                    reason,
+                }))
+            }
+
+            fn data_sync_timeout_epoch(&self) -> u64 {
+                self.counts.timeout_epoch.load(Ordering::SeqCst)
+            }
+        }
+
+        fn test_power_inhibition() -> (SyncPowerInhibition, Arc<TestPowerCounts>) {
+            let counts = Arc::new(TestPowerCounts::default());
+            let manager = Arc::new(TestPowerManager {
+                counts: Arc::clone(&counts),
+            });
+            (SyncPowerInhibition::with_manager(manager), counts)
+        }
 
         const MISSING_SOURCE_HASH_GUIDANCE: &str =
             "Restore the original source file or re-import affected projects so TuneForge can compute source hashes.";
         const DUPLICATE_SOURCE_HASH_GUIDANCE: &str =
             "Delete duplicate same-source projects or keep one canonical project before enabling sync.";
+
+        #[test]
+        fn listener_power_lease_releases_on_thread_exit_or_handle_drop() {
+            let (power, counts) = test_power_inhibition();
+            let lease = ListenerPowerLease::acquire(&power);
+
+            assert_eq!(counts.active(PowerInhibitionReason::SyncListener), 1);
+
+            lease.release();
+
+            assert_eq!(counts.active(PowerInhibitionReason::SyncListener), 0);
+
+            let lease = ListenerPowerLease::acquire(&power);
+            assert_eq!(counts.active(PowerInhibitionReason::SyncListener), 1);
+
+            drop(lease);
+
+            assert_eq!(counts.active(PowerInhibitionReason::SyncListener), 0);
+        }
+
+        #[test]
+        fn transfer_reservation_releases_after_success_and_failure() {
+            let (power, counts) = test_power_inhibition();
+            let reservations = ActiveTransferReservations::new(power);
+
+            let success: Result<(), &str> = {
+                let _reservation = reservations.reserve("success");
+                assert_eq!(counts.active(PowerInhibitionReason::SyncTransfer), 1);
+                Ok(())
+            };
+            assert!(success.is_ok());
+            assert_eq!(counts.active(PowerInhibitionReason::SyncTransfer), 0);
+
+            let failure: Result<(), &str> = {
+                let _reservation = reservations.reserve("failure");
+                assert_eq!(counts.active(PowerInhibitionReason::SyncTransfer), 1);
+                Err("connection failed")
+            };
+            assert!(failure.is_err());
+            assert_eq!(counts.active(PowerInhibitionReason::SyncTransfer), 0);
+        }
+
+        #[test]
+        fn transfer_reservation_survives_cancellation_until_run_exits() {
+            let (power, counts) = test_power_inhibition();
+            let reservations = ActiveTransferReservations::new(power);
+            let cancellation = RunCancellationToken::default();
+            let reservation = reservations.reserve("cancelled");
+
+            cancellation.cancelled.store(true, Ordering::SeqCst);
+
+            assert!(cancellation.is_cancelled());
+            assert_eq!(counts.active(PowerInhibitionReason::SyncTransfer), 1);
+
+            drop(reservation);
+
+            assert_eq!(counts.active(PowerInhibitionReason::SyncTransfer), 0);
+        }
+
+        #[test]
+        fn transfer_timeout_cancels_run_without_releasing_other_power_owners() {
+            let (power, counts) = test_power_inhibition();
+            let listener = power.acquire(PowerInhibitionReason::SyncListener);
+            let reservations = ActiveTransferReservations::new(power);
+            let cancel = RunCancellationToken::default();
+            let reservation = reservations.reserve("timed_out");
+            reservation.watch_timeout(cancel.clone());
+
+            counts.timeout_epoch.store(1, Ordering::SeqCst);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !cancel.is_cancelled() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+
+            assert!(cancel.is_cancelled());
+            assert_eq!(
+                cancel.interruption().unwrap().code,
+                "android_data_sync_timeout"
+            );
+            assert_eq!(counts.active(PowerInhibitionReason::SyncListener), 1);
+            assert_eq!(counts.active(PowerInhibitionReason::SyncTransfer), 1);
+
+            drop(reservation);
+            assert_eq!(counts.active(PowerInhibitionReason::SyncTransfer), 0);
+            assert_eq!(counts.active(PowerInhibitionReason::SyncListener), 1);
+            drop(listener);
+            assert_eq!(counts.active(PowerInhibitionReason::SyncListener), 0);
+        }
+
+        #[test]
+        fn concurrent_transfer_reservations_release_independently_and_on_shutdown() {
+            let (power, counts) = test_power_inhibition();
+            let reservations = ActiveTransferReservations::new(power);
+            let first = reservations.reserve("first");
+            let second = reservations.reserve("second");
+
+            assert_eq!(counts.active(PowerInhibitionReason::SyncTransfer), 2);
+
+            drop(first);
+            assert_eq!(counts.active(PowerInhibitionReason::SyncTransfer), 1);
+
+            reservations.shutdown();
+            assert_eq!(counts.active(PowerInhibitionReason::SyncTransfer), 0);
+
+            let after_shutdown = reservations.reserve("after_shutdown");
+            assert_eq!(counts.active(PowerInhibitionReason::SyncTransfer), 0);
+
+            drop(second);
+            drop(after_shutdown);
+            assert_eq!(counts.active(PowerInhibitionReason::SyncTransfer), 0);
+        }
+
+        #[test]
+        fn duplicate_transfer_reservation_does_not_release_active_owner() {
+            let (power, counts) = test_power_inhibition();
+            let reservations = ActiveTransferReservations::new(power);
+            let owner = reservations.reserve("same_run");
+            let duplicate = reservations.reserve("same_run");
+
+            assert_eq!(counts.active(PowerInhibitionReason::SyncTransfer), 1);
+
+            drop(duplicate);
+            assert_eq!(counts.active(PowerInhibitionReason::SyncTransfer), 1);
+
+            drop(owner);
+            assert_eq!(counts.active(PowerInhibitionReason::SyncTransfer), 0);
+        }
+
+        #[test]
+        fn transfer_reservation_releases_when_run_panics() {
+            let (power, counts) = test_power_inhibition();
+            let reservations = ActiveTransferReservations::new(power);
+            let panic_reservations = reservations.clone();
+
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                let _reservation = panic_reservations.reserve("panic");
+                panic!("test panic");
+            }));
+
+            assert!(result.is_err());
+            assert_eq!(counts.active(PowerInhibitionReason::SyncTransfer), 0);
+        }
 
         fn test_transfer_result(
             artifact_id: &str,
@@ -14185,6 +14663,38 @@ mod desktop {
                 Some("window blurred")
             );
             assert!(status.retryable_interruption_code.is_none());
+        }
+
+        #[test]
+        fn android_background_and_lock_do_not_interrupt_active_transfer() {
+            for kind in ["android_background", "android_screen_lock"] {
+                let cancel = RunCancellationToken::default();
+                let mut status = SharedStatus::default();
+                status.active_runs.insert(
+                    "sync_android_background".to_string(),
+                    ActiveSyncRun {
+                        peer_device_id: Some("dev_peer".to_string()),
+                        cancel: cancel.clone(),
+                        connection: None,
+                    },
+                );
+
+                let outcome = record_lifecycle_event_in_status(
+                    &mut status,
+                    SyncTransportLifecycleEventRequest {
+                        kind: kind.to_string(),
+                        occurred_at: Some("2026-01-01T00:00:00Z".to_string()),
+                        message: Some("Android lifecycle changed".to_string()),
+                    },
+                );
+                interrupt_active_runs_for_lifecycle(&outcome.event, outcome.interrupted_runs);
+
+                assert!(!cancel.is_cancelled());
+                assert!(!status.lifecycle_events[0].retryable);
+                assert!(status.lifecycle_events[0].interruption_code.is_none());
+                assert!(status.retryable_interruption_code.is_none());
+                assert!(status.active_runs.contains_key("sync_android_background"));
+            }
         }
 
         #[test]
@@ -16539,10 +17049,10 @@ mod desktop {
         fn sync_now_non_interrupted_result_clears_retryable_interruption() {
             let mut status = SharedStatus {
                 retryable_interruption_code: Some(
-                    "lifecycle_interrupted_android_background".to_string(),
+                    "lifecycle_interrupted_network_offline".to_string(),
                 ),
                 retryable_interruption_peer_device_id: Some("dev_peer".to_string()),
-                retry_guidance: Some(LIFECYCLE_INTERRUPTION_FOREGROUND_GUIDANCE.to_string()),
+                retry_guidance: Some(LIFECYCLE_INTERRUPTION_NETWORK_GUIDANCE.to_string()),
                 ..SharedStatus::default()
             };
             let result = Ok(failed_preflight_sync_result(

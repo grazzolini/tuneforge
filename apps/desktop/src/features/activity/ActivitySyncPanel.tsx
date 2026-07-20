@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { QRCodeSVG } from "qrcode.react";
@@ -24,6 +24,13 @@ import {
 } from "../../lib/api";
 import { formatLocalDateTime, normalizeApiDateTime } from "../../lib/datetime";
 import { scanPairingQrCode } from "../../lib/pairingQrScanner";
+import {
+  getPowerInhibitionVersion,
+  readPowerInhibitionStatus,
+  refreshPowerInhibitionStatus,
+  subscribePowerInhibition,
+  syncPowerProtectionMessage,
+} from "../../lib/powerInhibition";
 import {
   decodePairingCode,
   encodePairingCode,
@@ -2115,6 +2122,12 @@ export function ActivitySyncPanel() {
   const [syncNowPolling, setSyncNowPolling] = useState(false);
   const [evidenceMessage, setEvidenceMessage] = useState<string | null>(null);
   const [evidenceError, setEvidenceError] = useState<string | null>(null);
+	useSyncExternalStore(
+	  subscribePowerInhibition,
+	  getPowerInhibitionVersion,
+	  getPowerInhibitionVersion,
+	);
+	const powerInhibitionStatus = readPowerInhibitionStatus();
 	  const pairingCodeOutputRef = useRef<HTMLTextAreaElement | null>(null);
 	  const rawPairingOutputRef = useRef<HTMLTextAreaElement | null>(null);
 	  const refreshedProjectSyncKeyRef = useRef<string | null>(null);
@@ -2164,6 +2177,19 @@ export function ActivitySyncPanel() {
     return trustedNearbyPeers;
   }, [nearbyPeers, peersById]);
   const listenerActive = listenerQuery.data?.active ?? false;
+	useEffect(() => {
+	  if (!isTauri()) {
+	    return;
+	  }
+	  void refreshPowerInhibitionStatus();
+	  if (!listenerActive && !syncNowPolling) {
+	    return;
+	  }
+	  const intervalId = window.setInterval(() => {
+	    void refreshPowerInhibitionStatus();
+	  }, SYNC_LISTENER_POLL_INTERVAL_MS);
+	  return () => window.clearInterval(intervalId);
+	}, [listenerActive, syncNowPolling]);
   const listenerStatus = listenerQuery.isError ? "unavailable" : listenerQuery.data?.status ?? "checking";
   const listenerSyncResult = listenerQuery.data?.last_sync ?? null;
   const listenerSyncKey = useMemo(() => syncResultKey(listenerSyncResult), [listenerSyncResult]);
@@ -2794,6 +2820,7 @@ export function ActivitySyncPanel() {
   const preflightGuidance = preflight
     ? Array.from(new Set([...preflight.manual_cleanup_guidance, ...preflight.job_state.guidance]))
     : [];
+  const powerProtectionMessage = syncPowerProtectionMessage(powerInhibitionStatus);
 
   return (
     <section
@@ -2915,6 +2942,11 @@ export function ActivitySyncPanel() {
           {listenerLastErrorMessage ? (
             <p className="activity-sync-alert activity-sync-alert--error" role="alert">
               {listenerLastErrorMessage}
+            </p>
+          ) : null}
+          {powerProtectionMessage ? (
+            <p className="activity-sync-alert activity-sync-alert--error" role="alert">
+              {powerProtectionMessage}
             </p>
           ) : null}
           {retryableInterruption ? (

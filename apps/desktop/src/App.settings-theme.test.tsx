@@ -183,12 +183,17 @@ describe("Desktop app settings theme", () => {
     expect(screen.getByText("Frontend Git Ref")).toBeInTheDocument();
     expect(screen.getByText(FRONTEND_VERSION_INFO.git_ref)).toBeInTheDocument();
     expect(screen.getAllByText("Native (desktop-cpal)")).toHaveLength(2);
+    expect(screen.getByText(/^Unavailable —/)).toBeInTheDocument();
     expect(screen.getByText("Native microphone failed.")).toBeInTheDocument();
-    expect(screen.getAllByText("Native output failed.")).toHaveLength(2);
+    expect(screen.getByText("Native output failed.")).toBeInTheDocument();
     expect(screen.getByText("Latest Native Fallback Cause")).toBeInTheDocument();
+    expect(screen.getAllByText("None").length).toBeGreaterThan(0);
     expect(screen.getByText("Native Playback Buffer Health")).toBeInTheDocument();
-    expect(screen.getByText(/art_vocals: 25% buffer, 3 underruns, 1 worker errors/)).toBeInTheDocument();
-    expect(screen.getAllByText("Web Audio")).toHaveLength(2);
+    expect(screen.getByText("No active native lanes")).toBeInTheDocument();
+    expect(screen.getByText("Not started")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Configuration" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Current Playback" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Previous Playback Issues" })).toBeInTheDocument();
 
     expect(document.documentElement).toHaveAttribute("data-theme", "light");
     expect(window.localStorage.getItem("tuneforge.theme-preference")).toBe("light");
@@ -227,8 +232,11 @@ describe("Desktop app settings theme", () => {
     await user.click(screen.getByText("Show diagnostics"));
 
     expect(await screen.findByText("/tmp/tuneforge")).toBeInTheDocument();
-    expect(screen.getAllByText("Web Audio (forced)")).toHaveLength(2);
-    expect(mockInvoke).not.toHaveBeenCalledWith("audio_get_capabilities");
+    expect(screen.getByText("Web Audio forced at build time")).toBeInTheDocument();
+    expect(screen.getByText("Web Audio forced")).toBeInTheDocument();
+    expect(screen.getAllByText("Native (desktop-cpal)")).toHaveLength(2);
+    expect(screen.getByText("Not playing")).toBeInTheDocument();
+    expect(mockInvoke).toHaveBeenCalledWith("audio_get_capabilities");
   });
 
   it("persists playback follow defaults", async () => {

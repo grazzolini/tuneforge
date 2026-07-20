@@ -327,7 +327,10 @@ Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
 
 Object.defineProperty(window.HTMLMediaElement.prototype, "play", {
   writable: true,
-  value: vi.fn().mockResolvedValue(undefined),
+  value: vi.fn(function play(this: HTMLMediaElement) {
+    queueMicrotask(() => this.dispatchEvent(new Event("playing", { bubbles: true })));
+    return Promise.resolve();
+  }),
 });
 
 Object.defineProperty(window.HTMLMediaElement.prototype, "pause", {

@@ -303,7 +303,9 @@ describe("Desktop app project playback tempo", () => {
     });
     const sourceAudio = findAudioByArtifactId("art_source");
     markAudioReady(sourceAudio);
-    await waitFor(() => expect(getMockAudioContexts()[0]?.createdSources).toHaveLength(1));
+    await waitFor(() =>
+      expect(getMockAudioContexts().flatMap((context) => context.createdSources)).toHaveLength(1),
+    );
     expect(window.localStorage.getItem("tuneforge.playback-native-error")).toBe(
       "Native playback underrun persisted; falling back to Web Audio.",
     );
@@ -449,8 +451,10 @@ describe("Desktop app project playback tempo", () => {
     });
     const sourceAudio = findAudioByArtifactId("art_source");
     markAudioReady(sourceAudio);
-    await waitFor(() => expect(getMockAudioContexts()[0]?.createdSources).toHaveLength(1));
-    expect(getMockAudioContexts()[0]?.createdSources[0]?.start.mock.calls[0]?.[1]).toBeCloseTo(
+    await waitFor(() =>
+      expect(getMockAudioContexts().flatMap((context) => context.createdSources)).toHaveLength(1),
+    );
+    expect(getMockAudioContexts().flatMap((context) => context.createdSources)[0]?.start.mock.calls[0]?.[1]).toBeCloseTo(
       42.25,
       3,
     );

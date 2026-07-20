@@ -435,6 +435,18 @@
   color: var(--muted);
 }
 
+.transport__status {
+  grid-column: 1 / -1;
+  margin: -0.25rem 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.transport__status--error {
+  color: var(--danger);
+}
+
 .transport--compact {
   gap: 0.8rem;
   align-items: center;

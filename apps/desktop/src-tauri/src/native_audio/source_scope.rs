@@ -1,19 +1,29 @@
 use std::{
-    env,
-    ffi::OsStr,
     fs,
     path::{Path, PathBuf},
     time::Duration,
 };
 
-use rusqlite::{params, Connection, Error as SqliteError, OpenFlags, OptionalExtension};
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+use std::{env, ffi::OsStr};
 
+use rusqlite::{params, Connection, Error as SqliteError, OpenFlags, OptionalExtension};
+use serde_json::Value;
+#[cfg(not(target_os = "android"))]
+use tauri::AppHandle;
+#[cfg(target_os = "android")]
+use tauri::{AppHandle, Manager};
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 const BACKEND_DATABASE_NAME: &str = "app.sqlite";
+#[cfg(target_os = "android")]
+const MOBILE_DATABASE_NAME: &str = "mobile.sqlite3";
 const BACKEND_PROJECTS_DIR: &str = "projects";
 const PLAYBACK_SOURCE_MISSING_MESSAGE: &str = "Native playback source is missing or unavailable.";
 const PLAYBACK_SOURCE_UNAVAILABLE_MESSAGE: &str =
     "Native playback source is unavailable for native playback.";
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 const TUNEFORGE_DATA_DIR: &str = "TUNEFORGE_DATA_DIR";
 
 pub(super) struct PlaybackSourceScope {
@@ -22,13 +32,37 @@ pub(super) struct PlaybackSourceScope {
 }
 
 impl PlaybackSourceScope {
+    pub(super) fn from_app(app: &AppHandle) -> Result<Self, String> {
+        #[cfg(target_os = "android")]
+        {
+            let data_root = app
+                .path()
+                .app_data_dir()
+                .map_err(|_| PLAYBACK_SOURCE_UNAVAILABLE_MESSAGE.to_string())?;
+            return Self::from_data_root(&data_root, MOBILE_DATABASE_NAME)
+                .map_err(|error| error.message().to_string());
+        }
+
+        #[cfg(not(target_os = "android"))]
+        {
+            let _ = app;
+            Self::from_backend_config()
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
     pub(super) fn from_backend_config() -> Result<Self, String> {
         let data_root = backend_data_root()?;
         Self::from_backend_data_root(&data_root).map_err(|error| error.message().to_string())
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos", test))]
     fn from_backend_data_root(data_root: &Path) -> Result<Self, PlaybackSourceError> {
-        let database_path = data_root.join(BACKEND_DATABASE_NAME);
+        Self::from_data_root(data_root, BACKEND_DATABASE_NAME)
+    }
+
+    fn from_data_root(data_root: &Path, database_name: &str) -> Result<Self, PlaybackSourceError> {
+        let database_path = data_root.join(database_name);
         let projects_root = data_root.join(BACKEND_PROJECTS_DIR);
         let metadata =
             fs::metadata(&projects_root).map_err(|_| PlaybackSourceError::Unavailable)?;
@@ -54,10 +88,12 @@ impl PlaybackSourceScope {
             .filter(|value| !value.is_empty())
             .ok_or(PlaybackSourceError::Unavailable)?;
         let canonical_path = validate_playback_source_path(source_path, &self.projects_root)?;
-        let artifact_path = artifact_path_for_id(&self.database_path, artifact_id)?;
-        let canonical_artifact_path =
-            validate_artifact_record_path(&artifact_path, &self.projects_root)?;
-        if canonical_artifact_path != canonical_path {
+        let artifact_paths = artifact_paths_for_id(&self.database_path, artifact_id)?;
+        let matches_registered_path = artifact_paths.iter().any(|artifact_path| {
+            validate_artifact_record_path(artifact_path, &self.projects_root)
+                .is_ok_and(|registered_path| registered_path == canonical_path)
+        });
+        if !matches_registered_path {
             return Err(PlaybackSourceError::Unavailable);
         }
         Ok(canonical_path)
@@ -79,6 +115,7 @@ impl PlaybackSourceError {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn backend_data_root() -> Result<PathBuf, String> {
     let home = home_dir()?;
     let cwd = env::current_dir().unwrap_or_else(|_| home.clone());
@@ -90,6 +127,7 @@ fn backend_data_root() -> Result<PathBuf, String> {
     ))
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn home_dir() -> Result<PathBuf, String> {
     env::var("HOME")
         .ok()
@@ -99,6 +137,7 @@ fn home_dir() -> Result<PathBuf, String> {
         .ok_or_else(|| PLAYBACK_SOURCE_UNAVAILABLE_MESSAGE.to_string())
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn backend_data_root_from_parts(
     override_dir: Option<&OsStr>,
     home: &Path,
@@ -111,6 +150,7 @@ fn backend_data_root_from_parts(
     default_backend_data_root(home, platform)
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn default_backend_data_root(home: &Path, platform: BackendPlatform) -> PathBuf {
     match platform {
         #[cfg(any(target_os = "macos", test))]
@@ -123,6 +163,7 @@ fn default_backend_data_root(home: &Path, platform: BackendPlatform) -> PathBuf 
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn expand_home(path: &Path, home: &Path) -> PathBuf {
     let value = path.as_os_str().to_string_lossy();
     if value == "~" {
@@ -134,6 +175,7 @@ fn expand_home(path: &Path, home: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn absolute_path(path: &Path, cwd: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
@@ -166,10 +208,10 @@ fn validate_playback_source_path(
     Ok(canonical_path)
 }
 
-fn artifact_path_for_id(
+fn artifact_paths_for_id(
     database_path: &Path,
     artifact_id: &str,
-) -> Result<PathBuf, PlaybackSourceError> {
+) -> Result<Vec<PathBuf>, PlaybackSourceError> {
     let connection = Connection::open_with_flags(
         database_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -178,21 +220,40 @@ fn artifact_path_for_id(
     connection
         .busy_timeout(SQLITE_BUSY_TIMEOUT)
         .map_err(|_| PlaybackSourceError::Unavailable)?;
-    let artifact_path = connection
+    let artifact = connection
         .query_row(
-            "SELECT path FROM artifacts WHERE id = ?1",
+            "SELECT path, metadata_json FROM artifacts WHERE id = ?1",
             params![artifact_id],
-            |row| row.get::<_, String>(0),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
         .optional()
         .map_err(|error| match error {
             SqliteError::QueryReturnedNoRows => PlaybackSourceError::Unavailable,
             _ => PlaybackSourceError::Unavailable,
         })?;
-    artifact_path
-        .filter(|value| !value.trim().is_empty())
-        .map(PathBuf::from)
-        .ok_or(PlaybackSourceError::Unavailable)
+    let (artifact_path, metadata_json) = artifact.ok_or(PlaybackSourceError::Unavailable)?;
+    let mut paths = Vec::with_capacity(2);
+    if !artifact_path.trim().is_empty() {
+        paths.push(PathBuf::from(artifact_path));
+    }
+    if let Some(playback_path) =
+        serde_json::from_str::<Value>(&metadata_json)
+            .ok()
+            .and_then(|metadata| {
+                metadata
+                    .get("playback_path")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(PathBuf::from)
+            })
+    {
+        paths.push(playback_path);
+    }
+    if paths.is_empty() {
+        return Err(PlaybackSourceError::Unavailable);
+    }
+    Ok(paths)
 }
 
 fn validate_artifact_record_path(
@@ -220,6 +281,7 @@ fn validate_artifact_record_path(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 enum BackendPlatform {
     #[cfg(any(target_os = "macos", test))]
     Macos,
@@ -227,6 +289,7 @@ enum BackendPlatform {
     Linux,
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 impl BackendPlatform {
     fn current() -> Self {
         #[cfg(target_os = "macos")]
@@ -287,7 +350,7 @@ mod tests {
             Connection::open(data_root.join(BACKEND_DATABASE_NAME)).expect("open test database");
         connection
             .execute(
-                "CREATE TABLE artifacts (id TEXT PRIMARY KEY, path TEXT NOT NULL)",
+                "CREATE TABLE artifacts (id TEXT PRIMARY KEY, path TEXT NOT NULL, metadata_json TEXT NOT NULL)",
                 [],
             )
             .expect("create artifacts table");
@@ -298,8 +361,25 @@ mod tests {
             Connection::open(data_root.join(BACKEND_DATABASE_NAME)).expect("open test database");
         connection
             .execute(
-                "INSERT INTO artifacts (id, path) VALUES (?1, ?2)",
+                "INSERT INTO artifacts (id, path, metadata_json) VALUES (?1, ?2, '{}')",
                 params![artifact_id, source_path_string(path)],
+            )
+            .expect("insert artifact");
+    }
+
+    fn register_artifact_with_playback_path(
+        data_root: &Path,
+        artifact_id: &str,
+        path: &Path,
+        playback_path: &Path,
+    ) {
+        let connection =
+            Connection::open(data_root.join(BACKEND_DATABASE_NAME)).expect("open test database");
+        let metadata = serde_json::json!({"playback_path": source_path_string(playback_path)});
+        connection
+            .execute(
+                "INSERT INTO artifacts (id, path, metadata_json) VALUES (?1, ?2, ?3)",
+                params![artifact_id, source_path_string(path), metadata.to_string()],
             )
             .expect("insert artifact");
     }
@@ -386,6 +466,33 @@ mod tests {
         assert_eq!(
             validated,
             source_path.canonicalize().expect("canonical file")
+        );
+    }
+
+    #[test]
+    fn playback_source_scope_allows_registered_playback_proxy_path() {
+        let temp = TestTempDir::new("playback-proxy");
+        let (scope, projects_root) = test_source_scope(&temp);
+        let source_dir = projects_root.join("project_123").join("source");
+        fs::create_dir_all(&source_dir).expect("create source dir");
+        let source_path = source_dir.join("source.flac");
+        let playback_path = source_dir.join("source-playback.wav");
+        fs::write(&source_path, b"source").expect("write source");
+        fs::write(&playback_path, b"playback").expect("write playback proxy");
+        register_artifact_with_playback_path(
+            data_root_for_scope(&projects_root),
+            "artifact_1",
+            &source_path,
+            &playback_path,
+        );
+
+        let validated = scope
+            .validate(Some("artifact_1"), &source_path_string(&playback_path))
+            .expect("validate playback proxy");
+
+        assert_eq!(
+            validated,
+            playback_path.canonicalize().expect("canonical file")
         );
     }
 

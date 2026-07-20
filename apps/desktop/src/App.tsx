@@ -46,8 +46,8 @@ function MiniPlayPauseGlyph({ isPlaying }: { isPlaying: boolean }) {
             fill={fill}
             height="17"
             rx="2.4"
-            stroke="rgba(255, 255, 255, 0.42)"
-            strokeWidth="1"
+            stroke="currentColor"
+            strokeWidth="1.8"
             width="5.8"
             x="11.45"
             y="11.5"
@@ -56,8 +56,8 @@ function MiniPlayPauseGlyph({ isPlaying }: { isPlaying: boolean }) {
             fill={fill}
             height="17"
             rx="2.4"
-            stroke="rgba(255, 255, 255, 0.42)"
-            strokeWidth="1"
+            stroke="currentColor"
+            strokeWidth="1.8"
             width="5.8"
             x="22.75"
             y="11.5"
@@ -67,9 +67,9 @@ function MiniPlayPauseGlyph({ isPlaying }: { isPlaying: boolean }) {
         <path
           d="M13.2 10.2L28.9 20L13.2 29.8Z"
           fill={fill}
-          stroke="rgba(255, 255, 255, 0.48)"
+          stroke="currentColor"
           strokeLinejoin="round"
-          strokeWidth="1"
+          strokeWidth="1.8"
         />
       )}
     </svg>
@@ -92,8 +92,8 @@ function MiniStopGlyph() {
         fill={fill}
         height="14.5"
         rx="4"
-        stroke="rgba(255, 255, 255, 0.42)"
-        strokeWidth="1"
+        stroke="currentColor"
+        strokeWidth="1.8"
         width="14.5"
         x="12.75"
         y="12.75"

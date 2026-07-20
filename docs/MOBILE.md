@@ -104,7 +104,8 @@ pnpm package:android
 Set `ANDROID_HOME` or `ANDROID_SDK_ROOT` to the Android SDK directory before running the
 Android commands. Tauri cannot initialize or build the Android target without an SDK and NDK.
 
-Android builds are arm64-only by default for this experiment. Use `pnpm package:android` or
+Android builds target API 26 or newer so native project playback can use CPAL's AAudio backend.
+They are arm64-only by default for this experiment. Use `pnpm package:android` or
 `pnpm package:android:debug`; both pass `--target aarch64` and avoid building `armv7`, `i686`, or
 `x86_64`.
 Android package scripts run `tauri icon --output src-tauri/target/android-icons src-tauri/icons/icon.png`
@@ -112,7 +113,12 @@ before building so ignored desktop icon outputs stay under `target/` while the g
 launcher resources under `apps/desktop/src-tauri/gen/android/app/src/main/res/` are refreshed from
 the tracked TuneForge icon instead of Tauri's default icon.
 The Android scripts run through `scripts/android-arm64-env.sh` so Cargo uses the rustup toolchain and
-the Android NDK `aarch64-linux-android24-clang` compiler.
+the Android NDK `aarch64-linux-android26-clang` compiler.
+
+Project playback prefers the native `android-aaudio` path. Web Audio is an automatic disclosed
+fallback after native failure or a build-time development override; it is not a mobile setting.
+Playback state, clocks, and Settings diagnostics change only after the active native session or Web
+media confirms the transition.
 
 `pnpm --filter @tuneforge/desktop android:prepare` updates the generated Android target before a
 build. It keeps these manifest permissions present:

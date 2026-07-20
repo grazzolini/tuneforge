@@ -1,5 +1,10 @@
-import { useId } from "react";
+import { useId, useSyncExternalStore } from "react";
 import { RefreshCw, RefreshCwOff, RotateCcw } from "lucide-react";
+import {
+  getPlaybackDiagnosticsVersion,
+  readPlaybackLiveDiagnostics,
+  subscribePlaybackDiagnostics,
+} from "../../../lib/playbackDiagnostics";
 import { MetallicGlyphDefs, PlayPauseGlyph, SeekGlyph, StopGlyph } from "./TransportGlyphs";
 import { formatPlaybackClock } from "../projectViewUtils";
 import type { PlaybackLoopRange } from "../projectPlaybackState";
@@ -39,6 +44,12 @@ export function PlaybackTransport({
   onToggleLoop: () => void;
   onTogglePlayback: () => Promise<void>;
 }) {
+  useSyncExternalStore(
+    subscribePlaybackDiagnostics,
+    getPlaybackDiagnosticsVersion,
+    getPlaybackDiagnosticsVersion,
+  );
+  const playbackDiagnostics = readPlaybackLiveDiagnostics();
   const tempoLabel =
     tempoDisplayBpm === null
       ? "--"
@@ -153,6 +164,14 @@ export function PlaybackTransport({
           <span>{formatPlaybackClock(maxSeconds)}</span>
         </div>
       </label>
+      {playbackDiagnostics.statusMessage ? (
+        <p
+          className={`transport__status transport__status--${playbackDiagnostics.currentState}`}
+          role={playbackDiagnostics.currentState === "error" ? "alert" : "status"}
+        >
+          {playbackDiagnostics.statusMessage}
+        </p>
+      ) : null}
     </div>
   );
 }

@@ -9,6 +9,7 @@ pub fn current_platform() -> AudioPlatform {
         },
         backend: "desktop-cpal",
         native_playback_supported: true,
+        fallback_reason: None,
         mic_capture_supported: true,
         mic_monitoring_supported: false,
         system_input_volume_supported: true,

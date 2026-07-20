@@ -2905,6 +2905,12 @@ export function resetAppTestHarness() {
   mockGetMobileCapabilities.mockResolvedValue(null);
   mockScanPairingQrCode.mockReset();
   mockScanPairingQrCode.mockRejectedValue(new Error("QR scanner unavailable."));
+  vi.mocked(window.HTMLMediaElement.prototype.play).mockImplementation(function play(
+    this: HTMLMediaElement,
+  ) {
+    queueMicrotask(() => this.dispatchEvent(new Event("playing", { bubbles: true })));
+    return Promise.resolve();
+  });
   vi.mocked(window.HTMLMediaElement.prototype.play).mockClear();
   vi.mocked(window.HTMLMediaElement.prototype.pause).mockClear();
   getMockFetch().mockClear();

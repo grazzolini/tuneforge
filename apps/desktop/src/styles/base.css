@@ -294,6 +294,7 @@ a {
 
 .background-playback__icon {
   pointer-events: none;
+  color: var(--text);
   filter: drop-shadow(0 1px 1px rgba(15, 23, 42, 0.45));
 }
 

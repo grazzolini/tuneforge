@@ -217,6 +217,30 @@
   font-weight: 700;
 }
 
+.settings-diagnostics {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.settings-diagnostics__group {
+  display: grid;
+  gap: 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--divider) 78%, transparent);
+  border-radius: 16px;
+  padding: 0.9rem;
+  background: color-mix(in srgb, var(--panel) 72%, var(--panel-strong) 28%);
+}
+
+.settings-diagnostics__group h3 {
+  margin: 0;
+  font-size: 0.92rem;
+}
+
+.settings-diagnostics__group .details-grid {
+  margin: 0;
+}
+
 .theme-studio-page {
   gap: 1rem;
 }

@@ -647,6 +647,23 @@ describe("Desktop app project playback pre-count", () => {
 
     await user.click(screen.getByRole("button", { name: "Pause playback" }));
     await waitFor(() => expect(invokeCalls("audio_pause")).toHaveLength(1));
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+    expect(readPlaybackE2ETelemetry()).toMatchObject({
+      activePath: "native",
+      positionSeconds: 23.5,
+      transportState: "playing",
+    });
+    pauseDeferred.resolve({
+      sessionId: latestNativeSessionId(),
+      state: "paused",
+      positionSeconds: 23.5,
+      durationSeconds: 182,
+      playbackRate: 1,
+      nativePlaybackSupported: true,
+      fallbackReason: null,
+      lanes: [],
+      bufferHealth: [],
+    });
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument(),
     );
@@ -669,24 +686,6 @@ describe("Desktop app project playback pre-count", () => {
 
     await user.click(screen.getByRole("button", { name: "Play playback" }));
     await flushMicrotasks();
-    expect(invokeCalls("audio_play")).toHaveLength(1);
-    pauseDeferred.resolve({
-      sessionId: latestNativeSessionId(),
-      state: "paused",
-      positionSeconds: 23.5,
-      durationSeconds: 182,
-      playbackRate: 1,
-      nativePlaybackSupported: true,
-      fallbackReason: null,
-      lanes: [],
-      bufferHealth: [],
-    });
-    await flushMicrotasks();
-    expect(readPlaybackE2ETelemetry()).toMatchObject({
-      activePath: "none",
-      positionSeconds: 0,
-      transportState: "stopped",
-    });
     expect(invokeCalls("audio_play")).toHaveLength(1);
     stopDeferred.resolve({
       sessionId: latestNativeSessionId(),
@@ -1234,7 +1233,9 @@ describe("Desktop app project playback pre-count", () => {
     });
     await flushMicrotasks();
 
-    expect(audioContext?.createdOscillators).toHaveLength(8);
+    expect(
+      getMockAudioContexts().flatMap((context) => context.createdOscillators),
+    ).toHaveLength(8);
     expect(invokeCalls("audio_stop")).toHaveLength(1);
     expect(invokeCalls("audio_play")).toHaveLength(1);
     telemetry = readPlaybackE2ETelemetry();

@@ -7,7 +7,7 @@ pub mod capture;
 pub mod decode;
 pub mod mixer;
 pub mod platform;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 mod source_scope;
 pub mod system_input;
 pub mod transport;
@@ -83,9 +83,7 @@ impl AudioCapabilities {
                 AUDIO_EVENT_DEVICES_CHANGED,
             ],
             fallback_required: !platform.native_playback_supported,
-            fallback_reason: (!platform.native_playback_supported).then_some(
-                "Native audio playback is not wired yet; use existing WebView playback.",
-            ),
+            fallback_reason: platform.fallback_reason,
         }
     }
 }

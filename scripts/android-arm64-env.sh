@@ -27,8 +27,8 @@ case "$(uname -s)" in
 esac
 
 toolchain="$NDK_ROOT/toolchains/llvm/prebuilt/$prebuilt/bin"
-cc="$toolchain/aarch64-linux-android24-clang"
-cxx="$toolchain/aarch64-linux-android24-clang++"
+cc="$toolchain/aarch64-linux-android26-clang"
+cxx="$toolchain/aarch64-linux-android26-clang++"
 ar="$toolchain/llvm-ar"
 
 if [[ ! -x "$cc" ]]; then
@@ -54,10 +54,10 @@ export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$cc"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_AR="$ar"
 export CMAKE_TOOLCHAIN_FILE="$SCRIPT_DIR/android-arm64.toolchain.cmake"
 export ANDROID_ABI="arm64-v8a"
-export ANDROID_PLATFORM="android-24"
+export ANDROID_PLATFORM="android-26"
 export CMAKE_ANDROID_ARCH_ABI="arm64-v8a"
 export CMAKE_SYSTEM_PROCESSOR="aarch64"
-export CMAKE_SYSTEM_VERSION="24"
+export CMAKE_SYSTEM_VERSION="26"
 
 if command -v make >/dev/null 2>&1; then
   export CMAKE_MAKE_PROGRAM="$(command -v make)"

@@ -1,13 +1,15 @@
 # Native Audio
 
-TuneForge keeps Web Audio as the fallback implementation for desktop audio paths. Native audio is
-added feature by feature behind the Tauri native audio boundary.
+TuneForge prefers native audio for project playback and keeps Web Audio as a disclosed fallback or
+development override. Native audio is added feature by feature behind the Tauri native audio
+boundary.
 
 ## Current Scope
 
 - Tuner microphone capture uses native `cpal` on supported desktop builds.
 - Tuner device listing uses native input enumeration first, then cached/browser labels as fallback.
-- Source, practice-mix, and stem playback prefer native `cpal` on macOS/Linux when every active
+- Source, practice-mix, and stem playback prefer native `cpal` on macOS/Linux and CPAL/AAudio on
+  Android when every active
   artifact has a local path. WAV uses a fast streaming reader; other common formats decode through
   Symphonia for playback only.
 - Native playback supports shared transport play/pause/seek, position events, mute/solo lane gains,
@@ -18,6 +20,7 @@ added feature by feature behind the Tauri native audio boundary.
 - Linux native capture and playback currently use `cpal`'s ALSA host. On PipeWire/PulseAudio
   desktops this usually routes through the host ALSA compatibility layer, but device labels may
   still look like ALSA PCM names.
+- Android native playback reports the `android-aaudio` backend and requires Android API 26 or newer.
 
 ## Backend Selection
 
@@ -29,9 +32,10 @@ Playback also owns media-key controls and wake prevention through the active bac
 - TuneForge registers one desktop system-media adapter with the OS for media keys and headset
   controls. That adapter does not choose the audio engine; it routes play/pause/stop/seek events to
   the current playback owner.
-- Native playback owns the transport only after native playback has successfully started, and uses
+- Native playback owns the transport only after a matching native session confirms playback, and uses
   native idle/display inhibition while playing.
-- Web Audio/HTML media playback owns the transport when playback starts through browser media,
+- Web Audio/HTML media playback owns the transport only after a `playing` event or confirmed media
+  progress,
   including `VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` and native fallback. It uses the browser Screen Wake
   Lock while playing.
 - Native fallback is an explicit ownership transfer. TuneForge clears system media state and native
@@ -71,7 +75,8 @@ VITE_TUNEFORGE_FORCE_WEB_AUDIO=1 pnpm dev:desktop
 ```
 
 This is a global native audio override, not a per-feature setting. It affects tuner capture and
-project playback so Web Audio remains the comparison path for both.
+project playback so Web Audio remains the comparison path for both. It does not disable native
+capability detection, and it is not a persisted current-playback state.
 
 ## Diagnostics
 
@@ -82,14 +87,27 @@ Settings -> Local Data -> Show diagnostics reports:
 - input capture availability
 - last tuner capture backend
 - last native capture error
-- playback backend
-- last playback backend
-- last native playback error
+- audio override and playback selection policy
+- native playback capability, even while Web Audio is forced
+- current playback state and current confirmed path
+- last confirmed playback path
+- latest native playback failure
 - latest native fallback cause
+- latest Web media failure
+- active native session lane count
 - native playback buffer health per lane, including fill level, underrun count, worker errors, and
   the last worker error when present
 
-When `VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` is active, diagnostics report `Web Audio (forced)`.
+Current state is live and starts as `Not playing` / `None` after reload. Only last-confirmed path and
+redacted failures are restored from local storage. A native failure does not claim Web fallback
+until Web playback is confirmed, and `android-null` is always reported as unavailable. Diagnostic
+reasons omit local paths, URLs, artifact IDs, and session IDs.
+
+When `VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` is active, diagnostics report the build-time override and
+`Web Audio forced` policy while continuing to report native capability independently.
+
+On Web media `error`, playback stops with an error. After `waiting` or `stalled`, five seconds with
+no progress while the element is not paused, seeking, or ended is also treated as a failed path.
 
 ## Device And Volume Behavior
 

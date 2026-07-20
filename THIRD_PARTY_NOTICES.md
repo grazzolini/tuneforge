@@ -134,19 +134,25 @@ This file is the source of truth for dependency and model-weight distribution po
 
 - **License:** Apache-2.0 / MIT (dual)
 - **Source:** <https://github.com/RustAudio/cpal>
-- **Notes:** Used by the desktop shell for local microphone device enumeration, tuner input capture, and native desktop playback.
+- **Notes:** Used by the desktop shell for local microphone device enumeration and tuner input capture, and by macOS, Linux, and Android project playback. Android playback uses CPAL's AAudio backend and requires API 26 or newer.
 
 ### signalsmith-stretch
 
 - **License:** MIT
 - **Source:** <https://github.com/colinmarc/signalsmith-stretch-rs>
-- **Notes:** Used by the native desktop playback engine for tempo changes with pitch preservation. Its resolved Rust transitive stack is permissively licensed.
+- **Notes:** Used by the native macOS, Linux, and Android playback engine for tempo changes with pitch preservation. Its resolved Rust transitive stack is permissively licensed.
 
 ### Symphonia
 
 - **License:** MPL-2.0
 - **Source:** <https://github.com/pdeljanov/Symphonia>
-- **Notes:** Used only by the native desktop playback engine for streaming demux/decode of local playback files. FFmpeg remains the host dependency for transform/export work.
+- **Notes:** Used only by the native macOS, Linux, and Android playback engine for streaming demux/decode of local playback files. FFmpeg remains the desktop host dependency for transform/export work and is not bundled on Android.
+
+### ndk-context
+
+- **License:** Apache-2.0 / MIT (dual)
+- **Source:** <https://github.com/rust-windowing/android-ndk-rs>
+- **Notes:** Version 0.1.1 is used by the Android shell to initialize the process Android VM and activity context expected by CPAL before opening its AAudio output stream.
 
 ### rusqlite / SQLite
 

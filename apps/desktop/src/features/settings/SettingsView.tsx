@@ -1,16 +1,21 @@
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, type BeatBackendSchema, type ChordBackendSchema, type StemModelSchema } from "../../lib/api";
 import { FRONTEND_VERSION_INFO } from "../../lib/buildInfo";
 import {
+  getPlaybackDiagnosticsVersion,
+  readPlaybackLiveDiagnostics,
+  readRememberedNativeFallbackCause,
   readRememberedNativePlaybackError,
   readRememberedPlaybackBackend,
+  readRememberedWebPlaybackError,
+  redactPlaybackDiagnosticText,
+  subscribePlaybackDiagnostics,
   type PlaybackBackend,
 } from "../../lib/playbackDiagnostics";
 import {
   getNativeAudioCapabilities,
-  getNativeAudioSnapshot,
   isWebAudioBackendForced,
   type NativeAudioBufferHealth,
   type NativeAudioCapabilities,
@@ -281,28 +286,24 @@ function tunerVisualModeLabel(value: TunerVisualMode) {
 
 function inputCaptureBackendLabel(
   capabilities: NativeAudioCapabilities | undefined,
-  webAudioForced: boolean,
 ) {
-  if (webAudioForced) {
-    return "Web Audio (forced)";
-  }
   if (!capabilities) {
     return "Unknown";
   }
   return capabilities.micCaptureSupported ? `Native (${capabilities.backend})` : "Web Audio";
 }
 
-function playbackBackendLabel(
-  capabilities: NativeAudioCapabilities | undefined,
-  webAudioForced: boolean,
-) {
-  if (webAudioForced) {
-    return "Web Audio (forced)";
-  }
+function nativePlaybackCapabilityLabel(capabilities: NativeAudioCapabilities | undefined) {
   if (!capabilities) {
     return "Unknown";
   }
-  return capabilities.nativePlaybackSupported ? `Native (${capabilities.backend})` : "Web Audio";
+  if (capabilities.nativePlaybackSupported && capabilities.backend !== "android-null") {
+    return `Native (${capabilities.backend})`;
+  }
+  const reason = capabilities.fallbackReason
+    ? ` — ${redactPlaybackDiagnosticText(capabilities.fallbackReason)}`
+    : "";
+  return `Unavailable${reason}`;
 }
 
 function lastInputCaptureBackendLabel(backend: TunerInputCaptureBackend | null) {
@@ -320,28 +321,51 @@ function lastPlaybackBackendLabel(backend: PlaybackBackend | null) {
   }
   return backend.backend === "native"
     ? `Native (${backend.detail ?? "unknown"})`
-    : "Web Audio";
+    : backend.mode === "forced"
+      ? "Web Audio (forced)"
+      : "Web Audio (fallback)";
 }
 
-function nativePlaybackHealthLabel(
-  health: NativeAudioBufferHealth[] | undefined,
-  webAudioForced: boolean,
+function currentPlaybackStateLabel(
+  state: ReturnType<typeof readPlaybackLiveDiagnostics>["currentState"],
 ) {
-  if (webAudioForced) {
-    return "Web Audio forced";
+  if (state === "not-playing") return "Not playing";
+  return state[0].toUpperCase() + state.slice(1);
+}
+
+function currentPlaybackPathLabel(
+  diagnostics: ReturnType<typeof readPlaybackLiveDiagnostics>,
+  capabilities: NativeAudioCapabilities | undefined,
+) {
+  if (diagnostics.currentPath === "native") {
+    return `Native (${diagnostics.nativeBackend ?? capabilities?.backend ?? "unknown"})`;
   }
+  if (diagnostics.currentPath === "web-forced") {
+    return "Web Audio (forced)";
+  }
+  if (diagnostics.currentPath === "web-fallback") {
+    return "Web Audio (fallback)";
+  }
+  return "None";
+}
+
+function nativePlaybackHealthLabel(health: NativeAudioBufferHealth[] | undefined) {
   if (!health?.length) {
     return "No active native lanes";
   }
   return health
-    .map((lane) => {
-      const label = lane.artifactId ?? lane.laneId;
+    .map((lane, index) => {
+      const label = `Lane ${index + 1} (${lane.role.replace("_", " ")})`;
       const fillPercent =
         lane.ringCapacitySamples > 0
           ? Math.round((lane.ringFillSamples / lane.ringCapacitySamples) * 100)
           : 0;
-      const error = lane.lastWorkerError ? `, last worker error: ${lane.lastWorkerError}` : "";
-      return `${label}: ${fillPercent}% buffer, ${lane.underrunCount} underruns, ${lane.workerErrorCount} worker errors${error}`;
+      const error = lane.lastWorkerError
+        ? `, last worker error: ${redactPlaybackDiagnosticText(lane.lastWorkerError)}`
+        : "";
+      const underrunLabel = lane.underrunCount === 1 ? "underrun" : "underruns";
+      const workerErrorLabel = lane.workerErrorCount === 1 ? "worker error" : "worker errors";
+      return `${label}: ${fillPercent}% buffer, ${lane.underrunCount} ${underrunLabel}, ${lane.workerErrorCount} ${workerErrorLabel}${error}`;
     })
     .join(" / ");
 }
@@ -586,6 +610,12 @@ export function SettingsView() {
   const [isSnapshotBusy, setIsSnapshotBusy] = useState(false);
   const [snapshotStatus, setSnapshotStatus] = useState<SnapshotStatus | null>(null);
   const webAudioForced = isWebAudioBackendForced();
+  useSyncExternalStore(
+    subscribePlaybackDiagnostics,
+    getPlaybackDiagnosticsVersion,
+    getPlaybackDiagnosticsVersion,
+  );
+  const livePlaybackDiagnostics = readPlaybackLiveDiagnostics();
   const healthQuery = useQuery({
     queryKey: ["health"],
     queryFn: api.getHealth,
@@ -603,21 +633,15 @@ export function SettingsView() {
     queryFn: api.listStemModels,
   });
   const nativeAudioQuery = useQuery({
-    queryKey: ["native-audio-capabilities", webAudioForced],
+    queryKey: ["native-audio-capabilities"],
     queryFn: getNativeAudioCapabilities,
-    enabled: !webAudioForced,
-  });
-  const nativeAudioSnapshotQuery = useQuery({
-    queryKey: ["native-audio-snapshot", webAudioForced],
-    queryFn: getNativeAudioSnapshot,
-    enabled: !webAudioForced,
   });
   const lastInputCaptureBackend = readRememberedTunerInputCaptureBackend();
   const lastNativeCaptureError = readRememberedTunerNativeCaptureError();
   const lastPlaybackBackend = readRememberedPlaybackBackend();
   const lastNativePlaybackError = readRememberedNativePlaybackError();
-  const latestNativeFallbackCause =
-    lastNativePlaybackError ?? nativeAudioSnapshotQuery.data?.fallbackReason ?? "None";
+  const latestNativeFallbackCause = readRememberedNativeFallbackCause();
+  const latestWebPlaybackError = readRememberedWebPlaybackError();
   const savedThemeOverrideCount = themeOverrideCount(themeOverrides);
   const beatAvailabilityResolved = beatBackendsQuery.data?.backends !== undefined;
   const chordAvailabilityResolved = chordBackendsQuery.data?.backends !== undefined;
@@ -1058,82 +1082,125 @@ export function SettingsView() {
 
         <details className="details-block settings-details">
           <summary>Show diagnostics</summary>
-          <dl className="details-grid details-grid--single-column">
-            <div>
-              <dt>Status</dt>
-              <dd>{healthQuery.data?.status ?? "Unknown"}</dd>
-            </div>
-            <div>
-              <dt>Backend Package Version</dt>
-              <dd>{diagnosticVersionValue(healthQuery.data?.backend_version?.package_version)}</dd>
-            </div>
-            <div>
-              <dt>Backend Git Ref</dt>
-              <dd className="path">
-                {diagnosticVersionValue(healthQuery.data?.backend_version?.git_ref ?? healthQuery.data?.version)}
-              </dd>
-            </div>
-            <div>
-              <dt>Frontend Package Version</dt>
-              <dd>{diagnosticVersionValue(FRONTEND_VERSION_INFO.package_version)}</dd>
-            </div>
-            <div>
-              <dt>Frontend Git Ref</dt>
-              <dd className="path">{diagnosticVersionValue(FRONTEND_VERSION_INFO.git_ref)}</dd>
-            </div>
-            <div>
-              <dt>API Base URL</dt>
-              <dd>{healthQuery.data?.api_base_url ?? "Unavailable"}</dd>
-            </div>
-            <div>
-              <dt>Storage Root</dt>
-              <dd className="path">{healthQuery.data?.data_root ?? "Backend unavailable"}</dd>
-            </div>
-            <div>
-              <dt>Preview Format</dt>
-              <dd>{healthQuery.data?.preview_format ?? "wav"}</dd>
-            </div>
-            <div>
-              <dt>Default Export Format</dt>
-              <dd>{healthQuery.data?.default_export_format ?? "wav"}</dd>
-            </div>
-            <div>
-              <dt>Input Capture Available</dt>
-              <dd>{inputCaptureBackendLabel(nativeAudioQuery.data, webAudioForced)}</dd>
-            </div>
-            <div>
-              <dt>Last Tuner Capture</dt>
-              <dd>{lastInputCaptureBackendLabel(lastInputCaptureBackend)}</dd>
-            </div>
-            <div>
-              <dt>Last Native Capture Error</dt>
-              <dd>{lastNativeCaptureError ?? "None"}</dd>
-            </div>
-            <div>
-              <dt>Playback Backend</dt>
-              <dd>{playbackBackendLabel(nativeAudioQuery.data, webAudioForced)}</dd>
-            </div>
-            <div>
-              <dt>Last Playback Backend</dt>
-              <dd>{lastPlaybackBackendLabel(lastPlaybackBackend)}</dd>
-            </div>
-            <div>
-              <dt>Last Native Playback Error</dt>
-              <dd>{lastNativePlaybackError ?? "None"}</dd>
-            </div>
-            <div>
-              <dt>Latest Native Fallback Cause</dt>
-              <dd>{latestNativeFallbackCause}</dd>
-            </div>
-            <div>
-              <dt>Native Playback Buffer Health</dt>
-              <dd>
-                {nativeAudioSnapshotQuery.isError
-                  ? "Unavailable"
-                  : nativePlaybackHealthLabel(nativeAudioSnapshotQuery.data?.bufferHealth, webAudioForced)}
-              </dd>
-            </div>
-          </dl>
+          <div className="settings-diagnostics">
+            <section className="settings-diagnostics__group" aria-labelledby="diagnostics-configuration">
+              <h3 id="diagnostics-configuration">Configuration</h3>
+              <dl className="details-grid details-grid--single-column">
+                <div>
+                  <dt>Status</dt>
+                  <dd>{healthQuery.data?.status ?? "Unknown"}</dd>
+                </div>
+                <div>
+                  <dt>Backend Package Version</dt>
+                  <dd>{diagnosticVersionValue(healthQuery.data?.backend_version?.package_version)}</dd>
+                </div>
+                <div>
+                  <dt>Backend Git Ref</dt>
+                  <dd className="path">
+                    {diagnosticVersionValue(healthQuery.data?.backend_version?.git_ref ?? healthQuery.data?.version)}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Frontend Package Version</dt>
+                  <dd>{diagnosticVersionValue(FRONTEND_VERSION_INFO.package_version)}</dd>
+                </div>
+                <div>
+                  <dt>Frontend Git Ref</dt>
+                  <dd className="path">{diagnosticVersionValue(FRONTEND_VERSION_INFO.git_ref)}</dd>
+                </div>
+                <div>
+                  <dt>API Base URL</dt>
+                  <dd>{healthQuery.data?.api_base_url ?? "Unavailable"}</dd>
+                </div>
+                <div>
+                  <dt>Storage Root</dt>
+                  <dd className="path">{healthQuery.data?.data_root ?? "Backend unavailable"}</dd>
+                </div>
+                <div>
+                  <dt>Preview Format</dt>
+                  <dd>{healthQuery.data?.preview_format ?? "wav"}</dd>
+                </div>
+                <div>
+                  <dt>Default Export Format</dt>
+                  <dd>{healthQuery.data?.default_export_format ?? "wav"}</dd>
+                </div>
+                <div>
+                  <dt>Input Capture Available</dt>
+                  <dd>{inputCaptureBackendLabel(nativeAudioQuery.data)}</dd>
+                </div>
+                <div>
+                  <dt>Last Tuner Capture</dt>
+                  <dd>{lastInputCaptureBackendLabel(lastInputCaptureBackend)}</dd>
+                </div>
+                <div>
+                  <dt>Last Native Capture Error</dt>
+                  <dd>{lastNativeCaptureError ?? "None"}</dd>
+                </div>
+                <div>
+                  <dt>Audio Override</dt>
+                  <dd>{webAudioForced ? "Web Audio forced at build time" : "None"}</dd>
+                </div>
+                <div>
+                  <dt>Native Playback Capability</dt>
+                  <dd>{nativePlaybackCapabilityLabel(nativeAudioQuery.data)}</dd>
+                </div>
+                <div>
+                  <dt>Playback Selection Policy</dt>
+                  <dd>{webAudioForced ? "Web Audio forced" : "Native preferred"}</dd>
+                </div>
+              </dl>
+            </section>
+
+            <section className="settings-diagnostics__group" aria-labelledby="diagnostics-current-playback">
+              <h3 id="diagnostics-current-playback">Current Playback</h3>
+              <dl className="details-grid details-grid--single-column">
+                <div>
+                  <dt>Current Playback State</dt>
+                  <dd>{currentPlaybackStateLabel(livePlaybackDiagnostics.currentState)}</dd>
+                </div>
+                <div>
+                  <dt>Current Playback Path</dt>
+                  <dd>{currentPlaybackPathLabel(livePlaybackDiagnostics, nativeAudioQuery.data)}</dd>
+                </div>
+                <div>
+                  <dt>Native Session</dt>
+                  <dd>
+                    {livePlaybackDiagnostics.nativeSessionLaneCount === null
+                      ? "None"
+                      : `Active (${livePlaybackDiagnostics.nativeSessionLaneCount} ${
+                          livePlaybackDiagnostics.nativeSessionLaneCount === 1 ? "lane" : "lanes"
+                        })`}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Native Playback Buffer Health</dt>
+                  <dd>{nativePlaybackHealthLabel(livePlaybackDiagnostics.nativeBufferHealth)}</dd>
+                </div>
+              </dl>
+            </section>
+
+            <section className="settings-diagnostics__group" aria-labelledby="diagnostics-previous-issues">
+              <h3 id="diagnostics-previous-issues">Previous Playback Issues</h3>
+              <dl className="details-grid details-grid--single-column">
+                <div>
+                  <dt>Last Confirmed Playback Path</dt>
+                  <dd>{lastPlaybackBackendLabel(lastPlaybackBackend)}</dd>
+                </div>
+                <div>
+                  <dt>Latest Native Playback Failure</dt>
+                  <dd>{lastNativePlaybackError ?? "None"}</dd>
+                </div>
+                <div>
+                  <dt>Latest Native Fallback Cause</dt>
+                  <dd>{latestNativeFallbackCause ?? "None"}</dd>
+                </div>
+                <div>
+                  <dt>Latest Web Media Failure</dt>
+                  <dd>{latestWebPlaybackError ?? "None"}</dd>
+                </div>
+              </dl>
+            </section>
+          </div>
         </details>
 
         <div className="button-row">

@@ -7393,6 +7393,7 @@ dependencies = [
  "if-addrs",
  "iroh",
  "iroh-blobs",
+ "ndk-context",
  "ndk-sys",
  "objc2",
  "objc2-foundation",

@@ -13,6 +13,7 @@ pub struct AudioPlatform {
     pub name: &'static str,
     pub backend: &'static str,
     pub native_playback_supported: bool,
+    pub fallback_reason: Option<&'static str>,
     pub mic_capture_supported: bool,
     pub mic_monitoring_supported: bool,
     pub system_input_volume_supported: bool,

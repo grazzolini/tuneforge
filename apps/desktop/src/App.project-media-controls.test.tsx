@@ -1,6 +1,7 @@
 import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readPlaybackLiveDiagnostics } from "./lib/playbackDiagnostics";
 import {
   deferNextMockSystemMediaControlListen,
   emitMockNativePlaybackError,
@@ -415,6 +416,12 @@ describe("Desktop app project media controls", () => {
         message: "Native output failed.",
       });
     });
+    expect(readPlaybackLiveDiagnostics()).toMatchObject({
+      currentState: "starting",
+      currentPath: "none",
+      nativeSessionLaneCount: null,
+      nativeBufferHealth: [],
+    });
 
     await waitFor(() => expect(hasNativeIdleInhibition(false)).toBe(true));
     await waitFor(() => {
@@ -434,6 +441,192 @@ describe("Desktop app project media controls", () => {
     });
     expect(webUpdateIndex).toBeGreaterThan(clearIndex);
     restoreTauriRuntime();
+  });
+
+  it("blocks a failed paused native session and resumes through Web Audio on demand", async () => {
+    const restoreTauriRuntime = mockTauriRuntime();
+    const user = userEvent.setup();
+    setMockNativeAudioState({
+      capabilities: {
+        nativePlaybackSupported: true,
+        fallbackRequired: false,
+        fallbackReason: null,
+        backend: "desktop-cpal",
+      },
+    });
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitForNativeControls();
+    const sessionId = latestNativeSessionId();
+
+    await user.click(screen.getByRole("button", { name: "Pause playback" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument(),
+    );
+    act(() => {
+      emitMockNativePlaybackError({
+        sessionId,
+        message: "Native output disconnected while paused.",
+      });
+    });
+
+    expect(readPlaybackLiveDiagnostics()).toMatchObject({
+      currentState: "error",
+      currentPath: "none",
+      nativeSessionLaneCount: null,
+    });
+    expect(window.localStorage.getItem("tuneforge.playback-native-error")).toBe(
+      "Native output disconnected while paused.",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    const sourceAudio = await waitFor(() => findAudioByArtifactId("art_source"));
+    markAudioReady(sourceAudio);
+    await waitForWebOwnerControls();
+    expect(readPlaybackLiveDiagnostics()).toMatchObject({
+      currentState: "playing",
+      currentPath: "web-fallback",
+    });
+    restoreTauriRuntime();
+  });
+
+  it("honors a pending pause when a native stream error races its response", async () => {
+    const restoreTauriRuntime = mockTauriRuntime();
+    const user = userEvent.setup();
+    const mockInvoke = getMockInvoke();
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    if (!defaultInvoke) {
+      throw new Error("Mock invoke implementation was not installed.");
+    }
+    const nativePauseBlock: { release: (() => void) | null } = { release: null };
+    mockInvoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "audio_pause") {
+        await new Promise<void>((resolve) => {
+          nativePauseBlock.release = resolve;
+        });
+      }
+      return defaultInvoke(command, args);
+    });
+
+    try {
+      setMockNativeAudioState({
+        capabilities: {
+          nativePlaybackSupported: true,
+          fallbackRequired: false,
+          fallbackReason: null,
+          backend: "desktop-cpal",
+        },
+      });
+      renderApp(["/projects/proj_123"]);
+      expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+      await openPlaybackWorkspace(user);
+      await user.click(screen.getByRole("button", { name: "Play playback" }));
+      await waitForNativeControls();
+
+      const sessionId = latestNativeSessionId();
+      await user.click(screen.getByRole("button", { name: "Pause playback" }));
+      await waitFor(() => expect(nativePauseBlock.release).not.toBeNull());
+      act(() => {
+        emitMockNativePlaybackError({
+          sessionId,
+          message: "Native output disconnected during pause.",
+        });
+      });
+
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument(),
+      );
+      expect(readPlaybackLiveDiagnostics()).toMatchObject({
+        currentState: "error",
+        currentPath: "none",
+      });
+      expect(document.querySelector("audio[src]")).toBeNull();
+
+      nativePauseBlock.release?.();
+      await Promise.resolve();
+      expect(readPlaybackLiveDiagnostics()).toMatchObject({
+        currentState: "error",
+        currentPath: "none",
+      });
+      expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Play playback" }));
+      const sourceAudio = await waitFor(() => findAudioByArtifactId("art_source"));
+      markAudioReady(sourceAudio);
+      await waitForWebOwnerControls();
+      expect(readPlaybackLiveDiagnostics()).toMatchObject({
+        currentState: "playing",
+        currentPath: "web-fallback",
+      });
+    } finally {
+      nativePauseBlock.release?.();
+      mockInvoke.mockImplementation(defaultInvoke);
+      restoreTauriRuntime();
+    }
+  });
+
+  it("handles a matching native stream error while play is still pending", async () => {
+    const restoreTauriRuntime = mockTauriRuntime();
+    const user = userEvent.setup();
+    const mockInvoke = getMockInvoke();
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    if (!defaultInvoke) {
+      throw new Error("Mock invoke implementation was not installed.");
+    }
+    const nativePlayBlock: { release: (() => void) | null } = { release: null };
+    mockInvoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "audio_play") {
+        await new Promise<void>((resolve) => {
+          nativePlayBlock.release = resolve;
+        });
+      }
+      return defaultInvoke(command, args);
+    });
+
+    try {
+      setMockNativeAudioState({
+        capabilities: {
+          nativePlaybackSupported: true,
+          fallbackRequired: false,
+          fallbackReason: null,
+          backend: "desktop-cpal",
+        },
+      });
+      renderApp(["/projects/proj_123"]);
+      expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+      await openPlaybackWorkspace(user);
+      await user.click(screen.getByRole("button", { name: "Play playback" }));
+      await waitFor(() => expect(nativePlayBlock.release).not.toBeNull());
+
+      const sessionId = latestNativeSessionId();
+      act(() => {
+        emitMockNativePlaybackError({
+          sessionId,
+          message: "Native output disconnected during start.",
+        });
+      });
+
+      const sourceAudio = await waitFor(() => findAudioByArtifactId("art_source"));
+      markAudioReady(sourceAudio);
+      await waitForWebOwnerControls();
+      expect(window.localStorage.getItem("tuneforge.playback-native-error")).toBe(
+        "Native output disconnected during start.",
+      );
+
+      nativePlayBlock.release?.();
+      await Promise.resolve();
+      expect(readPlaybackLiveDiagnostics()).toMatchObject({
+        currentState: "playing",
+        currentPath: "web-fallback",
+      });
+    } finally {
+      nativePlayBlock.release?.();
+      mockInvoke.mockImplementation(defaultInvoke);
+      restoreTauriRuntime();
+    }
   });
 
   it("pause releases the Web Audio wake lock without touching native idle inhibition", async () => {

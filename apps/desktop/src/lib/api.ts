@@ -826,9 +826,6 @@ function labelFromSyncState(state: string, reason: string | null) {
   if (syncReasonLooksUnreadable(reason)) {
     return PROJECT_SYNC_STATE_LABELS.unreadable;
   }
-  if (state === "local" && reason?.trim().toLowerCase() === "synced from desktop.") {
-    return "Synced from desktop";
-  }
   return PROJECT_SYNC_STATE_LABELS[state] ??
     state
       .split("_")

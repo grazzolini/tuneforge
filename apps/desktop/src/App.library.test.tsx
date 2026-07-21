@@ -298,7 +298,7 @@ describe("Desktop app library", () => {
     expect(within(openLink).queryByText(/\[Sa-dxgZt4rY\]\.webm/i)).not.toBeInTheDocument();
   });
 
-  it("shows non-local sync status on library rows and treats missing sync fields as local", async () => {
+  it("shows actionable sync status on library rows and hides healthy local status", async () => {
     const updatedAt = "2026-04-21T02:59:00.000000";
 
     setProjects([
@@ -377,7 +377,8 @@ describe("Desktop app library", () => {
       ),
     ).toBeInTheDocument();
     expect(within(localCard as HTMLElement).queryByText("Local")).not.toBeInTheDocument();
-    expect(within(syncedCard as HTMLElement).getByText("Synced from desktop")).toBeInTheDocument();
+    expect(within(syncedCard as HTMLElement).queryByText("Synced from desktop")).not.toBeInTheDocument();
+    expect(within(syncedCard as HTMLElement).queryByLabelText(/Sync status:/)).not.toBeInTheDocument();
     expect(within(unreadableCard as HTMLElement).getByText("Unreadable")).toBeInTheDocument();
   });
 

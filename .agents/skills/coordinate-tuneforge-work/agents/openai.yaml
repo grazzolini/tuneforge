@@ -1,0 +1,4 @@
+interface:
+  display_name: "Coordinate TuneForge Work"
+  short_description: "Run bounded TuneForge issues and ad hoc work"
+  default_prompt: "Use $coordinate-tuneforge-work to deliver a bounded TuneForge issue or ad hoc change locally."

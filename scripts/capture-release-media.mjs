@@ -44,6 +44,22 @@ const releaseMediaCaptureCatalog = [
     capture: captureScreenshotEntry,
   },
   {
+    id: "mobile-playback",
+    enabled: true,
+    kind: "screenshot",
+    fileName: "mobile-playback.png",
+    title: "Mobile Playback practice view",
+    caption: "Compact Playback keeps synthetic lyrics, chords, and transport controls ready for practice.",
+    alt: "TuneForge mobile Playback ready screen showing synthetic lyrics and chords",
+    fixture: "release-showcase-mobile-playback-v1",
+    runtime: "mobile",
+    viewport: { width: 411, height: 891 },
+    route: "/projects/proj_release_showcase",
+    prepare: prepareMobilePlayback,
+    ready: readyMobilePlayback,
+    capture: captureScreenshotEntry,
+  },
+  {
     id: "tuner",
     enabled: true,
     kind: "screenshot",
@@ -502,9 +518,18 @@ async function waitForHttp(url, { child, timeoutMs }) {
   throw new Error(`Timed out waiting for ${url}: ${errorMessage(lastError)}\n${child.tail()}`);
 }
 
-async function installPageStabilizers(page, options, captureKind) {
+async function installPageStabilizers(
+  page,
+  options,
+  captureKind,
+  entry = null,
+  mobileFixtureOptions = {},
+) {
   const motionPolicy = captureMotionPolicy(captureKind);
-  await page.addInitScript(({ animatePlayback, theme }) => {
+  const mobileFixture = entry?.runtime === "mobile"
+    ? mobilePlaybackFixture(mobileFixtureOptions)
+    : null;
+  await page.addInitScript(({ animatePlayback, mobileFixture, theme }) => {
     const fixedNow = Date.parse("2026-04-18T13:16:00.000Z");
     let callbackId = 1;
     const callbacks = new Map();
@@ -734,7 +759,46 @@ async function installPageStabilizers(page, options, captureKind) {
         return "http://127.0.0.1:8765";
       }
       if (command === "mobile_capabilities") {
+        if (mobileFixture) {
+          return mobileFixture.capabilities;
+        }
         throw new Error("Mobile runtime unavailable in release media capture.");
+      }
+      if (mobileFixture && command === "mobile_get_health") {
+        return mobileFixture.health;
+      }
+      if (mobileFixture && command === "mobile_get_project") {
+        return mobileFixture.project;
+      }
+      if (mobileFixture && command === "mobile_get_analysis") {
+        return mobileFixture.analysis;
+      }
+      if (mobileFixture && command === "mobile_get_chords") {
+        return mobileFixture.chords;
+      }
+      if (mobileFixture && command === "mobile_get_lyrics") {
+        return mobileFixture.lyrics;
+      }
+      if (mobileFixture && command === "mobile_list_artifacts") {
+        return mobileFixture.artifacts;
+      }
+      if (mobileFixture && command === "mobile_list_jobs") {
+        const params = args?.params ?? {};
+        const statuses = Array.isArray(params.status) ? params.status : [];
+        const filtered = mobileFixture.jobs.filter((job) =>
+          (!params.project_id || job.project_id === params.project_id) &&
+          (!statuses.length || statuses.includes(job.status)),
+        );
+        const offset = Number(params.offset ?? 0);
+        const limit = Number(params.limit ?? 50);
+        const page = filtered.slice(offset, offset + limit);
+        return {
+          jobs: page,
+          total: filtered.length,
+          limit,
+          offset,
+          has_more: offset + page.length < filtered.length,
+        };
       }
       if (command === "audio_get_capabilities") {
         return {
@@ -956,7 +1020,7 @@ async function installPageStabilizers(page, options, captureKind) {
         }
       },
     };
-  }, { animatePlayback: motionPolicy.animatePlayback, theme: options.theme });
+  }, { animatePlayback: motionPolicy.animatePlayback, mobileFixture, theme: options.theme });
 }
 
 function captureMotionPolicy(captureKind) {
@@ -966,15 +1030,215 @@ function captureMotionPolicy(captureKind) {
   return { animatePlayback: captureKind === "video" };
 }
 
-async function createCaptureContext(browser, options, { recordVideo = false } = {}) {
+async function measureMobilePlaybackFollowLayouts(scenarios, { timeoutMs = 45_000 } = {}) {
+  if (!Array.isArray(scenarios) || scenarios.length === 0) {
+    throw new Error("Mobile Playback layout measurement requires at least one scenario.");
+  }
+
+  const mobileEntry = releaseMediaCaptureCatalog.find((entry) => entry.id === "mobile-playback");
+  if (!mobileEntry) {
+    throw new Error("Mobile Playback layout measurement requires the mobile-playback fixture.");
+  }
+
+  const { chromium } = loadPlaywright();
+  const port = await selectPort();
+  const appUrl = `http://127.0.0.1:${port}`;
+  const child = startDesktopDevServer(port);
+  let browser = null;
+
+  try {
+    await waitForHttp(appUrl, { child, timeoutMs });
+    browser = await chromium.launch({ headless: true });
+    const measurements = [];
+
+    for (const scenario of scenarios) {
+      const width = Number(scenario.width);
+      const height = Number(scenario.height ?? mobileEntry.viewport.height);
+      const textScale = Number(scenario.textScale ?? 1);
+      if (
+        !Number.isInteger(width) ||
+        !Number.isInteger(height) ||
+        width < 320 ||
+        height < 320 ||
+        !Number.isFinite(textScale) ||
+        textScale <= 0
+      ) {
+        throw new Error(`Invalid Mobile Playback layout scenario ${JSON.stringify(scenario)}.`);
+      }
+
+      const entry = { ...mobileEntry, viewport: { width, height } };
+      const context = await createCaptureContext(browser, {
+        outputDir: defaultOutputDir,
+        theme: "dark",
+        viewport: entry.viewport,
+      }, { entry });
+      try {
+        const page = await context.newPage();
+        await installPageStabilizers(page, { theme: "dark" }, "screenshot", entry, {
+          timedLyrics: scenario.followAvailable !== false,
+        });
+        await page.goto(`${appUrl}/#${entry.route}`, { waitUntil: "domcontentloaded" });
+        await page.waitForLoadState("networkidle", { timeout: timeoutMs });
+        await prepareMobilePlayback({ page, timeoutMs });
+        await page.getByRole("heading", { name: "Midnight Count-In" })
+          .waitFor({ timeout: timeoutMs });
+        await page.getByRole("button", { name: /^Follow/ })
+          .waitFor({ state: "visible", timeout: timeoutMs });
+        await page.getByRole("group", { name: "Playback display mode" })
+          .waitFor({ state: "visible", timeout: timeoutMs });
+        if (textScale !== 1) {
+          await page.addStyleTag({
+            content: `:root { font-size: ${textScale * 100}% !important; }`,
+          });
+        }
+        await settleScreenshotPaint(page);
+
+        const measurement = await page.evaluate(() => {
+          const requiredElement = (selector) => {
+            const element = document.querySelector(selector);
+            if (!(element instanceof HTMLElement)) {
+              throw new Error(`Missing Mobile Playback layout target ${selector}.`);
+            }
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            return {
+              rect: {
+                bottom: rect.bottom,
+                height: rect.height,
+                left: rect.left,
+                right: rect.right,
+                top: rect.top,
+                width: rect.width,
+              },
+              visible:
+                style.display !== "none" &&
+                style.visibility !== "hidden" &&
+                rect.width > 0 &&
+                rect.height > 0,
+            };
+          };
+          const overflow = (selector) => {
+            const element = document.querySelector(selector);
+            if (!(element instanceof HTMLElement)) {
+              throw new Error(`Missing Mobile Playback overflow target ${selector}.`);
+            }
+            return {
+              clientHeight: element.clientHeight,
+              clientWidth: element.clientWidth,
+              scrollHeight: element.scrollHeight,
+              scrollWidth: element.scrollWidth,
+            };
+          };
+          const requiredElements = (selector) => {
+            const elements = [...document.querySelectorAll(selector)];
+            if (!elements.length || elements.some((element) => !(element instanceof HTMLElement))) {
+              throw new Error(`Missing Mobile Playback layout targets ${selector}.`);
+            }
+            return elements.map((element) => {
+              const rect = element.getBoundingClientRect();
+              return {
+                bottom: rect.bottom,
+                height: rect.height,
+                left: rect.left,
+                right: rect.right,
+                top: rect.top,
+                width: rect.width,
+              };
+            });
+          };
+          const explanation = document.querySelector(".playback-follow-explanation");
+          const clippingAncestors = [];
+          if (explanation instanceof HTMLElement) {
+            let ancestor = explanation.parentElement;
+            while (ancestor) {
+              const style = window.getComputedStyle(ancestor);
+              const clips = [style.overflow, style.overflowX, style.overflowY]
+                .some((value) => ["auto", "clip", "hidden", "scroll"].includes(value));
+              if (clips) {
+                const rect = ancestor.getBoundingClientRect();
+                clippingAncestors.push({
+                  bottom: rect.bottom,
+                  className: ancestor.className || ancestor.tagName.toLowerCase(),
+                  left: rect.left,
+                  right: rect.right,
+                  top: rect.top,
+                });
+              }
+              ancestor = ancestor.parentElement;
+            }
+          }
+
+          return {
+            appBar: {
+              actions: requiredElements(
+                ".mobile-playback-app-bar__back, " +
+                  ".mobile-playback-app-bar__practice-controls, " +
+                  ".mobile-playback-overflow__trigger",
+              ),
+              container: requiredElement(".mobile-playback-app-bar").rect,
+              overflow: overflow(".mobile-playback-app-bar"),
+              title: requiredElement(".mobile-playback-app-bar__identity h1").rect,
+            },
+            clippingAncestors,
+            explanation: explanation instanceof HTMLElement
+              ? requiredElement(".playback-follow-explanation")
+              : null,
+            follow: requiredElement(".playback-follow-chip"),
+            heading: requiredElement(".playback-practice-surface__heading > div"),
+            headingGrid: requiredElement(".playback-practice-surface__heading"),
+            mode: requiredElement(".playback-mode-toggle"),
+            practiceBody: requiredElement(".playback-practice-body"),
+            overflow: {
+              header: overflow(".playback-practice-surface__header"),
+              surface: overflow(".playback-practice-surface"),
+            },
+            containers: {
+              header: requiredElement(".playback-practice-surface__header").rect,
+              surface: requiredElement(".playback-practice-surface").rect,
+            },
+            transport: {
+              buttons: requiredElements(".transport--mobile .transport__button"),
+              container: requiredElement(".transport--mobile").rect,
+              controls: requiredElement(".transport--mobile .transport__controls").rect,
+              dock: requiredElement(".playback-transport-dock").rect,
+              overflow: {
+                container: overflow(".transport--mobile"),
+                controls: overflow(".transport--mobile .transport__controls"),
+                dock: overflow(".playback-transport-dock"),
+                timeline: overflow(".transport--mobile .transport__timeline"),
+              },
+              range: requiredElement('.transport--mobile input[type="range"]').rect,
+              scrubber: requiredElement(".transport--mobile .transport__scrubber").rect,
+              timeline: requiredElement(".transport--mobile .transport__timeline").rect,
+            },
+            viewport: { height: window.innerHeight, width: window.innerWidth },
+          };
+        });
+        measurements.push({ ...scenario, measurement });
+      } finally {
+        await context.close();
+      }
+    }
+
+    return measurements;
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await stopChildren([child]);
+  }
+}
+
+async function createCaptureContext(browser, options, { entry = null, recordVideo = false } = {}) {
+  const viewport = entry?.viewport ?? options.viewport;
   const context = await browser.newContext({
     colorScheme: options.theme === "light" ? "light" : "dark",
     deviceScaleFactor: 1,
     reducedMotion: "reduce",
     recordVideo: recordVideo
-      ? { dir: options.outputDir, size: options.viewport }
+      ? { dir: options.outputDir, size: viewport }
       : undefined,
-    viewport: options.viewport,
+    viewport,
   });
   await context.route("**/*", async (route) => {
     const handled = await maybeFulfillMockApi(route);
@@ -991,11 +1255,11 @@ async function captureCatalogScreenshots({ appUrl, browser, catalog, entries, no
   }
 
   const capturedItems = [];
-  const context = await createCaptureContext(browser, options);
-  try {
-    const page = await context.newPage();
-    await installPageStabilizers(page, options, "screenshot");
-    for (const entry of entries) {
+  for (const entry of entries) {
+    const context = await createCaptureContext(browser, options, { entry });
+    try {
+      const page = await context.newPage();
+      await installPageStabilizers(page, options, "screenshot", entry);
       try {
         await entry.capture({ appUrl, entry, options, page });
         capturedItems.push(manifestItemForCatalogEntry(entry, catalog));
@@ -1004,9 +1268,9 @@ async function captureCatalogScreenshots({ appUrl, browser, catalog, entries, no
         notes.push(`${entry.id} capture skipped: ${message}`);
         console.warn(`[capture-release-media] ${entry.id} skipped: ${message}`);
       }
+    } finally {
+      await context.close();
     }
-  } finally {
-    await context.close();
   }
   return capturedItems;
 }
@@ -1068,6 +1332,14 @@ async function preparePlayback({ captureKind, page, timeoutMs }) {
   await playButton.click();
 }
 
+async function prepareMobilePlayback({ page, timeoutMs }) {
+  const bothMode = page.getByRole("button", { name: "Both", exact: true });
+  await bothMode.waitFor({ state: "visible", timeout: timeoutMs });
+  if (await bothMode.getAttribute("aria-pressed") !== "true") {
+    await bothMode.click();
+  }
+}
+
 async function prepareTuner({ page, timeoutMs }) {
   const startButton = page.getByRole("button", { name: "Start" });
   await startButton.waitFor({ timeout: timeoutMs });
@@ -1098,6 +1370,109 @@ async function readyPlayback({ captureKind, page, timeoutMs }) {
     }
   } else {
     await page.getByRole("button", { name: "Pause playback" }).waitFor({ timeout: timeoutMs });
+  }
+}
+
+async function readyMobilePlayback({ page, timeoutMs }) {
+  const appBar = page.locator(".mobile-playback-app-bar");
+  const modeSelector = page.getByRole("group", { name: "Playback display mode" });
+  const practiceScroller = page.locator(".playback-practice-body");
+  const transport = page.locator(".playback-transport-dock");
+
+  await appBar.waitFor({ state: "visible", timeout: timeoutMs });
+  await page.getByRole("heading", { name: "Midnight Count-In" }).waitFor({ timeout: timeoutMs });
+  await page.getByRole("button", { name: "Open Practice Controls" })
+    .waitFor({ timeout: timeoutMs });
+  await page.getByRole("button", { name: "More playback actions" })
+    .waitFor({ timeout: timeoutMs });
+  await modeSelector.waitFor({ state: "visible", timeout: timeoutMs });
+  for (const mode of ["Lyrics", "Chords", "Both"]) {
+    await modeSelector.getByRole("button", { name: mode, exact: true })
+      .waitFor({ state: "visible", timeout: timeoutMs });
+  }
+  await page.getByRole("button", { name: "Follow" }).waitFor({ timeout: timeoutMs });
+  await practiceScroller.waitFor({ state: "visible", timeout: timeoutMs });
+  await page.locator(".lead-sheet-word .lyrics-word", { hasText: /^Count$/ })
+    .waitFor({ timeout: timeoutMs });
+  await transport.waitFor({ state: "visible", timeout: timeoutMs });
+  await page.getByRole("button", { name: "Play playback" }).waitFor({ timeout: timeoutMs });
+
+  const geometry = await page.evaluate(() => {
+    const requiredElement = (selector) => {
+      const element = document.querySelector(selector);
+      if (!(element instanceof HTMLElement)) {
+        throw new Error(`Missing mobile Playback geometry target ${selector}.`);
+      }
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      if (
+        style.display === "none" ||
+        style.visibility === "hidden" ||
+        rect.width <= 0 ||
+        rect.height <= 0
+      ) {
+        throw new Error(`Mobile Playback geometry target ${selector} is not visible.`);
+      }
+      return {
+        bottom: rect.bottom,
+        height: rect.height,
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+      };
+    };
+
+    return {
+      appBar: requiredElement(".mobile-playback-app-bar"),
+      modeSelector: requiredElement(".playback-mode-toggle"),
+      practiceScroller: requiredElement(".playback-practice-body"),
+      transport: requiredElement(".playback-transport-dock"),
+      viewport: { height: window.innerHeight, width: window.innerWidth },
+    };
+  });
+
+  const tolerance = 1;
+  const viewportContained = (rect) =>
+    rect.top >= -tolerance &&
+    rect.left >= -tolerance &&
+    rect.right <= geometry.viewport.width + tolerance &&
+    rect.bottom <= geometry.viewport.height + tolerance;
+  for (const [name, rect] of Object.entries({
+    appBar: geometry.appBar,
+    modeSelector: geometry.modeSelector,
+    practiceScroller: geometry.practiceScroller,
+    transport: geometry.transport,
+  })) {
+    if (!viewportContained(rect)) {
+      throw new Error(
+        `Mobile Playback ${name} must remain inside the capture viewport; ` +
+          `received ${JSON.stringify(rect)} in ${geometry.viewport.width}x${geometry.viewport.height}.`,
+      );
+    }
+  }
+  if (geometry.transport.height > 128 + tolerance) {
+    throw new Error(
+      `Mobile Playback transport must be at most 128 CSS px; received ${geometry.transport.height.toFixed(1)}.`,
+    );
+  }
+  if (geometry.appBar.bottom > geometry.modeSelector.top + tolerance) {
+    throw new Error("Mobile Playback app bar overlaps the mode selector.");
+  }
+  if (geometry.modeSelector.bottom > geometry.practiceScroller.top + tolerance) {
+    throw new Error("Mobile Playback mode selector overlaps the practice scroller.");
+  }
+  if (geometry.practiceScroller.bottom > geometry.transport.top + tolerance) {
+    throw new Error("Mobile Playback practice scroller overlaps the transport.");
+  }
+  if (geometry.practiceScroller.height < geometry.transport.height * 2) {
+    throw new Error("Mobile Playback practice scroller must materially dominate the transport.");
+  }
+
+  const position = page.getByLabel("Playback position");
+  await position.waitFor({ timeout: timeoutMs });
+  const value = Number(await position.inputValue());
+  if (value !== 0) {
+    throw new Error(`Mobile Playback screenshot must stay stopped at 0 seconds; received ${value}.`);
   }
 }
 
@@ -1170,6 +1545,15 @@ function validateReleaseMediaCatalog(catalog) {
       for (const callback of ["prepare", "ready", "capture"]) {
         if (typeof entry[callback] !== "function") {
           throw new Error(`Screenshot ${entry.id} requires a ${callback} callback.`);
+        }
+      }
+      if (entry.runtime !== undefined && !["desktop", "mobile"].includes(entry.runtime)) {
+        throw new Error(`Screenshot ${entry.id} has unsupported runtime ${entry.runtime}.`);
+      }
+      if (entry.viewport !== undefined) {
+        const { width, height } = entry.viewport;
+        if (!Number.isInteger(width) || !Number.isInteger(height) || width < 320 || height < 320) {
+          throw new Error(`Screenshot ${entry.id} requires a viewport of at least 320x320.`);
         }
       }
     } else if (entry.kind === "video") {
@@ -1423,6 +1807,45 @@ function project(id, displayName, sourcePath, durationSeconds, extra = {}) {
     created_at: fixtureTimestamp,
     updated_at: fixtureTimestamp,
     ...extra,
+  };
+}
+
+function mobilePlaybackFixture({ timedLyrics = true } = {}) {
+  const projectId = "proj_release_showcase";
+  const fixtureProject = projects().find((candidate) => candidate.id === projectId);
+  if (!fixtureProject) {
+    throw new Error(`Release media mobile fixture requires project ${projectId}.`);
+  }
+  const fixtureLyrics = lyrics(projectId);
+  const untimedSegments = fixtureLyrics.segments.map((segment) => ({
+    ...segment,
+    start_seconds: null,
+    end_seconds: null,
+    words: [],
+  }));
+  return {
+    capabilities: {
+      platform: "android",
+      mediaBackend: "android_media_codec",
+      isEmulator: true,
+      gpuBackend: null,
+      analysisAvailable: true,
+      basicChordsAvailable: true,
+      whisperAvailable: false,
+      stemSeparationAvailable: false,
+      generationTestingAvailable: false,
+      maxRecommendedModel: null,
+      cpuFallbackAllowed: false,
+    },
+    health: healthResponse(),
+    project: { project: fixtureProject },
+    analysis: { analysis: analysis(projectId) },
+    chords: chords(projectId),
+    lyrics: timedLyrics
+      ? fixtureLyrics
+      : { ...fixtureLyrics, source_segments: untimedSegments, segments: untimedSegments },
+    artifacts: { artifacts: artifacts(projectId) },
+    jobs: jobs().filter((job) => job.project_id === projectId),
   };
 }
 
@@ -1781,6 +2204,7 @@ export {
   chordBackends,
   expectedCatalogEntries,
   manifestItemForCatalogEntry,
+  measureMobilePlaybackFollowLayouts,
   parseOptions,
   releaseMediaCaptureCatalog,
   validateReleaseMediaCatalog,

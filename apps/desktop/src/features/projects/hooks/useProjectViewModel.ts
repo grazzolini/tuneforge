@@ -291,6 +291,17 @@ function loopRangeFromPoints(
   };
 }
 
+function verticalPracticeScrollContainer(
+  content: HTMLDivElement,
+  isMobileRuntime: boolean,
+) {
+  if (!isMobileRuntime) {
+    return content;
+  }
+  const nestedScroller = content.closest<HTMLElement>(".playback-practice-body");
+  return nestedScroller ?? content;
+}
+
 export function useProjectViewModel() {
   const { projectId = "" } = useParams();
   const navigate = useNavigate();
@@ -2264,10 +2275,14 @@ export function useProjectViewModel() {
       lyricsSegmentRefs.current[
         `${activeSegment.start_seconds}-${activeSegment.end_seconds}-${activeLyricsIndex}`
       ];
-    const lyricsContainer = lyricsTheaterRef.current;
-    if (!activeElement || !lyricsContainer) {
+    const lyricsContent = lyricsTheaterRef.current;
+    if (!activeElement || !lyricsContent) {
       return;
     }
+    const lyricsContainer = verticalPracticeScrollContainer(
+      lyricsContent,
+      isMobileRuntime,
+    );
     const containerRect = lyricsContainer.getBoundingClientRect();
     const elementRect = activeElement.getBoundingClientRect();
     const centerOffset =
@@ -2298,6 +2313,7 @@ export function useProjectViewModel() {
     displayedLyrics,
     isEditingLyrics,
     isPlaying,
+    isMobileRuntime,
     hasTimedLyricsTranscript,
     lyricsFollowEnabled,
     playbackDisplayMode,
@@ -2319,10 +2335,14 @@ export function useProjectViewModel() {
       return;
     }
     const activeElement = combinedLeadSheetRowRefs.current[activeRow.id];
-    const leadSheetContainer = combinedLeadSheetRef.current;
-    if (!activeElement || !leadSheetContainer) {
+    const leadSheetContent = combinedLeadSheetRef.current;
+    if (!activeElement || !leadSheetContent) {
       return;
     }
+    const leadSheetContainer = verticalPracticeScrollContainer(
+      leadSheetContent,
+      isMobileRuntime,
+    );
     const containerRect = leadSheetContainer.getBoundingClientRect();
     const elementRect = activeElement.getBoundingClientRect();
     const centerOffset =
@@ -2352,6 +2372,7 @@ export function useProjectViewModel() {
     hasTimedLyricsTranscript,
     isEditingLyrics,
     isPlaying,
+    isMobileRuntime,
     lyricsFollowEnabled,
     playbackDisplayMode,
   ]);

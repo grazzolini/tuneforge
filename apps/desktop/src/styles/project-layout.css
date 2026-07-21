@@ -7,6 +7,17 @@
   overflow: hidden;
 }
 
+@media (max-width: 720px) {
+  .project-screen--playback:has(.mobile-playback-app-bar) {
+    block-size: 100%;
+    min-block-size: 0;
+    min-inline-size: 0;
+    gap: 0.5rem;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+}
+
 .project-workspace {
   display: flex;
   min-height: 0;

@@ -16,6 +16,7 @@ import type { PlaybackLoopRange } from "../projectPlaybackState";
 
 export function PlaybackTransport({
   compact = false,
+  mobile = false,
   isPlaying,
   loopRange,
   loopStatusMessage,
@@ -33,6 +34,7 @@ export function PlaybackTransport({
   onTogglePlayback,
 }: {
   compact?: boolean;
+  mobile?: boolean;
   isPlaying: boolean;
   loopRange: PlaybackLoopRange | null;
   loopStatusMessage: "Loop in" | "Loop set" | "Loop cleared" | null;
@@ -79,7 +81,11 @@ export function PlaybackTransport({
   const loopIconStroke = `url(#${loopGradientId})`;
 
   return (
-    <div className={`transport${compact ? " transport--compact" : ""}`}>
+    <div
+      className={`transport${compact ? " transport--compact" : ""}${
+        mobile ? " transport--mobile" : ""
+      }`}
+    >
       <div className="transport__controls">
         <button
           aria-label="Seek back 10 seconds"
@@ -147,50 +153,58 @@ export function PlaybackTransport({
         ) : null}
       </div>
 
-      <button
-        aria-label={tempoTargetBpm === null ? "Tempo at original" : "Reset tempo"}
-        className={`transport__tempo${tempoTargetBpm === null ? "" : " transport__tempo--active"}`}
-        disabled={tempoDisplayBpm === null || tempoTargetBpm === null}
-        onClick={onResetTempo}
-        type="button"
-      >
-        <span>Tempo</span>
-        <strong>{tempoLabel} BPM</strong>
-        {tempoTargetBpm !== null ? <RotateCcw aria-hidden="true" size={14} /> : null}
-      </button>
+      {!mobile ? (
+        <button
+          aria-label={tempoTargetBpm === null ? "Tempo at original" : "Reset tempo"}
+          className={`transport__tempo${tempoTargetBpm === null ? "" : " transport__tempo--active"}`}
+          disabled={tempoDisplayBpm === null || tempoTargetBpm === null}
+          onClick={onResetTempo}
+          type="button"
+        >
+          <span>Tempo</span>
+          <strong>{tempoLabel} BPM</strong>
+          {tempoTargetBpm !== null ? <RotateCcw aria-hidden="true" size={14} /> : null}
+        </button>
+      ) : null}
 
-      <label className="transport__scrubber">
-        <span className="metric-label">Playback position</span>
-        <input
-          aria-label="Playback position"
-          max={maxSeconds}
-          min={0}
-          onChange={(event) => onSeekTo(Number(event.target.value))}
-          step={0.001}
-          type="range"
-          value={Math.min(playbackTimeSeconds, maxSeconds)}
-        />
-        <div className="transport__times">
-          <strong>{formatPlaybackClock(playbackTimeSeconds)}</strong>
-          <span>{formatPlaybackClock(maxSeconds)}</span>
-        </div>
-      </label>
-      {playbackDiagnostics.statusMessage ? (
-        <p
-          className={`transport__status transport__status--${playbackDiagnostics.currentState}`}
-          role={playbackDiagnostics.currentState === "error" ? "alert" : "status"}
-        >
-          {playbackDiagnostics.statusMessage}
-        </p>
-      ) : null}
-      {powerProtectionMessage ? (
-        <p
-          className="transport__status transport__status--error"
-          role="status"
-        >
-          {powerProtectionMessage}
-        </p>
-      ) : null}
+      <div className="transport__timeline">
+        <label className="transport__scrubber">
+          <span className="metric-label">Playback position</span>
+          <input
+            aria-label="Playback position"
+            max={maxSeconds}
+            min={0}
+            onChange={(event) => onSeekTo(Number(event.target.value))}
+            step={0.001}
+            type="range"
+            value={Math.min(playbackTimeSeconds, maxSeconds)}
+          />
+          <div className="transport__times">
+            <strong>{formatPlaybackClock(playbackTimeSeconds)}</strong>
+            <span>{formatPlaybackClock(maxSeconds)}</span>
+          </div>
+        </label>
+        {playbackDiagnostics.statusMessage || powerProtectionMessage ? (
+          <div className="transport__status-stack">
+            {playbackDiagnostics.statusMessage ? (
+              <p
+                className={`transport__status transport__status--${playbackDiagnostics.currentState}`}
+                role={playbackDiagnostics.currentState === "error" ? "alert" : "status"}
+              >
+                {playbackDiagnostics.statusMessage}
+              </p>
+            ) : null}
+            {powerProtectionMessage ? (
+              <p
+                className="transport__status transport__status--error"
+                role="status"
+              >
+                {powerProtectionMessage}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }

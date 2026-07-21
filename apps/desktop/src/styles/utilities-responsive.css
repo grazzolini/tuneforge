@@ -188,6 +188,23 @@
     width: 100%;
     justify-content: center;
   }
+
+  .app-shell:has(.mobile-playback-app-bar) {
+    grid-template-rows: minmax(0, 1fr);
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .app-shell:has(.mobile-playback-app-bar) .sidebar {
+    display: none;
+  }
+
+  .app-shell:has(.mobile-playback-app-bar) .main-content {
+    --screen-padding: 0.5rem;
+    min-width: 0;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
 }
 
 @media (max-height: 900px) {

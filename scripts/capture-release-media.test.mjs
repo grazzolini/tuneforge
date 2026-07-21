@@ -32,8 +32,8 @@ test("capture motion policy freezes screenshots and preserves video movement", (
 
 test("release-media catalog has unique identifiers, files, and required callbacks", () => {
   assert.equal(validateReleaseMediaCatalog(releaseMediaCaptureCatalog), releaseMediaCaptureCatalog);
-  assert.equal(releaseMediaCaptureCatalog.length, 7);
-  assert.equal(releaseMediaCaptureCatalog.filter((entry) => entry.kind === "screenshot").length, 6);
+  assert.equal(releaseMediaCaptureCatalog.length, 8);
+  assert.equal(releaseMediaCaptureCatalog.filter((entry) => entry.kind === "screenshot").length, 7);
   assert.equal(releaseMediaCaptureCatalog.filter((entry) => entry.kind === "video").length, 1);
 
   const ids = releaseMediaCaptureCatalog.map((entry) => entry.id);
@@ -59,6 +59,18 @@ test("release-media catalog has unique identifiers, files, and required callback
   }
 });
 
+test("mobile Playback is one deterministic compact screenshot fixture", () => {
+  const mobileScreenshots = releaseMediaCaptureCatalog.filter(
+    (entry) => entry.kind === "screenshot" && entry.runtime === "mobile",
+  );
+
+  assert.equal(mobileScreenshots.length, 1);
+  assert.equal(mobileScreenshots[0].id, "mobile-playback");
+  assert.equal(mobileScreenshots[0].fixture, "release-showcase-mobile-playback-v1");
+  assert.deepEqual(mobileScreenshots[0].viewport, { width: 411, height: 891 });
+  assert.equal(mobileScreenshots[0].route, "/projects/proj_release_showcase");
+});
+
 test("catalog validation rejects duplicate identifiers and output files", () => {
   const duplicateId = cloneCatalog();
   duplicateId[1].id = duplicateId[0].id;
@@ -67,6 +79,25 @@ test("catalog validation rejects duplicate identifiers and output files", () => 
   const duplicateFile = cloneCatalog();
   duplicateFile[1].fileName = duplicateFile[0].fileName;
   assert.throws(() => validateReleaseMediaCatalog(duplicateFile), /duplicate file library\.png/);
+});
+
+test("catalog validation rejects invalid screenshot runtimes and viewports", () => {
+  const invalidRuntime = cloneCatalog();
+  invalidRuntime.find((entry) => entry.id === "mobile-playback").runtime = "tablet";
+  assert.throws(
+    () => validateReleaseMediaCatalog(invalidRuntime),
+    /unsupported runtime tablet/,
+  );
+
+  const invalidViewport = cloneCatalog();
+  invalidViewport.find((entry) => entry.id === "mobile-playback").viewport = {
+    width: 311,
+    height: 891,
+  };
+  assert.throws(
+    () => validateReleaseMediaCatalog(invalidViewport),
+    /requires a viewport of at least 320x320/,
+  );
 });
 
 test("video poster references resolve to enabled screenshots", () => {
@@ -180,6 +211,7 @@ test("importing capture script has no capture or console side effects", () => {
 function cloneCatalog() {
   return releaseMediaCaptureCatalog.map((entry) => ({
     ...entry,
+    viewport: entry.viewport ? { ...entry.viewport } : undefined,
     recordingItemIds: entry.recordingItemIds ? [...entry.recordingItemIds] : undefined,
   }));
 }

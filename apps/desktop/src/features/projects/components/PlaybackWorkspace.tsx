@@ -1,14 +1,22 @@
 import { PlaybackPracticeRail } from "./PlaybackPracticeRail";
+import { PlaybackPracticeControlsDrawer } from "./PlaybackPracticeControlsDrawer";
 import { PlaybackPracticeSurface } from "./PlaybackPracticeSurface";
 import { PlaybackTransport } from "./PlaybackTransport";
 import { useProjectViewModelContext } from "./useProjectViewModelContext";
 
-export function PlaybackWorkspace() {
+export function PlaybackWorkspace({
+  onClosePracticeControls,
+  practiceControlsOpen,
+}: {
+  onClosePracticeControls: () => void;
+  practiceControlsOpen: boolean;
+}) {
   const {
     handleSeek,
     handleSeekTo,
     handleResetPlaybackTempo,
     handleTogglePlaybackLoop,
+    isMobileRuntime,
     isPlaying,
     loopRange,
     loopStatusMessage,
@@ -27,11 +35,12 @@ export function PlaybackWorkspace() {
 
   return (
     <div className={`playback-workspace playback-workspace--practice${isPlaying ? " playback-workspace--focus" : ""}`}>
-      <PlaybackPracticeRail />
+      {!isMobileRuntime ? <PlaybackPracticeRail /> : null}
       <PlaybackPracticeSurface />
       <div className="panel playback-transport-dock" ref={playbackTransportRef}>
         <PlaybackTransport
           compact
+          mobile={isMobileRuntime}
           isPlaying={isPlaying}
           loopRange={loopRange}
           loopStatusMessage={loopStatusMessage}
@@ -49,6 +58,12 @@ export function PlaybackWorkspace() {
           onTogglePlayback={togglePlayback}
         />
       </div>
+      {isMobileRuntime ? (
+        <PlaybackPracticeControlsDrawer
+          open={practiceControlsOpen}
+          onDismiss={onClosePracticeControls}
+        />
+      ) : null}
     </div>
   );
 }

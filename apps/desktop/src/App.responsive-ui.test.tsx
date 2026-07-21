@@ -4,9 +4,26 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   findAudioByArtifactId,
   markAudioReady,
+  mockGetMobileCapabilities,
   renderApp,
   resetAppTestHarness,
 } from "./test/appTestHarness";
+
+function enableAndroidRuntime() {
+  mockGetMobileCapabilities.mockResolvedValue({
+    platform: "android",
+    mediaBackend: "android_media_codec",
+    isEmulator: true,
+    gpuBackend: null,
+    analysisAvailable: true,
+    basicChordsAvailable: true,
+    whisperAvailable: false,
+    stemSeparationAvailable: false,
+    generationTestingAvailable: true,
+    maxRecommendedModel: null,
+    cpuFallbackAllowed: false,
+  });
+}
 
 describe("Desktop app responsive UI revamp", () => {
   beforeEach(resetAppTestHarness);
@@ -87,6 +104,63 @@ describe("Desktop app responsive UI revamp", () => {
     expect(workspace).toContainElement(transportDock as HTMLElement);
     expect((transportDock as HTMLElement).parentElement).toBe(workspace);
     expect(within(transportDock as HTMLElement).getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+    expect(transportDock?.querySelector(".transport")).not.toHaveClass("transport--mobile");
+    expect(
+      within(transportDock as HTMLElement).getByRole("button", { name: "Tempo at original" }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps desktop Follow controls in the existing action row", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    await user.click(await screen.findByRole("tab", { name: "Playback" }));
+
+    const header = document.querySelector<HTMLElement>(".playback-practice-surface__header");
+    const heading = header?.querySelector<HTMLElement>(".playback-practice-surface__heading");
+    const actions = header?.querySelector<HTMLElement>(".playback-practice-actions");
+    const lyricsFollow = within(header as HTMLElement).getByRole("button", {
+      name: "Lyrics Follow",
+    });
+
+    expect(header).not.toBeNull();
+    expect(heading).not.toBeNull();
+    expect(actions).not.toBeNull();
+    expect(heading).not.toContainElement(lyricsFollow);
+    expect(actions).toContainElement(lyricsFollow);
+  });
+
+  it("uses a two-part mobile transport without duplicating Practice Controls tempo", async () => {
+    const user = userEvent.setup();
+    enableAndroidRuntime();
+    renderApp(["/projects/proj_123"]);
+
+    await user.click(await screen.findByRole("tab", { name: "Playback" }));
+
+    const transportDock = document.querySelector<HTMLElement>(".playback-transport-dock");
+    const transport = transportDock?.querySelector<HTMLElement>(".transport--mobile");
+    expect(transportDock).not.toBeNull();
+    expect(transport).not.toBeNull();
+    expect(transport?.querySelector(":scope > .transport__controls")).not.toBeNull();
+    expect(transport?.querySelector(":scope > .transport__timeline")).not.toBeNull();
+    expect(within(transportDock as HTMLElement).queryByText("Tempo")).not.toBeInTheDocument();
+    expect(
+      within(transportDock as HTMLElement).queryByRole("button", { name: /tempo/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(transportDock as HTMLElement).getByRole("slider", { name: "Playback position" }),
+    ).toBeInTheDocument();
+    expect(
+      within(transportDock as HTMLElement).getAllByRole("button").map((button) =>
+        button.getAttribute("aria-label"),
+      ),
+    ).toEqual([
+      "Seek back 10 seconds",
+      "Play playback",
+      "Stop playback",
+      "Seek forward 10 seconds",
+      "Set loop start",
+    ]);
   });
 
   it("collapses practice chrome while playback is active and restores it on pause", async () => {

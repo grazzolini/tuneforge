@@ -35,23 +35,13 @@ impl SystemMediaState {
             .lock()
             .map_err(|_| "System media state is unavailable.".to_string())?;
         runtime.current = None;
-        runtime.idle.set_active(false)?;
         Ok(())
-    }
-
-    fn set_idle_inhibition(&self, active: bool) -> Result<(), String> {
-        let mut runtime = self
-            .runtime
-            .lock()
-            .map_err(|_| "System media state is unavailable.".to_string())?;
-        runtime.idle.set_active(active)
     }
 }
 
 #[derive(Default)]
 struct SystemMediaRuntime {
     current: Option<SystemMediaPayload>,
-    idle: platform::IdleInhibition,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -124,14 +114,6 @@ pub fn system_media_clear_state(state: State<'_, SystemMediaState>) -> Result<()
     state.clear()
 }
 
-#[tauri::command]
-pub fn system_media_set_idle_inhibition(
-    state: State<'_, SystemMediaState>,
-    active: bool,
-) -> Result<(), String> {
-    state.set_idle_inhibition(active)
-}
-
 #[cfg(target_os = "macos")]
 mod platform {
     use super::{
@@ -141,89 +123,13 @@ mod platform {
     use objc2::runtime::AnyObject;
     use objc2::{class, msg_send};
     use objc2_foundation::{NSMutableDictionary, NSNumber, NSObject, NSString};
-    use std::ffi::{c_char, c_void, CString};
     use std::sync::Once;
     use tauri::AppHandle;
-
-    type CFAllocatorRef = *const c_void;
-    type CFStringRef = *const c_void;
-    type IOPMAssertionID = u32;
-    type IOReturn = i32;
-
-    const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
-    const K_IOPM_ASSERTION_LEVEL_ON: u32 = 255;
-    const K_IO_RETURN_SUCCESS: IOReturn = 0;
-
-    #[link(name = "CoreFoundation", kind = "framework")]
-    extern "C" {
-        fn CFStringCreateWithCString(
-            alloc: CFAllocatorRef,
-            c_str: *const c_char,
-            encoding: u32,
-        ) -> CFStringRef;
-        fn CFRelease(cf: *const c_void);
-    }
-
-    #[link(name = "IOKit", kind = "framework")]
-    extern "C" {
-        fn IOPMAssertionCreateWithName(
-            assertion_type: CFStringRef,
-            level: u32,
-            assertion_name: CFStringRef,
-            assertion_id: *mut IOPMAssertionID,
-        ) -> IOReturn;
-        fn IOPMAssertionRelease(assertion_id: IOPMAssertionID) -> IOReturn;
-    }
 
     #[link(name = "MediaPlayer", kind = "framework")]
     extern "C" {}
 
     static REGISTER_REMOTE_COMMANDS: Once = Once::new();
-
-    #[derive(Default)]
-    pub struct IdleInhibition {
-        assertion_id: Option<IOPMAssertionID>,
-    }
-
-    impl IdleInhibition {
-        pub fn set_active(&mut self, active: bool) -> Result<(), String> {
-            if active {
-                if self.assertion_id.is_some() {
-                    return Ok(());
-                }
-                let assertion_type = cf_string("NoDisplaySleepAssertion")?;
-                let assertion_name = cf_string("TuneForge playback")?;
-                let mut assertion_id = 0;
-                let result = unsafe {
-                    IOPMAssertionCreateWithName(
-                        assertion_type,
-                        K_IOPM_ASSERTION_LEVEL_ON,
-                        assertion_name,
-                        &mut assertion_id,
-                    )
-                };
-                unsafe {
-                    CFRelease(assertion_type);
-                    CFRelease(assertion_name);
-                }
-                if result != K_IO_RETURN_SUCCESS {
-                    return Err(format!("Could not inhibit macOS display sleep: {result}"));
-                }
-                self.assertion_id = Some(assertion_id);
-                return Ok(());
-            }
-
-            if let Some(assertion_id) = self.assertion_id.take() {
-                let result = unsafe { IOPMAssertionRelease(assertion_id) };
-                if result != K_IO_RETURN_SUCCESS {
-                    return Err(format!(
-                        "Could not release macOS display sleep assertion: {result}"
-                    ));
-                }
-            }
-            Ok(())
-        }
-    }
 
     pub fn update_media_state(app: &AppHandle, payload: &SystemMediaPayload) -> Result<(), String> {
         register_remote_commands(app);
@@ -274,22 +180,6 @@ mod platform {
             let _: () = msg_send![center, setPlaybackState: 0isize];
         }
         Ok(())
-    }
-
-    fn cf_string(value: &str) -> Result<CFStringRef, String> {
-        let c_string = CString::new(value)
-            .map_err(|_| "System media string contained an interior null byte.".to_string())?;
-        let cf_string = unsafe {
-            CFStringCreateWithCString(
-                std::ptr::null(),
-                c_string.as_ptr(),
-                K_CF_STRING_ENCODING_UTF8,
-            )
-        };
-        if cf_string.is_null() {
-            return Err("Could not create macOS system media string.".to_string());
-        }
-        Ok(cf_string)
     }
 
     fn finite_non_negative(value: Option<f64>) -> Option<f64> {
@@ -530,9 +420,6 @@ mod platform {
     const MPRIS_PLAYER_INTERFACE: &str = "org.mpris.MediaPlayer2.Player";
     const DBUS_PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
     const DBUS_INTROSPECTABLE_INTERFACE: &str = "org.freedesktop.DBus.Introspectable";
-    const SCREENSAVER_BUS_NAME: &str = "org.freedesktop.ScreenSaver";
-    const SCREENSAVER_OBJECT_PATH: &str = "/org/freedesktop/ScreenSaver";
-    const SCREENSAVER_INTERFACE: &str = "org.freedesktop.ScreenSaver";
 
     static MPRIS_RUNTIME: Mutex<Option<Arc<MprisRuntime>>> = Mutex::new(None);
 
@@ -540,53 +427,6 @@ mod platform {
     struct MprisRuntime {
         state: Arc<Mutex<Option<SystemMediaPayload>>>,
         active: Arc<AtomicBool>,
-    }
-
-    #[derive(Default)]
-    pub struct IdleInhibition {
-        connection: Option<Connection>,
-        cookie: Option<u32>,
-    }
-
-    impl IdleInhibition {
-        pub fn set_active(&mut self, active: bool) -> Result<(), String> {
-            if active {
-                if self.cookie.is_some() {
-                    return Ok(());
-                }
-                let connection = Connection::new_session()
-                    .map_err(|error| format!("D-Bus unavailable: {error}"))?;
-                let proxy = connection.with_proxy(
-                    SCREENSAVER_BUS_NAME,
-                    SCREENSAVER_OBJECT_PATH,
-                    Duration::from_millis(500),
-                );
-                let (cookie,): (u32,) = proxy
-                    .method_call(
-                        SCREENSAVER_INTERFACE,
-                        "Inhibit",
-                        ("TuneForge", "Native playback active"),
-                    )
-                    .map_err(|error| format!("Could not inhibit desktop idle: {error}"))?;
-                self.connection = Some(connection);
-                self.cookie = Some(cookie);
-                return Ok(());
-            }
-
-            if let (Some(connection), Some(cookie)) = (self.connection.take(), self.cookie.take()) {
-                let proxy = connection.with_proxy(
-                    SCREENSAVER_BUS_NAME,
-                    SCREENSAVER_OBJECT_PATH,
-                    Duration::from_millis(500),
-                );
-                proxy
-                    .method_call::<(), _, _, _>(SCREENSAVER_INTERFACE, "UnInhibit", (cookie,))
-                    .map_err(|error| {
-                        format!("Could not release desktop idle inhibition: {error}")
-                    })?;
-            }
-            Ok(())
-        }
     }
 
     pub fn update_media_state(app: &AppHandle, payload: &SystemMediaPayload) -> Result<(), String> {
@@ -967,18 +807,6 @@ mod platform {
 mod platform {
     use super::SystemMediaPayload;
     use tauri::AppHandle;
-
-    #[derive(Default)]
-    pub struct IdleInhibition {
-        active: bool,
-    }
-
-    impl IdleInhibition {
-        pub fn set_active(&mut self, active: bool) -> Result<(), String> {
-            self.active = active;
-            Ok(())
-        }
-    }
 
     pub fn update_media_state(app: &AppHandle, payload: &SystemMediaPayload) -> Result<(), String> {
         let _ = (app, payload);

@@ -1040,7 +1040,7 @@ describe("Desktop app activity", () => {
     }
 	  });
 
-	  it("records Android background and screen-lock lifecycle events as retryable", async () => {
+	  it("records Android background and screen-lock lifecycle events without retrying active sync", async () => {
 	    const user = userEvent.setup();
 	    mockGetMobileCapabilities.mockResolvedValue(androidCapabilities);
 	    setSyncTrustedPeers([
@@ -1054,7 +1054,7 @@ describe("Desktop app activity", () => {
 	      },
 	    ]);
 	    mockRecordSyncLifecycleEvent.mockImplementation(async (event) => {
-	      const retryableStatus = {
+	      const passiveStatus = {
 	        active: true,
 	        status: "listening",
 	        endpoint_hints: listenerEndpointHints,
@@ -1063,25 +1063,21 @@ describe("Desktop app activity", () => {
 	          kind: event.kind,
 	          occurred_at: event.occurredAt ?? "2026-04-18T13:16:30.000Z",
 	          message: event.message ?? null,
-	          retryable: true,
-	          interruption_code: event.kind === "android_screen_lock"
-	            ? "lifecycle_interrupted_android_screen_lock"
-	            : "lifecycle_interrupted_android_background",
-	          retry_guidance: "Bring Android back to the foreground, then retry sync.",
+	          retryable: false,
+	          interruption_code: null,
+	          retry_guidance: null,
 	          peer_device_id: "device_peer_1",
 	          run_id: "sync_run_android_lifecycle_1",
 	        },
 	        lifecycle_events: [],
-	        retryable_interruption_code: event.kind === "android_screen_lock"
-	          ? "lifecycle_interrupted_android_screen_lock"
-	          : "lifecycle_interrupted_android_background",
-	        retryable_interruption_peer_device_id: "device_peer_1",
-	        retry_guidance: "Bring Android back to the foreground, then retry sync.",
+	        retryable_interruption_code: null,
+	        retryable_interruption_peer_device_id: null,
+	        retry_guidance: null,
 	        last_sync: null,
 	        updated_at: "2026-04-18T13:16:30.000Z",
 	      };
-	      setSyncTransportStatus(retryableStatus);
-	      return retryableStatus;
+	      setSyncTransportStatus(passiveStatus);
+	      return passiveStatus;
 	    });
 
 	    try {
@@ -1100,7 +1096,7 @@ describe("Desktop app activity", () => {
 	      expect(mockRecordSyncLifecycleEvent).toHaveBeenCalledWith(
 	        expect.objectContaining({ kind: "android_background", message: "android background or screen lock" }),
 	      );
-	      expect(await screen.findByRole("button", { name: "Retry Sync" })).toBeInTheDocument();
+	      expect(screen.queryByRole("button", { name: "Retry Sync" })).not.toBeInTheDocument();
 	    } finally {
 	      setDocumentVisibility("visible");
 	    }

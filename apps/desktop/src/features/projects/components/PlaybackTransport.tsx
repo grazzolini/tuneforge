@@ -5,6 +5,11 @@ import {
   readPlaybackLiveDiagnostics,
   subscribePlaybackDiagnostics,
 } from "../../../lib/playbackDiagnostics";
+import {
+  getPowerInhibitionVersion,
+  playbackPowerProtectionMessage,
+  subscribePowerInhibition,
+} from "../../../lib/powerInhibition";
 import { MetallicGlyphDefs, PlayPauseGlyph, SeekGlyph, StopGlyph } from "./TransportGlyphs";
 import { formatPlaybackClock } from "../projectViewUtils";
 import type { PlaybackLoopRange } from "../projectPlaybackState";
@@ -49,7 +54,13 @@ export function PlaybackTransport({
     getPlaybackDiagnosticsVersion,
     getPlaybackDiagnosticsVersion,
   );
+  useSyncExternalStore(
+    subscribePowerInhibition,
+    getPowerInhibitionVersion,
+    getPowerInhibitionVersion,
+  );
   const playbackDiagnostics = readPlaybackLiveDiagnostics();
+  const powerProtectionMessage = playbackPowerProtectionMessage();
   const tempoLabel =
     tempoDisplayBpm === null
       ? "--"
@@ -170,6 +181,14 @@ export function PlaybackTransport({
           role={playbackDiagnostics.currentState === "error" ? "alert" : "status"}
         >
           {playbackDiagnostics.statusMessage}
+        </p>
+      ) : null}
+      {powerProtectionMessage ? (
+        <p
+          className="transport__status transport__status--error"
+          role="status"
+        >
+          {powerProtectionMessage}
         </p>
       ) : null}
     </div>

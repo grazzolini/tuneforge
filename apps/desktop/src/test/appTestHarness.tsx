@@ -22,6 +22,7 @@ import type {
   SyncTrustedPeerResponse,
 } from "../lib/api";
 import { resetPlaybackE2ETelemetry } from "../lib/playbackE2ETelemetry";
+import { resetPowerInhibitionDiagnostics } from "../lib/powerInhibition";
 
 const DEFAULT_PROJECTS_LIMIT = 50;
 const DEFAULT_JOBS_LIMIT = 50;
@@ -97,10 +98,12 @@ const {
   mockScanPairingQrCode,
   setMockSystemInputVolume,
   setMockNativeAudio,
+  setMockPowerInhibition,
   emitMockNativeAudioError,
   emitMockNativeAudioInputFrame,
   emitMockNativeAudioPosition,
   emitMockSystemMediaControl,
+  getSystemMediaControlListenerCount,
   deferNextSystemMediaControlListen,
   mockListen,
   rejectSystemMediaCommand,
@@ -211,6 +214,15 @@ const {
     nativeAudioSnapshot: Record<string, unknown>;
     nativeAudioStartError: string | null;
     nativeAudioPlayFallbackReason: string | null;
+    powerInhibitionStatus: {
+      phase: string;
+      backend: string | null;
+      activeReasons: string[];
+      screenProtected: boolean;
+      backgroundProtected: boolean;
+      errorCode: string | null;
+      errorMessage: string | null;
+    };
     systemMediaState: Record<string, unknown> | null;
     systemMediaIdleInhibited: boolean;
     systemMediaCommandErrors: Partial<Record<SystemMediaCommand, string>>;
@@ -853,6 +865,15 @@ const {
       },
       nativeAudioStartError: null,
       nativeAudioPlayFallbackReason: null,
+      powerInhibitionStatus: {
+        phase: "inactive",
+        backend: null,
+        activeReasons: [],
+        screenProtected: false,
+        backgroundProtected: false,
+        errorCode: null,
+        errorMessage: null,
+      },
       systemMediaState: null,
       systemMediaIdleInhibited: false,
       systemMediaCommandErrors: {},
@@ -925,6 +946,15 @@ const {
       state.nativeAudioPlayFallbackReason = nextState.playFallbackReason ?? null;
     }
   }
+
+  function setMockPowerInhibition(
+    nextStatus: Partial<typeof state.powerInhibitionStatus>,
+  ) {
+    state.powerInhibitionStatus = {
+      ...state.powerInhibitionStatus,
+      ...clone(nextStatus),
+    };
+  }
   function effectiveNativeAudioLanes(
     lanes: Array<{
       id: string;
@@ -971,6 +1001,9 @@ const {
         payload: clone(payload),
       });
     });
+  }
+  function getSystemMediaControlListenerCount() {
+    return systemMediaControlListeners.size;
   }
   function deferNextSystemMediaControlListen() {
     state.deferNextSystemMediaControlListen = true;
@@ -1106,6 +1139,31 @@ const {
       }
       state.systemMediaIdleInhibited = Boolean(args?.active);
       return null;
+    }
+
+    if (command === "power_inhibition_set_activity") {
+      const reason = String(args?.reason ?? "");
+      const activeReasons = new Set(state.powerInhibitionStatus.activeReasons);
+      if (args?.active === true) {
+        activeReasons.add(reason);
+      } else {
+        activeReasons.delete(reason);
+      }
+      const hasActiveReasons = activeReasons.size > 0;
+      state.powerInhibitionStatus = {
+        phase: hasActiveReasons ? "active" : "inactive",
+        backend: hasActiveReasons ? "test-power" : null,
+        activeReasons: [...activeReasons],
+        screenProtected: hasActiveReasons,
+        backgroundProtected: hasActiveReasons,
+        errorCode: null,
+        errorMessage: null,
+      };
+      return clone(state.powerInhibitionStatus);
+    }
+
+    if (command === "power_inhibition_status") {
+      return clone(state.powerInhibitionStatus);
     }
 
     if (command === "audio_get_capabilities") {
@@ -2362,10 +2420,12 @@ const {
     mockScanPairingQrCode,
     setMockSystemInputVolume,
     setMockNativeAudio,
+    setMockPowerInhibition,
     emitMockNativeAudioError,
     emitMockNativeAudioInputFrame,
     emitMockNativeAudioPosition,
     emitMockSystemMediaControl,
+    getSystemMediaControlListenerCount,
     deferNextSystemMediaControlListen,
     mockListen,
     rejectSystemMediaCommand,
@@ -2754,6 +2814,12 @@ export function setMockNativeAudioState(
   setMockNativeAudio(nextState);
 }
 
+export function setMockPowerInhibitionState(
+  nextState: Parameters<typeof setMockPowerInhibition>[0],
+) {
+  setMockPowerInhibition(nextState);
+}
+
 export function emitMockNativeInputFrame(
   frame: Parameters<typeof emitMockNativeAudioInputFrame>[0],
 ) {
@@ -2776,6 +2842,10 @@ export function emitMockSystemMediaPlaybackControl(
   payload: Parameters<typeof emitMockSystemMediaControl>[0],
 ) {
   emitMockSystemMediaControl(payload);
+}
+
+export function getMockSystemMediaControlListenerCount() {
+  return getSystemMediaControlListenerCount();
 }
 
 export function deferNextMockSystemMediaControlListen() {
@@ -2847,6 +2917,7 @@ export function getMockWakeLock() {
 export function resetAppTestHarness() {
   resetMockApiState();
   resetPlaybackE2ETelemetry();
+  resetPowerInhibitionDiagnostics();
   delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   window.localStorage.clear();
   window.sessionStorage.clear();

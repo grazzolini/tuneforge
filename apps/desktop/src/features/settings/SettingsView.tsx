@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, type BeatBackendSchema, type ChordBackendSchema, type StemModelSchema } from "../../lib/api";
@@ -14,6 +14,17 @@ import {
   subscribePlaybackDiagnostics,
   type PlaybackBackend,
 } from "../../lib/playbackDiagnostics";
+import {
+  getPowerInhibitionVersion,
+  readBrowserWakeLockStatus,
+  readPowerInhibitionStatus,
+  readRememberedPowerInhibitionBackend,
+  readRememberedPowerInhibitionError,
+  refreshPowerInhibitionStatus,
+  subscribePowerInhibition,
+  type PowerInhibitionPhase,
+  type PowerInhibitionReason,
+} from "../../lib/powerInhibition";
 import {
   getNativeAudioCapabilities,
   isWebAudioBackendForced,
@@ -62,6 +73,29 @@ type SnapshotStatus = {
   message: string;
   tone: "default" | "error";
 };
+
+const powerInhibitionPhaseLabels: Record<PowerInhibitionPhase, string> = {
+  inactive: "Inactive",
+  acquiring: "Acquiring",
+  active: "Active",
+  unsupported: "Unsupported",
+  failed: "Failed",
+  releasing: "Releasing",
+  "release-failed": "Release not confirmed",
+};
+
+const powerInhibitionReasonLabels: Record<PowerInhibitionReason, string> = {
+  playback: "Playback",
+  "sync-listener": "Sync listener",
+  "sync-transfer": "Sync transfer",
+};
+
+function powerInhibitionBackendLabel(backend: string | null) {
+  if (!backend) {
+    return "None confirmed";
+  }
+  return backend === "android-foreground-service" ? "Android foreground service" : backend;
+}
 
 const themeOptions: ChoiceOption<ThemePreference>[] = [
   {
@@ -615,7 +649,19 @@ export function SettingsView() {
     getPlaybackDiagnosticsVersion,
     getPlaybackDiagnosticsVersion,
   );
+  useSyncExternalStore(
+    subscribePowerInhibition,
+    getPowerInhibitionVersion,
+    getPowerInhibitionVersion,
+  );
   const livePlaybackDiagnostics = readPlaybackLiveDiagnostics();
+  const powerInhibitionStatus = readPowerInhibitionStatus();
+  const browserWakeLockStatus = readBrowserWakeLockStatus();
+  const rememberedPowerBackend = readRememberedPowerInhibitionBackend();
+  const rememberedPowerError = readRememberedPowerInhibitionError();
+  useEffect(() => {
+    void refreshPowerInhibitionStatus();
+  }, []);
   const healthQuery = useQuery({
     queryKey: ["health"],
     queryFn: api.getHealth,
@@ -1175,6 +1221,50 @@ export function SettingsView() {
                 <div>
                   <dt>Native Playback Buffer Health</dt>
                   <dd>{nativePlaybackHealthLabel(livePlaybackDiagnostics.nativeBufferHealth)}</dd>
+                </div>
+              </dl>
+            </section>
+
+            <section className="settings-diagnostics__group" aria-labelledby="diagnostics-power-protection">
+              <h3 id="diagnostics-power-protection">Power Protection</h3>
+              <dl className="details-grid details-grid--single-column">
+                <div>
+                  <dt>Current State</dt>
+                  <dd>{powerInhibitionPhaseLabels[powerInhibitionStatus.phase]}</dd>
+                </div>
+                <div>
+                  <dt>Current Backend</dt>
+                  <dd>{powerInhibitionBackendLabel(powerInhibitionStatus.backend)}</dd>
+                </div>
+                <div>
+                  <dt>Active Reasons</dt>
+                  <dd>
+                    {powerInhibitionStatus.activeReasons.length
+                      ? powerInhibitionStatus.activeReasons
+                          .map((reason) => powerInhibitionReasonLabels[reason])
+                          .join(", ")
+                      : "None"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Screen Protected</dt>
+                  <dd>{powerInhibitionStatus.screenProtected ? "Confirmed" : "Not confirmed"}</dd>
+                </div>
+                <div>
+                  <dt>Background Protected</dt>
+                  <dd>{powerInhibitionStatus.backgroundProtected ? "Confirmed" : "Not confirmed"}</dd>
+                </div>
+                <div>
+                  <dt>Browser Screen Wake Lock</dt>
+                  <dd>{powerInhibitionPhaseLabels[browserWakeLockStatus.phase]}</dd>
+                </div>
+                <div>
+                  <dt>Last Confirmed Backend</dt>
+                  <dd>{rememberedPowerBackend ? powerInhibitionBackendLabel(rememberedPowerBackend) : "None"}</dd>
+                </div>
+                <div>
+                  <dt>Latest Power Protection Error</dt>
+                  <dd>{powerInhibitionStatus.errorMessage ?? rememberedPowerError ?? "None"}</dd>
                 </div>
               </dl>
             </section>

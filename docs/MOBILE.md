@@ -120,6 +120,23 @@ fallback after native failure or a build-time development override; it is not a 
 Playback state, clocks, and Settings diagnostics change only after the active native session or Web
 media confirms the transition.
 
+Android power protection follows confirmed work automatically; no manual toggle exists. Confirmed
+native playback uses a `mediaPlayback` foreground service and keeps the foreground activity screen
+on. An active sync listener uses `connectedDevice`, and an active transfer also uses `dataSync`.
+Listener and transfer work hold a bounded, renewable partial wake lock; playback relies on Android's
+media path for CPU wakefulness. The ongoing notification states whether playback, sync, or both are
+active. Pause, stop, natural end, fallback, listener stop, transfer completion/cancellation/failure,
+and app shutdown release their corresponding reason without releasing other active work.
+On Android 13 and newer, TuneForge requests notification permission only when a user action starts
+protected playback or sync work. Denial does not cancel that work; diagnostics report the missing
+notification visibility while Android's system active-app controls remain available.
+
+Settings diagnostics distinguish acquiring, active, unsupported, failed, releasing, and
+release-not-confirmed states. They report protection only after Android confirms it. Activity ->
+Sync and playback status show concise reliability warnings for unsupported or failed protection.
+Android 15 `dataSync` timeout is reported as a failure and releases protection; it is never shown as
+a completed transfer.
+
 `pnpm --filter @tuneforge/desktop android:prepare` updates the generated Android target before a
 build. It keeps these manifest permissions present:
 
@@ -127,6 +144,10 @@ build. It keeps these manifest permissions present:
 - `android.permission.RECORD_AUDIO` and `android.permission.MODIFY_AUDIO_SETTINGS` for mobile audio
   flows.
 - `android.permission.CAMERA` for the Android-only QR pairing scanner.
+- foreground-service permissions for `mediaPlayback`, `connectedDevice`, and `dataSync`, plus
+  `android.permission.WAKE_LOCK`, for truthful playback and sync lifetime ownership.
+- `android.permission.POST_NOTIFICATIONS` so supported Android versions can expose active work.
+- `android.permission.CHANGE_NETWORK_STATE` for connected-device foreground sync work.
 
 These are package-level permissions only. They do not change the local-only product rule, and they
 must not be used to add cloud, telemetry, account, or remote-processing behavior. Do not add
@@ -169,12 +190,20 @@ For listener lifecycle validation, start, stop, restart, pause, and resume the A
 the build supports it. The UI records native-only lifecycle events through
 `sync_transport_record_lifecycle_event`: desktop background events from `visibilitychange` hidden,
 window blur, and `pagehide` stay passive; Android hidden/pagehide records `android_background`, and
-Android window blur records `android_screen_lock` so active sync runs are interrupted for retry.
+Android window blur records `android_screen_lock`. Both Android events stay passive so the listener
+and active transfers continue while the app is backgrounded or the screen is locked.
 Foreground events from window focus, `visibilitychange` visible, and `pageshow` refresh listener
 state; Android foreground uses `android_foreground`. Browser `online` and `offline` events record
-network recovery/interruption. Offline or Android lifecycle interruptions may expose native retry
-guidance and a trusted peer ID; when they do, the UI shows Retry Sync and reuses the normal preflight
-plus Sync Now path, including nearby endpoint hints.
+network recovery/interruption. Offline interruptions may expose native retry guidance and a trusted
+peer ID; when they do, the UI shows Retry Sync and reuses the normal preflight plus Sync Now path,
+including nearby endpoint hints.
+
+Also inspect Android service and power state with `adb`: confirmed playback must show the
+`mediaPlayback` foreground-service type; listener and transfer must add `connectedDevice` and
+`dataSync` as applicable. Notification copy must match active work. Verify every terminal path clears
+its reason, and exercise a shortened Android 15 data-sync timeout in a synthetic debug run. A live
+transfer still requires an isolated desktop peer; automated lifecycle tests do not prove that
+end-to-end path.
 
 Desktop sleep/wake has no native command bridge. The UI uses an elapsed-time check while visible: a
 long timer gap records `sleep` followed by `wake`, while ordinary desktop hidden/blur/pagehide remains

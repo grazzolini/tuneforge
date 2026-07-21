@@ -58,6 +58,7 @@ ed25519-dalek = "2.2.0"
 if-addrs = "0.15.0"
 iroh = "1.0.0-rc.0"
 iroh-blobs = { version = "0.103.0", features = ["fs-store"] }
+jni = "0.21.1"
 ndk-sys = { version = "0.6.0", features = ["media"] }
 ndk-context = "0.1.1"
 rand = "0.10.1"

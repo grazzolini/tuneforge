@@ -11,6 +11,26 @@ The mobile app includes its backend inside the Tauri app. It does not run the de
 
 The frontend talks through a `TuneForgeClient` boundary. Desktop uses the existing generated OpenAPI HTTP client. Mobile uses Tauri commands that return the same project, job, artifact, lyrics, chord, and analysis response shapes where possible.
 
+## Mobile Playback
+
+Android Playback uses a practice-first layout at compact portrait sizes. Its app bar keeps the
+project identity, Library navigation, Practice Controls, and an overflow menu visible without
+reusing the desktop workspace tabs. The practice area scrolls independently above a fixed,
+two-row transport so seeking and play/pause controls remain available while lyrics or chords move.
+
+The mobile practice view has explicit `Lyrics`, `Chords`, and `Both` modes. `Follow` tracks the
+active mode: it follows timed lyrics in `Lyrics` and `Both`, and follows the active chord in
+`Chords`. Lyrics follow stays unavailable when the transcript has no timing data.
+
+`Practice Controls` opens the existing practice controls in a mobile sheet: transpose/capo,
+count-in and loop alignment, tempo, source and mix selection, and available stem controls.
+Less-frequent actions live in the app-bar overflow, including returning to the Project workspace,
+editing lyrics when a transcript exists, and importing a tab. Device capability gates still apply;
+the sheet does not make unavailable mobile generation paths available.
+
+These changes are mobile-runtime behavior only. Desktop Playback keeps its existing workspace tabs,
+practice rail, display toggles, follow controls, and transport layout.
+
 ## Android Embedded Backend
 
 Rust owns mobile project persistence, artifact records, job records, and app data paths. Kotlin/Android or Rust NDK bindings are the intended bridge for platform-only work:

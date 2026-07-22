@@ -54,11 +54,14 @@ function PlaybackModeHeader() {
     handleRejectTabSuggestionGroup,
     handleSetChordsFollowEnabled,
     handleSetLyricsFollowEnabled,
+    handleSetPlaybackDisplayMode,
     handleTogglePlaybackDisplayLane,
+    hasChordTimeline,
     hasLyricsTranscript,
     hasTimedLyricsTranscript,
     isEditingLyrics,
     isLyricsRunning,
+    isMobileRuntime,
     isTabImportOpen,
     lyricsFollowEnabled,
     lyricsMutation,
@@ -74,101 +77,179 @@ function PlaybackModeHeader() {
     tabImportDraft,
     tabImportMutation,
   } = useProjectViewModelContext();
-  const lyricsSelected = playbackDisplayMode === "lyrics" || playbackDisplayMode === "combined";
-  const chordsSelected = playbackDisplayMode === "chords" || playbackDisplayMode === "combined";
+  const lyricsSelected = playbackDisplayMode !== "chords";
+  const chordsSelected = playbackDisplayMode !== "lyrics";
+  const followUsesTimedLyrics = playbackDisplayMode !== "chords";
+  const followAvailable = followUsesTimedLyrics
+    ? hasTimedLyricsTranscript
+    : hasChordTimeline;
+  const followEnabled = followAvailable && (
+    followUsesTimedLyrics ? lyricsFollowEnabled : chordsFollowEnabled
+  );
+  const followUnavailableDescription = followUsesTimedLyrics
+    ? "Follow requires timed lyrics."
+    : "Follow requires a chord timeline.";
+  const followLabel = playbackDisplayMode === "combined"
+    ? "Follow lyrics and chords"
+    : playbackDisplayMode === "lyrics"
+      ? "Follow lyrics"
+      : "Follow chords";
 
   return (
     <>
       <div className="playback-practice-surface__header">
-        <div>
-          <p className="metric-label">Practice View</p>
-          <h2>
-            {playbackDisplayMode === "combined"
-              ? "Lyrics + chords"
-              : playbackDisplayMode === "lyrics"
-                ? "Lyrics"
-                : "Chords"}
-          </h2>
+        <div className="playback-practice-surface__heading">
+          <div>
+            <p className="metric-label">Practice View</p>
+            <h2>
+              {playbackDisplayMode === "combined"
+                ? "Lyrics + chords"
+                : playbackDisplayMode === "lyrics"
+                  ? "Lyrics"
+                  : "Chords"}
+            </h2>
+          </div>
+          {isMobileRuntime ? (
+            <button
+              aria-describedby={
+                !followAvailable ? "playback-follow-unavailable-description" : undefined
+              }
+              aria-label={followLabel}
+              aria-pressed={followEnabled}
+              className={`chip playback-follow-chip${followEnabled ? " chip--active" : ""}`}
+              disabled={!followAvailable}
+              onClick={() => {
+                if (followUsesTimedLyrics) {
+                  handleSetLyricsFollowEnabled(!lyricsFollowEnabled);
+                } else {
+                  handleSetChordsFollowEnabled(!chordsFollowEnabled);
+                }
+              }}
+              title={!followAvailable ? followUnavailableDescription : followLabel}
+              type="button"
+            >
+              Follow
+            </button>
+          ) : null}
+          {isMobileRuntime && !followAvailable ? (
+            <span
+              className="artifact-meta playback-follow-explanation"
+              id="playback-follow-unavailable-description"
+            >
+              {followUnavailableDescription}
+            </span>
+          ) : null}
         </div>
 
         <div className="playback-practice-surface__controls">
           <div className="playback-mode-toggle" role="group" aria-label="Playback display mode">
-            <button
-              aria-pressed={lyricsSelected}
-              className={lyricsSelected ? "playback-mode-toggle__button playback-mode-toggle__button--active" : "playback-mode-toggle__button"}
-              onClick={() => handleTogglePlaybackDisplayLane("lyrics")}
-              type="button"
-            >
-              Lyrics
-            </button>
-            <button
-              aria-pressed={chordsSelected}
-              className={chordsSelected ? "playback-mode-toggle__button playback-mode-toggle__button--active" : "playback-mode-toggle__button"}
-              onClick={() => handleTogglePlaybackDisplayLane("chords")}
-              type="button"
-            >
-              Chords
-            </button>
+            {isMobileRuntime ? (
+              (["lyrics", "chords", "combined"] as const).map((mode) => {
+                const selected = playbackDisplayMode === mode;
+                return (
+                  <button
+                    aria-pressed={selected}
+                    className={
+                      selected
+                        ? "playback-mode-toggle__button playback-mode-toggle__button--active"
+                        : "playback-mode-toggle__button"
+                    }
+                    key={mode}
+                    onClick={() => handleSetPlaybackDisplayMode(mode)}
+                    type="button"
+                  >
+                    {mode === "combined" ? "Both" : mode === "lyrics" ? "Lyrics" : "Chords"}
+                  </button>
+                );
+              })
+            ) : (
+              <>
+                <button
+                  aria-pressed={lyricsSelected}
+                  className={
+                    lyricsSelected
+                      ? "playback-mode-toggle__button playback-mode-toggle__button--active"
+                      : "playback-mode-toggle__button"
+                  }
+                  onClick={() => handleTogglePlaybackDisplayLane("lyrics")}
+                  type="button"
+                >
+                  Lyrics
+                </button>
+                <button
+                  aria-pressed={chordsSelected}
+                  className={
+                    chordsSelected
+                      ? "playback-mode-toggle__button playback-mode-toggle__button--active"
+                      : "playback-mode-toggle__button"
+                  }
+                  onClick={() => handleTogglePlaybackDisplayLane("chords")}
+                  type="button"
+                >
+                  Chords
+                </button>
+              </>
+            )}
           </div>
 
-          <div className="button-row playback-practice-actions">
-            {lyricsSelected && hasLyricsTranscript && !isEditingLyrics ? (
+          {!isMobileRuntime ? (
+            <div className="button-row playback-practice-actions">
+              {lyricsSelected && hasLyricsTranscript && !isEditingLyrics ? (
+                <button
+                  className="button button--ghost button--small"
+                  type="button"
+                  onClick={() => {
+                    if (projectEditLocked) {
+                      return;
+                    }
+                    setLyricsDraft(displayedLyrics.map((segment) => segment.text));
+                    setIsEditingLyrics(true);
+                  }}
+                  disabled={projectEditLocked || lyricsMutation.isPending || isLyricsRunning}
+                  title={projectSyncLockReason ?? undefined}
+                >
+                  Edit Lyrics
+                </button>
+              ) : null}
               <button
                 className="button button--ghost button--small"
                 type="button"
-                onClick={() => {
-                  if (projectEditLocked) {
-                    return;
-                  }
-                  setLyricsDraft(displayedLyrics.map((segment) => segment.text));
-                  setIsEditingLyrics(true);
-                }}
-                disabled={projectEditLocked || lyricsMutation.isPending || isLyricsRunning}
+                onClick={handleOpenTabImport}
+                disabled={projectEditLocked}
                 title={projectSyncLockReason ?? undefined}
               >
-                Edit Lyrics
+                Import Tab
               </button>
-            ) : null}
-            <button
-              className="button button--ghost button--small"
-              type="button"
-              onClick={handleOpenTabImport}
-              disabled={projectEditLocked}
-              title={projectSyncLockReason ?? undefined}
-            >
-              Import Tab
-            </button>
-            {lyricsSelected ? (
-              <>
+              {lyricsSelected ? (
                 <button
                   aria-pressed={hasTimedLyricsTranscript && lyricsFollowEnabled}
-                  className={`chip playback-follow-chip${hasTimedLyricsTranscript && lyricsFollowEnabled ? " chip--active" : ""}`}
+                  className={`chip playback-follow-chip${
+                    hasTimedLyricsTranscript && lyricsFollowEnabled ? " chip--active" : ""
+                  }`}
                   disabled={!hasTimedLyricsTranscript}
                   onClick={() => handleSetLyricsFollowEnabled(!lyricsFollowEnabled)}
                   title={
-                    hasTimedLyricsTranscript ? undefined : "Lyrics Follow requires timed lyrics."
+                    hasTimedLyricsTranscript
+                      ? undefined
+                      : "Lyrics Follow requires timed lyrics."
                   }
                   type="button"
                 >
                   Lyrics Follow
                 </button>
-              </>
-            ) : null}
-            {chordsSelected ? (
-              <>
-                {playbackDisplayMode === "chords" ? (
-                  <button
-                    aria-pressed={chordsFollowEnabled}
-                    className={`chip playback-follow-chip${chordsFollowEnabled ? " chip--active" : ""}`}
-                    onClick={() => handleSetChordsFollowEnabled(!chordsFollowEnabled)}
-                    type="button"
-                  >
-                    Chords Follow
-                  </button>
-                ) : null}
-              </>
-            ) : null}
-          </div>
+              ) : null}
+              {playbackDisplayMode === "chords" ? (
+                <button
+                  aria-pressed={chordsFollowEnabled}
+                  className={`chip playback-follow-chip${chordsFollowEnabled ? " chip--active" : ""}`}
+                  onClick={() => handleSetChordsFollowEnabled(!chordsFollowEnabled)}
+                  type="button"
+                >
+                  Chords Follow
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </div>
       {isTabImportOpen ? (

@@ -1,4 +1,11 @@
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import {
+  forwardRef,
+  type KeyboardEvent,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 import {
   ArrowUpDown,
   AudioLines,
@@ -18,7 +25,14 @@ import {
 import { TargetKeySelector } from "./TargetKeySelector";
 import { useProjectViewModelContext } from "./useProjectViewModelContext";
 
-export function PlaybackPracticeRail() {
+export type PlaybackPracticeRailHandle = {
+  flushPendingTempo: () => void;
+};
+
+export const PlaybackPracticeRail = forwardRef<
+  PlaybackPracticeRailHandle,
+  { variant?: "desktop" | "drawer" }
+>(function PlaybackPracticeRail({ variant = "desktop" }, ref) {
   const {
     capoKey,
     capoOptionRefs,
@@ -101,6 +115,8 @@ export function PlaybackPracticeRail() {
         : tempoDisplayBpm.toFixed(1),
   );
   const tempoCommitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tempoDraftDirty = useRef(false);
+  const flushTempoDraftRef = useRef<() => void>(() => undefined);
   const skipNextTempoBlurCommit = useRef(false);
 
   const clampTempoBpm = (value: number) =>
@@ -110,16 +126,14 @@ export function PlaybackPracticeRail() {
     value === null ? "" : Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1);
 
   useEffect(() => {
+    tempoDraftDirty.current = false;
     setTempoDraftText(
       tempoDisplayBpm === null ? "" : formatTempoDraftText(tempoDisplayBpm),
     );
   }, [tempoDisplayBpm]);
 
   useEffect(() => () => {
-    if (tempoCommitTimer.current !== null) {
-      clearTimeout(tempoCommitTimer.current);
-      tempoCommitTimer.current = null;
-    }
+    flushTempoDraftRef.current();
   }, []);
 
   const clearTempoCommitTimer = () => {
@@ -133,35 +147,49 @@ export function PlaybackPracticeRail() {
     setTempoDraftText(tempoDisplayBpm === null ? "" : formatTempoDraftText(tempoDisplayBpm));
   };
 
-  const commitTempoFromInput = () => {
+  const commitTempoFromInput = (updateDraft = true) => {
+    if (!tempoDraftDirty.current) {
+      return;
+    }
     const trimmedDraft = tempoDraftText.trim();
     const parsed = Number(trimmedDraft);
     if (!Number.isFinite(parsed) || trimmedDraft === "") {
-      restoreTempoDraft();
+      clearTempoCommitTimer();
+      tempoDraftDirty.current = false;
+      if (updateDraft) {
+        restoreTempoDraft();
+      }
       return;
     }
     clearTempoCommitTimer();
     const target = clampTempoBpm(parsed);
-    setTempoDraftText(formatTempoDraftText(target));
+    tempoDraftDirty.current = false;
+    if (updateDraft) {
+      setTempoDraftText(formatTempoDraftText(target));
+    }
     handleSetPlaybackTempo(target);
   };
 
   const scheduleTempoCommit = (value: number) => {
     const target = clampTempoBpm(value);
+    tempoDraftDirty.current = true;
     setTempoDraftText(formatTempoDraftText(target));
     clearTempoCommitTimer();
     tempoCommitTimer.current = setTimeout(() => {
       tempoCommitTimer.current = null;
+      tempoDraftDirty.current = false;
       handleSetPlaybackTempo(target);
     }, 250);
   };
 
-  const flushPendingTempoCommit = () => {
-    if (tempoCommitTimer.current === null) {
-      return;
-    }
-    commitTempoFromInput();
+  const flushTempoDraft = (updateDraft = true) => {
+    commitTempoFromInput(updateDraft);
   };
+
+  flushTempoDraftRef.current = () => flushTempoDraft(false);
+  useImperativeHandle(ref, () => ({
+    flushPendingTempo: flushTempoDraft,
+  }));
 
   const handleTempoInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Enter") {
@@ -170,8 +198,12 @@ export function PlaybackPracticeRail() {
       event.currentTarget.blur();
     }
     if (event.key === "Escape") {
+      if (variant === "drawer") {
+        return;
+      }
       event.preventDefault();
       clearTempoCommitTimer();
+      tempoDraftDirty.current = false;
       restoreTempoDraft();
       skipNextTempoBlurCommit.current = true;
       event.currentTarget.blur();
@@ -188,17 +220,19 @@ export function PlaybackPracticeRail() {
 
   const handleTempoReset = () => {
     clearTempoCommitTimer();
+    tempoDraftDirty.current = false;
     handleResetPlaybackTempo();
     setTempoDraftText(formatTempoDraftText(tempoOriginalBpm ?? tempoDisplayBpm ?? null));
   };
 
   return (
     <aside
-      className="panel playback-practice-rail"
+      className={`panel playback-practice-rail playback-practice-rail--${variant}`}
+      data-practice-controls-variant={variant}
       onBlur={(event) => {
         const nextTarget = event.relatedTarget;
         if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
-          flushPendingTempoCommit();
+          flushTempoDraft();
         }
       }}
     >
@@ -390,7 +424,11 @@ export function PlaybackPracticeRail() {
                 }
                 commitTempoFromInput();
               }}
-              onChange={(event) => setTempoDraftText(event.target.value)}
+              onChange={(event) => {
+                clearTempoCommitTimer();
+                tempoDraftDirty.current = true;
+                setTempoDraftText(event.target.value);
+              }}
               onKeyDown={handleTempoInputKeyDown}
               step={1}
               type="number"
@@ -520,4 +558,4 @@ export function PlaybackPracticeRail() {
       </div>
     </aside>
   );
-}
+});

@@ -7,9 +7,11 @@ use tauri::AppHandle;
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 use super::{AudioCapabilities, AUDIO_EVENT_INPUT_FRAME, AUDIO_EVENT_INPUT_STATE};
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+use crate::power_inhibition::{PowerInhibitionReason, PowerInhibitionState};
 
 const DEFAULT_INPUT_DEVICE_ID: &str = "default";
 const INPUT_FRAME_SAMPLES: usize = 2048;
@@ -682,6 +684,10 @@ fn run_capture_worker(
         start_capture_stream(requested_device_id, Arc::clone(&shared), capture_generation);
     match startup {
         Ok(startup) => {
+            let _power_guard = app
+                .state::<PowerInhibitionState>()
+                .acquire_scoped(PowerInhibitionReason::TunerCapture)
+                .ok();
             let _ = ready_sender.send(Ok((startup.effective_device_id, startup.sample_rate)));
             emit_input_frames(
                 app,

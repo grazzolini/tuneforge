@@ -36,7 +36,7 @@ falls back to `getUserMedia` after a capability, permission, startup, or stream 
 `VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` development override remains an explicit all-Web mode for both
 tuner capture and playback.
 
-Playback also owns media-key controls and wake prevention through the active backend only:
+Playback owns media-key controls, while playback and tuner capture share counted power protection:
 
 - TuneForge registers one desktop system-media adapter with the OS for media keys and headset
   controls. That adapter does not choose the audio engine; it routes play/pause/stop/seek events to
@@ -49,6 +49,13 @@ Playback also owns media-key controls and wake prevention through the active bac
   including `VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` and native fallback. It uses the browser Screen Wake
   Lock while playing. Browser Screen Wake Lock protects the visible screen only; it does not claim
   native background protection.
+- Native tuner capture acquires the same OS power-protection manager only after the CPAL/AAudio
+  stream starts. Worker exit releases its scoped owner on stop, interruption, replacement, Android
+  suspension, or teardown even when WebView effects cannot run.
+- Confirmed Web Audio tuner capture owns the same shared browser Screen Wake Lock and a native
+  `tuner-capture` reason in packaged Tauri builds. Track termination, stop, error, replacement, and
+  unmount clear both. Pending permission and startup never acquire protection. Playback and tuner
+  browser owners share one sentinel, so either owner can stop without releasing the other.
 - Native fallback is an explicit ownership transfer. TuneForge clears system media state and native
   power protection, starts the Web Audio path at the fallback position, then re-registers system
   media state for the Web Audio owner and acquires the browser wake lock. Diagnostics keep the
@@ -110,8 +117,8 @@ Settings -> Local Data -> Show diagnostics reports:
   the last worker error when present
 - current power-protection phase, confirmed backend, active reasons, and separately confirmed screen
   and background coverage
-- current browser Screen Wake Lock phase plus latest safe power-protection error and last confirmed
-  native backend
+- current native backend, browser Screen Wake Lock phase/backend, and separately confirmed browser
+  screen coverage, plus latest safe power-protection error and last confirmed native backend
 
 Current state is live and starts as `Not playing` / `None` after reload. Only last-confirmed path and
 redacted failures are restored from local storage. A native failure does not claim Web fallback
@@ -128,6 +135,10 @@ toggle, and unavailable hardware. Blocked states give an Android Settings path a
 does not open Settings. Permission and privacy state are rechecked before every start and while the
 stream is active. Revocation, privacy blocking, stream interruption, or app suspension stops the
 stream, clears live pitch/input state, and requires an explicit retry after resume.
+
+Protection failure stays separate from capture truth. Listening continues with a compact warning
+when neither native screen protection nor browser Screen Wake Lock is confirmed. No active owner is
+restored from diagnostics history.
 
 On Web media `error`, playback stops with an error. After `waiting` or `stalled`, five seconds with
 no progress while the element is not paused, seeking, or ended is also treated as a failed path.

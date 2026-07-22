@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   getNativeAudioCapabilities,
@@ -16,6 +16,16 @@ import {
   type NativeAudioInputState,
 } from "../../lib/nativeAudio";
 import { useStableCallback } from "../../lib/useStableCallback";
+import {
+  getPowerInhibitionVersion,
+  refreshPowerInhibitionStatus,
+  subscribePowerInhibition,
+  tunerPowerProtectionMessage,
+} from "../../lib/powerInhibition";
+import {
+  usePowerInhibitionActivity,
+  useScreenWakeLock,
+} from "../../lib/useScreenWakeLock";
 import { usePreferences, type TunerVisualMode } from "../../lib/preferences";
 import {
   activateWebAudioContext,
@@ -153,6 +163,7 @@ function ChromaticTunerPage() {
   const readingStabilizerRef = useRef(createStabilizedTunerReadingState());
   const statusRef = useRef(status);
   const streamRef = useRef<MediaStream | null>(null);
+  const webTrackEndCleanupRef = useRef<(() => void) | null>(null);
   const timeDomainDataRef = useRef<Float32Array<ArrayBuffer> | null>(null);
 
   useEffect(() => {
@@ -230,6 +241,8 @@ function ChromaticTunerPage() {
     analyserRef.current = null;
     timeDomainDataRef.current = null;
 
+    webTrackEndCleanupRef.current?.();
+    webTrackEndCleanupRef.current = null;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
 
@@ -438,6 +451,22 @@ function ChromaticTunerPage() {
     analyserRef.current = analyser;
     mediaSourceRef.current = mediaSource;
 
+    const handleTrackEnded = () => {
+      if (requestIdRef.current !== requestId || streamRef.current !== stream) {
+        return;
+      }
+      requestIdRef.current += 1;
+      releaseCapture();
+      resetTunerDisplay();
+      setStatus("error");
+      setErrorMessage("Microphone capture ended. Choose Retry to start it again.");
+    };
+    const tracks = stream.getTracks();
+    tracks.forEach((track) => track.addEventListener?.("ended", handleTrackEnded));
+    webTrackEndCleanupRef.current = () => {
+      tracks.forEach((track) => track.removeEventListener?.("ended", handleTrackEnded));
+    };
+
     await activateWebAudioContext(audioContext);
 
     if (requestIdRef.current !== requestId) {
@@ -563,6 +592,20 @@ function ChromaticTunerPage() {
 
   const isBusy = status === "starting";
   const isListening = status === "listening";
+  const webTunerListening = isListening && activeCaptureBackend === "web";
+  useSyncExternalStore(
+    subscribePowerInhibition,
+    getPowerInhibitionVersion,
+    getPowerInhibitionVersion,
+  );
+  usePowerInhibitionActivity("tuner-capture", webTunerListening);
+  useScreenWakeLock("tuner-capture", webTunerListening);
+  useEffect(() => {
+    if (isListening) {
+      void refreshPowerInhibitionStatus();
+    }
+  }, [isListening]);
+  const protectionWarning = isListening ? tunerPowerProtectionMessage() : null;
   const canStart =
     ((!webAudioForced && androidRuntime) ||
       canUseTunerCapture(webAudioForced ? null : nativeAudioCapabilities)) &&
@@ -615,6 +658,9 @@ function ChromaticTunerPage() {
         />
 
         {errorMessage ? <p className="inline-error" role="alert">{errorMessage}</p> : null}
+        {protectionWarning ? (
+          <p className="tuner-preferences__status" role="status">{protectionWarning}</p>
+        ) : null}
         {webAudioForced ? (
           <p className="tuner-preferences__status">Web Audio development override is active.</p>
         ) : null}

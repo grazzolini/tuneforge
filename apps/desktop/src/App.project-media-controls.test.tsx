@@ -24,9 +24,11 @@ import {
 
 let usePlaybackPowerProtection: typeof import("./features/projects/playbackEffects").usePlaybackPowerProtection;
 let useWebPlaybackWakeLock: typeof import("./features/projects/playbackEffects").useWebPlaybackWakeLock;
+let useScreenWakeLock: typeof import("./lib/useScreenWakeLock").useScreenWakeLock;
 
 beforeAll(async () => {
   ({ usePlaybackPowerProtection, useWebPlaybackWakeLock } = await import("./features/projects/playbackEffects"));
+  ({ useScreenWakeLock } = await import("./lib/useScreenWakeLock"));
 });
 
 async function openPlaybackWorkspace(user: ReturnType<typeof userEvent.setup>) {
@@ -163,6 +165,12 @@ function WebPlaybackWakeLockHarness({
   isPlaying: boolean;
 }) {
   useWebPlaybackWakeLock({ backend, isPlaying });
+  return null;
+}
+
+function SharedWakeLockHarness({ playback, tuner }: { playback: boolean; tuner: boolean }) {
+  useScreenWakeLock("playback", playback);
+  useScreenWakeLock("tuner-capture", tuner);
   return null;
 }
 
@@ -955,6 +963,68 @@ describe("Desktop app project media controls", () => {
       backend: null,
       screenProtected: false,
     });
+    view.unmount();
+  });
+
+  it("reports a late browser Wake Lock release failure after the final owner exits", async () => {
+    let rejectRelease: (reason?: unknown) => void = () => undefined;
+    const pendingSentinel = {
+      release: vi.fn(
+        () => new Promise<void>((_resolve, reject) => {
+          rejectRelease = reject;
+        }),
+      ),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+    let resolveRequest: (sentinel: typeof pendingSentinel) => void = () => undefined;
+    getMockWakeLock().request.mockImplementationOnce(
+      () => new Promise((resolve) => {
+        resolveRequest = resolve;
+      }),
+    );
+    const view = render(<WebPlaybackWakeLockHarness isPlaying />);
+    await waitFor(() => expect(getMockWakeLock().request).toHaveBeenCalledTimes(1));
+
+    view.rerender(<WebPlaybackWakeLockHarness backend="native" isPlaying />);
+    await act(async () => {
+      resolveRequest(pendingSentinel);
+      await Promise.resolve();
+    });
+    expect(readBrowserWakeLockStatus()).toMatchObject({
+      phase: "releasing",
+      backend: "browser-screen-wake-lock",
+      screenProtected: true,
+    });
+
+    await act(async () => {
+      rejectRelease(new Error("late release failed"));
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      expect(readBrowserWakeLockStatus()).toMatchObject({
+        phase: "release-failed",
+        backend: "browser-screen-wake-lock",
+        screenProtected: true,
+      });
+    });
+    view.unmount();
+  });
+
+  it("keeps one browser Wake Lock while playback and tuner owners overlap", async () => {
+    const view = render(<SharedWakeLockHarness playback tuner />);
+    await waitFor(() => expect(getMockWakeLock().request).toHaveBeenCalledTimes(1));
+
+    view.rerender(<SharedWakeLockHarness playback={false} tuner />);
+    expect(getMockWakeLock().sentinels[0]?.release).not.toHaveBeenCalled();
+    expect(readBrowserWakeLockStatus()).toMatchObject({
+      phase: "active",
+      screenProtected: true,
+    });
+
+    view.rerender(<SharedWakeLockHarness playback={false} tuner={false} />);
+    await waitFor(() => expect(getMockWakeLock().sentinels[0]?.release).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(readBrowserWakeLockStatus().phase).toBe("inactive"));
     view.unmount();
   });
 

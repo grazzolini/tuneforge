@@ -93,13 +93,23 @@ const powerInhibitionReasonLabels: Record<PowerInhibitionReason, string> = {
   playback: "Playback",
   "sync-listener": "Sync listener",
   "sync-transfer": "Sync transfer",
+  "tuner-capture": "Tuner capture",
 };
 
 function powerInhibitionBackendLabel(backend: string | null) {
   if (!backend) {
     return "None confirmed";
   }
-  return backend === "android-foreground-service" ? "Android foreground service" : backend;
+  if (backend === "android-foreground-service") {
+    return "Android foreground service";
+  }
+  if (backend === "android-activity-screen") {
+    return "Android activity screen";
+  }
+  if (backend === "browser-screen-wake-lock") {
+    return "Browser Screen Wake Lock";
+  }
+  return backend;
 }
 
 const themeOptions: ChoiceOption<ThemePreference>[] = [
@@ -1281,7 +1291,7 @@ export function SettingsView() {
                   <dd>{powerInhibitionPhaseLabels[powerInhibitionStatus.phase]}</dd>
                 </div>
                 <div>
-                  <dt>Current Backend</dt>
+                  <dt>Native Backend</dt>
                   <dd>{powerInhibitionBackendLabel(powerInhibitionStatus.backend)}</dd>
                 </div>
                 <div>
@@ -1295,16 +1305,24 @@ export function SettingsView() {
                   </dd>
                 </div>
                 <div>
-                  <dt>Screen Protected</dt>
+                  <dt>Native Screen Protected</dt>
                   <dd>{powerInhibitionStatus.screenProtected ? "Confirmed" : "Not confirmed"}</dd>
                 </div>
                 <div>
-                  <dt>Background Protected</dt>
+                  <dt>Native Background Protected</dt>
                   <dd>{powerInhibitionStatus.backgroundProtected ? "Confirmed" : "Not confirmed"}</dd>
                 </div>
                 <div>
-                  <dt>Browser Screen Wake Lock</dt>
+                  <dt>Browser Screen Wake Lock State</dt>
                   <dd>{powerInhibitionPhaseLabels[browserWakeLockStatus.phase]}</dd>
+                </div>
+                <div>
+                  <dt>Browser Screen Wake Lock Backend</dt>
+                  <dd>{powerInhibitionBackendLabel(browserWakeLockStatus.backend)}</dd>
+                </div>
+                <div>
+                  <dt>Browser Screen Protected</dt>
+                  <dd>{browserWakeLockStatus.screenProtected ? "Confirmed" : "Not confirmed"}</dd>
                 </div>
                 <div>
                   <dt>Last Confirmed Backend</dt>

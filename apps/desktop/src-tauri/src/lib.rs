@@ -403,6 +403,8 @@ pub fn run() {
             native_audio::audio_list_input_devices,
             native_audio::audio_list_output_devices,
             native_audio::audio_get_input_state,
+            native_audio::audio_get_input_permission_status,
+            native_audio::audio_request_input_permission,
             native_audio::audio_start_input,
             native_audio::audio_stop_input,
             native_audio::audio_set_monitor,
@@ -460,6 +462,17 @@ pub fn run() {
         .expect("error while building tuneforge");
 
     app.run(|app_handle, event| {
+        #[cfg(target_os = "android")]
+        if matches!(
+            event,
+            tauri::RunEvent::WindowEvent {
+                event: tauri::WindowEvent::Suspended,
+                ..
+            }
+        ) {
+            let native_audio = app_handle.state::<native_audio::NativeAudioState>();
+            native_audio::stop_input_for_lifecycle(app_handle, native_audio.inner());
+        }
         if let tauri::RunEvent::Exit = event {
             let sync_transport = app_handle.state::<sync_transport::SyncTransportState>();
             sync_transport.shutdown();

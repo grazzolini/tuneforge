@@ -54,6 +54,7 @@ const {
   mockSave,
   mockConfirm,
   mockInvoke,
+  mockInvokeImplementation,
   mockListProjects,
   mockImportProject,
   mockGetProject,
@@ -101,6 +102,7 @@ const {
   setMockPowerInhibition,
   emitMockNativeAudioError,
   emitMockNativeAudioInputFrame,
+  emitMockNativeAudioInputState,
   emitMockNativeAudioPosition,
   emitMockSystemMediaControl,
   getSystemMediaControlListenerCount,
@@ -122,6 +124,7 @@ const {
     inputLevel: number;
     samples: number[];
     timestampMs: number;
+    captureGeneration: number;
   };
   type NativeAudioInputFrameEvent = {
     event: "audio://input-frame";
@@ -139,7 +142,7 @@ const {
     message: string;
   };
   type NativeAudioRuntimeEvent = {
-    event: "audio://position" | "audio://ended" | "audio://error";
+    event: "audio://position" | "audio://ended" | "audio://error" | "audio://input-state";
     id: number;
     payload: Record<string, unknown>;
   };
@@ -210,6 +213,14 @@ const {
       monitorGain: number;
       inputLevel: number;
       sampleRate: number | null;
+      captureGeneration: number;
+      capturePath: "none" | "desktop-cpal" | "android-aaudio";
+      permissionState: string;
+      error: { code: string; message: string; guidance: string | null } | null;
+    };
+    nativeAudioInputPermission: {
+      state: string;
+      error: { code: string; message: string; guidance: string | null } | null;
     };
     nativeAudioSnapshot: Record<string, unknown>;
     nativeAudioStartError: string | null;
@@ -851,7 +862,12 @@ const {
         monitorGain: 0,
         inputLevel: 0,
         sampleRate: null,
+        captureGeneration: 0,
+        capturePath: "none",
+        permissionState: "unavailable",
+        error: null,
       },
+      nativeAudioInputPermission: { state: "unavailable", error: null },
       nativeAudioSnapshot: {
         sessionId: null,
         state: "stopped",
@@ -919,6 +935,7 @@ const {
     capabilities?: Record<string, unknown>;
     inputDevices?: Record<string, unknown>;
     inputState?: Partial<typeof state.nativeAudioInputState>;
+    inputPermission?: Partial<typeof state.nativeAudioInputPermission>;
     snapshot?: Record<string, unknown>;
     startError?: string | null;
     playFallbackReason?: string | null;
@@ -935,6 +952,13 @@ const {
       ...state.nativeAudioInputState,
       ...nextState.inputState,
     };
+    state.nativeAudioInputPermission = {
+      ...state.nativeAudioInputPermission,
+      ...nextState.inputPermission,
+    };
+    if (nextState.capabilities?.platform === "android" && !nextState.inputPermission) {
+      state.nativeAudioInputPermission = { state: "granted", error: null };
+    }
     state.nativeAudioSnapshot = {
       ...state.nativeAudioSnapshot,
       ...nextState.snapshot,
@@ -986,6 +1010,9 @@ const {
         payload: clone(frame),
       });
     });
+  }
+  function emitMockNativeAudioInputState() {
+    emitMockNativeRuntimeEvent("audio://input-state", state.nativeAudioInputState);
   }
   function emitMockNativeAudioPosition(position: NativeAudioPositionPayload) {
     emitMockNativeRuntimeEvent("audio://position", position);
@@ -1056,7 +1083,8 @@ const {
       if (
         eventName === "audio://position" ||
         eventName === "audio://ended" ||
-        eventName === "audio://error"
+        eventName === "audio://error" ||
+        eventName === "audio://input-state"
       ) {
         const listenerId = nextNativeRuntimeListenerId;
         nextNativeRuntimeListenerId += 1;
@@ -1078,7 +1106,10 @@ const {
       return () => nativeInputFrameListeners.delete(listenerId);
     },
   );
-  const mockInvoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+  const mockInvokeImplementation = async (
+    command: string,
+    args?: Record<string, unknown>,
+  ) => {
     if (command === "backend_base_url") {
       return "http://127.0.0.1:8765";
     }
@@ -1176,6 +1207,14 @@ const {
 
     if (command === "audio_get_input_state") {
       return clone(state.nativeAudioInputState);
+    }
+
+    if (command === "audio_get_input_permission_status") {
+      return clone(state.nativeAudioInputPermission);
+    }
+
+    if (command === "audio_request_input_permission") {
+      return clone(state.nativeAudioInputPermission);
     }
 
     if (command === "audio_prepare_session") {
@@ -1324,6 +1363,12 @@ const {
         monitorGain: payload.monitorGain ?? 0,
         inputLevel: 0,
         sampleRate: 48000,
+        captureGeneration: state.nativeAudioInputState.captureGeneration + 1,
+        capturePath:
+          state.nativeAudioCapabilities.platform === "android" ? "android-aaudio" : "desktop-cpal",
+        permissionState:
+          state.nativeAudioCapabilities.platform === "android" ? "granted" : "unavailable",
+        error: null,
       };
       return clone(state.nativeAudioInputState);
     }
@@ -1334,12 +1379,16 @@ const {
         active: false,
         inputLevel: 0,
         sampleRate: null,
+        captureGeneration: state.nativeAudioInputState.captureGeneration + 1,
+        capturePath: "none",
+        error: null,
       };
       return clone(state.nativeAudioInputState);
     }
 
     throw new Error(`Unexpected invoke command: ${command}`);
-  });
+  };
+  const mockInvoke = vi.fn(mockInvokeImplementation);
   const mockGetHealth = vi.fn(async () => ({
     name: "TuneForge",
     version: "backend-test-ref",
@@ -2376,6 +2425,7 @@ const {
     mockSave,
     mockConfirm,
     mockInvoke,
+    mockInvokeImplementation,
     mockListProjects,
     mockImportProject,
     mockGetProject,
@@ -2423,6 +2473,7 @@ const {
     setMockPowerInhibition,
     emitMockNativeAudioError,
     emitMockNativeAudioInputFrame,
+    emitMockNativeAudioInputState,
     emitMockNativeAudioPosition,
     emitMockSystemMediaControl,
     getSystemMediaControlListenerCount,
@@ -2826,6 +2877,10 @@ export function emitMockNativeInputFrame(
   emitMockNativeAudioInputFrame(frame);
 }
 
+export function emitMockNativeInputState() {
+  emitMockNativeAudioInputState();
+}
+
 export function emitMockNativePlaybackPosition(
   position: Parameters<typeof emitMockNativeAudioPosition>[0],
 ) {
@@ -2926,6 +2981,7 @@ export function resetAppTestHarness() {
   mockOpen.mockReset();
   mockSave.mockReset();
   mockConfirm.mockReset();
+  mockInvoke.mockImplementation(mockInvokeImplementation);
   mockInvoke.mockClear();
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,

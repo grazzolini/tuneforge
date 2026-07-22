@@ -4,12 +4,12 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 use tauri::Emitter;
 
-use super::{AudioCapabilities, AUDIO_EVENT_INPUT_FRAME};
+use super::{AudioCapabilities, AUDIO_EVENT_INPUT_FRAME, AUDIO_EVENT_INPUT_STATE};
 
 const DEFAULT_INPUT_DEVICE_ID: &str = "default";
 const INPUT_FRAME_SAMPLES: usize = 2048;
@@ -72,6 +72,47 @@ pub struct AudioInputState {
     pub monitor_gain: f32,
     pub input_level: f32,
     pub sample_rate: Option<u32>,
+    pub capture_generation: u64,
+    pub capture_path: CapturePath,
+    pub permission_state: AudioInputPermissionState,
+    pub error: Option<AudioInputError>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+#[serde(rename_all = "kebab-case")]
+pub enum CapturePath {
+    None,
+    DesktopCpal,
+    AndroidAaudio,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+#[serde(rename_all = "kebab-case")]
+pub enum AudioInputPermissionState {
+    Prompt,
+    Prompting,
+    Granted,
+    Denied,
+    Blocked,
+    PrivacyBlocked,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioInputError {
+    pub code: &'static str,
+    pub message: &'static str,
+    pub guidance: Option<&'static str>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioInputPermissionStatus {
+    pub state: AudioInputPermissionState,
+    pub error: Option<AudioInputError>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -82,6 +123,7 @@ pub struct AudioInputFrame {
     pub input_level: f32,
     pub samples: Vec<f32>,
     pub timestamp_ms: u64,
+    pub capture_generation: u64,
 }
 
 pub struct CaptureState {
@@ -91,36 +133,43 @@ pub struct CaptureState {
     monitor_gain: f32,
     input_level: f32,
     sample_rate: Option<u32>,
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    capture_generation: u64,
+    capture_path: CapturePath,
+    permission_state: AudioInputPermissionState,
+    error: Option<AudioInputError>,
+    permission_pending: bool,
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
     runtime: Option<CaptureRuntime>,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 struct CaptureRuntime {
     stop_sender: mpsc::Sender<CaptureControl>,
     shared: Arc<Mutex<CaptureSharedState>>,
     worker_thread: Option<JoinHandle<()>>,
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos")))]
 struct CaptureRuntime;
 
 #[derive(Default)]
 struct CaptureSharedState {
     input_level: f32,
+    terminal_error: Option<AudioInputError>,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 enum CaptureControl {
     Stop,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 struct CaptureStreamStartup {
     effective_device_id: String,
     sample_rate: u32,
     stream: cpal::Stream,
     frame_receiver: mpsc::Receiver<AudioInputFrame>,
+    error_receiver: mpsc::Receiver<()>,
 }
 
 impl Default for CaptureState {
@@ -132,7 +181,12 @@ impl Default for CaptureState {
             monitor_gain: 0.0,
             input_level: 0.0,
             sample_rate: None,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            capture_generation: 0,
+            capture_path: CapturePath::None,
+            permission_state: initial_permission_state(),
+            error: None,
+            permission_pending: false,
+            #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
             runtime: None,
         }
     }
@@ -184,26 +238,111 @@ impl CaptureState {
         request: AudioInputRequest,
     ) -> Result<AudioInputState, String> {
         self.stop_runtime();
+        self.clear_live_state();
+        self.capture_generation = self.capture_generation.wrapping_add(1).max(1);
+        self.error = None;
+        self.permission_pending = false;
         self.monitor_enabled = request.monitor_enabled.unwrap_or(false);
         self.monitor_gain = normalize_gain(request.monitor_gain);
         self.input_level = 0.0;
 
-        let (device_id, sample_rate, runtime) = start_desktop_input(app, request.device_id)?;
+        #[cfg(target_os = "android")]
+        {
+            self.permission_state = input_permission_status(true).state;
+            if self.permission_state != AudioInputPermissionState::Granted {
+                self.permission_pending = matches!(
+                    self.permission_state,
+                    AudioInputPermissionState::Prompt | AudioInputPermissionState::Prompting
+                );
+                self.error = permission_error(self.permission_state);
+                let state = self.state();
+                let _ = app.emit(AUDIO_EVENT_INPUT_STATE, state.clone());
+                return Ok(state);
+            }
+        }
+
+        let generation = self.capture_generation;
+        let (device_id, sample_rate, runtime) =
+            match start_native_input(app.clone(), request.device_id, generation) {
+                Ok(startup) => startup,
+                Err(_) => {
+                    self.error = Some(startup_error());
+                    let state = self.state();
+                    let _ = app.emit(AUDIO_EVENT_INPUT_STATE, state.clone());
+                    return Ok(state);
+                }
+            };
         self.active = true;
         self.device_id = Some(device_id);
         self.sample_rate = Some(sample_rate);
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        self.capture_path = current_capture_path();
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
         {
             self.runtime = Some(runtime);
         }
-        Ok(self.state())
+        let state = self.state();
+        let _ = app.emit(AUDIO_EVENT_INPUT_STATE, state.clone());
+        Ok(state)
     }
 
     pub fn stop(&mut self) -> AudioInputState {
         self.stop_runtime();
-        self.active = false;
-        self.input_level = 0.0;
-        self.sample_rate = None;
+        self.capture_generation = self.capture_generation.wrapping_add(1).max(1);
+        self.clear_live_state();
+        self.error = None;
+        self.permission_pending = false;
+        self.state()
+    }
+
+    #[cfg(target_os = "android")]
+    pub fn stop_for_background(&mut self, app: &AppHandle) {
+        if let Some(terminal) = self.take_background_terminal(background_error()) {
+            let _ = app.emit(AUDIO_EVENT_INPUT_STATE, terminal);
+        }
+    }
+
+    #[cfg(any(target_os = "android", test))]
+    fn take_background_terminal(&mut self, error: AudioInputError) -> Option<AudioInputState> {
+        if !self.active {
+            return None;
+        }
+        let terminal_generation = self.capture_generation;
+        self.stop_runtime();
+        self.clear_live_state();
+        self.permission_pending = false;
+        self.error = Some(error);
+        let terminal = self.state();
+        self.capture_generation = terminal_generation.wrapping_add(1).max(1);
+        Some(terminal)
+    }
+
+    pub fn refresh(&mut self, app: &AppHandle) -> AudioInputState {
+        #[cfg(target_os = "android")]
+        {
+            let permission = read_android_permission();
+            self.permission_state = permission;
+            if self.permission_pending {
+                self.permission_pending = matches!(
+                    permission,
+                    AudioInputPermissionState::Prompt | AudioInputPermissionState::Prompting
+                );
+                self.error = permission_error(permission);
+            }
+        }
+
+        let runtime_error = self.runtime_terminal_error();
+        if let Some(error) = runtime_error.or_else(|| {
+            if self.active && cfg!(target_os = "android") {
+                permission_error(self.permission_state)
+            } else {
+                None
+            }
+        }) {
+            self.stop_runtime();
+            self.clear_live_state();
+            self.error = Some(error);
+            let _ = app.emit(AUDIO_EVENT_INPUT_STATE, self.state());
+        }
         self.state()
     }
 
@@ -215,17 +354,45 @@ impl CaptureState {
 
     pub fn state(&self) -> AudioInputState {
         AudioInputState {
-            active: self.active,
+            active: self.effective_active(),
             device_id: self.device_id.clone(),
             monitor_enabled: self.monitor_enabled,
             monitor_gain: self.monitor_gain,
             input_level: self.current_input_level(),
             sample_rate: self.sample_rate,
+            capture_generation: self.capture_generation,
+            capture_path: if self.effective_active() {
+                self.capture_path
+            } else {
+                CapturePath::None
+            },
+            permission_state: self.permission_state,
+            error: self.current_error(),
         }
     }
 
+    fn effective_active(&self) -> bool {
+        self.active && self.runtime_terminal_error().is_none()
+    }
+
+    fn current_error(&self) -> Option<AudioInputError> {
+        self.runtime_terminal_error().or_else(|| self.error.clone())
+    }
+
+    fn runtime_terminal_error(&self) -> Option<AudioInputError> {
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        if let Some(runtime) = &self.runtime {
+            return runtime
+                .shared
+                .lock()
+                .ok()
+                .and_then(|shared| shared.terminal_error.clone());
+        }
+        None
+    }
+
     fn current_input_level(&self) -> f32 {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
         if let Some(runtime) = &self.runtime {
             if let Ok(shared) = runtime.shared.lock() {
                 return shared.input_level;
@@ -235,14 +402,169 @@ impl CaptureState {
         self.input_level
     }
 
+    fn clear_live_state(&mut self) {
+        self.active = false;
+        self.device_id = None;
+        self.input_level = 0.0;
+        self.sample_rate = None;
+        self.capture_path = CapturePath::None;
+    }
+
     fn stop_runtime(&mut self) {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
         if let Some(mut runtime) = self.runtime.take() {
             let _ = runtime.stop_sender.send(CaptureControl::Stop);
             if let Some(worker_thread) = runtime.worker_thread.take() {
                 let _ = worker_thread.join();
             }
         }
+    }
+}
+
+pub fn input_permission_status(_request: bool) -> AudioInputPermissionStatus {
+    #[cfg(target_os = "android")]
+    let state = if _request {
+        request_android_permission()
+    } else {
+        read_android_permission()
+    };
+    #[cfg(not(target_os = "android"))]
+    let state = AudioInputPermissionState::Unavailable;
+    AudioInputPermissionStatus {
+        state,
+        error: if cfg!(target_os = "android") {
+            permission_error(state)
+        } else {
+            None
+        },
+    }
+}
+
+fn initial_permission_state() -> AudioInputPermissionState {
+    #[cfg(target_os = "android")]
+    return AudioInputPermissionState::Prompt;
+    #[cfg(not(target_os = "android"))]
+    AudioInputPermissionState::Unavailable
+}
+
+fn current_capture_path() -> CapturePath {
+    #[cfg(target_os = "android")]
+    return CapturePath::AndroidAaudio;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    return CapturePath::DesktopCpal;
+    #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos")))]
+    CapturePath::None
+}
+
+fn startup_error() -> AudioInputError {
+    AudioInputError {
+        code: "startup-failure",
+        message: "The microphone could not start.",
+        guidance: Some(if cfg!(target_os = "android") {
+            "Check Android Settings > Apps > TuneForge > Permissions > Microphone, then choose Retry."
+        } else {
+            "Check microphone access, then choose Retry."
+        }),
+    }
+}
+
+fn interruption_error() -> AudioInputError {
+    AudioInputError {
+        code: "stream-interruption",
+        message: "Microphone capture was interrupted.",
+        guidance: Some(if cfg!(target_os = "android") {
+            "Check Android Settings > Apps > TuneForge > Permissions > Microphone, then choose Retry."
+        } else {
+            "Choose Retry when the microphone is available."
+        }),
+    }
+}
+
+#[cfg(target_os = "android")]
+fn background_error() -> AudioInputError {
+    AudioInputError {
+        code: "background-teardown",
+        message: "Microphone capture stopped when TuneForge left the foreground.",
+        guidance: Some("Return to TuneForge, check Android Settings > Apps > TuneForge > Permissions > Microphone, then choose Retry."),
+    }
+}
+
+fn permission_error(permission: AudioInputPermissionState) -> Option<AudioInputError> {
+    match permission {
+        AudioInputPermissionState::Denied => Some(AudioInputError {
+            code: "permission-denied",
+            message: "Microphone permission was denied.",
+            guidance: Some("Check Android Settings > Apps > TuneForge > Permissions > Microphone, then choose Retry."),
+        }),
+        AudioInputPermissionState::Blocked => Some(AudioInputError {
+            code: "permission-blocked",
+            message: "Microphone permission is blocked.",
+            guidance: Some(
+                "Allow Microphone for TuneForge in Android Settings > Apps > TuneForge > Permissions, then choose Retry.",
+            ),
+        }),
+        AudioInputPermissionState::PrivacyBlocked => Some(AudioInputError {
+            code: "privacy-blocked",
+            message: "Android microphone privacy controls are blocking capture.",
+            guidance: Some("Enable microphone access in Android Settings > Privacy > Microphone access, then choose Retry."),
+        }),
+        AudioInputPermissionState::Unavailable => Some(AudioInputError {
+            code: "unavailable",
+            message: "Native microphone capture is unavailable.",
+            guidance: Some("Check Android Settings > Apps > TuneForge > Permissions > Microphone, then choose Retry."),
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "android")]
+fn request_android_permission() -> AudioInputPermissionState {
+    call_android_permission("requestTuneForgeAudioPermission")
+}
+
+#[cfg(target_os = "android")]
+fn read_android_permission() -> AudioInputPermissionState {
+    call_android_permission("getTuneForgeAudioPermissionState")
+}
+
+#[cfg(target_os = "android")]
+fn call_android_permission(method: &str) -> AudioInputPermissionState {
+    use jni::objects::JObject;
+    use jni::JavaVM;
+    use tauri::tao::platform::android::prelude::main_android_context;
+
+    let Some(context) = main_android_context() else {
+        return AudioInputPermissionState::Unavailable;
+    };
+    if context.java_vm.is_null() || context.context_jobject.is_null() {
+        return AudioInputPermissionState::Unavailable;
+    }
+    let Ok(vm) = (unsafe { JavaVM::from_raw(context.java_vm.cast()) }) else {
+        return AudioInputPermissionState::Unavailable;
+    };
+    let Ok(mut env) = vm.attach_current_thread() else {
+        return AudioInputPermissionState::Unavailable;
+    };
+    let activity = unsafe { JObject::from_raw(context.context_jobject.cast()) };
+    let result = env
+        .call_method(&activity, method, "()Ljava/lang/String;", &[])
+        .and_then(|value| value.l());
+    std::mem::forget(activity);
+    let Ok(result) = result else {
+        return AudioInputPermissionState::Unavailable;
+    };
+    let result = jni::objects::JString::from(result);
+    let Ok(value) = env.get_string(&result) else {
+        return AudioInputPermissionState::Unavailable;
+    };
+    match value.to_string_lossy().as_ref() {
+        "prompt" => AudioInputPermissionState::Prompt,
+        "prompting" => AudioInputPermissionState::Prompting,
+        "granted" => AudioInputPermissionState::Granted,
+        "denied" => AudioInputPermissionState::Denied,
+        "blocked" => AudioInputPermissionState::Blocked,
+        "privacy-blocked" => AudioInputPermissionState::PrivacyBlocked,
+        _ => AudioInputPermissionState::Unavailable,
     }
 }
 
@@ -306,10 +628,11 @@ fn list_desktop_input_devices() -> Result<Vec<AudioInputDevice>, String> {
     Err("Native microphone capture is only available on macOS and Linux.".to_string())
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn start_desktop_input(
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+fn start_native_input(
     app: AppHandle,
     requested_device_id: Option<String>,
+    capture_generation: u64,
 ) -> Result<(String, u32, CaptureRuntime), String> {
     let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
     let (stop_sender, stop_receiver) = mpsc::channel();
@@ -322,6 +645,7 @@ fn start_desktop_input(
             ready_sender,
             stop_receiver,
             worker_shared,
+            capture_generation,
         );
     });
 
@@ -345,19 +669,29 @@ fn start_desktop_input(
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 fn run_capture_worker(
     app: AppHandle,
     requested_device_id: Option<String>,
     ready_sender: mpsc::SyncSender<Result<(String, u32), String>>,
     stop_receiver: mpsc::Receiver<CaptureControl>,
     shared: Arc<Mutex<CaptureSharedState>>,
+    capture_generation: u64,
 ) {
-    let startup = start_capture_stream(requested_device_id, shared);
+    let startup =
+        start_capture_stream(requested_device_id, Arc::clone(&shared), capture_generation);
     match startup {
         Ok(startup) => {
             let _ = ready_sender.send(Ok((startup.effective_device_id, startup.sample_rate)));
-            emit_input_frames(app, startup.frame_receiver, stop_receiver, startup.stream);
+            emit_input_frames(
+                app,
+                startup.frame_receiver,
+                startup.error_receiver,
+                stop_receiver,
+                startup.stream,
+                shared,
+                capture_generation,
+            );
         }
         Err(error) => {
             let _ = ready_sender.send(Err(error));
@@ -365,10 +699,11 @@ fn run_capture_worker(
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 fn start_capture_stream(
     requested_device_id: Option<String>,
     shared: Arc<Mutex<CaptureSharedState>>,
+    capture_generation: u64,
 ) -> Result<CaptureStreamStartup, String> {
     let host = cpal::default_host();
     let (device, effective_device_id) = select_input_device(&host, requested_device_id.as_deref())?;
@@ -380,6 +715,7 @@ fn start_capture_stream(
     let sample_rate = config.sample_rate;
     let channels = usize::from(config.channels.max(1));
     let (sender, receiver) = mpsc::sync_channel::<AudioInputFrame>(2);
+    let (error_sender, error_receiver) = mpsc::sync_channel::<()>(1);
     let device_id = Some(effective_device_id.clone());
 
     let stream = match sample_format {
@@ -391,6 +727,8 @@ fn start_capture_stream(
             device_id.clone(),
             sender.clone(),
             Arc::clone(&shared),
+            error_sender.clone(),
+            capture_generation,
             convert_i8_sample,
         ),
         cpal::SampleFormat::F32 => build_input_stream(
@@ -401,6 +739,8 @@ fn start_capture_stream(
             device_id.clone(),
             sender.clone(),
             Arc::clone(&shared),
+            error_sender.clone(),
+            capture_generation,
             convert_f32_sample,
         ),
         cpal::SampleFormat::I16 => build_input_stream(
@@ -411,6 +751,8 @@ fn start_capture_stream(
             device_id.clone(),
             sender.clone(),
             Arc::clone(&shared),
+            error_sender.clone(),
+            capture_generation,
             convert_i16_sample,
         ),
         cpal::SampleFormat::I32 => build_input_stream(
@@ -421,6 +763,8 @@ fn start_capture_stream(
             device_id.clone(),
             sender.clone(),
             Arc::clone(&shared),
+            error_sender.clone(),
+            capture_generation,
             convert_i32_sample,
         ),
         cpal::SampleFormat::I64 => build_input_stream(
@@ -431,6 +775,8 @@ fn start_capture_stream(
             device_id.clone(),
             sender.clone(),
             Arc::clone(&shared),
+            error_sender.clone(),
+            capture_generation,
             convert_i64_sample,
         ),
         cpal::SampleFormat::U8 => build_input_stream(
@@ -441,6 +787,8 @@ fn start_capture_stream(
             device_id.clone(),
             sender.clone(),
             Arc::clone(&shared),
+            error_sender.clone(),
+            capture_generation,
             convert_u8_sample,
         ),
         cpal::SampleFormat::U16 => build_input_stream(
@@ -451,6 +799,8 @@ fn start_capture_stream(
             device_id,
             sender,
             Arc::clone(&shared),
+            error_sender.clone(),
+            capture_generation,
             convert_u16_sample,
         ),
         cpal::SampleFormat::U32 => build_input_stream(
@@ -461,6 +811,8 @@ fn start_capture_stream(
             device_id.clone(),
             sender.clone(),
             Arc::clone(&shared),
+            error_sender.clone(),
+            capture_generation,
             convert_u32_sample,
         ),
         cpal::SampleFormat::U64 => build_input_stream(
@@ -471,6 +823,8 @@ fn start_capture_stream(
             device_id.clone(),
             sender.clone(),
             Arc::clone(&shared),
+            error_sender.clone(),
+            capture_generation,
             convert_u64_sample,
         ),
         cpal::SampleFormat::F64 => build_input_stream(
@@ -481,6 +835,8 @@ fn start_capture_stream(
             device_id,
             sender,
             Arc::clone(&shared),
+            error_sender,
+            capture_generation,
             convert_f64_sample,
         ),
         unsupported => Err(format!(
@@ -497,13 +853,15 @@ fn start_capture_stream(
         sample_rate,
         stream,
         frame_receiver: receiver,
+        error_receiver,
     })
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn start_desktop_input(
+#[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos")))]
+fn start_native_input(
     _app: AppHandle,
     _requested_device_id: Option<String>,
+    _capture_generation: u64,
 ) -> Result<(String, u32, CaptureRuntime), String> {
     Err("Native microphone capture is only available on macOS and Linux.".to_string())
 }
@@ -541,7 +899,17 @@ fn select_input_device(
     hash_match.ok_or_else(|| "Selected native input device was not found.".to_string())
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "android")]
+fn select_input_device(
+    host: &cpal::Host,
+    _requested_device_id: Option<&str>,
+) -> Result<(cpal::Device, String), String> {
+    host.default_input_device()
+        .map(|device| (device, DEFAULT_INPUT_DEVICE_ID.to_string()))
+        .ok_or_else(|| "No default Android microphone is available.".to_string())
+}
+
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 fn build_input_stream<T, F>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
@@ -550,6 +918,8 @@ fn build_input_stream<T, F>(
     device_id: Option<String>,
     sender: mpsc::SyncSender<AudioInputFrame>,
     shared: Arc<Mutex<CaptureSharedState>>,
+    error_sender: mpsc::SyncSender<()>,
+    capture_generation: u64,
     convert_sample: F,
 ) -> Result<cpal::Stream, String>
 where
@@ -568,11 +938,14 @@ where
                     device_id.clone(),
                     &sender,
                     &shared,
+                    capture_generation,
                     convert_sample,
                     &mut pending_samples,
                 );
             },
-            |error| eprintln!("Native microphone input stream error: {error}"),
+            move |_| {
+                let _ = error_sender.try_send(());
+            },
             None,
         )
         .map_err(|error| format!("Could not build native input stream: {error}"))
@@ -585,6 +958,7 @@ fn process_interleaved_input<T, F>(
     device_id: Option<String>,
     sender: &mpsc::SyncSender<AudioInputFrame>,
     shared: &Arc<Mutex<CaptureSharedState>>,
+    capture_generation: u64,
     convert_sample: F,
     pending_samples: &mut Vec<f32>,
 ) where
@@ -605,6 +979,7 @@ fn process_interleaved_input<T, F>(
             input_level,
             samples,
             timestamp_ms: current_timestamp_ms(),
+            capture_generation,
         });
         pending_samples.drain(..INPUT_FRAME_HOP_SAMPLES.min(pending_samples.len()));
     }
@@ -632,16 +1007,46 @@ fn append_mono_samples<T, F>(
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 fn emit_input_frames(
     app: AppHandle,
     receiver: mpsc::Receiver<AudioInputFrame>,
+    error_receiver: mpsc::Receiver<()>,
     stop_receiver: mpsc::Receiver<CaptureControl>,
-    _stream: cpal::Stream,
+    stream: cpal::Stream,
+    shared: Arc<Mutex<CaptureSharedState>>,
+    capture_generation: u64,
 ) {
     let mut last_emit_at = Instant::now() - INPUT_FRAME_EVENT_INTERVAL;
+    #[cfg(target_os = "android")]
+    let mut last_permission_check = Instant::now();
     loop {
         if stop_receiver.try_recv().is_ok() {
+            break;
+        }
+        #[cfg(target_os = "android")]
+        if last_permission_check.elapsed() >= Duration::from_millis(250) {
+            last_permission_check = Instant::now();
+            let permission = read_android_permission();
+            if permission != AudioInputPermissionState::Granted {
+                finish_capture_with_error(
+                    &app,
+                    &shared,
+                    capture_generation,
+                    permission,
+                    permission_error(permission).unwrap_or_else(interruption_error),
+                );
+                break;
+            }
+        }
+        if error_receiver.try_recv().is_ok() {
+            finish_capture_with_error(
+                &app,
+                &shared,
+                capture_generation,
+                current_worker_permission_state(),
+                interruption_error(),
+            );
             break;
         }
         match receiver.recv_timeout(INPUT_FRAME_EVENT_INTERVAL) {
@@ -656,6 +1061,43 @@ fn emit_input_frames(
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
+    drop(stream);
+}
+
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+fn finish_capture_with_error(
+    app: &AppHandle,
+    shared: &Arc<Mutex<CaptureSharedState>>,
+    capture_generation: u64,
+    permission_state: AudioInputPermissionState,
+    error: AudioInputError,
+) {
+    if let Ok(mut shared) = shared.lock() {
+        shared.input_level = 0.0;
+        shared.terminal_error = Some(error.clone());
+    }
+    let _ = app.emit(
+        AUDIO_EVENT_INPUT_STATE,
+        AudioInputState {
+            active: false,
+            device_id: None,
+            monitor_enabled: false,
+            monitor_gain: 0.0,
+            input_level: 0.0,
+            sample_rate: None,
+            capture_generation,
+            capture_path: CapturePath::None,
+            permission_state,
+            error: Some(error),
+        },
+    );
+}
+
+fn current_worker_permission_state() -> AudioInputPermissionState {
+    #[cfg(target_os = "android")]
+    return read_android_permission();
+    #[cfg(not(target_os = "android"))]
+    AudioInputPermissionState::Unavailable
 }
 
 fn convert_f32_sample(sample: f32) -> f32 {
@@ -953,7 +1395,12 @@ mod tests {
             monitor_gain: 0.0,
             input_level: 0.42,
             sample_rate: Some(48_000),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            capture_generation: 7,
+            capture_path: CapturePath::DesktopCpal,
+            permission_state: AudioInputPermissionState::Unavailable,
+            error: None,
+            permission_pending: false,
+            #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
             runtime: None,
         };
 
@@ -962,5 +1409,62 @@ mod tests {
         assert!(!stopped.active);
         assert_eq!(stopped.input_level, 0.0);
         assert_eq!(stopped.sample_rate, None);
+        assert_eq!(stopped.capture_generation, 8);
+        assert_eq!(stopped.capture_path, CapturePath::None);
+    }
+
+    #[test]
+    fn permission_failures_use_fixed_safe_codes() {
+        let denied = permission_error(AudioInputPermissionState::Denied).expect("denied error");
+        let privacy =
+            permission_error(AudioInputPermissionState::PrivacyBlocked).expect("privacy error");
+
+        assert_eq!(denied.code, "permission-denied");
+        assert_eq!(privacy.code, "privacy-blocked");
+        assert!(!denied.message.contains('/'));
+    }
+
+    #[test]
+    fn background_invalidates_active_generation_but_not_pending_permission() {
+        let mut state = CaptureState::default();
+        state.capture_generation = 4;
+        state.permission_pending = true;
+
+        assert!(state
+            .take_background_terminal(interruption_error())
+            .is_none());
+        assert_eq!(state.capture_generation, 4);
+        assert!(state.permission_pending);
+
+        state.active = true;
+        state.device_id = Some("default".to_string());
+        state.sample_rate = Some(48_000);
+        state.capture_path = CapturePath::AndroidAaudio;
+        let terminal = state
+            .take_background_terminal(interruption_error())
+            .expect("active terminal");
+
+        assert_eq!(terminal.capture_generation, 4);
+        assert!(!terminal.active);
+        assert_eq!(state.capture_generation, 5);
+        assert_eq!(state.capture_path, CapturePath::None);
+    }
+
+    #[test]
+    fn clearing_live_state_removes_replaced_capture_facts() {
+        let mut state = CaptureState::default();
+        state.active = true;
+        state.device_id = Some("stale".to_string());
+        state.sample_rate = Some(48_000);
+        state.input_level = 0.8;
+        state.capture_path = CapturePath::DesktopCpal;
+
+        state.clear_live_state();
+
+        assert!(!state.active);
+        assert_eq!(state.device_id, None);
+        assert_eq!(state.sample_rate, None);
+        assert_eq!(state.input_level, 0.0);
+        assert_eq!(state.capture_path, CapturePath::None);
     }
 }

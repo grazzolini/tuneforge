@@ -27,9 +27,14 @@ import {
 } from "../../lib/powerInhibition";
 import {
   getNativeAudioCapabilities,
+  getNativeAudioInputPermissionStatus,
+  getNativeAudioInputState,
+  isAndroidRuntime,
   isWebAudioBackendForced,
   type NativeAudioBufferHealth,
   type NativeAudioCapabilities,
+  type NativeAudioInputState,
+  type NativeAudioInputPermissionStatus,
 } from "../../lib/nativeAudio";
 import { TunerPreferenceControls } from "../tools/TunerPreferenceControls";
 import {
@@ -324,7 +329,26 @@ function inputCaptureBackendLabel(
   if (!capabilities) {
     return "Unknown";
   }
-  return capabilities.micCaptureSupported ? `Native (${capabilities.backend})` : "Web Audio";
+  return capabilities.micCaptureSupported ? `Available (${capabilities.backend})` : "Unavailable";
+}
+
+function inputCaptureStateLabel(state: NativeAudioInputState | undefined) {
+  if (!state) return "Unknown";
+  if (state.active) return "Listening";
+  if (state.error) return "Error";
+  if (state.permissionState === "prompting") return "Starting";
+  return "Inactive";
+}
+
+function inputCapturePathLabel(state: NativeAudioInputState | undefined) {
+  if (!state || state.capturePath === "none") return "None";
+  return state.capturePath === "android-aaudio" ? "Android AAudio" : "Desktop CPAL";
+}
+
+function inputPermissionLabel(status: NativeAudioInputPermissionStatus | undefined) {
+  if (!status) return "Unknown";
+  if (status.state === "privacy-blocked") return "Privacy blocked";
+  return status.state[0].toUpperCase() + status.state.slice(1);
 }
 
 function nativePlaybackCapabilityLabel(capabilities: NativeAudioCapabilities | undefined) {
@@ -682,6 +706,14 @@ export function SettingsView() {
     queryKey: ["native-audio-capabilities"],
     queryFn: getNativeAudioCapabilities,
   });
+  const nativeInputQuery = useQuery({
+    queryKey: ["native-audio-input-state"],
+    queryFn: getNativeAudioInputState,
+  });
+  const nativePermissionQuery = useQuery({
+    queryKey: ["native-audio-input-permission"],
+    queryFn: getNativeAudioInputPermissionStatus,
+  });
   const lastInputCaptureBackend = readRememberedTunerInputCaptureBackend();
   const lastNativeCaptureError = readRememberedTunerNativeCaptureError();
   const lastPlaybackBackend = readRememberedPlaybackBackend();
@@ -988,7 +1020,7 @@ export function SettingsView() {
             onReferenceHzChange={setDefaultTunerReferenceHz}
             onVisualModeChange={setDefaultTunerVisualMode}
             referenceHz={defaultTunerReferenceHz}
-            systemDefaultOnly={webAudioForced}
+            systemDefaultOnly={webAudioForced || isAndroidRuntime() || nativeAudioQuery.data?.platform === "android"}
             visualMode={defaultTunerVisualMode}
           />
 
@@ -1171,15 +1203,31 @@ export function SettingsView() {
                   <dd>{healthQuery.data?.default_export_format ?? "wav"}</dd>
                 </div>
                 <div>
-                  <dt>Input Capture Available</dt>
+                  <dt>Native Capture Capability</dt>
                   <dd>{inputCaptureBackendLabel(nativeAudioQuery.data)}</dd>
                 </div>
                 <div>
-                  <dt>Last Tuner Capture</dt>
+                  <dt>Capture Selection Policy</dt>
+                  <dd>{webAudioForced ? "Forced Web Audio" : isAndroidRuntime() || nativeAudioQuery.data?.platform === "android" ? "Native required" : "Native preferred"}</dd>
+                </div>
+                <div>
+                  <dt>Current Microphone Permission</dt>
+                  <dd>{inputPermissionLabel(nativePermissionQuery.data)}</dd>
+                </div>
+                <div>
+                  <dt>Current Capture State</dt>
+                  <dd>{inputCaptureStateLabel(nativeInputQuery.data)}</dd>
+                </div>
+                <div>
+                  <dt>Current Capture Path</dt>
+                  <dd>{inputCapturePathLabel(nativeInputQuery.data)}</dd>
+                </div>
+                <div>
+                  <dt>Last Confirmed Capture Path</dt>
                   <dd>{lastInputCaptureBackendLabel(lastInputCaptureBackend)}</dd>
                 </div>
                 <div>
-                  <dt>Last Native Capture Error</dt>
+                  <dt>Latest Safe Capture Failure</dt>
                   <dd>{lastNativeCaptureError ?? "None"}</dd>
                 </div>
                 <div>

@@ -22,16 +22,19 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 import {
   getNativeAudioCapabilities,
+  getNativeAudioInputPermissionStatus,
   getNativeAudioInputState,
   getNativeAudioSnapshot,
   isWebAudioBackendForced,
   listNativeAudioInputDevices,
   listNativeAudioOutputDevices,
   listenNativeAudioInputFrames,
+  listenNativeAudioInputState,
   listenNativeAudioPositions,
   pauseNativeAudio,
   playNativeAudio,
   prepareNativeAudioSession,
+  requestNativeAudioInputPermission,
   seekNativeAudio,
   setNativeAudioClick,
   setNativeAudioLanes,
@@ -78,6 +81,10 @@ const inputState: NativeAudioInputState = {
   monitorGain: 0.5,
   inputLevel: 0,
   sampleRate: 48000,
+  captureGeneration: 4,
+  capturePath: "desktop-cpal",
+  permissionState: "unavailable",
+  error: null,
 };
 
 describe("native audio adapter", () => {
@@ -204,6 +211,18 @@ describe("native audio adapter", () => {
     expect(mockInvoke).toHaveBeenNthCalledWith(4, "audio_stop_input");
   });
 
+  it("keeps permission status and request separate from capture start", async () => {
+    const permission = { state: "granted" as const, error: null };
+    mockInvoke.mockResolvedValue(permission);
+
+    await expect(getNativeAudioInputPermissionStatus()).resolves.toEqual(permission);
+    await expect(requestNativeAudioInputPermission()).resolves.toEqual(permission);
+
+    expect(mockInvoke).toHaveBeenNthCalledWith(1, "audio_get_input_permission_status");
+    expect(mockInvoke).toHaveBeenNthCalledWith(2, "audio_request_input_permission");
+    expect(mockInvoke).not.toHaveBeenCalledWith("audio_start_input", expect.anything());
+  });
+
   it("wraps native input frame events", async () => {
     const unlisten = vi.fn();
     const frame: NativeAudioInputFrame = {
@@ -212,6 +231,7 @@ describe("native audio adapter", () => {
       inputLevel: 0.25,
       samples: [0, 0.5, -0.5],
       timestampMs: 1234,
+      captureGeneration: 4,
     };
     mockListen.mockImplementation(async (_eventName, callback) => {
       callback({ event: "audio://input-frame", id: 1, payload: frame });
@@ -223,6 +243,22 @@ describe("native audio adapter", () => {
 
     expect(mockListen).toHaveBeenCalledWith("audio://input-frame", expect.any(Function));
     expect(handler).toHaveBeenCalledWith(frame);
+    stopListening();
+    expect(unlisten).toHaveBeenCalled();
+  });
+
+  it("wraps generation-scoped native input state events", async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_eventName, callback) => {
+      callback({ event: "audio://input-state", id: 2, payload: inputState });
+      return unlisten;
+    });
+    const handler = vi.fn();
+
+    const stopListening = await listenNativeAudioInputState(handler);
+
+    expect(mockListen).toHaveBeenCalledWith("audio://input-state", expect.any(Function));
+    expect(handler).toHaveBeenCalledWith(inputState);
     stopListening();
     expect(unlisten).toHaveBeenCalled();
   });

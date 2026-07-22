@@ -143,6 +143,26 @@ fallback after native failure or a build-time development override; it is not a 
 Playback state, clocks, and Settings diagnostics change only after the active native session or Web
 media confirms the transition.
 
+## Android Tuner Capture
+
+The packaged Android tuner requires native CPAL/AAudio microphone capture. A native capability,
+permission, startup, or stream failure produces a truthful recoverable tuner error and never falls
+through to Web Audio. `VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` remains an explicit development-only
+all-Web override shared with playback.
+
+The tuner requests `RECORD_AUDIO` at start and distinguishes prompt, prompting, granted, denied,
+blocked, microphone-privacy blocked, and unavailable states. A blocked state points to Android
+Settings > Apps > TuneForge > Permissions and offers Retry without opening Settings. Capture polls
+permission/privacy state while active, stops on revocation or privacy blocking, and emits only safe
+structured failure codes. Android suspension tears capture down; returning to the app never restarts
+the microphone automatically.
+
+Android input routing is `System Default` only, and microphone monitoring remains unavailable. Live
+state is generation-scoped so late samples from a stopped or replaced stream cannot update pitch or
+input level. Settings keeps native capability, selection policy, permission, current path/state, last
+confirmed path, and latest safe historical failure as separate facts. Active capture is never
+restored after reload.
+
 Android power protection follows confirmed work automatically; no manual toggle exists. Confirmed
 native playback uses a `mediaPlayback` foreground service and keeps the foreground activity screen
 on. An active sync listener uses `connectedDevice`, and an active transfer also uses `dataSync`.

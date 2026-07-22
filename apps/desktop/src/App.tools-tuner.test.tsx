@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   emitMockNativeInputFrame,
+  emitMockNativeInputState,
   getMockAudioContexts,
   getMockInvoke,
   getMockMediaDevices,
@@ -263,6 +264,7 @@ describe("Desktop app tools tuner", () => {
     expect(window.localStorage.getItem("tuneforge.tuner-input-capture-backend")).toContain(
       "desktop-cpal",
     );
+    expect(screen.getByText("Listening", { selector: ".subpanel__copy" })).toHaveAttribute("aria-live", "polite");
     expect(getMockMediaDevices().getUserMedia).not.toHaveBeenCalled();
 
     act(() => {
@@ -272,6 +274,7 @@ describe("Desktop app tools tuner", () => {
         inputLevel: 0.25,
         samples: makeSineSamples(440, 48000, 2048),
         timestampMs: 1000,
+        captureGeneration: 1,
       });
     });
 
@@ -289,6 +292,43 @@ describe("Desktop app tools tuner", () => {
     await user.click(screen.getByRole("button", { name: "Stop" }));
 
     expect(getMockInvoke()).toHaveBeenCalledWith("audio_stop_input");
+    act(() => {
+      emitMockNativeInputFrame({
+        deviceId: "cpal:1:usb",
+        sampleRate: 48000,
+        inputLevel: 1,
+        samples: makeSineSamples(440, 48000, 2048),
+        timestampMs: 1100,
+        captureGeneration: 1,
+      });
+    });
+    expect(screen.getByRole("meter", { name: "Input signal level" })).toHaveAttribute("aria-valuenow", "0");
+
+    await user.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument());
+    act(() => {
+      emitMockNativeInputFrame({
+        deviceId: "cpal:1:usb",
+        sampleRate: 48000,
+        inputLevel: 1,
+        samples: makeSineSamples(440, 48000, 2048),
+        timestampMs: 1200,
+        captureGeneration: 1,
+      });
+    });
+    expect(screen.getByRole("meter", { name: "Input signal level" })).toHaveAttribute("aria-valuenow", "0");
+  });
+
+  it("stops native capture when the tuner unmounts", async () => {
+    const user = userEvent.setup();
+    setMockNativeAudioState({ capabilities: { micCaptureSupported: true, backend: "desktop-cpal" } });
+    renderApp(["/tools"]);
+
+    await user.click(await screen.findByRole("button", { name: "Start" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument());
+    await user.click(screen.getByRole("tab", { name: "Metronome" }));
+
+    await waitFor(() => expect(getMockInvoke()).toHaveBeenCalledWith("audio_stop_input"));
   });
 
   it("does not query native microphone devices while the tuner is idle until the picker is opened", async () => {
@@ -462,6 +502,167 @@ describe("Desktop app tools tuner", () => {
     expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
   });
 
+  it("never falls back to Web Audio when packaged Android native capture fails", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.tuner-microphone-devices",
+      JSON.stringify([{ deviceId: "cached", label: "Cached browser microphone" }]),
+    );
+    setMockNativeAudioState({
+      capabilities: {
+        platform: "android",
+        backend: "android-aaudio",
+        micCaptureSupported: true,
+      },
+      startError: "The microphone could not start. Check Android Settings > Apps > TuneForge > Permissions > Microphone, then choose Retry.",
+    });
+    renderApp(["/tools"]);
+
+    expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("option", { name: "Cached browser microphone" })).not.toBeInTheDocument(),
+    );
+    await user.click(screen.getByRole("button", { name: "Start" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Android Settings");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+    expect(getMockMediaDevices().getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it("continues Android startup after a prompted permission grant", async () => {
+    const user = userEvent.setup();
+    setMockNativeAudioState({
+      capabilities: { platform: "android", backend: "android-aaudio", micCaptureSupported: true },
+      inputPermission: { state: "prompt", error: null },
+    });
+    const mockInvoke = getMockInvoke();
+    const originalInvoke = mockInvoke.getMockImplementation();
+    if (!originalInvoke) throw new Error("Missing invoke mock implementation.");
+    let requested = false;
+    mockInvoke.mockImplementation((command, args) => {
+      if (command === "audio_request_input_permission") {
+        requested = true;
+        return Promise.resolve({ state: "prompting", error: null });
+      }
+      if (command === "audio_get_input_permission_status" && requested) {
+        return Promise.resolve({ state: "granted", error: null });
+      }
+      return originalInvoke(command, args);
+    });
+    renderApp(["/tools"]);
+
+    await user.click(await screen.findByRole("button", { name: "Start" }));
+
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("audio_start_input", {
+        payload: { deviceId: null },
+      }),
+    );
+    expect(mockInvoke).toHaveBeenCalledWith("audio_request_input_permission");
+    expect(screen.getByText("Listening")).toBeInTheDocument();
+    expect(getMockMediaDevices().getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it("keeps Android permission denial recoverable without starting capture", async () => {
+    const user = userEvent.setup();
+    const denial = {
+      code: "permission-denied",
+      message: "Microphone permission was denied.",
+      guidance: "Check Android Settings > Apps > TuneForge > Permissions > Microphone, then choose Retry.",
+    };
+    setMockNativeAudioState({
+      capabilities: { platform: "android", backend: "android-aaudio", micCaptureSupported: true },
+      inputPermission: { state: "prompt", error: null },
+    });
+    const mockInvoke = getMockInvoke();
+    const originalInvoke = mockInvoke.getMockImplementation();
+    if (!originalInvoke) throw new Error("Missing invoke mock implementation.");
+    let requested = false;
+    mockInvoke.mockImplementation((command, args) => {
+      if (command === "audio_request_input_permission") {
+        requested = true;
+        return Promise.resolve({ state: "prompting", error: null });
+      }
+      if (command === "audio_get_input_permission_status" && requested) {
+        return Promise.resolve({ state: "denied", error: denial });
+      }
+      return originalInvoke(command, args);
+    });
+    renderApp(["/tools"]);
+
+    await user.click(await screen.findByRole("button", { name: "Start" }));
+
+    expect(await screen.findByRole("alert", undefined, { timeout: 3_000 })).toHaveTextContent(
+      "Android Settings",
+    );
+    expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+    expect(mockInvoke).not.toHaveBeenCalledWith("audio_start_input", expect.anything());
+    expect(getMockMediaDevices().getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it("reports permanently blocked Android permission without prompting or fallback", async () => {
+    const user = userEvent.setup();
+    setMockNativeAudioState({
+      capabilities: { platform: "android", backend: "android-aaudio", micCaptureSupported: true },
+      inputPermission: {
+        state: "blocked",
+        error: {
+          code: "permission-blocked",
+          message: "Microphone permission is blocked.",
+          guidance: "Check Android Settings > Apps > TuneForge > Permissions > Microphone, then choose Retry.",
+        },
+      },
+    });
+    renderApp(["/tools"]);
+
+    await user.click(await screen.findByRole("button", { name: "Start" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Android Settings");
+    expect(getMockInvoke()).not.toHaveBeenCalledWith("audio_request_input_permission");
+    expect(getMockInvoke()).not.toHaveBeenCalledWith("audio_start_input", expect.anything());
+    expect(getMockMediaDevices().getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it("stops Android capture on a generation-matched terminal state event", async () => {
+    const user = userEvent.setup();
+    setMockNativeAudioState({
+      capabilities: {
+        platform: "android",
+        backend: "android-aaudio",
+        micCaptureSupported: true,
+      },
+    });
+    renderApp(["/tools"]);
+
+    expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument());
+
+    setMockNativeAudioState({
+      inputState: {
+        active: false,
+        captureGeneration: 0,
+        capturePath: "none",
+        inputLevel: 0,
+        sampleRate: null,
+        error: {
+          code: "stream-interruption",
+          message: "Microphone capture was interrupted.",
+          guidance: "Choose Retry when the microphone is available.",
+        },
+      },
+    });
+    act(() => emitMockNativeInputState());
+    expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
+
+    setMockNativeAudioState({ inputState: { captureGeneration: 1 } });
+    act(() => emitMockNativeInputState());
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Microphone capture was interrupted.");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+    expect(getMockMediaDevices().getUserMedia).not.toHaveBeenCalled();
+  });
+
   it("falls back to system-default Web Audio when a native microphone selection fails", async () => {
     const user = userEvent.setup();
     getMockMediaDevices().revealLabels();
@@ -495,7 +696,7 @@ describe("Desktop app tools tuner", () => {
       video: false,
     });
     expect(screen.getByLabelText("Microphone source")).toHaveValue("");
-    expect(screen.getByRole("option", { name: "Built-in Microphone" })).toBeDisabled();
+    expect(screen.queryByRole("option", { name: "Built-in Microphone" })).not.toBeInTheDocument();
     expect(window.localStorage.getItem("tuneforge.tuner-native-capture-error")).toBe(
       "Native microphone failed.",
     );
@@ -547,7 +748,7 @@ describe("Desktop app tools tuner", () => {
     await user.click(screen.getByRole("button", { name: "Start" }));
 
     expect(await screen.findByText("Microphone permission was denied.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Start" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
   });
 });
 

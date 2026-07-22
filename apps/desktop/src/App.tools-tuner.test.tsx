@@ -56,6 +56,9 @@ describe("Desktop app tools tuner", () => {
     renderApp(["/tools"]);
 
     expect(await screen.findByRole("heading", { name: "Tools" })).toBeInTheDocument();
+    expect(screen.getByRole("tablist", { name: "Tools" })).toHaveClass(
+      "project-workspace-tabs--tools",
+    );
     expect(screen.getByRole("tab", { name: "Chromatic Tuner" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("button", { name: "Start" })).toBeEnabled();
     expect(screen.getByLabelText("Microphone source")).toHaveValue("");

@@ -612,3 +612,20 @@
     writing-mode: horizontal-tb;
   }
 }
+
+@media (max-width: 720px) {
+  .project-workspace-tabs--tools {
+    display: flex;
+    width: 100%;
+    gap: 0.45rem;
+    padding: 0.5rem;
+    border-radius: 18px;
+  }
+
+  .project-workspace-tabs--tools .project-workspace-tabs__button {
+    flex: 1 1 calc((100% - 0.45rem) / 2);
+    min-inline-size: 0;
+    min-block-size: 3rem;
+    padding-inline: 0.75rem;
+  }
+}

@@ -4705,25 +4705,42 @@ mod desktop {
     }
 
     fn sync_transport_data_dir(_backend: &BackendAccess) -> Result<PathBuf, String> {
-        if let Ok(path) = env::var("TUNEFORGE_SYNC_TRANSPORT_DATA_DIR") {
-            let trimmed = path.trim();
-            if !trimmed.is_empty() {
-                return Ok(PathBuf::from(trimmed));
-            }
-        }
+        let transport_override = env::var("TUNEFORGE_SYNC_TRANSPORT_DATA_DIR").ok();
         #[cfg(target_os = "android")]
         {
-            return _backend
-                .app
-                .path()
-                .app_data_dir()
-                .map(|path| path.join("sync-transport"))
-                .map_err(|error| {
+            return resolve_sync_transport_data_dir(transport_override.as_deref(), None, || {
+                _backend.app.path().app_data_dir().map_err(|error| {
                     format!("Could not resolve Android sync transport data directory: {error}")
-                });
+                })
+            });
         }
         #[cfg(not(target_os = "android"))]
-        platform_app_data_dir().map(|path| path.join("sync-transport"))
+        {
+            let data_root_override = env::var("TUNEFORGE_DATA_DIR").ok();
+            resolve_sync_transport_data_dir(
+                transport_override.as_deref(),
+                data_root_override.as_deref(),
+                platform_app_data_dir,
+            )
+        }
+    }
+
+    fn resolve_sync_transport_data_dir(
+        transport_override: Option<&str>,
+        data_root_override: Option<&str>,
+        fallback: impl FnOnce() -> Result<PathBuf, String>,
+    ) -> Result<PathBuf, String> {
+        transport_override
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                data_root_override
+                    .map(str::trim)
+                    .filter(|path| !path.is_empty())
+                    .map(|path| PathBuf::from(path).join("sync-transport"))
+            })
+            .map_or_else(|| fallback().map(|path| path.join("sync-transport")), Ok)
     }
 
     #[cfg(all(not(target_os = "android"), target_os = "macos"))]
@@ -13017,8 +13034,72 @@ mod desktop {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use std::cell::Cell;
         use std::collections::VecDeque;
         use std::sync::atomic::AtomicU64;
+
+        #[test]
+        fn sync_transport_data_dir_prefers_explicit_transport_override() {
+            let resolved = resolve_sync_transport_data_dir(
+                Some(" transport-root "),
+                Some("data-root"),
+                || panic!("platform fallback must remain lazy"),
+            )
+            .expect("resolve explicit transport root");
+
+            assert_eq!(resolved, PathBuf::from("transport-root"));
+        }
+
+        #[test]
+        fn sync_transport_data_dir_uses_data_root_override() {
+            let resolved = resolve_sync_transport_data_dir(None, Some(" data-root "), || {
+                panic!("platform fallback must remain lazy")
+            })
+            .expect("resolve transport root from data root");
+
+            assert_eq!(resolved, PathBuf::from("data-root").join("sync-transport"));
+        }
+
+        #[test]
+        fn sync_transport_data_dir_uses_platform_fallback() {
+            let resolved =
+                resolve_sync_transport_data_dir(None, None, || Ok(PathBuf::from("platform-data")))
+                    .expect("resolve transport root from platform data");
+
+            assert_eq!(
+                resolved,
+                PathBuf::from("platform-data").join("sync-transport")
+            );
+        }
+
+        #[test]
+        fn sync_transport_data_dir_treats_blank_overrides_as_unset() {
+            let resolved = resolve_sync_transport_data_dir(Some(" \t"), Some("\n "), || {
+                Ok(PathBuf::from("platform-data"))
+            })
+            .expect("resolve transport root after blank overrides");
+
+            assert_eq!(
+                resolved,
+                PathBuf::from("platform-data").join("sync-transport")
+            );
+        }
+
+        #[test]
+        fn sync_transport_data_dir_does_not_evaluate_fallback_for_overrides() {
+            let fallback_calls = Cell::new(0);
+            for (transport, data_root) in
+                [(Some("transport-root"), None), (None, Some("data-root"))]
+            {
+                resolve_sync_transport_data_dir(transport, data_root, || {
+                    fallback_calls.set(fallback_calls.get() + 1);
+                    Ok(PathBuf::from("platform-data"))
+                })
+                .expect("resolve override");
+            }
+
+            assert_eq!(fallback_calls.get(), 0);
+        }
 
         #[derive(Default)]
         struct TestPowerCounts {

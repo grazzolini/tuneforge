@@ -87,7 +87,7 @@ export function ToolsView() {
         </div>
       </div>
 
-      <div className="project-workspace-tabs" role="tablist" aria-label="Tools">
+      <div className="project-workspace-tabs project-workspace-tabs--tools" role="tablist" aria-label="Tools">
         {[
           { id: "tuner", label: "Chromatic Tuner" },
           { id: "metronome", label: "Metronome" },

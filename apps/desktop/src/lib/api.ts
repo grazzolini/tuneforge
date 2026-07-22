@@ -1,5 +1,5 @@
 import createClient from "openapi-fetch";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import type { components, MobileCapabilities, paths } from "@tuneforge/shared-types";
 import { normalizeApiDateTime } from "./datetime";
 
@@ -2136,6 +2136,7 @@ async function createNativeSyncPairingOffer(body: SyncPairingOfferRequest): Prom
 
 export type TuneForgeClient = {
   getMobileCapabilities: () => Promise<RuntimeCapabilities>;
+  ensureWebMediaTransport: () => Promise<void>;
   getHealth: () => Promise<HealthResponse>;
   listProjects: (params?: ListProjectsParams) => Promise<components["schemas"]["ProjectsResponse"]>;
   importProject: (body: ProjectImportRequest) => Promise<components["schemas"]["ProjectResponse"]>;
@@ -2190,7 +2191,6 @@ export type TuneForgeClient = {
 };
 
 let client = createClient<paths>({ baseUrl: apiBaseUrl });
-const mobileArtifactPaths = new Map<string, string>();
 const mobileChordBackendsResponse: ChordBackendsResponse = {
   backends: [
     {
@@ -2329,19 +2329,10 @@ async function invokeMobile<T>(command: string, args?: Record<string, unknown>) 
   return invoke<T>(command, args);
 }
 
-function rememberArtifactPaths(artifacts: ArtifactSchema[]) {
-  artifacts.forEach((artifact) => {
-    const playbackPath =
-      typeof artifact.metadata.playback_path === "string"
-        ? artifact.metadata.playback_path
-        : artifact.path;
-    mobileArtifactPaths.set(artifact.id, playbackPath);
-  });
-}
-
 function createHttpTuneForgeClient(): TuneForgeClient {
   return {
     getMobileCapabilities: async () => null,
+    ensureWebMediaTransport: async () => {},
     getHealth: () => unwrap(client.GET("/api/v1/health")),
     listProjects: (params?: ListProjectsParams) =>
       unwrap(client.GET("/api/v1/projects", params ? { params: { query: params } } : undefined)),
@@ -2442,6 +2433,27 @@ function createHttpTuneForgeClient(): TuneForgeClient {
 }
 
 function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForgeClient {
+  let mediaBaseUrl: string | null = null;
+  let mediaInitialization: Promise<void> | null = null;
+  const ensureWebMediaTransport = () => {
+    if (mediaBaseUrl) {
+      return Promise.resolve();
+    }
+    if (!mediaInitialization) {
+      mediaInitialization = invokeMobile<string>("mobile_media_base_url")
+        .then((baseUrl) => {
+          if (!baseUrl) {
+            throw new Error("Mobile media transport returned an invalid URL.");
+          }
+          mediaBaseUrl = baseUrl;
+        })
+        .catch((error: unknown) => {
+          mediaInitialization = null;
+          throw error;
+        });
+    }
+    return mediaInitialization;
+  };
   const requireSupportedMobileAnalysisBackend = (request?: { beat_backend?: BeatAnalysisBackend }) => {
     if (request?.beat_backend === "beat-this") {
       throw new ApiError({
@@ -2454,6 +2466,7 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
 
   return {
     getMobileCapabilities: async () => capabilities,
+    ensureWebMediaTransport,
     getHealth: () => invokeMobile("mobile_get_health"),
     listProjects: (params?: ListProjectsParams) =>
       invokeMobile("mobile_list_projects", { params: params ?? null }),
@@ -2511,11 +2524,7 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
       invokeMobile("mobile_submit_retune", { projectId, payload: body }),
     createTranspose: (projectId: string, body: components["schemas"]["TransposeRequest"]) =>
       invokeMobile("mobile_submit_transpose", { projectId, payload: body }),
-    listArtifacts: async (projectId: string) => {
-      const response = await invokeMobile<components["schemas"]["ArtifactsResponse"]>("mobile_list_artifacts", { projectId });
-      rememberArtifactPaths(response.artifacts);
-      return response;
-    },
+    listArtifacts: (projectId: string) => invokeMobile("mobile_list_artifacts", { projectId }),
     deleteArtifact: (projectId: string, artifactId: string) =>
       invokeMobile("mobile_delete_artifact", { projectId, artifactId }),
     createExport: (projectId: string, body: ExportRequest) =>
@@ -2543,10 +2552,8 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     stopSyncListener,
     recordSyncLifecycleEvent,
     syncTrustedPeerNow,
-    streamArtifactUrl: (artifactId: string) => {
-      const artifactPath = mobileArtifactPaths.get(artifactId);
-      return artifactPath ? convertFileSrc(artifactPath) : "";
-    },
+    streamArtifactUrl: (artifactId: string) =>
+      mediaBaseUrl ? `${mediaBaseUrl}/artifacts/${encodeURIComponent(artifactId)}` : "",
   };
 }
 
@@ -2592,6 +2599,7 @@ export function getApiBaseUrl() {
 
 export const api: TuneForgeClient = {
   getMobileCapabilities: () => activeClient.getMobileCapabilities(),
+  ensureWebMediaTransport: () => activeClient.ensureWebMediaTransport(),
   getHealth: () => activeClient.getHealth(),
   listProjects: (params?: ListProjectsParams) => activeClient.listProjects(params),
   importProject: (body) => activeClient.importProject(body),

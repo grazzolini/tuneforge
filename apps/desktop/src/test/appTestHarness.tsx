@@ -96,6 +96,7 @@ const {
   mockDeleteProject,
   mockGetHealth,
   mockGetMobileCapabilities,
+  mockEnsureWebMediaTransport,
   mockScanPairingQrCode,
   setMockSystemInputVolume,
   setMockNativeAudio,
@@ -1407,6 +1408,7 @@ const {
     preview_format: "wav",
   }));
   const mockGetMobileCapabilities = vi.fn(async (): Promise<unknown> => null);
+  const mockEnsureWebMediaTransport = vi.fn(async () => {});
   const mockScanPairingQrCode = vi.fn(async (): Promise<string> => {
     throw new Error("QR scanner unavailable.");
   });
@@ -2467,6 +2469,7 @@ const {
     mockDeleteProject,
     mockGetHealth,
     mockGetMobileCapabilities,
+    mockEnsureWebMediaTransport,
     mockScanPairingQrCode,
     setMockSystemInputVolume,
     setMockNativeAudio,
@@ -2544,6 +2547,7 @@ export {
   mockDeleteProject,
   mockGetHealth,
   mockGetMobileCapabilities,
+  mockEnsureWebMediaTransport,
   mockScanPairingQrCode,
   mockListen,
 };
@@ -2611,6 +2615,7 @@ vi.mock("../lib/api", async (importOriginal) => {
       deleteArtifact: mockDeleteArtifact,
       deleteProject: mockDeleteProject,
       getMobileCapabilities: mockGetMobileCapabilities,
+      ensureWebMediaTransport: mockEnsureWebMediaTransport,
     },
   };
 });
@@ -3030,6 +3035,8 @@ export function resetAppTestHarness() {
   mockGetHealth.mockClear();
   mockGetMobileCapabilities.mockReset();
   mockGetMobileCapabilities.mockResolvedValue(null);
+  mockEnsureWebMediaTransport.mockReset();
+  mockEnsureWebMediaTransport.mockResolvedValue();
   mockScanPairingQrCode.mockReset();
   mockScanPairingQrCode.mockRejectedValue(new Error("QR scanner unavailable."));
   vi.mocked(window.HTMLMediaElement.prototype.play).mockImplementation(function play(

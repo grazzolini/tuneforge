@@ -17,6 +17,7 @@ use tauri::{AppHandle, Manager, State};
 
 mod file_dialog_scope;
 mod mobile_backend;
+mod mobile_media_transport;
 mod native_audio;
 pub mod power_inhibition;
 mod sync_transport;
@@ -370,12 +371,15 @@ pub fn run() {
                 spawn_packaged_backend(app.handle())?
             };
             let power_inhibition = power_inhibition::PowerInhibitionState::new();
+            let mobile_media =
+                mobile_media_transport::MobileMediaTransportState::new(app.handle().clone())?;
             let sync_transport = sync_transport::SyncTransportState::new(
                 runtime.base_url.clone(),
                 app.handle().clone(),
                 power_inhibition.clone(),
             );
             app.manage(runtime);
+            app.manage(mobile_media);
             app.manage(native_audio::NativeAudioState::new());
             app.manage(sync_transport);
             app.manage(system_media::SystemMediaState::new(app.handle().clone()));
@@ -456,7 +460,8 @@ pub fn run() {
             mobile_backend::mobile_get_sync_staged_artifact,
             mobile_backend::mobile_import_sync_project,
             mobile_backend::mobile_plan_sync_reconciliation,
-            mobile_backend::mobile_apply_sync_reconciliation
+            mobile_backend::mobile_apply_sync_reconciliation,
+            mobile_media_transport::mobile_media_base_url
         ])
         .build(tauri::generate_context!())
         .expect("error while building tuneforge");
@@ -474,6 +479,9 @@ pub fn run() {
             native_audio::stop_input_for_lifecycle(app_handle, native_audio.inner());
         }
         if let tauri::RunEvent::Exit = event {
+            let mobile_media =
+                app_handle.state::<mobile_media_transport::MobileMediaTransportState>();
+            mobile_media.shutdown();
             let sync_transport = app_handle.state::<sync_transport::SyncTransportState>();
             sync_transport.shutdown();
             let power_inhibition = app_handle.state::<power_inhibition::PowerInhibitionState>();

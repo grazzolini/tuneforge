@@ -84,6 +84,9 @@ describe("mobile sync API adapter", () => {
       if (command === "mobile_capabilities") {
         return mobileCapabilities;
       }
+      if (command === "mobile_media_base_url") {
+        return "http://127.0.0.1:43123/session-capability";
+      }
       return {};
     });
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
@@ -140,6 +143,57 @@ describe("mobile sync API adapter", () => {
     await api.listJobs(params);
 
     expect(mockInvoke).toHaveBeenCalledWith("mobile_list_jobs", { params });
+  });
+
+  it("starts mobile media lazily and caches the ephemeral loopback transport", async () => {
+    const apiModule = await import("./api");
+    await apiModule.initializeApi();
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect(mockInvoke).toHaveBeenCalledWith("mobile_capabilities");
+    mockInvoke.mockClear();
+    const api = apiModule.api;
+
+    expect(api.streamArtifactUrl("art_0123456789abcdef0123456789ab")).toBe("");
+    expect(mockInvoke).not.toHaveBeenCalled();
+    await api.ensureWebMediaTransport();
+    await api.ensureWebMediaTransport();
+    expect(api.streamArtifactUrl("art_0123456789abcdef0123456789ab")).toBe(
+      "http://127.0.0.1:43123/session-capability/artifacts/art_0123456789abcdef0123456789ab",
+    );
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect(mockInvoke).toHaveBeenCalledWith("mobile_media_base_url", undefined);
+    expect(mockConvertFileSrc).not.toHaveBeenCalled();
+  });
+
+  it("shares an in-flight mobile media start", async () => {
+    const api = await loadMobileApi();
+    let resolveBaseUrl: (value: string) => void = () => {};
+    const baseUrl = new Promise<string>((resolve) => {
+      resolveBaseUrl = resolve;
+    });
+    mockInvoke.mockImplementation((command: string) =>
+      command === "mobile_media_base_url" ? baseUrl : Promise.resolve({}),
+    );
+
+    const first = api.ensureWebMediaTransport();
+    const second = api.ensureWebMediaTransport();
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    resolveBaseUrl("http://127.0.0.1:43123/session-capability");
+    await Promise.all([first, second]);
+    expect(api.streamArtifactUrl("art_1")).toContain("/artifacts/art_1");
+  });
+
+  it("retries mobile media start after a failure", async () => {
+    const api = await loadMobileApi();
+    mockInvoke
+      .mockRejectedValueOnce(new Error("transport failed"))
+      .mockResolvedValueOnce("http://127.0.0.1:43123/retry-capability");
+
+    await expect(api.ensureWebMediaTransport()).rejects.toThrow("transport failed");
+    expect(api.streamArtifactUrl("art_1")).toBe("");
+    await expect(api.ensureWebMediaTransport()).resolves.toBeUndefined();
+    expect(api.streamArtifactUrl("art_1")).toContain("/retry-capability/artifacts/art_1");
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
   });
 
   it("allows built-in mobile import requests", async () => {

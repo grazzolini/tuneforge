@@ -7,11 +7,43 @@ import {
   getMockAudioContexts,
   getMockInvoke,
   getMockMediaDevices,
+  getMockWakeLock,
   resetAppTestHarness,
   renderApp,
   setMockNativeAudioState,
   setMockSystemInputVolumeState,
 } from "./test/appTestHarness";
+
+function mockTauriRuntime() {
+  Object.defineProperty(window, "__TAURI_INTERNALS__", {
+    configurable: true,
+    value: { invoke: getMockInvoke() },
+  });
+}
+
+function makeEndingMediaStream() {
+  const endedListeners = new Set<() => void>();
+  const track = {
+    addEventListener: vi.fn((type: string, listener: () => void) => {
+      if (type === "ended") endedListeners.add(listener);
+    }),
+    removeEventListener: vi.fn((type: string, listener: () => void) => {
+      if (type === "ended") endedListeners.delete(listener);
+    }),
+    stop: vi.fn(),
+  } as unknown as MediaStreamTrack;
+  const stream = {
+    getAudioTracks: vi.fn(() => [track]),
+    getTracks: vi.fn(() => [track]),
+  } as unknown as MediaStream;
+  return {
+    end() {
+      endedListeners.forEach((listener) => listener());
+    },
+    stream,
+    track,
+  };
+}
 
 describe("Desktop app tools tuner", () => {
   beforeEach(resetAppTestHarness);
@@ -233,6 +265,76 @@ describe("Desktop app tools tuner", () => {
     expect(screen.getByRole("button", { name: "Start" })).toBeEnabled();
   });
 
+  it("acquires Web tuner protection only after capture is listening and releases on stop", async () => {
+    const user = userEvent.setup();
+    const endingStream = makeEndingMediaStream();
+    let resolveCapture: (stream: MediaStream) => void = () => undefined;
+    getMockMediaDevices().getUserMedia.mockImplementationOnce(
+      () => new Promise<MediaStream>((resolve) => {
+        resolveCapture = resolve;
+      }),
+    );
+    mockTauriRuntime();
+    renderApp(["/tools"]);
+
+    await user.click(await screen.findByRole("button", { name: "Start" }));
+    await waitFor(() => expect(getMockMediaDevices().getUserMedia).toHaveBeenCalled());
+    expect(getMockWakeLock().request).not.toHaveBeenCalled();
+    expect(getMockInvoke()).not.toHaveBeenCalledWith("power_inhibition_set_activity", {
+      reason: "tuner-capture",
+      active: true,
+    });
+
+    await act(async () => {
+      resolveCapture(endingStream.stream);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(screen.getByText("Listening")).toBeInTheDocument());
+    await waitFor(() => expect(getMockWakeLock().request).toHaveBeenCalledWith("screen"));
+    await waitFor(() =>
+      expect(getMockInvoke()).toHaveBeenCalledWith("power_inhibition_set_activity", {
+        reason: "tuner-capture",
+        active: true,
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(getMockWakeLock().sentinels[0]?.release).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(getMockInvoke()).toHaveBeenCalledWith("power_inhibition_set_activity", {
+        reason: "tuner-capture",
+        active: false,
+      }),
+    );
+    expect(endingStream.track.removeEventListener).toHaveBeenCalledWith(
+      "ended",
+      expect.any(Function),
+    );
+    expect(endingStream.track.stop).toHaveBeenCalled();
+  });
+
+  it("ends Web tuner capture generation when its microphone track terminates", async () => {
+    const user = userEvent.setup();
+    const endingStream = makeEndingMediaStream();
+    getMockMediaDevices().getUserMedia.mockResolvedValueOnce(endingStream.stream);
+    renderApp(["/tools"]);
+
+    await user.click(await screen.findByRole("button", { name: "Start" }));
+    await waitFor(() => expect(screen.getByText("Listening")).toBeInTheDocument());
+
+    act(() => endingStream.end());
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Microphone capture ended. Choose Retry to start it again.",
+    );
+    expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+    expect(endingStream.track.removeEventListener).toHaveBeenCalledWith(
+      "ended",
+      expect.any(Function),
+    );
+    expect(endingStream.track.stop).toHaveBeenCalledTimes(1);
+  });
+
   it("uses native microphone capture when available", async () => {
     const user = userEvent.setup();
     setMockNativeAudioState({
@@ -266,6 +368,10 @@ describe("Desktop app tools tuner", () => {
     );
     expect(screen.getByText("Listening", { selector: ".subpanel__copy" })).toHaveAttribute("aria-live", "polite");
     expect(getMockMediaDevices().getUserMedia).not.toHaveBeenCalled();
+    expect(getMockInvoke()).not.toHaveBeenCalledWith("power_inhibition_set_activity", {
+      reason: "tuner-capture",
+      active: true,
+    });
 
     act(() => {
       emitMockNativeInputFrame({
@@ -460,6 +566,20 @@ describe("Desktop app tools tuner", () => {
     expect(window.localStorage.getItem("tuneforge.tuner-input-capture-backend")).toContain(
       '"web"',
     );
+  });
+
+  it("keeps Web tuner capture active when screen protection is unavailable", async () => {
+    const user = userEvent.setup();
+    getMockWakeLock().request.mockRejectedValueOnce(new Error("denied"));
+    renderApp(["/tools"]);
+
+    await user.click(await screen.findByRole("button", { name: "Start" }));
+
+    expect(await screen.findByText("Listening")).toBeInTheDocument();
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Screen protection is unavailable. The tuner may stop if the device sleeps.",
+    );
+    expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
   });
 
   it("falls back to Web Audio when native capture fails", async () => {

@@ -51,6 +51,34 @@ describe("power protection UI", () => {
     expect(within(section!).getByText("Inactive")).toBeInTheDocument();
   });
 
+  it("labels tuner-only Android screen protection without claiming background coverage", async () => {
+    const user = userEvent.setup();
+    setMockPowerInhibitionState({
+      phase: "active",
+      backend: "android-activity-screen",
+      activeReasons: ["tuner-capture"],
+      screenProtected: true,
+      backgroundProtected: false,
+      errorCode: null,
+      errorMessage: null,
+    });
+    renderApp(["/settings"]);
+
+    await user.click(await screen.findByText("Show diagnostics"));
+    const section = screen.getByRole("heading", { name: "Power Protection" }).closest("section");
+    expect(section).not.toBeNull();
+    await waitFor(() => {
+      expect(within(section!).getAllByText("Android activity screen")).toHaveLength(2);
+    });
+    expect(within(section!).getByText("Tuner capture")).toBeInTheDocument();
+    expect(within(section!).getByText("Native Screen Protected").nextElementSibling).toHaveTextContent(
+      "Confirmed",
+    );
+    expect(
+      within(section!).getByText("Native Background Protected").nextElementSibling,
+    ).toHaveTextContent("Not confirmed");
+  });
+
   it("shows a sync reliability alert only for relevant protection failure", async () => {
     const user = userEvent.setup();
     setMockPowerInhibitionState({

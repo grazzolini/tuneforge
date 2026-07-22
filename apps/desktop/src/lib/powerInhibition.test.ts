@@ -52,6 +52,28 @@ describe("power inhibition frontend boundary", () => {
     });
   });
 
+  it("normalizes tuner capture and Android activity-only screen protection", () => {
+    expect(
+      normalizePowerInhibitionStatus({
+        phase: "active",
+        backend: "android-activity-screen",
+        activeReasons: ["tuner-capture"],
+        screenProtected: true,
+        backgroundProtected: false,
+        errorCode: null,
+        errorMessage: null,
+      }),
+    ).toEqual({
+      phase: "active",
+      backend: "android-activity-screen",
+      activeReasons: ["tuner-capture"],
+      screenProtected: true,
+      backgroundProtected: false,
+      errorCode: null,
+      errorMessage: null,
+    });
+  });
+
   it("persists confirmed backend history without restoring active state", async () => {
     mockInvoke.mockResolvedValue({
       phase: "active",

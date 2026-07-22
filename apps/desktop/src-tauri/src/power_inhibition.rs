@@ -9,6 +9,7 @@ pub enum PowerInhibitionReason {
     Playback,
     SyncListener,
     SyncTransfer,
+    TunerCapture,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -84,10 +85,15 @@ fn parse_android_response(response: &str) -> Result<PlatformProbe, SafeError> {
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(0);
     let screen_protected = parts.next() == Some("true");
+    let service_confirmed = mask & 0b0111 != 0;
     let details = (mask != 0).then_some(PlatformDetails {
-        backend: "android-foreground-service",
+        backend: if service_confirmed {
+            "android-foreground-service"
+        } else {
+            "android-activity-screen"
+        },
         screen_protected,
-        background_protected: true,
+        background_protected: service_confirmed,
     });
     let confirmed = details.is_some();
     let error = match error_code {
@@ -129,6 +135,18 @@ fn parse_android_response(response: &str) -> Result<PlatformProbe, SafeError> {
         error,
         pending_phase,
         data_sync_timeout_epoch,
+    })
+}
+
+#[cfg(any(test, target_os = "android"))]
+fn android_reason_mask(reasons: &[PowerInhibitionReason]) -> i32 {
+    reasons.iter().fold(0, |mask, reason| {
+        mask | match reason {
+            PowerInhibitionReason::Playback => 1,
+            PowerInhibitionReason::SyncListener => 2,
+            PowerInhibitionReason::SyncTransfer => 4,
+            PowerInhibitionReason::TunerCapture => 8,
+        }
     })
 }
 
@@ -537,7 +555,7 @@ mod platform {
         ) -> Result<Option<PlatformDetails>, SafeError> {
             if self.assertion_id.is_none() {
                 let assertion_type = cf_string("NoDisplaySleepAssertion")?;
-                let assertion_name = cf_string("TuneForge playback and sync")?;
+                let assertion_name = cf_string("TuneForge active audio and sync")?;
                 let mut assertion_id = 0;
                 let result = unsafe {
                     IOPMAssertionCreateWithName(
@@ -745,7 +763,7 @@ mod platform {
                 (
                     "sleep:idle",
                     "TuneForge",
-                    "Playback or sync is active",
+                    "Playback, tuner, or sync is active",
                     "block",
                 ),
             )
@@ -772,7 +790,7 @@ mod platform {
             &mut self,
             reasons: &[PowerInhibitionReason],
         ) -> Result<Option<PlatformDetails>, SafeError> {
-            let mask = reason_mask(reasons);
+            let mask = android_reason_mask(reasons);
             let response = call_android("setTuneForgePowerInhibition", mask)?;
             let probe = parse_android_response(&response)?;
             if let Some(error) = probe.error {
@@ -808,16 +826,6 @@ mod platform {
                     }),
             )
         }
-    }
-
-    fn reason_mask(reasons: &[PowerInhibitionReason]) -> i32 {
-        reasons.iter().fold(0, |mask, reason| {
-            mask | match reason {
-                PowerInhibitionReason::Playback => 1,
-                PowerInhibitionReason::SyncListener => 2,
-                PowerInhibitionReason::SyncTransfer => 4,
-            }
-        })
     }
 
     fn call_android(method: &str, mask: i32) -> Result<String, SafeError> {
@@ -921,7 +929,12 @@ mod tests {
             }
             Ok(Some(PlatformDetails {
                 backend: "test",
-                screen_protected: reasons.contains(&PowerInhibitionReason::Playback),
+                screen_protected: reasons.iter().any(|reason| {
+                    matches!(
+                        reason,
+                        PowerInhibitionReason::Playback | PowerInhibitionReason::TunerCapture
+                    )
+                }),
                 background_protected: true,
             }))
         }
@@ -993,6 +1006,49 @@ mod tests {
             vec![PowerInhibitionReason::SyncTransfer]
         );
         drop(second);
+        assert_eq!(*control.releases.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn all_four_reasons_hold_shared_protection_until_final_release() {
+        let (state, control) = state();
+        let tuner = state
+            .acquire_scoped(PowerInhibitionReason::TunerCapture)
+            .unwrap();
+        let transfer = state
+            .acquire_scoped(PowerInhibitionReason::SyncTransfer)
+            .unwrap();
+        state
+            .set_activity(PowerInhibitionReason::Playback, true)
+            .unwrap();
+        state
+            .set_activity(PowerInhibitionReason::SyncListener, true)
+            .unwrap();
+
+        assert_eq!(
+            state.status().unwrap().active_reasons,
+            vec![
+                PowerInhibitionReason::Playback,
+                PowerInhibitionReason::SyncListener,
+                PowerInhibitionReason::SyncTransfer,
+                PowerInhibitionReason::TunerCapture,
+            ]
+        );
+
+        drop(tuner);
+        state
+            .set_activity(PowerInhibitionReason::Playback, false)
+            .unwrap();
+        drop(transfer);
+        assert_eq!(*control.releases.lock().unwrap(), 0);
+        assert_eq!(
+            state.status().unwrap().active_reasons,
+            vec![PowerInhibitionReason::SyncListener]
+        );
+
+        state
+            .set_activity(PowerInhibitionReason::SyncListener, false)
+            .unwrap();
         assert_eq!(*control.releases.lock().unwrap(), 1);
     }
 
@@ -1143,6 +1199,32 @@ mod tests {
             "Android notification permission is unavailable, and power protection is not confirmed."
         );
         assert!(!error.message.contains("protection is active"));
+    }
+
+    #[test]
+    fn android_tuner_only_reports_activity_screen_without_background_protection() {
+        let probe =
+            parse_android_response("active;8;none;8;0;true").expect("valid Android response");
+        let details = probe.details.expect("confirmed tuner protection");
+
+        assert_eq!(details.backend, "android-activity-screen");
+        assert!(details.screen_protected);
+        assert!(!details.background_protected);
+        assert_eq!(
+            android_reason_mask(&[PowerInhibitionReason::TunerCapture]),
+            8
+        );
+    }
+
+    #[test]
+    fn android_tuner_with_service_owner_reports_foreground_service() {
+        let probe =
+            parse_android_response("active;9;none;9;0;true").expect("valid Android response");
+        let details = probe.details.expect("confirmed combined protection");
+
+        assert_eq!(details.backend, "android-foreground-service");
+        assert!(details.screen_protected);
+        assert!(details.background_protected);
     }
 
     #[test]

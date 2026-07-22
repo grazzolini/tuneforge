@@ -172,21 +172,29 @@ confirmed path, and latest safe historical failure as separate facts. Active cap
 restored after reload.
 
 Android power protection follows confirmed work automatically; no manual toggle exists. Confirmed
-native playback uses a `mediaPlayback` foreground service and keeps the foreground activity screen
-on. An active sync listener uses `connectedDevice`, and an active transfer also uses `dataSync`.
-Listener and transfer work hold a bounded, renewable partial wake lock; playback relies on Android's
-media path for CPU wakefulness. The ongoing notification states whether playback, sync, or both are
-active. Pause, stop, natural end, fallback, listener stop, transfer completion/cancellation/failure,
-and app shutdown release their corresponding reason without releasing other active work.
+native tuner capture keeps the visible Activity screen on through `keepScreenOn`. Tuner-only
+protection starts no foreground service, notification, or partial wake lock and does not claim
+background microphone continuation. Confirmed native playback uses a `mediaPlayback` foreground
+service and also keeps the foreground Activity screen on. An active sync listener uses
+`connectedDevice`, and an active transfer also uses `dataSync`. Listener and transfer work hold a
+bounded, renewable partial wake lock; playback relies on Android's media path for CPU wakefulness.
+The ongoing notification states whether playback, sync, or both are active; tuner-only work never
+requests notification permission. Tuner capture, playback, listener, and transfer are independent
+owners. Stop, interruption, suspension, natural end, fallback, transfer completion/cancellation/
+failure, and app shutdown clear only the corresponding reason. Shared protection releases after the
+final owner exits.
 On Android 13 and newer, TuneForge requests notification permission only when a user action starts
 protected playback or sync work. Denial does not cancel that work; diagnostics report the missing
 notification visibility while Android's system active-app controls remain available.
 
 Settings diagnostics distinguish acquiring, active, unsupported, failed, releasing, and
-release-not-confirmed states. They report protection only after Android confirms it. Activity ->
-Sync and playback status show concise reliability warnings for unsupported or failed protection.
-Android 15 `dataSync` timeout is reported as a failure and releases protection; it is never shown as
-a completed transfer.
+release-not-confirmed states. They report `android-activity-screen` with confirmed screen coverage
+and no background coverage only for tuner-only protection. Playback or sync service ownership uses
+`android-foreground-service`; combined tuner/service transitions preserve both owners. Tuner,
+Activity -> Sync, and playback status show concise reliability warnings for unsupported or failed
+protection without changing capture or work state. Android 15 `dataSync` timeout is reported as a
+failure and clears the transfer reason while preserving other owners; it is never shown as a
+completed transfer.
 
 `pnpm --filter @tuneforge/desktop android:prepare` updates the generated Android target before a
 build. It keeps these manifest permissions present:
@@ -251,10 +259,15 @@ including nearby endpoint hints.
 
 Also inspect Android service and power state with `adb`: confirmed playback must show the
 `mediaPlayback` foreground-service type; listener and transfer must add `connectedDevice` and
-`dataSync` as applicable. Notification copy must match active work. Verify every terminal path clears
-its reason, and exercise a shortened Android 15 data-sync timeout in a synthetic debug run. A live
-transfer still requires an isolated desktop peer; automated lifecycle tests do not prove that
-end-to-end path.
+`dataSync` as applicable. Confirmed tuner-only capture must keep the visible screen awake without a
+`PowerInhibitionService` foreground-service entry, notification, or partial wake lock. Verify tuner
+stop, interruption, and Android suspension restore normal screen timeout; then overlap tuner with
+playback and sync owners to confirm each release preserves remaining work. Notification copy must
+match active service work. Verify every terminal path clears its reason, and exercise a shortened
+Android 15 data-sync timeout in a synthetic debug run. A live transfer still requires an isolated
+desktop peer; automated lifecycle tests do not prove that end-to-end path. macOS `pmset` and Linux
+portal/logind inhibitor evidence also remain manual platform checks; unit tests prove ownership, not
+OS handle behavior.
 
 Desktop sleep/wake has no native command bridge. The UI uses an elapsed-time check while visible: a
 long timer gap records `sleep` followed by `wake`, while ordinary desktop hidden/blur/pagehide remains

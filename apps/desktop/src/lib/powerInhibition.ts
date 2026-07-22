@@ -1,7 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { redactPlaybackDiagnosticText } from "./playbackDiagnostics";
 
-export type PowerInhibitionReason = "playback" | "sync-listener" | "sync-transfer";
+export type PowerInhibitionReason =
+  | "playback"
+  | "sync-listener"
+  | "sync-transfer"
+  | "tuner-capture";
 
 export type PowerInhibitionPhase =
   | "inactive"
@@ -35,6 +39,7 @@ const REASONS = new Set<PowerInhibitionReason>([
   "playback",
   "sync-listener",
   "sync-transfer",
+  "tuner-capture",
 ]);
 const PHASES = new Set<PowerInhibitionPhase>([
   "inactive",
@@ -49,6 +54,7 @@ const BACKENDS = new Set([
   "macos-iopm",
   "xdg-desktop-portal",
   "systemd-logind",
+  "android-activity-screen",
   "android-foreground-service",
 ]);
 
@@ -383,6 +389,20 @@ export function playbackPowerProtectionMessage() {
     return phaseFailureMessage(currentStatus.phase, currentStatus.errorMessage);
   }
   return phaseFailureMessage(browserStatus.phase, browserStatus.errorMessage);
+}
+
+export function tunerPowerProtectionMessage() {
+  const nativeRelevant = currentStatus.activeReasons.includes("tuner-capture");
+  const nativeConfirmed = nativeRelevant && currentStatus.screenProtected;
+  const browserConfirmed = browserStatus.screenProtected;
+  if (nativeConfirmed || browserConfirmed) {
+    return null;
+  }
+  const nativeFailed = nativeRelevant && ["unsupported", "failed"].includes(currentStatus.phase);
+  const browserFailed = ["unsupported", "failed"].includes(browserStatus.phase);
+  return nativeFailed || browserFailed
+    ? "Screen protection is unavailable. The tuner may stop if the device sleeps."
+    : null;
 }
 
 export function syncPowerProtectionMessage(status = currentStatus) {

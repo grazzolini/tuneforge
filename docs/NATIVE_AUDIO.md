@@ -23,6 +23,8 @@ boundary.
   still look like ALSA PCM names.
 - Android native playback and tuner capture report the `android-aaudio` backend and require Android
   API 26 or newer. Tuner monitoring remains unsupported.
+- Android Web Audio fallback and forced-Web-Audio playback use a private seekable loopback
+  transport so Chromium can request complete byte ranges without exposing arbitrary file paths.
 
 ## Backend Selection
 

@@ -129,6 +129,13 @@ type PendingWebPlayback = {
   startTimeSeconds: number;
 };
 
+type WebMediaSourceEnablementOwner = {
+  nativeControlGeneration: number;
+  shouldPlay: boolean;
+  signature: string;
+  transitionId: number;
+};
+
 type PlaybackE2ECountInEvent = PlaybackE2ECountInSchedule;
 type PlaybackE2ETelemetryOverrides = Omit<PlaybackE2ETelemetryPatch, "countIn">;
 
@@ -345,7 +352,7 @@ function nativeLaneUpdateForSession(session: ProjectPlaybackSession) {
 }
 
 export function PlaybackProvider({ children }: { children: ReactNode }) {
-  const initialWebMediaSourcesEnabled = isWebAudioBackendForced() || !isTauriRuntime();
+  const initialWebMediaSourcesEnabled = !isTauriRuntime();
   const primaryAudioRef = useRef<HTMLAudioElement | null>(null);
   const activePrecountRef = useRef<ActivePrecount | null>(null);
   const precountAudioContextRef = useRef<AudioContext | null>(null);
@@ -595,12 +602,42 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     [canUseStemClock],
   );
 
-  const enableWebMediaSources = useStableCallback(function enableWebMediaSources() {
+  const enableWebMediaSources = useStableCallback(async function enableWebMediaSources(
+    owner: WebMediaSourceEnablementOwner,
+  ) {
+    const ownerIsCurrent = () => {
+      const pendingTransition = pendingTransitionRef.current;
+      return Boolean(
+        pendingTransition &&
+          pendingTransition.id === owner.transitionId &&
+          pendingTransition.signature === owner.signature &&
+          pendingTransition.shouldPlay === owner.shouldPlay &&
+          nativeControlGenerationRef.current === owner.nativeControlGeneration &&
+          playbackSignature(sessionRef.current) === owner.signature &&
+          playbackControlBackendRef.current !== "native" &&
+          !nativePlaybackRef.current.active,
+      );
+    };
     if (webMediaSourcesEnabledRef.current) {
-      return;
+      return ownerIsCurrent();
+    }
+    try {
+      await api.ensureWebMediaTransport();
+    } catch (error) {
+      if (!ownerIsCurrent()) {
+        return false;
+      }
+      pendingTransitionRef.current = null;
+      rememberWebPlaybackError(playbackErrorMessage(error));
+      markWebPlaybackStartResult(false);
+      return false;
+    }
+    if (!ownerIsCurrent()) {
+      return false;
     }
     webMediaSourcesEnabledRef.current = true;
     setWebMediaSourcesEnabled(true);
+    return true;
   });
 
   const getNativeAudioCapabilityState = useStableCallback(async function getNativeAudioCapabilityState() {
@@ -2096,7 +2133,12 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       }
 
       if (!webMediaSourcesEnabledRef.current) {
-        enableWebMediaSources();
+        await enableWebMediaSources({
+          nativeControlGeneration: nativeControlGenerationRef.current,
+          shouldPlay: pendingTransition.shouldPlay,
+          signature: pendingTransition.signature,
+          transitionId: pendingTransition.id,
+        });
         return;
       }
 
@@ -2355,7 +2397,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       if (!activeKeys.length) {
         return;
       }
-      pendingTransitionRef.current = {
+      const pendingTransition: PendingTransition = {
         id: ++transitionCounterRef.current,
         signature: playbackSignature(targetSession),
         shouldPlay: true,
@@ -2366,7 +2408,13 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         awaitingSeekKeys: activeKeys,
         forceSeekKeys: activeKeys,
       };
-      enableWebMediaSources();
+      pendingTransitionRef.current = pendingTransition;
+      await enableWebMediaSources({
+        nativeControlGeneration: nativeControlGenerationRef.current,
+        shouldPlay: pendingTransition.shouldPlay,
+        signature: pendingTransition.signature,
+        transitionId: pendingTransition.id,
+      });
       return;
     }
 

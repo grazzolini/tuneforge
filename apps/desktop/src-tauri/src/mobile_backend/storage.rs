@@ -48,6 +48,14 @@ fn ensure_source_playback_proxy_metadata(
 pub struct MobileSyncTransportArtifactFile {
     pub path: PathBuf,
     pub size_bytes: u64,
+    pub media: Result<MobileMediaArtifactFile, String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MobileMediaArtifactFile {
+    pub path: PathBuf,
+    pub size_bytes: u64,
+    pub format: String,
 }
 pub(super) const DEFAULT_PROJECTS_LIMIT: usize = 50;
 pub(super) const MAX_PROJECTS_LIMIT: usize = 200;
@@ -2029,11 +2037,19 @@ pub fn mobile_sync_transport_artifact_file(
     app: AppHandle,
     artifact_id: &str,
 ) -> Result<MobileSyncTransportArtifactFile, String> {
+    let connection = db(&app)?;
+    let root = app_data_root(&app)?;
+    mobile_sync_transport_artifact_file_at_root(&connection, &root, artifact_id)
+}
+
+fn mobile_sync_transport_artifact_file_at_root(
+    connection: &Connection,
+    root: &Path,
+    artifact_id: &str,
+) -> Result<MobileSyncTransportArtifactFile, String> {
     if artifact_id.trim().is_empty() || artifact_id != artifact_id.trim() {
         return Err("artifact_id must be canonical.".to_string());
     }
-    let connection = db(&app)?;
-    let root = app_data_root(&app)?;
     let artifact = connection
         .query_row(
             &format!("SELECT {ARTIFACT_COLUMNS} FROM artifacts WHERE id = ?1"),
@@ -2043,10 +2059,13 @@ pub fn mobile_sync_transport_artifact_file(
         .optional()
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Artifact is unknown.".to_string())?;
+    if get_project_schema(&connection, &artifact.project_id)?.sync_status == "deleted" {
+        return Err("Artifact is unknown.".to_string());
+    }
     if artifact.size_bytes < 0 {
         return Err("Artifact size_bytes must be non-negative.".to_string());
     }
-    let relative_path = relative_artifact_path(&root, &artifact)
+    let relative_path = relative_artifact_path(root, &artifact)
         .ok_or_else(|| "Project artifact path is outside the mobile app data root.".to_string())?;
     safe_relative_path(&relative_path)?;
     let content_sha256 = artifact
@@ -2055,6 +2074,18 @@ pub fn mobile_sync_transport_artifact_file(
         .ok_or_else(|| "Project artifact is missing content SHA-256 metadata.".to_string())
         .and_then(|value| normalize_sha256(value, "content_sha256"))?;
     let path = PathBuf::from(&artifact.path);
+    let canonical_root = root.canonicalize().map_err(|error| error.to_string())?;
+    let canonical_project = project_root_path(root, &artifact.project_id)?
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let path = path
+        .canonicalize()
+        .map_err(|_| "Project artifact file is missing or unreadable.".to_string())?;
+    if !canonical_project.starts_with(canonical_root.join("projects"))
+        || !path.starts_with(&canonical_project)
+    {
+        return Err("Project artifact path is outside the mobile app data root.".to_string());
+    }
     let metadata = fs::metadata(&path)
         .map_err(|_| "Project artifact file is missing or unreadable.".to_string())?;
     if metadata.len() as i64 != artifact.size_bytes {
@@ -2063,8 +2094,241 @@ pub fn mobile_sync_transport_artifact_file(
     if file_sha256(&path)? != content_sha256 {
         return Err("Project artifact file SHA-256 does not match its metadata.".to_string());
     }
+    let original = MobileMediaArtifactFile {
+        path: path.clone(),
+        size_bytes: artifact.size_bytes as u64,
+        format: artifact.format.clone(),
+    };
+    let media = mobile_media_artifact_file_at_root(&artifact, &canonical_project, original);
     Ok(MobileSyncTransportArtifactFile {
         path,
         size_bytes: artifact.size_bytes as u64,
+        media,
     })
+}
+
+fn mobile_media_artifact_file_at_root(
+    artifact: &ArtifactSchema,
+    canonical_project: &Path,
+    original: MobileMediaArtifactFile,
+) -> Result<MobileMediaArtifactFile, String> {
+    if !matches!(
+        artifact.format.to_ascii_lowercase().as_str(),
+        "webm" | "mkv" | "mka"
+    ) {
+        return Ok(original);
+    }
+    let Some(playback_path) = artifact
+        .metadata
+        .get("playback_path")
+        .and_then(Value::as_str)
+    else {
+        return Ok(original);
+    };
+    let playback_format = artifact
+        .metadata
+        .get("playback_format")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty() && *value == value.trim())
+        .ok_or_else(|| "Project playback proxy metadata is invalid.".to_string())?;
+    let path = Path::new(playback_path)
+        .canonicalize()
+        .map_err(|_| "Project playback proxy is missing or unreadable.".to_string())?;
+    if !path.starts_with(canonical_project) || !path.is_file() {
+        return Err("Project playback proxy is outside the mobile app data root.".to_string());
+    }
+    let size_bytes = fs::metadata(&path)
+        .map_err(|_| "Project playback proxy is missing or unreadable.".to_string())?
+        .len();
+    Ok(MobileMediaArtifactFile {
+        path,
+        size_bytes,
+        format: playback_format.to_ascii_lowercase(),
+    })
+}
+
+#[cfg(test)]
+mod mobile_media_tests {
+    use super::*;
+
+    const ARTIFACT_ID: &str = "art_0123456789ab";
+    const MANIFEST_ARTIFACT_ID: &str = "manifest/source v1";
+
+    #[test]
+    fn media_resolution_rejects_invalid_stale_unauthorized_and_changed_artifacts() {
+        let root = std::env::temp_dir().join(format!(
+            "tuneforge-mobile-media-storage-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let connection = db_at_root(&root).unwrap();
+        let bytes = b"synthetic media fixture";
+        let hash = {
+            let mut hasher = Sha256::new();
+            hasher.update(bytes);
+            hex_digest(&hasher.finalize())
+        };
+        let project_id = source_hash_to_project_id(&hash).unwrap();
+        let project_root = project_root_path(&root, &project_id).unwrap();
+        let path = project_root.join("source/fixture.wav");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, bytes).unwrap();
+        let now = "2026-07-22T17:00:00.000Z";
+        connection
+            .execute(
+                "INSERT INTO projects (id, display_name, source_sha256, source_path, imported_path, sync_status, created_at, updated_at)
+                 VALUES (?1, 'Fixture', ?2, ?3, ?3, 'local', ?4, ?4)",
+                params![project_id, hash, path.to_string_lossy(), now],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO artifacts (id, project_id, type, format, path, content_sha256, size_bytes, generated_by, can_delete, can_regenerate, metadata_json, created_at)
+                 VALUES (?1, ?2, 'source_audio', 'wav', ?3, ?4, ?5, 'sync', 0, 0, '{}', ?6)",
+                params![
+                    ARTIFACT_ID,
+                    project_id,
+                    path.to_string_lossy(),
+                    hash,
+                    bytes.len() as i64,
+                    now
+                ],
+            )
+            .unwrap();
+
+        let resolved =
+            mobile_sync_transport_artifact_file_at_root(&connection, &root, ARTIFACT_ID).unwrap();
+        assert_eq!(resolved.size_bytes, bytes.len() as u64);
+        assert_eq!(resolved.media.unwrap().path, path.canonicalize().unwrap());
+        connection
+            .execute(
+                "INSERT INTO artifacts (id, project_id, type, format, path, content_sha256, size_bytes, generated_by, can_delete, can_regenerate, metadata_json, created_at)
+                 SELECT ?1, project_id, type, format, path, content_sha256, size_bytes, generated_by, can_delete, can_regenerate, metadata_json, created_at FROM artifacts WHERE id = ?2",
+                params![MANIFEST_ARTIFACT_ID, ARTIFACT_ID],
+            )
+            .unwrap();
+        assert!(mobile_sync_transport_artifact_file_at_root(
+            &connection,
+            &root,
+            MANIFEST_ARTIFACT_ID
+        )
+        .is_ok());
+        assert!(mobile_sync_transport_artifact_file_at_root(&connection, &root, " bad").is_err());
+        assert!(mobile_sync_transport_artifact_file_at_root(
+            &connection,
+            &root,
+            "art_ffffffffffffffffffffffffffff"
+        )
+        .is_err());
+
+        let proxy = project_root.join("playback/source-playback.wav");
+        fs::create_dir_all(proxy.parent().unwrap()).unwrap();
+        fs::write(&proxy, b"synthetic playback proxy").unwrap();
+        connection
+            .execute(
+                "UPDATE artifacts SET format = 'webm', metadata_json = ?1 WHERE id = ?2",
+                params![
+                    json!({"playback_path": proxy, "playback_format": "wav"}).to_string(),
+                    ARTIFACT_ID
+                ],
+            )
+            .unwrap();
+        let resolved =
+            mobile_sync_transport_artifact_file_at_root(&connection, &root, ARTIFACT_ID).unwrap();
+        assert_eq!(resolved.path, path.canonicalize().unwrap());
+        assert_eq!(resolved.size_bytes, bytes.len() as u64);
+        let media = resolved.media.unwrap();
+        assert_eq!(media.path, proxy.canonicalize().unwrap());
+        assert_eq!(media.size_bytes, b"synthetic playback proxy".len() as u64);
+        assert_eq!(media.format, "wav");
+
+        let outside_proxy = root.join("outside-proxy.wav");
+        fs::write(&outside_proxy, b"outside").unwrap();
+        connection
+            .execute(
+                "UPDATE artifacts SET metadata_json = ?1 WHERE id = ?2",
+                params![
+                    json!({"playback_path": outside_proxy, "playback_format": "wav"}).to_string(),
+                    ARTIFACT_ID
+                ],
+            )
+            .unwrap();
+        assert!(
+            mobile_sync_transport_artifact_file_at_root(&connection, &root, ARTIFACT_ID)
+                .unwrap()
+                .media
+                .is_err()
+        );
+        connection
+            .execute(
+                "UPDATE artifacts SET metadata_json = ?1 WHERE id = ?2",
+                params![
+                    json!({"playback_path": project_root.join("missing.wav"), "playback_format": "wav"}).to_string(),
+                    ARTIFACT_ID
+                ],
+            )
+            .unwrap();
+        assert!(
+            mobile_sync_transport_artifact_file_at_root(&connection, &root, ARTIFACT_ID)
+                .unwrap()
+                .media
+                .is_err()
+        );
+        connection
+            .execute(
+                "UPDATE artifacts SET format = 'wav', metadata_json = '{}' WHERE id = ?1",
+                params![ARTIFACT_ID],
+            )
+            .unwrap();
+
+        connection
+            .execute(
+                "UPDATE artifacts SET size_bytes = size_bytes + 1 WHERE id = ?1",
+                params![ARTIFACT_ID],
+            )
+            .unwrap();
+        assert!(
+            mobile_sync_transport_artifact_file_at_root(&connection, &root, ARTIFACT_ID).is_err()
+        );
+        connection
+            .execute(
+                "UPDATE artifacts SET size_bytes = ?1, content_sha256 = ?2 WHERE id = ?3",
+                params![bytes.len() as i64, "0".repeat(64), ARTIFACT_ID],
+            )
+            .unwrap();
+        assert!(
+            mobile_sync_transport_artifact_file_at_root(&connection, &root, ARTIFACT_ID).is_err()
+        );
+
+        let outside = root.join("outside.wav");
+        fs::write(&outside, bytes).unwrap();
+        connection
+            .execute(
+                "UPDATE artifacts SET path = ?1, content_sha256 = ?2 WHERE id = ?3",
+                params![outside.to_string_lossy(), hash, ARTIFACT_ID],
+            )
+            .unwrap();
+        assert!(
+            mobile_sync_transport_artifact_file_at_root(&connection, &root, ARTIFACT_ID).is_err()
+        );
+        connection
+            .execute(
+                "UPDATE artifacts SET path = ?1 WHERE id = ?2",
+                params![path.to_string_lossy(), ARTIFACT_ID],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE projects SET sync_status = 'deleted' WHERE id = ?1",
+                params![project_id],
+            )
+            .unwrap();
+        assert!(
+            mobile_sync_transport_artifact_file_at_root(&connection, &root, ARTIFACT_ID).is_err()
+        );
+
+        drop(connection);
+        fs::remove_dir_all(root).unwrap();
+    }
 }

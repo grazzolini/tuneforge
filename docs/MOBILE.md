@@ -143,6 +143,14 @@ fallback after native failure or a build-time development override; it is not a 
 Playback state, clocks, and Settings diagnostics change only after the active native session or Web
 media confirms the transition.
 
+On Android, Web Audio reads project artifacts through a private seekable server bound to an
+ephemeral `127.0.0.1` port. Routes contain only opaque artifact IDs, revalidate the current
+app-owned project file for every request, and support bounded streaming plus single byte ranges.
+The URL includes an unguessable per-process capability segment. Origin-less Android media requests
+are accepted, while requests that name a foreign browser origin are rejected. The server starts only
+when Web Audio is selected and stops with the app. Desktop Web Audio keeps using its existing asset
+or backend transport.
+
 ## Android Tuner Capture
 
 The packaged Android tuner requires native CPAL/AAudio microphone capture. A native capability,

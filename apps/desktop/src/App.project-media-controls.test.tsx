@@ -10,6 +10,7 @@ import {
   emitMockSystemMediaPlaybackControl,
   findAudioByArtifactId,
   getMockInvoke,
+  mockEnsureWebMediaTransport,
   getMockMediaSession,
   getMockSystemMediaControlListenerCount,
   getMockWakeLock,
@@ -41,6 +42,17 @@ function mockTauriRuntime() {
   return () => {
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   };
+}
+
+function deferWebMediaTransport() {
+  let resolve!: () => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<void>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  mockEnsureWebMediaTransport.mockImplementationOnce(() => promise);
+  return { reject, resolve };
 }
 
 function latestNativeSessionId() {
@@ -133,9 +145,12 @@ async function startForcedWebPlayback(user: ReturnType<typeof userEvent.setup>) 
   renderApp(["/projects/proj_123"]);
   expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
   await openPlaybackWorkspace(user);
-  const sourceAudio = findAudioByArtifactId("art_source");
-  markAudioReady(sourceAudio);
   await user.click(screen.getByRole("button", { name: "Play playback" }));
+  let sourceAudio: HTMLAudioElement | null = null;
+  await waitFor(() => {
+    sourceAudio = findAudioByArtifactId("art_source");
+  });
+  markAudioReady(sourceAudio!);
   await waitFor(() => expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument());
   return restoreTauriRuntime;
 }
@@ -281,12 +296,160 @@ describe("Desktop app project media controls", () => {
     expect(getMockMediaSession().actionHandlers.size).toBe(0);
     expect(getMockMediaSession().setActionHandler).not.toHaveBeenCalled();
     expect(getMockWakeLock().request).not.toHaveBeenCalled();
+    expect(mockEnsureWebMediaTransport).not.toHaveBeenCalled();
 
     act(() => {
       emitMockSystemMediaPlaybackControl({ action: "pause" });
     });
     await waitFor(() => expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument());
     await waitFor(() => expect(hasNativePowerProtection(false)).toBe(true));
+
+    restoreTauriRuntime();
+  });
+
+  it("keeps Web Audio sources disabled when lazy transport startup fails", async () => {
+    vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "1");
+    mockEnsureWebMediaTransport.mockRejectedValueOnce(
+      new Error("Mobile media transport could not start."),
+    );
+    const restoreTauriRuntime = mockTauriRuntime();
+    const user = userEvent.setup();
+    setMockNativeAudioState({
+      capabilities: {
+        nativePlaybackSupported: true,
+        fallbackRequired: false,
+        fallbackReason: null,
+        backend: "desktop-cpal",
+      },
+    });
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    await waitFor(() => expect(mockEnsureWebMediaTransport).toHaveBeenCalledTimes(1));
+    await waitFor(() => {
+      expect(readPlaybackLiveDiagnostics()).toMatchObject({
+        currentState: "error",
+        currentPath: "none",
+        statusMessage: "Playback stopped. Web Audio could not start.",
+      });
+    });
+    expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+    expect(
+      Array.from(document.querySelectorAll("audio")).every(
+        (element) => !element.hasAttribute("src"),
+      ),
+    ).toBe(true);
+
+    restoreTauriRuntime();
+  });
+
+  it("waits for lazy transport before exposing native fallback media sources", async () => {
+    const transport = deferWebMediaTransport();
+    const restoreTauriRuntime = mockTauriRuntime();
+    const user = userEvent.setup();
+    setMockNativeAudioState({
+      capabilities: {
+        nativePlaybackSupported: true,
+        fallbackRequired: false,
+        fallbackReason: null,
+        backend: "desktop-cpal",
+      },
+      playFallbackReason: "Native playback could not start.",
+    });
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+
+    await waitFor(() => expect(mockEnsureWebMediaTransport).toHaveBeenCalledTimes(1));
+    expect(
+      Array.from(document.querySelectorAll("audio")).every(
+        (element) => !element.hasAttribute("src"),
+      ),
+    ).toBe(true);
+    expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+
+    await act(async () => transport.resolve());
+    const sourceAudio = await waitFor(() => findAudioByArtifactId("art_source"));
+    markAudioReady(sourceAudio);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument(),
+    );
+
+    restoreTauriRuntime();
+  });
+
+  it("ignores lazy transport success after playback is stopped", async () => {
+    vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "1");
+    const transport = deferWebMediaTransport();
+    const restoreTauriRuntime = mockTauriRuntime();
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() => expect(mockEnsureWebMediaTransport).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByRole("button", { name: "Stop playback" }));
+    await act(async () => transport.resolve());
+
+    expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+    expect(
+      Array.from(document.querySelectorAll("audio")).every(
+        (element) => !element.hasAttribute("src"),
+      ),
+    ).toBe(true);
+    expect(readPlaybackLiveDiagnostics()).toMatchObject({
+      currentState: "not-playing",
+      currentPath: "none",
+    });
+
+    restoreTauriRuntime();
+  });
+
+  it("ignores lazy transport rejection after a newer native owner starts", async () => {
+    vi.stubEnv("VITE_TUNEFORGE_FORCE_WEB_AUDIO", "1");
+    const transport = deferWebMediaTransport();
+    const restoreTauriRuntime = mockTauriRuntime();
+    const user = userEvent.setup();
+    setMockNativeAudioState({
+      capabilities: {
+        nativePlaybackSupported: true,
+        fallbackRequired: false,
+        fallbackReason: null,
+        backend: "desktop-cpal",
+      },
+    });
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await openPlaybackWorkspace(user);
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitFor(() => expect(mockEnsureWebMediaTransport).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByRole("button", { name: "Stop playback" }));
+    vi.unstubAllEnvs();
+    await user.click(screen.getByRole("button", { name: "Play playback" }));
+    await waitForNativeControls();
+
+    await act(async () => transport.reject(new Error("Stale Web transport failure.")));
+
+    expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument();
+    expect(
+      Array.from(document.querySelectorAll("audio")).every(
+        (element) => !element.hasAttribute("src"),
+      ),
+    ).toBe(true);
+    expect(window.localStorage.getItem("tuneforge.playback-web-error")).toBeNull();
+    expect(readPlaybackLiveDiagnostics()).toMatchObject({
+      currentState: "playing",
+      currentPath: "native",
+    });
 
     restoreTauriRuntime();
   });

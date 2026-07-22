@@ -49,7 +49,7 @@ export function TunerPreferenceControls({
   visualModeLabel = "Default tuner",
 }: TunerPreferenceControlsProps) {
   const [devices, setDevices] = useState<TunerMicrophoneDevice[]>(() =>
-    readRememberedTunerMicrophoneDevices(),
+    systemDefaultOnly ? [] : readRememberedTunerMicrophoneDevices(),
   );
   const [deviceError, setDeviceError] = useState<string | null>(null);
   const [isReferenceFocused, setIsReferenceFocused] = useState(false);
@@ -84,7 +84,18 @@ export function TunerPreferenceControls({
     setDeviceError(null);
   }, [nativeCaptureDisabled]);
 
+  useEffect(() => {
+    if (systemDefaultOnly) {
+      setDevices([]);
+      setDeviceError(null);
+      refreshRequestIdRef.current += 1;
+    }
+  }, [systemDefaultOnly]);
+
   const refreshDevices = useCallback(({ queueIfBusy = false } = {}) => {
+    if (systemDefaultOnly) {
+      return Promise.resolve();
+    }
     if (refreshPromiseRef.current) {
       if (queueIfBusy) {
         pendingRefreshRef.current = true;
@@ -127,7 +138,7 @@ export function TunerPreferenceControls({
       }
     });
     return refreshPromise;
-  }, [nativeCaptureDisabled]);
+  }, [nativeCaptureDisabled, systemDefaultOnly]);
 
   useEffect(() => {
     if (lastRefreshTokenRef.current === refreshToken) {

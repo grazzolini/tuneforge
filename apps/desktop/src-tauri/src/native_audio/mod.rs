@@ -18,6 +18,7 @@ pub const AUDIO_EVENT_ENDED: &str = "audio://ended";
 pub const AUDIO_EVENT_ERROR: &str = "audio://error";
 pub const AUDIO_EVENT_INPUT_LEVEL: &str = "audio://input-level";
 pub const AUDIO_EVENT_INPUT_FRAME: &str = "audio://input-frame";
+pub const AUDIO_EVENT_INPUT_STATE: &str = "audio://input-state";
 pub const AUDIO_EVENT_DEVICES_CHANGED: &str = "audio://devices-changed";
 
 #[derive(Clone)]
@@ -80,6 +81,7 @@ impl AudioCapabilities {
                 AUDIO_EVENT_ERROR,
                 AUDIO_EVENT_INPUT_LEVEL,
                 AUDIO_EVENT_INPUT_FRAME,
+                AUDIO_EVENT_INPUT_STATE,
                 AUDIO_EVENT_DEVICES_CHANGED,
             ],
             fallback_required: !platform.native_playback_supported,
@@ -236,13 +238,31 @@ pub fn audio_list_output_devices(
 
 #[tauri::command]
 pub fn audio_get_input_state(
+    app: AppHandle,
     state: State<'_, NativeAudioState>,
 ) -> Result<capture::AudioInputState, String> {
-    let capture = state
+    let mut capture = state
         .capture
         .lock()
         .map_err(|_| "Native audio capture state is unavailable.".to_string())?;
-    Ok(capture.state())
+    Ok(capture.refresh(&app))
+}
+
+#[tauri::command]
+pub fn audio_get_input_permission_status() -> capture::AudioInputPermissionStatus {
+    capture::input_permission_status(false)
+}
+
+#[tauri::command]
+pub fn audio_request_input_permission() -> capture::AudioInputPermissionStatus {
+    capture::input_permission_status(true)
+}
+
+#[cfg(target_os = "android")]
+pub fn stop_input_for_lifecycle(app: &AppHandle, state: &NativeAudioState) {
+    if let Ok(mut capture) = state.capture.lock() {
+        capture.stop_for_background(app);
+    }
 }
 
 #[tauri::command]

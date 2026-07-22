@@ -182,7 +182,8 @@ describe("Desktop app settings theme", () => {
     expect(screen.getByText("Frontend Package Version")).toBeInTheDocument();
     expect(screen.getByText("Frontend Git Ref")).toBeInTheDocument();
     expect(screen.getByText(FRONTEND_VERSION_INFO.git_ref)).toBeInTheDocument();
-    expect(screen.getAllByText("Native (desktop-cpal)")).toHaveLength(2);
+    expect(screen.getByText("Available (desktop-cpal)")).toBeInTheDocument();
+    expect(screen.getByText("Native (desktop-cpal)")).toBeInTheDocument();
     expect(screen.getByText(/^Unavailable —/)).toBeInTheDocument();
     expect(screen.getByText("Native microphone failed.")).toBeInTheDocument();
     expect(screen.getByText("Native output failed.")).toBeInTheDocument();
@@ -233,10 +234,39 @@ describe("Desktop app settings theme", () => {
 
     expect(await screen.findByText("/tmp/tuneforge")).toBeInTheDocument();
     expect(screen.getByText("Web Audio forced at build time")).toBeInTheDocument();
-    expect(screen.getByText("Web Audio forced")).toBeInTheDocument();
-    expect(screen.getAllByText("Native (desktop-cpal)")).toHaveLength(2);
+    expect(screen.getByText("Forced Web Audio")).toBeInTheDocument();
+    expect(screen.getByText("Available (desktop-cpal)")).toBeInTheDocument();
+    expect(screen.getByText("Native (desktop-cpal)")).toBeInTheDocument();
     expect(screen.getByText("Not playing")).toBeInTheDocument();
     expect(mockInvoke).toHaveBeenCalledWith("audio_get_capabilities");
+  });
+
+  it("keeps Android capture capability, live state, and history distinct", async () => {
+    const user = userEvent.setup();
+    setMockNativeAudioState({
+      capabilities: { platform: "android", backend: "android-aaudio", micCaptureSupported: true },
+      inputPermission: { state: "blocked", error: null },
+      inputState: { active: false, capturePath: "none", captureGeneration: 9, error: null },
+    });
+    window.localStorage.setItem(
+      "tuneforge.tuner-input-capture-backend",
+      JSON.stringify({ backend: "native", detail: "android-aaudio" }),
+    );
+    window.localStorage.setItem(
+      "tuneforge.tuner-native-capture-error",
+      "Microphone capture was interrupted. Check Android Settings, then choose Retry.",
+    );
+    renderApp(["/settings"]);
+
+    await user.click(await screen.findByText("Show diagnostics"));
+
+    expect(await screen.findByText("Available (android-aaudio)")).toBeInTheDocument();
+    expect(screen.getByText("Native required")).toBeInTheDocument();
+    expect(screen.getByText("Blocked")).toBeInTheDocument();
+    expect(screen.getAllByText("Inactive").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("None").length).toBeGreaterThan(0);
+    expect(screen.getByText("Native (android-aaudio)")).toBeInTheDocument();
+    expect(screen.getByText(/Microphone capture was interrupted/)).toBeInTheDocument();
   });
 
   it("persists playback follow defaults", async () => {

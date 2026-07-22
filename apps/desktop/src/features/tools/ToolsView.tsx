@@ -2,12 +2,18 @@ import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   getNativeAudioCapabilities,
+  getNativeAudioInputPermissionStatus,
+  getNativeAudioInputState,
+  isAndroidRuntime,
   isWebAudioBackendForced,
   listenNativeAudioInputFrames,
+  listenNativeAudioInputState,
+  requestNativeAudioInputPermission,
   startNativeAudioInput,
   stopNativeAudioInput,
   type NativeAudioCapabilities,
   type NativeAudioInputFrame,
+  type NativeAudioInputState,
 } from "../../lib/nativeAudio";
 import { useStableCallback } from "../../lib/useStableCallback";
 import { usePreferences, type TunerVisualMode } from "../../lib/preferences";
@@ -27,7 +33,6 @@ import {
   SimpleTunerMeter,
   WideArcTunerMeter,
 } from "./TunerMeters";
-import { getTunerStatusLabel } from "./tunerMeterState";
 import {
   createStabilizedTunerReadingState,
   updateStabilizedTunerReading,
@@ -130,6 +135,7 @@ function ChromaticTunerPage() {
   const [nativeAudioCapabilities, setNativeAudioCapabilities] =
     useState<NativeAudioCapabilities | null>(null);
   const webAudioForced = isWebAudioBackendForced();
+  const androidRuntime = isAndroidRuntime() || nativeAudioCapabilities?.platform === "android";
   const [reading, setReading] = useState<TunerPitchReading | null>(null);
   const [deviceRefreshToken, setDeviceRefreshToken] = useState(0);
   const [systemInputVolumeRefreshToken, setSystemInputVolumeRefreshToken] = useState(0);
@@ -139,7 +145,9 @@ function ChromaticTunerPage() {
   const inputDeviceIdRef = useRef(defaultTunerInputDeviceId);
   const mediaSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const nativeCaptureActiveRef = useRef(false);
+  const nativeCaptureGenerationRef = useRef<number | null>(null);
   const nativeInputUnlistenRef = useRef<(() => void) | null>(null);
+  const nativeStateUnlistenRef = useRef<(() => void) | null>(null);
   const referenceHzRef = useRef(defaultTunerReferenceHz);
   const requestIdRef = useRef(0);
   const readingStabilizerRef = useRef(createStabilizedTunerReadingState());
@@ -204,6 +212,9 @@ function ChromaticTunerPage() {
 
     nativeInputUnlistenRef.current?.();
     nativeInputUnlistenRef.current = null;
+    nativeStateUnlistenRef.current?.();
+    nativeStateUnlistenRef.current = null;
+    nativeCaptureGenerationRef.current = null;
     if (nativeCaptureActiveRef.current) {
       nativeCaptureActiveRef.current = false;
       void stopNativeAudioInput().catch(() => undefined);
@@ -294,7 +305,12 @@ function ChromaticTunerPage() {
   const handleNativeInputFrame = useStableCallback(function handleNativeInputFrame(
     frame: NativeAudioInputFrame,
   ) {
-    if (!nativeCaptureActiveRef.current || frame.sampleRate <= 0 || frame.samples.length === 0) {
+    if (
+      !nativeCaptureActiveRef.current ||
+      frame.captureGeneration !== nativeCaptureGenerationRef.current ||
+      frame.sampleRate <= 0 ||
+      frame.samples.length === 0
+    ) {
       return;
     }
     processTunerSamples(
@@ -305,22 +321,79 @@ function ChromaticTunerPage() {
     );
   });
 
+  const handleNativeInputState = useStableCallback(function handleNativeInputState(
+    inputState: NativeAudioInputState,
+  ) {
+    if (
+      inputState.captureGeneration !== nativeCaptureGenerationRef.current ||
+      inputState.active ||
+      !inputState.error
+    ) {
+      return;
+    }
+    requestIdRef.current += 1;
+    const message = captureStateErrorMessage(inputState);
+    rememberTunerNativeCaptureError(message);
+    releaseCapture();
+    resetTunerDisplay();
+    setStatus("error");
+    setErrorMessage(message);
+  });
+
   const startNativeTuner = useStableCallback(async function startNativeTuner(
     deviceId: string | null,
     requestId: number,
     backend: string | null,
+    requireAndroidPermission: boolean,
   ) {
-    const unlisten = await listenNativeAudioInputFrames(handleNativeInputFrame);
+    const [unlistenFrames, unlistenState] = await Promise.all([
+      listenNativeAudioInputFrames(handleNativeInputFrame),
+      listenNativeAudioInputState(handleNativeInputState),
+    ]);
     if (requestIdRef.current !== requestId) {
-      unlisten();
+      unlistenFrames();
+      unlistenState();
       return;
     }
-    nativeInputUnlistenRef.current = unlisten;
-    const inputState = await startNativeAudioInput({ deviceId });
+    nativeInputUnlistenRef.current = unlistenFrames;
+    nativeStateUnlistenRef.current = unlistenState;
+    nativeCaptureActiveRef.current = true;
+    if (requireAndroidPermission) {
+      let permission = await getNativeAudioInputPermissionStatus();
+      if (permission.state === "prompt" || permission.state === "denied") {
+        permission = await requestNativeAudioInputPermission();
+      }
+      while (requestIdRef.current === requestId && permission.state === "prompting") {
+        await waitForPermissionPoll();
+        permission = await getNativeAudioInputPermissionStatus();
+      }
+      if (permission.error || permission.state !== "granted") {
+        throw new Error(captureSafeErrorMessage(permission.error));
+      }
+    }
+    let inputState = await startNativeAudioInput({ deviceId });
+    nativeCaptureGenerationRef.current = inputState.captureGeneration;
+    while (
+      requestIdRef.current === requestId &&
+      !inputState.active &&
+      !inputState.error &&
+      (inputState.permissionState === "prompt" || inputState.permissionState === "prompting")
+    ) {
+      await waitForPermissionPoll();
+      inputState = await getNativeAudioInputState();
+      nativeCaptureGenerationRef.current = inputState.captureGeneration;
+      if (inputState.permissionState === "granted" && !inputState.active) {
+        inputState = await startNativeAudioInput({ deviceId });
+        nativeCaptureGenerationRef.current = inputState.captureGeneration;
+      }
+    }
     nativeCaptureActiveRef.current = inputState.active;
     if (requestIdRef.current !== requestId) {
       releaseCapture();
       return;
+    }
+    if (!inputState.active || inputState.capturePath === "none") {
+      throw new Error(captureStateErrorMessage(inputState));
     }
     if (inputState.deviceId) {
       inputDeviceIdRef.current = deviceId;
@@ -393,10 +466,17 @@ function ChromaticTunerPage() {
     const selectedDeviceId = nextDeviceId ?? inputDeviceIdRef.current;
     const selectedNativeDevice = isNativeAudioInputDeviceId(selectedDeviceId);
     const nativeCapabilities = await resolveNativeAudioCapabilities();
+    const androidNativeRequired =
+      isAndroidRuntime() || nativeCapabilities?.platform === "android";
 
     if (!webAudioForced && nativeCapabilities?.micCaptureSupported) {
       try {
-        await startNativeTuner(selectedDeviceId, requestId, nativeCapabilities.backend);
+        await startNativeTuner(
+          selectedDeviceId,
+          requestId,
+          nativeCapabilities.backend,
+          androidNativeRequired,
+        );
         return;
       } catch (error) {
         rememberTunerNativeCaptureError(captureErrorMessage(error));
@@ -404,7 +484,18 @@ function ChromaticTunerPage() {
           return;
         }
         releaseCapture();
+        if (androidNativeRequired) {
+          setStatus("error");
+          setErrorMessage(captureErrorMessage(error));
+          return;
+        }
       }
+    } else if (!webAudioForced && androidNativeRequired) {
+      const message = "Native Android microphone capture is unavailable.";
+      rememberTunerNativeCaptureError(message);
+      setStatus("error");
+      setErrorMessage(message);
+      return;
     } else if (!webAudioForced && selectedNativeDevice) {
       rememberTunerNativeCaptureError(
         "Selected microphone requires native input capture, but native capture is unavailable.",
@@ -473,10 +564,14 @@ function ChromaticTunerPage() {
   const isBusy = status === "starting";
   const isListening = status === "listening";
   const canStart =
-    canUseTunerCapture(webAudioForced ? null : nativeAudioCapabilities) && !isBusy && !isListening;
-  const statusText = headerStatusLabel(status, reading);
+    ((!webAudioForced && androidRuntime) ||
+      canUseTunerCapture(webAudioForced ? null : nativeAudioCapabilities)) &&
+    !isBusy &&
+    !isListening;
+  const statusText = headerStatusLabel(status);
   const systemDefaultInputOnly =
     webAudioForced ||
+    androidRuntime ||
     activeCaptureBackend === "web" ||
     nativeAudioCapabilities?.micCaptureSupported === false;
   const inputVolumeDeviceId =
@@ -493,6 +588,7 @@ function ChromaticTunerPage() {
           canStart={canStart}
           isBusy={isBusy}
           isListening={isListening}
+          isError={status === "error"}
           onStart={() => void startTuner()}
           onStop={stopTuner}
           statusText={statusText}
@@ -518,7 +614,10 @@ function ChromaticTunerPage() {
           refreshToken={systemInputVolumeRefreshToken}
         />
 
-        {errorMessage ? <p className="inline-error">{errorMessage}</p> : null}
+        {errorMessage ? <p className="inline-error" role="alert">{errorMessage}</p> : null}
+        {webAudioForced ? (
+          <p className="tuner-preferences__status">Web Audio development override is active.</p>
+        ) : null}
 
         {defaultTunerVisualMode === "simple" ? (
           <SimpleTunerMeter
@@ -542,6 +641,7 @@ function TunerHeader({
   canStart,
   isBusy,
   isListening,
+  isError,
   onStart,
   onStop,
   statusText,
@@ -549,6 +649,7 @@ function TunerHeader({
   canStart: boolean;
   isBusy: boolean;
   isListening: boolean;
+  isError: boolean;
   onStart: () => void;
   onStop: () => void;
   statusText: string;
@@ -557,7 +658,7 @@ function TunerHeader({
     <div className="tuner-header">
       <div>
         <h2>Chromatic Tuner</h2>
-        <p className="subpanel__copy">{statusText}</p>
+        <p aria-live="polite" className="subpanel__copy">{statusText}</p>
       </div>
       <div className="button-row">
         {isListening || isBusy ? (
@@ -571,7 +672,7 @@ function TunerHeader({
             onClick={onStart}
             type="button"
           >
-            Start
+            {isError ? "Retry" : "Start"}
           </button>
         )}
       </div>
@@ -811,6 +912,20 @@ function captureErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Could not start microphone capture.";
 }
 
+function captureStateErrorMessage(inputState: NativeAudioInputState) {
+  return captureSafeErrorMessage(inputState.error);
+}
+
+function captureSafeErrorMessage(error: NativeAudioInputState["error"]) {
+  return error
+    ? [error.message, error.guidance].filter(Boolean).join(" ")
+    : "Native microphone capture did not start.";
+}
+
+function waitForPermissionPoll() {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, 250));
+}
+
 function isMicrophonePermissionError(error: unknown) {
   return error instanceof DOMException && (error.name === "NotAllowedError" || error.name === "SecurityError");
 }
@@ -819,9 +934,9 @@ function getCurrentTunerTimeMs() {
   return typeof performance !== "undefined" ? performance.now() : Date.now();
 }
 
-function headerStatusLabel(status: TunerStatus, reading: TunerPitchReading | null) {
+function headerStatusLabel(status: TunerStatus) {
   if (status === "error" || status === "unsupported") return "Error";
-  if (status === "starting") return "Listening";
-  if (status === "listening") return getTunerStatusLabel(reading);
+  if (status === "starting") return "Starting microphone";
+  if (status === "listening") return "Listening";
   return "Ready";
 }

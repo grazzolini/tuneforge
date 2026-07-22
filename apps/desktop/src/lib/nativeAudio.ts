@@ -10,6 +10,7 @@ export type NativeAudioEventName =
   | "audio://error"
   | "audio://input-level"
   | "audio://input-frame"
+  | "audio://input-state"
   | "audio://devices-changed";
 
 export type NativeAudioCapabilities = {
@@ -147,6 +148,35 @@ export type NativeAudioInputState = {
   monitorGain: number;
   inputLevel: number;
   sampleRate: number | null;
+  captureGeneration: number;
+  capturePath: "none" | "desktop-cpal" | "android-aaudio";
+  permissionState:
+    | "prompt"
+    | "prompting"
+    | "granted"
+    | "denied"
+    | "blocked"
+    | "privacy-blocked"
+    | "unavailable";
+  error: NativeAudioInputError | null;
+};
+
+export type NativeAudioInputError = {
+  code:
+    | "permission-denied"
+    | "permission-blocked"
+    | "privacy-blocked"
+    | "unavailable"
+    | "startup-failure"
+    | "stream-interruption"
+    | "background-teardown";
+  message: string;
+  guidance: string | null;
+};
+
+export type NativeAudioInputPermissionStatus = {
+  state: NativeAudioInputState["permissionState"];
+  error: NativeAudioInputError | null;
 };
 
 export type NativeAudioInputFrame = {
@@ -155,6 +185,7 @@ export type NativeAudioInputFrame = {
   inputLevel: number;
   samples: number[];
   timestampMs: number;
+  captureGeneration: number;
 };
 
 export function isWebAudioBackendForced() {
@@ -163,6 +194,10 @@ export function isWebAudioBackendForced() {
     typeof configuredValue === "string" &&
     FORCE_WEB_AUDIO_VALUES.has(configuredValue.trim().toLowerCase())
   );
+}
+
+export function isAndroidRuntime() {
+  return typeof navigator !== "undefined" && /\bAndroid\b/i.test(navigator.userAgent);
 }
 
 export function getNativeAudioCapabilities() {
@@ -213,6 +248,14 @@ export function getNativeAudioInputState() {
   return invoke<NativeAudioInputState>("audio_get_input_state");
 }
 
+export function getNativeAudioInputPermissionStatus() {
+  return invoke<NativeAudioInputPermissionStatus>("audio_get_input_permission_status");
+}
+
+export function requestNativeAudioInputPermission() {
+  return invoke<NativeAudioInputPermissionStatus>("audio_request_input_permission");
+}
+
 export function startNativeAudioInput(payload: NativeAudioInputRequest = {}) {
   return invoke<NativeAudioInputState>("audio_start_input", { payload });
 }
@@ -229,6 +272,14 @@ export function listenNativeAudioInputFrames(
   handler: (frame: NativeAudioInputFrame) => void,
 ) {
   return listen<NativeAudioInputFrame>("audio://input-frame", (event) => {
+    handler(event.payload);
+  });
+}
+
+export function listenNativeAudioInputState(
+  handler: (state: NativeAudioInputState) => void,
+) {
+  return listen<NativeAudioInputState>("audio://input-state", (event) => {
     handler(event.payload);
   });
 }

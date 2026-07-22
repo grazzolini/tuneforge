@@ -2,7 +2,7 @@ use super::AudioPlatform;
 use std::sync::OnceLock;
 
 const ANDROID_CONTEXT_UNAVAILABLE: &str =
-    "Native audio playback is unavailable because the Android audio context could not be initialized.";
+    "Native Android audio is unavailable because its audio context could not be initialized.";
 
 static ANDROID_AUDIO_CONTEXT: OnceLock<Result<(), &'static str>> = OnceLock::new();
 
@@ -13,7 +13,7 @@ pub fn current_platform() -> AudioPlatform {
         backend: "android-aaudio",
         native_playback_supported: context_result.is_ok(),
         fallback_reason: context_result.err(),
-        mic_capture_supported: false,
+        mic_capture_supported: context_result.is_ok(),
         mic_monitoring_supported: false,
         system_input_volume_supported: false,
     }

@@ -128,15 +128,19 @@ cat > "$MAIN_ACTIVITY" <<'KOTLIN'
 package com.tuneforge.desktop
 
 import android.Manifest
+import android.app.AppOpsManager
 import android.content.pm.PackageManager
+import android.hardware.SensorPrivacyManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Process
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 
 class MainActivity : TauriActivity() {
   private var notificationPermissionOwnershipRevision = 0L
+  @Volatile private var microphonePermissionRequestPending = false
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
@@ -188,6 +192,55 @@ class MainActivity : TauriActivity() {
         notificationPermissionOwnershipRevision,
       )
     }
+    if (requestCode == MICROPHONE_PERMISSION_REQUEST) {
+      microphonePermissionRequestPending = false
+    }
+  }
+
+  fun getTuneForgeAudioPermissionState(): String {
+    if (!packageManager.hasSystemFeature(PackageManager.FEATURE_MICROPHONE)) return "unavailable"
+    if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+      return if (microphonePrivacyBlocked()) "privacy-blocked" else "granted"
+    }
+    if (microphonePermissionRequestPending) return "prompting"
+    val requestedBefore = getPreferences(MODE_PRIVATE)
+      .getBoolean(MICROPHONE_PERMISSION_REQUESTED, false)
+    if (!requestedBefore) return "prompt"
+    return if (shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO)) {
+      "denied"
+    } else {
+      "blocked"
+    }
+  }
+
+  fun requestTuneForgeAudioPermission(): String {
+    val state = getTuneForgeAudioPermissionState()
+    if (state != "prompt" && state != "denied") return state
+    microphonePermissionRequestPending = true
+    getPreferences(MODE_PRIVATE).edit()
+      .putBoolean(MICROPHONE_PERMISSION_REQUESTED, true)
+      .apply()
+    window.decorView.post {
+      if (microphonePermissionRequestPending) {
+        requestPermissions(
+          arrayOf(Manifest.permission.RECORD_AUDIO),
+          MICROPHONE_PERMISSION_REQUEST,
+        )
+      }
+    }
+    return "prompting"
+  }
+
+  private fun microphonePrivacyBlocked(): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return false
+    val privacy = getSystemService(SensorPrivacyManager::class.java) ?: return false
+    if (!privacy.supportsSensorToggle(SensorPrivacyManager.Sensors.MICROPHONE)) return false
+    val appOps = getSystemService(AppOpsManager::class.java) ?: return false
+    return appOps.checkOpNoThrow(
+      AppOpsManager.OPSTR_RECORD_AUDIO,
+      Process.myUid(),
+      packageName,
+    ) == AppOpsManager.MODE_IGNORED
   }
 
   private fun requestTuneForgeNotificationPermission() {
@@ -207,6 +260,8 @@ class MainActivity : TauriActivity() {
 
   companion object {
     private const val NOTIFICATION_PERMISSION_REQUEST = 2305
+    private const val MICROPHONE_PERMISSION_REQUEST = 2306
+    private const val MICROPHONE_PERMISSION_REQUESTED = "tuneforge_microphone_permission_requested"
   }
 
   @Suppress("DEPRECATION")

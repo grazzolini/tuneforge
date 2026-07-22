@@ -6,7 +6,8 @@ boundary.
 
 ## Current Scope
 
-- Tuner microphone capture uses native `cpal` on supported desktop builds.
+- Tuner microphone capture uses native `cpal` on supported desktop builds and CPAL/AAudio on
+  Android.
 - Tuner device listing uses native input enumeration first, then cached/browser labels as fallback.
 - Source, practice-mix, and stem playback prefer native `cpal` on macOS/Linux and CPAL/AAudio on
   Android when every active
@@ -20,12 +21,18 @@ boundary.
 - Linux native capture and playback currently use `cpal`'s ALSA host. On PipeWire/PulseAudio
   desktops this usually routes through the host ALSA compatibility layer, but device labels may
   still look like ALSA PCM names.
-- Android native playback reports the `android-aaudio` backend and requires Android API 26 or newer.
+- Android native playback and tuner capture report the `android-aaudio` backend and require Android
+  API 26 or newer. Tuner monitoring remains unsupported.
 
 ## Backend Selection
 
 The frontend prefers native audio when a feature is supported and falls back to Web Audio when
 native support is unavailable or startup fails.
+
+Packaged Android tuner capture is an exception: it requires the native AAudio path and never silently
+falls back to `getUserMedia` after a capability, permission, startup, or stream failure. The global
+`VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` development override remains an explicit all-Web mode for both
+tuner capture and playback.
 
 Playback also owns media-key controls and wake prevention through the active backend only:
 
@@ -87,8 +94,8 @@ Settings -> Local Data -> Show diagnostics reports:
 - backend package version and git ref
 - frontend package version and git ref
 - input capture availability
-- last tuner capture backend
-- last native capture error
+- capture selection policy, current Android permission, current state, and current confirmed path
+- last confirmed tuner capture path and latest safe historical failure
 - audio override and playback selection policy
 - native playback capability, even while Web Audio is forced
 - current playback state and current confirmed path
@@ -113,6 +120,13 @@ from local storage; only a safe historical backend and error may survive reload.
 When `VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` is active, diagnostics report the build-time override and
 `Web Audio forced` policy while continuing to report native capability independently.
 
+Android microphone permission is requested only from a tuner start or retry. TuneForge distinguishes
+the initial prompt, an in-progress prompt, denial, permanent blocking, the Android microphone privacy
+toggle, and unavailable hardware. Blocked states give an Android Settings path and Retry; TuneForge
+does not open Settings. Permission and privacy state are rechecked before every start and while the
+stream is active. Revocation, privacy blocking, stream interruption, or app suspension stops the
+stream, clears live pitch/input state, and requires an explicit retry after resume.
+
 On Web media `error`, playback stops with an error. After `waiting` or `stalled`, five seconds with
 no progress while the element is not paused, seeking, or ended is also treated as a failed path.
 
@@ -122,6 +136,10 @@ Native tuner capture can use a selected input device without changing the system
 Native selected-device volume uses host controls where available. Web Audio capture remains limited
 to the browser/system default input path, so non-default microphone choices are disabled while Web
 Audio is active.
+
+Android exposes only `System Default` because CPAL/AAudio does not provide a confirmed stable native
+device identity for this flow. Cached browser labels and browser device choices are not shown as
+Android native routes.
 
 ## Playback QA Matrix
 

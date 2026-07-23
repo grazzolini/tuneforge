@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from app.config import get_settings
 from app.db import SessionLocal
 from app.models import SongSection, TabImport
 from app.services.artifacts import register_artifact
@@ -19,6 +20,17 @@ from app.services.stem_signal_metadata import (
 )
 
 from .conftest import wait_for_job
+
+
+@pytest.fixture(autouse=True)
+def _stub_unrelated_import_handlers(monkeypatch, isolated_data_dir):
+    monkeypatch.setenv("TUNEFORGE_DEFAULT_CHORD_BACKEND", "tuneforge-fast")
+    get_settings.cache_clear()
+    for handler in ("_handle_analyze", "_handle_stems", "_handle_lyrics"):
+        monkeypatch.setattr(
+            f"app.services.jobs.InProcessJobRunner.{handler}",
+            lambda *_args: SimpleNamespace(artifact_ids=[], runtime_device=None),
+        )
 
 
 def _segment(label: str, *, confidence: float, pitch_class: int, quality: str) -> dict[str, Any]:

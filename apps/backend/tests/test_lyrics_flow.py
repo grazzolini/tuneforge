@@ -235,10 +235,7 @@ def test_lyrics_job_persists_transcript_and_update_preserves_timings(
 
     monkeypatch.setattr("app.services.lyrics.transcribe_project_lyrics", fake_transcription)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_audio_file)}
 
     job = client.post(f"/api/v1/projects/{project['id']}/lyrics", json={"force": False}).json()["job"]
     final_job = wait_for_job(client, job["id"])
@@ -475,10 +472,7 @@ def test_lyrics_language_override_reaches_service_and_persists_metadata(
 
     monkeypatch.setattr("app.services.lyrics.transcribe_project_lyrics", fake_transcription)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_audio_file)}
 
     job = client.post(
         f"/api/v1/projects/{project['id']}/lyrics",
@@ -556,10 +550,7 @@ def test_lyrics_no_lyrics_override_clears_transcript_without_transcribing(
 
 
 def test_lyrics_language_override_invalid_code_rejected(client, sample_audio_file: Path):
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_audio_file)}
 
     response = client.post(
         f"/api/v1/projects/{project['id']}/lyrics",
@@ -574,11 +565,8 @@ def test_lyrics_short_circuit_ignores_override_when_force_false(
     monkeypatch,
     sample_audio_file: Path,
 ):
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_audio_file), "copy_into_project": True},
-    ).json()["project"]
-    jobs = client.get("/api/v1/jobs").json()["jobs"]
+    project = {"id": _create_project_without_import_jobs(sample_audio_file)}
+    jobs = [client.post(f"/api/v1/projects/{project['id']}/lyrics", json={"force": False}).json()["job"]]
     lyrics_job = next(job for job in jobs if job["project_id"] == project["id"] and job["type"] == "lyrics")
     assert wait_for_job(client, lyrics_job["id"])["status"] == "completed"
 
@@ -634,10 +622,7 @@ def test_force_regenerate_replaces_current_and_clears_edit_flag(client, monkeypa
 
     monkeypatch.setattr("app.services.lyrics.transcribe_project_lyrics", lambda *_args, **_kwargs: next(responses))
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_audio_file)}
 
     first_job = client.post(f"/api/v1/projects/{project['id']}/lyrics", json={"force": False}).json()["job"]
     assert wait_for_job(client, first_job["id"])["status"] == "completed"
@@ -662,10 +647,7 @@ def test_lyrics_job_failure_surfaces_error_message(client, monkeypatch, sample_a
 
     monkeypatch.setattr("app.services.lyrics.transcribe_project_lyrics", fail_transcription)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_audio_file)}
 
     job = client.post(f"/api/v1/projects/{project['id']}/lyrics", json={"force": False}).json()["job"]
     final_job = wait_for_job(client, job["id"])

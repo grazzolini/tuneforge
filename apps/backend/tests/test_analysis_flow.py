@@ -16,24 +16,11 @@ from app.services.artifacts import register_artifact
 from app.services.paths import ensure_project_dirs
 from app.services.stem_signal_metadata import STEM_SIGNAL_METADATA_KEY, STEM_SIGNAL_METADATA_VERSION
 
-from .conftest import wait_for_job
+from .conftest import import_project_without_jobs, wait_for_job
 
 
 def test_analysis_job_persists_results(client, sample_rhythmic_audio_file: Path):
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_rhythmic_audio_file), "copy_into_project": True},
-    ).json()["project"]
-
-    initial_jobs = client.get("/api/v1/jobs").json()["jobs"]
-    import_analyze_job = next(
-        job for job in initial_jobs if job["project_id"] == project["id"] and job["type"] == "analyze"
-    )
-    import_chord_job = next(
-        job for job in initial_jobs if job["project_id"] == project["id"] and job["type"] == "chords"
-    )
-    assert wait_for_job(client, import_analyze_job["id"], timeout=90.0)["status"] == "completed"
-    assert wait_for_job(client, import_chord_job["id"], timeout=90.0)["status"] == "completed"
+    project = import_project_without_jobs(sample_rhythmic_audio_file)
 
     job = client.post(
         f"/api/v1/projects/{project['id']}/analyze",

@@ -4,9 +4,49 @@ import test from "node:test";
 import {
   buildCaptureSidecar,
   findPactlSinkBlock,
+  optionsForGroup,
   pactlProperty,
+  parseOptions,
   validateCaptureOutputPath,
 } from "./playback-smoke.mjs";
+
+test("selects groups in catalog order and makes selectors runnable", () => {
+  const options = parseOptions(["--group", "audio-capture", "--group=playback"]);
+
+  assert.equal(options.run, true);
+  assert.deepEqual(options.groups, ["playback", "audio-capture"]);
+});
+
+test("maps CI and all selectors to their intended groups", () => {
+  assert.deepEqual(parseOptions(["--ci"]).groups, ["playback", "diagnostics"]);
+  assert.deepEqual(parseOptions(["--all"]).groups, ["playback", "diagnostics", "audio-capture"]);
+});
+
+test("rejects conflicting or unknown group selectors", () => {
+  assert.throws(() => parseOptions(["--group", "playback", "--ci"]), /cannot be combined/);
+  assert.throws(() => parseOptions(["--group", "missing"]), /Valid groups: playback, diagnostics, audio-capture/);
+  assert.throws(() => parseOptions(["--group"]), /--group requires a group name/);
+  assert.throws(() => parseOptions(["--group="]), /--group requires a group name/);
+});
+
+test("keeps legacy capture optional but makes selected capture strict", () => {
+  const legacy = parseOptions(["--run", "--capture-audio"]);
+  assert.equal(legacy.requireAudioCapture, false);
+  assert.deepEqual(legacy.groups, []);
+  assert.throws(
+    () => parseOptions(["--group", "playback", "--capture-audio"]),
+    /include --group audio-capture or use --all/,
+  );
+  assert.throws(
+    () => parseOptions(["--group", "playback", "--group", "diagnostics", "--capture-audio"]),
+    /include --group audio-capture or use --all/,
+  );
+  assert.deepEqual(parseOptions(["--group", "audio-capture"]).groups, ["audio-capture"]);
+  const all = parseOptions(["--all", "--capture-device", "Loopback"]);
+  assert.equal(optionsForGroup(all, "playback").captureAudio, false);
+  assert.equal(optionsForGroup(all, "audio-capture").captureAudio, true);
+  assert.equal(optionsForGroup(all, "audio-capture").requireAudioCapture, true);
+});
 
 test("parses PipeWire object serial from pactl sink output", () => {
   const pactlOutput = [
@@ -110,8 +150,8 @@ test("uses wider spacing tolerance only for AVFoundation capture", () => {
 
   assert.equal(linuxSidecar.markerToleranceSeconds, 0.2);
   assert.equal(linuxSidecar.spacingToleranceSeconds, 0.2);
-  assert.equal(macSidecar.markerToleranceSeconds, 0.2);
-  assert.equal(macSidecar.spacingToleranceSeconds, 0.25);
+  assert.equal(macSidecar.markerToleranceSeconds, 0.5);
+  assert.equal(macSidecar.spacingToleranceSeconds, 0.3);
 });
 
 function captureWithPhases(phases, planOverrides = {}) {

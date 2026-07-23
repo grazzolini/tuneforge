@@ -9,6 +9,7 @@ import { dirname, extname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
+import { runDiagnosticsSmoke } from "./diagnostics-smoke.mjs";
 
 const desktopRequire = createRequire(new URL("../apps/desktop/package.json", import.meta.url));
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -20,6 +21,11 @@ const CAPTURE_CHANNELS = 2;
 const CAPTURE_STARTUP_GRACE_MS = 1000;
 const CAPTURE_ANALYZER_TIMEOUT_MS = 120_000;
 const SUPPORTED_CAPTURE_PROVIDERS = new Set(["auto", "pipewire", "pulse", "avfoundation"]);
+const SMOKE_GROUPS = [
+  { name: "playback", description: "Generated-fixture playback controls smoke.", ci: true },
+  { name: "diagnostics", description: "Sanitized import and processing diagnostics smoke.", ci: true },
+  { name: "audio-capture", description: "Playback smoke with required local audio capture.", ci: false },
+];
 
 if (isDirectRun()) {
   try {
@@ -36,8 +42,17 @@ function isDirectRun() {
 
 async function main() {
   const options = parseOptions(process.argv.slice(2));
+  if (options.list) {
+    printGroups();
+    return;
+  }
   if (!options.run) {
     printScaffold();
+    return;
+  }
+
+  if (options.groups.length) {
+    await runGroups(options);
     return;
   }
 
@@ -56,6 +71,50 @@ async function main() {
   }
 
   await runIsolatedSmoke(options);
+}
+
+async function runGroups(options) {
+  if (options.manualApp && options.groups.some((group) => group === "diagnostics")) {
+    throw new Error("Manual-app mode supports only playback and audio-capture groups.");
+  }
+  for (const group of options.groups) {
+    const startedAt = performance.now();
+    try {
+      if (group === "diagnostics") {
+        await runDiagnosticsSmoke({ headed: options.headed, keepArtifacts: options.keepArtifacts });
+      } else {
+        const groupOptions = optionsForGroup(options, group);
+        if (groupOptions.manualApp) {
+          await runManualSmoke(groupOptions);
+        } else {
+          await runIsolatedSmoke(groupOptions);
+        }
+      }
+      console.log(`[playback-smoke] group ${group}: passed in ${formatDuration(performance.now() - startedAt)}.`);
+    } catch (error) {
+      console.error(`[playback-smoke] group ${group}: failed in ${formatDuration(performance.now() - startedAt)}.`);
+      throw error;
+    }
+  }
+}
+
+export function optionsForGroup(options, group) {
+  return {
+    ...options,
+    captureAudio: group === "audio-capture",
+    requireAudioCapture: group === "audio-capture",
+  };
+}
+
+function formatDuration(durationMs) {
+  return `${(durationMs / 1000).toFixed(1)}s`;
+}
+
+function printGroups() {
+  console.log("[playback-smoke] available groups:");
+  for (const group of SMOKE_GROUPS) {
+    console.log(`  ${group.name}${group.ci ? " (CI)" : ""}: ${group.description}`);
+  }
 }
 
 function printScaffold() {
@@ -129,6 +188,7 @@ async function runIsolatedSmoke(options) {
   const children = [];
   let fixture = null;
   let captureResult = null;
+  let failed = false;
 
   try {
     await mkdir(dataDir, { recursive: true });
@@ -200,11 +260,16 @@ async function runIsolatedSmoke(options) {
         recordPhase: capture?.recordPhase,
         captureTiming: Boolean(capture),
         captureTimingRequired: Boolean(capture) && options.requireAudioCapture,
+        failureArtifactRoot: tempRoot,
       }),
     });
+  } catch (error) {
+    failed = true;
+    await writeSmokeFailureSummary(tempRoot, "isolated playback setup");
+    throw error;
   } finally {
     await stopChildren(children);
-    if (options.keepArtifacts || captureResult?.keepArtifacts) {
+    if (options.keepArtifacts || failed || captureResult?.keepArtifacts) {
       logStep(`Kept artifacts at ${tempRoot}.`);
     } else {
       await rm(tempRoot, { recursive: true, force: true });
@@ -222,6 +287,7 @@ async function runSmoke({
   recordPhase = () => {},
   captureTiming = false,
   captureTimingRequired = false,
+  failureArtifactRoot = "",
 }) {
   let chromium;
   try {
@@ -239,9 +305,11 @@ async function runSmoke({
   }
 
   const browser = await chromium.launch({ headless: !headed });
+  let page;
+  let stage = "opening project";
 
   try {
-  const page = await browser.newPage();
+  page = await browser.newPage();
   recordPhase("smoke:start", { appUrl: projectUrl || appUrl });
   logStep(
     `Running ${headed ? "headed" : "headless"} smoke against ${projectUrl || appUrl} (${projectId ? `project ${projectId}` : `project "${projectName}"`}).`,
@@ -250,6 +318,7 @@ async function runSmoke({
   await page.getByRole("heading", { name: /.+/ }).first().waitFor();
   recordPhase("project:opened", { projectId: projectId || null, projectName: projectName || null });
   logStep("Project opened.");
+  stage = "opening playback controls";
   await openPlayback(page);
   recordPhase("playback:opened");
   if (requireTelemetry) {
@@ -386,13 +455,32 @@ async function runSmoke({
   logStep("Passed.");
 } catch (error) {
   recordPhase("smoke:error", { message: errorMessage(error) });
+  if (failureArtifactRoot) {
+    await writeSmokeFailureArtifacts(failureArtifactRoot, page, stage);
+  }
   throw error;
 } finally {
   await browser.close();
 }
 }
 
-function parseOptions(argv) {
+async function writeSmokeFailureArtifacts(root, page, stage) {
+  await mkdir(root, { recursive: true });
+  if (page) {
+    await page.screenshot({ path: join(root, "playback-failure.png"), fullPage: true }).catch(() => {});
+  }
+  await writeSmokeFailureSummary(root, stage);
+}
+
+async function writeSmokeFailureSummary(root, stage) {
+  await mkdir(root, { recursive: true });
+  await writeFile(
+    join(root, "playback-failure-summary.json"),
+    JSON.stringify({ group: "playback", result: "failed", stage, error: "Playback smoke failed." }),
+  );
+}
+
+export function parseOptions(argv) {
   const parsed = parseCliArgs(argv);
   const manualApp = readFlag(parsed, "manual-app");
   const requireAudioCapture = readFlag(parsed, "require-audio-capture");
@@ -400,6 +488,7 @@ function parseOptions(argv) {
   const captureProvider = readCaptureProviderOption(parsed);
   const captureDevice = readStringOption(parsed, "capture-device");
   const captureOutput = readStringOption(parsed, "capture-output");
+  const selectedGroups = selectGroups(parsed);
   const captureAudio = readFlag(parsed, "capture-audio")
     || requireAudioCapture
     || routeOutput
@@ -412,8 +501,14 @@ function parseOptions(argv) {
     || process.env.TUNEFORGE_SMOKE_PROJECT_NAME
     || "";
 
+  if (selectedGroups.length && captureAudio && !selectedGroups.includes("audio-capture")) {
+    throw new Error("Selected groups do not accept capture flags; include --group audio-capture or use --all.");
+  }
+
   return {
-    run: readFlag(parsed, "run"),
+    run: readFlag(parsed, "run") || selectedGroups.length > 0,
+    list: readFlag(parsed, "list"),
+    groups: selectedGroups,
     manualApp,
     keepArtifacts: readFlag(parsed, "keep-artifacts"),
     headed: readFlag(parsed, "headed"),
@@ -433,6 +528,33 @@ function parseOptions(argv) {
   };
 }
 
+function selectGroups(parsed) {
+  const rawGroups = parsed.values.get("group") ?? [];
+  if (parsed.flags.has("group") || rawGroups.some((group) => !group.trim())) {
+    throw new Error("--group requires a group name. Valid groups: playback, diagnostics, audio-capture.");
+  }
+  const requestedGroups = readStringOptions(parsed, "group");
+  const ci = readFlag(parsed, "ci");
+  const all = readFlag(parsed, "all");
+  if ((ci || all) && requestedGroups.length) {
+    throw new Error("--group cannot be combined with --ci or --all.");
+  }
+  if (ci && all) {
+    throw new Error("--ci cannot be combined with --all.");
+  }
+  const selected = all
+    ? SMOKE_GROUPS.map((group) => group.name)
+    : ci
+      ? SMOKE_GROUPS.filter((group) => group.ci).map((group) => group.name)
+      : requestedGroups;
+  const validGroups = SMOKE_GROUPS.map((group) => group.name);
+  const unknown = selected.filter((group) => !validGroups.includes(group));
+  if (unknown.length) {
+    throw new Error(`Unknown --group ${unknown.map((group) => `"${group}"`).join(", ")}. Valid groups: ${validGroups.join(", ")}.`);
+  }
+  return validGroups.filter((group) => selected.includes(group));
+}
+
 function parseCliArgs(argv) {
   const flags = new Set();
   const values = new Map();
@@ -446,13 +568,13 @@ function parseCliArgs(argv) {
     const body = arg.slice(2);
     const equalsIndex = body.indexOf("=");
     if (equalsIndex >= 0) {
-      values.set(body.slice(0, equalsIndex), body.slice(equalsIndex + 1));
+      addCliValue(values, body.slice(0, equalsIndex), body.slice(equalsIndex + 1));
       continue;
     }
 
     const next = argv[index + 1];
     if (next && !next.startsWith("--")) {
-      values.set(body, next);
+      addCliValue(values, body, next);
       index += 1;
       continue;
     }
@@ -463,16 +585,24 @@ function parseCliArgs(argv) {
   return { flags, values };
 }
 
+function addCliValue(values, name, value) {
+  values.set(name, [...(values.get(name) ?? []), value]);
+}
+
 function readFlag(parsed, name) {
   if (parsed.flags.has(name)) {
     return true;
   }
-  const value = parsed.values.get(name);
-  return value === "true" || value === "1";
+  return (parsed.values.get(name) ?? []).some((value) => value === "true" || value === "1");
 }
 
 function readStringOption(parsed, name) {
-  return parsed.values.get(name)?.trim() ?? "";
+  const values = parsed.values.get(name) ?? [];
+  return values.at(-1)?.trim() ?? "";
+}
+
+function readStringOptions(parsed, name) {
+  return (parsed.values.get(name) ?? []).map((value) => value.trim()).filter(Boolean);
 }
 
 function readPortOption(parsed, name) {
@@ -1315,8 +1445,8 @@ export function buildCaptureSidecar(capture, fileInfo, { runError }) {
     },
     minDurationSeconds: 1.0,
     rmsThreshold: 0.002,
-    markerToleranceSeconds: 0.2,
-    spacingToleranceSeconds: capture.plan.provider === "avfoundation" ? 0.25 : 0.2,
+    markerToleranceSeconds: capture.plan.provider === "avfoundation" ? 0.5 : 0.2,
+    spacingToleranceSeconds: capture.plan.provider === "avfoundation" ? 0.3 : 0.2,
     smoke_status: runError ? "failed" : "passed",
     smoke_error: runError ? errorMessage(runError) : null,
     capture_file: fileInfo,

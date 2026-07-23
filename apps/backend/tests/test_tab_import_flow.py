@@ -5,7 +5,7 @@ from pathlib import Path
 from app.engines.lyrics import LyricsTranscription
 from app.services.tabs import _match_tab_lyrics_to_segments
 
-from .conftest import wait_for_job
+from .conftest import import_project_without_jobs, wait_for_job
 
 
 def _install_lyrics_fixture(monkeypatch) -> None:
@@ -49,10 +49,7 @@ def _install_lyrics_fixture(monkeypatch) -> None:
 
 def _create_project_with_lyrics(client, monkeypatch, sample_audio_file: Path) -> dict:
     _install_lyrics_fixture(monkeypatch)
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = import_project_without_jobs(sample_audio_file)
     job = client.post(f"/api/v1/projects/{project['id']}/lyrics", json={"force": False}).json()["job"]
     assert wait_for_job(client, job["id"])["status"] == "completed"
     return project

@@ -140,6 +140,18 @@ Filesystem storage holds:
 
 Artifact rows include type, format, path, size, generation metadata, delete/regenerate flags, and creation time.
 
+### Database Migrations
+
+Alembic migrations run automatically on backend startup. The frozen v1 baseline is
+`0021_job_runtime_status`; databases already stamped at that revision remain compatible without
+rerunning schema changes.
+
+Revisions `0001` through `0020` are unsupported pre-v1 history. To recover one, first close every
+TuneForge instance, then back up the entire TuneForge data directory, including `app.sqlite`, any
+SQLite sidecars, and all project and artifact files. Copying `app.sqlite` alone is insufficient.
+After the backup completes, open that data directory once with TuneForge v1.0.0 so it upgrades to
+`0021_job_runtime_status`, close v1.0.0, and then open it with the newer build.
+
 ## Job Model
 
 The backend uses a single-process in-memory job runner with SQLite-persisted job state. Jobs can be pending, running, completed, failed, or cancelled.

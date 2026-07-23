@@ -1,45 +1,276 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
-from pathlib import Path
+from typing import Any
 
 import pytest
 
+from alembic import command
 from app.config import ensure_data_dirs, get_settings
-from app.db import UnknownDatabaseRevisionError, reconfigure_engine, run_migrations
-from app.services.sync_identity import source_hash_to_project_id, source_hash_to_project_storage_key
-from app.utils.hashing import file_sha256
+from app.db import (
+    UnknownDatabaseRevisionError,
+    _migration_config,
+    reconfigure_engine,
+    run_migrations,
+)
+
+# Derived from a database upgraded through the complete pre-baseline migration
+# chain. Each digest covers the full table-keyed signature assembled below.
+EXPECTED_SCHEMA_SIGNATURE_SHA256_BY_TABLE = {
+    "analysis_results": "4e0f43fa85b02f2e042cd159bc55a76d91f7473f19e077023cbb197806e7dfc2",
+    "artifacts": "82bd9b3a44809a681387d12761947e9b0a145434002f522e94e9c46f1b27368c",
+    "chord_timelines": "954cbc2f4a48703610257fe3f2e50719c41ad6840ac47b52cd39946e3f2b2a02",
+    "jobs": "985336056a11b651fd8481814540e4331ad9fa357af24cf04ad6f877fa83a184",
+    "lyrics_transcripts": "71d1b26a1ab12bcab6acd586445c74f4ae85006d3db3cbe1c17a826c359c4f64",
+    "projects": "805b17f8733c3f8fa9a12cde45ebb97901045f52464196b26cc5daa3f7f6f26f",
+    "settings": "da7bd8dd2a15802d64c86c2986360eb010b7ce4cd956785a2fec356d5f21c9e8",
+    "song_sections": "0d8f23683ab05f1c91438852610f0deafde29044355fdb102de94b19d8702b0a",
+    "sync_delete_tombstones": "4328886fa2e63598943d40360f664053892da11783413888b8f7d557e8723ec7",
+    "sync_entity_revisions": "c438f8286352c8f20387a13d4209216d76cd0f9932743a92901cbf8a2851e471",
+    "sync_local_identities": "beb94f479e9c189e7b2c582b4acc4f8587471d50873dc7f28db5b3a00fcd6233",
+    "sync_pairing_offers": "58ea114df56d6aa83d00b519af3a62b831c21363d57cc26d53bf2e6f332cf7b4",
+    "sync_staged_artifacts": "8abd9c34212a5f2870b23df26eb066425450d5e80b8805b70c35b7e6fd095181",
+    "sync_trusted_peers": "ce39cbce93c759ef39f8cce7ac6ec990fd80b4cabb9bf5e41ec29a21ad00d99a",
+    "tab_imports": "d44c27b31cb3fb4541ea42cea4875cc2ab66caac878d49abe90eeac48faa5115",
+}
 
 
-def _create_legacy_lyrics_transcripts_table(connection: sqlite3.Connection) -> None:
-    connection.execute(
+def _normalize_schema_sql(sql: str | None) -> str | None:
+    if sql is None:
+        return None
+    return " ".join(sql.replace('"', "").split())
+
+
+def _canonical_table_signature(
+    connection: sqlite3.Connection,
+    table: str,
+) -> dict[str, Any]:
+    index_rows = connection.execute(f"PRAGMA index_list({table!r})").fetchall()
+    table_sql = connection.execute(
         """
-        CREATE TABLE lyrics_transcripts (
-            project_id VARCHAR(32) PRIMARY KEY,
-            backend VARCHAR(64) NOT NULL DEFAULT 'openai-whisper',
-            source_artifact_id VARCHAR(32),
-            source_kind VARCHAR(32) NOT NULL DEFAULT 'ai',
-            requested_device VARCHAR(16),
-            device VARCHAR(16),
-            model_name VARCHAR(64),
-            language VARCHAR(32),
-            source_segments_json JSON NOT NULL DEFAULT '[]',
-            segments_json JSON NOT NULL DEFAULT '[]',
-            has_user_edits BOOLEAN NOT NULL DEFAULT 0,
-            created_at DATETIME,
-            updated_at DATETIME
-        )
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'table' AND name = ?
+        """,
+        (table,),
+    ).fetchone()
+    index_sql = connection.execute(
         """
+        SELECT name, sql
+        FROM sqlite_master
+        WHERE type = 'index'
+          AND tbl_name = ?
+          AND name NOT LIKE 'sqlite_%'
+        ORDER BY name
+        """,
+        (table,),
+    ).fetchall()
+    return {
+        "table_info": [
+            list(row)
+            for row in connection.execute(f"PRAGMA table_info({table!r})")
+        ],
+        "foreign_key_list": [
+            list(row)
+            for row in connection.execute(f"PRAGMA foreign_key_list({table!r})")
+        ],
+        # SQLite's sequence number reflects creation order, not index structure.
+        "index_list": {
+            row[1]: [row[2], row[3], row[4]]
+            for row in index_rows
+        },
+        "index_xinfo": {
+            row[1]: [
+                list(index_column)
+                for index_column in connection.execute(
+                    f"PRAGMA index_xinfo({row[1]!r})"
+                )
+            ]
+            for row in index_rows
+        },
+        # Full normalized DDL freezes CHECK clauses, unique constraints, index
+        # expressions, and partial-index predicates without depending on SQL
+        # formatting introduced by SQLite table rebuilds.
+        "sqlite_master": {
+            "table": _normalize_schema_sql(table_sql[0]),
+            "indexes": {
+                name: _normalize_schema_sql(sql)
+                for name, sql in index_sql
+            },
+        },
+    }
+
+
+def _schema_signature_sha256(signature: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        signature,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _database_snapshot(connection: sqlite3.Connection) -> tuple[object, ...]:
+    return (
+        connection.execute(
+            """
+            SELECT type, name, tbl_name, sql
+            FROM sqlite_master
+            WHERE name NOT LIKE 'sqlite_%'
+            ORDER BY type, name
+            """
+        ).fetchall(),
+        connection.execute(
+            """
+            SELECT id, display_name, source_path, imported_path, sync_status
+            FROM projects
+            """
+        ).fetchall(),
+        connection.execute(
+            """
+            SELECT id, project_id, type, path, content_sha256
+            FROM artifacts
+            """
+        ).fetchall(),
+        connection.execute(
+            """
+            SELECT id, project_id, status, runtime_device, stage, runtime_detail
+            FROM jobs
+            """
+        ).fetchall(),
     )
 
 
-def test_run_migrations_reports_unknown_database_revision() -> None:
+def test_fresh_v1_baseline_matches_frozen_pre_v1_schema_signature() -> None:
+    settings = get_settings()
+    ensure_data_dirs(settings)
+    reconfigure_engine(settings)
+
+    run_migrations(settings)
+
+    with sqlite3.connect(settings.database_path) as connection:
+        revision = connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone()[0]
+        tables = tuple(
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'table'
+                  AND name NOT LIKE 'sqlite_%'
+                  AND name != 'alembic_version'
+                ORDER BY name
+                """
+            )
+        )
+        signatures = {
+            table: _schema_signature_sha256(
+                _canonical_table_signature(connection, table)
+            )
+            for table in tables
+        }
+
+    assert revision == "0021_job_runtime_status"
+    assert tables == tuple(EXPECTED_SCHEMA_SIGNATURE_SHA256_BY_TABLE)
+    assert signatures == EXPECTED_SCHEMA_SIGNATURE_SHA256_BY_TABLE
+
+
+def test_stamped_v1_database_is_noop_and_preserves_data() -> None:
+    settings = get_settings()
+    ensure_data_dirs(settings)
+    reconfigure_engine(settings)
+    run_migrations(settings)
+    timestamp = "2026-07-23 12:00:00+00:00"
+    source_path = str(settings.projects_root / "synthetic" / "source.wav")
+    artifact_path = str(settings.projects_root / "synthetic" / "analysis.json")
+
+    with sqlite3.connect(settings.database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO projects (
+                id, display_name, source_path, imported_path, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "project_reference",
+                "Synthetic Reference",
+                source_path,
+                source_path,
+                timestamp,
+                timestamp,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO artifacts (
+                id, project_id, type, format, path, metadata_json, created_at,
+                content_sha256
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "artifact_reference",
+                "project_reference",
+                "analysis_json",
+                "json",
+                artifact_path,
+                '{"source_artifact_id":"source_reference"}',
+                timestamp,
+                "a" * 64,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO jobs (
+                id, project_id, type, status, progress, payload_json,
+                result_artifact_ids_json, cancel_requested, created_at, updated_at,
+                runtime_device, stage, runtime_detail
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "job_reference",
+                "project_reference",
+                "analyze",
+                "completed",
+                100,
+                '{"source_artifact_id":"source_reference"}',
+                '["artifact_reference"]',
+                0,
+                timestamp,
+                timestamp,
+                "cpu",
+                "finalize",
+                "Synthetic runtime detail",
+            ),
+        )
+        before = _database_snapshot(connection)
+
+    run_migrations(settings)
+
+    with sqlite3.connect(settings.database_path) as connection:
+        after = _database_snapshot(connection)
+        revision = connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone()[0]
+
+    assert revision == "0021_job_runtime_status"
+    assert after == before
+
+
+def test_pre_v1_revision_reports_safe_v1_recovery_path() -> None:
     settings = get_settings()
     ensure_data_dirs(settings)
     with sqlite3.connect(settings.database_path) as connection:
-        connection.execute("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)")
-        connection.execute("INSERT INTO alembic_version (version_num) VALUES (?)", ("9999_future_branch",))
+        connection.execute(
+            "CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO alembic_version (version_num) VALUES (?)",
+            ("0019_sync_project_state",),
+        )
 
     reconfigure_engine(settings)
 
@@ -47,1125 +278,53 @@ def test_run_migrations_reports_unknown_database_revision() -> None:
         run_migrations(settings)
 
     message = str(exc.value)
-    assert "9999_future_branch" in message
+    assert "0019_sync_project_state" in message
     assert str(settings.database_path) in message
+    assert "revisions 0001 through 0020 are pre-v1 history" in message
+    assert "close every TuneForge instance" in message
+    assert "entire TuneForge data directory" in message
+    assert "SQLite sidecar files" in message
+    assert "project and artifact files" in message
+    assert "app.sqlite alone is not sufficient" in message
+    assert "TuneForge v1.0.0" in message
+    assert "0021_job_runtime_status" in message
     assert "branch with newer migrations" in message
-    assert "TUNEFORGE_DATA_DIR" in message
+    assert "separate TUNEFORGE_DATA_DIR" in message
 
 
-def test_sync_trust_identity_migration_creates_identity_and_trust_tables() -> None:
+def test_v1_baseline_downgrade_removes_application_schema() -> None:
     settings = get_settings()
     ensure_data_dirs(settings)
-
     reconfigure_engine(settings)
     run_migrations(settings)
+
+    command.downgrade(_migration_config(settings), "base")
 
     with sqlite3.connect(settings.database_path) as connection:
         tables = {
             row[0]
             for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                """
             )
-        }
-
-    assert {
-        "sync_local_identities",
-        "sync_pairing_offers",
-        "sync_trusted_peers",
-    } <= tables
-
-
-def test_sync_artifact_staging_migration_creates_table_and_indexes() -> None:
-    settings = get_settings()
-    ensure_data_dirs(settings)
-
-    reconfigure_engine(settings)
-    run_migrations(settings)
-
-    with sqlite3.connect(settings.database_path) as connection:
-        tables = {
-            row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
-        }
-        columns = {
-            row[1]
-            for row in connection.execute("PRAGMA table_info('sync_staged_artifacts')")
         }
         indexes = {
-            row[1]
-            for row in connection.execute("PRAGMA index_list('sync_staged_artifacts')")
-        }
-
-    assert "sync_staged_artifacts" in tables
-    assert {
-        "content_sha256",
-        "size_bytes",
-        "relative_path",
-        "provider_device_id",
-        "metadata_json",
-        "verified_at",
-        "created_at",
-        "updated_at",
-    } <= columns
-    assert {
-        "ix_sync_staged_artifacts_provider_device_id",
-        "ix_sync_staged_artifacts_verified_at",
-    } <= indexes
-
-
-def test_sync_entity_revisions_migration_creates_table_columns_and_indexes() -> None:
-    settings = get_settings()
-    ensure_data_dirs(settings)
-
-    reconfigure_engine(settings)
-    run_migrations(settings)
-
-    with sqlite3.connect(settings.database_path) as connection:
-        tables = {
             row[0]
             for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'index' AND name NOT LIKE 'sqlite_%'
+                """
             )
         }
-        columns = {
-            row[1]
-            for row in connection.execute("PRAGMA table_info('sync_entity_revisions')")
-        }
-        indexes = {
-            row[1]
-            for row in connection.execute("PRAGMA index_list('sync_entity_revisions')")
-        }
-        project_entity_index_columns = [
-            row[2]
-            for row in connection.execute(
-                "PRAGMA index_info('ix_sync_entity_revisions_project_entity')"
-            )
-        ]
-
-    assert "sync_entity_revisions" in tables
-    assert {
-        "id",
-        "project_id",
-        "entity_type",
-        "entity_id",
-        "revision_type",
-        "base_revision_id",
-        "source_artifact_id",
-        "content_sha256",
-        "author_device_id",
-        "state",
-        "metadata_json",
-        "payload_json",
-        "created_at",
-        "updated_at",
-    } <= columns
-    assert {
-        "ix_sync_entity_revisions_project_entity",
-        "ix_sync_entity_revisions_base_revision_id",
-        "ix_sync_entity_revisions_author_device_id",
-        "ix_sync_entity_revisions_state",
-    } <= indexes
-    assert project_entity_index_columns == ["project_id", "entity_type", "entity_id"]
-
-
-def test_sync_delete_tombstones_migration_creates_table_columns_and_indexes() -> None:
-    settings = get_settings()
-    ensure_data_dirs(settings)
-
-    reconfigure_engine(settings)
-    run_migrations(settings)
-
-    with sqlite3.connect(settings.database_path) as connection:
-        tables = {
-            row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
-        }
-        columns = {
-            row[1]
-            for row in connection.execute("PRAGMA table_info('sync_delete_tombstones')")
-        }
-        indexes = {
-            row[1]
-            for row in connection.execute("PRAGMA index_list('sync_delete_tombstones')")
-        }
-        group_target_index_columns = [
-            row[2]
-            for row in connection.execute(
-                "PRAGMA index_info('uq_sync_delete_tombstones_group_target')"
-            )
-        ]
-
-    assert "sync_delete_tombstones" in tables
-    assert {
-        "id",
-        "sync_group_id",
-        "project_id",
-        "target_type",
-        "target_id",
-        "author_device_id",
-        "deleted_at",
-        "prior_metadata_json",
-        "created_at",
-        "updated_at",
-    } <= columns
-    assert {
-        "uq_sync_delete_tombstones_group_target",
-        "ix_sync_delete_tombstones_project_id",
-        "ix_sync_delete_tombstones_target",
-        "ix_sync_delete_tombstones_author_device_id",
-        "ix_sync_delete_tombstones_deleted_at",
-    } <= indexes
-    assert group_target_index_columns == ["sync_group_id", "target_type", "target_id"]
-
-
-def test_lyrics_language_override_migration_adds_nullable_column() -> None:
-    settings = get_settings()
-    ensure_data_dirs(settings)
-
-    reconfigure_engine(settings)
-    run_migrations(settings)
-
-    with sqlite3.connect(settings.database_path) as connection:
-        columns = {
-            row[1]: row
-            for row in connection.execute("PRAGMA table_info('lyrics_transcripts')")
-        }
-
-    assert "language_override" in columns
-    assert columns["language_override"][3] == 0
-
-
-def test_job_runtime_status_migration_skips_legacy_database_without_jobs_table() -> None:
-    settings = get_settings()
-    ensure_data_dirs(settings)
-
-    with sqlite3.connect(settings.database_path) as connection:
-        connection.execute("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)")
-        connection.execute(
-            "INSERT INTO alembic_version (version_num) VALUES (?)",
-            ("0020_lyrics_language_override",),
-        )
-
-    reconfigure_engine(settings)
-    run_migrations(settings)
-
-    with sqlite3.connect(settings.database_path) as connection:
-        tables = {
-            row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
-        }
-        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-
-    assert "jobs" not in tables
-    assert revision == "0021_job_runtime_status"
-
-
-def test_hash_storage_migration_backfills_existing_files(tmp_path: Path) -> None:
-    settings = get_settings()
-    ensure_data_dirs(settings)
-    duplicate_source_path = tmp_path / "duplicate.wav"
-    artifact_path = tmp_path / "artifact.wav"
-    old_project_root = settings.projects_root / "proj_legacy"
-    old_project_source_dir = old_project_root / "source"
-    old_project_source_dir.mkdir(parents=True)
-    source_path = old_project_source_dir / "source.wav"
-    imported_path = old_project_source_dir / "imported.wav"
-    source_path.write_bytes(b"source")
-    imported_path.write_bytes(b"imported")
-    duplicate_source_path.write_bytes(b"duplicate")
-    artifact_path.write_bytes(b"artifact")
-    expected_project_hash = file_sha256(source_path)
-    expected_project_id = source_hash_to_project_id(expected_project_hash)
-    expected_storage_key = source_hash_to_project_storage_key(expected_project_hash)
-
-    with sqlite3.connect(settings.database_path) as connection:
-        connection.execute("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)")
-        connection.execute(
-            "INSERT INTO alembic_version (version_num) VALUES (?)",
-            ("0011_expand_stem_artifact_uniqueness",),
-        )
-        connection.execute(
-            """
-            CREATE TABLE projects (
-                id VARCHAR(32) PRIMARY KEY,
-                display_name VARCHAR(255) NOT NULL,
-                source_key_override VARCHAR(32),
-                source_path VARCHAR(2048) NOT NULL,
-                imported_path VARCHAR(2048) NOT NULL,
-                duration_seconds FLOAT,
-                sample_rate INTEGER,
-                channels INTEGER,
-                created_at DATETIME,
-                updated_at DATETIME
-            )
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE artifacts (
-                id VARCHAR(32) PRIMARY KEY,
-                project_id VARCHAR(32) NOT NULL,
-                type VARCHAR(64) NOT NULL,
-                format VARCHAR(32) NOT NULL,
-                path VARCHAR(2048) NOT NULL,
-                size_bytes INTEGER NOT NULL DEFAULT 0,
-                generated_by VARCHAR(128) NOT NULL DEFAULT 'unknown',
-                can_delete BOOLEAN NOT NULL DEFAULT 1,
-                can_regenerate BOOLEAN NOT NULL DEFAULT 0,
-                metadata_json JSON NOT NULL DEFAULT '{}',
-                cache_key VARCHAR(128),
-                created_at DATETIME
-            )
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE analysis_results (
-                project_id VARCHAR(32) PRIMARY KEY,
-                source_artifact_id VARCHAR(32),
-                estimated_key VARCHAR(64),
-                key_confidence FLOAT,
-                estimated_reference_hz FLOAT,
-                tuning_offset_cents FLOAT,
-                tempo_bpm FLOAT,
-                analysis_version VARCHAR(32) NOT NULL DEFAULT 'v3',
-                created_at DATETIME
-            )
-            """
-        )
-        _create_legacy_lyrics_transcripts_table(connection)
-        connection.execute(
-            """
-            INSERT INTO projects (
-                id, display_name, source_path, imported_path
-            ) VALUES (?, ?, ?, ?)
-            """,
-            ("proj_legacy", "Song", str(source_path), str(imported_path)),
-        )
-        connection.execute(
-            """
-            INSERT INTO projects (
-                id, display_name, source_path, imported_path
-            ) VALUES (?, ?, ?, ?)
-            """,
-            ("proj_duplicate_1", "Duplicate Song 1", str(duplicate_source_path), str(duplicate_source_path)),
-        )
-        connection.execute(
-            """
-            INSERT INTO projects (
-                id, display_name, source_path, imported_path
-            ) VALUES (?, ?, ?, ?)
-            """,
-            ("proj_duplicate_2", "Duplicate Song 2", str(duplicate_source_path), str(duplicate_source_path)),
-        )
-        connection.execute(
-            """
-            INSERT INTO artifacts (
-                id, project_id, type, format, path, metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "source_1",
-                "proj_legacy",
-                "source_audio",
-                "wav",
-                str(imported_path),
-                "{}",
-            ),
-        )
-        connection.execute(
-            """
-            INSERT INTO artifacts (
-                id, project_id, type, format, path, metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "art_1",
-                "proj_legacy",
-                "vocal_stem",
-                "wav",
-                str(artifact_path),
-                '{"source_artifact_id":"source_1"}',
-            ),
-        )
-        connection.execute(
-            """
-            INSERT INTO analysis_results (project_id, source_artifact_id)
-            VALUES (?, ?)
-            """,
-            ("proj_legacy", "source_1"),
-        )
-
-    reconfigure_engine(settings)
-    run_migrations(settings)
-
-    with sqlite3.connect(settings.database_path) as connection:
-        project_rows = connection.execute(
-            """
-            SELECT id, display_name, source_sha256, source_path, imported_path
-            FROM projects
-            ORDER BY display_name
-            """
+        revisions = connection.execute(
+            "SELECT version_num FROM alembic_version"
         ).fetchall()
-        analysis_project_id = connection.execute(
-            "SELECT project_id FROM analysis_results WHERE source_artifact_id = 'source_1'"
-        ).fetchone()[0]
-        source_artifact = connection.execute(
-            "SELECT project_id, path, content_sha256 FROM artifacts WHERE id = 'source_1'"
-        ).fetchone()
-        artifact_hash = connection.execute(
-            "SELECT content_sha256 FROM artifacts WHERE id = 'art_1'"
-        ).fetchone()[0]
-        indexes = {
-            row[1]
-            for row in connection.execute("PRAGMA index_list('artifacts')")
-        }
-        project_columns = {
-            row[1]
-            for row in connection.execute("PRAGMA table_info('projects')")
-        }
 
-    assert project_rows == [
-        (
-            "proj_duplicate_1",
-            "Duplicate Song 1",
-            None,
-            str(duplicate_source_path),
-            str(duplicate_source_path),
-        ),
-        (
-            "proj_duplicate_2",
-            "Duplicate Song 2",
-            None,
-            str(duplicate_source_path),
-            str(duplicate_source_path),
-        ),
-        (
-            expected_project_id,
-            "Song",
-            expected_project_hash,
-            str(settings.projects_root / expected_storage_key / "source" / "source.wav"),
-            str(settings.projects_root / expected_storage_key / "source" / "imported.wav"),
-        ),
-    ]
-    assert analysis_project_id == expected_project_id
-    assert source_artifact == (
-        expected_project_id,
-        str(settings.projects_root / expected_storage_key / "source" / "imported.wav"),
-        file_sha256(settings.projects_root / expected_storage_key / "source" / "imported.wav"),
-    )
-    assert artifact_hash == file_sha256(artifact_path)
-    assert "ix_artifacts_content_sha256" in indexes
-    assert "uq_artifacts_stem_per_source" in indexes
-    assert "sync_project_id" not in project_columns
-    assert not old_project_root.exists()
-    assert (settings.projects_root / expected_storage_key).exists()
-
-
-def test_sync_identity_migration_prefers_imported_copy_when_hash_missing(tmp_path: Path) -> None:
-    settings = get_settings()
-    ensure_data_dirs(settings)
-    external_source_path = tmp_path / "external.wav"
-    external_source_path.write_bytes(b"changed external bytes")
-    old_project_root = settings.projects_root / "proj_legacy"
-    old_imported_path = old_project_root / "source" / "imported.wav"
-    old_imported_path.parent.mkdir(parents=True)
-    old_imported_path.write_bytes(b"original imported bytes")
-    expected_project_hash = file_sha256(old_imported_path)
-    expected_project_id = source_hash_to_project_id(expected_project_hash)
-    expected_storage_key = source_hash_to_project_storage_key(expected_project_hash)
-    expected_imported_path = settings.projects_root / expected_storage_key / "source" / "imported.wav"
-
-    assert file_sha256(external_source_path) != expected_project_hash
-
-    with sqlite3.connect(settings.database_path) as connection:
-        connection.execute("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)")
-        connection.execute(
-            "INSERT INTO alembic_version (version_num) VALUES (?)",
-            ("0013_analysis_timing",),
-        )
-        connection.execute(
-            """
-            CREATE TABLE projects (
-                id VARCHAR(32) PRIMARY KEY,
-                display_name VARCHAR(255) NOT NULL,
-                source_key_override VARCHAR(32),
-                source_sha256 VARCHAR(64),
-                source_path VARCHAR(2048) NOT NULL,
-                imported_path VARCHAR(2048) NOT NULL,
-                duration_seconds FLOAT,
-                sample_rate INTEGER,
-                channels INTEGER,
-                created_at DATETIME,
-                updated_at DATETIME
-            )
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE artifacts (
-                id VARCHAR(32) PRIMARY KEY,
-                project_id VARCHAR(32) NOT NULL,
-                type VARCHAR(64) NOT NULL,
-                format VARCHAR(32) NOT NULL,
-                path VARCHAR(2048) NOT NULL,
-                content_sha256 VARCHAR(64),
-                size_bytes INTEGER NOT NULL DEFAULT 0,
-                generated_by VARCHAR(128) NOT NULL DEFAULT 'unknown',
-                can_delete BOOLEAN NOT NULL DEFAULT 1,
-                can_regenerate BOOLEAN NOT NULL DEFAULT 0,
-                metadata_json JSON NOT NULL DEFAULT '{}',
-                cache_key VARCHAR(128),
-                created_at DATETIME
-            )
-            """
-        )
-        _create_legacy_lyrics_transcripts_table(connection)
-        connection.execute(
-            """
-            INSERT INTO projects (
-                id, display_name, source_sha256, source_path, imported_path
-            ) VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                "proj_legacy",
-                "Song",
-                None,
-                str(external_source_path),
-                str(old_imported_path),
-            ),
-        )
-        connection.execute(
-            """
-            INSERT INTO artifacts (
-                id, project_id, type, format, path, metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            ("source_1", "proj_legacy", "source_audio", "wav", str(old_imported_path), "{}"),
-        )
-
-    reconfigure_engine(settings)
-    run_migrations(settings)
-
-    with sqlite3.connect(settings.database_path) as connection:
-        project = connection.execute(
-            """
-            SELECT id, source_sha256, source_path, imported_path
-            FROM projects
-            WHERE display_name = 'Song'
-            """
-        ).fetchone()
-        source_artifact = connection.execute(
-            "SELECT project_id, path FROM artifacts WHERE id = 'source_1'"
-        ).fetchone()
-
-    assert project == (
-        expected_project_id,
-        expected_project_hash,
-        str(external_source_path),
-        str(expected_imported_path),
-    )
-    assert source_artifact == (expected_project_id, str(expected_imported_path))
-
-
-def test_sync_identity_migration_does_not_recover_moved_root_from_external_source_hash(
-    tmp_path: Path,
-) -> None:
-    settings = get_settings()
-    ensure_data_dirs(settings)
-    source_path = tmp_path / "source.wav"
-    source_path.write_bytes(b"source")
-    expected_project_hash = file_sha256(source_path)
-    expected_storage_key = source_hash_to_project_storage_key(expected_project_hash)
-
-    old_project_root = settings.projects_root / "proj_interrupted"
-    old_imported_path = old_project_root / "source" / "imported.wav"
-    recovered_project_root = settings.projects_root / expected_storage_key
-    recovered_imported_path = recovered_project_root / "source" / "imported.wav"
-    recovered_imported_path.parent.mkdir(parents=True)
-    recovered_imported_path.write_bytes(b"imported")
-
-    with sqlite3.connect(settings.database_path) as connection:
-        connection.execute("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)")
-        connection.execute(
-            "INSERT INTO alembic_version (version_num) VALUES (?)",
-            ("0013_analysis_timing",),
-        )
-        connection.execute(
-            """
-            CREATE TABLE projects (
-                id VARCHAR(32) PRIMARY KEY,
-                display_name VARCHAR(255) NOT NULL,
-                source_key_override VARCHAR(32),
-                source_sha256 VARCHAR(64),
-                source_path VARCHAR(2048) NOT NULL,
-                imported_path VARCHAR(2048) NOT NULL,
-                duration_seconds FLOAT,
-                sample_rate INTEGER,
-                channels INTEGER,
-                created_at DATETIME,
-                updated_at DATETIME
-            )
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE artifacts (
-                id VARCHAR(32) PRIMARY KEY,
-                project_id VARCHAR(32) NOT NULL,
-                type VARCHAR(64) NOT NULL,
-                format VARCHAR(32) NOT NULL,
-                path VARCHAR(2048) NOT NULL,
-                content_sha256 VARCHAR(64),
-                size_bytes INTEGER NOT NULL DEFAULT 0,
-                generated_by VARCHAR(128) NOT NULL DEFAULT 'unknown',
-                can_delete BOOLEAN NOT NULL DEFAULT 1,
-                can_regenerate BOOLEAN NOT NULL DEFAULT 0,
-                metadata_json JSON NOT NULL DEFAULT '{}',
-                cache_key VARCHAR(128),
-                created_at DATETIME
-            )
-            """
-        )
-        _create_legacy_lyrics_transcripts_table(connection)
-        connection.execute(
-            """
-            INSERT INTO projects (
-                id, display_name, source_sha256, source_path, imported_path
-            ) VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                "proj_interrupted",
-                "Interrupted",
-                expected_project_hash,
-                str(source_path),
-                str(old_imported_path),
-            ),
-        )
-        connection.execute(
-            """
-            INSERT INTO artifacts (
-                id, project_id, type, format, path, metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "source_interrupted",
-                "proj_interrupted",
-                "source_audio",
-                "wav",
-                str(old_imported_path),
-                "{}",
-            ),
-        )
-
-    reconfigure_engine(settings)
-    run_migrations(settings)
-
-    with sqlite3.connect(settings.database_path) as connection:
-        project = connection.execute(
-            "SELECT id, imported_path FROM projects WHERE display_name = 'Interrupted'"
-        ).fetchone()
-        artifact = connection.execute(
-            "SELECT project_id, path FROM artifacts WHERE id = 'source_interrupted'"
-        ).fetchone()
-
-    assert project == ("proj_interrupted", str(old_imported_path))
-    assert artifact == ("proj_interrupted", str(old_imported_path))
-    assert recovered_imported_path.exists()
-
-
-def test_sync_identity_migration_recovers_artifacts_already_referenced_by_new_project_id(tmp_path: Path) -> None:
-    settings = get_settings()
-    ensure_data_dirs(settings)
-    old_project_id = "proj_interrupted"
-    source_path = tmp_path / "source.wav"
-    source_path.write_bytes(b"source")
-    expected_project_hash = file_sha256(source_path)
-    expected_project_id = source_hash_to_project_id(expected_project_hash)
-    expected_storage_key = source_hash_to_project_storage_key(expected_project_hash)
-
-    old_project_root = settings.projects_root / old_project_id
-    old_source_path = old_project_root / "source" / "source.wav"
-    old_imported_path = old_project_root / "source" / "imported.wav"
-    old_stem_path = old_project_root / "stems" / "vocals.wav"
-    recovered_project_root = settings.projects_root / expected_storage_key
-    recovered_source_path = recovered_project_root / "source" / "source.wav"
-    recovered_imported_path = recovered_project_root / "source" / "imported.wav"
-    recovered_stem_path = recovered_project_root / "stems" / "vocals.wav"
-    recovered_source_path.parent.mkdir(parents=True)
-    recovered_source_path.write_bytes(source_path.read_bytes())
-    recovered_imported_path.write_bytes(b"imported")
-
-    with sqlite3.connect(settings.database_path) as connection:
-        connection.execute("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)")
-        connection.execute(
-            "INSERT INTO alembic_version (version_num) VALUES (?)",
-            ("0013_analysis_timing",),
-        )
-        connection.execute(
-            """
-            CREATE TABLE projects (
-                id VARCHAR(32) PRIMARY KEY,
-                display_name VARCHAR(255) NOT NULL,
-                source_key_override VARCHAR(32),
-                source_sha256 VARCHAR(64),
-                source_path VARCHAR(2048) NOT NULL,
-                imported_path VARCHAR(2048) NOT NULL,
-                duration_seconds FLOAT,
-                sample_rate INTEGER,
-                channels INTEGER,
-                created_at DATETIME,
-                updated_at DATETIME
-            )
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE artifacts (
-                id VARCHAR(32) PRIMARY KEY,
-                project_id VARCHAR(32) NOT NULL,
-                type VARCHAR(64) NOT NULL,
-                format VARCHAR(32) NOT NULL,
-                path VARCHAR(2048) NOT NULL,
-                content_sha256 VARCHAR(64),
-                size_bytes INTEGER NOT NULL DEFAULT 0,
-                generated_by VARCHAR(128) NOT NULL DEFAULT 'unknown',
-                can_delete BOOLEAN NOT NULL DEFAULT 1,
-                can_regenerate BOOLEAN NOT NULL DEFAULT 0,
-                metadata_json JSON NOT NULL DEFAULT '{}',
-                cache_key VARCHAR(128),
-                created_at DATETIME
-            )
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE analysis_results (
-                project_id VARCHAR(32) PRIMARY KEY,
-                source_artifact_id VARCHAR(32),
-                estimated_key VARCHAR(64),
-                key_confidence FLOAT,
-                estimated_reference_hz FLOAT,
-                tuning_offset_cents FLOAT,
-                tempo_bpm FLOAT,
-                analysis_version VARCHAR(32) NOT NULL DEFAULT 'v3',
-                created_at DATETIME
-            )
-            """
-        )
-        _create_legacy_lyrics_transcripts_table(connection)
-        connection.execute(
-            """
-            INSERT INTO projects (
-                id, display_name, source_sha256, source_path, imported_path
-            ) VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                old_project_id,
-                "Interrupted",
-                expected_project_hash,
-                str(recovered_source_path),
-                str(recovered_imported_path),
-            ),
-        )
-        connection.execute(
-            """
-            INSERT INTO artifacts (
-                id, project_id, type, format, path, metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "source_interrupted",
-                expected_project_id,
-                "source_audio",
-                "wav",
-                str(old_imported_path),
-                json.dumps({"original_copy_path": str(old_source_path)}),
-            ),
-        )
-        connection.execute(
-            """
-            INSERT INTO artifacts (
-                id, project_id, type, format, path, metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "stem_interrupted",
-                expected_project_id,
-                "vocal_stem",
-                "wav",
-                str(old_stem_path),
-                json.dumps(
-                    {
-                        "source_artifact_id": "source_interrupted",
-                        "source_path": str(old_imported_path),
-                        "copies": [str(old_stem_path)],
-                    }
-                ),
-            ),
-        )
-        connection.execute(
-            """
-            INSERT INTO analysis_results (project_id, source_artifact_id)
-            VALUES (?, ?)
-            """,
-            (old_project_id, "source_interrupted"),
-        )
-
-    reconfigure_engine(settings)
-    run_migrations(settings)
-
-    with sqlite3.connect(settings.database_path) as connection:
-        project = connection.execute(
-            """
-            SELECT id, source_path, imported_path
-            FROM projects
-            WHERE display_name = 'Interrupted'
-            """
-        ).fetchone()
-        artifacts = {
-            row[0]: row[1:]
-            for row in connection.execute(
-                """
-                SELECT id, project_id, path, metadata_json
-                FROM artifacts
-                ORDER BY id
-                """
-            )
-        }
-        analysis_project_id = connection.execute(
-            "SELECT project_id FROM analysis_results WHERE source_artifact_id = 'source_interrupted'"
-        ).fetchone()[0]
-
-    assert project == (expected_project_id, str(recovered_source_path), str(recovered_imported_path))
-    assert artifacts["source_interrupted"] == (
-        expected_project_id,
-        str(recovered_imported_path),
-        json.dumps({"original_copy_path": str(recovered_source_path)}, separators=(",", ":")),
-    )
-    assert artifacts["stem_interrupted"] == (
-        expected_project_id,
-        str(recovered_stem_path),
-        json.dumps(
-            {
-                "source_artifact_id": "source_interrupted",
-                "source_path": str(recovered_imported_path),
-                "copies": [str(recovered_stem_path)],
-            },
-            separators=(",", ":"),
-        ),
-    )
-    assert analysis_project_id == expected_project_id
-
-
-def test_sync_identity_migration_recovers_canonical_project_with_legacy_paths() -> None:
-    settings = get_settings()
-    ensure_data_dirs(settings)
-    legacy_project_id = "proj_legacy_paths"
-    old_project_root = settings.projects_root / legacy_project_id
-    old_source_path = old_project_root / "source" / "source.wav"
-    old_imported_path = old_project_root / "source" / "imported.wav"
-    old_stem_path = old_project_root / "stems" / "vocals.wav"
-    old_analysis_path = old_project_root / "analysis" / "analysis.json"
-    old_source_path.parent.mkdir(parents=True)
-    old_stem_path.parent.mkdir(parents=True)
-    old_analysis_path.parent.mkdir(parents=True)
-    old_source_path.write_bytes(b"source")
-    old_imported_path.write_bytes(b"imported")
-    old_stem_path.write_bytes(b"stem")
-    old_analysis_path.write_text(json.dumps({"project_id": legacy_project_id, "tempo_bpm": 120}), encoding="utf-8")
-    expected_project_hash = file_sha256(old_source_path)
-    expected_project_id = source_hash_to_project_id(expected_project_hash)
-    expected_storage_key = source_hash_to_project_storage_key(expected_project_hash)
-    expected_project_root = settings.projects_root / expected_storage_key
-    expected_source_path = expected_project_root / "source" / "source.wav"
-    expected_imported_path = expected_project_root / "source" / "imported.wav"
-    expected_stem_path = expected_project_root / "stems" / "vocals.wav"
-    expected_analysis_path = expected_project_root / "analysis" / "analysis.json"
-
-    with sqlite3.connect(settings.database_path) as connection:
-        connection.execute("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)")
-        connection.execute(
-            "INSERT INTO alembic_version (version_num) VALUES (?)",
-            ("0013_analysis_timing",),
-        )
-        connection.execute(
-            """
-            CREATE TABLE projects (
-                id VARCHAR(80) PRIMARY KEY,
-                display_name VARCHAR(255) NOT NULL,
-                source_key_override VARCHAR(32),
-                source_sha256 VARCHAR(64),
-                source_path VARCHAR(2048) NOT NULL,
-                imported_path VARCHAR(2048) NOT NULL,
-                duration_seconds FLOAT,
-                sample_rate INTEGER,
-                channels INTEGER,
-                created_at DATETIME,
-                updated_at DATETIME
-            )
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE artifacts (
-                id VARCHAR(32) PRIMARY KEY,
-                project_id VARCHAR(80) NOT NULL,
-                type VARCHAR(64) NOT NULL,
-                format VARCHAR(32) NOT NULL,
-                path VARCHAR(2048) NOT NULL,
-                content_sha256 VARCHAR(64),
-                size_bytes INTEGER NOT NULL DEFAULT 0,
-                generated_by VARCHAR(128) NOT NULL DEFAULT 'unknown',
-                can_delete BOOLEAN NOT NULL DEFAULT 1,
-                can_regenerate BOOLEAN NOT NULL DEFAULT 0,
-                metadata_json JSON NOT NULL DEFAULT '{}',
-                cache_key VARCHAR(128),
-                created_at DATETIME
-            )
-            """
-        )
-        _create_legacy_lyrics_transcripts_table(connection)
-        connection.execute(
-            """
-            INSERT INTO projects (
-                id, display_name, source_sha256, source_path, imported_path
-            ) VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                expected_project_id,
-                "Canonical Interrupted",
-                expected_project_hash,
-                str(old_source_path),
-                str(old_imported_path),
-            ),
-        )
-        connection.execute(
-            """
-            INSERT INTO artifacts (
-                id, project_id, type, format, path, metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "source_canonical_interrupted",
-                expected_project_id,
-                "source_audio",
-                "wav",
-                str(old_imported_path),
-                json.dumps({"original_copy_path": str(old_source_path)}),
-            ),
-        )
-        connection.execute(
-            """
-            INSERT INTO artifacts (
-                id, project_id, type, format, path, metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "stem_canonical_interrupted",
-                expected_project_id,
-                "vocal_stem",
-                "wav",
-                str(old_stem_path),
-                json.dumps({"source_path": str(old_imported_path)}),
-            ),
-        )
-
-    reconfigure_engine(settings)
-    run_migrations(settings)
-
-    with sqlite3.connect(settings.database_path) as connection:
-        project = connection.execute(
-            """
-            SELECT id, source_path, imported_path
-            FROM projects
-            WHERE display_name = 'Canonical Interrupted'
-            """
-        ).fetchone()
-        artifacts = {
-            row[0]: row[1:]
-            for row in connection.execute(
-                """
-                SELECT id, project_id, path, metadata_json
-                FROM artifacts
-                ORDER BY id
-                """
-            )
-        }
-
-    assert project == (expected_project_id, str(expected_source_path), str(expected_imported_path))
-    assert artifacts["source_canonical_interrupted"] == (
-        expected_project_id,
-        str(expected_imported_path),
-        json.dumps({"original_copy_path": str(expected_source_path)}, separators=(",", ":")),
-    )
-    assert artifacts["stem_canonical_interrupted"] == (
-        expected_project_id,
-        str(expected_stem_path),
-        json.dumps({"source_path": str(expected_imported_path)}, separators=(",", ":")),
-    )
-    assert not old_project_root.exists()
-    assert expected_stem_path.exists()
-    snapshot = json.loads(expected_analysis_path.read_text(encoding="utf-8"))
-    assert snapshot == {"project_id": expected_project_id, "tempo_bpm": 120}
-
-
-def test_sync_identity_migration_recovers_already_rewritten_project_root_and_snapshots() -> None:
-    settings = get_settings()
-    ensure_data_dirs(settings)
-    old_project_id = "proj_interrupted"
-    recovered_project_root = settings.projects_root / "proj_placeholder"
-    recovered_source_path = recovered_project_root / "source" / "source.wav"
-    recovered_imported_path = recovered_project_root / "source" / "imported.wav"
-    recovered_source_path.parent.mkdir(parents=True)
-    recovered_source_path.write_bytes(b"source")
-    recovered_imported_path.write_bytes(b"imported")
-    expected_project_hash = file_sha256(recovered_source_path)
-    expected_project_id = source_hash_to_project_id(expected_project_hash)
-    expected_storage_key = source_hash_to_project_storage_key(expected_project_hash)
-    expected_project_root = settings.projects_root / expected_storage_key
-    recovered_project_root.rename(expected_project_root)
-    recovered_source_path = expected_project_root / "source" / "source.wav"
-    recovered_imported_path = expected_project_root / "source" / "imported.wav"
-    analysis_dir = expected_project_root / "analysis"
-    analysis_dir.mkdir()
-    snapshot_payloads = {
-        "analysis.json": {"project_id": old_project_id, "kind": "analysis", "nested": {"project_id": old_project_id}},
-        "chords.json": {"project_id": old_project_id, "timeline": [{"project_id": old_project_id, "chord": "C"}]},
-        "lyrics.json": {"project_id": old_project_id, "segments": [{"text": "hello"}]},
-    }
-    for filename, payload in snapshot_payloads.items():
-        (analysis_dir / filename).write_text(json.dumps(payload), encoding="utf-8")
-
-    with sqlite3.connect(settings.database_path) as connection:
-        connection.execute("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)")
-        connection.execute(
-            "INSERT INTO alembic_version (version_num) VALUES (?)",
-            ("0013_analysis_timing",),
-        )
-        connection.execute(
-            """
-            CREATE TABLE projects (
-                id VARCHAR(32) PRIMARY KEY,
-                display_name VARCHAR(255) NOT NULL,
-                source_key_override VARCHAR(32),
-                source_sha256 VARCHAR(64),
-                source_path VARCHAR(2048) NOT NULL,
-                imported_path VARCHAR(2048) NOT NULL,
-                duration_seconds FLOAT,
-                sample_rate INTEGER,
-                channels INTEGER,
-                created_at DATETIME,
-                updated_at DATETIME
-            )
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE artifacts (
-                id VARCHAR(32) PRIMARY KEY,
-                project_id VARCHAR(32) NOT NULL,
-                type VARCHAR(64) NOT NULL,
-                format VARCHAR(32) NOT NULL,
-                path VARCHAR(2048) NOT NULL,
-                content_sha256 VARCHAR(64),
-                size_bytes INTEGER NOT NULL DEFAULT 0,
-                generated_by VARCHAR(128) NOT NULL DEFAULT 'unknown',
-                can_delete BOOLEAN NOT NULL DEFAULT 1,
-                can_regenerate BOOLEAN NOT NULL DEFAULT 0,
-                metadata_json JSON NOT NULL DEFAULT '{}',
-                cache_key VARCHAR(128),
-                created_at DATETIME
-            )
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE analysis_results (
-                project_id VARCHAR(32) PRIMARY KEY,
-                source_artifact_id VARCHAR(32),
-                estimated_key VARCHAR(64),
-                key_confidence FLOAT,
-                estimated_reference_hz FLOAT,
-                tuning_offset_cents FLOAT,
-                tempo_bpm FLOAT,
-                analysis_version VARCHAR(32) NOT NULL DEFAULT 'v3',
-                created_at DATETIME
-            )
-            """
-        )
-        _create_legacy_lyrics_transcripts_table(connection)
-        connection.execute(
-            """
-            INSERT INTO projects (
-                id, display_name, source_sha256, source_path, imported_path
-            ) VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                old_project_id,
-                "Interrupted",
-                expected_project_hash,
-                str(recovered_source_path),
-                str(recovered_imported_path),
-            ),
-        )
-        connection.execute(
-            """
-            INSERT INTO artifacts (
-                id, project_id, type, format, path, metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "source_interrupted",
-                old_project_id,
-                "source_audio",
-                "wav",
-                str(recovered_imported_path),
-                json.dumps({"original_copy_path": str(recovered_source_path)}),
-            ),
-        )
-        connection.execute(
-            """
-            INSERT INTO analysis_results (project_id, source_artifact_id)
-            VALUES (?, ?)
-            """,
-            (old_project_id, "source_interrupted"),
-        )
-
-    reconfigure_engine(settings)
-    run_migrations(settings)
-
-    with sqlite3.connect(settings.database_path) as connection:
-        project = connection.execute(
-            """
-            SELECT id, source_path, imported_path
-            FROM projects
-            WHERE display_name = 'Interrupted'
-            """
-        ).fetchone()
-        artifact = connection.execute(
-            "SELECT project_id, path, metadata_json FROM artifacts WHERE id = 'source_interrupted'"
-        ).fetchone()
-        analysis_project_id = connection.execute(
-            "SELECT project_id FROM analysis_results WHERE source_artifact_id = 'source_interrupted'"
-        ).fetchone()[0]
-
-    assert project == (expected_project_id, str(recovered_source_path), str(recovered_imported_path))
-    assert artifact == (
-        expected_project_id,
-        str(recovered_imported_path),
-        json.dumps({"original_copy_path": str(recovered_source_path)}),
-    )
-    assert analysis_project_id == expected_project_id
-    for filename, payload in snapshot_payloads.items():
-        snapshot = json.loads((analysis_dir / filename).read_text(encoding="utf-8"))
-        assert snapshot["project_id"] == expected_project_id
-        assert {key: value for key, value in snapshot.items() if key != "project_id"} == {
-            key: value for key, value in payload.items() if key != "project_id"
-        }
+    assert tables == {"alembic_version"}
+    assert indexes == set()
+    assert revisions == []

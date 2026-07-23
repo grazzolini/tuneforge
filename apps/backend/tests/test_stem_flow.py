@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from io import StringIO
 from pathlib import Path
 
 import numpy as np
@@ -13,8 +14,8 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.dependency_diagnostics import demucs_dependency_missing_error
 from app.engines.stem_signal import STEM_SIGNAL_THRESHOLDS
-from app.errors import JobCancelledError
-from app.models import Artifact, Job
+from app.errors import AppError, JobCancelledError
+from app.models import Artifact, ChordTimeline, Job
 from app.services.artifacts import register_artifact
 from app.services.projects import get_project, import_project
 from app.services.stem_signal_metadata import STEM_SIGNAL_METADATA_KEY, STEM_SIGNAL_METADATA_VERSION
@@ -32,6 +33,8 @@ def _create_project_without_import_jobs(source_path: Path) -> str:
             display_name=None,
         )
         project_id = project.id
+        session.add(ChordTimeline(project_id=project_id, backend="tuneforge-fast"))
+        session.add(Job(id=new_id("job"), project_id=project_id, type="chords", status="completed", progress=100))
         session.commit()
     return project_id
 
@@ -144,10 +147,7 @@ def test_default_stem_generation_creates_six_stem_artifacts(client, sample_stere
 
     monkeypatch.setattr("app.services.stems.separate_sources", fake_separate_sources)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
 
     stem_job = client.post(
         f"/api/v1/projects/{project['id']}/stems",
@@ -247,10 +247,7 @@ def test_rebuilding_six_stems_with_two_stems_prunes_previous_model_artifacts(
     monkeypatch.setattr("app.services.stems.separate_sources", fake_separate_sources)
     monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
 
     six_job = client.post(
         f"/api/v1/projects/{project['id']}/stems",
@@ -334,10 +331,7 @@ def test_rebuilding_two_stems_with_six_stems_prunes_previous_model_artifacts(
     monkeypatch.setattr("app.services.stems.separate_sources", fake_separate_sources)
     monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
 
     two_job = client.post(
         f"/api/v1/projects/{project['id']}/stems",
@@ -410,10 +404,7 @@ def test_stem_generation_creates_vocal_and_instrumental_artifacts(client, sample
 
     monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
 
     stem_job = client.post(
         f"/api/v1/projects/{project['id']}/stems",
@@ -552,10 +543,7 @@ def test_source_audio_stem_generation_stores_signal_metadata(
 
     monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
 
     stem_job = client.post(
         f"/api/v1/projects/{project['id']}/stems",
@@ -618,10 +606,7 @@ def test_source_audio_stem_generation_marks_relative_leakage_unusable(
 
     monkeypatch.setattr("app.services.stems.separate_sources", fake_separate_sources)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
 
     stem_job = client.post(
         f"/api/v1/projects/{project['id']}/stems",
@@ -671,10 +656,7 @@ def test_preview_mix_stem_generation_does_not_store_signal_metadata(
 
     monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
     preview_job = client.post(
         f"/api/v1/projects/{project['id']}/preview",
         json={"transpose": {"semitones": 1}, "output_format": "wav"},
@@ -739,10 +721,7 @@ def test_cached_source_audio_stems_missing_signal_metadata_are_hydrated_without_
 
     monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
 
     initial_jobs = client.get("/api/v1/jobs").json()["jobs"]
     initial_chord_job = next(
@@ -841,10 +820,7 @@ def test_cached_source_audio_stems_raw_only_signal_metadata_gets_usability_witho
 
     monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
 
     initial_jobs = client.get("/api/v1/jobs").json()["jobs"]
     initial_chord_job = next(
@@ -944,10 +920,7 @@ def test_cached_source_audio_stems_hydrated_unusable_signal_metadata_does_not_re
 
     monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
 
     initial_jobs = client.get("/api/v1/jobs").json()["jobs"]
     initial_chord_job = next(
@@ -1032,10 +1005,7 @@ def test_vocal_only_signal_stems_do_not_enqueue_chord_refresh(
 
     monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
 
     initial_jobs = client.get("/api/v1/jobs").json()["jobs"]
     initial_chord_job = next(
@@ -1092,10 +1062,7 @@ def test_omitted_stem_mode_uses_configured_default_model(client, sample_stereo_a
 
     monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
 
     stem_job = client.post(
         f"/api/v1/projects/{project['id']}/stems",
@@ -1109,10 +1076,7 @@ def test_omitted_stem_mode_uses_configured_default_model(client, sample_stereo_a
 
 
 def test_two_stem_mode_rejects_six_stem_model(client, sample_stereo_audio_file: Path):
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
 
     response = client.post(
         f"/api/v1/projects/{project['id']}/stems",
@@ -1149,10 +1113,7 @@ def test_two_stem_mode_with_default_uses_two_stem_model(client, sample_stereo_au
 
     monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
     stem_job = client.post(
         f"/api/v1/projects/{project['id']}/stems",
         json={"mode": "two_stem", "stem_model": "default", "output_format": "wav"},
@@ -1193,10 +1154,7 @@ def test_source_stem_generation_does_not_enqueue_chord_refresh_job(
 
     monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
 
     initial_jobs = client.get("/api/v1/jobs").json()["jobs"]
     initial_chord_job = next(
@@ -1275,10 +1233,7 @@ def test_source_stems_do_not_refresh_edited_chords_even_with_overwrite_flag(
 
     monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
 
     initial_jobs = client.get("/api/v1/jobs").json()["jobs"]
     initial_chord_job = next(
@@ -1319,10 +1274,7 @@ def test_source_stems_do_not_refresh_edited_chords_even_with_overwrite_flag(
 
 
 def test_stem_artifact_unique_constraint_rejects_duplicates(client, sample_stereo_audio_file: Path):
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
 
     artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
     source_artifact = next(artifact for artifact in artifacts if artifact["type"] == "source_audio")
@@ -1363,10 +1315,7 @@ def test_stem_generation_reports_missing_dependency(client, sample_stereo_audio_
 
     monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
 
     stem_job = client.post(
         f"/api/v1/projects/{project['id']}/stems",
@@ -1491,6 +1440,48 @@ def test_demucs_nonzero_exit_after_cancel_raises_job_cancelled(tmp_path: Path, m
             model="htdemucs_ft",
             should_cancel=should_cancel,
         )
+
+
+def test_demucs_worker_closes_pipes_and_reaps_exceptional_child(tmp_path: Path, monkeypatch):
+    class FakeDemucsProcess:
+        def __init__(self, returncode: int | None, stdout=None, stderr=None) -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+            self.killed = False
+            self.waited = False
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def kill(self) -> None:
+            self.killed = True
+            self.returncode = -9
+
+        def wait(self) -> int | None:
+            self.waited = True
+            return self.returncode
+
+    completed = FakeDemucsProcess(1, StringIO(""), StringIO("worker failed\n"))
+    running = FakeDemucsProcess(None, StringIO(""), StringIO(""))
+    processes = iter((completed, running))
+    monkeypatch.setattr("app.engines.stems.importlib.util.find_spec", lambda _name: object())
+    monkeypatch.setattr("app.engines.stems.subprocess.Popen", lambda *_args, **_kwargs: next(processes))
+
+    from app.engines.stems import separate_two_stems
+    with pytest.raises(AppError):
+        separate_two_stems(tmp_path / "source.wav", tmp_path / "vocals.wav", tmp_path / "instrumental.wav")
+
+    assert completed.stdout.closed and completed.stderr.closed
+    with pytest.raises(RuntimeError, match="registration failed"):
+        separate_two_stems(
+            tmp_path / "source.wav",
+            tmp_path / "vocals.wav",
+            tmp_path / "instrumental.wav",
+            register_process=lambda _process: (_ for _ in ()).throw(RuntimeError("registration failed")),
+        )
+
+    assert running.killed and running.waited and running.stdout.closed and running.stderr.closed
 
 
 def test_cancelled_stem_generation_removes_temp_outputs_without_artifact_rows(
@@ -1665,10 +1656,7 @@ def test_deleting_practice_mix_removes_its_stems_only(client, sample_stereo_audi
 
     monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
 
     preview_job = client.post(
         f"/api/v1/projects/{project['id']}/preview",
@@ -1756,10 +1744,7 @@ def test_deleting_practice_mix_removes_its_stems_only(client, sample_stereo_audi
 
 
 def test_source_audio_cannot_be_deleted_from_project(client, sample_audio_file: Path):
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_audio_file)}
 
     artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
     source_artifact = next(artifact for artifact in artifacts if artifact["type"] == "source_audio")
@@ -1794,10 +1779,7 @@ def test_stem_delete_rejects_when_audio_job_is_pending(client, sample_stereo_aud
 
     monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
     stem_job = client.post(
         f"/api/v1/projects/{project['id']}/stems",
         json={"mode": "two_stem", "stem_model": "htdemucs_ft", "output_format": "wav"},
@@ -1829,10 +1811,7 @@ def test_stem_delete_rejects_when_audio_job_is_pending(client, sample_stereo_aud
 
 
 def test_preview_mix_delete_rejects_when_audio_job_is_pending(client, sample_stereo_audio_file: Path):
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
     preview_job = client.post(
         f"/api/v1/projects/{project['id']}/preview",
         json={"transpose": {"semitones": 1}, "output_format": "wav"},
@@ -1889,10 +1868,7 @@ def test_stem_delete_rejects_when_export_job_is_running(
 
     monkeypatch.setattr("app.services.stems.separate_two_stems", fake_separate_two_stems)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
     stem_job = client.post(
         f"/api/v1/projects/{project['id']}/stems",
         json={"mode": "two_stem", "stem_model": "htdemucs_ft", "output_format": "wav"},
@@ -1927,10 +1903,7 @@ def test_preview_mix_delete_rejects_when_export_job_is_pending(
     client,
     sample_stereo_audio_file: Path,
 ):
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_stereo_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = {"id": _create_project_without_import_jobs(sample_stereo_audio_file)}
     preview_job = client.post(
         f"/api/v1/projects/{project['id']}/preview",
         json={"transpose": {"semitones": 1}, "output_format": "wav"},

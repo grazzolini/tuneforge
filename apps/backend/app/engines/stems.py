@@ -132,6 +132,8 @@ def _run_demucs_worker(
         on_progress(10)
 
     process: subprocess.Popen[str] | None = None
+    stdout_reader: threading.Thread | None = None
+    stderr_reader: threading.Thread | None = None
     stdout = ""
     stderr = ""
     runtime_event_callback = getattr(on_progress, "runtime_event", None)
@@ -220,8 +222,16 @@ def _run_demucs_worker(
             "device": device,
         }
     finally:
-        if process and process.poll() is None:
-            process.kill()
+        if process:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            for reader, pipe in (
+                (stdout_reader, getattr(process, "stdout", None)),
+                (stderr_reader, getattr(process, "stderr", None)),
+            ):
+                if reader is None and pipe is not None:
+                    pipe.close()
 
 
 def _demucs_worker_failure_error(stdout: str, stderr: str) -> AppError:
@@ -250,11 +260,16 @@ def _start_output_reader(
         return None
 
     def read_lines() -> None:
-        for line in pipe:
-            lines.append(line)
-            payload = parse_json_payload(str(line).strip())
-            if payload is not None and on_payload is not None and is_runtime_event_payload(payload):
-                on_payload(payload)
+        try:
+            for line in pipe:
+                lines.append(line)
+                payload = parse_json_payload(str(line).strip())
+                if payload is not None and on_payload is not None and is_runtime_event_payload(payload):
+                    on_payload(payload)
+        finally:
+            close_pipe = getattr(pipe, "close", None)
+            if callable(close_pipe):
+                close_pipe()
 
     thread = threading.Thread(target=read_lines, name="tuneforge-demucs-output-reader", daemon=True)
     thread.start()

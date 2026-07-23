@@ -11,7 +11,7 @@ from app.errors import JobCancelledError
 from app.models import Artifact, Project
 from app.services.transformations import export_artifacts
 
-from .conftest import wait_for_job
+from .conftest import import_project_without_jobs, wait_for_job
 
 
 def _fake_separate_sources(
@@ -68,10 +68,7 @@ def _create_export_fixture(
 
 
 def test_preview_generation_cache_and_export(client, sample_audio_file: Path):
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_audio_file), "copy_into_project": True},
-    ).json()["project"]
+    project = import_project_without_jobs(sample_audio_file)
 
     analyze_job = client.post(
         f"/api/v1/projects/{project['id']}/analyze",
@@ -223,16 +220,7 @@ def test_preview_mix_creation_does_not_auto_queue_stems(
 ):
     monkeypatch.setattr("app.services.stems.separate_sources", _fake_separate_sources)
 
-    project = client.post(
-        "/api/v1/projects/import",
-        json={"source_path": str(sample_audio_file), "copy_into_project": True},
-    ).json()["project"]
-    import_stem_job = next(
-        job
-        for job in client.get("/api/v1/jobs").json()["jobs"]
-        if job["project_id"] == project["id"] and job["type"] == "stems"
-    )
-    assert wait_for_job(client, import_stem_job["id"])["status"] == "completed"
+    project = import_project_without_jobs(sample_audio_file)
 
     preview_job = client.post(
         f"/api/v1/projects/{project['id']}/preview",

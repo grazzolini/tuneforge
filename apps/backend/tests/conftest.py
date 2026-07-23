@@ -130,6 +130,15 @@ def client() -> TestClient:
         yield current
 
 
+def import_project_without_jobs(source_path: Path) -> dict[str, str]:
+    from app.db import SessionLocal
+    from app.services.projects import import_project
+
+    with SessionLocal() as session:
+        project = import_project(session, source_path=str(source_path), copy_into_project=True, display_name=None)
+        session.commit()
+        return {"id": project.id}
+
 
 @pytest.fixture()
 def sample_audio_file(tmp_path: Path) -> Path:
@@ -148,7 +157,7 @@ def sample_audio_file(tmp_path: Path) -> Path:
 
 @pytest.fixture()
 def sample_rhythmic_audio_file(tmp_path: Path) -> Path:
-    sample_rate = 44100
+    sample_rate = 22050
     duration = 8.0
     timeline = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
     signal = (
@@ -181,7 +190,7 @@ def sample_stereo_audio_file(tmp_path: Path) -> Path:
 
 @pytest.fixture()
 def sample_chord_audio_file(tmp_path: Path) -> Path:
-    sample_rate = 44100
+    sample_rate = 22050
     segment_duration = 1.6
     fade_in = int(sample_rate * 0.03)
     fade_out = int(sample_rate * 0.08)

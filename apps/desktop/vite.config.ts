@@ -57,6 +57,18 @@ export default defineConfig(() => {
         allow: fsAllow,
       },
     },
+    build: {
+      rolldownOptions: {
+        output: {
+          codeSplitting: {
+            groups: [
+              { name: "vendor", test: /node_modules/, priority: 2 },
+              { name: "tools", test: /src[\\/]features[\\/]tools/, priority: 1 },
+            ],
+          },
+        },
+      },
+    },
     test: {
       environment: "jsdom",
       env: {

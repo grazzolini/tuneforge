@@ -47,6 +47,7 @@ export const PlaybackPracticeRail = forwardRef<
     handleSetPlaybackTempo,
     handleSetLoopAlignmentMode,
     handleResetPlaybackTempo,
+    handleResetStemControls,
     handleSelectPrimaryArtifact,
     handleSelectStemArtifact,
     higherCapoPreview,
@@ -56,6 +57,7 @@ export const PlaybackPracticeRail = forwardRef<
     handleSetPrecountLoopEnabled,
     canGenerateStems,
     informationDensity,
+    hasActiveStemControls,
     isMobileRuntime,
     isStemPlayback,
     lowerCapoPreview,
@@ -508,6 +510,15 @@ export const PlaybackPracticeRail = forwardRef<
                 type="button"
               >
                 Full Mix
+              </button>
+              <button
+                aria-label="Reset stem mute and solo"
+                className="chip"
+                disabled={!hasActiveStemControls}
+                onClick={handleResetStemControls}
+                type="button"
+              >
+                Reset
               </button>
             </div>
 

@@ -563,6 +563,11 @@
   border-color: var(--button-hover-border);
 }
 
+.chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .artifact-pill--active,
 .chip--active,
 .stem-row__name--active {

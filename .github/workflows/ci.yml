@@ -209,6 +209,158 @@ jobs:
       - name: Test setup-dev script
         run: bash scripts/setup-dev.test.sh
 
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Initialize E2E job
+        shell: bash
+        run: |
+          set -euo pipefail
+          e2e_root="${RUNNER_TEMP}/tuneforge-e2e"
+          e2e_tmpdir="${e2e_root}/tmp"
+          e2e_artifact_dir="${e2e_root}/failure-artifacts"
+          mkdir -p "${e2e_tmpdir}" "${e2e_artifact_dir}"
+          {
+            echo "E2E_JOB_STARTED_AT=$(date +%s)"
+            echo "E2E_TMPDIR=${e2e_tmpdir}"
+            echo "E2E_ARTIFACT_DIR=${e2e_artifact_dir}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Check out code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.33.0
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Sync backend dependencies
+        working-directory: apps/backend
+        run: uv sync --locked --all-groups
+
+      - name: Install FFmpeg
+        run: |
+          set -euo pipefail
+          started_at="$(date +%s)"
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          elapsed_seconds=$(($(date +%s) - started_at))
+          {
+            echo "## E2E FFmpeg setup"
+            echo
+            echo "- Duration: ${elapsed_seconds}s"
+            echo "- $(ffmpeg -version | sed -n '1p')"
+            echo "- $(ffprobe -version | sed -n '1p')"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Install Playwright Chromium
+        run: pnpm --filter @tuneforge/desktop exec playwright install --with-deps chromium
+
+      - name: Run E2E smoke
+        shell: bash
+        run: |
+          set -uo pipefail
+          started_at="$(date +%s)"
+          raw_log="${RUNNER_TEMP}/tuneforge-e2e/e2e-command.raw.log"
+          sanitized_log="${E2E_ARTIFACT_DIR}/e2e-command.log"
+
+          set +e
+          TMPDIR="${E2E_TMPDIR}" pnpm --filter @tuneforge/desktop test:e2e -- --ci 2>&1 | tee "${raw_log}"
+          e2e_exit_code="${PIPESTATUS[0]}"
+          set -e
+
+          command_elapsed_seconds=$(($(date +%s) - started_at))
+          sed \
+            -e "s|${GITHUB_WORKSPACE}|<GITHUB_WORKSPACE>|g" \
+            -e "s|${RUNNER_TEMP}|<RUNNER_TEMP>|g" \
+            -e "s|${HOME}|<HOME>|g" \
+            "${raw_log}" > "${sanitized_log}"
+
+          {
+            echo "## E2E smoke"
+            echo
+            echo "- E2E command duration: ${command_elapsed_seconds}s"
+            echo
+            echo "| Group | Result | Duration |"
+            echo "| --- | --- | --- |"
+            found_group_result=false
+            group_result_pattern='^\[playback-smoke\] group ([a-z-]+): (passed|failed) in ([0-9.]+s)\.$'
+            while IFS= read -r line; do
+              if [[ "${line}" =~ ${group_result_pattern} ]]; then
+                printf '| %s | %s | %s |\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+                found_group_result=true
+              fi
+            done < "${raw_log}"
+            if [[ "${found_group_result}" != "true" ]]; then
+              echo "| n/a | no result emitted | n/a |"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if (( command_elapsed_seconds > 180 )); then
+            echo "::warning::E2E command exceeded the 3-minute target (${command_elapsed_seconds}s)."
+          fi
+
+          exit "${e2e_exit_code}"
+
+      - name: Stage E2E failure artifacts
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' artifact; do
+            relative_path="${artifact#"${E2E_TMPDIR}"/}"
+            destination="${E2E_ARTIFACT_DIR}/${relative_path}"
+            mkdir -p "$(dirname "${destination}")"
+            cp "${artifact}" "${destination}"
+          done < <(find "${E2E_TMPDIR}" -type f \( \
+            -path "${E2E_TMPDIR}/tuneforge-playback-smoke-*/playback-failure.png" -o \
+            -path "${E2E_TMPDIR}/tuneforge-playback-smoke-*/playback-failure-summary.json" -o \
+            -path "${E2E_TMPDIR}/tuneforge-diagnostics-smoke-*/artifacts/diagnostics-failure.png" -o \
+            -path "${E2E_TMPDIR}/tuneforge-diagnostics-smoke-*/artifacts/summary.json" \
+          \) -print0)
+
+      - name: Upload E2E failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-failure-artifacts
+          path: ${{ env.E2E_ARTIFACT_DIR }}
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Report E2E job duration
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          job_elapsed_seconds=$(($(date +%s) - E2E_JOB_STARTED_AT))
+          {
+            echo "## E2E job duration"
+            echo
+            echo "- Job elapsed through final workflow step: ${job_elapsed_seconds}s"
+            echo "- Excludes GitHub Actions post-job cleanup."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
   site:
     needs: ci-scope
     if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.site == 'true') }}

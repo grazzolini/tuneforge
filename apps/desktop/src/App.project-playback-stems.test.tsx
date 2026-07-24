@@ -39,6 +39,7 @@ function readStoredProjectPlaybackState() {
         startSeconds: number;
         endSeconds: number;
       } | null;
+      stemControls?: Record<string, { muted: boolean; solo: boolean }>;
     }
   >;
 }
@@ -130,6 +131,181 @@ describe("Desktop app project playback stems", () => {
 
     expect(await screen.findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Playback stem list" })).toBeInTheDocument();
+  });
+
+  it("keeps stored practice-stem controls and selection while artifacts hydrate", async () => {
+    const artifacts = [
+      {
+        id: "art_preview",
+        project_id: "proj_123",
+        type: "preview_mix",
+        format: "wav",
+        path: "/tmp/demo-preview.wav",
+        metadata: { transpose: { semitones: 2 } },
+        created_at: "2026-04-18T13:16:00.000Z",
+      },
+      {
+        id: "art_source",
+        project_id: "proj_123",
+        type: "source_audio",
+        format: "wav",
+        path: "/tmp/demo.wav",
+        metadata: {},
+        created_at: "2026-04-18T13:16:00.000Z",
+      },
+      ...["source", "mix"].flatMap((source) =>
+        ["vocals", "drums"].map((stem) => ({
+          id: `art_${source}_${stem}`,
+          project_id: "proj_123",
+          type: stem === "vocals" ? "vocal_stem" : "drums_stem",
+          format: "wav",
+          path: `/tmp/${source}-${stem}.wav`,
+          metadata: {
+            source_artifact_id: source === "source" ? "art_source" : "art_preview",
+            stem_source: stem,
+          },
+          created_at: "2026-04-18T13:16:00.000Z",
+        })),
+      ),
+    ];
+    let resolveArtifacts: (value: { artifacts: typeof artifacts }) => void = () => undefined;
+    const defaultListArtifacts = mockListArtifacts.getMockImplementation();
+    if (!defaultListArtifacts) {
+      throw new Error("Expected the artifact-list mock implementation.");
+    }
+    mockListArtifacts
+      .mockImplementationOnce(
+        () =>
+          new Promise<{ artifacts: typeof artifacts }>((resolve) => {
+            resolveArtifacts = resolve;
+          }),
+      )
+      .mockImplementation(() => Promise.resolve({ artifacts }));
+    window.localStorage.setItem(
+      "tuneforge.project-playback-state",
+      JSON.stringify({
+        proj_123: {
+          selectedArtifactId: "art_mix_vocals",
+          selectedPrimaryArtifactId: "art_preview",
+          selectedStemSourceArtifactId: "art_preview",
+          activeWorkspace: "playback",
+          stemControls: {
+            art_source_drums: { muted: true, solo: false },
+            art_mix_vocals: { muted: false, solo: true },
+            art_mix_drums: { muted: true, solo: false },
+          },
+        },
+      }),
+    );
+
+    try {
+      const firstRender = renderApp(["/projects/proj_123"]);
+      expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+      await waitFor(() =>
+        expect(readStoredProjectPlaybackState().proj_123).toMatchObject({
+          selectedArtifactId: "art_mix_vocals",
+          selectedPrimaryArtifactId: "art_preview",
+          stemControls: {
+            art_source_drums: { muted: true, solo: false },
+            art_mix_vocals: { muted: false, solo: true },
+          },
+        }),
+      );
+
+      await act(async () => {
+        resolveArtifacts({ artifacts });
+      });
+      expect(await screen.findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
+      let stemList = screen.getByRole("group", { name: "Playback stem list" });
+      expect(within(stemList).getByRole("button", { name: "Solo Vocals" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+      expect(within(stemList).getByRole("button", { name: "Mute Drums" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+
+      firstRender.unmount();
+      renderApp(["/projects/proj_123"]);
+      expect(await screen.findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
+      stemList = screen.getByRole("group", { name: "Playback stem list" });
+      expect(within(stemList).getByRole("button", { name: "Solo Vocals" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+      expect(readStoredProjectPlaybackState().proj_123?.stemControls?.art_source_drums).toEqual({
+        muted: true,
+        solo: false,
+      });
+    } finally {
+      mockListArtifacts.mockImplementation(defaultListArtifacts);
+    }
+  });
+
+  it("keeps source and practice-mix stem controls independent and resets only the visible set", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await generateStems(user);
+    await openPlaybackWorkspace(user);
+
+    let stemList = await screen.findByRole("group", { name: "Playback stem list" });
+    await user.click(within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement);
+    await user.click(within(stemList).getByRole("button", { name: "Mute Drums" }));
+    await user.click(within(stemList).getByRole("button", { name: "Solo Vocals" }));
+    expect(screen.getByRole("button", { name: "Reset stem mute and solo" })).toBeEnabled();
+
+    await user.click(screen.getByRole("tab", { name: "Project" }));
+    await openStudioPanel(user);
+    const savedMixList = screen.getByRole("group", { name: "Saved mix list" });
+    await user.click(within(savedMixList).getByRole("button", { name: /Practice Mix/i }));
+    await generateStems(user);
+    await openPlaybackWorkspace(user);
+
+    stemList = await screen.findByRole("group", { name: "Playback stem list" });
+    await user.click(within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement);
+    await user.click(within(stemList).getByRole("button", { name: "Mute Drums" }));
+
+    const sourceList = screen.getByRole("group", { name: "Playback source and mix list" });
+    await user.click(within(sourceList).getByRole("button", { name: /Source Track/i }));
+    stemList = await screen.findByRole("group", { name: "Playback stem list" });
+    expect(within(stemList).getByRole("button", { name: "Mute Drums" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(within(stemList).getByRole("button", { name: "Solo Vocals" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Full Mix" }));
+    expect(await screen.findByRole("heading", { name: "Source Track" })).toBeInTheDocument();
+    expect(within(stemList).getByRole("button", { name: "Mute Drums" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    await user.click(within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement);
+    expect(await screen.findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Reset stem mute and solo" }));
+    expect(await screen.findByRole("heading", { name: "Vocals" })).toBeInTheDocument();
+    expect(within(stemList).getByRole("button", { name: "Mute Drums" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(within(stemList).getByRole("button", { name: "Solo Vocals" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+
+    await user.click(within(sourceList).getByRole("button", { name: /Practice Mix/i }));
+    stemList = await screen.findByRole("group", { name: "Playback stem list" });
+    expect(within(stemList).getByRole("button", { name: "Mute Drums" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
   });
 
   it("restores mix-owned stems after reopening the project", async () => {

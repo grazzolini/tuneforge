@@ -747,6 +747,61 @@ describe("Desktop app project playback artifacts", () => {
     expect(await screen.findByRole("heading", { name: "Practice Set" })).toBeInTheDocument();
   });
 
+  it("submits rename with Enter and cancels with Escape without toggling playback", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    const sourceAudio = findAudioByArtifactId("art_source");
+    markAudioReady(sourceAudio);
+    await user.click(screen.getByRole("button", { name: "Rename" }));
+    const nameInput = screen.getByLabelText("Project name");
+    await user.clear(nameInput);
+    await user.type(nameInput, "Practice Set");
+
+    expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+    await user.keyboard("{Enter}");
+
+    expect(mockUpdateProject).toHaveBeenCalledTimes(1);
+    expect(mockUpdateProject).toHaveBeenCalledWith("proj_123", { display_name: "Practice Set" });
+    expect(await screen.findByRole("heading", { name: "Practice Set" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Rename" }));
+    await user.clear(screen.getByLabelText("Project name"));
+    await user.type(screen.getByLabelText("Project name"), "Discard me");
+    screen.getByRole("button", { name: "Play playback" }).focus();
+    await user.keyboard("{Escape}");
+
+    expect(screen.queryByLabelText("Project name")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Practice Set" })).toBeInTheDocument();
+    expect(mockUpdateProject).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Play playback" })).toBeInTheDocument();
+  });
+
+  it("guards whitespace and pending rename submission", async () => {
+    const user = userEvent.setup();
+    renderApp(["/projects/proj_123"]);
+
+    expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Rename" }));
+    const nameInput = screen.getByLabelText("Project name");
+    await user.clear(nameInput);
+    await user.type(nameInput, "   ");
+    await user.keyboard("{Enter}");
+    expect(mockUpdateProject).not.toHaveBeenCalled();
+
+    await user.clear(nameInput);
+    await user.type(nameInput, "Practice Set");
+    mockUpdateProject.mockImplementationOnce(
+      () => new Promise<never>(() => undefined),
+    );
+    await user.keyboard("{Enter}");
+    await user.keyboard("{Enter}");
+
+    expect(mockUpdateProject).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Saving..." })).toBeDisabled();
+  });
+
   it("counts total stems across source audio and saved mixes in the collapsed sources rail", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);

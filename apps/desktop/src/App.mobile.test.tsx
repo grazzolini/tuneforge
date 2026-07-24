@@ -7,6 +7,7 @@ import { updateBrowserWakeLockStatus } from "./lib/powerInhibition";
 import {
   findAudioByArtifactId,
   markAudioReady,
+  mockCreateStems,
   mockGetChords,
   mockGetLyrics,
   mockGetMobileCapabilities,
@@ -164,6 +165,37 @@ describe("Desktop app mobile capability gates", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.queryByText("Generate stems from Project workspace for source track or selected mix.")).not.toBeInTheDocument();
+  });
+
+  it("resets synced stem controls from Android Practice Controls without leaving stems", async () => {
+    const user = userEvent.setup();
+    enableAndroidRuntime();
+    await mockCreateStems("proj_123", { source_artifact_id: "art_source" });
+    renderApp(["/projects/proj_123"]);
+
+    await user.click(await screen.findByRole("tab", { name: "Playback" }));
+    await user.click(screen.getByRole("button", { name: "Open Practice Controls" }));
+    const dialog = screen.getByRole("dialog", { name: "Practice Controls" });
+    const stemList = within(dialog).getByRole("group", { name: "Playback stem list" });
+    const resetButton = within(dialog).getByRole("button", { name: "Reset stem mute and solo" });
+    expect(resetButton).toBeDisabled();
+
+    await user.click(within(stemList).getAllByRole("button", { name: /Vocals/i })[0] as HTMLElement);
+    await user.click(within(stemList).getByRole("button", { name: "Mute Drums" }));
+    expect(resetButton).toBeEnabled();
+    expect(within(stemList).getByRole("button", { name: "Mute Drums" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    await user.click(resetButton);
+    expect(within(stemList).getByRole("button", { name: "Mute Drums" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(within(stemList).getAllByRole("button", { name: /Vocals/i })[0]).toHaveClass(
+      "artifact-pill--active",
+    );
   });
 
   it("allows emulator lyrics flow testing while keeping stems disabled", async () => {

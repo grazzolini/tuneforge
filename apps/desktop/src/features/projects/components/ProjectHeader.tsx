@@ -35,10 +35,45 @@ export function ProjectHeader({
   } = useProjectViewModelContext();
   const showSyncStatus = projectSyncSummary.showBadge;
   const syncReason = projectSyncLockReason ? ` ${projectSyncLockReason}` : "";
+  const canSubmitRename =
+    !projectEditLocked && !renameMutation.isPending && Boolean(draftName.trim());
+  const submitRename = () => {
+    if (canSubmitRename) {
+      renameMutation.mutate();
+    }
+  };
+  const cancelRename = useCallback(() => {
+    if (renameMutation.isPending) {
+      return;
+    }
+    setIsRenaming(false);
+    setDraftName(projectQuery.data?.display_name ?? "");
+  }, [
+    projectQuery.data?.display_name,
+    renameMutation.isPending,
+    setDraftName,
+    setIsRenaming,
+  ]);
   const [overflowOpen, setOverflowOpen] = useState(false);
   const overflowRef = useRef<HTMLDivElement>(null);
   const overflowHistoryMarkerRef = useRef(`playback-overflow-${crypto.randomUUID()}`);
   const overflowTriggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!isRenaming) {
+      return;
+    }
+    const handleRenameKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" && event.key !== "Esc") {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      cancelRename();
+    };
+    window.addEventListener("keydown", handleRenameKeyDown, true);
+    return () => window.removeEventListener("keydown", handleRenameKeyDown, true);
+  }, [cancelRename, isRenaming]);
 
   const dismissOverflowFromUi = useCallback((restoreFocus = true) => {
     setOverflowOpen(false);
@@ -212,7 +247,13 @@ export function ProjectHeader({
           <Link to="/">Library</Link> / Project
         </p>
         {isRenaming ? (
-          <div className="title-edit">
+          <form
+            className="title-edit"
+            onSubmit={(event) => {
+              event.preventDefault();
+              submitRename();
+            }}
+          >
             <input
               aria-label="Project name"
               className="title-input"
@@ -223,25 +264,21 @@ export function ProjectHeader({
             <div className="button-row">
               <button
                 className="button button--primary button--small"
-                type="button"
-                onClick={() => renameMutation.mutate()}
-                disabled={projectEditLocked || renameMutation.isPending || !draftName.trim()}
+                type="submit"
+                disabled={!canSubmitRename}
               >
                 {renameMutation.isPending ? "Saving..." : "Save"}
               </button>
               <button
                 className="button button--ghost button--small"
                 type="button"
-                onClick={() => {
-                  setIsRenaming(false);
-                  setDraftName(projectQuery.data?.display_name ?? "");
-                }}
+                onClick={cancelRename}
                 disabled={renameMutation.isPending}
               >
                 Cancel
               </button>
             </div>
-          </div>
+          </form>
         ) : (
           <div className="title-row">
             <h1>{projectQuery.data?.display_name ?? "Project"}</h1>

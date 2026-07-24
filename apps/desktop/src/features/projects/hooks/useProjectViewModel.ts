@@ -1283,6 +1283,10 @@ export function useProjectViewModel() {
     }
     return !state.muted;
   }).length;
+  const hasActiveStemControls = visibleStemArtifacts.some((artifact) => {
+    const state = stemControls[artifact.id];
+    return state?.muted || state?.solo;
+  });
 
   function handleSelectPrimaryArtifact(artifact: ArtifactSchema) {
     setSelectedPrimaryArtifactId(artifact.id);
@@ -1644,6 +1648,24 @@ export function useProjectViewModel() {
           [mode]: !previous[mode],
         },
       };
+    });
+  }
+
+  function handleResetStemControls() {
+    setStemControls((current) => {
+      let changed = false;
+      const next = { ...current };
+
+      visibleStemArtifacts.forEach((artifact) => {
+        const state = current[artifact.id];
+        if (!state?.muted && !state?.solo) {
+          return;
+        }
+        next[artifact.id] = { muted: false, solo: false };
+        changed = true;
+      });
+
+      return changed ? next : current;
     });
   }
 
@@ -2121,14 +2143,26 @@ export function useProjectViewModel() {
   ]);
 
   useEffect(() => {
+    if (hydratedProjectId !== projectId || !artifactsQuery.isSuccess) {
+      return;
+    }
+
     setStemControls((current) => {
+      const validStemIds = new Set(stemArtifacts.map((artifact) => artifact.id));
       const next: Record<string, StemControlState> = {};
-      visibleStemArtifacts.forEach((artifact) => {
-        next[artifact.id] = current[artifact.id] ?? { muted: false, solo: false };
+      validStemIds.forEach((artifactId) => {
+        next[artifactId] = current[artifactId] ?? { muted: false, solo: false };
       });
-      return next;
+
+      const didChange =
+        Object.keys(current).length !== Object.keys(next).length ||
+        Object.entries(next).some(
+          ([artifactId, state]) =>
+            current[artifactId]?.muted !== state.muted || current[artifactId]?.solo !== state.solo,
+        );
+      return didChange ? next : current;
     });
-  }, [visibleStemArtifacts]);
+  }, [artifactsQuery.isSuccess, hydratedProjectId, projectId, stemArtifacts]);
 
   useEffect(() => {
     if (hydratedProjectId !== projectId || !isProjectJobsLoaded) {
@@ -2555,6 +2589,7 @@ export function useProjectViewModel() {
     handleOpenTabImport,
     handleRejectTabSuggestionGroup,
     handleResetPlaybackTempo,
+    handleResetStemControls,
     handleTogglePlaybackLoop,
     handleSetPlaybackDisplayMode,
     handleStemAction,
@@ -2566,6 +2601,7 @@ export function useProjectViewModel() {
     hasTimedLyricsTranscript,
     hasTransformChange,
     hasVisibleStems,
+    hasActiveStemControls,
     hasNextProjectHistoryJobsPage: terminalProjectJobsQuery.hasNextPage,
     higherCapoPreview,
     higherCapoShiftOptions,

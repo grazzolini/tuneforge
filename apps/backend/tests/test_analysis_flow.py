@@ -5,10 +5,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 from sqlalchemy import select
 
 from app.db import SessionLocal
+from app.engines import audio_features
 from app.errors import AppError
 from app.models import AnalysisResult, Artifact, Job, Project
 from app.services import analysis as analysis_service
@@ -19,7 +21,16 @@ from app.services.stem_signal_metadata import STEM_SIGNAL_METADATA_KEY, STEM_SIG
 from .conftest import import_project_without_jobs, wait_for_job
 
 
-def test_analysis_job_persists_results(client, sample_rhythmic_audio_file: Path):
+def test_analysis_job_persists_results(
+    client,
+    sample_rhythmic_audio_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Persistence test bypasses Librosa HPSS lazy import/JIT; full HPSS behavior remains engine-test responsibility.
+    def split_harmonic_percussive(signal: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        return signal, signal
+
+    monkeypatch.setattr(audio_features, "_split_harmonic_percussive", split_harmonic_percussive)
     project = import_project_without_jobs(sample_rhythmic_audio_file)
 
     job = client.post(

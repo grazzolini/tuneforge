@@ -116,27 +116,27 @@ transfer, recovery, or conflict states rather than where the data originated.
 
 ## Android Setup
 
-The Tauri Android target must be initialized from a machine with Android SDK/NDK installed:
+Use the root commands to build Android APKs without opening Android Studio:
 
 ```sh
-pnpm --filter @tuneforge/desktop tauri android init
-pnpm android:studio:shim
+pnpm package:android:debug
 pnpm package:android
 ```
 
-Set `ANDROID_HOME` or `ANDROID_SDK_ROOT` to the Android SDK directory before running the
-Android commands. Tauri cannot initialize or build the Android target without an SDK and NDK.
+Packaging discovers a fresh JDK 17, Android SDK, and compatible installed NDK; checks the required
+Android, Rust, and Tauri tools; initializes an absent generated target noninteractively; rejects
+partial generated state; then runs the existing icon and preparation helpers. It requires the
+existing `~/.android/debug.keystore` and never creates signing credentials.
 
-Android builds target API 26 or newer so native project playback can use CPAL's AAudio backend.
-They are arm64-only by default for this experiment. Use `pnpm package:android` or
-`pnpm package:android:debug`; both pass `--target aarch64` and avoid building `armv7`, `i686`, or
-`x86_64`.
-Android package scripts run `tauri icon --output src-tauri/target/android-icons src-tauri/icons/icon.png`
-before building so ignored desktop icon outputs stay under `target/` while the generated Android
-launcher resources under `apps/desktop/src-tauri/gen/android/app/src/main/res/` are refreshed from
-the tracked TuneForge icon instead of Tauri's default icon.
-The Android scripts run through `scripts/android-arm64-env.sh` so Cargo uses the rustup toolchain and
-the Android NDK `aarch64-linux-android26-clang` compiler.
+`pnpm package:android` produces an optimized local release-profile APK, debug-key signed.
+`pnpm package:android:debug` produces the corresponding debug APK:
+
+- Debug: `apps/desktop/src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`
+- Release: `apps/desktop/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk`
+
+Packaging verifies the exact Gradle variant metadata and output path, a successful `apksigner`
+check, the expected debuggable state, and a non-empty release mapping. The release-profile APK is
+not for store publication. Packaging never installs or launches the app.
 
 Project playback prefers the native `android-aaudio` path. Web Audio is an automatic disclosed
 fallback after native failure or a build-time development override; it is not a mobile setting.

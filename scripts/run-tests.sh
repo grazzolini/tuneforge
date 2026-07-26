@@ -41,6 +41,15 @@ setup_dev_start=${SECONDS}
 setup_dev_elapsed=$((SECONDS - setup_dev_start))
 printf '\n[tests] setup-dev script tests finished in %ss\n' "${setup_dev_elapsed}"
 
+printf '\n[tests] Starting Android toolchain helper tests\n\n'
+android_env_start=${SECONDS}
+(
+  cd "${repo_root}"
+  bash scripts/android-arm64-env.test.sh
+)
+android_env_elapsed=$((SECONDS - android_env_start))
+printf '\n[tests] Android toolchain helper tests finished in %ss\n' "${android_env_elapsed}"
+
 printf '\n[tests] Starting Tauri shell tests\n\n'
 tauri_start=${SECONDS}
 (

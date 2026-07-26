@@ -4,17 +4,39 @@ set -euo pipefail
 ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
 NDK_ROOT="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MIN_NDK_MAJOR=29
+NDK_INSTALL_HINT="Install NDK ${MIN_NDK_MAJOR} or newer: android sdk install ndk/29.0.14206865"
 
-if [[ -z "$NDK_ROOT" ]]; then
-  if [[ ! -d "$ANDROID_HOME/ndk" ]]; then
-    echo "Android NDK not found under $ANDROID_HOME/ndk" >&2
-    exit 1
-  fi
-  NDK_ROOT="$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)"
+ndk_revision() {
+  local revision
+  revision="$(awk -F= '$1 ~ /^[[:space:]]*Pkg.Revision[[:space:]]*$/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit }' "$1/source.properties" 2>/dev/null)"
+  [[ "$revision" =~ ^[0-9]+(\.[0-9]+)*$ ]] && printf '%s\n' "$revision"
+}
+
+version_less() {
+  local IFS=. i
+  local -a left_parts=($1) right_parts=($2)
+  for ((i = 0; i < ${#left_parts[@]} || i < ${#right_parts[@]}; i++)); do
+    ((10#${left_parts[i]:-0} < 10#${right_parts[i]:-0})) && return 0; ((10#${left_parts[i]:-0} > 10#${right_parts[i]:-0})) && return 1
+  done
+  return 1
+}
+
+if [[ -n "$NDK_ROOT" ]]; then
+  NDK_REVISION="$(ndk_revision "$NDK_ROOT" || true)"
+else
+  NDK_REVISION=""
+  for candidate in "$ANDROID_HOME/ndk"/*; do
+    candidate_revision="$(ndk_revision "$candidate" || true)"
+    [[ -n "$candidate_revision" && $((10#${candidate_revision%%.*})) -ge $MIN_NDK_MAJOR ]] || continue
+    if [[ -z "$NDK_REVISION" ]] || version_less "$candidate_revision" "$NDK_REVISION"; then
+      NDK_ROOT="$candidate"
+      NDK_REVISION="$candidate_revision"
+    fi
+  done
 fi
-
-if [[ -z "$NDK_ROOT" || ! -d "$NDK_ROOT" ]]; then
-  echo "Android NDK not found. Set ANDROID_NDK_HOME or install it with Android Studio." >&2
+if [[ -z "$NDK_ROOT" || -z "$NDK_REVISION" || $((10#${NDK_REVISION%%.*})) -lt $MIN_NDK_MAJOR ]]; then
+  echo "Android NDK must have numeric Pkg.Revision >= ${MIN_NDK_MAJOR}: ${NDK_ROOT:-$ANDROID_HOME/ndk}. $NDK_INSTALL_HINT" >&2
   exit 1
 fi
 

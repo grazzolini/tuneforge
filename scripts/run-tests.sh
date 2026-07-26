@@ -41,6 +41,15 @@ release_license_start=${SECONDS}
 release_license_elapsed=$((SECONDS - release_license_start))
 printf '\n[tests] Release license inventory tests finished in %ss\n' "${release_license_elapsed}"
 
+printf '\n[tests] Starting Android packaging helper tests\n\n'
+android_package_start=${SECONDS}
+(
+  cd "${repo_root}"
+  node --test scripts/package-android.test.mjs
+)
+android_package_elapsed=$((SECONDS - android_package_start))
+printf '\n[tests] Android packaging helper tests finished in %ss\n' "${android_package_elapsed}"
+
 printf '\n[tests] Starting setup-dev script tests\n\n'
 setup_dev_start=${SECONDS}
 (

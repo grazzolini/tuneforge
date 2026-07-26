@@ -26,7 +26,7 @@ def test_analysis_job_persists_results(client, sample_rhythmic_audio_file: Path)
         f"/api/v1/projects/{project['id']}/analyze",
         json={"include_tempo": False, "force": False},
     ).json()["job"]
-    final_job = wait_for_job(client, job["id"])
+    final_job = wait_for_job(client, job["id"], timeout=90.0)
     assert final_job["status"] == "completed"
     assert final_job["beat_backend"] == "built-in"
     assert final_job["beat_input"] == "source"

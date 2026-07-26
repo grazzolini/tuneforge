@@ -209,6 +209,9 @@ jobs:
       - name: Test setup-dev script
         run: bash scripts/setup-dev.test.sh
 
+      - name: Test Android toolchain helper
+        run: bash scripts/android-arm64-env.test.sh
+
   e2e:
     runs-on: ubuntu-latest
     steps:

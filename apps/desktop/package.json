@@ -7,7 +7,7 @@
     "build": "tsc && vite build",
     "android:prepare": "bash ../../scripts/android-prepare-generated.sh",
     "android:icons": "tauri icon --output src-tauri/target/android-icons src-tauri/icons/icon.png",
-    "android:build": "pnpm android:icons && pnpm android:prepare && bash ../../scripts/android-arm64-env.sh tauri android build --target aarch64 --apk",
+    "android:build": "pnpm android:icons && pnpm android:prepare && bash ../../scripts/android-arm64-env.sh tauri android build --target aarch64 --apk && node ../../scripts/validate-android-release-jni.mjs",
     "android:build:debug": "pnpm android:icons && pnpm android:prepare && bash ../../scripts/android-arm64-env.sh tauri android build --debug --target aarch64 --apk",
     "android:studio": "bash ../../scripts/android-arm64-env.sh tauri android dev --open",
     "dev": "vite",

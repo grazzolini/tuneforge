@@ -8,11 +8,20 @@ ANDROID_ICONS="$ROOT_DIR/apps/desktop/src-tauri/target/android-icons/android"
 MANIFEST="$ANDROID_MAIN/AndroidManifest.xml"
 MAIN_ACTIVITY="$ANDROID_MAIN/java/com/tuneforge/desktop/MainActivity.kt"
 POWER_SERVICE="$ANDROID_MAIN/java/com/tuneforge/desktop/PowerInhibitionService.kt"
+PROGUARD_RULES="$ROOT_DIR/apps/desktop/src-tauri/proguard-tuneforge.pro"
+PROGUARD_DEST="$ROOT_DIR/apps/desktop/src-tauri/gen/android/app/proguard-tuneforge.pro"
 
 if [[ ! -f "$MANIFEST" || ! -f "$MAIN_ACTIVITY" || ! -d "$ANDROID_RES" ]]; then
   echo "Android project is not initialized. Run pnpm --filter @tuneforge/desktop tauri android init first." >&2
   exit 1
 fi
+
+if [[ ! -f "$PROGUARD_RULES" ]]; then
+  echo "TuneForge Android ProGuard rules are missing at $PROGUARD_RULES" >&2
+  exit 1
+fi
+
+cp "$PROGUARD_RULES" "$PROGUARD_DEST"
 
 copy_android_icons() {
   if [[ ! -d "$ANDROID_ICONS" ]]; then

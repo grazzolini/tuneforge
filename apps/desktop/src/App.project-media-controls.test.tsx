@@ -174,6 +174,17 @@ function SharedWakeLockHarness({ playback, tuner }: { playback: boolean; tuner: 
   return null;
 }
 
+function deferWakeLockRequest() {
+  const sentinel = {
+    release: vi.fn(async () => undefined),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  };
+  let resolve!: (value: typeof sentinel) => void;
+  const request = () => new Promise<typeof sentinel>((resolveRequest) => { resolve = resolveRequest; });
+  return { resolve: () => resolve(sentinel), request, sentinel };
+}
+
 function PlaybackPowerProtectionHarness({
   backend,
   isPlaying,
@@ -1026,6 +1037,37 @@ describe("Desktop app project media controls", () => {
     await waitFor(() => expect(getMockWakeLock().sentinels[0]?.release).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(readBrowserWakeLockStatus().phase).toBe("inactive"));
     view.unmount();
+  });
+
+  it("keeps a fresh tuner Wake Lock request isolated from a reset owner", async () => {
+    const priorRequest = deferWakeLockRequest();
+    getMockWakeLock().request.mockImplementationOnce(priorRequest.request);
+    const priorView = render(<SharedWakeLockHarness playback tuner={false} />);
+    await waitFor(() => expect(getMockWakeLock().request).toHaveBeenCalledTimes(1));
+
+    resetAppTestHarness();
+
+    const freshRequest = deferWakeLockRequest();
+    getMockWakeLock().request.mockImplementationOnce(freshRequest.request);
+    const freshView = render(<SharedWakeLockHarness playback={false} tuner />);
+    await waitFor(() => expect(getMockWakeLock().request).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      priorRequest.resolve();
+      await Promise.resolve();
+    });
+    fireEvent(document, new Event("visibilitychange"));
+    expect(getMockWakeLock().request).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      freshRequest.resolve();
+      await Promise.resolve();
+    });
+    expect(readBrowserWakeLockStatus().phase).toBe("active");
+
+    freshView.unmount();
+    await waitFor(() => expect(freshRequest.sentinel.release).toHaveBeenCalledTimes(1));
+    priorView.unmount();
   });
 
   it("releases native power protection on stop, natural end, and unmount", async () => {

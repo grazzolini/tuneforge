@@ -23,6 +23,7 @@ import type {
 } from "../lib/api";
 import { resetPlaybackE2ETelemetry } from "../lib/playbackE2ETelemetry";
 import { resetPowerInhibitionDiagnostics } from "../lib/powerInhibition";
+import { resetScreenWakeLockForTests } from "../lib/useScreenWakeLock";
 
 const DEFAULT_PROJECTS_LIMIT = 50;
 const DEFAULT_JOBS_LIMIT = 50;
@@ -2977,6 +2978,7 @@ export function getMockWakeLock() {
 export function resetAppTestHarness() {
   resetMockApiState();
   resetPlaybackE2ETelemetry();
+  resetScreenWakeLockForTests();
   resetPowerInhibitionDiagnostics();
   delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   window.localStorage.clear();

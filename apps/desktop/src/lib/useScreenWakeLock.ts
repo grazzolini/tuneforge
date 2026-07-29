@@ -23,6 +23,7 @@ const owners = new Set<ScreenWakeLockOwner>();
 let sentinel: WakeLockSentinelLike | null = null;
 let sentinelReleaseHandler: (() => void) | null = null;
 let requestInFlight = false;
+let wakeLockRequestId = 0;
 let ownershipGeneration = 0;
 let visibilitySubscribed = false;
 
@@ -136,6 +137,7 @@ async function acquireWakeLock() {
   }
 
   const generation = ownershipGeneration;
+  const requestId = ++wakeLockRequestId;
   requestInFlight = true;
   publish("acquiring", false);
   try {
@@ -164,14 +166,16 @@ async function acquireWakeLock() {
       publish("failed", false, "Screen Wake Lock could not be enabled.");
     }
   } finally {
-    requestInFlight = false;
-    if (
-      generation !== ownershipGeneration &&
-      owners.size > 0 &&
-      !sentinel &&
-      document.visibilityState === "visible"
-    ) {
-      void acquireWakeLock();
+    if (requestId === wakeLockRequestId) {
+      requestInFlight = false;
+      if (
+        generation !== ownershipGeneration &&
+        owners.size > 0 &&
+        !sentinel &&
+        document.visibilityState === "visible"
+      ) {
+        void acquireWakeLock();
+      }
     }
   }
 }
@@ -204,6 +208,16 @@ function setScreenWakeLockOwner(owner: ScreenWakeLockOwner, active: boolean) {
   } else {
     publish("inactive", false);
   }
+}
+
+export function resetScreenWakeLockForTests() {
+  ownershipGeneration += 1;
+  wakeLockRequestId += 1;
+  owners.clear();
+  requestInFlight = false;
+  clearSentinel();
+  setVisibilitySubscription(false);
+  publish("inactive", false);
 }
 
 export function useScreenWakeLock(owner: ScreenWakeLockOwner, active: boolean) {

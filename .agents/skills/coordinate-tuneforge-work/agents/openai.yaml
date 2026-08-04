@@ -1,4 +1,4 @@
 interface:
   display_name: "Coordinate TuneForge Work"
-  short_description: "Run bounded TuneForge issues and ad hoc work"
-  default_prompt: "Use $coordinate-tuneforge-work to deliver a bounded TuneForge issue or ad hoc change locally."
+  short_description: "Coordinate TuneForge work and reviewable PR stacks"
+  default_prompt: "Use $coordinate-tuneforge-work to select and deliver bounded TuneForge work with the appropriate single or stacked PR shape."

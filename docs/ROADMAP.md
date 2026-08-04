@@ -2,87 +2,132 @@
 
 ## Purpose
 
-This roadmap describes current product direction. It does not repeat completed foundation work as future work. Completed capabilities include local desktop project import, analysis, chords, lyrics, stems, retune/transpose previews, exports, playback practice views, generated shared contracts, and CI gates.
+This roadmap records TuneForge's undated release train from v1.0.1 through
+v2.0.0. GitHub milestones define release scope, and each milestone has one
+`release-plan` tracker whose `## Ordered work` section is the canonical work
+order. The first open linked issue is next. When no linked issue remains open,
+the milestone is ready for refinement or release handoff; that state does not
+publish a release or create a tag.
 
-Roadmap items are grouped by track so related work can move independently.
+Release issues describe intended product work. Research issues collect evidence
+before TuneForge commits to implementation. Research may conclude that a path is
+not viable, and completing a research issue never promises a shipped feature.
 
-## Core / Desktop
+## Release Train
 
-- Keep the desktop app as the most complete supported workflow.
-- Improve project portability so a project can be backed up, moved, or handed off more predictably.
-- Keep generated audio, chord, lyrics, analysis, and job state tied to explicit project artifacts.
-- Preserve user edits when regeneration jobs rerun, with explicit overwrite confirmation for destructive refreshes.
-- Continue refining settings for default chord backend, playback display, follow behavior, and source-key overrides.
+| Milestone | Direction | Canonical tracker |
+| --- | --- | --- |
+| [v1.0.1 — Mobile and E2E hardening](https://github.com/grazzolini/tuneforge/milestone/13) | Consolidate completed mobile, E2E, test-performance, and Android packaging work. | [#391](https://github.com/grazzolini/tuneforge/issues/391) |
+| [v1.1.0 — Export workflows](https://github.com/grazzolini/tuneforge/milestone/14) | Make audio and stem export selective, explicit, and platform-truthful. | [#392](https://github.com/grazzolini/tuneforge/issues/392) |
+| [v1.2.0 — Storage format choice](https://github.com/grazzolini/tuneforge/milestone/15) | Choose WAV or FLAC for newly created durable audio. | [#393](https://github.com/grazzolini/tuneforge/issues/393) |
+| [v1.3.0 — Footprint and engine defaults](https://github.com/grazzolini/tuneforge/milestone/16) | Convert existing audio on demand and reduce the default chord-engine footprint. | [#394](https://github.com/grazzolini/tuneforge/issues/394) |
+| [v1.4.0 — Mobile runtime experiments](https://github.com/grazzolini/tuneforge/milestone/17) | Measure iOS simulator and Android model feasibility without shipment promises. | [#395](https://github.com/grazzolini/tuneforge/issues/395) |
+| [v2.0.0 — Android-first 2.0](https://github.com/grazzolini/tuneforge/milestone/18) | Deliver the complete Android-first workflow and truthful capability states. | [#396](https://github.com/grazzolini/tuneforge/issues/396) |
 
-## Audio Analysis
+Milestones are intentionally undated. Scope and order may be refined through
+their trackers as implementation evidence changes.
 
-- Add an offline beat-tracking and tempo-map artifact.
-- Store beat timestamps, bar numbers, beat numbers, and confidence as JSON.
-- Add first downbeat detection to improve chord, lyric, loop, and count-in synchronization.
-- Use timing artifacts as shared project data rather than recalculating timing independently in each UI feature.
-- Add a smart metronome that follows the tempo/bar map without rendering new audio.
-- Consider an optional click-track audio artifact after the metronome and beat-map behavior are useful.
+## v1.0.1 — Mobile and E2E Hardening
 
-## Playback & Practice UX
+v1.0.1 gathers work merged since v1.0.0: mobile storage, playback and sync;
+native Android audio, tuner and wake handling; E2E coverage; test performance;
+and Android packaging. The closed
+[E2E and Test Performance](https://github.com/grazzolini/tuneforge/milestone/11)
+and [Mobile First-Class App](https://github.com/grazzolini/tuneforge/milestone/12)
+milestones remain the historical record. Their issues are not reassigned.
 
-- Add current bar and beat highlighting during playback.
-- Add count-in support based on the beat/bar map.
-- Add loop-by-bars so practice loops can snap to musical boundaries.
-- Add section practice built on top of saved bar ranges or detected sections.
-- Keep source-track analysis independent from practice mixes so stems or saved mixes do not accidentally change project-level analysis.
-- Continue improving playback persistence and sync across source audio, stems, lyrics, and chords.
+The milestone stays open until release refinement and preparation are requested.
+No tag or release is implied by completing its tracker.
 
-## Chords & Harmony
+## v1.1.0 — Export Workflows
 
-- Add a bar-based chord view similar to a lead sheet or Chordify-style practice grid.
-- Align chord rendering with beat/bar data once the tempo-map artifact exists.
-- Improve chord refresh UX around existing user edits and source-vs-stem analysis differences.
-- Add tab import as a correction aid for lyrics and chords where users have a trusted local tab source.
-- Keep capo-relative chord display as a presentation layer only. Audio pitch, tuning, and speed should remain unchanged.
-- Keep Advanced Chords as the desktop default while improving fallback quality for unsupported, mobile, or explicitly excluded dependency profiles.
+The export foundation in [#397](https://github.com/grazzolini/tuneforge/issues/397)
+precedes the contributor request in
+[#388](https://github.com/grazzolini/tuneforge/issues/388). The intended workflow
+selects one, several, or all stems and other exportable audio artifacts; targets
+a file, folder, or ZIP as appropriate; and supports WAV, FLAC, MP3, and M4A/AAC.
 
-## Lyrics
+Desktop and Android must expose their real encoder and destination capabilities.
+An unavailable combination is disabled or explained, never presented as a
+working action. TuneForge remains local-only and continues to rely on
+host-installed FFmpeg on desktop rather than bundling it.
 
-- Keep desktop lyrics generation and editing as supported local functionality.
-- Improve editable lyrics timeline behavior for segment timing, text correction, and playback follow.
-- Add Android lyrics MVP using local Whisper or an equivalent local runtime behind the mobile capability model.
-- Support tab import for lyrics correction and chord/lyric alignment where useful.
-- Research local forced-alignment second passes, such as WhisperX- or Gentle-style alignment, after lyrics generation or accepted lyric/tab edits to refine word and phrase timing.
-- Keep generated lyrics positioned as editable draft output, not guaranteed transcription truth.
+Lyrics and chord text export in
+[#387](https://github.com/grazzolini/tuneforge/issues/387) is a non-gating
+pre-2.0 candidate and remains unmilestoned.
 
-## Mobile
+## v1.2.0 — Storage Format Choice
 
-- Move mobile from experimental toward a supported Android-first companion workflow.
-- Keep mobile local-first: no account, no cloud backend, no telemetry, no remote processing requirement.
-- Maintain a capability model with:
-  - local processing for analysis, chords, and lyrics where device support exists
-  - desktop-backed processing for stems and other heavy ML work
-  - clear disabled states when local acceleration is unavailable
-- Keep the embedded project/job/artifact model aligned with the desktop project model.
-- Treat mobile stems as a later experimental milestone after native media, storage, and acceleration paths are reliable.
-- Explore optional desktop/mobile pair for sending heavier jobs.
-- Explore optional LAN (no cloud) desktop/mobile sync where imported tracks on either device show and play on both.
+[#398](https://github.com/grazzolini/tuneforge/issues/398) adds a `wav | flac`
+preference for new durable audio, with WAV as the default. The value is captured
+when an import, generation job, or save action starts and applies to new sources,
+stems, saved mixes, and other durable audio created by that action.
 
-## Packaging & Distribution
+Changing the preference affects future artifacts only. Existing files stay
+unchanged, and mixed WAV/FLAC libraries and projects remain valid. TuneForge does
+not retain the original import as a separate canonical file under this plan.
 
-- Keep macOS app/DMG packaging available for local unsigned builds.
-- Keep Linux Flatpak packaging available for local unsigned builds and local repository installs.
-- Treat source distribution as the repository checkout or version-control source archive unless a dedicated source artifact is added.
-- Create package recipes for Arch Linux's pacman (`PKGBUILD`), rpm, and deb.
-- Document host-installed FFmpeg and FFprobe requirements clearly.
-- Avoid bundling FFmpeg for licensing and distribution reasons.
-- Keep the Linux legacy NVIDIA profile documented for older `x86_64` CUDA-capable GPUs that need the opt-in PyTorch override.
-- Keep Android packaging optional/manual while mobile remains in transition.
-- Keep packaged desktop dependency notices current now that crema/TensorFlow and beat-this are default desktop dependency scope.
-- Keep release/package changes backed by fresh dependency/license inventory evidence, explicit model-weight download/cache policy, and verification that model weights, caches, and package build artifacts are not tracked.
+Sync preserves each received artifact's format regardless of the receiving
+peer's preference. Backend and Android source validation must accept matching
+WAV/FLAC media formats and suffixes. All peers are assumed to run the latest
+TuneForge; version negotiation, compatibility transcoding, and protocol redesign
+are out of scope. Any HTTP schema change must regenerate the committed OpenAPI
+TypeScript contract.
 
-## Testing & Quality
+## v1.3.0 — Footprint and Engine Defaults
 
-- Keep backend gates: Ruff, mypy, and pytest.
-- Keep desktop gates: lint, typecheck, and Vitest.
-- Keep OpenAPI contract drift checks in CI.
-- Keep release copy honest about manual/special checks for packaging, crema/TensorFlow, beat-this, GPU profiles, loopback browser E2E, BlackHole capture, and virtual-output capture.
-- Keep release guidance explicit about what ships, what downloads or caches after use, and which host tools must be installed locally.
-- Add focused tests when new timing artifacts, practice loops, mobile capability gates, or destructive-regeneration flows are introduced.
-- Prefer deterministic timing tests over wall-clock-dependent assertions.
-- Keep generated or ignored mobile build artifacts out of commits unless they are intentionally tracked.
+[#399](https://github.com/grazzolini/tuneforge/issues/399) adds an explicit
+background job to transcode existing durable audio to the current WAV/FLAC
+preference. It reuses progress and cancellation patterns, verifies each new
+file, and atomically updates the artifact path, format, size, and content hash.
+It does not rerun analysis, stems, lyrics, chords, beats, or other models.
+
+[#400](https://github.com/grazzolini/tuneforge/issues/400) improves the
+lightweight chord engine and makes it the default. CREMA remains supported as an
+optional engine, while TensorFlow leaves the default package scope. Chord
+quality, runtime, memory, and package-size evidence are part of completion.
+
+## v1.4.0 — Mobile Runtime Experiments
+
+This milestone contains evidence work rather than release promises:
+
+1. [#401 — iOS simulator build and core runtime feasibility](https://github.com/grazzolini/tuneforge/issues/401)
+2. [#402 — Whisper, Demucs, and beat-this Android benchmarks](https://github.com/grazzolini/tuneforge/issues/402)
+3. [#403 — Drum sub-stem quality and mobile viability](https://github.com/grazzolini/tuneforge/issues/403)
+
+The iOS work is simulator-only and must not imply physical-device support.
+Android benchmarks record model size, runtime, memory, output quality, runtime
+dependencies, and capability recommendations. The drum spike references the
+feature request in [#389](https://github.com/grazzolini/tuneforge/issues/389) and
+evaluates candidates including
+[MIT DrumSep](https://github.com/inagoy/drumsep) and its registered
+[demucs-infer](https://github.com/openmirlab/demucs-infer) path. #389 remains
+unmilestoned until evidence justifies implementation.
+
+## v2.0.0 — Android-First 2.0
+
+Android is the primary mobile target. The 2.0 gate is a functional Android flow
+for import, library, playback, editing, sync, export, WAV/FLAC storage, and
+truthful model capability states.
+
+Heavy on-device models ship only when v1.4 evidence justifies them. A negative
+Whisper, Demucs, beat-this, or drum-separation result does not block 2.0. iOS
+remains simulator-only experimental work.
+
+Play Store, App Store, notarization, and distribution signing are not release
+gates. Attaching an APK to a GitHub release may be useful, but remains optional.
+
+## Continuing Product Boundaries
+
+- Keep TuneForge local-only: no account, cloud backend, telemetry, or remote
+  processing requirement.
+- Keep desktop as the most complete workflow while Android reaches functional
+  parity for the 2.0 gate.
+- Keep generated audio, analysis, chord, lyric, and job state tied to explicit
+  project artifacts.
+- Preserve user edits when regeneration jobs run, with explicit confirmation
+  for destructive refreshes.
+- Keep backend, desktop, contract, packaging, and privacy validation proportional
+  to the surfaces changed by each issue.
+- Keep release copy explicit about what ships, what remains experimental, which
+  models download or cache after use, and which host tools are required.

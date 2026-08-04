@@ -84,11 +84,24 @@ Mobile does not bundle FFmpeg. Android uses platform media APIs instead.
 - Import keeps the original file inside app storage.
 - WAV/PCM can be read directly for CPU analysis and basic chord detection.
 - Compressed audio should decode through Android media APIs before waveform or ML processing.
-- Mobile internal generated audio should prefer `m4a`/AAC first.
+- Durable app-owned audio is planned to follow the shared WAV/FLAC storage preference; Android
+  platform codecs remain runtime and export capabilities rather than a separate canonical format.
 - Desktop currently keeps WAV intermediates and `wav`/`mp3`/`flac` exports through host-installed FFmpeg.
 - Unsupported mobile export formats stay unavailable until a native encoder path exists.
 
-Future desktop refinement: consider matching the mobile storage model by keeping the original import as the canonical source and creating normalized PCM/WAV files only as disposable derived cache. Analysis, chords, and feature data should stay cached separately so repeated desktop workflows do not require persistent full-size WAV copies.
+The planned durable-storage direction does not preserve the desktop original import as a separate
+canonical file. WAV remains the default, with FLAC as an optional preference for each new durable
+source, stem, saved mix, or other durable audio artifact. The preference is captured when an action
+or job starts; later changes affect future artifacts only. Existing files stay unchanged, so mixed
+WAV/FLAC libraries and mixed-format projects must remain readable. A later explicit background job
+may transcode existing durable files without rerunning analysis, stems, lyrics, chords, beats, or
+other model pipelines.
+
+Sync preserves the format received from the sender instead of applying the receiving peer's local
+preference. The planned WAV/FLAC work must widen current backend and Android source validation to
+accept matching media formats and suffixes in both directions. It assumes all peers run the latest
+TuneForge and does not add version negotiation, compatibility transcoding, or a sync protocol
+redesign.
 
 ## Desktop vs Mobile Persistence Parity
 
@@ -234,10 +247,12 @@ Also record whether Android reports sync transport support. If `sync_transport_s
 `false`, the APK is still using the Android stub and cannot satisfy real transport validation; only
 pairing/storage/playback checks can proceed.
 
-For accepted mobile sync evidence, sync at least one desktop project to Android, play the synced WAV
-source and synced WAV stem artifacts from app-local storage, and compare battery, CPU, storage, and
-transfer costs against AAC/M4A or another compressed baseline. Mobile sync remains library sync
-only; remote processing stays out of scope.
+For accepted mobile sync evidence today, sync at least one desktop project to Android, play the
+synced WAV source and synced WAV stem artifacts from app-local storage, and compare battery, CPU,
+storage, and transfer costs against AAC/M4A or another compressed baseline. After WAV/FLAC storage
+support lands, add desktop-to-Android and Android-to-desktop mixed-format cases that prove matching
+format, suffix, size, and content hash are preserved. Mobile sync remains library sync only; remote
+processing stays out of scope.
 
 For Android-to-desktop validation, import or change durable library data on Android, sync it to a
 desktop peer, and record redacted project import cadence, TTFA, transfer counts, selected transport,

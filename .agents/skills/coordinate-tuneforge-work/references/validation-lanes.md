@@ -35,6 +35,16 @@ local state validation separately from proven live transport. A successful
 validator, mocked transport, pairing UI, or emulator-only flow does not prove
 cross-device delivery, import, persistence on a peer, or release behavior.
 
+## Research and Benchmark Evidence
+
+Define question, method, datasets or fixtures, environment or hardware
+baseline, licensing constraints, timebox, and recommendation criteria. Preserve
+only sanitized measurements and reproducible command templates; exclude
+secrets, private paths, raw IDs, endpoints, and pairing payloads, following
+surface-specific privacy and data rules. Report benchmark comparability limits;
+do not generalize beyond evidence or treat a local spike as production proof. A
+supported negative or defer recommendation is valid.
+
 ## Manual or Hardware Steps
 
 Pause before actions requiring user-owned devices, credentials, pairing,

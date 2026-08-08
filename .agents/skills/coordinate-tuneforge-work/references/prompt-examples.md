@@ -1,6 +1,6 @@
 # TuneForge Coordinator Prompt Examples
 
-Replace `#NNN` or the milestone name before sending. Select Plan mode first when
+Replace `#NNN`, the milestone name, or `ad hoc: <short label>` before sending. Select Plan mode first when
 the preflight and execution plan should pause for approval.
 
 ## Full Issue Delivery
@@ -75,6 +75,33 @@ target, and recommendation criteria. Produce evidence and a recommendation.
 
 Do not retain product code or publish GitHub state unless I separately authorize
 it. A supported negative or defer recommendation is acceptable.
+```
+
+## Ad Hoc Small Change
+
+```text
+Use $coordinate-tuneforge-work for ad hoc: <short label>.
+
+Outcome: <concrete change>. Acceptance: <observable result and validation>.
+Search live issues and PRs for overlap, but do not require or create an issue.
+Decide normal PR versus stack under the skill's criteria. Implement, validate,
+review, and publish the retained change.
+I authorize branch creation and switching, signed commits, pushes, and draft PR
+creation. Do not merge.
+```
+
+## Ad Hoc Bug Exploration
+
+```text
+Use $coordinate-tuneforge-work for ad hoc: <short symptom label>.
+
+Symptom and evidence: <observed behavior and supporting evidence>.
+Attempt reproduction. Identify a likely cause only when evidence supports one;
+an inconclusive result is acceptable. Report attempted methods, evidence,
+remaining hypotheses, and a recommended next step. Search live issues and PRs
+for overlap, but do not require or create an issue.
+Treat this as research-only: report in this chat. Do not retain product code or
+publish to GitHub. If a fix should follow, reclassify and re-plan before editing.
 ```
 
 ## Plan First, Then Start a Goal

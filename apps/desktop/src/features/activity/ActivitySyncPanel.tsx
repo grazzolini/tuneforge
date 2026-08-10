@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { QRCodeSVG } from "qrcode.react";
 import {
   api,
@@ -192,6 +193,14 @@ function formatTimestamp(value: string | null | undefined) {
 }
 
 async function copyToClipboard(value: string, source?: HTMLTextAreaElement | null) {
+  if (isTauri()) {
+    try {
+      await writeText(value);
+      return true;
+    } catch {
+      return false;
+    }
+  }
   if (navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(value);
@@ -2122,6 +2131,7 @@ export function ActivitySyncPanel() {
   const [syncNowPolling, setSyncNowPolling] = useState(false);
   const [evidenceMessage, setEvidenceMessage] = useState<string | null>(null);
   const [evidenceError, setEvidenceError] = useState<string | null>(null);
+	const [evidenceActionPending, setEvidenceActionPending] = useState(false);
 	useSyncExternalStore(
 	  subscribePowerInhibition,
 	  getPowerInhibitionVersion,
@@ -2133,6 +2143,7 @@ export function ActivitySyncPanel() {
 	  const refreshedProjectSyncKeyRef = useRef<string | null>(null);
 	  const desktopLifecycleLastObservedAtRef = useRef(Date.now());
 	  const desktopLifecyclePassiveAwayRef = useRef(false);
+	  const evidenceActionPendingRef = useRef(false);
 
   const identityQuery = useQuery({
     queryKey: ["sync", "identity"],
@@ -2710,38 +2721,48 @@ export function ActivitySyncPanel() {
   }
 
   async function handleCopySyncEvidence() {
-    const evidence = buildCurrentSyncEvidenceFile();
-    if (!evidence) {
-      setEvidenceError("No sync result available to copy.");
-      setEvidenceMessage(null);
+    if (evidenceActionPendingRef.current) {
       return;
     }
+    evidenceActionPendingRef.current = true;
+    setEvidenceActionPending(true);
+    setEvidenceError(null);
+    setEvidenceMessage(null);
+    const evidence = buildCurrentSyncEvidenceFile();
     try {
-      const copied = await copyToClipboard(evidence.json);
-      if (!copied) {
-        setEvidenceMessage(null);
-        setEvidenceError("Could not copy sync evidence.");
+      if (!evidence) {
+        setEvidenceError("No sync result available to copy.");
         return;
       }
-      setEvidenceError(null);
+      const copied = await copyToClipboard(evidence.json);
+      if (!copied) {
+        setEvidenceError("Could not copy sync evidence. Try again.");
+        return;
+      }
       setEvidenceMessage("Sync evidence copied.");
     } catch {
-      setEvidenceMessage(null);
-      setEvidenceError("Could not copy sync evidence.");
+      setEvidenceError("Could not copy sync evidence. Try again.");
+    } finally {
+      evidenceActionPendingRef.current = false;
+      setEvidenceActionPending(false);
     }
   }
 
   async function handleExportSyncEvidence() {
-    const evidence = buildCurrentSyncEvidenceFile();
-    if (!evidence) {
-      setEvidenceError("No sync result available to export.");
-      setEvidenceMessage(null);
+    if (evidenceActionPendingRef.current) {
       return;
     }
+    evidenceActionPendingRef.current = true;
+    setEvidenceActionPending(true);
     setEvidenceError(null);
     setEvidenceMessage(null);
+    const evidence = buildCurrentSyncEvidenceFile();
 
     try {
+      if (!evidence) {
+        setEvidenceError("No sync result available to export.");
+        return;
+      }
       if (isTauri()) {
         const saved = await saveSyncEvidenceJson(evidence.fileName, evidence.json);
         if (!saved) {
@@ -2754,7 +2775,6 @@ export function ActivitySyncPanel() {
         } catch {
           copied = false;
         }
-        setEvidenceError(null);
         setEvidenceMessage(copied ? "Sync evidence exported and copied." : "Sync evidence exported.");
         return;
       }
@@ -2766,11 +2786,12 @@ export function ActivitySyncPanel() {
         copied = false;
       }
       downloadSyncEvidenceJson(evidence.fileName, evidence.json);
-      setEvidenceError(null);
       setEvidenceMessage(copied ? "Sync evidence exported and copied." : "Sync evidence exported.");
-    } catch (error) {
-      setEvidenceMessage(null);
-      setEvidenceError(error instanceof Error ? error.message : "Could not export sync evidence.");
+    } catch {
+      setEvidenceError("Could not export sync evidence. Choose another location and try again.");
+    } finally {
+      evidenceActionPendingRef.current = false;
+      setEvidenceActionPending(false);
     }
   }
 
@@ -2869,7 +2890,7 @@ export function ActivitySyncPanel() {
               ) : null}
               <button
                 className="button button--ghost button--small"
-                disabled={!visibleSyncResult}
+                disabled={!visibleSyncResult || evidenceActionPending}
                 onClick={handleCopySyncEvidence}
                 type="button"
               >
@@ -2877,7 +2898,7 @@ export function ActivitySyncPanel() {
               </button>
               <button
                 className="button button--ghost button--small"
-                disabled={!visibleSyncResult}
+                disabled={!visibleSyncResult || evidenceActionPending}
                 onClick={handleExportSyncEvidence}
                 type="button"
               >

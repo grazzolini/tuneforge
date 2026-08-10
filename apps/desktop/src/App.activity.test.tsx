@@ -51,6 +51,12 @@ import {
   triggerMockIntersectionObserver,
 } from "./test/appTestHarness";
 
+const mockClipboardWriteText = vi.hoisted(() => vi.fn());
+
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
+  writeText: mockClipboardWriteText,
+}));
+
 const irohTransportId = "tuneforge-sync+iroh";
 const tcpTransportId = "tuneforge-sync+tcp";
 const irohEndpointHint = `${irohTransportId}://device_peer_1`;
@@ -206,6 +212,25 @@ function syncRunStatus(overrides: Partial<SyncTransportRunStatus> = {}): SyncTra
       : {}),
     ...overrides,
   };
+}
+
+function setEvidenceSyncResult(suffix: string) {
+  setSyncTransportStatus({
+    active: true,
+    status: "listening",
+    endpoint_hints: listenerEndpointHints,
+    last_sync: syncRunStatus({
+      run_id: `sync_run_${suffix}`,
+      session_id: `sync_session_${suffix}`,
+      message: `Imported proj_${suffix} from device_peer_1.`,
+      project_results: [{
+        project_id: `proj_${suffix}`,
+        status: "imported",
+        message: `Imported proj_${suffix}.`,
+        imported_count: 1,
+      }],
+    }),
+  });
 }
 
 function syncPreflight(overrides: Partial<SyncPreflightResponse> = {}): SyncPreflightResponse {
@@ -406,6 +431,8 @@ function setDocumentVisibility(value: DocumentVisibilityState) {
 describe("Desktop app activity", () => {
   beforeEach(() => {
     resetAppTestHarness();
+    mockClipboardWriteText.mockReset();
+    mockClipboardWriteText.mockResolvedValue(undefined);
   });
 
   it("opens Activity from the sidebar with Jobs selected", async () => {
@@ -4246,8 +4273,98 @@ describe("Desktop app activity", () => {
     expect(exportedJson.projects).toEqual([]);
   });
 
+  it("copies exact privacy-safe evidence through the native Tauri clipboard", async () => {
+    const user = userEvent.setup();
+    const browserWriteText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: browserWriteText },
+    });
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+    setEvidenceSyncResult("native_copy_private");
+
+    await openSyncTab(user);
+    await user.click(screen.getByRole("button", { name: "Copy Evidence" }));
+
+    await waitFor(() => expect(mockClipboardWriteText).toHaveBeenCalledWith(expect.any(String)));
+    const copiedText = mockClipboardWriteText.mock.calls[0]?.[0] as string;
+    expect(JSON.parse(copiedText)).toMatchObject({
+      scenario: "listener-last-sync",
+      validation: { privacySafe: true },
+    });
+    expect(copiedText).not.toContain("proj_native_copy_private");
+    expect(copiedText).not.toContain("device_peer_1");
+    expect(browserWriteText).not.toHaveBeenCalled();
+    expect(await screen.findByText("Sync evidence copied.")).toBeInTheDocument();
+  });
+
+  it("reports native clipboard failure safely without browser fallback", async () => {
+    const user = userEvent.setup();
+    const browserWriteText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: browserWriteText },
+    });
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+    mockClipboardWriteText.mockRejectedValue(
+      new Error("Clipboard rejected /private/sync_run_native_copy_failure"),
+    );
+    setEvidenceSyncResult("native_copy_failure");
+
+    await openSyncTab(user);
+    await user.click(screen.getByRole("button", { name: "Copy Evidence" }));
+
+    expect(await screen.findByText("Could not copy sync evidence. Try again.")).toBeInTheDocument();
+    expect(screen.queryByText("Sync evidence copied.")).not.toBeInTheDocument();
+    expect(screen.queryByText(/private\/sync_run/)).not.toBeInTheDocument();
+    expect(browserWriteText).not.toHaveBeenCalled();
+  });
+
+  it("disables both evidence actions while a native copy is unresolved", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+    let resolveClipboard: (() => void) | undefined;
+    const pendingClipboard = new Promise<void>((resolve) => {
+      resolveClipboard = resolve;
+    });
+    mockClipboardWriteText.mockReturnValue(pendingClipboard);
+    setEvidenceSyncResult("native_copy_pending");
+
+    await openSyncTab(user);
+    await user.click(screen.getByRole("button", { name: "Copy Evidence" }));
+    await waitFor(() => expect(mockClipboardWriteText).toHaveBeenCalledOnce());
+    const copyButton = screen.getByRole("button", { name: "Copy Evidence" });
+    const exportButton = screen.getByRole("button", { name: "Export Evidence" });
+    expect(copyButton).toBeDisabled();
+    expect(exportButton).toBeDisabled();
+
+    fireEvent.click(copyButton);
+    fireEvent.click(exportButton);
+    expect(mockClipboardWriteText).toHaveBeenCalledOnce();
+    expect(getMockInvoke().mock.calls.some(([command]) => command === "write_sync_evidence_file")).toBe(false);
+
+    await act(async () => resolveClipboard?.());
+    expect(await screen.findByText("Sync evidence copied.")).toBeInTheDocument();
+    expect(copyButton).toBeEnabled();
+    expect(exportButton).toBeEnabled();
+  });
+
   it("exports evidence through the Tauri save command when available", async () => {
     const user = userEvent.setup();
+    const browserWriteText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: browserWriteText },
+    });
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,
       value: {},
@@ -4283,8 +4400,11 @@ describe("Desktop app activity", () => {
     );
     const writeCall = mockInvoke.mock.calls.find(([command]) => command === "write_sync_evidence_file");
     expect(writeCall).toBeDefined();
-    const exportedJson = JSON.parse((writeCall?.[1] as { contents: string }).contents) as Record<string, unknown>;
-    expect(await screen.findByText(/Sync evidence exported/)).toBeInTheDocument();
+    const exportedText = (writeCall?.[1] as { contents: string }).contents;
+    const exportedJson = JSON.parse(exportedText) as Record<string, unknown>;
+    await waitFor(() => expect(mockClipboardWriteText).toHaveBeenCalledWith(exportedText));
+    expect(await screen.findByText("Sync evidence exported and copied.")).toBeInTheDocument();
+    expect(browserWriteText).not.toHaveBeenCalled();
     expect(exportedJson.scenario).toBe("listener-last-sync");
     expect(exportedJson.run).toMatchObject({
       label: "Run 1",
@@ -4296,13 +4416,25 @@ describe("Desktop app activity", () => {
     expect(JSON.stringify(exportedJson)).not.toContain("device_peer_1");
   });
 
+  it("keeps verified export success when opportunistic native copy fails", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+    mockClipboardWriteText.mockRejectedValue(new Error("Clipboard unavailable at /private/provider"));
+    setEvidenceSyncResult("export_copy_failure");
+
+    await openSyncTab(user);
+    await user.click(screen.getByRole("button", { name: "Export Evidence" }));
+
+    expect(await screen.findByText("Sync evidence exported.")).toBeInTheDocument();
+    expect(screen.queryByText(/Could not copy sync evidence/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/private\/provider/)).not.toBeInTheDocument();
+  });
+
   it("keeps canceled Tauri evidence export quiet", async () => {
     const user = userEvent.setup();
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,
       value: {},
@@ -4344,7 +4476,7 @@ describe("Desktop app activity", () => {
         "write_sync_evidence_file",
         expect.objectContaining({ defaultFileName: expect.any(String) }),
       ));
-      expect(writeText).not.toHaveBeenCalled();
+      expect(mockClipboardWriteText).not.toHaveBeenCalled();
       expect(screen.queryByText(/Sync evidence exported/)).not.toBeInTheDocument();
       expect(screen.queryByText(/Could not export sync evidence/)).not.toBeInTheDocument();
     } finally {
@@ -4396,6 +4528,7 @@ describe("Desktop app activity", () => {
       ).toBeInTheDocument();
       expect(screen.queryByText(/\/Users\/test\/private/)).not.toBeInTheDocument();
       expect(screen.queryByText(/Sync evidence exported/)).not.toBeInTheDocument();
+      expect(mockClipboardWriteText).not.toHaveBeenCalled();
     } finally {
       mockInvoke.mockImplementation(defaultInvoke);
     }

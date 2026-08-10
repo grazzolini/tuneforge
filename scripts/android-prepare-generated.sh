@@ -521,7 +521,7 @@ class PowerInhibitionService : Service() {
     const val REASON_SYNC_LISTENER = 2
     const val REASON_SYNC_TRANSFER = 4
     const val REASON_TUNER_CAPTURE = 8
-    const val SCREEN_REASON_MASK = REASON_PLAYBACK or REASON_TUNER_CAPTURE
+    const val SCREEN_REASON_MASK = REASON_PLAYBACK or REASON_SYNC_TRANSFER or REASON_TUNER_CAPTURE
     const val SERVICE_REASON_MASK = REASON_PLAYBACK or REASON_SYNC_LISTENER or REASON_SYNC_TRANSFER
     private const val PARTIAL_WAKE_REASON_MASK = REASON_SYNC_LISTENER or REASON_SYNC_TRANSFER
     private const val CHANNEL_ID = "tuneforge_active_work"
@@ -680,7 +680,7 @@ verify_power_notification_wiring() {
     'buildTruthfulForegroundNotification()'
     'ERROR_NOTIFICATION_POST_FAILED'
     'const val REASON_TUNER_CAPTURE = 8'
-    'const val SCREEN_REASON_MASK = REASON_PLAYBACK or REASON_TUNER_CAPTURE'
+    'const val SCREEN_REASON_MASK = REASON_PLAYBACK or REASON_SYNC_TRANSFER or REASON_TUNER_CAPTURE'
     'const val SERVICE_REASON_MASK = REASON_PLAYBACK or REASON_SYNC_LISTENER or REASON_SYNC_TRANSFER'
     'val activeMask = if (serviceMatches) (confirmedServiceMask or screenOnlyMask) else 0'
     'notificationPermissionDenied && desiredServiceMask != 0'

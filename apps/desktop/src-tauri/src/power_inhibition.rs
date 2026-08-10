@@ -779,11 +779,16 @@ mod platform {
 #[cfg(target_os = "android")]
 mod platform {
     use super::*;
-    use jni::objects::{JObject, JValue};
-    use jni::JavaVM;
+    use jni::objects::{Global, JObject, JString, JValue};
+    use jni::{jni_sig, jni_str, JavaVM};
 
     #[derive(Default)]
     struct AndroidInhibitor;
+
+    enum AndroidCall {
+        Set(i32),
+        Probe,
+    }
 
     impl PlatformInhibitor for AndroidInhibitor {
         fn acquire(
@@ -791,7 +796,7 @@ mod platform {
             reasons: &[PowerInhibitionReason],
         ) -> Result<Option<PlatformDetails>, SafeError> {
             let mask = android_reason_mask(reasons);
-            let response = call_android("setTuneForgePowerInhibition", mask)?;
+            let response = call_android(AndroidCall::Set(mask))?;
             let probe = parse_android_response(&response)?;
             if let Some(error) = probe.error {
                 return Err(error);
@@ -803,7 +808,7 @@ mod platform {
         }
 
         fn release(&mut self) -> Result<(), SafeError> {
-            let response = call_android("setTuneForgePowerInhibition", 0)?;
+            let response = call_android(AndroidCall::Set(0))?;
             let probe = parse_android_response(&response)?;
             if probe.error.is_some() {
                 return Err(SafeError {
@@ -816,7 +821,7 @@ mod platform {
 
         fn probe(&mut self) -> Option<PlatformProbe> {
             Some(
-                call_android("getTuneForgePowerInhibitionStatus", 0)
+                call_android(AndroidCall::Probe)
                     .and_then(|response| parse_android_response(&response))
                     .unwrap_or_else(|error| PlatformProbe {
                         details: None,
@@ -828,34 +833,35 @@ mod platform {
         }
     }
 
-    fn call_android(method: &str, mask: i32) -> Result<String, SafeError> {
+    fn call_android(call: AndroidCall) -> Result<String, SafeError> {
         use tauri::tao::platform::android::prelude::main_android_context;
 
         let context = main_android_context().ok_or_else(android_error)?;
         if context.java_vm.is_null() || context.context_jobject.is_null() {
             return Err(android_error());
         }
-        let vm =
-            unsafe { JavaVM::from_raw(context.java_vm.cast()) }.map_err(|_| android_error())?;
-        let mut env = vm.attach_current_thread().map_err(|_| android_error())?;
-        let activity = unsafe { JObject::from_raw(context.context_jobject.cast()) };
-        let result = if method == "setTuneForgePowerInhibition" {
-            env.call_method(
-                &activity,
-                method,
-                "(I)Ljava/lang/String;",
-                &[JValue::Int(mask)],
-            )
-        } else {
-            env.call_method(&activity, method, "()Ljava/lang/String;", &[])
-        }
-        .and_then(|value| value.l());
-        std::mem::forget(activity);
-        let result = result.map_err(|_| android_error())?;
-        let result = jni::objects::JString::from(result);
-        env.get_string(&result)
-            .map(|value| value.to_string_lossy().into_owned())
-            .map_err(|_| android_error())
+        let vm = unsafe { JavaVM::from_raw(context.java_vm.cast()) };
+        vm.attach_current_thread(|env| {
+            let activity_raw = context.context_jobject.cast();
+            let activity = unsafe { env.as_cast_raw::<Global<JObject<'static>>>(&activity_raw)? };
+            let result = match call {
+                AndroidCall::Set(mask) => env.call_method(
+                    &activity,
+                    jni_str!("setTuneForgePowerInhibition"),
+                    jni_sig!((i32) -> JString),
+                    &[JValue::Int(mask)],
+                ),
+                AndroidCall::Probe => env.call_method(
+                    &activity,
+                    jni_str!("getTuneForgePowerInhibitionStatus"),
+                    jni_sig!(() -> JString),
+                    &[],
+                ),
+            }?
+            .into_object()?;
+            JString::cast_local(env, result)?.try_to_string(env)
+        })
+        .map_err(|_| android_error())
     }
 
     fn android_error() -> SafeError {

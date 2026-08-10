@@ -13235,7 +13235,23 @@ mod desktop {
         }
 
         #[test]
-        fn transfer_timeout_cancels_run_without_releasing_other_power_owners() {
+        fn transfer_reservation_survives_listener_release() {
+            let (power, counts) = test_power_inhibition();
+            let listener = ListenerPowerLease::acquire(&power);
+            let reservations = ActiveTransferReservations::new(power);
+            let transfer = reservations.reserve("listener_stopped");
+
+            listener.release();
+
+            assert_eq!(counts.active(PowerInhibitionReason::SyncListener), 0);
+            assert_eq!(counts.active(PowerInhibitionReason::SyncTransfer), 1);
+
+            drop(transfer);
+            assert_eq!(counts.active(PowerInhibitionReason::SyncTransfer), 0);
+        }
+
+        #[test]
+        fn transfer_reservation_timeout_cancels_run_without_releasing_other_power_owners() {
             let (power, counts) = test_power_inhibition();
             let listener = power.acquire(PowerInhibitionReason::SyncListener);
             let reservations = ActiveTransferReservations::new(power);

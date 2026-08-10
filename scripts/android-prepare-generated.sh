@@ -146,6 +146,7 @@ import android.os.Process
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
+import android.view.WindowManager
 
 class MainActivity : TauriActivity() {
   private var notificationPermissionOwnershipRevision = 0L
@@ -178,11 +179,16 @@ class MainActivity : TauriActivity() {
 
   fun getTuneForgePowerInhibitionStatus(): String = PowerInhibitionService.status()
 
-  fun applyTuneForgeScreenProtection() {
+  fun applyTuneForgeScreenProtection(expectedRevision: Long) {
     window.decorView.post {
-      val requestedMask = PowerInhibitionService.screenProtectionRequestedMask()
-      window.decorView.keepScreenOn = requestedMask != 0
-      PowerInhibitionService.confirmScreenProtection(requestedMask)
+      val requestedMask = PowerInhibitionService
+        .screenProtectionRequestedMask(this, expectedRevision) ?: return@post
+      if (requestedMask != 0) {
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+      } else {
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+      }
+      PowerInhibitionService.confirmScreenProtection(this, requestedMask, expectedRevision)
     }
   }
 
@@ -330,8 +336,7 @@ class PowerInhibitionService : Service() {
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     // A queued start intent may predate a later release request. Always apply
     // the latest process-wide desired mask so a stale intent cannot reacquire.
-    val requestedMask = desiredServiceReasonMask()
-    applyReasons(requestedMask)
+    applyReasons(desiredServiceState())
     return START_NOT_STICKY
   }
 
@@ -341,9 +346,9 @@ class PowerInhibitionService : Service() {
     confirmedServiceMask = 0
     instance = null
     super.onDestroy()
-    val remainingServiceMask = desiredServiceMask
-    if (remainingServiceMask != 0) {
-      launch(applicationContext, remainingServiceMask)
+    val remainingState = desiredServiceState()
+    if (remainingState.serviceMask != 0) {
+      launch(applicationContext, remainingState)
     }
   }
 
@@ -351,13 +356,9 @@ class PowerInhibitionService : Service() {
 
   override fun onTimeout(startId: Int, fgsType: Int) {
     if (Build.VERSION.SDK_INT >= 35 && fgsType and ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC != 0) {
-      val remainingMask = desiredMask and REASON_SYNC_TRANSFER.inv()
-      ownershipRevision.incrementAndGet()
+      transitionDesiredState(null, REASON_SYNC_TRANSFER)
       timeoutEpoch += 1
       lastFailure = ERROR_DATA_SYNC_TIMEOUT
-      desiredMask = remainingMask
-      desiredServiceMask = remainingMask and SERVICE_REASON_MASK
-      requestScreenProtection(remainingMask and SCREEN_REASON_MASK)
       confirmedServiceMask = 0
       releaseWakeLock()
       reasonMask = 0
@@ -366,10 +367,10 @@ class PowerInhibitionService : Service() {
     }
   }
 
-  private fun applyReasons(requestedMask: Int): String {
+  private fun applyReasons(attemptedState: DesiredStateTransition): String {
     return try {
-      reasonMask = requestedMask
-      confirmedServiceMask = requestedMask
+      reasonMask = attemptedState.serviceMask
+      confirmedServiceMask = attemptedState.serviceMask
       updateWakeLock()
       if (reasonMask == 0) {
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -382,11 +383,7 @@ class PowerInhibitionService : Service() {
     } catch (_: RuntimeException) {
       releaseWakeLock()
       reasonMask = 0
-      confirmedServiceMask = 0
-      desiredServiceMask = 0
-      desiredMask = desiredMask and SERVICE_REASON_MASK.inv()
-      lastFailure = ERROR_POWER_CONTROL
-      requestScreenProtection(desiredMask and SCREEN_REASON_MASK)
+      recordPowerControlFailure(attemptedState)
       stopForeground(STOP_FOREGROUND_REMOVE)
       stopSelf()
       status()
@@ -547,29 +544,60 @@ class PowerInhibitionService : Service() {
     @Volatile private var notificationPermissionDenied = false
     @Volatile private var activity = WeakReference<MainActivity>(null)
     private val ownershipRevision = AtomicLong(0)
+    private val screenProtectionRevision = AtomicLong(0)
+    private val serviceOwnershipRevision = AtomicLong(0)
 
+    private data class DesiredStateTransition(
+      val previousServiceMask: Int,
+      val serviceMask: Int,
+      val serviceRevision: Long,
+    )
+
+    @Synchronized
     fun attachActivity(nextActivity: MainActivity) {
       activity = WeakReference(nextActivity)
-      nextActivity.applyTuneForgeScreenProtection()
+      confirmedScreenMask = 0
+      val revision = screenProtectionRevision.incrementAndGet()
+      nextActivity.applyTuneForgeScreenProtection(revision)
     }
 
+    @Synchronized
     fun detachActivity(currentActivity: MainActivity) {
       if (activity.get() === currentActivity) {
+        screenProtectionRevision.incrementAndGet()
         activity.clear()
         confirmedScreenMask = 0
       }
     }
 
-    fun requestScreenProtection(reasonMask: Int) {
-      desiredScreenMask = reasonMask and SCREEN_REASON_MASK
-      activity.get()?.applyTuneForgeScreenProtection()
+    @Synchronized
+    fun screenProtectionRequestedMask(
+      currentActivity: MainActivity,
+      expectedRevision: Long,
+    ): Int? {
+      if (activity.get() !== currentActivity || expectedRevision != screenProtectionRevision.get()) {
+        return null
+      }
+      return desiredScreenMask
     }
 
-    fun screenProtectionRequestedMask(): Int = desiredScreenMask
+    @Synchronized
+    private fun desiredServiceState(): DesiredStateTransition = DesiredStateTransition(
+      previousServiceMask = desiredServiceMask,
+      serviceMask = desiredServiceMask,
+      serviceRevision = serviceOwnershipRevision.get(),
+    )
 
-    private fun desiredServiceReasonMask(): Int = desiredServiceMask
-
-    fun confirmScreenProtection(reasonMask: Int) {
+    @Synchronized
+    fun confirmScreenProtection(
+      currentActivity: MainActivity,
+      reasonMask: Int,
+      expectedRevision: Long,
+    ) {
+      if (activity.get() !== currentActivity ||
+        expectedRevision != screenProtectionRevision.get() ||
+        reasonMask != desiredScreenMask
+      ) return
       confirmedScreenMask = reasonMask and SCREEN_REASON_MASK
     }
 
@@ -589,16 +617,10 @@ class PowerInhibitionService : Service() {
     }
 
     fun request(context: Context, reasonMask: Int): String {
-      val previousServiceMask = desiredServiceMask
-      val nextServiceMask = reasonMask and SERVICE_REASON_MASK
-      if (previousServiceMask != nextServiceMask) {
-        ownershipRevision.incrementAndGet()
-      }
-      desiredMask = reasonMask
-      desiredServiceMask = nextServiceMask
-      requestScreenProtection(reasonMask and SCREEN_REASON_MASK)
+      val transition = transitionDesiredState(reasonMask, 0)
       if (lastFailure == ERROR_DATA_SYNC_TIMEOUT &&
-        (reasonMask and REASON_SYNC_TRANSFER == 0 || previousServiceMask and REASON_SYNC_TRANSFER == 0)
+        (reasonMask and REASON_SYNC_TRANSFER == 0 ||
+          transition.previousServiceMask and REASON_SYNC_TRANSFER == 0)
       ) {
         lastFailure = ERROR_NONE
       } else if (lastFailure == ERROR_POWER_CONTROL || lastFailure == ERROR_NOTIFICATION_POST_FAILED) {
@@ -606,15 +628,15 @@ class PowerInhibitionService : Service() {
       }
       val existing = instance
       if (existing != null) {
-        existing.applyOnMainThread(nextServiceMask)
+        existing.applyOnMainThread()
         return status()
       }
-      if (nextServiceMask == 0) {
+      if (transition.serviceMask == 0) {
         confirmedServiceMask = 0
         return status()
       }
 
-      launch(context, nextServiceMask)
+      launch(context, transition)
       return status()
     }
 
@@ -638,30 +660,56 @@ class PowerInhibitionService : Service() {
       return "$phase;$activeMask;$statusError;$desiredMask;$timeoutEpoch;${confirmedScreenMask != 0}"
     }
 
-    private fun launch(context: Context, reasonMask: Int) {
+    private fun launch(context: Context, attemptedState: DesiredStateTransition) {
       try {
         val intent = Intent(context, PowerInhibitionService::class.java)
-          .putExtra(EXTRA_REASON_MASK, reasonMask)
+          .putExtra(EXTRA_REASON_MASK, attemptedState.serviceMask)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
           context.startForegroundService(intent)
         } else {
           context.startService(intent)
         }
       } catch (_: RuntimeException) {
-        desiredMask = desiredMask and SERVICE_REASON_MASK.inv()
-        desiredServiceMask = 0
-        confirmedServiceMask = 0
-        lastFailure = ERROR_POWER_CONTROL
-        requestScreenProtection(desiredMask and SCREEN_REASON_MASK)
+        recordPowerControlFailure(attemptedState)
       }
+    }
+
+    @Synchronized
+    private fun transitionDesiredState(
+      requestedMask: Int?,
+      clearedReasons: Int,
+    ): DesiredStateTransition {
+      val nextMask = requestedMask ?: (desiredMask and clearedReasons.inv())
+      val previousServiceMask = desiredServiceMask
+      val nextServiceMask = nextMask and SERVICE_REASON_MASK
+      if (previousServiceMask != nextServiceMask) {
+        ownershipRevision.incrementAndGet()
+      }
+      desiredMask = nextMask
+      desiredServiceMask = nextServiceMask
+      desiredScreenMask = nextMask and SCREEN_REASON_MASK
+      val serviceRevision = serviceOwnershipRevision.incrementAndGet()
+      val revision = screenProtectionRevision.incrementAndGet()
+      activity.get()?.applyTuneForgeScreenProtection(revision)
+      return DesiredStateTransition(previousServiceMask, nextServiceMask, serviceRevision)
+    }
+
+    @Synchronized
+    private fun recordPowerControlFailure(attemptedState: DesiredStateTransition) {
+      if (attemptedState.serviceRevision != serviceOwnershipRevision.get() ||
+        attemptedState.serviceMask != desiredServiceMask
+      ) return
+      transitionDesiredState(null, SERVICE_REASON_MASK)
+      confirmedServiceMask = 0
+      lastFailure = ERROR_POWER_CONTROL
     }
   }
 
-  private fun applyOnMainThread(requestedMask: Int) {
+  private fun applyOnMainThread() {
     if (Looper.myLooper() == Looper.getMainLooper()) {
-      applyReasons(requestedMask)
+      applyReasons(desiredServiceState())
     } else {
-      handler.post { applyReasons(requestedMask) }
+      handler.post { applyReasons(desiredServiceState()) }
     }
   }
 }
@@ -684,6 +732,20 @@ verify_power_notification_wiring() {
     'const val SERVICE_REASON_MASK = REASON_PLAYBACK or REASON_SYNC_LISTENER or REASON_SYNC_TRANSFER'
     'val activeMask = if (serviceMatches) (confirmedServiceMask or screenOnlyMask) else 0'
     'notificationPermissionDenied && desiredServiceMask != 0'
+    'private val screenProtectionRevision = AtomicLong(0)'
+    'private val serviceOwnershipRevision = AtomicLong(0)'
+    'val serviceRevision: Long'
+    'private fun transitionDesiredState('
+    'val transition = transitionDesiredState(reasonMask, 0)'
+    'transitionDesiredState(null, REASON_SYNC_TRANSFER)'
+    'desiredScreenMask = nextMask and SCREEN_REASON_MASK'
+    'activity.get()?.applyTuneForgeScreenProtection(revision)'
+    'activity.get() !== currentActivity'
+    'reasonMask != desiredScreenMask'
+    'private fun recordPowerControlFailure(attemptedState: DesiredStateTransition)'
+    'attemptedState.serviceRevision != serviceOwnershipRevision.get()'
+    'attemptedState.serviceMask != desiredServiceMask'
+    'handler.post { applyReasons(desiredServiceState()) }'
   )
   local snippet
   for snippet in "${required_snippets[@]}"; do
@@ -697,7 +759,10 @@ verify_power_notification_wiring() {
     ! grep -Fq 'if (!PowerInhibitionService.beginNotificationPermissionRequest()) return@post' "$MAIN_ACTIVITY" ||
     ! grep -Fq 'notificationPermissionOwnershipRevision = expectedRevision' "$MAIN_ACTIVITY" ||
     ! grep -Fq 'reasonMask and PowerInhibitionService.SERVICE_REASON_MASK != 0' "$MAIN_ACTIVITY" ||
-    ! grep -Fq 'window.decorView.keepScreenOn = requestedMask != 0' "$MAIN_ACTIVITY"; then
+    ! grep -Fq 'screenProtectionRequestedMask(this, expectedRevision) ?: return@post' "$MAIN_ACTIVITY" ||
+    ! grep -Fq 'window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)' "$MAIN_ACTIVITY" ||
+    ! grep -Fq 'window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)' "$MAIN_ACTIVITY" ||
+    ! grep -Fq 'PowerInhibitionService.confirmScreenProtection(this, requestedMask, expectedRevision)' "$MAIN_ACTIVITY"; then
     echo "Generated Android activity does not bind notification permission to ownership." >&2
     exit 1
   fi

@@ -938,7 +938,9 @@ mod tests {
                 screen_protected: reasons.iter().any(|reason| {
                     matches!(
                         reason,
-                        PowerInhibitionReason::Playback | PowerInhibitionReason::TunerCapture
+                        PowerInhibitionReason::Playback
+                            | PowerInhibitionReason::SyncTransfer
+                            | PowerInhibitionReason::TunerCapture
                     )
                 }),
                 background_protected: true,
@@ -1013,6 +1015,55 @@ mod tests {
         );
         drop(second);
         assert_eq!(*control.releases.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn transfer_screen_protection_releases_to_listener_only() {
+        let (state, _) = state();
+        let listener = state
+            .acquire_scoped(PowerInhibitionReason::SyncListener)
+            .unwrap();
+        let transfer = state
+            .acquire_scoped(PowerInhibitionReason::SyncTransfer)
+            .unwrap();
+
+        assert!(state.status().unwrap().screen_protected);
+        drop(transfer);
+
+        let listener_only = state.status().unwrap();
+        assert_eq!(
+            listener_only.active_reasons,
+            vec![PowerInhibitionReason::SyncListener]
+        );
+        assert!(!listener_only.screen_protected);
+        drop(listener);
+    }
+
+    #[test]
+    fn transfer_release_preserves_playback_and_tuner_screen_owners() {
+        let (state, _) = state();
+        let transfer = state
+            .acquire_scoped(PowerInhibitionReason::SyncTransfer)
+            .unwrap();
+        let tuner = state
+            .acquire_scoped(PowerInhibitionReason::TunerCapture)
+            .unwrap();
+        state
+            .set_activity(PowerInhibitionReason::Playback, true)
+            .unwrap();
+
+        drop(transfer);
+
+        let protected = state.status().unwrap();
+        assert_eq!(
+            protected.active_reasons,
+            vec![
+                PowerInhibitionReason::Playback,
+                PowerInhibitionReason::TunerCapture,
+            ]
+        );
+        assert!(protected.screen_protected);
+        drop(tuner);
     }
 
     #[test]

@@ -50,6 +50,15 @@ android_package_start=${SECONDS}
 android_package_elapsed=$((SECONDS - android_package_start))
 printf '\n[tests] Android packaging helper tests finished in %ss\n' "${android_package_elapsed}"
 
+printf '\n[tests] Starting Android generated power inhibition tests\n\n'
+android_generated_power_start=${SECONDS}
+(
+  cd "${repo_root}"
+  node --test scripts/android-prepare-generated.test.mjs
+)
+android_generated_power_elapsed=$((SECONDS - android_generated_power_start))
+printf '\n[tests] Android generated power inhibition tests finished in %ss\n' "${android_generated_power_elapsed}"
+
 printf '\n[tests] Starting setup-dev script tests\n\n'
 setup_dev_start=${SECONDS}
 (

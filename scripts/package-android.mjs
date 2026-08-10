@@ -17,7 +17,7 @@ const generatedMarkers = [
   ["app/src/main/res", "directory"],
   ["gradle/wrapper/gradle-wrapper.jar", "file"], ["gradle/wrapper/gradle-wrapper.properties", "file"],
   ["gradlew", "executable"],
-  ["settings.gradle", "file"], ["tauri.settings.gradle", "file"],
+  ["settings.gradle", "file"],
 ];
 function capture(command, args, { cwd = repoRoot, env = process.env } = {}) {
   const result = spawnSync(command, args, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });

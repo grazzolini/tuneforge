@@ -521,18 +521,18 @@ fn permission_error(permission: AudioInputPermissionState) -> Option<AudioInputE
 
 #[cfg(target_os = "android")]
 fn request_android_permission() -> AudioInputPermissionState {
-    call_android_permission("requestTuneForgeAudioPermission")
+    call_android_permission(jni::jni_str!("requestTuneForgeAudioPermission"))
 }
 
 #[cfg(target_os = "android")]
 fn read_android_permission() -> AudioInputPermissionState {
-    call_android_permission("getTuneForgeAudioPermissionState")
+    call_android_permission(jni::jni_str!("getTuneForgeAudioPermissionState"))
 }
 
 #[cfg(target_os = "android")]
-fn call_android_permission(method: &str) -> AudioInputPermissionState {
-    use jni::objects::JObject;
-    use jni::JavaVM;
+fn call_android_permission(method: &jni::strings::JNIStr) -> AudioInputPermissionState {
+    use jni::objects::{Global, JObject, JString};
+    use jni::{jni_sig, JavaVM};
     use tauri::tao::platform::android::prelude::main_android_context;
 
     let Some(context) = main_android_context() else {
@@ -541,25 +541,19 @@ fn call_android_permission(method: &str) -> AudioInputPermissionState {
     if context.java_vm.is_null() || context.context_jobject.is_null() {
         return AudioInputPermissionState::Unavailable;
     }
-    let Ok(vm) = (unsafe { JavaVM::from_raw(context.java_vm.cast()) }) else {
+    let vm = unsafe { JavaVM::from_raw(context.java_vm.cast()) };
+    let result = vm.attach_current_thread(|env| {
+        let activity_raw = context.context_jobject.cast();
+        let activity = unsafe { env.as_cast_raw::<Global<JObject<'static>>>(&activity_raw)? };
+        let result = env
+            .call_method(&activity, method, jni_sig!(() -> JString), &[])?
+            .into_object()?;
+        JString::cast_local(env, result)?.try_to_string(env)
+    });
+    let Ok(value) = result else {
         return AudioInputPermissionState::Unavailable;
     };
-    let Ok(mut env) = vm.attach_current_thread() else {
-        return AudioInputPermissionState::Unavailable;
-    };
-    let activity = unsafe { JObject::from_raw(context.context_jobject.cast()) };
-    let result = env
-        .call_method(&activity, method, "()Ljava/lang/String;", &[])
-        .and_then(|value| value.l());
-    std::mem::forget(activity);
-    let Ok(result) = result else {
-        return AudioInputPermissionState::Unavailable;
-    };
-    let result = jni::objects::JString::from(result);
-    let Ok(value) = env.get_string(&result) else {
-        return AudioInputPermissionState::Unavailable;
-    };
-    match value.to_string_lossy().as_ref() {
+    match value.as_str() {
         "prompt" => AudioInputPermissionState::Prompt,
         "prompting" => AudioInputPermissionState::Prompting,
         "granted" => AudioInputPermissionState::Granted,

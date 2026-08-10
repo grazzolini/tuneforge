@@ -75,7 +75,7 @@ function completeGenerated(root) {
     "app/build.gradle.kts", "app/src/main/AndroidManifest.xml",
     "app/src/main/java/com/tuneforge/desktop/MainActivity.kt",
     "gradle/wrapper/gradle-wrapper.jar", "gradle/wrapper/gradle-wrapper.properties",
-    "settings.gradle", "tauri.settings.gradle",
+    "settings.gradle",
   ]) {
     const candidate = path.join(root, relative);
     fs.mkdirSync(path.dirname(candidate), { recursive: true });
@@ -85,10 +85,11 @@ function completeGenerated(root) {
   executable(path.join(root, "gradlew"));
 }
 
-test("generated state rejects absent markers and reuses complete state", (t) => {
+test("generated state accepts initialized projects and still requires source markers", (t) => {
   const root = path.join(temp(t), "android");
   assert.equal(generatedState(root).state, "absent");
   completeGenerated(root);
+  assert.equal(fs.existsSync(path.join(root, "tauri.settings.gradle")), false);
   assert.equal(generatedState(root).state, "complete");
   fs.rmSync(path.join(root, "app/src/main/java/com/tuneforge/desktop/MainActivity.kt"));
   assert.deepEqual(generatedState(root).missing, ["app/src/main/java/com/tuneforge/desktop/MainActivity.kt"]);

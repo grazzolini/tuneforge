@@ -97,9 +97,9 @@ dependencies = [
 
 [[package]]
 name = "android_system_properties"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "819e7219dbd41043ac279b19830f2efc897156490d7fd6ea916720117ee66311"
+checksum = "ae221649c9976a6f6c56ae1facf410f3ddb33cc661c4b7b61020a912d4237fbc"
 dependencies = [
  "libc",
 ]
@@ -298,9 +298,9 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "base64"
-version = "0.23.0"
+version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b25655df2c3cdd83c5e5b293b88acd880332b2ddadd7c30ac43144fdc0033da9"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "base64ct"
@@ -7256,7 +7256,7 @@ name = "tuneforge"
 version = "1.0.0"
 dependencies = [
  "android_system_properties",
- "base64 0.23.0",
+ "base64 0.23.1",
  "block2",
  "chrono",
  "cpal",

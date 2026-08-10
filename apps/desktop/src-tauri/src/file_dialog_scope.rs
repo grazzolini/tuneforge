@@ -1,10 +1,12 @@
 use std::{
-    fs, io,
+    fs,
+    io::{self, Read, Write},
     path::{Path, PathBuf},
 };
 
 use tauri::AppHandle;
 use tauri_plugin_dialog::{DialogExt, FilePath};
+use tauri_plugin_fs::{FsExt, OpenOptions};
 
 const JSON_FILTER_NAME: &str = "JSON";
 const JSON_EXTENSION: &str = "json";
@@ -98,12 +100,29 @@ pub(crate) fn write_user_selected_json_file(
 ) -> Result<bool, String> {
     validate_json_contents(&contents, purpose)?;
     let default_file_name = sanitized_json_file_name(&default_file_name, fallback_file_name);
-    let Some(path) = pick_user_selected_json_save_path(app, title, default_file_name)? else {
+    let Some(selection) = pick_user_selected_json_save_path(app, title, default_file_name)? else {
         return Ok(false);
     };
-    validate_user_selected_json_write_path(&path).map_err(|error| error.write_message(purpose))?;
-    fs::write(path, contents)
-        .map_err(|error| format!("Could not write selected {purpose} file: {error}"))?;
+    validate_user_selected_json_write_selection(&selection)
+        .map_err(|error| error.write_message(purpose))?;
+
+    let write_target = selection.clone();
+    let read_target = selection;
+    let mut write_options = OpenOptions::new();
+    write_options.write(true).truncate(true).create(true);
+    persist_and_verify_json(
+        &contents,
+        purpose,
+        || app.fs().open(write_target, write_options),
+        || {
+            let mut read_options = OpenOptions::new();
+            read_options.read(true);
+            let mut file = app.fs().open(read_target, read_options)?;
+            let mut verified = String::new();
+            file.read_to_string(&mut verified)?;
+            Ok(verified)
+        },
+    )?;
     Ok(true)
 }
 
@@ -124,16 +143,14 @@ fn pick_user_selected_json_save_path(
     app: &AppHandle,
     title: &str,
     default_file_name: String,
-) -> Result<Option<PathBuf>, String> {
-    app.dialog()
+) -> Result<Option<FilePath>, String> {
+    Ok(app
+        .dialog()
         .file()
         .set_title(title)
         .set_file_name(default_file_name)
         .add_filter(JSON_FILTER_NAME, &[JSON_EXTENSION])
-        .blocking_save_file()
-        .map(selected_file_path_to_local_path)
-        .transpose()
-        .map_err(|error| error.write_message("JSON file"))
+        .blocking_save_file())
 }
 
 fn selected_file_path_to_local_path(selection: FilePath) -> Result<PathBuf, JsonFilePathError> {
@@ -149,6 +166,27 @@ fn selected_file_path_to_local_path(selection: FilePath) -> Result<PathBuf, Json
         Ok(path)
     } else {
         Err(JsonFilePathError::NonLocalFileSelection)
+    }
+}
+
+fn validate_user_selected_json_write_selection(
+    selection: &FilePath,
+) -> Result<(), JsonFilePathError> {
+    validate_user_selected_json_write_selection_for_platform(selection, cfg!(target_os = "android"))
+}
+
+fn validate_user_selected_json_write_selection_for_platform(
+    selection: &FilePath,
+    allow_android_content: bool,
+) -> Result<(), JsonFilePathError> {
+    match selection {
+        FilePath::Url(url) if url.scheme() == "content" && allow_android_content => Ok(()),
+        FilePath::Url(url) if url.scheme() != "file" => {
+            Err(JsonFilePathError::NonLocalFileSelection)
+        }
+        _ => validate_user_selected_json_write_path(&selected_file_path_to_local_path(
+            selection.clone(),
+        )?),
     }
 }
 
@@ -217,7 +255,44 @@ fn validate_json_extension(path: &Path) -> Result<(), JsonFilePathError> {
 fn validate_json_contents(contents: &str, purpose: &str) -> Result<(), String> {
     serde_json::from_str::<serde_json::Value>(contents)
         .map(|_| ())
-        .map_err(|error| format!("Selected {purpose} contents are not valid JSON: {error}"))
+        .map_err(|_| format!("Selected {purpose} contents are not valid JSON."))
+}
+
+trait SyncWrite: Write {
+    fn sync_all(&self) -> io::Result<()>;
+}
+
+impl SyncWrite for fs::File {
+    fn sync_all(&self) -> io::Result<()> {
+        fs::File::sync_all(self)
+    }
+}
+
+fn persist_and_verify_json<W: SyncWrite>(
+    contents: &str,
+    purpose: &str,
+    open_writer: impl FnOnce() -> io::Result<W>,
+    read_back: impl FnOnce() -> io::Result<String>,
+) -> Result<(), String> {
+    let mut writer =
+        open_writer().map_err(|_| format!("Could not write selected {purpose} file."))?;
+    writer
+        .write_all(contents.as_bytes())
+        .map_err(|_| format!("Could not write selected {purpose} file."))?;
+    writer
+        .flush()
+        .and_then(|_| writer.sync_all())
+        .map_err(|_| format!("Could not finish writing selected {purpose} file."))?;
+    drop(writer);
+
+    let verified = read_back().map_err(|_| format!("Could not verify selected {purpose} file."))?;
+    if verified.is_empty()
+        || verified != contents
+        || serde_json::from_str::<serde_json::Value>(&verified).is_err()
+    {
+        return Err(format!("Selected {purpose} file could not be verified."));
+    }
+    Ok(())
 }
 
 fn sanitized_json_file_name(default_file_name: &str, fallback_file_name: &str) -> String {
@@ -276,6 +351,49 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[derive(Default)]
+    struct TestWriter {
+        fail_write: bool,
+        fail_flush: bool,
+        fail_sync: bool,
+    }
+
+    impl Write for TestWriter {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            if self.fail_write {
+                Err(io::Error::other("private write detail"))
+            } else {
+                Ok(buffer.len())
+            }
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            if self.fail_flush {
+                Err(io::Error::other("private flush detail"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl SyncWrite for TestWriter {
+        fn sync_all(&self) -> io::Result<()> {
+            if self.fail_sync {
+                Err(io::Error::other("private sync detail"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn persist_test_json(
+        contents: &str,
+        writer: TestWriter,
+        read_back: io::Result<String>,
+    ) -> Result<(), String> {
+        persist_and_verify_json(contents, "sync evidence", || Ok(writer), || read_back)
     }
 
     #[test]
@@ -406,5 +524,120 @@ mod tests {
         File::create(&path).expect("create file fixture");
 
         assert_eq!(validate_user_selected_json_write_path(&path), Ok(()));
+    }
+
+    #[test]
+    fn write_selection_accepts_content_uri_only_for_android_policy() {
+        let selection = serde_json::from_str::<FilePath>(
+            "\"content://com.example.documents/document/sync-evidence\"",
+        )
+        .expect("parse content URI");
+
+        assert_eq!(
+            validate_user_selected_json_write_selection_for_platform(&selection, true),
+            Ok(())
+        );
+        assert_eq!(
+            validate_user_selected_json_write_selection_for_platform(&selection, false),
+            Err(JsonFilePathError::NonLocalFileSelection)
+        );
+    }
+
+    #[test]
+    fn write_selection_rejects_other_remote_schemes() {
+        let selection = serde_json::from_str::<FilePath>("\"https://example.test/evidence.json\"")
+            .expect("parse remote URL");
+
+        assert_eq!(
+            validate_user_selected_json_write_selection_for_platform(&selection, true),
+            Err(JsonFilePathError::NonLocalFileSelection)
+        );
+    }
+
+    #[test]
+    fn persistence_requires_exact_valid_readback() {
+        let contents = "{\"privacySafe\":true}";
+
+        assert_eq!(
+            persist_test_json(contents, TestWriter::default(), Ok(contents.to_string())),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn persistence_rejects_write_failure_without_private_detail() {
+        let result = persist_test_json(
+            "{}",
+            TestWriter {
+                fail_write: true,
+                ..Default::default()
+            },
+            Ok("{}".to_string()),
+        );
+
+        assert_eq!(
+            result,
+            Err("Could not write selected sync evidence file.".to_string())
+        );
+    }
+
+    #[test]
+    fn persistence_rejects_flush_and_sync_failures() {
+        let flush_result = persist_test_json(
+            "{}",
+            TestWriter {
+                fail_flush: true,
+                ..Default::default()
+            },
+            Ok("{}".to_string()),
+        );
+        let sync_result = persist_test_json(
+            "{}",
+            TestWriter {
+                fail_sync: true,
+                ..Default::default()
+            },
+            Ok("{}".to_string()),
+        );
+
+        let expected = Err("Could not finish writing selected sync evidence file.".to_string());
+        assert_eq!(flush_result, expected);
+        assert_eq!(sync_result, expected);
+    }
+
+    #[test]
+    fn persistence_rejects_reopen_failure_without_private_detail() {
+        let result = persist_test_json(
+            "{}",
+            TestWriter::default(),
+            Err(io::Error::other("private provider detail")),
+        );
+
+        assert_eq!(
+            result,
+            Err("Could not verify selected sync evidence file.".to_string())
+        );
+    }
+
+    #[test]
+    fn persistence_rejects_empty_malformed_and_mismatched_readback() {
+        let expected = Err("Selected sync evidence file could not be verified.".to_string());
+
+        assert_eq!(
+            persist_test_json("{}", TestWriter::default(), Ok(String::new())),
+            expected
+        );
+        assert_eq!(
+            persist_test_json("{}", TestWriter::default(), Ok("not json".to_string())),
+            expected
+        );
+        assert_eq!(
+            persist_test_json(
+                "{}",
+                TestWriter::default(),
+                Ok("{\"other\":true}".to_string())
+            ),
+            expected
+        );
     }
 }

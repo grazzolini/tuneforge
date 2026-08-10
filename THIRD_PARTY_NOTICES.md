@@ -118,6 +118,12 @@ This file is the source of truth for dependency and model-weight distribution po
 - **Source:** <https://github.com/tauri-apps/plugins-workspace>
 - **Notes:** Used by the Android-only QR pairing scanner. The desktop shell does not enable the barcode scanner plugin.
 
+### Tauri clipboard manager plugin
+
+- **License:** MIT OR Apache-2.0
+- **Source:** <https://github.com/tauri-apps/plugins-workspace>
+- **Notes:** Used to write explicit user-requested pairing material and privacy-safe sync evidence as plain text to the system clipboard.
+
 ### TuneForge LAN sync transport Rust crates
 
 - **License:** Apache-2.0 / MIT for `snow`, `base64`, `rand`, `sha2`, and the RustCrypto AEAD/hash stack; BSD-3-Clause for `ed25519-dalek` and `curve25519-dalek`; MIT / BSD-3-Clause for `if-addrs`.

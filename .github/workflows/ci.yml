@@ -195,7 +195,7 @@ jobs:
           node-version: "22"
 
       - name: Test deterministic Node scripts
-        run: node --test scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/playback-smoke.test.mjs scripts/sync-validation.test.mjs scripts/release-license-inventory.test.mjs scripts/capture-release-media.test.mjs
+        run: node --test scripts/build-info.test.mjs scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/playback-smoke.test.mjs scripts/sync-validation.test.mjs scripts/release-license-inventory.test.mjs scripts/capture-release-media.test.mjs
 
       - name: Check release script syntax
         run: |

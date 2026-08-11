@@ -140,7 +140,7 @@ Important fields:
 
 Returns backend name, legacy backend git ref in `version`, backend/frontend package versions and git refs, status,
 API base URL, data root, default export format, and preview format. Build git refs use the packaged build
-metadata when available, otherwise local development resolves them with `git describe --tags --long --dirty --always`.
+metadata when available, otherwise local development resolves them with `git describe --tags --long --dirty --always --abbrev=8`.
 
 ## Beat Backends
 

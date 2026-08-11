@@ -215,6 +215,7 @@ Validation failures return `INVALID_REQUEST` with serialized validation details.
 - Native desktop tempo playback uses `signalsmith-stretch` for pitch preservation.
 - Native desktop playback decodes local files through a WAV fast path or Symphonia. FFmpeg remains a host dependency for transform/export work.
 - Native audio development notes live in [NATIVE_AUDIO.md](NATIVE_AUDIO.md).
+- Cross-platform wake, sleep, and power-inhibition behavior lives in [POWER_PROTECTION.md](POWER_PROTECTION.md).
 - Desktop system microphone volume control uses CoreAudio on macOS, or host `wpctl`/`pactl` tools on Linux with an active PipeWire/PulseAudio session.
 - Advanced Chords and Advanced Beat Analysis are default desktop/dev/package engines. Packaged builds must treat crema, its bundled chord model files, TensorFlow/Keras, h5py/HDF5, gRPC/Protobuf, TensorBoard, beat-this, and its runtime dependencies as default-runtime notice scope. Built-in chord and beat engines remain fallback paths when advanced dependencies are unavailable, unsupported, or explicitly excluded.
 - Demucs and lyrics models follow first-use local download/cache behavior.

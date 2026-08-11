@@ -36,7 +36,9 @@ falls back to `getUserMedia` after a capability, permission, startup, or stream 
 `VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` development override remains an explicit all-Web mode for both
 tuner capture and playback.
 
-Playback owns media-key controls, while playback and tuner capture share counted power protection:
+Playback owns media-key controls, while playback and tuner capture participate in TuneForge's
+shared power-protection model. See [POWER_PROTECTION.md](./POWER_PROTECTION.md) for the
+cross-platform owner, backend, diagnostic, and validation rules.
 
 - TuneForge registers one desktop system-media adapter with the OS for media keys and headset
   controls. That adapter does not choose the audio engine; it routes play/pause/stop/seek events to
@@ -182,11 +184,8 @@ BlackHole capture are release checks, not default `pnpm test` coverage.
 | Native runtime fallback ownership | system state/inhibition clear before Web Audio starts at fallback position, then system controls route to Web Audio | same | not applicable; web owns controls from start |
 | Fallback + no output device | falls back (or errors and recovers) without crash when no native output exists | same | same |
 
-For manual Linux inhibition validation, record distro, desktop/session, and package type. Start
-confirmed native playback and verify TuneForge appears in the desktop inhibitor detector. Pause,
-stop, natural end, playback failure, fallback, and app exit must each clear it. Repeat one
-start/stop cycle to detect a leaked handle. Settings diagnostics must name the same live backend
-(`xdg-desktop-portal` or `systemd-logind`) and return to `Inactive` after release.
+For manual Linux, macOS, Android, and browser power validation, use the owner-specific evidence and
+release checks in [POWER_PROTECTION.md](./POWER_PROTECTION.md#validation).
 
 ## Local-only Playwright Smoke Harness
 

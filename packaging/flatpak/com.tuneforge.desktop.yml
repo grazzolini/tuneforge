@@ -19,6 +19,7 @@ finish-args:
   - --filesystem=xdg-cache/whisper:create
   - --talk-name=org.freedesktop.portal.Desktop
   - --talk-name=org.freedesktop.portal.Documents
+  - --system-talk-name=org.freedesktop.login1
   - --env=TUNEFORGE_BUNDLED_BACKEND_ROOT=/app/lib/tuneforge/backend
   - --env=TUNEFORGE_DATA_DIR=~/.local/share/tuneforge
   - --env=TUNEFORGE_FFMPEG_PATH=/app/bin/ffmpeg

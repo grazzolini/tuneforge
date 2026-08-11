@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { buildModelBundlePlan } from "./model-bundle-metadata.mjs";
+
+const flatpakManifest = readFileSync(
+  new URL("../packaging/flatpak/com.tuneforge.desktop.yml", import.meta.url),
+  "utf8",
+);
 
 const demucsManifest = {
   rootUrl: "https://example.invalid/models/",
@@ -53,4 +59,8 @@ test("model bundle plan includes beat-this only when requested", () => {
     withBeatThis.sources.some((source) => source["dest-filename"] === "beat_this-small0.ckpt"),
     true,
   );
+});
+
+test("Flatpak manifest allows the logind inhibition fallback", () => {
+  assert.match(flatpakManifest, /^\s+- --system-talk-name=org\.freedesktop\.login1$/m);
 });

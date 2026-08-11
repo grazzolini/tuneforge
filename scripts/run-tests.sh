@@ -5,6 +5,15 @@ repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 total_start=${SECONDS}
 
+printf '\n[tests] Starting build info tests\n\n'
+build_info_start=${SECONDS}
+(
+  cd "${repo_root}"
+  node --test scripts/build-info.test.mjs
+)
+build_info_elapsed=$((SECONDS - build_info_start))
+printf '\n[tests] Build info tests finished in %ss\n' "${build_info_elapsed}"
+
 printf '\n[tests] Starting desktop tests\n\n'
 desktop_start=${SECONDS}
 (

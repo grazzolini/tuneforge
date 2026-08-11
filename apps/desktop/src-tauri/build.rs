@@ -12,7 +12,14 @@ fn git_ref() -> Option<String> {
         .filter(|value| !value.trim().is_empty())
         .or_else(|| {
             std::process::Command::new("git")
-                .args(["describe", "--tags", "--long", "--dirty", "--always"])
+                .args([
+                    "describe",
+                    "--tags",
+                    "--long",
+                    "--dirty",
+                    "--always",
+                    "--abbrev=8",
+                ])
                 .output()
                 .ok()
                 .filter(|output| output.status.success())

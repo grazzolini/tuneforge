@@ -59,7 +59,7 @@ function resolveGitRef(workspaceRoot) {
   }
 
   try {
-    return execFileSync("git", ["describe", "--tags", "--long", "--dirty", "--always"], {
+    return execFileSync("git", ["describe", "--tags", "--long", "--dirty", "--always", "--abbrev=8"], {
       cwd: workspaceRoot,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],

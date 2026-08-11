@@ -116,7 +116,7 @@ def _git_ref(workspace_root: Path | None) -> str:
         return UNKNOWN_VERSION
     try:
         return subprocess.run(
-            ["git", "describe", "--tags", "--long", "--dirty", "--always"],
+            ["git", "describe", "--tags", "--long", "--dirty", "--always", "--abbrev=8"],
             cwd=workspace_root,
             check=True,
             capture_output=True,

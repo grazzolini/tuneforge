@@ -76,5 +76,7 @@ data/
 *.key
 *.p12
 *.pfx
+*.jks
+*.keystore
 *.cer
 *.crt

@@ -132,24 +132,34 @@ transfer, recovery, or conflict states rather than where the data originated.
 Use the root commands to build Android APKs without opening Android Studio:
 
 ```sh
+pnpm package:android:prepare
 pnpm package:android:debug
 pnpm package:android
+pnpm package:android:release
 ```
 
-Packaging discovers a fresh JDK 17, Android SDK, and compatible installed NDK; checks the required
-Android, Rust, and Tauri tools; initializes an absent generated target noninteractively; rejects
-partial generated state; then runs the existing icon and preparation helpers. It requires the
-existing `~/.android/debug.keystore` and never creates signing credentials.
+Run `pnpm package:android:prepare` before the build commands. It validates the JDK 17, Android SDK,
+compatible NDK, Rust target, and Tauri tools; initializes an absent target; generates icons; and
+applies TuneForge's generated Android preparation. Build commands fail when that prepared state is
+absent or incomplete and never initialize or prepare it themselves.
 
 `pnpm package:android` produces an optimized local release-profile APK, debug-key signed.
-`pnpm package:android:debug` produces the corresponding debug APK:
+`pnpm package:android:debug` produces the corresponding debug APK. These local outputs remain under
+the generated Android project:
 
 - Debug: `apps/desktop/src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`
 - Release: `apps/desktop/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk`
 
 Packaging verifies the exact Gradle variant metadata and output path, a successful `apksigner`
-check, the expected debuggable state, and a non-empty release mapping. The release-profile APK is
-not for store publication. Packaging never installs or launches the app.
+check, the expected debuggable state, and a non-empty release mapping. The local release-profile APK
+is not the direct-distribution artifact.
+
+`pnpm package:android:release` builds the direct GitHub Release APK with TuneForge's stable signing
+identity. It requires the five environment
+variables documented in [Packaging](PACKAGING.md#android), verifies the PKCS12 file, private-key alias,
+passwords, expected certificate fingerprint, signer count, and manifest version, then atomically
+writes `apps/desktop/src-tauri/target/release/bundle/apk/TuneForge_<version>_android_aarch64_publishable.apk`.
+Packaging never installs, launches, uploads, tags, or publishes the app.
 
 Project playback prefers the native `android-aaudio` path. Web Audio is an automatic disclosed
 fallback after native failure or a build-time development override; it is not a mobile setting.
@@ -212,8 +222,8 @@ protection without changing capture or work state. Android 15 `dataSync` timeout
 failure and clears the transfer reason while preserving other owners; it is never shown as a
 completed transfer.
 
-`pnpm --filter @tuneforge/desktop android:prepare` updates the generated Android target before a
-build. It keeps these manifest permissions present:
+`pnpm package:android:prepare` updates the generated Android target before a build. It keeps these
+manifest permissions present:
 
 - `android.permission.INTERNET` for same-LAN TCP/QUIC/UDP sync sockets.
 - `android.permission.RECORD_AUDIO` and `android.permission.MODIFY_AUDIO_SETTINGS` for mobile audio

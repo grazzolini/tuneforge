@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "build": "tsc && vite build",
-    "android:prepare": "bash ../../scripts/android-prepare-generated.sh",
+    "android:prepare": "node ../../scripts/package-android.mjs --prepare",
     "android:icons": "tauri icon --output src-tauri/target/android-icons src-tauri/icons/icon.png",
     "android:build": "node ../../scripts/package-android.mjs",
     "android:build:debug": "node ../../scripts/package-android.mjs --debug",
+    "android:build:release": "node ../../scripts/package-android.mjs --publishable",
     "android:studio": "bash ../../scripts/android-arm64-env.sh tauri android dev --open",
     "dev": "vite",
     "lint": "eslint .",

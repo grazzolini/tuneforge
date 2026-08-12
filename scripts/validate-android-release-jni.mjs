@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -129,27 +129,36 @@ function parseDexXml(xml) {
   return targets;
 }
 
-export function validateReleaseJni({ root = workspaceRoot, run = runCommand } = {}) {
+export function validateReleaseJni({ root = workspaceRoot, run = runCommand, apk, sdkRoot,
+  env = process.env } = {}) {
   const rules = parseJniRules(readFileSync(path.join(root, "apps/desktop/src-tauri/proguard-tuneforge.pro"), "utf8"));
-  const apk = resolveReleaseArtifact(path.join(root, "apps/desktop/src-tauri/gen/android/app/build/outputs/apk/universal/release/output-metadata.json"));
-  const sdkRoot = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT || path.join(os.homedir(), "Library/Android/sdk");
-  const tools = selectAndroidTools(sdkRoot);
-  const badging = run(tools.aapt2, ["dump", "badging", apk]);
+  const artifact = apk ? path.resolve(apk) : resolveReleaseArtifact(path.join(root,
+    "apps/desktop/src-tauri/gen/android/app/build/outputs/apk/universal/release/output-metadata.json"));
+  if (!statSync(artifact, { throwIfNoEntry: false })?.isFile()) throw new Error("Release APK is missing or not a regular file.");
+  const tools = selectAndroidTools(sdkRoot || env.ANDROID_HOME || env.ANDROID_SDK_ROOT ||
+    path.join(os.homedir(), "Library/Android/sdk"));
+  const badging = run(tools.aapt2, ["dump", "badging", artifact]);
   if (/application-debuggable/.test(badging) || !/native-code:.*'arm64-v8a'/.test(badging)) {
     throw new Error("Release APK must be non-debuggable and contain arm64-v8a native code.");
   }
-  run(tools.apksigner, ["verify", "--verbose", apk]);
+  run(tools.apksigner, ["verify", "--verbose", artifact]);
   let tempDir;
   try {
-    const dexFiles = run("unzip", ["-Z1", apk]).split("\n").filter((file) => /^classes\d*\.dex$/.test(file)).sort(compareDexNames);
+    const dexFiles = run("unzip", ["-Z1", artifact]).split("\n").filter((file) => /^classes\d*\.dex$/.test(file)).sort(compareDexNames);
     if (!dexFiles.length) throw new Error("Release APK contains no classes*.dex files.");
     tempDir = mkdtempSync(path.join(os.tmpdir(), "tuneforge-jni-dex-"));
-    run("unzip", ["-qq", apk, ...dexFiles, "-d", tempDir]);
+    run("unzip", ["-qq", artifact, ...dexFiles, "-d", tempDir]);
     const xmlDocuments = dexFiles.map((file) => run(tools.dexdump, ["-l", "xml", path.join(tempDir, file)]));
     assertDexMethods(xmlDocuments, rules);
   } finally {
     if (tempDir) rmSync(tempDir, { recursive: true, force: true });
   }
+}
+
+export function parseCli(argv) {
+  if (argv.length === 0) return {};
+  if (argv.length === 2 && argv[0] === "--apk" && argv[1]) return { apk: argv[1] };
+  throw new Error("Usage: validate-android-release-jni.mjs [--apk <path>]");
 }
 
 function javaDescriptor(type) {
@@ -182,7 +191,7 @@ function runCommand(command, args) {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
-    validateReleaseJni();
+    validateReleaseJni(parseCli(process.argv.slice(2)));
     console.log("Android release JNI validation passed.");
   } catch (error) {
     console.error(`Android release JNI validation failed: ${error.message}`);

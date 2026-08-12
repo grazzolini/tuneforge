@@ -3,7 +3,8 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { assertDexMethods, parseJniRules, resolveReleaseArtifact, selectAndroidTools } from "./validate-android-release-jni.mjs";
+import { assertDexMethods, parseCli, parseJniRules, resolveReleaseArtifact, selectAndroidTools,
+  validateReleaseJni } from "./validate-android-release-jni.mjs";
 
 const rules = `-keepclassmembers class com.tuneforge.desktop.MainActivity {
     public java.lang.String setTuneForgePowerInhibition(int);
@@ -36,6 +37,32 @@ test("accepts only one safe universal release APK output", () => {
   assert.equal(resolveReleaseArtifact(metadata), apk);
   writeFileSync(metadata, JSON.stringify({ artifactType: { type: "APK" }, variantName: "universalRelease", elements: [{ type: "SINGLE", filters: [], outputFile: "../unsafe.apk" }] }));
   assert.throws(() => resolveReleaseArtifact(metadata), /unsafe/);
+});
+
+test("validates an explicit APK, falls through empty SDK values, and rejects invalid CLI forms", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "tuneforge-jni-explicit-"));
+  const rulesPath = path.join(root, "apps/desktop/src-tauri/proguard-tuneforge.pro");
+  mkdirSync(path.dirname(rulesPath), { recursive: true }); writeFileSync(rulesPath, rules);
+  const apk = path.join(root, "staged.apk"); writeFileSync(apk, "apk");
+  const sdkRoot = path.join(root, "sdk");
+  for (const tool of ["aapt2", "apksigner", "dexdump"]) {
+    const candidate = path.join(sdkRoot, "build-tools/36.0.0", tool);
+    mkdirSync(path.dirname(candidate), { recursive: true }); writeFileSync(candidate, "");
+  }
+  const calls = [];
+  validateReleaseJni({ root, apk, sdkRoot: "", env: { ANDROID_HOME: "", ANDROID_SDK_ROOT: sdkRoot },
+    run: (command, args) => {
+      calls.push([command, args]);
+      if (command.endsWith("aapt2")) return "native-code: 'arm64-v8a'";
+      if (command === "unzip" && args[0] === "-Z1") return "classes.dex";
+      if (command.endsWith("dexdump")) return dexXml(parseJniRules(rules));
+      return "";
+    },
+  });
+  assert.equal(calls.filter(([, args]) => args.includes(apk)).length, 4);
+  assert.deepEqual(parseCli(["--apk", apk]), { apk });
+  for (const argv of [["--apk"], ["--other", apk], ["--apk", apk, "extra"]]) assert.throws(() => parseCli(argv), /Usage/);
+  assert.throws(() => validateReleaseJni({ root, apk: path.join(root, "missing.apk"), sdkRoot }), /missing/);
 });
 
 test("selects highest complete Android build-tools version", () => {

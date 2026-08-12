@@ -507,10 +507,6 @@ jobs:
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Skip desktop checks
-        if: needs.ci-scope.outputs.desktop != 'true'
-        run: echo "No desktop or contract paths changed; skipping desktop frontend setup."
-
       - name: Set up pnpm
         if: needs.ci-scope.outputs.desktop == 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
@@ -582,6 +578,8 @@ jobs:
     needs: ci-scope
     if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.desktop == 'true') }}
     runs-on: ubuntu-latest
+    env:
+      RUST_VERSION: "1.97.1"
     steps:
       - name: Require CI scope
         if: needs.ci-scope.result != 'success'
@@ -592,15 +590,23 @@ jobs:
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Skip Tauri shell checks
-        if: needs.ci-scope.outputs.desktop != 'true'
-        run: echo "No desktop or contract paths changed; skipping Tauri shell setup."
-
       - name: Set up Rust
         if: needs.ci-scope.outputs.desktop == 'true'
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install "${RUST_VERSION}" --profile minimal
+          rustup default "${RUST_VERSION}"
+
+      - name: Cache Cargo dependencies and build output
+        if: needs.ci-scope.outputs.desktop == 'true'
+        continue-on-error: true
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/src-tauri/target
+            !apps/desktop/src-tauri/target/debug/incremental
+          key: cargo-v1-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_VERSION }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock', 'apps/desktop/src-tauri/Cargo.toml') }}
 
       - name: Install Tauri system dependencies
         if: needs.ci-scope.outputs.desktop == 'true'

@@ -1,183 +1,136 @@
 ---
 name: coordinate-tuneforge-work
-description: Coordinate bounded TuneForge implementation or evidence-based research without editing in the coordinator. Use for selecting the next issue from a canonical release-plan tracker, delivering a known issue, or carrying an ad hoc change or research question through scoped delegation, proportionate validation and review, single-versus-stacked PR planning when code changes are authorized, and one bounded remediation cycle; never create or update GitHub planning state unless requested, and require separate publication authority.
+description: Plan-first coordination for bounded TuneForge implementation or evidence-based research with local delivery by default. Use when selecting milestone work from a release-plan tracker, planning a known issue or ad hoc change, exploring a bug, or coordinating approved local execution, validation, and review; choose normal versus stacked delivery when relevant and publish only with later explicit authority.
 ---
 
 # Coordinate TuneForge Work
 
-Keep this chat coordinator-only and delegate work. Never alter
-installed-app data or start, stop, restart, or wipe a user-owned desktop app.
-Do not create a branch, commit, push, open a PR, or merge unless the user grants
-the corresponding authority.
+Keep this chat coordinator-only and delegate work. Never alter installed-app
+data or start, stop, restart, or wipe a user-owned desktop app.
 
-Read [prompt-examples.md](references/prompt-examples.md) when the user asks for
-a copyable invocation or a Plan-to-Goal workflow.
+## Lifecycle Contract
 
-## Select Entry Mode and Work Kind
+Use Plan-first as the core lifecycle:
 
-Classify the request before preflight:
+1. Without an approved plan, perform read-only preflight and produce a
+   decision-complete plan only.
+2. After plan approval and explicit local execution authority, implement,
+   validate, review, and remediate locally.
+3. Stop before publication unless the user later explicitly authorizes it.
+
+Collaboration mode selection and transitions are user-owned. Never invoke
+`/plan` or `/goal`, change modes, or create or expand a Goal. A Goal is
+optional and does not broaden execution or publication authority.
+
+Read [prompt-examples.md](references/prompt-examples.md) for initial
+Plan-first invocations and user-owned post-plan paths.
+
+## Select Work Scope and Kind
+
+Classify the **Work Scope** before preflight. Work Scope describes the source
+of work; it is not a Codex collaboration mode.
 
 - **Milestone:** Read the live milestone and its canonical `release-plan`
   tracker, then select the first open linked issue under `## Ordered work`.
-- **Known issue:** Deliver the specified issue whether or not it has a
-  milestone. Do not substitute a different issue.
-- **Ad hoc:** Build a local brief with outcome, evidence, assumptions,
-  acceptance criteria, and non-goals. Search live issues and PRs for overlap,
-  but do not require or create an issue unless requested.
+- **Known issue:** Use the specified issue whether or not it has a milestone;
+  never substitute another issue.
+- **Ad hoc:** Build a brief with outcome, evidence, assumptions, acceptance
+  criteria, and non-goals. Search live issues and PRs for overlap, but do not
+  require or create an issue unless requested.
 
-Identify the work item as an issue number or `ad hoc: <short label>`.
+Identify the work as an issue number or `ad hoc: <short label>`, then classify
+it as **implementation** or **research**. Implementation retains product code.
+Research produces evidence and a recommendation; its product-code envelope is
+zero. A research spike must be explicitly authorized, bounded, and disposable.
+Reclassify and re-plan before retaining product code.
 
-After selecting it, classify **implementation** or **research**. Implementation
-delivers or retains product code. Research produces evidence and a
-recommendation; its product-code envelope is zero. Research may use only an
-explicitly authorized bounded, disposable spike or report artifact; never
-retain or publish spike output as product code. If it should remain product
-code, reclassify as implementation and re-plan before editing.
+For a milestone, require exactly one open `release-plan` tracker. Parse links
+under `## Ordered work` in order and select the first still-open linked issue,
+excluding the tracker. If none remain, report refinement or release-handoff
+readiness. If a legacy milestone lacks a tracker, use explicit issue-body order
+and report that it has not adopted the canonical format.
 
-### Read Canonical Milestone Order
+## Read-Only Preflight and Plan
 
-1. Fetch the milestone, open issues, and relevant PRs live.
-2. Find the open issue labeled `release-plan` assigned to that milestone.
-3. Require exactly one tracker. If more than one exists, stop for refinement.
-4. Parse issue links under the tracker's `## Ordered work` heading in document
-   order. Select the first linked issue that is still open; do not select the
-   tracker itself.
-5. If no linked issue remains open, report that the milestone is ready for
-   refinement or release handoff. Do not invent work or publish a release.
+Before an approved plan, read applicable `AGENTS.md` files; inspect worktree
+dirt, branch, and fresh `origin/main` relationship; run the scope's live issue
+and PR checks; and classify affected surfaces and risks. Preserve user changes;
+do not update or rebase without authority.
 
-If a legacy milestone has no `release-plan` tracker, use its explicit issue-body
-ordering and report that the milestone has not adopted the canonical tracker
-format. A tracker always overrides legacy ordering.
+Produce a decision-complete plan containing:
 
-## Preflight
-
-Before confirming a work item or spawning an agent:
-
-1. Read every applicable `AGENTS.md` and scoped instruction file.
-2. Verify worktree dirt, branch, and relationship to freshly fetched
-   `origin/main`. Preserve user changes. Update or rebase only with authority
-   and a safe worktree.
-3. Run the selected entry mode's live issue and PR checks.
-4. Classify affected surfaces and risk: UI, contracts, Android runtime,
-   sync/transport, manual or hardware validation, privacy/security/data loss,
-   migration/transaction/concurrency, and cross-layer architecture.
-5. State either an implementation envelope (owned modules, production file and
-   line bounds, allowed interfaces, non-goals, lanes, delivery shape) or a
-   research evidence envelope (question, sources or datasets, non-goals,
-   lanes, report target), plus worker model and effort.
-
-Skill preflight is independent of Codex mode. In Plan mode, stop after
-preflight and plan. In Goal mode, bind work to exactly one selected item and
-the authorized publication boundary; never auto-advance a release-plan item or
-create or expand a goal implicitly.
+- selected item, work kind, outcome, non-goals, and acceptance evidence;
+- implementation envelope (modules, interfaces, line/file bounds) or research
+  evidence envelope (question, sources, method, report target);
+- normal-versus-stack decision, worker ownership/model/effort, validation lanes,
+  review plan, and explicit stop boundary;
+- assumptions, risks, and the exact authority still needed.
 
 Read [validation-lanes.md](references/validation-lanes.md) before selecting
 lanes or reporting evidence.
 
-## Research Workflow
+## Local Execution After Approval
 
-For research, define question, method and evidence matrix, fixtures or
-datasets, legal/licensing constraints, environment or hardware baseline,
-timebox, report target, and recommendation criteria before delegation. A
-negative or defer conclusion completes the work when evidence supports it.
-Do not require a PR or stack when no repository change is authorized. GitHub
-publication or issue closure still requires explicit authority.
+Only after the user approves the plan and explicitly requests local execution,
+delegate bounded implementation or research. Give workers the outcome,
+non-goals, owned files or evidence, envelope, current evidence, validation
+method, and stop-on-expansion instruction. Keep the coordinator out of edits.
 
-## Choose One PR or a Stack
+Use one implementation or research worker by default. Use at most two only when
+responsibilities and owned files or evidence streams are independent; assign
+clear ownership. Use one implementation worker across dependent stack layers.
 
-Apply this section when work includes repository changes; publication authority
-still governs branches, commits, pushes, and PRs.
+Select model and effort explicitly: Terra Medium for exploration; Terra High
+for bounded implementation; Sol High for ambiguity, cross-layer architecture,
+sync/concurrency, transactions, migrations, privacy/security/data-loss risk, or
+ambiguous test failures. Use the contract guard only at an actual contract
+boundary and Product Design only for UI work.
 
-Use a normal single PR by default.
+For implementation, treat production source as the scope tripwire, excluding
+tests, generated files, and lockfiles. Stop and re-plan if work reaches an
+unplanned module or interface, or production file count or changed lines exceed
+twice the declared envelope. Do not expand into broad cleanup, speculative
+hardening, or adjacent feature work. For research, define method, evidence
+matrix, fixtures/datasets, licensing constraints, baseline, timebox, report
+target, and recommendation criteria. A negative or defer conclusion can
+complete research. Never retain research product code without reclassification
+and a new approved plan. Research follows the same Plan-first contract and
+remains unpublished by default.
 
-Choose a stack only when a large feature or rewrite has all of these traits:
+## Delivery Shape and Publication Boundary
 
-- two to four dependency-ordered layers;
-- each layer is independently reviewable and keeps the repository usable;
-- later layers genuinely depend on earlier layers;
-- separating layers materially improves review.
+Use one normal PR by default. Choose a stack only for two to four genuinely
+dependent, independently reviewable layers that keep the repository usable and
+materially improve review. Independent changes are not a stack.
 
-Order stack layers foundations or contracts first, services and orchestration
-next, and UI or end-to-end integration last. Independent changes are not a
-stack; use one PR or separately deliverable PRs instead. Keep stacks small
-because repository rules and CI apply to every layer.
+If a true stack is required, stop after the plan until explicit stack
+publication authority covers branch creation or switching, signed commits,
+pushes, and draft PRs. A stack needs its layer branches and signed commits;
+never create a partial local stack. Read
+[stacked-prs.md](references/stacked-prs.md) before stack publication.
 
-Before starting stacked implementation, obtain explicit authority for all four
-actions: create or switch branches, create signed commits, push branches, and
-open draft PRs. If any authority is missing, stop after presenting the proposed
-layers and validation plan. Do not create a partial local stack.
+For normal work, also stop before branch creation, commit, push, PR or issue
+updates, or merge by default. A later explicit request such as “Commit and
+publish the completed work as a draft PR. Do not merge.” authorizes the required
+branch, signed-commit, push, and draft-PR actions. It never authorizes merge;
+merge needs a separate instruction.
 
-Use one implementation worker across dependent stack layers so ownership and
-rebases stay coherent. Use repository branch names and one signed commit per
-branch. Read [stacked-prs.md](references/stacked-prs.md) before creating or
-updating any stack. Never merge automatically.
+## Validate, Review, and Finish
 
-## Delegate Deliberately
+Run only applicable validation lanes and report command, result, proof boundary,
+and unverified behavior. Never treat a local validator, emulator, or mock as
+proof of live transport, external-device, or release behavior.
 
-Select model and effort explicitly before every spawn. Use one implementation
-or research worker by default. Use at most two only when responsibilities and
-files or evidence streams are independent; assign clear ownership. Keep the
-coordinator out of edits.
+Use one initial correctness review for implementation or one evidence review for
+research. Evidence review must check methodology, reproducibility, unsupported
+generalization, licensing, and evidence-to-conclusion fit. Add contract and
+Product Design review only when applicable. Route reviews to Sol High normally,
+Sol XHigh only for declared high risk, and Sol Max only for a focused unresolved
+critical dispute. Send actionable findings to the original worker for one
+remediation pass, then perform one focused re-review. Stop on unresolved
+critical findings.
 
-- Use `gpt-5.6-terra` at Medium for exploration and read-heavy investigation.
-- Use `gpt-5.6-terra` at High for bounded implementation.
-- Use `gpt-5.6-sol` at High for ambiguity, cross-layer architecture,
-  sync/concurrency, transactions, migrations, privacy/security/data-loss risk,
-  or ambiguous test failures.
-- Use Product Design on Sol High only for UI or user-facing work: produce a
-  concise brief before implementation and final UX QA afterward.
-- Use `tuneforge_contract_guard` on Terra High only when a contract boundary
-  may change. Ask only for actual schema, OpenAPI, generated-type, or caller
-  drift.
-
-For UI work, put user goals, mode boundaries, truthfulness rules, screens,
-states, interaction model, and UX acceptance criteria in the worker prompt.
-Give every worker the outcome, non-goals, owned files or evidence sources,
-change envelope, current evidence, validation commands or method, delivery
-target, and an instruction to stop on scope expansion. For research, include
-the question, evidence matrix, reproducibility baseline, licensing limits,
-timebox, and recommendation criteria.
-
-## Control Growth
-
-For implementation, treat production source as the tripwire. Exclude tests,
-generated files, and lockfiles from the estimate. Stop and re-plan when either
-condition occurs:
-
-- work reaches an unplanned module or interface;
-- production file count or changed lines exceed twice the declared envelope.
-
-Do not turn findings into broad cleanup, speculative hardening, or adjacent
-feature work.
-
-For research, stop and re-plan before any product-code change. Keep an
-authorized spike bounded and disposable; reclassify and re-plan before editing
-anything intended to remain as product code.
-
-## Validate and Review
-
-Run only applicable validation lanes. Report command, result, proof boundary,
-and unverified behavior. Never present a local validator, emulator, or mock as
-proof of live transport, external-device behavior, or release behavior.
-
-Use one initial correctness review for implementation, or one evidence review
-for research covering methodology, reproducibility, unsupported generalization,
-licensing, and evidence-to-conclusion fit. Add contract and Product Design
-reviews only when their lanes apply. Route normal reviews to Sol High, declared
-high risk to Sol XHigh, and a focused unresolved critical dispute only to Sol
-Max.
-
-Require actionable correctness, evidence-quality, regression, security,
-data-loss, contract, or necessary-test findings. Send valid findings to the
-original worker for one remediation pass, then run one focused re-review of
-changed areas or evidence. For a stack, amend the owning layer and cascade the
-update through every dependent layer. Stop if a critical finding remains
-unresolved.
-
-## Finish
-
-Summarize the issue or ad hoc label, work kind, delivery or report target,
-change envelope, agents and lanes used, validation or evidence results,
-unverified boundaries, remaining risks, and worktree or stack status when
-applicable. Stop at the exact publication boundary authorized by the user.
-Never merge automatically.
+Finish with the selected scope, work kind, delivery/report target, envelope,
+agents and lanes used, validation/evidence, unverified boundaries, remaining
+risks, and local worktree or stack status. Stop at the exact authorized boundary;
+never merge automatically.

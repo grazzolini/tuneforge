@@ -1,4 +1,4 @@
 interface:
   display_name: "Coordinate TuneForge Work"
-  short_description: "Coordinate TuneForge delivery or evidence research"
-  default_prompt: "Use $coordinate-tuneforge-work to select and coordinate bounded TuneForge implementation or evidence-based research, with publication only when authorized."
+  short_description: "Plan TuneForge work for local delivery"
+  default_prompt: "Use $coordinate-tuneforge-work to prepare a Plan-first TuneForge work plan for local delivery."

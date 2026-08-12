@@ -94,6 +94,61 @@ The packaged backend checks the inherited `PATH` plus common Homebrew and MacPor
 
 By default, Demucs, Whisper, and beat-this weights are read from their normal caches and downloaded on first use if missing. Crema is the dependency-owned exception: its wheel-embedded chord model files are part of the crema package and ship when Advanced Chords is included. `--model-bundle` stages required Demucs and Whisper weights into the package, and also stages the beat-this `small0` checkpoint when beat-this dependencies are included. On startup, bundled model files seed the normal caches; runtime loaders still use cache paths, not package resource paths. `--model-bundle` does not control dependency inclusion. The flag prints a warning because Demucs pretrained-weight redistribution is unclear/restricted upstream.
 
+## Android
+
+Prepare the generated project, then choose a debug, optimized local release-profile, or stable-key
+GitHub Release APK build:
+
+```sh
+pnpm package:android:prepare
+pnpm package:android:debug
+pnpm package:android
+pnpm package:android:release
+```
+
+Preparation owns toolchain validation, conditional Tauri Android initialization, icon generation,
+and generated-project preparation. All three build commands require this state and never prepare it.
+
+The release command creates a direct GitHub Release APK. Its dedicated long-lived key provides a
+stable signing/update identity for sideloaded APKs. PKCS12 is the only supported release-key
+container format. Inputs are environment-only:
+
+- `TUNEFORGE_ANDROID_RELEASE_KEYSTORE_PATH`: absolute path to a readable regular PKCS12 file.
+- `TUNEFORGE_ANDROID_RELEASE_KEY_ALIAS`: alias containing the private signing key.
+- `TUNEFORGE_ANDROID_RELEASE_STORE_PASSWORD`: PKCS12 password.
+- `TUNEFORGE_ANDROID_RELEASE_KEY_PASSWORD`: private-key password.
+- `TUNEFORGE_ANDROID_RELEASE_EXPECTED_CERT_SHA256`: expected certificate SHA-256 fingerprint (64
+  hexadecimal characters or 32 colon-separated bytes).
+
+Supply an externally managed PKCS12 file at a private absolute path outside the repository. TuneForge does
+not manage or need to know its storage/export workflow. The operator owns any temporary-file
+lifecycle and cleanup. Enter passwords silently, export the configuration, then clear it afterward:
+
+```sh
+read -rs "TUNEFORGE_ANDROID_RELEASE_STORE_PASSWORD?Keystore password: "; export TUNEFORGE_ANDROID_RELEASE_STORE_PASSWORD; echo
+read -rs "TUNEFORGE_ANDROID_RELEASE_KEY_PASSWORD?Key password: "; export TUNEFORGE_ANDROID_RELEASE_KEY_PASSWORD; echo
+export TUNEFORGE_ANDROID_RELEASE_KEYSTORE_PATH="/absolute/private/path/tuneforge-release.p12"
+export TUNEFORGE_ANDROID_RELEASE_KEY_ALIAS="tuneforge-release"
+export TUNEFORGE_ANDROID_RELEASE_EXPECTED_CERT_SHA256="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+pnpm package:android:release
+unset TUNEFORGE_ANDROID_RELEASE_KEYSTORE_PATH TUNEFORGE_ANDROID_RELEASE_KEY_ALIAS
+unset TUNEFORGE_ANDROID_RELEASE_STORE_PASSWORD TUNEFORGE_ANDROID_RELEASE_KEY_PASSWORD
+unset TUNEFORGE_ANDROID_RELEASE_EXPECTED_CERT_SHA256
+```
+
+The script never modifies the keystore. Before building, it verifies the PKCS12/store password, alias
+certificate and DER SHA-256 fingerprint, then proves the key password/private key by signing a
+temporary empty JAR. Credential subprocess output is suppressed; secrets stay out of arguments,
+generated Gradle configuration, metadata, logs, and errors.
+
+The verified result is atomically promoted to
+`apps/desktop/src-tauri/target/release/bundle/apk/TuneForge_<version>_android_aarch64_publishable.apk`.
+Android package commands serialize access to the generated project and never auto-remove a stale
+lock. If packaging reports one, first verify no package command is active, then remove
+`apps/desktop/src-tauri/target/.tuneforge-android-package.lock` manually. A failed attempt removes
+its disposable outputs and preserves an existing versioned APK. The command does not install,
+launch, upload, tag, create a release, or publish that file.
+
 ## Linux Flatpak
 
 Build the local Flatpak package with:

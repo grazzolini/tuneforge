@@ -17,7 +17,6 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
     deleteMutation,
     detectedKey,
     enharmonicDisplayMode,
-    exportMutation,
     handleDeleteAllMixes,
     handleDeleteAllStems,
     handleDeleteProject,
@@ -469,26 +468,6 @@ export function InspectorPanel({ mode = "studio" }: { mode?: "studio" | "analysi
             </div>
           </div>
         </details>
-      </div>
-
-      <div className="subpanel subpanel--compact analysis-export-panel">
-        <div className="subpanel__header">
-          <h3>Export</h3>
-          {showSupportingCopy ? (
-            <p className="subpanel__copy">
-              Export only when you need audio outside the app.
-            </p>
-          ) : null}
-        </div>
-        <button
-          className="button"
-          onClick={() => exportMutation.mutate()}
-          disabled={projectEditLocked || exportMutation.isPending}
-          title={editLockTitle}
-          type="button"
-        >
-          {exportMutation.isPending ? "Preparing..." : "Export Selected Audio"}
-        </button>
       </div>
 
       <div className="subpanel analysis-details-panel">

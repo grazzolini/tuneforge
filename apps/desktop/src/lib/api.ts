@@ -45,6 +45,8 @@ export type ListJobsParams = NonNullable<paths["/api/v1/jobs"]["get"]["parameter
 export type PreviewRequest = components["schemas"]["PreviewRequest"];
 export type RetuneRequest = components["schemas"]["RetuneRequest"];
 export type ExportRequest = components["schemas"]["ExportRequest"];
+export type ExportCapabilities = components["schemas"]["ExportCapabilitiesSchema"];
+export type ExportCapabilitiesResponse = components["schemas"]["ExportCapabilitiesResponse"];
 export type ProjectUpdateRequest = components["schemas"]["ProjectUpdateRequest"];
 export type ProjectImportRequest = components["schemas"]["ProjectImportRequest"];
 export type StemRequest = components["schemas"]["StemRequest"];
@@ -2138,6 +2140,7 @@ export type TuneForgeClient = {
   getMobileCapabilities: () => Promise<RuntimeCapabilities>;
   ensureWebMediaTransport: () => Promise<void>;
   getHealth: () => Promise<HealthResponse>;
+  getExportCapabilities: () => Promise<ExportCapabilitiesResponse>;
   listProjects: (params?: ListProjectsParams) => Promise<components["schemas"]["ProjectsResponse"]>;
   importProject: (body: ProjectImportRequest) => Promise<components["schemas"]["ProjectResponse"]>;
   getProject: (projectId: string) => Promise<components["schemas"]["ProjectResponse"]>;
@@ -2334,6 +2337,7 @@ function createHttpTuneForgeClient(): TuneForgeClient {
     getMobileCapabilities: async () => null,
     ensureWebMediaTransport: async () => {},
     getHealth: () => unwrap(client.GET("/api/v1/health")),
+    getExportCapabilities: () => unwrap(client.GET("/api/v1/export-capabilities")),
     listProjects: (params?: ListProjectsParams) =>
       unwrap(client.GET("/api/v1/projects", params ? { params: { query: params } } : undefined)),
     importProject: (body: ProjectImportRequest) =>
@@ -2468,6 +2472,22 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     getMobileCapabilities: async () => capabilities,
     ensureWebMediaTransport,
     getHealth: () => invokeMobile("mobile_get_health"),
+    getExportCapabilities: async () => ({
+      capabilities: {
+        platform: "android",
+        formats: ["wav", "flac", "mp3", "m4a"].map((id) => ({
+          id,
+          available: false,
+          reason: "Android audio export is not available in this build.",
+        })),
+        destinations: ["single_file", "folder", "zip"].map((id) => ({
+          id,
+          available: false,
+          reason: "Android audio export is not available in this build.",
+        })),
+        max_artifact_count: 1,
+      },
+    }),
     listProjects: (params?: ListProjectsParams) =>
       invokeMobile("mobile_list_projects", { params: params ?? null }),
     importProject: async (body: ProjectImportRequest) => {
@@ -2601,6 +2621,7 @@ export const api: TuneForgeClient = {
   getMobileCapabilities: () => activeClient.getMobileCapabilities(),
   ensureWebMediaTransport: () => activeClient.ensureWebMediaTransport(),
   getHealth: () => activeClient.getHealth(),
+  getExportCapabilities: () => activeClient.getExportCapabilities(),
   listProjects: (params?: ListProjectsParams) => activeClient.listProjects(params),
   importProject: (body) => activeClient.importProject(body),
   getProject: (projectId: string) => activeClient.getProject(projectId),

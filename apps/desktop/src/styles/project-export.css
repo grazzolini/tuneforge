@@ -1,0 +1,443 @@
+.export-workspace {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.export-workspace__header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.35rem 0.2rem;
+}
+
+.export-workspace__header h2 {
+  margin: 0.12rem 0 0.2rem;
+  font-size: clamp(1.55rem, 2.2vw, 2.1rem);
+}
+
+.export-workspace__header p {
+  max-width: 48rem;
+  margin: 0;
+  color: var(--muted);
+}
+
+.export-workspace__selection-count {
+  flex: 0 0 auto;
+  padding: 0.48rem 0.7rem;
+  border: 1px solid var(--divider);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.export-workspace__grid {
+  display: grid;
+  grid-template-columns: minmax(12.5rem, 0.64fr) minmax(23rem, 1.25fr) minmax(20rem, 0.92fr);
+  gap: 0.85rem;
+  align-items: start;
+}
+
+.export-audio-sets,
+.export-selection,
+.export-package {
+  --panel-padding: 0.9rem;
+  min-width: 0;
+}
+
+.export-audio-sets,
+.export-selection,
+.export-package,
+.export-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.export-section-heading,
+.export-selection__identity {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.export-section-heading {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.export-latest {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.65rem;
+  padding: 0.65rem;
+  border: 1px solid var(--divider);
+  border-radius: 14px;
+  color: var(--muted);
+}
+
+.export-latest strong {
+  color: var(--ink);
+  text-transform: capitalize;
+}
+
+.export-section-heading svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.export-audio-sets__options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.export-audio-set {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: 0.65rem;
+  align-items: center;
+  padding: 0.7rem;
+  border: 1px solid var(--divider);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
+  cursor: pointer;
+}
+
+.export-audio-set--active {
+  border-color: color-mix(in srgb, var(--playback-accent) 50%, var(--divider));
+  background: color-mix(in srgb, var(--chip-active-bg) 75%, var(--panel));
+}
+
+.export-audio-set__icon,
+.export-artifact-row__icon {
+  display: grid;
+  width: 2.3rem;
+  height: 2.3rem;
+  place-items: center;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--playback-accent) 13%, var(--panel-strong));
+  color: var(--playback-accent);
+}
+
+.export-audio-set__icon svg,
+.export-artifact-row__icon svg {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.export-audio-set strong,
+.export-audio-set small,
+.export-artifact-row__copy strong,
+.export-artifact-row__copy small {
+  display: block;
+}
+
+.export-audio-set small,
+.export-artifact-row__copy small,
+.export-selection__identity > span {
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.export-selection__identity {
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--divider);
+}
+
+.export-selection__identity h3 {
+  margin: 0.18rem 0 0;
+  font-size: 1.35rem;
+}
+
+.export-presets,
+.export-artifact-list,
+.export-destinations {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.export-presets legend,
+.export-artifact-list legend,
+.export-destinations legend,
+.export-field > span {
+  margin-bottom: 0.48rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 750;
+}
+
+.export-presets,
+.export-destinations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.export-presets legend,
+.export-destinations legend {
+  width: 100%;
+}
+
+.export-presets .button[aria-pressed="true"],
+.export-destinations .button[aria-pressed="true"] {
+  border-color: var(--chip-active-border);
+  background: var(--chip-active-bg);
+}
+
+.export-presets__state {
+  align-self: center;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.export-presets > .field-reason {
+  flex-basis: 100%;
+}
+
+.export-destination-option {
+  display: grid;
+  gap: 0.3rem;
+  min-width: 5rem;
+}
+
+.export-destination-option .field-reason {
+  max-width: 10rem;
+  font-size: 0.72rem;
+}
+
+.export-artifact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.export-artifact-row {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  gap: 0.65rem;
+  align-items: center;
+  padding: 0.65rem;
+  border: 1px solid var(--divider);
+  border-radius: 15px;
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+  cursor: pointer;
+}
+
+.export-artifact-row:has(input:checked) {
+  border-color: color-mix(in srgb, var(--playback-accent) 42%, var(--divider));
+}
+
+.export-artifact-row__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.export-artifact-row__status svg {
+  width: 0.9rem;
+  height: 0.9rem;
+  color: var(--playback-accent);
+}
+
+.export-empty-stems {
+  margin: 0;
+  padding: 0.7rem;
+  border: 1px dashed var(--divider);
+  border-radius: 14px;
+  color: var(--muted);
+}
+
+.export-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.export-field input,
+.export-field select {
+  width: 100%;
+}
+
+.field-reason,
+.export-destination-target,
+.export-activity-link {
+  margin: -0.35rem 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.export-destination-target {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.export-preview {
+  min-width: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--divider);
+  border-radius: 15px;
+  background: color-mix(in srgb, var(--panel-strong) 60%, transparent);
+}
+
+.export-preview ul {
+  display: flex;
+  max-height: 10.5rem;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0.65rem 0 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.export-preview li {
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.export-package__submit {
+  width: 100%;
+  min-height: 3rem;
+  justify-content: center;
+}
+
+.export-package__summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--divider);
+}
+
+.export-package__summary-copy {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.export-package__summary-copy strong {
+  color: var(--ink);
+  font-size: 0.78rem;
+}
+
+.export-package__summary--progress {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.export-progress progress {
+  width: 100%;
+}
+
+.export-progress__actions {
+  display: flex;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.export-progress__actions .button {
+  flex: 1 1 8rem;
+  justify-content: center;
+}
+
+.export-activity-link {
+  align-self: center;
+}
+
+@media (max-width: 1200px) {
+  .export-workspace__grid {
+    grid-template-columns: minmax(0, 1.15fr) minmax(19rem, 0.85fr);
+  }
+
+  .export-audio-sets {
+    grid-column: 1 / -1;
+  }
+
+  .export-audio-sets__options {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  }
+}
+
+@media (max-width: 1024px) {
+  .export-workspace__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .export-audio-sets {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  .export-workspace {
+    padding-bottom: 6rem;
+  }
+
+  .export-workspace__header {
+    align-items: flex-start;
+  }
+
+  .export-audio-sets__options {
+    display: flex;
+    flex-direction: row;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+  }
+
+  .export-audio-set {
+    min-width: 13.5rem;
+    scroll-snap-align: start;
+  }
+
+  .export-selection__identity,
+  .export-artifact-row {
+    align-items: flex-start;
+  }
+
+  .export-artifact-row {
+    grid-template-columns: auto auto minmax(0, 1fr);
+  }
+
+  .export-artifact-row__status {
+    grid-column: 3;
+  }
+
+  .export-package {
+    position: static;
+  }
+
+  .export-package__summary {
+    position: sticky;
+    bottom: 0.5rem;
+    z-index: 4;
+    margin: 0 -0.2rem -0.2rem;
+    padding: 0.75rem;
+    border: 1px solid var(--divider);
+    border-radius: 16px;
+    background: color-mix(in srgb, var(--panel-strong) 94%, transparent);
+    box-shadow: 0 18px 50px color-mix(in srgb, black 55%, transparent);
+  }
+}

@@ -7,6 +7,7 @@ import type {
   AnalysisRequest,
   BulkJobRequest,
   BulkJobsResponse,
+  ExportCapabilitiesResponse,
   LyricsGenerateRequest,
   ListJobsParams,
   ListProjectsParams,
@@ -42,6 +43,7 @@ const {
   setProjectAnalysis,
   setProjectChords,
   setProjectLyrics,
+  setProjectArtifacts,
   setBeatBackends,
   setChordBackends,
   setStemModels,
@@ -96,6 +98,7 @@ const {
   mockDeleteArtifact,
   mockDeleteProject,
   mockGetHealth,
+  mockGetExportCapabilities,
   mockGetMobileCapabilities,
   mockEnsureWebMediaTransport,
   mockScanPairingQrCode,
@@ -702,6 +705,10 @@ const {
 
   function setSyncPreflight(preflight: Record<string, unknown> | null) {
     state.syncPreflight = preflight ? clone(preflight) : null;
+  }
+
+  function setProjectArtifacts(projectId: string, artifacts: Array<Record<string, unknown>>) {
+    state.artifactsByProject[projectId] = clone(artifacts);
   }
 
   function setSyncTrustedPeers(peers: Array<Record<string, unknown>>) {
@@ -1409,6 +1416,18 @@ const {
     preview_format: "wav",
   }));
   const mockGetMobileCapabilities = vi.fn(async (): Promise<unknown> => null);
+  const mockGetExportCapabilities = vi.fn(async (): Promise<ExportCapabilitiesResponse> => ({
+    capabilities: {
+      platform: "desktop",
+      formats: ["wav", "flac", "mp3", "m4a"].map((id) => ({ id, available: true, reason: null })),
+      destinations: ["single_file", "folder", "zip"].map((id) => ({
+        id,
+        available: true,
+        reason: null,
+      })),
+      max_artifact_count: null,
+    },
+  }));
   const mockEnsureWebMediaTransport = vi.fn(async () => {});
   const mockScanPairingQrCode = vi.fn(async (): Promise<string> => {
     throw new Error("QR scanner unavailable.");
@@ -2415,6 +2434,7 @@ const {
     setProjectAnalysis,
     setProjectChords,
     setProjectLyrics,
+    setProjectArtifacts,
     setBeatBackends,
     setChordBackends,
     setStemModels,
@@ -2469,6 +2489,7 @@ const {
     mockDeleteArtifact,
     mockDeleteProject,
     mockGetHealth,
+    mockGetExportCapabilities,
     mockGetMobileCapabilities,
     mockEnsureWebMediaTransport,
     mockScanPairingQrCode,
@@ -2494,6 +2515,7 @@ export {
   setProjectAnalysis,
   setProjectChords,
   setProjectLyrics,
+  setProjectArtifacts,
   setBeatBackends,
   setChordBackends,
   setStemModels,
@@ -2547,6 +2569,7 @@ export {
   mockDeleteArtifact,
   mockDeleteProject,
   mockGetHealth,
+  mockGetExportCapabilities,
   mockGetMobileCapabilities,
   mockEnsureWebMediaTransport,
   mockScanPairingQrCode,
@@ -2576,6 +2599,7 @@ vi.mock("../lib/api", async (importOriginal) => {
     api: {
       ...actual.api,
       getHealth: mockGetHealth,
+      getExportCapabilities: mockGetExportCapabilities,
       listProjects: mockListProjects,
       importProject: mockImportProject,
       getProject: mockGetProject,
@@ -3049,6 +3073,7 @@ export function resetAppTestHarness() {
   mockDeleteArtifact.mockClear();
   mockDeleteProject.mockClear();
   mockGetHealth.mockClear();
+  mockGetExportCapabilities.mockClear();
   mockGetMobileCapabilities.mockReset();
   mockGetMobileCapabilities.mockResolvedValue(null);
   mockEnsureWebMediaTransport.mockReset();

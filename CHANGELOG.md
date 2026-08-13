@@ -5,6 +5,11 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+### Added
+
+- A dedicated project Export workspace for selecting one source track or practice mix and packaging
+  its track and stems as a file, folder, or ZIP.
+
 ## [1.0.1] - 2026-08-13
 
 ### Added

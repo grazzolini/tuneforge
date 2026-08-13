@@ -38,7 +38,10 @@ describe("Desktop app project analysis mix", () => {
     await user.click(screen.getByRole("tab", { name: "Playback" }));
   }
 
-  async function openProjectPanel(user: ReturnType<typeof userEvent.setup>, name: "Studio" | "Analysis") {
+  async function openProjectPanel(
+    user: ReturnType<typeof userEvent.setup>,
+    name: "Studio" | "Analysis" | "Export",
+  ) {
     const tab = screen.getByRole("tab", { name });
     if (tab.getAttribute("aria-selected") !== "true") {
       await user.click(tab);
@@ -263,11 +266,14 @@ describe("Desktop app project analysis mix", () => {
     fireEvent.click(sourceKeyButton);
     expect(screen.queryByRole("listbox", { name: "Project Source Key options" })).not.toBeInTheDocument();
 
-    const exportButton = screen.getByRole("button", { name: "Export Selected Audio" });
+    expect(screen.queryByRole("heading", { name: "Export" })).not.toBeInTheDocument();
+    await openProjectPanel(user, "Export");
+    const exportButton = screen.getByRole("button", { name: "Export 1 file" });
     expect(exportButton).toBeDisabled();
     fireEvent.click(exportButton);
     expect(mockCreateExport).not.toHaveBeenCalled();
 
+    await openAnalysisPanel(user);
     const deleteProjectButton = screen.getByRole("button", { name: "Delete Project" });
     expect(deleteProjectButton).toBeDisabled();
     fireEvent.click(deleteProjectButton);

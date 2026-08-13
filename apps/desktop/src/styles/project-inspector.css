@@ -35,17 +35,12 @@
   grid-template-columns: minmax(0, 1.25fr) minmax(18rem, 0.75fr);
   grid-template-areas:
     "summary details"
-    "summary export"
     "danger danger";
   align-items: start;
 }
 
 .analysis-summary-panel {
   grid-area: summary;
-}
-
-.analysis-export-panel {
-  grid-area: export;
 }
 
 .analysis-details-panel {
@@ -62,7 +57,6 @@
     grid-template-areas:
       "summary"
       "details"
-      "export"
       "danger";
   }
 }

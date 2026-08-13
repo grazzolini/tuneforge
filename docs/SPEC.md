@@ -120,7 +120,10 @@ Capo-relative display is a harmonic presentation feature. It should not alter au
 - Retune audio by reference frequency or cents offset.
 - Transpose audio by semitones.
 - Generate cached previews for practice before export.
-- Export selected artifacts or transformed outputs to supported local formats.
+- Use the dedicated project Export workspace to target one Source Track or Practice Mix at a time.
+- Export the track, selected stems, all stems, or the track with all stems. Desktop multi-file exports
+  can target a folder or ZIP; Android exposes only capabilities the installed build can complete.
+- Preserve deterministic, friendly output names based on the project, audio set, and stem label.
 - Desktop transform/export paths use host-installed FFmpeg.
 
 ### Playback and Practice UX

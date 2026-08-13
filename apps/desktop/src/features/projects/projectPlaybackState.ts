@@ -10,7 +10,7 @@ import {
 } from "../../lib/timingGrid";
 import { normalizeTempoTargetBpm } from "./playbackTempo";
 
-export type ProjectPanelMode = "studio" | "analysis";
+export type ProjectPanelMode = "studio" | "analysis" | "export";
 
 export type StemControlState = {
   muted: boolean;
@@ -127,7 +127,7 @@ export function normalizePlaybackLoopRange(value: unknown): PlaybackLoopRange | 
 }
 
 function isProjectPanelMode(value: unknown): value is ProjectPanelMode {
-  return value === "studio" || value === "analysis";
+  return value === "studio" || value === "analysis" || value === "export";
 }
 
 function normalizeStoredProjectPlaybackState(value: unknown): StoredProjectPlaybackState {

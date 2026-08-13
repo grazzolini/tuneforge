@@ -18,9 +18,9 @@ import {
 } from "./test/appTestHarness";
 import { ApiError } from "./lib/api";
 import {
-  ensureInspectorVisible,
   generateStems,
   openAnalysisPanel,
+  openExportPanel,
   openStudioPanel,
   refreshJobs,
   selectFirstStemInAnalysis,
@@ -87,11 +87,8 @@ function exportDestinationExistsError() {
 
 async function exportSelectedSourceAudio(user: ReturnType<typeof userEvent.setup>) {
   expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
-  await ensureInspectorVisible(user);
-  const sourceList = screen.getByRole("group", { name: "Source and mix list" });
-  await user.click(within(sourceList).getByRole("button", { name: /Source Track/i }));
-  await openAnalysisPanel(user);
-  await user.click(screen.getByRole("button", { name: "Export Selected Audio" }));
+  await openExportPanel(user);
+  await user.click(screen.getByRole("button", { name: "Export 1 file" }));
 }
 
 describe("Desktop app project playback artifacts", () => {
@@ -636,7 +633,7 @@ describe("Desktop app project playback artifacts", () => {
 
   it("exports selected audio", async () => {
     const user = userEvent.setup();
-    mockSave.mockResolvedValue("/tmp/exports/demo-source.flac");
+    mockSave.mockResolvedValue("/tmp/exports/Demo Song - Source.m4a");
 
     renderApp(["/projects/proj_123"]);
 
@@ -644,22 +641,24 @@ describe("Desktop app project playback artifacts", () => {
 
     expect(mockSave).toHaveBeenCalledWith(
       expect.objectContaining({
-        filters: expect.arrayContaining([
-          expect.objectContaining({ extensions: ["wav"] }),
-          expect.objectContaining({ extensions: ["mp3"] }),
-          expect.objectContaining({ extensions: ["flac"] }),
-        ]),
+        defaultPath: "Demo Song - Source.m4a",
+        filters: [{ name: "M4A", extensions: ["m4a"] }],
       }),
     );
     expect(mockCreateExport).toHaveBeenCalledWith(
       "proj_123",
       expect.objectContaining({
         artifact_ids: ["art_source"],
-        output_format: "flac",
-        destination_file_path: "/tmp/exports/demo-source.flac",
+        output_format: "m4a",
+        filename_base: "Demo Song",
+        destination: {
+          type: "single_file",
+          target: "/tmp/exports/Demo Song - Source.m4a",
+          overwrite: false,
+        },
       }),
     );
-    expect(mockCreateExport.mock.calls[0]?.[1]).not.toHaveProperty("destination_path");
+    expect(mockCreateExport.mock.calls[0]?.[1]).not.toHaveProperty("destination_file_path");
   });
 
   it("does not create an export when the save dialog is canceled", async () => {
@@ -676,7 +675,7 @@ describe("Desktop app project playback artifacts", () => {
 
   it("does not retry export when an existing destination warning is canceled", async () => {
     const user = userEvent.setup();
-    mockSave.mockResolvedValue("/tmp/exports/demo-source.wav");
+    mockSave.mockResolvedValue("/tmp/exports/Demo Song - Source.m4a");
     mockConfirm.mockResolvedValueOnce(false);
     mockCreateExport.mockRejectedValueOnce(exportDestinationExistsError());
 
@@ -686,7 +685,7 @@ describe("Desktop app project playback artifacts", () => {
 
     await waitFor(() =>
       expect(mockConfirm).toHaveBeenCalledWith(
-        expect.stringContaining("already exists"),
+        expect.stringContaining("export destinations"),
         expect.objectContaining({
           title: "Replace existing export?",
           kind: "warning",
@@ -695,12 +694,14 @@ describe("Desktop app project playback artifacts", () => {
       ),
     );
     expect(mockCreateExport).toHaveBeenCalledTimes(1);
-    expect(mockCreateExport.mock.calls[0]?.[1]).not.toHaveProperty("overwrite_existing");
+    expect(mockCreateExport.mock.calls[0]?.[1]).toMatchObject({
+      destination: { overwrite: false },
+    });
   });
 
   it("retries export once with overwrite when an existing destination warning is approved", async () => {
     const user = userEvent.setup();
-    mockSave.mockResolvedValue("/tmp/exports/demo-source.mp3");
+    mockSave.mockResolvedValue("/tmp/exports/Demo Song - Source.m4a");
     mockConfirm.mockResolvedValueOnce(true);
     mockCreateExport.mockRejectedValueOnce(exportDestinationExistsError());
 
@@ -714,22 +715,27 @@ describe("Desktop app project playback artifacts", () => {
       "proj_123",
       expect.objectContaining({
         artifact_ids: ["art_source"],
-        output_format: "mp3",
-        destination_file_path: "/tmp/exports/demo-source.mp3",
+        output_format: "m4a",
+        destination: {
+          type: "single_file",
+          target: "/tmp/exports/Demo Song - Source.m4a",
+          overwrite: false,
+        },
       }),
     );
-    expect(mockCreateExport.mock.calls[0]?.[1]).not.toHaveProperty("overwrite_existing");
     expect(mockCreateExport).toHaveBeenNthCalledWith(
       2,
       "proj_123",
       expect.objectContaining({
         artifact_ids: ["art_source"],
-        output_format: "mp3",
-        destination_file_path: "/tmp/exports/demo-source.mp3",
-        overwrite_existing: true,
+        output_format: "m4a",
+        destination: {
+          type: "single_file",
+          target: "/tmp/exports/Demo Song - Source.m4a",
+          overwrite: true,
+        },
       }),
     );
-    expect(mockCreateExport.mock.calls[1]?.[1]).not.toHaveProperty("destination_path");
   });
 
   it("renames project from the title row", async () => {

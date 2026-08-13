@@ -21,6 +21,12 @@ packaged launch smoke pass are both recorded for each intended artifact. Missing
 or smoke evidence fails the gate closed; do not substitute `pnpm dev`, a dev server, or
 an unpackaged Tauri run for packaged-artifact proof.
 
+Before tagging, verify the release changelog section against changes since the previous tag. Promote
+and merge the completed `[Unreleased]` entries into the release section, then leave a new empty
+`[Unreleased]` section. Freeze the release comparison at `previous-tag...new-tag` and reset the
+`[Unreleased]` comparison to `new-tag...main`. Operational artifact, installation, checksum,
+signature, and upload instructions belong in the GitHub Release notes.
+
 Run the pre-tag checks from the intended release commit:
 
 ```sh

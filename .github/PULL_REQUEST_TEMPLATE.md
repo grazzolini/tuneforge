@@ -30,6 +30,8 @@
 - [ ] `pnpm typecheck` passes
 - [ ] `pnpm test` passes (desktop + Tauri shell + backend)
 - [ ] If backend routes or schemas changed, ran `pnpm contracts:generate` and committed the result
+- [ ] If this PR includes noteworthy product behavior, updated `CHANGELOG.md`'s `[Unreleased]`
+  section
 - [ ] If release/package behavior changed or this PR prepares a release package, included Release Package Gate evidence from
   `docs/PACKAGING.md#release-package-gate` (package build plus packaged launch smoke with OS,
   artifact type, commit SHA, and pass/fail evidence); when release/package behavior changed, also

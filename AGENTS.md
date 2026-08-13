@@ -122,6 +122,10 @@ When asked to implement a change:
 - Keep docs aligned with behavior; if user-visible behavior changed, update docs in the same PR.
 - Prefer updating existing docs under `docs/` instead of adding near-duplicate pages.
 - Link docs with relative paths and keep section anchors stable where practical.
+- Add a concise `CHANGELOG.md` `[Unreleased]` entry in the same PR for noteworthy product
+  changes. Internal-only CI, test, dependency, and documentation changes do not need an entry.
+- During release preparation, reconcile Git and GitHub history, date and promote the release
+  section, and update compare links. The changelog is product history, not release operations.
 
 ## Release Media
 

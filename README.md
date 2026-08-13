@@ -46,6 +46,7 @@ Security reports follow the process in [SECURITY.md](./SECURITY.md). "There is n
 
 ## Documentation
 
+- [Changelog](./CHANGELOG.md)
 - [Product specification](./docs/SPEC.md)
 - [Third-party notices and release package policy](./THIRD_PARTY_NOTICES.md)
 - [Stem separation](./docs/STEM_SEPARATION.md)

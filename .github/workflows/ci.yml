@@ -89,7 +89,7 @@ jobs:
                 .github/workflows/ci.yml)
                   full_gate=true
                   ;;
-                .agents/*|.codex/environments/*|docs/*|README.md|CONTRIBUTING.md|CODE_OF_CONDUCT.md|LICENSE|THIRD_PARTY_NOTICES.md|SECURITY.md|AGENTS.md|.gitignore|packaging/flatpak/*|.github/ISSUE_TEMPLATE/*|.github/PULL_REQUEST_TEMPLATE.md)
+                .agents/*|.codex/environments/*|docs/*|CHANGELOG.md|README.md|CONTRIBUTING.md|CODE_OF_CONDUCT.md|LICENSE|THIRD_PARTY_NOTICES.md|SECURITY.md|AGENTS.md|.gitignore|packaging/flatpak/*|.github/ISSUE_TEMPLATE/*|.github/PULL_REQUEST_TEMPLATE.md)
                   ;;
                 *)
                   full_gate=true

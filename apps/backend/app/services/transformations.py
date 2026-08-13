@@ -1,23 +1,32 @@
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
+import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from fastapi import status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.engines.transform import cents_from_reference, run_ffmpeg_transform, semitones_to_cents
+from app.engines.transform import (
+    cents_from_reference,
+    probe_export_formats,
+    run_ffmpeg_transform,
+    semitones_to_cents,
+)
 from app.errors import AppError, JobCancelledError
 from app.models import Artifact, Project
 from app.services.analysis import analyze_project
 from app.services.artifacts import find_cached_artifact, register_artifact
 from app.services.paths import project_exports_dir, project_previews_dir
+from app.services.stem_models import STEM_ARTIFACT_TYPE_SOURCES, STEM_ARTIFACT_TYPES
 from app.utils.hashing import stable_hash
 
 
@@ -29,6 +38,12 @@ class TransformPlan:
     total_cents: float
     cache_key: str | None
     metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ExportBatchResult:
+    artifact_ids: list[str]
+    export_result: dict[str, Any]
 
 
 def _reference_cents(session: Session, project: Project, target_reference_hz: float) -> float:
@@ -47,7 +62,7 @@ def _ensure_not_cancelled(should_cancel: Callable[[], bool] | None) -> None:
         raise JobCancelledError()
 
 
-def _resolve_export_file_path(
+def _resolve_legacy_export_file_path(
     artifact: Artifact,
     *,
     output_format: str,
@@ -82,6 +97,167 @@ def ensure_export_destination_available(*, destination_file_path: str | None, ov
         return
     target = Path(destination_file_path).expanduser().resolve()
     if target.exists():
+        raise AppError(
+            "EXPORT_DESTINATION_EXISTS",
+            "Export destination already exists.",
+            status_code=status.HTTP_409_CONFLICT,
+            details={"destination_file_path": str(target)},
+        )
+
+
+def export_capabilities() -> dict[str, Any]:
+    formats = probe_export_formats()
+    return {
+        "platform": "desktop",
+        "formats": [
+            {"id": output_format, "available": available, "reason": reason}
+            for output_format, (available, reason) in formats.items()
+        ],
+        "destinations": [
+            {"id": destination, "available": True, "reason": None}
+            for destination in ("single_file", "folder", "zip")
+        ],
+        "max_artifact_count": None,
+    }
+
+
+def _safe_filename_base(value: str) -> str:
+    sanitized = re.sub(r"[\\/:*?\"<>|\x00-\x1f]", "-", value).strip(" .")
+    sanitized = re.sub(r"\s+", " ", sanitized)
+    return sanitized[:120] or "TuneForge Export"
+
+
+def _primary_audio_artifact(artifact: Artifact, artifacts_by_id: dict[str, Artifact]) -> Artifact | None:
+    if artifact.type in {"source_audio", "preview_mix"}:
+        return artifact
+    if artifact.type not in STEM_ARTIFACT_TYPES:
+        return None
+    source_artifact_id = artifact.metadata_json.get("source_artifact_id")
+    return artifacts_by_id.get(source_artifact_id) if isinstance(source_artifact_id, str) else None
+
+
+def _practice_mix_label(session: Session, project_id: str, artifact_id: str) -> str:
+    mixes = list(
+        session.scalars(
+            select(Artifact)
+            .where(Artifact.project_id == project_id, Artifact.type == "preview_mix")
+            .order_by(Artifact.created_at.asc(), Artifact.id.asc())
+        )
+    )
+    return f"Practice Mix {next((index for index, mix in enumerate(mixes, 1) if mix.id == artifact_id), 1)}"
+
+
+def _audio_set_label(session: Session, artifact: Artifact) -> str:
+    return (
+        "Source"
+        if artifact.type == "source_audio"
+        else _practice_mix_label(session, artifact.project_id, artifact.id)
+    )
+
+
+def _artifact_export_label(artifact: Artifact) -> str | None:
+    source = STEM_ARTIFACT_TYPE_SOURCES.get(artifact.type)
+    return source.replace("_", " ").title() if source else None
+
+
+def _deduplicate_output_names(names: list[str]) -> list[str]:
+    counts: dict[str, int] = {}
+    deduplicated: list[str] = []
+    for name in names:
+        path = Path(name)
+        key = name.casefold()
+        counts[key] = counts.get(key, 0) + 1
+        suffix = "" if counts[key] == 1 else f" ({counts[key]})"
+        deduplicated.append(f"{path.stem}{suffix}{path.suffix}")
+    return deduplicated
+
+
+def prepare_export_job_payload(
+    session: Session,
+    *,
+    project: Project,
+    request_payload: dict[str, Any],
+) -> dict[str, Any]:
+    artifact_ids = list(request_payload.get("artifact_ids", []))
+    artifacts = [session.get(Artifact, artifact_id) for artifact_id in artifact_ids]
+    if any(artifact is None or artifact.project_id != project.id for artifact in artifacts):
+        raise AppError("ARTIFACT_NOT_FOUND", "Artifact does not belong to this project.", status_code=404)
+    selected = [artifact for artifact in artifacts if artifact is not None]
+    all_project_artifacts = {
+        artifact.id: artifact
+        for artifact in session.scalars(select(Artifact).where(Artifact.project_id == project.id))
+    }
+    primary_artifacts = [_primary_audio_artifact(artifact, all_project_artifacts) for artifact in selected]
+    if any(primary is None for primary in primary_artifacts):
+        raise AppError("INVALID_REQUEST", "Only source tracks, practice mixes, and their stems can be exported.")
+    primary_ids = {primary.id for primary in primary_artifacts if primary is not None}
+    if len(primary_ids) != 1:
+        raise AppError("EXPORT_AUDIO_SET_MISMATCH", "Selected artifacts must belong to one audio set.")
+    output_format = str(request_payload.get("output_format", "wav"))
+    format_available, reason = probe_export_formats().get(output_format, (False, "Unsupported export format."))
+    if not format_available:
+        raise AppError("EXPORT_FORMAT_UNAVAILABLE", reason or "Export format is unavailable.", status_code=422)
+
+    primary = next(primary for primary in primary_artifacts if primary is not None)
+    destination = request_payload.get("destination")
+    if isinstance(destination, dict):
+        filename_base = _safe_filename_base(str(request_payload.get("filename_base") or project.display_name))
+        context_label = _audio_set_label(session, primary)
+        raw_names = [
+            f"{filename_base} - {context_label}"
+            f"{' - ' + label if (label := _artifact_export_label(artifact)) else ''}.{output_format}"
+            for artifact in selected
+        ]
+        output_names = _deduplicate_output_names(raw_names)
+        normalized_destination = {
+            "type": str(destination.get("type")),
+            "target": str(destination.get("target")),
+            "overwrite": bool(destination.get("overwrite", False)),
+        }
+    else:
+        artifact = selected[0]
+        target = _resolve_legacy_export_file_path(
+            artifact,
+            output_format=output_format,
+            destination_path=request_payload.get("destination_path"),
+            destination_file_path=request_payload.get("destination_file_path"),
+        )
+        output_names = [target.name]
+        normalized_destination = {
+            "type": "single_file",
+            "target": str(target),
+            "overwrite": bool(request_payload.get("overwrite_existing", False)),
+        }
+
+    _preflight_export_destination(normalized_destination, output_names)
+    return {
+        "artifact_ids": artifact_ids,
+        "mixdown_mode": "copy",
+        "output_format": output_format,
+        "filename_base": _safe_filename_base(str(request_payload.get("filename_base") or project.display_name)),
+        "destination": normalized_destination,
+        "output_names": output_names,
+        "audio_set_artifact_id": primary.id,
+    }
+
+
+def _preflight_export_destination(destination: dict[str, Any], output_names: list[str]) -> None:
+    target = Path(str(destination["target"])).expanduser().resolve()
+    overwrite = bool(destination.get("overwrite", False))
+    destination_type = destination["type"]
+    if destination_type == "folder":
+        if target.exists() and not target.is_dir():
+            raise AppError("INVALID_REQUEST", "Export folder destination is not a directory.")
+        collisions = [str(target / name) for name in output_names if (target / name).exists()]
+        if collisions and not overwrite:
+            raise AppError(
+                "EXPORT_DESTINATION_EXISTS",
+                "One or more export destinations already exist.",
+                status_code=status.HTTP_409_CONFLICT,
+                details={"destination_file_paths": collisions},
+            )
+        return
+    if target.exists() and not overwrite:
         raise AppError(
             "EXPORT_DESTINATION_EXISTS",
             "Export destination already exists.",
@@ -201,44 +377,28 @@ def execute_transform_plan(
     return artifact
 
 
-def export_artifacts(
-    session: Session,
+def _export_one_to_target(
     *,
-    project: Project,
-    artifact_ids: list[str],
+    source: Artifact,
+    target: Path,
     output_format: str,
-    destination_path: str | None,
-    destination_file_path: str | None = None,
-    overwrite_existing: bool = False,
-    on_progress: Callable[[int], None] | None = None,
-    should_cancel: Callable[[], bool] | None = None,
-    register_process: Callable[[subprocess.Popen[str]], None] | None = None,
-    unregister_process: Callable[[], None] | None = None,
-) -> Artifact:
-    if len(artifact_ids) != 1:
-        raise AppError("INVALID_REQUEST", "V1 export supports exactly one source artifact.")
-    artifact = session.get(Artifact, artifact_ids[0])
-    if artifact is None or artifact.project_id != project.id:
-        raise AppError("ARTIFACT_NOT_FOUND", "Artifact not found.", status_code=status.HTTP_404_NOT_FOUND)
-    source_path = Path(artifact.path)
-    target = _resolve_export_file_path(
-        artifact,
-        output_format=output_format,
-        destination_path=destination_path,
-        destination_file_path=destination_file_path,
-    )
-    ensure_export_destination_available(
-        destination_file_path=destination_file_path,
-        overwrite_existing=overwrite_existing,
-    )
+    overwrite: bool,
+    sample_rate: int,
+    should_cancel: Callable[[], bool] | None,
+    register_process: Callable[[subprocess.Popen[str]], None] | None,
+    unregister_process: Callable[[], None] | None,
+    on_progress: Callable[[int], None] | None,
+) -> None:
+    source_path = Path(source.path)
     temp_base_path, temp_path = _new_sibling_temp_paths(target, output_format)
     try:
-        if artifact.format == output_format:
+        if source.format == output_format:
             _ensure_not_cancelled(should_cancel)
             shutil.copy2(source_path, temp_path)
+            if on_progress:
+                on_progress(90)
             _ensure_not_cancelled(should_cancel)
         else:
-            sample_rate = project.sample_rate or 44100
             run_ffmpeg_transform(
                 source_path,
                 temp_base_path,
@@ -251,22 +411,167 @@ def export_artifacts(
                 unregister_process=unregister_process,
             )
             _ensure_not_cancelled(should_cancel)
-        ensure_export_destination_available(
-            destination_file_path=destination_file_path,
-            overwrite_existing=overwrite_existing,
-        )
+        if target.exists() and not overwrite:
+            raise AppError("EXPORT_DESTINATION_EXISTS", "An export destination already exists.", status_code=409)
         temp_path.replace(target)
     finally:
         temp_base_path.unlink(missing_ok=True)
         temp_path.unlink(missing_ok=True)
-    return register_artifact(
-        session,
-        project_id=project.id,
-        artifact_type="export_mix",
-        artifact_format=output_format,
-        path=target,
-        metadata={"source_artifact_id": artifact.id},
-        generated_by="ffmpeg",
-        can_delete=True,
-        can_regenerate=False,
-    )
+
+
+def _export_result_payload(items: list[dict[str, Any]]) -> dict[str, Any]:
+    completed_count = sum(item["status"] == "completed" for item in items)
+    failed_count = sum(item["status"] == "failed" for item in items)
+    outcome = "completed" if completed_count == len(items) else "partial" if completed_count else "failed"
+    return {
+        "outcome": outcome,
+        "total_count": len(items),
+        "completed_count": completed_count,
+        "failed_count": failed_count,
+        "items": [dict(item) for item in items],
+    }
+
+
+def export_artifacts(
+    session: Session,
+    *,
+    project: Project,
+    artifact_ids: list[str],
+    output_format: str,
+    destination: dict[str, Any],
+    output_names: list[str],
+    on_progress: Callable[[int], None] | None = None,
+    on_result: Callable[[dict[str, Any]], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+    register_process: Callable[[subprocess.Popen[str]], None] | None = None,
+    unregister_process: Callable[[], None] | None = None,
+) -> ExportBatchResult:
+    artifacts = [session.get(Artifact, artifact_id) for artifact_id in artifact_ids]
+    if len(artifacts) != len(output_names) or any(artifact is None for artifact in artifacts):
+        raise AppError("ARTIFACT_NOT_FOUND", "Artifact not found.", status_code=status.HTTP_404_NOT_FOUND)
+    selected = [artifact for artifact in artifacts if artifact is not None]
+    target = Path(str(destination["target"])).expanduser().resolve()
+    destination_type = str(destination["type"])
+    overwrite = bool(destination.get("overwrite", False))
+    _preflight_export_destination(destination, output_names)
+    sample_rate = project.sample_rate or 44100
+    items = [
+        {
+            "artifact_id": artifact.id,
+            "output_name": output_name,
+            "status": "pending",
+            "progress": 0,
+            "result_artifact_id": None,
+            "error": None,
+        }
+        for artifact, output_name in zip(selected, output_names, strict=True)
+    ]
+    result_artifact_ids: list[str] = []
+
+    def publish_result() -> None:
+        if on_result:
+            on_result(_export_result_payload(items))
+
+    with tempfile.TemporaryDirectory(prefix="tuneforge-export-stage-") as stage_dir_name:
+        stage_dir = Path(stage_dir_name)
+        completed_outputs: list[tuple[Artifact, Path, str]] = []
+        for index, (artifact, output_name) in enumerate(zip(selected, output_names, strict=True)):
+            _ensure_not_cancelled(should_cancel)
+            item = items[index]
+            item["status"] = "running"
+            item["progress"] = 5
+            publish_result()
+            item_target = stage_dir / output_name if destination_type == "zip" else (
+                target / output_name if destination_type == "folder" else target
+            )
+
+            def report_item_progress(value: int, *, item_index: int = index) -> None:
+                items[item_index]["progress"] = min(99, max(0, value))
+                if on_progress:
+                    on_progress(int(((item_index + value / 100) / len(items)) * 85) + 10)
+                publish_result()
+
+            try:
+                _export_one_to_target(
+                    source=artifact,
+                    target=item_target,
+                    output_format=output_format,
+                    overwrite=overwrite,
+                    sample_rate=sample_rate,
+                    should_cancel=should_cancel,
+                    register_process=register_process,
+                    unregister_process=unregister_process,
+                    on_progress=report_item_progress,
+                )
+            except JobCancelledError:
+                item["status"] = "cancelled"
+                publish_result()
+                raise
+            except (AppError, OSError):
+                item["status"] = "failed"
+                item["error"] = "Could not export this audio item."
+                publish_result()
+                continue
+
+            item["status"] = "completed"
+            item["progress"] = 100
+            completed_outputs.append((artifact, item_target, output_name))
+            if destination_type != "zip":
+                exported = register_artifact(
+                    session,
+                    project_id=project.id,
+                    artifact_type="export_mix",
+                    artifact_format=output_format,
+                    path=item_target,
+                    metadata={"source_artifact_id": artifact.id, "output_name": output_name},
+                    generated_by="ffmpeg",
+                    can_delete=True,
+                    can_regenerate=False,
+                )
+                item["result_artifact_id"] = exported.id
+                result_artifact_ids.append(exported.id)
+            publish_result()
+
+        if destination_type == "zip" and completed_outputs:
+            _ensure_not_cancelled(should_cancel)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                dir=target.parent,
+                prefix="tuneforge-export-",
+                suffix=".zip",
+                delete=False,
+            ) as temp:
+                zip_path = Path(temp.name)
+            try:
+                with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                    for _artifact, staged_path, output_name in completed_outputs:
+                        archive.write(staged_path, arcname=output_name)
+                _ensure_not_cancelled(should_cancel)
+                if target.exists() and not overwrite:
+                    _preflight_export_destination(destination, output_names)
+                zip_path.replace(target)
+            finally:
+                zip_path.unlink(missing_ok=True)
+            archive_artifact = register_artifact(
+                session,
+                project_id=project.id,
+                artifact_type="export_mix",
+                artifact_format="zip",
+                path=target,
+                metadata={
+                    "source_artifact_ids": [artifact.id for artifact, _, _ in completed_outputs],
+                    "output_names": [output_name for _, _, output_name in completed_outputs],
+                    "contained_format": output_format,
+                },
+                generated_by="ffmpeg",
+                can_delete=True,
+                can_regenerate=False,
+            )
+            result_artifact_ids.append(archive_artifact.id)
+            for item in items:
+                if item["status"] == "completed":
+                    item["result_artifact_id"] = archive_artifact.id
+            publish_result()
+
+    export_result = _export_result_payload(items)
+    return ExportBatchResult(artifact_ids=result_artifact_ids, export_result=export_result)

@@ -49,6 +49,7 @@ from app.utils.ids import new_id
 class JobExecutionResult:
     artifact_ids: list[str]
     runtime_device: str | None = None
+    export_result: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -515,6 +516,13 @@ class JobExecutionContext:
     def set_progress(self, progress: int) -> None:
         self.update_runtime_status(progress=progress)
 
+    def set_export_result(self, export_result: dict[str, Any]) -> None:
+        job = self.session.get(Job, self.job_id)
+        if job is None or job.type != "export":
+            return
+        job.payload_json = {**job.payload_json, "export_result": export_result}
+        self.session.commit()
+
     def update_runtime_status(
         self,
         *,
@@ -828,6 +836,8 @@ class InProcessJobRunner:
                 job.status = "completed"
                 job.progress = 100
                 job.result_artifact_ids_json = result.artifact_ids
+                if result.export_result is not None:
+                    job.payload_json = {**job.payload_json, "export_result": result.export_result}
                 if result.runtime_device is not None:
                     job.runtime_device = result.runtime_device
                 self._ensure_terminal_runtime_status(job)
@@ -836,14 +846,17 @@ class InProcessJobRunner:
                     queue_project_storage_reconciliation(session, job.project_id)
                 session.commit()
         except JobCancelledError:
+            self._mark_export_result_cancelled(job_id)
             self.update_job(job_id, status="cancelled", error_message=None)
         except AppError as exc:
             if self.is_cancel_requested(job_id):
+                self._mark_export_result_cancelled(job_id)
                 self.update_job(job_id, status="cancelled", error_message=None)
             else:
                 self.update_job(job_id, status="failed", error_message=_job_error_message(exc))
         except Exception as exc:  # pragma: no cover - defensive fallback
             if self.is_cancel_requested(job_id):
+                self._mark_export_result_cancelled(job_id)
                 self.update_job(job_id, status="cancelled", error_message=None)
             else:
                 self.update_job(job_id, status="failed", error_message=str(exc))
@@ -1024,15 +1037,15 @@ class InProcessJobRunner:
             progress=25,
             runtime_device="cpu",
         )
-        artifact = export_artifacts(
+        batch = export_artifacts(
             session,
             project=project,
             artifact_ids=list(payload.get("artifact_ids", [])),
             output_format=payload.get("output_format", "wav"),
-            destination_path=payload.get("destination_path"),
-            destination_file_path=payload.get("destination_file_path"),
-            overwrite_existing=bool(payload.get("overwrite_existing", False)),
+            destination=dict(payload.get("destination", {})),
+            output_names=list(payload.get("output_names", [])),
             on_progress=context.progress_reporter(),
+            on_result=context.set_export_result,
             should_cancel=context.should_cancel,
             register_process=context.register_process,
             unregister_process=context.unregister_process,
@@ -1043,7 +1056,40 @@ class InProcessJobRunner:
             progress=90,
             runtime_device="cpu",
         )
-        return JobExecutionResult(artifact_ids=[artifact.id])
+        if batch.export_result["outcome"] == "failed":
+            job.payload_json = {**job.payload_json, "export_result": batch.export_result}
+            session.commit()
+            raise AppError("PROCESSING_FAILED", "No selected audio items could be exported.")
+        return JobExecutionResult(artifact_ids=batch.artifact_ids, export_result=batch.export_result)
+
+    def _mark_export_result_cancelled(self, job_id: str) -> None:
+        with self.session_factory() as session:
+            job = session.get(Job, job_id)
+            if job is None or job.type != "export":
+                return
+            result = job.payload_json.get("export_result")
+            if not isinstance(result, dict):
+                return
+            items = result.get("items")
+            if not isinstance(items, list):
+                return
+            cancelled_items: list[dict[str, Any]] = []
+            for raw_item in items:
+                if not isinstance(raw_item, dict):
+                    continue
+                item = dict(raw_item)
+                if item.get("status") in {"pending", "running"}:
+                    item["status"] = "cancelled"
+                cancelled_items.append(item)
+            job.payload_json = {
+                **job.payload_json,
+                "export_result": {
+                    **result,
+                    "outcome": "cancelled",
+                    "items": cancelled_items,
+                },
+            }
+            session.commit()
 
     def _handle_stems(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")

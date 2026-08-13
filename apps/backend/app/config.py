@@ -77,7 +77,7 @@ def get_settings() -> Settings:
         backend_port=int(os.environ.get("TUNEFORGE_PORT", "8765")),
         default_export_format="wav",
         supported_import_formats=("mp3", "wav", "flac", "m4a", "aac", "ogg", "mp4", "webm"),
-        supported_export_formats=("wav", "mp3", "flac"),
+        supported_export_formats=("wav", "flac", "mp3", "m4a"),
         preview_format="wav",
         ffmpeg_path=os.environ.get("TUNEFORGE_FFMPEG_PATH", "ffmpeg"),
         ffprobe_path=os.environ.get("TUNEFORGE_FFPROBE_PATH", "ffprobe"),

@@ -2829,10 +2829,19 @@ export function getMockAudioContexts() {
           start: ReturnType<typeof vi.fn>;
         }>;
         close: ReturnType<typeof vi.fn>;
+        currentTime: number;
         resume: ReturnType<typeof vi.fn>;
       }>;
     }
   ).__mockAudioContexts;
+}
+
+export function advanceMockAnimationFrames(count = 1) {
+  (
+    globalThis as typeof globalThis & {
+      __mockAnimationFrameController: { advance: (count?: number) => void };
+    }
+  ).__mockAnimationFrameController.advance(count);
 }
 
 export function setMockAudioContextInitialState(state: AudioContextState) {
@@ -2976,6 +2985,11 @@ export function getMockWakeLock() {
 
 
 export function resetAppTestHarness() {
+  (
+    globalThis as typeof globalThis & {
+      __mockAnimationFrameController: { reset: () => void };
+    }
+  ).__mockAnimationFrameController.reset();
   resetMockApiState();
   resetPlaybackE2ETelemetry();
   resetScreenWakeLockForTests();

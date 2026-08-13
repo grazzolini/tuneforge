@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  advanceMockAnimationFrames,
   findAudioByArtifactId,
   getMockAudioContexts,
   markAudioReady,
@@ -154,6 +155,9 @@ describe("Desktop app tools metronome", () => {
     const sourceAudio = findAudioByArtifactId("art_source");
     markAudioReady(sourceAudio);
     await user.click(screen.getByRole("tab", { name: "Playback" }));
+    const playbackPosition = screen.getByLabelText("Playback position");
+    fireEvent.change(playbackPosition, { target: { value: "0.49" } });
+    expect(playbackPosition).toHaveValue("0.49");
     await user.click(screen.getByRole("button", { name: "Play playback" }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument(),
@@ -162,6 +166,11 @@ describe("Desktop app tools metronome", () => {
     await user.click(screen.getByRole("link", { name: "Tools" }));
     await user.click(await screen.findByRole("tab", { name: "Metronome" }));
     await user.click(screen.getByLabelText("Follow project playback"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText("Following Demo Song").length).toBeGreaterThan(0));
+    act(() => {
+      advanceMockAnimationFrames();
+    });
 
     await waitFor(() =>
       expect(getMetronomeAudioContext()?.createdOscillators.length).toBeGreaterThan(0),
@@ -173,9 +182,19 @@ describe("Desktop app tools metronome", () => {
     await waitFor(() =>
       expect(screen.getAllByText("Waiting for Demo Song playback").length).toBeGreaterThan(0),
     );
+    act(() => {
+      advanceMockAnimationFrames();
+    });
     expect(syncedContext?.close).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "Play background playback" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Pause background playback" })).toBeInTheDocument(),
+    );
+    await waitFor(() => expect(screen.getAllByText("Following Demo Song").length).toBeGreaterThan(0));
+    act(() => {
+      advanceMockAnimationFrames();
+    });
     await waitFor(() =>
       expect(syncedContext?.createdOscillators.length).toBeGreaterThan(scheduledBeforePause),
     );
@@ -190,18 +209,21 @@ describe("Desktop app tools metronome", () => {
     const sourceAudio = findAudioByArtifactId("art_source");
     markAudioReady(sourceAudio);
     await user.click(screen.getByRole("tab", { name: "Playback" }));
+    const playbackPosition = screen.getByLabelText("Playback position");
+    fireEvent.change(playbackPosition, { target: { value: "0.45" } });
+    expect(playbackPosition).toHaveValue("0.45");
     await user.click(screen.getByRole("button", { name: "Play playback" }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument(),
     );
-    act(() => {
-      sourceAudio.currentTime = 0.45;
-      fireEvent.timeUpdate(sourceAudio);
-    });
-
     await user.click(screen.getByRole("link", { name: "Tools" }));
     await user.click(await screen.findByRole("tab", { name: "Metronome" }));
     await user.click(screen.getByLabelText("Follow project playback"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText("Following Demo Song").length).toBeGreaterThan(0));
+    act(() => {
+      advanceMockAnimationFrames();
+    });
 
     await waitFor(() => {
       const frequencies =
@@ -220,6 +242,9 @@ describe("Desktop app tools metronome", () => {
     const sourceAudio = findAudioByArtifactId("art_source");
     markAudioReady(sourceAudio);
     await user.click(screen.getByRole("tab", { name: "Playback" }));
+    const playbackPosition = screen.getByLabelText("Playback position");
+    fireEvent.change(playbackPosition, { target: { value: "0.49" } });
+    expect(playbackPosition).toHaveValue("0.49");
     await user.click(screen.getByRole("button", { name: "Play playback" }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Pause playback" })).toBeInTheDocument(),
@@ -228,6 +253,11 @@ describe("Desktop app tools metronome", () => {
     await user.click(screen.getByRole("link", { name: "Tools" }));
     await user.click(await screen.findByRole("tab", { name: "Metronome" }));
     await user.click(screen.getByLabelText("Follow project playback"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText("Following Demo Song").length).toBeGreaterThan(0));
+    act(() => {
+      advanceMockAnimationFrames();
+    });
     await waitFor(() =>
       expect(getMetronomeAudioContext()?.createdOscillators.length).toBeGreaterThan(0),
     );

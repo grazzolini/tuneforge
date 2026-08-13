@@ -5,7 +5,7 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
-## [1.0.1] - Pending
+## [1.0.1] - 2026-08-13
 
 ### Added
 
@@ -19,7 +19,7 @@ download, installation, verification, signature, and publication instructions.
   ([#361](https://github.com/grazzolini/tuneforge/pull/361)).
 - Dedicated Android release signing for publishable APKs
   ([#422](https://github.com/grazzolini/tuneforge/pull/422)).
-- Added this curated product changelog.
+- Added this curated product changelog ([#424](https://github.com/grazzolini/tuneforge/pull/424)).
 
 ### Changed
 
@@ -82,5 +82,6 @@ download, installation, verification, signature, and publication instructions.
 
 - Development used `0.1.0` metadata; `v1.0.0` was the first tagged release.
 
-[1.0.1]: https://github.com/grazzolini/tuneforge/compare/v1.0.0...main
+[Unreleased]: https://github.com/grazzolini/tuneforge/compare/v1.0.1...main
+[1.0.1]: https://github.com/grazzolini/tuneforge/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/grazzolini/tuneforge/releases/tag/v1.0.0

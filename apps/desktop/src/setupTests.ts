@@ -344,7 +344,7 @@ let mockAudioSourceStartError: Error | null = null;
 const RAF_STEP_SECONDS = 1 / 60;
 let nextAnimationFrameId = 1;
 let mockAnimationTimeMs = 0;
-const pendingAnimationFrames = new Map<number, ReturnType<typeof setTimeout>>();
+const pendingAnimationFrames = new Map<number, FrameRequestCallback>();
 
 function advanceMockAudioTime(seconds: number) {
   mockAudioContexts.forEach((audioContext) => {
@@ -352,31 +352,60 @@ function advanceMockAudioTime(seconds: number) {
   });
 }
 
+const mockRequestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+  const frameId = nextAnimationFrameId++;
+  pendingAnimationFrames.set(frameId, callback);
+  return frameId;
+});
+
+const mockCancelAnimationFrame = vi.fn((frameId: number) => {
+  pendingAnimationFrames.delete(frameId);
+});
+
 Object.defineProperty(window, "requestAnimationFrame", {
   writable: true,
-  value: vi.fn((callback: FrameRequestCallback) => {
-    const frameId = nextAnimationFrameId++;
-    const timer = setTimeout(() => {
-      pendingAnimationFrames.delete(frameId);
-      mockAnimationTimeMs += RAF_STEP_SECONDS * 1000;
-      advanceMockAudioTime(RAF_STEP_SECONDS);
-      callback(mockAnimationTimeMs);
-    }, 0);
-    pendingAnimationFrames.set(frameId, timer);
-    return frameId;
-  }),
+  value: mockRequestAnimationFrame,
 });
 
 Object.defineProperty(window, "cancelAnimationFrame", {
   writable: true,
-  value: vi.fn((frameId: number) => {
-    const timer = pendingAnimationFrames.get(frameId);
-    if (!timer) {
-      return;
+  value: mockCancelAnimationFrame,
+});
+
+function advanceMockAnimationFrames(count = 1) {
+  if (!Number.isInteger(count) || count < 0) {
+    throw new RangeError("Mock animation frame count must be a non-negative integer.");
+  }
+
+  for (let frame = 0; frame < count; frame += 1) {
+    mockAnimationTimeMs += RAF_STEP_SECONDS * 1000;
+    advanceMockAudioTime(RAF_STEP_SECONDS);
+    const frameIds = [...pendingAnimationFrames.keys()];
+    for (const frameId of frameIds) {
+      const callback = pendingAnimationFrames.get(frameId);
+      if (!callback) {
+        continue;
+      }
+      pendingAnimationFrames.delete(frameId);
+      callback(mockAnimationTimeMs);
     }
-    clearTimeout(timer);
-    pendingAnimationFrames.delete(frameId);
-  }),
+  }
+}
+
+function resetMockAnimationFrames() {
+  pendingAnimationFrames.clear();
+  nextAnimationFrameId = 1;
+  mockAnimationTimeMs = 0;
+  mockRequestAnimationFrame.mockClear();
+  mockCancelAnimationFrame.mockClear();
+}
+
+Object.defineProperty(globalThis, "__mockAnimationFrameController", {
+  writable: true,
+  value: {
+    advance: advanceMockAnimationFrames,
+    reset: resetMockAnimationFrames,
+  },
 });
 
 class MockAudioContext {

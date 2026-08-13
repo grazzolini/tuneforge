@@ -1,7 +1,8 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  advanceMockAnimationFrames,
   emitMockNativePlaybackError,
   emitMockNativePlaybackPosition,
   findAudioByArtifactId,
@@ -627,6 +628,10 @@ describe("Desktop app project playback tempo", () => {
     await user.click(screen.getByRole("button", { name: "Decrease playback tempo" }));
     await user.click(screen.getByRole("button", { name: "Increase playback tempo" }));
     await waitForTempoSummary("118 BPM (0.983x)");
+    await act(async () => {});
+    act(() => {
+      advanceMockAnimationFrames(5);
+    });
 
     await waitFor(() => expect(vocalAudio.playbackRate).toBeCloseTo(118 / 120, 4));
     expect(instrumentalAudio.playbackRate).toBeCloseTo(118 / 120, 4);

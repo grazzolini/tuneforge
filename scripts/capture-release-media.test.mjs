@@ -32,8 +32,8 @@ test("capture motion policy freezes screenshots and preserves video movement", (
 
 test("release-media catalog has unique identifiers, files, and required callbacks", () => {
   assert.equal(validateReleaseMediaCatalog(releaseMediaCaptureCatalog), releaseMediaCaptureCatalog);
-  assert.equal(releaseMediaCaptureCatalog.length, 8);
-  assert.equal(releaseMediaCaptureCatalog.filter((entry) => entry.kind === "screenshot").length, 7);
+  assert.equal(releaseMediaCaptureCatalog.length, 9);
+  assert.equal(releaseMediaCaptureCatalog.filter((entry) => entry.kind === "screenshot").length, 8);
   assert.equal(releaseMediaCaptureCatalog.filter((entry) => entry.kind === "video").length, 1);
 
   const ids = releaseMediaCaptureCatalog.map((entry) => entry.id);

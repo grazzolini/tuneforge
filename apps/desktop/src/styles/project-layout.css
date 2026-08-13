@@ -599,7 +599,6 @@
     grid-template-areas:
       "summary"
       "details"
-      "export"
       "danger";
   }
 }

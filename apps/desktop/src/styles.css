@@ -2,6 +2,7 @@
 @import "./styles/settings-theme.css";
 @import "./styles/library.css";
 @import "./styles/project-layout.css";
+@import "./styles/project-export.css";
 @import "./styles/project-playback.css";
 @import "./styles/project-history.css";
 @import "./styles/project-inspector.css";

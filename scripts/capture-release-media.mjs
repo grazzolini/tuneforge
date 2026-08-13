@@ -60,6 +60,21 @@ const releaseMediaCaptureCatalog = [
     capture: captureScreenshotEntry,
   },
   {
+    id: "export-workspace",
+    enabled: true,
+    kind: "screenshot",
+    fileName: "export-workspace.png",
+    title: "Selective export workspace",
+    caption: "Package one practice mix and a custom set of stems as local files.",
+    alt: "TuneForge Export workspace with Practice Mix 1 and four M4A files selected",
+    fixture: "release-showcase-v1",
+    viewport: { width: 1440, height: 1024 },
+    route: "/projects/proj_release_showcase",
+    prepare: prepareExportWorkspace,
+    ready: readyExportWorkspace,
+    capture: captureScreenshotEntry,
+  },
+  {
     id: "tuner",
     enabled: true,
     kind: "screenshot",
@@ -128,6 +143,7 @@ const releaseMediaCaptureCatalog = [
     recordingItemIds: [
       "library",
       "playback",
+      "export-workspace",
       "tuner",
       "chord-dictionary",
       "jobs",
@@ -1340,6 +1356,16 @@ async function prepareMobilePlayback({ page, timeoutMs }) {
   }
 }
 
+async function prepareExportWorkspace({ page, timeoutMs }) {
+  await page.getByRole("tab", { name: "Project" }).click();
+  await page.getByRole("tab", { name: "Export" }).click();
+  await page.getByRole("radio", { name: /Practice Mix 1/i }).click();
+  await page.getByRole("button", { name: "Track + all stems" }).click();
+  const guitar = page.getByRole("checkbox", { name: /Guitar/i });
+  await guitar.waitFor({ timeout: timeoutMs });
+  await guitar.uncheck();
+}
+
 async function prepareTuner({ page, timeoutMs }) {
   const startButton = page.getByRole("button", { name: "Start" });
   await startButton.waitFor({ timeout: timeoutMs });
@@ -1371,6 +1397,15 @@ async function readyPlayback({ captureKind, page, timeoutMs }) {
   } else {
     await page.getByRole("button", { name: "Pause playback" }).waitFor({ timeout: timeoutMs });
   }
+}
+
+async function readyExportWorkspace({ page, timeoutMs }) {
+  await page.getByRole("heading", { name: "Export audio" }).waitFor({ timeout: timeoutMs });
+  await page.getByText("Custom selection", { exact: true }).waitFor({ timeout: timeoutMs });
+  await page.getByText("4 selected", { exact: true }).waitFor({ timeout: timeoutMs });
+  await page.getByRole("button", { name: "Folder" }).waitFor({ timeout: timeoutMs });
+  await page.getByText("Midnight Count-In - Practice Mix 1 - Vocals.m4a", { exact: true })
+    .waitFor({ timeout: timeoutMs });
 }
 
 async function readyMobilePlayback({ page, timeoutMs }) {
@@ -1705,6 +1740,26 @@ function mockApiResponse(method, url) {
   if (method === "GET" && path === "/api/v1/jobs") {
     return { body: jobsResponse(url.searchParams) };
   }
+  if (method === "GET" && path === "/api/v1/export-capabilities") {
+    return {
+      body: {
+        capabilities: {
+          platform: "desktop",
+          formats: ["wav", "flac", "mp3", "m4a"].map((id) => ({
+            id,
+            available: true,
+            reason: null,
+          })),
+          destinations: ["single_file", "folder", "zip"].map((id) => ({
+            id,
+            available: true,
+            reason: null,
+          })),
+          max_artifact_count: null,
+        },
+      },
+    };
+  }
   if (method === "GET" && path === "/api/v1/sync/preflight") {
     return { body: syncPreflight() };
   }
@@ -1946,6 +2001,20 @@ function artifacts(projectId) {
       },
       created_at: fixtureTimestamp,
     },
+    ...[
+      ["art_vocals", "vocal_stem"],
+      ["art_drums", "drums_stem"],
+      ["art_bass", "bass_stem"],
+      ["art_guitar", "guitar_stem"],
+    ].map(([id, type]) => ({
+      id,
+      project_id: projectId,
+      type,
+      format: "wav",
+      path: `/tmp/tuneforge-release-media/${id}.wav`,
+      metadata: { source_artifact_id: "art_preview" },
+      created_at: fixtureTimestamp,
+    })),
     {
       id: "art_source",
       project_id: projectId,

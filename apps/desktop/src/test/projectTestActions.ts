@@ -13,7 +13,7 @@ export async function ensureInspectorVisible(user: UserEvent) {
   }
 }
 
-export async function openProjectPanel(user: UserEvent, name: "Studio" | "Analysis") {
+export async function openProjectPanel(user: UserEvent, name: "Studio" | "Analysis" | "Export") {
   const tab = screen.getByRole("tab", { name });
   if (tab.getAttribute("aria-selected") !== "true") {
     await user.click(tab);
@@ -26,6 +26,10 @@ export async function openStudioPanel(user: UserEvent) {
 
 export async function openAnalysisPanel(user: UserEvent) {
   await openProjectPanel(user, "Analysis");
+}
+
+export async function openExportPanel(user: UserEvent) {
+  await openProjectPanel(user, "Export");
 }
 
 export async function generateStems(user: UserEvent) {

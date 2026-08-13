@@ -3,7 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.config import get_settings
-from app.schemas import HealthResponse, VersionInfo
+from app.schemas import ExportCapabilitiesResponse, ExportCapabilitiesSchema, HealthResponse, VersionInfo
+from app.services.transformations import export_capabilities
 from app.version import get_build_versions
 
 router = APIRouter(tags=["health"])
@@ -29,4 +30,11 @@ def health() -> HealthResponse:
         data_root=str(settings.data_root),
         default_export_format=settings.default_export_format,
         preview_format=settings.preview_format,
+    )
+
+
+@router.get("/export-capabilities", response_model=ExportCapabilitiesResponse)
+def get_export_capabilities() -> ExportCapabilitiesResponse:
+    return ExportCapabilitiesResponse(
+        capabilities=ExportCapabilitiesSchema.model_validate(export_capabilities())
     )

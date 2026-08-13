@@ -431,6 +431,11 @@ class Job(Base):
     project: Mapped[Project | None] = relationship(back_populates="jobs")
 
     @property
+    def export_result(self) -> dict[str, Any] | None:
+        value = self.payload_json.get("export_result")
+        return value if self.type == "export" and isinstance(value, dict) else None
+
+    @property
     def source_artifact_id(self) -> str | None:
         value = self.payload_json.get("source_artifact_id")
         return value if isinstance(value, str) else None

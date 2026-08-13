@@ -1243,6 +1243,23 @@ class TabImportApplyResponse(BaseModel):
     project: ProjectSchema
 
 
+class ExportResultItemSchema(BaseModel):
+    artifact_id: str
+    output_name: str
+    status: Literal["pending", "running", "completed", "failed", "cancelled"]
+    progress: int = Field(default=0, ge=0, le=100)
+    result_artifact_id: str | None = None
+    error: str | None = None
+
+
+class ExportResultSchema(BaseModel):
+    outcome: Literal["completed", "partial", "failed", "cancelled"]
+    total_count: int = Field(ge=1)
+    completed_count: int = Field(ge=0)
+    failed_count: int = Field(ge=0)
+    items: list[ExportResultItemSchema]
+
+
 class JobSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -1268,6 +1285,8 @@ class JobSchema(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     duration_seconds: float | None = None
+    result_artifact_ids: list[str] = Field(default_factory=list, validation_alias="result_artifact_ids_json")
+    export_result: ExportResultSchema | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -1422,10 +1441,52 @@ class StemRequest(BaseModel):
         return self
 
 
+class ExportSingleFileDestinationSchema(BaseModel):
+    type: Literal["single_file"]
+    target: str = Field(min_length=1)
+    overwrite: bool = False
+
+
+class ExportFolderDestinationSchema(BaseModel):
+    type: Literal["folder"]
+    target: str = Field(min_length=1)
+    overwrite: bool = False
+
+
+class ExportZipDestinationSchema(BaseModel):
+    type: Literal["zip"]
+    target: str = Field(min_length=1)
+    overwrite: bool = False
+
+
+ExportDestinationSchema = (
+    ExportSingleFileDestinationSchema | ExportFolderDestinationSchema | ExportZipDestinationSchema
+)
+
+
+class ExportCapabilityOptionSchema(BaseModel):
+    id: str
+    available: bool
+    reason: str | None = None
+
+
+class ExportCapabilitiesSchema(BaseModel):
+    platform: Literal["desktop", "android"]
+    formats: list[ExportCapabilityOptionSchema]
+    destinations: list[ExportCapabilityOptionSchema]
+    max_artifact_count: int | None = None
+
+
+class ExportCapabilitiesResponse(BaseModel):
+    capabilities: ExportCapabilitiesSchema
+
+
 class ExportRequest(BaseModel):
     artifact_ids: list[str]
     mixdown_mode: str = "copy"
-    output_format: str = "wav"
+    output_format: Literal["wav", "flac", "mp3", "m4a"] = "wav"
+    filename_base: str | None = None
+    destination: ExportDestinationSchema | None = Field(default=None, discriminator="type")
     destination_path: str | None = None
     destination_file_path: str | None = None
     overwrite_existing: bool = False
@@ -1434,4 +1495,20 @@ class ExportRequest(BaseModel):
     def validate_export(self) -> ExportRequest:
         if not self.artifact_ids:
             raise ValueError("At least one artifact id is required.")
+        if len(self.artifact_ids) != len(set(self.artifact_ids)):
+            raise ValueError("Artifact ids must be unique.")
+        has_legacy_destination = bool(self.destination_path or self.destination_file_path)
+        if self.destination is not None and has_legacy_destination:
+            raise ValueError("Canonical and legacy export destinations cannot be combined.")
+        if self.destination is not None and self.overwrite_existing:
+            raise ValueError("Canonical overwrite approval belongs in destination.overwrite.")
+        if self.destination is None and len(self.artifact_ids) != 1:
+            raise ValueError("Legacy export requests support exactly one artifact.")
+        if self.destination is not None:
+            if len(self.artifact_ids) == 1 and self.destination.type != "single_file":
+                raise ValueError("Single-artifact exports require a single_file destination.")
+            if len(self.artifact_ids) > 1 and self.destination.type == "single_file":
+                raise ValueError("Multi-artifact exports require a folder or zip destination.")
+        if self.filename_base is not None and not self.filename_base.strip():
+            raise ValueError("Filename base cannot be empty.")
         return self

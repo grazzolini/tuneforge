@@ -21,6 +21,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/export-capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Export Capabilities */
+        get: operations["get_export_capabilities_api_v1_export_capabilities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/beat-backends": {
         parameters: {
             query?: never;
@@ -1108,6 +1125,48 @@ export interface components {
         ErrorResponse: {
             error: components["schemas"]["ErrorInfo"];
         };
+        /** ExportCapabilitiesResponse */
+        ExportCapabilitiesResponse: {
+            capabilities: components["schemas"]["ExportCapabilitiesSchema"];
+        };
+        /** ExportCapabilitiesSchema */
+        ExportCapabilitiesSchema: {
+            /**
+             * Platform
+             * @enum {string}
+             */
+            platform: "desktop" | "android";
+            /** Formats */
+            formats: components["schemas"]["ExportCapabilityOptionSchema"][];
+            /** Destinations */
+            destinations: components["schemas"]["ExportCapabilityOptionSchema"][];
+            /** Max Artifact Count */
+            max_artifact_count?: number | null;
+        };
+        /** ExportCapabilityOptionSchema */
+        ExportCapabilityOptionSchema: {
+            /** Id */
+            id: string;
+            /** Available */
+            available: boolean;
+            /** Reason */
+            reason?: string | null;
+        };
+        /** ExportFolderDestinationSchema */
+        ExportFolderDestinationSchema: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "folder";
+            /** Target */
+            target: string;
+            /**
+             * Overwrite
+             * @default false
+             */
+            overwrite?: boolean;
+        };
         /** ExportRequest */
         ExportRequest: {
             /** Artifact Ids */
@@ -1120,8 +1179,13 @@ export interface components {
             /**
              * Output Format
              * @default wav
+             * @enum {string}
              */
-            output_format?: string;
+            output_format?: "wav" | "flac" | "mp3" | "m4a";
+            /** Filename Base */
+            filename_base?: string | null;
+            /** Destination */
+            destination?: (components["schemas"]["ExportSingleFileDestinationSchema"] | components["schemas"]["ExportFolderDestinationSchema"] | components["schemas"]["ExportZipDestinationSchema"]) | null;
             /** Destination Path */
             destination_path?: string | null;
             /** Destination File Path */
@@ -1131,6 +1195,73 @@ export interface components {
              * @default false
              */
             overwrite_existing?: boolean;
+        };
+        /** ExportResultItemSchema */
+        ExportResultItemSchema: {
+            /** Artifact Id */
+            artifact_id: string;
+            /** Output Name */
+            output_name: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "running" | "completed" | "failed" | "cancelled";
+            /**
+             * Progress
+             * @default 0
+             */
+            progress?: number;
+            /** Result Artifact Id */
+            result_artifact_id?: string | null;
+            /** Error */
+            error?: string | null;
+        };
+        /** ExportResultSchema */
+        ExportResultSchema: {
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "completed" | "partial" | "failed" | "cancelled";
+            /** Total Count */
+            total_count: number;
+            /** Completed Count */
+            completed_count: number;
+            /** Failed Count */
+            failed_count: number;
+            /** Items */
+            items: components["schemas"]["ExportResultItemSchema"][];
+        };
+        /** ExportSingleFileDestinationSchema */
+        ExportSingleFileDestinationSchema: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "single_file";
+            /** Target */
+            target: string;
+            /**
+             * Overwrite
+             * @default false
+             */
+            overwrite?: boolean;
+        };
+        /** ExportZipDestinationSchema */
+        ExportZipDestinationSchema: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "zip";
+            /** Target */
+            target: string;
+            /**
+             * Overwrite
+             * @default false
+             */
+            overwrite?: boolean;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1206,6 +1337,9 @@ export interface components {
             completed_at?: string | null;
             /** Duration Seconds */
             duration_seconds?: number | null;
+            /** Result Artifact Ids */
+            result_artifact_ids?: string[];
+            export_result?: components["schemas"]["ExportResultSchema"] | null;
             /**
              * Created At
              * Format: date-time
@@ -2747,6 +2881,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+        };
+    };
+    get_export_capabilities_api_v1_export_capabilities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportCapabilitiesResponse"];
                 };
             };
         };

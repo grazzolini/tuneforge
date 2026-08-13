@@ -927,14 +927,29 @@ Queues an export job for selected project artifacts.
 
 Request fields:
 
-- `artifact_ids`
-- `mixdown_mode`
-- `output_format`
-- `destination_path`
+- `artifact_ids` - unique ordered IDs from one source track or practice mix and its stems.
+- `output_format` - `wav`, `flac`, `mp3`, or `m4a`, subject to runtime capabilities.
+- `filename_base` - sanitized base used for stable friendly output names.
+- `destination` - tagged `single_file`, `folder`, or `zip` object with opaque `target` and
+  explicit `overwrite` approval.
 
-At least one artifact ID is required.
+Legacy `mixdown_mode`, `destination_path`, `destination_file_path`, and `overwrite_existing`
+remain accepted for one artifact during migration. Canonical and legacy destinations cannot be
+combined. Multi-artifact requests require Folder or ZIP and reject artifacts from different audio
+sets before queuing.
 
 Response: `JobResponse`.
+
+Completed export jobs expose ordered `result_artifact_ids` and `export_result`. The result contains
+aggregate outcome/counts plus per-item progress, status, output name, registered result ID, and safe
+error. A mixed batch keeps global job status `completed` with export outcome `partial`.
+
+### Get export capabilities
+
+`GET /api/v1/export-capabilities`
+
+Returns runtime-probed format availability, destination availability, and maximum artifact count.
+Desktop probes configured host FFmpeg encoders and muxers once per backend process.
 
 ## Jobs
 

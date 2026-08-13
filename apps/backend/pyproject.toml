@@ -1,6 +1,6 @@
 [project]
 name = "tuneforge-backend"
-version = "1.0.0"
+version = "1.0.1"
 description = "Local API and processing backend for TuneForge."
 readme = "README.md"
 requires-python = ">=3.11,<3.12"

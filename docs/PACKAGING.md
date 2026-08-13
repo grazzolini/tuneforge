@@ -21,25 +21,26 @@ packaged launch smoke pass are both recorded for each intended artifact. Missing
 or smoke evidence fails the gate closed; do not substitute `pnpm dev`, a dev server, or
 an unpackaged Tauri run for packaged-artifact proof.
 
-Before tagging, verify the release changelog section against changes since the previous tag. Promote
-and merge the completed `[Unreleased]` entries into the release section, then leave a new empty
-`[Unreleased]` section. Freeze the release comparison at `previous-tag...new-tag` and reset the
-`[Unreleased]` comparison to `new-tag...main`. Operational artifact, installation, checksum,
-signature, and upload instructions belong in the GitHub Release notes.
+Before tagging, verify the release changelog against changes since the previous tag. Promote completed
+`[Unreleased]` entries into the dated release section, leave `[Unreleased]` empty, freeze the release
+comparison at `previous-tag...new-tag`, and reset `[Unreleased]` to `new-tag...main`.
 
-Run the pre-tag checks from the intended release commit:
+Run these checks from the clean final release commit:
 
 ```sh
 node scripts/check-release-version.mjs
 node scripts/release-license-inventory.mjs --check
-pnpm package:mac
-pnpm package:linux:flatpak
 ```
 
+Create and push a signed annotated `v<version>` tag, then create a GitHub pre-release for that tag.
+Build each intended artifact from a clean checkout of the tag without a `TUNEFORGE_GIT_REF` override.
+Validate and sign the artifacts, upload them to the pre-release, and publish the final release only
+after the uploaded assets pass verification. Never move or delete a published tag; roll forward with a
+new version. Operational artifact, installation, checksum, signature, and upload instructions belong
+in the GitHub Release notes.
+
 Run `pnpm package:mac` only on supported macOS release hosts, and run
-`pnpm package:linux:flatpak` only on supported Linux hosts with Flatpak packaging
-tooling. If a release includes only one platform artifact, run and record the package
-command for that artifact.
+`pnpm package:linux:flatpak` only on supported Linux hosts with Flatpak packaging tooling.
 
 For the manual launch smoke, install or open the built package artifact and confirm:
 

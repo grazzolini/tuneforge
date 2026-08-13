@@ -6,6 +6,7 @@ import {
   mockGetExportCapabilities,
   mockGetMobileCapabilities,
   mockOpen,
+  mockSave,
   resetAppTestHarness,
   renderApp,
   setProjectArtifacts,
@@ -202,23 +203,24 @@ describe("project export workspace", () => {
     await waitFor(() => expect(screen.getByText("Demo Song - Source.m4a")).toBeInTheDocument());
   });
 
-  it("shows truthful Android limits and disabled export controls", async () => {
+  it("enables one picker-owned M4A export while showing truthful Android limits", async () => {
     const user = userEvent.setup();
     installExportArtifacts();
     mockGetMobileCapabilities.mockResolvedValue({ platform: "android" });
     mockGetExportCapabilities.mockResolvedValue({
       capabilities: {
         platform: "android",
-        formats: ["wav", "flac", "mp3", "m4a"].map((id) => ({
-          id,
-          available: false,
-          reason: "Android audio export is not available in this build.",
-        })),
-        destinations: ["single_file", "folder", "zip"].map((id) => ({
-          id,
-          available: false,
-          reason: "Android audio export is not available in this build.",
-        })),
+        formats: [
+          { id: "wav", available: false, reason: "Android currently exports only M4A audio." },
+          { id: "flac", available: false, reason: "Android currently exports only M4A audio." },
+          { id: "mp3", available: false, reason: "Android currently exports only M4A audio." },
+          { id: "m4a", available: true, reason: null },
+        ],
+        destinations: [
+          { id: "single_file", available: true, reason: null },
+          { id: "folder", available: false, reason: "Android currently exports one file at a time." },
+          { id: "zip", available: false, reason: "Android currently exports one file at a time." },
+        ],
         max_artifact_count: 1,
       },
     });
@@ -236,12 +238,26 @@ describe("project export workspace", () => {
     expect(allStems).toHaveAttribute("aria-describedby", "android-multi-export-reason");
     expect(trackAndStems).toHaveAttribute("aria-describedby", "android-multi-export-reason");
     expect(screen.getByText(/All stems and track plus stems require multiple files/)).toBeVisible();
-    expect(screen.getAllByText("Android audio export is not available in this build.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Android currently exports one file at a time.").length).toBeGreaterThan(0);
     expect(within(screen.getByRole("group", { name: "Audio selection" })).getAllByRole("radio")).toHaveLength(5);
     expect(screen.getByLabelText("File format")).toHaveAttribute(
       "aria-describedby",
       "android-export-format-notice",
     );
-    expect(screen.getByRole("button", { name: "Export 1 file" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Folder" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "ZIP" })).toBeDisabled();
+    expect(screen.getByLabelText("File format")).toHaveValue("m4a");
+    mockSave.mockResolvedValue("content://picker/Demo Song - Practice Mix 1.m4a");
+    await user.click(screen.getByRole("button", { name: "Export 1 file" }));
+    expect(mockCreateExport).toHaveBeenCalledWith("proj_123", {
+      artifact_ids: ["art_mix"],
+      output_format: "m4a",
+      filename_base: "Demo Song",
+      destination: {
+        type: "single_file",
+        target: "content://picker/Demo Song - Practice Mix 1.m4a",
+        overwrite: true,
+      },
+    });
   });
 });

@@ -89,6 +89,14 @@ Mobile does not bundle FFmpeg. Android uses platform media APIs instead.
 - Desktop currently keeps WAV intermediates and `wav`/`mp3`/`flac` exports through host-installed FFmpeg.
 - Unsupported mobile export formats stay unavailable until a native encoder path exists.
 
+Android Export accepts one source, practice-mix track, or stem at a time and writes AAC-LC M4A at
+192 kb/s through `MediaCodec` and `MediaMuxer`. The worker stages the file in app-private storage,
+validates the container, then writes the picker-owned `content://` destination and verifies an exact
+byte readback before recording local `export_mix` history. Encoding and staging are cancellable;
+the final provider commit is non-interruptible and shown as `Finalizing…`. Interrupted running
+exports become failed jobs after the next app start. WAV, FLAC, MP3, Folder, and ZIP remain visibly
+unavailable on Android.
+
 The planned durable-storage direction does not preserve the desktop original import as a separate
 canonical file. WAV remains the default, with FLAC as an optional preference for each new durable
 source, stem, saved mix, or other durable audio artifact. The preference is captured when an action

@@ -9,6 +9,8 @@ download, installation, verification, signature, and publication instructions.
 
 - A dedicated project Export workspace for selecting one source track or practice mix and packaging
   its track and stems as a file, folder, or ZIP.
+- Android M4A export for one source track, practice mix, or stem at a time through the system file
+  picker.
 
 ## [1.0.1] - 2026-08-13
 

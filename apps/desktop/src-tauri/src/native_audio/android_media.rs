@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use super::decode::DecodedAudio;
+use super::decode::{DecodedAudio, DecodedInterleavedAudio};
 
 #[cfg(target_os = "android")]
 mod android {
@@ -173,7 +173,7 @@ mod android {
         media_format_i32(format.0, key)
     }
 
-    pub(super) fn read(path: &Path) -> Result<DecodedAudio, String> {
+    pub(super) fn read(path: &Path) -> Result<DecodedInterleavedAudio, String> {
         const TIMEOUT_US: i64 = 10_000;
         const PCM_ENCODING_16BIT: i32 = 2;
         const PCM_ENCODING_FLOAT: i32 = 4;
@@ -384,20 +384,20 @@ mod android {
 
         match output_encoding {
             PCM_ENCODING_16BIT => {
-                pcm_i16_bytes_to_mono(&decoded, output_sample_rate, output_channels)
+                pcm_i16_bytes_to_interleaved(&decoded, output_sample_rate, output_channels)
             }
             PCM_ENCODING_FLOAT => {
-                pcm_f32_bytes_to_mono(&decoded, output_sample_rate, output_channels)
+                pcm_f32_bytes_to_interleaved(&decoded, output_sample_rate, output_channels)
             }
             _ => Err("Android MediaCodec returned an unsupported PCM output encoding.".to_string()),
         }
     }
 
-    fn pcm_i16_bytes_to_mono(
+    fn pcm_i16_bytes_to_interleaved(
         bytes: &[u8],
         sample_rate: i32,
         channels: i32,
-    ) -> Result<DecodedAudio, String> {
+    ) -> Result<DecodedInterleavedAudio, String> {
         if sample_rate <= 0 || channels <= 0 {
             return Err("Android MediaCodec returned invalid PCM metadata.".to_string());
         }
@@ -408,38 +408,24 @@ mod android {
         if frame_bytes == 0 {
             return Err("Android MediaCodec returned invalid channel metadata.".to_string());
         }
-        let frame_count = bytes.len() / frame_bytes;
-        let mut samples = Vec::with_capacity(frame_count);
-        for frame_index in 0..frame_count {
-            let frame_start = frame_index * frame_bytes;
-            let mut sum = 0.0f32;
-            for channel_index in 0..channel_count {
-                let sample_start = frame_start + channel_index * 2;
-                let raw = i16::from_le_bytes(
-                    bytes
-                        .get(sample_start..sample_start + 2)
-                        .ok_or_else(|| {
-                            "Android MediaCodec returned truncated PCM data.".to_string()
-                        })?
-                        .try_into()
-                        .map_err(|_| "Android MediaCodec returned invalid PCM data.".to_string())?,
-                );
-                sum += raw as f32 / i16::MAX as f32;
-            }
-            samples.push((sum / channel_count as f32).clamp(-1.0, 1.0));
+        let mut samples = Vec::with_capacity(bytes.len() / 2);
+        for raw in bytes.chunks_exact(2) {
+            samples.push(
+                (i16::from_le_bytes([raw[0], raw[1]]) as f32 / i16::MAX as f32).clamp(-1.0, 1.0),
+            );
         }
-        Ok(DecodedAudio {
+        Ok(DecodedInterleavedAudio {
             samples,
             sample_rate: sample_rate as u32,
             channels: channels as u32,
         })
     }
 
-    fn pcm_f32_bytes_to_mono(
+    fn pcm_f32_bytes_to_interleaved(
         bytes: &[u8],
         sample_rate: i32,
         channels: i32,
-    ) -> Result<DecodedAudio, String> {
+    ) -> Result<DecodedInterleavedAudio, String> {
         if sample_rate <= 0 || channels <= 0 {
             return Err("Android MediaCodec returned invalid PCM metadata.".to_string());
         }
@@ -450,27 +436,11 @@ mod android {
         if frame_bytes == 0 {
             return Err("Android MediaCodec returned invalid channel metadata.".to_string());
         }
-        let frame_count = bytes.len() / frame_bytes;
-        let mut samples = Vec::with_capacity(frame_count);
-        for frame_index in 0..frame_count {
-            let frame_start = frame_index * frame_bytes;
-            let mut sum = 0.0f32;
-            for channel_index in 0..channel_count {
-                let sample_start = frame_start + channel_index * 4;
-                let raw = f32::from_le_bytes(
-                    bytes
-                        .get(sample_start..sample_start + 4)
-                        .ok_or_else(|| {
-                            "Android MediaCodec returned truncated PCM data.".to_string()
-                        })?
-                        .try_into()
-                        .map_err(|_| "Android MediaCodec returned invalid PCM data.".to_string())?,
-                );
-                sum += raw;
-            }
-            samples.push((sum / channel_count as f32).clamp(-1.0, 1.0));
+        let mut samples = Vec::with_capacity(bytes.len() / 4);
+        for raw in bytes.chunks_exact(4) {
+            samples.push(f32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]).clamp(-1.0, 1.0));
         }
-        Ok(DecodedAudio {
+        Ok(DecodedInterleavedAudio {
             samples,
             sample_rate: sample_rate as u32,
             channels: channels as u32,
@@ -478,7 +448,9 @@ mod android {
     }
 }
 
-pub fn read_android_media_audio(path: &Path) -> Result<DecodedAudio, String> {
+pub fn read_android_media_audio_interleaved(
+    path: &Path,
+) -> Result<DecodedInterleavedAudio, String> {
     #[cfg(target_os = "android")]
     {
         android::read(path)
@@ -489,4 +461,20 @@ pub fn read_android_media_audio(path: &Path) -> Result<DecodedAudio, String> {
         let _ = path;
         Err("Android MediaCodec decode is only available in Android builds.".to_string())
     }
+}
+
+pub fn read_android_media_audio(path: &Path) -> Result<DecodedAudio, String> {
+    let audio = read_android_media_audio_interleaved(path)?;
+    let channels = usize::try_from(audio.channels)
+        .map_err(|_| "Android MediaCodec returned invalid channel metadata.".to_string())?;
+    let samples = audio
+        .samples
+        .chunks_exact(channels)
+        .map(|frame| frame.iter().copied().sum::<f32>() / audio.channels as f32)
+        .collect();
+    Ok(DecodedAudio {
+        samples,
+        sample_rate: audio.sample_rate,
+        channels: audio.channels,
+    })
 }

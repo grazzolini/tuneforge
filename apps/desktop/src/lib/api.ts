@@ -2475,16 +2475,17 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     getExportCapabilities: async () => ({
       capabilities: {
         platform: "android",
-        formats: ["wav", "flac", "mp3", "m4a"].map((id) => ({
-          id,
-          available: false,
-          reason: "Android audio export is not available in this build.",
-        })),
-        destinations: ["single_file", "folder", "zip"].map((id) => ({
-          id,
-          available: false,
-          reason: "Android audio export is not available in this build.",
-        })),
+        formats: [
+          { id: "wav", available: false, reason: "Android currently exports only M4A audio." },
+          { id: "flac", available: false, reason: "Android currently exports only M4A audio." },
+          { id: "mp3", available: false, reason: "Android currently exports only M4A audio." },
+          { id: "m4a", available: true, reason: null },
+        ],
+        destinations: [
+          { id: "single_file", available: true, reason: null },
+          { id: "folder", available: false, reason: "Android currently exports one file at a time." },
+          { id: "zip", available: false, reason: "Android currently exports one file at a time." },
+        ],
         max_artifact_count: 1,
       },
     }),

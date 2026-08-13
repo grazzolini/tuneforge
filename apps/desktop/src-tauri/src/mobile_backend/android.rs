@@ -17,6 +17,7 @@ use std::{
     io::{self, Read},
     path::{Path, PathBuf},
     str::FromStr,
+    sync::OnceLock,
     thread,
     time::Instant,
 };
@@ -28,6 +29,8 @@ use whisper_rs::{
 
 #[path = "audio.rs"]
 mod audio;
+#[path = "export.rs"]
+mod export;
 #[path = "identity.rs"]
 mod identity;
 #[path = "lyrics.rs"]
@@ -65,6 +68,7 @@ pub use audio::{
     mobile_get_analysis, mobile_get_chords, mobile_submit_analyze, mobile_submit_chords,
     mobile_submit_preview, mobile_submit_retune, mobile_submit_stems, mobile_submit_transpose,
 };
+pub use export::mobile_submit_export;
 pub use identity::{
     mobile_answer_sync_pairing_offer, mobile_create_sync_pairing_offer, mobile_get_sync_identity,
     mobile_list_sync_trusted_peers, mobile_revoke_sync_trusted_peer,
@@ -81,7 +85,7 @@ pub use storage::{
     mobile_cancel_job, mobile_delete_artifact, mobile_delete_project, mobile_get_health,
     mobile_get_job, mobile_get_project, mobile_get_sync_staged_artifact, mobile_import_project,
     mobile_list_artifacts, mobile_list_jobs, mobile_list_projects,
-    mobile_register_sync_staged_reference, mobile_stage_sync_artifact, mobile_submit_export,
+    mobile_register_sync_staged_reference, mobile_stage_sync_artifact,
     mobile_sync_transport_artifact_file, mobile_update_project,
 };
 pub use transport_bridge::{
@@ -109,7 +113,14 @@ const PAIRING_SECRET_HASH_CONTEXT: &[u8] = b"tuneforge.sync.pairing_secret.v1\0"
 const DEFAULT_PAIRING_TTL_SECONDS: i64 = 600;
 const MAX_PAIRING_TTL_SECONDS: i64 = 3600;
 pub fn mobile_capabilities(app: AppHandle) -> Result<MobileCapabilities, String> {
+    static EXPORT_RECOVERY: OnceLock<Result<(), String>> = OnceLock::new();
     let root = app_data_root(&app)?;
+    EXPORT_RECOVERY
+        .get_or_init(|| {
+            let connection = db_at_root(&root)?;
+            recover_stale_export_jobs(&connection).map(|_| ())
+        })
+        .clone()?;
     let whisper_model = find_whisper_model(&root);
     let is_emulator = is_android_emulator();
     Ok(MobileCapabilities {

@@ -63,7 +63,7 @@ pub(super) const DEFAULT_JOBS_LIMIT: usize = 50;
 pub(super) const MAX_JOBS_LIMIT: usize = 200;
 pub(super) const PROJECT_COLUMNS: &str = "id, display_name, source_key_override, source_sha256, source_path, imported_path, duration_seconds, sample_rate, channels, sync_status, sync_status_reason, sync_required_artifact_ids_json, sync_provider_device_ids_json, sync_conflict_count, created_at, updated_at";
 pub(super) const ARTIFACT_COLUMNS: &str = "id, project_id, type, format, path, content_sha256, size_bytes, generated_by, can_delete, can_regenerate, metadata_json, cache_key, created_at";
-pub(super) const JOB_COLUMNS: &str = "id, project_id, type, status, progress, source_artifact_id, result_artifact_ids_json, error_message, runtime_device, started_at, completed_at, duration_seconds, created_at, updated_at";
+pub(super) const JOB_COLUMNS: &str = "id, project_id, type, status, progress, source_artifact_id, result_artifact_ids_json, error_message, runtime_device, started_at, completed_at, duration_seconds, created_at, updated_at, payload_json";
 pub(super) const SYNC_STAGED_ARTIFACT_COLUMNS: &str = "content_sha256, size_bytes, relative_path, provider_device_id, metadata_json, verified_at, created_at, updated_at";
 pub(super) const SYNC_ENTITY_REVISION_COLUMNS: &str = "id, project_id, entity_type, entity_id, revision_type, base_revision_id, author_device_id, source_artifact_id, content_sha256, state, metadata_json, payload_json, created_at, updated_at";
 pub(super) const SYNC_DELETE_TOMBSTONE_COLUMNS: &str = "id, sync_group_id, project_id, target_type, target_id, author_device_id, deleted_at, prior_metadata_json, created_at, updated_at";
@@ -579,14 +579,23 @@ pub(super) fn row_job(row: &Row<'_>) -> rusqlite::Result<JobSchema> {
     let result_artifact_ids_json: String = row
         .get::<_, Option<String>>(6)?
         .unwrap_or_else(|| DEFAULT_SYNC_LIST_JSON.to_string());
+    let payload_raw: String = row
+        .get::<_, Option<String>>(14)?
+        .unwrap_or_else(|| "{}".to_string());
+    let payload: Value = serde_json::from_str(&payload_raw).unwrap_or_else(|_| json!({}));
     Ok(JobSchema {
         id: row.get(0)?,
         project_id: row.get(1)?,
         r#type: row.get(2)?,
         status: row.get(3)?,
         progress: row.get(4)?,
+        stage_label: payload
+            .get("stage_label")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
         source_artifact_id: row.get(5)?,
         result_artifact_ids: string_list_from_json(&result_artifact_ids_json),
+        export_result: payload.get("export_result").cloned(),
         chord_backend: None,
         chord_backend_fallback_from: None,
         chord_source: None,
@@ -727,8 +736,10 @@ pub(super) fn create_failed_job(
         r#type: job_type.to_string(),
         status: "failed".to_string(),
         progress: 0,
+        stage_label: None,
         source_artifact_id: None,
         result_artifact_ids: Vec::new(),
+        export_result: None,
         chord_backend: None,
         chord_backend_fallback_from: None,
         chord_source: None,
@@ -778,8 +789,10 @@ pub(super) fn create_completed_job(
         r#type: job_type.to_string(),
         status: "completed".to_string(),
         progress: 100,
+        stage_label: None,
         source_artifact_id,
         result_artifact_ids: Vec::new(),
+        export_result: None,
         chord_backend: None,
         chord_backend_fallback_from: None,
         chord_source: None,
@@ -829,8 +842,10 @@ pub(super) fn create_running_job(
         r#type: job_type.to_string(),
         status: "running".to_string(),
         progress: 5,
+        stage_label: None,
         source_artifact_id,
         result_artifact_ids: Vec::new(),
+        export_result: None,
         chord_backend: None,
         chord_backend_fallback_from: None,
         chord_source: None,
@@ -878,6 +893,280 @@ pub(super) fn update_job_progress(
             params![progress, now_iso(), job_id],
         )
         .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub(super) fn update_export_job_progress(
+    connection: &Connection,
+    job_id: &str,
+    progress: i64,
+    stage_label: &str,
+) -> Result<(), String> {
+    let payload = connection
+        .query_row(
+            "SELECT payload_json FROM jobs WHERE id = ?1",
+            params![job_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Export job not found.".to_string())?;
+    let mut payload: Value = serde_json::from_str(&payload).unwrap_or_else(|_| json!({}));
+    payload["stage_label"] = Value::String(stage_label.to_string());
+    if let Some(item) = payload.pointer_mut("/export_result/items/0") {
+        item["status"] = Value::String("running".to_string());
+        item["progress"] = Value::Number(progress.clamp(0, 100).into());
+    }
+    connection
+        .execute(
+            "UPDATE jobs SET progress = ?1, payload_json = ?2, updated_at = ?3 WHERE id = ?4 AND status = 'running'",
+            params![progress.clamp(0, 100), payload.to_string(), now_iso(), job_id],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub(super) fn export_cancel_requested(
+    connection: &Connection,
+    job_id: &str,
+) -> Result<bool, String> {
+    connection
+        .query_row(
+            "SELECT cancel_requested != 0 OR status = 'cancelled' FROM jobs WHERE id = ?1",
+            params![job_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Export job not found.".to_string())
+}
+
+pub(super) fn begin_export_finalizing(connection: &Connection, job_id: &str) -> Result<(), String> {
+    let payload = connection
+        .query_row(
+            "SELECT payload_json FROM jobs WHERE id = ?1",
+            params![job_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Export job not found.".to_string())?;
+    let mut payload: Value = serde_json::from_str(&payload).unwrap_or_else(|_| json!({}));
+    payload["stage_label"] = Value::String("Finalizing…".to_string());
+    if let Some(item) = payload.pointer_mut("/export_result/items/0") {
+        item["status"] = Value::String("running".to_string());
+        item["progress"] = Value::Number(95.into());
+    }
+    let changed = connection
+        .execute(
+            "UPDATE jobs SET progress = 95, payload_json = ?1, updated_at = ?2 WHERE id = ?3 AND status = 'running' AND cancel_requested = 0",
+            params![payload.to_string(), now_iso(), job_id],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err("Export cancelled.".to_string())
+    }
+}
+
+pub(super) fn complete_export_job(
+    connection: &Connection,
+    job_id: &str,
+    source_artifact_id: &str,
+    result_artifact_id: &str,
+    output_name: &str,
+    duration_seconds: f64,
+) -> Result<(), String> {
+    let timestamp = now_iso();
+    let result_ids =
+        serde_json::to_string(&[result_artifact_id]).map_err(|error| error.to_string())?;
+    let payload = terminal_export_payload(
+        connection,
+        job_id,
+        "Export complete",
+        "completed",
+        "completed",
+        100,
+        Some(source_artifact_id),
+        Some(output_name),
+        Some(result_artifact_id),
+        None,
+    )?;
+    connection
+        .execute(
+            "UPDATE jobs SET status = 'completed', progress = 100, result_artifact_ids_json = ?1, payload_json = ?2, error_message = NULL, runtime_device = 'android-media-codec', completed_at = ?3, duration_seconds = ?4, updated_at = ?3 WHERE id = ?5 AND status = 'running'",
+            params![result_ids, payload.to_string(), timestamp, duration_seconds, job_id],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn terminal_export_payload(
+    connection: &Connection,
+    job_id: &str,
+    stage_label: &str,
+    outcome: &str,
+    item_status: &str,
+    item_progress: i64,
+    source_artifact_id: Option<&str>,
+    output_name: Option<&str>,
+    result_artifact_id: Option<&str>,
+    error: Option<&str>,
+) -> Result<Value, String> {
+    let payload = connection
+        .query_row(
+            "SELECT payload_json FROM jobs WHERE id = ?1",
+            params![job_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|query_error| query_error.to_string())?
+        .ok_or_else(|| "Export job not found.".to_string())?;
+    let mut payload: Value = serde_json::from_str(&payload).unwrap_or_else(|_| json!({}));
+    let existing_item = payload
+        .pointer("/export_result/items/0")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let artifact_id = source_artifact_id
+        .map(ToString::to_string)
+        .or_else(|| {
+            existing_item
+                .get("artifact_id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .unwrap_or_default();
+    let output_name = output_name
+        .map(ToString::to_string)
+        .or_else(|| {
+            existing_item
+                .get("output_name")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .unwrap_or_else(|| "TuneForge Export.m4a".to_string());
+    payload["stage_label"] = Value::String(stage_label.to_string());
+    payload["export_result"] = json!({
+        "outcome": outcome,
+        "total_count": 1,
+        "completed_count": i64::from(item_status == "completed"),
+        "failed_count": i64::from(item_status == "failed"),
+        "items": [{
+            "artifact_id": artifact_id,
+            "status": item_status,
+            "progress": item_progress,
+            "output_name": output_name,
+            "result_artifact_id": result_artifact_id,
+            "error": error
+        }]
+    });
+    Ok(payload)
+}
+
+pub(super) fn fail_export_job(
+    connection: &Connection,
+    job_id: &str,
+    error: &str,
+    duration_seconds: f64,
+) -> Result<(), String> {
+    let timestamp = now_iso();
+    let payload = terminal_export_payload(
+        connection,
+        job_id,
+        "Export failed",
+        "failed",
+        "failed",
+        100,
+        None,
+        None,
+        None,
+        Some(error),
+    )?;
+    connection
+        .execute(
+            "UPDATE jobs SET status = 'failed', progress = 100, payload_json = ?1, error_message = ?2, completed_at = ?3, duration_seconds = ?4, updated_at = ?3 WHERE id = ?5 AND status IN ('pending', 'running')",
+            params![payload.to_string(), error, timestamp, duration_seconds, job_id],
+        )
+        .map_err(|query_error| query_error.to_string())?;
+    Ok(())
+}
+
+pub(super) fn recover_stale_export_jobs(connection: &Connection) -> Result<usize, String> {
+    let job_ids = {
+        let mut statement = connection
+            .prepare(
+                "SELECT id FROM jobs WHERE type = 'export' AND status IN ('pending', 'running')",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        rows
+    };
+    for job_id in &job_ids {
+        fail_export_job(
+            connection,
+            job_id,
+            "Android export was interrupted when the app restarted.",
+            0.0,
+        )?;
+    }
+    Ok(job_ids.len())
+}
+
+fn request_job_cancellation(connection: &Connection, job_id: &str) -> Result<(), String> {
+    let job = connection
+        .query_row(
+            "SELECT type, status, progress FROM jobs WHERE id = ?1",
+            params![job_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some((job_type, status, progress)) = job else {
+        return Ok(());
+    };
+    if !matches!(status.as_str(), "pending" | "running") || (job_type == "export" && progress >= 95)
+    {
+        return Ok(());
+    }
+    let timestamp = now_iso();
+    if job_type == "export" {
+        let payload = terminal_export_payload(
+            connection,
+            job_id,
+            "Export cancelled",
+            "cancelled",
+            "cancelled",
+            progress,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        connection
+            .execute(
+                "UPDATE jobs SET cancel_requested = 1, status = ?1, payload_json = ?2, completed_at = ?3, updated_at = ?3 WHERE id = ?4",
+                params![MOBILE_CANCELLED_JOB_STATUS, payload.to_string(), timestamp, job_id],
+            )
+            .map_err(|error| error.to_string())?;
+    } else {
+        connection
+            .execute(
+                "UPDATE jobs SET cancel_requested = 1, status = ?1, completed_at = ?2, updated_at = ?2 WHERE id = ?3",
+                params![MOBILE_CANCELLED_JOB_STATUS, timestamp, job_id],
+            )
+            .map_err(|error| error.to_string())?;
+    }
     Ok(())
 }
 
@@ -2006,31 +2295,8 @@ pub fn mobile_get_job(app: AppHandle, job_id: String) -> Result<JobResponse, Str
 
 pub fn mobile_cancel_job(app: AppHandle, job_id: String) -> Result<JobResponse, String> {
     let connection = db(&app)?;
-    connection
-        .execute(
-            "UPDATE jobs SET status = ?1, updated_at = ?2 WHERE id = ?3 AND status IN ('pending', 'running')",
-            params![MOBILE_CANCELLED_JOB_STATUS, now_iso(), job_id],
-        )
-        .map_err(|error| error.to_string())?;
+    request_job_cancellation(&connection, &job_id)?;
     mobile_get_job(app, job_id)
-}
-
-pub fn mobile_submit_export(
-    app: AppHandle,
-    project_id: String,
-    payload: Value,
-) -> Result<JobResponse, String> {
-    let _ = payload;
-    let connection = db(&app)?;
-    let _ = require_sync_editable_project(&connection, &project_id)?;
-    Ok(JobResponse {
-        job: create_failed_job(
-            &connection,
-            &project_id,
-            "export",
-            "Android Media3 export is not wired yet.",
-        )?,
-    })
 }
 
 pub fn mobile_sync_transport_artifact_file(
@@ -2153,6 +2419,110 @@ mod mobile_media_tests {
 
     const ARTIFACT_ID: &str = "art_0123456789ab";
     const MANIFEST_ARTIFACT_ID: &str = "manifest/source v1";
+
+    fn insert_export_job(connection: &Connection, id: &str, status: &str, progress: i64) {
+        let payload = json!({
+            "stage_label": "Encoding M4A",
+            "export_result": {
+                "outcome": "failed",
+                "total_count": 1,
+                "completed_count": 0,
+                "failed_count": 0,
+                "items": [{
+                    "artifact_id": "source",
+                    "output_name": "Song - Source.m4a",
+                    "status": "running",
+                    "progress": progress,
+                    "result_artifact_id": null,
+                    "error": null
+                }]
+            }
+        });
+        connection
+            .execute(
+                "INSERT INTO jobs (id, type, status, progress, payload_json, created_at, updated_at) VALUES (?1, 'export', ?2, ?3, ?4, ?5, ?5)",
+                params![id, status, progress, payload.to_string(), now_iso()],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn export_cancellation_is_durable_but_final_provider_commit_is_not_interruptible() {
+        let connection = Connection::open_in_memory().unwrap();
+        migrate_mobile_db(&connection).unwrap();
+        insert_export_job(&connection, "cancel-me", "running", 54);
+        insert_export_job(&connection, "finalizing", "running", 95);
+        insert_export_job(&connection, "enter-finalizing", "running", 90);
+
+        request_job_cancellation(&connection, "cancel-me").unwrap();
+        request_job_cancellation(&connection, "finalizing").unwrap();
+        begin_export_finalizing(&connection, "enter-finalizing").unwrap();
+        request_job_cancellation(&connection, "enter-finalizing").unwrap();
+
+        let cancelled = connection
+            .query_row(
+                &format!("SELECT {JOB_COLUMNS} FROM jobs WHERE id = 'cancel-me'"),
+                [],
+                row_job,
+            )
+            .unwrap();
+        assert_eq!(cancelled.status, "cancelled");
+        assert_eq!(cancelled.export_result.unwrap()["outcome"], "cancelled");
+        assert!(export_cancel_requested(&connection, "cancel-me").unwrap());
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT status FROM jobs WHERE id = 'finalizing'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "running"
+        );
+        assert!(!export_cancel_requested(&connection, "finalizing").unwrap());
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT status || ':' || progress FROM jobs WHERE id = 'enter-finalizing'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "running:95"
+        );
+    }
+
+    #[test]
+    fn restart_recovery_fails_only_stale_export_jobs_with_structured_result() {
+        let connection = Connection::open_in_memory().unwrap();
+        migrate_mobile_db(&connection).unwrap();
+        insert_export_job(&connection, "stale", "running", 40);
+        connection
+            .execute(
+                "INSERT INTO jobs (id, type, status, progress, created_at, updated_at) VALUES ('lyrics', 'lyrics', 'running', 40, ?1, ?1)",
+                params![now_iso()],
+            )
+            .unwrap();
+
+        assert_eq!(recover_stale_export_jobs(&connection).unwrap(), 1);
+        let recovered = connection
+            .query_row(
+                &format!("SELECT {JOB_COLUMNS} FROM jobs WHERE id = 'stale'"),
+                [],
+                row_job,
+            )
+            .unwrap();
+        assert_eq!(recovered.status, "failed");
+        assert_eq!(recovered.export_result.unwrap()["outcome"], "failed");
+        assert_eq!(
+            connection
+                .query_row("SELECT status FROM jobs WHERE id = 'lyrics'", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+            "running"
+        );
+    }
 
     #[test]
     fn media_resolution_rejects_invalid_stale_unauthorized_and_changed_artifacts() {

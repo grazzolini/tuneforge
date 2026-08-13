@@ -179,7 +179,13 @@ export function useExportWorkspace() {
         artifact_ids: selectedArtifacts.map((artifact) => artifact.id),
         output_format: outputFormat,
         filename_base: filenameBase.trim(),
-        destination: { type: destinationType, target, overwrite: false },
+        destination: {
+          type: destinationType,
+          target,
+          // Android's native save picker owns the collision confirmation. A returned URI
+          // therefore represents explicit approval to replace that picker-owned target.
+          overwrite: isMobileRuntime,
+        },
       };
       try {
         return await api.createExport(projectQuery.data.id, request);

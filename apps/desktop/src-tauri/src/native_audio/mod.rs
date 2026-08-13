@@ -2,6 +2,7 @@ use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, State};
 
+pub mod android_export;
 pub mod android_media;
 pub mod capture;
 pub mod decode;

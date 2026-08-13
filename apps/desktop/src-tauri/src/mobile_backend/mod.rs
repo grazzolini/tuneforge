@@ -53,6 +53,10 @@ pub use stubs::*;
 
 #[cfg(all(test, not(target_os = "android")))]
 #[allow(dead_code)]
+#[path = "export.rs"]
+mod export;
+#[cfg(all(test, not(target_os = "android")))]
+#[allow(dead_code)]
 #[path = "storage.rs"]
 mod storage;
 #[cfg(all(test, not(target_os = "android")))]

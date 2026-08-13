@@ -19,9 +19,29 @@ pub struct DecodedInterleavedAudio {
 }
 
 pub fn read_mobile_audio(path: &Path) -> Result<DecodedAudio, String> {
-    match read_wav_audio(path) {
+    let interleaved = read_mobile_audio_interleaved(path)?;
+    let channels = usize::try_from(interleaved.channels)
+        .map_err(|_| "Invalid mobile audio channel count.".to_string())?;
+    let samples = interleaved
+        .samples
+        .chunks_exact(channels)
+        .map(|frame| {
+            (frame.iter().map(|sample| f64::from(*sample)).sum::<f64>()
+                / interleaved.channels as f64)
+                .clamp(-1.0, 1.0) as f32
+        })
+        .collect();
+    Ok(DecodedAudio {
+        samples,
+        sample_rate: interleaved.sample_rate,
+        channels: interleaved.channels,
+    })
+}
+
+pub fn read_mobile_audio_interleaved(path: &Path) -> Result<DecodedInterleavedAudio, String> {
+    match read_wav_audio_interleaved(path) {
         Ok(audio) => Ok(audio),
-        Err(wav_error) => android_media::read_android_media_audio(path).map_err(|media_error| {
+        Err(wav_error) => android_media::read_android_media_audio_interleaved(path).map_err(|media_error| {
             format!(
                 "Mobile audio decode supports PCM WAV files and formats Android MediaCodec can decode. WAV decode failed: {wav_error}. Android MediaCodec decode failed: {media_error}"
             )
@@ -414,6 +434,37 @@ mod tests {
         assert_eq!(decoded.samples.len(), 4);
         assert!(decoded.samples[0] > 0.99);
         assert!(decoded.samples[1] < -0.99);
+    }
+
+    #[test]
+    fn mobile_interleaved_decode_preserves_stereo_samples() {
+        let path = std::env::temp_dir().join(format!(
+            "tuneforge-audio-stereo-mobile-test-{}.wav",
+            std::process::id()
+        ));
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&44u32.to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&48_000u32.to_le_bytes());
+        bytes.extend_from_slice(&192_000u32.to_le_bytes());
+        bytes.extend_from_slice(&4u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&8u32.to_le_bytes());
+        for sample in [24_000i16, -16_000, 8_000, -4_000] {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        fs::write(&path, bytes).unwrap();
+        let decoded = read_mobile_audio_interleaved(&path).unwrap();
+        let _ = fs::remove_file(path);
+
+        assert_eq!(decoded.channels, 2);
+        assert_eq!(decoded.samples.len(), 4);
+        assert!(decoded.samples[0] > 0.7 && decoded.samples[1] < -0.4);
     }
 
     #[test]

@@ -633,7 +633,7 @@ describe("Desktop app project playback artifacts", () => {
 
   it("exports selected audio", async () => {
     const user = userEvent.setup();
-    mockSave.mockResolvedValue("/tmp/exports/Demo Song - Source.wav");
+    mockSave.mockResolvedValue("/tmp/exports/Demo Song - Source.m4a");
 
     renderApp(["/projects/proj_123"]);
 
@@ -641,19 +641,19 @@ describe("Desktop app project playback artifacts", () => {
 
     expect(mockSave).toHaveBeenCalledWith(
       expect.objectContaining({
-        defaultPath: "Demo Song - Source.wav",
-        filters: [{ name: "WAV", extensions: ["wav"] }],
+        defaultPath: "Demo Song - Source.m4a",
+        filters: [{ name: "M4A", extensions: ["m4a"] }],
       }),
     );
     expect(mockCreateExport).toHaveBeenCalledWith(
       "proj_123",
       expect.objectContaining({
         artifact_ids: ["art_source"],
-        output_format: "wav",
+        output_format: "m4a",
         filename_base: "Demo Song",
         destination: {
           type: "single_file",
-          target: "/tmp/exports/Demo Song - Source.wav",
+          target: "/tmp/exports/Demo Song - Source.m4a",
           overwrite: false,
         },
       }),
@@ -715,7 +715,7 @@ describe("Desktop app project playback artifacts", () => {
       "proj_123",
       expect.objectContaining({
         artifact_ids: ["art_source"],
-        output_format: "wav",
+        output_format: "m4a",
         destination: {
           type: "single_file",
           target: "/tmp/exports/Demo Song - Source.m4a",
@@ -728,7 +728,7 @@ describe("Desktop app project playback artifacts", () => {
       "proj_123",
       expect.objectContaining({
         artifact_ids: ["art_source"],
-        output_format: "wav",
+        output_format: "m4a",
         destination: {
           type: "single_file",
           target: "/tmp/exports/Demo Song - Source.m4a",

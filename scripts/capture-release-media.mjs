@@ -65,10 +65,10 @@ const releaseMediaCaptureCatalog = [
     kind: "screenshot",
     fileName: "export-workspace.png",
     title: "Selective export workspace",
-    caption: "Package a practice mix, selected stems, and generated lyrics with chords as local files.",
-    alt: "TuneForge Export workspace with four audio files and Lyrics plus chords selected",
+    caption: "Package one practice mix and a custom set of stems as local files.",
+    alt: "TuneForge Export workspace with Practice Mix 1 and four M4A files selected",
     fixture: "release-showcase-v1",
-    viewport: { width: 1440, height: 1280 },
+    viewport: { width: 1440, height: 1024 },
     route: "/projects/proj_release_showcase",
     prepare: prepareExportWorkspace,
     ready: readyExportWorkspace,
@@ -1364,10 +1364,6 @@ async function prepareExportWorkspace({ page, timeoutMs }) {
   const guitar = page.getByRole("checkbox", { name: /Guitar/i });
   await guitar.waitFor({ timeout: timeoutMs });
   await guitar.uncheck();
-  await page.getByRole("checkbox", { name: /Lyrics \+ chords/i }).check();
-  await page.locator(".main-content").evaluate((element) => {
-    element.scrollTop = 0;
-  });
 }
 
 async function prepareTuner({ page, timeoutMs }) {
@@ -1409,57 +1405,13 @@ async function readyPlayback({ captureKind, page, timeoutMs }) {
   }
 }
 
-async function readyExportWorkspace({ captureKind, page, timeoutMs }) {
-  await page.getByRole("heading", { name: "Export files" }).waitFor({ timeout: timeoutMs });
-  const documentSelection = page.locator("fieldset.export-document-list");
-  await documentSelection.waitFor({ state: "visible", timeout: timeoutMs });
-  const selectedDocument = documentSelection.getByRole("checkbox", { name: "Lyrics + chords" });
-  await selectedDocument.waitFor({ state: "visible", timeout: timeoutMs });
-  if (!await selectedDocument.isChecked()) {
-    throw new Error("Export fixture must keep Lyrics + chords selected.");
-  }
-  await page.getByText(
-    "TXT · UTF-8 · Matches Practice Mix 1 (+2 semitones)",
-    { exact: true },
-  ).waitFor({ timeout: timeoutMs });
-  await page.getByText("Shift +2 semitones / Retuned to 440.0 Hz", { exact: true })
-    .waitFor({ timeout: timeoutMs });
+async function readyExportWorkspace({ page, timeoutMs }) {
+  await page.getByRole("heading", { name: "Export audio" }).waitFor({ timeout: timeoutMs });
   await page.getByText("Custom selection", { exact: true }).waitFor({ timeout: timeoutMs });
-  await page.getByText("5 selected", { exact: true }).waitFor({ timeout: timeoutMs });
+  await page.getByText("4 selected", { exact: true }).waitFor({ timeout: timeoutMs });
   await page.getByRole("button", { name: "Folder" }).waitFor({ timeout: timeoutMs });
-  const fileFormat = await page.getByLabel("File format").inputValue();
-  await page.locator(".export-preview").getByText(
-    `Midnight Count-In - Practice Mix 1 - Vocals.${fileFormat}`,
-    { exact: true },
-  )
+  await page.getByText("Midnight Count-In - Practice Mix 1 - Vocals.m4a", { exact: true })
     .waitFor({ timeout: timeoutMs });
-  await page.locator(".export-preview").getByText(
-    "Midnight Count-In - Lyrics and Chords.txt",
-    { exact: true },
-  ).waitFor({ timeout: timeoutMs });
-  await page.locator(".export-preview")
-    .getByRole("group", { name: "Project documents" })
-    .waitFor({ state: "visible", timeout: timeoutMs });
-  await page.getByRole("button", { name: "Export 5 files" }).waitFor({ timeout: timeoutMs });
-  const documentFormatNotice = page.getByText(
-    "Project documents are exported as .txt files.",
-    { exact: true },
-  );
-  await documentFormatNotice.waitFor({ state: "visible", timeout: timeoutMs });
-  if (captureKind === "screenshot") {
-    const noticeBox = await documentFormatNotice.boundingBox();
-    const viewport = page.viewportSize();
-    if (
-      !noticeBox ||
-      !viewport ||
-      noticeBox.x < 0 ||
-      noticeBox.y < 0 ||
-      noticeBox.x + noticeBox.width > viewport.width ||
-      noticeBox.y + noticeBox.height > viewport.height
-    ) {
-      throw new Error("Export document format notice must fit fully within the capture viewport.");
-    }
-  }
 }
 
 async function readyMobilePlayback({ page, timeoutMs }) {

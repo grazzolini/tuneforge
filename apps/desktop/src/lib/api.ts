@@ -45,7 +45,6 @@ export type ListJobsParams = NonNullable<paths["/api/v1/jobs"]["get"]["parameter
 export type PreviewRequest = components["schemas"]["PreviewRequest"];
 export type RetuneRequest = components["schemas"]["RetuneRequest"];
 export type ExportRequest = components["schemas"]["ExportRequest"];
-export type GeneratedExportDocumentId = components["schemas"]["GeneratedExportDocumentId"];
 export type ExportCapabilities = components["schemas"]["ExportCapabilitiesSchema"];
 export type ExportCapabilitiesResponse = components["schemas"]["ExportCapabilitiesResponse"];
 export type ProjectUpdateRequest = components["schemas"]["ProjectUpdateRequest"];

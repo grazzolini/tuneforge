@@ -277,6 +277,21 @@
   gap: 0.45rem;
 }
 
+.export-document-list {
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--divider);
+}
+
+.export-document-list > p {
+  margin: 0 0 0.15rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.export-artifact-row:has(input:disabled) {
+  cursor: not-allowed;
+}
+
 .export-artifact-row {
   display: grid;
   grid-template-columns: auto auto minmax(0, 1fr) auto;
@@ -348,12 +363,29 @@
   background: color-mix(in srgb, var(--panel-strong) 60%, transparent);
 }
 
+.export-preview__group {
+  margin-block-start: 0.65rem;
+}
+
+.export-preview__group + .export-preview__group {
+  padding-block-start: 0.65rem;
+  border-block-start: 1px solid var(--divider);
+}
+
+.export-preview__label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 .export-preview ul {
   display: flex;
   max-height: 10.5rem;
   flex-direction: column;
   gap: 0.35rem;
-  margin: 0.65rem 0 0;
+  margin: 0.35rem 0 0;
   padding: 0;
   overflow: auto;
   list-style: none;

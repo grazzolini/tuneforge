@@ -65,10 +65,10 @@ const releaseMediaCaptureCatalog = [
     kind: "screenshot",
     fileName: "export-workspace.png",
     title: "Selective export workspace",
-    caption: "Package one practice mix and a custom set of stems as local files.",
-    alt: "TuneForge Export workspace with Practice Mix 1 and four audio files selected",
+    caption: "Package a practice mix, selected stems, and generated lyrics with chords as local files.",
+    alt: "TuneForge Export workspace with four audio files and Lyrics plus chords selected",
     fixture: "release-showcase-v1",
-    viewport: { width: 1440, height: 1024 },
+    viewport: { width: 1440, height: 1280 },
     route: "/projects/proj_release_showcase",
     prepare: prepareExportWorkspace,
     ready: readyExportWorkspace,
@@ -1364,6 +1364,10 @@ async function prepareExportWorkspace({ page, timeoutMs }) {
   const guitar = page.getByRole("checkbox", { name: /Guitar/i });
   await guitar.waitFor({ timeout: timeoutMs });
   await guitar.uncheck();
+  await page.getByRole("checkbox", { name: /Lyrics \+ chords/i }).check();
+  await page.locator(".main-content").evaluate((element) => {
+    element.scrollTop = 0;
+  });
 }
 
 async function prepareTuner({ page, timeoutMs }) {
@@ -1386,6 +1390,12 @@ async function readyPlayback({ captureKind, page, timeoutMs }) {
   await page.locator(".lead-sheet").waitFor({ timeout: timeoutMs });
   await page.locator(".lead-sheet-word .lyrics-word", { hasText: /^Count$/ })
     .waitFor({ timeout: timeoutMs });
+  const followingWord = page.locator(".lead-sheet-word").filter({
+    has: page.locator(".lyrics-word", { hasText: /^the$/ }),
+  });
+  await followingWord.locator(".lead-sheet-word__chords")
+    .getByRole("button", { name: "Bb", exact: true })
+    .waitFor({ timeout: timeoutMs });
   if (captureKind === "screenshot") {
     await page.getByRole("button", { name: "Play playback" }).waitFor({ timeout: timeoutMs });
     const position = page.getByLabel("Playback position");
@@ -1399,10 +1409,23 @@ async function readyPlayback({ captureKind, page, timeoutMs }) {
   }
 }
 
-async function readyExportWorkspace({ page, timeoutMs }) {
-  await page.getByRole("heading", { name: "Export audio" }).waitFor({ timeout: timeoutMs });
+async function readyExportWorkspace({ captureKind, page, timeoutMs }) {
+  await page.getByRole("heading", { name: "Export files" }).waitFor({ timeout: timeoutMs });
+  const documentSelection = page.locator("fieldset.export-document-list");
+  await documentSelection.waitFor({ state: "visible", timeout: timeoutMs });
+  const selectedDocument = documentSelection.getByRole("checkbox", { name: "Lyrics + chords" });
+  await selectedDocument.waitFor({ state: "visible", timeout: timeoutMs });
+  if (!await selectedDocument.isChecked()) {
+    throw new Error("Export fixture must keep Lyrics + chords selected.");
+  }
+  await page.getByText(
+    "TXT · UTF-8 · Matches Practice Mix 1 (+2 semitones)",
+    { exact: true },
+  ).waitFor({ timeout: timeoutMs });
+  await page.getByText("Shift +2 semitones / Retuned to 440.0 Hz", { exact: true })
+    .waitFor({ timeout: timeoutMs });
   await page.getByText("Custom selection", { exact: true }).waitFor({ timeout: timeoutMs });
-  await page.getByText("4 selected", { exact: true }).waitFor({ timeout: timeoutMs });
+  await page.getByText("5 selected", { exact: true }).waitFor({ timeout: timeoutMs });
   await page.getByRole("button", { name: "Folder" }).waitFor({ timeout: timeoutMs });
   const fileFormat = await page.getByLabel("File format").inputValue();
   await page.locator(".export-preview").getByText(
@@ -1410,6 +1433,33 @@ async function readyExportWorkspace({ page, timeoutMs }) {
     { exact: true },
   )
     .waitFor({ timeout: timeoutMs });
+  await page.locator(".export-preview").getByText(
+    "Midnight Count-In - Lyrics and Chords.txt",
+    { exact: true },
+  ).waitFor({ timeout: timeoutMs });
+  await page.locator(".export-preview")
+    .getByRole("group", { name: "Project documents" })
+    .waitFor({ state: "visible", timeout: timeoutMs });
+  await page.getByRole("button", { name: "Export 5 files" }).waitFor({ timeout: timeoutMs });
+  const documentFormatNotice = page.getByText(
+    "Project documents are exported as .txt files.",
+    { exact: true },
+  );
+  await documentFormatNotice.waitFor({ state: "visible", timeout: timeoutMs });
+  if (captureKind === "screenshot") {
+    const noticeBox = await documentFormatNotice.boundingBox();
+    const viewport = page.viewportSize();
+    if (
+      !noticeBox ||
+      !viewport ||
+      noticeBox.x < 0 ||
+      noticeBox.y < 0 ||
+      noticeBox.x + noticeBox.width > viewport.width ||
+      noticeBox.y + noticeBox.height > viewport.height
+    ) {
+      throw new Error("Export document format notice must fit fully within the capture viewport.");
+    }
+  }
 }
 
 async function readyMobilePlayback({ page, timeoutMs }) {
@@ -1911,7 +1961,7 @@ function mobilePlaybackFixture({ timedLyrics = true } = {}) {
 function analysis(projectId) {
   return {
     project_id: projectId,
-    estimated_key: "G major",
+    estimated_key: "F major",
     key_confidence: 0.86,
     estimated_reference_hz: 439.8,
     tuning_offset_cents: -8,
@@ -1923,7 +1973,9 @@ function analysis(projectId) {
 
 function chords(projectId) {
   const timeline = [
-    { start_seconds: 0, end_seconds: 16, label: "G", confidence: 0.84, pitch_class: 7, quality: "major" },
+    { start_seconds: 0, end_seconds: 0.8, label: "Am", confidence: 0.84, pitch_class: 9, quality: "minor" },
+    { start_seconds: 0.8, end_seconds: 1.2, label: "Bb", confidence: 0.82, pitch_class: 10, quality: "major" },
+    { start_seconds: 1.2, end_seconds: 16, label: "F", confidence: 0.83, pitch_class: 5, quality: "major" },
     { start_seconds: 16, end_seconds: 32, label: "D", confidence: 0.81, pitch_class: 2, quality: "major" },
     { start_seconds: 32, end_seconds: 48, label: "Em", confidence: 0.78, pitch_class: 4, quality: "minor" },
     { start_seconds: 48, end_seconds: 64, label: "C", confidence: 0.8, pitch_class: 0, quality: "major" },
@@ -1948,8 +2000,8 @@ function lyrics(projectId) {
       end_seconds: 7.5,
       text: "Count the bar and breathe in time",
       words: [
-        { text: "Count", start_seconds: 0, end_seconds: 1.1, confidence: 0.92 },
-        { text: "the", start_seconds: 1.1, end_seconds: 1.5, confidence: 0.91 },
+        { text: "Count", start_seconds: 0, end_seconds: 0.8, confidence: 0.92 },
+        { text: "the", start_seconds: 1.2, end_seconds: 1.5, confidence: 0.91 },
         { text: "bar", start_seconds: 1.5, end_seconds: 2.3, confidence: 0.9 },
         { text: "and", start_seconds: 2.3, end_seconds: 2.9, confidence: 0.88 },
         { text: "breathe", start_seconds: 2.9, end_seconds: 4.2, confidence: 0.89 },
@@ -1988,7 +2040,7 @@ function artifacts(projectId) {
       format: "wav",
       path: "/tmp/tuneforge-release-media/midnight-count-in-preview.wav",
       metadata: {
-        retune: { reference_hz: 440 },
+        retune: { target_reference_hz: 440 },
         transpose: { semitones: 2 },
       },
       created_at: fixtureTimestamp,
@@ -2274,6 +2326,7 @@ export {
   buildManifest,
   captureAccounting,
   captureMotionPolicy,
+  chords,
   chordBackends,
   expectedCatalogEntries,
   manifestItemForCatalogEntry,

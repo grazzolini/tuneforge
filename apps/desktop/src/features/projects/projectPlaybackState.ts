@@ -9,6 +9,7 @@ import {
   type LoopAlignmentMode,
 } from "../../lib/timingGrid";
 import { normalizeTempoTargetBpm } from "./playbackTempo";
+import type { GeneratedExportDocumentId } from "../../lib/api";
 
 export type ProjectPanelMode = "studio" | "analysis" | "export";
 
@@ -25,6 +26,7 @@ export type PlaybackLoopRange = {
 export type ExportWorkspaceState = {
   audioSetId: string | null;
   selectedArtifactIds: string[];
+  selectedGeneratedDocumentIds: GeneratedExportDocumentId[];
   outputFormat: "wav" | "flac" | "mp3" | "m4a" | null;
   filenameBase: string;
   destinationType: "single_file" | "folder" | "zip";
@@ -134,6 +136,11 @@ function normalizeExportWorkspaceState(value: unknown): ExportWorkspaceState | n
     audioSetId: !invalidChoice && typeof candidate.audioSetId === "string" ? candidate.audioSetId : null,
     selectedArtifactIds: Array.isArray(candidate.selectedArtifactIds)
       ? candidate.selectedArtifactIds.filter((id): id is string => typeof id === "string")
+      : [],
+    selectedGeneratedDocumentIds: Array.isArray(candidate.selectedGeneratedDocumentIds)
+      ? candidate.selectedGeneratedDocumentIds.filter(
+          (id): id is GeneratedExportDocumentId => id === "lyrics" || id === "lyrics_with_chords",
+        )
       : [],
     outputFormat,
     filenameBase: typeof candidate.filenameBase === "string" ? candidate.filenameBase : "",

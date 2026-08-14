@@ -123,6 +123,15 @@ Capo-relative display is a harmonic presentation feature. It should not alter au
 - Use the dedicated project Export workspace to target one Source Track or Practice Mix at a time.
 - Export the track, selected stems, all stems, or the track with all stems. Desktop multi-file exports
   can target a folder or ZIP; Android exposes only capabilities the installed build can complete.
+- On desktop, export saved Lyrics or Lyrics + chords as UTF-8 TXT, alone or in the same ordered
+  folder or ZIP batch as audio. Missing lyrics or chords remain visible with a Studio-directed reason.
+- Keep plain Lyrics TXT source-faithful. Spell and transpose Lyrics + chords TXT for the selected
+  Source Track or Practice Mix, using the current enharmonic display setting and any corrected
+  source key, while leaving capo and other playback-only shifts out of exported documents.
+- Render each instrumental gap as one chronological, space-separated chord row and keep lyric-bound
+  chord placement above its saved lyric block.
+- Document-only exports do not require FFmpeg. Generated TXT is written to the user's destination
+  and represented only by local receipt history; TuneForge stores no app-owned copy and does not sync it.
 - Preserve deterministic, friendly output names based on the project, audio set, and stem label.
 - Desktop transform/export paths use host-installed FFmpeg.
 

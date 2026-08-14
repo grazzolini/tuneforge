@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.dependency_diagnostics import safe_dependency_remediation
 from app.errors import AppError, JobCancelledError
-from app.models import Artifact, Job, Project, utcnow
+from app.models import Artifact, ChordTimeline, Job, LyricsTranscript, Project, utcnow
 from app.runtime_status import (
     JobRuntimeEvent,
     JobRuntimeStage,
@@ -1031,6 +1031,20 @@ class InProcessJobRunner:
     def _handle_export(self, context: JobExecutionContext, session: Session, job: Job) -> JobExecutionResult:
         project = get_project(session, job.project_id or "")
         payload = job.payload_json
+        lyrics = session.get(LyricsTranscript, project.id)
+        chords = session.get(ChordTimeline, project.id)
+        lyrics_segments = list(lyrics.segments_json) if lyrics is not None else []
+        chord_segments = list(chords.segments_json) if chords is not None else []
+        generated_document_ids = list(payload.get("generated_document_ids", []))
+        if generated_document_ids and not any(
+            isinstance(segment, dict)
+            and isinstance(segment.get("text"), str)
+            and segment["text"].strip()
+            for segment in lyrics_segments
+        ):
+            raise AppError("EXPORT_LYRICS_UNAVAILABLE", "Saved lyrics are no longer available.")
+        if "lyrics_with_chords" in generated_document_ids and not chord_segments:
+            raise AppError("EXPORT_CHORDS_UNAVAILABLE", "Saved chords are no longer available.")
         context.update_runtime_status(
             stage="writing",
             stage_label="Writing export.",
@@ -1041,6 +1055,14 @@ class InProcessJobRunner:
             session,
             project=project,
             artifact_ids=list(payload.get("artifact_ids", [])),
+            generated_document_ids=generated_document_ids,
+            lyrics_segments=lyrics_segments,
+            chord_segments=chord_segments,
+            document_chord_context=(
+                dict(payload["document_chord_context"])
+                if isinstance(payload.get("document_chord_context"), dict)
+                else None
+            ),
             output_format=payload.get("output_format", "wav"),
             destination=dict(payload.get("destination", {})),
             output_names=list(payload.get("output_names", [])),
@@ -1059,7 +1081,7 @@ class InProcessJobRunner:
         if batch.export_result["outcome"] == "failed":
             job.payload_json = {**job.payload_json, "export_result": batch.export_result}
             session.commit()
-            raise AppError("PROCESSING_FAILED", "No selected audio items could be exported.")
+            raise AppError("PROCESSING_FAILED", "No selected items could be exported.")
         return JobExecutionResult(artifact_ids=batch.artifact_ids, export_result=batch.export_result)
 
     def _mark_export_result_cancelled(self, job_id: str) -> None:

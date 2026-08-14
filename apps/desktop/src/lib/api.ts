@@ -45,6 +45,7 @@ export type ListJobsParams = NonNullable<paths["/api/v1/jobs"]["get"]["parameter
 export type PreviewRequest = components["schemas"]["PreviewRequest"];
 export type RetuneRequest = components["schemas"]["RetuneRequest"];
 export type ExportRequest = components["schemas"]["ExportRequest"];
+export type GeneratedExportDocumentId = components["schemas"]["GeneratedExportDocumentId"];
 export type ExportCapabilities = components["schemas"]["ExportCapabilitiesSchema"];
 export type ExportCapabilitiesResponse = components["schemas"]["ExportCapabilitiesResponse"];
 export type ProjectUpdateRequest = components["schemas"]["ProjectUpdateRequest"];
@@ -2547,8 +2548,16 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     listArtifacts: (projectId: string) => invokeMobile("mobile_list_artifacts", { projectId }),
     deleteArtifact: (projectId: string, artifactId: string) =>
       invokeMobile("mobile_delete_artifact", { projectId, artifactId }),
-    createExport: (projectId: string, body: ExportRequest) =>
-      invokeMobile("mobile_submit_export", { projectId, payload: body }),
+    createExport: (projectId: string, body: ExportRequest) => {
+      if (body.generated_document_ids?.length) {
+        throw new ApiError({
+          code: "EXPORT_DOCUMENTS_UNAVAILABLE",
+          message: "Project document export is available on desktop only.",
+          details: {},
+        });
+      }
+      return invokeMobile("mobile_submit_export", { projectId, payload: body });
+    },
     listJobs: (params?: ListJobsParams) => invokeMobile("mobile_list_jobs", { params: params ?? null }),
     getJob: (jobId: string) => invokeMobile("mobile_get_job", { jobId }),
     cancelJob: (jobId: string) => invokeMobile("mobile_cancel_job", { jobId }),

@@ -52,9 +52,11 @@ An unavailable combination is disabled or explained, never presented as a
 working action. TuneForge remains local-only and continues to rely on
 host-installed FFmpeg on desktop rather than bundling it.
 
-Lyrics and chord text export in
-[#387](https://github.com/grazzolini/tuneforge/issues/387) is a non-gating
-pre-2.0 candidate and remains unmilestoned.
+Desktop lyrics and lyrics-with-chords TXT export from
+[#387](https://github.com/grazzolini/tuneforge/issues/387) and
+[#439](https://github.com/grazzolini/tuneforge/issues/439) now extends this workspace. Generated
+documents can ship alone or alongside audio without becoming synced or app-owned project artifacts.
+Chords-only and additional document formats remain outside this milestone.
 
 ## v1.2.0 — Storage Format Choice
 

@@ -5,6 +5,7 @@ import {
   buildManifest,
   captureAccounting,
   captureMotionPolicy,
+  chords,
   chordBackends,
   expectedCatalogEntries,
   manifestItemForCatalogEntry,
@@ -61,9 +62,13 @@ test("release-media catalog has unique identifiers, files, and required callback
 
 test("Export readiness follows the selected file format in its preview", async () => {
   const exportWorkspace = releaseMediaCaptureCatalog.find((entry) => entry.id === "export-workspace");
+  assert.deepEqual(exportWorkspace.viewport, { width: 1440, height: 1280 });
 
   for (const fileFormat of ["wav", "flac", "mp3", "m4a"]) {
-    let previewRequest;
+    const previewRequests = [];
+    const pageReadiness = [];
+    const scopedReadiness = [];
+    let geometryChecks = 0;
     const waitFor = () => ({ waitFor: async () => {} });
     const page = {
       getByLabel: (label) => {
@@ -71,24 +76,140 @@ test("Export readiness follows the selected file format in its preview", async (
         return { inputValue: async () => fileFormat };
       },
       getByRole: () => waitFor(),
-      getByText: () => waitFor(),
+      getByText: (text, options) => {
+        pageReadiness.push({ options, text });
+        if (text === "Project documents are exported as .txt files.") {
+          assert.deepEqual(options, { exact: true });
+          geometryChecks += 1;
+          return {
+            ...waitFor(),
+            boundingBox: async () => ({ x: 20, y: 1220, width: 320, height: 20 }),
+          };
+        }
+        return waitFor();
+      },
+      viewportSize: () => ({ width: 1440, height: 1280 }),
       locator: (selector) => {
+        if (selector === "fieldset.export-document-list") {
+          return {
+            ...waitFor(),
+            getByRole: (role, options) => {
+              scopedReadiness.push({ role, options, scope: "selection" });
+              return { ...waitFor(), isChecked: async () => true };
+            },
+          };
+        }
         assert.equal(selector, ".export-preview");
         return {
+          getByRole: (role, options) => {
+            scopedReadiness.push({ role, options, scope: "preview" });
+            return waitFor();
+          },
           getByText: (text, options) => {
-            previewRequest = { options, text };
+            previewRequests.push({ options, text });
             return waitFor();
           },
         };
       },
     };
 
-    await exportWorkspace.ready({ page, timeoutMs: 1 });
-    assert.deepEqual(previewRequest, {
-      options: { exact: true },
-      text: `Midnight Count-In - Practice Mix 1 - Vocals.${fileFormat}`,
-    });
+    await exportWorkspace.ready({ captureKind: "screenshot", page, timeoutMs: 1 });
+    assert.deepEqual(previewRequests, [
+      {
+        options: { exact: true },
+        text: `Midnight Count-In - Practice Mix 1 - Vocals.${fileFormat}`,
+      },
+      {
+        options: { exact: true },
+        text: "Midnight Count-In - Lyrics and Chords.txt",
+      },
+    ]);
+    assert.deepEqual(pageReadiness, [
+      {
+        options: { exact: true },
+        text: "TXT · UTF-8 · Matches Practice Mix 1 (+2 semitones)",
+      },
+      {
+        options: { exact: true },
+        text: "Shift +2 semitones / Retuned to 440.0 Hz",
+      },
+      {
+        options: { exact: true },
+        text: "Custom selection",
+      },
+      {
+        options: { exact: true },
+        text: "5 selected",
+      },
+      {
+        options: { exact: true },
+        text: "Project documents are exported as .txt files.",
+      },
+    ]);
+    assert.deepEqual(scopedReadiness, [
+      {
+        role: "checkbox",
+        options: { name: "Lyrics + chords" },
+        scope: "selection",
+      },
+      {
+        role: "group",
+        options: { name: "Project documents" },
+        scope: "preview",
+      },
+    ]);
+    assert.equal(geometryChecks, 1);
   }
+});
+
+test("Playback fixture anchors an explicit Am-Bb-F gap chord to the following word", async () => {
+  const playback = releaseMediaCaptureCatalog.find((entry) => entry.id === "playback");
+  const timeline = chords("proj_release_showcase").timeline.slice(0, 3);
+  assert.deepEqual(timeline.map((segment) => segment.label), ["Am", "Bb", "F"]);
+  assert.equal(timeline[1].start_seconds, 0.8);
+  assert.equal(timeline[1].end_seconds, 1.2);
+
+  const expectedChord = [];
+  const waitFor = () => ({ waitFor: async () => {} });
+  const lyricWord = { selector: ".lyrics-word", options: { hasText: /^the$/ } };
+  const page = {
+    getByLabel: (label) => {
+      assert.equal(label, "Playback position");
+      return { ...waitFor(), inputValue: async () => "0" };
+    },
+    getByRole: () => waitFor(),
+    locator: (selector, options) => {
+      if (selector === ".lyrics-word") {
+        assert.deepEqual(options, { hasText: /^the$/ });
+        return lyricWord;
+      }
+      if (selector === ".lead-sheet-word") {
+        return {
+          filter: ({ has }) => {
+            assert.equal(has, lyricWord);
+            return {
+              locator: (chordSlotSelector) => {
+                assert.equal(chordSlotSelector, ".lead-sheet-word__chords");
+                return {
+                  getByRole: (role, roleOptions) => {
+                    expectedChord.push({ role, roleOptions });
+                    return waitFor();
+                  },
+                };
+              },
+            };
+          },
+        };
+      }
+      return waitFor();
+    },
+  };
+
+  await playback.ready({ captureKind: "screenshot", page, timeoutMs: 1 });
+  assert.deepEqual(expectedChord, [{
+    role: "button",
+    roleOptions: { name: "Bb", exact: true },
+  }]);
 });
 
 test("mobile Playback is one deterministic compact screenshot fixture", () => {

@@ -36,6 +36,7 @@ import {
   readProjectPlaybackState,
   writeProjectPlaybackState,
   type PlaybackLoopRange,
+  type ExportWorkspaceState,
   type ProjectPanelMode,
   type StemControlState,
 } from "../projectPlaybackState";
@@ -368,6 +369,9 @@ export function useProjectViewModel() {
   );
   const [stemControls, setStemControls] = useState<Record<string, StemControlState>>({});
   const [dismissedStemJobIds, setDismissedStemJobIds] = useState<string[]>([]);
+  const [exportWorkspace, setExportWorkspace] = useState<ExportWorkspaceState | null>(null);
+  const [exportRecoveryNoticeId, setExportRecoveryNoticeId] = useState(0);
+  const [exportRecoveryNoticeProjectId, setExportRecoveryNoticeProjectId] = useState<string | null>(null);
   const [isEditingLyrics, setIsEditingLyrics] = useState(false);
   const [lyricsDraft, setLyricsDraft] = useState<string[]>([]);
   const [selectedLyricsLanguageOverride, setSelectedLyricsLanguageOverride] =
@@ -1920,6 +1924,7 @@ export function useProjectViewModel() {
     );
     setStemControls(storedPlaybackState.stemControls);
     setDismissedStemJobIds(storedPlaybackState.dismissedStemJobIds);
+    setExportWorkspace(storedPlaybackState.exportWorkspace);
     setHydratedProjectId(projectId);
   }, [
     defaultChordsFollowEnabled,
@@ -2130,6 +2135,7 @@ export function useProjectViewModel() {
       chordsFollowEnabled,
       stemControls,
       dismissedStemJobIds,
+      exportWorkspace,
     });
   }, [
     activeProjectPanel,
@@ -2137,6 +2143,7 @@ export function useProjectViewModel() {
     capoSemitones,
     chordsFollowEnabled,
     dismissedStemJobIds,
+    exportWorkspace,
     hydratedProjectId,
     lyricsFollowEnabled,
     loopRange,
@@ -2432,6 +2439,7 @@ export function useProjectViewModel() {
     activeLyricsWordIndex,
     activeStemCount,
     analysisQuery,
+    artifactsQuery,
     analysisTimingGrid,
     analyzeMutation,
     canAnalyze,
@@ -2474,6 +2482,9 @@ export function useProjectViewModel() {
     displayedLyrics,
     draftName,
     enharmonicDisplayMode,
+    exportRecoveryNoticeId,
+    exportRecoveryNoticeProjectId,
+    exportWorkspace,
     acceptedTabSuggestionIds,
     handleAnalyzeAction,
     handleDeleteMix,
@@ -2491,6 +2502,11 @@ export function useProjectViewModel() {
     handleSelectStemArtifact,
     handleSelectWorkspace,
     handleSelectProjectPanel: setActiveProjectPanel,
+    handleSetExportWorkspace: setExportWorkspace,
+    handleShowExportRecoveryNotice: () => {
+      setExportRecoveryNoticeProjectId(projectId);
+      setExportRecoveryNoticeId((current) => current + 1);
+    },
     handleSetChordsFollowEnabled,
     handleSetLyricsFollowEnabled,
     handleSetPrecountClickCount,
@@ -2518,6 +2534,8 @@ export function useProjectViewModel() {
     hasTimedLyricsTranscript,
     hasTransformChange,
     hasVisibleStems,
+    hydratedProjectId,
+    projectId,
     hasActiveStemControls,
     hasNextProjectHistoryJobsPage: terminalProjectJobsQuery.hasNextPage,
     higherCapoPreview,

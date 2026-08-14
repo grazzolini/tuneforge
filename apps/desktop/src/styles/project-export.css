@@ -34,6 +34,34 @@
   font-weight: 700;
 }
 
+.export-workspace__header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+
+.export-workspace__header-actions .field-reason {
+  flex-basis: 100%;
+  max-width: 16rem;
+  text-align: right;
+}
+
+.project-export-recovery-toast {
+  position: fixed;
+  z-index: 20;
+  right: max(1rem, env(safe-area-inset-right));
+  bottom: max(1rem, env(safe-area-inset-bottom));
+  max-width: min(28rem, calc(100vw - 2rem));
+  padding: 0.8rem 0.95rem;
+  border: 1px solid var(--divider);
+  border-radius: 14px;
+  background: var(--panel-strong);
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--ink) 20%, transparent);
+}
+
 .export-workspace__grid {
   display: grid;
   grid-template-columns: minmax(12.5rem, 0.64fr) minmax(23rem, 1.25fr) minmax(20rem, 0.92fr);
@@ -398,6 +426,18 @@
 
   .export-workspace__header {
     align-items: flex-start;
+
+    flex-wrap: wrap;
+  }
+
+  .export-workspace__header-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .export-workspace__header-actions .field-reason {
+    max-width: none;
+    text-align: left;
   }
 
   .export-audio-sets__options {

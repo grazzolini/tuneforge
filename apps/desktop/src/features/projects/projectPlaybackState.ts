@@ -22,6 +22,15 @@ export type PlaybackLoopRange = {
   endSeconds: number;
 };
 
+export type ExportWorkspaceState = {
+  audioSetId: string | null;
+  selectedArtifactIds: string[];
+  outputFormat: "wav" | "flac" | "mp3" | "m4a" | null;
+  filenameBase: string;
+  destinationType: "single_file" | "folder" | "zip";
+  desktopDestinationTarget: string | null;
+};
+
 export const DEFAULT_PRECOUNT_CLICK_COUNT = 4;
 export const MIN_PRECOUNT_CLICK_COUNT = 1;
 export const MAX_PRECOUNT_CLICK_COUNT = 8;
@@ -45,6 +54,7 @@ export type StoredProjectPlaybackState = {
   chordsFollowEnabled: boolean;
   stemControls: Record<string, StemControlState>;
   dismissedStemJobIds: string[];
+  exportWorkspace: ExportWorkspaceState | null;
 };
 
 const STORAGE_KEY = "tuneforge.project-playback-state";
@@ -67,6 +77,7 @@ const DEFAULT_STORED_PROJECT_PLAYBACK_STATE: StoredProjectPlaybackState = {
   chordsFollowEnabled: true,
   stemControls: {},
   dismissedStemJobIds: [],
+  exportWorkspace: null,
 };
 
 function normalizeTransposeSemitones(value: unknown) {
@@ -103,6 +114,34 @@ function normalizeLoopPoint(value: unknown) {
     return null;
   }
   return Math.max(0, value);
+}
+
+function normalizeExportWorkspaceState(value: unknown): ExportWorkspaceState | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<ExportWorkspaceState>;
+  const hasValidOutputFormat = ["wav", "flac", "mp3", "m4a"].includes(candidate.outputFormat ?? "");
+  const hasValidDestinationType = ["single_file", "folder", "zip"].includes(
+    candidate.destinationType ?? "",
+  );
+  const outputFormat = hasValidOutputFormat
+    ? candidate.outputFormat as ExportWorkspaceState["outputFormat"]
+    : null;
+  const destinationType = hasValidDestinationType
+    ? candidate.destinationType as ExportWorkspaceState["destinationType"]
+    : "single_file";
+  const invalidChoice = !hasValidOutputFormat || !hasValidDestinationType;
+  return {
+    audioSetId: !invalidChoice && typeof candidate.audioSetId === "string" ? candidate.audioSetId : null,
+    selectedArtifactIds: Array.isArray(candidate.selectedArtifactIds)
+      ? candidate.selectedArtifactIds.filter((id): id is string => typeof id === "string")
+      : [],
+    outputFormat,
+    filenameBase: typeof candidate.filenameBase === "string" ? candidate.filenameBase : "",
+    destinationType,
+    desktopDestinationTarget: !invalidChoice && typeof candidate.desktopDestinationTarget === "string"
+        ? candidate.desktopDestinationTarget
+        : null,
+  };
 }
 
 export function normalizePlaybackLoopRange(value: unknown): PlaybackLoopRange | null {
@@ -196,6 +235,7 @@ function normalizeStoredProjectPlaybackState(value: unknown): StoredProjectPlayb
         : DEFAULT_STORED_PROJECT_PLAYBACK_STATE.chordsFollowEnabled,
     stemControls,
     dismissedStemJobIds,
+    exportWorkspace: normalizeExportWorkspaceState(candidate.exportWorkspace),
   };
 }
 

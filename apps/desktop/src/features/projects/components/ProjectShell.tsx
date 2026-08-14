@@ -5,8 +5,16 @@ import { ProjectHeader } from "./ProjectHeader";
 import { ProjectWorkspace } from "./ProjectWorkspace";
 
 export function ProjectShell() {
-  const { activeWorkspace, handleSelectWorkspace, isMobileRuntime } = useProjectViewModelContext();
+  const {
+    activeWorkspace,
+    exportRecoveryNoticeId,
+    exportRecoveryNoticeProjectId,
+    handleSelectWorkspace,
+    isMobileRuntime,
+    projectId,
+  } = useProjectViewModelContext();
   const [practiceControlsOpen, setPracticeControlsOpen] = useState(false);
+  const [showExportRecoveryNotice, setShowExportRecoveryNotice] = useState(false);
   const screenRef = useRef<HTMLElement>(null);
   const mobilePlayback = isMobileRuntime && activeWorkspace === "playback";
   const closePracticeControls = useCallback(() => setPracticeControlsOpen(false), []);
@@ -35,6 +43,16 @@ export function ProjectShell() {
       setPracticeControlsOpen(false);
     }
   }, [mobilePlayback]);
+
+  useEffect(() => {
+    if (!exportRecoveryNoticeId || exportRecoveryNoticeProjectId !== projectId) {
+      setShowExportRecoveryNotice(false);
+      return;
+    }
+    setShowExportRecoveryNotice(true);
+    const timeoutId = window.setTimeout(() => setShowExportRecoveryNotice(false), 4000);
+    return () => window.clearTimeout(timeoutId);
+  }, [exportRecoveryNoticeId, exportRecoveryNoticeProjectId, projectId]);
 
   return (
     <section
@@ -70,6 +88,11 @@ export function ProjectShell() {
           onClosePracticeControls={closePracticeControls}
         />
       )}
+      {showExportRecoveryNotice ? (
+        <div aria-atomic="true" aria-live="polite" className="project-export-recovery-toast" role="status">
+          Saved Export choices were adjusted because this project or device changed.
+        </div>
+      ) : null}
     </section>
   );
 }

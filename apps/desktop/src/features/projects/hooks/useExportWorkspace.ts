@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import { ApiError, api, type ExportRequest } from "../../../lib/api";
@@ -8,11 +8,16 @@ import {
   exportContextName,
   exportOutputNames,
   exportPresetForSelection,
+  isDesktopDestinationTarget,
+  defaultExportWorkspaceState,
+  reconcileExportWorkspaceState,
+  type ExportDestinationType,
+  type ExportFormat,
   type ExportPreset,
 } from "../exportWorkspaceUtils";
+import type { ExportWorkspaceState } from "../projectPlaybackState";
 
-type DestinationType = "single_file" | "folder" | "zip";
-type ExportFormat = "wav" | "flac" | "mp3" | "m4a";
+type DestinationType = ExportDestinationType;
 
 const FORMAT_LABELS: Record<ExportFormat, string> = {
   wav: "WAV",
@@ -38,49 +43,118 @@ function selectedIdsForPreset(
 export function useExportWorkspace() {
   const {
     displayArtifacts,
+    artifactsQuery,
+    exportWorkspace,
+    handleSetExportWorkspace,
+    handleShowExportRecoveryNotice,
     handleSelectProjectPanel,
+    hydratedProjectId,
     isMobileRuntime,
     projectEditLocked,
+    projectId,
     projectQuery,
     selectedPrimaryArtifactId,
     visibleJobs,
   } = useProjectViewModelContext();
   const queryClient = useQueryClient();
-  const audioSets = useMemo(() => buildExportAudioSets(displayArtifacts), [displayArtifacts]);
+  const isCurrentProjectHydrated =
+    hydratedProjectId === projectId && projectQuery.data?.id === projectId && artifactsQuery.isSuccess;
+  const audioSets = useMemo(
+    () => isCurrentProjectHydrated ? buildExportAudioSets(displayArtifacts) : [],
+    [displayArtifacts, isCurrentProjectHydrated],
+  );
   const defaultAudioSetId =
     audioSets.find((audioSet) => audioSet.artifact.id === selectedPrimaryArtifactId)?.artifact.id ??
     audioSets[0]?.artifact.id ??
     "";
-  const [audioSetId, setAudioSetId] = useState(defaultAudioSetId);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [outputFormat, setOutputFormat] = useState<ExportFormat>("m4a");
-  const [filenameBase, setFilenameBase] = useState(projectQuery.data?.display_name ?? "TuneForge Export");
-  const [destinationType, setDestinationType] = useState<DestinationType>("single_file");
-  const [destinationTarget, setDestinationTarget] = useState<string | null>(null);
-  const skipAudioSetResetRef = useRef(false);
-  const audioSet = audioSets.find((candidate) => candidate.artifact.id === audioSetId) ?? audioSets[0] ?? null;
-
-  useEffect(() => {
-    if (!audioSetId && defaultAudioSetId) setAudioSetId(defaultAudioSetId);
-  }, [audioSetId, defaultAudioSetId]);
-
-  useEffect(() => {
-    if (!audioSet) return;
-    if (skipAudioSetResetRef.current) {
-      skipAudioSetResetRef.current = false;
-      return;
-    }
-    setSelectedIds(new Set([audioSet.artifact.id]));
-    setDestinationType("single_file");
-    setDestinationTarget(null);
-  }, [audioSet]);
-
+  const fallbackState = useMemo<ExportWorkspaceState | null>(() => {
+    if (!defaultAudioSetId) return null;
+    return {
+      audioSetId: defaultAudioSetId,
+      selectedArtifactIds: [defaultAudioSetId],
+      outputFormat: "m4a",
+      filenameBase: isCurrentProjectHydrated
+        ? projectQuery.data?.display_name ?? "TuneForge Export"
+        : "TuneForge Export",
+      destinationType: "single_file",
+      desktopDestinationTarget: null,
+    };
+  }, [defaultAudioSetId, isCurrentProjectHydrated, projectQuery.data?.display_name]);
+  const healthQuery = useQuery({
+    queryKey: ["health"],
+    queryFn: () => api.getHealth(),
+    staleTime: Infinity,
+  });
   const capabilitiesQuery = useQuery({
     queryKey: ["export-capabilities"],
     queryFn: () => api.getExportCapabilities(),
     staleTime: Infinity,
   });
   const capabilities = capabilitiesQuery.data?.capabilities ?? null;
+  const healthSettled = healthQuery.isSuccess || healthQuery.isError;
+  const defaultOutputFormat = healthQuery.isSuccess
+    ? healthQuery.data.default_export_format
+    : null;
+  const savedFormatIsAvailable = Boolean(
+    exportWorkspace?.outputFormat && capabilities?.formats.some(
+      (format) => format.id === exportWorkspace.outputFormat && format.available,
+    ),
+  );
+  const workspaceReady = Boolean(
+    isCurrentProjectHydrated &&
+      capabilitiesQuery.isSuccess &&
+      capabilities &&
+      (healthSettled || savedFormatIsAvailable),
+  );
+  const reconciliation = useMemo(
+    () => workspaceReady && capabilities
+      ? reconcileExportWorkspaceState({
+          storedState: exportWorkspace,
+          audioSets,
+          selectedPrimaryArtifactId,
+          filenameBase: projectQuery.data?.display_name ?? "TuneForge Export",
+          capabilities,
+          defaultOutputFormat,
+        })
+      : null,
+    [
+      audioSets,
+      capabilities,
+      defaultOutputFormat,
+      exportWorkspace,
+      projectQuery.data?.display_name,
+      selectedPrimaryArtifactId,
+      workspaceReady,
+    ],
+  );
+  const draft = reconciliation?.state ?? fallbackState;
+  const audioSetId = draft?.audioSetId ?? "";
+  const selectedIds = useMemo(() => new Set(draft?.selectedArtifactIds ?? []), [draft?.selectedArtifactIds]);
+  const outputFormat = draft?.outputFormat ?? "m4a";
+  const filenameBase = draft?.filenameBase ?? fallbackState?.filenameBase ?? "TuneForge Export";
+  const destinationType = draft?.destinationType ?? "single_file";
+  const destinationTarget = draft?.desktopDestinationTarget ?? null;
+  const recoveredDrafts = useRef(new Set<string>());
+  const audioSet = audioSets.find((candidate) => candidate.artifact.id === audioSetId) ?? audioSets[0] ?? null;
+
+  useEffect(() => {
+    if (!reconciliation) {
+      return;
+    }
+    if (JSON.stringify(reconciliation.state) === JSON.stringify(exportWorkspace)) return;
+    const storedFingerprint = JSON.stringify(exportWorkspace);
+    if (reconciliation.recovery && !recoveredDrafts.current.has(`${projectId}:${storedFingerprint}`)) {
+      recoveredDrafts.current.add(`${projectId}:${storedFingerprint}`);
+      handleShowExportRecoveryNotice();
+    }
+    handleSetExportWorkspace(reconciliation.state);
+  }, [
+    exportWorkspace,
+    handleSetExportWorkspace,
+    handleShowExportRecoveryNotice,
+    projectId,
+    reconciliation,
+  ]);
   const selectedArtifacts = audioSet
     ? [audioSet.artifact, ...audioSet.stems].filter((artifact) => selectedIds.has(artifact.id))
     : [];
@@ -114,18 +188,27 @@ export function useExportWorkspace() {
       selectedFormatCapability?.available &&
       selectedDestinationCapability?.available &&
       selectionAllowed &&
+      workspaceReady &&
       !projectEditLocked &&
       !activeExportJob,
   );
 
+  function updateDraft(next: ExportWorkspaceState) {
+    if (!workspaceReady) return;
+    handleSetExportWorkspace(next);
+  }
+
   function updateSelection(next: Set<string>) {
     const wasSingle = selectedIds.size === 1;
     const isSingle = next.size === 1;
-    setSelectedIds(next);
-    if (next.size === 0 || wasSingle !== isSingle) {
-      setDestinationTarget(null);
-      setDestinationType(isSingle ? "single_file" : "folder");
-    }
+    updateDraft({
+      ...(draft ?? fallbackState!),
+      selectedArtifactIds: [...next],
+      destinationType: next.size === 0 || wasSingle !== isSingle
+        ? isSingle ? "single_file" : "folder"
+        : destinationType,
+      desktopDestinationTarget: next.size === 0 || wasSingle !== isSingle ? null : destinationTarget,
+    });
   }
 
   function selectPreset(nextPreset: Exclude<ExportPreset, "custom">) {
@@ -146,8 +229,32 @@ export function useExportWorkspace() {
     updateSelection(next);
   }
 
+  function selectAudioSet(nextAudioSetId: string) {
+    const nextAudioSet = audioSets.find((audioSet) => audioSet.artifact.id === nextAudioSetId);
+    if (!nextAudioSet || !draft) return;
+    updateDraft({
+      ...draft,
+      audioSetId: nextAudioSetId,
+      selectedArtifactIds: [nextAudioSet.artifact.id],
+      destinationType: "single_file",
+      desktopDestinationTarget: null,
+    });
+  }
+
+  function resetWorkspace() {
+    if (!workspaceReady || !healthSettled || !capabilities || activeExportJob) return;
+    const next = defaultExportWorkspaceState({
+      audioSets,
+      selectedPrimaryArtifactId,
+      filenameBase: projectQuery.data?.display_name ?? "TuneForge Export",
+      capabilities,
+      defaultOutputFormat,
+    });
+    handleSetExportWorkspace(next);
+  }
+
   async function chooseDestination(type = destinationType) {
-    if (!audioSet) return null;
+    if (!audioSet || capabilities?.platform !== "desktop") return null;
     let target: string | string[] | null;
     if (type === "folder") {
       target = await open({ directory: true, multiple: false });
@@ -165,8 +272,13 @@ export function useExportWorkspace() {
       });
     }
     const normalized = Array.isArray(target) ? target[0] : target;
-    if (!normalized) return null;
-    setDestinationTarget(normalized);
+    if (
+      !normalized ||
+      !isDesktopDestinationTarget(normalized) ||
+      !selectedFormatCapability?.available ||
+      !selectedDestinationCapability?.available
+    ) return null;
+    if (draft) updateDraft({ ...draft, desktopDestinationTarget: normalized });
     return normalized;
   }
 
@@ -217,13 +329,14 @@ export function useExportWorkspace() {
     const failed = failedArtifactIds.filter(
       (id) => id === retryAudioSet.artifact.id || retryAudioSet.stems.some((stem) => stem.id === id),
     );
-    if (retryAudioSet.artifact.id !== audioSet?.artifact.id) {
-      skipAudioSetResetRef.current = true;
-      setAudioSetId(retryAudioSet.artifact.id);
-    }
-    setSelectedIds(new Set(failed));
-    setDestinationTarget(null);
-    setDestinationType(failed.length === 1 ? "single_file" : "folder");
+    if (!draft) return;
+    updateDraft({
+      ...draft,
+      audioSetId: retryAudioSet.artifact.id,
+      selectedArtifactIds: failed,
+      destinationType: failed.length === 1 ? "single_file" : "folder",
+      desktopDestinationTarget: null,
+    });
   }
 
   return {
@@ -235,6 +348,9 @@ export function useExportWorkspace() {
     cancelMutation,
     capabilities,
     capabilitiesQuery,
+    capabilitiesError: capabilitiesQuery.isError
+      ? "Export options couldn’t load. Retry to continue."
+      : null,
     chooseDestination,
     destinationTarget,
     destinationType,
@@ -250,6 +366,15 @@ export function useExportWorkspace() {
     preset,
     projectEditLocked,
     retryFailed,
+    retryCapabilities: () => void capabilitiesQuery.refetch(),
+    resetWorkspace,
+    resetUnavailableReason: activeExportJob
+      ? "Export options can’t be reset while an export is in progress."
+      : capabilitiesQuery.isError
+        ? "Export options couldn’t load. Retry to continue."
+        : !workspaceReady || !healthSettled
+        ? "Export options are still loading."
+        : null,
     retryUnavailableReason: partialExportJob && !retryAudioSet
       ? "Failed export items are no longer available in this project."
       : null,
@@ -259,11 +384,17 @@ export function useExportWorkspace() {
     selectedArtifacts,
     selectionAllowed,
     selectPreset,
-    setAudioSetId,
-    setDestinationTarget,
-    setDestinationType,
-    setFilenameBase,
-    setOutputFormat,
+    setAudioSetId: selectAudioSet,
+    setDestinationType: (nextDestinationType: DestinationType) => {
+      if (draft) updateDraft({ ...draft, destinationType: nextDestinationType, desktopDestinationTarget: null });
+    },
+    setFilenameBase: (nextFilenameBase: string) => {
+      if (draft) updateDraft({ ...draft, filenameBase: nextFilenameBase });
+    },
+    setOutputFormat: (nextOutputFormat: ExportFormat) => {
+      if (draft) updateDraft({ ...draft, outputFormat: nextOutputFormat, desktopDestinationTarget: null });
+    },
     toggleArtifact,
+    workspaceReady,
   };
 }

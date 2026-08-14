@@ -54,10 +54,10 @@ export function ExportWorkspace() {
     audioSetId,
     audioSets,
     activeExportJob,
+    capabilitiesError,
     canExport,
     cancelMutation,
     capabilities,
-    capabilitiesQuery,
     chooseDestination,
     destinationTarget,
     destinationType,
@@ -71,7 +71,10 @@ export function ExportWorkspace() {
     partialExportJob,
     preset,
     retryFailed,
+    retryCapabilities,
     retryUnavailableReason,
+    resetUnavailableReason,
+    resetWorkspace,
     selectedDestinationCapability,
     selectedFormatCapability,
     selectedIds,
@@ -79,16 +82,16 @@ export function ExportWorkspace() {
     selectionAllowed,
     selectPreset,
     setAudioSetId,
-    setDestinationTarget,
     setDestinationType,
     setFilenameBase,
     setOutputFormat,
     toggleArtifact,
+    workspaceReady,
   } = workspace;
   const { projectQuery } = useProjectViewModelContext();
   const projectDuration = projectQuery.data?.duration_seconds;
   const selectionInputType = isMobileRuntime ? "radio" : "checkbox";
-  const controlsDisabled = Boolean(activeExportJob);
+  const controlsDisabled = Boolean(activeExportJob) || !workspaceReady;
   const destinationLabel = DESTINATIONS.find((destination) => destination.id === destinationType)?.label
     ?? "Destination";
 
@@ -99,7 +102,13 @@ export function ExportWorkspace() {
         className="panel export-workspace-empty"
         id="project-export-panel"
         role="tabpanel"
-      >No audio is available to export yet.</div>
+      >
+        {capabilitiesError ? (
+          <div className="notice notice--error" role="alert">
+            {capabilitiesError} <button className="button-link" onClick={retryCapabilities} type="button">Retry</button>
+          </div>
+        ) : "No audio is available to export yet."}
+      </div>
     );
   }
 
@@ -111,10 +120,26 @@ export function ExportWorkspace() {
           <h2 id="export-workspace-title">Export audio</h2>
           <p>Choose one audio set, select its tracks, then package local files.</p>
         </div>
-        <span className="export-workspace__selection-count" aria-live="polite">
-          {selectedIds.size} selected
-        </span>
+        <div className="export-workspace__header-actions">
+          <span className="export-workspace__selection-count" aria-live="polite">
+            {selectedIds.size} selected
+          </span>
+          <button
+            aria-describedby={resetUnavailableReason ? "export-reset-reason" : undefined}
+            className="button button--ghost button--small"
+            disabled={Boolean(resetUnavailableReason)}
+            onClick={resetWorkspace}
+            type="button"
+          >Reset export workspace</button>
+          {resetUnavailableReason ? <span className="field-reason" id="export-reset-reason">{resetUnavailableReason}</span> : null}
+        </div>
       </header>
+
+      {capabilitiesError ? (
+        <div className="notice notice--error" role="alert">
+          {capabilitiesError} <button className="button-link" onClick={retryCapabilities} type="button">Retry</button>
+        </div>
+      ) : null}
 
       {isMobileRuntime ? (
         <div className="notice notice--info" id="android-export-format-notice" role="status">
@@ -256,11 +281,8 @@ export function ExportWorkspace() {
                 <span>File format</span>
                 <select
                   aria-describedby={isMobileRuntime ? "android-export-format-notice" : undefined}
-                  disabled={capabilitiesQuery.isLoading}
-                  onChange={(event) => {
-                    setOutputFormat(event.target.value as typeof outputFormat);
-                    setDestinationTarget(null);
-                  }}
+                  disabled={!workspaceReady}
+                  onChange={(event) => setOutputFormat(event.target.value as typeof outputFormat)}
                   value={outputFormat}
                 >
                   {FORMATS.map((format) => {
@@ -288,7 +310,7 @@ export function ExportWorkspace() {
                         aria-pressed={destinationType === id}
                         className="button button--small"
                         disabled={unavailable}
-                        onClick={() => { setDestinationType(id); setDestinationTarget(null); }}
+                        onClick={() => setDestinationType(id)}
                         type="button"
                       ><Icon aria-hidden="true" /> {label}</button>
                       {unavailable ? (
@@ -305,7 +327,7 @@ export function ExportWorkspace() {
                 })}
               </fieldset>
               {selectedDestinationCapability?.available === false ? <p className="field-reason">{selectedDestinationCapability.reason}</p> : null}
-              <button className="button button--ghost export-destination-picker" disabled={!selectedIds.size} onClick={() => void chooseDestination()} type="button">
+              <button className="button button--ghost export-destination-picker" disabled={!selectedIds.size || !workspaceReady || isMobileRuntime} onClick={() => void chooseDestination()} type="button">
                 {destinationTarget ? "Change destination" : "Choose destination"}
               </button>
               {destinationTarget ? <p className="export-destination-target" title={destinationTarget}>{destinationTarget}</p> : null}

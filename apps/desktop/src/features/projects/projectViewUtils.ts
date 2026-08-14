@@ -994,9 +994,24 @@ function chordAnchorForLyricsSegment(
   segment: LyricsSegmentSchema,
 ): LeadSheetChordAnchor {
   if (segment.words?.length) {
-    const wordIndex = findActiveLyricsWordIndex(segment.words, chord.start_seconds);
-    if (wordIndex >= 0) {
-      return { type: "word", wordIndex };
+    const timedWords = segment.words.flatMap((word, wordIndex) =>
+      typeof word.start_seconds === "number" &&
+      Number.isFinite(word.start_seconds) &&
+      typeof word.end_seconds === "number" &&
+      Number.isFinite(word.end_seconds) &&
+      word.end_seconds >= word.start_seconds
+        ? [{ end: word.end_seconds, start: word.start_seconds, wordIndex }]
+        : []
+    );
+    if (timedWords.length) {
+      const containingOrFollowing = timedWords.find(
+        (word) => chord.start_seconds < word.start ||
+          (chord.start_seconds >= word.start && chord.start_seconds < word.end),
+      );
+      return {
+        type: "word",
+        wordIndex: containingOrFollowing?.wordIndex ?? timedWords[timedWords.length - 1]!.wordIndex,
+      };
     }
   }
 

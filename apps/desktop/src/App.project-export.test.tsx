@@ -1,12 +1,14 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
-import type { ExportCapabilitiesResponse, HealthResponse } from "./lib/api";
+import type { ExportCapabilitiesResponse, ExportRequest, HealthResponse } from "./lib/api";
 import {
   mockCreateExport,
   mockDeleteProject,
   mockGetExportCapabilities,
   mockGetHealth,
+  mockGetChords,
+  mockGetLyrics,
   mockGetMobileCapabilities,
   mockOpen,
   mockSave,
@@ -14,20 +16,27 @@ import {
   renderApp,
   setProjects,
   setProjectArtifacts,
+  setProjectChords,
+  setProjectLyrics,
   setJobs,
 } from "./test/appTestHarness";
 import { openAnalysisPanel, openExportPanel, refreshJobs } from "./test/projectTestActions";
 
 const createdAt = "2026-04-18T13:16:00.000Z";
 
-function artifact(id: string, type: string, sourceArtifactId?: string) {
+function artifact(
+  id: string,
+  type: string,
+  sourceArtifactId?: string,
+  metadata: Record<string, unknown> = {},
+) {
   return {
     id,
     project_id: "proj_123",
     type,
     format: "wav",
     path: `/tmp/${id}.wav`,
-    metadata: sourceArtifactId ? { source_artifact_id: sourceArtifactId } : {},
+    metadata: sourceArtifactId ? { source_artifact_id: sourceArtifactId } : metadata,
     created_at: createdAt,
   };
 }
@@ -35,7 +44,10 @@ function artifact(id: string, type: string, sourceArtifactId?: string) {
 function installExportArtifacts() {
   setProjectArtifacts("proj_123", [
     artifact("art_source", "source_audio"),
-    artifact("art_mix", "preview_mix"),
+    artifact("art_mix", "preview_mix", undefined, {
+      transpose: { semitones: -2 },
+      retune: { target_reference_hz: 442 },
+    }),
     artifact("art_vocals", "vocal_stem", "art_mix"),
     artifact("art_drums", "drums_stem", "art_mix"),
     artifact("art_bass", "bass_stem", "art_mix"),
@@ -60,6 +72,30 @@ function health(defaultExportFormat: string): HealthResponse {
 describe("project export workspace", () => {
   beforeEach(resetAppTestHarness);
 
+  it("exposes conditional lyrics-with-chords requirements in the generated contract", () => {
+    const audioOnly: ExportRequest = {
+      artifact_ids: ["art_source"],
+      destination_file_path: "/tmp/source.wav",
+    };
+    const lyricsOnly: ExportRequest = {
+      generated_document_ids: ["lyrics"],
+      destination: { type: "single_file", target: "/tmp/lyrics.txt" },
+    };
+    const lyricsWithChords: ExportRequest = {
+      generated_document_ids: ["lyrics_with_chords"],
+      document_audio_set_artifact_id: "art_source",
+      document_chord_display_mode: "auto",
+      destination: { type: "single_file", target: "/tmp/lyrics-with-chords.txt" },
+    };
+    const missingChordContext: ExportRequest = {
+      // @ts-expect-error Lyrics with chords requires its audio-set and display context.
+      generated_document_ids: ["lyrics_with_chords"],
+      destination: { type: "single_file", target: "/tmp/invalid.txt" },
+    };
+
+    expect([audioOnly, lyricsOnly, lyricsWithChords, missingChordContext]).toHaveLength(4);
+  });
+
   it("uses a dedicated project tab instead of the Analysis inspector", async () => {
     const user = userEvent.setup();
     renderApp(["/projects/proj_123"]);
@@ -70,8 +106,9 @@ describe("project export workspace", () => {
 
     await openExportPanel(user);
     expect(screen.getByRole("tabpanel", { name: "Export" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Export audio" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Export files" })).toBeInTheDocument();
     expect(screen.getByLabelText("File format")).toHaveValue("wav");
+    expect(screen.getByText("Original source file")).toBeVisible();
   });
 
   it("keeps the empty Export view connected to its tabpanel", async () => {
@@ -82,8 +119,9 @@ describe("project export workspace", () => {
     await openExportPanel(user);
 
     expect(screen.getByRole("tabpanel", { name: "Export" })).toHaveTextContent(
-      "No audio is available to export yet.",
+      "No audio set is available yet.",
     );
+    expect(screen.getByRole("checkbox", { name: /Lyrics$/i })).toBeEnabled();
   });
 
   it("supports keyboard tab navigation and persists the Export panel", async () => {
@@ -122,6 +160,9 @@ describe("project export workspace", () => {
     const preview = screen.getByText("File preview").closest("div")?.parentElement;
     expect(preview).not.toBeNull();
     expect(within(preview as HTMLElement).getAllByRole("listitem")).toHaveLength(4);
+    expect(within(preview as HTMLElement).getByRole("group", { name: "Audio" })).toBeVisible();
+    expect(within(preview as HTMLElement).queryByRole("group", { name: "Project documents" }))
+      .not.toBeInTheDocument();
     expect(within(preview as HTMLElement).getByText("Demo Song - Practice Mix 1 - Vocals.wav")).toBeInTheDocument();
   });
 
@@ -206,6 +247,114 @@ describe("project export workspace", () => {
     expect(mockCreateExport).toHaveBeenCalledWith("proj_123", expect.objectContaining({
       destination: { type: "folder", target: "/tmp/exports", overwrite: false },
     }));
+  });
+
+  it("keeps a saved document draft while lyrics and chords load on startup", async () => {
+    const user = userEvent.setup();
+    let resolveLyrics!: (value: Awaited<ReturnType<typeof mockGetLyrics>>) => void;
+    let resolveChords!: (value: Awaited<ReturnType<typeof mockGetChords>>) => void;
+    mockGetLyrics.mockImplementationOnce(() => new Promise((resolve) => { resolveLyrics = resolve; }));
+    mockGetChords.mockImplementationOnce(() => new Promise((resolve) => { resolveChords = resolve; }));
+    localStorage.setItem("tuneforge.project-playback-state", JSON.stringify({
+      proj_123: {
+        exportWorkspace: {
+          audioSetId: "art_source",
+          selectedArtifactIds: ["art_source"],
+          selectedGeneratedDocumentIds: ["lyrics_with_chords"],
+          outputFormat: "wav",
+          filenameBase: "Saved package",
+          destinationType: "folder",
+          desktopDestinationTarget: "/tmp/saved-package",
+        },
+      },
+    }));
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await openExportPanel(user);
+
+    expect(JSON.parse(localStorage.getItem("tuneforge.project-playback-state") ?? "{}")
+      .proj_123.exportWorkspace).toMatchObject({
+        selectedGeneratedDocumentIds: ["lyrics_with_chords"],
+        desktopDestinationTarget: "/tmp/saved-package",
+      });
+
+    resolveLyrics({
+      project_id: "proj_123",
+      source_segments: [],
+      segments: [{ text: "Saved lyrics" }],
+      has_user_edits: false,
+    });
+    resolveChords({
+      project_id: "proj_123",
+      source_segments: [],
+      timeline: [{ start_seconds: 0, end_seconds: 1, label: "Am" }],
+      has_user_edits: false,
+    });
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: /Lyrics \+ chords/i })).toBeChecked());
+    expect(screen.getByText("/tmp/saved-package")).toBeVisible();
+  });
+
+  it("keeps the destination for a switched project's document draft while its data loads", async () => {
+    const user = userEvent.setup();
+    installExportArtifacts();
+    setProjects([
+      {
+        id: "proj_123", display_name: "Demo Song", source_key_override: null,
+        source_path: "/tmp/demo.wav", imported_path: "/tmp/demo.wav", duration_seconds: 182,
+        sample_rate: 44100, channels: 2, created_at: createdAt, updated_at: createdAt,
+      },
+      {
+        id: "proj_456", display_name: "Other Song", source_key_override: null,
+        source_path: "/tmp/other.wav", imported_path: "/tmp/other.wav", duration_seconds: 182,
+        sample_rate: 44100, channels: 2, created_at: createdAt, updated_at: createdAt,
+      },
+    ]);
+    setProjectArtifacts("proj_456", [{ ...artifact("other_source", "source_audio"), project_id: "proj_456" }]);
+    localStorage.setItem("tuneforge.project-playback-state", JSON.stringify({
+      proj_456: {
+        exportWorkspace: {
+          audioSetId: "other_source",
+          selectedArtifactIds: ["other_source"],
+          selectedGeneratedDocumentIds: ["lyrics"],
+          outputFormat: "wav",
+          filenameBase: "Other package",
+          destinationType: "folder",
+          desktopDestinationTarget: "/tmp/other-package",
+        },
+      },
+    }));
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+
+    let resolveLyrics!: (value: Awaited<ReturnType<typeof mockGetLyrics>>) => void;
+    let resolveChords!: (value: Awaited<ReturnType<typeof mockGetChords>>) => void;
+    mockGetLyrics.mockImplementationOnce(() => new Promise((resolve) => { resolveLyrics = resolve; }));
+    mockGetChords.mockImplementationOnce(() => new Promise((resolve) => { resolveChords = resolve; }));
+    await user.click(screen.getAllByRole("link", { name: "Library" })[0]!);
+    await screen.findByRole("heading", { name: "Practice Projects" });
+    await user.click(screen.getByRole("link", { name: "Open Other Song project" }));
+    await screen.findByRole("heading", { name: "Other Song" });
+    await openExportPanel(user);
+
+    expect(JSON.parse(localStorage.getItem("tuneforge.project-playback-state") ?? "{}")
+      .proj_456.exportWorkspace).toMatchObject({
+        selectedGeneratedDocumentIds: ["lyrics"],
+        desktopDestinationTarget: "/tmp/other-package",
+      });
+    resolveLyrics({
+      project_id: "proj_456",
+      source_segments: [],
+      segments: [{ text: "Other lyrics" }],
+      has_user_edits: false,
+    });
+    resolveChords({
+      project_id: "proj_456",
+      source_segments: [],
+      timeline: [],
+      has_user_edits: false,
+    });
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: /Lyrics$/i })).toBeChecked());
+    expect(screen.getByText("/tmp/other-package")).toBeVisible();
   });
 
   it("keeps stored private choices out of the pending and recovered workspace", async () => {
@@ -361,6 +510,25 @@ describe("project export workspace", () => {
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
     expect(screen.getByRole("button", { name: "Export 1 file" })).toBeEnabled();
+  });
+
+  it("keeps audio-only export usable when document availability queries fail", async () => {
+    const user = userEvent.setup();
+    mockGetLyrics.mockRejectedValueOnce(new Error("lyrics unavailable"));
+    mockGetChords.mockRejectedValueOnce(new Error("chords unavailable"));
+    mockSave.mockResolvedValue("/tmp/Demo Song - Source.wav");
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await openExportPanel(user);
+
+    const exportButton = screen.getByRole("button", { name: "Export 1 file" });
+    await waitFor(() => expect(exportButton).toBeEnabled());
+    await user.click(exportButton);
+
+    await waitFor(() => expect(mockCreateExport).toHaveBeenCalledTimes(1));
+    const request = mockCreateExport.mock.calls[0]?.[1];
+    expect(request).toEqual(expect.objectContaining({ artifact_ids: ["art_source"] }));
+    expect(request).not.toHaveProperty("generated_document_ids");
   });
 
   it("does not persist an uninitialized format while health is pending", async () => {
@@ -625,6 +793,127 @@ describe("project export workspace", () => {
     await waitFor(() => expect(screen.getByText("Demo Song - Source.m4a")).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "Reset export workspace" })).toBeDisabled();
     expect(screen.getByText("Export options can’t be reset while an export is in progress.")).toBeVisible();
+  });
+
+  it("shows persistent document options with truthful Studio reasons", async () => {
+    const user = userEvent.setup();
+    setProjectLyrics("proj_123", {
+      project_id: "proj_123", source_segments: [], segments: [], has_user_edits: false,
+    });
+    setProjectChords("proj_123", {
+      project_id: "proj_123", source_segments: [], timeline: [], has_user_edits: false,
+    });
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await openExportPanel(user);
+
+    expect(screen.getByText("Plain-text documents generated from this project.")).toBeVisible();
+    const lyrics = screen.getByRole("checkbox", { name: /Lyrics$/i });
+    const lyricsWithChords = screen.getByRole("checkbox", { name: /Lyrics \+ chords/i });
+    expect(lyrics).toBeDisabled();
+    expect(lyricsWithChords).toBeDisabled();
+    expect(lyrics).toHaveAccessibleDescription(/lyrics in Studio/i);
+    expect(lyricsWithChords).toHaveAccessibleDescription(
+      /TXT · UTF-8 · Source key.*lyrics and chords in Studio/i,
+    );
+    expect(screen.getByText("Project documents are exported as .txt files.")).toBeVisible();
+  });
+
+  it("exports a document-only TXT with live counts, preview, and payload", async () => {
+    const user = userEvent.setup();
+    mockSave.mockResolvedValue("/tmp/Demo Song - Lyrics.txt");
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await openExportPanel(user);
+
+    await user.click(screen.getByRole("checkbox", { name: /Source Track/i }));
+    expect(screen.getByText("0 selected")).toBeVisible();
+    await user.click(screen.getByRole("checkbox", { name: /Lyrics$/i }));
+
+    expect(screen.getByText("1 selected")).toBeVisible();
+    expect(screen.getByLabelText("File format")).toBeDisabled();
+    expect(screen.getByText(/Documents use TXT/)).toBeVisible();
+    expect(screen.getByText("Demo Song - Lyrics.txt")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Export 1 file" }));
+
+    expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({
+      filters: [{ name: "Plain Text", extensions: ["txt"] }],
+    }));
+    expect(mockCreateExport).toHaveBeenCalledWith("proj_123", {
+      artifact_ids: [],
+      generated_document_ids: ["lyrics"],
+      document_audio_set_artifact_id: "art_source",
+      document_chord_display_mode: "auto",
+      output_format: "wav",
+      filename_base: "Demo Song",
+      destination: {
+        type: "single_file",
+        target: "/tmp/Demo Song - Lyrics.txt",
+        overwrite: false,
+      },
+    });
+  });
+
+  it("keeps document choices while changing audio sets and builds a mixed package", async () => {
+    const user = userEvent.setup();
+    installExportArtifacts();
+    mockOpen.mockResolvedValue("/tmp/mixed-export");
+    localStorage.setItem("tuneforge.ui-preferences", JSON.stringify({
+      enharmonicDisplayMode: "flats",
+    }));
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await openExportPanel(user);
+
+    const lyricsWithChords = screen.getByRole("checkbox", { name: /Lyrics \+ chords/i });
+    await user.click(lyricsWithChords);
+    expect(screen.getByText("TXT · UTF-8 · Source key")).toBeVisible();
+    expect(lyricsWithChords).toHaveAccessibleDescription("TXT · UTF-8 · Source key");
+    await user.click(screen.getByRole("radio", { name: /Practice Mix 1/i }));
+    expect(lyricsWithChords).toBeChecked();
+    expect(screen.getByText("TXT · UTF-8 · Matches Practice Mix 1 (-2 semitones)")).toBeVisible();
+    expect(lyricsWithChords).toHaveAccessibleDescription(
+      "TXT · UTF-8 · Matches Practice Mix 1 (-2 semitones)",
+    );
+    expect(screen.getByText("Shift -2 semitones / Retuned to 442.0 Hz")).toBeVisible();
+    expect(screen.getByText("6 selected")).toBeVisible();
+    expect(screen.getByText("Demo Song - Lyrics and Chords.txt")).toBeVisible();
+    const preview = screen.getByText("File preview").closest("div")?.parentElement;
+    expect(preview).not.toBeNull();
+    const previewGroups = within(preview as HTMLElement).getAllByRole("group");
+    expect(previewGroups.map((group) => group.getAttribute("aria-label"))).toEqual([
+      "Audio",
+      "Project documents",
+    ]);
+    expect(within(previewGroups[0]!).getAllByRole("listitem")).toHaveLength(5);
+    expect(within(previewGroups[1]!).getAllByRole("listitem")).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "Choose destination" }));
+    await user.click(screen.getByRole("button", { name: "Export 6 files" }));
+
+    expect(mockCreateExport).toHaveBeenCalledWith("proj_123", expect.objectContaining({
+      artifact_ids: ["art_mix", "art_vocals", "art_drums", "art_bass", "art_guitar"],
+      generated_document_ids: ["lyrics_with_chords"],
+      document_audio_set_artifact_id: "art_mix",
+      document_chord_display_mode: "flats",
+      destination: { type: "folder", target: "/tmp/mixed-export", overwrite: false },
+    }));
+  });
+
+  it("restores failed available documents for partial retry", async () => {
+    const user = userEvent.setup();
+    setJobs([{ id: "job_partial_docs", project_id: "proj_123", type: "export", status: "completed", progress: 100,
+      export_result: { outcome: "partial", total_count: 2, completed_count: 1, failed_count: 1, items: [
+        { artifact_id: "art_source", generated_document_id: null, output_name: "Demo Song - Source.wav", status: "completed", progress: 100, result_artifact_id: "receipt", error: null },
+        { artifact_id: null, generated_document_id: "lyrics", output_name: "Demo Song - Lyrics.txt", status: "failed", progress: 0, result_artifact_id: null, error: "failed" },
+      ] } }]);
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await openExportPanel(user);
+
+    await user.click(screen.getByRole("button", { name: "Retry failed" }));
+    expect(screen.getByRole("checkbox", { name: /Lyrics$/i })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /Source Track/i })).not.toBeChecked();
+    expect(screen.getByText("1 selected")).toBeVisible();
   });
 
   it("shows truthful Android limits and disabled export controls", async () => {

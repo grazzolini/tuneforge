@@ -923,26 +923,55 @@ Response: `DeleteResponse`.
 
 `POST /api/v1/projects/{project_id}/export`
 
-Queues an export job for selected project artifacts.
+Queues an export job for selected project audio artifacts and generated project documents.
 
 Request fields:
 
-- `artifact_ids` - unique ordered IDs from one source track or practice mix and its stems.
-- `output_format` - `wav`, `flac`, `mp3`, or `m4a`, subject to runtime capabilities.
+- `artifact_ids` - unique ordered IDs from one source track or practice mix and its stems; defaults
+  to an empty list.
+- `generated_document_ids` - unique ordered `GeneratedExportDocumentId` values, `lyrics` or
+  `lyrics_with_chords`; defaults to an empty list.
+- `document_audio_set_artifact_id` - same-project primary `source_audio` or `preview_mix` used as
+  the document's musical context. Required for `lyrics_with_chords`; when audio is also selected,
+  both selections must resolve to this audio set.
+- `document_chord_display_mode` - `auto`, `sharps`, `flats`, `neutral`, or `dual`. Required for
+  `lyrics_with_chords`; plain lyrics ignore document chord context.
+- `output_format` - `wav`, `flac`, `mp3`, or `m4a`, subject to runtime capabilities. It is ignored
+  by document-only exports, which always write UTF-8 TXT.
 - `filename_base` - sanitized base used for stable friendly output names.
 - `destination` - tagged `single_file`, `folder`, or `zip` object with opaque `target` and
   explicit `overwrite` approval.
 
 Legacy `mixdown_mode`, `destination_path`, `destination_file_path`, and `overwrite_existing`
-remain accepted for one artifact during migration. Canonical and legacy destinations cannot be
-combined. Multi-artifact requests require Folder or ZIP and reject artifacts from different audio
-sets before queuing.
+remain accepted for one audio artifact during migration. Generated documents require the canonical
+destination. Canonical and legacy destinations cannot be combined. The combined audio-and-document
+count selects File for one item or Folder/ZIP for multiple items. Audio artifacts from different
+sets are rejected before queuing.
+
+Generated documents read current saved lyrics and chords from the database when the job starts.
+Job payloads contain only document IDs, output names, and resolved key/transpose/display context,
+never lyric or chord content. Lyrics TXT preserves saved segment text and order with normalized LF
+newlines. Lyrics with chords corrects labels from the detected key to `source_key_override`, then
+adds only the selected practice mix's metadata transpose. The override-or-detected key, transposed
+for that mix, controls enharmonic spelling; retune-only/source audio contributes no mix transpose,
+and capo or other playback-only shifts are excluded. Known chords and slash bass notes follow the
+desktop playback spelling modes, while `N.C.` and unparseable labels remain unchanged. Chords stay
+anchored above lyric blocks, and every leading, internal, or trailing instrumental gap becomes one
+chronological, single-space-separated chord row with blank block separation.
+
+Direct files remain user-owned external outputs. Successful direct documents register local
+`export_mix` receipts, while ZIP uses the existing archive receipt. No document copy is stored under
+the project and export receipts remain excluded from sync.
 
 Response: `JobResponse`.
 
 Completed export jobs expose ordered `result_artifact_ids` and `export_result`. The result contains
 aggregate outcome/counts plus per-item progress, status, output name, registered result ID, and safe
-error. A mixed batch keeps global job status `completed` with export outcome `partial`.
+error. `ExportResultItemSchema` is an exact union: each item has either a non-null `artifact_id` or
+a non-null `generated_document_id`, never both. A mixed batch keeps global job status `completed`
+with export outcome `partial`. Document availability failures use `EXPORT_LYRICS_UNAVAILABLE`,
+`EXPORT_CHORDS_UNAVAILABLE`, or `EXPORT_DOCUMENTS_UNAVAILABLE`; export `422` responses use the
+typed `ErrorResponse` envelope rather than FastAPI's validation-error shape.
 
 ### Get export capabilities
 

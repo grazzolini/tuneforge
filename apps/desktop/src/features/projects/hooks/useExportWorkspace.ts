@@ -1,12 +1,18 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
-import { ApiError, api, type ExportRequest } from "../../../lib/api";
+import {
+  ApiError,
+  api,
+  type ExportRequest,
+  type GeneratedExportDocumentId,
+} from "../../../lib/api";
 import { useProjectViewModelContext } from "../components/useProjectViewModelContext";
 import {
   buildExportAudioSets,
   exportContextName,
   exportOutputNames,
+  generatedDocumentOutputNames,
   exportPresetForSelection,
   isDesktopDestinationTarget,
   defaultExportWorkspaceState,
@@ -16,6 +22,7 @@ import {
   type ExportPreset,
 } from "../exportWorkspaceUtils";
 import type { ExportWorkspaceState } from "../projectPlaybackState";
+import { artifactTransposeSemitones } from "../projectViewUtils";
 
 type DestinationType = ExportDestinationType;
 
@@ -43,8 +50,15 @@ function selectedIdsForPreset(
 export function useExportWorkspace() {
   const {
     displayArtifacts,
+    displayedChords,
+    displayedLyrics,
+    chordsQuerySettled,
+    chordsQuerySucceeded,
+    lyricsQuerySettled,
+    lyricsQuerySucceeded,
     artifactsQuery,
     exportWorkspace,
+    enharmonicDisplayMode,
     handleSetExportWorkspace,
     handleShowExportRecoveryNotice,
     handleSelectProjectPanel,
@@ -68,10 +82,11 @@ export function useExportWorkspace() {
     audioSets[0]?.artifact.id ??
     "";
   const fallbackState = useMemo<ExportWorkspaceState | null>(() => {
-    if (!defaultAudioSetId) return null;
+    if (!isCurrentProjectHydrated) return null;
     return {
-      audioSetId: defaultAudioSetId,
-      selectedArtifactIds: [defaultAudioSetId],
+      audioSetId: defaultAudioSetId || null,
+      selectedArtifactIds: defaultAudioSetId ? [defaultAudioSetId] : [],
+      selectedGeneratedDocumentIds: [],
       outputFormat: "m4a",
       filenameBase: isCurrentProjectHydrated
         ? projectQuery.data?.display_name ?? "TuneForge Export"
@@ -80,6 +95,40 @@ export function useExportWorkspace() {
       desktopDestinationTarget: null,
     };
   }, [defaultAudioSetId, isCurrentProjectHydrated, projectQuery.data?.display_name]);
+  const availableGeneratedDocumentIds = useMemo(() => {
+    const available = new Set<GeneratedExportDocumentId>();
+    if (
+      !isMobileRuntime &&
+      lyricsQuerySucceeded &&
+      displayedLyrics.some((segment) => segment.text.trim())
+    ) {
+      available.add("lyrics");
+      if (chordsQuerySucceeded && displayedChords.length) available.add("lyrics_with_chords");
+    }
+    return available;
+  }, [
+    chordsQuerySucceeded,
+    displayedChords.length,
+    displayedLyrics,
+    isMobileRuntime,
+    lyricsQuerySucceeded,
+  ]);
+  const storedDocumentIds = useMemo(
+    () => exportWorkspace?.selectedGeneratedDocumentIds ?? [],
+    [exportWorkspace?.selectedGeneratedDocumentIds],
+  );
+  const relevantDocumentAvailabilitySettled = Boolean(
+    isMobileRuntime ||
+      !storedDocumentIds.length ||
+      (lyricsQuerySettled &&
+        (!storedDocumentIds.includes("lyrics_with_chords") || chordsQuerySettled)),
+  );
+  const reconciliationDocumentIds = useMemo(
+    () => relevantDocumentAvailabilitySettled
+      ? availableGeneratedDocumentIds
+      : new Set(storedDocumentIds),
+    [availableGeneratedDocumentIds, relevantDocumentAvailabilitySettled, storedDocumentIds],
+  );
   const healthQuery = useQuery({
     queryKey: ["health"],
     queryFn: () => api.getHealth(),
@@ -115,6 +164,7 @@ export function useExportWorkspace() {
           filenameBase: projectQuery.data?.display_name ?? "TuneForge Export",
           capabilities,
           defaultOutputFormat,
+          availableGeneratedDocumentIds: reconciliationDocumentIds,
         })
       : null,
     [
@@ -123,6 +173,7 @@ export function useExportWorkspace() {
       defaultOutputFormat,
       exportWorkspace,
       projectQuery.data?.display_name,
+      reconciliationDocumentIds,
       selectedPrimaryArtifactId,
       workspaceReady,
     ],
@@ -130,12 +181,24 @@ export function useExportWorkspace() {
   const draft = reconciliation?.state ?? fallbackState;
   const audioSetId = draft?.audioSetId ?? "";
   const selectedIds = useMemo(() => new Set(draft?.selectedArtifactIds ?? []), [draft?.selectedArtifactIds]);
+  const selectedDocumentIds = useMemo(
+    () => draft?.selectedGeneratedDocumentIds ?? [],
+    [draft?.selectedGeneratedDocumentIds],
+  );
+  const selectedDocumentIdSet = useMemo(() => new Set(selectedDocumentIds), [selectedDocumentIds]);
   const outputFormat = draft?.outputFormat ?? "m4a";
   const filenameBase = draft?.filenameBase ?? fallbackState?.filenameBase ?? "TuneForge Export";
   const destinationType = draft?.destinationType ?? "single_file";
   const destinationTarget = draft?.desktopDestinationTarget ?? null;
   const recoveredDrafts = useRef(new Set<string>());
   const audioSet = audioSets.find((candidate) => candidate.artifact.id === audioSetId) ?? audioSets[0] ?? null;
+  const documentMixTransposeSemitones = artifactTransposeSemitones(
+    audioSet?.artifact ?? null,
+    displayArtifacts,
+  );
+  const documentChordContext = documentMixTransposeSemitones === 0
+    ? "Source key"
+    : `Matches ${audioSet?.label ?? "selected audio"} (${documentMixTransposeSemitones > 0 ? "+" : ""}${documentMixTransposeSemitones} semitone${Math.abs(documentMixTransposeSemitones) === 1 ? "" : "s"})`;
 
   useEffect(() => {
     if (!reconciliation) {
@@ -159,9 +222,12 @@ export function useExportWorkspace() {
     ? [audioSet.artifact, ...audioSet.stems].filter((artifact) => selectedIds.has(artifact.id))
     : [];
   const preset = audioSet ? exportPresetForSelection(audioSet, selectedIds) : "custom";
-  const outputNames = audioSet
+  const audioOutputNames = audioSet
     ? exportOutputNames(audioSet, selectedIds, filenameBase, outputFormat)
     : [];
+  const documentOutputNames = generatedDocumentOutputNames(selectedDocumentIds, filenameBase);
+  const outputNames = [...audioOutputNames, ...documentOutputNames];
+  const totalSelectedCount = selectedIds.size + selectedDocumentIds.length;
   const activeExportJob = visibleJobs.find(
     (job) => job.type === "export" && ["pending", "running"].includes(job.status),
   );
@@ -169,7 +235,13 @@ export function useExportWorkspace() {
   const partialExportJob = latestExportJob?.export_result?.outcome === "partial" ? latestExportJob : null;
   const failedArtifactIds = partialExportJob?.export_result?.items
     .filter((item) => item.status === "failed")
-    .map((item) => item.artifact_id) ?? [];
+    .map((item) => item.artifact_id)
+    .filter((id): id is string => id != null) ?? [];
+  const failedDocumentIds = partialExportJob?.export_result?.items
+    .filter((item) => item.status === "failed")
+    .map((item) => item.generated_document_id)
+    .filter((id): id is GeneratedExportDocumentId =>
+      id != null && availableGeneratedDocumentIds.has(id)) ?? [];
   const retryAudioSet = audioSets.find((candidate) =>
     failedArtifactIds.some(
       (id) => id === candidate.artifact.id || candidate.stems.some((stem) => stem.id === id),
@@ -180,14 +252,14 @@ export function useExportWorkspace() {
   const selectedDestinationCapability = capabilities?.destinations.find(
     (destination) => destination.id === destinationType,
   );
-  const selectionAllowed = maxArtifactCount === null || selectedIds.size <= maxArtifactCount;
+  const selectionAllowed = maxArtifactCount === null || totalSelectedCount <= maxArtifactCount;
   const canExport = Boolean(
-    audioSet &&
-      selectedIds.size &&
+    totalSelectedCount &&
       filenameBase.trim() &&
-      selectedFormatCapability?.available &&
+      (!selectedIds.size || selectedFormatCapability?.available) &&
       selectedDestinationCapability?.available &&
       selectionAllowed &&
+      (!selectedDocumentIds.length || relevantDocumentAvailabilitySettled) &&
       workspaceReady &&
       !projectEditLocked &&
       !activeExportJob,
@@ -199,15 +271,37 @@ export function useExportWorkspace() {
   }
 
   function updateSelection(next: Set<string>) {
-    const wasSingle = selectedIds.size === 1;
-    const isSingle = next.size === 1;
+    const previousCount = totalSelectedCount;
+    const nextCount = next.size + selectedDocumentIds.length;
     updateDraft({
       ...(draft ?? fallbackState!),
       selectedArtifactIds: [...next],
-      destinationType: next.size === 0 || wasSingle !== isSingle
-        ? isSingle ? "single_file" : "folder"
+      destinationType: previousCount === 0 || (previousCount === 1) !== (nextCount === 1)
+        ? nextCount <= 1 ? "single_file" : "folder"
         : destinationType,
-      desktopDestinationTarget: next.size === 0 || wasSingle !== isSingle ? null : destinationTarget,
+      desktopDestinationTarget: previousCount === 0 || (previousCount === 1) !== (nextCount === 1)
+        ? null
+        : destinationTarget,
+    });
+  }
+
+  function toggleGeneratedDocument(documentId: GeneratedExportDocumentId) {
+    if (!draft || !availableGeneratedDocumentIds.has(documentId)) return;
+    const next = new Set(selectedDocumentIds);
+    if (next.has(documentId)) next.delete(documentId);
+    else next.add(documentId);
+    const ordered = (["lyrics", "lyrics_with_chords"] as GeneratedExportDocumentId[])
+      .filter((id) => next.has(id));
+    const nextCount = selectedIds.size + ordered.length;
+    updateDraft({
+      ...draft,
+      selectedGeneratedDocumentIds: ordered,
+      destinationType: (totalSelectedCount === 1) !== (nextCount === 1)
+        ? nextCount <= 1 ? "single_file" : "folder"
+        : destinationType,
+      desktopDestinationTarget: (totalSelectedCount === 1) !== (nextCount === 1)
+        ? null
+        : destinationTarget,
     });
   }
 
@@ -244,7 +338,9 @@ export function useExportWorkspace() {
       ...draft,
       audioSetId: nextAudioSetId,
       selectedArtifactIds: nextDefault.selectedArtifactIds,
-      destinationType: nextDefault.destinationType,
+      destinationType: nextDefault.selectedArtifactIds.length + selectedDocumentIds.length === 1
+        ? "single_file"
+        : "folder",
       desktopDestinationTarget: null,
     });
   }
@@ -258,32 +354,41 @@ export function useExportWorkspace() {
       capabilities,
       defaultOutputFormat,
     });
-    handleSetExportWorkspace(next);
+    handleSetExportWorkspace(next ?? (fallbackState ? {
+      ...fallbackState,
+      selectedGeneratedDocumentIds: [],
+      filenameBase: projectQuery.data?.display_name ?? "TuneForge Export",
+      desktopDestinationTarget: null,
+    } : null));
   }
 
   async function chooseDestination(type = destinationType) {
-    if (!audioSet || capabilities?.platform !== "desktop") return null;
+    if (capabilities?.platform !== "desktop") return null;
     let target: string | string[] | null;
     if (type === "folder") {
       target = await open({ directory: true, multiple: false });
     } else {
       const defaultName =
         type === "zip"
-          ? `${filenameBase.trim()} - ${exportContextName(audioSet)}.zip`
+          ? selectedDocumentIds.length
+            ? `${filenameBase.trim()} - Export.zip`
+            : `${filenameBase.trim()} - ${audioSet ? exportContextName(audioSet) : "Export"}.zip`
           : outputNames[0];
       target = await save({
         defaultPath: defaultName,
         filters:
           type === "zip"
             ? [{ name: "ZIP Archive", extensions: ["zip"] }]
-            : [{ name: FORMAT_LABELS[outputFormat], extensions: [outputFormat] }],
+            : selectedIds.size
+              ? [{ name: FORMAT_LABELS[outputFormat], extensions: [outputFormat] }]
+              : [{ name: "Plain Text", extensions: ["txt"] }],
       });
     }
     const normalized = Array.isArray(target) ? target[0] : target;
     if (
       !normalized ||
       !isDesktopDestinationTarget(normalized) ||
-      !selectedFormatCapability?.available ||
+      (selectedIds.size > 0 && !selectedFormatCapability?.available) ||
       !selectedDestinationCapability?.available
     ) return null;
     if (draft) updateDraft({ ...draft, desktopDestinationTarget: normalized });
@@ -292,15 +397,36 @@ export function useExportWorkspace() {
 
   const exportMutation = useMutation({
     mutationFn: async () => {
-      if (!audioSet || !projectQuery.data) return null;
+      if (!projectQuery.data) return null;
       const target = destinationTarget ?? (await chooseDestination());
       if (!target) return null;
-      const request: ExportRequest = {
+      const chordDocumentSelected = selectedDocumentIds.includes("lyrics_with_chords");
+      if (chordDocumentSelected && !audioSet) return null;
+      const commonRequest = {
         artifact_ids: selectedArtifacts.map((artifact) => artifact.id),
         output_format: outputFormat,
         filename_base: filenameBase.trim(),
         destination: { type: destinationType, target, overwrite: false },
       };
+      const request: ExportRequest = chordDocumentSelected && audioSet
+        ? {
+            ...commonRequest,
+            generated_document_ids: selectedDocumentIds.length === 1
+              ? ["lyrics_with_chords"]
+              : selectedDocumentIds[0] === "lyrics"
+                ? ["lyrics", "lyrics_with_chords"]
+                : ["lyrics_with_chords", "lyrics"],
+            document_audio_set_artifact_id: audioSet.artifact.id,
+            document_chord_display_mode: enharmonicDisplayMode,
+          }
+        : {
+            ...commonRequest,
+            ...(selectedDocumentIds.length ? { generated_document_ids: ["lyrics"] as const } : {}),
+            ...(selectedDocumentIds.length && audioSet ? {
+              document_audio_set_artifact_id: audioSet.artifact.id,
+              document_chord_display_mode: enharmonicDisplayMode,
+            } : {}),
+          };
       try {
         return await api.createExport(projectQuery.data.id, request);
       } catch (error) {
@@ -333,16 +459,17 @@ export function useExportWorkspace() {
   });
 
   function retryFailed() {
-    if (!retryAudioSet) return;
+    if (!retryAudioSet && !failedDocumentIds.length) return;
     const failed = failedArtifactIds.filter(
-      (id) => id === retryAudioSet.artifact.id || retryAudioSet.stems.some((stem) => stem.id === id),
+      (id) => id === retryAudioSet?.artifact.id || retryAudioSet?.stems.some((stem) => stem.id === id),
     );
     if (!draft) return;
     updateDraft({
       ...draft,
-      audioSetId: retryAudioSet.artifact.id,
+      audioSetId: retryAudioSet?.artifact.id ?? draft.audioSetId,
       selectedArtifactIds: failed,
-      destinationType: failed.length === 1 ? "single_file" : "folder",
+      selectedGeneratedDocumentIds: failedDocumentIds,
+      destinationType: failed.length + failedDocumentIds.length === 1 ? "single_file" : "folder",
       desktopDestinationTarget: null,
     });
   }
@@ -352,6 +479,7 @@ export function useExportWorkspace() {
     audioSetId,
     audioSets,
     activeExportJob,
+    audioOutputNames,
     canExport,
     cancelMutation,
     capabilities,
@@ -383,14 +511,17 @@ export function useExportWorkspace() {
         : !workspaceReady || !healthSettled
         ? "Export options are still loading."
         : null,
-    retryUnavailableReason: partialExportJob && !retryAudioSet
+    retryUnavailableReason: partialExportJob && !retryAudioSet && !failedDocumentIds.length
       ? "Failed export items are no longer available in this project."
       : null,
     selectedDestinationCapability,
     selectedFormatCapability,
     selectedIds,
+    selectedDocumentIdSet,
+    selectedDocumentIds,
     selectedArtifacts,
     selectionAllowed,
+    totalSelectedCount,
     selectPreset,
     setAudioSetId: selectAudioSet,
     setDestinationType: (nextDestinationType: DestinationType) => {
@@ -403,6 +534,13 @@ export function useExportWorkspace() {
       if (draft) updateDraft({ ...draft, outputFormat: nextOutputFormat, desktopDestinationTarget: null });
     },
     toggleArtifact,
+    toggleGeneratedDocument,
+    documentAvailability: {
+      lyrics: availableGeneratedDocumentIds.has("lyrics"),
+      lyrics_with_chords: availableGeneratedDocumentIds.has("lyrics_with_chords"),
+    },
+    documentChordContext,
+    documentOutputNames,
     workspaceReady,
   };
 }

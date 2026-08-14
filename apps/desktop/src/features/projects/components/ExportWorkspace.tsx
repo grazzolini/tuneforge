@@ -6,6 +6,7 @@ import {
   Download,
   Drum,
   FileAudio,
+  FileText,
   Folder,
   Guitar,
   Layers3,
@@ -15,7 +16,7 @@ import {
   X,
 } from "lucide-react";
 import type { ArtifactSchema } from "../../../lib/api";
-import { artifactLabel, isStemArtifact } from "../projectViewUtils";
+import { artifactLabel, artifactSummary, isStemArtifact } from "../projectViewUtils";
 import { useExportWorkspace } from "../hooks/useExportWorkspace";
 import { useProjectViewModelContext } from "./useProjectViewModelContext";
 
@@ -54,6 +55,7 @@ export function ExportWorkspace() {
     audioSetId,
     audioSets,
     activeExportJob,
+    audioOutputNames,
     capabilitiesError,
     canExport,
     cancelMutation,
@@ -61,6 +63,9 @@ export function ExportWorkspace() {
     chooseDestination,
     destinationTarget,
     destinationType,
+    documentAvailability,
+    documentChordContext,
+    documentOutputNames,
     exportMutation,
     filenameBase,
     goToStudio,
@@ -78,14 +83,16 @@ export function ExportWorkspace() {
     selectedDestinationCapability,
     selectedFormatCapability,
     selectedIds,
-    selectedArtifacts,
+    selectedDocumentIdSet,
     selectionAllowed,
+    totalSelectedCount,
     selectPreset,
     setAudioSetId,
     setDestinationType,
     setFilenameBase,
     setOutputFormat,
     toggleArtifact,
+    toggleGeneratedDocument,
     workspaceReady,
   } = workspace;
   const { projectQuery } = useProjectViewModelContext();
@@ -95,34 +102,17 @@ export function ExportWorkspace() {
   const destinationLabel = DESTINATIONS.find((destination) => destination.id === destinationType)?.label
     ?? "Destination";
 
-  if (!audioSet) {
-    return (
-      <div
-        aria-labelledby="project-export-tab"
-        className="panel export-workspace-empty"
-        id="project-export-panel"
-        role="tabpanel"
-      >
-        {capabilitiesError ? (
-          <div className="notice notice--error" role="alert">
-            {capabilitiesError} <button className="button-link" onClick={retryCapabilities} type="button">Retry</button>
-          </div>
-        ) : "No audio is available to export yet."}
-      </div>
-    );
-  }
-
   return (
     <section className="export-workspace" aria-labelledby="project-export-tab" id="project-export-panel" role="tabpanel">
       <header className="export-workspace__header">
         <div>
           <span className="eyebrow">Project delivery</span>
-          <h2 id="export-workspace-title">Export audio</h2>
-          <p>Choose one audio set, select its tracks, then package local files.</p>
+          <h2 id="export-workspace-title">Export files</h2>
+          <p>Choose project audio and documents, then package local files.</p>
         </div>
         <div className="export-workspace__header-actions">
           <span className="export-workspace__selection-count" aria-live="polite">
-            {selectedIds.size} selected
+            {totalSelectedCount} selected
           </span>
           <button
             aria-describedby={resetUnavailableReason ? "export-reset-reason" : undefined}
@@ -172,23 +162,24 @@ export function ExportWorkspace() {
                 <span className="export-audio-set__icon"><Music2 aria-hidden="true" /></span>
                 <span>
                   <strong>{candidate.label}</strong>
-                  <small>{candidate.stems.length ? `${candidate.stems.length} stems` : "Track only"}</small>
+                  <small>{artifactSummary(candidate.artifact) || "No pitch or tuning changes"}</small>
                 </span>
               </label>
             ))}
           </div>
+          {!audioSets.length ? <p className="export-empty-stems">No audio set is available yet.</p> : null}
         </aside>
 
         <div className="panel export-selection">
-          <div className="export-selection__identity">
+          {audioSet ? <div className="export-selection__identity">
             <div>
               <span className="eyebrow">Selected audio set</span>
               <h3>{audioSet.label}</h3>
             </div>
             <span>{audioSet.artifact.format.toUpperCase()} · {formatDuration(projectDuration)}</span>
-          </div>
+          </div> : null}
 
-          <fieldset className="export-presets" disabled={controlsDisabled}>
+          {audioSet ? <fieldset className="export-presets" disabled={controlsDisabled}>
             <legend>Quick selections</legend>
             <button
               aria-describedby={isMobileRuntime ? "android-multi-export-reason" : undefined}
@@ -220,9 +211,9 @@ export function ExportWorkspace() {
                 All stems and track plus stems require multiple files. Android exports one file at a time.
               </span>
             ) : null}
-          </fieldset>
+          </fieldset> : null}
 
-          <fieldset className="export-artifact-list" disabled={controlsDisabled}>
+          {audioSet ? <fieldset className="export-artifact-list" disabled={controlsDisabled}>
             <legend>Audio selection</legend>
             {[audioSet.artifact, ...audioSet.stems].map((artifact) => (
               <label className="export-artifact-row" key={artifact.id}>
@@ -243,10 +234,65 @@ export function ExportWorkspace() {
                 </span>
               </label>
             ))}
-          </fieldset>
+          </fieldset> : null}
 
-          {!audioSet.stems.length ? (
+          {audioSet && !audioSet.stems.length ? (
             <p className="export-empty-stems">No stems yet for this audio set. <button className="button-link" onClick={goToStudio} type="button">Go to Studio</button></p>
+          ) : null}
+
+          {!isMobileRuntime ? (
+            <fieldset className="export-artifact-list export-document-list" disabled={controlsDisabled}>
+              <legend>Project documents</legend>
+              <p>Plain-text documents generated from this project.</p>
+              {([
+                {
+                  id: "lyrics" as const,
+                  label: "Lyrics",
+                  available: documentAvailability.lyrics,
+                  reason: "Add or generate lyrics in Studio to export this document.",
+                },
+                {
+                  id: "lyrics_with_chords" as const,
+                  label: "Lyrics + chords",
+                  available: documentAvailability.lyrics_with_chords,
+                  reason: documentAvailability.lyrics
+                    ? "Add or generate chords in Studio to export this document."
+                    : "Add or generate lyrics and chords in Studio to export this document.",
+                },
+              ]).map((document) => {
+                const reasonId = `export-document-${document.id}-reason`;
+                const metadataId = `export-document-${document.id}-metadata`;
+                const describedBy = [
+                  document.id === "lyrics_with_chords" ? metadataId : null,
+                  !document.available ? reasonId : null,
+                ].filter(Boolean).join(" ") || undefined;
+                return (
+                  <label className="export-artifact-row" key={document.id}>
+                    <input
+                      aria-label={document.label}
+                      aria-describedby={describedBy}
+                      checked={selectedDocumentIdSet.has(document.id)}
+                      disabled={!document.available}
+                      onChange={() => toggleGeneratedDocument(document.id)}
+                      type="checkbox"
+                    />
+                    <span className="export-artifact-row__icon"><FileText aria-hidden="true" /></span>
+                    <span className="export-artifact-row__copy">
+                      <strong>{document.label}</strong>
+                      <small id={document.id === "lyrics_with_chords" ? metadataId : undefined}>
+                        TXT · UTF-8{document.id === "lyrics_with_chords" ? ` · ${documentChordContext}` : ""}
+                      </small>
+                      {!document.available ? <small className="field-reason" id={reasonId}>{document.reason}</small> : null}
+                    </span>
+                    <span className="export-artifact-row__status">
+                      {selectedDocumentIdSet.has(document.id) ? <Check aria-hidden="true" /> : null}
+                      {document.available ? "Available" : "Unavailable"}
+                    </span>
+                  </label>
+                );
+              })}
+              <p className="field-reason">Project documents are exported as .txt files.</p>
+            </fieldset>
           ) : null}
         </div>
 
@@ -259,7 +305,7 @@ export function ExportWorkspace() {
                 ?? activeExportJob.export_result?.items[0]?.output_name
                 ?? outputNames[0]
                 ?? "Export package"}</p>
-              <p>{activeExportJob.export_result?.total_count ?? selectedArtifacts.length} items · {activeExportJob.progress}%</p>
+              <p>{activeExportJob.export_result?.total_count ?? totalSelectedCount} items · {activeExportJob.progress}%</p>
               <progress aria-label="Export progress" max="100" value={activeExportJob.progress} />
               <div className="export-progress__actions">
                 <button className="button" disabled={cancelMutation.isPending} onClick={() => cancelMutation.mutate()} type="button">
@@ -281,7 +327,7 @@ export function ExportWorkspace() {
                 <span>File format</span>
                 <select
                   aria-describedby={isMobileRuntime ? "android-export-format-notice" : undefined}
-                  disabled={!workspaceReady}
+                  disabled={!workspaceReady || selectedIds.size === 0}
                   onChange={(event) => setOutputFormat(event.target.value as typeof outputFormat)}
                   value={outputFormat}
                 >
@@ -291,6 +337,9 @@ export function ExportWorkspace() {
                   })}
                 </select>
               </label>
+              {!selectedIds.size && totalSelectedCount ? (
+                <p className="field-reason">Audio format does not apply to document-only exports. Documents use TXT.</p>
+              ) : null}
               {selectedFormatCapability?.available === false ? <p className="field-reason">{selectedFormatCapability.reason}</p> : null}
               <label className="export-field">
                 <span>File name base</span>
@@ -299,7 +348,7 @@ export function ExportWorkspace() {
               <fieldset className="export-destinations">
                 <legend>Destination</legend>
                 {DESTINATIONS.map(({ id, label, icon: Icon }) => {
-                  const countCompatible = selectedIds.size === 1 ? id === "single_file" : id !== "single_file";
+                  const countCompatible = totalSelectedCount <= 1 ? id === "single_file" : id !== "single_file";
                   const capability = capabilities?.destinations.find((candidate) => candidate.id === id);
                   const unavailable = !countCompatible || capability?.available === false;
                   const reasonId = `export-destination-${id}-reason`;
@@ -323,7 +372,7 @@ export function ExportWorkspace() {
                         <small className="field-reason" id={reasonId}>
                           {capability?.available === false
                             ? capability.reason
-                            : selectedIds.size === 1
+                            : totalSelectedCount <= 1
                               ? "Choose File for one item."
                               : "Multiple items require Folder or ZIP."}
                         </small>
@@ -333,14 +382,25 @@ export function ExportWorkspace() {
                 })}
               </fieldset>
               {selectedDestinationCapability?.available === false ? <p className="field-reason">{selectedDestinationCapability.reason}</p> : null}
-              <button className="button button--ghost export-destination-picker" disabled={!selectedIds.size || !workspaceReady || isMobileRuntime} onClick={() => void chooseDestination()} type="button">
+              <button className="button button--ghost export-destination-picker" disabled={!totalSelectedCount || !workspaceReady || isMobileRuntime} onClick={() => void chooseDestination()} type="button">
                 {destinationTarget ? "Change destination" : "Choose destination"}
               </button>
               {destinationTarget ? <p className="export-destination-target" title={destinationTarget}>{destinationTarget}</p> : null}
 
               <div className="export-preview">
                 <div className="export-section-heading"><span>File preview</span><span>{outputNames.length}</span></div>
-                <ul>{outputNames.map((name) => <li key={name}>{name}</li>)}</ul>
+                {audioOutputNames.length ? (
+                  <div aria-label="Audio" className="export-preview__group" role="group">
+                    <span className="export-preview__label">Audio</span>
+                    <ul>{audioOutputNames.map((name) => <li key={name}>{name}</li>)}</ul>
+                  </div>
+                ) : null}
+                {documentOutputNames.length ? (
+                  <div aria-label="Project documents" className="export-preview__group" role="group">
+                    <span className="export-preview__label">Project documents</span>
+                    <ul>{documentOutputNames.map((name) => <li key={name}>{name}</li>)}</ul>
+                  </div>
+                ) : null}
               </div>
 
               {!selectionAllowed ? <p className="field-reason">This device supports one export item at a time.</p> : null}
@@ -352,11 +412,11 @@ export function ExportWorkspace() {
               ) : null}
               <div className="export-package__summary" data-testid="export-compact-summary">
                 <div className="export-package__summary-copy" aria-live="polite">
-                  <span>{selectedIds.size} {selectedIds.size === 1 ? "item" : "items"}</span>
+                  <span>{totalSelectedCount} {totalSelectedCount === 1 ? "item" : "items"}</span>
                   <strong>{destinationLabel} · {destinationTarget ? "Selected" : "Choose on export"}</strong>
                 </div>
                 <button className="button export-package__submit" disabled={!canExport || exportMutation.isPending} onClick={() => exportMutation.mutate()} type="button">
-                  <Download aria-hidden="true" /> {exportMutation.isPending ? "Opening destination…" : `Export ${selectedIds.size || ""} ${selectedIds.size === 1 ? "file" : "files"}`}
+                  <Download aria-hidden="true" /> {exportMutation.isPending ? "Opening destination…" : `Export ${totalSelectedCount || ""} ${totalSelectedCount === 1 ? "file" : "files"}`}
                 </button>
                 {exportMutation.error ? <p className="error" role="alert">{exportMutation.error.message}</p> : null}
               </div>

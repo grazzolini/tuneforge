@@ -1125,6 +1125,29 @@ export interface components {
         ErrorResponse: {
             error: components["schemas"]["ErrorInfo"];
         };
+        /** ExportAudioResultItemSchema */
+        ExportAudioResultItemSchema: {
+            /** Output Name */
+            output_name: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "running" | "completed" | "failed" | "cancelled";
+            /**
+             * Progress
+             * @default 0
+             */
+            progress?: number;
+            /** Result Artifact Id */
+            result_artifact_id?: string | null;
+            /** Error */
+            error?: string | null;
+            /** Artifact Id */
+            artifact_id: string;
+            /** Generated Document Id */
+            generated_document_id?: null;
+        };
         /** ExportCapabilitiesResponse */
         ExportCapabilitiesResponse: {
             capabilities: components["schemas"]["ExportCapabilitiesSchema"];
@@ -1167,10 +1190,44 @@ export interface components {
              */
             overwrite?: boolean;
         };
+        /** ExportGeneratedDocumentResultItemSchema */
+        ExportGeneratedDocumentResultItemSchema: {
+            /** Output Name */
+            output_name: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "running" | "completed" | "failed" | "cancelled";
+            /**
+             * Progress
+             * @default 0
+             */
+            progress?: number;
+            /** Result Artifact Id */
+            result_artifact_id?: string | null;
+            /** Error */
+            error?: string | null;
+            /** Artifact Id */
+            artifact_id?: null;
+            generated_document_id: components["schemas"]["GeneratedExportDocumentId"];
+        };
         /** ExportRequest */
-        ExportRequest: {
+        ExportRequest: components["schemas"]["ExportRequestWithoutChordDocument"] | components["schemas"]["ExportRequestWithChordDocument"];
+        /** ExportRequestWithChordDocument */
+        ExportRequestWithChordDocument: {
             /** Artifact Ids */
-            artifact_ids: string[];
+            artifact_ids?: string[];
+            /** Generated Document Ids */
+            generated_document_ids: [
+                "lyrics_with_chords"
+            ] | [
+                "lyrics",
+                "lyrics_with_chords"
+            ] | [
+                "lyrics_with_chords",
+                "lyrics"
+            ];
             /**
              * Mixdown Mode
              * @default copy
@@ -1195,28 +1252,50 @@ export interface components {
              * @default false
              */
             overwrite_existing?: boolean;
-        };
-        /** ExportResultItemSchema */
-        ExportResultItemSchema: {
-            /** Artifact Id */
-            artifact_id: string;
-            /** Output Name */
-            output_name: string;
+            /** Document Audio Set Artifact Id */
+            document_audio_set_artifact_id: string;
             /**
-             * Status
+             * Document Chord Display Mode
              * @enum {string}
              */
-            status: "pending" | "running" | "completed" | "failed" | "cancelled";
-            /**
-             * Progress
-             * @default 0
-             */
-            progress?: number;
-            /** Result Artifact Id */
-            result_artifact_id?: string | null;
-            /** Error */
-            error?: string | null;
+            document_chord_display_mode: "auto" | "sharps" | "flats" | "neutral" | "dual";
         };
+        /** ExportRequestWithoutChordDocument */
+        ExportRequestWithoutChordDocument: {
+            /** Artifact Ids */
+            artifact_ids?: string[];
+            /** Generated Document Ids */
+            generated_document_ids?: "lyrics"[];
+            /**
+             * Mixdown Mode
+             * @default copy
+             */
+            mixdown_mode?: string;
+            /**
+             * Output Format
+             * @default wav
+             * @enum {string}
+             */
+            output_format?: "wav" | "flac" | "mp3" | "m4a";
+            /** Filename Base */
+            filename_base?: string | null;
+            /** Destination */
+            destination?: (components["schemas"]["ExportSingleFileDestinationSchema"] | components["schemas"]["ExportFolderDestinationSchema"] | components["schemas"]["ExportZipDestinationSchema"]) | null;
+            /** Destination Path */
+            destination_path?: string | null;
+            /** Destination File Path */
+            destination_file_path?: string | null;
+            /**
+             * Overwrite Existing
+             * @default false
+             */
+            overwrite_existing?: boolean;
+            /** Document Audio Set Artifact Id */
+            document_audio_set_artifact_id?: string | null;
+            /** Document Chord Display Mode */
+            document_chord_display_mode?: ("auto" | "sharps" | "flats" | "neutral" | "dual") | null;
+        };
+        ExportResultItemSchema: components["schemas"]["ExportAudioResultItemSchema"] | components["schemas"]["ExportGeneratedDocumentResultItemSchema"];
         /** ExportResultSchema */
         ExportResultSchema: {
             /**
@@ -1263,6 +1342,8 @@ export interface components {
              */
             overwrite?: boolean;
         };
+        /** @enum {string} */
+        GeneratedExportDocumentId: "lyrics" | "lyrics_with_chords";
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -3734,13 +3815,13 @@ export interface operations {
                     "application/json": components["schemas"]["JobResponse"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Invalid export request or unavailable generated documents (EXPORT_LYRICS_UNAVAILABLE, EXPORT_CHORDS_UNAVAILABLE, or EXPORT_DOCUMENTS_UNAVAILABLE). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

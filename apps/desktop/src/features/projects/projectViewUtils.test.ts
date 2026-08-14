@@ -76,6 +76,82 @@ describe("buildLeadSheetRows", () => {
     expect(rows[0].chords[1]?.isActive).toBe(true);
   });
 
+  it("anchors active, gap, leading, and trailing chords to deterministic words", () => {
+    const lyrics: LyricsSegmentSchema[] = [{
+      start_seconds: 0,
+      end_seconds: 10,
+      text: "One two three",
+      words: [
+        { confidence: 0.9, start_seconds: 1, end_seconds: 2, text: "One" },
+        { confidence: 0.9, start_seconds: 4, end_seconds: 5, text: "two" },
+        { confidence: 0.9, start_seconds: 7, end_seconds: 8, text: "three" },
+      ],
+    }];
+    const rows = buildLeadSheetRows(
+      lyrics,
+      [
+        chord(0.2, 0.5, "Am"),
+        chord(1.5, 1.8, "Bb"),
+        chord(3, 3.5, "F"),
+        chord(9, 9.5, "C"),
+      ],
+      { activeChordIndex: -1, activeLyricsIndex: -1, activeLyricsWordIndex: -1 },
+    );
+    if (rows[0]?.type !== "lyrics") throw new Error("Expected lyrics row");
+    expect(rows[0].chords.map((item) => [item.segment.label, item.anchor])).toEqual([
+      ["Am", { type: "word", wordIndex: 0 }],
+      ["Bb", { type: "word", wordIndex: 0 }],
+      ["F", { type: "word", wordIndex: 1 }],
+      ["C", { type: "word", wordIndex: 2 }],
+    ]);
+  });
+
+  it("keeps Am, Bb, and F in lyric order without a floating timed-chord row", () => {
+    const lyrics: LyricsSegmentSchema[] = [{
+      start_seconds: 0,
+      end_seconds: 8,
+      text: "Stay with me",
+      words: [
+        { confidence: 0.9, start_seconds: 0, end_seconds: 1, text: "Stay" },
+        { confidence: 0.9, start_seconds: 2, end_seconds: 3, text: "with" },
+        { confidence: 0.9, start_seconds: 4, end_seconds: 5, text: "me" },
+      ],
+    }];
+    const rows = buildLeadSheetRows(
+      lyrics,
+      [chord(0.2, 1, "Am"), chord(1.5, 2, "Bb"), chord(4.2, 5, "F")],
+      { activeChordIndex: 1, activeLyricsIndex: 0, activeLyricsWordIndex: 0 },
+    );
+
+    expect(rows.map((row) => row.type)).toEqual(["lyrics"]);
+    if (rows[0]?.type !== "lyrics") throw new Error("Expected lyrics row");
+    expect(rows[0].chords.map((item) => item.segment.label)).toEqual(["Am", "Bb", "F"]);
+    expect(rows[0].chords.map((item) => item.anchor)).toEqual([
+      { type: "word", wordIndex: 0 },
+      { type: "word", wordIndex: 1 },
+      { type: "word", wordIndex: 2 },
+    ]);
+  });
+
+  it("uses segment percentage only when word timing is unusable", () => {
+    const lyrics: LyricsSegmentSchema[] = [{
+      start_seconds: 10,
+      end_seconds: 20,
+      text: "Malformed words",
+      words: [
+        { confidence: 0.9, start_seconds: null, end_seconds: null, text: "Malformed" },
+        { confidence: 0.9, start_seconds: 18, end_seconds: 17, text: "words" },
+      ],
+    }];
+    const rows = buildLeadSheetRows(
+      lyrics,
+      [chord(15, 16, "G")],
+      { activeChordIndex: -1, activeLyricsIndex: -1, activeLyricsWordIndex: -1 },
+    );
+    if (rows[0]?.type !== "lyrics") throw new Error("Expected lyrics row");
+    expect(rows[0].chords[0]?.anchor).toEqual({ type: "percent", percent: 50 });
+  });
+
   it("falls back to proportional chord positions when words are unavailable", () => {
     const lyrics: LyricsSegmentSchema[] = [
       {

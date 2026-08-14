@@ -110,6 +110,7 @@ describe("export workspace utilities", () => {
       storedState: {
         audioSetId: "source",
         selectedArtifactIds: ["vocals"],
+        selectedGeneratedDocumentIds: [],
         outputFormat: "flac",
         filenameBase: "Session",
         destinationType: "single_file",
@@ -120,11 +121,13 @@ describe("export workspace utilities", () => {
       filenameBase: "Demo Song",
       capabilities: capabilities(),
       defaultOutputFormat: "wav",
+      availableGeneratedDocumentIds: new Set(),
     })).toEqual({
       recovery: false,
       state: {
         audioSetId: "source",
         selectedArtifactIds: ["vocals"],
+        selectedGeneratedDocumentIds: [],
         outputFormat: "flac",
         filenameBase: "Session",
         destinationType: "single_file",
@@ -194,6 +197,7 @@ describe("export workspace utilities", () => {
       storedState: {
         audioSetId: "source",
         selectedArtifactIds: ["source"],
+        selectedGeneratedDocumentIds: [],
         outputFormat: null,
         filenameBase: "Session",
         destinationType: "single_file",
@@ -204,6 +208,7 @@ describe("export workspace utilities", () => {
       filenameBase: "Demo Song",
       capabilities: capabilities(),
       defaultOutputFormat: "wav",
+      availableGeneratedDocumentIds: new Set(),
     })).toMatchObject({
       recovery: true,
       state: { outputFormat: "wav", desktopDestinationTarget: null },
@@ -221,6 +226,7 @@ describe("export workspace utilities", () => {
       storedState: {
         audioSetId: "gone",
         selectedArtifactIds: ["drums", "mix", "missing", "source"],
+        selectedGeneratedDocumentIds: [],
         outputFormat: "wav",
         filenameBase: "Session",
         destinationType: "zip",
@@ -231,6 +237,7 @@ describe("export workspace utilities", () => {
       filenameBase: "Demo Song",
       capabilities: capabilities({ formats: ["m4a"], maxArtifactCount: 1 }),
       defaultOutputFormat: "wav",
+      availableGeneratedDocumentIds: new Set(),
     })).toMatchObject({
       recovery: true,
       state: {
@@ -248,6 +255,7 @@ describe("export workspace utilities", () => {
     const draft = {
       audioSetId: "source",
       selectedArtifactIds: ["source"],
+      selectedGeneratedDocumentIds: [],
       outputFormat: "m4a" as const,
       filenameBase: "Session",
       destinationType: "single_file" as const,
@@ -260,6 +268,7 @@ describe("export workspace utilities", () => {
       filenameBase: "Demo Song",
       capabilities: capabilities(),
       defaultOutputFormat: "wav",
+      availableGeneratedDocumentIds: new Set(),
     }).state?.desktopDestinationTarget).toBeNull();
     expect(reconcileExportWorkspaceState({
       storedState: { ...draft, desktopDestinationTarget: "C:\\exports\\session.m4a" },
@@ -268,6 +277,55 @@ describe("export workspace utilities", () => {
       filenameBase: "Demo Song",
       capabilities: capabilities({ platform: "android" }),
       defaultOutputFormat: "m4a",
+      availableGeneratedDocumentIds: new Set(),
     }).state?.desktopDestinationTarget).toBeNull();
+  });
+
+  it("preserves available document-only drafts and discards unavailable document ids", () => {
+    const storedState = {
+      audioSetId: null,
+      selectedArtifactIds: [],
+      selectedGeneratedDocumentIds: ["lyrics", "lyrics_with_chords"] as const,
+      outputFormat: "wav" as const,
+      filenameBase: "Document set",
+      destinationType: "folder" as const,
+      desktopDestinationTarget: "/tmp/documents",
+    };
+    const reconciled = reconcileExportWorkspaceState({
+      storedState: {
+        ...storedState,
+        selectedGeneratedDocumentIds: [...storedState.selectedGeneratedDocumentIds],
+      },
+      audioSets: [],
+      selectedPrimaryArtifactId: null,
+      filenameBase: "Demo Song",
+      capabilities: capabilities(),
+      defaultOutputFormat: "wav",
+      availableGeneratedDocumentIds: new Set(["lyrics"]),
+    });
+
+    expect(reconciled).toMatchObject({
+      recovery: true,
+      state: {
+        audioSetId: null,
+        selectedArtifactIds: [],
+        selectedGeneratedDocumentIds: ["lyrics"],
+        destinationType: "single_file",
+      },
+    });
+    expect(reconcileExportWorkspaceState({
+      storedState: {
+        ...storedState,
+        selectedGeneratedDocumentIds: ["lyrics"],
+        destinationType: "single_file",
+        desktopDestinationTarget: "/tmp/lyrics.txt",
+      },
+      audioSets: [],
+      selectedPrimaryArtifactId: null,
+      filenameBase: "Demo Song",
+      capabilities: capabilities(),
+      defaultOutputFormat: "wav",
+      availableGeneratedDocumentIds: new Set(["lyrics"] as const),
+    }).state?.desktopDestinationTarget).toBe("/tmp/lyrics.txt");
   });
 });

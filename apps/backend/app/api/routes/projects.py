@@ -448,7 +448,20 @@ def project_artifact_delete(project_id: str, artifact_id: str, session: Session 
     return DeleteResponse(deleted=True)
 
 
-@router.post("/{project_id}/export", response_model=JobResponse)
+@router.post(
+    "/{project_id}/export",
+    response_model=JobResponse,
+    responses={
+        422: {
+            "model": ErrorResponse,
+            "description": (
+                "Invalid export request or unavailable generated documents "
+                "(EXPORT_LYRICS_UNAVAILABLE, EXPORT_CHORDS_UNAVAILABLE, "
+                "or EXPORT_DOCUMENTS_UNAVAILABLE)."
+            ),
+        }
+    },
+)
 def project_export(
     project_id: str,
     payload: ExportRequest,

@@ -10,10 +10,13 @@ download, installation, verification, signature, and publication instructions.
 - A dedicated project Export workspace for selecting one source track or practice mix and packaging
   its track and stems as a file, folder, or ZIP.
 - Saved per-project Export choices that safely reconcile with available audio and device capabilities.
+- Desktop TXT export for saved lyrics and lyrics with chords, alone or packaged with selected audio.
 
 ### Changed
 
 - Polished Export destination controls and defaulted new stemmed selections to track plus all stems.
+- Matched Lyrics + chords TXT to the selected source or practice mix, including corrected key,
+  transpose, enharmonic spelling, slash chords, and compact chronological instrumental rows.
 
 ## [1.0.1] - 2026-08-13
 

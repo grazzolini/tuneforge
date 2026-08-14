@@ -1,4 +1,4 @@
-import type { ArtifactSchema, ExportCapabilities } from "../../lib/api";
+import type { ArtifactSchema, ExportCapabilities, GeneratedExportDocumentId } from "../../lib/api";
 import type { ExportWorkspaceState } from "./projectPlaybackState";
 import { artifactLabel, isStemArtifact } from "./projectViewUtils";
 
@@ -34,7 +34,11 @@ function stateEquals(left: ExportWorkspaceState, right: ExportWorkspaceState) {
     left.destinationType === right.destinationType &&
     left.desktopDestinationTarget === right.desktopDestinationTarget &&
     left.selectedArtifactIds.length === right.selectedArtifactIds.length &&
-    left.selectedArtifactIds.every((id, index) => id === right.selectedArtifactIds[index]);
+    left.selectedArtifactIds.every((id, index) => id === right.selectedArtifactIds[index]) &&
+    left.selectedGeneratedDocumentIds.length === right.selectedGeneratedDocumentIds.length &&
+    left.selectedGeneratedDocumentIds.every((id, index) =>
+      id === right.selectedGeneratedDocumentIds[index]
+    );
 }
 
 export function isDesktopDestinationTarget(value: string | null) {
@@ -59,8 +63,8 @@ function availableOptionIds(
   return new Set(capabilities[kind].filter((option) => option.available).map((option) => option.id));
 }
 
-function compatibleDestinationTypes(artifactCount: number): ExportDestinationType[] {
-  return artifactCount === 1 ? ["single_file"] : ["folder", "zip"];
+function compatibleDestinationTypes(itemCount: number): ExportDestinationType[] {
+  return itemCount <= 1 ? ["single_file"] : ["folder", "zip"];
 }
 
 function preferredDestinationType(
@@ -97,6 +101,7 @@ export function defaultExportWorkspaceState({
   return {
     audioSetId: audioSet.artifact.id,
     selectedArtifactIds,
+    selectedGeneratedDocumentIds: [],
     outputFormat,
     filenameBase,
     destinationType: preferredDestinationType(selectedArtifactIds.length, availableDestinations),
@@ -111,6 +116,7 @@ export function reconcileExportWorkspaceState({
   filenameBase,
   capabilities,
   defaultOutputFormat,
+  availableGeneratedDocumentIds,
 }: {
   storedState: ExportWorkspaceState | null;
   audioSets: ExportAudioSet[];
@@ -118,8 +124,42 @@ export function reconcileExportWorkspaceState({
   filenameBase: string;
   capabilities: ExportCapabilities;
   defaultOutputFormat: string | null | undefined;
+  availableGeneratedDocumentIds: Set<GeneratedExportDocumentId>;
 }): { state: ExportWorkspaceState | null; recovery: boolean } {
-  if (!audioSets.length) return { state: null, recovery: storedState !== null };
+  const availableFormats = availableOptionIds(capabilities, "formats");
+  const availableDestinations = availableOptionIds(capabilities, "destinations");
+  if (!audioSets.length) {
+    const selectedGeneratedDocumentIds = (storedState?.selectedGeneratedDocumentIds ?? [])
+      .filter((id) => availableGeneratedDocumentIds.has(id));
+    const outputFormat = storedState?.outputFormat && availableFormats.has(storedState.outputFormat)
+      ? storedState.outputFormat
+      : preferredOutputFormat(defaultOutputFormat, availableFormats);
+    const compatibleDestinations = compatibleDestinationTypes(selectedGeneratedDocumentIds.length);
+    const destinationType = storedState &&
+      compatibleDestinations.includes(storedState.destinationType) &&
+      availableDestinations.has(storedState.destinationType)
+      ? storedState.destinationType
+      : preferredDestinationType(selectedGeneratedDocumentIds.length, availableDestinations);
+    const candidate: ExportWorkspaceState = {
+      audioSetId: null,
+      selectedArtifactIds: [],
+      selectedGeneratedDocumentIds,
+      outputFormat,
+      filenameBase: storedState?.filenameBase || filenameBase,
+      destinationType,
+      desktopDestinationTarget: storedState?.desktopDestinationTarget ?? null,
+    };
+    const targetIsCompatible = capabilities.platform === "desktop" &&
+      availableDestinations.has(destinationType) &&
+      isDesktopDestinationTarget(candidate.desktopDestinationTarget);
+    const state = {
+      ...candidate,
+      desktopDestinationTarget: !storedState || !stateEquals(storedState, candidate) || !targetIsCompatible
+        ? null
+        : candidate.desktopDestinationTarget?.trim() ?? null,
+    };
+    return { state, recovery: storedState !== null && !stateEquals(storedState, state) };
+  }
   if (!storedState) {
     return {
       state: defaultExportWorkspaceState({
@@ -150,33 +190,37 @@ export function reconcileExportWorkspaceState({
   if (maxArtifactCount !== null && maxArtifactCount !== undefined) {
     selectedArtifactIds = selectedArtifactIds.slice(0, Math.max(0, maxArtifactCount));
   }
-  if (!selectedArtifactIds.length) selectedArtifactIds = [audioSet.artifact.id];
-
-  const availableFormats = availableOptionIds(capabilities, "formats");
+  const selectedGeneratedDocumentIds = (storedState.selectedGeneratedDocumentIds ?? [])
+    .filter((id) => availableGeneratedDocumentIds.has(id));
+  if (!savedSet && survivingSets.length === 0 && !selectedArtifactIds.length && !selectedGeneratedDocumentIds.length) {
+    selectedArtifactIds = [audioSet.artifact.id];
+  }
   const outputFormat = storedState.outputFormat && availableFormats.has(storedState.outputFormat)
     ? storedState.outputFormat
     : preferredOutputFormat(defaultOutputFormat, availableFormats);
-  const compatibleDestinations = compatibleDestinationTypes(selectedArtifactIds.length);
-  const availableDestinations = availableOptionIds(capabilities, "destinations");
+  const totalCount = selectedArtifactIds.length + selectedGeneratedDocumentIds.length;
+  const compatibleDestinations = compatibleDestinationTypes(totalCount);
   const destinationType = compatibleDestinations.includes(storedState.destinationType) &&
     availableDestinations.has(storedState.destinationType)
     ? storedState.destinationType
-    : preferredDestinationType(selectedArtifactIds.length, availableDestinations);
+    : preferredDestinationType(totalCount, availableDestinations);
   const adjusted = !stateEquals(storedState, {
     audioSetId: audioSet.artifact.id,
     selectedArtifactIds,
+    selectedGeneratedDocumentIds,
     outputFormat,
     filenameBase: storedState.filenameBase,
     destinationType,
     desktopDestinationTarget: storedState.desktopDestinationTarget,
   });
   const targetIsCompatible = capabilities.platform === "desktop" &&
-    availableFormats.has(outputFormat) &&
+    (selectedArtifactIds.length === 0 || availableFormats.has(outputFormat)) &&
     availableDestinations.has(destinationType) &&
     isDesktopDestinationTarget(storedState.desktopDestinationTarget);
   const state: ExportWorkspaceState = {
     audioSetId: audioSet.artifact.id,
     selectedArtifactIds,
+    selectedGeneratedDocumentIds,
     outputFormat,
     filenameBase: storedState.filenameBase,
     destinationType,
@@ -243,4 +287,14 @@ export function exportOutputNames(
       const itemLabel = isStemArtifact(artifact) ? ` - ${artifactLabel(artifact)}` : "";
       return `${filenameBase.trim() || "TuneForge Export"} - ${context}${itemLabel}.${outputFormat}`;
     });
+}
+
+export function generatedDocumentOutputNames(
+  selectedIds: GeneratedExportDocumentId[],
+  filenameBase: string,
+) {
+  const base = filenameBase.trim() || "TuneForge Export";
+  return selectedIds.map((id) =>
+    `${base} - ${id === "lyrics" ? "Lyrics" : "Lyrics and Chords"}.txt`
+  );
 }

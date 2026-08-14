@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 from pydantic import (
     AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
+    RootModel,
     field_serializer,
     field_validator,
     model_validator,
 )
+from typing_extensions import TypeAliasType
 
 from app.runtime_status import (
     JobRuntimeStage,
@@ -1243,13 +1246,34 @@ class TabImportApplyResponse(BaseModel):
     project: ProjectSchema
 
 
-class ExportResultItemSchema(BaseModel):
-    artifact_id: str
+GeneratedExportDocumentId = TypeAliasType(
+    "GeneratedExportDocumentId",
+    Literal["lyrics", "lyrics_with_chords"],
+)
+
+
+class ExportResultItemBaseSchema(BaseModel):
     output_name: str
     status: Literal["pending", "running", "completed", "failed", "cancelled"]
     progress: int = Field(default=0, ge=0, le=100)
     result_artifact_id: str | None = None
     error: str | None = None
+
+
+class ExportAudioResultItemSchema(ExportResultItemBaseSchema):
+    artifact_id: str
+    generated_document_id: None = None
+
+
+class ExportGeneratedDocumentResultItemSchema(ExportResultItemBaseSchema):
+    artifact_id: None = None
+    generated_document_id: GeneratedExportDocumentId
+
+
+ExportResultItemSchema = TypeAliasType(
+    "ExportResultItemSchema",
+    ExportAudioResultItemSchema | ExportGeneratedDocumentResultItemSchema,
+)
 
 
 class ExportResultSchema(BaseModel):
@@ -1481,8 +1505,9 @@ class ExportCapabilitiesResponse(BaseModel):
     capabilities: ExportCapabilitiesSchema
 
 
-class ExportRequest(BaseModel):
-    artifact_ids: list[str]
+class _ExportRequestBase(BaseModel):
+    artifact_ids: list[str] = Field(default_factory=list)
+    generated_document_ids: Sequence[GeneratedExportDocumentId] = Field(default_factory=list)
     mixdown_mode: str = "copy"
     output_format: Literal["wav", "flac", "mp3", "m4a"] = "wav"
     filename_base: str | None = None
@@ -1492,23 +1517,48 @@ class ExportRequest(BaseModel):
     overwrite_existing: bool = False
 
     @model_validator(mode="after")
-    def validate_export(self) -> ExportRequest:
-        if not self.artifact_ids:
-            raise ValueError("At least one artifact id is required.")
+    def validate_export(self) -> Self:
+        total_count = len(self.artifact_ids) + len(self.generated_document_ids)
+        if total_count == 0:
+            raise ValueError("At least one artifact or generated document id is required.")
         if len(self.artifact_ids) != len(set(self.artifact_ids)):
             raise ValueError("Artifact ids must be unique.")
+        if len(self.generated_document_ids) != len(set(self.generated_document_ids)):
+            raise ValueError("Generated document ids must be unique.")
         has_legacy_destination = bool(self.destination_path or self.destination_file_path)
         if self.destination is not None and has_legacy_destination:
             raise ValueError("Canonical and legacy export destinations cannot be combined.")
         if self.destination is not None and self.overwrite_existing:
             raise ValueError("Canonical overwrite approval belongs in destination.overwrite.")
-        if self.destination is None and len(self.artifact_ids) != 1:
-            raise ValueError("Legacy export requests support exactly one artifact.")
+        if self.generated_document_ids and self.destination is None:
+            raise ValueError("Generated document exports require a canonical destination.")
+        if self.destination is None and (len(self.artifact_ids) != 1 or self.generated_document_ids):
+            raise ValueError("Legacy export requests support exactly one audio artifact.")
         if self.destination is not None:
-            if len(self.artifact_ids) == 1 and self.destination.type != "single_file":
-                raise ValueError("Single-artifact exports require a single_file destination.")
-            if len(self.artifact_ids) > 1 and self.destination.type == "single_file":
-                raise ValueError("Multi-artifact exports require a folder or zip destination.")
+            if total_count == 1 and self.destination.type != "single_file":
+                raise ValueError("Single-item exports require a single_file destination.")
+            if total_count > 1 and self.destination.type == "single_file":
+                raise ValueError("Multi-item exports require a folder or zip destination.")
         if self.filename_base is not None and not self.filename_base.strip():
             raise ValueError("Filename base cannot be empty.")
         return self
+
+
+class ExportRequestWithoutChordDocument(_ExportRequestBase):
+    generated_document_ids: list[Literal["lyrics"]] = Field(default_factory=list)
+    document_audio_set_artifact_id: str | None = Field(default=None, min_length=1)
+    document_chord_display_mode: Literal["auto", "sharps", "flats", "neutral", "dual"] | None = None
+
+
+class ExportRequestWithChordDocument(_ExportRequestBase):
+    generated_document_ids: (
+        tuple[Literal["lyrics_with_chords"]]
+        | tuple[Literal["lyrics"], Literal["lyrics_with_chords"]]
+        | tuple[Literal["lyrics_with_chords"], Literal["lyrics"]]
+    )
+    document_audio_set_artifact_id: str = Field(min_length=1)
+    document_chord_display_mode: Literal["auto", "sharps", "flats", "neutral", "dual"]
+
+
+class ExportRequest(RootModel[ExportRequestWithoutChordDocument | ExportRequestWithChordDocument]):
+    pass

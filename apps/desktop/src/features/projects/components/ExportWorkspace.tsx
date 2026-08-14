@@ -191,6 +191,15 @@ export function ExportWorkspace() {
           <fieldset className="export-presets" disabled={controlsDisabled}>
             <legend>Quick selections</legend>
             <button
+              aria-describedby={isMobileRuntime ? "android-multi-export-reason" : undefined}
+              aria-pressed={preset === "track-and-stems"}
+              className="button button--small"
+              disabled={!audioSet.stems.length || isMobileRuntime}
+              title={isMobileRuntime ? "Android currently exports one file at a time." : undefined}
+              onClick={() => selectPreset("track-and-stems")}
+              type="button"
+            >Track + all stems</button>
+            <button
               aria-pressed={preset === "track"}
               className="button button--small"
               onClick={() => selectPreset("track")}
@@ -205,15 +214,6 @@ export function ExportWorkspace() {
               onClick={() => selectPreset("stems")}
               type="button"
             >All stems</button>
-            <button
-              aria-describedby={isMobileRuntime ? "android-multi-export-reason" : undefined}
-              aria-pressed={preset === "track-and-stems"}
-              className="button button--small"
-              disabled={!audioSet.stems.length || isMobileRuntime}
-              title={isMobileRuntime ? "Android currently exports one file at a time." : undefined}
-              onClick={() => selectPreset("track-and-stems")}
-              type="button"
-            >Track + all stems</button>
             <span className="export-presets__state">{preset === "custom" ? "Custom selection" : "Preset selection"}</span>
             {isMobileRuntime ? (
               <span className="field-reason" id="android-multi-export-reason">
@@ -312,7 +312,13 @@ export function ExportWorkspace() {
                         disabled={unavailable}
                         onClick={() => setDestinationType(id)}
                         type="button"
-                      ><Icon aria-hidden="true" /> {label}</button>
+                      >
+                        <Icon aria-hidden="true" />
+                        <span>{label}</span>
+                        <span aria-hidden="true" className="export-destination-option__check">
+                          {destinationType === id ? <Check /> : null}
+                        </span>
+                      </button>
                       {unavailable ? (
                         <small className="field-reason" id={reasonId}>
                           {capability?.available === false

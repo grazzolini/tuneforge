@@ -151,6 +151,42 @@ describe("export workspace utilities", () => {
     expect(createState("ogg", [])?.outputFormat).toBe("m4a");
   });
 
+  it("defaults to track-first audio selections and a compatible destination", () => {
+    const audioSets = buildExportAudioSets([
+      artifact("source", "source_audio", createdAt),
+      artifact("vocals", "vocal_stem", createdAt, "source"),
+      artifact("drums", "drums_stem", createdAt, "source"),
+    ]);
+    const createState = (maxArtifactCount: number | null, destinations?: string[]) =>
+      defaultExportWorkspaceState({
+        audioSets,
+        selectedPrimaryArtifactId: "source",
+        filenameBase: "Demo Song",
+        capabilities: capabilities({ maxArtifactCount, destinations }),
+        defaultOutputFormat: "wav",
+      });
+
+    expect(createState(null)).toMatchObject({
+      selectedArtifactIds: ["source", "vocals", "drums"],
+      destinationType: "folder",
+    });
+    expect(createState(2, ["single_file", "zip"])).toMatchObject({
+      selectedArtifactIds: ["source", "vocals"],
+      destinationType: "zip",
+    });
+    expect(createState(1)).toMatchObject({
+      selectedArtifactIds: ["source"],
+      destinationType: "single_file",
+    });
+    expect(defaultExportWorkspaceState({
+      audioSets: buildExportAudioSets([artifact("solo", "source_audio", createdAt)]),
+      selectedPrimaryArtifactId: "solo",
+      filenameBase: "Solo",
+      capabilities: capabilities(),
+      defaultOutputFormat: "wav",
+    })).toMatchObject({ selectedArtifactIds: ["solo"], destinationType: "single_file" });
+  });
+
   it("recovers a corrupt stored format to the backend default and clears its target", () => {
     const audioSets = buildExportAudioSets([artifact("source", "source_audio", createdAt)]);
 

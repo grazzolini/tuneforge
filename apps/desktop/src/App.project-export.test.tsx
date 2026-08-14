@@ -125,6 +125,40 @@ describe("project export workspace", () => {
     expect(within(preview as HTMLElement).getByText("Demo Song - Practice Mix 1 - Vocals.wav")).toBeInTheDocument();
   });
 
+  it("orders presets and defaults a newly selected stemmed set to a folder package", async () => {
+    const user = userEvent.setup();
+    installExportArtifacts();
+    renderApp(["/projects/proj_123"]);
+    await screen.findByRole("heading", { name: "Demo Song" });
+    await openExportPanel(user);
+
+    const presetButtons = within(screen.getByRole("group", { name: "Quick selections" }))
+      .getAllByRole("button");
+    expect(presetButtons.map((button) => button.textContent)).toEqual([
+      "Track + all stems",
+      "Track only",
+      "All stems",
+    ]);
+    await user.click(screen.getByRole("radio", { name: /Practice Mix 1/i }));
+    presetButtons[0]?.focus();
+    await user.tab();
+    expect(presetButtons[1]).toHaveFocus();
+    await user.tab();
+    expect(presetButtons[2]).toHaveFocus();
+
+    expect(screen.getByText("5 selected")).toBeInTheDocument();
+    expect(presetButtons[0]).toHaveAttribute("aria-pressed", "true");
+    const destinations = within(screen.getByRole("group", { name: "Destination" }))
+      .getAllByRole("button");
+    expect(destinations).toHaveLength(3);
+    expect(destinations[1]).toHaveAttribute("aria-pressed", "true");
+    expect(destinations.map((button) => button.querySelector(".export-destination-option__check")))
+      .not.toContain(null);
+    expect(destinations[0]?.querySelector(".export-destination-option__check svg")).toBeNull();
+    expect(destinations[1]?.querySelector(".export-destination-option__check svg")).not.toBeNull();
+    expect(destinations[2]?.querySelector(".export-destination-option__check svg")).toBeNull();
+  });
+
   it("retains a compatible folder target for manual many-to-many selection changes", async () => {
     const user = userEvent.setup();
     installExportArtifacts();

@@ -4,6 +4,21 @@ import { cwd } from "node:process";
 import { describe, expect, it } from "vitest";
 
 describe("narrow export package source", () => {
+  it("shares destination geometry and does not override it at narrow widths", () => {
+    const stylesheet = readFileSync(resolve(cwd(), "src/styles/project-export.css"), "utf8");
+    const narrowStyles = stylesheet.slice(stylesheet.indexOf("@media (max-width: 720px)"));
+    const geometry = stylesheet.match(/\.export-destination-option \.button\s*\{([^}]*)\}/)?.[1] ?? "";
+    const optionLayout = stylesheet.match(/\.export-destination-option\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(geometry).toMatch(/width:\s*100%/);
+    expect(geometry).toMatch(/min-height:\s*44px/);
+    expect(geometry).toMatch(/grid-template-columns:\s*1rem minmax\(0, 1fr\) 1rem/);
+    expect(geometry).toMatch(/padding:\s*0\.56rem 0\.9rem/);
+    expect(geometry).toMatch(/border-radius:\s*999px/);
+    expect(optionLayout).toMatch(/align-content:\s*start/);
+    expect(narrowStyles).not.toMatch(/\.export-destination-option \.button\s*\{/);
+  });
+
   it("keeps the package in flow and sticks only its compact summary", () => {
     const stylesheet = readFileSync(resolve(cwd(), "src/styles/project-export.css"), "utf8");
     const narrowStyles = stylesheet.slice(stylesheet.indexOf("@media (max-width: 720px)"));

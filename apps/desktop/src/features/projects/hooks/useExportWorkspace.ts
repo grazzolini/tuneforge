@@ -231,12 +231,20 @@ export function useExportWorkspace() {
 
   function selectAudioSet(nextAudioSetId: string) {
     const nextAudioSet = audioSets.find((audioSet) => audioSet.artifact.id === nextAudioSetId);
-    if (!nextAudioSet || !draft) return;
+    if (!nextAudioSet || !draft || !capabilities) return;
+    const nextDefault = defaultExportWorkspaceState({
+      audioSets: [nextAudioSet],
+      selectedPrimaryArtifactId: nextAudioSetId,
+      filenameBase: draft.filenameBase,
+      capabilities,
+      defaultOutputFormat,
+    });
+    if (!nextDefault) return;
     updateDraft({
       ...draft,
       audioSetId: nextAudioSetId,
-      selectedArtifactIds: [nextAudioSet.artifact.id],
-      destinationType: "single_file",
+      selectedArtifactIds: nextDefault.selectedArtifactIds,
+      destinationType: nextDefault.destinationType,
       desktopDestinationTarget: null,
     });
   }

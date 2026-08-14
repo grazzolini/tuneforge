@@ -66,7 +66,7 @@ const releaseMediaCaptureCatalog = [
     fileName: "export-workspace.png",
     title: "Selective export workspace",
     caption: "Package one practice mix and a custom set of stems as local files.",
-    alt: "TuneForge Export workspace with Practice Mix 1 and four M4A files selected",
+    alt: "TuneForge Export workspace with Practice Mix 1 and four audio files selected",
     fixture: "release-showcase-v1",
     viewport: { width: 1440, height: 1024 },
     route: "/projects/proj_release_showcase",
@@ -1404,7 +1404,11 @@ async function readyExportWorkspace({ page, timeoutMs }) {
   await page.getByText("Custom selection", { exact: true }).waitFor({ timeout: timeoutMs });
   await page.getByText("4 selected", { exact: true }).waitFor({ timeout: timeoutMs });
   await page.getByRole("button", { name: "Folder" }).waitFor({ timeout: timeoutMs });
-  await page.getByText("Midnight Count-In - Practice Mix 1 - Vocals.m4a", { exact: true })
+  const fileFormat = await page.getByLabel("File format").inputValue();
+  await page.locator(".export-preview").getByText(
+    `Midnight Count-In - Practice Mix 1 - Vocals.${fileFormat}`,
+    { exact: true },
+  )
     .waitFor({ timeout: timeoutMs });
 }
 

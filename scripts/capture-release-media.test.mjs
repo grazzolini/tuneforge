@@ -59,6 +59,38 @@ test("release-media catalog has unique identifiers, files, and required callback
   }
 });
 
+test("Export readiness follows the selected file format in its preview", async () => {
+  const exportWorkspace = releaseMediaCaptureCatalog.find((entry) => entry.id === "export-workspace");
+
+  for (const fileFormat of ["wav", "flac", "mp3", "m4a"]) {
+    let previewRequest;
+    const waitFor = () => ({ waitFor: async () => {} });
+    const page = {
+      getByLabel: (label) => {
+        assert.equal(label, "File format");
+        return { inputValue: async () => fileFormat };
+      },
+      getByRole: () => waitFor(),
+      getByText: () => waitFor(),
+      locator: (selector) => {
+        assert.equal(selector, ".export-preview");
+        return {
+          getByText: (text, options) => {
+            previewRequest = { options, text };
+            return waitFor();
+          },
+        };
+      },
+    };
+
+    await exportWorkspace.ready({ page, timeoutMs: 1 });
+    assert.deepEqual(previewRequest, {
+      options: { exact: true },
+      text: `Midnight Count-In - Practice Mix 1 - Vocals.${fileFormat}`,
+    });
+  }
+});
+
 test("mobile Playback is one deterministic compact screenshot fixture", () => {
   const mobileScreenshots = releaseMediaCaptureCatalog.filter(
     (entry) => entry.kind === "screenshot" && entry.runtime === "mobile",

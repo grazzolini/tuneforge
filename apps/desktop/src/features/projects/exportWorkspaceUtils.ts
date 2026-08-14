@@ -59,6 +59,18 @@ function availableOptionIds(
   return new Set(capabilities[kind].filter((option) => option.available).map((option) => option.id));
 }
 
+function compatibleDestinationTypes(artifactCount: number): ExportDestinationType[] {
+  return artifactCount === 1 ? ["single_file"] : ["folder", "zip"];
+}
+
+function preferredDestinationType(
+  artifactCount: number,
+  availableDestinations: Set<string>,
+) {
+  const compatibleDestinations = compatibleDestinationTypes(artifactCount);
+  return compatibleDestinations.find((type) => availableDestinations.has(type)) ?? compatibleDestinations[0];
+}
+
 export function defaultExportWorkspaceState({
   audioSets,
   selectedPrimaryArtifactId,
@@ -76,12 +88,18 @@ export function defaultExportWorkspaceState({
   if (!audioSet) return null;
   const availableFormats = availableOptionIds(capabilities, "formats");
   const outputFormat = preferredOutputFormat(defaultOutputFormat, availableFormats);
+  const artifactOrder = [audioSet.artifact, ...audioSet.stems].map((artifact) => artifact.id);
+  const maxArtifactCount = capabilities.max_artifact_count;
+  const selectedArtifactIds = maxArtifactCount === null || maxArtifactCount === undefined
+    ? artifactOrder
+    : artifactOrder.slice(0, Math.max(1, maxArtifactCount));
+  const availableDestinations = availableOptionIds(capabilities, "destinations");
   return {
     audioSetId: audioSet.artifact.id,
-    selectedArtifactIds: [audioSet.artifact.id],
+    selectedArtifactIds,
     outputFormat,
     filenameBase,
-    destinationType: "single_file",
+    destinationType: preferredDestinationType(selectedArtifactIds.length, availableDestinations),
     desktopDestinationTarget: null,
   };
 }
@@ -138,14 +156,12 @@ export function reconcileExportWorkspaceState({
   const outputFormat = storedState.outputFormat && availableFormats.has(storedState.outputFormat)
     ? storedState.outputFormat
     : preferredOutputFormat(defaultOutputFormat, availableFormats);
-  const compatibleDestinations: ExportDestinationType[] = selectedArtifactIds.length === 1
-    ? ["single_file"]
-    : ["folder", "zip"];
+  const compatibleDestinations = compatibleDestinationTypes(selectedArtifactIds.length);
   const availableDestinations = availableOptionIds(capabilities, "destinations");
   const destinationType = compatibleDestinations.includes(storedState.destinationType) &&
     availableDestinations.has(storedState.destinationType)
     ? storedState.destinationType
-    : compatibleDestinations.find((type) => availableDestinations.has(type)) ?? compatibleDestinations[0];
+    : preferredDestinationType(selectedArtifactIds.length, availableDestinations);
   const adjusted = !stateEquals(storedState, {
     audioSetId: audioSet.artifact.id,
     selectedArtifactIds,

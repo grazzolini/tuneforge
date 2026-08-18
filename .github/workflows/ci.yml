@@ -157,19 +157,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Lint commits
-        uses: wagoid/commitlint-github-action@b948419dd99f3fd78a6548d48f94e3df7f6bf3ed # v6.2.1
-        with:
-          configFile: commitlint.config.cjs
-
       - name: Set up pnpm
-        if: github.event_name == 'pull_request'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 10.33.0
 
       - name: Set up Node
-        if: github.event_name == 'pull_request'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
@@ -177,8 +170,30 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
 
       - name: Install commitlint
-        if: github.event_name == 'pull_request'
         run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Test commitlint configuration
+        run: node --test scripts/commitlint.test.mjs
+
+      - name: Lint commits
+        env:
+          EVENT_NAME: "${{ github.event_name }}"
+          PR_BASE_SHA: "${{ github.event.pull_request.base.sha }}"
+          PR_HEAD_SHA: "${{ github.event.pull_request.head.sha }}"
+          PUSH_BEFORE_SHA: "${{ github.event.before }}"
+          GITHUB_SHA: "${{ github.sha }}"
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            pnpm exec commitlint --config commitlint.config.cjs --verbose \
+              --from "$PR_BASE_SHA" --to "$PR_HEAD_SHA"
+          elif [[ "$PUSH_BEFORE_SHA" == "0000000000000000000000000000000000000000" ]]; then
+            pnpm exec commitlint --config commitlint.config.cjs --verbose --to "$GITHUB_SHA"
+          else
+            pnpm exec commitlint --config commitlint.config.cjs --verbose \
+              --from "$PUSH_BEFORE_SHA" --to "$GITHUB_SHA"
+          fi
 
       - name: Lint PR title (squash commit message)
         if: github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]'

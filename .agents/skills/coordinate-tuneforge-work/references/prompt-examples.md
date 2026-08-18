@@ -42,6 +42,12 @@ Use $coordinate-tuneforge-work to plan bug exploration for ad hoc: <symptom labe
 Symptom and evidence: <observed behavior and supporting evidence>.
 ```
 
+## Release Preparation
+
+```text
+Use $coordinate-tuneforge-work to plan release prep for v1.1.0.
+```
+
 ## User-Owned Post-Plan Paths
 
 After reviewing and approving the plan, choose one path. Collaboration-mode
@@ -53,6 +59,17 @@ change modes.
 Tell Codex to implement the approved plan locally. It may implement, validate,
 review, and remediate, but stops before branch creation, commit, push, PR or
 issue updates, and merge.
+
+### Continue Release Preparation
+
+After the release-preparation PR is merged, continue the approved release plan
+without granting signing or final-publication authority:
+
+```text
+Continue v1.1.0 release preparation with $coordinate-tuneforge-work. Pause
+before the signed tag, draft release, Android release APK, and artifact signing
+and upload. Do not sign artifacts or publish the final release.
+```
 
 ### Optional Goal
 

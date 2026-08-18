@@ -60,8 +60,8 @@ function health(defaultExportFormat: string): HealthResponse {
   return {
     name: "TuneForge",
     version: "backend-test-ref",
-    backend_version: { package_version: "1.0.1", git_ref: "backend-test-ref" },
-    frontend_version: { package_version: "1.0.1", git_ref: "frontend-test-ref" },
+    backend_version: { package_version: "1.1.0", git_ref: "backend-test-ref" },
+    frontend_version: { package_version: "1.1.0", git_ref: "frontend-test-ref" },
     status: "ok",
     api_base_url: "http://127.0.0.1:8765/api/v1",
     data_root: "/tmp/tuneforge",

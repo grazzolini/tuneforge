@@ -1,4 +1,4 @@
 interface:
   display_name: "Coordinate TuneForge Work"
-  short_description: "Plan TuneForge work for local delivery"
-  default_prompt: "Use $coordinate-tuneforge-work to prepare a Plan-first TuneForge work plan for local delivery."
+  short_description: "Plan TuneForge work and release preparation"
+  default_prompt: "Use $coordinate-tuneforge-work to prepare a Plan-first TuneForge work or approval-gated release plan."

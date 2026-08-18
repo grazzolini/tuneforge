@@ -32,38 +32,64 @@ node scripts/check-release-version.mjs
 node scripts/release-license-inventory.mjs --check
 ```
 
-Create and push a signed annotated `v<version>` tag, then create a GitHub pre-release for that tag.
-Build each intended artifact from a clean checkout of the tag without a `TUNEFORGE_GIT_REF` override.
-Validate and sign the artifacts, upload them to the pre-release, and publish the final release only
-after the uploaded assets pass verification. Never move or delete a published tag; roll forward with a
-new version. Operational artifact, installation, checksum, signature, and upload instructions belong
-in the GitHub Release notes.
+After the tag checkpoint stop and fresh explicit tag-signing approval, automation may create the signed
+annotated `v<version>` tag and must verify its signature, annotation, target, and release commit.
+Require separate draft-release authority before creating a draft GitHub Release for that tag. Build
+each intended artifact from a clean checkout of the tag without a `TUNEFORGE_GIT_REF` override.
+TuneForge's current release contract requires exactly seven uploaded assets:
 
-Run `pnpm package:mac` only on supported macOS release hosts, and run
-`pnpm package:linux:flatpak` only on supported Linux hosts with Flatpak packaging tooling.
+- Apple Silicon `TuneForge_<version>_aarch64.dmg` and its detached `.asc` signature;
+- publishable ARM64 `TuneForge_<version>_android_aarch64_publishable.apk` and its detached `.asc`
+  signature;
+- `SHA256SUMS`, containing only the DMG and APK, and its detached `.asc` signature;
+- armored public `release-key.asc` matching the signing fingerprint.
 
-For the manual launch smoke, install or open the built package artifact and confirm:
+Both the DMG and publishable APK are mandatory. Manual steps run
+`pnpm package:android:release` with the externally managed release key, create all detached
+signatures, export `release-key.asc`, and publish the verified draft. Automation may build the
+unsigned/not-notarized macOS DMG and verify public artifacts. It must never run the Android release
+build or artifact-signing commands. Pushing the verified tag and draft-asset upload each need separate explicit
+authority; final publication remains manual-only. Never move or delete a published tag; roll forward
+with a new version. Operational artifact, installation, checksum, signature, and upload instructions
+belong in the GitHub Release notes.
+
+Run `pnpm package:mac` only on supported macOS release hosts. Flatpak packaging remains available
+for local or future distribution work on supported Linux hosts, but v1.1.0 neither builds nor uploads
+a Flatpak.
+
+Use the artifact-specific checklist for the manual launch smoke.
+
+For the macOS DMG, install or open the packaged app and confirm:
 
 - the packaged app launches without a dev server;
-- the bundled backend starts and remains bound to `127.0.0.1`;
+- the bundled FastAPI backend starts and remains bound to `127.0.0.1`;
 - the UI loads and core navigation is usable;
-- Settings/About release identity is visible when that surface exists for the build;
-- observed behavior matches the package policy above: unsigned/not-notarized local
-  builds, no bundled FFmpeg, and no external Demucs, Whisper, or beat-this model
-  weights unless `--model-bundle` was explicitly reviewed and used.
+- Settings/About release identity is visible;
+- observed behavior matches the package policy above: unsigned/not-notarized local builds, no
+  bundled FFmpeg, and no external Demucs, Whisper, or beat-this model weights unless
+  `--model-bundle` was explicitly reviewed and used.
+
+For the Android APK, install it on an isolated emulator or device and confirm:
+
+- the packaged APK launches without a dev server;
+- the embedded mobile backend initializes and serves the packaged app's on-device workflow; do not
+  require or claim a desktop FastAPI listener or `127.0.0.1` bind;
+- the UI loads and core navigation is usable;
+- Settings/About release identity is visible.
 
 Record release gate evidence with:
 
 - OS and version;
-- artifact type, such as macOS `.app`/DMG or Linux `.flatpak`;
+- artifact type, such as macOS `.app`/DMG, publishable ARM64 Android APK, or Linux `.flatpak`;
 - commit SHA;
 - command run;
 - repo-relative output path, artifact filename/hash, or sanitized artifact identity;
 - launch-smoke checklist source, such as this manual checklist or a named release
   checklist;
-- per-check proof for packaged launch without a dev server, backend startup,
-  `127.0.0.1` bind, UI load, core navigation, and Settings/About release identity
-  when that surface exists;
+- per-check proof for the applicable platform checklist: macOS packaged launch, bundled FastAPI
+  startup and loopback bind, UI/navigation, and release identity; or Android packaged launch on the
+  isolated emulator/device, embedded mobile backend initialization, UI/navigation, and release
+  identity;
 - pass/fail result for each package build and launch-smoke check;
 - sanitized notes or log excerpt.
 

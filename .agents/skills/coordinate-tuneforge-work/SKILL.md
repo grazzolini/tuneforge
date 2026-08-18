@@ -1,6 +1,6 @@
 ---
 name: coordinate-tuneforge-work
-description: Plan-first coordination for bounded TuneForge implementation or evidence-based research with local delivery by default. Use when selecting milestone work from a release-plan tracker, planning a known issue or ad hoc change, exploring a bug, or coordinating approved local execution, validation, and review; choose normal versus stacked delivery when relevant and publish only with later explicit authority.
+description: Plan-first coordination for bounded TuneForge implementation, evidence-based research, or release preparation with local delivery by default. Use when selecting milestone work from a release-plan tracker, planning a known issue or ad hoc change, exploring a bug, preparing a versioned release and its approval-gated artifacts, or coordinating approved execution, validation, and review; choose normal versus stacked delivery when relevant and publish only with later explicit authority.
 ---
 
 # Coordinate TuneForge Work
@@ -17,6 +17,11 @@ Use Plan-first as the core lifecycle:
 2. After plan approval and explicit local execution authority, implement,
    validate, review, and remediate locally.
 3. Stop before publication unless the user later explicitly authorizes it.
+
+Release preparation adds four narrower stop boundaries. Read
+[release-prep.md](references/release-prep.md) before planning or continuing any
+release-preparation work. Authority for one checkpoint never carries into the
+next checkpoint or authorizes final publication.
 
 Collaboration mode selection and transitions are user-owned. Never invoke
 `/plan` or `/goal`, change modes, or create or expand a Goal. A Goal is
@@ -37,12 +42,18 @@ of work; it is not a Codex collaboration mode.
 - **Ad hoc:** Build a brief with outcome, evidence, assumptions, acceptance
   criteria, and non-goals. Search live issues and PRs for overlap, but do not
   require or create an issue unless requested.
+- **Release preparation:** Use the specified version and release tracker. Plan
+  the metadata-preparation PR and the later approval-gated tag, draft release,
+  artifact build, signing, upload, verification, and closure workflow. Follow
+  [release-prep.md](references/release-prep.md).
 
-Identify the work as an issue number or `ad hoc: <short label>`, then classify
-it as **implementation** or **research**. Implementation retains product code.
-Research produces evidence and a recommendation; its product-code envelope is
-zero. A research spike must be explicitly authorized, bounded, and disposable.
-Reclassify and re-plan before retaining product code.
+For milestone, known-issue, and ad-hoc work, identify the work as an issue
+number or `ad hoc: <short label>`, then classify it as **implementation** or
+**research**. Implementation retains product code. Research produces evidence
+and a recommendation; its product-code envelope is zero. A research spike must
+be explicitly authorized, bounded, and disposable. Reclassify and re-plan
+before retaining product code. Identify release preparation by version and
+tracker; do not substitute another release.
 
 For a milestone, require exactly one open `release-plan` tracker. Parse links
 under `## Ordered work` in order and select the first still-open linked issue,
@@ -72,13 +83,15 @@ lanes or reporting evidence.
 ## Local Execution After Approval
 
 Only after the user approves the plan and explicitly requests local execution,
-delegate bounded implementation or research. Give workers the outcome,
-non-goals, owned files or evidence, envelope, current evidence, validation
-method, and stop-on-expansion instruction. Keep the coordinator out of edits.
+delegate bounded implementation, research, or release-preparation work. Give
+workers the outcome, non-goals, owned files or evidence, envelope, current
+evidence, validation method, and stop-on-expansion instruction. Keep the
+coordinator out of edits.
 
-Use one implementation or research worker by default. Use at most two only when
-responsibilities and owned files or evidence streams are independent; assign
-clear ownership. Use one implementation worker across dependent stack layers.
+Use one implementation, research, or release-preparation worker by default.
+Use at most two only when responsibilities and owned files or evidence streams
+are independent; assign clear ownership. Use one implementation worker across
+dependent stack layers.
 
 Select model and effort explicitly: Terra Medium for exploration; Terra High
 for bounded implementation; Sol High for ambiguity, cross-layer architecture,
@@ -121,14 +134,16 @@ Run only applicable validation lanes and report command, result, proof boundary,
 and unverified behavior. Never treat a local validator, emulator, or mock as
 proof of live transport, external-device, or release behavior.
 
-Use one initial correctness review for implementation or one evidence review for
-research. Evidence review must check methodology, reproducibility, unsupported
-generalization, licensing, and evidence-to-conclusion fit. Add contract and
-Product Design review only when applicable. Route reviews to Sol High normally,
-Sol XHigh only for declared high risk, and Sol Max only for a focused unresolved
-critical dispute. Send actionable findings to the original worker for one
-remediation pass, then perform one focused re-review. Stop on unresolved
-critical findings.
+Use one initial correctness review for implementation, one evidence review for
+research, or one release-safety review for release preparation. Evidence review
+must check methodology, reproducibility, unsupported generalization, licensing,
+and evidence-to-conclusion fit. Release-safety review must check the asset
+contract, provenance, checkpoint authority, manual-only operations, and fail-closed
+gates. Add contract and Product Design review only when applicable. Route reviews
+to Sol High normally, Sol XHigh only for declared high risk, and Sol Max only for
+a focused unresolved critical dispute. Send actionable findings to the original
+worker for one remediation pass, then perform one focused re-review. Stop on
+unresolved critical findings.
 
 Finish with the selected scope, work kind, delivery/report target, envelope,
 agents and lanes used, validation/evidence, unverified boundaries, remaining

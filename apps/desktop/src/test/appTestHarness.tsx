@@ -1402,11 +1402,11 @@ const {
     name: "TuneForge",
     version: "backend-test-ref",
     backend_version: {
-      package_version: "1.0.1",
+      package_version: "1.1.0",
       git_ref: "backend-test-ref",
     },
     frontend_version: {
-      package_version: "1.0.1",
+      package_version: "1.1.0",
       git_ref: "frontend-test-ref",
     },
     status: "ok",

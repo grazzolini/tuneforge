@@ -5,20 +5,29 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-18
+
 ### Added
 
 - A dedicated project Export workspace for selecting one source track or practice mix and packaging
-  its track and stems as a file, folder, or ZIP.
-- Saved per-project Export choices that safely reconcile with available audio and device capabilities.
-- Desktop TXT export for saved lyrics and lyrics with chords, alone or packaged with selected audio.
+  its track and stems as a file, folder, or ZIP
+  ([#428](https://github.com/grazzolini/tuneforge/pull/428),
+  [#429](https://github.com/grazzolini/tuneforge/pull/429)).
+- Saved per-project Export choices that safely reconcile with available audio and device capabilities
+  ([#433](https://github.com/grazzolini/tuneforge/pull/433)).
+- Desktop TXT export for saved lyrics and lyrics with chords, alone or packaged with selected audio
+  ([#440](https://github.com/grazzolini/tuneforge/pull/440)).
 - Android system-picker export for one existing WAV, Lyrics TXT, or mix-aware Lyrics + chords TXT,
-  with verified local receipt history when provider readback is available.
+  with verified local receipt history when provider readback is available
+  ([#451](https://github.com/grazzolini/tuneforge/pull/451)).
 
 ### Changed
 
-- Polished Export destination controls and defaulted new stemmed selections to track plus all stems.
+- Polished Export destination controls and defaulted new stemmed selections to track plus all stems
+  ([#437](https://github.com/grazzolini/tuneforge/pull/437)).
 - Matched Lyrics + chords TXT to the selected source or practice mix, including corrected key,
-  transpose, enharmonic spelling, slash chords, and compact chronological instrumental rows.
+  transpose, enharmonic spelling, slash chords, and compact chronological instrumental rows
+  ([#440](https://github.com/grazzolini/tuneforge/pull/440)).
 
 ## [1.0.1] - 2026-08-13
 
@@ -97,6 +106,7 @@ download, installation, verification, signature, and publication instructions.
 
 - Development used `0.1.0` metadata; `v1.0.0` was the first tagged release.
 
-[Unreleased]: https://github.com/grazzolini/tuneforge/compare/v1.0.1...main
+[Unreleased]: https://github.com/grazzolini/tuneforge/compare/v1.1.0...main
+[1.1.0]: https://github.com/grazzolini/tuneforge/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/grazzolini/tuneforge/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/grazzolini/tuneforge/releases/tag/v1.0.0

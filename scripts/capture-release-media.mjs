@@ -1860,11 +1860,11 @@ function healthResponse() {
     name: "TuneForge",
     version: "release-media-fixture",
     backend_version: {
-      package_version: "1.0.1",
+      package_version: "1.1.0",
       git_ref: "release-media-fixture",
     },
     frontend_version: {
-      package_version: "1.0.1",
+      package_version: "1.1.0",
       git_ref: "release-media-fixture",
     },
     status: "ok",

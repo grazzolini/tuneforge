@@ -162,7 +162,7 @@ Use this matrix for local regressions against source, practice-mix, and stems.
 Run once with native playback selected per platform, then rerun with forced Web Audio.
 
 Coverage label: manual/special unless a CI workflow explicitly runs the same command and capture
-mode. The matrix, loopback browser smoke, Linux `--route-output`, macOS AVFoundation capture, and
+mode. The matrix, loopback browser E2E suite, Linux `--route-output`, macOS AVFoundation capture, and
 BlackHole capture are release checks, not default `pnpm test` coverage.
 
 | Check | Native macOS | Native Linux | Forced Web Audio (`VITE_TUNEFORGE_FORCE_WEB_AUDIO=1`) |
@@ -187,42 +187,63 @@ BlackHole capture are release checks, not default `pnpm test` coverage.
 For manual Linux, macOS, Android, and browser power validation, use the owner-specific evidence and
 release checks in [POWER_PROTECTION.md](./POWER_PROTECTION.md#validation).
 
-## Local-only Playwright Smoke Harness
+## Local-only Playwright Desktop E2E Suite
 
-Scaffold file: `scripts/playback-smoke.mjs` (local only, not wired to CI or default gates). This is
-a browser-based smoke check for the frontend transport path; native output still needs the manual
-matrix above. The automated path uses generated fixture audio only; do not use copyrighted audio.
-The isolated smoke pass requires `window.__TUNEFORGE_PLAYBACK_E2E__.read()` and asserts song-start
+Suite file: `scripts/desktop-e2e.mjs`. `--run` executes all headless-capable groups in catalog order:
+generated-fixture playback, diagnostics, and the Export workspace. `--ci` separately expresses the
+CI-approved policy; it currently runs the same three groups, but can diverge without changing `--run`.
+Neither selector includes audio capture, and the suite is not part of the default `pnpm test` suite.
+This is a browser-based desktop E2E suite; its playback group checks the frontend transport path, while
+native output still needs the manual matrix above. The automated path uses generated fixture audio only;
+do not use copyrighted audio. The isolated playback group requires `window.__TUNEFORGE_PLAYBACK_E2E__.read()` and asserts song-start
 count-in scheduling/firing before loop setup, loop pre-count scheduling/firing during loop playback,
 and transport telemetry. Native transport/buffer health is checked only when telemetry reports native
 playback is the active path. Manual app mode remains backward-compatible and skips telemetry-only
 assertions when that bridge is unavailable.
 
-`pnpm setup:dev` installs the Playwright Chromium browser needed by this smoke check; use
+`pnpm setup:dev` installs the Playwright Chromium browser needed by this suite; use
 `pnpm setup:dev -- --skip-playwright-browsers` to skip that download.
 
-Check that the local smoke scaffold is available:
+Check that the local desktop E2E suite is available:
 
 ```sh
 pnpm --filter @tuneforge/desktop test:e2e
 ```
 
-Run the isolated smoke pass:
+Run all headless-capable groups:
 
 ```sh
 pnpm --filter @tuneforge/desktop test:e2e -- --run
 ```
 
-Run the optional Linux virtual-audio capture smoke:
+Run the CI-approved selector policy:
 
 ```sh
-pnpm --filter @tuneforge/desktop test:e2e -- --run --route-output
+pnpm --filter @tuneforge/desktop test:e2e -- --ci
 ```
 
-Run the optional macOS AVFoundation capture smoke with an explicit capture device:
+Run every group, including audio capture. A headed browser is currently recommended for working capture:
 
 ```sh
-pnpm --filter @tuneforge/desktop test:e2e -- --run --capture-provider=avfoundation --capture-device="BlackHole 2ch"
+pnpm --filter @tuneforge/desktop test:e2e -- --all --headed
+```
+
+Run only the CI-safe Export workspace journey without submitting an export or opening a native picker:
+
+```sh
+pnpm --filter @tuneforge/desktop test:e2e -- --group export
+```
+
+Run the optional Linux virtual-audio capture group:
+
+```sh
+pnpm --filter @tuneforge/desktop test:e2e -- --run --route-output --headed
+```
+
+Run the optional macOS AVFoundation capture group with an explicit capture device:
+
+```sh
+pnpm --filter @tuneforge/desktop test:e2e -- --run --capture-provider=avfoundation --capture-device="BlackHole 2ch" --headed
 ```
 
 Use the same local debugging flags when needed. On macOS, replace `--route-output` with the explicit
@@ -230,23 +251,26 @@ Use the same local debugging flags when needed. On macOS, replace `--route-outpu
 
 ```sh
 pnpm --filter @tuneforge/desktop test:e2e -- --run --route-output --headed
-pnpm --filter @tuneforge/desktop test:e2e -- --run --route-output --keep-artifacts
-pnpm --filter @tuneforge/desktop test:e2e -- --run --route-output --backend-port=<port> --app-port=<port>
+pnpm --filter @tuneforge/desktop test:e2e -- --run --route-output --keep-artifacts --headed
+pnpm --filter @tuneforge/desktop test:e2e -- --run --route-output --backend-port=<port> --app-port=<port> --headed
 ```
 
 The isolated run prepares temporary app data and a temporary database, creates a deterministic
-generated fixture project, starts the backend and frontend, runs the smoke flow, then cleans the
+generated fixture project, starts the backend and frontend, runs the E2E flow, then cleans the
 temporary data by default. Use `--keep-artifacts` to retain temporary paths and logs for debugging.
 If a local port is already in use, pass `--backend-port=<port>` or `--app-port=<port>`. The isolated
 backend allows only the selected loopback frontend origin so browser CORS stays enabled.
 
 `--route-output` is Linux-only and should be used only for isolated generated-fixture runs. It must
 not be combined with `--manual-app`, because virtual output capture is intended to avoid personal
-libraries and user audio. Without `--route-output`, the smoke does not change system audio routing.
-With `--route-output` on Linux, the smoke records the fixture playback through a temporary virtual
+libraries and user audio. `--headed` is a launch-mode option, not a capture policy: it is currently
+recommended (and typically needed) for working capture, but headless attempts are allowed so future
+browser and platform support can succeed without changing the selector contract. Without `--route-output`,
+the E2E suite does not change system audio routing.
+With `--route-output` on Linux, the capture group records fixture playback through a temporary virtual
 output path and restores the previous output route during cleanup. If routing, recording, or platform
 support is missing, the virtual-capture portion fails or skips with a clear message; the standard
-browser smoke still reports its own pass/fail result separately.
+browser E2E suite still reports its own pass/fail result separately.
 
 On Linux, use a PipeWire desktop with the PulseAudio compatibility service (`pipewire-pulse`) or a
 PulseAudio session, and make sure `pactl` plus either `pw-record` or `parecord` are available on
@@ -260,12 +284,12 @@ sudo pacman -S pipewire-pulse pipewire-audio libpulse
 sudo apt-get install pipewire-pulse pulseaudio-utils pipewire-bin
 ```
 
-The smoke creates a temporary null sink only when `--route-output` is present, routes playback to
+The capture group creates a temporary null sink only when `--route-output` is present, routes playback to
 that sink, records the sink through the selected local provider, then restores the previous default
 sink and unloads the temporary sink. With PipeWire, the smoke resolves the temp sink's
 `object.serial` and passes that serial to `pw-record --target`; the sidecar still records the
 Pulse/PipeWire monitor source as the logical device. If `pactl` cannot create the sink, no default
-sink can be restored, or capture is unavailable, keep artifacts and inspect the smoke logs before
+sink can be restored, or capture is unavailable, keep artifacts and inspect the E2E logs before
 rerunning.
 
 On macOS, install a local BlackHole device and `ffmpeg` first, then verify AVFoundation can see it:
@@ -282,10 +306,10 @@ Select the BlackHole device with `--capture-device=<name-or-id>` if more than on
 device is installed. macOS capture does not support `--route-output` and the smoke does not switch or
 restore the default output device. Configure any Multi-Output Device or output routing manually
 before running the smoke if you want to listen while capturing. Tauri WebDriver cannot automate the
-WKWebView on macOS, so this capture path validates the local browser smoke and explicit AVFoundation
+WKWebView on macOS, so this capture path validates the local browser E2E suite and explicit AVFoundation
 capture rather than automating the packaged Tauri WebView.
 
-With `--keep-artifacts`, virtual-capture runs retain the temporary root printed by the smoke. Expect
+With `--keep-artifacts`, virtual-capture runs retain the temporary root printed by the E2E suite. Expect
 the fixture data directory, backend/frontend child-process logs, the captured audio file, and any
 platform routing logs or metadata that describe the selected virtual sink/device. Custom
 `--capture-output` paths must end in `.wav`, because the capture analyzer reads WAV output. Without
@@ -302,6 +326,6 @@ pnpm --filter @tuneforge/desktop test:e2e -- --run --manual-app --project-id=<id
 Manual app mode requires the app to already be running. Use it only when you need an existing
 personal project instead of the generated fixture.
 
-For full coverage, use a fixture project with timed lyrics or chords. The smoke pass always checks
+For full coverage, use a fixture project with timed lyrics or chords. The playback group always checks
 stopped scrubber start, and it also checks stopped lyrics/chords start when a timed practice target
-is available. It remains a local/manual diagnostic, not a CI gate and not part of `pnpm test`.
+is available. Native output and virtual-audio capture remain local/manual diagnostics, not CI gates.

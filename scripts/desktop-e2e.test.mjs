@@ -2,37 +2,73 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  CI_APPROVED_GROUPS,
+  HEADLESS_CAPABLE_GROUPS,
   buildCaptureSidecar,
+  failureArtifactNames,
   findPactlSinkBlock,
   optionsForGroup,
   pactlProperty,
   parseOptions,
   validateCaptureOutputPath,
-} from "./playback-smoke.mjs";
+} from "./desktop-e2e.mjs";
 
-test("selects groups in catalog order and makes selectors runnable", () => {
+test("declares headless and CI group catalogs independently", () => {
+  assert.deepEqual(HEADLESS_CAPABLE_GROUPS, ["playback", "diagnostics", "export"]);
+  assert.deepEqual(CI_APPROVED_GROUPS, ["playback", "diagnostics", "export"]);
+});
+
+test("selects exact requested groups in catalog order and makes selectors runnable", () => {
   const options = parseOptions(["--group", "audio-capture", "--group=playback"]);
 
   assert.equal(options.run, true);
+  assert.equal(options.headed, false);
   assert.deepEqual(options.groups, ["playback", "audio-capture"]);
 });
 
-test("maps CI and all selectors to their intended groups", () => {
-  assert.deepEqual(parseOptions(["--ci"]).groups, ["playback", "diagnostics"]);
-  assert.deepEqual(parseOptions(["--all"]).groups, ["playback", "diagnostics", "audio-capture"]);
+test("maps bare run, CI, and all selectors to their intended groups", () => {
+  assert.deepEqual(parseOptions(["--run"]).groups, ["playback", "diagnostics", "export"]);
+  assert.deepEqual(parseOptions(["--ci"]).groups, ["playback", "diagnostics", "export"]);
+  const all = parseOptions(["--all"]);
+  assert.equal(all.headed, false);
+  assert.deepEqual(all.groups, ["playback", "diagnostics", "export", "audio-capture"]);
+});
+
+test("leaves no-flag invocation in scaffold mode", () => {
+  const options = parseOptions([]);
+
+  assert.equal(options.run, false);
+  assert.equal(options.list, false);
+  assert.deepEqual(options.groups, []);
 });
 
 test("rejects conflicting or unknown group selectors", () => {
   assert.throws(() => parseOptions(["--group", "playback", "--ci"]), /cannot be combined/);
-  assert.throws(() => parseOptions(["--group", "missing"]), /Valid groups: playback, diagnostics, audio-capture/);
-  assert.throws(() => parseOptions(["--group"]), /--group requires a group name/);
-  assert.throws(() => parseOptions(["--group="]), /--group requires a group name/);
+  assert.throws(
+    () => parseOptions(["--group", "missing"]),
+    (error) => error instanceof Error && error.message ===
+      "Unknown --group \"missing\". Valid groups: playback, diagnostics, export, audio-capture.",
+  );
+  assert.throws(
+    () => parseOptions(["--group"]),
+    (error) => error instanceof Error && error.message ===
+      "--group requires a group name. Valid groups: playback, diagnostics, export, audio-capture.",
+  );
+  assert.throws(
+    () => parseOptions(["--group="]),
+    (error) => error instanceof Error && error.message ===
+      "--group requires a group name. Valid groups: playback, diagnostics, export, audio-capture.",
+  );
 });
 
-test("keeps legacy capture optional but makes selected capture strict", () => {
+test("keeps capture launch mode optional while selected capture remains strict", () => {
   const legacy = parseOptions(["--run", "--capture-audio"]);
   assert.equal(legacy.requireAudioCapture, false);
+  assert.equal(legacy.headed, false);
   assert.deepEqual(legacy.groups, []);
+  const selected = parseOptions(["--group", "audio-capture"]);
+  assert.equal(selected.headed, false);
+  assert.deepEqual(selected.groups, ["audio-capture"]);
   assert.throws(
     () => parseOptions(["--group", "playback", "--capture-audio"]),
     /include --group audio-capture or use --all/,
@@ -41,11 +77,24 @@ test("keeps legacy capture optional but makes selected capture strict", () => {
     () => parseOptions(["--group", "playback", "--group", "diagnostics", "--capture-audio"]),
     /include --group audio-capture or use --all/,
   );
-  assert.deepEqual(parseOptions(["--group", "audio-capture"]).groups, ["audio-capture"]);
-  const all = parseOptions(["--all", "--capture-device", "Loopback"]);
-  assert.equal(optionsForGroup(all, "playback").captureAudio, false);
-  assert.equal(optionsForGroup(all, "audio-capture").captureAudio, true);
-  assert.equal(optionsForGroup(all, "audio-capture").requireAudioCapture, true);
+  const headedSelected = parseOptions(["--group", "audio-capture", "--headed"]);
+  assert.equal(headedSelected.headed, true);
+  assert.deepEqual(headedSelected.groups, ["audio-capture"]);
+  const manual = parseOptions(["--run", "--manual-app", "--project-name", "Demo Song"]);
+  assert.equal(manual.manualApp, true);
+  assert.deepEqual(manual.groups, []);
+  const headedAll = parseOptions(["--all", "--capture-device", "Loopback", "--headed"]);
+  assert.equal(headedAll.headed, true);
+  assert.equal(optionsForGroup(headedAll, "playback").captureAudio, false);
+  assert.equal(optionsForGroup(headedAll, "audio-capture").captureAudio, true);
+  assert.equal(optionsForGroup(headedAll, "audio-capture").requireAudioCapture, true);
+});
+
+test("names failure artifacts by smoke group", () => {
+  assert.deepEqual(failureArtifactNames("export"), {
+    image: "export-failure.png",
+    summary: "export-failure-summary.json",
+  });
 });
 
 test("parses PipeWire object serial from pactl sink output", () => {

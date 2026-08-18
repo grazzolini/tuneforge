@@ -15,7 +15,7 @@
     "lint": "eslint .",
     "tauri": "bash ../../scripts/run-tauri-command.sh",
     "test": "vitest",
-    "test:e2e": "node ../../scripts/playback-smoke.mjs",
+    "test:e2e": "node ../../scripts/desktop-e2e.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -10,7 +10,9 @@ import struct
 import sys
 import wave
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from shutil import copyfile
 from typing import Any
 
 from sqlalchemy import select
@@ -18,6 +20,8 @@ from sqlalchemy.orm import Session
 
 from app.errors import AppError
 from app.models import AnalysisResult, Artifact, ChordTimeline, LyricsTranscript, Project, SongSection
+from app.services.artifacts import register_artifact
+from app.services.paths import project_previews_dir, project_stems_dir
 from app.services.projects import import_project
 from app.services.sync_identity import source_hash_to_project_id
 from app.utils.hashing import file_sha256
@@ -29,9 +33,11 @@ FIXTURE_DURATION_SECONDS = 40.0
 FIXTURE_BPM = 120.0
 FIXTURE_SAMPLE_RATE = 22_050
 BEATS_PER_BAR = 4
+FIXTURE_ARTIFACT_MARKER = "desktop-e2e"
+FIXTURE_ARTIFACT_CREATED_AT = datetime(2024, 1, 1, tzinfo=UTC)
 
 
-class PlaybackE2EFixtureCliError(RuntimeError):
+class DesktopE2EFixtureCliError(RuntimeError):
     pass
 
 
@@ -43,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
     except AppError as exc:
         sys.stderr.write(f"error: {exc.message}\n")
         return 1
-    except PlaybackE2EFixtureCliError as exc:
+    except DesktopE2EFixtureCliError as exc:
         sys.stderr.write(f"error: {exc}\n")
         return 1
     except Exception as exc:
@@ -57,13 +63,13 @@ def main(argv: list[str] | None = None) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m app.cli.playback_e2e_fixture",
-        description="Create a deterministic local playback E2E fixture project.",
+        prog="python -m app.cli.desktop_e2e_fixture",
+        description="Create a deterministic local desktop E2E fixture project.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     create_parser = subparsers.add_parser(
         "create",
-        help="Create or refresh the playback E2E fixture.",
+        help="Create or refresh the desktop E2E fixture.",
     )
     create_parser.add_argument("--data-dir", required=True, type=Path, metavar="PATH")
     create_parser.add_argument("--work-dir", required=True, type=Path, metavar="PATH")
@@ -77,7 +83,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _run_command(args: argparse.Namespace) -> dict[str, Any]:
     if args.command != "create":
-        raise PlaybackE2EFixtureCliError(f"unsupported command: {args.command}")
+        raise DesktopE2EFixtureCliError(f"unsupported command: {args.command}")
 
     data_dir = _resolve_path(args.data_dir)
     work_dir = _resolve_path(args.work_dir)
@@ -98,6 +104,8 @@ def _run_command(args: argparse.Namespace) -> dict[str, Any]:
             session,
             project=project,
             source_artifact=source_artifact,
+            data_dir=data_dir,
+            work_dir=work_dir,
         )
         session.flush()
         session.refresh(project)
@@ -116,7 +124,7 @@ def _resolve_path(path: Path) -> Path:
 def _normalize_project_name(value: str) -> str:
     normalized = value.strip()
     if not normalized:
-        raise PlaybackE2EFixtureCliError("--project-name cannot be empty")
+        raise DesktopE2EFixtureCliError("--project-name cannot be empty")
     return normalized
 
 
@@ -171,7 +179,7 @@ def _import_or_get_project(
 ) -> Project:
     source_sha256 = file_sha256(source_path)
     if source_sha256 is None:
-        raise PlaybackE2EFixtureCliError(f"could not hash fixture WAV: {source_path}")
+        raise DesktopE2EFixtureCliError(f"could not hash fixture WAV: {source_path}")
 
     expected_project_id = source_hash_to_project_id(source_sha256)
     project = session.get(Project, expected_project_id)
@@ -194,7 +202,7 @@ def _source_artifact(session: Session, *, project_id: str) -> Artifact:
         .order_by(Artifact.created_at.desc(), Artifact.id.desc())
     )
     if artifact is None:
-        raise PlaybackE2EFixtureCliError(f"project {project_id} has no source_audio artifact")
+        raise DesktopE2EFixtureCliError(f"project {project_id} has no source_audio artifact")
     return artifact
 
 
@@ -203,11 +211,100 @@ def _seed_fixture_data(
     *,
     project: Project,
     source_artifact: Artifact,
+    data_dir: Path,
+    work_dir: Path,
 ) -> None:
+    _replace_export_artifacts(
+        session,
+        project=project,
+        source_artifact=source_artifact,
+        data_dir=data_dir,
+        work_dir=work_dir,
+    )
     _upsert_analysis(session, project=project, source_artifact=source_artifact)
     _upsert_lyrics(session, project=project, source_artifact=source_artifact)
     _upsert_chords(session, project=project, source_artifact=source_artifact)
     _replace_sections(session, project=project)
+
+
+def _replace_export_artifacts(
+    session: Session,
+    *,
+    project: Project,
+    source_artifact: Artifact,
+    data_dir: Path,
+    work_dir: Path,
+) -> None:
+    """Create a small, local-only mix and stem set for the Export workspace."""
+    existing = list(
+        session.scalars(
+            select(Artifact)
+            .where(Artifact.project_id == project.id)
+            .where(Artifact.type.in_(("preview_mix", "vocal_stem", "drums_stem")))
+        )
+    )
+    for artifact in existing:
+        if artifact.metadata_json.get("fixture") == FIXTURE_ARTIFACT_MARKER:
+            session.delete(artifact)
+    session.flush()
+
+    source_file = Path(source_artifact.path).resolve()
+    _require_path_within(source_file, data_dir, "source artifact")
+    preview_path = project_previews_dir(project.id) / "fixture-practice-mix.wav"
+    vocal_path = project_stems_dir(project.id) / "fixture-export" / "vocals.wav"
+    drums_path = project_stems_dir(project.id) / "fixture-export" / "drums.wav"
+    for path in (preview_path, vocal_path, drums_path):
+        _require_path_within(path, data_dir, "fixture artifact")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        copyfile(source_file, path)
+        if not path.is_file() or not path.stat().st_size:
+            raise DesktopE2EFixtureCliError(f"could not create fixture artifact: {path.name}")
+
+    # Explicit timestamps make API order stable; the newest stems are listed first.
+    register_artifact(
+        session,
+        project_id=project.id,
+        artifact_type="preview_mix",
+        artifact_format="wav",
+        path=preview_path,
+        artifact_id="art_fixture_preview_mix",
+        metadata={"fixture": FIXTURE_ARTIFACT_MARKER, "source_artifact_id": source_artifact.id},
+        generated_by="fixture",
+        can_regenerate=False,
+        created_at=FIXTURE_ARTIFACT_CREATED_AT,
+    )
+    for offset, artifact_type, path, stem_source in (
+        (1, "vocal_stem", vocal_path, "vocals"),
+        (2, "drums_stem", drums_path, "drums"),
+    ):
+        register_artifact(
+            session,
+            project_id=project.id,
+            artifact_type=artifact_type,
+            artifact_format="wav",
+            path=path,
+            artifact_id=f"art_fixture_{stem_source}",
+            metadata={
+                "fixture": FIXTURE_ARTIFACT_MARKER,
+                "source_artifact_id": source_artifact.id,
+                "source_artifact_type": "source_audio",
+                "stem_source": stem_source,
+            },
+            generated_by="fixture",
+            can_regenerate=False,
+            created_at=FIXTURE_ARTIFACT_CREATED_AT + timedelta(seconds=offset),
+        )
+
+    _require_path_within(work_dir / FIXTURE_FILE_NAME, work_dir, "fixture source")
+
+
+def _require_path_within(path: Path, root: Path, label: str) -> None:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError as exc:
+        raise DesktopE2EFixtureCliError(
+            f"{label} must stay inside the supplied fixture data or work directory"
+        ) from exc
 
 
 def _upsert_analysis(

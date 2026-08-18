@@ -6,18 +6,18 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from app.cli import playback_e2e_fixture
+from app.cli import desktop_e2e_fixture
 from app.models import AnalysisResult, Artifact, ChordTimeline, LyricsTranscript, Project, SongSection
 
 
-def test_create_playback_e2e_fixture_seeds_project_data(
+def test_create_desktop_e2e_fixture_seeds_project_data(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     data_dir = tmp_path / "fixture-data"
     work_dir = tmp_path / "fixture-work"
 
-    exit_code = playback_e2e_fixture.main(
+    exit_code = desktop_e2e_fixture.main(
         [
             "create",
             "--data-dir",
@@ -65,6 +65,42 @@ def test_create_playback_e2e_fixture_seeds_project_data(
         assert source_artifact.content_sha256
         assert source_artifact.metadata_json["source_path"] == payload["source_path"]
         assert Path(source_artifact.path).exists()
+
+        export_artifacts = list(
+            session.scalars(
+                select(Artifact)
+                .where(Artifact.project_id == project.id)
+                .where(Artifact.type.in_(("preview_mix", "vocal_stem", "drums_stem")))
+                .order_by(Artifact.created_at.asc())
+            )
+        )
+        assert [artifact.type for artifact in export_artifacts] == [
+            "preview_mix",
+            "vocal_stem",
+            "drums_stem",
+        ]
+        preview_mix, vocal_stem, drums_stem = export_artifacts
+        assert preview_mix.metadata_json == {
+            "fixture": "desktop-e2e",
+            "source_artifact_id": source_artifact.id,
+        }
+        assert [stem.metadata_json["source_artifact_id"] for stem in (vocal_stem, drums_stem)] == [
+            source_artifact.id,
+            source_artifact.id,
+        ]
+        assert [stem.metadata_json["stem_source"] for stem in (vocal_stem, drums_stem)] == [
+            "vocals",
+            "drums",
+        ]
+        for artifact in export_artifacts:
+            artifact_path = Path(artifact.path).resolve()
+            assert artifact.format == "wav"
+            assert artifact.generated_by == "fixture"
+            assert artifact.can_regenerate is False
+            assert artifact.content_sha256
+            assert artifact.size_bytes > 0
+            assert artifact_path.is_file()
+            assert artifact_path.is_relative_to(data_dir.resolve())
 
         analysis = session.get(AnalysisResult, project.id)
         assert analysis is not None

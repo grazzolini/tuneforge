@@ -55,7 +55,7 @@ jobs:
                 scripts/capture-release-media.mjs|scripts/check-release-version.mjs)
                   site=true
                   ;;
-                scripts/package-options*|scripts/flatpak-options*|scripts/playback-smoke*|scripts/sync-validation*|scripts/setup-dev*)
+                scripts/package-options*|scripts/flatpak-options*|scripts/desktop-e2e*|scripts/sync-validation*|scripts/setup-dev*)
                   ;;
                 scripts/*)
                   full_gate=true
@@ -198,7 +198,7 @@ jobs:
           node-version: "22"
 
       - name: Test deterministic Node scripts
-        run: node --test scripts/build-info.test.mjs scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/playback-smoke.test.mjs scripts/sync-validation.test.mjs scripts/release-license-inventory.test.mjs scripts/capture-release-media.test.mjs
+        run: node --test scripts/build-info.test.mjs scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/desktop-e2e.test.mjs scripts/sync-validation.test.mjs scripts/release-license-inventory.test.mjs scripts/capture-release-media.test.mjs
 
       - name: Check release script syntax
         run: |
@@ -282,7 +282,7 @@ jobs:
       - name: Install Playwright Chromium
         run: pnpm --filter @tuneforge/desktop exec playwright install --with-deps chromium
 
-      - name: Run E2E smoke
+      - name: Run desktop E2E suite
         shell: bash
         run: |
           set -uo pipefail
@@ -303,14 +303,14 @@ jobs:
             "${raw_log}" > "${sanitized_log}"
 
           {
-            echo "## E2E smoke"
+            echo "## Desktop E2E suite"
             echo
             echo "- E2E command duration: ${command_elapsed_seconds}s"
             echo
             echo "| Group | Result | Duration |"
             echo "| --- | --- | --- |"
             found_group_result=false
-            group_result_pattern='^\[playback-smoke\] group ([a-z-]+): (passed|failed) in ([0-9.]+s)\.$'
+            group_result_pattern='^\[desktop-e2e\] group ([a-z-]+): (passed|failed) in ([0-9.]+s)\.$'
             while IFS= read -r line; do
               if [[ "${line}" =~ ${group_result_pattern} ]]; then
                 printf '| %s | %s | %s |\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
@@ -339,8 +339,8 @@ jobs:
             mkdir -p "$(dirname "${destination}")"
             cp "${artifact}" "${destination}"
           done < <(find "${E2E_TMPDIR}" -type f \( \
-            -path "${E2E_TMPDIR}/tuneforge-playback-smoke-*/playback-failure.png" -o \
-            -path "${E2E_TMPDIR}/tuneforge-playback-smoke-*/playback-failure-summary.json" -o \
+            -path "${E2E_TMPDIR}/tuneforge-*-smoke-*/*-failure.png" -o \
+            -path "${E2E_TMPDIR}/tuneforge-*-smoke-*/*-failure-summary.json" -o \
             -path "${E2E_TMPDIR}/tuneforge-diagnostics-smoke-*/artifacts/diagnostics-failure.png" -o \
             -path "${E2E_TMPDIR}/tuneforge-diagnostics-smoke-*/artifacts/summary.json" \
           \) -print0)

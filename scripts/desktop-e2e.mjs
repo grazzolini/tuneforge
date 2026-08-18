@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import assert from "node:assert/strict";
 import process from "node:process";
 import net from "node:net";
 import { spawn } from "node:child_process";
@@ -22,16 +23,19 @@ const CAPTURE_STARTUP_GRACE_MS = 1000;
 const CAPTURE_ANALYZER_TIMEOUT_MS = 120_000;
 const SUPPORTED_CAPTURE_PROVIDERS = new Set(["auto", "pipewire", "pulse", "avfoundation"]);
 const SMOKE_GROUPS = [
-  { name: "playback", description: "Generated-fixture playback controls smoke.", ci: true },
-  { name: "diagnostics", description: "Sanitized import and processing diagnostics smoke.", ci: true },
-  { name: "audio-capture", description: "Playback smoke with required local audio capture.", ci: false },
+  { name: "playback", description: "Generated-fixture playback controls smoke." },
+  { name: "diagnostics", description: "Sanitized import and processing diagnostics smoke." },
+  { name: "export", description: "Generated-fixture Export workspace smoke." },
+  { name: "audio-capture", description: "Playback smoke with required local audio capture." },
 ];
+export const HEADLESS_CAPABLE_GROUPS = ["playback", "diagnostics", "export"];
+export const CI_APPROVED_GROUPS = ["playback", "diagnostics", "export"];
 
 if (isDirectRun()) {
   try {
     await main();
   } catch (error) {
-    console.error(`[playback-smoke] ${errorMessage(error)}`);
+    console.error(`[desktop-e2e] ${errorMessage(error)}`);
     process.exitCode = 1;
   }
 }
@@ -64,7 +68,7 @@ async function main() {
   if (options.projectId) {
     throw new Error(
       [
-        "Isolated playback smoke creates its own fixture project.",
+        "Isolated desktop E2E creates its own fixture project.",
         'Use manual mode for an existing project: pnpm --filter @tuneforge/desktop test:e2e -- --run --manual-app --project-id="<id>"',
       ].join("\n"),
     );
@@ -74,7 +78,7 @@ async function main() {
 }
 
 async function runGroups(options) {
-  if (options.manualApp && options.groups.some((group) => group === "diagnostics")) {
+  if (options.manualApp && options.groups.some((group) => group === "diagnostics" || group === "export")) {
     throw new Error("Manual-app mode supports only playback and audio-capture groups.");
   }
   for (const group of options.groups) {
@@ -90,9 +94,9 @@ async function runGroups(options) {
           await runIsolatedSmoke(groupOptions);
         }
       }
-      console.log(`[playback-smoke] group ${group}: passed in ${formatDuration(performance.now() - startedAt)}.`);
+      console.log(`[desktop-e2e] group ${group}: passed in ${formatDuration(performance.now() - startedAt)}.`);
     } catch (error) {
-      console.error(`[playback-smoke] group ${group}: failed in ${formatDuration(performance.now() - startedAt)}.`);
+      console.error(`[desktop-e2e] group ${group}: failed in ${formatDuration(performance.now() - startedAt)}.`);
       throw error;
     }
   }
@@ -101,6 +105,7 @@ async function runGroups(options) {
 export function optionsForGroup(options, group) {
   return {
     ...options,
+    smokeGroup: group,
     captureAudio: group === "audio-capture",
     requireAudioCapture: group === "audio-capture",
   };
@@ -111,24 +116,29 @@ function formatDuration(durationMs) {
 }
 
 function printGroups() {
-  console.log("[playback-smoke] available groups:");
+  console.log("[desktop-e2e] available groups:");
   for (const group of SMOKE_GROUPS) {
-    console.log(`  ${group.name}${group.ci ? " (CI)" : ""}: ${group.description}`);
+    console.log(`  ${group.name}${CI_APPROVED_GROUPS.includes(group.name) ? " (CI)" : ""}: ${group.description}`);
   }
 }
 
 function printScaffold() {
-  console.log("[playback-smoke] Local smoke scaffold is available.");
-  console.log("Run isolated smoke with generated fixture data:");
+  console.log("[desktop-e2e] Local desktop E2E suite is available.");
+  console.log("Run all headless-capable groups (playback, diagnostics, export):");
   console.log("  pnpm --filter @tuneforge/desktop test:e2e -- --run");
+  console.log("Run the CI-approved group policy (currently the same three groups):");
+  console.log("  pnpm --filter @tuneforge/desktop test:e2e -- --ci");
+  console.log("Run every group, including audio capture (headed is currently recommended):");
+  console.log("  pnpm --filter @tuneforge/desktop test:e2e -- --all --headed");
   console.log("Run against an existing personal library app:");
   console.log(
     '  pnpm --filter @tuneforge/desktop test:e2e -- --run --manual-app --project-name="Demo Song"',
   );
-  console.log("Optional local virtual-audio capture:");
+  console.log("Optional local virtual-audio capture (headed is currently recommended):");
   console.log(
-    "  pnpm --filter @tuneforge/desktop test:e2e -- --run --capture-audio --route-output",
+    "  pnpm --filter @tuneforge/desktop test:e2e -- --run --capture-audio --route-output --headed",
   );
+  console.log("Headless capture attempts are allowed and report unsupported runtime behavior directly.");
 }
 
 async function runManualSmoke(options) {
@@ -182,7 +192,8 @@ async function runManualSmoke(options) {
 async function runIsolatedSmoke(options) {
   const appPort = await selectPort(options.appPort, new Set(), "desktop dev server");
   const backendPort = await selectPort(options.backendPort, new Set([appPort]), "backend");
-  const tempRoot = await mkdtemp(join(tmpdir(), "tuneforge-playback-smoke-"));
+  const smokeGroup = options.smokeGroup ?? "playback";
+  const tempRoot = await mkdtemp(join(tmpdir(), `tuneforge-${smokeGroup}-smoke-`));
   const dataDir = join(tempRoot, "data");
   const workDir = join(tempRoot, "work");
   const children = [];
@@ -194,7 +205,7 @@ async function runIsolatedSmoke(options) {
     await mkdir(dataDir, { recursive: true });
     await mkdir(workDir, { recursive: true });
     logStep(`Using temp root ${tempRoot}.`);
-    fixture = await createPlaybackFixture({ dataDir, workDir, projectName: options.projectName });
+    fixture = await createDesktopE2EFixture({ dataDir, workDir, projectName: options.projectName });
     logStep(
       `Seeded fixture project ${fixture.project_id} (${fixture.project_name ?? "unnamed"}) in ${dataDir}.`,
     );
@@ -250,7 +261,7 @@ async function runIsolatedSmoke(options) {
       onStop: (result) => {
         captureResult = result;
       },
-      run: async (capture) => runSmoke({
+      run: async (capture) => (smokeGroup === "export" ? runExportSmoke : runSmoke)({
         appUrl,
         projectId: fixture.project_id,
         projectName: fixture.project_name ?? "",
@@ -261,11 +272,14 @@ async function runIsolatedSmoke(options) {
         captureTiming: Boolean(capture),
         captureTimingRequired: Boolean(capture) && options.requireAudioCapture,
         failureArtifactRoot: tempRoot,
+        failureGroup: smokeGroup,
       }),
     });
   } catch (error) {
     failed = true;
-    await writeSmokeFailureSummary(tempRoot, "isolated playback setup");
+    if (!(await smokeFailureSummaryExists(tempRoot, smokeGroup))) {
+      await writeSmokeFailureSummary(tempRoot, smokeGroup, "isolated desktop E2E setup");
+    }
     throw error;
   } finally {
     await stopChildren(children);
@@ -288,6 +302,7 @@ async function runSmoke({
   captureTiming = false,
   captureTimingRequired = false,
   failureArtifactRoot = "",
+  failureGroup = "playback",
 }) {
   let chromium;
   try {
@@ -456,7 +471,7 @@ async function runSmoke({
 } catch (error) {
   recordPhase("smoke:error", { message: errorMessage(error) });
   if (failureArtifactRoot) {
-    await writeSmokeFailureArtifacts(failureArtifactRoot, page, stage);
+    await writeSmokeFailureArtifacts(failureArtifactRoot, page, failureGroup, stage);
   }
   throw error;
 } finally {
@@ -464,20 +479,211 @@ async function runSmoke({
 }
 }
 
-async function writeSmokeFailureArtifacts(root, page, stage) {
-  await mkdir(root, { recursive: true });
-  if (page) {
-    await page.screenshot({ path: join(root, "playback-failure.png"), fullPage: true }).catch(() => {});
+async function runExportSmoke({ appUrl, projectId, projectName, projectUrl, headed, failureArtifactRoot }) {
+  let chromium;
+  try {
+    ({ chromium } = desktopRequire("playwright"));
+  } catch {
+    throw new Error("Playwright is not installed locally. Run pnpm setup:dev before the Export smoke.");
   }
-  await writeSmokeFailureSummary(root, stage);
+
+  const browser = await chromium.launch({ headless: !headed });
+  let page;
+  let stage = "opening Export workspace";
+  try {
+    for (const viewport of [
+      { label: "wide", width: 1440, height: 1100 },
+      { label: "narrow", width: 600, height: 1000 },
+    ]) {
+      page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+      const exportPosts = [];
+      page.on("request", (request) => {
+        if (request.method() === "POST" && /\/api\/v1\/projects\/[^/]+\/export(?:\?|$)/.test(request.url())) {
+          exportPosts.push(request.url());
+        }
+      });
+      stage = `${viewport.label} Export workspace journey`;
+      await runExportJourney(page, {
+        appUrl,
+        projectId,
+        projectName,
+        projectUrl,
+        viewport,
+      });
+      assert.deepEqual(exportPosts, [], "Export smoke must not submit an export request.");
+      await page.close();
+      page = null;
+    }
+    logStep("Export workspace smoke passed at wide and narrow viewports without an export submission.");
+  } catch (error) {
+    if (failureArtifactRoot) {
+      await writeSmokeFailureArtifacts(failureArtifactRoot, page, "export", stage);
+    }
+    throw error;
+  } finally {
+    await browser.close();
+  }
 }
 
-async function writeSmokeFailureSummary(root, stage) {
+async function runExportJourney(page, { appUrl, projectId, projectName, projectUrl, viewport }) {
+  await openProject(page, { appUrl, projectId, projectName, projectUrl });
+  await activateExportWithKeyboard(page);
+  await page.getByRole("heading", { name: "Export files" }).waitFor();
+  await page.getByRole("button", { name: "Reset export workspace" }).click();
+  await assertExportSelection(page, { preset: "track-and-stems", selectedCount: 3 });
+
+  const presetButtons = page.locator(".export-presets > button");
+  assert.deepEqual(await presetButtons.allTextContents(), ["Track + all stems", "Track only", "All stems"]);
+  await assertExportPreview(page, [
+    "Tuneforge E2E Fixture - Source.wav",
+    "Tuneforge E2E Fixture - Source - Drums.wav",
+    "Tuneforge E2E Fixture - Source - Vocals.wav",
+  ]);
+
+  const fileButton = page.getByRole("button", { name: "File", exact: true });
+  const folderButton = page.getByRole("button", { name: "Folder", exact: true });
+  const zipButton = page.getByRole("button", { name: "ZIP", exact: true });
+  assert.equal(await fileButton.isDisabled(), true);
+  const multiItemReason = await fileButton.getAttribute("aria-describedby");
+  assert.ok(multiItemReason);
+  assert.match(await page.locator(`#${multiItemReason}`).innerText(), /Multiple items require Folder or ZIP/);
+  assert.equal(await folderButton.isEnabled(), true);
+  assert.equal(await zipButton.isEnabled(), true);
+
+  await folderButton.click();
+  await assertExportSummary(page, "3 items", "Folder · Choose on export");
+  await assertDestinationGeometry(page, viewport);
+
+  await activateButtonWithKeyboard(page.getByRole("button", { name: "Track only", exact: true }));
+  await assertExportSelection(page, { preset: "track", selectedCount: 1 });
+  assert.equal(await fileButton.isEnabled(), true);
+  assert.equal(await fileButton.getAttribute("aria-pressed"), "true");
+  assert.equal(await folderButton.isDisabled(), true);
+  assert.equal(await zipButton.isDisabled(), true);
+  const singleItemReason = await folderButton.getAttribute("aria-describedby");
+  assert.ok(singleItemReason);
+  assert.match(await page.locator(`#${singleItemReason}`).innerText(), /Choose File for one item/);
+  await assertExportSummary(page, "1 item", "File · Choose on export");
+  await assertExportPreview(page, ["Tuneforge E2E Fixture - Source.wav"]);
+
+  await activateButtonWithKeyboard(page.getByRole("button", { name: "All stems", exact: true }));
+  await assertExportSelection(page, { preset: "stems", selectedCount: 2 });
+  assert.equal(await fileButton.isDisabled(), true);
+  assert.equal(await folderButton.isEnabled(), true);
+  assert.equal(await folderButton.getAttribute("aria-pressed"), "true");
+  assert.equal(await zipButton.isEnabled(), true);
+  await assertExportSummary(page, "2 items", "Folder · Choose on export");
+  await assertExportPreview(page, [
+    "Tuneforge E2E Fixture - Source - Drums.wav",
+    "Tuneforge E2E Fixture - Source - Vocals.wav",
+  ]);
+
+  await activateButtonWithKeyboard(page.getByRole("button", { name: "Track + all stems", exact: true }));
+  await assertExportSelection(page, { preset: "track-and-stems", selectedCount: 3 });
+  await folderButton.click();
+  await assertExportSummary(page, "3 items", "Folder · Choose on export");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await activateExportWithKeyboard(page);
+  await assertExportSelection(page, { preset: "track-and-stems", selectedCount: 3 });
+  await assertExportSummary(page, "3 items", "Folder · Choose on export");
+}
+
+async function activateExportWithKeyboard(page) {
+  const studioTab = page.getByRole("tab", { name: "Studio", exact: true });
+  await studioTab.focus();
+  await studioTab.press("ArrowRight");
+  await page.getByRole("tab", { name: "Analysis", exact: true }).press("ArrowRight");
+  const exportTab = page.getByRole("tab", { name: "Export", exact: true });
+  await exportTab.waitFor();
+  assert.equal(await exportTab.getAttribute("aria-selected"), "true");
+}
+
+async function activateButtonWithKeyboard(button) {
+  await button.focus();
+  await button.press("Enter");
+}
+
+async function assertExportSelection(page, { preset, selectedCount }) {
+  const selection = page.locator("fieldset.export-artifact-list").first();
+  await selection.waitFor();
+  const inputs = selection.locator('input[type="checkbox"]');
+  assert.equal(await inputs.count(), 3);
+  assert.deepEqual(await selection.locator("label.export-artifact-row strong").allTextContents(), [
+    "Source Track",
+    "Drums",
+    "Vocals",
+  ]);
+  assert.equal(await inputs.evaluateAll((items) => items.filter((item) => item.checked).length), selectedCount);
+  assert.equal(await page.locator(".export-presets > button[aria-pressed=\"true\"]").innerText(), {
+    track: "Track only",
+    stems: "All stems",
+    "track-and-stems": "Track + all stems",
+  }[preset]);
+}
+
+async function assertExportSummary(page, itemCount, destination) {
+  const summary = page.getByTestId("export-compact-summary");
+  assert.match(await summary.innerText(), new RegExp(`${itemCount}\\s+${destination.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}`));
+}
+
+async function assertExportPreview(page, names) {
+  assert.deepEqual(await page.locator('.export-preview__group[aria-label="Audio"] li').allTextContents(), names);
+}
+
+async function assertDestinationGeometry(page, viewport) {
+  const destinations = page.locator(".export-destination-option .button");
+  await destinations.first().scrollIntoViewIfNeeded();
+  const geometry = await destinations.evaluateAll((buttons) => ({
+    viewport: { width: window.innerWidth, height: window.innerHeight },
+    buttons: buttons.map((button) => {
+      const rect = button.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height };
+    }),
+  }));
+  assert.equal(geometry.viewport.width, viewport.width);
+  assert.equal(geometry.buttons.length, 3);
+  const widths = geometry.buttons.map((button) => button.width);
+  assert.ok(Math.max(...widths) - Math.min(...widths) <= 1, "Destination controls must have equal widths.");
+  for (const button of geometry.buttons) {
+    assert.ok(button.width >= 44, "Destination controls must be at least 44px wide.");
+    assert.ok(button.height >= 44, "Destination controls must be at least 44px tall.");
+    assert.ok(button.left >= 0 && button.right <= geometry.viewport.width, "Destination control leaves the viewport horizontally.");
+    assert.ok(button.top >= 0 && button.bottom <= geometry.viewport.height, "Destination control leaves the viewport vertically.");
+  }
+  for (let index = 0; index < geometry.buttons.length; index += 1) {
+    for (let other = index + 1; other < geometry.buttons.length; other += 1) {
+      const left = geometry.buttons[index];
+      const right = geometry.buttons[other];
+      const overlaps = left.left < right.right && left.right > right.left && left.top < right.bottom && left.bottom > right.top;
+      assert.equal(overlaps, false, "Destination controls must not overlap.");
+    }
+  }
+}
+
+async function writeSmokeFailureArtifacts(root, page, group, stage) {
   await mkdir(root, { recursive: true });
+  const files = failureArtifactNames(group);
+  if (page) {
+    await page.screenshot({ path: join(root, files.image), fullPage: true }).catch(() => {});
+  }
+  await writeSmokeFailureSummary(root, group, stage);
+}
+
+async function writeSmokeFailureSummary(root, group, stage) {
+  await mkdir(root, { recursive: true });
+  const files = failureArtifactNames(group);
   await writeFile(
-    join(root, "playback-failure-summary.json"),
-    JSON.stringify({ group: "playback", result: "failed", stage, error: "Playback smoke failed." }),
+    join(root, files.summary),
+    JSON.stringify({ group, result: "failed", stage, error: "Smoke group failed." }),
   );
+}
+
+async function smokeFailureSummaryExists(root, group) {
+  return stat(join(root, failureArtifactNames(group).summary)).then(() => true).catch(() => false);
+}
+
+export function failureArtifactNames(group) {
+  return { image: `${group}-failure.png`, summary: `${group}-failure-summary.json` };
 }
 
 export function parseOptions(argv) {
@@ -488,7 +694,8 @@ export function parseOptions(argv) {
   const captureProvider = readCaptureProviderOption(parsed);
   const captureDevice = readStringOption(parsed, "capture-device");
   const captureOutput = readStringOption(parsed, "capture-output");
-  const selectedGroups = selectGroups(parsed);
+  const explicitlySelectedGroups = selectGroups(parsed);
+  const runRequested = readFlag(parsed, "run");
   const captureAudio = readFlag(parsed, "capture-audio")
     || requireAudioCapture
     || routeOutput
@@ -501,14 +708,19 @@ export function parseOptions(argv) {
     || process.env.TUNEFORGE_SMOKE_PROJECT_NAME
     || "";
 
-  if (selectedGroups.length && captureAudio && !selectedGroups.includes("audio-capture")) {
+  const groups = explicitlySelectedGroups.length
+    ? explicitlySelectedGroups
+    : runRequested && !manualApp && !captureAudio
+      ? groupsInCatalogOrder(HEADLESS_CAPABLE_GROUPS)
+      : [];
+
+  if (groups.length && captureAudio && !groups.includes("audio-capture")) {
     throw new Error("Selected groups do not accept capture flags; include --group audio-capture or use --all.");
   }
-
   return {
-    run: readFlag(parsed, "run") || selectedGroups.length > 0,
+    run: runRequested || groups.length > 0,
     list: readFlag(parsed, "list"),
-    groups: selectedGroups,
+    groups,
     manualApp,
     keepArtifacts: readFlag(parsed, "keep-artifacts"),
     headed: readFlag(parsed, "headed"),
@@ -530,8 +742,10 @@ export function parseOptions(argv) {
 
 function selectGroups(parsed) {
   const rawGroups = parsed.values.get("group") ?? [];
+  const validGroups = SMOKE_GROUPS.map((group) => group.name);
+  const validGroupsMessage = `Valid groups: ${validGroups.join(", ")}.`;
   if (parsed.flags.has("group") || rawGroups.some((group) => !group.trim())) {
-    throw new Error("--group requires a group name. Valid groups: playback, diagnostics, audio-capture.");
+    throw new Error(`--group requires a group name. ${validGroupsMessage}`);
   }
   const requestedGroups = readStringOptions(parsed, "group");
   const ci = readFlag(parsed, "ci");
@@ -543,16 +757,20 @@ function selectGroups(parsed) {
     throw new Error("--ci cannot be combined with --all.");
   }
   const selected = all
-    ? SMOKE_GROUPS.map((group) => group.name)
+    ? groupsInCatalogOrder(SMOKE_GROUPS.map((group) => group.name))
     : ci
-      ? SMOKE_GROUPS.filter((group) => group.ci).map((group) => group.name)
+      ? groupsInCatalogOrder(CI_APPROVED_GROUPS)
       : requestedGroups;
-  const validGroups = SMOKE_GROUPS.map((group) => group.name);
   const unknown = selected.filter((group) => !validGroups.includes(group));
   if (unknown.length) {
-    throw new Error(`Unknown --group ${unknown.map((group) => `"${group}"`).join(", ")}. Valid groups: ${validGroups.join(", ")}.`);
+    throw new Error(`Unknown --group ${unknown.map((group) => `"${group}"`).join(", ")}. ${validGroupsMessage}`);
   }
   return validGroups.filter((group) => selected.includes(group));
+}
+
+function groupsInCatalogOrder(groupNames) {
+  const selected = new Set(groupNames);
+  return SMOKE_GROUPS.map((group) => group.name).filter((name) => selected.has(name));
 }
 
 function parseCliArgs(argv) {
@@ -1535,7 +1753,7 @@ function roundSeconds(value) {
 async function selectPort(preferredPort, excludedPorts, label) {
   if (preferredPort !== null) {
     if (excludedPorts.has(preferredPort)) {
-      throw new Error(`Port ${preferredPort} conflicts with another smoke process port.`);
+      throw new Error(`Port ${preferredPort} conflicts with another desktop E2E process port.`);
     }
     await assertPortAvailable(preferredPort, label);
     return preferredPort;
@@ -1548,7 +1766,7 @@ async function selectPort(preferredPort, excludedPorts, label) {
     }
   }
 
-  throw new Error("Could not allocate a free local port for isolated playback smoke.");
+  throw new Error("Could not allocate a free local port for isolated desktop E2E.");
 }
 
 async function getFreePort() {
@@ -1589,10 +1807,10 @@ async function assertPortAvailable(port, label) {
   }
 }
 
-async function createPlaybackFixture({ dataDir, workDir, projectName }) {
+async function createDesktopE2EFixture({ dataDir, workDir, projectName }) {
   const args = [
     "scripts/run-backend-module.sh",
-    "app.cli.playback_e2e_fixture",
+    "app.cli.desktop_e2e_fixture",
     "create",
     "--data-dir",
     dataDir,
@@ -1834,7 +2052,7 @@ function delay(ms) {
 }
 
 function logStep(message) {
-  console.log(`[playback-smoke] ${message}`);
+  console.log(`[desktop-e2e] ${message}`);
 }
 
 function formatSeconds(value) {

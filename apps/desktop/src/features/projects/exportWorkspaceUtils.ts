@@ -63,6 +63,30 @@ function availableOptionIds(
   return new Set(capabilities[kind].filter((option) => option.available).map((option) => option.id));
 }
 
+export function androidAudioExportUnavailableReason(artifact: ArtifactSchema) {
+  if (artifact.format.toLowerCase() !== "wav") {
+    return "Android can export only locally stored WAV audio without re-encoding.";
+  }
+  if (!artifact.path.trim() || /^(?:content|https?):/i.test(artifact.path)) {
+    return "This WAV is not available as a locally readable project file.";
+  }
+  return null;
+}
+
+function capCombinedSelection(
+  artifactIds: string[],
+  documentIds: GeneratedExportDocumentId[],
+  maxCount: number | null | undefined,
+) {
+  if (maxCount === null || maxCount === undefined) {
+    return { artifactIds, documentIds };
+  }
+  const normalizedMax = Math.max(0, maxCount);
+  const cappedArtifacts = artifactIds.slice(0, normalizedMax);
+  const cappedDocuments = documentIds.slice(0, Math.max(0, normalizedMax - cappedArtifacts.length));
+  return { artifactIds: cappedArtifacts, documentIds: cappedDocuments };
+}
+
 function compatibleDestinationTypes(itemCount: number): ExportDestinationType[] {
   return itemCount <= 1 ? ["single_file"] : ["folder", "zip"];
 }
@@ -92,7 +116,11 @@ export function defaultExportWorkspaceState({
   if (!audioSet) return null;
   const availableFormats = availableOptionIds(capabilities, "formats");
   const outputFormat = preferredOutputFormat(defaultOutputFormat, availableFormats);
-  const artifactOrder = [audioSet.artifact, ...audioSet.stems].map((artifact) => artifact.id);
+  const artifactOrder = [audioSet.artifact, ...audioSet.stems]
+    .filter((artifact) =>
+      capabilities.platform !== "android" || !androidAudioExportUnavailableReason(artifact)
+    )
+    .map((artifact) => artifact.id);
   const maxArtifactCount = capabilities.max_artifact_count;
   const selectedArtifactIds = maxArtifactCount === null || maxArtifactCount === undefined
     ? artifactOrder
@@ -129,8 +157,13 @@ export function reconcileExportWorkspaceState({
   const availableFormats = availableOptionIds(capabilities, "formats");
   const availableDestinations = availableOptionIds(capabilities, "destinations");
   if (!audioSets.length) {
-    const selectedGeneratedDocumentIds = (storedState?.selectedGeneratedDocumentIds ?? [])
+    let selectedGeneratedDocumentIds = (storedState?.selectedGeneratedDocumentIds ?? [])
       .filter((id) => availableGeneratedDocumentIds.has(id));
+    selectedGeneratedDocumentIds = capCombinedSelection(
+      [],
+      selectedGeneratedDocumentIds,
+      capabilities.max_artifact_count,
+    ).documentIds;
     const outputFormat = storedState?.outputFormat && availableFormats.has(storedState.outputFormat)
       ? storedState.outputFormat
       : preferredOutputFormat(defaultOutputFormat, availableFormats);
@@ -183,14 +216,18 @@ export function reconcileExportWorkspaceState({
     (survivingSets.length === 1 ? survivingSets[0] : null) ??
     audioSets.find((set) => set.artifact.id === selectedPrimaryArtifactId) ??
     audioSets[0];
-  const artifactOrder = [audioSet.artifact, ...audioSet.stems].map((artifact) => artifact.id);
+  const artifactOrder = [audioSet.artifact, ...audioSet.stems]
+    .filter((artifact) =>
+      capabilities.platform !== "android" || !androidAudioExportUnavailableReason(artifact)
+    )
+    .map((artifact) => artifact.id);
   const savedIds = new Set(storedState.selectedArtifactIds);
   let selectedArtifactIds = artifactOrder.filter((id) => savedIds.has(id));
   const maxArtifactCount = capabilities.max_artifact_count;
   if (maxArtifactCount !== null && maxArtifactCount !== undefined) {
     selectedArtifactIds = selectedArtifactIds.slice(0, Math.max(0, maxArtifactCount));
   }
-  const selectedGeneratedDocumentIds = (storedState.selectedGeneratedDocumentIds ?? [])
+  let selectedGeneratedDocumentIds = (storedState.selectedGeneratedDocumentIds ?? [])
     .filter((id) => availableGeneratedDocumentIds.has(id));
   if (!savedSet && survivingSets.length === 0 && !selectedArtifactIds.length && !selectedGeneratedDocumentIds.length) {
     selectedArtifactIds = [audioSet.artifact.id];
@@ -198,6 +235,13 @@ export function reconcileExportWorkspaceState({
   const outputFormat = storedState.outputFormat && availableFormats.has(storedState.outputFormat)
     ? storedState.outputFormat
     : preferredOutputFormat(defaultOutputFormat, availableFormats);
+  const cappedSelection = capCombinedSelection(
+    selectedArtifactIds,
+    selectedGeneratedDocumentIds,
+    maxArtifactCount,
+  );
+  selectedArtifactIds = cappedSelection.artifactIds;
+  selectedGeneratedDocumentIds = cappedSelection.documentIds;
   const totalCount = selectedArtifactIds.length + selectedGeneratedDocumentIds.length;
   const compatibleDestinations = compatibleDestinationTypes(totalCount);
   const destinationType = compatibleDestinations.includes(storedState.destinationType) &&

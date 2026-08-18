@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ArtifactSchema } from "../../lib/api";
 import {
   buildExportAudioSets,
+  androidAudioExportUnavailableReason,
   defaultExportWorkspaceState,
   reconcileExportWorkspaceState,
   exportOutputNames,
@@ -327,5 +328,56 @@ describe("export workspace utilities", () => {
       defaultOutputFormat: "wav",
       availableGeneratedDocumentIds: new Set(["lyrics"] as const),
     }).state?.desktopDestinationTarget).toBe("/tmp/lyrics.txt");
+  });
+
+  it("reconciles Android audio and documents as one combined deliverable", () => {
+    const source = artifact("source", "source_audio", createdAt);
+    const mp3Mix = {
+      ...artifact("mix", "preview_mix", createdAt),
+      format: "mp3",
+      path: "/tmp/mix.mp3",
+    };
+    const androidCapabilities = capabilities({
+      platform: "android",
+      formats: ["wav"],
+      destinations: ["single_file"],
+      maxArtifactCount: 1,
+    });
+
+    expect(androidAudioExportUnavailableReason(source)).toBeNull();
+    expect(androidAudioExportUnavailableReason(mp3Mix)).toMatch(/locally stored WAV/);
+    expect(reconcileExportWorkspaceState({
+      storedState: {
+        audioSetId: "source",
+        selectedArtifactIds: ["source"],
+        selectedGeneratedDocumentIds: ["lyrics", "lyrics_with_chords"],
+        outputFormat: "m4a",
+        filenameBase: "Session",
+        destinationType: "folder",
+        desktopDestinationTarget: "content://caller/forbidden",
+      },
+      audioSets: buildExportAudioSets([source, mp3Mix]),
+      selectedPrimaryArtifactId: "source",
+      filenameBase: "Demo Song",
+      capabilities: androidCapabilities,
+      defaultOutputFormat: "m4a",
+      availableGeneratedDocumentIds: new Set(["lyrics", "lyrics_with_chords"] as const),
+    })).toMatchObject({
+      recovery: true,
+      state: {
+        selectedArtifactIds: ["source"],
+        selectedGeneratedDocumentIds: [],
+        outputFormat: "wav",
+        destinationType: "single_file",
+        desktopDestinationTarget: null,
+      },
+    });
+    expect(defaultExportWorkspaceState({
+      audioSets: buildExportAudioSets([mp3Mix]),
+      selectedPrimaryArtifactId: "mix",
+      filenameBase: "Demo Song",
+      capabilities: androidCapabilities,
+      defaultOutputFormat: "m4a",
+    })?.selectedArtifactIds).toEqual([]);
   });
 });

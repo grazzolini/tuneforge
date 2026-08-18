@@ -89,6 +89,30 @@ Mobile does not bundle FFmpeg. Android uses platform media APIs instead.
 - Desktop currently keeps WAV intermediates and `wav`/`mp3`/`flac` exports through host-installed FFmpeg.
 - Unsupported mobile export formats stay unavailable until a native encoder path exists.
 
+## Android Export
+
+The project Export workspace uses Android's native create-document picker for exactly one
+deliverable at a time. The available choices are a locally readable WAV artifact, saved Lyrics as
+UTF-8 TXT, or saved Lyrics + chords as UTF-8 TXT. FLAC, MP3, M4A, folder, and ZIP export remain
+unavailable because this path does not encode audio or assemble multi-file packages.
+
+The renderer sends only the selected artifact or document, a suggested file-name base, and document
+chord context. It never supplies a destination or URI. The native picker owns the fresh provider
+grant, final name, location, and collision behavior. TuneForge does not retain `content://` state in
+the Export draft and does not delete provider-owned output.
+
+WAV bytes stream directly from app-local project storage without decoding or re-encoding. TXT is
+rendered from a snapshot of the current saved lyrics and chords in memory and is never staged under
+project storage. Lyrics + chords uses the selected Source Track or Practice Mix as its chord context,
+including corrected source key, mix transpose, and the current enharmonic display mode. Retune-only
+mixes do not transpose chord labels.
+
+After writing, TuneForge reopens the provider output when supported and requires a matching nonempty
+size and SHA-256. Verified exports atomically complete the job and add a local `export_mix` receipt.
+If provider readback is unsupported, the job completes as unverified and no receipt is created. Empty
+or mismatched readback fails the job and creates no receipt. Cancellation and app restart also create
+no receipt or automatic retry; a partial provider file may remain after an interrupted write.
+
 The planned durable-storage direction does not preserve the desktop original import as a separate
 canonical file. WAV remains the default, with FLAC as an optional preference for each new durable
 source, stem, saved mix, or other durable audio artifact. The preference is captured when an action
@@ -117,7 +141,7 @@ transfer, recovery, or conflict states rather than where the data originated.
 | Projects | Project response and sync manifest project entry with `project_id`, `source_sha256`, display name, and timestamps. | Persist as mobile project rows with the same identity; import through mobile services, not by copying desktop SQLite rows. | Healthy editable local data has no badge. `Not on this device` when only metadata exists. `Missing` when required source or artifact bytes were expected but absent. |
 | Source artifacts | `source_audio` artifact manifest with relative path, content SHA-256, size, format, and metadata; source SHA-256 remains project identity. | Store bytes in app-local project storage, verify hashes, and decode through WAV/PCM or Android media paths. | Healthy readable local data has no badge. `Not on this device` before bytes arrive. `Missing` if the local file is absent. `Unreadable` if hash or decode fails. |
 | Generated artifacts | Artifact manifest rows for app-owned stems, practice mixes, previews, and cache artifacts, including type, format, metadata, and content SHA-256. | Preserve readable desktop-generated files as first-class artifacts. Regenerate only when a mobile capability exists. | Healthy readable local data has no badge. `Not on this device`, `Missing`, or `Unreadable` follows byte state. Unsupported generation is `Unavailable on this device`. |
-| Export history | Local `export_mix` artifact rows record external deliverables, including path, format, and metadata. Export mixes are excluded from sync manifests and sync metadata. | Keep export history local. Do not transfer exported files or require an external destination to remain present. | Missing external exports never create sync warnings, failures, or transfer counts. |
+| Export history | Verified local `export_mix` artifact rows record external deliverables, including provider reference, format, hash, size, and job linkage. Export mixes are excluded from sync manifests and sync metadata. | Keep export history local. Do not transfer or delete provider-owned exported files, require an external destination to remain present, or create a receipt for unverified output. | Missing external exports never create sync warnings, failures, or transfer counts. |
 | Analysis | Analysis project document with key, tuning, tempo, backend/version metadata, source artifact, created time, and timing data. | Persist imported results. Recompute only when `analysisAvailable` is true and source bytes are readable. | Healthy readable local data has no badge. `Missing` if no analysis document exists. `Unreadable` if the payload or source artifact is invalid. |
 | Timing | Timing arrays embedded in the analysis document. | Keep complete arrays with analysis so playback and practice do not depend on lazy fragments. | Healthy readable local data has no badge. `Missing` if analysis lacks timing. `Unreadable` if the timing schema is invalid. |
 | Chords | Chord document or entity revision with source and current timelines, backend, source artifact, source kind, edit state, metadata, and timestamps. | Render and edit imported timelines. Basic mobile chords may generate only when available; advanced desktop output remains valid data. | Healthy readable local data has no badge. Empty timeline means no chords, not failure. Invalid schema is `Unreadable`. Unsupported generation is `Unavailable on this device`. |

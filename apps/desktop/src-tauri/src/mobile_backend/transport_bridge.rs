@@ -24,18 +24,6 @@ pub fn mobile_sync_transport_update_trusted_peer_endpoint_hints_value(
     )?)
 }
 
-pub fn mobile_sync_transport_refresh_peer_endpoint_hints_value(
-    app: AppHandle,
-    peer_device_id: String,
-    endpoint_hints: Vec<String>,
-) -> Result<Value, String> {
-    mobile_sync_transport_update_trusted_peer_endpoint_hints_value(
-        app,
-        peer_device_id,
-        endpoint_hints,
-    )
-}
-
 pub fn mobile_sync_transport_create_pairing_offer_value(
     app: AppHandle,
     endpoint_hints: Vec<String>,

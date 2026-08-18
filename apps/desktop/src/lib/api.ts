@@ -2476,16 +2476,37 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     getExportCapabilities: async () => ({
       capabilities: {
         platform: "android",
-        formats: ["wav", "flac", "mp3", "m4a"].map((id) => ({
-          id,
-          available: false,
-          reason: "Android audio export is not available in this build.",
-        })),
-        destinations: ["single_file", "folder", "zip"].map((id) => ({
-          id,
-          available: false,
-          reason: "Android audio export is not available in this build.",
-        })),
+        formats: [
+          { id: "wav", available: true, reason: null },
+          {
+            id: "flac",
+            available: false,
+            reason: "Android exports existing WAV bytes and does not encode FLAC yet.",
+          },
+          {
+            id: "mp3",
+            available: false,
+            reason: "Android exports existing WAV bytes and does not encode MP3 yet.",
+          },
+          {
+            id: "m4a",
+            available: false,
+            reason: "Android exports existing WAV bytes and does not encode M4A yet.",
+          },
+        ],
+        destinations: [
+          { id: "single_file", available: true, reason: null },
+          {
+            id: "folder",
+            available: false,
+            reason: "Android exports one file through the system picker; folder export is unavailable.",
+          },
+          {
+            id: "zip",
+            available: false,
+            reason: "Android exports one file through the system picker; ZIP export is unavailable.",
+          },
+        ],
         max_artifact_count: 1,
       },
     }),
@@ -2548,16 +2569,8 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     listArtifacts: (projectId: string) => invokeMobile("mobile_list_artifacts", { projectId }),
     deleteArtifact: (projectId: string, artifactId: string) =>
       invokeMobile("mobile_delete_artifact", { projectId, artifactId }),
-    createExport: (projectId: string, body: ExportRequest) => {
-      if (body.generated_document_ids?.length) {
-        throw new ApiError({
-          code: "EXPORT_DOCUMENTS_UNAVAILABLE",
-          message: "Project document export is available on desktop only.",
-          details: {},
-        });
-      }
-      return invokeMobile("mobile_submit_export", { projectId, payload: body });
-    },
+    createExport: (projectId: string, body: ExportRequest) =>
+      invokeMobile("mobile_submit_export", { projectId, payload: body }),
     listJobs: (params?: ListJobsParams) => invokeMobile("mobile_list_jobs", { params: params ?? null }),
     getJob: (jobId: string) => invokeMobile("mobile_get_job", { jobId }),
     cancelJob: (jobId: string) => invokeMobile("mobile_cancel_job", { jobId }),

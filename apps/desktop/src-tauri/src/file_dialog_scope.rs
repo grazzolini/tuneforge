@@ -153,6 +153,22 @@ fn pick_user_selected_json_save_path(
         .blocking_save_file())
 }
 
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn pick_user_selected_export_save_path(
+    app: &AppHandle,
+    title: &str,
+    default_file_name: String,
+    filter_name: &str,
+    extension: &str,
+) -> Option<FilePath> {
+    app.dialog()
+        .file()
+        .set_title(title)
+        .set_file_name(default_file_name)
+        .add_filter(filter_name, &[extension])
+        .blocking_save_file()
+}
+
 fn selected_file_path_to_local_path(selection: FilePath) -> Result<PathBuf, JsonFilePathError> {
     let path = match selection {
         FilePath::Path(path) => path,
@@ -179,14 +195,32 @@ fn validate_user_selected_json_write_selection_for_platform(
     selection: &FilePath,
     allow_android_content: bool,
 ) -> Result<(), JsonFilePathError> {
+    validate_user_selected_write_selection_for_platform(selection, allow_android_content)?;
+    if let Ok(path) = selected_file_path_to_local_path(selection.clone()) {
+        validate_json_extension(&path)?;
+    }
+    Ok(())
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn validate_user_selected_write_selection(
+    selection: &FilePath,
+) -> Result<(), JsonFilePathError> {
+    validate_user_selected_write_selection_for_platform(selection, cfg!(target_os = "android"))
+}
+
+fn validate_user_selected_write_selection_for_platform(
+    selection: &FilePath,
+    allow_android_content: bool,
+) -> Result<(), JsonFilePathError> {
     match selection {
         FilePath::Url(url) if url.scheme() == "content" && allow_android_content => Ok(()),
         FilePath::Url(url) if url.scheme() != "file" => {
             Err(JsonFilePathError::NonLocalFileSelection)
         }
-        _ => validate_user_selected_json_write_path(&selected_file_path_to_local_path(
-            selection.clone(),
-        )?),
+        _ => {
+            validate_user_selected_write_path(&selected_file_path_to_local_path(selection.clone())?)
+        }
     }
 }
 
@@ -209,8 +243,13 @@ pub(crate) fn validate_user_selected_json_read_path(path: &Path) -> Result<(), J
     Ok(())
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn validate_user_selected_json_write_path(path: &Path) -> Result<(), JsonFilePathError> {
     validate_json_extension(path)?;
+    validate_user_selected_write_path(path)
+}
+
+fn validate_user_selected_write_path(path: &Path) -> Result<(), JsonFilePathError> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())

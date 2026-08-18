@@ -63,7 +63,7 @@ pub(super) const DEFAULT_JOBS_LIMIT: usize = 50;
 pub(super) const MAX_JOBS_LIMIT: usize = 200;
 pub(super) const PROJECT_COLUMNS: &str = "id, display_name, source_key_override, source_sha256, source_path, imported_path, duration_seconds, sample_rate, channels, sync_status, sync_status_reason, sync_required_artifact_ids_json, sync_provider_device_ids_json, sync_conflict_count, created_at, updated_at";
 pub(super) const ARTIFACT_COLUMNS: &str = "id, project_id, type, format, path, content_sha256, size_bytes, generated_by, can_delete, can_regenerate, metadata_json, cache_key, created_at";
-pub(super) const JOB_COLUMNS: &str = "id, project_id, type, status, progress, source_artifact_id, result_artifact_ids_json, error_message, runtime_device, started_at, completed_at, duration_seconds, created_at, updated_at";
+pub(super) const JOB_COLUMNS: &str = "id, project_id, type, status, progress, source_artifact_id, result_artifact_ids_json, error_message, runtime_device, started_at, completed_at, duration_seconds, created_at, updated_at, payload_json";
 pub(super) const SYNC_STAGED_ARTIFACT_COLUMNS: &str = "content_sha256, size_bytes, relative_path, provider_device_id, metadata_json, verified_at, created_at, updated_at";
 pub(super) const SYNC_ENTITY_REVISION_COLUMNS: &str = "id, project_id, entity_type, entity_id, revision_type, base_revision_id, author_device_id, source_artifact_id, content_sha256, state, metadata_json, payload_json, created_at, updated_at";
 pub(super) const SYNC_DELETE_TOMBSTONE_COLUMNS: &str = "id, sync_group_id, project_id, target_type, target_id, author_device_id, deleted_at, prior_metadata_json, created_at, updated_at";
@@ -364,8 +364,27 @@ pub(super) fn db_at_root(root: &Path) -> Result<Connection, String> {
     let connection =
         Connection::open(root.join("mobile.sqlite3")).map_err(|error| error.to_string())?;
     migrate_mobile_db(&connection)?;
+    mark_interrupted_exports_on_first_open(root, &connection)?;
     ensure_local_identity(&connection)?;
     Ok(connection)
+}
+
+fn mark_interrupted_exports_on_first_open(
+    root: &Path,
+    connection: &Connection,
+) -> Result<(), String> {
+    use std::sync::{Mutex, OnceLock};
+
+    static OPENED_DATABASES: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    let database_path = root.join("mobile.sqlite3");
+    let mut opened = OPENED_DATABASES
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .map_err(|_| "Mobile database open-state lock was poisoned.".to_string())?;
+    if opened.insert(database_path) {
+        super::export::fail_interrupted_exports(connection)?;
+    }
+    Ok(())
 }
 
 pub(super) fn migrate_mobile_db(connection: &Connection) -> Result<(), String> {
@@ -579,12 +598,24 @@ pub(super) fn row_job(row: &Row<'_>) -> rusqlite::Result<JobSchema> {
     let result_artifact_ids_json: String = row
         .get::<_, Option<String>>(6)?
         .unwrap_or_else(|| DEFAULT_SYNC_LIST_JSON.to_string());
+    let payload_raw: String = row
+        .get::<_, Option<String>>(14)?
+        .unwrap_or_else(|| "{}".to_string());
+    let payload = serde_json::from_str::<Value>(&payload_raw).unwrap_or_else(|_| json!({}));
     Ok(JobSchema {
         id: row.get(0)?,
         project_id: row.get(1)?,
         r#type: row.get(2)?,
         status: row.get(3)?,
         progress: row.get(4)?,
+        stage: payload
+            .get("stage")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        stage_label: payload
+            .get("stage_label")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
         source_artifact_id: row.get(5)?,
         result_artifact_ids: string_list_from_json(&result_artifact_ids_json),
         chord_backend: None,
@@ -592,9 +623,14 @@ pub(super) fn row_job(row: &Row<'_>) -> rusqlite::Result<JobSchema> {
         chord_source: None,
         error_message: row.get(7)?,
         runtime_device: row.get(8)?,
+        runtime_detail: payload
+            .get("runtime_detail")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
         started_at: row.get(9)?,
         completed_at: row.get(10)?,
         duration_seconds: row.get(11)?,
+        export_result: payload.get("export_result").cloned(),
         created_at: row.get(12)?,
         updated_at: row.get(13)?,
     })
@@ -727,6 +763,8 @@ pub(super) fn create_failed_job(
         r#type: job_type.to_string(),
         status: "failed".to_string(),
         progress: 0,
+        stage: None,
+        stage_label: None,
         source_artifact_id: None,
         result_artifact_ids: Vec::new(),
         chord_backend: None,
@@ -734,9 +772,11 @@ pub(super) fn create_failed_job(
         chord_source: None,
         error_message: Some(message.to_string()),
         runtime_device: None,
+        runtime_detail: None,
         started_at: Some(timestamp.clone()),
         completed_at: Some(timestamp.clone()),
         duration_seconds: Some(0.0),
+        export_result: None,
         created_at: timestamp.clone(),
         updated_at: timestamp,
     };
@@ -778,6 +818,8 @@ pub(super) fn create_completed_job(
         r#type: job_type.to_string(),
         status: "completed".to_string(),
         progress: 100,
+        stage: None,
+        stage_label: None,
         source_artifact_id,
         result_artifact_ids: Vec::new(),
         chord_backend: None,
@@ -785,9 +827,11 @@ pub(super) fn create_completed_job(
         chord_source: None,
         error_message: None,
         runtime_device: Some("cpu".to_string()),
+        runtime_detail: None,
         started_at: Some(timestamp.clone()),
         completed_at: Some(timestamp.clone()),
         duration_seconds: Some(0.0),
+        export_result: None,
         created_at: timestamp.clone(),
         updated_at: timestamp,
     };
@@ -829,6 +873,8 @@ pub(super) fn create_running_job(
         r#type: job_type.to_string(),
         status: "running".to_string(),
         progress: 5,
+        stage: None,
+        stage_label: None,
         source_artifact_id,
         result_artifact_ids: Vec::new(),
         chord_backend: None,
@@ -836,9 +882,11 @@ pub(super) fn create_running_job(
         chord_source: None,
         error_message: None,
         runtime_device: Some("cpu".to_string()),
+        runtime_detail: None,
         started_at: Some(timestamp.clone()),
         completed_at: None,
         duration_seconds: None,
+        export_result: None,
         created_at: timestamp.clone(),
         updated_at: timestamp,
     };
@@ -2008,29 +2056,11 @@ pub fn mobile_cancel_job(app: AppHandle, job_id: String) -> Result<JobResponse, 
     let connection = db(&app)?;
     connection
         .execute(
-            "UPDATE jobs SET status = ?1, updated_at = ?2 WHERE id = ?3 AND status IN ('pending', 'running')",
+            "UPDATE jobs SET status = ?1, cancel_requested = 1, updated_at = ?2 WHERE id = ?3 AND status IN ('pending', 'running')",
             params![MOBILE_CANCELLED_JOB_STATUS, now_iso(), job_id],
         )
         .map_err(|error| error.to_string())?;
     mobile_get_job(app, job_id)
-}
-
-pub fn mobile_submit_export(
-    app: AppHandle,
-    project_id: String,
-    payload: Value,
-) -> Result<JobResponse, String> {
-    let _ = payload;
-    let connection = db(&app)?;
-    let _ = require_sync_editable_project(&connection, &project_id)?;
-    Ok(JobResponse {
-        job: create_failed_job(
-            &connection,
-            &project_id,
-            "export",
-            "Android Media3 export is not wired yet.",
-        )?,
-    })
 }
 
 pub fn mobile_sync_transport_artifact_file(

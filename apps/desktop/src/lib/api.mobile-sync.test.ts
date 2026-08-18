@@ -215,6 +215,41 @@ describe("mobile sync API adapter", () => {
     expect(mockInvoke).toHaveBeenNthCalledWith(2, "mobile_import_project", { payload: defaultRequest });
   });
 
+  it("reports truthful Android export capabilities and forwards destination-free selections", async () => {
+    const api = await loadMobileApi();
+    const capabilities = await api.getExportCapabilities();
+    const request = {
+      artifact_ids: [],
+      generated_document_ids: ["lyrics_with_chords"] as ["lyrics_with_chords"],
+      output_format: "wav" as const,
+      filename_base: "Song",
+      document_audio_set_artifact_id: "art_mix",
+      document_chord_display_mode: "flats" as const,
+    };
+
+    expect(capabilities.capabilities).toMatchObject({
+      platform: "android",
+      max_artifact_count: 1,
+      formats: [
+        { id: "wav", available: true },
+        { id: "flac", available: false },
+        { id: "mp3", available: false },
+        { id: "m4a", available: false },
+      ],
+      destinations: [
+        { id: "single_file", available: true },
+        { id: "folder", available: false },
+        { id: "zip", available: false },
+      ],
+    });
+    await api.createExport("proj_1", request);
+    expect(mockInvoke).toHaveBeenCalledWith("mobile_submit_export", {
+      projectId: "proj_1",
+      payload: request,
+    });
+    expect(request).not.toHaveProperty("destination");
+  });
+
   it("rejects advanced mobile import beat analysis before native invoke", async () => {
     const api = await loadMobileApi();
 

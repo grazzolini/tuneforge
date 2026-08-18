@@ -11,6 +11,8 @@ download, installation, verification, signature, and publication instructions.
   its track and stems as a file, folder, or ZIP.
 - Saved per-project Export choices that safely reconcile with available audio and device capabilities.
 - Desktop TXT export for saved lyrics and lyrics with chords, alone or packaged with selected audio.
+- Android system-picker export for one existing WAV, Lyrics TXT, or mix-aware Lyrics + chords TXT,
+  with verified local receipt history when provider readback is available.
 
 ### Changed
 

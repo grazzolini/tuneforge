@@ -10,6 +10,7 @@ import {
 import { useProjectViewModelContext } from "../components/useProjectViewModelContext";
 import {
   buildExportAudioSets,
+  androidAudioExportUnavailableReason,
   exportContextName,
   exportOutputNames,
   generatedDocumentOutputNames,
@@ -23,6 +24,7 @@ import {
 } from "../exportWorkspaceUtils";
 import type { ExportWorkspaceState } from "../projectPlaybackState";
 import { artifactTransposeSemitones } from "../projectViewUtils";
+import { useActiveJobPolling } from "./useActiveJobPolling";
 
 type DestinationType = ExportDestinationType;
 
@@ -98,7 +100,6 @@ export function useExportWorkspace() {
   const availableGeneratedDocumentIds = useMemo(() => {
     const available = new Set<GeneratedExportDocumentId>();
     if (
-      !isMobileRuntime &&
       lyricsQuerySucceeded &&
       displayedLyrics.some((segment) => segment.text.trim())
     ) {
@@ -110,7 +111,6 @@ export function useExportWorkspace() {
     chordsQuerySucceeded,
     displayedChords.length,
     displayedLyrics,
-    isMobileRuntime,
     lyricsQuerySucceeded,
   ]);
   const storedDocumentIds = useMemo(
@@ -118,8 +118,7 @@ export function useExportWorkspace() {
     [exportWorkspace?.selectedGeneratedDocumentIds],
   );
   const relevantDocumentAvailabilitySettled = Boolean(
-    isMobileRuntime ||
-      !storedDocumentIds.length ||
+    !storedDocumentIds.length ||
       (lyricsQuerySettled &&
         (!storedDocumentIds.includes("lyrics_with_chords") || chordsQuerySettled)),
   );
@@ -257,6 +256,9 @@ export function useExportWorkspace() {
     totalSelectedCount &&
       filenameBase.trim() &&
       (!selectedIds.size || selectedFormatCapability?.available) &&
+      (!isMobileRuntime || selectedArtifacts.every((artifact) =>
+        !androidAudioExportUnavailableReason(artifact)
+      )) &&
       selectedDestinationCapability?.available &&
       selectionAllowed &&
       (!selectedDocumentIds.length || relevantDocumentAvailabilitySettled) &&
@@ -271,11 +273,13 @@ export function useExportWorkspace() {
   }
 
   function updateSelection(next: Set<string>) {
+    const nextDocumentIds = isMobileRuntime && next.size ? [] : selectedDocumentIds;
     const previousCount = totalSelectedCount;
-    const nextCount = next.size + selectedDocumentIds.length;
+    const nextCount = next.size + nextDocumentIds.length;
     updateDraft({
       ...(draft ?? fallbackState!),
       selectedArtifactIds: [...next],
+      selectedGeneratedDocumentIds: nextDocumentIds,
       destinationType: previousCount === 0 || (previousCount === 1) !== (nextCount === 1)
         ? nextCount <= 1 ? "single_file" : "folder"
         : destinationType,
@@ -287,6 +291,16 @@ export function useExportWorkspace() {
 
   function toggleGeneratedDocument(documentId: GeneratedExportDocumentId) {
     if (!draft || !availableGeneratedDocumentIds.has(documentId)) return;
+    if (isMobileRuntime) {
+      updateDraft({
+        ...draft,
+        selectedArtifactIds: [],
+        selectedGeneratedDocumentIds: [documentId],
+        destinationType: "single_file",
+        desktopDestinationTarget: null,
+      });
+      return;
+    }
     const next = new Set(selectedDocumentIds);
     if (next.has(documentId)) next.delete(documentId);
     else next.add(documentId);
@@ -337,8 +351,12 @@ export function useExportWorkspace() {
     updateDraft({
       ...draft,
       audioSetId: nextAudioSetId,
-      selectedArtifactIds: nextDefault.selectedArtifactIds,
-      destinationType: nextDefault.selectedArtifactIds.length + selectedDocumentIds.length === 1
+      selectedArtifactIds: isMobileRuntime && selectedDocumentIds.length
+        ? []
+        : nextDefault.selectedArtifactIds,
+      destinationType: (isMobileRuntime && selectedDocumentIds.length
+        ? selectedDocumentIds.length
+        : nextDefault.selectedArtifactIds.length + selectedDocumentIds.length) === 1
         ? "single_file"
         : "folder",
       desktopDestinationTarget: null,
@@ -398,10 +416,35 @@ export function useExportWorkspace() {
   const exportMutation = useMutation({
     mutationFn: async () => {
       if (!projectQuery.data) return null;
-      const target = destinationTarget ?? (await chooseDestination());
-      if (!target) return null;
       const chordDocumentSelected = selectedDocumentIds.includes("lyrics_with_chords");
       if (chordDocumentSelected && !audioSet) return null;
+      if (isMobileRuntime) {
+        if (totalSelectedCount !== 1 || (!audioSet && selectedDocumentIds.length)) return null;
+        const request: ExportRequest = chordDocumentSelected
+          ? {
+              artifact_ids: [],
+              generated_document_ids: ["lyrics_with_chords"],
+              output_format: "wav",
+              filename_base: filenameBase.trim(),
+              document_audio_set_artifact_id: audioSet!.artifact.id,
+              document_chord_display_mode: enharmonicDisplayMode,
+            }
+          : {
+              artifact_ids: selectedArtifacts.map((artifact) => artifact.id),
+              ...(selectedDocumentIds.includes("lyrics")
+                ? { generated_document_ids: ["lyrics"] as const }
+                : {}),
+              output_format: "wav",
+              filename_base: filenameBase.trim(),
+              ...(selectedDocumentIds.length && audioSet ? {
+                document_audio_set_artifact_id: audioSet.artifact.id,
+                document_chord_display_mode: enharmonicDisplayMode,
+              } : {}),
+            };
+        return api.createExport(projectQuery.data.id, request);
+      }
+      const target = destinationTarget ?? (await chooseDestination());
+      if (!target) return null;
       const commonRequest = {
         artifact_ids: selectedArtifacts.map((artifact) => artifact.id),
         output_format: outputFormat,
@@ -451,6 +494,11 @@ export function useExportWorkspace() {
         queryClient.invalidateQueries({ queryKey: ["artifacts", projectQuery.data?.id] }),
       ]);
     },
+  });
+
+  useActiveJobPolling(projectId, undefined, {
+    forceActive: isMobileRuntime && exportMutation.isPending,
+    intervalMs: 250,
   });
 
   const cancelMutation = useMutation({
@@ -541,6 +589,16 @@ export function useExportWorkspace() {
     },
     documentChordContext,
     documentOutputNames,
+    androidAudioUnavailableReason: androidAudioExportUnavailableReason,
+    selectedDeliverableLabel: selectedArtifacts[0]
+      ? (audioSet && selectedArtifacts[0].id === audioSet.artifact.id
+          ? audioSet.label
+          : selectedArtifacts[0].type.replace(/_stem$/, "").replaceAll("_", " "))
+      : selectedDocumentIds[0] === "lyrics_with_chords"
+        ? "Lyrics + chords"
+        : selectedDocumentIds[0] === "lyrics"
+          ? "Lyrics"
+          : null,
     workspaceReady,
   };
 }

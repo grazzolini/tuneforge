@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { useEffect, useRef } from "react";
 import {
   Archive,
   AudioLines,
@@ -56,6 +57,7 @@ export function ExportWorkspace() {
     audioSets,
     activeExportJob,
     audioOutputNames,
+    androidAudioUnavailableReason,
     capabilitiesError,
     canExport,
     cancelMutation,
@@ -83,6 +85,7 @@ export function ExportWorkspace() {
     selectedDestinationCapability,
     selectedFormatCapability,
     selectedIds,
+    selectedDeliverableLabel,
     selectedDocumentIdSet,
     selectionAllowed,
     totalSelectedCount,
@@ -95,6 +98,8 @@ export function ExportWorkspace() {
     toggleGeneratedDocument,
     workspaceReady,
   } = workspace;
+  const submitButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreSubmitFocusRef = useRef(false);
   const { projectQuery } = useProjectViewModelContext();
   const projectDuration = projectQuery.data?.duration_seconds;
   const selectionInputType = isMobileRuntime ? "radio" : "checkbox";
@@ -102,13 +107,21 @@ export function ExportWorkspace() {
   const destinationLabel = DESTINATIONS.find((destination) => destination.id === destinationType)?.label
     ?? "Destination";
 
+  useEffect(() => {
+    if (activeExportJob || exportMutation.isPending || !restoreSubmitFocusRef.current) return;
+    restoreSubmitFocusRef.current = false;
+    submitButtonRef.current?.focus();
+  }, [activeExportJob, exportMutation.isPending]);
+
   return (
     <section className="export-workspace" aria-labelledby="project-export-tab" id="project-export-panel" role="tabpanel">
       <header className="export-workspace__header">
         <div>
           <span className="eyebrow">Project delivery</span>
           <h2 id="export-workspace-title">Export files</h2>
-          <p>Choose project audio and documents, then package local files.</p>
+          <p>{isMobileRuntime
+            ? "Choose one local WAV or project text file, then save it with Android’s system picker."
+            : "Choose project audio and documents, then package local files."}</p>
         </div>
         <div className="export-workspace__header-actions">
           <span className="export-workspace__selection-count" aria-live="polite">
@@ -133,10 +146,8 @@ export function ExportWorkspace() {
 
       {isMobileRuntime ? (
         <div className="notice notice--info" id="android-export-format-notice" role="status">
-          Android currently exports one M4A file at a time.
-          {!capabilities?.formats.some((format) => format.available)
-            ? " Audio export is unavailable in this build."
-            : null}
+          Android exports one WAV, Lyrics TXT, or Lyrics + chords TXT at a time. The system
+          provider chooses the location and handles name collisions.
         </div>
       ) : null}
 
@@ -179,7 +190,7 @@ export function ExportWorkspace() {
             <span>{audioSet.artifact.format.toUpperCase()} · {formatDuration(projectDuration)}</span>
           </div> : null}
 
-          {audioSet ? <fieldset className="export-presets" disabled={controlsDisabled}>
+          {audioSet && !isMobileRuntime ? <fieldset className="export-presets" disabled={controlsDisabled}>
             <legend>Quick selections</legend>
             <button
               aria-describedby={isMobileRuntime ? "android-multi-export-reason" : undefined}
@@ -213,7 +224,83 @@ export function ExportWorkspace() {
             ) : null}
           </fieldset> : null}
 
-          {audioSet ? <fieldset className="export-artifact-list" disabled={controlsDisabled}>
+          {isMobileRuntime ? (
+            <fieldset className="export-artifact-list" disabled={controlsDisabled}>
+              <legend>File to export</legend>
+              <p>Choose exactly one file. Audio set selection above remains the chord context for document exports.</p>
+              {audioSet ? [audioSet.artifact, ...audioSet.stems].map((artifact) => {
+                const unavailableReason = androidAudioUnavailableReason(artifact);
+                const reasonId = `android-export-audio-${artifact.id}-reason`;
+                return (
+                  <label className="export-artifact-row" key={artifact.id}>
+                    <input
+                      aria-label={isStemArtifact(artifact) ? artifactLabel(artifact) : audioSet.label}
+                      aria-describedby={unavailableReason ? reasonId : undefined}
+                      checked={selectedIds.has(artifact.id)}
+                      disabled={Boolean(unavailableReason)}
+                      name="android-file-to-export"
+                      onChange={() => toggleArtifact(artifact.id)}
+                      type="radio"
+                    />
+                    <span className="export-artifact-row__icon"><ArtifactIcon artifact={artifact} /></span>
+                    <span className="export-artifact-row__copy">
+                      <strong>{isStemArtifact(artifact) ? artifactLabel(artifact) : audioSet.label}</strong>
+                      <small>{artifact.format.toUpperCase()} · {formatDuration(projectDuration)}</small>
+                      {unavailableReason ? <small className="field-reason" id={reasonId}>{unavailableReason}</small> : null}
+                    </span>
+                    <span className="export-artifact-row__status">
+                      {selectedIds.has(artifact.id) ? <Check aria-hidden="true" /> : null}
+                      {unavailableReason ? "Unavailable" : "Available"}
+                    </span>
+                  </label>
+                );
+              }) : null}
+              {([
+                {
+                  id: "lyrics" as const,
+                  label: "Lyrics",
+                  available: documentAvailability.lyrics,
+                  reason: "Add or generate lyrics in Studio to export this TXT file.",
+                },
+                {
+                  id: "lyrics_with_chords" as const,
+                  label: "Lyrics + chords",
+                  available: documentAvailability.lyrics_with_chords,
+                  reason: documentAvailability.lyrics
+                    ? "Add or generate chords in Studio to export this TXT file."
+                    : "Add or generate lyrics and chords in Studio to export this TXT file.",
+                },
+              ]).map((document) => {
+                const reasonId = `android-export-document-${document.id}-reason`;
+                const contextId = `android-export-document-${document.id}-context`;
+                return (
+                  <label className="export-artifact-row" key={document.id}>
+                    <input
+                      aria-label={document.label}
+                      aria-describedby={[document.id === "lyrics_with_chords" ? contextId : null, !document.available ? reasonId : null].filter(Boolean).join(" ") || undefined}
+                      checked={selectedDocumentIdSet.has(document.id)}
+                      disabled={!document.available || !audioSet}
+                      name="android-file-to-export"
+                      onChange={() => toggleGeneratedDocument(document.id)}
+                      type="radio"
+                    />
+                    <span className="export-artifact-row__icon"><FileText aria-hidden="true" /></span>
+                    <span className="export-artifact-row__copy">
+                      <strong>{document.label}</strong>
+                      <small id={document.id === "lyrics_with_chords" ? contextId : undefined}>
+                        TXT · UTF-8{document.id === "lyrics_with_chords" ? ` · ${documentChordContext}` : ""}
+                      </small>
+                      {!document.available ? <small className="field-reason" id={reasonId}>{document.reason}</small> : null}
+                    </span>
+                    <span className="export-artifact-row__status">
+                      {selectedDocumentIdSet.has(document.id) ? <Check aria-hidden="true" /> : null}
+                      {document.available && audioSet ? "Available" : "Unavailable"}
+                    </span>
+                  </label>
+                );
+              })}
+            </fieldset>
+          ) : audioSet ? <fieldset className="export-artifact-list" disabled={controlsDisabled}>
             <legend>Audio selection</legend>
             {[audioSet.artifact, ...audioSet.stems].map((artifact) => (
               <label className="export-artifact-row" key={artifact.id}>
@@ -296,7 +383,11 @@ export function ExportWorkspace() {
           ) : null}
         </div>
 
-        <aside className="panel export-package" aria-label="Export package">
+        <aside
+          aria-busy={Boolean(activeExportJob) || exportMutation.isPending}
+          aria-label="Export package"
+          className="panel export-package"
+        >
           {activeExportJob ? (
             <div className="export-package__summary export-package__summary--progress export-progress" aria-live="polite">
               <span className="eyebrow">Export in progress</span>
@@ -318,12 +409,26 @@ export function ExportWorkspace() {
             <>
               <div className="export-section-heading"><span>Export package</span><PackageSummaryIcon /></div>
               {latestExportJob ? (
-                <div className="export-latest" aria-live="polite">
+                <div
+                  className="export-latest"
+                  role={latestExportJob.status === "failed" ? "alert" : "status"}
+                >
                   <span>Latest export</span>
                   <strong>{latestExportJob.export_result?.outcome ?? latestExportJob.status}</strong>
+                  {isMobileRuntime ? (
+                    <small>{latestExportJob.runtime_detail ?? (
+                      latestExportJob.status === "cancelled"
+                        ? "The picker was closed. No verified receipt was saved."
+                        : latestExportJob.status === "failed"
+                          ? "Export failed. A provider may retain partial output; TuneForge saved no receipt."
+                          : latestExportJob.status === "completed"
+                            ? "The provider export finished."
+                            : "Export state will update here."
+                    )}</small>
+                  ) : null}
                 </div>
               ) : null}
-              <label className="export-field">
+              {!isMobileRuntime ? <label className="export-field">
                 <span>File format</span>
                 <select
                   aria-describedby={isMobileRuntime ? "android-export-format-notice" : undefined}
@@ -336,13 +441,23 @@ export function ExportWorkspace() {
                     return <option disabled={capability?.available === false} key={format} value={format}>{format.toUpperCase()}{capability?.available === false ? " — unavailable" : ""}</option>;
                   })}
                 </select>
-              </label>
-              {!selectedIds.size && totalSelectedCount ? (
+              </label> : (
+                <div className="export-field" aria-describedby="android-export-format-reasons">
+                  <span>Format</span>
+                  <strong>{selectedIds.size ? "WAV" : "TXT · UTF-8"}</strong>
+                  <p className="field-reason" id="android-export-format-reasons">
+                    {selectedIds.size
+                      ? "FLAC, MP3, and M4A are unavailable because Android copies existing WAV bytes without an encoder."
+                      : "Project documents use UTF-8 plain text with Unix line endings."}
+                  </p>
+                </div>
+              )}
+              {!isMobileRuntime && !selectedIds.size && totalSelectedCount ? (
                 <p className="field-reason">Audio format does not apply to document-only exports. Documents use TXT.</p>
               ) : null}
               {selectedFormatCapability?.available === false ? <p className="field-reason">{selectedFormatCapability.reason}</p> : null}
               <label className="export-field">
-                <span>File name base</span>
+                <span>{isMobileRuntime ? "Suggested file name" : "File name base"}</span>
                 <input onChange={(event) => setFilenameBase(event.target.value)} value={filenameBase} />
               </label>
               <fieldset className="export-destinations">
@@ -382,10 +497,16 @@ export function ExportWorkspace() {
                 })}
               </fieldset>
               {selectedDestinationCapability?.available === false ? <p className="field-reason">{selectedDestinationCapability.reason}</p> : null}
-              <button className="button button--ghost export-destination-picker" disabled={!totalSelectedCount || !workspaceReady || isMobileRuntime} onClick={() => void chooseDestination()} type="button">
-                {destinationTarget ? "Change destination" : "Choose destination"}
-              </button>
-              {destinationTarget ? <p className="export-destination-target" title={destinationTarget}>{destinationTarget}</p> : null}
+              {!isMobileRuntime ? (
+                <>
+                  <button className="button button--ghost export-destination-picker" disabled={!totalSelectedCount || !workspaceReady} onClick={() => void chooseDestination()} type="button">
+                    {destinationTarget ? "Change destination" : "Choose destination"}
+                  </button>
+                  {destinationTarget ? <p className="export-destination-target" title={destinationTarget}>{destinationTarget}</p> : null}
+                </>
+              ) : (
+                <p className="field-reason">Suggested name: {outputNames[0] ?? "Choose a file"}. Your Android provider confirms the final name and location.</p>
+              )}
 
               <div className="export-preview">
                 <div className="export-section-heading"><span>File preview</span><span>{outputNames.length}</span></div>
@@ -413,10 +534,23 @@ export function ExportWorkspace() {
               <div className="export-package__summary" data-testid="export-compact-summary">
                 <div className="export-package__summary-copy" aria-live="polite">
                   <span>{totalSelectedCount} {totalSelectedCount === 1 ? "item" : "items"}</span>
-                  <strong>{destinationLabel} · {destinationTarget ? "Selected" : "Choose on export"}</strong>
+                  <strong>{destinationLabel} · {isMobileRuntime ? "Choose in system picker" : destinationTarget ? "Selected" : "Choose on export"}</strong>
                 </div>
-                <button className="button export-package__submit" disabled={!canExport || exportMutation.isPending} onClick={() => exportMutation.mutate()} type="button">
-                  <Download aria-hidden="true" /> {exportMutation.isPending ? "Opening destination…" : `Export ${totalSelectedCount || ""} ${totalSelectedCount === 1 ? "file" : "files"}`}
+                <button
+                  className="button export-package__submit"
+                  disabled={!canExport || exportMutation.isPending}
+                  onClick={() => {
+                    restoreSubmitFocusRef.current = true;
+                    exportMutation.mutate();
+                  }}
+                  ref={submitButtonRef}
+                  type="button"
+                >
+                  <Download aria-hidden="true" /> {exportMutation.isPending
+                    ? isMobileRuntime ? "Opening picker…" : "Opening destination…"
+                    : isMobileRuntime
+                      ? `Export ${selectedDeliverableLabel ?? "file"}`
+                      : `Export ${totalSelectedCount || ""} ${totalSelectedCount === 1 ? "file" : "files"}`}
                 </button>
                 {exportMutation.error ? <p className="error" role="alert">{exportMutation.error.message}</p> : null}
               </div>

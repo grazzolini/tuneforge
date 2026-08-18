@@ -1,9 +1,10 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { ExportCapabilitiesResponse, ExportRequest, HealthResponse } from "./lib/api";
 import {
   mockCreateExport,
+  mockCancelJob,
   mockDeleteProject,
   mockGetExportCapabilities,
   mockGetHealth,
@@ -916,48 +917,122 @@ describe("project export workspace", () => {
     expect(screen.getByText("1 selected")).toBeVisible();
   });
 
-  it("shows truthful Android limits and disabled export controls", async () => {
+  it("uses one Android file choice, keeps chord context separate, and submits without a destination", async () => {
     const user = userEvent.setup();
     installExportArtifacts();
-    mockGetHealth.mockResolvedValueOnce(health("m4a"));
+    mockGetHealth.mockResolvedValueOnce(health("wav"));
     mockGetMobileCapabilities.mockResolvedValue({ platform: "android" });
     mockGetExportCapabilities.mockResolvedValue({
       capabilities: {
         platform: "android",
-        formats: ["wav", "flac", "mp3", "m4a"].map((id) => ({
-          id,
-          available: false,
-          reason: "Android audio export is not available in this build.",
-        })),
-        destinations: ["single_file", "folder", "zip"].map((id) => ({
-          id,
-          available: false,
-          reason: "Android audio export is not available in this build.",
-        })),
+        formats: [
+          { id: "wav", available: true, reason: null },
+          { id: "flac", available: false, reason: "No Android FLAC encoder." },
+          { id: "mp3", available: false, reason: "No Android MP3 encoder." },
+          { id: "m4a", available: false, reason: "No Android M4A encoder." },
+        ],
+        destinations: [
+          { id: "single_file", available: true, reason: null },
+          { id: "folder", available: false, reason: "Android exports one file." },
+          { id: "zip", available: false, reason: "Android exports one file." },
+        ],
         max_artifact_count: 1,
       },
     });
+    setJobs([{
+      id: "job_android_cancelled",
+      project_id: "proj_123",
+      type: "export",
+      status: "cancelled",
+      progress: 0,
+      runtime_detail: "The picker was closed. No verified receipt was saved.",
+    }]);
+    const openingJob = {
+      id: "job_android_running",
+      project_id: "proj_123",
+      type: "export",
+      status: "running",
+      progress: 5,
+      stage: "preparing",
+      stage_label: "Opening Android picker",
+      runtime_detail: "Choose a provider, file name, and location.",
+      error_message: null,
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    let resolveExport: (() => void) | null = null;
+    mockCreateExport.mockImplementationOnce((_projectId, body) => new Promise((resolve) => {
+      resolveExport = () => resolve({ job: openingJob, request: body });
+    }));
     renderApp(["/projects/proj_123"]);
     await screen.findByRole("heading", { name: "Demo Song" });
     await openExportPanel(user);
 
-    expect(screen.getByText(/Android currently exports one M4A file at a time/)).toBeInTheDocument();
+    expect(screen.getByText(/Android exports one WAV, Lyrics TXT, or Lyrics \+ chords TXT/)).toBeVisible();
     await user.click(screen.getByRole("radio", { name: /Practice Mix 1/i }));
-    const trackOnly = screen.getByRole("button", { name: "Track only" });
-    const allStems = screen.getByRole("button", { name: "All stems" });
-    const trackAndStems = screen.getByRole("button", { name: "Track + all stems" });
-    expect(trackOnly).not.toHaveAttribute("aria-describedby");
-    expect(allStems).toBeDisabled();
-    expect(allStems).toHaveAttribute("aria-describedby", "android-multi-export-reason");
-    expect(trackAndStems).toHaveAttribute("aria-describedby", "android-multi-export-reason");
-    expect(screen.getByText(/All stems and track plus stems require multiple files/)).toBeVisible();
-    expect(screen.getAllByText("Android audio export is not available in this build.").length).toBeGreaterThan(0);
-    expect(within(screen.getByRole("group", { name: "Audio selection" })).getAllByRole("radio")).toHaveLength(5);
-    expect(screen.getByLabelText("File format")).toHaveValue("m4a");
-    expect(screen.getByLabelText("File format")).toHaveAttribute(
-      "aria-describedby",
-      "android-export-format-notice",
+    const fileGroup = screen.getByRole("group", { name: "File to export" });
+    expect(within(fileGroup).getAllByRole("radio")).toHaveLength(7);
+    expect(screen.queryByRole("group", { name: "Quick selections" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "File" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Folder" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "ZIP" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Choose destination" })).not.toBeInTheDocument();
+    expect(screen.getByText(/FLAC, MP3, and M4A are unavailable/)).toBeVisible();
+    expect(screen.getByLabelText("Suggested file name")).toHaveValue("Demo Song");
+    expect(screen.getByText(/picker was closed/i).closest("[role='status']")).toHaveTextContent(
+      /cancelled/i,
     );
-    expect(screen.getByRole("button", { name: "Export 1 file" })).toBeDisabled();
+
+    await user.click(within(fileGroup).getByRole("radio", { name: "Lyrics + chords" }));
+    expect(within(fileGroup).getByRole("radio", { name: "Lyrics + chords" })).toBeChecked();
+    expect(within(fileGroup).getByRole("radio", { name: /Practice Mix 1/i })).not.toBeChecked();
+    expect(screen.getByText(/Matches Practice Mix 1 \(-2 semitones\)/)).toBeVisible();
+    expect(screen.getByText(/Suggested name: Demo Song - Lyrics and Chords.txt/)).toBeVisible();
+    expect(screen.queryByText(/FLAC, MP3, and M4A are unavailable/)).not.toBeInTheDocument();
+    expect(screen.getByText(/UTF-8 plain text with Unix line endings/)).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Export Lyrics + chords" }));
+    expect(mockCreateExport).toHaveBeenCalledWith("proj_123", {
+      artifact_ids: [],
+      generated_document_ids: ["lyrics_with_chords"],
+      output_format: "wav",
+      filename_base: "Demo Song",
+      document_audio_set_artifact_id: "art_mix",
+      document_chord_display_mode: "auto",
+    });
+    expect(mockSave).not.toHaveBeenCalled();
+    expect(screen.getByRole("complementary", { name: "Export package" })).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "Opening picker…" })).toBeDisabled();
+
+    setJobs([openingJob]);
+    await screen.findByText("Opening Android picker");
+    expect(screen.getByRole("complementary", { name: "Export package" })).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+    setJobs([{
+      ...openingJob,
+      progress: 35,
+      stage: "writing",
+      stage_label: "Writing export",
+      runtime_detail: "TuneForge is streaming the selected file to the provider.",
+    }]);
+    await screen.findByText("Writing export", {}, { timeout: 2000 });
+    setJobs([{
+      ...openingJob,
+      progress: 90,
+      stage: "finalizing",
+      stage_label: "Finalizing export",
+      runtime_detail: "TuneForge is verifying provider size and SHA-256.",
+    }]);
+    await screen.findByText("Finalizing export", {}, { timeout: 2000 });
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(mockCancelJob).toHaveBeenCalledWith("job_android_running");
+    act(() => resolveExport?.());
+    const restoredSubmit = await screen.findByRole("button", { name: "Export Lyrics + chords" });
+    await waitFor(() => expect(restoredSubmit).toHaveFocus());
   });
 });

@@ -2,17 +2,26 @@ import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { JobSchema } from "../../../lib/api";
 
-export function useActiveJobPolling(projectId: string, jobs: JobSchema[] | undefined) {
+type ActiveJobPollingOptions = {
+  forceActive?: boolean;
+  intervalMs?: number;
+};
+
+export function useActiveJobPolling(
+  projectId: string,
+  jobs: JobSchema[] | undefined,
+  { forceActive = false, intervalMs = 1500 }: ActiveJobPollingOptions = {},
+) {
   const queryClient = useQueryClient();
 
   useEffect(() => {
-    const active = jobs?.some(
+    const active = forceActive || jobs?.some(
       (job) => job.project_id === projectId && ["pending", "running"].includes(job.status),
     );
     if (!active) return;
 
-    const interval = window.setInterval(async () => {
-      await Promise.all([
+    const refresh = () => {
+      void Promise.all([
         queryClient.invalidateQueries({ queryKey: ["jobs"] }),
         queryClient.invalidateQueries({ queryKey: ["analysis", projectId] }),
         queryClient.invalidateQueries({ queryKey: ["chords", projectId] }),
@@ -21,9 +30,10 @@ export function useActiveJobPolling(projectId: string, jobs: JobSchema[] | undef
         queryClient.invalidateQueries({ queryKey: ["project", projectId] }),
         queryClient.invalidateQueries({ queryKey: ["projects"] }),
       ]);
-    }, 1500);
+    };
+    refresh();
+    const interval = window.setInterval(refresh, intervalMs);
 
     return () => window.clearInterval(interval);
-  }, [jobs, projectId, queryClient]);
+  }, [forceActive, intervalMs, jobs, projectId, queryClient]);
 }
-

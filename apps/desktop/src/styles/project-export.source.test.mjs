@@ -19,13 +19,15 @@ describe("narrow export package source", () => {
     expect(narrowStyles).not.toMatch(/\.export-destination-option \.button\s*\{/);
   });
 
-  it("keeps the package in flow and sticks only its compact summary", () => {
+  it("keeps the package and compact summary in flow", () => {
     const stylesheet = readFileSync(resolve(cwd(), "src/styles/project-export.css"), "utf8");
     const narrowStyles = stylesheet.slice(stylesheet.indexOf("@media (max-width: 720px)"));
 
     expect(narrowStyles).toMatch(/\.export-package\s*\{\s*position:\s*static;/);
-    expect(narrowStyles).toMatch(/\.export-package__summary\s*\{[^}]*position:\s*sticky;/s);
-    expect(narrowStyles).not.toMatch(/\.export-package\s*\{[^}]*position:\s*sticky;/s);
+    expect(narrowStyles).toMatch(/\.export-package__summary\s*\{[^}]*position:\s*static;/s);
+    expect(narrowStyles).not.toMatch(/position:\s*sticky/);
+    expect(narrowStyles).toMatch(/\.export-latest\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;/s);
+    expect(narrowStyles).toMatch(/\.export-latest small\s*\{[^}]*grid-column:\s*1 \/ -1;/s);
   });
 
   it("keeps export recovery notices below overlays and inside the viewport", () => {

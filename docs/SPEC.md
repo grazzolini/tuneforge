@@ -122,9 +122,12 @@ Capo-relative display is a harmonic presentation feature. It should not alter au
 - Generate cached previews for practice before export.
 - Use the dedicated project Export workspace to target one Source Track or Practice Mix at a time.
 - Export the track, selected stems, all stems, or the track with all stems. Desktop multi-file exports
-  can target a folder or ZIP; Android exposes only capabilities the installed build can complete.
-- On desktop, export saved Lyrics or Lyrics + chords as UTF-8 TXT, alone or in the same ordered
+  can target a folder or ZIP. Android exports exactly one locally readable WAV through the native
+  create-document picker and does not expose an encoder, folder, or ZIP workflow.
+- Export saved Lyrics or Lyrics + chords as UTF-8 TXT. Desktop can export them alone or in the same ordered
   folder or ZIP batch as audio. Missing lyrics or chords remain visible with a Studio-directed reason.
+- Android offers one WAV, Lyrics TXT, or Lyrics + chords TXT in one unified choice. The selected Source
+  Track or Practice Mix remains a separate chord context for document-only export.
 - Keep plain Lyrics TXT source-faithful. Spell and transpose Lyrics + chords TXT for the selected
   Source Track or Practice Mix, using the current enharmonic display setting and any corrected
   source key, while leaving capo and other playback-only shifts out of exported documents.
@@ -132,6 +135,11 @@ Capo-relative display is a harmonic presentation feature. It should not alter au
   chord placement above its saved lyric block.
 - Document-only exports do not require FFmpeg. Generated TXT is written to the user's destination
   and represented only by local receipt history; TuneForge stores no app-owned copy and does not sync it.
+- On Android, the renderer never sends or persists a destination URI. The system picker owns its fresh
+  provider grant and collision behavior. WAV streams without re-encoding and TXT renders in memory.
+- Android creates local `export_mix` receipt history only after nonempty provider readback matches the
+  written size and SHA-256. Unsupported readback completes as unverified without a receipt; mismatch,
+  cancellation, or restart fails or cancels without a receipt, retry, provider deletion, or stale URI.
 - Preserve deterministic, friendly output names based on the project, audio set, and stem label.
 - Desktop transform/export paths use host-installed FFmpeg.
 

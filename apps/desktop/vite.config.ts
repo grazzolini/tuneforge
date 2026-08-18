@@ -72,6 +72,8 @@ export default defineConfig(() => {
     test: {
       environment: "jsdom",
       env: {
+        LANG: "C.UTF-8",
+        LC_ALL: "C.UTF-8",
         NODE_ENV: "test",
       },
       globals: true,

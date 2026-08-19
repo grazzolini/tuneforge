@@ -3,7 +3,7 @@ runtime: org.gnome.Platform
 runtime-version: "50"
 sdk: org.gnome.Sdk
 sdk-extensions:
-  - org.freedesktop.Sdk.Extension.node22
+  - org.freedesktop.Sdk.Extension.node26
   - org.freedesktop.Sdk.Extension.llvm20
   - org.freedesktop.Sdk.Extension.rust-stable
 command: tuneforge
@@ -77,7 +77,7 @@ modules:
   - name: pnpm
     buildsystem: simple
     build-options:
-      append-path: /usr/lib/sdk/node22/bin
+      append-path: /usr/lib/sdk/node26/bin
     sources:
       - type: archive
         url: https://registry.npmjs.org/pnpm/-/pnpm-11.22.0.tgz
@@ -86,8 +86,8 @@ modules:
     build-commands:
       - install -dm755 /app/lib/pnpm /app/bin
       - cp -a pnpm/. /app/lib/pnpm/
-      - ln -sf ../lib/pnpm/bin/pnpm.cjs /app/bin/pnpm
-      - ln -sf ../lib/pnpm/bin/pnpx.cjs /app/bin/pnpx
+      - ln -sf ../lib/pnpm/bin/pnpm.mjs /app/bin/pnpm
+      - ln -sf ../lib/pnpm/bin/pnpx.mjs /app/bin/pnpx
 
   - name: node-sources
     buildsystem: simple
@@ -154,7 +154,7 @@ modules:
   - name: tuneforge
     buildsystem: simple
     build-options:
-      append-path: /app/bin:/usr/lib/sdk/node22/bin:/usr/lib/sdk/llvm20/bin:/usr/lib/sdk/rust-stable/bin
+      append-path: /app/bin:/usr/lib/sdk/node26/bin:/usr/lib/sdk/llvm20/bin:/usr/lib/sdk/rust-stable/bin
       env:
         CARGO_HOME: /run/build/tuneforge/cargo-home
         CARGO_NET_OFFLINE: "true"

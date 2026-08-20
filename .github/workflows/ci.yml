@@ -86,7 +86,7 @@ jobs:
                 apps/site/*|.github/workflows/pages.yml)
                   site=true
                   ;;
-                .github/workflows/ci.yml)
+                .github/ci/*|.github/workflows/ci-image.yml|.github/workflows/ci.yml)
                   full_gate=true
                   ;;
                 .agents/*|.codex/environments/*|docs/*|CHANGELOG.md|README.md|CONTRIBUTING.md|CODE_OF_CONDUCT.md|LICENSE|THIRD_PARTY_NOTICES.md|SECURITY.md|AGENTS.md|.gitignore|packaging/flatpak/*|.github/ISSUE_TEMPLATE/*|.github/PULL_REQUEST_TEMPLATE.md)
@@ -218,7 +218,7 @@ jobs:
           node-version: "26"
 
       - name: Test deterministic Node scripts
-        run: node --test scripts/build-info.test.mjs scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/flatpak-pnpm.test.mjs scripts/desktop-e2e.test.mjs scripts/sync-validation.test.mjs scripts/release-license-inventory.test.mjs scripts/capture-release-media.test.mjs
+        run: node --test scripts/build-info.test.mjs scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/flatpak-pnpm.test.mjs scripts/desktop-e2e.test.mjs scripts/sync-validation.test.mjs scripts/release-license-inventory.test.mjs scripts/capture-release-media.test.mjs scripts/ci-image-policy.test.mjs
 
       - name: Check release script syntax
         run: |

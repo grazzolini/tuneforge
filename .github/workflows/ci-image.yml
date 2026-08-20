@@ -1,0 +1,101 @@
+name: Publish CI image
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/ci/**
+      - .github/workflows/ci-image.yml
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ci-image-publish
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/grazzolini/tuneforge-ci
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish immutable image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .github/ci
+          file: .github/ci/Dockerfile
+          platforms: linux/amd64
+          pull: true
+          no-cache: true
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.description=Ubuntu CI dependencies for TuneForge
+            org.opencontainers.image.licenses=LicenseRef-TuneForge-CI-Image
+          provenance: mode=max
+          sbom: true
+
+      - name: Record publication evidence
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Build did not return a valid immutable image digest." >&2
+            exit 1
+          fi
+
+          base_image="$(sed -n 's/^FROM --platform=linux\/amd64 //p' .github/ci/Dockerfile)"
+          ffmpeg_version="$(sed -n 's/^ARG FFMPEG_VERSION=//p' .github/ci/Dockerfile)"
+          ffmpeg_source="$(sed -n 's/^ARG FFMPEG_DEB_URL=//p' .github/ci/Dockerfile)"
+          ffmpeg_deb_sha="$(sed -n 's/^ARG FFMPEG_DEB_SHA256=//p' .github/ci/Dockerfile)"
+          ffmpeg_sha="$(sed -n 's/^ARG FFMPEG_SHA256=//p' .github/ci/Dockerfile)"
+          ffprobe_sha="$(sed -n 's/^ARG FFPROBE_SHA256=//p' .github/ci/Dockerfile)"
+          playwright_version="$(sed -n 's/^ARG PLAYWRIGHT_VERSION=//p' .github/ci/Dockerfile)"
+          immutable_tag="${IMAGE_NAME}:sha-${GITHUB_SHA}-run-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}"
+          immutable_reference="${IMAGE_NAME}@${IMAGE_DIGEST}"
+
+          {
+            echo "## CI image publication"
+            echo
+            echo "- Tag: \`${immutable_tag}\`"
+            echo "- Digest reference: \`${immutable_reference}\`"
+            echo "- Platform: \`linux/amd64\`"
+            echo "- Base: \`${base_image}\`"
+            echo "- FFmpeg package: \`${ffmpeg_version}\`"
+            echo "- FFmpeg source: \`${ffmpeg_source}\`"
+            echo "- FFmpeg package SHA-256: \`${ffmpeg_deb_sha}\`"
+            echo "- \`ffmpeg\` SHA-256: \`${ffmpeg_sha}\`"
+            echo "- \`ffprobe\` SHA-256: \`${ffprobe_sha}\`"
+            echo "- Playwright dependency review marker: \`${playwright_version}\`"
+            echo "- BuildKit SBOM: attached by the successful build"
+            echo "- BuildKit provenance: attached with \`mode=max\`"
+            echo "- Image inventory: \`/usr/share/tuneforge-ci/packages.txt\`"
+            echo "- Codec evidence: \`/usr/share/tuneforge-ci/codec-validation.jsonl\`"
+            echo
+            echo "> Publication does not authorize GHCR visibility changes or digest promotion."
+          } >> "${GITHUB_STEP_SUMMARY}"

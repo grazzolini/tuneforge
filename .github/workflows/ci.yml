@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  CI_IMAGE_REFERENCE: ghcr.io/grazzolini/tuneforge-ci@sha256:6b12309d6ce40b047567ce82f7a434b6a1a74f6c5f515480c49b374a3f289bb7
+
 jobs:
   ci-scope:
     runs-on: ubuntu-latest
@@ -236,7 +239,11 @@ jobs:
         run: bash scripts/android-arm64-env.test.sh
 
   e2e:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    container: ghcr.io/grazzolini/tuneforge-ci@sha256:6b12309d6ce40b047567ce82f7a434b6a1a74f6c5f515480c49b374a3f289bb7
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Initialize E2E job
         shell: bash
@@ -254,6 +261,9 @@ jobs:
 
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify CI image
+        run: bash scripts/verify-ci-image.sh
 
       - name: Set up pnpm
         uses: pnpm/setup@84cb39b217b10273981911c288cd62326dc7c6d2 # v2.0.2
@@ -284,23 +294,8 @@ jobs:
         working-directory: apps/backend
         run: uv sync --locked --all-groups
 
-      - name: Install FFmpeg
-        run: |
-          set -euo pipefail
-          started_at="$(date +%s)"
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-          elapsed_seconds=$(($(date +%s) - started_at))
-          {
-            echo "## E2E FFmpeg setup"
-            echo
-            echo "- Duration: ${elapsed_seconds}s"
-            echo "- $(ffmpeg -version | sed -n '1p')"
-            echo "- $(ffprobe -version | sed -n '1p')"
-          } >> "${GITHUB_STEP_SUMMARY}"
-
       - name: Install Playwright Chromium
-        run: pnpm --filter @tuneforge/desktop exec playwright install --with-deps chromium
+        run: pnpm --filter @tuneforge/desktop exec playwright install chromium
 
       - name: Run desktop E2E suite
         shell: bash
@@ -450,7 +445,11 @@ jobs:
   backend:
     needs: ci-scope
     if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    container: ghcr.io/grazzolini/tuneforge-ci@sha256:6b12309d6ce40b047567ce82f7a434b6a1a74f6c5f515480c49b374a3f289bb7
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Require CI scope
         if: needs.ci-scope.result != 'success'
@@ -460,6 +459,9 @@ jobs:
 
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify CI image
+        run: bash scripts/verify-ci-image.sh
 
       - name: Skip backend checks
         if: needs.ci-scope.outputs.backend_static != 'true' && needs.ci-scope.outputs.backend_ffmpeg != 'true'
@@ -491,22 +493,6 @@ jobs:
         if: needs.ci-scope.outputs.backend_static == 'true'
         working-directory: apps/backend
         run: uv run --python 3.11 mypy app
-
-      - name: Install FFmpeg
-        if: needs.ci-scope.outputs.backend_ffmpeg == 'true'
-        run: |
-          set -euo pipefail
-          started_at="$(date +%s)"
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-          elapsed_seconds=$(($(date +%s) - started_at))
-          {
-            echo "## Backend FFmpeg setup"
-            echo
-            echo "- Duration: ${elapsed_seconds}s"
-            echo "- $(ffmpeg -version | sed -n '1p')"
-            echo "- $(ffprobe -version | sed -n '1p')"
-          } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Test backend
         if: needs.ci-scope.outputs.backend_ffmpeg == 'true'
@@ -597,7 +583,11 @@ jobs:
   desktop_tauri:
     needs: ci-scope
     if: ${{ always() && (needs.ci-scope.result != 'success' || needs.ci-scope.outputs.desktop == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    container: ghcr.io/grazzolini/tuneforge-ci@sha256:6b12309d6ce40b047567ce82f7a434b6a1a74f6c5f515480c49b374a3f289bb7
+    defaults:
+      run:
+        shell: bash
     env:
       RUST_VERSION: "1.97.1"
     steps:
@@ -610,11 +600,16 @@ jobs:
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Verify CI image
+        run: bash scripts/verify-ci-image.sh
+
       - name: Set up Rust
         if: needs.ci-scope.outputs.desktop == 'true'
-        run: |
-          rustup toolchain install "${RUST_VERSION}" --profile minimal
-          rustup default "${RUST_VERSION}"
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          cache: false
+          rustflags: ""
 
       - name: Cache Cargo dependencies and build output
         if: needs.ci-scope.outputs.desktop == 'true'
@@ -627,19 +622,6 @@ jobs:
             apps/desktop/src-tauri/target
             !apps/desktop/src-tauri/target/debug/incremental
           key: cargo-v1-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_VERSION }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock', 'apps/desktop/src-tauri/Cargo.toml') }}
-
-      - name: Install Tauri system dependencies
-        if: needs.ci-scope.outputs.desktop == 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libasound2-dev \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libxdo-dev \
-            libssl-dev
 
       - name: Check Tauri shell
         if: needs.ci-scope.outputs.desktop == 'true'

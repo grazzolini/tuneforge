@@ -159,6 +159,8 @@ jobs:
 
       - name: Set up pnpm
         uses: pnpm/setup@84cb39b217b10273981911c288cd62326dc7c6d2 # v2.0.2
+        with:
+          install: false
 
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -205,13 +207,18 @@ jobs:
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Set up pnpm
+        uses: pnpm/setup@84cb39b217b10273981911c288cd62326dc7c6d2 # v2.0.2
+        with:
+          install: false
+
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "26"
 
       - name: Test deterministic Node scripts
-        run: node --test scripts/build-info.test.mjs scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/desktop-e2e.test.mjs scripts/sync-validation.test.mjs scripts/release-license-inventory.test.mjs scripts/capture-release-media.test.mjs
+        run: node --test scripts/build-info.test.mjs scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/flatpak-pnpm.test.mjs scripts/desktop-e2e.test.mjs scripts/sync-validation.test.mjs scripts/release-license-inventory.test.mjs scripts/capture-release-media.test.mjs
 
       - name: Check release script syntax
         run: |
@@ -250,6 +257,8 @@ jobs:
 
       - name: Set up pnpm
         uses: pnpm/setup@84cb39b217b10273981911c288cd62326dc7c6d2 # v2.0.2
+        with:
+          install: false
 
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -399,6 +408,8 @@ jobs:
       - name: Set up pnpm
         if: needs.ci-scope.outputs.site == 'true'
         uses: pnpm/setup@84cb39b217b10273981911c288cd62326dc7c6d2 # v2.0.2
+        with:
+          install: false
 
       - name: Set up Node
         if: needs.ci-scope.outputs.site == 'true'
@@ -519,6 +530,8 @@ jobs:
       - name: Set up pnpm
         if: needs.ci-scope.outputs.desktop == 'true'
         uses: pnpm/setup@84cb39b217b10273981911c288cd62326dc7c6d2 # v2.0.2
+        with:
+          install: false
 
       - name: Set up Node
         if: needs.ci-scope.outputs.desktop == 'true'

@@ -88,6 +88,7 @@ modules:
       - cp -a pnpm/. /app/lib/pnpm/
       - ln -sf ../lib/pnpm/bin/pnpm.mjs /app/bin/pnpm
       - ln -sf ../lib/pnpm/bin/pnpx.mjs /app/bin/pnpx
+      - /app/bin/pnpm --version
 
   - name: node-sources
     buildsystem: simple
@@ -251,7 +252,7 @@ modules:
         path: ffprobe-wrapper.sh
         dest-filename: ffprobe
       - type: file
-        path: rewrite-pnpm-lock.mjs
+        path: seed-pnpm-store.mjs
       - type: file
         path: com.tuneforge.desktop.desktop
       - type: file
@@ -265,10 +266,9 @@ modules:
       - /app/bin/ffprobe -version
       - /app/bin/pactl --version
       - bash cargo-checksums.sh
-      - node rewrite-pnpm-lock.mjs /app/share/tuneforge/node-sources
-      - /app/bin/pnpm install --offline --frozen-lockfile
+      - node seed-pnpm-store.mjs /app/share/tuneforge/node-sources /run/build/tuneforge/pnpm-store /run/build/tuneforge/pnpm-cache /app/bin/pnpm
       - /app/bin/pnpm --filter @tuneforge/desktop build
-      - rm -rf /app/share/tuneforge/node-sources /app/lib/pnpm /app/bin/pnpm /app/bin/pnpx
+      - rm -rf /app/lib/pnpm /app/bin/pnpm /app/bin/pnpx
       - cargo build --release --locked --features custom-protocol --manifest-path apps/desktop/src-tauri/Cargo.toml
       - install -Dm755 apps/desktop/src-tauri/target/release/tuneforge /app/bin/tuneforge
       - install -Dm644 version.json /app/lib/tuneforge/backend/version.json

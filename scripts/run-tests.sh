@@ -14,6 +14,15 @@ build_info_start=${SECONDS}
 build_info_elapsed=$((SECONDS - build_info_start))
 printf '\n[tests] Build info tests finished in %ss\n' "${build_info_elapsed}"
 
+printf '\n[tests] Starting Flatpak pnpm tests\n\n'
+flatpak_pnpm_start=${SECONDS}
+(
+  cd "${repo_root}"
+  node --test scripts/flatpak-pnpm.test.mjs
+)
+flatpak_pnpm_elapsed=$((SECONDS - flatpak_pnpm_start))
+printf '\n[tests] Flatpak pnpm tests finished in %ss\n' "${flatpak_pnpm_elapsed}"
+
 printf '\n[tests] Starting desktop tests\n\n'
 desktop_start=${SECONDS}
 (

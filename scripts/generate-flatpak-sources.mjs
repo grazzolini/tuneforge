@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { parsePnpmLock } from "../packaging/flatpak/seed-pnpm-store.mjs";
 import { buildModelBundlePlan } from "./model-bundle-metadata.mjs";
 import { parsePackageOptions } from "./package-options.mjs";
 
@@ -124,104 +125,6 @@ function generateCargoSources() {
   writeGeneratedJson("cargo-sources.json", sources);
 
   return crates.length;
-}
-
-function cleanYamlKey(key) {
-  let cleaned = key.trim();
-  if (cleaned.endsWith(":")) {
-    cleaned = cleaned.slice(0, -1);
-  }
-  if (
-    (cleaned.startsWith("'") && cleaned.endsWith("'")) ||
-    (cleaned.startsWith('"') && cleaned.endsWith('"'))
-  ) {
-    cleaned = cleaned.slice(1, -1);
-  }
-  return cleaned;
-}
-
-function parsePnpmPackageKey(key) {
-  const withoutPeers = key.replace(/\(.+$/, "");
-  const versionSeparator = withoutPeers.lastIndexOf("@");
-  if (versionSeparator <= 0) {
-    throw new Error(`Could not parse pnpm package key: ${key}`);
-  }
-
-  return {
-    name: withoutPeers.slice(0, versionSeparator),
-    version: withoutPeers.slice(versionSeparator + 1),
-  };
-}
-
-function npmTarballUrl(name, version) {
-  if (!name.startsWith("@")) {
-    return `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`;
-  }
-
-  const [scope, packageName] = name.split("/");
-  return `https://registry.npmjs.org/${scope}/${packageName}/-/${packageName}-${version}.tgz`;
-}
-
-function nodeTarballFileName(name, version) {
-  return `${name.replace(/^@/, "").replace("/", "-")}-${version}.tgz`;
-}
-
-function parsePnpmLock(contents) {
-  const packagesStart = contents.indexOf("\npackages:\n");
-  if (packagesStart === -1) {
-    throw new Error("Could not find packages section in pnpm-lock.yaml");
-  }
-
-  const snapshotsStart = contents.indexOf("\nsnapshots:\n", packagesStart);
-  const packagesBody = contents.slice(
-    packagesStart + "\npackages:\n".length,
-    snapshotsStart === -1 ? contents.length : snapshotsStart,
-  );
-
-  const packages = new Map();
-  let currentKey = null;
-  let currentBlock = [];
-
-  function finishEntry() {
-    if (!currentKey) {
-      return;
-    }
-
-    const block = currentBlock.join("\n");
-    const integrity = block.match(/integrity:\s*([^}\s]+)/)?.[1];
-    if (!integrity) {
-      return;
-    }
-
-    const parsed = parsePnpmPackageKey(currentKey);
-    const key = `${parsed.name}@${parsed.version}`;
-    if (!packages.has(key)) {
-      packages.set(key, {
-        ...parsed,
-        integrity,
-        url: npmTarballUrl(parsed.name, parsed.version),
-        fileName: nodeTarballFileName(parsed.name, parsed.version),
-      });
-    }
-  }
-
-  for (const line of packagesBody.split("\n")) {
-    if (line.startsWith("  ") && !line.startsWith("    ") && line.trim().endsWith(":")) {
-      finishEntry();
-      currentKey = cleanYamlKey(line);
-      currentBlock = [];
-      continue;
-    }
-
-    if (currentKey) {
-      currentBlock.push(line);
-    }
-  }
-  finishEntry();
-
-  return Array.from(packages.values()).sort((left, right) =>
-    `${left.name}@${left.version}`.localeCompare(`${right.name}@${right.version}`),
-  );
 }
 
 function generateNodeSources() {

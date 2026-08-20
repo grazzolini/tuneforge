@@ -60,6 +60,14 @@ test("Playwright dependency review requires the exact Noble package set", (conte
   assert.throws(() => validateCiImagePolicy(root), /exact reviewed Playwright 1\.62\.1 Noble/);
 });
 
+test("Rust bindgen requires libclang-dev in the CI image", (context) => {
+  const root = fixture();
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  replace(root, ".github/ci/Dockerfile", "      libclang-dev \\\n", "");
+
+  assert.throws(() => validateCiImagePolicy(root), /libclang-dev for Rust bindgen/);
+});
+
 test("untrusted and broad publisher triggers fail closed", (context) => {
   const root = fixture();
   context.after(() => fs.rmSync(root, { recursive: true, force: true }));

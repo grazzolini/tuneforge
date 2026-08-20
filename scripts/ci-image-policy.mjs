@@ -143,6 +143,11 @@ export function validateCiImagePolicy(root) {
       ),
     "Dockerfile must contain the exact reviewed Playwright 1.62.1 Noble tools and Chromium packages",
   );
+  check(
+    dockerfile.includes("      libclang-dev \\\n") &&
+      imageReadme.includes("`libclang-dev` for Rust bindgen"),
+    "CI image must install and document libclang-dev for Rust bindgen",
+  );
 
   check(
     JSON.stringify(topLevelMappingKeys(imageWorkflow, "on")) ===

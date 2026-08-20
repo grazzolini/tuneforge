@@ -35,6 +35,7 @@ RUN set -eux; \
       gzip \
       libasound2-dev \
       libayatana-appindicator3-dev \
+      libclang-dev \
       libgtk-3-dev \
       librsvg2-dev \
       libssl-dev \

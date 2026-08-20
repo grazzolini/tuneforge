@@ -41,3 +41,9 @@ updates:
     patterns:
       - "*"
     multi-ecosystem-group: dependencies
+
+  - package-ecosystem: docker
+    directory: "/.github/ci"
+    patterns:
+      - "*"
+    multi-ecosystem-group: dependencies

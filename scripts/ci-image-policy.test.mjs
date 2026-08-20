@@ -8,6 +8,10 @@ import { fileURLToPath } from "node:url";
 import { validateCiImagePolicy } from "./ci-image-policy.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const ciImageReference = fs
+  .readFileSync(path.join(repositoryRoot, ".github/workflows/ci.yml"), "utf8")
+  .match(/^  CI_IMAGE_REFERENCE:\s+(\S+)$/m)?.[1];
+assert.ok(ciImageReference, "CI workflow must declare CI_IMAGE_REFERENCE");
 const fixtureFiles = [
   "apps/desktop/package.json",
   "pnpm-lock.yaml",
@@ -34,6 +38,16 @@ function replace(root, relativePath, before, after) {
   const original = fs.readFileSync(target, "utf8");
   assert.ok(original.includes(before), `${relativePath} fixture must include replacement target`);
   fs.writeFileSync(target, original.replaceAll(before, after));
+}
+
+function assertMutationsFail(relativePath, mutations, expected) {
+  for (const [before, after] of mutations) {
+    const root = fixture();
+    try {
+      replace(root, relativePath, before, after);
+      assert.throws(() => validateCiImagePolicy(root), expected);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }
 }
 
 test("repository satisfies CI image policy", () => {
@@ -132,6 +146,103 @@ test("FFmpeg package checksum verification precedes installation", (context) => 
   replace(root, ".github/ci/Dockerfile", "| sha256sum -c -;", "| cat; ");
 
   assert.throws(() => validateCiImagePolicy(root), /checksum-verified, then installed/);
+});
+
+test("CI image consumers require independent exact env and container digests", () =>
+  assertMutationsFail(".github/workflows/ci.yml", [
+    [`env:\n  CI_IMAGE_REFERENCE: ${ciImageReference}`, "env:\n  CI_IMAGE_REFERENCE: ghcr.io/grazzolini/tuneforge-ci:main"],
+    [`    container: ${ciImageReference}`, "    container: ghcr.io/grazzolini/tuneforge-ci:main"],
+  ], /Exactly backend, e2e, and desktop_tauri/));
+
+test("CI image consumers reject valid container credentials", (context) => {
+  const root = fixture();
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  replace(
+    root,
+    ".github/workflows/ci.yml",
+    `    container: ${ciImageReference}`,
+    `    container:\n      image: ${ciImageReference}\n      credentials:\n        username: actor\n        password: token`,
+  );
+
+  assert.throws(() => validateCiImagePolicy(root), /backend must not configure container credentials/);
+});
+
+test("CI image consumers reject every valid packages write permission form", () => {
+  const permissions = [
+    "    permissions:\n      packages: write", '    permissions:\n      packages: "write"',
+    "    permissions:\n      packages: 'write'", "    permissions: { contents: read, packages: write }",
+    "    permissions: write-all", '    permissions: "write-all"', "    permissions: 'write-all'",
+  ];
+  assertMutationsFail(
+    ".github/workflows/ci.yml",
+    permissions.map((value) => ["  backend:\n    needs: ci-scope", `  backend:\n${value}\n    needs: ci-scope`]),
+    /backend must not receive packages: write/,
+  );
+});
+
+test("CI image consumer discovery rejects fourth-job container key variants", () => {
+  const containers = [
+    `    container:\n      image: ${ciImageReference}`, `    container: { image: ${ciImageReference} }`,
+    `    'container': ${ciImageReference}`, `    "container": ${ciImageReference}`,
+    `    'container':\n      image: ${ciImageReference}`, `    "container": { image: ${ciImageReference} }`,
+    `    ? container\n    : ${ciImageReference}`,
+  ];
+  assertMutationsFail(
+    ".github/workflows/ci.yml",
+    containers.map((value) => ["jobs:\n", `jobs:\n  unexpected_ci_image:\n    runs-on: ubuntu-24.04\n${value}\n    steps:\n      - run: echo unexpected\n\n`]),
+    /Exactly backend, e2e, and desktop_tauri/,
+  );
+});
+
+test("targeted jobs reject apt and Playwright system dependency installation", (context) => {
+  const root = fixture();
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  replace(
+    root,
+    ".github/workflows/ci.yml",
+    "run: pnpm --filter @tuneforge/desktop exec playwright install chromium",
+    "run: pnpm --filter @tuneforge/desktop exec playwright install --with-deps chromium\n\n      - run: sudo apt-get update",
+  );
+
+  assert.throws(
+    () => validateCiImagePolicy(root),
+    /e2e must not execute apt[\s\S]*e2e must not use Playwright --with-deps/,
+  );
+});
+
+test("shared verifier calls reject comments, wrong order, duplicates, and nonconsumers", () => {
+  const run = "        run: bash scripts/verify-ci-image.sh";
+  const step = `      - name: Verify CI image\n${run}`;
+  const checkout = "      - name: Check out code\n        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1";
+  assertMutationsFail(".github/workflows/ci.yml", [
+    [run, `        # ${run.trim()}`],
+    [`${checkout}\n\n${step}`, `${step}\n\n${checkout}`],
+    [step, `${step}\n\n${step}`],
+    ["          fetch-depth: 0", "          fetch-depth: 0\n\n      - run: bash scripts/verify-ci-image.sh"],
+  ], /must call the shared CI image verifier|Only CI image consumers/);
+});
+
+test("consumer runner and shell checks fail closed", (context) => {
+  const root = fixture();
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  replace(
+    root,
+    ".github/workflows/ci.yml",
+    `  e2e:\n    runs-on: ubuntu-24.04\n    container: ${ciImageReference}\n    defaults:\n      run:\n        shell: bash`,
+    `  e2e:\n    runs-on: ubuntu-latest\n    container: ${ciImageReference}\n    defaults:\n      run:\n        shell: sh`,
+  );
+  assert.throws(
+    () => validateCiImagePolicy(root),
+    /e2e must use ubuntu-24\.04[\s\S]*e2e must default run steps to Bash/,
+  );
+});
+
+test("pinned Rust bootstrap stays required", (context) => {
+  const root = fixture();
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  replace(root, ".github/workflows/ci.yml", "          cache: false\n", "          cache: true\n");
+
+  assert.throws(() => validateCiImagePolicy(root), /must bootstrap pinned Rust/);
 });
 
 test("release-facing workflow stays separate from CI image", (context) => {

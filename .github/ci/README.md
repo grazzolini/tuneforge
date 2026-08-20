@@ -16,7 +16,8 @@ anything from this image.
 - Playwright: Ubuntu 24.04 Chromium system dependencies reviewed against
   Playwright `1.62.1`. Chromium itself remains a job-time download.
 - Tauri: the GTK, WebKitGTK, ALSA, AppIndicator, SVG, XDo, and OpenSSL
-  development packages previously installed by the CI workflow.
+  development packages previously installed by the CI workflow, plus
+  `libclang-dev` for Rust bindgen.
 - CI utilities: only tools needed by setup actions and native builds. No source
   tree, dependency directory, build output, model, user data, or credential is
   included.

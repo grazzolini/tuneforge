@@ -19,7 +19,7 @@ use std::{
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
-use cpal::{FromSample, Sample, SampleFormat, SizedSample};
+use cpal::{ErrorKind, FromSample, Sample, SampleFormat, SizedSample};
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 use symphonia::core::{
     codecs::audio::{AudioDecoder, AudioDecoderOptions},
@@ -132,7 +132,29 @@ pub struct AudioStateEvent {
 #[serde(rename_all = "camelCase")]
 pub struct AudioErrorEvent {
     pub session_id: Option<String>,
-    pub message: String,
+    pub code: NativeAudioErrorCode,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeAudioErrorCode {
+    DeviceChanged,
+    DeviceNotAvailable,
+    StreamInvalidated,
+    OutputStreamFailure,
+    DecoderWorkerFailure,
+}
+
+impl NativeAudioErrorCode {
+    fn fallback_message(self) -> &'static str {
+        match self {
+            Self::DeviceChanged => "Native audio device changed.",
+            Self::DeviceNotAvailable => "Native playback device is unavailable.",
+            Self::StreamInvalidated => "Native playback stream was interrupted.",
+            Self::OutputStreamFailure => "Native playback output failed.",
+            Self::DecoderWorkerFailure => "Native playback decoder failed.",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -345,8 +367,8 @@ struct PlaybackShared {
     snapshot_lanes: Vec<EffectiveAudioLane>,
     click: ClickState,
     ended_pending: bool,
-    error_pending: Option<String>,
-    terminal_error: Option<String>,
+    error_pending: Option<NativeAudioErrorCode>,
+    terminal_error: Option<NativeAudioErrorCode>,
     buffering: bool,
     sustained_underrun_frames: usize,
     underrun_error_pending: bool,
@@ -359,7 +381,7 @@ impl PlaybackShared {
     fn snapshot(&self) -> AudioSnapshot {
         let fallback_reason = self
             .terminal_error
-            .clone()
+            .map(|code| code.fallback_message().to_string())
             .or_else(|| self.fallback_reason.clone())
             .or_else(|| self.fallback_cause.map(|cause| cause.message().to_string()));
 
@@ -413,16 +435,52 @@ impl PlaybackShared {
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 fn mark_terminal_runtime_error(
     shared: &mut PlaybackShared,
-    message: String,
+    code: NativeAudioErrorCode,
     diagnostic_code: DiagnosticSafeCode,
 ) {
     if shared.terminal_error.is_none() {
-        shared.error_pending = Some(message.clone());
-        shared.terminal_error = Some(message);
+        shared.error_pending = Some(code);
+        shared.terminal_error = Some(code);
     }
     shared.status = TransportStatus::Paused;
     shared.buffering = false;
     diagnostics::record_callback_safe_code(shared.diagnostics_generation, diagnostic_code);
+}
+
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+fn output_stream_error_code(error: &cpal::Error) -> NativeAudioErrorCode {
+    match error.kind() {
+        ErrorKind::DeviceChanged => NativeAudioErrorCode::DeviceChanged,
+        ErrorKind::DeviceNotAvailable => NativeAudioErrorCode::DeviceNotAvailable,
+        ErrorKind::StreamInvalidated => NativeAudioErrorCode::StreamInvalidated,
+        _ => NativeAudioErrorCode::OutputStreamFailure,
+    }
+}
+
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+fn diagnostic_code_for_output_stream_error(code: NativeAudioErrorCode) -> DiagnosticSafeCode {
+    match code {
+        NativeAudioErrorCode::DeviceChanged => DiagnosticSafeCode::DeviceChanged,
+        NativeAudioErrorCode::DeviceNotAvailable => DiagnosticSafeCode::DeviceNotAvailable,
+        NativeAudioErrorCode::StreamInvalidated => DiagnosticSafeCode::StreamInvalidated,
+        NativeAudioErrorCode::OutputStreamFailure => DiagnosticSafeCode::OutputStreamFailure,
+        NativeAudioErrorCode::DecoderWorkerFailure => DiagnosticSafeCode::DecoderWorkerFailure,
+    }
+}
+
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+fn mark_device_changed(shared: &mut PlaybackShared) {
+    if shared.terminal_error.is_some()
+        || shared.fallback_cause.is_some()
+        || shared.error_pending.is_some()
+    {
+        return;
+    }
+    shared.error_pending = Some(NativeAudioErrorCode::DeviceChanged);
+    diagnostics::record_callback_safe_code(
+        shared.diagnostics_generation,
+        DiagnosticSafeCode::DeviceChanged,
+    );
 }
 
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
@@ -676,11 +734,14 @@ impl TransportState {
         #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
         let terminal_runtime = self.runtime.as_ref().and_then(|runtime| {
             let shared = runtime.shared.lock().ok()?;
-            let reason = shared.terminal_error.clone().or_else(|| {
-                shared
-                    .fallback_cause
-                    .map(|cause| cause.message().to_string())
-            })?;
+            let reason = shared
+                .terminal_error
+                .map(|code| code.fallback_message().to_string())
+                .or_else(|| {
+                    shared
+                        .fallback_cause
+                        .map(|cause| cause.message().to_string())
+                })?;
             Some((shared.position_seconds, reason))
         });
         #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
@@ -746,11 +807,15 @@ impl TransportState {
         if let Some(runtime) = &self.runtime {
             if let Ok(shared) = runtime.shared.lock() {
                 self.position_seconds = shared.position_seconds;
-                if let Some(reason) = shared.terminal_error.clone().or_else(|| {
-                    shared
-                        .fallback_cause
-                        .map(|cause| cause.message().to_string())
-                }) {
+                if let Some(reason) = shared
+                    .terminal_error
+                    .map(|code| code.fallback_message().to_string())
+                    .or_else(|| {
+                        shared
+                            .fallback_cause
+                            .map(|cause| cause.message().to_string())
+                    })
+                {
                     self.native_playback_supported = false;
                     self.fallback_reason = Some(reason);
                 }
@@ -765,11 +830,14 @@ impl TransportState {
         #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
         let failed_runtime = self.runtime.as_ref().and_then(|runtime| {
             let shared = runtime.shared.lock().ok()?;
-            let reason = shared.terminal_error.clone().or_else(|| {
-                shared
-                    .fallback_cause
-                    .map(|cause| cause.message().to_string())
-            })?;
+            let reason = shared
+                .terminal_error
+                .map(|code| code.fallback_message().to_string())
+                .or_else(|| {
+                    shared
+                        .fallback_cause
+                        .map(|cause| cause.message().to_string())
+                })?;
             Some((shared.position_seconds, reason))
         });
         #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
@@ -1540,7 +1608,7 @@ fn start_native_runtime(
                     }
                     mark_terminal_runtime_error(
                         &mut shared,
-                        worker_error.message,
+                        NativeAudioErrorCode::DecoderWorkerFailure,
                         DiagnosticSafeCode::DecoderWorkerFailure,
                     );
                 }
@@ -1661,13 +1729,17 @@ where
                 }
             },
             move |error| {
-                let message = format!("Native audio output stream error: {error}");
                 if let Ok(mut shared) = error_shared.lock() {
-                    mark_terminal_runtime_error(
-                        &mut shared,
-                        message,
-                        DiagnosticSafeCode::OutputStreamFailure,
-                    );
+                    let code = output_stream_error_code(&error);
+                    if code == NativeAudioErrorCode::DeviceChanged {
+                        mark_device_changed(&mut shared);
+                    } else {
+                        mark_terminal_runtime_error(
+                            &mut shared,
+                            code,
+                            diagnostic_code_for_output_stream_error(code),
+                        );
+                    }
                 }
             },
             None,
@@ -1678,24 +1750,29 @@ where
 
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 fn emit_runtime_events(app: &AppHandle, shared: &Arc<Mutex<PlaybackShared>>) -> bool {
-    let (snapshot, ended, error) = {
+    let (snapshot, ended, error, requires_error_handling) = {
         let mut shared = match shared.lock() {
             Ok(shared) => shared,
             Err(_) => return false,
         };
         let snapshot = shared.snapshot();
-        let ended = shared.ended_pending;
+        let ended_pending = shared.ended_pending;
         shared.ended_pending = false;
         let mut error = shared.error_pending.take();
         if shared.underrun_error_pending {
             shared.underrun_error_pending = false;
             if error.is_none() {
-                error = shared
-                    .fallback_cause
-                    .map(|cause| cause.message().to_string());
+                error = Some(NativeAudioErrorCode::OutputStreamFailure);
             }
         }
-        (snapshot, ended, error)
+        let requires_error_handling =
+            shared.terminal_error.is_some() || shared.fallback_cause.is_some();
+        (
+            snapshot,
+            should_emit_ended(ended_pending, requires_error_handling),
+            error,
+            requires_error_handling,
+        )
     };
 
     let _ = app.emit(
@@ -1718,16 +1795,21 @@ fn emit_runtime_events(app: &AppHandle, shared: &Arc<Mutex<PlaybackShared>>) -> 
     if ended {
         let _ = app.emit(AUDIO_EVENT_ENDED, snapshot.clone());
     }
-    if let Some(message) = &error {
+    if let Some(code) = error {
         let _ = app.emit(
             AUDIO_EVENT_ERROR,
             AudioErrorEvent {
                 session_id: snapshot.session_id,
-                message: message.clone(),
+                code,
             },
         );
     }
-    ended || error.is_some()
+    ended || requires_error_handling
+}
+
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+fn should_emit_ended(ended_pending: bool, requires_error_handling: bool) -> bool {
+    ended_pending && !requires_error_handling
 }
 
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
@@ -2769,6 +2851,152 @@ mod tests {
         );
     }
 
+    #[test]
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    fn classifies_cpal_output_errors_without_exposing_backend_details() {
+        let classified = [
+            (
+                ErrorKind::DeviceChanged,
+                NativeAudioErrorCode::DeviceChanged,
+            ),
+            (
+                ErrorKind::DeviceNotAvailable,
+                NativeAudioErrorCode::DeviceNotAvailable,
+            ),
+            (
+                ErrorKind::StreamInvalidated,
+                NativeAudioErrorCode::StreamInvalidated,
+            ),
+            (
+                ErrorKind::DeviceBusy,
+                NativeAudioErrorCode::OutputStreamFailure,
+            ),
+            (
+                ErrorKind::HostUnavailable,
+                NativeAudioErrorCode::OutputStreamFailure,
+            ),
+            (
+                ErrorKind::InvalidInput,
+                NativeAudioErrorCode::OutputStreamFailure,
+            ),
+            (
+                ErrorKind::PermissionDenied,
+                NativeAudioErrorCode::OutputStreamFailure,
+            ),
+            (
+                ErrorKind::RealtimeDenied,
+                NativeAudioErrorCode::OutputStreamFailure,
+            ),
+            (
+                ErrorKind::ResourceExhausted,
+                NativeAudioErrorCode::OutputStreamFailure,
+            ),
+            (
+                ErrorKind::UnsupportedConfig,
+                NativeAudioErrorCode::OutputStreamFailure,
+            ),
+            (
+                ErrorKind::UnsupportedOperation,
+                NativeAudioErrorCode::OutputStreamFailure,
+            ),
+            (ErrorKind::Xrun, NativeAudioErrorCode::OutputStreamFailure),
+            (
+                ErrorKind::BackendError,
+                NativeAudioErrorCode::OutputStreamFailure,
+            ),
+            (ErrorKind::Other, NativeAudioErrorCode::OutputStreamFailure),
+        ];
+
+        for (kind, expected) in classified {
+            assert_eq!(output_stream_error_code(&cpal::Error::new(kind)), expected);
+        }
+    }
+
+    #[test]
+    fn error_events_serialize_only_the_safe_code() {
+        let event = AudioErrorEvent {
+            session_id: Some("session-123".to_string()),
+            code: NativeAudioErrorCode::StreamInvalidated,
+        };
+
+        let serialized = serde_json::to_string(&event).expect("serialize event");
+
+        assert_eq!(
+            serialized,
+            r#"{"sessionId":"session-123","code":"stream_invalidated"}"#
+        );
+        assert!(!serialized.contains("message"));
+        assert!(!serialized.contains("/private/audio.wav"));
+    }
+
+    #[test]
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    fn terminal_error_precedes_recoverable_and_device_changed_events() {
+        let mut device_changed_first =
+            shared_with_lane(Arc::new(Mutex::new(RingBuffer::new(1_000))), 1_000, 1, 1.0);
+        mark_device_changed(&mut device_changed_first);
+        assert_eq!(
+            device_changed_first.error_pending,
+            Some(NativeAudioErrorCode::DeviceChanged)
+        );
+        mark_terminal_runtime_error(
+            &mut device_changed_first,
+            NativeAudioErrorCode::OutputStreamFailure,
+            DiagnosticSafeCode::OutputStreamFailure,
+        );
+        mark_device_changed(&mut device_changed_first);
+        assert_eq!(
+            device_changed_first.error_pending,
+            Some(NativeAudioErrorCode::OutputStreamFailure)
+        );
+
+        let mut shared =
+            shared_with_lane(Arc::new(Mutex::new(RingBuffer::new(1_000))), 1_000, 1, 1.0);
+        shared.fallback_cause = Some(NativePlaybackFallbackCause::SustainedUnderrun);
+        shared.underrun_error_pending = true;
+
+        mark_device_changed(&mut shared);
+        assert_eq!(shared.error_pending, None);
+
+        mark_terminal_runtime_error(
+            &mut shared,
+            NativeAudioErrorCode::DecoderWorkerFailure,
+            DiagnosticSafeCode::DecoderWorkerFailure,
+        );
+        mark_device_changed(&mut shared);
+
+        assert_eq!(
+            shared.error_pending,
+            Some(NativeAudioErrorCode::DecoderWorkerFailure)
+        );
+        assert_eq!(
+            shared.terminal_error,
+            Some(NativeAudioErrorCode::DecoderWorkerFailure)
+        );
+    }
+
+    #[test]
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    fn terminal_error_suppresses_ended_notification_for_the_same_snapshot() {
+        let mut shared =
+            shared_with_lane(Arc::new(Mutex::new(RingBuffer::new(1_000))), 1_000, 1, 1.0);
+        shared.ended_pending = true;
+        mark_terminal_runtime_error(
+            &mut shared,
+            NativeAudioErrorCode::OutputStreamFailure,
+            DiagnosticSafeCode::OutputStreamFailure,
+        );
+
+        let requires_error_handling =
+            shared.terminal_error.is_some() || shared.fallback_cause.is_some();
+
+        assert!(!should_emit_ended(
+            shared.ended_pending,
+            requires_error_handling
+        ));
+        assert!(should_emit_ended(true, false));
+    }
+
     #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
     fn assert_sample_close(actual: f32, expected: f32) {
         assert!(
@@ -2861,7 +3089,7 @@ mod tests {
         )));
         mark_terminal_runtime_error(
             &mut shared.lock().expect("shared lock"),
-            "Native audio output stream disconnected.".to_string(),
+            NativeAudioErrorCode::OutputStreamFailure,
             DiagnosticSafeCode::OutputStreamFailure,
         );
         let (audio_stop_sender, _audio_stop_receiver) = mpsc::channel();
@@ -2887,11 +3115,11 @@ mod tests {
             .expect_err("reject terminal runtime error");
         let snapshot = state.snapshot();
 
-        assert_eq!(error, "Native audio output stream disconnected.");
+        assert_eq!(error, "Native playback output failed.");
         assert!(!snapshot.native_playback_supported);
         assert_eq!(
             snapshot.fallback_reason.as_deref(),
-            Some("Native audio output stream disconnected.")
+            Some("Native playback output failed.")
         );
         assert_eq!(snapshot.state, "paused");
     }

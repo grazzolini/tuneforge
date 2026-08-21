@@ -370,7 +370,7 @@ describe("Desktop app project playback tempo", () => {
 
       emitMockNativePlaybackError({
         sessionId: latestNativeSessionId(),
-        message: "Native playback underrun persisted; falling back to Web Audio.",
+        code: "output_stream_failure",
       });
       await waitFor(() => expect(nativeStopBlock.resolve).not.toBeNull());
       const sourceAudio = findAudioByArtifactId("art_source");
@@ -433,7 +433,7 @@ describe("Desktop app project playback tempo", () => {
 
     emitMockNativePlaybackError({
       sessionId: "stale-native-session",
-      message: "Stale native playback error.",
+      code: "output_stream_failure",
     });
     await waitFor(() => {
       expect(
@@ -444,7 +444,7 @@ describe("Desktop app project playback tempo", () => {
 
     emitMockNativePlaybackError({
       sessionId,
-      message: "Native playback underrun persisted; falling back to Web Audio.",
+      code: "output_stream_failure",
     });
 
     await waitFor(() => {
@@ -460,7 +460,7 @@ describe("Desktop app project playback tempo", () => {
       3,
     );
     expect(window.localStorage.getItem("tuneforge.playback-native-error")).toBe(
-      "Native playback underrun persisted; falling back to Web Audio.",
+      "Native playback output failed.",
     );
     expect(
       getMockInvoke().mock.calls.some(([command]) => command === "audio_stop"),

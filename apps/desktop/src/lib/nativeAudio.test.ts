@@ -33,6 +33,7 @@ import {
   listNativeAudioOutputDevices,
   listenNativeAudioInputFrames,
   listenNativeAudioInputState,
+  listenNativeAudioErrors,
   listenNativeAudioPositions,
   pauseNativeAudio,
   playNativeAudio,
@@ -357,6 +358,23 @@ describe("native audio adapter", () => {
 
     expect(mockListen).toHaveBeenCalledWith("audio://position", expect.any(Function));
     expect(handler).toHaveBeenCalledWith(position);
+    stopListening();
+    expect(unlisten).toHaveBeenCalled();
+  });
+
+  it("wraps code-only native error events", async () => {
+    const unlisten = vi.fn();
+    const error = { sessionId: "session-1", code: "stream_invalidated" as const };
+    mockListen.mockImplementation(async (_eventName, callback) => {
+      callback({ event: "audio://error", id: 1, payload: error });
+      return unlisten;
+    });
+    const handler = vi.fn();
+
+    const stopListening = await listenNativeAudioErrors(handler);
+
+    expect(mockListen).toHaveBeenCalledWith("audio://error", expect.any(Function));
+    expect(handler).toHaveBeenCalledWith(error);
     stopListening();
     expect(unlisten).toHaveBeenCalled();
   });

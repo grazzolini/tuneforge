@@ -5,6 +5,7 @@ import {
   markPlaybackPaused,
   markPlaybackStarting,
   markPlaybackStopped,
+  nativePlaybackErrorMessage,
   readPlaybackLiveDiagnostics,
   readRememberedPlaybackBackend,
   redactPlaybackDiagnosticText,
@@ -31,6 +32,17 @@ describe("playback diagnostics", () => {
       currentState: "not-playing",
       currentPath: "none",
     });
+  });
+
+  it.each([
+    ["device_changed", "Native audio device changed."],
+    ["device_not_available", "Native playback device is unavailable."],
+    ["stream_invalidated", "Native playback stream was interrupted."],
+    ["output_stream_failure", "Native playback output failed."],
+    ["decoder_worker_failure", "Native playback decoder failed."],
+  ] as const)("maps %s to fixed safe text", (code, expected) => {
+    expect(nativePlaybackErrorMessage(code)).toBe(expected);
+    expect(expected).not.toMatch(/\/(?:Users|private)|art_|session_/);
   });
 
   it("does not relabel legacy Web history without an explicit mode", () => {

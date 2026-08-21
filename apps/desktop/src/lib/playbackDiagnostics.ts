@@ -1,5 +1,6 @@
 import type {
   NativeAudioBufferHealth,
+  NativeAudioErrorEvent,
   NativeAudioSnapshot,
 } from "./nativeAudio";
 
@@ -324,4 +325,19 @@ export function playbackErrorMessage(error: unknown) {
     return redactPlaybackDiagnosticText(error);
   }
   return "Playback failed.";
+}
+
+export function nativePlaybackErrorMessage(code: NativeAudioErrorEvent["code"]) {
+  switch (code) {
+    case "device_changed":
+      return "Native audio device changed.";
+    case "device_not_available":
+      return "Native playback device is unavailable.";
+    case "stream_invalidated":
+      return "Native playback stream was interrupted.";
+    case "decoder_worker_failure":
+      return "Native playback decoder failed.";
+    case "output_stream_failure":
+      return "Native playback output failed.";
+  }
 }

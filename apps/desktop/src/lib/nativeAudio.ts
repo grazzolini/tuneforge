@@ -41,7 +41,10 @@ export type NativeAudioDiagnosticSafeCode =
   | "sustained_underrun"
   | "runtime_start_failure"
   | "decoder_worker_failure"
-  | "output_stream_failure";
+  | "output_stream_failure"
+  | "device_changed"
+  | "device_not_available"
+  | "stream_invalidated";
 
 export type NativeAudioDiagnosticCounters = {
   operationCount: number;
@@ -201,7 +204,12 @@ export type NativeAudioPositionEvent = {
 
 export type NativeAudioErrorEvent = {
   sessionId: string | null;
-  message: string;
+  code:
+    | "device_changed"
+    | "device_not_available"
+    | "stream_invalidated"
+    | "output_stream_failure"
+    | "decoder_worker_failure";
 };
 
 export type NativeAudioInputRequest = {

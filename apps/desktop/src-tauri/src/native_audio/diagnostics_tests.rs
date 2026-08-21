@@ -188,6 +188,24 @@ fn safe_code_recording_uses_fixed_atomic_slots_and_resets() {
 }
 
 #[test]
+fn output_route_safe_codes_are_counted_distinctly_without_raw_details() {
+    let (recorder, _) = recorder();
+    let generation = recorder.begin_operation(DiagnosticOperationKind::Play, 1);
+    recorder.record_safe_code(generation, DiagnosticSafeCode::DeviceChanged);
+    recorder.record_safe_code(generation, DiagnosticSafeCode::DeviceNotAvailable);
+    recorder.record_safe_code(generation, DiagnosticSafeCode::StreamInvalidated);
+
+    let export = recorder.export().expect("export");
+    let json = serde_json::to_string(&export).expect("json");
+
+    assert_eq!(export.safe_codes.len(), 3);
+    assert!(json.contains("device_changed"));
+    assert!(json.contains("device_not_available"));
+    assert!(json.contains("stream_invalidated"));
+    assert!(!json.contains("CPAL failure: /private/audio.wav device-id=42"));
+}
+
+#[test]
 fn callback_timestamps_read_clock_only_for_first_winning_event() {
     let (recorder, clock) = recorder();
     let generation = recorder.begin_operation(DiagnosticOperationKind::Play, 1);

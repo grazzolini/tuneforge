@@ -62,6 +62,13 @@ cross-platform owner, backend, diagnostic, and validation rules.
   power protection, starts the Web Audio path at the fallback position, then re-registers system
   media state for the Web Audio owner and acquires the browser wake lock. Diagnostics keep the
   native fallback reason.
+- Native output events carry only a session ID and one safe code: `device_changed`,
+  `device_not_available`, `stream_invalidated`, `output_stream_failure`, or
+  `decoder_worker_failure`. A device change is informational and leaves playback alone.
+  Device loss and stream invalidation retire native playback and hand off once to Web Audio at the
+  synchronously captured, clamped position. Pause, stop, project changes, and unmount cancel a
+  pending handoff. TuneForge never retries native playback automatically; the next explicit Play
+  makes one new native attempt.
 - Failed native prepare/play attempts before audio starts never activate native transport ownership.
 
 ## Linux Build Prerequisites
@@ -138,7 +145,8 @@ are available only when the desktop process starts with
 `TUNEFORGE_NATIVE_AUDIO_DIAGNOSTICS=1`. When enabled, Settings shows **Native Audio Diagnostics**;
 normal builds show no diagnostics panel and native playback takes a zero-generation no-op path. The
 export contains relative monotonic timings, safe counts, fixed buffer capacities, and process RSS
-where supported. Operation timestamps are elapsed from that command's zero point. It never
+where supported. Operation timestamps are elapsed from that command's zero point. Safe route codes
+include `device_changed`, `device_not_available`, and `stream_invalidated`. It never
 contains names, paths, URLs, artifact/project/device/session/lane identifiers, raw decoder errors,
 PCM, or wall-clock timestamps. It is not persisted automatically or sent; **Export sanitized JSON**
 writes a user-selected local copy only when requested.

@@ -84,8 +84,9 @@ Mobile does not bundle FFmpeg. Android uses platform media APIs instead.
 - Import keeps the original file inside app storage.
 - WAV/PCM can be read directly for CPU analysis and basic chord detection.
 - Compressed audio should decode through Android media APIs before waveform or ML processing.
-- Durable app-owned audio is planned to follow the shared WAV/FLAC storage preference; Android
-  platform codecs remain runtime and export capabilities rather than a separate canonical format.
+- Android receives and preserves app-owned PCM16 WAV, FLAC, MP3, and AAC-LC M4A audio. Platform
+  decoding remains a runtime capability; mobile does not expose the desktop storage preference or
+  add an encoder.
 - Desktop currently keeps WAV intermediates and `wav`/`mp3`/`flac` exports through host-installed FFmpeg.
 - Unsupported mobile export formats stay unavailable until a native encoder path exists.
 
@@ -113,19 +114,22 @@ If provider readback is unsupported, the job completes as unverified and no rece
 or mismatched readback fails the job and creates no receipt. Cancellation and app restart also create
 no receipt or automatic retry; a partial provider file may remain after an interrupted write.
 
-The planned durable-storage direction does not preserve the desktop original import as a separate
-canonical file. WAV remains the default, with FLAC as an optional preference for each new durable
-source, stem, saved mix, or other durable audio artifact. The preference is captured when an action
-or job starts; later changes affect future artifacts only. Existing files stay unchanged, so mixed
-WAV/FLAC libraries and mixed-format projects must remain readable. A later explicit background job
-may transcode existing durable files without rerunning analysis, stems, lyrics, chords, beats, or
-other model pipelines.
+Desktop does not preserve the original import as a separate canonical file. WAV/PCM remains the
+default; Settings can choose WAV/PCM, FLAC, MP3 at 192 kbps, or AAC-LC M4A at 192 kbps for each new
+durable source, stem set, saved mix, or bulk stem refresh. The choice is captured before the action
+starts. Later changes affect future artifacts only, existing and queued work remains unchanged, and
+temporary processing audio remains WAV. Mixed-format libraries and projects remain readable. MP3
+and M4A require an explicit irreversible-quality confirmation. A later explicit background job may
+transcode existing durable files without rerunning analysis, stems, lyrics, chords, beats, or other
+model pipelines.
 
-Sync preserves the format received from the sender instead of applying the receiving peer's local
-preference. The planned WAV/FLAC work must widen current backend and Android source validation to
-accept matching media formats and suffixes in both directions. It assumes all peers run the latest
-TuneForge and does not add version negotiation, compatibility transcoding, or a sync protocol
-redesign.
+Sync preserves the format received from the sender instead of applying a receiving preference.
+Android accepts exact `wav`/`.wav`, `flac`/`.flac`, `mp3`/`.mp3`, and `m4a`/`.m4a` pairs for sources,
+practice mixes, and stems. It verifies size and SHA-256, then performs a bounded container, codec,
+and first-packet readability probe before database commit. Received bytes are not transcoded or
+proxied, and project/artifact identity, format, path, hash, size, metadata, and manifest version are
+preserved. All peers are assumed to run the latest TuneForge; there is no version negotiation,
+compatibility transcode, or sync protocol redesign.
 
 ## Desktop vs Mobile Persistence Parity
 

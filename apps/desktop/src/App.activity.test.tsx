@@ -5560,6 +5560,7 @@ describe("Desktop app activity", () => {
       JSON.stringify({
         defaultBeatAnalysisBackend: "beat-this",
         defaultChordBackend: "crema-advanced",
+        defaultDurableAudioFormat: "m4a",
         defaultStemModel: "htdemucs_ft",
       }),
     );
@@ -5587,6 +5588,7 @@ describe("Desktop app activity", () => {
     await waitFor(() =>
       expect(mockBulkJobs).toHaveBeenCalledWith({
         job_type: "stems",
+        output_format: "m4a",
         chord_backend: "crema-advanced",
         stem_model: "htdemucs_ft",
       }),
@@ -5639,6 +5641,7 @@ describe("Desktop app activity", () => {
     await waitFor(() =>
       expect(mockBulkJobs).toHaveBeenCalledWith({
         job_type: "stems",
+        output_format: "wav",
         chord_backend: "tuneforge-fast",
         chord_backend_fallback_from: "crema-advanced",
         stem_model: "htdemucs_ft",

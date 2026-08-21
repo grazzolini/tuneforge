@@ -5,6 +5,7 @@ import {
   resetAppTestHarness,
   mockDeleteProject,
   mockGetProject,
+  mockGetExportCapabilities,
   mockImportProject,
   mockListProjects,
   mockOpen,
@@ -394,6 +395,7 @@ describe("Desktop app library", () => {
     expect(mockImportProject).toHaveBeenCalledWith({
       source_path: "/tmp/new-song.mp4",
       copy_into_project: true,
+      output_format: "wav",
       beat_backend: "beat-this",
       chord_backend: "crema-advanced",
       stem_model: "htdemucs_6s",
@@ -408,6 +410,28 @@ describe("Desktop app library", () => {
     );
     expect(await screen.findByRole("heading", { name: "New Song" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Hide Inspector" })).toBeInTheDocument();
+  });
+
+  it("keeps Android imports on backend-default WAV and omits the hidden desktop preference", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultDurableAudioFormat: "m4a" }),
+    );
+    mockGetExportCapabilities.mockResolvedValueOnce({
+      capabilities: {
+        platform: "android",
+        formats: [{ id: "wav", available: true, reason: null }],
+        destinations: [],
+        max_artifact_count: 1,
+      },
+    });
+    mockOpen.mockResolvedValue("/tmp/mobile-song.wav");
+    renderApp(["/"]);
+
+    await user.click(await screen.findByRole("button", { name: "Import Track(s)" }));
+    await waitFor(() => expect(mockImportProject).toHaveBeenCalled());
+    expect(mockImportProject.mock.calls[0]?.[0]).not.toHaveProperty("output_format");
   });
 
   it("imports multiple tracks in order and stays on the library", async () => {
@@ -436,6 +460,7 @@ describe("Desktop app library", () => {
       expect(payload).toEqual(
         expect.objectContaining({
           copy_into_project: true,
+          output_format: "wav",
           beat_backend: "beat-this",
           chord_backend: "crema-advanced",
           stem_model: "htdemucs_ft",
@@ -451,6 +476,36 @@ describe("Desktop app library", () => {
     );
     expect(screen.getByRole("heading", { name: "Practice Projects" })).toBeInTheDocument();
     expect(mockGetProject).not.toHaveBeenCalled();
+  });
+
+  it("keeps one captured durable format across a batch when Settings changes after the picker opens", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultDurableAudioFormat: "flac" }),
+    );
+    let resolveSelection: ((value: string[]) => void) | null = null;
+    mockOpen.mockImplementationOnce(
+      () => new Promise<string[]>((resolve) => {
+        resolveSelection = resolve;
+      }),
+    );
+    renderApp(["/"]);
+
+    await user.click(await screen.findByRole("button", { name: "Import Track(s)" }));
+    await waitFor(() => expect(mockOpen).toHaveBeenCalled());
+    await user.click(screen.getByRole("link", { name: "Settings" }));
+    const m4a = await screen.findByRole("button", { name: /^M4A \(AAC-LC, 192 kbps\)/ });
+    await waitFor(() => expect(m4a).toBeEnabled());
+    await user.click(m4a);
+
+    await act(async () => {
+      resolveSelection?.(["/tmp/batch-one.wav", "/tmp/batch-two.wav"]);
+    });
+    await waitFor(() => expect(mockImportProject).toHaveBeenCalledTimes(2));
+    for (const [payload] of mockImportProject.mock.calls) {
+      expect(payload).toHaveProperty("output_format", "flac");
+    }
   });
 
   it("shows truthful pending guidance while choosing files and importing selected tracks", async () => {
@@ -745,6 +800,7 @@ describe("Desktop app library", () => {
       JSON.stringify({
         defaultChordBackend: "crema-advanced",
         defaultBeatAnalysisBackend: "beat-this",
+        defaultDurableAudioFormat: "flac",
         defaultSourcesRailCollapsed: false,
         defaultStemModel: "htdemucs_ft",
       }),
@@ -759,6 +815,7 @@ describe("Desktop app library", () => {
     expect(mockImportProject).toHaveBeenCalledWith({
       source_path: "/tmp/new-song.mp4",
       copy_into_project: true,
+      output_format: "flac",
       beat_backend: "beat-this",
       chord_backend: "crema-advanced",
       stem_model: "htdemucs_ft",
@@ -803,6 +860,7 @@ describe("Desktop app library", () => {
     expect(mockImportProject).toHaveBeenCalledWith({
       source_path: "/tmp/new-song.mp4",
       copy_into_project: true,
+      output_format: "wav",
       beat_backend: "beat-this",
       chord_backend: "tuneforge-fast",
       stem_model: "htdemucs_6s",
@@ -830,6 +888,7 @@ describe("Desktop app library", () => {
     expect(mockImportProject).toHaveBeenCalledWith({
       source_path: "/tmp/new-song.mp4",
       copy_into_project: true,
+      output_format: "wav",
       beat_backend: "built-in",
       chord_backend: "crema-advanced",
       stem_model: "htdemucs_6s",

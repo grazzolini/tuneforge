@@ -627,6 +627,13 @@ mod tests {
     const MANIFEST_ID: &str = "manifest/source v1";
     const ORIGIN: &str = "http://tauri.localhost";
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
+    static SERVER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn server_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        SERVER_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     struct TestDirectory(PathBuf);
 
@@ -679,6 +686,7 @@ mod tests {
 
     #[test]
     fn lazy_server_starts_once_for_concurrent_callers() {
+        let _server_test_guard = server_test_guard();
         let directory = TestDirectory::new();
         let path = directory.0.join("fixture.wav");
         fs::write(&path, b"media").unwrap();
@@ -708,6 +716,7 @@ mod tests {
 
     #[test]
     fn lazy_server_can_retry_after_start_failure() {
+        let _server_test_guard = server_test_guard();
         let directory = TestDirectory::new();
         let path = directory.0.join("fixture.wav");
         fs::write(&path, b"media").unwrap();
@@ -732,13 +741,17 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
+            Self::new_with_content_type("audio/wav")
+        }
+
+        fn new_with_content_type(content_type: &'static str) -> Self {
             let directory = TestDirectory::new();
             let path = directory.0.join("fixture.wav");
             let bytes = (0..STREAM_BUFFER_BYTES * 3 + 17)
                 .map(|index| (index % 251) as u8)
                 .collect::<Vec<_>>();
             fs::write(&path, &bytes).unwrap();
-            let server = start_server(&path, "audio/wav");
+            let server = start_server(&path, content_type);
             Self {
                 server,
                 _directory: directory,
@@ -805,6 +818,7 @@ mod tests {
 
     #[test]
     fn serves_full_head_options_and_rejects_methods_and_origins() {
+        let _server_test_guard = server_test_guard();
         let fixture = Fixture::new();
         let response = fixture.exchange(&fixture.request_text("GET", ""));
         let (headers, body) = split_response(&response);
@@ -882,6 +896,7 @@ mod tests {
 
     #[test]
     fn serves_closed_open_and_suffix_ranges_without_a_response_cap() {
+        let _server_test_guard = server_test_guard();
         let fixture = Fixture::new();
         for (range, start, end) in [
             ("bytes=10-19", 10, 19),
@@ -907,7 +922,20 @@ mod tests {
     }
 
     #[test]
+    fn maps_exact_manifest_durable_audio_formats_to_web_mime_types() {
+        for (format, content_type) in [
+            ("wav", "audio/wav"),
+            ("flac", "audio/flac"),
+            ("mp3", "audio/mpeg"),
+            ("m4a", "audio/mp4"),
+        ] {
+            assert_eq!(content_type_for_format(format), Some(content_type));
+        }
+    }
+
+    #[test]
     fn rejects_malformed_multiple_and_unsatisfiable_ranges_and_shuts_down() {
+        let _server_test_guard = server_test_guard();
         let fixture = Fixture::new();
         for headers in [
             "Range: items=0-1\r\n".to_string(),
@@ -929,6 +957,7 @@ mod tests {
 
     #[test]
     fn shutdown_interrupts_an_incomplete_request() {
+        let _server_test_guard = server_test_guard();
         let fixture = Fixture::new();
         let mut stream = TcpStream::connect(fixture.server.address).unwrap();
         write!(
@@ -946,6 +975,7 @@ mod tests {
 
     #[test]
     fn shutdown_interrupts_a_stalled_large_response() {
+        let _server_test_guard = server_test_guard();
         let directory = TestDirectory::new();
         let path = directory.0.join("large.wav");
         std::fs::File::create(&path)

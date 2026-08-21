@@ -7,6 +7,12 @@ import { api, type BulkJobRequest, type BulkJobsResponse, type JobSchema, type P
 import { formatLocalDateTime, normalizeApiDateTime, parseApiDateTime } from "../../lib/datetime";
 import { useLazyLoadSentinel } from "../../lib/useLazyLoadSentinel";
 import { usePreferences } from "../../lib/preferences";
+import {
+  DURABLE_AUDIO_CAPABILITIES_QUERY_KEY,
+  durableAudioFormatLabel,
+  requireDurableAudioActionFormat,
+  type DurableAudioActionFormat,
+} from "../../lib/durableAudio";
 import { useBeatBackendActionSelection } from "../projects/hooks/useBeatBackendActionSelection";
 import { useChordBackendActionSelection } from "../projects/hooks/useChordBackendActionSelection";
 import {
@@ -78,6 +84,9 @@ const BULK_JOB_ACTIONS = [
 
 type ActivityTab = (typeof ACTIVITY_TABS)[number]["id"];
 type BulkJobAction = (typeof BULK_JOB_ACTIONS)[number];
+type BulkJobMutationAction = BulkJobAction & {
+  durableFormat?: DurableAudioActionFormat;
+};
 type BulkJobSkippedProject = BulkJobsResponse["skipped"][number];
 
 type DisplayJob = {
@@ -367,10 +376,11 @@ export function ActivityView() {
     action: BulkJobAction;
     response: BulkJobsResponse;
   } | null>(null);
+  const [bulkPreflightError, setBulkPreflightError] = useState<string | null>(null);
   const deferredSearch = useDeferredValue(searchDraft.trim());
   const previousActiveJobIds = useRef<Set<string>>(new Set());
   const queryClient = useQueryClient();
-  const { defaultStemModel } = usePreferences();
+  const { defaultDurableAudioFormat, defaultStemModel } = usePreferences();
   const { beatBackendForAction } = useBeatBackendActionSelection();
   const { chordBackendForAction } = useChordBackendActionSelection();
   const activeJobsQueryKey = useMemo(
@@ -475,7 +485,7 @@ export function ActivityView() {
     },
   });
   const bulkJobsMutation = useMutation({
-    mutationFn: async (action: BulkJobAction) => {
+    mutationFn: async (action: BulkJobMutationAction) => {
       const request: BulkJobRequest = { job_type: action.jobType };
       if (action.jobType === "analyze") {
         const beatBackendSelection = await beatBackendForAction();
@@ -490,6 +500,9 @@ export function ActivityView() {
       }
       if (action.jobType === "stems") {
         request.stem_model = defaultStemModel;
+        if (action.durableFormat?.outputFormat) {
+          request.output_format = action.durableFormat.outputFormat;
+        }
       }
       return api.bulkJobs(request);
     },
@@ -559,7 +572,28 @@ export function ActivityView() {
   async function handleBulkJobAction(action: BulkJobAction) {
     bulkJobsMutation.reset();
     setBulkJobResult(null);
-    const approved = await confirm(action.confirmBody, {
+    setBulkPreflightError(null);
+    let durableFormat: DurableAudioActionFormat | undefined;
+    try {
+      if (action.jobType === "stems") {
+        const preferredFormat = defaultDurableAudioFormat;
+        const { capabilities } = await queryClient.fetchQuery({
+          queryKey: DURABLE_AUDIO_CAPABILITIES_QUERY_KEY,
+          queryFn: api.getExportCapabilities,
+          staleTime: Infinity,
+        });
+        durableFormat = requireDurableAudioActionFormat(capabilities, preferredFormat);
+      }
+    } catch (error) {
+      setBulkPreflightError(
+        error instanceof Error ? error.message : "Could not check audio format availability.",
+      );
+      return;
+    }
+    const confirmBody = durableFormat
+      ? `${action.confirmBody} New stems will use ${durableAudioFormatLabel(durableFormat.format)}.`
+      : action.confirmBody;
+    const approved = await confirm(confirmBody, {
       title: action.confirmTitle,
       kind: "warning",
       okLabel: action.okLabel,
@@ -568,7 +602,7 @@ export function ActivityView() {
     if (!approved) {
       return;
     }
-    bulkJobsMutation.mutate(action);
+    bulkJobsMutation.mutate({ ...action, durableFormat });
   }
 
   return (
@@ -665,11 +699,11 @@ export function ActivityView() {
             </div>
           ) : null}
 
-          {bulkJobsMutation.isError ? (
+          {bulkPreflightError || bulkJobsMutation.isError ? (
             <div className="activity-jobs-panel__state activity-jobs-panel__state--error" role="alert">
-              {bulkJobsMutation.error instanceof Error
+              {bulkPreflightError ?? (bulkJobsMutation.error instanceof Error
                 ? bulkJobsMutation.error.message
-                : "Could not queue bulk jobs."}
+                : "Could not queue bulk jobs.")}
             </div>
           ) : null}
 

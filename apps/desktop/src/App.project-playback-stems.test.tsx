@@ -69,6 +69,10 @@ describe("Desktop app project playback stems", () => {
 
   it("switches between source playback and stems", async () => {
     const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultDurableAudioFormat: "mp3" }),
+    );
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
@@ -79,7 +83,7 @@ describe("Desktop app project playback stems", () => {
       expect.objectContaining({
         mode: "stems",
         stem_model: "htdemucs_6s",
-        output_format: "wav",
+        output_format: "mp3",
         force: false,
         source_artifact_id: "art_source",
       }),

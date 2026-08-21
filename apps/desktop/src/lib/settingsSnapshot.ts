@@ -13,7 +13,7 @@ import {
 import { isThemeVariableName, type ThemeOverrides } from "./themeTokens";
 
 export const SETTINGS_SNAPSHOT_KIND = "tuneforge.settings";
-export const SETTINGS_SNAPSHOT_VERSION = 1;
+export const SETTINGS_SNAPSHOT_VERSION = 2;
 const SETTINGS_PARSE_ERROR = "Could not parse the settings file.";
 const SETTINGS_UNSUPPORTED_ERROR = "Unsupported settings file.";
 const REQUIRED_PREFERENCE_KEYS = [
@@ -27,6 +27,7 @@ const REQUIRED_PREFERENCE_KEYS = [
   "defaultBeatAnalysisBackend",
   "defaultChordBackend",
   "defaultStemModel",
+  "defaultDurableAudioFormat",
   "defaultLyricsFollowEnabled",
   "defaultChordsFollowEnabled",
   "defaultTunerInputDeviceId",
@@ -83,14 +84,17 @@ function requireSupported(condition: boolean): asserts condition {
   }
 }
 
-function validateExportedAt(value: unknown) {
+function validateExportedAt(value: unknown): asserts value is string {
   requireSupported(typeof value === "string" && value.trim().length > 0);
   requireSupported(Number.isFinite(Date.parse(value)));
 }
 
-function validatePreferences(value: unknown): UiPreferences {
+function validatePreferences(value: unknown, version: 1 | 2): UiPreferences {
   requireSupported(isRecord(value));
   for (const key of REQUIRED_PREFERENCE_KEYS) {
+    if (version === 1 && key === "defaultDurableAudioFormat") {
+      continue;
+    }
     requireSupported(hasOwn(value, key));
   }
   requireSupported(isOneOf(value.informationDensity, ["minimal", "balanced", "detailed"]));
@@ -103,6 +107,9 @@ function validatePreferences(value: unknown): UiPreferences {
   requireSupported(isOneOf(value.defaultBeatAnalysisBackend, ["built-in", "beat-this"]));
   requireSupported(isOneOf(value.defaultChordBackend, ["tuneforge-fast", "crema-advanced"]));
   requireSupported(isOneOf(value.defaultStemModel, ["htdemucs_6s", "htdemucs_ft"]));
+  if (version === 2) {
+    requireSupported(isOneOf(value.defaultDurableAudioFormat, ["wav", "flac", "mp3", "m4a"]));
+  }
   requireSupported(typeof value.defaultLyricsFollowEnabled === "boolean");
   requireSupported(typeof value.defaultChordsFollowEnabled === "boolean");
   requireSupported(value.defaultTunerInputDeviceId === null || typeof value.defaultTunerInputDeviceId === "string");
@@ -113,7 +120,9 @@ function validatePreferences(value: unknown): UiPreferences {
       value.defaultTunerReferenceHz <= MAX_TUNER_REFERENCE_HZ,
   );
   requireSupported(isOneOf(value.defaultTunerVisualMode, ["simple", "wide-arc"]));
-  return normalizePreferences(value);
+  return normalizePreferences(
+    version === 1 ? { ...value, defaultDurableAudioFormat: "wav" } : value,
+  );
 }
 
 function validateThemeOverrides(value: unknown): ThemeOverrides {
@@ -146,10 +155,11 @@ export function parseSettingsSnapshot(text: string): SettingsSnapshot {
     throw new Error(SETTINGS_PARSE_ERROR);
   }
 
-  const candidate = parsed as Partial<SettingsSnapshot>;
+  const candidate = parsed;
+  const version = candidate.version;
   if (
     candidate.kind !== SETTINGS_SNAPSHOT_KIND ||
-    candidate.version !== SETTINGS_SNAPSHOT_VERSION
+    (version !== 1 && version !== SETTINGS_SNAPSHOT_VERSION)
   ) {
     throw new Error(SETTINGS_UNSUPPORTED_ERROR);
   }
@@ -158,7 +168,7 @@ export function parseSettingsSnapshot(text: string): SettingsSnapshot {
 
   return buildSettingsSnapshot({
     exportedAt: candidate.exportedAt,
-    preferences: validatePreferences(candidate.preferences),
+    preferences: validatePreferences(candidate.preferences, version),
     themeOverrides: validateThemeOverrides(candidate.themeOverrides),
     themePreference: validateThemePreference(candidate.themePreference),
   });

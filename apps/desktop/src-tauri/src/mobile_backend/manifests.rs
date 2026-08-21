@@ -3,6 +3,7 @@ use super::storage_cleanup::{
     project_storage_mutation_guard, require_owned_project_file,
 };
 use super::*;
+use crate::native_audio::decode::probe_mobile_durable_audio;
 
 pub(super) fn normalize_sync_status(value: &str) -> Result<String, String> {
     let normalized = value.trim().to_ascii_lowercase();
@@ -901,6 +902,21 @@ pub(super) fn import_sync_project_manifest(
         if let Err(message) = require_owned_project_file(copied) {
             cleanup_owned_project_files(&copied_paths);
             return Err(message);
+        }
+    }
+
+    for prepared in &prepared_artifacts {
+        if prepared.staged_path.is_none() {
+            continue;
+        }
+        let Some(format) = durable_manifest_audio_format(&prepared.manifest) else {
+            continue;
+        };
+        if let Err(message) = probe_mobile_durable_audio(&prepared.destination_path, format) {
+            cleanup_owned_project_files(&copied_paths);
+            return Err(format!(
+                "Synced durable audio failed bounded {format} validation: {message}"
+            ));
         }
     }
 

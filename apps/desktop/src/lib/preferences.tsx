@@ -13,6 +13,10 @@ import {
   normalizeLoopAlignmentMode,
   type LoopAlignmentMode,
 } from "./timingGrid";
+import {
+  isDurableAudioFormat,
+  type DurableAudioFormat,
+} from "./durableAudio";
 
 export type InformationDensity = "minimal" | "balanced" | "detailed";
 export type ProjectWorkspaceMode = "project" | "playback";
@@ -39,6 +43,7 @@ export type UiPreferences = {
   defaultBeatAnalysisBackend: DefaultBeatAnalysisBackend;
   defaultChordBackend: DefaultChordBackend;
   defaultStemModel: DefaultStemModel;
+  defaultDurableAudioFormat: DurableAudioFormat;
   defaultLyricsFollowEnabled: boolean;
   defaultChordsFollowEnabled: boolean;
   defaultTunerInputDeviceId: string | null;
@@ -52,6 +57,7 @@ export type AnalysisPreferences = Pick<
   UiPreferences,
   "defaultBeatAnalysisBackend" | "defaultChordBackend" | "defaultStemModel"
 >;
+export type AudioStoragePreferences = Pick<UiPreferences, "defaultDurableAudioFormat">;
 export type TunerPreferences = Pick<
   UiPreferences,
   "defaultTunerInputDeviceId" | "defaultTunerReferenceHz" | "defaultTunerVisualMode"
@@ -78,6 +84,7 @@ type PreferencesContextValue = UiPreferences & {
   setDefaultBeatAnalysisBackend: (value: DefaultBeatAnalysisBackend) => void;
   setDefaultChordBackend: (value: DefaultChordBackend) => void;
   setDefaultStemModel: (value: DefaultStemModel) => void;
+  setDefaultDurableAudioFormat: (value: DurableAudioFormat) => void;
   setDefaultLyricsFollowEnabled: (value: boolean) => void;
   setDefaultChordsFollowEnabled: (value: boolean) => void;
   setDefaultTunerInputDeviceId: (value: string | null) => void;
@@ -87,6 +94,7 @@ type PreferencesContextValue = UiPreferences & {
   resetAppearancePreferences: () => void;
   resetNotationPreferences: () => void;
   resetAnalysisPreferences: () => void;
+  resetAudioStoragePreferences: () => void;
   resetTunerPreferences: () => void;
   resetVisibilityPreferences: () => void;
   resetPreferences: () => void;
@@ -106,6 +114,10 @@ export const DEFAULT_ANALYSIS_PREFERENCES: AnalysisPreferences = {
   defaultBeatAnalysisBackend: "beat-this",
   defaultChordBackend: "crema-advanced",
   defaultStemModel: "htdemucs_6s",
+};
+
+export const DEFAULT_AUDIO_STORAGE_PREFERENCES: AudioStoragePreferences = {
+  defaultDurableAudioFormat: "wav",
 };
 
 export const DEFAULT_TUNER_PREFERENCES: TunerPreferences = {
@@ -128,6 +140,7 @@ export const DEFAULT_PREFERENCES: UiPreferences = {
   ...DEFAULT_APPEARANCE_PREFERENCES,
   ...DEFAULT_NOTATION_PREFERENCES,
   ...DEFAULT_ANALYSIS_PREFERENCES,
+  ...DEFAULT_AUDIO_STORAGE_PREFERENCES,
   ...DEFAULT_TUNER_PREFERENCES,
   ...DEFAULT_VISIBILITY_PREFERENCES,
 };
@@ -232,6 +245,9 @@ export function normalizePreferences(value: unknown): UiPreferences {
     defaultStemModel: isDefaultStemModel(candidate.defaultStemModel)
       ? candidate.defaultStemModel
       : DEFAULT_PREFERENCES.defaultStemModel,
+    defaultDurableAudioFormat: isDurableAudioFormat(candidate.defaultDurableAudioFormat)
+      ? candidate.defaultDurableAudioFormat
+      : DEFAULT_PREFERENCES.defaultDurableAudioFormat,
     defaultTunerInputDeviceId: normalizeTunerInputDeviceId(candidate.defaultTunerInputDeviceId),
     defaultTunerReferenceHz: normalizeTunerReferenceHz(candidate.defaultTunerReferenceHz),
     defaultTunerVisualMode: isTunerVisualMode(candidate.defaultTunerVisualMode)
@@ -318,6 +334,9 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       setDefaultStemModel: (defaultStemModel) => {
         setPreferences((current) => mergePreferences(current, { defaultStemModel }));
       },
+      setDefaultDurableAudioFormat: (defaultDurableAudioFormat) => {
+        setPreferences((current) => mergePreferences(current, { defaultDurableAudioFormat }));
+      },
       setDefaultLyricsFollowEnabled: (defaultLyricsFollowEnabled) => {
         setPreferences((current) => mergePreferences(current, { defaultLyricsFollowEnabled }));
       },
@@ -354,6 +373,9 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       },
       resetAnalysisPreferences: () => {
         setPreferences((current) => mergePreferences(current, DEFAULT_ANALYSIS_PREFERENCES));
+      },
+      resetAudioStoragePreferences: () => {
+        setPreferences((current) => mergePreferences(current, DEFAULT_AUDIO_STORAGE_PREFERENCES));
       },
       resetTunerPreferences: () => {
         setPreferences((current) => mergePreferences(current, DEFAULT_TUNER_PREFERENCES));

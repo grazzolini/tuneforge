@@ -13,6 +13,10 @@ import {
 } from "../../../lib/api";
 import { usePreferences } from "../../../lib/preferences";
 import {
+  DURABLE_AUDIO_CAPABILITIES_QUERY_KEY,
+  requireDurableAudioActionFormat,
+} from "../../../lib/durableAudio";
+import {
   normalizeAnalysisTimingGrid,
   normalizeLoopAlignmentMode,
   snapLoopPointToTiming,
@@ -302,6 +306,7 @@ export function useProjectViewModel() {
     defaultLyricsFollowEnabled,
     defaultProjectWorkspace,
     defaultSourcesRailCollapsed,
+    defaultDurableAudioFormat,
     defaultStemModel,
     enharmonicDisplayMode,
     informationDensity,
@@ -629,12 +634,20 @@ export function useProjectViewModel() {
         throw new Error("Choose a tuning or key change first.");
       }
 
+      const preferredFormat = defaultDurableAudioFormat;
+      const { capabilities } = await queryClient.fetchQuery({
+        queryKey: DURABLE_AUDIO_CAPABILITIES_QUERY_KEY,
+        queryFn: api.getExportCapabilities,
+        staleTime: Infinity,
+      });
+      const durableFormat = requireDurableAudioActionFormat(capabilities, preferredFormat);
+
       pendingPreviewSelection.current = {
         previousLatestPreviewArtifactId: latestPreviewArtifact?.id ?? null,
       };
 
       return api.createPreview(projectId, {
-        output_format: "wav",
+        ...(durableFormat.outputFormat ? { output_format: durableFormat.outputFormat } : {}),
         retune:
           retuneMode === "reference"
             ? { target_reference_hz: Number(referenceHz) }
@@ -661,11 +674,18 @@ export function useProjectViewModel() {
       if (!selectedPrimaryArtifactId) {
         throw new Error("Select source audio or practice mix first.");
       }
+      const preferredFormat = defaultDurableAudioFormat;
+      const { capabilities } = await queryClient.fetchQuery({
+        queryKey: DURABLE_AUDIO_CAPABILITIES_QUERY_KEY,
+        queryFn: api.getExportCapabilities,
+        staleTime: Infinity,
+      });
+      const durableFormat = requireDurableAudioActionFormat(capabilities, preferredFormat);
       const backendSelection = await chordBackendForAction();
       return api.createStems(projectId, {
         mode: "stems",
         stem_model: defaultStemModel,
-        output_format: "wav",
+        ...(durableFormat.outputFormat ? { output_format: durableFormat.outputFormat } : {}),
         chord_backend: backendSelection.backend,
         chord_backend_fallback_from: backendSelection.backend_fallback_from,
         force: hasVisibleStems,

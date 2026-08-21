@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import SessionLocal
+from app.engines.audio_encoding import DurableAudioFormat, encode_audio
 from app.models import (
     AnalysisResult,
     Artifact,
@@ -1357,7 +1358,7 @@ def test_issue119_staging_cleanup_keeps_shared_hash_until_all_references_import(
     tmp_path: Path,
 ) -> None:
     _ensure_identity_and_peers("peer-issue119-shared-hash")
-    shared_stem_bytes = b"shared issue119 stem bytes"
+    shared_stem_bytes = _wav_bytes(frame_count=72)
 
     with SessionLocal() as session:
         first = _create_project_with_artifacts(
@@ -2719,9 +2720,11 @@ def test_issue120_stale_inventory_cannot_import_without_verified_staged_size(
         } == {fixture.source_artifact_id, fixture.stem_artifact_id}
 
 
+@pytest.mark.parametrize("output_format", ["wav", "flac", "mp3", "m4a"])
 def test_issue120_existing_project_imports_late_manifest_artifacts(
     client: TestClient,
     tmp_path: Path,
+    output_format: DurableAudioFormat,
 ) -> None:
     _ensure_identity_and_peers("peer-issue120-late-artifact")
 
@@ -2738,11 +2741,29 @@ def test_issue120_existing_project_imports_late_manifest_artifacts(
         assert late_artifact is not None
         session.delete(late_artifact)
         late_artifact_path.unlink()
+        source_path = tmp_path / "issue120-late-artifact-source.wav"
+        source_path.write_bytes(fixture.artifact_bytes[fixture.stem_artifact_id])
+        encoded_path = tmp_path / f"issue120-late-artifact.{output_format}"
+        encode_audio(source_path, encoded_path, output_format)
+        encoded_bytes = encoded_path.read_bytes()
+        encoded_hash = file_sha256(encoded_path)
+        assert encoded_hash is not None
+        remote_artifact = _artifact_by_id(manifest, fixture.stem_artifact_id)
+        remote_artifact.update(
+            {
+                "format": output_format,
+                "relative_path": Path(fixture.stem_relative_path)
+                .with_suffix(f".{output_format}")
+                .as_posix(),
+                "content_sha256": encoded_hash,
+                "size_bytes": len(encoded_bytes),
+            }
+        )
         _stage_manifest_artifact_content(
             session,
             manifest,
             tmp_path=tmp_path,
-            artifact_bytes=fixture.artifact_bytes,
+            artifact_bytes={fixture.stem_artifact_id: encoded_bytes},
             provider_device_id="peer-issue120-late-artifact",
             artifact_id=fixture.stem_artifact_id,
         )
@@ -2783,8 +2804,82 @@ def test_issue120_existing_project_imports_late_manifest_artifacts(
         assert Path(restored_artifact.path).exists()
         assert restored_artifact.project_id == fixture.project_id
         assert restored_artifact.type == "vocals"
+        assert restored_artifact.format == output_format
+        assert Path(restored_artifact.path).suffix == f".{output_format}"
         assert restored_artifact.metadata_json == {"source_artifact_id": fixture.source_artifact_id}
-        assert restored_artifact.content_sha256 == fixture.artifact_hashes[fixture.stem_artifact_id]
+        assert restored_artifact.content_sha256 == encoded_hash
+        assert Path(restored_artifact.path).read_bytes() == encoded_bytes
+
+
+def test_issue120_late_durable_artifact_rejects_corrupt_staged_bytes(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    peer_id = "peer-issue120-corrupt-durable"
+    _ensure_identity_and_peers(peer_id)
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(
+            session,
+            tmp_path,
+            slug="issue120-corrupt-durable",
+            source_frames=129,
+        )
+        manifest = _jsonable_manifest(export_project_manifest(session, project_id=fixture.project_id))
+        late_artifact = session.get(Artifact, fixture.stem_artifact_id)
+        assert late_artifact is not None
+        destination_path = Path(late_artifact.path)
+        session.delete(late_artifact)
+        destination_path.unlink()
+        corrupt_bytes = b"not an audio stream"
+        corrupt_path = tmp_path / "corrupt-durable.wav"
+        corrupt_hash, corrupt_size = _write_bytes(corrupt_path, corrupt_bytes)
+        remote_artifact = _artifact_by_id(manifest, fixture.stem_artifact_id)
+        remote_artifact.update(
+            {
+                "content_sha256": corrupt_hash,
+                "size_bytes": corrupt_size,
+            }
+        )
+        _stage_manifest_artifact_content(
+            session,
+            manifest,
+            tmp_path=tmp_path,
+            artifact_bytes={fixture.stem_artifact_id: corrupt_bytes},
+            provider_device_id=peer_id,
+            artifact_id=fixture.stem_artifact_id,
+        )
+        session.commit()
+
+    response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": _empty_remote_library(),
+            "project_manifests": [manifest],
+            "peer_inventory": [
+                {
+                    "device_id": peer_id,
+                    "available_content_sha256": [corrupt_hash],
+                }
+            ],
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["failed_actions"] == 1
+    assert any(
+        result["action"]["action_type"] == "import_artifact_manifest"
+        and result["action"]["item_id"] == fixture.stem_artifact_id
+        and result["status"] == "failed"
+        and result["details"]["error_code"] == "SYNC_MANIFEST_DURABLE_AUDIO_INVALID"
+        for result in payload["results"]
+    )
+    with SessionLocal() as session:
+        assert session.get(Artifact, fixture.stem_artifact_id) is None
+        assert not destination_path.exists()
+        assert session.get(SyncStagedArtifact, corrupt_hash) is not None
 
 
 def test_issue120_late_manifest_copy_mismatch_does_not_persist_artifact(
@@ -3223,14 +3318,22 @@ def test_regenerated_stem_newer_than_local_tombstone_applies_without_conflict(
                 updated_at=deleted_at,
             )
         )
-        remote_bytes = f"remotely regenerated {slug} bytes".encode()
-        remote_hash, remote_size = _write_bytes(
-            tmp_path / slug / "remote-vocals.wav",
-            remote_bytes,
-        )
+        remote_wav_path = tmp_path / slug / "remote-vocals-source.wav"
+        remote_wav_path.parent.mkdir(parents=True, exist_ok=True)
+        remote_wav_path.write_bytes(_wav_bytes(frame_count=144))
+        remote_path = tmp_path / slug / "remote-vocals.flac"
+        encode_audio(remote_wav_path, remote_path, "flac")
+        remote_bytes = remote_path.read_bytes()
+        remote_hash = file_sha256(remote_path)
+        assert remote_hash is not None
+        remote_size = len(remote_bytes)
         remote_stem = _artifact_by_id(manifest, fixture.stem_artifact_id)
         remote_stem.update(
             {
+                "format": "flac",
+                "relative_path": Path(remote_stem["relative_path"])
+                .with_suffix(".flac")
+                .as_posix(),
                 "content_sha256": remote_hash,
                 "size_bytes": remote_size,
                 "created_at": remote_regenerated_at.isoformat(),
@@ -3249,15 +3352,27 @@ def test_regenerated_stem_newer_than_local_tombstone_applies_without_conflict(
         )
         remote_sibling_hash: str | None = None
         remote_sibling_size: int | None = None
+        old_sibling_path: Path | None = None
         if live_sibling_artifact_id is not None and sibling_metadata is not None:
-            remote_sibling_bytes = b"remotely regenerated sibling instrumental bytes"
-            remote_sibling_hash, remote_sibling_size = _write_bytes(
-                tmp_path / slug / "remote-instrumental.wav",
-                remote_sibling_bytes,
-            )
+            sibling_artifact = session.get(Artifact, live_sibling_artifact_id)
+            assert sibling_artifact is not None
+            old_sibling_path = Path(sibling_artifact.path)
+            sibling_wav_path = tmp_path / slug / "remote-instrumental-source.wav"
+            sibling_wav_path.parent.mkdir(parents=True, exist_ok=True)
+            sibling_wav_path.write_bytes(_wav_bytes(frame_count=152))
+            remote_sibling_path = tmp_path / slug / "remote-instrumental.flac"
+            encode_audio(sibling_wav_path, remote_sibling_path, "flac")
+            remote_sibling_bytes = remote_sibling_path.read_bytes()
+            remote_sibling_hash = file_sha256(remote_sibling_path)
+            assert remote_sibling_hash is not None
+            remote_sibling_size = len(remote_sibling_bytes)
             remote_sibling = _artifact_by_id(manifest, live_sibling_artifact_id)
             remote_sibling.update(
                 {
+                    "format": "flac",
+                    "relative_path": Path(remote_sibling["relative_path"])
+                    .with_suffix(".flac")
+                    .as_posix(),
                     "content_sha256": remote_sibling_hash,
                     "size_bytes": remote_sibling_size,
                     "created_at": remote_regenerated_at.isoformat(),
@@ -3326,6 +3441,8 @@ def test_regenerated_stem_newer_than_local_tombstone_applies_without_conflict(
         artifact = session.get(Artifact, fixture.stem_artifact_id)
         assert artifact is not None
         assert artifact.type == "vocal_stem"
+        assert artifact.format == "flac"
+        assert Path(artifact.path).suffix == ".flac"
         assert artifact.content_sha256 == remote_hash
         assert artifact.size_bytes == remote_size
         assert artifact.metadata_json["source_artifact_type"] == source_artifact_type
@@ -3334,10 +3451,137 @@ def test_regenerated_stem_newer_than_local_tombstone_applies_without_conflict(
         if live_sibling_artifact_id is not None:
             sibling = session.get(Artifact, live_sibling_artifact_id)
             assert sibling is not None
+            assert sibling.format == "flac"
+            assert Path(sibling.path).suffix == ".flac"
             assert sibling.content_sha256 == remote_sibling_hash
             assert sibling.size_bytes == remote_sibling_size
             assert sibling.created_at.replace(tzinfo=UTC) == remote_regenerated_at
+            assert old_sibling_path is not None
+            assert not old_sibling_path.exists()
         assert session.get(SyncDeleteTombstone, "tomb_local_deleted_regenerated_stem") is None
+
+    replay_response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": {
+                "projects": [manifest["project"]],
+                "artifacts": manifest["artifacts"],
+                "entity_revisions": [],
+                "delete_tombstones": [],
+            },
+            "project_manifests": [manifest],
+            "peer_inventory": [
+                {
+                    "device_id": "peer-regenerated-stem",
+                    "available_content_sha256": available_hashes,
+                }
+            ],
+            "project_ids": [fixture.project_id],
+            "use_content_addressed_staging": True,
+        },
+    )
+    assert replay_response.status_code == 200
+    assert replay_response.json()["summary"]["failed_actions"] == 0
+
+
+def test_format_changing_regenerated_stem_failure_preserves_local_bytes(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    peer_id = "peer-invalid-regenerated-stem"
+    _ensure_identity_and_peers(peer_id)
+    remote_regenerated_at = datetime(2026, 1, 3, tzinfo=UTC)
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(
+            session,
+            tmp_path,
+            slug="invalid-regenerated-stem",
+            source_frames=136,
+        )
+        stem_artifact = session.get(Artifact, fixture.stem_artifact_id)
+        assert stem_artifact is not None
+        stem_metadata = {
+            "mode": "two_stems",
+            "stem_model": "htdemucs_ft",
+            "stem_model_label": "HTDemucs fine-tuned",
+            "stem_source": "vocals",
+            "source_artifact_id": fixture.source_artifact_id,
+            "source_artifact_type": "source_audio",
+        }
+        stem_artifact.type = "vocal_stem"
+        stem_artifact.metadata_json = stem_metadata
+        old_path = Path(stem_artifact.path)
+        old_bytes = old_path.read_bytes()
+        old_hash = stem_artifact.content_sha256
+        session.flush()
+        manifest = _jsonable_manifest(export_project_manifest(session, project_id=fixture.project_id))
+        corrupt_bytes = b"not flac audio"
+        corrupt_path = tmp_path / "invalid-regenerated-stem.flac"
+        corrupt_hash, corrupt_size = _write_bytes(corrupt_path, corrupt_bytes)
+        remote_stem = _artifact_by_id(manifest, fixture.stem_artifact_id)
+        remote_stem.update(
+            {
+                "format": "flac",
+                "relative_path": Path(remote_stem["relative_path"])
+                .with_suffix(".flac")
+                .as_posix(),
+                "content_sha256": corrupt_hash,
+                "size_bytes": corrupt_size,
+                "created_at": remote_regenerated_at.isoformat(),
+                "metadata": stem_metadata,
+                "can_regenerate": True,
+            }
+        )
+        _stage_manifest_artifact_content(
+            session,
+            manifest,
+            tmp_path=tmp_path,
+            artifact_bytes={fixture.stem_artifact_id: corrupt_bytes},
+            provider_device_id=peer_id,
+            artifact_id=fixture.stem_artifact_id,
+        )
+        session.commit()
+
+    response = client.post(
+        "/api/v1/sync/reconciliation/apply",
+        json={
+            "remote_library": {
+                "projects": [manifest["project"]],
+                "artifacts": manifest["artifacts"],
+                "entity_revisions": [],
+                "delete_tombstones": [],
+            },
+            "project_manifests": [manifest],
+            "peer_inventory": [
+                {
+                    "device_id": peer_id,
+                    "available_content_sha256": [corrupt_hash],
+                }
+            ],
+            "project_ids": [fixture.project_id],
+            "use_content_addressed_staging": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["failed_actions"] == 1
+    assert any(
+        result["action"]["action_type"] == "import_artifact_manifest"
+        and result["action"]["item_id"] == fixture.stem_artifact_id
+        and result["status"] == "failed"
+        and result["details"]["error_code"] == "SYNC_MANIFEST_DURABLE_AUDIO_INVALID"
+        for result in payload["results"]
+    )
+    with SessionLocal() as session:
+        stem_artifact = session.get(Artifact, fixture.stem_artifact_id)
+        assert stem_artifact is not None
+        assert stem_artifact.format == "wav"
+        assert Path(stem_artifact.path) == old_path
+        assert stem_artifact.content_sha256 == old_hash
+        assert old_path.read_bytes() == old_bytes
+        assert not old_path.with_suffix(".flac").exists()
 
 
 def _ensure_identity_and_peers(*peer_device_ids: str) -> dict[str, str]:
@@ -3373,7 +3617,7 @@ def _create_project_with_artifacts(
     stem_bytes: bytes | None = None,
 ) -> Issue119ProjectFixture:
     source_bytes = _wav_bytes(frame_count=source_frames)
-    stem_bytes = stem_bytes if stem_bytes is not None else f"issue119 stem {slug}".encode()
+    stem_bytes = stem_bytes if stem_bytes is not None else _wav_bytes(frame_count=max(1, source_frames // 2))
     external_source_path = tmp_path / "library" / f"{slug}.wav"
     source_sha256, _ = _write_bytes(external_source_path, source_bytes)
     project_id = source_hash_to_project_id(source_sha256)

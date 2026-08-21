@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.api.pagination import PaginationQuery, pagination_metadata
 from app.dependencies import get_db, get_job_runner
+from app.engines.audio_encoding import require_encoding_available
 from app.models import AnalysisResult, Artifact, ChordTimeline, LyricsTranscript
 from app.schemas import (
     AnalysisRequest,
@@ -92,6 +93,7 @@ def create_project(
         source_path=payload.source_path,
         copy_into_project=payload.copy_into_project,
         display_name=payload.display_name,
+        output_format=payload.output_format,
     )
     analyze_job = runner.create_job(
         session,
@@ -117,7 +119,7 @@ def create_project(
             **StemRequest(
                 mode="stems",
                 stem_model=selected_stem_model.id,
-                output_format="wav",
+                output_format=payload.output_format,
                 force=False,
                 source_artifact_id=source_artifact.id,
                 chord_backend=selected_chord_backend.id,
@@ -403,6 +405,7 @@ def project_preview(
     runner=Depends(get_job_runner),
 ) -> JobResponse:
     get_mutable_project(session, project_id)
+    require_encoding_available(payload.output_format)
     job = runner.create_job(
         session,
         project_id=project_id,

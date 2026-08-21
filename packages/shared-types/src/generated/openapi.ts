@@ -953,6 +953,12 @@ export interface components {
              * @enum {string}
              */
             job_type: "analyze" | "chords" | "lyrics" | "stems";
+            /**
+             * Output Format
+             * @default wav
+             * @enum {string}
+             */
+            output_format?: "wav" | "flac" | "mp3" | "m4a";
             /** Chord Backend */
             chord_backend?: string | null;
             /** Chord Backend Fallback From */
@@ -1528,8 +1534,9 @@ export interface components {
             /**
              * Output Format
              * @default wav
+             * @enum {string}
              */
-            output_format?: string;
+            output_format?: "wav" | "flac" | "mp3" | "m4a";
         };
         /** PreviewRetuneRequest */
         PreviewRetuneRequest: {
@@ -1554,6 +1561,12 @@ export interface components {
             copy_into_project?: boolean;
             /** Display Name */
             display_name?: string | null;
+            /**
+             * Output Format
+             * @default wav
+             * @enum {string}
+             */
+            output_format?: "wav" | "flac" | "mp3" | "m4a";
             /** Chord Backend */
             chord_backend?: string | null;
             /** Chord Backend Fallback From */
@@ -1727,8 +1740,9 @@ export interface components {
             /**
              * Output Format
              * @default wav
+             * @enum {string}
              */
-            output_format?: string;
+            output_format?: "wav" | "flac" | "mp3" | "m4a";
             /**
              * Force
              * @default false

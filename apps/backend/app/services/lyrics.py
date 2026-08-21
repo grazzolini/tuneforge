@@ -18,6 +18,7 @@ from app.engines.lyrics import transcribe_project_lyrics
 from app.errors import AppError, JobCancelledError
 from app.models import Artifact, LyricsTranscript, Project
 from app.schemas import LyricsEditSegmentSchema
+from app.services.audio_working import materialize_pcm_wav
 from app.services.paths import project_analysis_dir
 from app.services.stem_signal_metadata import stem_signal_analysis_usable
 from app.services.sync_revisions import record_lyrics_revision
@@ -148,17 +149,23 @@ def generate_project_lyrics(
         if lyrics_source_artifact is not None
         else Path(project.imported_path)
     )
-    transcription = transcribe_project_lyrics(
+    with materialize_pcm_wav(
         transcription_source_path,
-        model_name=get_settings().lyrics_model,
-        requested_device=get_settings().lyrics_device,
-        download_root=get_settings().lyrics_cache_dir,
-        language_override=language_override,
         should_cancel=should_cancel,
         register_process=register_process,
         unregister_process=unregister_process,
-        on_runtime_event=on_runtime_event,
-    )
+    ) as working_transcription_source:
+        transcription = transcribe_project_lyrics(
+            working_transcription_source,
+            model_name=get_settings().lyrics_model,
+            requested_device=get_settings().lyrics_device,
+            download_root=get_settings().lyrics_cache_dir,
+            language_override=language_override,
+            should_cancel=should_cancel,
+            register_process=register_process,
+            unregister_process=unregister_process,
+            on_runtime_event=on_runtime_event,
+        )
     _ensure_not_cancelled(should_cancel)
     if force:
         clear_project_tab_state(session, project_id=project.id)

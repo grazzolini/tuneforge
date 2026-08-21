@@ -604,7 +604,7 @@ Request fields:
 - `manifest`
 - `staging_root`
 
-`staging_root` is a local directory containing the staged project files at the relative paths declared in the manifest. During import, the backend requires exactly one `source_audio` artifact, and that artifact must use `format="wav"` with a `.wav` relative path. The backend verifies source and artifact bytes with SHA-256, rewrites accepted paths into this install's backend-managed project root, and persists the project through backend services instead of copying database rows from another device. Original absolute import paths are local provenance only and are not sync-operational inputs.
+`staging_root` is a local directory containing the staged project files at the relative paths declared in the manifest. During import, the backend requires exactly one `source_audio` artifact. Durable sources, stems, and practice mixes accept exact `wav`/`.wav`, `flac`/`.flac`, `mp3`/`.mp3`, or AAC-LC `m4a`/`.m4a` pairs. The backend verifies size, SHA-256, readability, container, and codec before commit, rewrites accepted paths into this install's backend-managed project root, and persists the project through backend services instead of copying database rows from another device. Original absolute import paths are local provenance only and are not sync-operational inputs.
 
 If the local library already contains the same canonical project or source SHA-256, staged import rejects the duplicate with HTTP `409` instead of creating a second project. The response uses the normal project wrapper shape:
 
@@ -625,6 +625,7 @@ Request fields:
 - `source_path`
 - `copy_into_project`
 - `display_name`
+- `output_format` - `wav`, `flac`, `mp3`, or `m4a`; defaults to `wav`.
 - `chord_backend`
 - `chord_backend_fallback_from`
 - `stem_model`
@@ -637,7 +638,7 @@ manual stem generation preferences; if omitted, the backend stem model default i
 defaults to `built-in`; desktop preferences may send `beat-this` when Advanced Beat Analysis is
 available. Chord backend fields follow the same validation as explicit chord generation.
 
-`source_path` records where the user imported the file from on this install. Sync treats it as local provenance, not a durable source of original bytes or an operational sync input. `copy_into_project=false` is accepted for compatibility, but new imports still create an app-managed operational WAV source artifact under the project root.
+`source_path` records where the user imported the file from on this install. Sync treats it as local provenance, not a durable source of original bytes or an operational sync input. `copy_into_project=false` is accepted for compatibility, but new imports still create an app-managed durable source artifact under the project root. Project identity remains derived from the original selected bytes; the artifact hash describes the encoded durable bytes.
 
 If the same source track has already been imported, the endpoint returns HTTP `409` with code `DUPLICATE_PROJECT_SOURCE`, message `This project is already imported with name "{name}".`, and details containing:
 
@@ -867,7 +868,7 @@ Request fields:
 - `transpose`
 - `output_format`
 
-At least one transform must be provided.
+At least one transform must be provided. Durable practice mixes support `wav`, `flac`, `mp3`, and `m4a`.
 
 Response: `JobResponse`.
 
@@ -890,7 +891,7 @@ Request fields:
 - `chord_backend_fallback_from`
 - `overwrite_chord_edits`
 
-Current validation allows `mode: "stems"` or `mode: "two_stem"` and `output_format: "wav"`. If `stem_model` is omitted, `mode: "stems"` uses the backend default `htdemucs_6s`; `mode: "two_stem"` maps to `htdemucs_ft` for compatibility.
+Current validation allows `mode: "stems"` or `mode: "two_stem"` and `output_format: "wav"`, `"flac"`, `"mp3"`, or `"m4a"`. If `stem_model` is omitted, `mode: "stems"` uses the backend default `htdemucs_6s`; `mode: "two_stem"` maps to `htdemucs_ft` for compatibility.
 
 `htdemucs_6s` creates visible `Vocals`, `Drums`, `Bass`, `Guitar`, `Piano`, and `Other` artifacts. `htdemucs_ft` creates visible `Vocals` and `Instrumental` artifacts.
 
@@ -1034,6 +1035,7 @@ Queues the same project activity job for eligible projects in the local library.
 Request fields:
 
 - `job_type` - `analyze`, `chords`, `lyrics`, or `stems`.
+- `output_format` - captured durable stem format; defaults to `wav` and must remain `wav` for non-stem jobs.
 - `chord_backend`
 - `chord_backend_fallback_from`
 - `stem_model`

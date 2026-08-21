@@ -105,6 +105,39 @@ def test_import_project_persists_metadata_and_source_artifact(client, sample_aud
         assert artifact_row.content_sha256 == file_sha256(imported_path)
 
 
+@pytest.mark.parametrize("output_format", ["wav", "flac", "mp3", "m4a"])
+def test_import_project_encodes_selected_durable_format(
+    sample_audio_file: Path,
+    tmp_path: Path,
+    output_format: str,
+) -> None:
+    source_path = tmp_path / f"fixture-{output_format}.wav"
+    source_path.write_bytes(sample_audio_file.read_bytes() + output_format.encode())
+    source_hash = file_sha256(source_path)
+    assert source_hash is not None
+
+    with SessionLocal() as session:
+        project = import_project(
+            session,
+            source_path=str(source_path),
+            copy_into_project=True,
+            display_name=None,
+            output_format=output_format,  # type: ignore[arg-type]
+        )
+        session.commit()
+        session.refresh(project)
+
+        source_artifact = next(
+            artifact for artifact in project.artifacts if artifact.type == "source_audio"
+        )
+        imported_path = Path(project.imported_path)
+        assert project.id == source_hash_to_project_id(source_hash)
+        assert project.source_sha256 == source_hash
+        assert imported_path.suffix == f".{output_format}"
+        assert source_artifact.format == output_format
+        assert source_artifact.content_sha256 == file_sha256(imported_path)
+
+
 def test_import_project_rejects_duplicate_source_hash(client, sample_audio_file: Path):
     source_hash = file_sha256(sample_audio_file)
     assert source_hash is not None
@@ -446,6 +479,7 @@ def test_import_project_enqueues_source_processing_after_stems(
             "source_path": str(sample_chord_audio_file),
             "copy_into_project": True,
             "stem_model": "htdemucs_ft",
+            "output_format": "flac",
         },
     )
 
@@ -505,6 +539,7 @@ def test_import_project_enqueues_full_source_processing(
             "source_path": str(sample_chord_audio_file),
             "copy_into_project": True,
             "stem_model": "htdemucs_ft",
+            "output_format": "flac",
         },
     )
 
@@ -515,6 +550,7 @@ def test_import_project_enqueues_full_source_processing(
         for artifact in client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
         if artifact["type"] == "source_audio"
     )
+    assert source_artifact["format"] == "flac"
 
     jobs = client.get("/api/v1/jobs").json()["jobs"]
     analyze_job = next(job for job in jobs if job["project_id"] == project["id"] and job["type"] == "analyze")
@@ -528,6 +564,10 @@ def test_import_project_enqueues_full_source_processing(
     assert completed_stem_job["source_artifact_id"] == source_artifact["id"]
     assert completed_stem_job["stem_model"] == "htdemucs_ft"
     assert completed_stem_job["stem_model_label"] == "2 stems model"
+    with SessionLocal() as session:
+        persisted_stem_job = session.get(Job, stem_job["id"])
+        assert persisted_stem_job is not None
+        assert persisted_stem_job.payload_json["output_format"] == "flac"
     completed_chord_job = wait_for_job(client, chord_job["id"], timeout=90.0)
     assert completed_chord_job["status"] == "completed"
     assert completed_chord_job["chord_backend"] == "tuneforge-fast"

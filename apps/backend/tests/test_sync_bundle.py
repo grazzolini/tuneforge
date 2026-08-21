@@ -920,7 +920,7 @@ def _create_project_with_artifacts(
     tmp_path: Path,
 ) -> BundleProjectFixture:
     source_bytes = _wav_bytes(frame_count=96)
-    stem_bytes = b"sync bundle stem bytes"
+    stem_bytes = _wav_bytes(frame_count=48)
     external_source = tmp_path / "user-library" / f"{hashlib.sha1(source_bytes).hexdigest()}.wav"
     source_sha256, _ = _write_bytes(external_source, source_bytes)
     project_id = source_hash_to_project_id(source_sha256)

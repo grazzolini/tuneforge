@@ -16,6 +16,7 @@ from pydantic import (
 )
 from typing_extensions import TypeAliasType
 
+from app.engines.audio_encoding import DurableAudioFormat
 from app.runtime_status import (
     JobRuntimeStage,
     safe_runtime_detail,
@@ -144,6 +145,7 @@ class ProjectImportRequest(BaseModel):
     source_path: str
     copy_into_project: bool = True
     display_name: str | None = None
+    output_format: DurableAudioFormat = "wav"
     chord_backend: str | None = None
     chord_backend_fallback_from: str | None = None
     stem_model: str | None = None
@@ -1340,6 +1342,7 @@ BulkJobSkipReason = Literal["active_job", "locked", "creation_failed", "no_exist
 
 class BulkJobRequest(BaseModel):
     job_type: BulkJobType = Field(description="Project job type to enqueue for every project.")
+    output_format: DurableAudioFormat = "wav"
     chord_backend: str | None = None
     chord_backend_fallback_from: str | None = None
     stem_model: str | None = None
@@ -1350,6 +1353,8 @@ class BulkJobRequest(BaseModel):
         _validate_chord_backend_fields(self.chord_backend, self.chord_backend_fallback_from)
         if self.stem_model is not None and self.stem_model not in SUPPORTED_STEM_MODELS:
             raise ValueError("Unsupported stem model.")
+        if self.job_type != "stems" and self.output_format != "wav":
+            raise ValueError("output_format is only supported for bulk stem jobs.")
         return self
 
 
@@ -1432,7 +1437,7 @@ class PreviewTransposeRequest(BaseModel):
 class PreviewRequest(BaseModel):
     retune: PreviewRetuneRequest | None = None
     transpose: PreviewTransposeRequest | None = None
-    output_format: str = "wav"
+    output_format: DurableAudioFormat = "wav"
 
     @model_validator(mode="after")
     def validate_preview(self) -> PreviewRequest:
@@ -1444,7 +1449,7 @@ class PreviewRequest(BaseModel):
 class StemRequest(BaseModel):
     mode: str = "stems"
     stem_model: str | None = None
-    output_format: str = "wav"
+    output_format: DurableAudioFormat = "wav"
     force: bool = False
     source_artifact_id: str | None = None
     chord_backend: str = "default"
@@ -1459,8 +1464,6 @@ class StemRequest(BaseModel):
             raise ValueError("Unsupported stem model.")
         if self.mode == "two_stem" and self.stem_model in SIX_STEM_MODEL_ALIASES:
             raise ValueError("two_stem mode requires a two-stem model.")
-        if self.output_format != "wav":
-            raise ValueError("Stem output must be wav in v1.")
         _validate_chord_backend_fields(self.chord_backend, self.chord_backend_fallback_from)
         return self
 

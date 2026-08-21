@@ -26,6 +26,7 @@ from app.services.sync_manifest import (
     _safe_relative_path,
     hydrate_project_analysis_result_from_artifact,
     import_staged_project_manifest,
+    validate_staged_durable_audio_artifact,
 )
 from app.services.sync_project_status import update_project_sync_status
 from app.services.sync_reconciliation import (
@@ -361,6 +362,7 @@ def _import_artifact_manifest(
             and existing_path.stat().st_size == artifact_manifest.size_bytes
             and file_sha256(existing_path) == artifact_manifest.content_sha256
         ):
+            validate_staged_durable_audio_artifact(artifact_manifest, existing_path)
             return _result(action, APPLY_STATUS_SATISFIED, "Artifact manifest is already imported locally.")
         if overwrite_generated_artifact and artifact_manifest.type == "analysis_json":
             destination_path = _generated_analysis_overwrite_destination(project_id, existing_artifact)
@@ -376,7 +378,24 @@ def _import_artifact_manifest(
                 return _result(action, APPLY_STATUS_FAILED, "Artifact destination already exists locally.")
             destination_has_manifest_bytes = _copied_artifact_matches_manifest(destination_path, artifact_manifest)
         elif overwrite_generated_artifact:
-            destination_path = existing_path
+            destination_path = _resolve_project_destination_path(
+                project_id,
+                artifact_manifest.relative_path,
+            )
+            if _destination_conflicts_with_existing_artifact(
+                session,
+                destination_path,
+                existing_artifact,
+            ) or (
+                destination_path.exists()
+                and existing_resolved_path != destination_path.resolve(strict=False)
+                and not _copied_artifact_matches_manifest(destination_path, artifact_manifest)
+            ):
+                return _result(action, APPLY_STATUS_FAILED, "Artifact destination already exists locally.")
+            destination_has_manifest_bytes = _copied_artifact_matches_manifest(
+                destination_path,
+                artifact_manifest,
+            )
         else:
             destination_path = existing_path
     else:
@@ -413,6 +432,7 @@ def _import_artifact_manifest(
             return _result(action, APPLY_STATUS_FAILED, "Copied artifact bytes do not match the manifest.")
     if not _copied_artifact_matches_manifest(destination_path, artifact_manifest):
         return _result(action, APPLY_STATUS_FAILED, "Copied artifact bytes do not match the manifest.")
+    validate_staged_durable_audio_artifact(artifact_manifest, destination_path)
     if existing_artifact is None:
         imported_artifact = register_artifact(
             session,
@@ -537,6 +557,7 @@ def _copy_staged_artifact_verified(
         shutil.copy2(source_path, temp_path)
         if not _copied_artifact_matches_manifest(temp_path, artifact_manifest):
             return False
+        validate_staged_durable_audio_artifact(artifact_manifest, temp_path)
         temp_path.replace(destination_path)
     except OSError as exc:
         raise AppError(
@@ -593,6 +614,7 @@ def _update_existing_artifact_from_manifest(
     artifact_manifest: SyncArtifactManifest,
     destination_path: Path,
 ) -> None:
+    artifact.format = artifact_manifest.format
     artifact.path = str(destination_path.resolve(strict=False))
     artifact.metadata_json = deepcopy(artifact_manifest.metadata)
     artifact.cache_key = artifact_manifest.cache_key

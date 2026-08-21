@@ -5,6 +5,11 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+### Added
+
+- Added backend storage, processing-job, and desktop-sync foundations for durable WAV, FLAC, MP3,
+  and M4A audio artifacts ([#398](https://github.com/grazzolini/tuneforge/issues/398)).
+
 ### Fixed
 
 - Preserved project playback safely across native output route changes and interruptions by using

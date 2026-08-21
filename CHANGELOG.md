@@ -5,6 +5,11 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserved project playback safely across native output route changes and interruptions by using
+  a guarded Web Audio fallback at the current position.
+
 ## [1.1.0] - 2026-08-18
 
 ### Added

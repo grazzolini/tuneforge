@@ -144,7 +144,12 @@ const {
   };
   type NativeAudioErrorPayload = {
     sessionId: string | null;
-    message: string;
+    code:
+      | "device_changed"
+      | "device_not_available"
+      | "stream_invalidated"
+      | "output_stream_failure"
+      | "decoder_worker_failure";
   };
   type NativeAudioRuntimeEvent = {
     event: "audio://position" | "audio://ended" | "audio://error" | "audio://input-state";
@@ -230,6 +235,7 @@ const {
     nativeAudioSnapshot: Record<string, unknown>;
     nativeAudioStartError: string | null;
     nativeAudioPlayFallbackReason: string | null;
+    nativeAudioStopFallbackReason: string | null;
     powerInhibitionStatus: {
       phase: string;
       backend: string | null;
@@ -890,6 +896,7 @@ const {
       },
       nativeAudioStartError: null,
       nativeAudioPlayFallbackReason: null,
+      nativeAudioStopFallbackReason: null,
       powerInhibitionStatus: {
         phase: "inactive",
         backend: null,
@@ -948,6 +955,7 @@ const {
     snapshot?: Record<string, unknown>;
     startError?: string | null;
     playFallbackReason?: string | null;
+    stopFallbackReason?: string | null;
   }) {
     state.nativeAudioCapabilities = {
       ...state.nativeAudioCapabilities,
@@ -977,6 +985,9 @@ const {
     }
     if ("playFallbackReason" in nextState) {
       state.nativeAudioPlayFallbackReason = nextState.playFallbackReason ?? null;
+    }
+    if ("stopFallbackReason" in nextState) {
+      state.nativeAudioStopFallbackReason = nextState.stopFallbackReason ?? null;
     }
   }
 
@@ -1314,6 +1325,12 @@ const {
         ...state.nativeAudioSnapshot,
         state: "stopped",
         positionSeconds: 0,
+        ...(state.nativeAudioStopFallbackReason
+          ? {
+              nativePlaybackSupported: false,
+              fallbackReason: state.nativeAudioStopFallbackReason,
+            }
+          : {}),
       };
       return clone(state.nativeAudioSnapshot);
     }

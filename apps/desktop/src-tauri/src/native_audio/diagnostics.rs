@@ -14,7 +14,7 @@ const ENABLE_ENV: &str = "TUNEFORGE_NATIVE_AUDIO_DIAGNOSTICS";
 const SCHEMA_VERSION: &str = "tuneforge-native-audio-diagnostics-v1";
 const MAX_OPERATIONS: usize = 256;
 const MAX_LANES: usize = 6;
-const SAFE_CODE_COUNT: usize = 5;
+const SAFE_CODE_COUNT: usize = 8;
 const TIMESTAMP_PENDING: u64 = u64::MAX;
 
 static DIAGNOSTICS: OnceLock<DiagnosticsRecorder> = OnceLock::new();
@@ -153,6 +153,9 @@ pub enum DiagnosticSafeCode {
     RuntimeStartFailure,
     DecoderWorkerFailure,
     OutputStreamFailure,
+    DeviceChanged,
+    DeviceNotAvailable,
+    StreamInvalidated,
 }
 
 const SAFE_CODES: [DiagnosticSafeCode; SAFE_CODE_COUNT] = [
@@ -161,6 +164,9 @@ const SAFE_CODES: [DiagnosticSafeCode; SAFE_CODE_COUNT] = [
     DiagnosticSafeCode::RuntimeStartFailure,
     DiagnosticSafeCode::DecoderWorkerFailure,
     DiagnosticSafeCode::OutputStreamFailure,
+    DiagnosticSafeCode::DeviceChanged,
+    DiagnosticSafeCode::DeviceNotAvailable,
+    DiagnosticSafeCode::StreamInvalidated,
 ];
 
 impl DiagnosticSafeCode {
@@ -171,6 +177,9 @@ impl DiagnosticSafeCode {
             Self::RuntimeStartFailure => 2,
             Self::DecoderWorkerFailure => 3,
             Self::OutputStreamFailure => 4,
+            Self::DeviceChanged => 5,
+            Self::DeviceNotAvailable => 6,
+            Self::StreamInvalidated => 7,
         }
     }
 }

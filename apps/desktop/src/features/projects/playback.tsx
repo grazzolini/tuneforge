@@ -30,6 +30,7 @@ import {
   markPlaybackPaused,
   markPlaybackStarting,
   markPlaybackStopped,
+  nativePlaybackErrorMessage,
   playbackErrorMessage,
   rememberNativePlaybackError,
   rememberNativeFallbackCause,
@@ -127,6 +128,11 @@ type PendingWebPlayback = {
   mode: "fallback" | "forced";
   signature: string;
   startTimeSeconds: number;
+};
+
+type PendingNativeRecovery = {
+  generation: number;
+  sessionId: string;
 };
 
 type WebMediaSourceEnablementOwner = {
@@ -385,6 +391,7 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
   const nativeCapabilitiesPromiseRef = useRef<ReturnType<typeof getNativeAudioCapabilities> | null>(null);
   const nativeBackendRef = useRef<string | null>(null);
   const pendingNativeFallbackCauseRef = useRef<string | null>(null);
+  const pendingNativeRecoveryRef = useRef<PendingNativeRecovery | null>(null);
   const pendingWebPlaybackRef = useRef<PendingWebPlayback | null>(null);
   const webStallTimersRef = useRef(new Map<HTMLAudioElement, number>());
   const webMediaSourcesEnabledRef = useRef(initialWebMediaSourcesEnabled);
@@ -990,6 +997,13 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         markNativePlaybackInactive();
         clearPlaybackControlBackend();
         void requestNativeStop();
+        nativePlaybackRef.current = {
+          ...nativePlaybackRef.current,
+          preparePromise: null,
+          prepareSignature: null,
+          sessionSignature: null,
+          playbackSignature: null,
+        };
         return false;
       }
       if (
@@ -1037,6 +1051,14 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       nativePlaybackRef.current.blockedSessionSignature = sessionSignature;
       markNativePlaybackInactive();
       clearPlaybackControlBackend();
+      void requestNativeStop();
+      nativePlaybackRef.current = {
+        ...nativePlaybackRef.current,
+        preparePromise: null,
+        prepareSignature: null,
+        sessionSignature: null,
+        playbackSignature: null,
+      };
       return false;
     }
   });
@@ -2250,6 +2272,10 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
   const pausePlayback = useCallback(() => {
     allowFreshPlaybackRef.current = false;
+    if (pendingNativeRecoveryRef.current) {
+      pendingNativeRecoveryRef.current = null;
+      nativeControlGenerationRef.current += 1;
+    }
     cancelPrecount("playback-stopped");
     const pendingTransition = pendingTransitionRef.current;
     if (pendingTransition) {
@@ -2613,6 +2639,21 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    const pendingNativePlay = pendingNativePlayRef.current;
+    if (
+      pendingNativePlay?.generation === nativeControlGenerationRef.current &&
+      pendingNativePlay.sessionSignature === nativeSessionSignature(targetSession) &&
+      pendingNativePlay.playbackSignature === playbackSignature(targetSession)
+    ) {
+      return;
+    }
+
+    if (
+      nativePlaybackRef.current.blockedSessionSignature === nativeSessionSignature(targetSession)
+    ) {
+      nativePlaybackRef.current.blockedSessionSignature = null;
+    }
+
     tryCompletePendingTransition();
 
     const masterTime = playbackStartTimeForSession(
@@ -2734,6 +2775,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
   const stopPlayback = useCallback(() => {
     allowFreshPlaybackRef.current = true;
+    pendingNativeRecoveryRef.current = null;
+    nativeControlGenerationRef.current += 1;
     cancelPrecount("playback-stopped");
     clearPendingTransition();
     const targetSession = sessionRef.current;
@@ -2797,6 +2840,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
     const nextSignature = playbackSignature(nextSession);
 
     if (previousSession && previousSession.projectId !== nextSession.projectId) {
+      pendingNativeRecoveryRef.current = null;
+      nativeControlGenerationRef.current += 1;
       const resetTime = playbackResetTimeForSession(nextSession);
       cancelPrecount("session-changed");
       clearPendingTransition();
@@ -3050,6 +3095,8 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
 
   useEffect(
     () => () => {
+      pendingNativeRecoveryRef.current = null;
+      nativeControlGenerationRef.current += 1;
       cancelPrecount("unavailable");
       closePlaybackAudioContext();
     },
@@ -3209,13 +3256,18 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
         ) {
           return;
         }
+        const message = nativePlaybackErrorMessage(error.code);
+        if (error.code === "device_changed") {
+          rememberNativePlaybackError(message);
+          return;
+        }
         const shouldContinuePlayback =
           (nativePlaybackRef.current.active || matchingPendingPlay) &&
           !matchingPendingPause;
         nativeControlGenerationRef.current += 1;
         pendingNativePlayRef.current = null;
         pendingNativePauseRef.current = null;
-        recordNativePlaybackFailure(error.message);
+        recordNativePlaybackFailure(message);
         const fallbackTime = clampTime(
           playbackTimeSecondsRef.current,
           playbackDurationSecondsRef.current || activeSession.durationHintSeconds || 0,
@@ -3232,7 +3284,18 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
           );
         }
         void requestNativeStop();
+        nativePlaybackRef.current = {
+          ...nativePlaybackRef.current,
+          preparePromise: null,
+          prepareSignature: null,
+          sessionSignature: null,
+          playbackSignature: null,
+        };
         const fallbackGeneration = nativeControlGenerationRef.current;
+        pendingNativeRecoveryRef.current = {
+          generation: fallbackGeneration,
+          sessionId: nativeSessionSignature(activeSession),
+        };
         syncStemElementTimes(activeSession.visibleStemArtifactIds, fallbackTime);
         getRenderedMediaElements(activeSession).forEach((element) => {
           element.pause();
@@ -3253,12 +3316,15 @@ export function PlaybackProvider({ children }: { children: ReactNode }) {
             const currentSession = sessionRef.current;
             if (
               nativeControlGenerationRef.current !== fallbackGeneration ||
+              pendingNativeRecoveryRef.current?.generation !== fallbackGeneration ||
+              pendingNativeRecoveryRef.current.sessionId !== error.sessionId ||
               !currentSession ||
               nativeSessionSignature(currentSession) !== error.sessionId ||
               nativePlaybackRef.current.blockedSessionSignature !== error.sessionId
             ) {
               return;
             }
+            pendingNativeRecoveryRef.current = null;
             void playPlaybackImmediately();
           })
           .catch(() => markPlaybackError("Playback stopped. Fallback could not start."));

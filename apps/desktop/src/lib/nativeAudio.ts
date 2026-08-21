@@ -25,6 +25,80 @@ export type NativeAudioCapabilities = {
   fallbackReason: string | null;
 };
 
+export type NativeAudioDiagnosticsAvailability = {
+  enabled: boolean;
+};
+
+export type NativeAudioDiagnosticOperationKind =
+  | "prepare"
+  | "play"
+  | "seek"
+  | "tempo"
+  | "lane_update"
+  | "lane_route";
+export type NativeAudioDiagnosticSafeCode =
+  | "prebuffer_timeout"
+  | "sustained_underrun"
+  | "runtime_start_failure"
+  | "decoder_worker_failure"
+  | "output_stream_failure";
+
+export type NativeAudioDiagnosticCounters = {
+  operationCount: number;
+  ringClearCount: number;
+  workerFirstPcmEventCount: number;
+  prebufferReadyCount: number;
+  callbackFirstNonzeroCount: number;
+  gainRampBeginCount: number;
+  gainRampCompleteCount: number;
+  underrunCount: number;
+  skippedPacketErrorCount: number;
+  skippedDecodeErrorCount: number;
+  staleGenerationEventCount: number;
+};
+
+export type NativeAudioDiagnosticSafeCodeCount = {
+  code: NativeAudioDiagnosticSafeCode;
+  count: number;
+};
+
+export type NativeAudioDiagnosticOperation = {
+  sequence: number;
+  kind: NativeAudioDiagnosticOperationKind;
+  laneCount: number;
+  commandStartUs: 0;
+  ringClearCount: number;
+  ringClearUs: number[];
+  workerFirstPcmCount: number;
+  workerFirstPcmUs: Array<number | null>;
+  allWorkersFirstPcmUs: number | null;
+  prebufferReadyUs: number | null;
+  callbackFirstNonzeroUs: number | null;
+  gainRampBeginCount: number;
+  gainRampBeginUs: number | null;
+  gainFirstChangeUs: number | null;
+  gainRampCompleteCount: number;
+  firstGainRampCompleteUs: number | null;
+  underrunCount: number;
+  firstUnderrunUs: number | null;
+  skippedPacketErrorCount: number;
+  skippedDecodeErrorCount: number;
+  ringCapacitySamples: number | null;
+  scratchCapacitySamples: number | null;
+  rssKibAtBegin: number | null;
+  safeCodes: NativeAudioDiagnosticSafeCodeCount[];
+};
+
+export type NativeAudioDiagnosticExport = {
+  schemaVersion: "tuneforge-native-audio-diagnostics-v1";
+  relativeNowUs: number;
+  resetCount: number;
+  counters: NativeAudioDiagnosticCounters;
+  operations: NativeAudioDiagnosticOperation[];
+  safeCodes: NativeAudioDiagnosticSafeCodeCount[];
+  rssKibAtExport: number | null;
+};
+
 export type NativeAudioDevice = {
   id: string;
   label: string;
@@ -202,6 +276,22 @@ export function isAndroidRuntime() {
 
 export function getNativeAudioCapabilities() {
   return invoke<NativeAudioCapabilities>("audio_get_capabilities");
+}
+
+export function getNativeAudioDiagnosticsAvailability() {
+  return invoke<NativeAudioDiagnosticsAvailability>("native_audio_diagnostics_availability");
+}
+
+export function readNativeAudioDiagnostics() {
+  return invoke<NativeAudioDiagnosticExport>("native_audio_diagnostics_read");
+}
+
+export function resetNativeAudioDiagnostics() {
+  return invoke<NativeAudioDiagnosticExport>("native_audio_diagnostics_reset");
+}
+
+export function exportNativeAudioDiagnostics() {
+  return invoke<boolean>("native_audio_diagnostics_export");
 }
 
 export function listNativeAudioInputDevices() {

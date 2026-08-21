@@ -241,6 +241,77 @@ describe("Desktop app settings theme", () => {
     expect(mockInvoke).toHaveBeenCalledWith("audio_get_capabilities");
   });
 
+  it("hides native audio diagnostics when the diagnostic environment is disabled", async () => {
+    renderApp(["/settings"]);
+
+    expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("native_audio_diagnostics_availability"),
+    );
+    expect(screen.queryByRole("heading", { name: "Native Audio Diagnostics" })).not.toBeInTheDocument();
+  });
+
+  it("resets and exports enabled local native audio diagnostics", async () => {
+    const user = userEvent.setup();
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    if (!defaultInvoke) {
+      throw new Error("Mock invoke implementation was not installed.");
+    }
+    const diagnosticExport = {
+      schemaVersion: "tuneforge-native-audio-diagnostics-v1",
+      relativeNowUs: 10,
+      resetCount: 0,
+      counters: {
+        operationCount: 2,
+        ringClearCount: 1,
+        workerFirstPcmEventCount: 1,
+        prebufferReadyCount: 1,
+        callbackFirstNonzeroCount: 1,
+        gainRampBeginCount: 0,
+        gainRampCompleteCount: 0,
+        underrunCount: 0,
+        skippedPacketErrorCount: 1,
+        skippedDecodeErrorCount: 2,
+        staleGenerationEventCount: 0,
+      },
+      operations: [],
+      safeCodes: [],
+      rssKibAtExport: null,
+    };
+    mockInvoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "native_audio_diagnostics_availability") {
+        return { enabled: true };
+      }
+      if (command === "native_audio_diagnostics_read" || command === "native_audio_diagnostics_reset") {
+        return diagnosticExport;
+      }
+      if (command === "native_audio_diagnostics_export") {
+        return true;
+      }
+      return defaultInvoke(command, args);
+    });
+
+    try {
+      renderApp(["/settings"]);
+
+      expect(await screen.findByRole("heading", { name: "Native Audio Diagnostics" })).toBeInTheDocument();
+      expect(screen.getByText(/Local session only/)).toHaveTextContent(
+        "Names, paths, identifiers, and audio samples are not recorded or sent.",
+      );
+      expect(await screen.findByText("3")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Reset diagnostics" }));
+      expect(await screen.findByText("Local diagnostic counters reset.")).toBeInTheDocument();
+      expect(mockInvoke).toHaveBeenCalledWith("native_audio_diagnostics_reset");
+
+      await user.click(screen.getByRole("button", { name: "Export sanitized JSON" }));
+      expect(await screen.findByText("Sanitized diagnostics exported.")).toBeInTheDocument();
+      expect(mockInvoke).toHaveBeenCalledWith("native_audio_diagnostics_export");
+    } finally {
+      mockInvoke.mockImplementation(defaultInvoke);
+    }
+  });
+
   it("keeps Android capture capability, live state, and history distinct", async () => {
     const user = userEvent.setup();
     setMockNativeAudioState({

@@ -5,6 +5,7 @@ use tauri::{AppHandle, State};
 pub mod android_media;
 pub mod capture;
 pub mod decode;
+pub mod diagnostics;
 pub mod mixer;
 pub mod platform;
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
@@ -31,6 +32,7 @@ pub struct NativeAudioState {
 
 impl NativeAudioState {
     pub fn new() -> Self {
+        diagnostics::initialize();
         Self {
             capabilities: AudioCapabilities::detect(),
             mixer: Arc::new(Mutex::new(mixer::MixerState::default())),
@@ -103,6 +105,10 @@ pub async fn audio_prepare_session(
 ) -> Result<transport::AudioSession, String> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let diagnostic_generation = diagnostics::begin_operation(
+            diagnostics::DiagnosticOperationKind::Prepare,
+            payload.lanes.len(),
+        );
         let effective_lanes = {
             let mut mixer = state
                 .mixer
@@ -116,6 +122,7 @@ pub async fn audio_prepare_session(
             .transport
             .lock()
             .map_err(|_| "Native audio transport state is unavailable.".to_string())?;
+        transport.set_diagnostics_generation(diagnostic_generation);
         Ok(transport.prepare(Some(app), payload, effective_lanes, state.capabilities()))
     })
     .await
@@ -135,6 +142,11 @@ pub fn audio_play(
         .transport
         .lock()
         .map_err(|_| "Native audio transport state is unavailable.".to_string())?;
+    let generation = diagnostics::begin_operation(
+        diagnostics::DiagnosticOperationKind::Play,
+        transport.lane_count(),
+    );
+    transport.set_diagnostics_generation(generation);
     transport.play(payload)
 }
 
@@ -165,6 +177,11 @@ pub fn audio_seek(
         .transport
         .lock()
         .map_err(|_| "Native audio transport state is unavailable.".to_string())?;
+    let generation = diagnostics::begin_operation(
+        diagnostics::DiagnosticOperationKind::Seek,
+        transport.lane_count(),
+    );
+    transport.set_diagnostics_generation(generation);
     Ok(transport.seek(payload))
 }
 
@@ -187,6 +204,15 @@ pub fn audio_set_lanes(
         .transport
         .lock()
         .map_err(|_| "Native audio transport state is unavailable.".to_string())?;
+    let operation_kind = if transport.diagnostic_route_changed(&raw_lanes) {
+        diagnostics::DiagnosticOperationKind::LaneRoute
+    } else if transport.diagnostic_playback_rate_changed(playback_rate) {
+        diagnostics::DiagnosticOperationKind::Tempo
+    } else {
+        diagnostics::DiagnosticOperationKind::LaneUpdate
+    };
+    let generation = diagnostics::begin_operation(operation_kind, raw_lanes.len());
+    transport.set_diagnostics_generation(generation);
     transport.set_lanes(raw_lanes, effective_lanes, playback_rate);
     Ok(transport.snapshot())
 }

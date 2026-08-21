@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   NativeAudioCapabilities,
   NativeAudioDevices,
+  NativeAudioDiagnosticExport,
   NativeAudioInputFrame,
   NativeAudioInputState,
   NativeAudioSnapshot,
@@ -21,7 +22,9 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import {
+  exportNativeAudioDiagnostics,
   getNativeAudioCapabilities,
+  getNativeAudioDiagnosticsAvailability,
   getNativeAudioInputPermissionStatus,
   getNativeAudioInputState,
   getNativeAudioSnapshot,
@@ -34,7 +37,9 @@ import {
   pauseNativeAudio,
   playNativeAudio,
   prepareNativeAudioSession,
+  readNativeAudioDiagnostics,
   requestNativeAudioInputPermission,
+  resetNativeAudioDiagnostics,
   seekNativeAudio,
   setNativeAudioClick,
   setNativeAudioLanes,
@@ -118,6 +123,77 @@ describe("native audio adapter", () => {
     expect(mockInvoke).toHaveBeenNthCalledWith(1, "audio_get_capabilities");
     expect(mockInvoke).toHaveBeenNthCalledWith(2, "audio_list_input_devices");
     expect(mockInvoke).toHaveBeenNthCalledWith(3, "audio_list_output_devices");
+  });
+
+  it("wraps gated diagnostics commands without filesystem arguments", async () => {
+    const availability = {
+      enabled: true,
+    };
+    const diagnosticExport = {
+      schemaVersion: "tuneforge-native-audio-diagnostics-v1" as const,
+      relativeNowUs: 50,
+      resetCount: 0,
+      counters: {
+        operationCount: 0,
+        ringClearCount: 0,
+        workerFirstPcmEventCount: 0,
+        prebufferReadyCount: 0,
+        callbackFirstNonzeroCount: 0,
+        gainRampBeginCount: 0,
+        gainRampCompleteCount: 0,
+        underrunCount: 0,
+        skippedPacketErrorCount: 0,
+        skippedDecodeErrorCount: 0,
+        staleGenerationEventCount: 0,
+      },
+      operations: [
+        {
+          sequence: 1,
+          kind: "play" as const,
+          laneCount: 1,
+          commandStartUs: 0 as const,
+          ringClearCount: 1,
+          ringClearUs: [10],
+          workerFirstPcmCount: 1,
+          workerFirstPcmUs: [20],
+          allWorkersFirstPcmUs: 20,
+          prebufferReadyUs: 25,
+          callbackFirstNonzeroUs: 30,
+          gainRampBeginCount: 1,
+          gainRampBeginUs: 35,
+          gainFirstChangeUs: 36,
+          gainRampCompleteCount: 1,
+          firstGainRampCompleteUs: 45,
+          underrunCount: 0,
+          firstUnderrunUs: null,
+          skippedPacketErrorCount: 0,
+          skippedDecodeErrorCount: 0,
+          ringCapacitySamples: 1024,
+          scratchCapacitySamples: 512,
+          rssKibAtBegin: null,
+          safeCodes: [],
+        },
+      ],
+      safeCodes: [{ code: "decoder_worker_failure", count: 1 }],
+      rssKibAtExport: null,
+    } satisfies NativeAudioDiagnosticExport;
+    mockInvoke
+      .mockResolvedValueOnce(availability)
+      .mockResolvedValueOnce(diagnosticExport)
+      .mockResolvedValueOnce(diagnosticExport)
+      .mockResolvedValueOnce(true);
+
+    await expect(getNativeAudioDiagnosticsAvailability()).resolves.toEqual(availability);
+    await expect(readNativeAudioDiagnostics()).resolves.toEqual(diagnosticExport);
+    await expect(resetNativeAudioDiagnostics()).resolves.toEqual(diagnosticExport);
+    await expect(exportNativeAudioDiagnostics()).resolves.toBe(true);
+
+    expect(mockInvoke.mock.calls).toEqual([
+      ["native_audio_diagnostics_availability"],
+      ["native_audio_diagnostics_read"],
+      ["native_audio_diagnostics_reset"],
+      ["native_audio_diagnostics_export"],
+    ]);
   });
 
   it("sends camelCase session and transport payloads", async () => {

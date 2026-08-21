@@ -26,11 +26,15 @@ import {
   type PowerInhibitionReason,
 } from "../../lib/powerInhibition";
 import {
+  exportNativeAudioDiagnostics,
   getNativeAudioCapabilities,
+  getNativeAudioDiagnosticsAvailability,
   getNativeAudioInputPermissionStatus,
   getNativeAudioInputState,
   isAndroidRuntime,
   isWebAudioBackendForced,
+  readNativeAudioDiagnostics,
+  resetNativeAudioDiagnostics,
   type NativeAudioBufferHealth,
   type NativeAudioCapabilities,
   type NativeAudioInputState,
@@ -677,6 +681,8 @@ export function SettingsView() {
   } = usePreferences();
   const [isSnapshotBusy, setIsSnapshotBusy] = useState(false);
   const [snapshotStatus, setSnapshotStatus] = useState<SnapshotStatus | null>(null);
+  const [isNativeValidationBusy, setIsNativeValidationBusy] = useState(false);
+  const [nativeValidationStatus, setNativeValidationStatus] = useState<SnapshotStatus | null>(null);
   const webAudioForced = isWebAudioBackendForced();
   useSyncExternalStore(
     subscribePlaybackDiagnostics,
@@ -715,6 +721,15 @@ export function SettingsView() {
   const nativeAudioQuery = useQuery({
     queryKey: ["native-audio-capabilities"],
     queryFn: getNativeAudioCapabilities,
+  });
+  const nativeDiagnosticsAvailabilityQuery = useQuery({
+    queryKey: ["native-audio-diagnostics-availability"],
+    queryFn: getNativeAudioDiagnosticsAvailability,
+  });
+  const nativeDiagnosticsQuery = useQuery({
+    enabled: nativeDiagnosticsAvailabilityQuery.data?.enabled === true,
+    queryKey: ["native-audio-diagnostics"],
+    queryFn: readNativeAudioDiagnostics,
   });
   const nativeInputQuery = useQuery({
     queryKey: ["native-audio-input-state"],
@@ -864,6 +879,41 @@ export function SettingsView() {
       });
     } finally {
       setIsSnapshotBusy(false);
+    }
+  }
+
+  async function handleResetNativeValidation() {
+    setIsNativeValidationBusy(true);
+    setNativeValidationStatus(null);
+    try {
+      await resetNativeAudioDiagnostics();
+      await nativeDiagnosticsQuery.refetch();
+      setNativeValidationStatus({ message: "Local diagnostic counters reset.", tone: "default" });
+    } catch (error) {
+      setNativeValidationStatus({
+        message: error instanceof Error ? error.message : "Native audio diagnostics could not reset.",
+        tone: "error",
+      });
+    } finally {
+      setIsNativeValidationBusy(false);
+    }
+  }
+
+  async function handleExportNativeValidation() {
+    setIsNativeValidationBusy(true);
+    setNativeValidationStatus(null);
+    try {
+      const exported = await exportNativeAudioDiagnostics();
+      if (exported) {
+        setNativeValidationStatus({ message: "Sanitized diagnostics exported.", tone: "default" });
+      }
+    } catch (error) {
+      setNativeValidationStatus({
+        message: error instanceof Error ? error.message : "Native audio diagnostics could not export.",
+        tone: "error",
+      });
+    } finally {
+      setIsNativeValidationBusy(false);
     }
   }
 
@@ -1390,6 +1440,62 @@ export function SettingsView() {
           </p>
         ) : null}
       </div>
+
+      {nativeDiagnosticsAvailabilityQuery.data?.enabled ? (
+        <div className="panel settings-panel" aria-labelledby="native-audio-diagnostics-title">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Diagnostics</p>
+              <h2 id="native-audio-diagnostics-title">Native Audio Diagnostics</h2>
+              <p className="subpanel__copy">
+                Local session only. Names, paths, identifiers, and audio samples are not recorded or sent.
+              </p>
+            </div>
+          </div>
+
+          <dl className="details-grid details-grid--single-column">
+            <div>
+              <dt>Recorded operations</dt>
+              <dd>{nativeDiagnosticsQuery.data?.counters.operationCount ?? 0}</dd>
+            </div>
+            <div>
+              <dt>Skipped packet/decode errors</dt>
+              <dd>
+                {(nativeDiagnosticsQuery.data?.counters.skippedPacketErrorCount ?? 0)
+                  + (nativeDiagnosticsQuery.data?.counters.skippedDecodeErrorCount ?? 0)}
+              </dd>
+            </div>
+          </dl>
+
+          <div className="button-row">
+            <button
+              className="button button--ghost button--small"
+              disabled={isNativeValidationBusy}
+              onClick={() => void handleResetNativeValidation()}
+              type="button"
+            >
+              Reset diagnostics
+            </button>
+            <button
+              className="button button--ghost button--small"
+              disabled={isNativeValidationBusy}
+              onClick={() => void handleExportNativeValidation()}
+              type="button"
+            >
+              Export sanitized JSON
+            </button>
+          </div>
+          {nativeValidationStatus ? (
+            <p
+              className={`settings-feedback${
+                nativeValidationStatus.tone === "error" ? " settings-feedback--error" : ""
+              }`}
+            >
+              {nativeValidationStatus.message}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
     </section>
   );
 }

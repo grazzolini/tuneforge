@@ -19,6 +19,7 @@ jobs:
       backend_static: ${{ steps.scope.outputs.backend_static }}
       backend_ffmpeg: ${{ steps.scope.outputs.backend_ffmpeg }}
       desktop: ${{ steps.scope.outputs.desktop }}
+      release_media: ${{ steps.scope.outputs.release_media }}
       site: ${{ steps.scope.outputs.site }}
     steps:
       - name: Check out code
@@ -35,6 +36,7 @@ jobs:
           backend_static=false
           backend_ffmpeg=false
           desktop=false
+          release_media=false
           site=false
           full_gate=false
           changed_files="${RUNNER_TEMP}/changed-files.txt"
@@ -57,6 +59,7 @@ jobs:
               case "${path}" in
                 scripts/capture-release-media.mjs|scripts/check-release-version.mjs)
                   site=true
+                  release_media=true
                   ;;
                 scripts/package-options*|scripts/flatpak-options*|scripts/desktop-e2e*|scripts/sync-validation*|scripts/setup-dev*)
                   ;;
@@ -65,6 +68,7 @@ jobs:
                   ;;
                 package.json|pnpm-lock.yaml|pnpm-workspace.yaml)
                   site=true
+                  release_media=true
                   ;;
                 apps/backend/pyproject.toml|apps/backend/uv.lock)
                   backend_static=true
@@ -83,7 +87,12 @@ jobs:
                   ;;
                 packages/shared-types/AGENTS.md)
                   ;;
-                apps/desktop/*|packages/shared-types/*)
+                apps/desktop/*)
+                  desktop=true
+                  site=true
+                  release_media=true
+                  ;;
+                packages/shared-types/*)
                   desktop=true
                   ;;
                 apps/site/*|.github/workflows/pages.yml)
@@ -105,6 +114,7 @@ jobs:
             backend_static=true
             backend_ffmpeg=true
             desktop=true
+            release_media=true
             site=true
           fi
 
@@ -129,6 +139,7 @@ jobs:
             echo "backend_static=${backend_static}"
             echo "backend_ffmpeg=${backend_ffmpeg}"
             echo "desktop=${desktop}"
+            echo "release_media=${release_media}"
             echo "site=${site}"
           } >> "${GITHUB_OUTPUT}"
 
@@ -221,7 +232,7 @@ jobs:
           node-version: "26"
 
       - name: Test deterministic Node scripts
-        run: node --test scripts/build-info.test.mjs scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/flatpak-pnpm.test.mjs scripts/desktop-e2e.test.mjs scripts/sync-validation.test.mjs scripts/release-license-inventory.test.mjs scripts/capture-release-media.test.mjs scripts/ci-image-policy.test.mjs
+        run: node --test scripts/build-info.test.mjs scripts/package-options.test.mjs scripts/flatpak-options.test.mjs scripts/flatpak-pnpm.test.mjs scripts/desktop-e2e.test.mjs scripts/sync-validation.test.mjs scripts/release-license-inventory.test.mjs scripts/capture-release-media.test.mjs scripts/ci-image-policy.test.mjs scripts/ci-scope-policy.test.mjs
 
       - name: Check release script syntax
         run: |
@@ -437,6 +448,14 @@ jobs:
       - name: Test site
         if: needs.ci-scope.outputs.site == 'true'
         run: pnpm --filter @tuneforge/site test
+
+      - name: Install Chromium for release media
+        if: needs.ci-scope.outputs.release_media == 'true'
+        run: pnpm --filter @tuneforge/desktop exec playwright install --with-deps chromium
+
+      - name: Capture release media
+        if: needs.ci-scope.outputs.release_media == 'true'
+        run: node scripts/capture-release-media.mjs --run
 
       - name: Build site
         if: needs.ci-scope.outputs.site == 'true'

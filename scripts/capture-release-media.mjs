@@ -1613,8 +1613,16 @@ async function readySettings({ page, timeoutMs }) {
   }
   const panel = page.locator('[aria-labelledby="audio-storage-title"]');
   await panel.scrollIntoViewIfNeeded();
-  const panelBounds = await panel.boundingBox();
   const viewport = page.viewportSize();
+  const initialPanelBounds = await panel.boundingBox();
+  const scrollDelta = overflowToScrollDelta(
+    initialPanelBounds?.y + initialPanelBounds?.height,
+    viewport?.height,
+  );
+  if (scrollDelta > 0) {
+    await panel.evaluate((element, delta) => element.closest(".main-content").scrollBy(0, delta), scrollDelta);
+  }
+  const panelBounds = await panel.boundingBox();
   if (
     !panelBounds
     || !viewport
@@ -1625,6 +1633,10 @@ async function readySettings({ page, timeoutMs }) {
   ) {
     throw new Error("Settings release media requires the full Audio Storage panel in frame.");
   }
+}
+
+function overflowToScrollDelta(panelBottom, viewportHeight) {
+  return Math.max(0, Math.ceil(panelBottom - viewportHeight));
 }
 
 async function recordOverviewVideo({ appUrl, catalog, entry, options, page }) {
@@ -2369,6 +2381,7 @@ export {
   expectedCatalogEntries,
   manifestItemForCatalogEntry,
   measureMobilePlaybackFollowLayouts,
+  overflowToScrollDelta,
   parseOptions,
   releaseMediaCaptureCatalog,
   validateReleaseMediaCatalog,

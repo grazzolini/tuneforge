@@ -9,6 +9,7 @@ import {
   chordBackends,
   expectedCatalogEntries,
   manifestItemForCatalogEntry,
+  overflowToScrollDelta,
   parseOptions,
   releaseMediaCaptureCatalog,
   validateReleaseMediaCatalog,
@@ -29,6 +30,12 @@ test("capture motion policy freezes screenshots and preserves video movement", (
   assert.deepEqual(captureMotionPolicy("screenshot"), { animatePlayback: false });
   assert.deepEqual(captureMotionPolicy("video"), { animatePlayback: true });
   assert.throws(() => captureMotionPolicy("unknown"), /Unsupported capture kind unknown/);
+});
+
+test("settings scroll delta rounds bottom overflow up to whole pixels", () => {
+  assert.equal(overflowToScrollDelta(980, 980), 0);
+  assert.equal(overflowToScrollDelta(980.15625, 980), 1);
+  assert.equal(overflowToScrollDelta(983, 980), 3);
 });
 
 test("release-media catalog has unique identifiers, files, and required callbacks", () => {

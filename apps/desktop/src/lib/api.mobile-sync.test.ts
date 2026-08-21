@@ -206,7 +206,6 @@ describe("mobile sync API adapter", () => {
     };
     const defaultRequest: ProjectImportRequest = {
       source_path: "/music/default.wav",
-      copy_into_project: true,
     };
 
     await api.importProject(builtInRequest);

@@ -6,6 +6,10 @@ import { Link, useNavigate } from "react-router-dom";
 import { api, getProjectSyncSummary, type ProjectSchema } from "../../lib/api";
 import { formatLocalDateTime, normalizeApiDateTime } from "../../lib/datetime";
 import { usePreferences } from "../../lib/preferences";
+import {
+  DURABLE_AUDIO_CAPABILITIES_QUERY_KEY,
+  requireDurableAudioActionFormat,
+} from "../../lib/durableAudio";
 import { useLazyLoadSentinel } from "../../lib/useLazyLoadSentinel";
 import { formatApiErrorMessage } from "./projectViewUtils";
 import { useBeatBackendActionSelection } from "./hooks/useBeatBackendActionSelection";
@@ -271,7 +275,7 @@ function getImportNoticeRole(importNotice: ImportNotice) {
 export function LibraryView() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { defaultStemModel, informationDensity } = usePreferences();
+  const { defaultDurableAudioFormat, defaultStemModel, informationDensity } = usePreferences();
   const { beatBackendForAction } = useBeatBackendActionSelection();
   const { chordBackendForAction } = useChordBackendActionSelection();
   const [searchDraft, setSearchDraft] = useState("");
@@ -306,6 +310,13 @@ export function LibraryView() {
 
   const importMutation = useMutation({
     mutationFn: async () => {
+      const preferredFormat = defaultDurableAudioFormat;
+      const { capabilities } = await queryClient.fetchQuery({
+        queryKey: DURABLE_AUDIO_CAPABILITIES_QUERY_KEY,
+        queryFn: api.getExportCapabilities,
+        staleTime: Infinity,
+      });
+      const durableFormat = requireDurableAudioActionFormat(capabilities, preferredFormat);
       const selection = await open({
         directory: false,
         multiple: true,
@@ -329,6 +340,7 @@ export function LibraryView() {
       const backendSelection = await chordBackendForAction();
       const importPayload = {
         copy_into_project: true,
+        ...(durableFormat.outputFormat ? { output_format: durableFormat.outputFormat } : {}),
         beat_backend: beatBackendSelection.beat_backend,
         chord_backend: backendSelection.backend,
         stem_model: defaultStemModel,

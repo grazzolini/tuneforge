@@ -25,6 +25,10 @@ boundary.
   API 26 or newer. Tuner monitoring remains unsupported.
 - Android Web Audio fallback and forced-Web-Audio playback use a private seekable loopback
   transport so Chromium can request complete byte ranges without exposing arbitrary file paths.
+- Synced Android source, practice-mix, and stem artifacts accept PCM16 WAV, FLAC, MP3, and AAC-LC
+  M4A. Receive validation checks the declared suffix, container, codec, and a bounded first decoded
+  packet before commit without decoding the full file. Playback and the private range transport use
+  the preserved bytes; TuneForge does not create a receiver-side transcode or playback proxy.
 
 ## Backend Selection
 
@@ -157,6 +161,8 @@ Settings to reset or export the sanitized recorder. These diagnostics observe th
 path; they do not run an automated playback matrix, control an output device, measure audible output,
 or produce a performance verdict. Release-build, output-device, Linux, and Android measurements
 remain manual handoffs and must not be reported as a runtime PASS from the exported counters alone.
+Automated Android receive/probe and loopback MIME/range tests likewise do not prove physical-device
+codec availability, audible output, latency, or long-session behavior.
 
 Android microphone permission is requested only from a tuner start or retry. TuneForge distinguishes
 the initial prompt, an in-progress prompt, denial, permanent blocking, the Android microphone privacy

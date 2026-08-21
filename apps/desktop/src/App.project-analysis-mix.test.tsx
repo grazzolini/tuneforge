@@ -1152,6 +1152,10 @@ describe("Desktop app project analysis mix", () => {
 
   it("creates a new mix from the project source key override and target controls", async () => {
     const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultDurableAudioFormat: "flac" }),
+    );
     renderApp(["/projects/proj_123"]);
 
     expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
@@ -1169,7 +1173,7 @@ describe("Desktop app project analysis mix", () => {
     expect(mockCreatePreview).toHaveBeenCalledWith(
       "proj_123",
       expect.objectContaining({
-        output_format: "wav",
+        output_format: "flac",
         transpose: { semitones: 1 },
       }),
     );

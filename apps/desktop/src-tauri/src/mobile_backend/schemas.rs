@@ -205,6 +205,7 @@ pub struct LyricsResponse {
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub struct ProjectImportRequest {
     source_path: String,
+    #[serde(default = "default_true")]
     copy_into_project: bool,
     display_name: Option<String>,
 }
@@ -718,4 +719,17 @@ pub struct SyncReconciliationApplyResponse {
 
 fn default_true() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProjectImportRequest;
+
+    #[test]
+    fn project_import_request_defaults_copy_into_project_to_true() {
+        let request: ProjectImportRequest =
+            serde_json::from_str(r#"{"source_path":"/music/song.wav"}"#).unwrap();
+
+        assert!(request.copy_into_project);
+    }
 }

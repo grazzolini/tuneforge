@@ -1,8 +1,10 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { api, type BeatBackendSchema, type ChordBackendSchema, type StemModelSchema } from "../../lib/api";
 import { FRONTEND_VERSION_INFO } from "../../lib/buildInfo";
+import { DURABLE_AUDIO_CAPABILITIES_QUERY_KEY } from "../../lib/durableAudio";
 import {
   getPlaybackDiagnosticsVersion,
   readPlaybackLiveDiagnostics,
@@ -53,6 +55,12 @@ import {
   type ProjectWorkspaceMode,
   type TunerVisualMode,
 } from "../../lib/preferences";
+import {
+  DURABLE_AUDIO_FORMAT_PROFILES,
+  durableAudioFormatIsLossy,
+  durableAudioFormatLabel,
+  type DurableAudioFormat,
+} from "../../lib/durableAudio";
 import {
   parseSettingsSnapshot,
   readSettingsSnapshotFile,
@@ -274,6 +282,37 @@ const fallbackStemModelOptions: ChoiceOption<DefaultStemModel>[] = [
     description: "Separate vocals and a single instrumental track.",
   },
 ];
+
+function durableAudioFormatOptions(
+  formats: Awaited<ReturnType<typeof api.getExportCapabilities>>["capabilities"]["formats"] | undefined,
+  fetching: boolean,
+  error: boolean,
+  selected: DurableAudioFormat,
+): ChoiceOption<DurableAudioFormat>[] {
+  return DURABLE_AUDIO_FORMAT_PROFILES.map((profile) => {
+    const capability = formats?.find((format) => format.id === profile.value);
+    let status: string;
+    if (fetching || formats === undefined) {
+      status = "Checking availability…";
+    } else if (error) {
+      status = "Availability could not be checked";
+    } else if (capability?.available) {
+      status = profile.value === "wav"
+        ? "Available · Lossless · Default"
+        : `Available · ${profile.lossy ? "Lossy" : "Lossless"}`;
+    } else {
+      const unavailable = `Unavailable — ${capability?.reason || "Not reported by backend"}`;
+      status = profile.value === selected ? `Selected · ${unavailable}` : unavailable;
+    }
+    return {
+      value: profile.value,
+      label: profile.label,
+      description: profile.description,
+      disabled: fetching || error || capability?.available !== true,
+      status,
+    };
+  });
+}
 
 function themePreferenceLabel(themePreference: ThemePreference) {
   if (themePreference === "system") {
@@ -570,12 +609,14 @@ function stemModelOptions(models: StemModelSchema[] | undefined): ChoiceOption<D
 }
 
 function ChoiceGroup<T extends string>({
+  ariaBusy,
   description,
   legend,
   onChange,
   options,
   value,
 }: {
+  ariaBusy?: boolean;
   description: string;
   legend: string;
   onChange: (value: T) => void;
@@ -583,7 +624,7 @@ function ChoiceGroup<T extends string>({
   value: T | null;
 }) {
   return (
-    <fieldset className="settings-fieldset">
+    <fieldset aria-busy={ariaBusy || undefined} className="settings-fieldset">
       <legend>{legend}</legend>
       <p className="setting-copy">{description}</p>
       <div className="settings-choice-grid">
@@ -653,6 +694,7 @@ export function SettingsView() {
     defaultBeatAnalysisBackend,
     defaultChordBackend,
     defaultStemModel,
+    defaultDurableAudioFormat,
     defaultLyricsFollowEnabled,
     defaultChordsFollowEnabled,
     defaultTunerInputDeviceId,
@@ -666,6 +708,7 @@ export function SettingsView() {
     setDefaultBeatAnalysisBackend,
     setDefaultChordBackend,
     setDefaultStemModel,
+    setDefaultDurableAudioFormat,
     setDefaultLyricsFollowEnabled,
     setDefaultChordsFollowEnabled,
     setDefaultTunerInputDeviceId,
@@ -674,6 +717,7 @@ export function SettingsView() {
     resetAppearancePreferences,
     resetNotationPreferences,
     resetAnalysisPreferences,
+    resetAudioStoragePreferences,
     resetTunerPreferences,
     resetVisibilityPreferences,
     resetPreferences,
@@ -681,9 +725,11 @@ export function SettingsView() {
   } = usePreferences();
   const [isSnapshotBusy, setIsSnapshotBusy] = useState(false);
   const [snapshotStatus, setSnapshotStatus] = useState<SnapshotStatus | null>(null);
+  const [availabilityRetrying, setAvailabilityRetrying] = useState(false);
   const [isNativeValidationBusy, setIsNativeValidationBusy] = useState(false);
   const [nativeValidationStatus, setNativeValidationStatus] = useState<SnapshotStatus | null>(null);
   const webAudioForced = isWebAudioBackendForced();
+  const androidRuntime = isAndroidRuntime();
   useSyncExternalStore(
     subscribePlaybackDiagnostics,
     getPlaybackDiagnosticsVersion,
@@ -717,6 +763,12 @@ export function SettingsView() {
   const stemModelsQuery = useQuery({
     queryKey: ["stem-models"],
     queryFn: api.listStemModels,
+  });
+  const exportCapabilitiesQuery = useQuery({
+    enabled: !androidRuntime,
+    queryKey: DURABLE_AUDIO_CAPABILITIES_QUERY_KEY,
+    queryFn: api.getExportCapabilities,
+    staleTime: Infinity,
   });
   const nativeAudioQuery = useQuery({
     queryKey: ["native-audio-capabilities"],
@@ -763,6 +815,15 @@ export function SettingsView() {
     chordAvailabilityResolved,
   );
   const stemModelChoices = stemModelOptions(stemModelsQuery.data?.models);
+  const durableAudioChoices = durableAudioFormatOptions(
+    exportCapabilitiesQuery.data?.capabilities.formats,
+    exportCapabilitiesQuery.isFetching,
+    exportCapabilitiesQuery.isError,
+    defaultDurableAudioFormat,
+  );
+  const androidSettings =
+    androidRuntime || exportCapabilitiesQuery.data?.capabilities.platform === "android";
+  const showAudioStoragePanel = !androidSettings;
   const beatFallbackNotice = fallbackNotice(
     defaultBeatAnalysisBackend,
     effectiveBeatAnalysisBackend,
@@ -800,6 +861,37 @@ export function SettingsView() {
     resetAnalysisPreferences();
   }
 
+  function handleResetAudioStorage() {
+    resetAudioStoragePreferences();
+  }
+
+  async function confirmLossyDurableAudioFormat(format: DurableAudioFormat) {
+    if (durableAudioFormatIsLossy(format)) {
+      const label = durableAudioFormatLabel(format);
+      const shortLabel = format === "mp3" ? "MP3" : "M4A";
+      const approved = await confirm(
+        `${label} uses irreversible lossy compression that permanently removes audio detail. That detail cannot be recovered later. This applies only to new imports, stems, saved mixes, and bulk stem refreshes; existing files and queued work stay unchanged.`,
+        {
+          title: `Use ${label}?`,
+          kind: "warning",
+          okLabel: `Use ${shortLabel}`,
+          cancelLabel: "Cancel",
+        },
+      );
+      if (!approved) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  async function handleDurableAudioFormatChange(format: DurableAudioFormat) {
+    if (format === defaultDurableAudioFormat || !await confirmLossyDurableAudioFormat(format)) {
+      return;
+    }
+    setDefaultDurableAudioFormat(format);
+  }
+
   function handleResetTunerDefaults() {
     resetTunerPreferences();
   }
@@ -823,6 +915,7 @@ export function SettingsView() {
           defaultChordBackend,
           defaultLoopAlignmentMode,
           defaultStemModel,
+          defaultDurableAudioFormat,
           defaultInspectorOpen,
           defaultPlaybackDisplayMode,
           defaultTunerInputDeviceId,
@@ -865,6 +958,13 @@ export function SettingsView() {
       }
 
       const snapshot = parseSettingsSnapshot(contents);
+      if (
+        !androidSettings
+        && snapshot.preferences.defaultDurableAudioFormat !== defaultDurableAudioFormat
+        && !await confirmLossyDurableAudioFormat(snapshot.preferences.defaultDurableAudioFormat)
+      ) {
+        return;
+      }
 
       replaceThemeState({
         themeOverrides: snapshot.themeOverrides,
@@ -879,6 +979,18 @@ export function SettingsView() {
       });
     } finally {
       setIsSnapshotBusy(false);
+    }
+  }
+
+  async function handleRetryAudioAvailability() {
+    if (availabilityRetrying || exportCapabilitiesQuery.isFetching) {
+      return;
+    }
+    setAvailabilityRetrying(true);
+    try {
+      await exportCapabilitiesQuery.refetch();
+    } finally {
+      setAvailabilityRetrying(false);
     }
   }
 
@@ -923,7 +1035,11 @@ export function SettingsView() {
         <div className="screen__title-block">
           <p className="eyebrow">Settings</p>
           <h1>Control Room</h1>
-          <p className="screen__subtitle">App-wide appearance, notation, and playback defaults.</p>
+          <p className="screen__subtitle">
+            {androidSettings
+              ? "App-wide appearance, notation, and playback defaults."
+              : "App-wide appearance, audio storage, notation, and playback defaults."}
+          </p>
         </div>
       </div>
 
@@ -939,6 +1055,7 @@ export function SettingsView() {
             <span className="pill">Beat analysis</span>
             <span className="pill">Chord backend</span>
             <span className="pill">Stem model</span>
+            {showAudioStoragePanel ? <span className="pill">Audio storage</span> : null}
             <span className="pill">Playback defaults</span>
           </div>
         </div>
@@ -992,6 +1109,12 @@ export function SettingsView() {
             <dt>Stem model</dt>
             <dd>{stemModelLabel(defaultStemModel)}</dd>
           </div>
+          {showAudioStoragePanel ? (
+            <div className="settings-overview__stat">
+              <dt>New audio format</dt>
+              <dd>{durableAudioFormatLabel(defaultDurableAudioFormat)}</dd>
+            </div>
+          ) : null}
           <div className="settings-overview__stat">
             <dt>Tuner mic</dt>
             <dd>{tunerInputDeviceLabel(defaultTunerInputDeviceId)}</dd>
@@ -1018,6 +1141,71 @@ export function SettingsView() {
           </div>
         </dl>
       </div>
+
+      {showAudioStoragePanel ? (
+        <div className="panel settings-panel" aria-labelledby="audio-storage-title">
+          <div className="panel-heading">
+            <div>
+              <h2 id="audio-storage-title">Audio Storage</h2>
+              <p className="subpanel__copy">
+                Choose the storage format for new audio created on this desktop.
+              </p>
+            </div>
+          </div>
+
+          <ChoiceGroup
+            ariaBusy={exportCapabilitiesQuery.isFetching}
+            description="The format is captured when an action starts. Future imports, stems, saved mixes, and bulk stem refreshes use it; existing files and already queued work stay unchanged. Temporary processing audio remains WAV."
+            legend="New durable audio format"
+            onChange={(format) => void handleDurableAudioFormatChange(format)}
+            options={durableAudioChoices}
+            value={defaultDurableAudioFormat}
+          />
+
+          {exportCapabilitiesQuery.isFetching ? (
+            <p aria-live="polite" className="settings-feedback" role="status">
+              Checking audio format availability…
+            </p>
+          ) : null}
+          {exportCapabilitiesQuery.isError || availabilityRetrying ? (
+            <>
+              {!exportCapabilitiesQuery.isFetching ? (
+                <p className="settings-feedback settings-feedback--error" role="alert">
+                  Audio format availability could not be checked. Check FFmpeg, then try again.
+                </p>
+              ) : null}
+              <div className="button-row">
+                <button
+                  className="button button--ghost button--small"
+                  disabled={exportCapabilitiesQuery.isFetching}
+                  onClick={() => void handleRetryAudioAvailability()}
+                  type="button"
+                >
+                  Retry
+                </button>
+              </div>
+            </>
+          ) : null}
+
+          {exportCapabilitiesQuery.isSuccess && !exportCapabilitiesQuery.isFetching
+          && exportCapabilitiesQuery.data.capabilities.formats.find(
+            (format) => format.id === defaultDurableAudioFormat && !format.available,
+          ) ? (
+            <p className="settings-feedback settings-feedback--error" role="status">
+              {durableAudioFormatLabel(defaultDurableAudioFormat)} is saved but unavailable on this desktop:{" "}
+              {exportCapabilitiesQuery.data.capabilities.formats.find(
+                (format) => format.id === defaultDurableAudioFormat,
+              )?.reason?.replace(/\.+$/, "") || "Not reported by backend"}. Choose an available format before creating new audio.
+            </p>
+          ) : null}
+
+          <div className="button-row">
+            <button className="button button--ghost button--small" onClick={handleResetAudioStorage} type="button">
+              Reset Audio Storage
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <div className="settings-column">
         <div className="panel settings-panel">

@@ -61,6 +61,68 @@ fn safe_sync_relative_path_parts(relative_path: &str) -> Result<Vec<String>, Str
 }
 
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn durable_manifest_audio_format(
+    artifact: &SyncProjectManifestArtifactSchema,
+) -> Option<&'static str> {
+    if !is_durable_manifest_audio_type(&artifact.r#type) {
+        return None;
+    }
+    match artifact.format.as_str() {
+        "wav" => Some("wav"),
+        "flac" => Some("flac"),
+        "mp3" => Some("mp3"),
+        "m4a" => Some("m4a"),
+        _ => None,
+    }
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn is_durable_manifest_audio_type(artifact_type: &str) -> bool {
+    matches!(
+        artifact_type,
+        "source_audio"
+            | "preview_mix"
+            | "vocal_stem"
+            | "instrumental_stem"
+            | "drums_stem"
+            | "bass_stem"
+            | "guitar_stem"
+            | "piano_stem"
+            | "other_stem"
+            | "vocals"
+            | "instrumental"
+            | "drums"
+            | "bass"
+            | "guitar"
+            | "piano"
+            | "other"
+    )
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn validate_manifest_durable_audio_artifact(
+    artifact: &SyncProjectManifestArtifactSchema,
+) -> Result<(), String> {
+    if !is_durable_manifest_audio_type(&artifact.r#type) {
+        return Ok(());
+    }
+    let format = durable_manifest_audio_format(artifact).ok_or_else(|| {
+        "Durable project manifest audio must use wav, flac, mp3, or m4a format.".to_string()
+    })?;
+    let suffix = format!(".{format}");
+    if !artifact
+        .relative_path
+        .to_ascii_lowercase()
+        .ends_with(&suffix)
+    {
+        return Err(format!(
+            "Durable project manifest {format} audio relative_path must end in {suffix}."
+        ));
+    }
+    Ok(())
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 fn validate_manifest_source_audio_artifact(
     artifact: &SyncProjectManifestArtifactSchema,
     project_id: &str,
@@ -75,16 +137,7 @@ fn validate_manifest_source_audio_artifact(
     }
     normalize_sha256(&artifact.content_sha256, "content_sha256")?;
     safe_sync_relative_path_parts(&artifact.relative_path)?;
-    if !artifact.format.trim().eq_ignore_ascii_case("wav") {
-        return Err("Project manifest source_audio artifact must use wav format.".to_string());
-    }
-    if !artifact
-        .relative_path
-        .to_ascii_lowercase()
-        .ends_with(".wav")
-    {
-        return Err("Project manifest source_audio relative_path must end in .wav.".to_string());
-    }
+    validate_manifest_durable_audio_artifact(artifact)?;
     Ok(())
 }
 
@@ -137,6 +190,7 @@ fn validate_sync_project_manifest_identity(
         }
         normalize_sha256(&artifact.content_sha256, "content_sha256")?;
         safe_sync_relative_path_parts(&artifact.relative_path)?;
+        validate_manifest_durable_audio_artifact(artifact)?;
     }
     manifest_source_audio_artifact(manifest)?;
     for revision in &manifest.entity_revisions {
@@ -1519,6 +1573,8 @@ mod mobile_backend_tests {
     use super::*;
     use chrono::{TimeZone, Utc};
     use serde_json::json;
+    #[cfg(not(target_os = "android"))]
+    use std::process::Command;
 
     fn mobile_test_job(
         id: &str,
@@ -1605,6 +1661,86 @@ mod mobile_backend_tests {
         }
     }
 
+    #[test]
+    fn mobile_manifest_accepts_exact_four_format_durable_audio_pairs() {
+        let source_sha256 = "a".repeat(64);
+        let project_id = source_hash_to_project_id(&source_sha256).unwrap();
+        for format in ["wav", "flac", "mp3", "m4a"] {
+            let mut manifest = mobile_test_manifest(&project_id, &source_sha256);
+            manifest.artifacts[0].format = format.to_string();
+            manifest.artifacts[0].relative_path = format!("source/source.{format}");
+            manifest.artifacts.push(SyncProjectManifestArtifactSchema {
+                artifact_id: format!("art_mix_{format}"),
+                project_id: project_id.clone(),
+                r#type: "preview_mix".to_string(),
+                format: format.to_string(),
+                relative_path: format!("mixes/mix.{format}"),
+                content_sha256: "b".repeat(64),
+                size_bytes: 42,
+                generated_by: "preview".to_string(),
+                can_delete: true,
+                can_regenerate: true,
+                cache_key: None,
+                metadata: json!({}),
+                created_at: "2026-05-22T12:00:00.000Z".to_string(),
+            });
+            manifest.artifacts.push(SyncProjectManifestArtifactSchema {
+                artifact_id: format!("art_stem_{format}"),
+                project_id: project_id.clone(),
+                r#type: "vocal_stem".to_string(),
+                format: format.to_string(),
+                relative_path: format!("stems/vocals.{format}"),
+                content_sha256: "c".repeat(64),
+                size_bytes: 42,
+                generated_by: "stems".to_string(),
+                can_delete: true,
+                can_regenerate: true,
+                cache_key: None,
+                metadata: json!({}),
+                created_at: "2026-05-22T12:00:00.000Z".to_string(),
+            });
+            validate_sync_project_manifest_identity(&manifest).unwrap();
+        }
+    }
+
+    #[test]
+    fn mobile_manifest_rejects_durable_audio_format_suffix_mismatch() {
+        let source_sha256 = "d".repeat(64);
+        let project_id = source_hash_to_project_id(&source_sha256).unwrap();
+        let mut manifest = mobile_test_manifest(&project_id, &source_sha256);
+        manifest.artifacts[0].format = "flac".to_string();
+        assert!(validate_sync_project_manifest_identity(&manifest)
+            .unwrap_err()
+            .contains("must end in .flac"));
+
+        manifest.artifacts[0].format = "ogg".to_string();
+        manifest.artifacts[0].relative_path = "source/source.ogg".to_string();
+        assert!(validate_sync_project_manifest_identity(&manifest)
+            .unwrap_err()
+            .contains("wav, flac, mp3, or m4a"));
+
+        for noncanonical in ["WAV", " wav", "wav "] {
+            manifest.artifacts[0].format = noncanonical.to_string();
+            manifest.artifacts[0].relative_path = "source/source.wav".to_string();
+            assert!(validate_sync_project_manifest_identity(&manifest).is_err());
+        }
+
+        manifest.artifacts[0].format = "wav".to_string();
+        manifest.artifacts[0].relative_path = "source/source.WAV".to_string();
+        validate_sync_project_manifest_identity(&manifest).unwrap();
+
+        let mut legacy_stem = manifest.artifacts[0].clone();
+        legacy_stem.artifact_id = "art_legacy_vocals".to_string();
+        legacy_stem.r#type = "vocals".to_string();
+        legacy_stem.format = "ogg".to_string();
+        legacy_stem.relative_path = "stems/vocals.ogg".to_string();
+        manifest.artifacts[0].relative_path = "source/source.wav".to_string();
+        manifest.artifacts.push(legacy_stem);
+        assert!(validate_sync_project_manifest_identity(&manifest)
+            .unwrap_err()
+            .contains("wav, flac, mp3, or m4a"));
+    }
+
     fn mobile_test_tombstone(
         tombstone_id: &str,
         project_id: &str,
@@ -1643,6 +1779,237 @@ mod mobile_backend_tests {
         }
         std::fs::write(path, bytes).unwrap();
         (storage::file_sha256(path).unwrap(), bytes.len() as i64)
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn write_mobile_synthetic_wav(path: &std::path::Path) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        write_mono_pcm_wav(
+            path,
+            &crate::native_audio::decode::DecodedAudio {
+                samples: (0..800)
+                    .map(|index| ((index as f32 * 0.15).sin() * 0.2).clamp(-1.0, 1.0))
+                    .collect(),
+                sample_rate: 8_000,
+                channels: 1,
+            },
+        )
+        .unwrap();
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn encode_mobile_contract_fixture(source: &std::path::Path, output: &std::path::Path, format: &str) {
+        let mut command = Command::new("ffmpeg");
+        command.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]);
+        command.arg(source);
+        match format {
+            "flac" => command.args(["-c:a", "flac", "-compression_level", "5"]),
+            "mp3" => command.args(["-c:a", "libmp3lame", "-b:a", "192k"]),
+            "m4a" => command.args(["-c:a", "aac", "-profile:a", "aac_low", "-b:a", "192k"]),
+            _ => panic!("unsupported mobile contract fixture format"),
+        };
+        assert!(command.arg(output).status().unwrap().success());
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn mobile_manifest_import_preserves_four_format_durable_audio_bytes_and_identity() {
+        for format in ["wav", "flac", "mp3", "m4a"] {
+            let root = mobile_storage_contract_root(&format!("preserve-{format}"));
+            let connection = storage::db_at_root(&root).unwrap();
+            let fixture_wav = root.join("fixture.wav");
+            write_mobile_synthetic_wav(&fixture_wav);
+            let encoded_path = if format == "wav" {
+                fixture_wav.clone()
+            } else {
+                let path = root.join(format!("fixture.{format}"));
+                encode_mobile_contract_fixture(&fixture_wav, &path, format);
+                path
+            };
+            let expected_bytes = std::fs::read(&encoded_path).unwrap();
+            let content_sha256 = storage::hex_digest(&Sha256::digest(&expected_bytes));
+            let size_bytes = expected_bytes.len() as i64;
+            let source_sha256 = storage::hex_digest(&Sha256::digest(format.as_bytes()));
+            let project_id = source_hash_to_project_id(&source_sha256).unwrap();
+            let staging_root = root.join("incoming");
+            let artifacts = [
+                ("art_source", "source_audio", format!("source/source.{format}"), false, None),
+                ("art_mix", "preview_mix", format!("mixes/practice.{format}"), true, Some("mix:source")),
+                ("art_stem", "vocal_stem", format!("stems/vocals.{format}"), true, Some("stem:source:vocals")),
+            ]
+            .into_iter()
+            .map(|(artifact_id, artifact_type, relative_path, can_delete, cache_key)| {
+                write_mobile_contract_file(&staging_root.join(&relative_path), &expected_bytes);
+                SyncProjectManifestArtifactSchema {
+                    artifact_id: artifact_id.to_string(),
+                    project_id: project_id.clone(),
+                    r#type: artifact_type.to_string(),
+                    format: format.to_string(),
+                    relative_path,
+                    content_sha256: content_sha256.clone(),
+                    size_bytes,
+                    generated_by: "sync".to_string(),
+                    can_delete,
+                    can_regenerate: can_delete,
+                    cache_key: cache_key.map(ToString::to_string),
+                    metadata: json!({"preserved": format}),
+                    created_at: "2026-05-22T12:00:00.000Z".to_string(),
+                }
+            })
+            .collect::<Vec<_>>();
+            let manifest = SyncProjectManifestSchema {
+                schema_version: SYNC_PROJECT_MANIFEST_SCHEMA_VERSION.to_string(),
+                exported_at: "2026-05-22T12:01:00.000Z".to_string(),
+                project: SyncProjectManifestProjectSchema {
+                    project_id: project_id.clone(),
+                    display_name: format!("{format} project"),
+                    source_key_override: None,
+                    source_sha256,
+                    duration_seconds: Some(0.1),
+                    sample_rate: Some(8_000),
+                    channels: Some(1),
+                    created_at: "2026-05-22T12:00:00.000Z".to_string(),
+                    updated_at: "2026-05-22T12:00:00.000Z".to_string(),
+                },
+                entity_revisions: Vec::new(),
+                artifacts,
+                delete_tombstones: Vec::new(),
+            };
+
+            manifests::import_sync_project_manifest(
+                &connection,
+                &root,
+                SyncProjectStagedImportRequest {
+                    manifest,
+                    staging_root: Some(staging_root.to_string_lossy().into_owned()),
+                    use_content_addressed_staging: Some(false),
+                },
+            )
+            .unwrap();
+
+            for artifact_id in ["art_source", "art_mix", "art_stem"] {
+                let artifact = connection
+                    .query_row(
+                        &format!("SELECT {ARTIFACT_COLUMNS} FROM artifacts WHERE id = ?1"),
+                        rusqlite::params![artifact_id],
+                        storage::row_artifact,
+                    )
+                    .unwrap();
+                assert_eq!(artifact.project_id, project_id);
+                assert_eq!(artifact.format, format);
+                assert_eq!(artifact.content_sha256.as_deref(), Some(content_sha256.as_str()));
+                assert_eq!(artifact.size_bytes, size_bytes);
+                assert_eq!(artifact.generated_by, "sync");
+                assert_eq!(artifact.metadata, json!({"preserved": format}));
+                assert_eq!(std::fs::read(&artifact.path).unwrap(), expected_bytes);
+            }
+            let exported = storage::get_project_manifest(&connection, &root, &project_id).unwrap();
+            assert_eq!(exported.schema_version, SYNC_PROJECT_MANIFEST_SCHEMA_VERSION);
+            assert!(exported.artifacts.iter().all(|artifact| artifact.format == format));
+
+            drop(connection);
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn mobile_manifest_rejects_corrupt_legacy_stem_before_commit_and_cleans_copy() {
+        let root = mobile_storage_contract_root("corrupt-durable-audio");
+        let connection = storage::db_at_root(&root).unwrap();
+        let staging_root = root.join("incoming");
+        let source_relative_path = "source/source.wav";
+        let source_path = staging_root.join(source_relative_path);
+        write_mobile_synthetic_wav(&source_path);
+        let source_bytes = std::fs::read(&source_path).unwrap();
+        let source_sha256 = storage::hex_digest(&Sha256::digest(&source_bytes));
+        let source_size_bytes = source_bytes.len() as i64;
+        let legacy_stem_relative_path = "stems/vocals.m4a";
+        let corrupt_bytes = b"\0\0\0\x18ftypM4A \0\0\0\0corrupt";
+        let (stem_sha256, stem_size_bytes) = write_mobile_contract_file(
+            &staging_root.join(legacy_stem_relative_path),
+            corrupt_bytes,
+        );
+        let project_id = source_hash_to_project_id(&source_sha256).unwrap();
+        let manifest = SyncProjectManifestSchema {
+            schema_version: SYNC_PROJECT_MANIFEST_SCHEMA_VERSION.to_string(),
+            exported_at: "2026-05-22T12:01:00.000Z".to_string(),
+            project: SyncProjectManifestProjectSchema {
+                project_id: project_id.clone(),
+                display_name: "Corrupt project".to_string(),
+                source_key_override: None,
+                source_sha256: source_sha256.clone(),
+                duration_seconds: None,
+                sample_rate: None,
+                channels: None,
+                created_at: "2026-05-22T12:00:00.000Z".to_string(),
+                updated_at: "2026-05-22T12:00:00.000Z".to_string(),
+            },
+            entity_revisions: Vec::new(),
+            artifacts: vec![
+                SyncProjectManifestArtifactSchema {
+                    artifact_id: "art_source".to_string(),
+                    project_id: project_id.clone(),
+                    r#type: "source_audio".to_string(),
+                    format: "wav".to_string(),
+                    relative_path: source_relative_path.to_string(),
+                    content_sha256: source_sha256,
+                    size_bytes: source_size_bytes,
+                    generated_by: "sync".to_string(),
+                    can_delete: false,
+                    can_regenerate: false,
+                    cache_key: None,
+                    metadata: json!({}),
+                    created_at: "2026-05-22T12:00:00.000Z".to_string(),
+                },
+                SyncProjectManifestArtifactSchema {
+                    artifact_id: "art_legacy_vocals".to_string(),
+                    project_id: project_id.clone(),
+                    r#type: "vocals".to_string(),
+                    format: "m4a".to_string(),
+                    relative_path: legacy_stem_relative_path.to_string(),
+                    content_sha256: stem_sha256,
+                    size_bytes: stem_size_bytes,
+                    generated_by: "sync".to_string(),
+                    can_delete: true,
+                    can_regenerate: true,
+                    cache_key: Some("stem:source:vocals".to_string()),
+                    metadata: json!({}),
+                    created_at: "2026-05-22T12:00:00.000Z".to_string(),
+                },
+            ],
+            delete_tombstones: Vec::new(),
+        };
+
+        let error = match manifests::import_sync_project_manifest(
+            &connection,
+            &root,
+            SyncProjectStagedImportRequest {
+                manifest,
+                staging_root: Some(staging_root.to_string_lossy().into_owned()),
+                use_content_addressed_staging: Some(false),
+            },
+        ) {
+            Ok(_) => panic!("corrupt durable audio must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.contains("failed bounded m4a validation"));
+        let project_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM projects", [], |row| row.get(0))
+            .unwrap();
+        let artifact_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM artifacts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(project_count, 0);
+        assert_eq!(artifact_count, 0);
+        let project_root = root.join("projects").join(project_id);
+        assert!(!project_root.join(source_relative_path).exists());
+        assert!(!project_root.join(legacy_stem_relative_path).exists());
+
+        drop(connection);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(not(target_os = "android"))]
@@ -1708,6 +2075,53 @@ mod mobile_backend_tests {
                 ],
             )
             .unwrap();
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn mobile_local_import_with_uppercase_extension_exports_canonical_manifest() {
+        let root = mobile_storage_contract_root("uppercase-import-manifest-export");
+        let connection = storage::db_at_root(&root).unwrap();
+        let fixture_path = root.join("Song.WAV");
+        write_mobile_synthetic_wav(&fixture_path);
+        let source_sha256 = storage::file_sha256(&fixture_path).unwrap();
+        let project_id = source_hash_to_project_id(&source_sha256).unwrap();
+        let source_path = storage::project_root_path(&root, &project_id)
+            .unwrap()
+            .join("source")
+            .join("Song.WAV");
+        std::fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+        std::fs::rename(&fixture_path, &source_path).unwrap();
+        let source_size_bytes = std::fs::metadata(&source_path).unwrap().len() as i64;
+
+        insert_mobile_contract_project(&connection, &project_id, &source_sha256, &source_path);
+        insert_mobile_contract_artifact(
+            &connection,
+            MobileContractArtifact {
+                artifact_id: "art_source_audio",
+                project_id: &project_id,
+                artifact_type: "source_audio",
+                format: "wav",
+                path: &source_path,
+                content_sha256: &source_sha256,
+                size_bytes: source_size_bytes,
+                generated_by: "import",
+                can_delete: false,
+                can_regenerate: false,
+                cache_key: None,
+                metadata: json!({"source_path": "Song.WAV"}),
+            },
+        );
+
+        let manifest = storage::get_project_manifest(&connection, &root, &project_id).unwrap();
+
+        assert_eq!(manifest.artifacts.len(), 1);
+        assert_eq!(manifest.artifacts[0].format, "wav");
+        assert_eq!(manifest.artifacts[0].relative_path, "source/Song.WAV");
+        validate_sync_project_manifest_identity(&manifest).unwrap();
+
+        drop(connection);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(not(target_os = "android"))]
@@ -3065,7 +3479,7 @@ mod mobile_backend_tests {
         bad_format.artifacts[0].format = "m4a".to_string();
         assert!(validate_sync_project_manifest_identity(&bad_format)
             .unwrap_err()
-            .contains("wav format"));
+            .contains("must end in .m4a"));
 
         let mut bad_path = manifest;
         bad_path.artifacts[0].relative_path = "source/source.m4a".to_string();

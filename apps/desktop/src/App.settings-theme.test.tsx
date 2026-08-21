@@ -2,12 +2,15 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FRONTEND_VERSION_INFO } from "./lib/buildInfo";
+import { DEFAULT_PREFERENCES } from "./lib/preferences";
 import {
   resetAppTestHarness,
   getAllByAriaKeyLabel,
   getByAriaKeyLabel,
   installMatchMediaMock,
   mockInvoke,
+  mockConfirm,
+  mockGetExportCapabilities,
   mockListBeatBackends,
   mockListChordBackends,
   queryByAriaKeyLabel,
@@ -36,6 +39,21 @@ describe("Desktop app settings theme", () => {
     if (showInspectorButton) {
       await user.click(showInspectorButton);
     }
+  }
+
+  function settingsSnapshotContents(
+    preferences: typeof DEFAULT_PREFERENCES,
+    themePreference: "dark" | "light" | "system",
+    themeOverrides: Record<string, Record<string, string>> = {},
+  ) {
+    return JSON.stringify({
+      exportedAt: "2026-04-18T13:16:00.000Z",
+      kind: "tuneforge.settings",
+      preferences,
+      themeOverrides,
+      themePreference,
+      version: 2,
+    });
   }
 
   it("applies enharmonic display overrides from settings", async () => {
@@ -102,6 +120,18 @@ describe("Desktop app settings theme", () => {
       expect(screen.getByRole("button", { name: /^Advanced Beat Analysis/ })).toHaveAttribute("aria-pressed", "true"),
     );
     expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("heading", { name: "Audio Storage" })).toBeInTheDocument();
+    const durableFormats = screen.getByRole("group", { name: "New durable audio format" });
+    expect(within(durableFormats).getByRole("button", { name: /^WAV\/PCM/ }))
+      .toHaveTextContent("Available · Lossless · Default");
+    expect(within(durableFormats).getByRole("button", { name: /^FLAC/ }))
+      .toHaveTextContent("Available · Lossless");
+    expect(within(durableFormats).getByRole("button", { name: /^MP3/ }))
+      .toHaveTextContent("Available · Lossy");
+    expect(within(durableFormats).getByRole("button", { name: /^M4A/ }))
+      .toHaveTextContent("Available · Lossy");
+    expect(within(durableFormats).getByRole("button", { name: /^WAV\/PCM/ }))
+      .toHaveAttribute("aria-pressed", "true");
     expect(
       within(screen.getByRole("group", { name: "Default beat analysis" })).getAllByRole("button")[0],
     ).toHaveTextContent("Advanced Beat Analysis");
@@ -120,12 +150,165 @@ describe("Desktop app settings theme", () => {
       defaultPlaybackDisplayMode: "auto",
       defaultBeatAnalysisBackend: "beat-this",
       defaultChordBackend: "crema-advanced",
+      defaultDurableAudioFormat: "wav",
       defaultLyricsFollowEnabled: true,
       defaultChordsFollowEnabled: true,
       defaultTunerInputDeviceId: null,
       defaultTunerReferenceHz: 440,
       defaultTunerVisualMode: "wide-arc",
     });
+  });
+
+  it("confirms lossy audio storage choices and resets to WAV", async () => {
+    const user = userEvent.setup();
+    renderApp(["/settings"]);
+
+    expect(await screen.findByRole("heading", { name: "Audio Storage" })).toBeInTheDocument();
+    const audioFormats = screen.getByRole("group", { name: "New durable audio format" });
+    await waitFor(() => expect(within(audioFormats).getByRole("button", { name: /^MP3 \(192 kbps\)/ })).toBeEnabled());
+    await user.click(within(audioFormats).getByRole("button", { name: /^MP3 \(192 kbps\)/ }));
+
+    expect(mockConfirm).toHaveBeenCalledWith(
+      expect.stringMatching(/irreversible.*cannot be recovered.*new imports.*bulk stem refreshes/is),
+      expect.objectContaining({ okLabel: "Use MP3" }),
+    );
+    expect(within(audioFormats).getByRole("button", { name: /^MP3 \(192 kbps\)/ }))
+      .toHaveAttribute("aria-pressed", "true");
+    expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}"))
+      .toMatchObject({ defaultDurableAudioFormat: "mp3" });
+
+    await user.click(within(audioFormats).getByRole("button", { name: /^M4A \(AAC-LC, 192 kbps\)/ }));
+    expect(mockConfirm).toHaveBeenLastCalledWith(
+      expect.stringMatching(/irreversible.*cannot be recovered/is),
+      expect.objectContaining({ okLabel: "Use M4A" }),
+    );
+    expect(within(audioFormats).getByRole("button", { name: /^M4A \(AAC-LC, 192 kbps\)/ }))
+      .toHaveAttribute("aria-pressed", "true");
+
+    await user.click(screen.getByRole("button", { name: "Reset Audio Storage" }));
+    expect(within(audioFormats).getByRole("button", { name: /^WAV\/PCM/ }))
+      .toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("retains a persisted unavailable format without fallback", async () => {
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultDurableAudioFormat: "m4a" }),
+    );
+    mockGetExportCapabilities.mockResolvedValueOnce({
+      capabilities: {
+        platform: "desktop",
+        formats: [
+          { id: "wav", available: true, reason: null },
+          { id: "flac", available: true, reason: null },
+          { id: "mp3", available: false, reason: "MP3 encoder missing." },
+          { id: "m4a", available: false, reason: "AAC encoder missing." },
+        ],
+        destinations: [],
+        max_artifact_count: null,
+      },
+    });
+    renderApp(["/settings"]);
+
+    const savedChoice = await screen.findByRole("button", { name: /^M4A \(AAC-LC, 192 kbps\)/ });
+    await waitFor(() => expect(savedChoice).toBeDisabled());
+    expect(savedChoice).toHaveAttribute("aria-pressed", "true");
+    expect(savedChoice).toHaveTextContent("Selected · Unavailable — AAC encoder missing.");
+    expect(screen.getByRole("button", { name: /^MP3 \(192 kbps\)/ }))
+      .toHaveTextContent("Unavailable — MP3 encoder missing.");
+    expect(screen.getByText(
+      "M4A (AAC-LC, 192 kbps) is saved but unavailable on this desktop: AAC encoder missing. Choose an available format before creating new audio.",
+    )).toBeInTheDocument();
+  });
+
+  it("keeps the persisted format pressed while availability is loading", async () => {
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultDurableAudioFormat: "flac" }),
+    );
+    let resolveCapabilities: ((value: Awaited<ReturnType<typeof mockGetExportCapabilities>>) => void) | null = null;
+    mockGetExportCapabilities.mockImplementationOnce(
+      () => new Promise((resolve) => {
+        resolveCapabilities = resolve;
+      }),
+    );
+    renderApp(["/settings"]);
+
+    const group = await screen.findByRole("group", { name: "New durable audio format" });
+    expect(group).toHaveAttribute("aria-busy", "true");
+    expect(within(group).getByRole("button", { name: /^FLAC/ })).toHaveAttribute("aria-pressed", "true");
+    for (const button of within(group).getAllByRole("button")) {
+      expect(button).toBeDisabled();
+    }
+    expect(screen.getByText("Checking audio format availability…")).toHaveAttribute("aria-live", "polite");
+
+    await act(async () => {
+      resolveCapabilities?.({
+        capabilities: {
+          platform: "desktop",
+          formats: ["wav", "flac", "mp3", "m4a"].map((id) => ({ id, available: true, reason: null })),
+          destinations: [],
+          max_artifact_count: null,
+        },
+      });
+    });
+    await waitFor(() => expect(group).not.toHaveAttribute("aria-busy"));
+  });
+
+  it("disables audio choices and retry while an availability retry is fetching", async () => {
+    const user = userEvent.setup();
+    mockGetExportCapabilities.mockRejectedValueOnce(new Error("offline"));
+    renderApp(["/settings"]);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Audio format availability could not be checked. Check FFmpeg, then try again.",
+    );
+    let resolveRetry: ((value: Awaited<ReturnType<typeof mockGetExportCapabilities>>) => void) | null = null;
+    mockGetExportCapabilities.mockImplementationOnce(
+      () => new Promise((resolve) => {
+        resolveRetry = resolve;
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    const retry = screen.getByRole("button", { name: "Retry" });
+    const group = screen.getByRole("group", { name: "New durable audio format" });
+    expect(retry).toBeDisabled();
+    expect(group).toHaveAttribute("aria-busy", "true");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    for (const choice of within(group).getAllByRole("button")) {
+      expect(choice).toBeDisabled();
+      expect(choice).toHaveTextContent("Checking availability…");
+    }
+    await user.click(retry);
+    expect(mockGetExportCapabilities).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      resolveRetry?.({
+        capabilities: {
+          platform: "desktop",
+          formats: ["wav", "flac", "mp3", "m4a"].map((id) => ({ id, available: true, reason: null })),
+          destinations: [],
+          max_artifact_count: null,
+        },
+      });
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: /^WAV\/PCM/ })).toBeEnabled());
+  });
+
+  it("hides audio storage settings when capabilities report Android", async () => {
+    mockGetExportCapabilities.mockResolvedValueOnce({
+      capabilities: {
+        platform: "android",
+        formats: [{ id: "wav", available: true, reason: null }],
+        destinations: [],
+        max_artifact_count: 1,
+      },
+    });
+    renderApp(["/settings"]);
+
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "Audio Storage" })).not.toBeInTheDocument());
+    expect(screen.queryByText("New audio format")).not.toBeInTheDocument();
+    expect(screen.getByText("App-wide appearance, notation, and playback defaults.")).toBeInTheDocument();
+    expect(screen.queryByText(/audio storage/i)).not.toBeInTheDocument();
   });
 
   it("persists theme and visible UI preferences", async () => {
@@ -746,6 +929,129 @@ describe("Desktop app settings theme", () => {
     expect(screen.getAllByText("Lyrics + chords").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Advanced Chords").length).toBeGreaterThan(0);
     expect(document.documentElement.style.getPropertyValue("--color-bg-app")).toBe("#123456");
+  });
+
+  it("confirms a lossy desktop snapshot before atomically applying it", async () => {
+    const user = userEvent.setup();
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    if (!defaultInvoke) throw new Error("Mock invoke implementation was not installed.");
+    const contents = settingsSnapshotContents(
+      { ...DEFAULT_PREFERENCES, defaultDurableAudioFormat: "mp3", informationDensity: "detailed" },
+      "dark",
+      { light: { "--color-bg-app": "#123456" } },
+    );
+    mockInvoke.mockImplementation(async (command: string, args?: Record<string, unknown>) =>
+      command === "read_settings_snapshot_file" ? contents : defaultInvoke(command, args));
+
+    try {
+      renderApp(["/settings"]);
+      await user.click(await screen.findByRole("button", { name: "Import Settings" }));
+
+      await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith("read_settings_snapshot_file"));
+      await waitFor(() =>
+        expect(mockConfirm).toHaveBeenCalledWith(
+          expect.stringMatching(/irreversible.*cannot be recovered/is),
+          expect.objectContaining({ okLabel: "Use MP3" }),
+        ),
+      );
+      await waitFor(() => expect(document.documentElement).toHaveAttribute("data-theme", "dark"));
+      expect(screen.getByRole("button", { name: /^MP3 \(192 kbps\)/ }))
+        .toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByText("Settings imported.")).toBeInTheDocument();
+    } finally {
+      mockInvoke.mockImplementation(defaultInvoke);
+    }
+  });
+
+  it("leaves theme and preferences unchanged when a lossy snapshot is declined", async () => {
+    const user = userEvent.setup();
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    if (!defaultInvoke) throw new Error("Mock invoke implementation was not installed.");
+    const contents = settingsSnapshotContents(
+      { ...DEFAULT_PREFERENCES, defaultDurableAudioFormat: "m4a", informationDensity: "detailed" },
+      "dark",
+      { light: { "--color-bg-app": "#123456" } },
+    );
+    mockInvoke.mockImplementation(async (command: string, args?: Record<string, unknown>) =>
+      command === "read_settings_snapshot_file" ? contents : defaultInvoke(command, args));
+    mockConfirm.mockResolvedValueOnce(false);
+
+    try {
+      renderApp(["/settings"]);
+      await user.click(await screen.findByRole("button", { name: "Import Settings" }));
+
+      await waitFor(() => expect(mockConfirm).toHaveBeenCalled());
+      expect(screen.getByRole("button", { name: /^Follow system/ })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByRole("button", { name: /^WAV\/PCM/ })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByRole("button", { name: /^Minimal/ })).toHaveAttribute("aria-pressed", "true");
+      expect(document.documentElement.style.getPropertyValue("--color-bg-app")).not.toBe("#123456");
+      expect(screen.queryByText("Settings imported.")).not.toBeInTheDocument();
+    } finally {
+      mockInvoke.mockImplementation(defaultInvoke);
+    }
+  });
+
+  it("imports WAV from a v1 snapshot without a lossy confirmation", async () => {
+    const user = userEvent.setup();
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    if (!defaultInvoke) throw new Error("Mock invoke implementation was not installed.");
+    const { defaultDurableAudioFormat, ...v1Preferences } = DEFAULT_PREFERENCES;
+    expect(defaultDurableAudioFormat).toBe("wav");
+    const contents = JSON.stringify({
+      exportedAt: "2026-04-18T13:16:00.000Z",
+      kind: "tuneforge.settings",
+      preferences: { ...v1Preferences, informationDensity: "detailed" },
+      themeOverrides: {},
+      themePreference: "dark",
+      version: 1,
+    });
+    mockInvoke.mockImplementation(async (command: string, args?: Record<string, unknown>) =>
+      command === "read_settings_snapshot_file" ? contents : defaultInvoke(command, args));
+
+    try {
+      renderApp(["/settings"]);
+      await user.click(await screen.findByRole("button", { name: "Import Settings" }));
+
+      await screen.findByText("Settings imported.");
+      expect(mockConfirm).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: /^WAV\/PCM/ })).toHaveAttribute("aria-pressed", "true");
+      expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+    } finally {
+      mockInvoke.mockImplementation(defaultInvoke);
+    }
+  });
+
+  it("preserves a hidden compressed snapshot preference on Android without prompting", async () => {
+    const user = userEvent.setup();
+    const defaultInvoke = mockInvoke.getMockImplementation();
+    if (!defaultInvoke) throw new Error("Mock invoke implementation was not installed.");
+    mockGetExportCapabilities.mockResolvedValueOnce({
+      capabilities: {
+        platform: "android",
+        formats: [{ id: "wav", available: true, reason: null }],
+        destinations: [],
+        max_artifact_count: 1,
+      },
+    });
+    const contents = settingsSnapshotContents(
+      { ...DEFAULT_PREFERENCES, defaultDurableAudioFormat: "m4a" },
+      "system",
+    );
+    mockInvoke.mockImplementation(async (command: string, args?: Record<string, unknown>) =>
+      command === "read_settings_snapshot_file" ? contents : defaultInvoke(command, args));
+
+    try {
+      renderApp(["/settings"]);
+      await waitFor(() => expect(screen.queryByRole("heading", { name: "Audio Storage" })).not.toBeInTheDocument());
+      await user.click(screen.getByRole("button", { name: "Import Settings" }));
+
+      await screen.findByText("Settings imported.");
+      expect(mockConfirm).not.toHaveBeenCalled();
+      expect(JSON.parse(window.localStorage.getItem("tuneforge.ui-preferences") ?? "{}"))
+        .toMatchObject({ defaultDurableAudioFormat: "m4a" });
+    } finally {
+      mockInvoke.mockImplementation(defaultInvoke);
+    }
   });
 
   it("keeps settings snapshot cancel quiet", async () => {

@@ -9,6 +9,9 @@ download, installation, verification, signature, and publication instructions.
 
 - Added backend storage, processing-job, and desktop-sync foundations for durable WAV, FLAC, MP3,
   and M4A audio artifacts ([#398](https://github.com/grazzolini/tuneforge/issues/398)).
+- Added a desktop Audio Storage preference for future imports, stems, and saved mixes, plus
+  byte-preserving Android receive and playback support for all four durable formats
+  ([#398](https://github.com/grazzolini/tuneforge/issues/398)).
 
 ### Fixed
 

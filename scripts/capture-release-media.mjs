@@ -122,9 +122,10 @@ const releaseMediaCaptureCatalog = [
     kind: "screenshot",
     fileName: "settings.png",
     title: "Settings screen",
-    caption: "Local processing and practice preferences in the TuneForge control room.",
-    alt: "TuneForge settings control room",
+    caption: "Choose WAV, FLAC, MP3, or M4A storage for future local audio alongside practice defaults.",
+    alt: "TuneForge Settings showing Audio Storage choices for WAV, FLAC, MP3, and M4A",
     fixture: "release-showcase-v1",
+    viewport: { width: 1920, height: 1280 },
     route: "/settings",
     prepare: noPreparation,
     ready: readySettings,
@@ -1587,6 +1588,43 @@ async function readyJobs({ page, timeoutMs }) {
 
 async function readySettings({ page, timeoutMs }) {
   await page.getByRole("heading", { name: "Control Room" }).waitFor({ timeout: timeoutMs });
+  await page.getByRole("heading", { name: "Audio Storage" }).waitFor({ timeout: timeoutMs });
+  const formats = page.getByRole("group", { name: "New durable audio format" });
+  const expectedFormats = [
+    ["WAV/PCM", "Available · Lossless · Default"],
+    ["FLAC", "Available · Lossless"],
+    ["MP3 (192 kbps)", "Available · Lossy"],
+    ["M4A (AAC-LC, 192 kbps)", "Available · Lossy"],
+  ];
+  for (const [label, status] of expectedFormats) {
+    const choice = formats.getByRole("button").filter({ hasText: label });
+    await choice.waitFor({ timeout: timeoutMs });
+    await choice.getByText(status, { exact: true }).waitFor({ timeout: timeoutMs });
+    if (await choice.isDisabled()) {
+      throw new Error(`Settings release media requires ${label} available.`);
+    }
+  }
+  const wav = formats.getByRole("button", { name: /^WAV\/PCM/ });
+  if (await wav.getAttribute("aria-pressed") !== "true") {
+    throw new Error("Settings release media requires WAV/PCM selected.");
+  }
+  if (await formats.getAttribute("aria-busy") === "true") {
+    throw new Error("Settings release media requires resolved audio availability.");
+  }
+  const panel = page.locator('[aria-labelledby="audio-storage-title"]');
+  await panel.scrollIntoViewIfNeeded();
+  const panelBounds = await panel.boundingBox();
+  const viewport = page.viewportSize();
+  if (
+    !panelBounds
+    || !viewport
+    || panelBounds.x < 0
+    || panelBounds.y < 0
+    || panelBounds.x + panelBounds.width > viewport.width
+    || panelBounds.y + panelBounds.height > viewport.height
+  ) {
+    throw new Error("Settings release media requires the full Audio Storage panel in frame.");
+  }
 }
 
 async function recordOverviewVideo({ appUrl, catalog, entry, options, page }) {

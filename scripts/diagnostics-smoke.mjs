@@ -141,6 +141,16 @@ async function installApiFixtures(page) {
       if (importCount === 2) return respond(route, 200, { project: PROJECT });
       return respond(route, 503, dependencyError("FFmpeg is required for import. stderr: RAW_STDERR_DIAGNOSTICS_CANARY"));
     }
+    if (path === "/api/v1/export-capabilities") {
+      return respond(route, 200, {
+        capabilities: {
+          platform: "desktop",
+          formats: ["wav", "flac", "mp3", "m4a"].map((id) => ({ id, available: true, reason: null })),
+          destinations: [],
+          max_artifact_count: null,
+        },
+      });
+    }
     if (path === "/api/v1/health") return respond(route, 200, { status: "ok" });
     if (path === "/api/v1/projects") return respond(route, 200, { projects: [PROJECT], total: 1, limit: 50, offset: 0, has_more: false });
     if (path === `/api/v1/projects/${PROJECT_ID}`) return respond(route, 200, { project: PROJECT });

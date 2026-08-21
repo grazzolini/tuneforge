@@ -1210,6 +1210,12 @@ const {
       return clone(state.nativeAudioCapabilities);
     }
 
+    if (command === "native_audio_diagnostics_availability") {
+      return {
+        enabled: false,
+      };
+    }
+
     if (command === "audio_list_input_devices") {
       return clone(state.nativeAudioInputDevices);
     }

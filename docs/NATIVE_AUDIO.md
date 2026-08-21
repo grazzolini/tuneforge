@@ -131,6 +131,25 @@ from local storage; only a safe historical backend and error may survive reload.
 When `VITE_TUNEFORGE_FORCE_WEB_AUDIO=1` is active, diagnostics report the build-time override and
 `Web Audio forced` policy while continuing to report native capability independently.
 
+### Retained Native Audio Diagnostics
+
+Native transport diagnostics are bounded and memory-only. Detailed read, reset, and export commands
+are available only when the desktop process starts with
+`TUNEFORGE_NATIVE_AUDIO_DIAGNOSTICS=1`. When enabled, Settings shows **Native Audio Diagnostics**;
+normal builds show no diagnostics panel and native playback takes a zero-generation no-op path. The
+export contains relative monotonic timings, safe counts, fixed buffer capacities, and process RSS
+where supported. Operation timestamps are elapsed from that command's zero point. It never
+contains names, paths, URLs, artifact/project/device/session/lane identifiers, raw decoder errors,
+PCM, or wall-clock timestamps. It is not persisted automatically or sent; **Export sanitized JSON**
+writes a user-selected local copy only when requested.
+
+To collect a diagnostic session, enable the environment gate before starting the desktop process,
+exercise ordinary native playback and its prepare, play, seek, tempo, or lane controls, then use
+Settings to reset or export the sanitized recorder. These diagnostics observe the existing native
+path; they do not run an automated playback matrix, control an output device, measure audible output,
+or produce a performance verdict. Release-build, output-device, Linux, and Android measurements
+remain manual handoffs and must not be reported as a runtime PASS from the exported counters alone.
+
 Android microphone permission is requested only from a tuner start or retry. TuneForge distinguishes
 the initial prompt, an in-progress prompt, denial, permanent blocking, the Android microphone privacy
 toggle, and unavailable hardware. Blocked states give an Android Settings path and Retry; TuneForge

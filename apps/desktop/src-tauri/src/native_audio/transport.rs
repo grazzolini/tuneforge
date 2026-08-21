@@ -33,6 +33,7 @@ use symphonia::core::{
 use tauri::Emitter;
 
 use super::{
+    diagnostics::{self, DiagnosticCheckpoint, DiagnosticSafeCode},
     mixer::{AudioLaneRequest, AudioLaneRole, EffectiveAudioLane},
     AudioCapabilities,
 };
@@ -275,8 +276,12 @@ enum WorkerControl {
     SetPlaybackRate {
         playback_rate: f64,
         position_seconds: f64,
+        diagnostics_generation: u64,
     },
-    Seek(f64),
+    Seek {
+        position_seconds: f64,
+        diagnostics_generation: u64,
+    },
     Stop,
 }
 
@@ -346,6 +351,8 @@ struct PlaybackShared {
     sustained_underrun_frames: usize,
     underrun_error_pending: bool,
     fallback_cause: Option<NativePlaybackFallbackCause>,
+    diagnostics_generation: u64,
+    diagnostics_gain_first_change_recorded: bool,
 }
 
 impl PlaybackShared {
@@ -404,13 +411,18 @@ impl PlaybackShared {
 }
 
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
-fn mark_terminal_runtime_error(shared: &mut PlaybackShared, message: String) {
+fn mark_terminal_runtime_error(
+    shared: &mut PlaybackShared,
+    message: String,
+    diagnostic_code: DiagnosticSafeCode,
+) {
     if shared.terminal_error.is_none() {
         shared.error_pending = Some(message.clone());
         shared.terminal_error = Some(message);
     }
     shared.status = TransportStatus::Paused;
     shared.buffering = false;
+    diagnostics::record_callback_safe_code(shared.diagnostics_generation, diagnostic_code);
 }
 
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
@@ -449,6 +461,7 @@ pub struct TransportState {
     raw_lanes: Vec<AudioLaneRequest>,
     lanes: Vec<EffectiveAudioLane>,
     click: ClickState,
+    diagnostics_generation: u64,
     #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
     app: Option<AppHandle>,
     #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
@@ -469,6 +482,7 @@ impl Default for TransportState {
             raw_lanes: Vec::new(),
             lanes: Vec::new(),
             click: ClickState::default(),
+            diagnostics_generation: 0,
             #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
             app: None,
             #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
@@ -478,6 +492,37 @@ impl Default for TransportState {
 }
 
 impl TransportState {
+    pub fn lane_count(&self) -> usize {
+        self.raw_lanes.len().min(6)
+    }
+
+    pub fn set_diagnostics_generation(&mut self, generation: u64) {
+        self.diagnostics_generation = generation;
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+        if let Some(runtime) = &self.runtime {
+            if let Ok(mut shared) = runtime.shared.lock() {
+                shared.diagnostics_generation = generation;
+                shared.diagnostics_gain_first_change_recorded = false;
+            }
+        }
+    }
+
+    pub fn diagnostic_route_changed(&self, next: &[AudioLaneRequest]) -> bool {
+        self.raw_lanes.len() != next.len()
+            || self.raw_lanes.iter().zip(next).any(|(current, next)| {
+                current.id != next.id
+                    || current.artifact_id != next.artifact_id
+                    || current.source_path != next.source_path
+                    || current.role != next.role
+            })
+    }
+
+    pub fn diagnostic_playback_rate_changed(&self, next: Option<f64>) -> bool {
+        next.map(|next| normalize_playback_rate(Some(next)))
+            .map(|next| (next - self.playback_rate).abs() > RATE_TOLERANCE)
+            .unwrap_or(false)
+    }
+
     pub fn prepare(
         &mut self,
         app: Option<AppHandle>,
@@ -565,13 +610,14 @@ impl TransportState {
                     shared.underrun_error_pending = false;
                     if shared.status == TransportStatus::Playing {
                         shared.buffering = true;
-                        clear_lane_rings(&mut shared.lanes);
+                        clear_lane_rings(shared.diagnostics_generation, &mut shared.lanes);
                         should_prebuffer = true;
                     }
                     for sender in &runtime.worker_control_senders {
                         let _ = sender.send(WorkerControl::SetPlaybackRate {
                             playback_rate: rate,
                             position_seconds,
+                            diagnostics_generation: shared.diagnostics_generation,
                         });
                     }
                 }
@@ -650,7 +696,7 @@ impl TransportState {
         #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
         if let Some(runtime) = &self.runtime {
             if runtime_started || request.start_time_seconds.is_some() {
-                seek_runtime_workers(runtime, self.position_seconds);
+                seek_runtime_workers(runtime, self.position_seconds, self.diagnostics_generation);
             }
             if let Ok(mut shared) = runtime.shared.lock() {
                 shared.position_seconds = self.position_seconds;
@@ -757,10 +803,10 @@ impl TransportState {
             if was_playing {
                 if let Ok(mut shared) = runtime.shared.lock() {
                     shared.buffering = true;
-                    clear_lane_rings(&mut shared.lanes);
+                    clear_lane_rings(shared.diagnostics_generation, &mut shared.lanes);
                 }
             }
-            seek_runtime_workers(runtime, self.position_seconds);
+            seek_runtime_workers(runtime, self.position_seconds, self.diagnostics_generation);
             if let Ok(mut shared) = runtime.shared.lock() {
                 shared.position_seconds = self.position_seconds;
                 shared.ended_pending = false;
@@ -860,12 +906,17 @@ impl TransportState {
             &self.raw_lanes,
             &self.lanes,
             &self.click,
+            self.diagnostics_generation,
         ) {
             Ok(runtime) => {
                 self.runtime = Some(runtime);
                 Ok(true)
             }
             Err(error) => {
+                diagnostics::record_safe_code(
+                    self.diagnostics_generation,
+                    DiagnosticSafeCode::RuntimeStartFailure,
+                );
                 self.native_playback_supported = false;
                 self.fallback_reason = Some(error.clone());
                 Err(error)
@@ -895,14 +946,22 @@ impl TransportState {
 }
 
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
-fn seek_runtime_workers(runtime: &PlaybackRuntime, position_seconds: f64) {
+fn seek_runtime_workers(
+    runtime: &PlaybackRuntime,
+    position_seconds: f64,
+    diagnostics_generation: u64,
+) {
     if let Ok(mut shared) = runtime.shared.lock() {
-        clear_lane_rings(&mut shared.lanes);
+        shared.diagnostics_generation = diagnostics_generation;
+        clear_lane_rings(diagnostics_generation, &mut shared.lanes);
         shared.sustained_underrun_frames = 0;
         shared.underrun_error_pending = false;
     }
     for sender in &runtime.worker_control_senders {
-        let _ = sender.send(WorkerControl::Seek(position_seconds));
+        let _ = sender.send(WorkerControl::Seek {
+            position_seconds,
+            diagnostics_generation,
+        });
     }
 }
 
@@ -912,15 +971,17 @@ fn wait_for_runtime_prebuffer(
 ) -> Result<(), NativePlaybackFallbackCause> {
     let started_at = Instant::now();
     loop {
-        let ready = runtime
+        let (ready, generation) = runtime
             .shared
             .lock()
-            .map(|shared| shared.prebuffer_ready())
-            .unwrap_or(false);
+            .map(|shared| (shared.prebuffer_ready(), shared.diagnostics_generation))
+            .unwrap_or((false, 0));
         if ready {
+            diagnostics::record_checkpoint(generation, DiagnosticCheckpoint::PrebufferReady, None);
             return Ok(());
         }
         if started_at.elapsed() >= PREBUFFER_TIMEOUT {
+            diagnostics::record_safe_code(generation, DiagnosticSafeCode::PrebufferTimeout);
             return Err(NativePlaybackFallbackCause::PrebufferTimeout);
         }
         thread::sleep(PREBUFFER_POLL_INTERVAL);
@@ -972,7 +1033,15 @@ fn effective_gain_for_lane(lanes: &[EffectiveAudioLane], id: &str) -> f32 {
 fn update_shared_lanes(shared: &mut PlaybackShared, lanes: &[EffectiveAudioLane]) {
     shared.snapshot_lanes = lanes.to_vec();
     for lane in &mut shared.lanes {
-        lane.target_gain = effective_gain_for_lane(lanes, &lane.id);
+        let next_gain = effective_gain_for_lane(lanes, &lane.id);
+        if (lane.target_gain - next_gain).abs() > f32::EPSILON {
+            diagnostics::record_checkpoint(
+                shared.diagnostics_generation,
+                DiagnosticCheckpoint::GainRampBegin,
+                None,
+            );
+        }
+        lane.target_gain = next_gain;
         if let Some(effective) = lanes.iter().find(|candidate| candidate.id == lane.id) {
             lane.muted = effective.muted;
             lane.solo = effective.solo;
@@ -1096,14 +1165,26 @@ fn click_sample(click: &ClickState, position_seconds: f64, channel: usize) -> f3
 }
 
 fn mix_shared_frame(shared: &mut PlaybackShared, channel: usize, sample_index: usize) -> f32 {
+    if shared.diagnostics_generation == 0 {
+        return mix_shared_frame_without_diagnostics(shared, channel, sample_index);
+    }
+
     let mut sample = 0.0;
     let ramp_step = (1.0 / (shared.sample_rate as f64 * GAIN_RAMP_SECONDS)).max(0.0001) as f32;
 
     for lane in &mut shared.lanes {
+        let was_ramping = (lane.current_gain - lane.target_gain).abs() > f32::EPSILON;
         if lane.current_gain < lane.target_gain {
             lane.current_gain = (lane.current_gain + ramp_step).min(lane.target_gain);
         } else if lane.current_gain > lane.target_gain {
             lane.current_gain = (lane.current_gain - ramp_step).max(lane.target_gain);
+        }
+        if was_ramping && !shared.diagnostics_gain_first_change_recorded {
+            diagnostics::record_gain_first_change(shared.diagnostics_generation);
+            shared.diagnostics_gain_first_change_recorded = true;
+        }
+        if was_ramping && (lane.current_gain - lane.target_gain).abs() <= f32::EPSILON {
+            diagnostics::record_gain_ramp_complete(shared.diagnostics_generation);
         }
 
         let lane_sample = lane.scratch.get(sample_index).copied().unwrap_or(0.0);
@@ -1120,7 +1201,38 @@ fn mix_shared_frame(shared: &mut PlaybackShared, channel: usize, sample_index: u
     sample.clamp(-1.0, 1.0)
 }
 
-fn prepare_lane_scratch(lanes: &mut [PlaybackLane], sample_count: usize) -> bool {
+fn mix_shared_frame_without_diagnostics(
+    shared: &mut PlaybackShared,
+    channel: usize,
+    sample_index: usize,
+) -> f32 {
+    let mut sample = 0.0;
+    let ramp_step = (1.0 / (shared.sample_rate as f64 * GAIN_RAMP_SECONDS)).max(0.0001) as f32;
+
+    for lane in &mut shared.lanes {
+        if lane.current_gain < lane.target_gain {
+            lane.current_gain = (lane.current_gain + ramp_step).min(lane.target_gain);
+        } else if lane.current_gain > lane.target_gain {
+            lane.current_gain = (lane.current_gain - ramp_step).max(lane.target_gain);
+        }
+        let lane_sample = lane.scratch.get(sample_index).copied().unwrap_or(0.0);
+        if lane.current_gain > 0.0001 {
+            sample += lane_sample * lane.current_gain;
+        }
+    }
+
+    if !shared.click.follow_transport || shared.status == TransportStatus::Playing {
+        sample += click_sample(&shared.click, shared.position_seconds, channel);
+    }
+
+    sample.clamp(-1.0, 1.0)
+}
+
+fn prepare_lane_scratch(
+    diagnostics_generation: u64,
+    lanes: &mut [PlaybackLane],
+    sample_count: usize,
+) -> bool {
     let mut audible_underrun = false;
 
     for lane in lanes {
@@ -1140,6 +1252,9 @@ fn prepare_lane_scratch(lanes: &mut [PlaybackLane], sample_count: usize) -> bool
 
         if read_status.is_underrun() {
             lane.underrun_count = lane.underrun_count.saturating_add(1);
+            if diagnostics_generation != 0 {
+                diagnostics::record_underrun(diagnostics_generation);
+            }
             if is_audible {
                 audible_underrun = true;
             }
@@ -1170,16 +1285,25 @@ fn update_underrun_state(shared: &mut PlaybackShared, audible_underrun: bool, fr
         shared.buffering = false;
         shared.fallback_cause = Some(NativePlaybackFallbackCause::SustainedUnderrun);
         shared.underrun_error_pending = true;
+        diagnostics::record_callback_safe_code(
+            shared.diagnostics_generation,
+            DiagnosticSafeCode::SustainedUnderrun,
+        );
     }
 }
 
-fn clear_lane_rings(lanes: &mut [PlaybackLane]) {
+fn clear_lane_rings(diagnostics_generation: u64, lanes: &mut [PlaybackLane]) {
     for lane in lanes {
         match &lane.source {
             PlaybackLaneSource::Stream(stream) => {
                 stream.eof.store(false, Ordering::Release);
                 if let Ok(mut ring) = stream.ring.lock() {
                     ring.clear();
+                    diagnostics::record_checkpoint(
+                        diagnostics_generation,
+                        DiagnosticCheckpoint::RingClear,
+                        None,
+                    );
                 }
             }
         }
@@ -1208,10 +1332,13 @@ fn render_shared_output(shared: &mut PlaybackShared, output: &mut [f32]) {
     }
     if shared.status == TransportStatus::Playing && !shared.buffering {
         let frame_count = output.len() / shared.channels;
-        let audible_underrun = prepare_lane_scratch(&mut shared.lanes, output.len());
+        let audible_underrun = prepare_lane_scratch(
+            shared.diagnostics_generation,
+            &mut shared.lanes,
+            output.len(),
+        );
         update_underrun_state(shared, audible_underrun, frame_count);
     }
-
     for (frame_index, frame) in output.chunks_mut(shared.channels).enumerate() {
         if shared.status != TransportStatus::Playing || shared.buffering {
             frame.fill(0.0);
@@ -1228,6 +1355,13 @@ fn render_shared_output(shared: &mut PlaybackShared, output: &mut [f32]) {
             shared.status = TransportStatus::Stopped;
             shared.ended_pending = true;
         }
+    }
+    if shared.diagnostics_generation != 0
+        && output
+            .iter()
+            .any(|sample| sample.abs() > AUDIBLE_GAIN_FLOOR)
+    {
+        diagnostics::record_callback_nonzero(shared.diagnostics_generation);
     }
     if shared.status == TransportStatus::Playing && playback_lanes_drained(&shared.lanes) {
         shared.position_seconds = 0.0;
@@ -1250,10 +1384,16 @@ where
     }
     if shared.status == TransportStatus::Playing && !shared.buffering {
         let frame_count = output.len() / shared.channels;
-        let audible_underrun = prepare_lane_scratch(&mut shared.lanes, output.len());
+        let audible_underrun = prepare_lane_scratch(
+            shared.diagnostics_generation,
+            &mut shared.lanes,
+            output.len(),
+        );
         update_underrun_state(shared, audible_underrun, frame_count);
     }
 
+    let track_nonzero = shared.diagnostics_generation != 0;
+    let mut any_nonzero = false;
     for (frame_index, frame) in output.chunks_mut(shared.channels).enumerate() {
         if shared.status != TransportStatus::Playing || shared.buffering {
             for sample in frame {
@@ -1263,11 +1403,11 @@ where
         }
 
         for (channel, sample) in frame.iter_mut().enumerate() {
-            *sample = T::from_sample(mix_shared_frame(
-                shared,
-                channel,
-                frame_index * shared.channels + channel,
-            ));
+            let mixed = mix_shared_frame(shared, channel, frame_index * shared.channels + channel);
+            if track_nonzero {
+                any_nonzero |= mixed.abs() > AUDIBLE_GAIN_FLOOR;
+            }
+            *sample = T::from_sample(mixed);
         }
 
         shared.position_seconds += shared.playback_rate / shared.sample_rate as f64;
@@ -1276,6 +1416,9 @@ where
             shared.status = TransportStatus::Stopped;
             shared.ended_pending = true;
         }
+    }
+    if track_nonzero && any_nonzero {
+        diagnostics::record_callback_nonzero(shared.diagnostics_generation);
     }
     if shared.status == TransportStatus::Playing && playback_lanes_drained(&shared.lanes) {
         shared.position_seconds = 0.0;
@@ -1293,6 +1436,7 @@ fn start_native_runtime(
     raw_lanes: &[AudioLaneRequest],
     effective_lanes: &[EffectiveAudioLane],
     click: &ClickState,
+    diagnostics_generation: u64,
 ) -> Result<PlaybackRuntime, String> {
     let host = cpal::default_host();
     let device = host
@@ -1317,6 +1461,7 @@ fn start_native_runtime(
         channels,
         playback_rate,
         worker_error_sender,
+        diagnostics_generation,
     )?;
     let snapshot_lanes = effective_lanes.to_vec();
     let shared = Arc::new(Mutex::new(PlaybackShared {
@@ -1339,6 +1484,8 @@ fn start_native_runtime(
         sustained_underrun_frames: 0,
         underrun_error_pending: false,
         fallback_cause: None,
+        diagnostics_generation,
+        diagnostics_gain_first_change_recorded: false,
     }));
 
     drop(device);
@@ -1391,7 +1538,11 @@ fn start_native_runtime(
                         lane.worker_error_count = lane.worker_error_count.saturating_add(1);
                         lane.last_worker_error = Some(worker_error.message.clone());
                     }
-                    mark_terminal_runtime_error(&mut shared, worker_error.message);
+                    mark_terminal_runtime_error(
+                        &mut shared,
+                        worker_error.message,
+                        DiagnosticSafeCode::DecoderWorkerFailure,
+                    );
                 }
             }
             if emit_runtime_events(&app, &shared) {
@@ -1512,7 +1663,11 @@ where
             move |error| {
                 let message = format!("Native audio output stream error: {error}");
                 if let Ok(mut shared) = error_shared.lock() {
-                    mark_terminal_runtime_error(&mut shared, message);
+                    mark_terminal_runtime_error(
+                        &mut shared,
+                        message,
+                        DiagnosticSafeCode::OutputStreamFailure,
+                    );
                 }
             },
             None,
@@ -1589,6 +1744,16 @@ struct DecoderWorkers {
 }
 
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+fn sourced_playback_lanes(
+    raw_lanes: &[AudioLaneRequest],
+) -> impl Iterator<Item = (usize, &AudioLaneRequest)> {
+    raw_lanes
+        .iter()
+        .filter(|lane| lane.source_path.is_some())
+        .enumerate()
+}
+
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 impl DecoderWorkers {
     fn into_parts(mut self) -> (Vec<mpsc::Sender<WorkerControl>>, Vec<JoinHandle<()>>) {
         (
@@ -1619,15 +1784,17 @@ fn load_playback_lanes(
     channels: usize,
     playback_rate: f64,
     worker_error_sender: mpsc::Sender<WorkerError>,
+    diagnostics_generation: u64,
 ) -> Result<LoadedPlaybackLanes, String> {
     let mut lanes = Vec::new();
     let mut workers = DecoderWorkers::default();
     let mut source_scope = None;
 
-    for lane in raw_lanes {
-        let Some(source_path) = &lane.source_path else {
-            continue;
-        };
+    for (lane_ordinal, lane) in sourced_playback_lanes(raw_lanes) {
+        let source_path = lane
+            .source_path
+            .as_ref()
+            .expect("sourced playback lane has a source path");
         if source_scope.is_none() {
             source_scope = Some(PlaybackSourceScope::from_app(app)?);
         }
@@ -1649,6 +1816,7 @@ fn load_playback_lanes(
         let eof = Arc::new(AtomicBool::new(false));
         let (sender, worker_thread) = spawn_decoder_worker(
             lane.id.clone(),
+            lane_ordinal.min(5),
             path,
             ring.clone(),
             eof.clone(),
@@ -1656,6 +1824,7 @@ fn load_playback_lanes(
             channels,
             playback_rate,
             worker_error_sender.clone(),
+            diagnostics_generation,
         )?;
         let target_gain = effective_gain_for_lane(effective_lanes, &lane.id);
         workers.control_senders.push(sender);
@@ -1680,12 +1849,27 @@ fn load_playback_lanes(
         });
     }
 
+    let ring_capacity_samples = lanes
+        .iter()
+        .map(|lane| match &lane.source {
+            PlaybackLaneSource::Stream(stream) => stream.capacity_samples,
+        })
+        .sum();
+    let scratch_capacity_samples = lanes.iter().map(|lane| lane.scratch.capacity()).sum();
+    diagnostics::record_capacities(
+        diagnostics_generation,
+        lanes.len(),
+        ring_capacity_samples,
+        scratch_capacity_samples,
+    );
+
     Ok(LoadedPlaybackLanes { lanes, workers })
 }
 
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 fn spawn_decoder_worker(
     lane_id: String,
+    lane_ordinal: usize,
     path: PathBuf,
     ring: Arc<Mutex<RingBuffer>>,
     eof: Arc<AtomicBool>,
@@ -1693,17 +1877,22 @@ fn spawn_decoder_worker(
     target_channels: usize,
     playback_rate: f64,
     error_sender: mpsc::Sender<WorkerError>,
+    diagnostics_generation: u64,
 ) -> Result<(mpsc::Sender<WorkerControl>, JoinHandle<()>), String> {
     let mut playback_rate = normalize_playback_rate(Some(playback_rate));
-    let mut decoder = StreamingDecoder::open(
+    let mut diagnostics_generation = diagnostics_generation;
+    let mut decoder = StreamingDecoder::open_with_diagnostics(
         path.clone(),
         target_sample_rate,
         target_channels,
         playback_rate,
         0.0,
+        diagnostics_generation,
+        lane_ordinal,
     )?;
     let (sender, receiver) = mpsc::channel();
     let mut pending_samples: Option<Vec<f32>> = None;
+    let mut first_pcm_recorded = false;
     let worker_thread = thread::spawn(move || loop {
         loop {
             let control = match receiver.try_recv() {
@@ -1711,10 +1900,17 @@ fn spawn_decoder_worker(
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => return,
             };
+            apply_worker_control_diagnostics_generation(
+                &control,
+                &mut diagnostics_generation,
+                &mut decoder,
+                lane_ordinal,
+            );
             match control {
                 WorkerControl::SetPlaybackRate {
                     playback_rate: next_playback_rate,
                     position_seconds,
+                    ..
                 } => {
                     eof.store(false, Ordering::Release);
                     playback_rate = normalize_playback_rate(Some(next_playback_rate));
@@ -1722,14 +1918,17 @@ fn spawn_decoder_worker(
                         guard.clear();
                     }
                     pending_samples = None;
+                    first_pcm_recorded = false;
                     decoder.set_playback_rate(playback_rate);
                     if decoder.seek(position_seconds).is_err() {
-                        match StreamingDecoder::open(
+                        match StreamingDecoder::open_with_diagnostics(
                             path.clone(),
                             target_sample_rate,
                             target_channels,
                             playback_rate,
                             position_seconds,
+                            diagnostics_generation,
+                            lane_ordinal,
                         ) {
                             Ok(reopened) => {
                                 decoder = reopened;
@@ -1744,19 +1943,24 @@ fn spawn_decoder_worker(
                         }
                     }
                 }
-                WorkerControl::Seek(position_seconds) => {
+                WorkerControl::Seek {
+                    position_seconds, ..
+                } => {
                     eof.store(false, Ordering::Release);
                     if let Ok(mut guard) = ring.lock() {
                         guard.clear();
                     }
                     pending_samples = None;
+                    first_pcm_recorded = false;
                     if decoder.seek(position_seconds).is_err() {
-                        match StreamingDecoder::open(
+                        match StreamingDecoder::open_with_diagnostics(
                             path.clone(),
                             target_sample_rate,
                             target_channels,
                             playback_rate,
                             position_seconds,
+                            diagnostics_generation,
+                            lane_ordinal,
                         ) {
                             Ok(reopened) => {
                                 decoder = reopened;
@@ -1801,6 +2005,14 @@ fn spawn_decoder_worker(
                 if samples.is_empty() {
                     thread::sleep(Duration::from_millis(2));
                     continue;
+                }
+                if !first_pcm_recorded {
+                    diagnostics::record_checkpoint(
+                        diagnostics_generation,
+                        DiagnosticCheckpoint::WorkerFirstPcm,
+                        Some(lane_ordinal),
+                    );
+                    first_pcm_recorded = true;
                 }
                 match push_or_defer_worker_samples(&ring, &mut pending_samples, samples) {
                     Ok(true) => {}
@@ -1847,13 +2059,62 @@ enum StreamingDecoder {
 }
 
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+trait WorkerDiagnosticsGenerationTarget {
+    fn set_worker_diagnostics_generation(&mut self, generation: u64, lane_ordinal: usize);
+}
+
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+fn apply_worker_control_diagnostics_generation<T: WorkerDiagnosticsGenerationTarget>(
+    control: &WorkerControl,
+    current_generation: &mut u64,
+    decoder: &mut T,
+    lane_ordinal: usize,
+) {
+    let next_generation = match control {
+        WorkerControl::SetPlaybackRate {
+            diagnostics_generation,
+            ..
+        }
+        | WorkerControl::Seek {
+            diagnostics_generation,
+            ..
+        } => Some(*diagnostics_generation),
+        WorkerControl::Stop => None,
+    };
+    if let Some(next_generation) = next_generation {
+        *current_generation = next_generation;
+        decoder.set_worker_diagnostics_generation(next_generation, lane_ordinal);
+    }
+}
+
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
 impl StreamingDecoder {
-    fn open(
+    fn open_with_diagnostics(
         path: PathBuf,
         target_sample_rate: u32,
         target_channels: usize,
         playback_rate: f64,
         start_seconds: f64,
+        diagnostics_generation: u64,
+        lane_ordinal: usize,
+    ) -> Result<Self, String> {
+        Self::open_inner(
+            path,
+            target_sample_rate,
+            target_channels,
+            playback_rate,
+            start_seconds,
+            decoder_diagnostics_context(diagnostics_generation, lane_ordinal),
+        )
+    }
+
+    fn open_inner(
+        path: PathBuf,
+        target_sample_rate: u32,
+        target_channels: usize,
+        playback_rate: f64,
+        start_seconds: f64,
+        diagnostics_context: Option<(u64, usize)>,
     ) -> Result<Self, String> {
         let is_wav = path
             .extension()
@@ -1876,6 +2137,7 @@ impl StreamingDecoder {
                         target_channels,
                         playback_rate,
                         start_seconds,
+                        diagnostics_context,
                     )
                     .map(Self::Symphonia)
                     .map_err(|symphonia_error| {
@@ -1893,6 +2155,7 @@ impl StreamingDecoder {
             target_channels,
             playback_rate,
             start_seconds,
+            diagnostics_context,
         )
         .map(Self::Symphonia)
     }
@@ -1917,6 +2180,37 @@ impl StreamingDecoder {
             Self::Symphonia(decoder) => decoder.set_playback_rate(playback_rate),
         }
     }
+
+    fn set_diagnostics_generation(&mut self, generation: u64, lane_ordinal: usize) {
+        if let Self::Symphonia(decoder) = self {
+            set_decoder_diagnostics_context(
+                &mut decoder.diagnostics_context,
+                generation,
+                lane_ordinal,
+            );
+        }
+    }
+}
+
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+impl WorkerDiagnosticsGenerationTarget for StreamingDecoder {
+    fn set_worker_diagnostics_generation(&mut self, generation: u64, lane_ordinal: usize) {
+        self.set_diagnostics_generation(generation, lane_ordinal);
+    }
+}
+
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+fn decoder_diagnostics_context(generation: u64, lane_ordinal: usize) -> Option<(u64, usize)> {
+    (generation != 0).then_some((generation, lane_ordinal))
+}
+
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+fn set_decoder_diagnostics_context(
+    context: &mut Option<(u64, usize)>,
+    generation: u64,
+    lane_ordinal: usize,
+) {
+    *context = decoder_diagnostics_context(generation, lane_ordinal);
 }
 
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
@@ -2125,6 +2419,7 @@ struct SymphoniaStreamDecoder {
     target_channels: usize,
     playback_rate: f64,
     stretch: signalsmith_stretch::Stretch,
+    diagnostics_context: Option<(u64, usize)>,
 }
 
 #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
@@ -2135,6 +2430,7 @@ impl SymphoniaStreamDecoder {
         target_channels: usize,
         playback_rate: f64,
         start_seconds: f64,
+        diagnostics_context: Option<(u64, usize)>,
     ) -> Result<Self, String> {
         let file = File::open(&path).map_err(|error| error.to_string())?;
         let mss = MediaSourceStream::new(Box::new(file), Default::default());
@@ -2167,7 +2463,6 @@ impl SymphoniaStreamDecoder {
         let decoder = symphonia::default::get_codecs()
             .make_audio_decoder(&codec_params, &AudioDecoderOptions::default())
             .map_err(|error| format!("Native playback codec is unsupported: {error}"))?;
-
         let mut stream = Self {
             format,
             decoder,
@@ -2180,6 +2475,7 @@ impl SymphoniaStreamDecoder {
                 target_channels as u32,
                 target_sample_rate,
             ),
+            diagnostics_context,
         };
         if start_seconds > 0.0 {
             stream.seek(start_seconds)?;
@@ -2197,7 +2493,16 @@ impl SymphoniaStreamDecoder {
                 {
                     return Ok(None)
                 }
-                Err(SymphoniaError::DecodeError(_)) => continue,
+                Err(SymphoniaError::DecodeError(_)) => {
+                    if let Some((generation, lane_ordinal)) = self.diagnostics_context {
+                        diagnostics::record_checkpoint(
+                            generation,
+                            DiagnosticCheckpoint::SkippedPacketError,
+                            Some(lane_ordinal),
+                        );
+                    }
+                    continue;
+                }
                 Err(SymphoniaError::ResetRequired) => {
                     self.decoder.reset();
                     continue;
@@ -2213,7 +2518,16 @@ impl SymphoniaStreamDecoder {
 
             let decoded = match self.decoder.decode(&packet) {
                 Ok(decoded) => decoded,
-                Err(SymphoniaError::DecodeError(_)) => continue,
+                Err(SymphoniaError::DecodeError(_)) => {
+                    if let Some((generation, lane_ordinal)) = self.diagnostics_context {
+                        diagnostics::record_checkpoint(
+                            generation,
+                            DiagnosticCheckpoint::SkippedDecodeError,
+                            Some(lane_ordinal),
+                        );
+                    }
+                    continue;
+                }
                 Err(SymphoniaError::IoError(error))
                     if error.kind() == std::io::ErrorKind::UnexpectedEof =>
                 {
@@ -2397,6 +2711,8 @@ mod tests {
             sustained_underrun_frames: 0,
             underrun_error_pending: false,
             fallback_cause: None,
+            diagnostics_generation: 0,
+            diagnostics_gain_first_change_recorded: false,
         }
     }
 
@@ -2546,6 +2862,7 @@ mod tests {
         mark_terminal_runtime_error(
             &mut shared.lock().expect("shared lock"),
             "Native audio output stream disconnected.".to_string(),
+            DiagnosticSafeCode::OutputStreamFailure,
         );
         let (audio_stop_sender, _audio_stop_receiver) = mpsc::channel();
         let (reporter_stop_sender, _reporter_stop_receiver) = mpsc::channel();
@@ -2650,6 +2967,7 @@ mod tests {
         let (error_sender, _error_receiver) = mpsc::channel();
         let (control_sender, worker_thread) = spawn_decoder_worker(
             "lane".to_string(),
+            0,
             path.clone(),
             ring,
             Arc::new(AtomicBool::new(false)),
@@ -2657,12 +2975,53 @@ mod tests {
             1,
             1.0,
             error_sender,
+            0,
         )
         .expect("spawn decoder worker");
 
         drop(control_sender);
         worker_thread.join().expect("decoder worker exits");
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    fn sourced_lanes_receive_loaded_ordinals_when_raw_lanes_are_sparse() {
+        let lane = |id: &str, source_path: Option<&str>| AudioLaneRequest {
+            id: id.to_string(),
+            artifact_id: Some(format!("artifact-{id}")),
+            source_path: source_path.map(str::to_string),
+            role: AudioLaneRole::Stem,
+            gain: 1.0,
+            muted: false,
+            solo: false,
+        };
+        let raw_lanes = vec![
+            lane("missing", None),
+            lane("first-loaded", Some("first.wav")),
+            lane("second-loaded", Some("second.wav")),
+        ];
+
+        let loaded = sourced_playback_lanes(&raw_lanes)
+            .map(|(ordinal, lane)| (ordinal, lane.id.as_str()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(loaded, vec![(0, "first-loaded"), (1, "second-loaded")]);
+    }
+
+    #[test]
+    fn disabled_diagnostics_skip_gain_event_tracking_while_preserving_ramp_behavior() {
+        let ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
+        push_ring_samples(&ring, &[0.5]);
+        let mut shared = shared_with_lane(ring, 1_000, 1, 1.0);
+        shared.lanes[0].current_gain = 0.0;
+        shared.diagnostics_generation = 0;
+        let mut output = [0.0];
+
+        render_shared_output(&mut shared, &mut output);
+
+        assert!(shared.lanes[0].current_gain > 0.0);
+        assert!(!shared.diagnostics_gain_first_change_recorded);
     }
 
     #[test]
@@ -3033,7 +3392,7 @@ mod tests {
         assert_eq!(snapshot.state, "playing");
         assert_seconds_close(state.position_seconds, loop_start);
 
-        clear_lane_rings(&mut shared.lanes);
+        clear_lane_rings(shared.diagnostics_generation, &mut shared.lanes);
         let PlaybackLaneSource::Stream(stream) = &shared.lanes[0].source;
         push_ring_samples(&stream.ring, &vec![0.8; 1_000]);
         shared.position_seconds = state.position_seconds;
@@ -3072,6 +3431,65 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    fn tempo_and_seek_controls_attribute_skipped_events_to_active_generation() {
+        assert_eq!(decoder_diagnostics_context(0, 3), None);
+        let mut disabled_context = Some((9, 3));
+        set_decoder_diagnostics_context(&mut disabled_context, 0, 3);
+        assert_eq!(disabled_context, None);
+
+        #[derive(Default)]
+        struct DecoderProbe {
+            context: Option<(u64, usize)>,
+        }
+
+        impl WorkerDiagnosticsGenerationTarget for DecoderProbe {
+            fn set_worker_diagnostics_generation(&mut self, generation: u64, lane_ordinal: usize) {
+                set_decoder_diagnostics_context(&mut self.context, generation, lane_ordinal);
+            }
+        }
+
+        let mut decoder = DecoderProbe::default();
+        let recorder = diagnostics::TestDiagnosticsRecorder::new();
+        let mut current_generation =
+            recorder.begin_operation(diagnostics::DiagnosticOperationKind::Play);
+
+        let tempo_generation =
+            recorder.begin_operation(diagnostics::DiagnosticOperationKind::Tempo);
+        let tempo_control = WorkerControl::SetPlaybackRate {
+            playback_rate: 1.25,
+            position_seconds: 3.0,
+            diagnostics_generation: tempo_generation,
+        };
+        apply_worker_control_diagnostics_generation(
+            &tempo_control,
+            &mut current_generation,
+            &mut decoder,
+            0,
+        );
+        recorder.record_skipped_decode_error(decoder.context.expect("tempo context").0, 0);
+
+        let seek_generation = recorder.begin_operation(diagnostics::DiagnosticOperationKind::Seek);
+        let seek_control = WorkerControl::Seek {
+            position_seconds: 9.0,
+            diagnostics_generation: seek_generation,
+        };
+        apply_worker_control_diagnostics_generation(
+            &seek_control,
+            &mut current_generation,
+            &mut decoder,
+            0,
+        );
+        recorder.record_skipped_decode_error(decoder.context.expect("seek context").0, 0);
+
+        let export = recorder.export();
+        assert_eq!(export.counters.stale_generation_event_count, 0);
+        assert_eq!(export.operations[1].skipped_decode_error_count, 1);
+        assert_eq!(export.operations[2].skipped_decode_error_count, 1);
+        assert_eq!(decoder.context, Some((seek_generation, 0)));
+    }
+
+    #[test]
     fn snapshot_reports_buffer_health_for_stream_lane() {
         let ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
         push_ring_samples(&ring, &vec![0.5; 128]);
@@ -3099,6 +3517,7 @@ mod tests {
         let empty_ring = Arc::new(Mutex::new(RingBuffer::new(1_000)));
         let mut empty_lane = stream_lane("empty", empty_ring, 1.0);
         assert!(prepare_lane_scratch(
+            0,
             std::slice::from_mut(&mut empty_lane),
             10
         ));
@@ -3108,6 +3527,7 @@ mod tests {
         push_ring_samples(&partial_ring, &[0.25; 5]);
         let mut partial_lane = stream_lane("partial", partial_ring, 1.0);
         assert!(prepare_lane_scratch(
+            0,
             std::slice::from_mut(&mut partial_lane),
             10
         ));
@@ -3119,6 +3539,7 @@ mod tests {
         let guard = locked_ring.lock().expect("ring lock");
         let mut locked_lane = stream_lane("locked", locked_ring.clone(), 1.0);
         assert!(prepare_lane_scratch(
+            0,
             std::slice::from_mut(&mut locked_lane),
             10
         ));

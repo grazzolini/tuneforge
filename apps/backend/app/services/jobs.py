@@ -12,6 +12,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.dependency_diagnostics import safe_dependency_remediation
+from app.engines.audio_encoding import require_encoding_available
 from app.errors import AppError, JobCancelledError
 from app.models import Artifact, ChordTimeline, Job, LyricsTranscript, Project, utcnow
 from app.runtime_status import (
@@ -264,6 +265,8 @@ def create_bulk_activity_jobs(
     payload: BulkJobRequest,
 ) -> BulkActivityJobCreationResult:
     validated_job_type = validate_bulk_activity_job_type(payload.job_type)
+    if validated_job_type == "stems":
+        require_encoding_available(payload.output_format)
     projects = list(
         session.scalars(
             select(Project)
@@ -368,7 +371,7 @@ def _bulk_activity_job_payloads(
         return [
             StemRequest(
                 mode="stems",
-                output_format="wav",
+                output_format=request.output_format,
                 force=True,
                 source_artifact_id=source_artifact_id,
                 stem_model=request.stem_model,
@@ -455,6 +458,7 @@ def _project_activity_job_payload(
     if job_type == "lyrics" and isinstance(payload, LyricsGenerateRequest):
         return payload.model_dump()
     if job_type == "stems" and isinstance(payload, StemRequest):
+        require_encoding_available(payload.output_format)
         source_artifact = resolve_stem_source_artifact(
             session,
             project=project,

@@ -354,6 +354,7 @@ def test_bulk_stems_refreshes_only_sources_with_existing_stems(
             "chord_backend": "tuneforge-fast",
             "chord_backend_fallback_from": "crema-advanced",
             "stem_model": "htdemucs_ft",
+            "output_format": "m4a",
         },
     )
 
@@ -378,6 +379,7 @@ def test_bulk_stems_refreshes_only_sources_with_existing_stems(
         assert all(job.payload_json["force"] is True for job in jobs)
         assert all(job.payload_json["chord_backend"] == "tuneforge-fast" for job in jobs)
         assert all(job.payload_json["chord_backend_fallback_from"] == "crema-advanced" for job in jobs)
+        assert all(job.payload_json["output_format"] == "m4a" for job in jobs)
         assert all(job.payload_json["stem_model"] == "htdemucs_ft" for job in jobs)
 
 
@@ -583,6 +585,16 @@ def test_analyze_job_api_defaults_missing_or_unknown_beat_input_to_source(
 
 def test_bulk_jobs_rejects_unsupported_job_type(client: TestClient) -> None:
     response = client.post("/api/v1/jobs/bulk", json={"job_type": "preview"})
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "INVALID_REQUEST"
+
+
+def test_bulk_non_stem_job_rejects_non_default_output_format(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/jobs/bulk",
+        json={"job_type": "analyze", "output_format": "mp3"},
+    )
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "INVALID_REQUEST"

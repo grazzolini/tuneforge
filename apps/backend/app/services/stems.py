@@ -11,10 +11,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.engines.audio_encoding import (
+    DurableAudioFormat,
+    encode_audio,
+    require_encoding_available,
+    validate_audio_file,
+)
 from app.engines.stems import separate_sources, separate_two_stems
 from app.errors import AppError, JobCancelledError
 from app.models import Artifact, Project, utcnow
 from app.services.artifacts import refresh_artifact_file_metadata, register_artifact
+from app.services.audio_working import materialize_pcm_wav
 from app.services.paths import project_stems_dir
 from app.services.project_storage import queue_project_storage_reconciliation
 from app.services.stem_models import (
@@ -124,6 +131,7 @@ def _complete_existing_stem_artifacts(
     project_id: str,
     source_artifact_id: str,
     stem_model: StemModelDefinition,
+    output_format: str | None = None,
 ) -> list[Artifact] | None:
     artifacts = _stem_artifacts_for_source(
         session,
@@ -139,7 +147,9 @@ def _complete_existing_stem_artifacts(
 
     complete = [artifact for artifact in existing if artifact is not None]
     if all(
-        artifact.metadata_json.get("stem_model") == stem_model.id and Path(artifact.path).exists()
+        artifact.metadata_json.get("stem_model") == stem_model.id
+        and (output_format is None or artifact.format == output_format)
+        and Path(artifact.path).exists()
         for artifact in complete
     ):
         return complete
@@ -273,19 +283,13 @@ def _temp_stem_plan(plan: list[StemOutputPlan]) -> tuple[tempfile.TemporaryDirec
     if not plan:
         raise AppError("INVALID_REQUEST", "At least one stem output is required.")
     final_dir = plan[0].path.parent
-    final_dir.mkdir(parents=True, exist_ok=True)
-    temp_dir = tempfile.TemporaryDirectory(prefix=".tuneforge-stems-", dir=final_dir)
+    final_dir.parent.mkdir(parents=True, exist_ok=True)
+    temp_dir = tempfile.TemporaryDirectory(prefix=".tuneforge-stems-", dir=final_dir.parent)
     temp_root = Path(temp_dir.name)
     return temp_dir, [
-        replace(output, path=temp_root / f"{output.source}.{output.output_format}")
+        replace(output, path=temp_root / "working" / f"{output.source}.wav", output_format="wav")
         for output in plan
     ]
-
-
-def _replace_stem_outputs(temp_plan: list[StemOutputPlan], final_plan: list[StemOutputPlan]) -> None:
-    for temp_output, final_output in zip(temp_plan, final_plan, strict=True):
-        final_output.path.parent.mkdir(parents=True, exist_ok=True)
-        temp_output.path.replace(final_output.path)
 
 
 def _ensure_not_cancelled(should_cancel: Callable[[], bool] | None) -> None:
@@ -329,7 +333,7 @@ def generate_stems(
     *,
     project: Project,
     source_artifact_id: str | None,
-    output_format: str,
+    output_format: DurableAudioFormat,
     force: bool,
     stem_model: str | None = None,
     on_progress: Callable[[int], None] | None = None,
@@ -337,8 +341,7 @@ def generate_stems(
     register_process: Callable[[Popen[str]], None] | None = None,
     unregister_process: Callable[[], None] | None = None,
 ) -> StemGenerationResult:
-    if output_format != "wav":
-        raise AppError("INVALID_REQUEST", "Stem output must be wav in v1.")
+    require_encoding_available(output_format)
 
     source_artifact = resolve_stem_source_artifact(
         session,
@@ -353,6 +356,7 @@ def generate_stems(
             project_id=project.id,
             source_artifact_id=source_artifact.id,
             stem_model=selected_model,
+            output_format=output_format,
         )
         if existing:
             signal_metadata_hydrated = False
@@ -373,18 +377,47 @@ def generate_stems(
         generation_id=new_id("stemset"),
     )
     temp_dir, temp_plan = _temp_stem_plan(plan)
+    signal_metadata_by_source: dict[str, dict[str, Any]] = {}
     with temp_dir:
-        metadata = _separate_with_model(
+        with materialize_pcm_wav(
             Path(source_artifact.path),
-            temp_plan,
-            stem_model=selected_model,
-            on_progress=on_progress,
             should_cancel=should_cancel,
             register_process=register_process,
             unregister_process=unregister_process,
-        )
+        ) as working_source:
+            metadata = _separate_with_model(
+                working_source,
+                temp_plan,
+                stem_model=selected_model,
+                on_progress=on_progress,
+                should_cancel=should_cancel,
+                register_process=register_process,
+                unregister_process=unregister_process,
+            )
+        if source_artifact.type == "source_audio":
+            signal_metadata_by_source = {
+                output.source: build_stem_signal_metadata(output.path)
+                for output in temp_plan
+            }
         _ensure_not_cancelled(should_cancel)
-        _replace_stem_outputs(temp_plan, plan)
+        publish_dir = Path(temp_dir.name) / "publish"
+        encoded_plan = [
+            replace(output, path=publish_dir / output.path.name)
+            for output in plan
+        ]
+        for working_output, encoded_output in zip(temp_plan, encoded_plan, strict=True):
+            encode_audio(
+                working_output.path,
+                encoded_output.path,
+                output_format,
+                should_cancel=should_cancel,
+                register_process=register_process,
+                unregister_process=unregister_process,
+            )
+            validate_audio_file(encoded_output.path, output_format)
+            _ensure_not_cancelled(should_cancel)
+        plan[0].path.parent.parent.mkdir(parents=True, exist_ok=True)
+        publish_dir.replace(plan[0].path.parent)
         try:
             _ensure_not_cancelled(should_cancel)
         except JobCancelledError:
@@ -412,7 +445,7 @@ def generate_stems(
             **metadata,
         }
         if source_artifact.type == "source_audio":
-            stem_metadata[STEM_SIGNAL_METADATA_KEY] = build_stem_signal_metadata(output.path)
+            stem_metadata[STEM_SIGNAL_METADATA_KEY] = signal_metadata_by_source[output.source]
         stem_output_metadatas.append((output, stem_metadata))
 
     if source_artifact.type == "source_audio":
@@ -428,25 +461,29 @@ def generate_stems(
             )
         ]
 
-    for output, stem_metadata in stem_output_metadatas:
-        saved_artifacts.append(
-            _upsert_stem_artifact(
-                session,
-                existing_artifact=existing_by_type.get(output.artifact_type),
-                project_id=project.id,
-                artifact_type=output.artifact_type,
-                artifact_format=output.output_format,
-                path=output.path,
-                metadata=stem_metadata,
+    try:
+        for output, stem_metadata in stem_output_metadatas:
+            saved_artifacts.append(
+                _upsert_stem_artifact(
+                    session,
+                    existing_artifact=existing_by_type.get(output.artifact_type),
+                    project_id=project.id,
+                    artifact_type=output.artifact_type,
+                    artifact_format=output.output_format,
+                    path=output.path,
+                    metadata=stem_metadata,
+                )
             )
-        )
 
-    _prune_extra_stem_artifacts(
-        session,
-        project_id=project.id,
-        source_artifact_id=source_artifact.id,
-        stem_model_id=None,
-        keep_ids={artifact.id for artifact in saved_artifacts},
-    )
+        _prune_extra_stem_artifacts(
+            session,
+            project_id=project.id,
+            source_artifact_id=source_artifact.id,
+            stem_model_id=None,
+            keep_ids={artifact.id for artifact in saved_artifacts},
+        )
+    except Exception:
+        _cleanup_stem_outputs(plan)
+        raise
 
     return StemGenerationResult(artifacts=saved_artifacts, generated_this_job=True)

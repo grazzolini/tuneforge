@@ -2614,8 +2614,14 @@ def test_missing_project_import_requires_every_manifest_artifact_available(
         ("missing_source", "Project manifest must contain exactly one source_audio artifact."),
         ("ambiguous_source", "Project manifest must contain exactly one source_audio artifact."),
         ("wrong_type", "Project manifest must contain exactly one source_audio artifact."),
-        ("non_wav_format", "Project manifest source_audio artifact format must be 'wav'."),
-        ("non_wav_relative_path", "Project manifest source_audio artifact relative_path must end with .wav."),
+        (
+            "non_wav_format",
+            "Project manifest source_audio artifact format and relative_path suffix do not match.",
+        ),
+        (
+            "non_wav_relative_path",
+            "Project manifest source_audio artifact format and relative_path suffix do not match.",
+        ),
         ("unsafe_relative_path", "Sync manifest artifact relative path is invalid."),
         ("noncanonical_project_id", "Project manifest project_id must be derived from source_sha256."),
     ],

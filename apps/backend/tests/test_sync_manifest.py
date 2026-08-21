@@ -29,6 +29,7 @@ from app.models import (
 )
 from app.schemas import SyncMetadataResponse, SyncProjectManifestSchema
 from app.services.paths import project_root
+from app.services.projects import import_project
 from app.services.sync_identity import source_hash_to_project_id
 from app.services.sync_metadata import get_sync_metadata
 from app.services.sync_revisions import CURRENT_REVISION_STATE
@@ -252,10 +253,12 @@ def _create_project_with_artifacts(
     tmp_path: Path,
     *,
     source_bytes: bytes | None = None,
-    stem_bytes: bytes = b"sync vocal stem",
+    stem_bytes: bytes | None = None,
 ) -> ManifestProjectFixture:
     if source_bytes is None:
         source_bytes = _wav_bytes()
+    if stem_bytes is None:
+        stem_bytes = _wav_bytes()
     external_source = tmp_path / "user-library" / "fixture.wav"
     source_sha256, _ = _write_bytes(external_source, source_bytes)
     project_id = source_hash_to_project_id(source_sha256)
@@ -337,6 +340,56 @@ def _create_project_with_artifacts(
         },
         external_source_path=external_source,
     )
+
+
+@pytest.mark.parametrize("output_format", ["wav", "flac", "mp3", "m4a"])
+def test_sync_round_trip_preserves_durable_source_format_and_bytes(
+    client: object,
+    sample_audio_file: Path,
+    tmp_path: Path,
+    output_format: str,
+) -> None:
+    del client
+    export_manifest, import_manifest = _sync_manifest_services()
+    source_path = tmp_path / f"sync-source-{output_format}.wav"
+    source_path.write_bytes(sample_audio_file.read_bytes() + output_format.encode())
+    staging_root = tmp_path / "staging"
+
+    with SessionLocal() as session:
+        project = import_project(
+            session,
+            source_path=str(source_path),
+            copy_into_project=True,
+            display_name=None,
+            output_format=output_format,  # type: ignore[arg-type]
+        )
+        session.commit()
+        session.refresh(project)
+        project_id = project.id
+        root = project_root(project_id)
+        manifest = _plain_manifest(export_manifest(session, project_id=project_id))
+        _stage_manifest_files(manifest, staging_root=staging_root, source_root=root)
+        source_manifest = next(
+            artifact for artifact in manifest["artifacts"] if artifact["type"] == "source_audio"
+        )
+        staged_path = staging_root / source_manifest["relative_path"]
+        staged_bytes = staged_path.read_bytes()
+
+        session.delete(project)
+        session.commit()
+        shutil.rmtree(root)
+
+        imported = import_manifest(session, manifest=manifest, staging_root=staging_root)
+        session.commit()
+        session.refresh(imported)
+
+        source_artifact = next(
+            artifact for artifact in imported.artifacts if artifact.type == "source_audio"
+        )
+        assert source_artifact.format == output_format
+        assert Path(source_artifact.path).suffix == f".{output_format}"
+        assert Path(source_artifact.path).read_bytes() == staged_bytes
+        assert source_artifact.content_sha256 == source_manifest["content_sha256"]
 
 
 def _revision_content_hash(payload: dict[str, Any]) -> str:
@@ -1268,7 +1321,7 @@ def test_export_project_manifest_allows_source_artifact_hash_to_differ_from_proj
     assert source_artifact_manifest["content_sha256"] != fixture.source_sha256
 
 
-def test_export_project_manifest_rejects_non_wav_source_audio_artifact(
+def test_export_project_manifest_rejects_source_audio_format_suffix_mismatch(
     client: object,
     tmp_path: Path,
 ) -> None:
@@ -1285,7 +1338,7 @@ def test_export_project_manifest_rejects_non_wav_source_audio_artifact(
     assert exc.value.code == "SYNC_MANIFEST_SOURCE_ARTIFACT_UNSUPPORTED"
     assert exc.value.status_code == 400
     assert exc.value.details["artifact_id"] == "art_source_audio"
-    assert exc.value.details["format"] == "mp3"
+    assert exc.value.details["relative_path"] == fixture.source_relative_path
 
 
 def test_export_project_manifest_rejects_multiple_source_artifacts(
@@ -2187,7 +2240,7 @@ def test_import_staged_project_manifest_rejects_corrupt_content_addressed_stagin
         )
         corrupt_path = staged_paths[fixture.artifact_hashes["art_vocals"]]
         _delete_live_project(session, fixture)
-        corrupt_path.write_bytes(b"corrupt stem!!!")
+        corrupt_path.write_bytes(b"x" * corrupt_path.stat().st_size)
 
         with pytest.raises(AppError) as exc:
             import_manifest(
@@ -2218,7 +2271,8 @@ def test_import_staged_project_manifest_rejects_hash_mismatch(
         fixture = _create_project_with_artifacts(session, tmp_path)
         manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
         _stage_manifest_files(manifest, staging_root=staging_root, source_root=fixture.root)
-        (staging_root / fixture.stem_relative_path).write_bytes(b"corrupt stem!!!")
+        staged_stem = staging_root / fixture.stem_relative_path
+        staged_stem.write_bytes(b"x" * staged_stem.stat().st_size)
         _delete_live_project(session, fixture)
 
         with pytest.raises(AppError) as exc:
@@ -2362,10 +2416,39 @@ def test_import_staged_project_manifest_rejects_non_wav_source_audio_bytes(
 
         assert session.get(Project, fixture.project_id) is None
 
-    assert exc.value.code == "SYNC_MANIFEST_SOURCE_ARTIFACT_NOT_WAV"
+    assert exc.value.code == "SYNC_MANIFEST_DURABLE_AUDIO_INVALID"
     assert exc.value.status_code == 400
     assert exc.value.details["artifact_id"] == "art_source_audio"
     assert exc.value.details["relative_path"] == fixture.source_relative_path
+
+
+def test_import_staged_project_manifest_rejects_corrupt_durable_stem_bytes(
+    client: object,
+    tmp_path: Path,
+) -> None:
+    export_manifest, import_manifest = _sync_manifest_services()
+    staging_root = tmp_path / "staging"
+
+    with SessionLocal() as session:
+        fixture = _create_project_with_artifacts(session, tmp_path)
+        manifest = _plain_manifest(export_manifest(session, project_id=fixture.project_id))
+        _stage_manifest_files(manifest, staging_root=staging_root, source_root=fixture.root)
+
+        staged_stem_path = staging_root / fixture.stem_relative_path
+        invalid_hash, invalid_size = _write_bytes(staged_stem_path, b"not a wav stem")
+        stem_artifact = _artifacts_by_id(manifest)["art_vocals"]
+        stem_artifact["content_sha256"] = invalid_hash
+        stem_artifact["size_bytes"] = invalid_size
+        _delete_live_project(session, fixture)
+
+        with pytest.raises(AppError) as exc:
+            import_manifest(session, manifest=manifest, staging_root=staging_root)
+        session.rollback()
+
+        assert session.get(Project, fixture.project_id) is None
+
+    assert exc.value.code == "SYNC_MANIFEST_DURABLE_AUDIO_INVALID"
+    assert exc.value.details["artifact_id"] == "art_vocals"
 
 
 def test_import_staged_project_manifest_rejects_multiple_source_artifacts(

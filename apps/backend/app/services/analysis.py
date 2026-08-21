@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -15,6 +16,7 @@ from app.engines.beat_this import BeatThisRuntimeError, analyze_track_with_beat_
 from app.errors import AppError
 from app.models import AnalysisResult, Artifact, Project
 from app.services.artifacts import refresh_artifact_file_metadata, register_artifact
+from app.services.audio_working import materialize_pcm_wav
 from app.services.paths import project_analysis_dir
 
 SOURCE_STEM_ARTIFACT_TYPES = ("drums_stem", "bass_stem")
@@ -32,12 +34,18 @@ def analyze_project(
     source_stem_artifacts = (
         _source_stem_artifacts(project, source_artifact) if source_artifact is not None else ()
     )
-    results = _analyze_track_with_backend(
-        Path(project.imported_path),
-        source_stem_paths=tuple(Path(artifact.path) for artifact in source_stem_artifacts),
-        beat_backend=beat_backend,
-        duration_seconds=project.duration_seconds,
-    )
+    with ExitStack() as stack:
+        source_path = stack.enter_context(materialize_pcm_wav(Path(project.imported_path)))
+        source_stem_paths = tuple(
+            stack.enter_context(materialize_pcm_wav(Path(artifact.path)))
+            for artifact in source_stem_artifacts
+        )
+        results = _analyze_track_with_backend(
+            source_path,
+            source_stem_paths=source_stem_paths,
+            beat_backend=beat_backend,
+            duration_seconds=project.duration_seconds,
+        )
     analysis = session.get(AnalysisResult, project.id)
     if analysis is None:
         analysis = AnalysisResult(project_id=project.id)

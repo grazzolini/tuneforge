@@ -19,8 +19,8 @@ not viable, and completing a research issue never promises a shipped feature.
 | --- | --- | --- |
 | [v1.0.1 — Mobile and E2E hardening](https://github.com/grazzolini/tuneforge/milestone/13) | Consolidate completed mobile, E2E, test-performance, and Android packaging work. | [#391](https://github.com/grazzolini/tuneforge/issues/391) |
 | [v1.1.0 — Export workflows](https://github.com/grazzolini/tuneforge/milestone/14) | Make audio and stem export selective, explicit, and platform-truthful. | [#392](https://github.com/grazzolini/tuneforge/issues/392) |
-| [v1.2.0 — Storage format choice](https://github.com/grazzolini/tuneforge/milestone/15) | Choose WAV or FLAC for newly created durable audio. | [#393](https://github.com/grazzolini/tuneforge/issues/393) |
-| [v1.3.0 — Footprint and engine defaults](https://github.com/grazzolini/tuneforge/milestone/16) | Convert existing audio on demand and reduce the default chord-engine footprint. | [#394](https://github.com/grazzolini/tuneforge/issues/394) |
+| [v1.2.0 — Storage format choice](https://github.com/grazzolini/tuneforge/milestone/15) | Choose WAV, FLAC, MP3, or M4A for newly created durable audio and convert existing audio on demand. | [#393](https://github.com/grazzolini/tuneforge/issues/393) |
+| [v1.3.0 — Footprint and engine defaults](https://github.com/grazzolini/tuneforge/milestone/16) | Improve the lightweight chord engine and reduce the default package footprint. | [#394](https://github.com/grazzolini/tuneforge/issues/394) |
 | [v1.4.0 — Mobile runtime experiments](https://github.com/grazzolini/tuneforge/milestone/17) | Measure iOS simulator and Android model feasibility without shipment promises. | [#395](https://github.com/grazzolini/tuneforge/issues/395) |
 | [v2.0.0 — Android-first 2.0](https://github.com/grazzolini/tuneforge/milestone/18) | Deliver the complete Android-first workflow and truthful capability states. | [#396](https://github.com/grazzolini/tuneforge/issues/396) |
 
@@ -60,29 +60,30 @@ Chords-only and additional document formats remain outside this milestone.
 
 ## v1.2.0 — Storage Format Choice
 
-[#398](https://github.com/grazzolini/tuneforge/issues/398) adds a `wav | flac`
-preference for new durable audio, with WAV as the default. The value is captured
+[#398](https://github.com/grazzolini/tuneforge/issues/398) adds a
+`wav | flac | mp3 | m4a` preference for new durable audio, with WAV as the default.
+MP3 and M4A use 192 kbps lossy encoding and require an irreversible-quality warning. The value is captured
 when an import, generation job, or save action starts and applies to new sources,
 stems, saved mixes, and other durable audio created by that action.
 
 Changing the preference affects future artifacts only. Existing files stay
-unchanged, and mixed WAV/FLAC libraries and projects remain valid. TuneForge does
+unchanged, and mixed-format libraries and projects remain valid. TuneForge does
 not retain the original import as a separate canonical file under this plan.
 
 Sync preserves each received artifact's format regardless of the receiving
 peer's preference. Backend and Android source validation must accept matching
-WAV/FLAC media formats and suffixes. All peers are assumed to run the latest
+WAV, FLAC, MP3, and AAC-LC M4A media formats and suffixes. All peers are assumed to run the latest
 TuneForge; version negotiation, compatibility transcoding, and protocol redesign
 are out of scope. Any HTTP schema change must regenerate the committed OpenAPI
 TypeScript contract.
 
-## v1.3.0 — Footprint and Engine Defaults
-
 [#399](https://github.com/grazzolini/tuneforge/issues/399) adds an explicit
-background job to transcode existing durable audio to the current WAV/FLAC
+background job to transcode existing durable audio to the current four-format
 preference. It reuses progress and cancellation patterns, verifies each new
 file, and atomically updates the artifact path, format, size, and content hash.
 It does not rerun analysis, stems, lyrics, chords, beats, or other models.
+
+## v1.3.0 — Footprint and Engine Defaults
 
 [#400](https://github.com/grazzolini/tuneforge/issues/400) improves the
 lightweight chord engine and makes it the default. CREMA remains supported as an
@@ -109,7 +110,7 @@ unmilestoned until evidence justifies implementation.
 ## v2.0.0 — Android-First 2.0
 
 Android is the primary mobile target. The 2.0 gate is a functional Android flow
-for import, library, playback, editing, sync, export, WAV/FLAC storage, and
+for import, library, playback, editing, sync, export, four-format durable storage, and
 truthful model capability states.
 
 Heavy on-device models ship only when v1.4 evidence justifies them. A negative

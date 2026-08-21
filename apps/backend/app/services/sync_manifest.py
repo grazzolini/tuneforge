@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -15,7 +14,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
+from app.engines.audio_encoding import (
+    DURABLE_AUDIO_FORMATS,
+    DurableAudioFormat,
+    validate_audio_file,
+)
 from app.errors import AppError
 from app.models import (
     AnalysisResult,
@@ -31,6 +34,7 @@ from app.schemas import SUPPORTED_LYRICS_LANGUAGE_OVERRIDES
 from app.services.artifacts import register_artifact
 from app.services.paths import ensure_project_dirs, project_root
 from app.services.project_storage import queue_project_storage_reconciliation
+from app.services.stem_models import STEM_ARTIFACT_TYPES, STEM_SOURCE_ARTIFACT_TYPES
 from app.services.sync_identity import source_hash_to_project_id
 from app.services.sync_metadata import (
     artifact_sync_metadata,
@@ -857,8 +861,8 @@ def _export_artifact_manifest(artifact: Artifact) -> SyncArtifactManifest:
 
     _validate_export_artifact_relative_path(artifact, relative_path)
 
-    if artifact.type == "source_audio":
-        _validate_export_source_artifact(
+    if _is_durable_audio_artifact_type(artifact.type):
+        _validate_export_durable_audio_artifact(
             artifact=artifact,
             relative_path=relative_path,
         )
@@ -1392,14 +1396,8 @@ def _verify_staged_artifacts(
             assert staging_root is not None
             staged_path = (staging_root / relative_path).resolve(strict=False)
             _ensure_child_path(staging_root, staged_path, "staged artifact")
-            _verify_staged_file(artifact, staged_path)
-        if artifact.type == "source_audio":
-            _validate_wav_source_file(
-                artifact_id=artifact.artifact_id,
-                project_id=artifact.project_id,
-                relative_path=artifact.relative_path,
-                path=staged_path,
-            )
+        _verify_staged_file(artifact, staged_path)
+        validate_staged_durable_audio_artifact(artifact, staged_path)
 
         verified.append(
             _VerifiedStagedArtifact(
@@ -1494,30 +1492,65 @@ def _validate_source_artifact_present(manifest: SyncProjectManifest) -> None:
 
 def _validate_staged_import_source_artifact(manifest: SyncProjectManifest) -> SyncArtifactManifest:
     source_artifact = _source_artifact_manifest(manifest)
-    if source_artifact.format != "wav":
-        raise _invalid_manifest("Project manifest source_audio artifact format must be 'wav'.")
-
     relative_path = _safe_relative_path(source_artifact.relative_path)
-    if relative_path.suffix.lower() != ".wav":
-        raise _invalid_manifest("Project manifest source_audio artifact relative_path must end with .wav.")
+    expected_suffix = _source_audio_suffix(source_artifact.format)
+    if expected_suffix is None:
+        raise _invalid_manifest("Project manifest source_audio artifact format is unsupported.")
+    if relative_path.suffix.lower() != expected_suffix:
+        raise _invalid_manifest(
+            "Project manifest source_audio artifact format and relative_path suffix do not match."
+        )
     return source_artifact
 
 
-def _validate_export_source_artifact(
+def _is_durable_audio_artifact_type(artifact_type: str) -> bool:
+    return artifact_type in {
+        "source_audio",
+        "preview_mix",
+        *STEM_ARTIFACT_TYPES,
+        *STEM_SOURCE_ARTIFACT_TYPES,
+    }
+
+
+def validate_staged_durable_audio_artifact(
+    artifact: SyncArtifactManifest,
+    staged_path: Path,
+) -> None:
+    if not _is_durable_audio_artifact_type(artifact.type):
+        return
+    relative_path = _safe_relative_path(artifact.relative_path)
+    expected_suffix = _source_audio_suffix(artifact.format)
+    if expected_suffix is None or relative_path.suffix.lower() != expected_suffix:
+        raise _durable_audio_invalid_error(
+            artifact_id=artifact.artifact_id,
+            project_id=artifact.project_id,
+            relative_path=artifact.relative_path,
+        )
+    _validate_durable_audio_file(
+        artifact_id=artifact.artifact_id,
+        project_id=artifact.project_id,
+        relative_path=artifact.relative_path,
+        path=staged_path,
+        artifact_format=artifact.format,
+    )
+
+
+def _validate_export_durable_audio_artifact(
     *,
     artifact: Artifact,
     relative_path: str,
 ) -> None:
-    if artifact.format != "wav":
+    expected_suffix = _source_audio_suffix(artifact.format)
+    if expected_suffix is None:
         raise AppError(
             "SYNC_MANIFEST_SOURCE_ARTIFACT_UNSUPPORTED",
-            "Project source audio artifact must be an app-managed WAV before sync export.",
+            "Durable audio artifact format is unsupported for sync export.",
             details={"artifact_id": artifact.id, "project_id": artifact.project_id, "format": artifact.format},
         )
-    if PurePosixPath(relative_path).suffix.lower() != ".wav":
+    if PurePosixPath(relative_path).suffix.lower() != expected_suffix:
         raise AppError(
             "SYNC_MANIFEST_SOURCE_ARTIFACT_UNSUPPORTED",
-            "Project source audio artifact must use a .wav relative path before sync export.",
+            "Durable audio artifact format and relative path suffix do not match.",
             details={
                 "artifact_id": artifact.id,
                 "project_id": artifact.project_id,
@@ -1526,90 +1559,52 @@ def _validate_export_source_artifact(
         )
 
 
-def _validate_wav_source_file(
+def _source_audio_suffix(artifact_format: str) -> str | None:
+    if artifact_format not in DURABLE_AUDIO_FORMATS:
+        return None
+    return f".{artifact_format}"
+
+
+def _validate_durable_audio_file(
     *,
     artifact_id: str,
     project_id: str,
     relative_path: str,
     path: Path,
+    artifact_format: str,
 ) -> None:
-    command = [
-        get_settings().ffprobe_path,
-        "-v",
-        "error",
-        "-select_streams",
-        "a:0",
-        "-show_entries",
-        "stream=codec_name,channels,sample_rate",
-        "-show_entries",
-        "format=format_name",
-        "-of",
-        "json",
-        str(path),
-    ]
-    try:
-        result = subprocess.run(command, check=True, capture_output=True, text=True)
-        payload = json.loads(result.stdout or "{}")
-    except FileNotFoundError as exc:
-        raise AppError(
-            "DEPENDENCY_MISSING",
-            "ffprobe is required to validate source audio artifacts for sync.",
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        ) from exc
-    except (json.JSONDecodeError, subprocess.CalledProcessError) as exc:
-        raise _source_artifact_not_wav_error(
-            artifact_id=artifact_id,
-            project_id=project_id,
-            relative_path=relative_path,
-        ) from exc
-
-    if not _is_wav_pcm_probe(payload):
-        raise _source_artifact_not_wav_error(
+    expected_suffix = _source_audio_suffix(artifact_format)
+    if expected_suffix is None:
+        raise _durable_audio_invalid_error(
             artifact_id=artifact_id,
             project_id=project_id,
             relative_path=relative_path,
         )
-
-
-def _is_wav_pcm_probe(payload: Any) -> bool:
-    if not isinstance(payload, dict):
-        return False
-    fmt = payload.get("format")
-    streams = payload.get("streams")
-    if not isinstance(fmt, dict) or not isinstance(streams, list) or not streams:
-        return False
-    stream = streams[0]
-    if not isinstance(stream, dict):
-        return False
-    format_name = fmt.get("format_name")
-    codec_name = stream.get("codec_name")
-    if not isinstance(format_name, str) or not isinstance(codec_name, str):
-        return False
-    format_names = {name.strip().lower() for name in format_name.split(",")}
-    return (
-        "wav" in format_names
-        and codec_name.startswith("pcm_")
-        and _positive_int(stream.get("channels"))
-        and _positive_int(stream.get("sample_rate"))
-    )
-
-
-def _positive_int(value: Any) -> bool:
     try:
-        return int(value) > 0
-    except (TypeError, ValueError):
-        return False
+        validate_audio_file(
+            path,
+            cast(DurableAudioFormat, artifact_format),
+            require_suffix=False,
+        )
+    except AppError as exc:
+        if exc.code == "DEPENDENCY_MISSING":
+            raise
+        raise _durable_audio_invalid_error(
+            artifact_id=artifact_id,
+            project_id=project_id,
+            relative_path=relative_path,
+        ) from exc
 
 
-def _source_artifact_not_wav_error(
+def _durable_audio_invalid_error(
     *,
     artifact_id: str,
     project_id: str,
     relative_path: str,
 ) -> AppError:
     return AppError(
-        "SYNC_MANIFEST_SOURCE_ARTIFACT_NOT_WAV",
-        "Project source audio artifact file must be a readable PCM WAV.",
+        "SYNC_MANIFEST_DURABLE_AUDIO_INVALID",
+        "Durable audio artifact file does not match its declared format.",
         details={
             "artifact_id": artifact_id,
             "project_id": project_id,

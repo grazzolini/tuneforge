@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,10 +11,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.engines.audio_encoding import (
+    DurableAudioFormat,
+    encode_audio,
+    require_encoding_available,
+    validate_audio_file,
+)
 from app.errors import AppError
 from app.models import Artifact, Project, SyncDeleteTombstone, SyncEntityRevision, utcnow
 from app.services.artifacts import register_artifact
-from app.services.metadata import extract_audio_metadata, normalize_audio_to_wav
+from app.services.metadata import extract_audio_metadata
 from app.services.paths import ensure_project_dirs, project_source_dir
 from app.services.project_storage import queue_project_storage_reconciliation
 from app.services.sync_identity import source_hash_to_project_id
@@ -163,7 +170,9 @@ def import_project(
     source_path: str,
     copy_into_project: bool,
     display_name: str | None,
+    output_format: DurableAudioFormat = "wav",
 ) -> Project:
+    require_encoding_available(output_format)
     resolved_source = Path(source_path).expanduser().resolve()
     _validate_import_path(resolved_source)
     original_format = resolved_source.suffix.lower().lstrip(".")
@@ -192,10 +201,10 @@ def import_project(
 
     metadata = extract_audio_metadata(resolved_source)
     source_dir = project_source_dir(project_id)
-    imported_path = source_dir / f"{resolved_source.stem}.wav"
+    imported_path = source_dir / f"{resolved_source.stem}.{output_format}"
     artifact_metadata = {"source_path": str(resolved_source), "original_format": original_format}
     fallback_project_name = display_name or resolved_source.stem
-    _ = copy_into_project  # Historical API flag; imports always materialize an internal WAV.
+    _ = copy_into_project  # Historical API flag; imports always materialize an internal durable file.
 
     project = Project(
         id=project_id,
@@ -222,21 +231,37 @@ def import_project(
         raise _duplicate_project_source_error(project_id, fallback_project_name) from exc
 
     ensure_project_dirs(project_id)
-    normalize_audio_to_wav(resolved_source, imported_path)
+    with tempfile.NamedTemporaryFile(
+        dir=source_dir,
+        prefix=".tuneforge-import-",
+        suffix=f".{output_format}",
+        delete=False,
+    ) as temp_file:
+        staged_path = Path(temp_file.name)
+    try:
+        encode_audio(resolved_source, staged_path, output_format)
+        validate_audio_file(staged_path, output_format)
+        staged_path.replace(imported_path)
+    finally:
+        staged_path.unlink(missing_ok=True)
 
-    register_artifact(
-        session,
-        project_id=project.id,
-        artifact_type="source_audio",
-        artifact_format="wav",
-        path=Path(project.imported_path),
-        metadata=artifact_metadata,
-        generated_by="import",
-        can_delete=False,
-        can_regenerate=False,
-    )
+    try:
+        register_artifact(
+            session,
+            project_id=project.id,
+            artifact_type="source_audio",
+            artifact_format=output_format,
+            path=Path(project.imported_path),
+            metadata=artifact_metadata,
+            generated_by="import",
+            can_delete=False,
+            can_regenerate=False,
+        )
 
-    queue_project_storage_reconciliation(session, project.id)
+        queue_project_storage_reconciliation(session, project.id)
+    except Exception:
+        imported_path.unlink(missing_ok=True)
+        raise
 
     return project
 

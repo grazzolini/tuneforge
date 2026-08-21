@@ -2468,6 +2468,15 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
       });
     }
   };
+  const requireSupportedMobileImportFormat = (request: ProjectImportRequest) => {
+    if (request.output_format !== undefined && request.output_format !== "wav") {
+      throw new ApiError({
+        code: "UNSUPPORTED_RUNTIME",
+        message: "Selecting a compressed durable audio format is not available on mobile yet.",
+        details: { output_format: request.output_format },
+      });
+    }
+  };
 
   return {
     getMobileCapabilities: async () => capabilities,
@@ -2514,6 +2523,7 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
       invokeMobile("mobile_list_projects", { params: params ?? null }),
     importProject: async (body: ProjectImportRequest) => {
       requireSupportedMobileAnalysisBackend(body);
+      requireSupportedMobileImportFormat(body);
       return invokeMobile("mobile_import_project", { payload: body });
     },
     getProject: (projectId: string) => invokeMobile("mobile_get_project", { projectId }),

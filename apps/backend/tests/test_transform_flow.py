@@ -183,6 +183,31 @@ def test_preview_generation_cache_and_export(client, sample_audio_file: Path):
     assert any(Path(artifact["path"]).suffix == ".mp3" for artifact in exported)
 
 
+@pytest.mark.parametrize("output_format", ["wav", "flac", "mp3", "m4a"])
+def test_preview_mix_encodes_selected_durable_format(
+    client,
+    sample_audio_file: Path,
+    tmp_path: Path,
+    output_format: str,
+) -> None:
+    source_path = tmp_path / f"preview-{output_format}.wav"
+    source_path.write_bytes(sample_audio_file.read_bytes() + output_format.encode())
+    project = import_project_without_jobs(source_path)
+
+    response = client.post(
+        f"/api/v1/projects/{project['id']}/preview",
+        json={"transpose": {"semitones": 1}, "output_format": output_format},
+    )
+    assert response.status_code == 200
+    final_job = wait_for_job(client, response.json()["job"]["id"])
+    assert final_job["status"] == "completed"
+
+    artifacts = client.get(f"/api/v1/projects/{project['id']}/artifacts").json()["artifacts"]
+    preview = next(artifact for artifact in artifacts if artifact["type"] == "preview_mix")
+    assert preview["format"] == output_format
+    assert Path(preview["path"]).suffix == f".{output_format}"
+
+
 def test_export_uses_exact_destination_file_path(client, tmp_path: Path):
     project_id, artifact_id, source_path = _create_export_fixture(
         tmp_path,

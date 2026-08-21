@@ -8,13 +8,19 @@ import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from fastapi import status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.engines.audio_encoding import (
+    DURABLE_AUDIO_FORMATS,
+    DurableAudioFormat,
+    require_encoding_available,
+    validate_audio_file,
+)
 from app.engines.chord_labels import parse_chord_label
 from app.engines.transform import (
     cents_from_reference,
@@ -35,7 +41,7 @@ from app.utils.hashing import stable_hash
 class TransformPlan:
     artifact_type: str
     destination_path: Path
-    output_format: str
+    output_format: DurableAudioFormat
     total_cents: float
     cache_key: str | None
     metadata: dict[str, Any]
@@ -280,7 +286,12 @@ def prepare_export_job_payload(
         raise AppError("EXPORT_AUDIO_SET_MISMATCH", "Selected artifacts must belong to one audio set.")
     output_format = str(request_payload.get("output_format", "wav"))
     if artifact_ids:
-        format_available, reason = probe_export_formats().get(output_format, (False, "Unsupported export format."))
+        capability = (
+            probe_export_formats().get(cast(DurableAudioFormat, output_format))
+            if output_format in DURABLE_AUDIO_FORMATS
+            else None
+        )
+        format_available, reason = capability or (False, "Unsupported export format.")
         if not format_available:
             raise AppError("EXPORT_FORMAT_UNAVAILABLE", reason or "Export format is unavailable.", status_code=422)
 
@@ -401,14 +412,9 @@ def build_preview_plan(
     project: Project,
     retune: dict[str, Any] | None,
     transpose: dict[str, Any] | None,
-    output_format: str,
+    output_format: DurableAudioFormat,
 ) -> tuple[TransformPlan, Artifact | None]:
-    if output_format != get_settings().preview_format:
-        raise AppError(
-            "INVALID_REQUEST",
-            f"Preview output must be {get_settings().preview_format}.",
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
+    require_encoding_available(output_format)
     total_cents = 0.0
     metadata: dict[str, Any] = {"retune": retune, "transpose": transpose}
     if retune:
@@ -445,7 +451,10 @@ def build_single_transform_plan(
     transform_type: str,
     payload: dict[str, Any],
 ) -> TransformPlan:
-    output_format = payload.get("output_format", get_settings().preview_format)
+    raw_output_format = str(payload.get("output_format", get_settings().preview_format))
+    if raw_output_format not in DURABLE_AUDIO_FORMATS:
+        raise AppError("INVALID_REQUEST", "Unsupported audio format.", status_code=422)
+    output_format = cast(DurableAudioFormat, raw_output_format)
     preview_only = payload.get("preview_only", True)
     if transform_type == "retune":
         if payload.get("target_cents_offset") is not None:
@@ -481,28 +490,40 @@ def execute_transform_plan(
 ) -> Artifact:
     source_path = Path(project.imported_path)
     sample_rate = project.sample_rate or 44100
-    run_ffmpeg_transform(
-        source_path,
-        plan.destination_path.with_suffix(""),
-        sample_rate,
-        plan.total_cents,
-        plan.output_format,
-        on_progress=on_progress,
-        should_cancel=should_cancel,
-        register_process=register_process,
-        unregister_process=unregister_process,
-    )
     output_path = plan.destination_path.with_suffix(f".{plan.output_format}")
-    artifact = register_artifact(
-        session,
-        project_id=project.id,
-        artifact_type=plan.artifact_type,
-        artifact_format=plan.output_format,
-        path=output_path,
-        metadata=plan.metadata,
-        cache_key=plan.cache_key,
-        generated_by="ffmpeg",
-    )
+    temp_base_path, temp_path = _new_sibling_temp_paths(output_path, plan.output_format)
+    try:
+        run_ffmpeg_transform(
+            source_path,
+            temp_base_path,
+            sample_rate,
+            plan.total_cents,
+            plan.output_format,
+            on_progress=on_progress,
+            should_cancel=should_cancel,
+            register_process=register_process,
+            unregister_process=unregister_process,
+        )
+        validate_audio_file(temp_path, plan.output_format)
+        _ensure_not_cancelled(should_cancel)
+        temp_path.replace(output_path)
+    finally:
+        temp_base_path.unlink(missing_ok=True)
+        temp_path.unlink(missing_ok=True)
+    try:
+        artifact = register_artifact(
+            session,
+            project_id=project.id,
+            artifact_type=plan.artifact_type,
+            artifact_format=plan.output_format,
+            path=output_path,
+            metadata=plan.metadata,
+            cache_key=plan.cache_key,
+            generated_by="ffmpeg",
+        )
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
     return artifact
 
 

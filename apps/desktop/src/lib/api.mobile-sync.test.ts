@@ -202,6 +202,7 @@ describe("mobile sync API adapter", () => {
       source_path: "/music/song.wav",
       copy_into_project: true,
       beat_backend: "built-in",
+      output_format: "wav",
     };
     const defaultRequest: ProjectImportRequest = {
       source_path: "/music/default.wav",
@@ -266,6 +267,26 @@ describe("mobile sync API adapter", () => {
 
     expect(mockInvoke).not.toHaveBeenCalled();
   });
+
+  it.each(["flac", "mp3", "m4a"] as const)(
+    "rejects %s durable import format on mobile before native invoke",
+    async (outputFormat) => {
+      const api = await loadMobileApi();
+
+      await expect(
+        api.importProject({
+          source_path: "/music/song.wav",
+          copy_into_project: true,
+          output_format: outputFormat,
+        }),
+      ).rejects.toMatchObject({
+        code: "UNSUPPORTED_RUNTIME",
+        details: { output_format: outputFormat },
+      });
+
+      expect(mockInvoke).not.toHaveBeenCalled();
+    },
+  );
 
   it("allows built-in mobile analysis requests", async () => {
     const api = await loadMobileApi();

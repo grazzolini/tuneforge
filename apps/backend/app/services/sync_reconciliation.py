@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.engines.audio_encoding import DURABLE_AUDIO_FORMATS
 from app.errors import AppError
 from app.models import (
     Artifact,
@@ -2998,10 +2999,10 @@ def _importable_source_artifact_for_manifest(
         )
 
     source_artifact = source_artifacts[0]
-    if source_artifact.format != "wav":
+    if source_artifact.format not in DURABLE_AUDIO_FORMATS:
         return (
             None,
-            "Project manifest source_audio artifact format must be 'wav'.",
+            "Project manifest source_audio artifact format is unsupported.",
             {"artifact_id": source_artifact.artifact_id, "format": source_artifact.format},
         )
     path_error = _manifest_relative_path_error(source_artifact.relative_path)
@@ -3015,10 +3016,10 @@ def _importable_source_artifact_for_manifest(
             },
         )
     assert source_artifact.relative_path is not None
-    if PurePosixPath(source_artifact.relative_path).suffix.lower() != ".wav":
+    if PurePosixPath(source_artifact.relative_path).suffix.lower() != f".{source_artifact.format}":
         return (
             None,
-            "Project manifest source_audio artifact relative_path must end with .wav.",
+            "Project manifest source_audio artifact format and relative_path suffix do not match.",
             {
                 "artifact_id": source_artifact.artifact_id,
                 "relative_path": source_artifact.relative_path,

@@ -138,6 +138,12 @@ Filesystem storage holds:
 - export artifacts
 - future JSON artifacts such as tempo/beat maps
 
+App-owned source audio, stems, and saved practice mixes may use PCM16 WAV, FLAC level 5,
+MP3 at 192 kbps, or AAC-LC M4A at 192 kbps. Each creation job captures one format; mixed-format
+projects remain valid. Analysis, chord, lyric, and Demucs integrations receive scoped temporary
+PCM WAV materializations when their durable input is compressed. Working WAVs are never artifacts,
+never sync, and are removed when processing completes.
+
 Artifact rows include type, format, path, size, generation metadata, delete/regenerate flags, and creation time.
 
 ### Database Migrations

@@ -201,6 +201,52 @@ def test_default_stem_generation_creates_six_stem_artifacts(client, sample_stere
     assert not [artifact for artifact in remaining_artifacts if artifact["id"] == drums_artifact["id"]]
 
 
+@pytest.mark.parametrize("output_format", ["wav", "flac", "mp3", "m4a"])
+def test_stem_generation_encodes_selected_durable_format(
+    client,
+    sample_stereo_audio_file: Path,
+    tmp_path: Path,
+    monkeypatch,
+    output_format: str,
+) -> None:
+    source_path = tmp_path / f"stems-{output_format}.wav"
+    source_path.write_bytes(sample_stereo_audio_file.read_bytes() + output_format.encode())
+
+    def fake_separate_sources(
+        source_path: Path,
+        output_paths: dict[str, Path],
+        **_kwargs,
+    ) -> dict[str, str]:
+        signal, sample_rate = sf.read(source_path, always_2d=True)
+        for output_path in output_paths.values():
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            sf.write(output_path, signal * 0.5, sample_rate)
+        return {"engine": "demucs", "model": "htdemucs_6s", "device": "cpu"}
+
+    monkeypatch.setattr("app.services.stems.separate_sources", fake_separate_sources)
+    project_id = _create_project_without_import_jobs(source_path)
+
+    response = client.post(
+        f"/api/v1/projects/{project_id}/stems",
+        json={"mode": "stems", "output_format": output_format, "force": False},
+    )
+    assert response.status_code == 200
+    final_job = wait_for_job(client, response.json()["job"]["id"])
+    assert final_job["status"] == "completed"
+
+    artifacts = client.get(f"/api/v1/projects/{project_id}/artifacts").json()["artifacts"]
+    stem_artifacts = [
+        artifact
+        for artifact in artifacts
+        if artifact["metadata"].get("stem_model") == "htdemucs_6s"
+    ]
+    assert len(stem_artifacts) == 6
+    assert {artifact["format"] for artifact in stem_artifacts} == {output_format}
+    assert {Path(artifact["path"]).suffix for artifact in stem_artifacts} == {
+        f".{output_format}"
+    }
+
+
 def test_rebuilding_six_stems_with_two_stems_prunes_previous_model_artifacts(
     client,
     sample_stereo_audio_file: Path,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+from contextlib import ExitStack
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, cast
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.engines.stems import mix_audio_files
 from app.errors import AppError
 from app.models import Artifact, ChordTimeline, Project, utcnow
+from app.services.audio_working import materialize_pcm_wav
 from app.services.chord_backends import (
     ChordDetectionResult,
     chord_backend_uses_source_instrumental_stem,
@@ -51,7 +53,8 @@ def detect_project_chords(
 
     source_artifact = _source_audio_artifact(project)
     source_path = Path(source_artifact.path) if source_artifact is not None else Path(project.imported_path)
-    source_result = _detect_timeline(source_path, selected_backend_id)
+    with materialize_pcm_wav(source_path) as working_source_path:
+        source_result = _detect_timeline(working_source_path, selected_backend_id)
     runtime_device = source_result.runtime_device
     source_timeline = source_result.segments
     augmented_timeline = (
@@ -179,7 +182,8 @@ def _detect_source_stem_timeline(
 ) -> list[dict[str, Any]]:
     instrumental_stem = _source_instrumental_stem(project, source_artifact)
     if instrumental_stem is not None:
-        return _detect_timeline(Path(instrumental_stem.path), backend_id).segments
+        with materialize_pcm_wav(Path(instrumental_stem.path)) as working_path:
+            return _detect_timeline(working_path, backend_id).segments
 
     non_vocal_stems = _source_non_vocal_stems(project, source_artifact)
     if not non_vocal_stems:
@@ -189,7 +193,12 @@ def _detect_source_stem_timeline(
     mix_path = Path(temp_file.name)
     temp_file.close()
     try:
-        mix_audio_files([Path(stem.path) for stem in non_vocal_stems], mix_path, subtype="FLOAT")
+        with ExitStack() as stack:
+            working_stems = [
+                stack.enter_context(materialize_pcm_wav(Path(stem.path)))
+                for stem in non_vocal_stems
+            ]
+            mix_audio_files(working_stems, mix_path, subtype="FLOAT")
         return _detect_timeline(mix_path, backend_id).segments
     finally:
         mix_path.unlink(missing_ok=True)

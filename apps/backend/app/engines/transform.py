@@ -3,75 +3,18 @@ from __future__ import annotations
 import math
 import subprocess
 from collections.abc import Callable
-from functools import lru_cache
 from pathlib import Path
 
 from app.config import get_settings
 from app.dependency_diagnostics import missing_host_tool_error
+from app.engines.audio_encoding import encoding_profile, probe_encoding_formats
 from app.errors import AppError, JobCancelledError
 
-_EXPORT_PROFILES: dict[str, tuple[str, ...]] = {
-    "wav": ("-c:a", "pcm_s16le"),
-    "flac": ("-c:a", "flac", "-compression_level", "5"),
-    "mp3": ("-c:a", "libmp3lame", "-b:a", "192k"),
-    "m4a": ("-c:a", "aac", "-profile:a", "aac_low", "-b:a", "192k", "-f", "mp4"),
-}
-
-_EXPORT_REQUIREMENTS = {
-    "wav": ("pcm_s16le", "wav"),
-    "flac": ("flac", "flac"),
-    "mp3": ("libmp3lame", "mp3"),
-    "m4a": ("aac", "mp4"),
-}
-
-
-@lru_cache(maxsize=1)
-def probe_export_formats() -> dict[str, tuple[bool, str | None]]:
-    ffmpeg_path = get_settings().ffmpeg_path
-    try:
-        encoders = subprocess.run(
-            [ffmpeg_path, "-hide_banner", "-encoders"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        ).stdout
-        muxers = subprocess.run(
-            [ffmpeg_path, "-hide_banner", "-muxers"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        ).stdout
-    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        reason = "Configured FFmpeg is unavailable."
-        return {output_format: (False, reason) for output_format in _EXPORT_PROFILES}
-
-    capabilities: dict[str, tuple[bool, str | None]] = {}
-    for output_format, (encoder, muxer) in _EXPORT_REQUIREMENTS.items():
-        encoder_available = any(
-            len(parts) >= 2 and parts[1] == encoder
-            for line in encoders.splitlines()
-            if (parts := line.split())
-        )
-        muxer_available = any(
-            len(parts) >= 2 and muxer in parts[1].split(",")
-            for line in muxers.splitlines()
-            if (parts := line.split())
-        )
-        available = encoder_available and muxer_available
-        capabilities[output_format] = (
-            available,
-            None if available else f"Configured FFmpeg does not support {output_format.upper()} export.",
-        )
-    return capabilities
+probe_export_formats = probe_encoding_formats
 
 
 def export_profile(output_format: str) -> tuple[str, ...]:
-    try:
-        return _EXPORT_PROFILES[output_format]
-    except KeyError as exc:
-        raise AppError("INVALID_REQUEST", "Unsupported export format.", status_code=422) from exc
+    return encoding_profile(output_format)
 
 
 def _tempo_filters(tempo_ratio: float) -> list[str]:

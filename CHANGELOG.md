@@ -15,6 +15,7 @@ download, installation, verification, signature, and publication instructions.
 
 ### Fixed
 
+- Applied repeat desktop-to-Android sync changes to existing project metadata and artifacts.
 - Preserved project playback safely across native output route changes and interruptions by using
   a guarded Web Audio fallback at the current position.
 

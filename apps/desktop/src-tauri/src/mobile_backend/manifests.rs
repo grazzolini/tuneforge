@@ -1,6 +1,7 @@
 use super::storage_cleanup::{
-    capture_owned_project_file, cleanup_owned_project_files, prepare_owned_project_file,
-    project_storage_mutation_guard, require_owned_project_file,
+    capture_owned_project_file, cleanup_owned_project_files, move_owned_project_file,
+    prepare_owned_project_file, project_storage_mutation_guard, require_owned_project_file,
+    OwnedProjectFile,
 };
 use super::*;
 use crate::native_audio::decode::probe_mobile_durable_audio;
@@ -663,6 +664,95 @@ fn hydrate_lyrics_revision(
     Ok(())
 }
 
+fn apply_project_metadata_revision_state(
+    project: &mut ProjectSchema,
+    revision: &SyncProjectManifestEntityRevisionSchema,
+) -> Result<(), String> {
+    let payload = &revision.payload;
+    if payload
+        .get("project_id")
+        .and_then(Value::as_str)
+        .is_some_and(|project_id| project_id != revision.project_id)
+    {
+        return Err("Project metadata revision belongs to a different project.".to_string());
+    }
+    let display_name = match payload.get("display_name") {
+        Some(Value::String(value)) if !value.trim().is_empty() => value.trim().to_string(),
+        Some(_) => {
+            return Err(
+                "Project metadata revision display_name must be a non-empty string.".to_string(),
+            )
+        }
+        None => project.display_name.clone(),
+    };
+    let source_key_override = match payload.get("source_key_override") {
+        Some(Value::String(value)) => Some(value.clone()),
+        Some(Value::Null) => None,
+        Some(_) => {
+            return Err(
+                "Project metadata revision source_key_override must be a string or null."
+                    .to_string(),
+            )
+        }
+        None => project.source_key_override.clone(),
+    };
+    if let Some(value) = payload.get("source_sha256") {
+        let source_sha256 = value.as_str().ok_or_else(|| {
+            "Project metadata revision source_sha256 must be a string.".to_string()
+        })?;
+        validate_project_source_identity(&revision.project_id, Some(source_sha256))?;
+        if project.source_sha256.as_deref() != Some(source_sha256) {
+            return Err("Project metadata revision conflicts with the project source.".to_string());
+        }
+    }
+    let duration_seconds = match payload.get("duration_seconds") {
+        Some(Value::Null) => None,
+        Some(value) => Some(value.as_f64().ok_or_else(|| {
+            "Project metadata revision duration_seconds must be a number or null.".to_string()
+        })?),
+        None => project.duration_seconds,
+    };
+    let integer_field = |name: &str, current: Option<i64>| -> Result<Option<i64>, String> {
+        match payload.get(name) {
+            Some(Value::Null) => Ok(None),
+            Some(value) => value.as_i64().map(Some).ok_or_else(|| {
+                format!("Project metadata revision {name} must be an integer or null.")
+            }),
+            None => Ok(current),
+        }
+    };
+    project.display_name = display_name;
+    project.source_key_override = source_key_override;
+    project.duration_seconds = duration_seconds;
+    project.sample_rate = integer_field("sample_rate", project.sample_rate)?;
+    project.channels = integer_field("channels", project.channels)?;
+    project.updated_at = normalize_sync_timestamp_utc(&revision.updated_at, "revision updated_at")?;
+    Ok(())
+}
+
+fn hydrate_project_metadata_revision(
+    connection: &Connection,
+    revision: &SyncProjectManifestEntityRevisionSchema,
+) -> Result<(), String> {
+    let mut project = get_project_schema(connection, &revision.project_id)?;
+    apply_project_metadata_revision_state(&mut project, revision)?;
+    connection
+        .execute(
+            "UPDATE projects SET display_name = ?1, source_key_override = ?2, duration_seconds = ?3, sample_rate = ?4, channels = ?5, updated_at = ?6 WHERE id = ?7",
+            params![
+                project.display_name,
+                project.source_key_override,
+                project.duration_seconds,
+                project.sample_rate,
+                project.channels,
+                project.updated_at,
+                revision.project_id,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 pub(super) fn hydrate_imported_read_models(
     connection: &Connection,
     project_id: &str,
@@ -670,6 +760,31 @@ pub(super) fn hydrate_imported_read_models(
     let project = get_project_schema(connection, project_id)?;
     if project.sync_status == "deleted" {
         return Ok(());
+    }
+    let project_metadata_revisions = {
+        let mut statement = connection
+            .prepare(
+                &format!(
+                    "SELECT {SYNC_ENTITY_REVISION_COLUMNS} FROM sync_entity_revisions WHERE project_id = ?1 AND state IN ('active', 'current') AND entity_type = 'project_metadata' ORDER BY created_at ASC, id ASC"
+                ),
+            )
+            .map_err(|error| error.to_string())?;
+        let revisions = statement
+            .query_map(params![project_id], row_entity_revision)
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        revisions
+    };
+    match project_metadata_revisions.as_slice() {
+        [] => {}
+        [revision] => hydrate_project_metadata_revision(connection, revision)?,
+        _ => {
+            return Err(
+                "Project manifest contains multiple current project_metadata revisions."
+                    .to_string(),
+            )
+        }
     }
     let mut statement = connection
         .prepare(
@@ -764,7 +879,188 @@ struct PreparedManifestArtifact {
     manifest: SyncProjectManifestArtifactSchema,
     destination_path: PathBuf,
     existing: Option<ArtifactSchema>,
-    staged_path: Option<PathBuf>,
+    merge: ManifestArtifactMerge,
+    copy_source_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ManifestArtifactMerge {
+    Insert,
+    Update,
+    Replace,
+    KeepLocal,
+}
+
+pub(super) fn manifest_artifact_merge(
+    connection: &Connection,
+    artifact: &SyncProjectManifestArtifactSchema,
+) -> Result<(ManifestArtifactMerge, Option<ArtifactSchema>), String> {
+    let existing = connection
+        .query_row(
+            &format!("SELECT {ARTIFACT_COLUMNS} FROM artifacts WHERE id = ?1"),
+            params![artifact.artifact_id],
+            row_artifact,
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some(existing_artifact) = existing else {
+        return Ok((ManifestArtifactMerge::Insert, None));
+    };
+    if existing_artifact.project_id != artifact.project_id {
+        return Err("A synced artifact conflicts with an existing local artifact.".to_string());
+    }
+    if existing_artifact.content_sha256.as_deref() == Some(&artifact.content_sha256) {
+        if existing_artifact.size_bytes != artifact.size_bytes {
+            return Err("A synced artifact conflicts with an existing local artifact.".to_string());
+        }
+        return Ok((ManifestArtifactMerge::Update, Some(existing_artifact)));
+    }
+    if existing_artifact.r#type.trim().to_ascii_lowercase()
+        != artifact.r#type.trim().to_ascii_lowercase()
+        || existing_artifact
+            .r#type
+            .trim()
+            .eq_ignore_ascii_case("analysis_json")
+        || !existing_artifact.can_regenerate
+        || !artifact.can_regenerate
+    {
+        return Err("A synced artifact conflicts with an existing local artifact.".to_string());
+    }
+    let local_created_at =
+        parse_sync_timestamp_utc(&existing_artifact.created_at, "local artifact created_at")?;
+    let remote_created_at = parse_sync_timestamp_utc(&artifact.created_at, "artifact created_at")?;
+    let merge = if remote_created_at > local_created_at {
+        ManifestArtifactMerge::Replace
+    } else {
+        ManifestArtifactMerge::KeepLocal
+    };
+    Ok((merge, Some(existing_artifact)))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ProjectManifestMismatch {
+    ProjectCore,
+    ArtifactMissing,
+    ArtifactReplacement,
+    ArtifactMetadata,
+    RevisionMissing,
+    RevisionMetadata,
+}
+
+pub(super) fn project_manifest_mismatch(
+    connection: &Connection,
+    root: &Path,
+    manifest: &SyncProjectManifestSchema,
+) -> Result<Option<ProjectManifestMismatch>, String> {
+    let project = get_project_schema(connection, &manifest.project.project_id)?;
+    let mut expected = project.clone();
+    expected.display_name = manifest.project.display_name.clone();
+    expected.source_key_override = manifest.project.source_key_override.clone();
+    expected.source_sha256 = Some(manifest.project.source_sha256.clone());
+    expected.duration_seconds = manifest.project.duration_seconds;
+    expected.sample_rate = manifest.project.sample_rate;
+    expected.channels = manifest.project.channels;
+    expected.updated_at =
+        normalize_sync_timestamp_utc(&manifest.project.updated_at, "manifest project updated_at")?;
+    let mut current_metadata = {
+        let mut statement = connection
+            .prepare(&format!(
+                "SELECT {SYNC_ENTITY_REVISION_COLUMNS} FROM sync_entity_revisions WHERE project_id = ?1 AND entity_type = 'project_metadata' AND state IN ('active', 'current')"
+            ))
+            .map_err(|error| error.to_string())?;
+        let revisions = statement
+            .query_map(params![manifest.project.project_id], row_entity_revision)
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        revisions
+            .into_iter()
+            .map(|revision| (revision.revision_id.clone(), revision))
+            .collect::<BTreeMap<_, _>>()
+    };
+    for revision in manifest
+        .entity_revisions
+        .iter()
+        .filter(|revision| revision.entity_type == "project_metadata")
+    {
+        if matches!(revision.state.as_str(), "active" | "current") {
+            current_metadata.insert(revision.revision_id.clone(), revision.clone());
+        } else {
+            current_metadata.remove(&revision.revision_id);
+        }
+    }
+    let current_metadata = current_metadata.into_values().collect::<Vec<_>>();
+    match current_metadata.as_slice() {
+        [] => {}
+        [revision] => apply_project_metadata_revision_state(&mut expected, revision)?,
+        _ => {
+            return Err(
+                "Project manifest contains multiple current project_metadata revisions."
+                    .to_string(),
+            )
+        }
+    }
+    if project.display_name != expected.display_name
+        || project.source_key_override != expected.source_key_override
+        || project.source_sha256 != expected.source_sha256
+        || project.duration_seconds != expected.duration_seconds
+        || project.sample_rate != expected.sample_rate
+        || project.channels != expected.channels
+        || normalize_sync_timestamp_utc(&project.created_at, "project created_at")?
+            != manifest.project.created_at
+        || normalize_sync_timestamp_utc(&project.updated_at, "project updated_at")?
+            != expected.updated_at
+    {
+        return Ok(Some(ProjectManifestMismatch::ProjectCore));
+    }
+    for artifact in &manifest.artifacts {
+        let (merge, existing) = manifest_artifact_merge(connection, artifact)?;
+        match merge {
+            ManifestArtifactMerge::Insert => {
+                return Ok(Some(ProjectManifestMismatch::ArtifactMissing));
+            }
+            ManifestArtifactMerge::Replace => {
+                return Ok(Some(ProjectManifestMismatch::ArtifactReplacement));
+            }
+            ManifestArtifactMerge::KeepLocal => continue,
+            ManifestArtifactMerge::Update => {}
+        }
+        let local = super::storage::manifest_artifact_from_artifact(
+            root,
+            existing.expect("update has artifact"),
+        )?;
+        let mut expected = artifact.clone();
+        expected.metadata = sanitize_sync_manifest_value(&expected.metadata);
+        if serde_json::to_value(local).map_err(|error| error.to_string())?
+            != serde_json::to_value(expected).map_err(|error| error.to_string())?
+        {
+            return Ok(Some(ProjectManifestMismatch::ArtifactMetadata));
+        }
+    }
+    for revision in &manifest.entity_revisions {
+        let local = connection
+            .query_row(
+                &format!("SELECT {SYNC_ENTITY_REVISION_COLUMNS} FROM sync_entity_revisions WHERE id = ?1"),
+                params![revision.revision_id],
+                row_entity_revision,
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let Some(local) = local else {
+            return Ok(Some(ProjectManifestMismatch::RevisionMissing));
+        };
+        if local.content_sha256 != revision.content_sha256 {
+            return Err(
+                "A synced entity revision conflicts with an existing local revision.".to_string(),
+            );
+        }
+        if serde_json::to_value(local).map_err(|error| error.to_string())?
+            != serde_json::to_value(revision).map_err(|error| error.to_string())?
+        {
+            return Ok(Some(ProjectManifestMismatch::RevisionMetadata));
+        }
+    }
+    Ok(None)
 }
 
 pub(super) fn artifact_file_matches(path: &Path, content_sha256: &str, size_bytes: i64) -> bool {
@@ -775,6 +1071,52 @@ pub(super) fn artifact_file_matches(path: &Path, content_sha256: &str, size_byte
         return false;
     };
     metadata.len() as i64 == size_bytes && file_sha256(path).ok().as_deref() == Some(content_sha256)
+}
+
+pub(super) fn reusable_local_artifact_path(
+    connection: &Connection,
+    root: &Path,
+    project_id: &str,
+    content_sha256: &str,
+    size_bytes: i64,
+) -> Option<PathBuf> {
+    let project_root = project_root_path(root, project_id).ok()?;
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT {ARTIFACT_COLUMNS} FROM artifacts WHERE project_id = ?1 AND content_sha256 = ?2 AND size_bytes = ?3"
+        ))
+        .ok()?;
+    let artifacts = statement
+        .query_map(
+            params![project_id, content_sha256, size_bytes],
+            row_artifact,
+        )
+        .ok()?;
+    for artifact in artifacts.flatten() {
+        let path = PathBuf::from(artifact.path);
+        let owned = match capture_owned_project_file(root, &project_root, &path) {
+            Ok(owned) => owned,
+            Err(_) => continue,
+        };
+        if require_owned_project_file(&owned).is_ok()
+            && artifact_file_matches(&path, content_sha256, size_bytes)
+        {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn rollback_manifest_files(
+    copied: &[OwnedProjectFile],
+    installed: &[OwnedProjectFile],
+    backups: &mut Vec<(OwnedProjectFile, PathBuf)>,
+) {
+    cleanup_owned_project_files(copied);
+    cleanup_owned_project_files(installed);
+    for (backup, destination) in backups.drain(..).rev() {
+        let _ = move_owned_project_file(&backup, &destination);
+    }
 }
 
 pub(super) fn import_sync_project_manifest(
@@ -808,7 +1150,6 @@ pub(super) fn import_sync_project_manifest(
     let timestamp = now_iso();
     let existing_project = get_project_schema(connection, &project_id).ok();
     let source_artifact = manifest_source_audio_artifact(&payload.manifest)?;
-    let source_path = project_root.join(safe_relative_path(&source_artifact.relative_path)?);
     let manifest_project_created_at = normalize_sync_timestamp_utc(
         &payload.manifest.project.created_at,
         "manifest project created_at",
@@ -821,24 +1162,7 @@ pub(super) fn import_sync_project_manifest(
     let mut prepared_artifacts = Vec::new();
     for artifact in &payload.manifest.artifacts {
         let destination_path = project_root.join(safe_relative_path(&artifact.relative_path)?);
-        let existing_artifact = connection
-            .query_row(
-                &format!("SELECT {ARTIFACT_COLUMNS} FROM artifacts WHERE id = ?1"),
-                params![artifact.artifact_id],
-                row_artifact,
-            )
-            .optional()
-            .map_err(|error| error.to_string())?;
-        if let Some(existing) = &existing_artifact {
-            if existing.project_id != artifact.project_id
-                || existing.content_sha256.as_deref() != Some(artifact.content_sha256.as_str())
-                || existing.size_bytes != artifact.size_bytes
-            {
-                return Err(
-                    "A synced artifact conflicts with an existing local artifact.".to_string(),
-                );
-            }
-        }
+        let (merge, existing_artifact) = manifest_artifact_merge(connection, artifact)?;
         let has_verified_destination = artifact_file_matches(
             &destination_path,
             &artifact.content_sha256,
@@ -851,77 +1175,149 @@ pub(super) fn import_sync_project_manifest(
                 artifact.size_bytes,
             )
         });
-        let staged_path = if has_verified_destination || has_verified_existing {
-            None
-        } else {
-            Some(artifact_staged_source_path(
+        let copy_source_path =
+            if merge == ManifestArtifactMerge::KeepLocal || has_verified_destination {
+                None
+            } else if has_verified_existing {
+                existing_artifact
+                    .as_ref()
+                    .map(|existing| PathBuf::from(&existing.path))
+            } else if let Some(path) = reusable_local_artifact_path(
                 connection,
                 root,
-                artifact,
-                staging_root.as_deref(),
-                use_content_addressed_staging,
-            )?)
-        };
+                &artifact.project_id,
+                &artifact.content_sha256,
+                artifact.size_bytes,
+            ) {
+                Some(path)
+            } else {
+                Some(artifact_staged_source_path(
+                    connection,
+                    root,
+                    artifact,
+                    staging_root.as_deref(),
+                    use_content_addressed_staging,
+                )?)
+            };
         prepared_artifacts.push(PreparedManifestArtifact {
             manifest: artifact.clone(),
             destination_path,
             existing: existing_artifact,
-            staged_path,
+            merge,
+            copy_source_path,
         });
     }
+    let source_path = prepared_artifacts
+        .iter()
+        .find(|prepared| prepared.manifest.artifact_id == source_artifact.artifact_id)
+        .and_then(|prepared| {
+            (prepared.merge == ManifestArtifactMerge::KeepLocal)
+                .then(|| {
+                    prepared
+                        .existing
+                        .as_ref()
+                        .map(|artifact| PathBuf::from(&artifact.path))
+                })
+                .flatten()
+                .or_else(|| Some(prepared.destination_path.clone()))
+        })
+        .ok_or_else(|| "Project manifest source artifact was not prepared.".to_string())?;
 
     let storage_guard = project_storage_mutation_guard();
-    let mut copied_paths = Vec::new();
-    for prepared in &prepared_artifacts {
-        prepare_owned_project_file(root, &project_root, &prepared.destination_path)?;
-        let Some(staged_path) = &prepared.staged_path else {
-            continue;
-        };
-        fs::copy(staged_path, &prepared.destination_path)
-            .inspect_err(|_| cleanup_owned_project_files(&copied_paths))
-            .map_err(|error| error.to_string())?;
-        let copied = capture_owned_project_file(root, &project_root, &prepared.destination_path)?;
-        copied_paths.push(copied);
-        if !artifact_file_matches(
-            &prepared.destination_path,
-            &prepared.manifest.content_sha256,
-            prepared.manifest.size_bytes,
-        ) {
-            cleanup_owned_project_files(&copied_paths);
-            return Err("A copied artifact file does not match its manifest.".to_string());
-        }
-        if let Err(message) =
-            require_owned_project_file(copied_paths.last().expect("copied artifact was recorded"))
-        {
-            cleanup_owned_project_files(&copied_paths);
-            return Err(message);
-        }
-    }
-
-    for copied in &copied_paths {
-        if let Err(message) = require_owned_project_file(copied) {
-            cleanup_owned_project_files(&copied_paths);
-            return Err(message);
-        }
-    }
-
-    for prepared in &prepared_artifacts {
-        if prepared.staged_path.is_none() {
-            continue;
-        }
-        let Some(format) = durable_manifest_audio_format(&prepared.manifest) else {
-            continue;
-        };
-        if let Err(message) = probe_mobile_durable_audio(&prepared.destination_path, format) {
-            cleanup_owned_project_files(&copied_paths);
-            return Err(format!(
-                "Synced durable audio failed bounded {format} validation: {message}"
+    let mut copied_files = Vec::new();
+    let mut installed_files = Vec::new();
+    let mut backups = Vec::new();
+    let copy_result = (|| -> Result<(), String> {
+        for prepared in &prepared_artifacts {
+            prepare_owned_project_file(root, &project_root, &prepared.destination_path)?;
+            let Some(source_path) = &prepared.copy_source_path else {
+                continue;
+            };
+            if prepared.merge != ManifestArtifactMerge::Replace {
+                if prepared.destination_path.exists() {
+                    return Err("A synced artifact destination already exists.".to_string());
+                }
+                fs::copy(source_path, &prepared.destination_path)
+                    .map_err(|error| error.to_string())?;
+                let copied =
+                    capture_owned_project_file(root, &project_root, &prepared.destination_path)?;
+                copied_files.push(copied);
+                if !artifact_file_matches(
+                    &prepared.destination_path,
+                    &prepared.manifest.content_sha256,
+                    prepared.manifest.size_bytes,
+                ) {
+                    return Err("A copied artifact file does not match its manifest.".to_string());
+                }
+                if let Some(format) = durable_manifest_audio_format(&prepared.manifest) {
+                    probe_mobile_durable_audio(&prepared.destination_path, format).map_err(
+                        |message| {
+                            format!(
+                                "Synced durable audio failed bounded {format} validation: {message}"
+                            )
+                        },
+                    )?;
+                }
+                require_owned_project_file(copied_files.last().expect("copied file was recorded"))?;
+                continue;
+            }
+            let mut candidate_path = project_root.join(format!(
+                ".sync-incoming-{}-{}",
+                prepared.manifest.artifact_id,
+                new_id("artifact")
             ));
+            if let Some(extension) = prepared.destination_path.extension() {
+                candidate_path.set_extension(extension);
+            }
+            prepare_owned_project_file(root, &project_root, &candidate_path)?;
+            if let Err(error) = fs::copy(source_path, &candidate_path) {
+                let _ = fs::remove_file(&candidate_path);
+                return Err(error.to_string());
+            }
+            let copied = capture_owned_project_file(root, &project_root, &candidate_path)?;
+            if !artifact_file_matches(
+                &candidate_path,
+                &prepared.manifest.content_sha256,
+                prepared.manifest.size_bytes,
+            ) {
+                cleanup_owned_project_files(std::slice::from_ref(&copied));
+                return Err("A copied artifact file does not match its manifest.".to_string());
+            }
+            if let Some(format) = durable_manifest_audio_format(&prepared.manifest) {
+                probe_mobile_durable_audio(&candidate_path, format).map_err(|message| {
+                    cleanup_owned_project_files(std::slice::from_ref(&copied));
+                    format!("Synced durable audio failed bounded {format} validation: {message}")
+                })?;
+            }
+            require_owned_project_file(&copied)?;
+            if prepared.destination_path.is_file() {
+                let existing_destination =
+                    capture_owned_project_file(root, &project_root, &prepared.destination_path)?;
+                let backup_path = project_root.join(format!(
+                    ".sync-backup-{}-{}",
+                    prepared.manifest.artifact_id,
+                    new_id("artifact")
+                ));
+                let backup = move_owned_project_file(&existing_destination, &backup_path)?;
+                backups.push((backup, prepared.destination_path.clone()));
+            }
+            match move_owned_project_file(&copied, &prepared.destination_path) {
+                Ok(installed) => installed_files.push(installed),
+                Err(message) => {
+                    cleanup_owned_project_files(std::slice::from_ref(&copied));
+                    return Err(message);
+                }
+            }
         }
+        Ok(())
+    })();
+    if let Err(message) = copy_result {
+        rollback_manifest_files(&copied_files, &installed_files, &mut backups);
+        return Err(message);
     }
 
     if let Err(error) = connection.execute_batch("BEGIN IMMEDIATE") {
-        cleanup_owned_project_files(&copied_paths);
+        rollback_manifest_files(&copied_files, &installed_files, &mut backups);
         return Err(error.to_string());
     }
     let db_result = (|| -> Result<(), String> {
@@ -959,14 +1355,20 @@ pub(super) fn import_sync_project_manifest(
                             payload.manifest.project.duration_seconds,
                             payload.manifest.project.sample_rate,
                             payload.manifest.project.channels,
-                            &timestamp,
+                            &manifest_project_updated_at,
                             &project_id,
                         ],
                     )
                     .map_err(|error| error.to_string())?;
         }
 
+        for tombstone in &payload.manifest.delete_tombstones {
+            apply_delete_tombstone(connection, tombstone)?;
+        }
         for prepared in &prepared_artifacts {
+            if prepared.merge == ManifestArtifactMerge::KeepLocal {
+                continue;
+            }
             let artifact = &prepared.manifest;
             let destination_path = prepared.destination_path.to_string_lossy().into_owned();
             let metadata = sanitize_sync_manifest_value(&artifact.metadata).to_string();
@@ -1021,26 +1423,26 @@ pub(super) fn import_sync_project_manifest(
         import_entity_revisions(connection, &payload.manifest.entity_revisions)?;
         connection
                 .execute(
-                    "UPDATE projects SET sync_status = 'local', sync_status_reason = ?1, sync_required_artifact_ids_json = ?2, sync_provider_device_ids_json = ?2, sync_conflict_count = 0, sync_status_updated_at = ?3, updated_at = ?3 WHERE id = ?4",
+                    "UPDATE projects SET sync_status = 'local', sync_status_reason = ?1, sync_required_artifact_ids_json = ?2, sync_provider_device_ids_json = ?2, sync_conflict_count = 0, sync_status_updated_at = ?3 WHERE id = ?4",
                     params!["Synced from desktop.", DEFAULT_SYNC_LIST_JSON, &timestamp, &project_id],
                 )
                 .map_err(|error| error.to_string())?;
-        for tombstone in &payload.manifest.delete_tombstones {
-            apply_delete_tombstone(connection, tombstone)?;
-        }
         hydrate_imported_read_models(connection, &project_id)?;
         Ok(())
     })();
 
     if let Err(message) = db_result {
         let _ = connection.execute_batch("ROLLBACK");
-        cleanup_owned_project_files(&copied_paths);
+        rollback_manifest_files(&copied_files, &installed_files, &mut backups);
         return Err(message);
     }
     if let Err(error) = connection.execute_batch("COMMIT") {
         let _ = connection.execute_batch("ROLLBACK");
-        cleanup_owned_project_files(&copied_paths);
+        rollback_manifest_files(&copied_files, &installed_files, &mut backups);
         return Err(error.to_string());
+    }
+    for (backup, _) in &backups {
+        cleanup_owned_project_files(std::slice::from_ref(backup));
     }
     drop(storage_guard);
     reconcile_project_storage_after_commit(connection, root, &project_id);
@@ -1242,6 +1644,170 @@ mod tests {
                 params![project_id, "a".repeat(64), live_at],
             )
             .unwrap();
+    }
+
+    fn metadata_revision(
+        project_id: &str,
+        revision_id: &str,
+        state: &str,
+        display_name: &str,
+        updated_at: &str,
+    ) -> SyncProjectManifestEntityRevisionSchema {
+        SyncProjectManifestEntityRevisionSchema {
+            revision_id: revision_id.to_string(),
+            project_id: project_id.to_string(),
+            entity_type: "project_metadata".to_string(),
+            entity_id: project_id.to_string(),
+            revision_type: "metadata_change".to_string(),
+            base_revision_id: None,
+            author_device_id: "device_peer_1".to_string(),
+            source_artifact_id: None,
+            content_sha256: revision_id
+                .bytes()
+                .fold(0_u8, u8::wrapping_add)
+                .to_string()
+                .repeat(64)
+                .chars()
+                .take(64)
+                .collect(),
+            state: state.to_string(),
+            metadata: json!({}),
+            payload: json!({
+                "project_id": project_id,
+                "display_name": display_name,
+                "source_sha256": project_id.trim_start_matches(PROJECT_ID_PREFIX),
+                "duration_seconds": 2.0,
+                "sample_rate": 16_000,
+                "channels": 2,
+            }),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: updated_at.to_string(),
+        }
+    }
+
+    fn metadata_manifest(
+        project_id: &str,
+        revisions: Vec<SyncProjectManifestEntityRevisionSchema>,
+    ) -> SyncProjectManifestSchema {
+        SyncProjectManifestSchema {
+            schema_version: SYNC_PROJECT_MANIFEST_SCHEMA_VERSION.to_string(),
+            exported_at: "2026-01-02T00:00:00Z".to_string(),
+            project: SyncProjectManifestProjectSchema {
+                project_id: project_id.to_string(),
+                display_name: "Manifest name".to_string(),
+                source_key_override: None,
+                source_sha256: project_id.trim_start_matches(PROJECT_ID_PREFIX).to_string(),
+                duration_seconds: Some(1.0),
+                sample_rate: Some(8_000),
+                channels: Some(1),
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-02T00:00:00Z".to_string(),
+            },
+            entity_revisions: revisions,
+            artifacts: Vec::new(),
+            delete_tombstones: Vec::new(),
+        }
+    }
+
+    fn insert_manifest_project(connection: &Connection, manifest: &SyncProjectManifestSchema) {
+        migrate_mobile_db(connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO projects (id, display_name, source_key_override, source_sha256, source_path, imported_path, duration_seconds, sample_rate, channels, sync_status, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, '', '', ?5, ?6, ?7, 'local', ?8, ?9)",
+                params![
+                    manifest.project.project_id,
+                    manifest.project.display_name,
+                    manifest.project.source_key_override,
+                    manifest.project.source_sha256,
+                    manifest.project.duration_seconds,
+                    manifest.project.sample_rate,
+                    manifest.project.channels,
+                    manifest.project.created_at,
+                    manifest.project.updated_at,
+                ],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn retained_local_current_metadata_keeps_replay_satisfied() {
+        let connection = Connection::open_in_memory().unwrap();
+        let project_id = source_hash_to_project_id(&"d".repeat(64)).unwrap();
+        let manifest = metadata_manifest(&project_id, Vec::new());
+        insert_manifest_project(&connection, &manifest);
+        let local = metadata_revision(
+            &project_id,
+            "rev_metadata_local",
+            "active",
+            "Retained local name",
+            "2026-01-03T00:00:00Z",
+        );
+        import_entity_revisions(&connection, &[local]).unwrap();
+        hydrate_imported_read_models(&connection, &project_id).unwrap();
+
+        assert!(
+            project_manifest_mismatch(&connection, Path::new(""), &manifest)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn incoming_and_retained_local_currents_return_hydration_error() {
+        let connection = Connection::open_in_memory().unwrap();
+        let project_id = source_hash_to_project_id(&"e".repeat(64)).unwrap();
+        let local = metadata_revision(
+            &project_id,
+            "rev_metadata_local",
+            "active",
+            "Local current",
+            "2026-01-03T00:00:00Z",
+        );
+        let incoming = metadata_revision(
+            &project_id,
+            "rev_metadata_incoming",
+            "current",
+            "Incoming current",
+            "2026-01-04T00:00:00Z",
+        );
+        let manifest = metadata_manifest(&project_id, vec![incoming]);
+        insert_manifest_project(&connection, &manifest);
+        import_entity_revisions(&connection, &[local]).unwrap();
+
+        assert_eq!(
+            project_manifest_mismatch(&connection, Path::new(""), &manifest).unwrap_err(),
+            "Project manifest contains multiple current project_metadata revisions."
+        );
+    }
+
+    #[test]
+    fn multiple_incoming_currents_return_hydration_error() {
+        let connection = Connection::open_in_memory().unwrap();
+        let project_id = source_hash_to_project_id(&"f".repeat(64)).unwrap();
+        let revisions = vec![
+            metadata_revision(
+                &project_id,
+                "rev_metadata_one",
+                "active",
+                "First current",
+                "2026-01-03T00:00:00Z",
+            ),
+            metadata_revision(
+                &project_id,
+                "rev_metadata_two",
+                "current",
+                "Second current",
+                "2026-01-04T00:00:00Z",
+            ),
+        ];
+        let manifest = metadata_manifest(&project_id, revisions);
+        insert_manifest_project(&connection, &manifest);
+
+        assert_eq!(
+            project_manifest_mismatch(&connection, Path::new(""), &manifest).unwrap_err(),
+            "Project manifest contains multiple current project_metadata revisions."
+        );
     }
 
     #[test]

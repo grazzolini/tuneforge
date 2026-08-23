@@ -348,12 +348,12 @@ def _import_artifact_manifest(
             or existing_artifact.content_sha256 != artifact_manifest.content_sha256
             or existing_artifact.size_bytes != artifact_manifest.size_bytes
         )
-        overwrite_generated_artifact = _can_overwrite_generated_artifact(
+        overwrite_artifact = _can_overwrite_artifact(
             action,
             existing_artifact,
             artifact_manifest,
         )
-        if has_manifest_conflict and not overwrite_generated_artifact:
+        if has_manifest_conflict and not overwrite_artifact:
             return _result(action, APPLY_STATUS_FAILED, "Artifact manifest conflicts with a local artifact.")
         existing_path = Path(existing_artifact.path)
         existing_resolved_path = existing_path.resolve(strict=False)
@@ -364,7 +364,7 @@ def _import_artifact_manifest(
         ):
             validate_staged_durable_audio_artifact(artifact_manifest, existing_path)
             return _result(action, APPLY_STATUS_SATISFIED, "Artifact manifest is already imported locally.")
-        if overwrite_generated_artifact and artifact_manifest.type == "analysis_json":
+        if overwrite_artifact and artifact_manifest.type == "analysis_json":
             destination_path = _generated_analysis_overwrite_destination(project_id, existing_artifact)
             if _destination_conflicts_with_existing_artifact(
                 session,
@@ -377,7 +377,7 @@ def _import_artifact_manifest(
             ):
                 return _result(action, APPLY_STATUS_FAILED, "Artifact destination already exists locally.")
             destination_has_manifest_bytes = _copied_artifact_matches_manifest(destination_path, artifact_manifest)
-        elif overwrite_generated_artifact:
+        elif overwrite_artifact:
             destination_path = _resolve_project_destination_path(
                 project_id,
                 artifact_manifest.relative_path,
@@ -447,10 +447,18 @@ def _import_artifact_manifest(
             can_delete=artifact_manifest.can_delete,
             can_regenerate=artifact_manifest.can_regenerate,
             created_at=artifact_manifest.created_at,
+            updated_at=artifact_manifest.updated_at,
         )
     else:
-        _update_existing_artifact_from_manifest(existing_artifact, artifact_manifest, destination_path)
+        _update_existing_artifact_from_manifest(
+            existing_artifact,
+            artifact_manifest,
+            destination_path,
+            preserve_later_updated_at=not has_manifest_conflict,
+        )
         imported_artifact = existing_artifact
+        if artifact_manifest.type == "source_audio":
+            project.imported_path = str(destination_path.resolve(strict=False))
     if (
         imported_artifact.content_sha256 != artifact_manifest.content_sha256
         or imported_artifact.size_bytes != artifact_manifest.size_bytes
@@ -472,12 +480,21 @@ def _import_artifact_manifest(
     )
 
 
-def _can_overwrite_generated_artifact(
+def _can_overwrite_artifact(
     action: SyncReconciliationAction,
     existing_artifact: Artifact,
     artifact_manifest: SyncArtifactManifest,
 ) -> bool:
     reason = action.details.get("resolution_reason")
+    if reason == "Remote durable audio artifact update timestamp is newer.":
+        return (
+            action.item_type == ITEM_ARTIFACT
+            and action.content_sha256 == artifact_manifest.content_sha256
+            and existing_artifact.id == artifact_manifest.artifact_id
+            and existing_artifact.project_id == artifact_manifest.project_id
+            and existing_artifact.type == artifact_manifest.type
+            and _as_utc(artifact_manifest.updated_at) > _as_utc(existing_artifact.updated_at)
+        )
     if reason == "Remote analysis_json generation timestamp is newer.":
         if action.details.get("artifact_type") != "analysis_json":
             return False
@@ -613,6 +630,8 @@ def _update_existing_artifact_from_manifest(
     artifact: Artifact,
     artifact_manifest: SyncArtifactManifest,
     destination_path: Path,
+    *,
+    preserve_later_updated_at: bool = False,
 ) -> None:
     artifact.format = artifact_manifest.format
     artifact.path = str(destination_path.resolve(strict=False))
@@ -624,6 +643,11 @@ def _update_existing_artifact_from_manifest(
     artifact.content_sha256 = artifact_manifest.content_sha256
     artifact.size_bytes = artifact_manifest.size_bytes
     artifact.created_at = artifact_manifest.created_at
+    artifact.updated_at = (
+        max(_as_utc(artifact.updated_at), _as_utc(artifact_manifest.updated_at))
+        if preserve_later_updated_at
+        else artifact_manifest.updated_at
+    )
 
 
 def _retire_superseded_artifact_tombstone(

@@ -12,6 +12,7 @@ download, installation, verification, signature, and publication instructions.
 - Added a desktop Audio Storage preference for future imports, stems, and saved mixes, plus
   byte-preserving Android receive and playback support for all four durable formats
   ([#398](https://github.com/grazzolini/tuneforge/issues/398)).
+- Added desktop Activity re-processing for existing durable audio, with mixed-format project skips and timestamp-based sync replacement across trusted peers ([#399](https://github.com/grazzolini/tuneforge/issues/399)).
 
 ### Fixed
 

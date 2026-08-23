@@ -131,6 +131,7 @@ Important fields:
 - `can_regenerate`
 - `metadata`
 - `created_at`
+- `updated_at`
 
 ## Health
 
@@ -1034,8 +1035,8 @@ Queues the same project activity job for eligible projects in the local library.
 
 Request fields:
 
-- `job_type` - `analyze`, `chords`, `lyrics`, or `stems`.
-- `output_format` - captured durable stem format; defaults to `wav` and must remain `wav` for non-stem jobs.
+- `job_type` - `analyze`, `chords`, `lyrics`, `stems`, or desktop-only `convert_audio`.
+- `output_format` - captured durable stem/conversion format; defaults to `wav` and must remain `wav` for other jobs.
 - `chord_backend`
 - `chord_backend_fallback_from`
 - `stem_model`

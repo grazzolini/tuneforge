@@ -29,6 +29,7 @@ function artifact(
     can_regenerate: false,
     metadata: sourceArtifactId ? { source_artifact_id: sourceArtifactId } : {},
     created_at: createdAt,
+    updated_at: createdAt,
   };
 }
 

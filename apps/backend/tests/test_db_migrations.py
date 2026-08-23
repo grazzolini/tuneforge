@@ -148,7 +148,7 @@ def test_fresh_v1_baseline_matches_frozen_pre_v1_schema_signature() -> None:
     ensure_data_dirs(settings)
     reconfigure_engine(settings)
 
-    run_migrations(settings)
+    command.upgrade(_migration_config(settings), "0021_job_runtime_status")
 
     with sqlite3.connect(settings.database_path) as connection:
         revision = connection.execute(
@@ -208,8 +208,8 @@ def test_stamped_v1_database_is_noop_and_preserves_data() -> None:
             """
             INSERT INTO artifacts (
                 id, project_id, type, format, path, metadata_json, created_at,
-                content_sha256
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                content_sha256, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "artifact_reference",
@@ -220,6 +220,7 @@ def test_stamped_v1_database_is_noop_and_preserves_data() -> None:
                 '{"source_artifact_id":"source_reference"}',
                 timestamp,
                 "a" * 64,
+                timestamp,
             ),
         )
         connection.execute(
@@ -256,8 +257,37 @@ def test_stamped_v1_database_is_noop_and_preserves_data() -> None:
             "SELECT version_num FROM alembic_version"
         ).fetchone()[0]
 
-    assert revision == "0021_job_runtime_status"
+    assert revision == "0022_artifact_updated_at"
     assert after == before
+
+
+def test_artifact_updated_at_migration_backfills_created_at() -> None:
+    settings = get_settings()
+    ensure_data_dirs(settings)
+    reconfigure_engine(settings)
+    command.upgrade(_migration_config(settings), "0021_job_runtime_status")
+    timestamp = "2026-07-23 12:00:00+00:00"
+    with sqlite3.connect(settings.database_path) as connection:
+        connection.execute(
+            "INSERT INTO projects "
+            "(id, display_name, source_path, imported_path, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("project_reference", "Reference", "/tmp/source.wav", "/tmp/source.wav", timestamp, timestamp),
+        )
+        connection.execute(
+            "INSERT INTO artifacts "
+            "(id, project_id, type, format, path, metadata_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("artifact_reference", "project_reference", "source_audio", "wav", "/tmp/source.wav", "{}", timestamp),
+        )
+
+    command.upgrade(_migration_config(settings), "head")
+
+    with sqlite3.connect(settings.database_path) as connection:
+        created_at, updated_at = connection.execute(
+            "SELECT created_at, updated_at FROM artifacts WHERE id = 'artifact_reference'"
+        ).fetchone()
+    assert updated_at == created_at
 
 
 def test_pre_v1_revision_reports_safe_v1_recovery_path() -> None:

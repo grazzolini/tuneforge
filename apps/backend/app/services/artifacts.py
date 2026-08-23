@@ -51,11 +51,14 @@ def register_artifact(
     can_delete: bool | None = None,
     can_regenerate: bool | None = None,
     created_at: datetime | None = None,
+    updated_at: datetime | None = None,
 ) -> Artifact:
     resolved_path = path.resolve()
     artifact_kwargs: dict[str, Any] = {}
     if created_at is not None:
         artifact_kwargs["created_at"] = created_at
+    if updated_at is not None:
+        artifact_kwargs["updated_at"] = updated_at
     artifact = Artifact(
         id=artifact_id or new_artifact_id(),
         project_id=project_id,

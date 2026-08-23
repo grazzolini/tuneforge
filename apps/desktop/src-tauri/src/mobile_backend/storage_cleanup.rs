@@ -256,16 +256,13 @@ fn build_project_storage_plan(
     let mut protected_paths = HashSet::new();
 
     let mut projects = connection
-        .prepare("SELECT source_path, imported_path FROM projects WHERE sync_status != 'deleted'")
+        .prepare("SELECT imported_path FROM projects WHERE sync_status != 'deleted'")
         .map_err(|error| error.to_string())?;
     let project_rows = projects
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
+        .query_map([], |row| row.get::<_, String>(0))
         .map_err(|error| error.to_string())?;
     for row in project_rows {
-        let (source_path, imported_path) = row.map_err(|error| error.to_string())?;
-        protect_owned_path(&mut protected_paths, &project_root, Path::new(&source_path))?;
+        let imported_path = row.map_err(|error| error.to_string())?;
         protect_owned_path(
             &mut protected_paths,
             &project_root,
@@ -612,7 +609,8 @@ mod tests {
         let target_id = project_id('a');
         let other_id = project_id('b');
         let target_root = project_root_path(&temp.data, &target_id).unwrap();
-        let source = target_root.join("source/source.wav");
+        let stale_source = target_root.join("source/source.wav");
+        let imported = target_root.join("source/imported.flac");
         let missing = target_root.join("previews/missing.wav");
         let cross_project = target_root.join("previews/cross-project.wav");
         let analysis = target_root.join("analysis/analysis.json");
@@ -629,7 +627,8 @@ mod tests {
         let referenced_link = target_root.join("linked-parent");
 
         for (path, contents) in [
-            (&source, b"source".as_slice()),
+            (&stale_source, b"source".as_slice()),
+            (&imported, b"imported"),
             (&cross_project, b"cross"),
             (&analysis, b"analysis"),
             (&chords, b"chords"),
@@ -649,9 +648,15 @@ mod tests {
             std::os::unix::fs::symlink(&external_dir, &referenced_link).unwrap();
         }
 
-        insert_project(&connection, &target_id, &source);
+        insert_project(&connection, &target_id, &stale_source);
+        connection
+            .execute(
+                "UPDATE projects SET imported_path = ?1 WHERE id = ?2",
+                params![imported.to_string_lossy(), &target_id],
+            )
+            .unwrap();
         insert_project(&connection, &other_id, &external_file);
-        insert_artifact(&connection, "source", &target_id, &source, json!({}));
+        insert_artifact(&connection, "source", &target_id, &imported, json!({}));
         insert_artifact(&connection, "missing", &target_id, &missing, json!({}));
         insert_artifact(
             &connection,
@@ -672,9 +677,10 @@ mod tests {
         reconcile_project_storage(&connection, &temp.data, &target_id).unwrap();
         reconcile_project_storage(&connection, &temp.data, &target_id).unwrap();
 
-        for path in [&source, &cross_project, &analysis, &chords, &lyrics] {
+        for path in [&imported, &cross_project, &analysis, &chords, &lyrics] {
             assert!(path.exists(), "{} should remain", path.display());
         }
+        assert!(!stale_source.exists());
         assert!(!stale_analysis.exists());
         assert!(!stale_stem.exists());
         assert!(!stale_stem.parent().unwrap().exists());

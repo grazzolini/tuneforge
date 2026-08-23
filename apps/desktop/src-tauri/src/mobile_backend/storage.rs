@@ -62,7 +62,7 @@ pub(super) const MAX_PROJECTS_LIMIT: usize = 200;
 pub(super) const DEFAULT_JOBS_LIMIT: usize = 50;
 pub(super) const MAX_JOBS_LIMIT: usize = 200;
 pub(super) const PROJECT_COLUMNS: &str = "id, display_name, source_key_override, source_sha256, source_path, imported_path, duration_seconds, sample_rate, channels, sync_status, sync_status_reason, sync_required_artifact_ids_json, sync_provider_device_ids_json, sync_conflict_count, created_at, updated_at";
-pub(super) const ARTIFACT_COLUMNS: &str = "id, project_id, type, format, path, content_sha256, size_bytes, generated_by, can_delete, can_regenerate, metadata_json, cache_key, created_at";
+pub(super) const ARTIFACT_COLUMNS: &str = "id, project_id, type, format, path, content_sha256, size_bytes, generated_by, can_delete, can_regenerate, metadata_json, cache_key, created_at, updated_at";
 pub(super) const JOB_COLUMNS: &str = "id, project_id, type, status, progress, source_artifact_id, result_artifact_ids_json, error_message, runtime_device, started_at, completed_at, duration_seconds, created_at, updated_at, payload_json";
 pub(super) const SYNC_STAGED_ARTIFACT_COLUMNS: &str = "content_sha256, size_bytes, relative_path, provider_device_id, metadata_json, verified_at, created_at, updated_at";
 pub(super) const SYNC_ENTITY_REVISION_COLUMNS: &str = "id, project_id, entity_type, entity_id, revision_type, base_revision_id, author_device_id, source_artifact_id, content_sha256, state, metadata_json, payload_json, created_at, updated_at";
@@ -118,7 +118,8 @@ pub(super) const MOBILE_CORE_SCHEMA_SQL: &str = r#"
         can_regenerate INTEGER NOT NULL,
         metadata_json TEXT NOT NULL,
         cache_key TEXT,
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'
     );
     CREATE TABLE IF NOT EXISTS jobs (
         id TEXT PRIMARY KEY,
@@ -456,6 +457,28 @@ pub(super) fn add_mobile_sync_columns(connection: &Connection) -> Result<(), Str
     add_column_if_missing(connection, "artifacts", "cache_key", "TEXT")?;
     add_column_if_missing(
         connection,
+        "artifacts",
+        "updated_at",
+        "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'",
+    )?;
+    connection
+        .execute(
+            "UPDATE artifacts SET updated_at = created_at WHERE updated_at = '1970-01-01T00:00:00.000Z'",
+            [],
+        )
+        .map_err(|error| error.to_string())?;
+    connection
+        .execute_batch(
+            "CREATE TRIGGER IF NOT EXISTS artifacts_updated_at_after_insert
+             AFTER INSERT ON artifacts
+             WHEN NEW.updated_at = '1970-01-01T00:00:00.000Z'
+             BEGIN
+                 UPDATE artifacts SET updated_at = NEW.created_at WHERE id = NEW.id;
+             END;",
+        )
+        .map_err(|error| error.to_string())?;
+    add_column_if_missing(
+        connection,
         "lyrics_transcripts",
         "language_override",
         "TEXT",
@@ -591,6 +614,7 @@ pub(super) fn row_artifact(row: &Row<'_>) -> rusqlite::Result<ArtifactSchema> {
         metadata: serde_json::from_str(&metadata_raw).unwrap_or_else(|_| json!({})),
         cache_key: row.get(11)?,
         created_at: row.get(12)?,
+        updated_at: row.get(13)?,
     })
 }
 
@@ -1072,6 +1096,10 @@ pub(super) fn manifest_artifact_from_artifact(
         cache_key: artifact.cache_key,
         metadata: sanitize_sync_manifest_value(&artifact.metadata),
         created_at: normalize_sync_timestamp_utc(&artifact.created_at, "artifact created_at")?,
+        updated_at: Some(normalize_sync_timestamp_utc(
+            &artifact.updated_at,
+            "artifact updated_at",
+        )?),
     })
 }
 

@@ -398,6 +398,9 @@ class Artifact(Base):
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON(), default=dict)
     cache_key: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
 
     project: Mapped[Project] = relationship(back_populates="artifacts")
 
@@ -439,6 +442,30 @@ class Job(Base):
     def source_artifact_id(self) -> str | None:
         value = self.payload_json.get("source_artifact_id")
         return value if isinstance(value, str) else None
+
+    @property
+    def input_formats(self) -> list[str]:
+        if self.type != "convert_audio":
+            return []
+        artifacts = self.payload_json.get("artifacts")
+        if not isinstance(artifacts, list):
+            return []
+        return sorted(
+            {
+                format_value.strip().lower()
+                for artifact in artifacts
+                if isinstance(artifact, dict)
+                and isinstance((format_value := artifact.get("format")), str)
+                and format_value.strip()
+            }
+        )
+
+    @property
+    def output_format(self) -> str | None:
+        if self.type != "convert_audio":
+            return None
+        value = self.payload_json.get("output_format")
+        return value.strip().lower() if isinstance(value, str) and value.strip() else None
 
     @property
     def beat_backend(self) -> str | None:

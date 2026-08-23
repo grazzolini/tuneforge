@@ -9,10 +9,12 @@ import { useLazyLoadSentinel } from "../../lib/useLazyLoadSentinel";
 import { usePreferences } from "../../lib/preferences";
 import {
   DURABLE_AUDIO_CAPABILITIES_QUERY_KEY,
+  durableAudioFormatIsLossy,
   durableAudioFormatLabel,
   requireDurableAudioActionFormat,
   type DurableAudioActionFormat,
 } from "../../lib/durableAudio";
+import { isAndroidRuntime } from "../../lib/nativeAudio";
 import { useBeatBackendActionSelection } from "../projects/hooks/useBeatBackendActionSelection";
 import { useChordBackendActionSelection } from "../projects/hooks/useChordBackendActionSelection";
 import {
@@ -79,6 +81,16 @@ const BULK_JOB_ACTIONS = [
     confirmBody: "Refresh only source tracks and practice mixes that already have stems, using your default stem model. This may take time and may use CPU/GPU heavily.",
     okLabel: "Refresh stems",
     icon: Layers,
+  },
+  {
+    jobType: "convert_audio",
+    label: "Re-process existing audio",
+    pendingLabel: "Queueing audio conversion jobs...",
+    resultLabel: "Audio conversion jobs",
+    confirmTitle: "Re-process existing audio",
+    confirmBody: "Convert durable source tracks, stems, and saved practice mixes that do not match your current default format? Matching audio will be skipped.",
+    okLabel: "Re-process audio",
+    icon: RefreshCw,
   },
 ] as const;
 
@@ -188,6 +200,8 @@ function bulkJobSkipReasonLabel(reason: BulkJobSkippedProject["reason"]) {
       return "Locked by sync";
     case "no_existing_stems":
       return "No existing stems";
+    case "already_target_format":
+      return "Already in target format";
     case "creation_failed":
       return "Could not queue";
     default:
@@ -500,9 +514,9 @@ export function ActivityView() {
       }
       if (action.jobType === "stems") {
         request.stem_model = defaultStemModel;
-        if (action.durableFormat?.outputFormat) {
-          request.output_format = action.durableFormat.outputFormat;
-        }
+      }
+      if ((action.jobType === "stems" || action.jobType === "convert_audio") && action.durableFormat?.outputFormat) {
+        request.output_format = action.durableFormat.outputFormat;
       }
       return api.bulkJobs(request);
     },
@@ -575,7 +589,7 @@ export function ActivityView() {
     setBulkPreflightError(null);
     let durableFormat: DurableAudioActionFormat | undefined;
     try {
-      if (action.jobType === "stems") {
+      if (action.jobType === "stems" || action.jobType === "convert_audio") {
         const preferredFormat = defaultDurableAudioFormat;
         const { capabilities } = await queryClient.fetchQuery({
           queryKey: DURABLE_AUDIO_CAPABILITIES_QUERY_KEY,
@@ -590,11 +604,16 @@ export function ActivityView() {
       );
       return;
     }
+    const formatLabel = durableFormat ? durableAudioFormatLabel(durableFormat.format) : null;
     const confirmBody = durableFormat
-      ? `${action.confirmBody} New stems will use ${durableAudioFormatLabel(durableFormat.format)}.`
+      ? action.jobType === "convert_audio"
+        ? `${action.confirmBody} Target format: ${formatLabel}.${durableAudioFormatIsLossy(durableFormat.format) ? " MP3 and M4A conversion is lossy; converting from a lossy source can reduce quality further." : ""}`
+        : `${action.confirmBody} New stems will use ${formatLabel}.`
       : action.confirmBody;
     const approved = await confirm(confirmBody, {
-      title: action.confirmTitle,
+      title: action.jobType === "convert_audio" && formatLabel
+        ? `Re-process existing audio as ${formatLabel}`
+        : action.confirmTitle,
       kind: "warning",
       okLabel: action.okLabel,
       cancelLabel: "Cancel",
@@ -665,14 +684,19 @@ export function ActivityView() {
             </div>
           </div>
           <div aria-label="Bulk job actions" className="activity-bulk-actions" role="group">
-            {BULK_JOB_ACTIONS.map((action) => {
+            {BULK_JOB_ACTIONS.filter((action) => action.jobType !== "convert_audio" || !isAndroidRuntime()).map((action) => {
               const Icon = action.icon;
               const isPending = bulkJobsMutation.isPending &&
                 bulkJobsMutation.variables?.jobType === action.jobType;
+              const conversionActive = action.jobType === "convert_audio" &&
+                activeJobs.some((job) => job.type === "convert_audio" && CANCELABLE_JOB_STATUSES.has(job.status));
+              const label = action.jobType === "convert_audio"
+                ? `Re-process existing audio as ${defaultDurableAudioFormat.toUpperCase()}`
+                : action.label;
               return (
                 <button
                   className="button button--ghost button--small activity-bulk-actions__button"
-                  disabled={bulkJobsMutation.isPending}
+                  disabled={bulkJobsMutation.isPending || conversionActive}
                   key={action.jobType}
                   onClick={() => {
                     void handleBulkJobAction(action);
@@ -680,7 +704,7 @@ export function ActivityView() {
                   type="button"
                 >
                   <Icon aria-hidden="true" size={16} />
-                  <span>{isPending ? "Queueing..." : action.label}</span>
+                  <span>{isPending ? "Queueing..." : label}</span>
                 </button>
               );
             })}

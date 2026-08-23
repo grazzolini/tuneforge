@@ -439,6 +439,17 @@ describe("formatJobStageLabel", () => {
       ),
     ).toBeNull();
   });
+
+  it("shows completed audio conversions instead of their persisted preparing stage", () => {
+    expect(
+      formatJobStageLabel(
+        testJob({
+          stage_label: "Preparing job.",
+          type: "convert_audio",
+        }),
+      ),
+    ).toBe("Converted audio");
+  });
 });
 
 describe("formatJobRuntimeSummary", () => {
@@ -559,6 +570,20 @@ describe("formatJobStatusSummary", () => {
     });
 
     expect(formatJobStatusSummary(job, { includeRuntimeDevice: false })).toBe("completed / vocals / 1.2 s");
+  });
+
+  it("includes source and target formats for audio conversion history", () => {
+    const job = testJob({
+      duration_seconds: 19,
+      input_formats: ["wav", "flac", "wav"],
+      output_format: "mp3",
+      runtime_device: "cpu",
+      type: "convert_audio",
+    });
+
+    expect(formatJobStatusSummary(job, { includeRuntimeDevice: false })).toBe(
+      "completed / WAV + FLAC → MP3 / 19 s",
+    );
   });
 
   it("includes beat backend and source beat input for analysis jobs", () => {

@@ -23,6 +23,7 @@ from app.models import (
     SyncLocalIdentity,
     SyncTrustedPeer,
 )
+from app.services.stem_models import DURABLE_AUDIO_ARTIFACT_TYPES
 from app.services.sync_identity import source_hash_to_project_id
 from app.services.sync_manifest import _coerce_project_manifest
 from app.services.sync_revisions import revision_payload_sha256, sanitize_revision_payload
@@ -3164,27 +3165,52 @@ def _generated_artifact_divergence(
 
     if local_type != remote_type:
         return None
-    if local_artifact.can_regenerate is not True or _remote_artifact_can_regenerate(remote_artifact) is not True:
+    durable_audio = local_type in DURABLE_AUDIO_ARTIFACT_TYPES
+    if not durable_audio and (
+        local_artifact.can_regenerate is not True
+        or _remote_artifact_can_regenerate(remote_artifact) is not True
+    ):
         return None
     if local_artifact.project_id != remote_artifact.project_id:
         return None
 
-    local_timestamp = _coerce_datetime(local_artifact.created_at)
-    remote_timestamp = _coerce_datetime(_first_field(remote_artifact.raw, "created_at", default=None))
+    local_timestamp = _coerce_datetime(
+        local_artifact.updated_at if durable_audio else local_artifact.created_at
+    )
+    remote_timestamp = _coerce_datetime(
+        _first_field(
+            remote_artifact.raw,
+            "updated_at" if durable_audio else "created_at",
+            default=_first_field(remote_artifact.raw, "created_at", default=None),
+        )
+    )
     if local_timestamp is None or remote_timestamp is None:
         return None
 
-    keep_local = local_timestamp >= remote_timestamp
-    reason = (
-        "Local regenerable artifact generation timestamp is newer."
-        if keep_local
-        else "Remote regenerable artifact generation timestamp is newer."
-    )
     details = _artifact_conflict_details(
         local_artifact,
         remote_artifact,
         local_content_sha256=local_hash,
     )
+    if durable_audio and local_timestamp == remote_timestamp:
+        return _GeneratedAnalysisDivergence(
+            resolvable=False,
+            keep_local=True,
+            reason="Durable audio artifacts have equal update timestamps but different content.",
+            details=details,
+        )
+
+    keep_local = local_timestamp >= remote_timestamp
+    subject = "durable audio artifact update" if durable_audio else "regenerable artifact generation"
+    reason = f"{'Local' if keep_local else 'Remote'} {subject} timestamp is newer."
+    if durable_audio:
+        details.update({"resolution": "keep_local" if keep_local else "fetch_remote", "resolution_reason": reason})
+        return _GeneratedAnalysisDivergence(
+            resolvable=True,
+            keep_local=keep_local,
+            reason=reason,
+            details=details,
+        )
     details.update(
         {
             "generated_divergence_candidate": True,

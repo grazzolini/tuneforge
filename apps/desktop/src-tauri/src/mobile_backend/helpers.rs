@@ -1656,6 +1656,7 @@ mod mobile_backend_tests {
                 cache_key: None,
                 metadata: json!({}),
                 created_at: "2026-05-22T12:00:00.000Z".to_string(),
+                updated_at: None,
             }],
             delete_tombstones: Vec::new(),
         }
@@ -1683,6 +1684,7 @@ mod mobile_backend_tests {
                 cache_key: None,
                 metadata: json!({}),
                 created_at: "2026-05-22T12:00:00.000Z".to_string(),
+                updated_at: None,
             });
             manifest.artifacts.push(SyncProjectManifestArtifactSchema {
                 artifact_id: format!("art_stem_{format}"),
@@ -1698,6 +1700,7 @@ mod mobile_backend_tests {
                 cache_key: None,
                 metadata: json!({}),
                 created_at: "2026-05-22T12:00:00.000Z".to_string(),
+                updated_at: None,
             });
             validate_sync_project_manifest_identity(&manifest).unwrap();
         }
@@ -1856,10 +1859,11 @@ mod mobile_backend_tests {
                     cache_key: cache_key.map(ToString::to_string),
                     metadata: json!({"preserved": format}),
                     created_at: "2026-05-22T12:00:00.000Z".to_string(),
+                    updated_at: None,
                 }
             })
             .collect::<Vec<_>>();
-            let manifest = SyncProjectManifestSchema {
+            let mut manifest = SyncProjectManifestSchema {
                 schema_version: SYNC_PROJECT_MANIFEST_SCHEMA_VERSION.to_string(),
                 exported_at: "2026-05-22T12:01:00.000Z".to_string(),
                 project: SyncProjectManifestProjectSchema {
@@ -1882,7 +1886,7 @@ mod mobile_backend_tests {
                 &connection,
                 &root,
                 SyncProjectStagedImportRequest {
-                    manifest,
+                    manifest: manifest.clone(),
                     staging_root: Some(staging_root.to_string_lossy().into_owned()),
                     use_content_addressed_staging: Some(false),
                 },
@@ -1908,6 +1912,43 @@ mod mobile_backend_tests {
             let exported = storage::get_project_manifest(&connection, &root, &project_id).unwrap();
             assert_eq!(exported.schema_version, SYNC_PROJECT_MANIFEST_SCHEMA_VERSION);
             assert!(exported.artifacts.iter().all(|artifact| artifact.format == format));
+
+            if format == "wav" {
+                let original_path: String = connection
+                    .query_row("SELECT source_path FROM projects WHERE id = ?1", params![project_id], |row| row.get(0))
+                    .unwrap();
+                let replacement = root.join("replacement.flac");
+                encode_mobile_contract_fixture(&fixture_wav, &replacement, "flac");
+                let replacement_bytes = std::fs::read(&replacement).unwrap();
+                let replacement_relative = "source/source.flac";
+                let source = &mut manifest.artifacts[0];
+                source.format = "flac".to_string();
+                source.relative_path = replacement_relative.to_string();
+                source.content_sha256 = storage::hex_digest(&Sha256::digest(&replacement_bytes));
+                source.size_bytes = replacement_bytes.len() as i64;
+                source.updated_at = Some("2026-05-22T12:06:00.000Z".to_string());
+                write_mobile_contract_file(&staging_root.join(replacement_relative), &replacement_bytes);
+                manifests::import_sync_project_manifest(
+                    &connection,
+                    &root,
+                    SyncProjectStagedImportRequest {
+                        manifest,
+                        staging_root: Some(staging_root.to_string_lossy().into_owned()),
+                        use_content_addressed_staging: Some(false),
+                    },
+                )
+                .unwrap();
+                let (source_path, imported_path): (String, String) = connection
+                    .query_row(
+                        "SELECT source_path, imported_path FROM projects WHERE id = ?1",
+                        params![project_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .unwrap();
+                assert_eq!(source_path, original_path);
+                assert!(!std::path::Path::new(&source_path).exists());
+                assert_eq!(std::fs::read(imported_path).unwrap(), replacement_bytes);
+            }
 
             drop(connection);
             let _ = std::fs::remove_dir_all(root);
@@ -1963,6 +2004,7 @@ mod mobile_backend_tests {
                     cache_key: None,
                     metadata: json!({}),
                     created_at: "2026-05-22T12:00:00.000Z".to_string(),
+                    updated_at: None,
                 },
                 SyncProjectManifestArtifactSchema {
                     artifact_id: "art_legacy_vocals".to_string(),
@@ -1978,6 +2020,7 @@ mod mobile_backend_tests {
                     cache_key: Some("stem:source:vocals".to_string()),
                     metadata: json!({}),
                     created_at: "2026-05-22T12:00:00.000Z".to_string(),
+                    updated_at: None,
                 },
             ],
             delete_tombstones: Vec::new(),
@@ -2334,6 +2377,7 @@ mod mobile_backend_tests {
                 cache_key: None,
                 metadata: json!({}),
                 created_at: "2026-05-22T12:00:00Z".to_string(),
+                updated_at: None,
             }],
             delete_tombstones: Vec::new(),
         };
@@ -3049,6 +3093,7 @@ mod mobile_backend_tests {
                     cache_key: None,
                     metadata: json!({}),
                     created_at: "2026-05-22T12:00:00.000Z".to_string(),
+                    updated_at: None,
                 },
                 SyncProjectManifestArtifactSchema {
                     artifact_id: "art_analysis_json".to_string(),
@@ -3064,6 +3109,7 @@ mod mobile_backend_tests {
                     cache_key: None,
                     metadata: json!({"analysis_version": "desktop-v1"}),
                     created_at: "2026-05-22T12:02:00.000Z".to_string(),
+                    updated_at: None,
                 },
             ],
             delete_tombstones: Vec::new(),
@@ -4024,7 +4070,7 @@ mod mobile_backend_tests {
 
     #[test]
     fn mobile_sync_defaults_match_local_project_contract() {
-        assert_eq!(MOBILE_DB_VERSION, 4);
+        assert_eq!(MOBILE_DB_VERSION, 5);
         assert!(sync_editable(DEFAULT_SYNC_STATUS));
         assert!(!sync_editable("remote_available"));
         assert!(!sync_editable("conflicted"));
@@ -4032,6 +4078,67 @@ mod mobile_backend_tests {
         assert!(require_sync_editable_status("remote_available")
             .unwrap_err()
             .contains("locked by sync status"));
+    }
+
+    #[test]
+    fn mobile_db_v5_backfills_artifact_updated_at() {
+        let connection = Connection::open_in_memory().unwrap();
+        storage::migrate_mobile_db(&connection).unwrap();
+        connection
+            .execute_batch(
+                "DROP TRIGGER artifacts_updated_at_after_insert;
+                 ALTER TABLE artifacts DROP COLUMN updated_at;
+                 PRAGMA user_version = 4;",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO artifacts (id, project_id, type, format, path, size_bytes, generated_by, can_delete, can_regenerate, metadata_json, created_at)
+                 VALUES ('art_old', 'project_old', 'source_audio', 'wav', '/tmp/old.wav', 1, 'test', 0, 0, '{}', '2026-05-22T12:00:00.000Z')",
+                [],
+            )
+            .unwrap();
+
+        storage::migrate_mobile_db(&connection).unwrap();
+
+        let timestamps_match: bool = connection
+            .query_row(
+                "SELECT created_at = updated_at FROM artifacts WHERE id = 'art_old'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(timestamps_match);
+    }
+
+    #[test]
+    fn mobile_durable_artifact_merge_uses_updated_at_lww() {
+        let connection = Connection::open_in_memory().unwrap();
+        storage::migrate_mobile_db(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO artifacts (id, project_id, type, format, path, content_sha256, size_bytes, generated_by, can_delete, can_regenerate, metadata_json, created_at, updated_at)
+                 VALUES ('art_source', 'project_lww', 'source_audio', 'wav', '/tmp/local.wav', ?1, 10, 'test', 0, 0, '{}', '2026-05-22T12:00:00.000Z', '2026-05-22T12:05:00.000Z')",
+                params!["a".repeat(64)],
+            )
+            .unwrap();
+        let mut manifest = mobile_test_manifest("project_lww", &"b".repeat(64));
+        let artifact = &mut manifest.artifacts[0];
+        artifact.artifact_id = "art_source".to_string();
+        artifact.project_id = "project_lww".to_string();
+        artifact.content_sha256 = "b".repeat(64);
+        for (updated_at, artifact_type, expected) in [
+            ("2026-05-22T12:06:00.000Z", "source_audio", Some(manifests::ManifestArtifactMerge::Replace)),
+            ("2026-05-22T12:04:00.000Z", "source_audio", Some(manifests::ManifestArtifactMerge::KeepLocal)),
+            ("2026-05-22T12:05:00.000Z", "source_audio", None),
+            ("2026-05-22T12:06:00.000Z", "vocals", Some(manifests::ManifestArtifactMerge::Replace)),
+        ] {
+            connection.execute("UPDATE artifacts SET type = ?1 WHERE id = 'art_source'", params![artifact_type]).unwrap();
+            artifact.r#type = artifact_type.to_string();
+            artifact.updated_at = Some(updated_at.to_string());
+            let merge = manifests::manifest_artifact_merge(&connection, artifact).map(|value| value.0).ok();
+            assert_eq!(merge, expected);
+        }
     }
 
     #[test]

@@ -344,6 +344,7 @@ def test_issue202_apply_restores_missing_existing_artifact_file_from_peer(
         )
         source_artifact = session.get(Artifact, fixture.source_artifact_id)
         assert source_artifact is not None
+        source_artifact.updated_at = newer_local_updated_at = datetime(2027, 1, 1, tzinfo=UTC)
         source_path = Path(source_artifact.path)
         source_path.unlink()
         session.commit()
@@ -388,6 +389,7 @@ def test_issue202_apply_restores_missing_existing_artifact_file_from_peer(
         restored_path = Path(source_artifact.path)
         assert restored_path.exists()
         assert file_sha256(restored_path) == fixture.artifact_hashes[fixture.source_artifact_id]
+        assert source_artifact.updated_at == newer_local_updated_at.replace(tzinfo=None)
         assert session.scalar(select(func.count()).select_from(SyncStagedArtifact)) == 0
 
 
@@ -3265,6 +3267,7 @@ def test_regenerated_stem_newer_than_local_tombstone_applies_without_conflict(
         stem_artifact.type = "vocal_stem"
         stem_artifact.cache_key = f"stem:{stem_source_artifact_id}:vocals"
         stem_artifact.metadata_json = stem_metadata
+        stem_artifact.updated_at = datetime(2026, 1, 2, tzinfo=UTC)
         live_sibling_artifact_id: str | None = None
         sibling_metadata: dict[str, Any] | None = None
         if source_artifact_type == "source_audio":
@@ -3293,6 +3296,7 @@ def test_regenerated_stem_newer_than_local_tombstone_applies_without_conflict(
                     cache_key=f"stem:{stem_source_artifact_id}:instrumental",
                     metadata_json=sibling_metadata,
                     created_at=datetime(2026, 1, 2, tzinfo=UTC),
+                    updated_at=datetime(2026, 1, 2, tzinfo=UTC),
                 )
             )
         session.flush()
@@ -3337,6 +3341,7 @@ def test_regenerated_stem_newer_than_local_tombstone_applies_without_conflict(
                 "content_sha256": remote_hash,
                 "size_bytes": remote_size,
                 "created_at": remote_regenerated_at.isoformat(),
+                "updated_at": remote_regenerated_at.isoformat(),
                 "metadata": stem_metadata,
                 "can_regenerate": True,
             }
@@ -3376,6 +3381,7 @@ def test_regenerated_stem_newer_than_local_tombstone_applies_without_conflict(
                     "content_sha256": remote_sibling_hash,
                     "size_bytes": remote_sibling_size,
                     "created_at": remote_regenerated_at.isoformat(),
+                    "updated_at": remote_regenerated_at.isoformat(),
                     "metadata": sibling_metadata,
                     "can_regenerate": True,
                 }
@@ -3511,6 +3517,7 @@ def test_format_changing_regenerated_stem_failure_preserves_local_bytes(
         }
         stem_artifact.type = "vocal_stem"
         stem_artifact.metadata_json = stem_metadata
+        stem_artifact.updated_at = datetime(2026, 1, 2, tzinfo=UTC)
         old_path = Path(stem_artifact.path)
         old_bytes = old_path.read_bytes()
         old_hash = stem_artifact.content_sha256
@@ -3529,6 +3536,7 @@ def test_format_changing_regenerated_stem_failure_preserves_local_bytes(
                 "content_sha256": corrupt_hash,
                 "size_bytes": corrupt_size,
                 "created_at": remote_regenerated_at.isoformat(),
+                "updated_at": remote_regenerated_at.isoformat(),
                 "metadata": stem_metadata,
                 "can_regenerate": True,
             }

@@ -96,6 +96,7 @@ pub struct ArtifactSchema {
     metadata: Value,
     cache_key: Option<String>,
     created_at: String,
+    updated_at: String,
 }
 
 #[derive(Serialize)]
@@ -401,6 +402,8 @@ pub struct SyncMetadataArtifactSchema {
     metadata: Value,
     #[serde(deserialize_with = "deserialize_sync_timestamp")]
     created_at: String,
+    #[serde(default, deserialize_with = "deserialize_optional_sync_timestamp")]
+    updated_at: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -463,6 +466,8 @@ pub struct SyncProjectManifestArtifactSchema {
     metadata: Value,
     #[serde(deserialize_with = "deserialize_sync_timestamp")]
     created_at: String,
+    #[serde(default, deserialize_with = "deserialize_optional_sync_timestamp")]
+    updated_at: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]

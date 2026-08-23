@@ -332,6 +332,13 @@ class SyncMetadataArtifactSchema(_SyncTimestampSchemaMixin, BaseModel):
     cache_key: str | None
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
+    updated_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def default_updated_at(self) -> SyncMetadataArtifactSchema:
+        if self.updated_at is None:
+            self.updated_at = self.created_at
+        return self
 
 
 class SyncDeleteTombstoneSchema(_SyncTimestampSchemaMixin, BaseModel):
@@ -390,6 +397,13 @@ class SyncProjectManifestArtifactSchema(_SyncTimestampSchemaMixin, BaseModel):
     cache_key: str | None
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
+    updated_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def default_updated_at(self) -> SyncProjectManifestArtifactSchema:
+        if self.updated_at is None:
+            self.updated_at = self.created_at
+        return self
 
 
 class SyncProjectManifestEntityRevisionSchema(_SyncTimestampSchemaMixin, BaseModel):
@@ -1297,6 +1311,8 @@ class JobSchema(BaseModel):
     stage: JobRuntimeStage | None = None
     stage_label: str | None = None
     source_artifact_id: str | None = None
+    input_formats: list[str] = Field(default_factory=list)
+    output_format: str | None = None
     beat_backend: str | None = None
     beat_input: str | None = None
     chord_backend: str | None = None
@@ -1336,8 +1352,14 @@ class JobResponse(BaseModel):
     job: JobSchema
 
 
-BulkJobType = Literal["analyze", "chords", "lyrics", "stems"]
-BulkJobSkipReason = Literal["active_job", "locked", "creation_failed", "no_existing_stems"]
+BulkJobType = Literal["analyze", "chords", "lyrics", "stems", "convert_audio"]
+BulkJobSkipReason = Literal[
+    "active_job",
+    "locked",
+    "creation_failed",
+    "no_existing_stems",
+    "already_target_format",
+]
 
 
 class BulkJobRequest(BaseModel):
@@ -1353,8 +1375,8 @@ class BulkJobRequest(BaseModel):
         _validate_chord_backend_fields(self.chord_backend, self.chord_backend_fallback_from)
         if self.stem_model is not None and self.stem_model not in SUPPORTED_STEM_MODELS:
             raise ValueError("Unsupported stem model.")
-        if self.job_type != "stems" and self.output_format != "wav":
-            raise ValueError("output_format is only supported for bulk stem jobs.")
+        if self.job_type not in {"stems", "convert_audio"} and self.output_format != "wav":
+            raise ValueError("output_format is only supported for bulk stem and audio conversion jobs.")
         return self
 
 
@@ -1392,6 +1414,7 @@ class ArtifactSchema(BaseModel):
     can_regenerate: bool
     metadata: dict[str, Any] = Field(validation_alias="metadata_json")
     created_at: datetime
+    updated_at: datetime
 
 
 class ArtifactsResponse(BaseModel):

@@ -607,6 +607,9 @@ function stripTrailingStagePeriod(stageLabel: string) {
 }
 
 export function formatJobStageLabel(job: JobSchema) {
+  if (job.type === "convert_audio" && job.status === "completed") {
+    return "Converted audio";
+  }
   const reportedLabel = formatSafeRuntimeText(job.stage_label, RUNTIME_LABEL_LIMIT);
   if (reportedLabel) {
     const stageLabel = stripTrailingStageDevice(reportedLabel, formatJobRuntimeDevice(job.runtime_device));
@@ -626,6 +629,7 @@ export function formatJobStatusSummary(job: JobSchema, options: FormatJobStatusS
   const includeRuntimeDevice = options.includeRuntimeDevice ?? true;
   return [
     job.status,
+    job.type === "convert_audio" ? formatAudioConversion(job.input_formats, job.output_format) : null,
     job.type === "analyze" ? formatBeatBackend(job.beat_backend) : null,
     job.type === "analyze" ? formatBeatInput(job.beat_input) : null,
     job.type === "chords" ? formatChordBackend(job.chord_backend) : null,
@@ -637,6 +641,17 @@ export function formatJobStatusSummary(job: JobSchema, options: FormatJobStatusS
   ]
     .filter(Boolean)
     .join(" / ");
+}
+
+function formatAudioConversion(inputFormats: string[] | undefined, outputFormat: string | null | undefined) {
+  const inputs = [...new Set((inputFormats ?? []).map(formatAudioFormat).filter(Boolean))];
+  const output = formatAudioFormat(outputFormat);
+  return inputs.length && output ? `${inputs.join(" + ")} → ${output}` : null;
+}
+
+function formatAudioFormat(format: string | null | undefined) {
+  const normalized = typeof format === "string" ? format.trim() : "";
+  return normalized ? normalized.toUpperCase() : null;
 }
 
 function formatBeatBackend(backend: string | null | undefined) {

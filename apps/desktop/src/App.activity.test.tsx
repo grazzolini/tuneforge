@@ -5595,6 +5595,52 @@ describe("Desktop app activity", () => {
     );
   });
 
+  it.each([
+    ["wav", "WAV/PCM", false],
+    ["flac", "FLAC", false],
+    ["mp3", "MP3 (192 kbps)", true],
+    ["m4a", "M4A (AAC-LC, 192 kbps)", true],
+  ] as const)("re-processes durable audio as %s", async (format, confirmationLabel, lossy) => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultDurableAudioFormat: format }),
+    );
+
+    renderApp(["/activity"]);
+
+    const action = await screen.findByRole("button", {
+      name: `Re-process existing audio as ${format.toUpperCase()}`,
+    });
+    await user.click(action);
+
+    expect(mockConfirm).toHaveBeenCalledWith(
+      expect.stringContaining(lossy ? "conversion is lossy" : `Target format: ${confirmationLabel}`),
+      expect.objectContaining({
+        title: `Re-process existing audio as ${confirmationLabel}`,
+        okLabel: "Re-process audio",
+      }),
+    );
+    await waitFor(() =>
+      expect(mockBulkJobs).toHaveBeenCalledWith({
+        job_type: "convert_audio",
+        output_format: format,
+      }),
+    );
+  });
+
+  it("hides durable audio re-processing on Android", async () => {
+    const userAgent = vi.spyOn(window.navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0 (Linux; Android 15)");
+    try {
+      renderApp(["/activity"]);
+
+      expect(await screen.findByRole("heading", { level: 2, name: "Jobs" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /Re-process existing audio as/ })).not.toBeInTheDocument();
+    } finally {
+      userAgent.mockRestore();
+    }
+  });
+
   it("falls back to built-in beats for bulk analyze when advanced beats are unavailable", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem(

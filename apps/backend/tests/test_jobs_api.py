@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from subprocess import TimeoutExpired
 from typing import Any
 
@@ -15,7 +16,13 @@ from app.db import SessionLocal
 from app.errors import AppError
 from app.models import AnalysisResult, Artifact, Job, Project
 from app.runtime_status import runtime_event_payload
-from app.services.jobs import InProcessJobRunner, JobExecutionContext, JobExecutionResult
+from app.services.jobs import (
+    InProcessJobRunner,
+    JobExecutionContext,
+    JobExecutionResult,
+    _convert_artifact_audio,
+)
+from app.utils.hashing import file_sha256
 
 _BASE_TIME = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -106,6 +113,32 @@ def _capture_enqueued_jobs(client: TestClient, monkeypatch: pytest.MonkeyPatch) 
     enqueued: list[str] = []
     monkeypatch.setattr(client.app.state.job_runner, "enqueue", enqueued.append)
     return enqueued
+
+
+def _conversion_fixture(
+    project_id: str,
+    artifact_id: str,
+    artifact_type: str,
+    source_path: Path,
+) -> tuple[str | None, datetime]:
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_bytes(b"source wav")
+    content_hash = file_sha256(source_path)
+    updated_at = _timestamp(1)
+    with SessionLocal() as session:
+        _add_project(session, project_id)
+        _add_artifact(session, artifact_id, project_id, artifact_type)
+        session.flush()
+        project = session.get(Project, project_id)
+        artifact = session.get(Artifact, artifact_id)
+        assert project is not None and artifact is not None
+        project.source_path = project.imported_path = str(source_path)
+        artifact.path = str(source_path)
+        artifact.content_sha256 = content_hash
+        artifact.size_bytes = source_path.stat().st_size
+        artifact.updated_at = updated_at
+        session.commit()
+    return content_hash, updated_at
 
 
 def test_bulk_jobs_creates_jobs_for_editable_projects(
@@ -381,6 +414,201 @@ def test_bulk_stems_refreshes_only_sources_with_existing_stems(
         assert all(job.payload_json["chord_backend_fallback_from"] == "crema-advanced" for job in jobs)
         assert all(job.payload_json["output_format"] == "m4a" for job in jobs)
         assert all(job.payload_json["stem_model"] == "htdemucs_ft" for job in jobs)
+
+
+def test_bulk_convert_audio_uses_db_only_mixed_project_eligibility(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _capture_enqueued_jobs(client, monkeypatch)
+    monkeypatch.setattr("app.services.jobs.require_encoding_available", lambda _format: None)
+    with SessionLocal() as session:
+        _add_project(session, "project_mixed", display_name="Mixed")
+        _add_project(session, "project_matching", display_name="Matching")
+        _add_artifact(session, "mixed_source", "project_mixed", "source_audio")
+        _add_artifact(session, "mixed_legacy_vocals", "project_mixed", "vocals")
+        _add_artifact(session, "mixed_mix", "project_mixed", "preview_mix")
+        _add_artifact(session, "matching_source", "project_matching", "source_audio")
+        _add_artifact(session, "ignored_export", "project_matching", "export_mix")
+        session.flush()
+        session.get(Artifact, "mixed_legacy_vocals").format = "mp3"  # type: ignore[union-attr]
+        session.get(Artifact, "mixed_mix").format = "flac"  # type: ignore[union-attr]
+        session.get(Artifact, "matching_source").format = "flac"  # type: ignore[union-attr]
+        session.commit()
+
+    response = client.post(
+        "/api/v1/jobs/bulk",
+        json={"job_type": "convert_audio", "output_format": "flac"},
+    )
+
+    payload = response.json()
+    assert (payload["total_projects"], [job["project_id"] for job in payload["created_jobs"]]) == (2, ["project_mixed"])
+    assert payload["created_jobs"][0]["input_formats"] == ["mp3", "wav"]
+    assert payload["created_jobs"][0]["output_format"] == "flac"
+    assert [(item["project_id"], item["reason"]) for item in payload["skipped"]] == [
+        ("project_matching", "already_target_format")
+    ]
+    with SessionLocal() as session:
+        job = session.get(Job, payload["created_jobs"][0]["id"])
+        assert job is not None
+        assert sorted(item["artifact_id"] for item in job.payload_json["artifacts"]) == [
+            "mixed_legacy_vocals", "mixed_source"
+        ]
+
+
+def test_bulk_convert_audio_serializes_concurrent_batch_creation(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import jobs as jobs_service
+
+    _capture_enqueued_jobs(client, monkeypatch)
+    monkeypatch.setattr("app.services.jobs.require_encoding_available", lambda _format: None)
+    with SessionLocal() as session:
+        _add_project(session, "project_concurrent_conversion")
+        _add_artifact(
+            session,
+            "source_concurrent_conversion",
+            "project_concurrent_conversion",
+            "source_audio",
+        )
+        session.commit()
+
+    original_active_check = jobs_service._has_active_conversion_batch
+    first_check_entered = threading.Event()
+
+    def controlled_active_check(session: Session) -> bool:
+        if not first_check_entered.is_set():
+            first_check_entered.set()
+            time.sleep(0.1)
+        return original_active_check(session)
+
+    monkeypatch.setattr(jobs_service, "_has_active_conversion_batch", controlled_active_check)
+    responses: list[Any] = []
+
+    def submit_batch() -> None:
+        responses.append(
+            client.post(
+                "/api/v1/jobs/bulk",
+                json={"job_type": "convert_audio", "output_format": "flac"},
+            )
+        )
+
+    first = threading.Thread(target=submit_batch)
+    second = threading.Thread(target=submit_batch)
+    first.start()
+    assert first_check_entered.wait(timeout=2)
+    second.start()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert sorted(response.status_code for response in responses) == [200, 409]
+
+
+def test_convert_audio_job_preserves_identity_and_updates_source_path(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.paths import project_root
+
+    _ = client
+    project_id = "project_convert"
+    source_path = project_root(project_id) / "source" / "song.wav"
+    original_hash, original_updated_at = _conversion_fixture(
+        project_id, "source_convert", "source_audio", source_path
+    )
+    with SessionLocal() as session:
+        runner = InProcessJobRunner(SessionLocal)
+        job = runner.create_job(
+            session,
+            project_id=project_id,
+            job_type="convert_audio",
+            payload={
+                "output_format": "flac",
+                "artifacts": [
+                    {
+                        "artifact_id": "source_convert",
+                        "content_sha256": original_hash,
+                        "format": "wav",
+                        "updated_at": original_updated_at.isoformat(),
+                    }
+                ],
+            },
+        )
+        job_id = job.id
+        session.commit()
+
+    monkeypatch.setattr("app.services.jobs.require_encoding_available", lambda _format: None)
+    monkeypatch.setattr(
+        "app.services.jobs.encode_audio",
+        lambda _source, destination, _format, **_kwargs: destination.write_bytes(b"converted flac"),
+    )
+    monkeypatch.setattr("app.services.jobs.validate_audio_file", lambda *_args, **_kwargs: None)
+
+    runner._execute_job(job_id)
+
+    with SessionLocal() as session:
+        project = session.get(Project, project_id)
+        artifact = session.get(Artifact, "source_convert")
+        assert project is not None and artifact is not None
+        assert (artifact.format, Path(artifact.path).suffix, artifact.content_sha256) == (
+            "flac", ".flac", file_sha256(Path(artifact.path))
+        )
+        assert (project.source_path, project.imported_path) == (str(source_path), artifact.path)
+    assert not source_path.exists()
+
+
+def test_convert_audio_cas_discards_output_after_concurrent_artifact_change(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.paths import project_root
+
+    _ = client
+    project_id = "project_convert_cas"
+    source_path = project_root(project_id) / "mixes" / "mix.wav"
+    original_hash, original_updated_at = _conversion_fixture(
+        project_id, "mix_convert_cas", "preview_mix", source_path
+    )
+    runner = InProcessJobRunner(SessionLocal)
+    with SessionLocal() as session:
+        job = runner.create_job(session, project_id=project_id, job_type="convert_audio", payload={})
+        job_id = job.id
+        session.commit()
+
+    def encode_then_change(_source: Path, destination: Path, _format: str, **_kwargs: Any) -> None:
+        destination.write_bytes(b"stale converted flac")
+        with SessionLocal() as concurrent_session:
+            artifact = concurrent_session.get(Artifact, "mix_convert_cas")
+            assert artifact is not None
+            artifact.content_sha256 = "b" * 64
+            artifact.updated_at = _timestamp(3)
+            concurrent_session.commit()
+
+    monkeypatch.setattr("app.services.jobs.encode_audio", encode_then_change)
+    monkeypatch.setattr("app.services.jobs.validate_audio_file", lambda *_args, **_kwargs: None)
+    with SessionLocal() as session:
+        context = JobExecutionContext(runner, job_id, session)
+        with pytest.raises(AppError) as exc:
+            _convert_artifact_audio(
+                context,
+                session,
+                project_id=project_id,
+                snapshot={
+                    "artifact_id": "mix_convert_cas",
+                    "content_sha256": original_hash,
+                    "format": "wav",
+                    "updated_at": original_updated_at.isoformat(),
+                },
+                output_format="flac",
+            )
+
+    assert exc.value.code == "ARTIFACT_CHANGED"
+    assert not source_path.with_suffix(".flac").exists() and not list(source_path.parent.glob("*.convert-*.flac"))
+    with SessionLocal() as session:
+        artifact = session.get(Artifact, "mix_convert_cas")
+        assert artifact is not None
+        assert (artifact.content_sha256, artifact.format) == ("b" * 64, "wav")
 
 
 def test_bulk_jobs_skips_active_duplicate_project_type(

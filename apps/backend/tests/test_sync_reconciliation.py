@@ -119,6 +119,8 @@ def test_artifact_classification_uses_recorded_metadata_and_trusted_provider_cho
         path=tmp_path / "conflict.wav",
         content_sha256=local_conflict_hash,
         size_bytes=(tmp_path / "conflict.wav").stat().st_size,
+        artifact_type="vocals",
+        updated_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
     db_session.commit()
     missing_file_path.unlink()
@@ -140,7 +142,14 @@ def test_artifact_classification_uses_recorded_metadata_and_trusted_provider_cho
                 _artifact_manifest(project.id, "art_truncated_file", truncated_file_hash, truncated_file_size),
                 _artifact_manifest(project.id, "art_remote_available", remote_hash, 64),
                 _artifact_manifest(project.id, "art_missing_provider", missing_provider_hash, 64),
-                _artifact_manifest(project.id, "art_conflict", _sha("remote conflict"), 64),
+                _artifact_manifest(
+                    project.id,
+                    "art_conflict",
+                    _sha("remote conflict"),
+                    64,
+                    artifact_type="vocals",
+                    updated_at=datetime(2026, 1, 2, tzinfo=UTC),
+                ),
                 _artifact_manifest(project.id, "art_duplicate_content", identical_hash, identical_size),
                 _artifact_manifest(project.id, "art_untrusted_only", untrusted_hash, 64),
             ],
@@ -153,6 +162,7 @@ def test_artifact_classification_uses_recorded_metadata_and_trusted_provider_cho
                     missing_file_hash,
                     truncated_file_hash,
                     remote_hash,
+                    _sha("remote conflict"),
                 ],
             },
             {
@@ -192,7 +202,7 @@ def test_artifact_classification_uses_recorded_metadata_and_trusted_provider_cho
     assert remote_available.chosen_provider_device_id == "peer-a"
     assert _item(plan, ITEM_ARTIFACT, "art_missing_provider").status == "missing_provider"
     assert _item(plan, ITEM_ARTIFACT, "art_untrusted_only").status == "missing_provider"
-    assert _item(plan, ITEM_ARTIFACT, "art_conflict").status == "conflicted"
+    assert _item(plan, ITEM_ARTIFACT, "art_conflict").status == "remote_available"
     duplicate = _item(plan, ITEM_ARTIFACT, "art_duplicate_content")
     assert duplicate.status == "identical_content"
     assert duplicate.action_type == ACTION_IMPORT_ARTIFACT_MANIFEST
@@ -206,11 +216,17 @@ def test_artifact_classification_uses_recorded_metadata_and_trusted_provider_cho
     assert fetch_actions["art_missing_file"].provider_device_id == "peer-a"
     assert fetch_actions["art_truncated_file"].provider_device_id == "peer-a"
     assert fetch_actions["art_remote_available"].provider_device_id == "peer-a"
-    assert _action(plan, ACTION_RECORD_CONFLICT, ITEM_ARTIFACT, "art_conflict") is not None
+    remote_conflict = request["remote_library"]["artifacts"][6]
+    for updated_at, status, action_type in [
+        (datetime(2025, 12, 31, tzinfo=UTC), "noop", ACTION_NOOP),
+        (datetime(2026, 1, 1, tzinfo=UTC), "conflicted", ACTION_RECORD_CONFLICT),
+    ]:
+        remote_conflict["updated_at"] = updated_at
+        item = _item(plan_sync_reconciliation(db_session, request), ITEM_ARTIFACT, "art_conflict")
+        assert (item.status, item.action_type) == (status, action_type)
     assert _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, "art_missing_file") is not None
     assert _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, "art_truncated_file") is not None
     assert _action(plan, ACTION_IMPORT_ARTIFACT_MANIFEST, ITEM_ARTIFACT, "art_duplicate_content") is not None
-
 
 def test_generated_analysis_same_hash_noops_even_when_remote_timestamp_is_newer(
     db_session: Session,
@@ -387,8 +403,9 @@ def test_generated_analysis_unresolvable_divergence_stays_conflicted(
     assert _action(plan, ACTION_RECORD_CONFLICT, ITEM_ARTIFACT, "art_generated_analysis") is not None
     if case == "source_mismatch":
         source_item = _item(plan, ITEM_ARTIFACT, "art_generated_source")
-        assert source_item.status == "conflicted"
+        assert source_item.status == "noop"
         assert source_item.details["artifact_type"] == "source_audio"
+        assert source_item.details["resolution"] == "keep_local"
 
 
 def test_issue120_three_peer_group_uses_online_trusted_provider_deterministically(
@@ -3106,10 +3123,13 @@ def _add_artifact(
     can_regenerate: bool = False,
     metadata_json: dict[str, Any] | None = None,
     created_at: datetime | None = None,
+    updated_at: datetime | None = None,
 ) -> Artifact:
     artifact_kwargs: dict[str, Any] = {}
     if created_at is not None:
         artifact_kwargs["created_at"] = created_at
+    if updated_at is not None:
+        artifact_kwargs["updated_at"] = updated_at
     artifact = Artifact(
         id=artifact_id,
         project_id=project_id,
@@ -3327,6 +3347,7 @@ def _artifact_manifest(
     metadata: dict[str, Any] | None = None,
     relative_path: str | None = None,
     created_at: datetime | None = None,
+    updated_at: datetime | None = None,
 ) -> dict[str, Any]:
     created = created_at or datetime.now(UTC)
     return {
@@ -3343,6 +3364,7 @@ def _artifact_manifest(
         "cache_key": None,
         "metadata": metadata or {},
         "created_at": created,
+        "updated_at": updated_at or created,
     }
 
 

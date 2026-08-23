@@ -915,6 +915,31 @@ pub(super) fn manifest_artifact_merge(
         }
         return Ok((ManifestArtifactMerge::Update, Some(existing_artifact)));
     }
+    if durable_manifest_audio_format(artifact).is_some() {
+        if !existing_artifact
+            .r#type
+            .trim()
+            .eq_ignore_ascii_case(&artifact.r#type)
+        {
+            return Err("A synced artifact conflicts with an existing local artifact.".to_string());
+        }
+        let local_updated_at =
+            parse_sync_timestamp_utc(&existing_artifact.updated_at, "local artifact updated_at")?;
+        let remote_updated_at = parse_sync_timestamp_utc(
+            artifact
+                .updated_at
+                .as_deref()
+                .unwrap_or(&artifact.created_at),
+            "artifact updated_at",
+        )?;
+        return if remote_updated_at > local_updated_at {
+            Ok((ManifestArtifactMerge::Replace, Some(existing_artifact)))
+        } else if remote_updated_at < local_updated_at {
+            Ok((ManifestArtifactMerge::KeepLocal, Some(existing_artifact)))
+        } else {
+            Err("A synced artifact conflicts with an existing local artifact.".to_string())
+        };
+    }
     if existing_artifact.r#type.trim().to_ascii_lowercase()
         != artifact.r#type.trim().to_ascii_lowercase()
         || existing_artifact
@@ -1031,6 +1056,9 @@ pub(super) fn project_manifest_mismatch(
         )?;
         let mut expected = artifact.clone();
         expected.metadata = sanitize_sync_manifest_value(&expected.metadata);
+        if expected.updated_at.is_none() {
+            expected.updated_at = Some(expected.created_at.clone());
+        }
         if serde_json::to_value(local).map_err(|error| error.to_string())?
             != serde_json::to_value(expected).map_err(|error| error.to_string())?
         {
@@ -1346,7 +1374,7 @@ pub(super) fn import_sync_project_manifest(
         } else {
             connection
                     .execute(
-                        "UPDATE projects SET display_name = ?1, source_key_override = ?2, source_sha256 = ?3, source_path = ?4, imported_path = ?4, duration_seconds = ?5, sample_rate = ?6, channels = ?7, updated_at = ?8 WHERE id = ?9",
+                        "UPDATE projects SET display_name = ?1, source_key_override = ?2, source_sha256 = ?3, imported_path = ?4, duration_seconds = ?5, sample_rate = ?6, channels = ?7, updated_at = ?8 WHERE id = ?9",
                         params![
                             &payload.manifest.project.display_name,
                             payload.manifest.project.source_key_override.as_ref(),
@@ -1374,10 +1402,38 @@ pub(super) fn import_sync_project_manifest(
             let metadata = sanitize_sync_manifest_value(&artifact.metadata).to_string();
             let artifact_created_at =
                 normalize_sync_timestamp_utc(&artifact.created_at, "artifact created_at")?;
+            let remote_artifact_updated_at = normalize_sync_timestamp_utc(
+                artifact
+                    .updated_at
+                    .as_deref()
+                    .unwrap_or(&artifact.created_at),
+                "artifact updated_at",
+            )?;
+            let artifact_updated_at = if prepared.merge == ManifestArtifactMerge::Update {
+                prepared
+                    .existing
+                    .as_ref()
+                    .map(|existing| existing.updated_at.clone())
+                    .filter(|local| {
+                        parse_sync_timestamp_utc(local, "local artifact updated_at").is_ok_and(
+                            |value| {
+                                value
+                                    > parse_sync_timestamp_utc(
+                                        &remote_artifact_updated_at,
+                                        "artifact updated_at",
+                                    )
+                                    .expect("normalized artifact timestamp")
+                            },
+                        )
+                    })
+                    .unwrap_or(remote_artifact_updated_at)
+            } else {
+                remote_artifact_updated_at
+            };
             if prepared.existing.is_some() {
                 connection
                         .execute(
-                            "UPDATE artifacts SET project_id = ?1, type = ?2, format = ?3, path = ?4, content_sha256 = ?5, size_bytes = ?6, generated_by = ?7, can_delete = ?8, can_regenerate = ?9, metadata_json = ?10, cache_key = ?11, created_at = ?12 WHERE id = ?13",
+                            "UPDATE artifacts SET project_id = ?1, type = ?2, format = ?3, path = ?4, content_sha256 = ?5, size_bytes = ?6, generated_by = ?7, can_delete = ?8, can_regenerate = ?9, metadata_json = ?10, cache_key = ?11, created_at = ?12, updated_at = ?13 WHERE id = ?14",
                             params![
                                 &artifact.project_id,
                                 &artifact.r#type,
@@ -1391,6 +1447,7 @@ pub(super) fn import_sync_project_manifest(
                                 &metadata,
                                 artifact.cache_key.as_ref(),
                                 &artifact_created_at,
+                                &artifact_updated_at,
                                 &artifact.artifact_id,
                             ],
                         )
@@ -1398,8 +1455,8 @@ pub(super) fn import_sync_project_manifest(
             } else {
                 connection
                         .execute(
-                            "INSERT INTO artifacts (id, project_id, type, format, path, content_sha256, size_bytes, generated_by, can_delete, can_regenerate, metadata_json, cache_key, created_at)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                            "INSERT INTO artifacts (id, project_id, type, format, path, content_sha256, size_bytes, generated_by, can_delete, can_regenerate, metadata_json, cache_key, created_at, updated_at)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                             params![
                                 &artifact.artifact_id,
                                 &artifact.project_id,
@@ -1414,6 +1471,7 @@ pub(super) fn import_sync_project_manifest(
                                 &metadata,
                                 artifact.cache_key.as_ref(),
                                 &artifact_created_at,
+                                &artifact_updated_at,
                             ],
                         )
                         .map_err(|error| error.to_string())?;
@@ -1507,6 +1565,10 @@ pub(super) fn get_sync_metadata(
             cache_key: artifact.cache_key,
             metadata: sanitize_sync_manifest_value(&artifact.metadata),
             created_at: normalize_sync_timestamp_utc(&artifact.created_at, "artifact created_at")?,
+            updated_at: Some(normalize_sync_timestamp_utc(
+                &artifact.updated_at,
+                "artifact updated_at",
+            )?),
         });
     }
 

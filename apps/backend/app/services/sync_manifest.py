@@ -34,7 +34,7 @@ from app.schemas import SUPPORTED_LYRICS_LANGUAGE_OVERRIDES
 from app.services.artifacts import register_artifact
 from app.services.paths import ensure_project_dirs, project_root
 from app.services.project_storage import queue_project_storage_reconciliation
-from app.services.stem_models import STEM_ARTIFACT_TYPES, STEM_SOURCE_ARTIFACT_TYPES
+from app.services.stem_models import DURABLE_AUDIO_ARTIFACT_TYPES
 from app.services.sync_identity import source_hash_to_project_id
 from app.services.sync_metadata import (
     artifact_sync_metadata,
@@ -71,6 +71,7 @@ class SyncArtifactManifest:
     cache_key: str | None
     metadata: dict[str, Any]
     created_at: datetime
+    updated_at: datetime
 
 
 @dataclass(frozen=True)
@@ -527,6 +528,7 @@ def import_staged_project_manifest(
                 can_delete=verified_artifact.manifest.can_delete,
                 can_regenerate=verified_artifact.manifest.can_regenerate,
                 created_at=verified_artifact.manifest.created_at,
+                updated_at=verified_artifact.manifest.updated_at,
             )
             if (
                 imported_artifact.content_sha256 != verified_artifact.manifest.content_sha256
@@ -633,6 +635,7 @@ def _merge_staged_project_manifest(
                 can_delete=verified_artifact.manifest.can_delete,
                 can_regenerate=verified_artifact.manifest.can_regenerate,
                 created_at=verified_artifact.manifest.created_at,
+                updated_at=verified_artifact.manifest.updated_at,
             )
             if (
                 imported_artifact.content_sha256 != verified_artifact.manifest.content_sha256
@@ -881,6 +884,7 @@ def _export_artifact_manifest(artifact: Artifact) -> SyncArtifactManifest:
         cache_key=artifact.cache_key,
         metadata=artifact_sync_metadata(artifact),
         created_at=artifact.created_at,
+        updated_at=artifact.updated_at,
     )
 
 
@@ -1504,12 +1508,7 @@ def _validate_staged_import_source_artifact(manifest: SyncProjectManifest) -> Sy
 
 
 def _is_durable_audio_artifact_type(artifact_type: str) -> bool:
-    return artifact_type in {
-        "source_audio",
-        "preview_mix",
-        *STEM_ARTIFACT_TYPES,
-        *STEM_SOURCE_ARTIFACT_TYPES,
-    }
+    return artifact_type in DURABLE_AUDIO_ARTIFACT_TYPES
 
 
 def validate_staged_durable_audio_artifact(
@@ -2072,6 +2071,7 @@ def _coerce_project_manifest(manifest: SyncProjectManifest | Mapping[str, Any] |
             replace(
                 artifact,
                 created_at=sync_datetime_as_utc(artifact.created_at),
+                updated_at=sync_datetime_as_utc(artifact.updated_at),
             )
             for artifact in project_manifest.artifacts
         ],
@@ -2115,6 +2115,8 @@ def _coerce_artifact_manifest(manifest: Mapping[str, Any] | object) -> SyncArtif
         cache_key=_optional_str(manifest, "cache_key"),
         metadata=metadata,
         created_at=_required_datetime(manifest, "created_at"),
+        updated_at=_optional_datetime(manifest, "updated_at")
+        or _required_datetime(manifest, "created_at"),
     )
 
 

@@ -33,6 +33,14 @@ STEM_SOURCE_ARTIFACT_TYPES = {
 }
 STEM_ARTIFACT_TYPES = frozenset(STEM_SOURCE_ARTIFACT_TYPES.values())
 STEM_ARTIFACT_TYPE_SOURCES = {artifact_type: source for source, artifact_type in STEM_SOURCE_ARTIFACT_TYPES.items()}
+DURABLE_AUDIO_ARTIFACT_TYPES = frozenset(
+    {
+        "source_audio",
+        "preview_mix",
+        *STEM_ARTIFACT_TYPES,
+        *STEM_SOURCE_ARTIFACT_TYPES,
+    }
+)
 
 
 @dataclass(frozen=True)

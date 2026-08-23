@@ -113,7 +113,6 @@ def _build_reconciliation(
     if not delete_project_root:
         if project is None:
             raise RuntimeError("Live project reconciliation requires a project row.")
-        _add_owned_path(owned_paths, project.source_path, root)
         _add_owned_path(owned_paths, project.imported_path, root)
         if session.get(AnalysisResult, project_id) is not None:
             owned_paths.add(Path("analysis") / "analysis.json")

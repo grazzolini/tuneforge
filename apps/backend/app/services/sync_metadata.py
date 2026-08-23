@@ -54,6 +54,7 @@ class SyncMetadataArtifact:
     cache_key: str | None
     metadata: dict[str, Any]
     created_at: datetime
+    updated_at: datetime
 
 
 @dataclass(frozen=True)
@@ -166,6 +167,7 @@ def _artifact_metadata(artifact: Artifact) -> SyncMetadataArtifact:
         cache_key=artifact.cache_key,
         metadata=artifact_sync_metadata(artifact),
         created_at=artifact.created_at,
+        updated_at=artifact.updated_at,
     )
 
 

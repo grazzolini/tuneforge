@@ -5,14 +5,22 @@ import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from subprocess import Popen, TimeoutExpired
 from typing import Any, Literal, cast
+from uuid import uuid4
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.dependency_diagnostics import safe_dependency_remediation
-from app.engines.audio_encoding import require_encoding_available
+from app.engines.audio_encoding import (
+    DurableAudioFormat,
+    encode_audio,
+    require_encoding_available,
+    validate_audio_file,
+)
 from app.errors import AppError, JobCancelledError
 from app.models import Artifact, ChordTimeline, Job, LyricsTranscript, Project, utcnow
 from app.runtime_status import (
@@ -32,6 +40,7 @@ from app.services.lyrics import generate_project_lyrics
 from app.services.project_storage import queue_project_storage_reconciliation
 from app.services.projects import get_mutable_project, get_project
 from app.services.stem_models import (
+    DURABLE_AUDIO_ARTIFACT_TYPES,
     STEM_ARTIFACT_TYPES,
     TWO_STEMS_MODEL_ID,
     resolve_stem_model,
@@ -43,6 +52,7 @@ from app.services.transformations import (
     execute_transform_plan,
     export_artifacts,
 )
+from app.utils.hashing import file_sha256
 from app.utils.ids import new_id
 
 
@@ -63,12 +73,14 @@ JobHandler = Callable[["JobExecutionContext", Session, Job], JobExecutionResult]
 JobSortBy = Literal["activity", "created_at", "started_at", "updated_at", "status"]
 JobSortOrder = Literal["asc", "desc"]
 JobTimestampSortBy = Literal["created_at", "started_at", "updated_at"]
-BulkActivityJobType = Literal["analyze", "chords", "lyrics", "stems"]
-BulkActivityJobSkipReason = Literal["active_job", "locked", "creation_failed", "no_existing_stems"]
-ProjectActivityJobPayload = AnalysisRequest | ChordRequest | LyricsGenerateRequest | StemRequest
+BulkActivityJobType = Literal["analyze", "chords", "lyrics", "stems", "convert_audio"]
+BulkActivityJobSkipReason = Literal["active_job", "locked", "creation_failed",
+                                    "no_existing_stems", "already_target_format"]
+ProjectActivityJobPayload = AnalysisRequest | ChordRequest | LyricsGenerateRequest | StemRequest | dict[str, Any]
 
 _ACTIVE_JOB_STATUSES = ("pending", "running")
-_BULK_ACTIVITY_JOB_TYPES = frozenset({"analyze", "chords", "lyrics", "stems"})
+_BULK_ACTIVITY_JOB_TYPES = frozenset({"analyze", "chords", "lyrics", "stems", "convert_audio"})
+_CONVERSION_BATCH_CREATION_LOCK = threading.Lock()
 _TERMINAL_JOB_STATUSES = ("completed", "cancelled", "failed")
 _PROCESS_TERMINATION_GRACE_SECONDS = 1.0
 _RUNTIME_UNSET = object()
@@ -265,8 +277,37 @@ def create_bulk_activity_jobs(
     payload: BulkJobRequest,
 ) -> BulkActivityJobCreationResult:
     validated_job_type = validate_bulk_activity_job_type(payload.job_type)
-    if validated_job_type == "stems":
+    if validated_job_type == "convert_audio":
+        with _CONVERSION_BATCH_CREATION_LOCK:
+            return _create_bulk_activity_jobs_locked(
+                session,
+                runner,
+                payload=payload,
+                validated_job_type=validated_job_type,
+            )
+    return _create_bulk_activity_jobs_locked(
+        session,
+        runner,
+        payload=payload,
+        validated_job_type=validated_job_type,
+    )
+
+
+def _create_bulk_activity_jobs_locked(
+    session: Session,
+    runner: InProcessJobRunner,
+    *,
+    payload: BulkJobRequest,
+    validated_job_type: BulkActivityJobType,
+) -> BulkActivityJobCreationResult:
+    if validated_job_type in {"stems", "convert_audio"}:
         require_encoding_available(payload.output_format)
+    if validated_job_type == "convert_audio" and _has_active_conversion_batch(session):
+        raise AppError(
+            "CONVERSION_BATCH_ACTIVE",
+            "A durable audio conversion batch is already active.",
+            status_code=409,
+        )
     projects = list(
         session.scalars(
             select(Project)
@@ -297,12 +338,22 @@ def create_bulk_activity_jobs(
             continue
         try:
             project_jobs: list[Job] = []
-            for job_payload in _bulk_activity_job_payloads(
+            job_payloads = _bulk_activity_job_payloads(
                 session,
                 project=project,
                 request=payload,
                 job_type=validated_job_type,
-            ):
+            )
+            if not job_payloads:
+                skipped.append(
+                    BulkActivityJobSkippedProject(
+                        project_id=project.id,
+                        project_name=project.display_name,
+                        reason="already_target_format",
+                    )
+                )
+                continue
+            for job_payload in job_payloads:
                 job = _create_project_activity_job(
                     session,
                     runner,
@@ -357,6 +408,12 @@ def _has_active_project_job(session: Session, *, project_id: str, job_type: Bulk
     )
 
 
+def _has_active_conversion_batch(session: Session) -> bool:
+    return session.scalar(
+        select(Job.id).where(Job.type == "convert_audio", Job.status.in_(_ACTIVE_JOB_STATUSES)).limit(1)
+    ) is not None
+
+
 def _bulk_activity_job_payloads(
     session: Session,
     *,
@@ -364,6 +421,26 @@ def _bulk_activity_job_payloads(
     request: BulkJobRequest,
     job_type: BulkActivityJobType,
 ) -> list[ProjectActivityJobPayload]:
+    if job_type == "convert_audio":
+        artifacts = session.scalars(
+            select(Artifact)
+            .where(
+                Artifact.project_id == project.id,
+                Artifact.type.in_(tuple(DURABLE_AUDIO_ARTIFACT_TYPES)),
+                func.lower(Artifact.format) != request.output_format,
+            )
+            .order_by(Artifact.created_at.asc(), Artifact.id.asc())
+        )
+        snapshots = [
+            {
+                "artifact_id": artifact.id,
+                "content_sha256": artifact.content_sha256,
+                "format": artifact.format,
+                "updated_at": artifact.updated_at.isoformat(),
+            }
+            for artifact in artifacts
+        ]
+        return [{"output_format": request.output_format, "artifacts": snapshots}] if snapshots else []
     if job_type == "stems":
         source_artifact_ids = _existing_stem_source_artifact_ids(session, project_id=project.id)
         if not source_artifact_ids:
@@ -475,6 +552,8 @@ def _project_activity_job_payload(
         job_payload["stem_model_label"] = selected_stem_model.label
         job_payload["source_artifact_id"] = source_artifact.id
         return job_payload
+    if job_type == "convert_audio" and isinstance(payload, dict):
+        return payload
     raise AppError("INVALID_REQUEST", "Job payload does not match job type.", status_code=422)
 
 
@@ -620,6 +699,7 @@ class InProcessJobRunner:
             "transpose": self._handle_single_transform,
             "stems": self._handle_stems,
             "export": self._handle_export,
+            "convert_audio": self._handle_convert_audio,
         }
         self._active_processes: dict[str, Popen[str]] = {}
         self._lock = threading.Lock()
@@ -1156,6 +1236,136 @@ class InProcessJobRunner:
             artifact_ids=[artifact.id for artifact in artifacts],
             runtime_device=runtime_device,
         )
+
+    def _handle_convert_audio(
+        self,
+        context: JobExecutionContext,
+        session: Session,
+        job: Job,
+    ) -> JobExecutionResult:
+        output_format = cast(DurableAudioFormat, job.payload_json["output_format"])
+        snapshots = cast(list[dict[str, Any]], job.payload_json["artifacts"])
+        require_encoding_available(output_format)
+        converted_ids: list[str] = []
+        for raw_snapshot in snapshots:
+            context.ensure_not_cancelled()
+            converted = _convert_artifact_audio(
+                context,
+                session,
+                project_id=job.project_id or "",
+                snapshot=raw_snapshot,
+                output_format=output_format,
+            )
+            if converted:
+                converted_ids.append(cast(str, raw_snapshot["artifact_id"]))
+        return JobExecutionResult(artifact_ids=converted_ids, runtime_device="cpu")
+
+
+def _convert_artifact_audio(
+    context: JobExecutionContext,
+    session: Session,
+    *,
+    project_id: str,
+    snapshot: dict[str, Any],
+    output_format: DurableAudioFormat,
+) -> bool:
+    artifact_id = cast(str, snapshot["artifact_id"])
+    snapshot_hash = snapshot.get("content_sha256")
+    snapshot_format = snapshot.get("format")
+    snapshot_updated_raw = snapshot.get("updated_at")
+    try:
+        snapshot_updated_at = datetime.fromisoformat(cast(str, snapshot_updated_raw).replace("Z", "+00:00"))
+    except (AttributeError, ValueError) as exc:
+        raise AppError("INVALID_REQUEST", "Audio conversion snapshot is invalid.", status_code=422) from exc
+
+    artifact = session.get(Artifact, artifact_id)
+    if artifact is None or artifact.project_id != project_id or artifact.type not in DURABLE_AUDIO_ARTIFACT_TYPES:
+        raise AppError("ARTIFACT_NOT_FOUND", "Audio conversion artifact is no longer available.", status_code=409)
+    session.refresh(artifact)
+    if artifact.format.lower() == output_format:
+        return False
+    if (
+        artifact.content_sha256 != snapshot_hash
+        or artifact.format != snapshot_format
+        or _as_utc_datetime(artifact.updated_at) != _as_utc_datetime(snapshot_updated_at)
+    ):
+        raise AppError(
+            "ARTIFACT_CHANGED",
+            "Audio changed after the conversion job was queued. Run re-process again.",
+            status_code=409,
+        )
+
+    source_path = Path(artifact.path)
+    if not source_path.is_file():
+        raise AppError("ARTIFACT_FILE_MISSING", "Audio file is missing or unreadable.", status_code=409)
+    destination_path = source_path.with_suffix(f".{output_format}")
+    if destination_path.exists():
+        raise AppError(
+            "ARTIFACT_DESTINATION_EXISTS",
+            "Converted audio destination already exists.",
+            status_code=409,
+        )
+    temp_path = destination_path.with_name(
+        f".{destination_path.stem}.convert-{uuid4().hex}.{output_format}"
+    )
+    installed = False
+    try:
+        encode_audio(
+            source_path,
+            temp_path,
+            output_format,
+            should_cancel=context.should_cancel,
+            register_process=context.register_process,
+            unregister_process=context.unregister_process,
+        )
+        context.ensure_not_cancelled()
+        validate_audio_file(temp_path, output_format)
+        converted_hash = file_sha256(temp_path)
+        if converted_hash is None:
+            raise AppError("PROCESSING_FAILED", "Converted audio could not be hashed.")
+        converted_size = temp_path.stat().st_size
+        result = cast(
+            CursorResult[Any],
+            session.execute(
+                update(Artifact)
+                .where(
+                    Artifact.id == artifact_id,
+                    Artifact.content_sha256 == snapshot_hash,
+                    Artifact.updated_at == snapshot_updated_at,
+                )
+                .values(
+                    format=output_format,
+                    path=str(destination_path.resolve(strict=False)),
+                    content_sha256=converted_hash,
+                    size_bytes=converted_size,
+                    cache_key=None,
+                    updated_at=utcnow(),
+                )
+            ),
+        )
+        if result.rowcount != 1:
+            session.rollback()
+            raise AppError(
+                "ARTIFACT_CHANGED",
+                "Audio changed while conversion was running. Run re-process again.",
+                status_code=409,
+            )
+        temp_path.replace(destination_path)
+        installed = True
+        if artifact.type == "source_audio":
+            project = get_project(session, project_id)
+            project.imported_path = str(destination_path.resolve(strict=False))
+        queue_project_storage_reconciliation(session, project_id)
+        session.commit()
+        installed = False
+        return True
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+            if installed:
+                destination_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _job_payload_for_create(*, job_type: str, payload: dict[str, Any]) -> dict[str, Any]:

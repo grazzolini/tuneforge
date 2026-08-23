@@ -1197,6 +1197,7 @@ mod tests {
             cache_key: None,
             metadata: json!({"fixture": id}),
             created_at: created_at.to_string(),
+            updated_at: None,
         }
     }
 
@@ -1627,9 +1628,9 @@ mod tests {
             Some(super::manifests::ProjectManifestMismatch::ArtifactMetadata)
         );
 
-        for (slug, phase, created_at) in [
-            ("mix-equal", 2.1, changed_at),
-            ("mix-older", 2.2, initial_updated),
+        for (slug, phase, created_at, expect_conflict) in [
+            ("mix-equal", 2.1, changed_at, true),
+            ("mix-older", 2.2, initial_updated, false),
         ] {
             let (ignored_hash, ignored_size) = staged_wav(&connection, &root, slug, phase);
             let mut ignored = changed.clone();
@@ -1641,7 +1642,7 @@ mod tests {
             ignored_mix.content_sha256 = ignored_hash;
             ignored_mix.size_bytes = ignored_size;
             ignored_mix.created_at = created_at.to_string();
-            super::manifests::import_sync_project_manifest(
+            let result = super::manifests::import_sync_project_manifest(
                 &connection,
                 &root,
                 SyncProjectStagedImportRequest {
@@ -1649,8 +1650,12 @@ mod tests {
                     staging_root: None,
                     use_content_addressed_staging: Some(true),
                 },
-            )
-            .unwrap();
+            );
+            if expect_conflict {
+                assert!(result.err().unwrap().contains("conflicts"));
+            } else {
+                result.unwrap();
+            }
             let preserved: String = connection
                 .query_row(
                     "SELECT content_sha256 FROM artifacts WHERE id = 'art_mix'",
@@ -1661,46 +1666,35 @@ mod tests {
             assert_eq!(preserved, replacement_hash);
         }
 
-        let replacement_path: String = connection
-            .query_row(
-                "SELECT path FROM artifacts WHERE id = 'art_mix'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        let replacement_bytes = fs::read(&replacement_path).unwrap();
-        let mut rejected = changed;
-        let (rejected_hash, rejected_size) = staged_wav(&connection, &root, "mix-reject", 2.4);
-        let rejected_mix = rejected
+        let mut remote_newer = changed;
+        let (newer_hash, newer_size) = staged_wav(&connection, &root, "mix-newer", 2.4);
+        let newer_mix = remote_newer
             .artifacts
             .iter_mut()
             .find(|artifact| artifact.artifact_id == "art_mix")
             .unwrap();
-        rejected_mix.content_sha256 = rejected_hash;
-        rejected_mix.size_bytes = rejected_size;
-        rejected_mix.can_regenerate = false;
-        rejected_mix.created_at = "2026-01-04T00:00:00Z".to_string();
-        let error = super::manifests::import_sync_project_manifest(
+        newer_mix.content_sha256 = newer_hash.clone();
+        newer_mix.size_bytes = newer_size;
+        newer_mix.can_regenerate = false;
+        newer_mix.created_at = "2026-01-04T00:00:00Z".to_string();
+        super::manifests::import_sync_project_manifest(
             &connection,
             &root,
             SyncProjectStagedImportRequest {
-                manifest: rejected,
+                manifest: remote_newer,
                 staging_root: None,
                 use_content_addressed_staging: Some(true),
             },
         )
-        .err()
         .unwrap();
-        assert!(error.contains("conflicts"));
-        assert_eq!(fs::read(&replacement_path).unwrap(), replacement_bytes);
-        let preserved_hash: String = connection
+        let installed_hash: String = connection
             .query_row(
                 "SELECT content_sha256 FROM artifacts WHERE id = 'art_mix'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(preserved_hash, replacement_hash);
+        assert_eq!(installed_hash, newer_hash);
         assert!(fs::read_dir(root.join("projects").join(&project_id))
             .unwrap()
             .all(|entry| !entry

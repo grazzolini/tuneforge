@@ -913,6 +913,11 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
         };
         /** ArtifactsResponse */
         ArtifactsResponse: {
@@ -952,7 +957,7 @@ export interface components {
              * @description Project job type to enqueue for every project.
              * @enum {string}
              */
-            job_type: "analyze" | "chords" | "lyrics" | "stems";
+            job_type: "analyze" | "chords" | "lyrics" | "stems" | "convert_audio";
             /**
              * Output Format
              * @default wav
@@ -982,7 +987,7 @@ export interface components {
              * Reason
              * @enum {string}
              */
-            reason: "active_job" | "locked" | "creation_failed" | "no_existing_stems";
+            reason: "active_job" | "locked" | "creation_failed" | "no_existing_stems" | "already_target_format";
         };
         /** BulkJobsResponse */
         BulkJobsResponse: {
@@ -1396,6 +1401,10 @@ export interface components {
             stage_label?: string | null;
             /** Source Artifact Id */
             source_artifact_id?: string | null;
+            /** Input Formats */
+            input_formats?: string[];
+            /** Output Format */
+            output_format?: string | null;
             /** Beat Backend */
             beat_backend?: string | null;
             /** Beat Input */
@@ -1932,6 +1941,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Updated At */
+            updated_at?: string | null;
         };
         /** SyncMetadataArtifactSchema */
         "SyncMetadataArtifactSchema-Output": {
@@ -1963,6 +1974,8 @@ export interface components {
             };
             /** Created At */
             created_at: string | null;
+            /** Updated At */
+            updated_at?: string | null;
         };
         /** SyncMetadataProjectSchema */
         "SyncMetadataProjectSchema-Input": {
@@ -2248,6 +2261,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Updated At */
+            updated_at?: string | null;
         };
         /** SyncProjectManifestArtifactSchema */
         "SyncProjectManifestArtifactSchema-Output": {
@@ -2279,6 +2294,8 @@ export interface components {
             };
             /** Created At */
             created_at: string | null;
+            /** Updated At */
+            updated_at?: string | null;
         };
         /** SyncProjectManifestEntityRevisionSchema */
         "SyncProjectManifestEntityRevisionSchema-Input": {

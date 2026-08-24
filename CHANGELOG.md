@@ -5,20 +5,24 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-24
+
 ### Added
 
-- Added backend storage, processing-job, and desktop-sync foundations for durable WAV, FLAC, MP3,
-  and M4A audio artifacts ([#398](https://github.com/grazzolini/tuneforge/issues/398)).
-- Added a desktop Audio Storage preference for future imports, stems, and saved mixes, plus
-  byte-preserving Android receive and playback support for all four durable formats
-  ([#398](https://github.com/grazzolini/tuneforge/issues/398)).
-- Added desktop Activity re-processing for existing durable audio, with mixed-format project skips and timestamp-based sync replacement across trusted peers ([#399](https://github.com/grazzolini/tuneforge/issues/399)).
+- Added durable WAV, FLAC, MP3, and M4A storage, including byte-preserving Android receive and
+  playback support ([#465](https://github.com/grazzolini/tuneforge/pull/465),
+  [#467](https://github.com/grazzolini/tuneforge/pull/467)).
+- Added opt-in, memory-only, bounded, sanitized diagnostics for native playback
+  ([#464](https://github.com/grazzolini/tuneforge/pull/464)).
+- Added Activity re-processing for durable audio with timestamp-based last-write-wins sync
+  replacement ([#471](https://github.com/grazzolini/tuneforge/pull/471)).
 
 ### Fixed
 
-- Applied repeat desktop-to-Android sync changes to existing project metadata and artifacts.
-- Preserved project playback safely across native output route changes and interruptions by using
-  a guarded Web Audio fallback at the current position.
+- Applied repeat desktop-to-Android sync changes to existing project metadata and artifacts
+  ([#469](https://github.com/grazzolini/tuneforge/pull/469)).
+- Preserved project playback across native output-route changes and interruptions
+  ([#466](https://github.com/grazzolini/tuneforge/pull/466)).
 
 ## [1.1.0] - 2026-08-18
 
@@ -121,7 +125,8 @@ download, installation, verification, signature, and publication instructions.
 
 - Development used `0.1.0` metadata; `v1.0.0` was the first tagged release.
 
-[Unreleased]: https://github.com/grazzolini/tuneforge/compare/v1.1.0...main
+[Unreleased]: https://github.com/grazzolini/tuneforge/compare/v1.2.0...main
+[1.2.0]: https://github.com/grazzolini/tuneforge/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/grazzolini/tuneforge/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/grazzolini/tuneforge/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/grazzolini/tuneforge/releases/tag/v1.0.0

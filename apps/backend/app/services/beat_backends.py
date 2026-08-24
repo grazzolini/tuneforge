@@ -7,7 +7,7 @@ from app.engines.beat_this import beat_this_dependency_status
 
 BUILT_IN_BEAT_BACKEND_ID = "built-in"
 BEAT_THIS_BEAT_BACKEND_ID = "beat-this"
-DEFAULT_BEAT_BACKEND_ID = BUILT_IN_BEAT_BACKEND_ID
+DEFAULT_BEAT_BACKEND_ID = BEAT_THIS_BEAT_BACKEND_ID
 
 
 @dataclass(frozen=True)

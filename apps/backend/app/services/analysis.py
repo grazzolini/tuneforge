@@ -28,7 +28,7 @@ def analyze_project(
     session: Session,
     project: Project,
     *,
-    beat_backend: str = BUILT_IN_BEAT_BACKEND,
+    beat_backend: str = BEAT_THIS_BACKEND,
 ) -> AnalysisResult:
     source_artifact = _project_source_artifact(project)
     source_stem_artifacts = (

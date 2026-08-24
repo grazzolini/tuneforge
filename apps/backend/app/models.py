@@ -472,7 +472,9 @@ class Job(Base):
         if self.type != "analyze":
             return None
         value = self.payload_json.get("beat_backend")
-        return value if isinstance(value, str) else "built-in"
+        if isinstance(value, str):
+            return value
+        return "built-in" if self.status == "completed" else None
 
     @property
     def beat_input(self) -> str | None:

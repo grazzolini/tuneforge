@@ -123,7 +123,7 @@ def test_preview_generation_cache_and_export(client, sample_audio_file: Path):
 
     analyze_job = client.post(
         f"/api/v1/projects/{project['id']}/analyze",
-        json={"include_tempo": False, "force": False},
+        json={"include_tempo": False, "force": False, "beat_backend": "built-in"},
     ).json()["job"]
     assert wait_for_job(client, analyze_job["id"])["status"] == "completed"
 

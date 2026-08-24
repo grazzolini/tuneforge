@@ -868,7 +868,7 @@ describe("Desktop app library", () => {
     });
   });
 
-  it("falls back to built-in beat analysis when importing with unavailable advanced beats", async () => {
+  it("submits saved Beat This when importing from a normal install that reports it unavailable", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem(
       "tuneforge.ui-preferences",
@@ -889,7 +889,7 @@ describe("Desktop app library", () => {
       source_path: "/tmp/new-song.mp4",
       copy_into_project: true,
       output_format: "wav",
-      beat_backend: "built-in",
+      beat_backend: "beat-this",
       chord_backend: "crema-advanced",
       stem_model: "htdemucs_6s",
     });

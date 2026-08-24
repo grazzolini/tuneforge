@@ -116,6 +116,12 @@ pnpm package:mac -- --no-advanced-chords --no-advanced-beats
 pnpm package:mac -- --model-bundle
 ```
 
+Advanced Beat Analysis remains the default analysis request without bundled model weights. Its
+`small0` checkpoint follows the normal first-use cache lifecycle. With `--no-beat-this`, the desktop
+backend registry marks Advanced Beat Analysis unavailable and the compile-time package option makes
+desktop actions send an explicit Built-in Beat Analysis selection. A broken normal installation still
+submits Advanced Beat Analysis and surfaces the dependency failure instead of silently changing engines.
+
 The generated artifacts are written under `apps/desktop/src-tauri/target/release/bundle/`:
 
 - `macos/TuneForge.app`
@@ -216,6 +222,10 @@ pnpm package:linux -- --legacy-nvidia --model-bundle
 - `--sandbox-data` keeps app data under Flatpak-private `/var/data/tuneforge` instead of the host XDG data directory.
 
 Like macOS packages, plain Flatpak packages rely on normal Demucs, Whisper, and beat-this caches unless `--model-bundle` is explicitly passed. Advanced Chords uses crema package assets instead of a separate first-use model download; this is the dependency-owned Crema exception, not an external model-bundle source.
+When beat-this is excluded, desktop actions explicitly select Built-in Beat Analysis. An Advanced
+Beat Analysis request that ultimately fails during first-use download, load, runtime, or timing
+analysis fails the job rather than switching engines; explicit Built-in Beat Analysis requests do
+not probe beat-this.
 
 By default, the Flatpak grants access to `xdg-data/tuneforge`, `xdg-cache/torch`, and
 `xdg-cache/whisper`. Packaged runs therefore use the same data root and model caches as

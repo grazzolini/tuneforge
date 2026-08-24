@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { writeBuildInfoFile } from "./build-info.mjs";
 import {
+  packageOptionsEnvironment,
   packageOptionsToGeneratorArgs,
   parsePackageOptions,
   printModelBundleWarning,
@@ -54,7 +55,7 @@ function checkCommand(command, installHint) {
 function generatedManifestPath(options) {
   const generatedManifestPath = path.join(flatpakRoot, "com.tuneforge.desktop.generated.yml");
   const baseManifest = readFileSync(baseManifestPath, "utf8");
-  let manifest = baseManifest;
+  let manifest = manifestWithPackageOptions(baseManifest, options);
   if (options.legacyNvidia) {
     manifest = replaceManifestFragment(manifest, "  - --device=dri\n", "  - --device=all\n");
   }
@@ -107,6 +108,21 @@ function generatedManifestPath(options) {
   mkdirSync(path.dirname(generatedManifestPath), { recursive: true });
   writeFileSync(generatedManifestPath, manifest);
   return generatedManifestPath;
+}
+
+export function manifestWithPackageOptions(manifest, options) {
+  const encodedPackageOptions = packageOptionsEnvironment(options).TUNEFORGE_PACKAGE_OPTIONS;
+  const tuneforgeEnvAnchor =
+    "  - name: tuneforge\n" +
+    "    buildsystem: simple\n" +
+    "    build-options:\n" +
+    "      append-path: /app/bin:/usr/lib/sdk/node26/bin:/usr/lib/sdk/llvm20/bin:/usr/lib/sdk/rust-stable/bin\n" +
+    "      env:\n";
+  return replaceManifestFragment(
+    manifest,
+    tuneforgeEnvAnchor,
+    `${tuneforgeEnvAnchor}        TUNEFORGE_PACKAGE_OPTIONS: '${encodedPackageOptions}'\n`,
+  );
 }
 
 function replaceManifestFragment(contents, search, replacement) {
@@ -214,9 +230,11 @@ function main() {
   process.stdout.write(`Flatpak bundle written to ${bundlePath}\n`);
 }
 
-try {
-  main();
-} catch (error) {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  try {
+    main();
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  }
 }

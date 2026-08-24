@@ -35,7 +35,7 @@ def test_analysis_job_persists_results(
 
     job = client.post(
         f"/api/v1/projects/{project['id']}/analyze",
-        json={"include_tempo": False, "force": False},
+        json={"include_tempo": False, "force": False, "beat_backend": "built-in"},
     ).json()["job"]
     final_job = wait_for_job(client, job["id"], timeout=90.0)
     assert final_job["status"] == "completed"
@@ -64,7 +64,7 @@ def test_analysis_job_persists_results(
 
     refresh_job = client.post(
         f"/api/v1/projects/{project['id']}/analyze",
-        json={"include_tempo": False, "force": False},
+        json={"include_tempo": False, "force": False, "beat_backend": "built-in"},
     ).json()["job"]
     assert wait_for_job(client, refresh_job["id"])["status"] == "completed"
 
@@ -120,7 +120,7 @@ def test_analysis_passes_latest_source_drums_and_bass_stems_only(
     with SessionLocal() as session:
         project = session.get(Project, project_id)
         assert project is not None
-        analysis = analysis_service.analyze_project(session, project)
+        analysis = analysis_service.analyze_project(session, project, beat_backend="built-in")
         session.commit()
 
     assert analysis.source_artifact_id == "art_analysis_source"
@@ -202,7 +202,7 @@ def test_reanalysis_updates_analysis_artifact_sync_metadata(
     with SessionLocal() as session:
         project = session.get(Project, project_id)
         assert project is not None
-        analysis_service.analyze_project(session, project)
+        analysis_service.analyze_project(session, project, beat_backend="built-in")
         first_artifact = _analysis_artifact(session, project_id)
         source_artifact = session.get(Artifact, "art_analysis_source")
         drums_artifact = session.get(Artifact, "art_source_drums")
@@ -314,7 +314,11 @@ def test_analysis_uses_beat_this_backend_when_requested(
         }
 
     monkeypatch.setattr(analysis_service, "beat_this_dependency_status", lambda: (True, None))
-    monkeypatch.setattr(analysis_service, "analyze_track_with_beat_this", fake_analyze_track_with_beat_this)
+    monkeypatch.setattr(
+        analysis_service,
+        "analyze_track_with_beat_this",
+        fake_analyze_track_with_beat_this,
+    )
 
     with SessionLocal() as session:
         project = session.get(Project, project_id)
@@ -377,7 +381,11 @@ def test_analysis_beat_this_uses_source_only_even_when_source_stems_have_signal_
             "timing": _timing_payload(source="beat-this"),
         }
 
-    monkeypatch.setattr(analysis_service, "analyze_track_with_beat_this", fake_analyze_track_with_beat_this)
+    monkeypatch.setattr(
+        analysis_service,
+        "analyze_track_with_beat_this",
+        fake_analyze_track_with_beat_this,
+    )
 
     with SessionLocal() as session:
         project = session.get(Project, project_id)
@@ -401,7 +409,6 @@ def test_analysis_beat_this_backend_fails_when_dependency_is_missing(
     project_id = "analysis_beat_this_unavailable_project"
     _seed_analysis_project(project_id, sample_audio_file)
     monkeypatch.setattr(analysis_service, "beat_this_dependency_status", lambda: (False, "beat-this is not installed"))
-
     with SessionLocal() as session:
         project = session.get(Project, project_id)
         assert project is not None
@@ -409,7 +416,7 @@ def test_analysis_beat_this_backend_fails_when_dependency_is_missing(
             analysis_service.analyze_project(session, project, beat_backend="beat-this")
 
 
-def test_analysis_beat_this_backend_reports_runtime_failure(
+def test_analysis_beat_this_backend_reports_known_runtime_failure(
     client,
     sample_audio_file: Path,
     monkeypatch,
@@ -420,10 +427,15 @@ def test_analysis_beat_this_backend_reports_runtime_failure(
     monkeypatch.setattr(analysis_service, "beat_this_dependency_status", lambda: (True, None))
 
     def fail_beat_this_analysis(*_args, **_kwargs):
-        raise analysis_service.BeatThisRuntimeError("Advanced Beat Analysis could not load the beat-this model.")
+        raise analysis_service.BeatThisRuntimeError(
+            "Advanced Beat Analysis could not load the beat-this model."
+        )
 
-    monkeypatch.setattr(analysis_service, "analyze_track_with_beat_this", fail_beat_this_analysis)
-
+    monkeypatch.setattr(
+        analysis_service,
+        "analyze_track_with_beat_this",
+        fail_beat_this_analysis,
+    )
     with SessionLocal() as session:
         project = session.get(Project, project_id)
         assert project is not None

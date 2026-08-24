@@ -1,48 +1,39 @@
 import { useCallback } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type BeatBackendsResponse } from "../../../lib/api";
+import { isAndroidRuntime } from "../../../lib/nativeAudio";
 import { usePreferences, type DefaultBeatAnalysisBackend } from "../../../lib/preferences";
+
+declare const __TUNEFORGE_BEAT_THIS_INCLUDED__: boolean;
 
 export type BeatBackendActionSelection = {
   beat_backend: DefaultBeatAnalysisBackend;
 };
 
+type BeatBackendRuntime = {
+  androidRuntime: boolean;
+  beatThisIncluded: boolean;
+};
+
+export function resolveBeatBackendActionSelection(
+  defaultBeatAnalysisBackend: DefaultBeatAnalysisBackend,
+  runtime: BeatBackendRuntime = {
+    androidRuntime: isAndroidRuntime(),
+    beatThisIncluded: __TUNEFORGE_BEAT_THIS_INCLUDED__,
+  },
+): BeatBackendActionSelection {
+  return {
+    beat_backend:
+      runtime.androidRuntime || !runtime.beatThisIncluded
+        ? "built-in"
+        : defaultBeatAnalysisBackend,
+  };
+}
+
 export function useBeatBackendActionSelection() {
-  const queryClient = useQueryClient();
   const { defaultBeatAnalysisBackend } = usePreferences();
-  const beatBackendsQuery = useQuery({
-    queryKey: ["beat-backends"],
-    queryFn: api.listBeatBackends,
-  });
 
   const beatBackendForAction = useCallback(async (): Promise<BeatBackendActionSelection> => {
-    if (defaultBeatAnalysisBackend === "built-in") {
-      return { beat_backend: "built-in" };
-    }
+    return resolveBeatBackendActionSelection(defaultBeatAnalysisBackend);
+  }, [defaultBeatAnalysisBackend]);
 
-    let backendResponse: BeatBackendsResponse | undefined = beatBackendsQuery.data;
-    if (!backendResponse) {
-      try {
-        backendResponse = await queryClient.fetchQuery({
-          queryKey: ["beat-backends"],
-          queryFn: api.listBeatBackends,
-        });
-      } catch {
-        return { beat_backend: "built-in" };
-      }
-    }
-    if (!backendResponse) {
-      return { beat_backend: "built-in" };
-    }
-
-    const selectedBackend = backendResponse.backends.find(
-      (backend) => backend.id === defaultBeatAnalysisBackend,
-    );
-    if (selectedBackend?.available) {
-      return { beat_backend: defaultBeatAnalysisBackend };
-    }
-    return { beat_backend: "built-in" };
-  }, [beatBackendsQuery.data, defaultBeatAnalysisBackend, queryClient]);
-
-  return { beatBackendForAction, beatBackendsQuery };
+  return { beatBackendForAction };
 }

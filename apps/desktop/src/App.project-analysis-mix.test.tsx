@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { LyricsResponse } from "./lib/api";
+import { resolveBeatBackendActionSelection } from "./features/projects/hooks/useBeatBackendActionSelection";
 import {
   resetAppTestHarness,
   findAudioByArtifactId,
@@ -33,6 +34,15 @@ import {
 
 describe("Desktop app project analysis mix", () => {
   beforeEach(resetAppTestHarness);
+
+  it("forces Built-in only when Beat This was intentionally excluded from the package", () => {
+    expect(
+      resolveBeatBackendActionSelection("beat-this", {
+        androidRuntime: false,
+        beatThisIncluded: false,
+      }),
+    ).toEqual({ beat_backend: "built-in" });
+  });
 
   async function openPlaybackWorkspace(user: ReturnType<typeof userEvent.setup>) {
     await user.click(screen.getByRole("tab", { name: "Playback" }));
@@ -185,7 +195,7 @@ describe("Desktop app project analysis mix", () => {
     expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123", { beat_backend: "beat-this" });
   });
 
-  it("falls back to built-in beats when the saved advanced backend is unavailable", async () => {
+  it("submits saved Beat This when a normal install reports it unavailable", async () => {
     const user = userEvent.setup();
     setProjectAnalysis("proj_123", null);
     window.localStorage.setItem(
@@ -203,7 +213,30 @@ describe("Desktop app project analysis mix", () => {
     await openStudioPanel(user);
     await user.click(screen.getByRole("button", { name: "Analyze Track" }));
 
-    expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123", { beat_backend: "built-in" });
+    expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123", { beat_backend: "beat-this" });
+  });
+
+  it("keeps Android analysis explicitly on Built-in", async () => {
+    const user = userEvent.setup();
+    const userAgent = vi
+      .spyOn(window.navigator, "userAgent", "get")
+      .mockReturnValue("Mozilla/5.0 (Linux; Android 15)");
+    setProjectAnalysis("proj_123", null);
+    window.localStorage.setItem(
+      "tuneforge.ui-preferences",
+      JSON.stringify({ defaultBeatAnalysisBackend: "beat-this" }),
+    );
+
+    try {
+      renderApp(["/projects/proj_123"]);
+      expect(await screen.findByRole("heading", { name: "Demo Song" })).toBeInTheDocument();
+      await openStudioPanel(user);
+      await user.click(screen.getByRole("button", { name: "Analyze Track" }));
+
+      expect(mockAnalyzeProject).toHaveBeenCalledWith("proj_123", { beat_backend: "built-in" });
+    } finally {
+      userAgent.mockRestore();
+    }
   });
 
   it("does not show the timing status panel in the playback rail", async () => {

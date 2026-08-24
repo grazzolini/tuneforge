@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { ChordSegmentSchema, JobSchema, LyricsSegmentSchema } from "../../lib/api";
+import type { ArtifactSchema, ChordSegmentSchema, JobSchema, LyricsSegmentSchema } from "../../lib/api";
 import {
+  artifactSummary,
   buildLeadSheetRows,
   findActiveLyricsIndex,
   formatApiErrorMessage,
@@ -10,6 +11,23 @@ import {
   formatJobStatusSummary,
   transposeChordSegment,
 } from "./projectViewUtils";
+
+function analysisArtifact(metadata: Record<string, unknown>): ArtifactSchema {
+  return {
+    can_delete: true,
+    can_regenerate: true,
+    created_at: "2026-04-18T13:16:02.000Z",
+    format: "json",
+    generated_by: "analysis",
+    id: "artifact_analysis",
+    metadata,
+    path: "/tmp/analysis.json",
+    project_id: "proj_123",
+    size_bytes: 100,
+    type: "analysis_json",
+    updated_at: "2026-04-18T13:16:02.000Z",
+  };
+}
 
 function chord(startSeconds: number, endSeconds: number, label: string): ChordSegmentSchema {
   return {
@@ -39,6 +57,16 @@ function testJob(overrides: Partial<JobSchema>): JobSchema {
     ...overrides,
   };
 }
+
+describe("artifactSummary", () => {
+  it("shows the actual analysis backend", () => {
+    expect(artifactSummary(analysisArtifact({ analysis_backend: "beat-this" }))).toBe("advanced");
+  });
+
+  it("keeps legacy analysis metadata readable as Built-in", () => {
+    expect(artifactSummary(analysisArtifact({}))).toBe("built-in");
+  });
+});
 
 describe("buildLeadSheetRows", () => {
   it("anchors chords to active lyric words when word timestamps exist", () => {

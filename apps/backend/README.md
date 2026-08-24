@@ -215,8 +215,32 @@ Accepted backend aliases are `fast` / `tuneforge-fast` and `advanced` / `crema-a
 Benchmark Built-in Chords against Advanced Chords:
 
 ```sh
-bash scripts/run-backend-module.sh app.benchmarks.chords --audio /path/to/song.mp3
+pnpm chords:benchmark -- --audio /path/to/song.mp3
 ```
+
+### Chord quality benchmarks
+
+The quality benchmark is a manual-only evaluator; it is intentionally excluded from CI and never
+downloads datasets. It emits anonymous aggregate metrics only, without source paths, filenames,
+labels, timelines, or audio hashes. The deterministic synthetic suite contains generated tones only:
+
+```sh
+pnpm chords:benchmark -- --quality-synthetic --json-only
+```
+
+For an external normalized manifest, keep the manifest and its audio outside the repository. The
+manifest requires SHA-256-verified relative audio paths and only the fixed public musical strata.
+Pass an explicit root for those paths. Vendored public manifests resolve their declared safe
+`data_subdir` below that root, so GuitarSet and Tiny AAM can run together:
+
+```sh
+pnpm chords:benchmark -- \
+  --quality-manifest /secure/local/chords.json --data-root /secure/local/data --json-only
+```
+
+Vendored GuitarSet 1.1.0 and Tiny AAM 1.1.0 manifests pin official archive and selected-asset
+checksums plus deterministic six-track selection rules. The benchmark does not fetch data; corpus
+execution and archive/layout validation remain separate manual checks.
 
 Run from the repository root. The command writes machine-readable JSON to stdout and a short summary to stderr. Use `--json-only` for JSON-only output.
 

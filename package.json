@@ -5,6 +5,7 @@
   "scripts": {
     "build:packaged-frontend": "node scripts/build-packaged-frontend.mjs",
     "bundle:prepare": "node scripts/prepare-bundle.mjs",
+    "chords:benchmark": "bash -c 'if [[ \"${1:-}\" == \"--\" ]]; then shift; fi; exec bash scripts/run-backend-module.sh app.benchmarks.chords \"$@\"' --",
     "contracts:generate": "pnpm --filter @tuneforge/shared-types generate",
     "dev": "concurrently -n backend,desktop -c blue,green \"pnpm dev:backend\" \"pnpm dev:desktop\"",
     "android:studio:shim": "bash scripts/android-studio-root-shim.sh",

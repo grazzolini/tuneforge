@@ -5,6 +5,12 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+### Changed
+
+- Made Advanced Beat Analysis the default beat-analysis request. Built-in Beat Analysis remains an
+  explicit choice for mobile, dependency-excluded packages, and users who opt out; advanced beat
+  runtime failures now fail the job.
+
 ## [1.2.0] - 2026-08-24
 
 ### Added

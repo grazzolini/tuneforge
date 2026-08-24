@@ -811,7 +811,7 @@ export interface components {
             force?: boolean;
             /**
              * Beat Backend
-             * @default built-in
+             * @default beat-this
              * @enum {string}
              */
             beat_backend?: "built-in" | "beat-this";
@@ -972,7 +972,7 @@ export interface components {
             stem_model?: string | null;
             /**
              * Beat Backend
-             * @default built-in
+             * @default beat-this
              * @enum {string}
              */
             beat_backend?: "built-in" | "beat-this";
@@ -1584,7 +1584,7 @@ export interface components {
             stem_model?: string | null;
             /**
              * Beat Backend
-             * @default built-in
+             * @default beat-this
              * @enum {string}
              */
             beat_backend?: "built-in" | "beat-this";

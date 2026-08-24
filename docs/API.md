@@ -149,9 +149,10 @@ metadata when available, otherwise local development resolves them with `git des
 
 `GET /api/v1/beat-backends`
 
-Returns available beat analysis backends. Built-in Beat Analysis is always expected to be available.
-Advanced Beat Analysis is the default desktop/dev/package engine, but may be unavailable when
-desktop-only dependencies are explicitly excluded, unsupported, or missing.
+Returns available Advanced Beat Analysis and Built-in Beat Analysis backends. Built-in Beat Analysis
+is always expected to be available. Advanced Beat Analysis is the default desktop/dev/package
+request, but may be unavailable when desktop-only dependencies are explicitly excluded, unsupported,
+or missing.
 
 ## Chord Backends
 
@@ -636,8 +637,9 @@ Response: `ProjectResponse`.
 
 `stem_model` is optional. Desktop imports send the user's default stem model so automatic source stems match
 manual stem generation preferences; if omitted, the backend stem model default is used. `beat_backend`
-defaults to `built-in`; desktop preferences may send `beat-this` when Advanced Beat Analysis is
-available. Chord backend fields follow the same validation as explicit chord generation.
+defaults to `beat-this`. An Advanced Beat Analysis dependency, checkpoint download/load, runtime, or
+unusable-timing failure fails the analysis job; the backend does not switch to Built-in Beat Analysis.
+Chord backend fields follow the same validation as explicit chord generation.
 
 `source_path` records where the user imported the file from on this install. Sync treats it as local provenance, not a durable source of original bytes or an operational sync input. `copy_into_project=false` is accepted for compatibility, but new imports still create an app-managed durable source artifact under the project root. Project identity remains derived from the original selected bytes; the artifact hash describes the encoded durable bytes.
 
@@ -700,6 +702,10 @@ Request fields:
 - `beat_backend`
 
 Response: `JobResponse`.
+
+`beat_backend` defaults to `beat-this`. Analysis jobs expose the selected backend in `beat_backend`.
+Pending jobs reconstructed without a selection adopt Advanced Beat Analysis; legacy completed jobs
+without a backend remain readable as Built-in Beat Analysis.
 
 ### Get analysis
 
@@ -1049,6 +1055,10 @@ Response: `BulkJobsResponse`, with `created_jobs`, `total_projects`, and `skippe
 `GET /api/v1/jobs/{job_id}`
 
 Response: `JobResponse`.
+
+For analysis jobs, `beat_backend` is the backend selected for the run. Analysis artifact metadata
+records the completed engine as `analysis_backend`. Advanced Beat Analysis failures do not produce a
+Built-in Beat Analysis artifact.
 
 ### Cancel job
 

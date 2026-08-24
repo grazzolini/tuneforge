@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { manifestWithPackageOptions } from "./package-flatpak.mjs";
 import {
   backendSyncArgs,
+  packageOptionsEnvironment,
   packageOptionsToGeneratorArgs,
   parsePackageOptions,
 } from "./package-options.mjs";
@@ -69,8 +72,31 @@ test("package option parser accepts advanced dependency opt-outs", () => {
 
   assert.equal(options.crema, false);
   assert.equal(options.beatThis, false);
+  assert.equal(JSON.parse(packageOptionsEnvironment(options).TUNEFORGE_PACKAGE_OPTIONS).beatThis, false);
   assert.deepEqual(packageOptionsToGeneratorArgs(options), ["--no-crema", "--no-beat-this"]);
   assert.deepEqual(backendSyncArgs(options), ["sync", "--python", "3.11", "--all-groups"]);
+});
+
+test("Flatpak package options are scoped to the TuneForge module build environment", () => {
+  const baseManifest = readFileSync(
+    new URL("../packaging/flatpak/com.tuneforge.desktop.yml", import.meta.url),
+    "utf8",
+  );
+  const options = parsePackageOptions(["--no-beat-this"], { platform: "linux" });
+  const manifest = manifestWithPackageOptions(baseManifest, options);
+  const cpythonModule = manifest.slice(
+    manifest.indexOf("  - name: cpython-3.11"),
+    manifest.indexOf("  - name: python-runtime-deps"),
+  );
+  const tuneforgeModule = manifest.slice(manifest.indexOf("  - name: tuneforge"));
+
+  assert.equal(cpythonModule.includes("TUNEFORGE_PACKAGE_OPTIONS"), false);
+  assert.equal((tuneforgeModule.match(/\n    build-options:/g) ?? []).length, 1);
+  assert.equal((manifest.match(/TUNEFORGE_PACKAGE_OPTIONS:/g) ?? []).length, 1);
+  assert.match(
+    tuneforgeModule,
+    /      env:\n        TUNEFORGE_PACKAGE_OPTIONS: '.*"beatThis":false.*'/,
+  );
 });
 
 test("package option parser has no profile compatibility path", () => {

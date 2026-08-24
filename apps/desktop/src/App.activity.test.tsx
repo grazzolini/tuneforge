@@ -5641,7 +5641,7 @@ describe("Desktop app activity", () => {
     }
   });
 
-  it("falls back to built-in beats for bulk analyze when advanced beats are unavailable", async () => {
+  it("submits saved Beat This for bulk analyze when a normal install reports it unavailable", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem(
       "tuneforge.ui-preferences",
@@ -5660,7 +5660,7 @@ describe("Desktop app activity", () => {
     await waitFor(() =>
       expect(mockBulkJobs).toHaveBeenCalledWith({
         job_type: "analyze",
-        beat_backend: "built-in",
+        beat_backend: "beat-this",
       }),
     );
   });

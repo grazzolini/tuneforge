@@ -204,7 +204,7 @@ def test_import_project_without_copy_still_materializes_internal_wav(
         assert source_artifact.content_sha256 != expected_hash
 
         source_path.unlink()
-        analysis = analyze_project(session, project)
+        analysis = analyze_project(session, project, beat_backend="built-in")
 
         assert analysis.project_id == project.id
         assert imported_path.exists()
@@ -540,6 +540,7 @@ def test_import_project_enqueues_full_source_processing(
             "copy_into_project": True,
             "stem_model": "htdemucs_ft",
             "output_format": "flac",
+            "beat_backend": "built-in",
         },
     )
 

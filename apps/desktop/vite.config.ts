@@ -42,12 +42,14 @@ const reactRefreshPreamble = {
 export default defineConfig(() => {
   const versionFilePath = process.env.TUNEFORGE_VERSION_FILE;
   const buildInfo = resolveBuildInfo({ workspaceRoot, versionFilePath });
+  const beatThisIncluded = beatThisIncludedInBuild();
 
   return {
     plugins: [reactRefreshPreamble, react()],
     define: {
       __TUNEFORGE_FRONTEND_GIT_REF__: JSON.stringify(buildInfo.frontend.git_ref),
       __TUNEFORGE_FRONTEND_PACKAGE_VERSION__: JSON.stringify(buildInfo.frontend.package_version),
+      __TUNEFORGE_BEAT_THIS_INCLUDED__: JSON.stringify(beatThisIncluded),
     },
     server: {
       host: "127.0.0.1",
@@ -81,6 +83,15 @@ export default defineConfig(() => {
     },
   };
 });
+
+function beatThisIncludedInBuild() {
+  const encodedOptions = process.env.TUNEFORGE_PACKAGE_OPTIONS;
+  if (!encodedOptions) {
+    return true;
+  }
+  const packageOptions = JSON.parse(encodedOptions) as { beatThis?: unknown };
+  return packageOptions.beatThis !== false;
+}
 
 function realpathIfPresent(path: string) {
   return existsSync(path) ? realpathSync(path) : null;

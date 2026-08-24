@@ -149,7 +149,7 @@ class ProjectImportRequest(BaseModel):
     chord_backend: str | None = None
     chord_backend_fallback_from: str | None = None
     stem_model: str | None = None
-    beat_backend: AnalysisBeatBackend = "built-in"
+    beat_backend: AnalysisBeatBackend = "beat-this"
 
     @model_validator(mode="after")
     def validate_import_request(self) -> ProjectImportRequest:
@@ -962,7 +962,7 @@ class SyncTrustedPeersResponse(BaseModel):
 class AnalysisRequest(BaseModel):
     include_tempo: bool = False
     force: bool = False
-    beat_backend: AnalysisBeatBackend = "built-in"
+    beat_backend: AnalysisBeatBackend = "beat-this"
 
 
 class AnalysisTimingBeatSchema(BaseModel):
@@ -1368,7 +1368,7 @@ class BulkJobRequest(BaseModel):
     chord_backend: str | None = None
     chord_backend_fallback_from: str | None = None
     stem_model: str | None = None
-    beat_backend: AnalysisBeatBackend = "built-in"
+    beat_backend: AnalysisBeatBackend = "beat-this"
 
     @model_validator(mode="after")
     def validate_bulk_job_request(self) -> BulkJobRequest:

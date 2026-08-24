@@ -583,7 +583,7 @@ describe("Desktop app settings theme", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows unavailable advanced beat backend and selects built-in fallback", async () => {
+  it("shows unavailable advanced beat backend alongside the available Built-in choice", async () => {
     window.localStorage.setItem(
       "tuneforge.ui-preferences",
       JSON.stringify({ defaultBeatAnalysisBackend: "beat-this", defaultSourcesRailCollapsed: false }),
@@ -617,13 +617,9 @@ describe("Desktop app settings theme", () => {
       "aria-pressed",
       "true",
     );
+    expect(screen.getByRole("button", { name: /^Advanced Beat Analysis/ })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("button", { name: /^Advanced Beat Analysis/ })).toBeDisabled();
-    expect(
-      screen.getByText(
-        "Advanced Beat Analysis unavailable: beat-this is not installed. Using Built-in Beat Analysis fallback.",
-      ),
-    ).toBeInTheDocument();
-    expect(screen.getAllByText("Built-in Beat Analysis").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Advanced Beat Analysis").length).toBeGreaterThan(0);
   });
 
   it("keeps engine defaults neutral while registry availability is loading", async () => {
@@ -661,7 +657,7 @@ describe("Desktop app settings theme", () => {
     expect(screen.queryByText("Checking availability")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Advanced Beat Analysis/ })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByText(/No beat analysis backend available/)).toBeInTheDocument();
+    expect(screen.getAllByText("No available backend")).toHaveLength(2);
     expect(screen.getByText(/No chord backend available/)).toBeInTheDocument();
   });
 
@@ -720,7 +716,7 @@ describe("Desktop app settings theme", () => {
     expect(screen.getByRole("button", { name: /^Built-in Beat Analysis/ })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("button", { name: /^Built-in Chords/ })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByText(/No beat analysis backend available/)).toBeInTheDocument();
+    expect(screen.getAllByText("No available backend")).toHaveLength(2);
     expect(screen.getByText(/No chord backend available/)).toBeInTheDocument();
     expect(screen.queryByText(/Using Built-in .* fallback/)).not.toBeInTheDocument();
   });

@@ -64,23 +64,28 @@ dependency stack. Built-in Chords fallback should stay available when that stack
 
 ### Advanced Beat Analysis backend
 
-Advanced Beat Analysis is the default desktop timing-grid backend when the desktop dependency stack
-and `small0` checkpoint are available. Built-in Beat Analysis uses TuneForge's built-in
-librosa-derived beat tracker, sparse-gap stabilization, and downbeat heuristics, and stays available
-as the fallback.
+Advanced Beat Analysis is the default desktop timing-grid request. It uses the optional `beat-this`
+dependency and downloads or loads its `small0` checkpoint on first use. Built-in Beat Analysis uses
+TuneForge's local librosa-derived beat tracker, sparse-gap stabilization, and downbeat heuristics,
+and remains available as an explicit alternative.
 
-Advanced Beat Analysis is backed by [`beat-this`](https://github.com/CPJKU/beat_this). It runs when
-an analyze request uses `"beat_backend": "beat-this"`; desktop preferences and desktop import flows
-select it by default when available. For the default desktop setup:
+Advanced Beat Analysis is backed by [`beat-this`](https://github.com/CPJKU/beat_this). Analyze,
+import, and bulk analyze requests default to `"beat_backend": "beat-this"`; desktop actions send the
+saved choice to the backend. For the default desktop setup:
 
 ```sh
 pnpm setup:dev
 ```
 
-The backend loads `beat-this` lazily and uses its `small0` checkpoint on CPU. `pnpm setup:dev`
+The backend loads `beat-this` lazily and uses its `small0` checkpoint on CPU. An Advanced Beat
+Analysis request fails if its optional dependency is missing or if checkpoint download, load,
+runtime, or timing analysis ultimately fails. It never silently switches analysis engines. An
+explicit Built-in Beat Analysis request never probes `beat-this`. `pnpm setup:dev`
 verifies the checkpoint with size and SHA-256 before importing beat-this; if it is missing or
-invalid, setup preloads it. If the dependency or checkpoint is unavailable, the advanced settings
-option is disabled and Built-in Beat Analysis keeps working.
+invalid, setup preloads it. Normal desktop builds submit the saved Advanced Beat Analysis choice even
+if dependency diagnostics fail, so the job reports the failure instead of silently switching engines.
+Packages built with `--no-beat-this` embed that intentional opt-out and desktop actions explicitly
+select Built-in Beat Analysis.
 
 Release coverage label: full beat-this runtime and checkpoint behavior are manual or special checks
 unless a CI workflow explicitly installs the advanced beat dependency stack and exercises it.

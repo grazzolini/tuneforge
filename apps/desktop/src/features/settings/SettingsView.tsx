@@ -252,7 +252,6 @@ const fallbackBeatAnalysisBackendOptions: ChoiceOption<DefaultBeatAnalysisBacken
     value: "built-in",
     label: "Built-in Beat Analysis",
     description: "Use the local librosa heuristic for tempo and beat timing.",
-    status: "Fallback",
   },
 ];
 
@@ -539,7 +538,7 @@ function beatBackendOptions(backends: BeatBackendSchema[] | undefined): ChoiceOp
       label: backend.label,
       description: fallback.description,
       disabled: !backend.available,
-      status: unavailableReason ?? (fallback.value === "built-in" ? "Fallback" : undefined),
+      status: unavailableReason ?? undefined,
     };
   });
 }
@@ -824,15 +823,6 @@ export function SettingsView() {
   const androidSettings =
     androidRuntime || exportCapabilitiesQuery.data?.capabilities.platform === "android";
   const showAudioStoragePanel = !androidSettings;
-  const beatFallbackNotice = fallbackNotice(
-    defaultBeatAnalysisBackend,
-    effectiveBeatAnalysisBackend,
-    beatBackendChoices,
-    beatAnalysisBackendLabel,
-    beatAnalysisBackendLabel,
-    beatAvailabilityResolved,
-    "No beat analysis backend available",
-  );
   const chordFallbackNotice = fallbackNotice(
     defaultChordBackend,
     effectiveChordBackend,
@@ -1095,7 +1085,6 @@ export function SettingsView() {
               {effectiveBeatAnalysisBackend === null
                 ? "No available backend"
                 : beatAnalysisBackendLabel(effectiveBeatAnalysisBackend)}
-              {beatFallbackNotice ? <span>{beatFallbackNotice}</span> : null}
             </dd>
           </div>
           <div className="settings-overview__stat">

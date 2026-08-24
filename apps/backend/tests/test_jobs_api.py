@@ -712,7 +712,10 @@ def test_analyze_job_exposes_source_beat_input(
         beat_backend: str = "built-in",
     ) -> AnalysisResult:
         assert beat_backend == "beat-this"
-        return AnalysisResult(project_id=project.id, timing_json=None if timing_json is None else dict(timing_json))
+        return AnalysisResult(
+            project_id=project.id,
+            timing_json=None if timing_json is None else dict(timing_json),
+        )
 
     monkeypatch.setattr("app.services.jobs.analyze_project", fake_analyze_project)
     with SessionLocal() as session:
@@ -722,9 +725,10 @@ def test_analyze_job_exposes_source_beat_input(
             session,
             project_id=project_id,
             job_type="analyze",
-            payload={"beat_backend": "beat-this"},
+            payload={},
         )
         assert job.payload_json["beat_input"] == "source"
+        assert "beat_backend" not in job.payload_json
         job_id = job.id
         session.commit()
 
@@ -804,6 +808,7 @@ def test_analyze_job_api_defaults_missing_or_unknown_beat_input_to_source(
     get_response = client.get("/api/v1/jobs/job_analyze_input")
     assert get_response.status_code == 200
     assert get_response.json()["job"]["beat_input"] == "source"
+    assert get_response.json()["job"]["beat_backend"] == "built-in"
 
     list_response = client.get("/api/v1/jobs")
     assert list_response.status_code == 200

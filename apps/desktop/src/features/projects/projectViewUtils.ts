@@ -746,6 +746,14 @@ export function artifactSummary(artifact: ArtifactSchema) {
       .join(" / ");
   }
 
+  if (artifact.type === "analysis_json") {
+    const backend =
+      typeof artifact.metadata?.analysis_backend === "string"
+        ? artifact.metadata.analysis_backend
+        : "built-in";
+    return formatBeatBackend(backend) ?? "built-in";
+  }
+
   const metadata = artifact.metadata ?? {};
   const pieces: string[] = [];
   const transpose = metadata.transpose;

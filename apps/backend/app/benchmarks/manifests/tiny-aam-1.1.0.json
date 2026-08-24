@@ -1,0 +1,32 @@
+{
+  "schema_version": "chord-public-manifest-v1",
+  "dataset": "tiny-aam",
+  "dataset_version": "1.1.0",
+  "license": "CC BY 4.0",
+  "official_source": "https://doi.org/10.5281/zenodo.6771120",
+  "adapter": "tiny-aam-arff-v1",
+  "data_subdir": "tiny-aam",
+  "archive_pins": [
+    {
+      "kind": "dataset_archive",
+      "checksum_algorithm": "md5",
+      "checksum": "9121d5ae106747e67721bde0d55f9e00",
+      "bytes": 168412253
+    }
+  ],
+  "selection": {
+    "rule": "select six lowest SHA-256 digests of paired audio basenames",
+    "count": 6,
+    "audio_glob": "audio-mixes-mp3/*_mix.mp3",
+    "annotation_templates": ["annotations/{basename}_beatinfo.arff", "annotations/{basename}_segments.arff"],
+    "selected_assets": [
+      {"id": "0758", "audio_sha256": "c348cfa14ed0996c343fb0b52a5f51db1d698b942f9dfd0821890eb35d3199e6", "beatinfo_sha256": "13a5ed1dc34de6523c64e7859edf0233e54bbbbf19a494e1424839ea0331563d", "segments_sha256": "826f804ffc0f47a5918d72af64baea648da42f1e46e4ee2d9ff2409538464133"},
+      {"id": "2395", "audio_sha256": "9cb0c6954a11b3b339a002e1cc65763ae5011aa558cc85ed9a1c0e4c3e23b314", "beatinfo_sha256": "98a228f1ed783e03e896907098e88426459a1642bb6fa2cfb3df78f0775716ba", "segments_sha256": "3130966fb3a7ebef1846dbe61aea8b38dec4516780d249598eaa1717fd94f632"},
+      {"id": "1941", "audio_sha256": "cfb0e8e32dc0ca2bb69147e2de7392c16a07711a14eadc0a0b3939360dacf6c3", "beatinfo_sha256": "07cc1718f37a20ba2b4f52c63d890af7da5d7db345c54961a58b5ae4e66c550d", "segments_sha256": "b995b425d2917e29426caed66a76e102deef8cb8d5cefd7945c91e7ff3f66054"},
+      {"id": "0001", "audio_sha256": "a5a1b0b4ed5e435106a0e4b5659f4849332b5dd611fdbc3bc4fb79f4958512e4", "beatinfo_sha256": "33e870a406ed13142b6ad7c7f28c9f6043b52fa17bb51aff943ec087df495afa", "segments_sha256": "62c0cf1c05c5ba2ec0fcba9d5a9e3dfcae3a84f869ea83a5fff7c02358b3e315"},
+      {"id": "2841", "audio_sha256": "c2e14c61e27dd616e9ea34453fdf511e1ae213b56683494d13751ae5a450fbf0", "beatinfo_sha256": "e94b7f1ff6530c9ec36d466aa6f7675d98db567a8b58094461c26ee03e4b3407", "segments_sha256": "866567461587dd57c56a08b22d9607a4f346f75c68830b48c360e868b368208d"},
+      {"id": "3000", "audio_sha256": "1f7b4f5e1866cefbd5174c8487f044a834d16122e6ddb7120f14be1f96529aa8", "beatinfo_sha256": "6bb40cdf68015c41ed343250aaa9ec0e075de516b9ac85a4da3ffe7d3d4bab43", "segments_sha256": "70a686dfcf26aeb9ef390e844e2956c6175a2c8b79f3cc6732f73bcbd6be1af7"}
+    ]
+  },
+  "safe_strata": ["full-mix"]
+}

@@ -1,0 +1,38 @@
+{
+  "schema_version": "chord-public-manifest-v1",
+  "dataset": "guitarset",
+  "dataset_version": "1.1.0",
+  "license": "CC BY 4.0",
+  "official_source": "https://doi.org/10.5281/zenodo.3371780",
+  "adapter": "guitarset-jams-v1",
+  "data_subdir": "guitarset",
+  "archive_pins": [
+    {
+      "kind": "annotations",
+      "checksum_algorithm": "md5",
+      "checksum": "b39b78e63d3446f2e54ddb7a54df9b10",
+      "bytes": 39132574
+    },
+    {
+      "kind": "mono_microphone_audio",
+      "checksum_algorithm": "md5",
+      "checksum": "275966d6610ac34999b58426beb119c3",
+      "bytes": 656927981
+    }
+  ],
+  "selection": {
+    "rule": "select six lowest SHA-256 digests of paired annotation basenames",
+    "count": 6,
+    "annotation_glob": "annotations/*.jams",
+    "audio_template": "audio/{basename}_mic.wav",
+    "selected_annotations": [
+      {"basename": "05_Funk3-98-A_solo", "sha256": "cece1d8b559e6a86a7a9265928060f2c9c8c812d9e19453bf76d41b3c415c65e", "audio_sha256": "62b9db961f832c0b893f64363b9963bd46c5cef0128fad31236d6aee4c9ef4e2"},
+      {"basename": "05_Jazz1-200-B_comp", "sha256": "1b831c294ee0c18e8299df4247ebc969d96cffd2d02f1cd24161046c9e3fa3a9", "audio_sha256": "00cdf3460ef31be49312fb7f3c520045a85b83b6b1b70b9efd9a986431490281"},
+      {"basename": "03_Rock1-130-A_comp", "sha256": "502ab4f7788bad71bafe9572ba185e698b3cf82576be105acd6d4112b711f1fa", "audio_sha256": "5e71387daf08213651f8b8f0d9b1db7d589cbc6b9fefd8e052e13a1f8f7286ca"},
+      {"basename": "02_SS2-107-Ab_solo", "sha256": "38ba295df29b31a842aa37d28a9b6ed6b3e36f648566dfab60a9647bc89e428b", "audio_sha256": "62dd76b1551d81484981161808a281eb5785027110b6ace56c701edd04320685"},
+      {"basename": "05_Funk3-112-C#_solo", "sha256": "b7ebab2a0e1c8b68f0359646704c9644a4b18fca4083f6816909a7f9bec693a7", "audio_sha256": "32862cde85f0a3f1d9b22e1c734a5b1433f4149a268edf9cc578b122f66ba00b"},
+      {"basename": "00_Funk1-97-C_solo", "sha256": "00c77a22d7a0022002926f186ec11cc6c66d4fd2704619e1869dab76a712aade", "audio_sha256": "8e0d08e0e2c8b1a66ff50cb7e0a7433d87068620d9c607394412ca4248238ee3"}
+    ]
+  },
+  "safe_strata": ["solo-guitar", "accompaniment"]
+}

@@ -787,6 +787,28 @@ describe("formatJobStatusSummary", () => {
     expect(formatJobStatusSummary(job)).toBe("completed / advanced / source / CUDA / 5.3 s");
   });
 
+  it("labels LV Chordia chord jobs", () => {
+    const job: JobSchema = {
+      chord_backend: "lv-chordia-submission",
+      chord_source: "source",
+      completed_at: "2026-04-18T13:16:14.000Z",
+      created_at: "2026-04-18T13:16:00.000Z",
+      duration_seconds: 8.1,
+      error_message: null,
+      id: "job_chords_lv",
+      progress: 100,
+      project_id: "proj_123",
+      runtime_device: "mps",
+      source_artifact_id: null,
+      started_at: "2026-04-18T13:16:06.000Z",
+      status: "completed",
+      type: "chords",
+      updated_at: "2026-04-18T13:16:14.000Z",
+    };
+
+    expect(formatJobStatusSummary(job)).toBe("completed / LV Chordia / source / MPS / 8.1 s");
+  });
+
   it("includes stem model label for stem jobs", () => {
     const job: JobSchema = {
       chord_backend: null,

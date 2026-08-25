@@ -13,12 +13,20 @@ from app.engines.crema_chords import (
     crema_runtime_device,
     detect_crema_chord_timeline,
 )
+from app.engines.lv_chordia import (
+    LV_CHORDIA_BACKEND_ID,
+    detect_lv_chordia_timeline,
+    lv_chordia_dependency_status,
+    lv_chordia_model_metadata,
+    lv_chordia_runtime_device,
+)
 from app.errors import AppError
 
 ChordBackendSpeed = Literal["fast", "medium", "slow"]
 
 FAST_CHORD_BACKEND_ID = "tuneforge-fast"
 CREMA_CHORD_BACKEND_ID = "crema-advanced"
+LV_CHORDIA_CHORD_BACKEND_ID = LV_CHORDIA_BACKEND_ID
 DEFAULT_CHORD_BACKEND_ID = CREMA_CHORD_BACKEND_ID
 FALLBACK_CHORD_BACKEND_ID = FAST_CHORD_BACKEND_ID
 
@@ -132,9 +140,46 @@ class CremaChordBackend:
         )
 
 
+@dataclass(frozen=True)
+class LVChordiaChordBackend:
+    id: str = LV_CHORDIA_CHORD_BACKEND_ID
+    label: str = "LV Chordia (Submission)"
+    description: str = "Use bundled LV Chordia submission model for desktop chord detection."
+    capabilities: ChordBackendCapabilities = ChordBackendCapabilities(
+        supports_sevenths=True,
+        supports_inversions=True,
+        supports_confidence=False,
+        supports_no_chord=True,
+        estimated_speed="slow",
+        desktop_only=True,
+        experimental=True,
+    )
+
+    def availability(self) -> ChordBackendAvailability:
+        available, reason = lv_chordia_dependency_status(runtime_platform=get_settings().runtime_platform)
+        return ChordBackendAvailability(available=available, unavailable_reason=reason)
+
+    def detect(self, source_path: Path) -> ChordDetectionResult:
+        availability = self.availability()
+        if not availability.available:
+            _raise_unavailable(cast(ChordDetectionBackend, self), availability)
+        detection = detect_lv_chordia_timeline(source_path)
+        metadata = lv_chordia_model_metadata()
+        metadata["runtime_device"] = detection.runtime_device
+        if detection.accelerator_fallback_from is not None:
+            metadata["accelerator_fallback_from"] = detection.accelerator_fallback_from
+        return ChordDetectionResult(
+            segments=detection.segments,
+            backend_id=self.id,
+            metadata=metadata,
+            runtime_device=detection.runtime_device,
+        )
+
+
 _BACKENDS: dict[str, ChordDetectionBackend] = {
     FAST_CHORD_BACKEND_ID: cast(ChordDetectionBackend, FastChordBackend()),
     CREMA_CHORD_BACKEND_ID: cast(ChordDetectionBackend, CremaChordBackend()),
+    LV_CHORDIA_CHORD_BACKEND_ID: cast(ChordDetectionBackend, LVChordiaChordBackend()),
 }
 
 _ALIASES = {
@@ -145,6 +190,8 @@ _ALIASES = {
     "advanced": CREMA_CHORD_BACKEND_ID,
     "crema": CREMA_CHORD_BACKEND_ID,
     "crema-advanced": CREMA_CHORD_BACKEND_ID,
+    "lv-chordia": LV_CHORDIA_CHORD_BACKEND_ID,
+    "lv-chordia-submission": LV_CHORDIA_CHORD_BACKEND_ID,
 }
 
 
@@ -195,6 +242,8 @@ def chord_backend_runtime_device(backend_id: str) -> str | None:
         return "cpu"
     if resolved_backend_id == CREMA_CHORD_BACKEND_ID:
         return crema_runtime_device()
+    if resolved_backend_id == LV_CHORDIA_CHORD_BACKEND_ID:
+        return lv_chordia_runtime_device()
     return None
 
 
@@ -206,6 +255,7 @@ def chord_backend_uses_source_instrumental_stem(backend_id: str) -> bool:
     return resolve_chord_backend_id(backend_id) in {
         FAST_CHORD_BACKEND_ID,
         CREMA_CHORD_BACKEND_ID,
+        LV_CHORDIA_CHORD_BACKEND_ID,
     }
 
 

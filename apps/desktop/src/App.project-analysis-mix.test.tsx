@@ -403,7 +403,7 @@ describe("Desktop app project analysis mix", () => {
     );
   });
 
-  it("falls back to built-in chords when the saved advanced backend is unavailable", async () => {
+  it("keeps the saved chord backend for explicit generation when unavailable", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem(
       "tuneforge.ui-preferences",
@@ -440,16 +440,14 @@ describe("Desktop app project analysis mix", () => {
     await user.click(screen.getByRole("button", { name: "Generate Stems" }));
 
     expect(mockCreateChords).toHaveBeenCalledWith("proj_123", {
-      backend: "tuneforge-fast",
-      backend_fallback_from: "crema-advanced",
+      backend: "crema-advanced",
       force: true,
       overwrite_user_edits: false,
     });
     expect(mockCreateStems).toHaveBeenCalledWith(
       "proj_123",
       expect.objectContaining({
-        chord_backend: "tuneforge-fast",
-        chord_backend_fallback_from: "crema-advanced",
+        chord_backend: "crema-advanced",
       }),
     );
   });

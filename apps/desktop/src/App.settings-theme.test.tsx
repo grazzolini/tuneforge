@@ -574,13 +574,37 @@ describe("Desktop app settings theme", () => {
     renderApp(["/settings"]);
 
     expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
-    expect(await screen.findByText("crema is not installed")).toBeInTheDocument();
+    expect(await screen.findByText("Selected · Unavailable — crema is not installed")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Built-in Chords/ })).not.toBeDisabled();
     expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /^Built-in Chords/ })).toHaveAttribute("aria-pressed", "true");
-    expect(
-      screen.getByText("Advanced Chords unavailable: crema is not installed. Using Built-in Chords fallback."),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Built-in Chords/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText(/Imports may use Built-in Chords if the saved backend is unavailable/)).toBeInTheDocument();
+  });
+
+  it("preserves the saved chord backend and offers retry when availability fails", async () => {
+    const user = userEvent.setup();
+    mockListChordBackends.mockRejectedValueOnce(new Error("registry unavailable"));
+
+    renderApp(["/settings"]);
+
+    expect(await screen.findByText(
+      "Chord backend availability could not be checked. Saved selection was preserved.",
+    )).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^LV Chordia/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Built-in Chords/ })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Retry availability" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Advanced Chords/ })).not.toBeDisabled());
+    const chordBackendGroup = screen.getByRole("group", { name: "Default chord backend" });
+    expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toHaveAttribute("aria-pressed", "true");
+    expect(chordBackendGroup).toHaveFocus();
+    expect(within(chordBackendGroup).getByRole("status")).toHaveTextContent(
+      "Chord backend availability updated.",
+    );
   });
 
   it("shows unavailable advanced beat backend alongside the available Built-in choice", async () => {
@@ -643,7 +667,11 @@ describe("Desktop app settings theme", () => {
     expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Advanced Beat Analysis/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getAllByText("Checking availability").length).toBeGreaterThanOrEqual(4);
+    expect(screen.getByRole("group", { name: "Default chord backend" })).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByText("Checking chord backend availability…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^LV Chordia/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Built-in Chords/ })).toBeDisabled();
     expect(screen.queryByText(/Using Built-in .* fallback/)).not.toBeInTheDocument();
 
     await act(async () => {
@@ -656,9 +684,9 @@ describe("Desktop app settings theme", () => {
     );
     expect(screen.queryByText("Checking availability")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Advanced Beat Analysis/ })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getAllByText("No available backend")).toHaveLength(2);
-    expect(screen.getByText(/No chord backend available/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getAllByText("No available backend")).toHaveLength(1);
+    expect(screen.getByText(/Imports may use Built-in Chords if the saved backend is unavailable/)).toBeInTheDocument();
   });
 
   it("shows blocked state when no beat or chord backend is available", async () => {
@@ -710,14 +738,14 @@ describe("Desktop app settings theme", () => {
     expect(await screen.findByRole("heading", { name: "Control Room" })).toBeInTheDocument();
     expect(await screen.findByText("beat-this is not installed")).toBeInTheDocument();
     expect(screen.getByText("built-in beat engine failed diagnostics")).toBeInTheDocument();
-    expect(screen.getByText("crema is not installed")).toBeInTheDocument();
-    expect(screen.getByText("built-in chord engine failed diagnostics")).toBeInTheDocument();
+    expect(screen.getByText("Selected · Unavailable — crema is not installed")).toBeInTheDocument();
+    expect(screen.getByText("Unavailable — built-in chord engine failed diagnostics")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Advanced Beat Analysis/ })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("button", { name: /^Built-in Beat Analysis/ })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Built-in Chords/ })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getAllByText("No available backend")).toHaveLength(2);
-    expect(screen.getByText(/No chord backend available/)).toBeInTheDocument();
+    expect(screen.getAllByText("No available backend")).toHaveLength(1);
+    expect(screen.getByText(/Imports may use Built-in Chords if the saved backend is unavailable/)).toBeInTheDocument();
     expect(screen.queryByText(/Using Built-in .* fallback/)).not.toBeInTheDocument();
   });
 

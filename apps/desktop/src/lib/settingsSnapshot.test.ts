@@ -19,16 +19,23 @@ function snapshot(version: number, preferences: Record<string, unknown>) {
   });
 }
 
-describe("settings snapshot durable audio migration", () => {
-  it("writes v2 with the durable audio preference", () => {
+describe("settings snapshot migrations", () => {
+  it("writes v3 with the durable audio and chord backend preferences", () => {
     expect(buildSettingsSnapshot({
       exportedAt,
-      preferences: { ...DEFAULT_PREFERENCES, defaultDurableAudioFormat: "flac" },
+      preferences: {
+        ...DEFAULT_PREFERENCES,
+        defaultChordBackend: "lv-chordia-submission",
+        defaultDurableAudioFormat: "flac",
+      },
       themeOverrides: {},
       themePreference: "system",
     })).toMatchObject({
-      version: 2,
-      preferences: { defaultDurableAudioFormat: "flac" },
+      version: 3,
+      preferences: {
+        defaultChordBackend: "lv-chordia-submission",
+        defaultDurableAudioFormat: "flac",
+      },
     });
   });
 
@@ -44,5 +51,12 @@ describe("settings snapshot durable audio migration", () => {
       ...DEFAULT_PREFERENCES,
       defaultDurableAudioFormat: "ogg",
     }))).toThrow("Unsupported settings file.");
+  });
+
+  it("continues to parse v2 snapshots", () => {
+    expect(parseSettingsSnapshot(snapshot(2, {
+      ...DEFAULT_PREFERENCES,
+      defaultChordBackend: "crema-advanced",
+    })).preferences.defaultChordBackend).toBe("crema-advanced");
   });
 });

@@ -10,6 +10,8 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(__filename);
 const workspaceRoot = path.resolve(scriptDir, "..");
+const LV_CHORDIA_CHECKPOINT_BYTES = 28_730_939;
+const LV_CHORDIA_SOURCE_REVISION = "9d7de7bbf45efa6731ec8dc62d35280f141c0702";
 
 const TOOL_DEFINITIONS = {
   pnpm: {
@@ -137,6 +139,7 @@ export function buildReleaseLicenseInventory({ includeToolStatus = false, checkT
     toolStatuses,
     modelPolicy: {
       defaultPackageOptions: {
+        lvChordia: defaultOptions.lvChordia,
         modelBundle: defaultOptions.modelBundle,
         generatorArgs: defaultGeneratorArgs,
       },
@@ -150,8 +153,16 @@ export function buildReleaseLicenseInventory({ includeToolStatus = false, checkT
       ],
       cachePrewarmCommand:
         "cd apps/backend && uv run --python 3.11 --locked --all-groups " +
-        "--extra advanced-chords --extra advanced-beats python -m app.cli.prewarm_models " +
-        "--include-crema --include-beat-this",
+        "--extra advanced-chords --extra advanced-beats --extra lv-chordia " +
+        "python -m app.cli.prewarm_models --include-crema --include-beat-this --include-lv-chordia",
+      bundledDependencyWeights: {
+        lvChordia: {
+          checkpointBytes: LV_CHORDIA_CHECKPOINT_BYTES,
+          checkpointCount: 5,
+          packagePath: "share/lv-chordia/cache_data",
+          sourceRevision: LV_CHORDIA_SOURCE_REVISION,
+        },
+      },
       cachePaths: [
         "$TORCH_HOME/hub/checkpoints",
         "$XDG_CACHE_HOME/torch/hub/checkpoints",
@@ -239,6 +250,7 @@ export function formatReleaseLicenseInventory(checklist) {
   lines.push("");
   lines.push("Model-weight policy:");
   lines.push(`- default modelBundle: ${checklist.modelPolicy.defaultPackageOptions.modelBundle}`);
+  lines.push(`- default LV Chordia: ${checklist.modelPolicy.defaultPackageOptions.lvChordia}`);
   lines.push(
     `- default package generator args: ${checklist.modelPolicy.defaultPackageOptions.generatorArgs.join(" ")}`,
   );
@@ -256,6 +268,11 @@ export function formatReleaseLicenseInventory(checklist) {
       `${formatBytes(checklist.modelPolicy.explicitBundleBytes)}`,
   );
   lines.push(`- default lyrics model: ${checklist.modelPolicy.defaultLyricsModel}`);
+  const lvChordia = checklist.modelPolicy.bundledDependencyWeights.lvChordia;
+  lines.push(
+    `- bundled LV Chordia checkpoints: ${lvChordia.checkpointCount} files, ` +
+      `${formatBytes(lvChordia.checkpointBytes)}, revision ${lvChordia.sourceRevision}`,
+  );
 
   lines.push("");
   lines.push("Risks / release checks:");

@@ -16,7 +16,7 @@ export function useChordBackendActionSelection() {
     queryFn: api.listChordBackends,
   });
 
-  const chordBackendForAction = useCallback(async (): Promise<ChordBackendActionSelection> => {
+  const chordBackendForImport = useCallback(async (): Promise<ChordBackendActionSelection> => {
     if (defaultChordBackend === "tuneforge-fast") {
       return { backend: "tuneforge-fast" };
     }
@@ -43,5 +43,9 @@ export function useChordBackendActionSelection() {
     return { backend: "tuneforge-fast", backend_fallback_from: defaultChordBackend };
   }, [chordBackendsQuery.data, defaultChordBackend, queryClient]);
 
-  return { chordBackendForAction, chordBackendsQuery };
+  const chordBackendForAction = useCallback(async (): Promise<ChordBackendActionSelection> => (
+    { backend: defaultChordBackend }
+  ), [defaultChordBackend]);
+
+  return { chordBackendForAction, chordBackendForImport, chordBackendsQuery };
 }

@@ -100,10 +100,17 @@ function generatedManifestPath(options) {
   if (options.beatThis) {
     imports.push("beat_this");
   }
+  if (options.lvChordia) {
+    imports.push("lv_chordia");
+  }
+  const lvChordiaValidation = options.lvChordia
+    ? "      - PYTHONPATH=/app/lib/tuneforge/backend/src:/app/lib/tuneforge/backend/site-packages /app/lib/tuneforge/backend/python/bin/python3.11 -c \"from pathlib import Path; from app.engines.lv_chordia import lv_chordia_dependency_status; files=list(Path('/app/lib/tuneforge/backend').rglob('*.sdict')); assert len(files)==5, len(files); assert lv_chordia_dependency_status()[0]\"\n"
+    : "      - /app/lib/tuneforge/backend/python/bin/python3.11 -c \"from pathlib import Path; files=list(Path('/app/lib/tuneforge/backend').rglob('*.sdict')); assert not files, files\"\n";
   manifest = replaceManifestFragment(
     manifest,
     '      - /app/lib/tuneforge/backend/python/bin/python3.11 -c "import fastapi, demucs, whisper, torch"\n',
-    `      - /app/lib/tuneforge/backend/python/bin/python3.11 -c "import ${imports.join(", ")}"\n`,
+    `      - /app/lib/tuneforge/backend/python/bin/python3.11 -c "import ${imports.join(", ")}"\n` +
+      lvChordiaValidation,
   );
   mkdirSync(path.dirname(generatedManifestPath), { recursive: true });
   writeFileSync(generatedManifestPath, manifest);
@@ -118,11 +125,40 @@ export function manifestWithPackageOptions(manifest, options) {
     "    build-options:\n" +
     "      append-path: /app/bin:/usr/lib/sdk/node26/bin:/usr/lib/sdk/llvm20/bin:/usr/lib/sdk/rust-stable/bin\n" +
     "      env:\n";
-  return replaceManifestFragment(
+  let result = replaceManifestFragment(
     manifest,
     tuneforgeEnvAnchor,
     `${tuneforgeEnvAnchor}        TUNEFORGE_PACKAGE_OPTIONS: '${encodedPackageOptions}'\n`,
   );
+  result = replaceManifestFragment(
+    result,
+    "      - generated/python-sources.json\n" +
+      "      - type: file\n" +
+      "        path: generated/python-requirements.txt\n",
+    "      - generated/python-sources.json\n" +
+      "      - type: file\n" +
+      "        path: generated/python-build-requirements.txt\n" +
+      "      - type: file\n" +
+      "        path: generated/python-requirements.txt\n",
+  );
+  result = replaceManifestFragment(
+    result,
+    "      - /app/lib/tuneforge/backend/python/bin/python3.11 -m pip install --no-index --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages setuptools wheel\n",
+    "      - /app/lib/tuneforge/backend/python/bin/python3.11 -m pip install --no-index --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages -r python-build-requirements.txt\n",
+  );
+  if (options.lvChordia) {
+    const runtimeInstall =
+      "      - /app/lib/tuneforge/backend/python/bin/python3.11 -m pip install --no-index --no-build-isolation --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages -r python-requirements.txt\n";
+    result = replaceManifestFragment(
+      result,
+      runtimeInstall,
+      runtimeInstall +
+        "      - install -dm755 /app/lib/tuneforge/backend/python/share/lv-chordia\n" +
+        "      - test -d /app/lib/tuneforge/backend/site-packages/share/lv-chordia/cache_data\n" +
+        "      - mv /app/lib/tuneforge/backend/site-packages/share/lv-chordia/cache_data /app/lib/tuneforge/backend/python/share/lv-chordia/cache_data\n",
+    );
+  }
+  return result;
 }
 
 function replaceManifestFragment(contents, search, replacement) {

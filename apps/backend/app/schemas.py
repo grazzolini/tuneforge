@@ -25,7 +25,17 @@ from app.runtime_status import (
 )
 from app.services.sync_timestamps import parse_sync_datetime, sync_datetime_to_rfc3339
 
-SUPPORTED_CHORD_BACKENDS = {"default", "fast", "tuneforge-fast", "librosa", "advanced", "crema", "crema-advanced"}
+SUPPORTED_CHORD_BACKENDS = {
+    "default",
+    "fast",
+    "tuneforge-fast",
+    "librosa",
+    "advanced",
+    "crema",
+    "crema-advanced",
+    "lv-chordia",
+    "lv-chordia-submission",
+}
 AnalysisBeatBackend = Literal["built-in", "beat-this"]
 SUPPORTED_STEM_MODELS = {
     "default",

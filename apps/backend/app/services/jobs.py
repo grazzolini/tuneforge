@@ -1392,7 +1392,12 @@ def _analysis_stage_label(beat_backend: str | None, runtime_device: str | None) 
 
 def _chord_stage_label(backend_id: str, runtime_device: str | None) -> str:
     device_label = _device_display_label(runtime_device)
-    prefix = "Detecting advanced chords" if backend_id == "crema-advanced" else "Detecting chords"
+    if backend_id == "crema-advanced":
+        prefix = "Detecting advanced chords"
+    elif backend_id == "lv-chordia-submission":
+        prefix = "Detecting chords with LV Chordia"
+    else:
+        prefix = "Detecting chords"
     return f"{prefix} on {device_label}." if device_label else f"{prefix}."
 
 

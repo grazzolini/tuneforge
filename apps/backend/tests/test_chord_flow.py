@@ -217,14 +217,28 @@ def test_import_chord_job_uses_requested_advanced_backend_when_available(
     assert [segment["label"] for segment in chords["timeline"]] == ["D/F#"]
 
 
-def test_import_chord_job_falls_back_when_requested_advanced_backend_is_unavailable(
+@pytest.mark.parametrize(
+    ("backend_id", "status_function", "reason"),
+    [
+        ("crema-advanced", "crema_dependency_status", "crema is not installed"),
+        (
+            "lv-chordia-submission",
+            "lv_chordia_dependency_status",
+            "LV Chordia is not installed in this desktop package",
+        ),
+    ],
+)
+def test_import_chord_job_falls_back_when_requested_backend_is_unavailable(
     client,
     sample_chord_audio_file: Path,
     monkeypatch,
+    backend_id: str,
+    status_function: str,
+    reason: str,
 ):
     monkeypatch.setattr(
-        "app.services.chord_backends.crema_dependency_status",
-        lambda **_kwargs: (False, "crema is not installed"),
+        f"app.services.chord_backends.{status_function}",
+        lambda **_kwargs: (False, reason),
     )
 
     project = client.post(
@@ -232,7 +246,7 @@ def test_import_chord_job_falls_back_when_requested_advanced_backend_is_unavaila
         json={
             "source_path": str(sample_chord_audio_file),
             "copy_into_project": True,
-            "chord_backend": "crema-advanced",
+            "chord_backend": backend_id,
         },
     ).json()["project"]
 
@@ -241,16 +255,16 @@ def test_import_chord_job_falls_back_when_requested_advanced_backend_is_unavaila
         job for job in initial_jobs if job["project_id"] == project["id"] and job["type"] == "chords"
     )
     assert initial_chord_job["chord_backend"] == "tuneforge-fast"
-    assert initial_chord_job["chord_backend_fallback_from"] == "crema-advanced"
+    assert initial_chord_job["chord_backend_fallback_from"] == backend_id
 
     final_job = wait_for_job(client, initial_chord_job["id"], timeout=90.0)
     assert final_job["status"] == "completed"
     assert final_job["chord_backend"] == "tuneforge-fast"
-    assert final_job["chord_backend_fallback_from"] == "crema-advanced"
+    assert final_job["chord_backend_fallback_from"] == backend_id
 
     chords = client.get(f"/api/v1/projects/{project['id']}/chords").json()
     assert chords["backend"] == "tuneforge-fast"
-    assert chords["metadata"]["backend_fallback_from"] == "crema-advanced"
+    assert chords["metadata"]["backend_fallback_from"] == backend_id
 
 
 @pytest.mark.parametrize("backend_id", ["tuneforge-fast", "crema-advanced"])

@@ -20,6 +20,7 @@ const packageOptions = parsePackageOptions(process.argv.slice(2), { platform: "l
 const selectedPythonExtras = [
   ...(packageOptions.crema ? ["advanced-chords"] : []),
   ...(packageOptions.beatThis ? ["advanced-beats"] : []),
+  ...(packageOptions.lvChordia ? ["lv-chordia"] : []),
 ];
 
 function readRequiredFile(filePath) {
@@ -233,7 +234,17 @@ function parseUvLock(contents) {
         )
       : [];
     const sdistMatch = block.match(/\nsdist = \{([^}]+)\}/);
-    const sdist = sdistMatch ? parsePythonArtifact(sdistMatch[1]) : null;
+    const directSourceUrl = block.match(/^source = \{ url = "([^"]+)" \}$/m)?.[1];
+    const parsedSdist = sdistMatch
+      ? parsePythonArtifact(
+          directSourceUrl && !sdistMatch[1].includes("url =")
+            ? `${sdistMatch[1]}, url = "${directSourceUrl}"`
+            : sdistMatch[1],
+        )
+      : null;
+    const sdist = parsedSdist && directSourceUrl
+      ? { ...parsedSdist, fileName: `${name.replaceAll("-", "_")}-${version}.tar.gz` }
+      : parsedSdist;
 
     packages.set(normalizePackageName(name), {
       name,
@@ -366,7 +377,7 @@ function resolvePythonRuntimePackages(packages, { extras = [] } = {}) {
     throw new Error("Could not find tuneforge-backend in uv.lock");
   }
 
-  const queue = [...root.dependencies, { name: "setuptools" }, { name: "wheel" }];
+  const queue = [...root.dependencies];
   for (const extra of extras) {
     const extraDependencies = root.optionalDependencies.get(extra);
     if (!extraDependencies) {
@@ -419,6 +430,28 @@ function resolvePythonRuntimePackages(packages, { extras = [] } = {}) {
   }
 
   return Array.from(resolved.values()).sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function resolveNamedPythonPackages(packages, names) {
+  const resolved = new Map();
+  const queue = names.map((name) => ({ name }));
+  while (queue.length > 0) {
+    const dependency = queue.shift();
+    if (!markerMatchesFlatpakTarget(dependency.marker)) {
+      continue;
+    }
+    const normalizedName = normalizePackageName(dependency.name);
+    if (resolved.has(normalizedName)) {
+      continue;
+    }
+    const pkg = packages.get(normalizedName);
+    if (!pkg) {
+      throw new Error(`Could not find Python build dependency ${dependency.name} in uv.lock`);
+    }
+    resolved.set(normalizedName, pkg);
+    queue.push(...pkg.dependencies);
+  }
+  return Array.from(resolved.values());
 }
 
 function run(command, args, options = {}) {
@@ -498,10 +531,17 @@ function mergeLegacyTorchPackages(packages) {
 }
 
 function generatePythonSources() {
-  let packages = resolvePythonRuntimePackages(parseUvLock(readRequiredFile(uvLockPath)), { extras: selectedPythonExtras });
+  const lockedPackages = parseUvLock(readRequiredFile(uvLockPath));
+  let runtimePackages = resolvePythonRuntimePackages(lockedPackages, { extras: selectedPythonExtras });
   if (packageOptions.legacyNvidia) {
-    packages = mergeLegacyTorchPackages(packages);
+    runtimePackages = mergeLegacyTorchPackages(runtimePackages);
   }
+  const buildRequirementNames = ["setuptools", "wheel", ...(packageOptions.lvChordia ? ["hatchling"] : [])];
+  const buildPackages = resolveNamedPythonPackages(lockedPackages, buildRequirementNames);
+  const runtimePackageNames = new Set(runtimePackages.map((pkg) => normalizePackageName(pkg.name)));
+  const packages = Array.from(
+    new Map([...runtimePackages, ...buildPackages].map((pkg) => [normalizePackageName(pkg.name), pkg])).values(),
+  ).sort((left, right) => left.name.localeCompare(right.name));
   const sourceByUrl = new Map();
   const artifactReport = [];
 
@@ -525,11 +565,19 @@ function generatePythonSources() {
 
   const sources = Array.from(sourceByUrl.values()).sort((left, right) => left.url.localeCompare(right.url));
   const runtimeRequirements = packages
-    .filter((pkg) => !["setuptools", "wheel"].includes(normalizePackageName(pkg.name)))
+    .filter((pkg) => runtimePackageNames.has(normalizePackageName(pkg.name)))
     .map((pkg) => `${pkg.name}==${pkg.version}`)
     .sort();
+  const buildRequirements = buildRequirementNames.map((name) => {
+    const pkg = lockedPackages.get(normalizePackageName(name));
+    if (!pkg) {
+      throw new Error(`Could not find Python build dependency ${name} in uv.lock`);
+    }
+    return `${pkg.name}==${pkg.version}`;
+  });
 
   writeGeneratedJson("python-sources.json", sources);
+  writeGeneratedFile("python-build-requirements.txt", `${buildRequirements.join("\n")}\n`);
   writeGeneratedFile("python-requirements.txt", `${runtimeRequirements.join("\n")}\n`);
   writeGeneratedJson(
     "python-size-report.json",

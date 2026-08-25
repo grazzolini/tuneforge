@@ -277,7 +277,7 @@ export function LibraryView() {
   const queryClient = useQueryClient();
   const { defaultDurableAudioFormat, defaultStemModel, informationDensity } = usePreferences();
   const { beatBackendForAction } = useBeatBackendActionSelection();
-  const { chordBackendForAction } = useChordBackendActionSelection();
+  const { chordBackendForImport } = useChordBackendActionSelection();
   const [searchDraft, setSearchDraft] = useState("");
   const [importNotice, setImportNotice] = useState<ImportNotice | null>(null);
   const [importPendingPhase, setImportPendingPhase] = useState<ImportPendingPhase | null>(null);
@@ -337,7 +337,7 @@ export function LibraryView() {
         return { kind: "selectionLimit" } satisfies ImportMutationResult;
       }
       const beatBackendSelection = await beatBackendForAction();
-      const backendSelection = await chordBackendForAction();
+      const backendSelection = await chordBackendForImport();
       const importPayload = {
         copy_into_project: true,
         ...(durableFormat.outputFormat ? { output_format: durableFormat.outputFormat } : {}),

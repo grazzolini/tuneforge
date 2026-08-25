@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type RefObject } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { confirm } from "@tauri-apps/plugin-dialog";
@@ -262,6 +262,11 @@ const fallbackChordBackendOptions: ChoiceOption<DefaultChordBackend>[] = [
     description: "Use the crema detector with richer chord vocabulary and inversion labels.",
   },
   {
+    value: "lv-chordia-submission",
+    label: "LV Chordia (Submission)",
+    description: "Use bundled LV Chordia submission model for desktop chord detection.",
+  },
+  {
     value: "tuneforge-fast",
     label: "Built-in Chords",
     description: "Use the local lightweight source and stem chord detector.",
@@ -360,7 +365,9 @@ function beatAnalysisBackendLabel(value: DefaultBeatAnalysisBackend) {
 }
 
 function chordBackendLabel(value: DefaultChordBackend) {
-  return value === "crema-advanced" ? "Advanced Chords" : "Built-in Chords";
+  if (value === "crema-advanced") return "Advanced Chords";
+  if (value === "lv-chordia-submission") return "LV Chordia (Submission)";
+  return "Built-in Chords";
 }
 
 function stemModelLabel(value: DefaultStemModel) {
@@ -485,12 +492,23 @@ function diagnosticVersionValue(value: string | undefined) {
   return normalized ? normalized : "Unknown";
 }
 
-function chordBackendOptions(backends: ChordBackendSchema[] | undefined): ChoiceOption<DefaultChordBackend>[] {
-  if (backends === undefined) {
+function chordBackendOptions(
+  backends: ChordBackendSchema[] | undefined,
+  fetching: boolean,
+  error: boolean,
+  selected: DefaultChordBackend,
+): ChoiceOption<DefaultChordBackend>[] {
+  if (fetching || backends === undefined) {
     return fallbackChordBackendOptions.map((option) => ({
       ...option,
       disabled: true,
-      status: "Checking availability",
+    }));
+  }
+  if (error) {
+    return fallbackChordBackendOptions.map((option) => ({
+      ...option,
+      disabled: true,
+      status: "Availability could not be checked",
     }));
   }
 
@@ -503,13 +521,17 @@ function chordBackendOptions(backends: ChordBackendSchema[] | undefined): Choice
         status: "Missing from backend registry",
       };
     }
-    const unavailableReason = backend.available ? null : backend.unavailable_reason;
+    const unavailableReason = backend.available
+      ? null
+      : `Unavailable — ${backend.unavailable_reason || "Not reported by backend"}`;
     return {
       value: fallback.value,
       label: backend.label,
       description: fallback.description,
       disabled: !backend.available,
-      status: unavailableReason ?? (fallback.value === "tuneforge-fast" ? "Fallback" : undefined),
+      status: unavailableReason
+        ? fallback.value === selected ? `Selected · ${unavailableReason}` : unavailableReason
+        : fallback.value === "tuneforge-fast" ? "Import fallback" : undefined,
     };
   });
 }
@@ -561,35 +583,6 @@ function effectiveChoiceValue<T extends string>(
   return null;
 }
 
-function optionStatus<T extends string>(value: T, options: ChoiceOption<T>[]) {
-  return options.find((option) => option.value === value)?.status;
-}
-
-function fallbackNotice<T extends string>(
-  requestedValue: T,
-  effectiveValue: T | null,
-  options: ChoiceOption<T>[],
-  requestedLabel: (value: T) => string,
-  effectiveLabel: (value: T) => string,
-  availabilityResolved: boolean,
-  blockedPrefix: string,
-) {
-  if (!availabilityResolved) {
-    return null;
-  }
-  if (effectiveValue === null) {
-    const reasons = options
-      .map((option) => `${option.label}: ${option.status ?? "Unavailable"}`)
-      .join("; ");
-    return `${blockedPrefix}. ${reasons}.`;
-  }
-  if (requestedValue === effectiveValue) {
-    return null;
-  }
-  const reason = optionStatus(requestedValue, options) ?? "Unavailable";
-  return `${requestedLabel(requestedValue)} unavailable: ${reason}. Using ${effectiveLabel(effectiveValue)} fallback.`;
-}
-
 function stemModelOptions(models: StemModelSchema[] | undefined): ChoiceOption<DefaultStemModel>[] {
   if (!models?.length) {
     return fallbackStemModelOptions;
@@ -610,22 +603,32 @@ function stemModelOptions(models: StemModelSchema[] | undefined): ChoiceOption<D
 function ChoiceGroup<T extends string>({
   ariaBusy,
   description,
+  fieldsetRef,
   legend,
+  liveStatus,
   onChange,
   options,
   value,
 }: {
   ariaBusy?: boolean;
   description: string;
+  fieldsetRef?: RefObject<HTMLFieldSetElement | null>;
   legend: string;
+  liveStatus?: string;
   onChange: (value: T) => void;
   options: ChoiceOption<T>[];
   value: T | null;
 }) {
   return (
-    <fieldset aria-busy={ariaBusy || undefined} className="settings-fieldset">
+    <fieldset
+      ref={fieldsetRef}
+      aria-busy={ariaBusy || undefined}
+      className="settings-fieldset"
+      tabIndex={fieldsetRef ? -1 : undefined}
+    >
       <legend>{legend}</legend>
       <p className="setting-copy">{description}</p>
+      {liveStatus ? <p className="setting-copy" role="status">{liveStatus}</p> : null}
       <div className="settings-choice-grid">
         {options.map((option) => (
           <button
@@ -724,6 +727,8 @@ export function SettingsView() {
   } = usePreferences();
   const [isSnapshotBusy, setIsSnapshotBusy] = useState(false);
   const [snapshotStatus, setSnapshotStatus] = useState<SnapshotStatus | null>(null);
+  const [chordAvailabilityStatus, setChordAvailabilityStatus] = useState<string | null>(null);
+  const chordBackendGroupRef = useRef<HTMLFieldSetElement>(null);
   const [availabilityRetrying, setAvailabilityRetrying] = useState(false);
   const [isNativeValidationBusy, setIsNativeValidationBusy] = useState(false);
   const [nativeValidationStatus, setNativeValidationStatus] = useState<SnapshotStatus | null>(null);
@@ -798,7 +803,6 @@ export function SettingsView() {
   const latestWebPlaybackError = readRememberedWebPlaybackError();
   const savedThemeOverrideCount = themeOverrideCount(themeOverrides);
   const beatAvailabilityResolved = beatBackendsQuery.data?.backends !== undefined;
-  const chordAvailabilityResolved = chordBackendsQuery.data?.backends !== undefined;
   const beatBackendChoices = beatBackendOptions(beatBackendsQuery.data?.backends);
   const effectiveBeatAnalysisBackend = effectiveChoiceValue(
     defaultBeatAnalysisBackend,
@@ -806,12 +810,11 @@ export function SettingsView() {
     "built-in",
     beatAvailabilityResolved,
   );
-  const chordBackendChoices = chordBackendOptions(chordBackendsQuery.data?.backends);
-  const effectiveChordBackend = effectiveChoiceValue(
+  const chordBackendChoices = chordBackendOptions(
+    chordBackendsQuery.data?.backends,
+    chordBackendsQuery.isFetching,
+    chordBackendsQuery.isError,
     defaultChordBackend,
-    chordBackendChoices,
-    "tuneforge-fast",
-    chordAvailabilityResolved,
   );
   const stemModelChoices = stemModelOptions(stemModelsQuery.data?.models);
   const durableAudioChoices = durableAudioFormatOptions(
@@ -823,15 +826,8 @@ export function SettingsView() {
   const androidSettings =
     androidRuntime || exportCapabilitiesQuery.data?.capabilities.platform === "android";
   const showAudioStoragePanel = !androidSettings;
-  const chordFallbackNotice = fallbackNotice(
-    defaultChordBackend,
-    effectiveChordBackend,
-    chordBackendChoices,
-    chordBackendLabel,
-    chordBackendLabel,
-    chordAvailabilityResolved,
-    "No chord backend available",
-  );
+  const chordFallbackNotice =
+    "Imports may use Built-in Chords if the saved backend is unavailable; generate, refresh, and bulk actions keep the saved backend.";
 
   function handleResetAppearance() {
     setThemePreference(DEFAULT_THEME_PREFERENCE);
@@ -849,6 +845,15 @@ export function SettingsView() {
 
   function handleResetAnalysis() {
     resetAnalysisPreferences();
+  }
+
+  async function handleChordAvailabilityRetry() {
+    setChordAvailabilityStatus(null);
+    const result = await chordBackendsQuery.refetch();
+    if (result.isSuccess) {
+      setChordAvailabilityStatus("Chord backend availability updated.");
+      chordBackendGroupRef.current?.focus();
+    }
   }
 
   function handleResetAudioStorage() {
@@ -1090,8 +1095,8 @@ export function SettingsView() {
           <div className="settings-overview__stat">
             <dt>Chord backend</dt>
             <dd>
-              {effectiveChordBackend === null ? "No available backend" : chordBackendLabel(effectiveChordBackend)}
-              {chordFallbackNotice ? <span>{chordFallbackNotice}</span> : null}
+              {chordBackendLabel(defaultChordBackend)}
+              <span>{chordFallbackNotice}</span>
             </dd>
           </div>
           <div className="settings-overview__stat">
@@ -1308,12 +1313,31 @@ export function SettingsView() {
           />
 
           <ChoiceGroup
-            description="Choose the backend used when generating or refreshing chords."
+            ariaBusy={chordBackendsQuery.isFetching}
+            description="Choose default backend for new imports and chord generation. Imports may use Built-in Chords when selected backend is unavailable; generate, refresh, and bulk actions do not switch backends."
+            fieldsetRef={chordBackendGroupRef}
             legend="Default chord backend"
+            liveStatus={chordBackendsQuery.isFetching
+              ? "Checking chord backend availability…"
+              : chordAvailabilityStatus ?? undefined}
             onChange={setDefaultChordBackend}
             options={chordBackendChoices}
-            value={effectiveChordBackend}
+            value={defaultChordBackend}
           />
+
+          {chordBackendsQuery.isError ? (
+            <div className="settings-feedback settings-feedback--error" role="alert">
+              <span>Chord backend availability could not be checked. Saved selection was preserved.</span>
+              <button
+                className="button button--ghost button--small"
+                disabled={chordBackendsQuery.isFetching}
+                onClick={() => void handleChordAvailabilityRetry()}
+                type="button"
+              >
+                Retry availability
+              </button>
+            </div>
+          ) : null}
 
           <ChoiceGroup
             description="Choose the Demucs model used when generating stems."

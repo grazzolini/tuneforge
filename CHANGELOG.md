@@ -5,6 +5,11 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+### Added
+
+- Added optional bundled LV Chordia submission chord detection for desktop; Advanced Chords remains
+  the default while the new backend awaits manual comparison and approval.
+
 ### Changed
 
 - Made Advanced Beat Analysis the default beat-analysis request. Built-in Beat Analysis remains an

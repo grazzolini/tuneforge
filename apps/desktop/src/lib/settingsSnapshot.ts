@@ -13,7 +13,7 @@ import {
 import { isThemeVariableName, type ThemeOverrides } from "./themeTokens";
 
 export const SETTINGS_SNAPSHOT_KIND = "tuneforge.settings";
-export const SETTINGS_SNAPSHOT_VERSION = 2;
+export const SETTINGS_SNAPSHOT_VERSION = 3;
 const SETTINGS_PARSE_ERROR = "Could not parse the settings file.";
 const SETTINGS_UNSUPPORTED_ERROR = "Unsupported settings file.";
 const REQUIRED_PREFERENCE_KEYS = [
@@ -89,7 +89,7 @@ function validateExportedAt(value: unknown): asserts value is string {
   requireSupported(Number.isFinite(Date.parse(value)));
 }
 
-function validatePreferences(value: unknown, version: 1 | 2): UiPreferences {
+function validatePreferences(value: unknown, version: 1 | 2 | 3): UiPreferences {
   requireSupported(isRecord(value));
   for (const key of REQUIRED_PREFERENCE_KEYS) {
     if (version === 1 && key === "defaultDurableAudioFormat") {
@@ -105,9 +105,9 @@ function validatePreferences(value: unknown, version: 1 | 2): UiPreferences {
   requireSupported(isOneOf(value.defaultPlaybackDisplayMode, ["auto", "lyrics", "chords", "combined"]));
   requireSupported(isOneOf(value.defaultLoopAlignmentMode, ["free", "beat", "bar"]));
   requireSupported(isOneOf(value.defaultBeatAnalysisBackend, ["built-in", "beat-this"]));
-  requireSupported(isOneOf(value.defaultChordBackend, ["tuneforge-fast", "crema-advanced"]));
+  requireSupported(isOneOf(value.defaultChordBackend, ["tuneforge-fast", "crema-advanced", "lv-chordia-submission"]));
   requireSupported(isOneOf(value.defaultStemModel, ["htdemucs_6s", "htdemucs_ft"]));
-  if (version === 2) {
+  if (version >= 2) {
     requireSupported(isOneOf(value.defaultDurableAudioFormat, ["wav", "flac", "mp3", "m4a"]));
   }
   requireSupported(typeof value.defaultLyricsFollowEnabled === "boolean");
@@ -159,7 +159,7 @@ export function parseSettingsSnapshot(text: string): SettingsSnapshot {
   const version = candidate.version;
   if (
     candidate.kind !== SETTINGS_SNAPSHOT_KIND ||
-    (version !== 1 && version !== SETTINGS_SNAPSHOT_VERSION)
+    (version !== 1 && version !== 2 && version !== SETTINGS_SNAPSHOT_VERSION)
   ) {
     throw new Error(SETTINGS_UNSUPPORTED_ERROR);
   }

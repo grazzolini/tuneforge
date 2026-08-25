@@ -27,10 +27,12 @@ from app.benchmarks.chord_evaluation import (
     synthetic_tracks,
 )
 from app.engines.crema_chords import clear_crema_model_cache
+from app.engines.lv_chordia import clear_lv_chordia_session_cache
 from app.services.audio_working import materialize_pcm_wav
 from app.services.chord_backends import (
     CREMA_CHORD_BACKEND_ID,
     FAST_CHORD_BACKEND_ID,
+    LV_CHORDIA_CHORD_BACKEND_ID,
     detect_with_chord_backend,
     resolve_chord_backend,
     resolve_chord_backend_id,
@@ -249,6 +251,10 @@ def _safe_backend_provenance(
                 "runtime_device",
                 "crema_version",
                 "tensorflow_version",
+                "source_revision",
+                "vocabulary",
+                "checkpoint_count",
+                "checkpoint_bytes",
             }
             and isinstance(value, (str, int, float))
             and _is_safe_provenance_value(str(value))
@@ -335,6 +341,8 @@ def _benchmark_backend(audio_path: Path, backend_id: str) -> dict[str, Any]:
 
     if backend.id == CREMA_CHORD_BACKEND_ID:
         clear_crema_model_cache()
+    elif backend.id == LV_CHORDIA_CHORD_BACKEND_ID:
+        clear_lv_chordia_session_cache()
 
     try:
         cold = _timed_detect(audio_path, backend.id)

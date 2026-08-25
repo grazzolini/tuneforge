@@ -29,9 +29,23 @@ advanced-chords = [
 advanced-beats = [
   "beat-this>=1.1.0,<2.0.0",
 ]
+lv-chordia = [
+  "lv-chordia @ https://github.com/openmirlab/lv-chordia/archive/9d7de7bbf45efa6731ec8dc62d35280f141c0702.tar.gz",
+]
+
+[tool.uv]
+override-dependencies = [
+  # Audited against lv-chordia's upstream golden fixture at the pinned commit.
+  "numpy==1.26.4",
+  "torch==2.11.0",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [dependency-groups]
 dev = [
+  "hatchling==1.28.0",
   "httpx>=0.28.1,<1.0.0",
   "mypy>=1.15.0,<3.0.0",
   "pytest>=8.3.5,<10.0.0",
@@ -61,7 +75,7 @@ strict_optional = true
 packages = ["app"]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.28.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

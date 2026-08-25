@@ -19,6 +19,11 @@ from app.engines.demucs_cache import (
     invalid_demucs_torch_cache_files,
     preload_demucs_torch_cache,
 )
+from app.engines.lv_chordia import (
+    invalid_lv_chordia_model_asset_files,
+    lv_chordia_dependency_status,
+    preload_lv_chordia_session,
+)
 from app.engines.lyrics import invalid_whisper_model_cache_files, preload_whisper_model
 from app.utils.model_cache import (
     InvalidModelFile,
@@ -40,6 +45,8 @@ def main(argv: list[str] | None = None) -> int:
             _verify_or_prewarm_crema()
         if args.include_beat_this:
             _verify_or_prewarm_beat_this(args.beat_this_checkpoint)
+        if args.include_lv_chordia:
+            _verify_or_prewarm_lv_chordia()
     except Exception as exc:
         sys.stderr.write(f"Model prewarm failed: {exc}\n")
         return 1
@@ -63,6 +70,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--include-crema",
         action="store_true",
         help="Verify/prewarm the optional crema chord model.",
+    )
+    parser.add_argument(
+        "--include-lv-chordia",
+        action="store_true",
+        help="Verify/prewarm the optional bundled LV Chordia submission model.",
     )
     parser.add_argument("--beat-this-checkpoint", default=BEAT_THIS_CHECKPOINT)
     return parser
@@ -138,6 +150,20 @@ def _verify_or_prewarm_crema() -> None:
             f"Crema model assets remain invalid: {format_invalid_model_files(invalid_after_prewarm)}"
         )
     sys.stdout.write("Preloaded Crema model.\n")
+
+
+def _verify_or_prewarm_lv_chordia() -> None:
+    available, reason = lv_chordia_dependency_status()
+    if not available:
+        raise RuntimeError(reason or "LV Chordia is unavailable")
+    invalid_files = invalid_lv_chordia_model_asset_files()
+    if invalid_files:
+        raise RuntimeError(
+            "LV Chordia bundled checkpoints are invalid; reinstall TuneForge: "
+            f"{format_invalid_model_files(invalid_files)}"
+        )
+    preload_lv_chordia_session()
+    sys.stdout.write("LV Chordia bundled checkpoints verified and model preloaded.\n")
 
 
 def _print_invalid_files(label: str, invalid_files: Sequence[InvalidModelFile]) -> None:

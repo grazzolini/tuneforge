@@ -20,6 +20,8 @@ Options:
                               Include the default beat-this backend and verify/preload small0.
   --no-advanced-beats, --no-beat-this
                               Skip the beat-this backend and checkpoint verification/preload.
+  --lv-chordia               Include LV Chordia and verify its bundled checkpoints (default).
+  --no-lv-chordia            Skip LV Chordia and its bundled checkpoints.
   --legacy-nvidia             Use the Linux x86_64 legacy NVIDIA Torch profile.
   --skip-demucs-models        Skip Demucs model cache verification/preload.
   --skip-model-prewarm        Skip all model cache verification/preload work.
@@ -32,6 +34,7 @@ EOF
 
 advanced_chords=1
 advanced_beats=1
+lv_chordia=1
 legacy_nvidia=0
 skip_demucs_models=0
 skip_model_prewarm=0
@@ -52,6 +55,12 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-advanced-beats | --no-beat-this)
       advanced_beats=0
+      ;;
+    --lv-chordia)
+      lv_chordia=1
+      ;;
+    --no-lv-chordia)
+      lv_chordia=0
       ;;
     --legacy-nvidia)
       legacy_nvidia=1
@@ -100,6 +109,11 @@ if [[ "${legacy_nvidia}" -eq 1 ]]; then
     echo "Legacy NVIDIA backend profile is only supported on Linux x86_64." >&2
     exit 1
   fi
+
+  if [[ "${lv_chordia}" -eq 1 ]]; then
+    echo "--legacy-nvidia requires --no-lv-chordia because LV Chordia is audited only with Torch 2.11.0." >&2
+    exit 1
+  fi
 fi
 
 backend_sync_args=(sync --python 3.11 --all-groups)
@@ -108,6 +122,9 @@ if [[ "${advanced_chords}" -eq 1 ]]; then
 fi
 if [[ "${advanced_beats}" -eq 1 ]]; then
   backend_sync_args+=(--extra advanced-beats)
+fi
+if [[ "${lv_chordia}" -eq 1 ]]; then
+  backend_sync_args+=(--extra lv-chordia)
 fi
 
 cd "${repo_root}"
@@ -184,6 +201,9 @@ if [[ "${skip_model_prewarm}" -eq 0 ]]; then
   fi
   if [[ "${advanced_beats}" -eq 1 ]]; then
     prewarm_args+=(--include-beat-this)
+  fi
+  if [[ "${lv_chordia}" -eq 1 ]]; then
+    prewarm_args+=(--include-lv-chordia)
   fi
   echo "Verifying model caches; preloading missing or invalid assets only..."
   if [[ "${#prewarm_args[@]}" -gt 0 ]]; then

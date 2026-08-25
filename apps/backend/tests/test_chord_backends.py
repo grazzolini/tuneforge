@@ -194,6 +194,33 @@ def test_default_chord_backend_falls_back_when_crema_unavailable(monkeypatch):
     assert resolve_chord_backend_id(None) == "tuneforge-fast"
 
 
+def test_lv_chordia_alias_resolves_without_changing_default(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.chord_backends.crema_dependency_status",
+        lambda **_kwargs: (True, None),
+    )
+    monkeypatch.setattr(
+        "app.services.chord_backends.lv_chordia_dependency_status",
+        lambda **_kwargs: (True, None),
+    )
+
+    assert resolve_chord_backend_id("lv-chordia") == "lv-chordia-submission"
+    assert resolve_chord_backend("lv-chordia", require_available=True).id == "lv-chordia-submission"
+    assert resolve_chord_backend_id("default") == "crema-advanced"
+
+
+def test_lv_chordia_registry_reports_damaged_bundle(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.chord_backends.lv_chordia_dependency_status",
+        lambda **_kwargs: (False, "Bundled LV Chordia checkpoint is sha256; reinstall TuneForge"),
+    )
+
+    backends = {backend["id"]: backend for backend in list_chord_backend_infos()}
+
+    assert backends["lv-chordia-submission"]["availability"] == "unavailable"
+    assert "reinstall TuneForge" in backends["lv-chordia-submission"]["unavailable_reason"]
+
+
 def test_resolving_missing_advanced_backend_returns_structured_error(monkeypatch):
     def fake_find_spec(module_name: str):
         return None if module_name == "crema" else object()
@@ -283,6 +310,31 @@ def test_advanced_chords_request_fails_if_crema_missing(client, sample_chord_aud
     payload = response.json()
     assert payload["error"]["code"] == "ADVANCED_CHORD_BACKEND_UNAVAILABLE"
     assert payload["error"]["message"] == "crema is not installed"
+
+
+def test_explicit_lv_chordia_request_fails_if_bundle_is_unavailable(
+    client,
+    sample_chord_audio_file: Path,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "app.services.chord_backends.lv_chordia_dependency_status",
+        lambda **_kwargs: (False, "Bundled LV Chordia checkpoint is sha256; reinstall TuneForge"),
+    )
+    project = client.post(
+        "/api/v1/projects/import",
+        json={"source_path": str(sample_chord_audio_file), "copy_into_project": True},
+    ).json()["project"]
+
+    response = client.post(
+        f"/api/v1/projects/{project['id']}/chords",
+        json={"backend": "lv-chordia-submission", "force": True},
+    )
+
+    assert response.status_code == 409
+    payload = response.json()
+    assert payload["error"]["code"] == "CHORD_BACKEND_UNAVAILABLE"
+    assert payload["error"]["details"]["backend"] == "lv-chordia-submission"
 
 
 def test_chord_benchmark_command_emits_json(sample_chord_audio_file: Path, capsys):

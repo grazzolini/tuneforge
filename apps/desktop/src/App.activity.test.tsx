@@ -5665,7 +5665,7 @@ describe("Desktop app activity", () => {
     );
   });
 
-  it("uses chord backend fallback preferences for bulk stem refresh", async () => {
+  it("uses the saved chord backend for bulk stem refresh", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem(
       "tuneforge.ui-preferences",
@@ -5688,8 +5688,7 @@ describe("Desktop app activity", () => {
       expect(mockBulkJobs).toHaveBeenCalledWith({
         job_type: "stems",
         output_format: "wav",
-        chord_backend: "tuneforge-fast",
-        chord_backend_fallback_from: "crema-advanced",
+        chord_backend: "crema-advanced",
         stem_model: "htdemucs_ft",
       }),
     );

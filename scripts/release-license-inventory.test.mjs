@@ -29,6 +29,7 @@ test("model policy documents default no-bundle packaging and explicit bundle com
   const checklist = buildReleaseLicenseInventory();
 
   assert.equal(checklist.modelPolicy.defaultPackageOptions.modelBundle, false);
+  assert.equal(checklist.modelPolicy.defaultPackageOptions.lvChordia, true);
   assert.ok(
     checklist.modelPolicy.defaultPackageCommands.every((entry) => !entry.command.includes("--model-bundle")),
   );
@@ -39,6 +40,12 @@ test("model policy documents default no-bundle packaging and explicit bundle com
   assert.ok(checklist.modelPolicy.cachePaths.includes("~/.cache/whisper"));
   assert.ok(checklist.modelPolicy.explicitBundleSourceCount > 0);
   assert.ok(checklist.modelPolicy.explicitBundleBytes > 0);
+  assert.deepEqual(checklist.modelPolicy.bundledDependencyWeights.lvChordia, {
+    checkpointBytes: 28_730_939,
+    checkpointCount: 5,
+    packagePath: "share/lv-chordia/cache_data",
+    sourceRevision: "9d7de7bbf45efa6731ec8dc62d35280f141c0702",
+  });
 });
 
 test("model policy output is stable when lyrics model env is overridden", () => {

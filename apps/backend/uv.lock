@@ -7,6 +7,12 @@ resolution-markers = [
     "sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[manifest]
+overrides = [
+    { name = "numpy", specifier = "==1.26.4" },
+    { name = "torch", specifier = "==2.11.0" },
+]
+
 [[package]]
 name = "absl-py"
 version = "2.4.0"
@@ -555,6 +561,21 @@ wheels = [
 ]
 
 [[package]]
+name = "hatchling"
+version = "1.28.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+    { name = "pathspec" },
+    { name = "pluggy" },
+    { name = "trove-classifiers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0b/8e/e480359492affde4119a131da729dd26da742c2c9b604dff74836e47eef9/hatchling-1.28.0.tar.gz", hash = "sha256:4d50b02aece6892b8cd0b3ce6c82cb218594d3ec5836dbde75bf41a21ab004c8", size = 55365, upload-time = "2025-11-27T00:31:13.766Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0d/a5/48cb7efb8b4718b1a4c0c331e3364a3a33f614ff0d6afd2b93ee883d3c47/hatchling-1.28.0-py3-none-any.whl", hash = "sha256:dc48722b68b3f4bbfa3ff618ca07cdea6750e7d03481289ffa8be1521d18a961", size = 76075, upload-time = "2025-11-27T00:31:12.544Z" },
+]
+
+[[package]]
 name = "httpcore"
 version = "1.0.9"
 source = { registry = "https://pypi.org/simple" }
@@ -589,6 +610,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/6f/6d/0703ccc57f3a7233505399edb88de3cbd678da106337b9fcde432b65ed60/idna-3.11.tar.gz", hash = "sha256:795dafcc9c04ed0c1fb032c2aa73654d8e8c5023a7df64a53f39190ada629902", size = 194582, upload-time = "2025-10-12T14:55:20.501Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0e/61/66938bbb5fc52dbdf84594873d5b51fb1f7c7794e9c0f5bd885f30bc507b/idna-3.11-py3-none-any.whl", hash = "sha256:771a87f49d9defaf64091e6e6fe9c18d4833f140bd19464795bc32d966ca37ea", size = 71008, upload-time = "2025-10-12T14:55:18.883Z" },
+]
+
+[[package]]
+name = "importlib-resources"
+version = "7.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e4/06/b56dfa750b44e86157093bc8fca0ab81dccbf5260510de4eaf1cb69b5b99/importlib_resources-7.1.0.tar.gz", hash = "sha256:0722d4c6212489c530f2a145a34c0a7a3b4721bc96a15fada5930e2a0b760708", size = 44985, upload-time = "2026-04-12T16:36:09.232Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8a/db/55a262f3606bebcae07cc14095338471ad7c0bbcaa37707e6f0ee49725b7/importlib_resources-7.1.0-py3-none-any.whl", hash = "sha256:1bd7b48b4088eddb2cd16382150bb515af0bd2c70128194392725f82ad2c96a1", size = 37232, upload-time = "2026-04-12T16:36:08.219Z" },
 ]
 
 [[package]]
@@ -789,6 +819,39 @@ wheels = [
 ]
 
 [[package]]
+name = "lv-chordia"
+version = "1.1.0"
+source = { url = "https://github.com/openmirlab/lv-chordia/archive/9d7de7bbf45efa6731ec8dc62d35280f141c0702.tar.gz" }
+dependencies = [
+    { name = "h5py" },
+    { name = "joblib" },
+    { name = "librosa" },
+    { name = "numpy" },
+    { name = "pretty-midi" },
+    { name = "pydub" },
+    { name = "torch" },
+]
+sdist = { hash = "sha256:7778dd38a7614c1ad7ec4d4d0070adde65f32aeca0a2e17b856a4f66c3a1fe4e" }
+
+[package.metadata]
+requires-dist = [
+    { name = "black", marker = "extra == 'dev'", specifier = ">=22.0" },
+    { name = "build", marker = "extra == 'dev'", specifier = ">=1.0.0" },
+    { name = "flake8", marker = "extra == 'dev'", specifier = ">=4.0" },
+    { name = "h5py", specifier = ">=3.16.0" },
+    { name = "joblib", specifier = ">=1.5.3" },
+    { name = "librosa", specifier = ">=0.11.0" },
+    { name = "numpy", specifier = ">=2.2.6" },
+    { name = "pretty-midi", specifier = ">=0.2.9" },
+    { name = "pydub", specifier = ">=0.23.1" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=6.0" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0.1" },
+    { name = "torch", specifier = ">=2.13.0" },
+    { name = "twine", marker = "extra == 'dev'", specifier = ">=4.0.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "mako"
 version = "1.3.11"
 source = { registry = "https://pypi.org/simple" }
@@ -826,6 +889,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/0f/62/d9c46a7f5c9adbeeeda52f5b8d802e1094e9717705a645efc71b0913a0a8/markupsafe-3.0.3-cp311-cp311-win32.whl", hash = "sha256:0db14f5dafddbb6d9208827849fad01f1a2609380add406671a26386cdf15a19", size = 14572, upload-time = "2025-09-27T18:36:28.045Z" },
     { url = "https://files.pythonhosted.org/packages/83/8a/4414c03d3f891739326e1783338e48fb49781cc915b2e0ee052aa490d586/markupsafe-3.0.3-cp311-cp311-win_amd64.whl", hash = "sha256:de8a88e63464af587c950061a5e6a67d3632e36df62b986892331d4620a35c01", size = 15077, upload-time = "2025-09-27T18:36:29.025Z" },
     { url = "https://files.pythonhosted.org/packages/35/73/893072b42e6862f319b5207adc9ae06070f095b358655f077f69a35601f0/markupsafe-3.0.3-cp311-cp311-win_arm64.whl", hash = "sha256:3b562dd9e9ea93f13d53989d23a7e775fdfd1066c33494ff43f5418bc8c58a5c", size = 13876, upload-time = "2025-09-27T18:36:29.954Z" },
+]
+
+[[package]]
+name = "mido"
+version = "1.3.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/23/14/cfda3fe61ce4c0f50a9f707ae02b46cb53211732b2cd4522bf06272848f4/mido-1.3.3.tar.gz", hash = "sha256:1aecb30b7f282404f17e43768cbf74a6a31bf22b3b783bdd117a1ce9d22cb74c", size = 124288, upload-time = "2024-10-25T15:05:21.847Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fd/28/45deb15c11859d2f10702b32e71de9328a9fa494f989626916db39a9617f/mido-1.3.3-py3-none-any.whl", hash = "sha256:01033c9b10b049e4436fca2762194ca839b09a4334091dd3c34e7f4ae674fd8a", size = 54614, upload-time = "2024-10-25T15:05:20.349Z" },
 ]
 
 [[package]]
@@ -1247,6 +1322,21 @@ wheels = [
 ]
 
 [[package]]
+name = "pretty-midi"
+version = "0.2.11.post0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "importlib-resources" },
+    { name = "mido" },
+    { name = "numpy" },
+    { name = "six" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9b/19/0c3822e73fa1364cf00aa5f57b9b72a216e35818bd75871308283e76ed8c/pretty_midi-0.2.11.post0.tar.gz", hash = "sha256:c91e40c9b087b0511f503c3efbba892b41e7048c831cafdccbf6ba965632a0bf", size = 5602265, upload-time = "2026-07-28T18:14:53.148Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/db/4f/fae82739ec54708915e90772938ac2745f2084550223f94cbee175a24910/pretty_midi-0.2.11.post0-py3-none-any.whl", hash = "sha256:a3e2321736245a9c92259716d85a4762f16b7bde2f591fb0dba95bdb6e793d8a", size = 5597222, upload-time = "2026-07-28T18:14:51.38Z" },
+]
+
+[[package]]
 name = "protobuf"
 version = "4.25.9"
 source = { registry = "https://pypi.org/simple" }
@@ -1356,6 +1446,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/8e/a8/258a32878140347532be4e44c6f3b1ace3b52b9c9ca7548a65ce18adf4b4/pydantic_core-2.46.2-pp311-pypy311_pp73-musllinux_1_1_armv7l.whl", hash = "sha256:807eeda5551f6884d3b4421578be37be50ddb7a58832348e99617a6714a73748", size = 2319882, upload-time = "2026-04-17T09:10:21.872Z" },
     { url = "https://files.pythonhosted.org/packages/13/b9/5071c298a0f91314a5402b8c56e0efbcebe77085327d0b4df7dc9cb0b674/pydantic_core-2.46.2-pp311-pypy311_pp73-musllinux_1_1_x86_64.whl", hash = "sha256:fcaa1c3c846a7f6686b38fe493d1b2e8007380e293bfef6a9354563c026cbf36", size = 2348065, upload-time = "2026-04-17T09:11:08.263Z" },
     { url = "https://files.pythonhosted.org/packages/75/f3/0a7087e5f861d66ca64ce927230b397cc264c87b712156e6a93b26a459c8/pydantic_core-2.46.2-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:154dbfdfb11b8cbd8ff4d00d0b81e3d19f4cb4bedd5aa9f091060ba071474c6a", size = 2192159, upload-time = "2026-04-17T09:11:20.123Z" },
+]
+
+[[package]]
+name = "pydub"
+version = "0.25.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fe/9a/e6bca0eed82db26562c73b5076539a4a08d3cffd19c3cc5913a3e61145fd/pydub-0.25.1.tar.gz", hash = "sha256:980a33ce9949cab2a569606b65674d748ecbca4f0796887fd6f46173a7b0d30f", size = 38326, upload-time = "2021-03-10T02:09:54.659Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a6/53/d78dc063216e62fc55f6b2eebb447f6a4b0a59f55c8406376f76bf959b08/pydub-0.25.1-py2.py3-none-any.whl", hash = "sha256:65617e33033874b59d87db603aa1ed450633288aefead953b30bded59cb599a6", size = 32327, upload-time = "2021-03-10T02:09:53.503Z" },
 ]
 
 [[package]]
@@ -1918,6 +2017,15 @@ wheels = [
 ]
 
 [[package]]
+name = "trove-classifiers"
+version = "2026.6.1.19"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c2/e3/7ca82ee24c82d344584abd5b8637b3bd056f2900226e8d82fc22f1184b92/trove_classifiers-2026.6.1.19.tar.gz", hash = "sha256:c5132b4b61a829d11cfbd2d72e97f20a45ed6edb95e45c5efdeb5e00836b2745", size = 17059, upload-time = "2026-06-01T19:41:34.649Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7c/a4/81502f486f01db95bc8320646a8a12511f5e556cb63d5e224d91816605c4/trove_classifiers-2026.6.1.19-py3-none-any.whl", hash = "sha256:ab4c4ec93cc4a4e7815fa759906e05e6bb3f2fbd92ea0f897288c6a43efd15b3", size = 14211, upload-time = "2026-06-01T19:41:33.434Z" },
+]
+
+[[package]]
 name = "tuneforge-backend"
 version = "1.2.0"
 source = { editable = "." }
@@ -1946,9 +2054,13 @@ advanced-chords = [
     { name = "setuptools" },
     { name = "tensorflow" },
 ]
+lv-chordia = [
+    { name = "lv-chordia" },
+]
 
 [package.dev-dependencies]
 dev = [
+    { name = "hatchling" },
     { name = "httpx" },
     { name = "mypy" },
     { name = "pytest" },
@@ -1965,6 +2077,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.12,<1.0.0" },
     { name = "keras", marker = "extra == 'advanced-chords'", specifier = ">=2.15,<3.16" },
     { name = "librosa", specifier = ">=0.10.2.post1,<1.0.0" },
+    { name = "lv-chordia", marker = "extra == 'lv-chordia'", url = "https://github.com/openmirlab/lv-chordia/archive/9d7de7bbf45efa6731ec8dc62d35280f141c0702.tar.gz" },
     { name = "numpy", specifier = ">=1.26.4,<3.0.0" },
     { name = "openai-whisper", specifier = ">=20250625,<20260000" },
     { name = "pydantic", specifier = ">=2.11.3,<3.0.0" },
@@ -1975,10 +2088,11 @@ requires-dist = [
     { name = "tensorflow", marker = "extra == 'advanced-chords'", specifier = ">=2.15,<2.22" },
     { name = "uvicorn", specifier = ">=0.34.2,<1.0.0" },
 ]
-provides-extras = ["advanced-chords", "advanced-beats"]
+provides-extras = ["advanced-chords", "advanced-beats", "lv-chordia"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "hatchling", specifier = "==1.28.0" },
     { name = "httpx", specifier = ">=0.28.1,<1.0.0" },
     { name = "mypy", specifier = ">=1.15.0,<3.0.0" },
     { name = "pytest", specifier = ">=8.3.5,<10.0.0" },

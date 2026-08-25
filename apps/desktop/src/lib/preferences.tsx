@@ -23,7 +23,7 @@ export type ProjectWorkspaceMode = "project" | "playback";
 export type PlaybackDisplayMode = "lyrics" | "chords" | "combined";
 export type DefaultPlaybackDisplayMode = "auto" | PlaybackDisplayMode;
 export type DefaultBeatAnalysisBackend = "built-in" | "beat-this";
-export type DefaultChordBackend = "tuneforge-fast" | "crema-advanced";
+export type DefaultChordBackend = "tuneforge-fast" | "crema-advanced" | "lv-chordia-submission";
 export type DefaultStemModel = "htdemucs_6s" | "htdemucs_ft";
 export type TunerVisualMode = "simple" | "wide-arc";
 export type { EnharmonicDisplayMode, LoopAlignmentMode };
@@ -174,7 +174,7 @@ export function isDefaultBeatAnalysisBackend(value: unknown): value is DefaultBe
 }
 
 export function isDefaultChordBackend(value: unknown): value is DefaultChordBackend {
-  return value === "tuneforge-fast" || value === "crema-advanced";
+  return value === "tuneforge-fast" || value === "crema-advanced" || value === "lv-chordia-submission";
 }
 
 export function isDefaultStemModel(value: unknown): value is DefaultStemModel {

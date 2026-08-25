@@ -1,6 +1,6 @@
 # Packaging
 
-TuneForge packaging creates local unsigned desktop builds. Packaged builds launch the bundled backend locally, include the default desktop Advanced Chords and Advanced Beat Analysis dependency stacks, and do not bundle external model weights by default. Crema's wheel-embedded chord model assets are the dependency-owned exception and may be included with Advanced Chords. TuneForge does not bundle FFmpeg: macOS packages use host-installed `ffmpeg` and `ffprobe`, while Flatpak routes backend lookups through sandbox wrappers at `/app/bin/ffmpeg` and `/app/bin/ffprobe`.
+TuneForge packaging creates local unsigned desktop builds. Packaged builds launch the bundled backend locally and include Advanced Chords, Advanced Beat Analysis, and LV Chordia by default. LV Chordia includes five dependency-owned MIT checkpoints (28,730,939 bytes); other external model weights remain excluded by default. TuneForge does not bundle FFmpeg: macOS packages use host-installed `ffmpeg` and `ffprobe`, while Flatpak routes backend lookups through sandbox wrappers at `/app/bin/ffmpeg` and `/app/bin/ffprobe`.
 
 See [Third-party notices](../THIRD_PARTY_NOTICES.md) for the dependency and model-weight distribution policy.
 
@@ -13,6 +13,7 @@ See [Third-party notices](../THIRD_PARTY_NOTICES.md) for the dependency and mode
 - Release/default package commands must not use `--model-bundle`; publishable artifacts must not include Demucs, Whisper, or beat-this model weights unless redistribution has been explicitly reviewed.
 - Default packages may still download Demucs, Whisper, or beat-this weights on first use when caches are missing. Fully offline operation requires host/sandbox FFmpeg access plus the relevant local caches or package assets to already exist.
 - Crema chord model files come from the crema dependency and ship with Advanced Chords unless that dependency stack is excluded; Demucs, Whisper, and beat-this external weights remain cache/download assets unless `--model-bundle` is explicitly passed.
+- LV Chordia checkpoints ship inside its pinned dependency for offline first use. `--no-lv-chordia` excludes both the runtime and checkpoints; damaged assets fail closed and are repaired by reinstalling.
 
 ## Release Package Gate
 
@@ -106,13 +107,14 @@ Build the app bundle and DMG with:
 pnpm package:mac
 ```
 
-Plain macOS packages include crema Advanced Chords and beat-this Advanced Beat Analysis
-dependencies by default. Package flags can opt out of advanced dependencies or opt into explicit
-model bundling:
+Plain macOS packages include crema Advanced Chords, beat-this Advanced Beat Analysis, and LV
+Chordia dependencies by default. Package flags independently opt out or opt into explicit model
+bundling:
 
 ```sh
-pnpm package:mac -- --no-crema --no-beat-this
+pnpm package:mac -- --no-crema --no-beat-this --no-lv-chordia
 pnpm package:mac -- --no-advanced-chords --no-advanced-beats
+pnpm package:mac -- --lv-chordia
 pnpm package:mac -- --model-bundle
 ```
 
@@ -131,7 +133,7 @@ Run packaging from a normal macOS shell so `hdiutil` can create the disk image. 
 
 The packaged backend checks the inherited `PATH` plus common Homebrew and MacPorts install locations when looking for `ffmpeg` and `ffprobe`. System microphone volume control uses the built-in CoreAudio API on macOS.
 
-By default, Demucs, Whisper, and beat-this weights are read from their normal caches and downloaded on first use if missing. Crema is the dependency-owned exception: its wheel-embedded chord model files are part of the crema package and ship when Advanced Chords is included. `--model-bundle` stages required Demucs and Whisper weights into the package, and also stages the beat-this `small0` checkpoint when beat-this dependencies are included. On startup, bundled model files seed the normal caches; runtime loaders still use cache paths, not package resource paths. `--model-bundle` does not control dependency inclusion. The flag prints a warning because Demucs pretrained-weight redistribution is unclear/restricted upstream.
+By default, Demucs, Whisper, and beat-this weights are read from their normal caches and downloaded on first use if missing. Crema and LV Chordia are dependency-owned exceptions: LV Chordia ships exactly five checkpoints totaling 28,730,939 bytes and validates them before loading. It performs no model download and uses no user checkpoint cache. `--model-bundle` stages required Demucs and Whisper weights, plus beat-this `small0` when included; it does not control LV Chordia.
 
 ## Android
 
@@ -206,18 +208,19 @@ The Flatpak build generates local dependency source manifests, builds inside the
 
 Flatpak runtime lookups are not host `PATH` lookups. The manifest sets `TUNEFORGE_FFMPEG_PATH=/app/bin/ffmpeg` and `TUNEFORGE_FFPROBE_PATH=/app/bin/ffprobe`; those files are wrappers that search for `ffmpeg` and `ffprobe` inside the sandbox runtime/extension paths. If the runtime does not provide them, the Flatpak build or app reports the missing sandbox binary rather than falling back to the host shell.
 
-Plain Linux packages include crema Advanced Chords and beat-this Advanced Beat Analysis dependency
-stacks by default. Feature flags are independent:
+Plain Linux packages include crema Advanced Chords, beat-this Advanced Beat Analysis, and LV
+Chordia dependency stacks by default. Feature flags are independent:
 
 ```sh
-pnpm package:linux -- --no-crema --no-beat-this
+pnpm package:linux -- --no-crema --no-beat-this --no-lv-chordia
 pnpm package:linux -- --no-advanced-chords --no-advanced-beats
-pnpm package:linux -- --legacy-nvidia --model-bundle
+pnpm package:linux -- --legacy-nvidia --no-lv-chordia --model-bundle
 ```
 
 - `--no-crema` / `--no-advanced-chords` exclude the Advanced Chords dependency stack.
 - `--no-beat-this` / `--no-advanced-beats` exclude the Advanced Beat Analysis dependency stack.
-- `--legacy-nvidia` swaps in the legacy CUDA 12.6 PyTorch/torchaudio wheels and broader GPU device access.
+- `--lv-chordia` / `--no-lv-chordia` include or exclude LV Chordia and its five checkpoints.
+- `--legacy-nvidia` swaps in the legacy CUDA 12.6 PyTorch/torchaudio wheels and broader GPU device access; it requires `--no-lv-chordia` because LV Chordia is audited only with Torch 2.11.0.
 - `--model-bundle` includes required Demucs and Whisper weights, plus beat-this `small0` when beat-this dependencies are included.
 - `--sandbox-data` keeps app data under Flatpak-private `/var/data/tuneforge` instead of the host XDG data directory.
 
@@ -247,6 +250,6 @@ Without `--no-bundle`, the Flatpak bundle is written under `packaging/flatpak/` 
 
 ## Size Expectations
 
-Linux Flatpak bundles are large because the default package includes Torch, NVIDIA CUDA Python wheels, TensorFlow and related Advanced Chords dependencies, and beat-this Advanced Beat Analysis dependencies. `--legacy-nvidia` swaps in CUDA 12.6 runtime wheels, and `--model-bundle` adds model weights.
+Linux Flatpak bundles are large because the default package includes Torch, NVIDIA CUDA Python wheels, TensorFlow and related Advanced Chords dependencies, beat-this, and the LV Chordia runtime. Report LV Chordia source/runtime bytes separately from its fixed 28,730,939 checkpoint bytes. `--legacy-nvidia` swaps in CUDA 12.6 runtime wheels, and `--model-bundle` adds other reviewed model weights.
 
 Packaging prints a size report for the built `/app` tree and selected Python artifacts. Use that report to distinguish accidental copied build inputs from expected ML runtime payloads.

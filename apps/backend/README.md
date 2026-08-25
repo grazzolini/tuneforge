@@ -20,7 +20,7 @@ FastAPI backend for TuneForge. It owns persistence, artifact management, audio a
 ## Setup
 
 ```sh
-uv sync --python 3.11 --all-groups --extra advanced-chords --extra advanced-beats
+uv sync --python 3.11 --all-groups --extra advanced-chords --extra advanced-beats --extra lv-chordia
 ```
 
 From the workspace root, `pnpm setup:dev` also runs the full developer setup: `pnpm install`,
@@ -61,6 +61,20 @@ If `crema`, TensorFlow, Keras, or JAMS are missing, `/api/v1/chord-backends` rep
 Release coverage label: full crema/TensorFlow runtime, package inclusion, and model-artifact review
 are manual or special checks unless a CI workflow explicitly installs and exercises the advanced
 dependency stack. Built-in Chords fallback should stay available when that stack is missing.
+
+### LV Chordia backend
+
+`lv-chordia-submission` (alias `lv-chordia`) is an optional desktop chord backend using the
+submission vocabulary from audited upstream revision
+`9d7de7bbf45efa6731ec8dc62d35280f141c0702`. Normal desktop setup and packages include its five
+MIT checkpoints (28,730,939 bytes); `--no-lv-chordia` excludes the dependency and checkpoints.
+The backend validates every checkpoint name, size, and SHA-256 before model loading. Missing or
+corrupt assets fail closed and are repaired by reinstalling or rebuilding the package; there is no
+download or user-cache lifecycle. Crema remains the default pending manual product evaluation.
+
+LV Chordia accepts local audio paths only. It tries CUDA or MPS when available and retries once on
+CPU for accelerator availability or allocation failures. Explicit generation, refresh, stem, and
+bulk requests never switch chord backends; import routes may record a Built-in fallback.
 
 ### Advanced Beat Analysis backend
 
@@ -188,7 +202,7 @@ All configuration is environment-driven (see [`app/config.py`](./app/config.py))
 | `TUNEFORGE_LYRICS_DEVICE` | `auto` | One of `auto`, `cpu`, `mps`, `cuda`. `auto` prefers compatible CUDA, then MPS, then CPU. |
 | `TUNEFORGE_LYRICS_CACHE_DIR` | upstream Whisper cache | Override where Whisper model weights are cached. By default this is `$XDG_CACHE_HOME/whisper` or `~/.cache/whisper`. |
 | `TUNEFORGE_DEFAULT_CHORD_BACKEND` | `crema-advanced` | Default chord backend for `backend: "default"` on desktop. Built-in fallback remains available when crema is unavailable, unsupported, or explicitly excluded. |
-| `TUNEFORGE_RUNTIME_PLATFORM` | `desktop` | Runtime platform marker. `android`, `ios`, or `mobile` disables the advanced chord backend. |
+| `TUNEFORGE_RUNTIME_PLATFORM` | `desktop` | Runtime platform marker. `android`, `ios`, or `mobile` disables desktop chord backends. |
 
 Default data directory:
 
@@ -215,7 +229,9 @@ Generate chords with an explicit backend:
 }
 ```
 
-Accepted backend aliases are `fast` / `tuneforge-fast` and `advanced` / `crema-advanced`. User-edited chord timelines are preserved unless `overwrite_user_edits` is explicitly true.
+Accepted backend aliases are `fast` / `tuneforge-fast`, `advanced` / `crema-advanced`, and
+`lv-chordia` / `lv-chordia-submission`. User-edited chord timelines are preserved unless
+`overwrite_user_edits` is explicitly true.
 
 Benchmark Built-in Chords against Advanced Chords:
 

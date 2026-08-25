@@ -207,12 +207,18 @@ describe("mobile sync API adapter", () => {
     const defaultRequest: ProjectImportRequest = {
       source_path: "/music/default.wav",
     };
+    const nullableRequest: ProjectImportRequest = {
+      source_path: "/music/nullable.wav",
+      chord_backend: null,
+    };
 
     await api.importProject(builtInRequest);
     await api.importProject(defaultRequest);
+    await api.importProject(nullableRequest);
 
     expect(mockInvoke).toHaveBeenNthCalledWith(1, "mobile_import_project", { payload: builtInRequest });
     expect(mockInvoke).toHaveBeenNthCalledWith(2, "mobile_import_project", { payload: defaultRequest });
+    expect(mockInvoke).toHaveBeenNthCalledWith(3, "mobile_import_project", { payload: nullableRequest });
   });
 
   it("reports truthful Android export capabilities and forwards destination-free selections", async () => {
@@ -267,6 +273,21 @@ describe("mobile sync API adapter", () => {
     expect(mockInvoke).not.toHaveBeenCalled();
   });
 
+  it("rejects LV Chordia mobile import before native invoke", async () => {
+    const api = await loadMobileApi();
+
+    await expect(api.importProject({
+      source_path: "/music/song.wav",
+      copy_into_project: true,
+      chord_backend: "lv-chordia-submission",
+    })).rejects.toMatchObject({
+      code: "UNSUPPORTED_RUNTIME",
+      details: { chord_backend: "lv-chordia-submission" },
+    });
+
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
   it.each(["flac", "mp3", "m4a"] as const)(
     "rejects %s durable import format on mobile before native invoke",
     async (outputFormat) => {
@@ -303,6 +324,33 @@ describe("mobile sync API adapter", () => {
     await expect(api.analyzeProject("proj_1", { beat_backend: "beat-this" })).rejects.toMatchObject({
       code: "UNSUPPORTED_RUNTIME",
       details: { beat_backend: "beat-this" },
+    });
+
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it("reports LV Chordia unavailable on mobile", async () => {
+    const api = await loadMobileApi();
+
+    const response = await api.listChordBackends();
+    expect(response.backends).toContainEqual(expect.objectContaining({
+      available: false,
+      id: "lv-chordia-submission",
+      unavailable_reason: "LV Chordia is disabled on mobile",
+    }));
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it("rejects explicit LV Chordia generation before native invoke", async () => {
+    const api = await loadMobileApi();
+
+    await expect(Promise.resolve().then(() => api.createChords("proj_1", {
+      backend: "lv-chordia-submission",
+      force: true,
+      overwrite_user_edits: false,
+    }))).rejects.toMatchObject({
+      code: "UNSUPPORTED_RUNTIME",
+      details: { chord_backend: "lv-chordia-submission" },
     });
 
     expect(mockInvoke).not.toHaveBeenCalled();

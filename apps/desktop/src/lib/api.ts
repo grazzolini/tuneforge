@@ -2235,6 +2235,25 @@ const mobileChordBackendsResponse: ChordBackendsResponse = {
       label: "Advanced Chords",
       unavailable_reason: "advanced chord backend is disabled on mobile",
     },
+    {
+      availability: "unavailable",
+      available: false,
+      capabilities: {
+        desktopOnly: true,
+        estimatedSpeed: "slow",
+        experimental: true,
+        supportsConfidence: false,
+        supportsInversions: true,
+        supportsNoChord: true,
+        supportsSevenths: true,
+      },
+      description: "Use bundled LV Chordia submission model for desktop chord detection.",
+      desktopOnly: true,
+      experimental: true,
+      id: "lv-chordia-submission",
+      label: "LV Chordia (Submission)",
+      unavailable_reason: "LV Chordia is disabled on mobile",
+    },
   ],
 };
 const mobileBeatBackendsResponse: BeatBackendsResponse = {
@@ -2468,6 +2487,19 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
       });
     }
   };
+  const requireSupportedMobileChordBackend = (request?: {
+    backend?: string | null;
+    chord_backend?: string | null;
+  }) => {
+    const backend = request?.backend ?? request?.chord_backend;
+    if (backend && !["default", "fast", "tuneforge-fast", "librosa"].includes(backend)) {
+      throw new ApiError({
+        code: "UNSUPPORTED_RUNTIME",
+        message: "Selected chord backend is not available on mobile.",
+        details: { chord_backend: backend },
+      });
+    }
+  };
   const requireSupportedMobileImportFormat = (request: ProjectImportRequest) => {
     if (request.output_format !== undefined && request.output_format !== "wav") {
       throw new ApiError({
@@ -2523,6 +2555,7 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
       invokeMobile("mobile_list_projects", { params: params ?? null }),
     importProject: async (body: ProjectImportRequest) => {
       requireSupportedMobileAnalysisBackend(body);
+      requireSupportedMobileChordBackend(body);
       requireSupportedMobileImportFormat(body);
       return invokeMobile("mobile_import_project", { payload: body });
     },
@@ -2538,8 +2571,10 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     listBeatBackends: async () => mobileBeatBackendsResponse,
     listChordBackends: async () => mobileChordBackendsResponse,
     listStemModels: async () => mobileStemModelsResponse,
-    createChords: (projectId: string, body: ChordRequest) =>
-      invokeMobile("mobile_submit_chords", { projectId, payload: body }),
+    createChords: (projectId: string, body: ChordRequest) => {
+      requireSupportedMobileChordBackend(body);
+      return invokeMobile("mobile_submit_chords", { projectId, payload: body });
+    },
     getChords: (projectId: string) => invokeMobile("mobile_get_chords", { projectId }),
     createLyrics: (projectId: string, body: LyricsGenerateRequest) =>
       invokeMobile("mobile_submit_lyrics", { projectId, payload: body }),
@@ -2570,8 +2605,10 @@ function createMobileTuneForgeClient(capabilities: MobileCapabilities): TuneForg
     listSections: async () => ({ sections: [] }),
     createPreview: (projectId: string, body: PreviewRequest) =>
       invokeMobile("mobile_submit_preview", { projectId, payload: body }),
-    createStems: (projectId: string, body: StemRequest) =>
-      invokeMobile("mobile_submit_stems", { projectId, payload: body }),
+    createStems: (projectId: string, body: StemRequest) => {
+      requireSupportedMobileChordBackend(body);
+      return invokeMobile("mobile_submit_stems", { projectId, payload: body });
+    },
     createRetune: (projectId: string, body: RetuneRequest) =>
       invokeMobile("mobile_submit_retune", { projectId, payload: body }),
     createTranspose: (projectId: string, body: components["schemas"]["TransposeRequest"]) =>

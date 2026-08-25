@@ -15,12 +15,15 @@ Options:
                               Include the default beat-this backend.
   --no-advanced-beats, --no-beat-this
                               Skip the beat-this backend.
+  --lv-chordia               Include LV Chordia and verify bundled checkpoints (default).
+  --no-lv-chordia            Skip LV Chordia and its bundled checkpoints.
   -h, --help                  Show this help.
 EOF
 }
 
 advanced_chords=1
 advanced_beats=1
+lv_chordia=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -35,6 +38,12 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-advanced-beats | --no-beat-this)
       advanced_beats=0
+      ;;
+    --lv-chordia)
+      lv_chordia=1
+      ;;
+    --no-lv-chordia)
+      lv_chordia=0
       ;;
     --)
       ;;
@@ -63,7 +72,16 @@ fi
 if [[ "${advanced_beats}" -eq 1 ]]; then
   backend_sync_args+=(--extra advanced-beats)
 fi
+if [[ "${lv_chordia}" -eq 1 ]]; then
+  backend_sync_args+=(--extra lv-chordia)
+fi
 
 rm -rf .venv
 uv "${backend_sync_args[@]}"
+if [[ "${lv_chordia}" -eq 1 ]]; then
+  .venv/bin/python -m app.cli.prewarm_models \
+    --skip-demucs \
+    --skip-whisper \
+    --include-lv-chordia
+fi
 rm -f "${marker_file}"

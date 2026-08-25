@@ -8,11 +8,12 @@ This document is an engineering notice and distribution checklist, not legal adv
 
 This file is the source of truth for dependency and model-weight distribution policy:
 
-- Default release package commands (`pnpm package:mac`, `pnpm package:linux:flatpak`) do not pass `--model-bundle`. They include the default desktop runtime dependencies, including Advanced Chords and Advanced Beat Analysis, but not external Demucs, Whisper, or beat-this model/checkpoint weights.
+- Default release package commands (`pnpm package:mac`, `pnpm package:linux:flatpak`) do not pass `--model-bundle`. They include Advanced Chords, Advanced Beat Analysis, and LV Chordia. LV Chordia's five dependency-owned checkpoints are included; external Demucs, Whisper, and beat-this weights are not.
 - FFmpeg and ffprobe are not bundled by Tuneforge. macOS and source runs use host-installed binaries on `PATH` or explicit `TUNEFORGE_FFMPEG_PATH` / `TUNEFORGE_FFPROBE_PATH` overrides. Flatpak builds use `/app/bin/ffmpeg` and `/app/bin/ffprobe` wrappers backed by the Flatpak runtime or extensions.
 - Demucs, Whisper, and beat-this weights are local cache assets by default. Setup/model-prewarm can prepare them ahead of time, and the app may download them on first use if they are missing. Fully offline use requires the relevant caches/assets to already exist.
 - `--model-bundle` is an explicit local/dev packaging option, not part of default release packaging. It stages Demucs and Whisper weights and, when beat-this is included, the beat-this `small0` checkpoint; redistribution needs separate review before publishable artifacts use it.
 - Crema chord model files are the dependency-owned exception to the external model-weight rule: they are wheel-embedded assets inside the published crema package, ship with default desktop packages when Advanced Chords is included, and are removed only when Advanced Chords is excluded with `--no-crema` / `--no-advanced-chords`.
+- LV Chordia's five MIT checkpoints are bundled inside its pinned source dependency, total exactly 28,730,939 bytes, and are removed with `--no-lv-chordia`. They never use a downloader or user cache.
 - Tuneforge does not add cloud processing, accounts, telemetry, or track uploads for these features. Local-first does not mean first use is always offline.
 
 ## Build and Development Dependencies
@@ -65,6 +66,12 @@ This file is the source of truth for dependency and model-weight distribution po
 - **License:** MIT
 - **Source:** <https://github.com/CPJKU/beat_this>
 - **Notes:** Advanced Beat Analysis is part of the default desktop/dev/package dependency set and can be excluded with `--no-beat-this` / `--no-advanced-beats`. Tuneforge does not bundle beat-this checkpoints by default. `pnpm setup:dev` preloads the selected `small0` checkpoint into the local PyTorch cache; if it is not preloaded, the first Advanced Beat Analysis run may download it through `beat-this`. Packages built with `--model-bundle` include the `small0` checkpoint when beat-this dependencies are included.
+
+### lv-chordia / LV Chordia (Submission) backend and checkpoints
+
+- **License:** MIT for source and the five distributed checkpoints.
+- **Source:** <https://github.com/openmirlab/lv-chordia/tree/9d7de7bbf45efa6731ec8dc62d35280f141c0702>
+- **Notes:** The optional dependency is pinned to audited revision `9d7de7bbf45efa6731ec8dc62d35280f141c0702`. Normal desktop packages include one checkpoint set under `share/lv-chordia/cache_data`: five files totaling exactly 28,730,939 bytes. TuneForge validates exact names, sizes, and SHA-256 digests before deserialization. Missing or corrupt files fail closed and are repaired by reinstalling; no outbound fetch or user-cache lifecycle exists. `--no-lv-chordia` excludes both source/runtime bytes and checkpoint bytes. Runtime dependency size must be reported separately from the 28,730,939 checkpoint bytes.
 
 ### openai-whisper / Whisper model weights
 

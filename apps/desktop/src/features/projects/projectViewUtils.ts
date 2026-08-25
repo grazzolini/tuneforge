@@ -704,6 +704,9 @@ function formatChordBackend(backend: string | null | undefined) {
   if (backend === "crema-advanced" || backend === "advanced" || backend === "crema") {
     return "advanced";
   }
+  if (backend === "lv-chordia-submission" || backend === "lv-chordia") {
+    return "LV Chordia";
+  }
   return backend ?? null;
 }
 

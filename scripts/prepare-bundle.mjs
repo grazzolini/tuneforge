@@ -3,6 +3,7 @@ import {
   existsSync,
   readFileSync,
   mkdirSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -26,6 +27,15 @@ const stagedBackendSourceRoot = path.join(stagedBackendRoot, "src");
 const stagedPythonRoot = path.join(stagedBackendRoot, "python");
 const stagedSitePackagesRoot = path.join(stagedBackendRoot, "site-packages");
 const stagedModelBundleRoot = path.join(stagedBackendRoot, "models", "bundle");
+const stagedLvChordiaRoot = path.join(stagedPythonRoot, "share", "lv-chordia", "cache_data");
+const sourceLvChordiaRoot = path.join(backendRoot, ".venv", "share", "lv-chordia", "cache_data");
+export const LV_CHORDIA_CHECKPOINT_NAMES = [
+  "joint_chord_net_ismir_naive_v1.0_reweight(0.0,10.0)_s0.best.sdict",
+  "joint_chord_net_ismir_naive_v1.0_reweight(0.0,10.0)_s1.best.sdict",
+  "joint_chord_net_ismir_naive_v1.0_reweight(0.0,10.0)_s2.best.sdict",
+  "joint_chord_net_ismir_naive_v1.0_reweight(0.0,10.0)_s3.best.sdict",
+  "joint_chord_net_ismir_naive_v1.0_reweight(0.0,10.0)_s4.best.sdict",
+];
 
 function requirePath(targetPath, description) {
   if (!existsSync(targetPath)) {
@@ -40,6 +50,26 @@ function copyInto(sourcePath, destinationPath, { dereference = false, filter } =
     dereference,
     filter,
   });
+}
+
+function checkpointPaths(root) {
+  if (!existsSync(root)) {
+    return [];
+  }
+  return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const entryPath = path.join(root, entry.name);
+    return entry.isDirectory() ? checkpointPaths(entryPath) : entry.name.endsWith(".sdict") ? [entryPath] : [];
+  });
+}
+
+export function assertLvChordiaBundleLayout(root, enabled) {
+  const actual = checkpointPaths(root).map((filePath) => path.relative(root, filePath)).sort();
+  const expected = enabled
+    ? LV_CHORDIA_CHECKPOINT_NAMES.map((name) => path.join("python", "share", "lv-chordia", "cache_data", name)).sort()
+    : [];
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`Unexpected LV Chordia checkpoint layout: ${actual.join(", ") || "none"}`);
+  }
 }
 
 function parsePythonHome(venvConfigPath) {
@@ -106,6 +136,51 @@ function prepareModelBundle(options) {
   run(pythonPath, args, { cwd: backendRoot });
 }
 
+function verifyBundledDependencyAssets(options) {
+  if (!options.lvChordia) {
+    return;
+  }
+  const pythonPath = path.join(backendRoot, ".venv", "bin", "python");
+  requirePath(pythonPath, "Backend virtualenv Python");
+  run(
+    pythonPath,
+    [
+      "-c",
+      "from app.engines.lv_chordia import lv_chordia_dependency_status; " +
+        "available, reason = lv_chordia_dependency_status(); assert available, reason",
+    ],
+    { cwd: backendRoot },
+  );
+}
+
+function stageLvChordiaAssets(options) {
+  if (options.lvChordia) {
+    requirePath(sourceLvChordiaRoot, "LV Chordia checkpoint source");
+    mkdirSync(path.dirname(stagedLvChordiaRoot), { recursive: true });
+    copyInto(sourceLvChordiaRoot, stagedLvChordiaRoot);
+  }
+  assertLvChordiaBundleLayout(stagedBackendRoot, options.lvChordia);
+  if (!options.lvChordia) {
+    return;
+  }
+  const stagedPython = path.join(stagedPythonRoot, "bin", "python3.11");
+  run(
+    stagedPython,
+    [
+      "-c",
+      "from app.engines.lv_chordia import lv_chordia_dependency_status; " +
+        "available, reason = lv_chordia_dependency_status(); assert available, reason",
+    ],
+    {
+      cwd: stagedBackendSourceRoot,
+      env: {
+        DYLD_LIBRARY_PATH: path.join(stagedPythonRoot, "lib"),
+        PYTHONPATH: `${stagedBackendSourceRoot}${path.delimiter}${stagedSitePackagesRoot}`,
+      },
+    },
+  );
+}
+
 async function main() {
   const packageOptions = packageOptionsFromEnvironmentOrArgv(process.argv.slice(2), { platform: "mac" });
   const venvConfigPath = path.join(backendRoot, ".venv", "pyvenv.cfg");
@@ -113,6 +188,7 @@ async function main() {
   requirePath(venvConfigPath, "Backend virtualenv config");
   requirePath(sitePackagesRoot, "Backend site-packages");
   sitePackagesRootForFilter = sitePackagesRoot;
+  verifyBundledDependencyAssets(packageOptions);
   const buildInfo = resolveBuildInfo({ workspaceRoot, versionFilePath: null });
 
   const pythonHomeBin = parsePythonHome(venvConfigPath);
@@ -129,6 +205,7 @@ async function main() {
   copyInto(path.join(backendRoot, "pyproject.toml"), path.join(stagedBackendSourceRoot, "pyproject.toml"));
   copyInto(pythonInstallRoot, stagedPythonRoot, { dereference: true });
   copyInto(sitePackagesRoot, stagedSitePackagesRoot, { filter: shouldIncludeBundledSitePackage });
+  stageLvChordiaAssets(packageOptions);
   prepareModelBundle(packageOptions);
   writeResolvedBuildInfoFile(path.join(stagedBackendRoot, "version.json"), buildInfo);
 
@@ -153,7 +230,9 @@ async function main() {
   process.stdout.write(`Prepared bundled backend resources in ${resourcesRoot}\n`);
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
+}

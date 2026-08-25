@@ -3,6 +3,8 @@ const OPTION_ALIASES = new Map([
   ["--advanced-chords", ["crema", true]],
   ["--no-crema", ["crema", false]],
   ["--no-advanced-chords", ["crema", false]],
+  ["--lv-chordia", ["lvChordia", true]],
+  ["--no-lv-chordia", ["lvChordia", false]],
   ["--beat-this", ["beatThis", true]],
   ["--advanced-beats", ["beatThis", true]],
   ["--no-beat-this", ["beatThis", false]],
@@ -16,6 +18,7 @@ const OPTION_ALIASES = new Map([
 export function defaultPackageOptions() {
   return {
     crema: true,
+    lvChordia: true,
     beatThis: true,
     legacyNvidia: false,
     modelBundle: false,
@@ -59,8 +62,12 @@ export function validatePackageOptions(rawOptions, { platform } = {}) {
   if (platform === "mac" && options.sandboxData) {
     throw new Error("--sandbox-data is only supported for Linux Flatpak packaging.");
   }
+  if (options.legacyNvidia && options.lvChordia) {
+    throw new Error("--legacy-nvidia requires --no-lv-chordia because LV Chordia is audited only with Torch 2.11.0.");
+  }
   return {
     crema: Boolean(options.crema),
+    lvChordia: Boolean(options.lvChordia),
     beatThis: Boolean(options.beatThis),
     legacyNvidia: Boolean(options.legacyNvidia),
     modelBundle: Boolean(options.modelBundle),
@@ -88,6 +95,11 @@ export function packageOptionsToGeneratorArgs(options) {
   } else {
     args.push("--no-beat-this");
   }
+  if (validated.lvChordia) {
+    args.push("--lv-chordia");
+  } else {
+    args.push("--no-lv-chordia");
+  }
   if (validated.legacyNvidia) {
     args.push("--legacy-nvidia");
   }
@@ -105,6 +117,9 @@ export function backendSyncArgs(options) {
   }
   if (validated.beatThis) {
     args.push("--extra", "advanced-beats");
+  }
+  if (validated.lvChordia) {
+    args.push("--extra", "lv-chordia");
   }
   return args;
 }

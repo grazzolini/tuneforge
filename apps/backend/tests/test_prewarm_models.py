@@ -65,6 +65,23 @@ def test_valid_beat_this_cache_skips_preload(
     assert capsys.readouterr().out == "beat-this small0 checkpoint cache verified.\n"
 
 
+def test_valid_lv_chordia_bundle_preloads_after_integrity_check(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(prewarm_models, "lv_chordia_dependency_status", lambda: (True, None))
+    monkeypatch.setattr(prewarm_models, "invalid_lv_chordia_model_asset_files", lambda: ())
+    monkeypatch.setattr(prewarm_models, "preload_lv_chordia_session", lambda: calls.append("loaded"))
+
+    prewarm_models._verify_or_prewarm_lv_chordia()
+
+    assert calls == ["loaded"]
+    assert capsys.readouterr().out == (
+        "LV Chordia bundled checkpoints verified and model preloaded.\n"
+    )
+
+
 @pytest.mark.parametrize("reason", ["missing", "sha256"])
 def test_missing_or_invalid_beat_this_cache_preloads(
     monkeypatch: pytest.MonkeyPatch,

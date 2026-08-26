@@ -461,6 +461,91 @@ def test_model_bundle_seeds_missing_caches(
     assert (lyrics_cache / "lyrics.pt").read_bytes() == b"whisper-model"
 
 
+def test_model_bundle_seeds_exact_crema_onnx_files(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    from app.engines import crema_onnx
+    from app.utils import model_bundle
+    from app.utils.model_cache import ExpectedModelFile
+
+    bundle_dir = tmp_path / "bundle"
+    relative_root = Path("crema") / "0.2.0" / crema_onnx.MODEL_REVISION
+    payloads = {
+        crema_onnx.MODEL_FILENAME: b"onnx-model",
+        crema_onnx.STATE_FILENAME: b"runtime-state",
+    }
+    for name, payload in payloads.items():
+        source = bundle_dir / relative_root / name
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(payload)
+    _write_model_bundle_manifest(
+        bundle_dir,
+        torch_payload=b"torch-model",
+        whisper_payload=b"whisper-model",
+        crema_onnx_payloads=payloads,
+    )
+    (bundle_dir / "torch" / "hub" / "checkpoints").mkdir(parents=True)
+    (bundle_dir / "torch" / "hub" / "checkpoints" / "model.th").write_bytes(b"torch-model")
+    (bundle_dir / "whisper").mkdir()
+    (bundle_dir / "whisper" / "lyrics.pt").write_bytes(b"whisper-model")
+    cache_root = tmp_path / "cache"
+
+    def expected_files(root: Path) -> tuple[ExpectedModelFile, ...]:
+        return tuple(
+            ExpectedModelFile(
+                label=f"fixture {name}",
+                path=root / name,
+                size=len(payload),
+                sha256=hashlib.sha256(payload).hexdigest(),
+            )
+            for name, payload in payloads.items()
+        )
+
+    monkeypatch.setattr(model_bundle, "expected_crema_onnx_files", expected_files)
+    monkeypatch.setenv("TORCH_HOME", str(tmp_path / "torch-home"))
+
+    model_bundle.seed_model_bundle_caches(
+        SimpleNamespace(
+            model_bundle_dir=bundle_dir,
+            lyrics_cache_dir=tmp_path / "lyrics",
+            cache_root=cache_root,
+        )
+    )
+
+    destination = cache_root / "models" / "crema" / "0.2.0" / crema_onnx.MODEL_REVISION
+    assert {path.name: path.read_bytes() for path in destination.iterdir()} == payloads
+
+
+def test_prepare_model_bundle_includes_crema_onnx_only_when_requested(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    from app.cli import prepare_model_bundle as bundle_cli
+
+    monkeypatch.setattr(bundle_cli, "_prepare_demucs_entries", lambda _output: [])
+    monkeypatch.setattr(bundle_cli, "_prepare_whisper_entries", lambda _output, _models: [])
+    monkeypatch.setattr(
+        bundle_cli,
+        "_prepare_crema_onnx_entries",
+        lambda _output: [{"file_name": "crema.onnx"}],
+    )
+
+    without_onnx = tmp_path / "without-onnx"
+    bundle_cli.prepare_model_bundle(output_dir=without_onnx, lyrics_models=[])
+    with_onnx = tmp_path / "with-onnx"
+    bundle_cli.prepare_model_bundle(
+        output_dir=with_onnx,
+        include_crema_onnx=True,
+        lyrics_models=[],
+    )
+
+    assert json.loads((without_onnx / "manifest.json").read_text())["crema_onnx_files"] == []
+    assert json.loads((with_onnx / "manifest.json").read_text())["crema_onnx_files"] == [
+        {"file_name": "crema.onnx"}
+    ]
+
+
 def test_model_bundle_skips_valid_cache(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -617,7 +702,9 @@ def _write_model_bundle_manifest(
     *,
     torch_payload: bytes,
     whisper_payload: bytes,
+    crema_onnx_payloads: dict[str, bytes] | None = None,
 ) -> None:
+    crema_onnx_payloads = crema_onnx_payloads or {}
     (bundle_dir / "manifest.json").write_text(
         json.dumps(
             {
@@ -639,6 +726,18 @@ def _write_model_bundle_manifest(
                         "size": len(whisper_payload),
                         "sha256": hashlib.sha256(whisper_payload).hexdigest(),
                     }
+                ],
+                "crema_onnx_files": [
+                    {
+                        "label": f"fixture {name}",
+                        "file_name": name,
+                        "relative_path": (
+                            f"crema/0.2.0/65af18f49af5101267fd28f15ac8c452d98b8e3d/{name}"
+                        ),
+                        "size": len(payload),
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                    }
+                    for name, payload in crema_onnx_payloads.items()
                 ],
             }
         ),

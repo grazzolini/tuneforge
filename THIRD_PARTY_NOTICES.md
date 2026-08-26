@@ -11,8 +11,8 @@ This file is the source of truth for dependency and model-weight distribution po
 - Default release package commands (`pnpm package:mac`, `pnpm package:linux:flatpak`) do not pass `--model-bundle`. They include Advanced Chords, Advanced Beat Analysis, and LV Chordia. LV Chordia's five dependency-owned checkpoints are included; external Demucs, Whisper, and beat-this weights are not.
 - FFmpeg and ffprobe are not bundled by Tuneforge. macOS and source runs use host-installed binaries on `PATH` or explicit `TUNEFORGE_FFMPEG_PATH` / `TUNEFORGE_FFPROBE_PATH` overrides. Flatpak builds use `/app/bin/ffmpeg` and `/app/bin/ffprobe` wrappers backed by the Flatpak runtime or extensions.
 - Demucs, Whisper, and beat-this weights are local cache assets by default. Setup/model-prewarm can prepare them ahead of time, and the app may download them on first use if they are missing. Fully offline use requires the relevant caches/assets to already exist.
-- `--model-bundle` is an explicit local/dev packaging option, not part of default release packaging. It stages Demucs and Whisper weights and, when beat-this is included, the beat-this `small0` checkpoint; redistribution needs separate review before publishable artifacts use it.
-- Crema chord model files are the dependency-owned exception to the external model-weight rule: they are wheel-embedded assets inside the published crema package, ship with default desktop packages when Advanced Chords is included, and are removed only when Advanced Chords is excluded with `--no-crema` / `--no-advanced-chords`.
+- `--model-bundle` is an explicit local/dev packaging option, not part of default release packaging. It stages Demucs and Whisper weights and, when selected, the beat-this `small0` checkpoint and Crema ONNX model/state; redistribution needs separate review before publishable artifacts use it.
+- Default Advanced Chords packages use Crema/TensorFlow and include Crema's wheel-owned model files. Plain opt-in `--crema-onnx` packages use ONNX Runtime and the verified TuneForge data cache. Combining `--crema-onnx` with `--model-bundle` includes the exact pinned converted model and runtime state so startup can seed that cache.
 - LV Chordia's five MIT checkpoints are bundled inside its pinned source dependency, total exactly 28,730,939 bytes, and are removed with `--no-lv-chordia`. They never use a downloader or user cache.
 - Tuneforge does not add cloud processing, accounts, telemetry, or track uploads for these features. Local-first does not mean first use is always offline.
 
@@ -59,7 +59,13 @@ This file is the source of truth for dependency and model-weight distribution po
 
 - **License:** PyPI metadata lists ISC; upstream `LICENSE.md` currently contains BSD-2-Clause terms.
 - **Source:** <https://github.com/bmcfee/crema>
-- **Notes:** Advanced Chords is part of the default desktop/dev/package dependency set and can be excluded with `--no-crema` / `--no-advanced-chords`. The published `crema-0.2.0` wheel includes pretrained chord model files (`model.h5`, `model_spec.pkl`, `muda.pkl`, `pump.pkl`, and `test_scores.json`) inside the package; they are dependency-owned assets, not Tuneforge-generated bundle sources, and are not downloaded separately at runtime. Standard packaged desktop builds redistribute those files as part of crema unless Advanced Chords is explicitly excluded.
+- **Notes:** TensorFlow remains the default implementation and can be excluded with `--no-crema` / `--no-advanced-chords`. The published `crema-0.2.0` wheel includes pretrained model and decoder files. The opt-in ONNX implementation is a format conversion of that model, not a TuneForge-trained model. Its model and runtime state are pinned to immutable Hugging Face revision `65af18f49af5101267fd28f15ac8c452d98b8e3d`. Plain ONNX packages download those files into the verified cache; the explicit local/dev `--crema-onnx --model-bundle` profile includes them. Distribution of a model-bundled application package remains an explicit package-review decision. Source/training provenance remains incomplete. The complete Brian McFee BSD-2-Clause notice is packaged at [`LICENSES/crema-0.2.0-BSD-2-Clause.txt`](./LICENSES/crema-0.2.0-BSD-2-Clause.txt).
+
+### ONNX Runtime / opt-in Crema ONNX backend
+
+- **License:** MIT
+- **Source:** <https://github.com/microsoft/onnxruntime>
+- **Notes:** Included only by the `advanced-chords-onnx` dependency profile. TuneForge uses CPU execution and an immutable converted-model revision. Plain ONNX packages use model and runtime-state files from the verified TuneForge data cache; `--crema-onnx --model-bundle` packages include those exact files and seed the same cache on startup. This profile removes Crema/TensorFlow's HDF5 model-loading closure; preserved LV Chordia support still brings its separately declared `h5py` dependency.
 
 ### beat-this / Advanced Beat Analysis backend
 

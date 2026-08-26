@@ -14,8 +14,10 @@ test("release inventory commands cover JS, Python, and Rust without writing repo
 
   assert.deepEqual(Array.from(commandsById.keys()), ["javascript", "python", "rust"]);
   assert.equal(commandsById.get("javascript").commands[0].shell, "pnpm licenses list --recursive");
-  assert.match(commandsById.get("python").commands[0].shell, /uv export .* --all-groups --all-extras/);
-  assert.match(commandsById.get("python").commands[1].shell, /python -m pip inspect --local/);
+  assert.match(commandsById.get("python").commands[0].shell, /--extra advanced-chords /);
+  assert.match(commandsById.get("python").commands[1].shell, /--extra advanced-chords-onnx /);
+  assert.doesNotMatch(commandsById.get("python").commands[0].shell, /--all-extras/);
+  assert.match(commandsById.get("python").commands[2].shell, /python -m pip inspect --local/);
   assert.equal(
     commandsById.get("rust").commands[0].shell,
     "cd apps/desktop/src-tauri && cargo about generate --format json --locked",
@@ -36,10 +38,18 @@ test("model policy documents default no-bundle packaging and explicit bundle com
   assert.ok(
     checklist.modelPolicy.explicitModelBundleCommands.every((entry) => entry.command.includes("--model-bundle")),
   );
+  assert.ok(
+    checklist.modelPolicy.cremaOnnxModelBundleCommands.every(
+      (entry) => entry.command.includes("--crema-onnx") && entry.command.includes("--model-bundle"),
+    ),
+  );
+  assert.ok(checklist.modelPolicy.onnxPackageCommands.every((entry) => entry.command.includes("--crema-onnx")));
   assert.ok(checklist.modelPolicy.cachePaths.includes("~/.cache/torch/hub/checkpoints"));
   assert.ok(checklist.modelPolicy.cachePaths.includes("~/.cache/whisper"));
   assert.ok(checklist.modelPolicy.explicitBundleSourceCount > 0);
   assert.ok(checklist.modelPolicy.explicitBundleBytes > 0);
+  assert.equal(checklist.modelPolicy.cremaOnnxBundleSourceCount, 2);
+  assert.equal(checklist.modelPolicy.cremaOnnxBundleBytes, 2_197_594);
   assert.deepEqual(checklist.modelPolicy.bundledDependencyWeights.lvChordia, {
     checkpointBytes: 28_730_939,
     checkpointCount: 5,

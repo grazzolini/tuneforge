@@ -18,7 +18,8 @@ const pnpmLockPath = path.join(workspaceRoot, "pnpm-lock.yaml");
 const uvLockPath = path.join(workspaceRoot, "apps", "backend", "uv.lock");
 const packageOptions = parsePackageOptions(process.argv.slice(2), { platform: "linux" });
 const selectedPythonExtras = [
-  ...(packageOptions.crema ? ["advanced-chords"] : []),
+  ...(packageOptions.crema === "tensorflow" ? ["advanced-chords"] : []),
+  ...(packageOptions.crema === "onnx" ? ["advanced-chords-onnx"] : []),
   ...(packageOptions.beatThis ? ["advanced-beats"] : []),
   ...(packageOptions.lvChordia ? ["lv-chordia"] : []),
 ];
@@ -596,6 +597,7 @@ function generateModelBundleSources() {
   }
   const plan = buildModelBundlePlan({
     includeBeatThis: packageOptions.beatThis,
+    includeCremaOnnx: packageOptions.crema === "onnx",
   });
   writeGeneratedJson("model-bundle-sources.json", plan.sources);
   writeGeneratedJson("model-bundle-manifest.json", {

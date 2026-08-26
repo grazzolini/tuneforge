@@ -9,6 +9,8 @@ Recreates the backend environment with the Linux x86_64 legacy NVIDIA Torch prof
 
 Options:
   --advanced-chords, --crema  Include the default crema/TensorFlow chord backend.
+  --advanced-chords-onnx, --crema-onnx
+                              Use the Crema ONNX Runtime chord backend.
   --no-advanced-chords, --no-crema
                               Skip the crema/TensorFlow chord backend.
   --advanced-beats, --beat-this
@@ -21,17 +23,21 @@ Options:
 EOF
 }
 
-advanced_chords=1
+advanced_chords="tensorflow"
+advanced_chords_selected=""
 advanced_beats=1
 lv_chordia=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --advanced-chords | --crema)
-      advanced_chords=1
+      selection="tensorflow"
+      ;;
+    --advanced-chords-onnx | --crema-onnx)
+      selection="onnx"
       ;;
     --no-advanced-chords | --no-crema)
-      advanced_chords=0
+      selection="none"
       ;;
     --advanced-beats | --beat-this)
       advanced_beats=1
@@ -57,6 +63,15 @@ while [[ $# -gt 0 ]]; do
       exit 2
       ;;
   esac
+  if [[ -n "${selection:-}" ]]; then
+    if [[ -n "${advanced_chords_selected}" && "${advanced_chords_selected}" != "${selection}" ]]; then
+      echo "Conflicting Advanced Chords selectors were provided." >&2
+      exit 2
+    fi
+    advanced_chords="${selection}"
+    advanced_chords_selected="${selection}"
+    unset selection
+  fi
   shift
 done
 
@@ -79,8 +94,10 @@ cd "${backend_dir}"
 # Start from the standard locked backend environment, then locally override
 # torch/torchaudio with the older CUDA 12.6 wheels for legacy NVIDIA cards.
 backend_sync_args=(sync --python 3.11 --all-groups)
-if [[ "${advanced_chords}" -eq 1 ]]; then
+if [[ "${advanced_chords}" == "tensorflow" ]]; then
   backend_sync_args+=(--extra advanced-chords)
+elif [[ "${advanced_chords}" == "onnx" ]]; then
+  backend_sync_args+=(--extra advanced-chords-onnx)
 fi
 if [[ "${advanced_beats}" -eq 1 ]]; then
   backend_sync_args+=(--extra advanced-beats)

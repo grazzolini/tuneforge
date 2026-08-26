@@ -14,7 +14,7 @@ Current release limits:
 
 - Desktop is the supported full workflow. Android/mobile remains a local-first companion path in progress.
 - Packages are local build artifacts, not signed distribution releases.
-- Default packages do not include external Demucs, Whisper, or beat-this model weights. Those weights are cached locally and may download on first setup/use unless the caches already exist or a local/dev package was explicitly built with `--model-bundle`. Crema's wheel-embedded chord model assets are the dependency-owned exception and ship with Advanced Chords unless that stack is excluded.
+- Default packages do not include external Demucs, Whisper, or beat-this model weights. Those weights are cached locally and may download on first setup/use unless the caches already exist or a local/dev package was explicitly built with `--model-bundle`. Crema's wheel-embedded chord model assets are the dependency-owned exception and ship with default Advanced Chords. Opt-in Crema ONNX packages use the pinned model from the verified cache or from an explicit `--model-bundle` package.
 - Advanced Chords, Advanced Beat Analysis, GPU acceleration, loopback/browser playback smoke, and BlackHole or virtual-audio capture need manual or special coverage unless a specific CI job says otherwise.
 
 ## Features
@@ -109,6 +109,13 @@ pnpm setup:dev -- --no-crema
 pnpm setup:dev -- --no-advanced-chords
 pnpm setup:dev -- --no-beat-this
 pnpm setup:dev -- --no-advanced-beats
+```
+
+Select Crema ONNX explicitly to use ONNX Runtime and preload the pinned model into the
+verified TuneForge data cache:
+
+```sh
+pnpm setup:dev -- --crema-onnx
 ```
 
 The built-in chord and beat backends remain available as fallbacks when advanced dependencies are
@@ -235,13 +242,14 @@ for local/dev artifacts that explicitly copy model weights into the package:
 pnpm package:mac -- --no-crema --no-beat-this
 pnpm package:linux -- --no-advanced-chords --no-advanced-beats --legacy-nvidia
 pnpm package:mac -- --model-bundle
+pnpm package:mac -- --crema-onnx
+pnpm package:mac -- --crema-onnx --model-bundle
 ```
 
 `--model-bundle` stages Demucs and Whisper weights, and stages the beat-this `small0` checkpoint
-only when beat-this dependencies are included. It does not control whether advanced dependencies are
-installed. Crema is the dependency-owned exception to the external model-weight rule: its
-wheel-embedded chord model files ship when Advanced Chords is included unless `--no-crema` /
-`--no-advanced-chords` is used. See
+only when beat-this dependencies are included. With `--crema-onnx`, it also stages the exact pinned
+ONNX model and runtime state so packaged startup can seed the verified cache. Crema/TensorFlow
+remains the default Advanced Chords package profile and ships its wheel-embedded model files. See
 [Third-party notices and release package policy](./THIRD_PARTY_NOTICES.md) for the dependency and
 model-weight policy.
 

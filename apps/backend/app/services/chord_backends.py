@@ -8,6 +8,7 @@ from typing import Any, Literal, Protocol, cast
 from app.config import get_settings
 from app.engines.chords import detect_chord_timeline
 from app.engines.crema_chords import (
+    crema_backend_label,
     crema_dependency_status,
     crema_model_metadata,
     crema_runtime_device,
@@ -119,6 +120,9 @@ class CremaChordBackend:
     def availability(self) -> ChordBackendAvailability:
         available, reason = crema_dependency_status(runtime_platform=get_settings().runtime_platform)
         return ChordBackendAvailability(available=available, unavailable_reason=reason)
+
+    def display_label(self) -> str:
+        return crema_backend_label()
 
     def detect(self, source_path: Path) -> ChordDetectionResult:
         availability = self.availability()
@@ -264,7 +268,7 @@ def _backend_info(backend: ChordDetectionBackend) -> dict[str, Any]:
     capabilities = asdict(backend.capabilities)
     return {
         "id": backend.id,
-        "label": backend.label,
+        "label": backend.display_label() if isinstance(backend, CremaChordBackend) else backend.label,
         "description": backend.description,
         "availability": "available" if availability.available else "unavailable",
         "available": availability.available,

@@ -2232,7 +2232,7 @@ const mobileChordBackendsResponse: ChordBackendsResponse = {
       desktopOnly: true,
       experimental: true,
       id: "crema-advanced",
-      label: "Advanced Chords",
+      label: "Advanced Chords — Crema",
       unavailable_reason: "advanced chord backend is disabled on mobile",
     },
     {

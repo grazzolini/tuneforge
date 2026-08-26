@@ -182,6 +182,9 @@ modules:
       - type: file
         path: ../../THIRD_PARTY_NOTICES.md
       - type: file
+        path: ../../LICENSES/crema-0.2.0-BSD-2-Clause.txt
+        dest: LICENSES
+      - type: file
         path: ../../docs/PACKAGING.md
         dest: docs
       - type: file
@@ -285,6 +288,7 @@ modules:
       - install -Dm644 README.md /app/share/doc/tuneforge/README.md
       - install -Dm644 LICENSE /app/share/doc/tuneforge/LICENSE
       - install -Dm644 THIRD_PARTY_NOTICES.md /app/share/doc/tuneforge/THIRD_PARTY_NOTICES.md
+      - install -Dm644 LICENSES/crema-0.2.0-BSD-2-Clause.txt /app/share/doc/tuneforge/LICENSES/crema-0.2.0-BSD-2-Clause.txt
       - install -Dm644 docs/PACKAGING.md /app/share/doc/tuneforge/PACKAGING.md
       - install -Dm644 apps/desktop/src-tauri/icons/32x32.png /app/share/icons/hicolor/32x32/apps/com.tuneforge.desktop.png
       - install -Dm644 apps/desktop/src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/com.tuneforge.desktop.png

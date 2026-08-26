@@ -5,7 +5,12 @@ import path from "node:path";
 import test from "node:test";
 import { mergeLegacyTorchPackageSets } from "./generate-flatpak-sources.mjs";
 import { manifestWithPackageOptions } from "./package-flatpak.mjs";
-import { assertLvChordiaBundleLayout, LV_CHORDIA_CHECKPOINT_NAMES } from "./prepare-bundle.mjs";
+import {
+  assertCremaOnnxBundleLayout,
+  assertLvChordiaBundleLayout,
+  CREMA_ONNX_BUNDLE_RELATIVE_PATHS,
+  LV_CHORDIA_CHECKPOINT_NAMES,
+} from "./prepare-bundle.mjs";
 import {
   backendSyncArgs,
   packageOptionsEnvironment,
@@ -44,7 +49,7 @@ test("package option parser accepts feature aliases", () => {
   assert.deepEqual(
     parsePackageOptions(["--crema", "--beat-this", "--model-bundle"], { platform: "mac" }),
     {
-      crema: true,
+      crema: "tensorflow",
       lvChordia: true,
       beatThis: true,
       legacyNvidia: false,
@@ -56,7 +61,7 @@ test("package option parser accepts feature aliases", () => {
   assert.deepEqual(
     parsePackageOptions(["--advanced-chords", "--advanced-beats"], { platform: "linux" }),
     {
-      crema: true,
+      crema: "tensorflow",
       lvChordia: true,
       beatThis: true,
       legacyNvidia: false,
@@ -71,7 +76,7 @@ test("package option parser includes advanced dependencies by default", () => {
   const options = parsePackageOptions([], { platform: "mac" });
 
   assert.deepEqual(options, {
-    crema: true,
+    crema: "tensorflow",
     lvChordia: true,
     beatThis: true,
     legacyNvidia: false,
@@ -106,12 +111,28 @@ test("release default package options do not bundle model weights", () => {
 test("package option parser accepts advanced dependency opt-outs", () => {
   const options = parsePackageOptions(["--no-crema", "--no-beat-this", "--no-lv-chordia"], { platform: "linux" });
 
-  assert.equal(options.crema, false);
+  assert.equal(options.crema, "none");
   assert.equal(options.beatThis, false);
   assert.equal(options.lvChordia, false);
   assert.equal(JSON.parse(packageOptionsEnvironment(options).TUNEFORGE_PACKAGE_OPTIONS).beatThis, false);
   assert.deepEqual(packageOptionsToGeneratorArgs(options), ["--no-crema", "--no-beat-this", "--no-lv-chordia"]);
   assert.deepEqual(backendSyncArgs(options), ["sync", "--python", "3.11", "--all-groups"]);
+});
+
+test("package option parser selects ONNX and rejects mixed implementations", () => {
+  const options = parsePackageOptions(["--crema-onnx"], { platform: "mac" });
+  assert.equal(options.crema, "onnx");
+  assert.deepEqual(packageOptionsToGeneratorArgs(options), ["--crema-onnx", "--beat-this", "--lv-chordia"]);
+  assert.deepEqual(backendSyncArgs(options).slice(4, 6), ["--extra", "advanced-chords-onnx"]);
+  assert.throws(
+    () => parsePackageOptions(["--crema", "--advanced-chords-onnx"], { platform: "mac" }),
+    /Conflicting Advanced Chords selectors/,
+  );
+});
+
+test("legacy boolean package data maps to TensorFlow or none", () => {
+  assert.equal(JSON.parse(packageOptionsEnvironment({ crema: true }).TUNEFORGE_PACKAGE_OPTIONS).crema, "tensorflow");
+  assert.equal(JSON.parse(packageOptionsEnvironment({ crema: false }).TUNEFORGE_PACKAGE_OPTIONS).crema, "none");
 });
 
 test("Flatpak package options are scoped to the TuneForge module build environment", () => {
@@ -198,6 +219,36 @@ test("macOS staged bundle has exactly one LV Chordia checkpoint set or none when
     rmSync(fixture, { recursive: true, force: true });
     mkdirSync(fixture, { recursive: true });
     assert.doesNotThrow(() => assertLvChordiaBundleLayout(fixture, false));
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("staged bundles contain Crema ONNX files only in the explicit model-bundle layout", () => {
+  const fixture = mkdtempSync(path.join(tmpdir(), "tuneforge-crema-layout-"));
+  try {
+    assert.doesNotThrow(() => assertCremaOnnxBundleLayout(fixture, false));
+    const datasets = path.join(fixture, "site-packages", "onnxruntime", "datasets");
+    mkdirSync(datasets, { recursive: true });
+    writeFileSync(path.join(datasets, "logreg_iris.onnx"), "onnxruntime fixture");
+    assert.doesNotThrow(() => assertCremaOnnxBundleLayout(fixture, false));
+
+    for (const relativePath of CREMA_ONNX_BUNDLE_RELATIVE_PATHS) {
+      const artifact = path.join(fixture, relativePath);
+      mkdirSync(path.dirname(artifact), { recursive: true });
+      writeFileSync(artifact, "fixture");
+    }
+    assert.doesNotThrow(() => assertCremaOnnxBundleLayout(fixture, true));
+    assert.throws(
+      () => assertCremaOnnxBundleLayout(fixture, false),
+      /Unexpected Crema ONNX model bundle layout/,
+    );
+
+    rmSync(path.join(fixture, CREMA_ONNX_BUNDLE_RELATIVE_PATHS[0]));
+    assert.throws(
+      () => assertCremaOnnxBundleLayout(fixture, true),
+      /Unexpected Crema ONNX model bundle layout/,
+    );
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }

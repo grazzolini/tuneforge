@@ -94,8 +94,10 @@ function generatedManifestPath(options) {
   }
 
   const imports = ["fastapi", "demucs", "whisper", "torch"];
-  if (options.crema) {
+  if (options.crema === "tensorflow") {
     imports.push("crema", "tensorflow", "keras");
+  } else if (options.crema === "onnx") {
+    imports.push("onnxruntime");
   }
   if (options.beatThis) {
     imports.push("beat_this");

@@ -12,6 +12,12 @@ from pathlib import Path
 from typing import Any
 
 from app.engines.chord_labels import chord_label_to_segment
+from app.engines.crema_onnx import (
+    crema_onnx_metadata,
+    detect_crema_onnx_timeline,
+    ensure_crema_onnx_files,
+    invalid_crema_onnx_files,
+)
 from app.utils.model_cache import ExpectedModelFile, InvalidModelFile, invalid_model_files
 
 CREMA_BACKEND_ID = "crema-advanced"
@@ -22,6 +28,11 @@ _CREMA_MODEL: Any | None = None
 def crema_dependency_status(*, runtime_platform: str = "desktop") -> tuple[bool, str | None]:
     if runtime_platform in {"android", "ios", "mobile"}:
         return False, "advanced chord backend is disabled on mobile"
+    implementation, reason = _crema_implementation()
+    if implementation is None:
+        return False, reason
+    if implementation == "onnx":
+        return True, None
     for module_name, display_name in (
         ("crema", "crema"),
         ("tensorflow", "TensorFlow backend"),
@@ -51,6 +62,16 @@ def detect_crema_chord_timeline(
     merge_adjacent: bool = True,
     min_segment_seconds: float = 0.0,
 ) -> list[dict[str, Any]]:
+    implementation, reason = _crema_implementation()
+    if implementation == "onnx":
+        segments = detect_crema_onnx_timeline(source_path)
+        if min_segment_seconds > 0:
+            segments = _drop_short_segments(segments, min_segment_seconds=min_segment_seconds)
+        if merge_adjacent:
+            segments = merge_adjacent_chord_segments(segments)
+        return segments
+    if implementation is None:
+        raise RuntimeError(reason or "Advanced chord backend is unavailable.")
     model = _get_crema_model()
     with _suppress_crema_runtime_noise(), redirect_stdout(io.StringIO()):
         annotation = model.predict(filename=str(source_path))
@@ -63,6 +84,9 @@ def detect_crema_chord_timeline(
 
 
 def crema_runtime_device() -> str:
+    implementation, _reason = _crema_implementation()
+    if implementation == "onnx":
+        return "cpu"
     try:
         import tensorflow as tf
     except Exception:
@@ -113,10 +137,19 @@ def clear_crema_model_cache() -> None:
 
 
 def preload_crema_model() -> None:
-    _get_crema_model()
+    implementation, reason = _crema_implementation()
+    if implementation == "onnx":
+        ensure_crema_onnx_files()
+    elif implementation == "tensorflow":
+        _get_crema_model()
+    else:
+        raise RuntimeError(reason or "Advanced chord backend is unavailable.")
 
 
 def invalid_crema_model_asset_files() -> tuple[InvalidModelFile, ...]:
+    implementation, _reason = _crema_implementation()
+    if implementation == "onnx":
+        return invalid_crema_onnx_files()
     try:
         package_files = importlib.metadata.files("crema")
     except importlib.metadata.PackageNotFoundError:
@@ -189,14 +222,53 @@ def invalid_crema_model_asset_files() -> tuple[InvalidModelFile, ...]:
 
 
 def crema_model_metadata() -> dict[str, Any]:
+    implementation, reason = _crema_implementation()
+    if implementation == "onnx":
+        return crema_onnx_metadata()
+    if implementation is None:
+        raise RuntimeError(reason or "Advanced chord backend is unavailable.")
     return {
         "backend_id": CREMA_BACKEND_ID,
+        "implementation": "crema-tensorflow",
         "output_format": "jams",
         "model": "crema.models.chord.ChordModel",
         "crema_version": _package_version("crema"),
         "tensorflow_version": _package_version("tensorflow"),
         "license_note": "PyPI metadata lists ISC; upstream LICENSE.md is BSD-2-Clause.",
     }
+
+
+def crema_backend_label() -> str:
+    implementation, _reason = _crema_implementation()
+    if implementation == "tensorflow":
+        return "Advanced Chords — Crema (TensorFlow)"
+    if implementation == "onnx":
+        return "Advanced Chords — Crema ONNX"
+    return "Advanced Chords — Crema"
+
+
+def _crema_implementation() -> tuple[str | None, str | None]:
+    tensorflow_installed = all(
+        _module_available(module_name)
+        for module_name in ("crema", "tensorflow", "keras", "jams")
+    )
+    onnx_installed = _module_available("onnxruntime")
+    if tensorflow_installed and onnx_installed:
+        return None, "both Crema TensorFlow and ONNX Runtime implementations are installed"
+    if onnx_installed:
+        return "onnx", None
+    if tensorflow_installed:
+        return "tensorflow", None
+    if not _module_available("crema") and not onnx_installed:
+        return None, "crema or ONNX Runtime is not installed"
+    return None, "Crema advanced chord dependencies are incomplete"
+
+
+def _module_available(module_name: str) -> bool:
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, ValueError):
+        return module_name in __import__("sys").modules
 
 
 def _get_crema_model() -> Any:

@@ -13,6 +13,7 @@ mkdir -p \
 
 cp "${repo_root}/scripts/setup-dev.sh" "${fixture}/scripts/setup-dev.sh"
 cp "${repo_root}/scripts/sync-backend-default.sh" "${fixture}/scripts/sync-backend-default.sh"
+cp "${repo_root}/scripts/sync-backend-legacy-nvidia.sh" "${fixture}/scripts/sync-backend-legacy-nvidia.sh"
 
 cat > "${fixture}/scripts/configure-tauri-build-env.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -22,23 +23,28 @@ EOF
 cat > "${fixture}/bin/uv" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ -n "${SETUP_DEV_TEST_UV_CALLED:-}" ]]; then
-  : > "${SETUP_DEV_TEST_UV_CALLED}"
+if [[ -n "${SETUP_DEV_TEST_UV_ARGS:-}" ]]; then
+  printf '%s\n' '[call]' "$@" >> "${SETUP_DEV_TEST_UV_ARGS}"
 fi
-if [[ "$1" != "sync" ]]; then
-  echo "unexpected uv command: $*" >&2
-  exit 1
-fi
-if [[ -n "${SYNC_BACKEND_TEST_UV_ARGS:-}" ]]; then
-  printf '%s\n' "$@" > "${SYNC_BACKEND_TEST_UV_ARGS}"
+if [[ "$1" == "sync" ]]; then
+  if [[ -n "${SYNC_BACKEND_TEST_UV_ARGS:-}" ]]; then
+    printf '%s\n' "$@" > "${SYNC_BACKEND_TEST_UV_ARGS}"
+  fi
   mkdir -p .venv/bin
   cat > .venv/bin/python <<'PYTHON'
 #!/usr/bin/env bash
 set -euo pipefail
-: "${SYNC_BACKEND_TEST_PYTHON_ARGS:?}"
-printf '%s\n' "$@" > "${SYNC_BACKEND_TEST_PYTHON_ARGS}"
+python_args_file="${SETUP_DEV_TEST_PYTHON_ARGS:-${SYNC_BACKEND_TEST_PYTHON_ARGS:-}}"
+: "${python_args_file:?}"
+printf '%s\n' "$@" > "${python_args_file}"
+if [[ "${1:-}" == "-" ]]; then
+  /bin/cat > "${SETUP_DEV_TEST_PYTHON_STDIN:-/dev/null}"
+fi
 PYTHON
   chmod +x .venv/bin/python
+elif [[ "$1" != "pip" || "${2:-}" != "install" ]]; then
+  echo "unexpected uv command: $*" >&2
+  exit 1
 fi
 EOF
 
@@ -72,6 +78,8 @@ chmod +x \
   "${fixture}/apps/backend/.venv/bin/python"
 
 python_args_file="${fixture}/python-args"
+python_stdin_file="${fixture}/python-stdin"
+setup_uv_args_file="${fixture}/setup-uv-args"
 
 run_setup_dev() {
   local label="$1"
@@ -79,8 +87,12 @@ run_setup_dev() {
   local output_file="${fixture}/setup-output-${label}"
 
   : > "${python_args_file}"
+  : > "${python_stdin_file}"
+  : > "${setup_uv_args_file}"
   if ! PATH="${fixture}/bin:${PATH}" \
     SETUP_DEV_TEST_PYTHON_ARGS="${python_args_file}" \
+    SETUP_DEV_TEST_PYTHON_STDIN="${python_stdin_file}" \
+    SETUP_DEV_TEST_UV_ARGS="${setup_uv_args_file}" \
     /bin/bash "${fixture}/scripts/setup-dev.sh" \
       --skip-contracts \
       --skip-playwright-browsers \
@@ -105,6 +117,53 @@ assert_python_args() {
   fi
 }
 
+assert_legacy_version_verifier() {
+  local label="$1"
+  local fake_module_dir="${fixture}/fake-python-modules-${label}"
+  local output_file="${fixture}/version-verifier-output-${label}"
+
+  mkdir -p "${fake_module_dir}"
+  cat > "${fake_module_dir}/torch.py" <<'PYTHON'
+import os
+
+__version__ = os.environ["FAKE_TORCH_VERSION"]
+
+
+class _Version:
+    cuda = os.environ["FAKE_TORCH_CUDA"]
+
+
+version = _Version()
+PYTHON
+  cat > "${fake_module_dir}/torchaudio.py" <<'PYTHON'
+import os
+
+__version__ = os.environ["FAKE_TORCHAUDIO_VERSION"]
+PYTHON
+
+  if ! PYTHONPATH="${fake_module_dir}" \
+    FAKE_TORCH_VERSION="2.11.0+cu126" \
+    FAKE_TORCH_CUDA="12.6" \
+    FAKE_TORCHAUDIO_VERSION="2.11.0+cu126" \
+    python3 - < "${python_stdin_file}" > "${output_file}" 2>&1; then
+    cat "${output_file}" >&2
+    echo "${label} verifier rejected the matched legacy NVIDIA profile" >&2
+    exit 1
+  fi
+
+  if PYTHONPATH="${fake_module_dir}" \
+    FAKE_TORCH_VERSION="2.11.0+cu126" \
+    FAKE_TORCH_CUDA="12.6" \
+    FAKE_TORCHAUDIO_VERSION="2.6.0+cu126" \
+    python3 - < "${python_stdin_file}" > "${output_file}" 2>&1; then
+    echo "${label} verifier accepted mismatched torch and torchaudio versions" >&2
+    exit 1
+  fi
+  grep -F \
+    'Expected torchaudio 2.11.0+cu126 for the legacy NVIDIA profile, found 2.6.0+cu126.' \
+    "${output_file}" > /dev/null
+}
+
 run_setup_dev "default"
 assert_python_args "default" \
   -m \
@@ -118,25 +177,24 @@ assert_python_args "opt-out" \
   -m \
   app.cli.prewarm_models
 
-legacy_output_file="${fixture}/setup-output-legacy-lv"
-legacy_uv_called_file="${fixture}/legacy-uv-called"
-if PATH="${fixture}/bin:${PATH}" \
-  SETUP_DEV_TEST_UV_CALLED="${legacy_uv_called_file}" \
-  /bin/bash "${fixture}/scripts/setup-dev.sh" \
-    --legacy-nvidia \
-    --skip-contracts \
-    --skip-playwright-browsers \
-    --skip-pnpm-install > "${legacy_output_file}" 2>&1; then
-  echo "expected legacy NVIDIA with default LV Chordia to fail" >&2
-  exit 1
-fi
-grep -F -- \
-  "--legacy-nvidia requires --no-lv-chordia because LV Chordia is audited only with Torch 2.11.0." \
-  "${legacy_output_file}"
-if [[ -e "${legacy_uv_called_file}" ]]; then
-  echo "legacy NVIDIA compatibility rejection invoked uv" >&2
-  exit 1
-fi
+run_setup_dev "legacy-lv" --legacy-nvidia
+assert_python_args "legacy-lv" \
+  -m \
+  app.cli.prewarm_models \
+  --include-crema \
+  --include-beat-this \
+  --include-lv-chordia
+printf '%s\n' \
+  '[call]' sync --python 3.11 --all-groups --extra advanced-chords --extra advanced-beats --extra lv-chordia \
+  '[call]' pip install --python .venv/bin/python --torch-backend cu126 \
+  --reinstall-package torch --reinstall-package torchaudio \
+  'torch==2.11.0' 'torchaudio==2.11.0' > "${fixture}/expected-setup-legacy-uv-args"
+cmp "${fixture}/expected-setup-legacy-uv-args" "${setup_uv_args_file}"
+grep -F 'expected_version = "2.11.0+cu126"' "${python_stdin_file}" > /dev/null
+grep -F 'torch.__version__ != expected_version' "${python_stdin_file}" > /dev/null
+grep -F 'torchaudio.__version__ != expected_version' "${python_stdin_file}" > /dev/null
+grep -F 'torch.version.cuda != "12.6"' "${python_stdin_file}" > /dev/null
+assert_legacy_version_verifier "setup-dev"
 
 sync_uv_args_file="${fixture}/sync-uv-args"
 sync_python_args_file="${fixture}/sync-python-args"
@@ -179,4 +237,55 @@ if [[ -s "${sync_python_args_file}" ]]; then
   exit 1
 fi
 
-echo "setup-dev and sync-backend prewarm arg tests passed"
+run_sync_legacy_backend() {
+  local label="$1"
+  shift
+  local output_file="${fixture}/sync-legacy-output-${label}"
+
+  : > "${setup_uv_args_file}"
+  : > "${sync_uv_args_file}"
+  : > "${sync_python_args_file}"
+  : > "${python_stdin_file}"
+  if ! PATH="${fixture}/bin:${PATH}" \
+    SETUP_DEV_TEST_UV_ARGS="${setup_uv_args_file}" \
+    SETUP_DEV_TEST_PYTHON_STDIN="${python_stdin_file}" \
+    SYNC_BACKEND_TEST_UV_ARGS="${sync_uv_args_file}" \
+    SYNC_BACKEND_TEST_PYTHON_ARGS="${sync_python_args_file}" \
+    /bin/bash "${fixture}/scripts/sync-backend-legacy-nvidia.sh" \
+      --no-crema \
+      --no-beat-this \
+      "$@" > "${output_file}" 2>&1; then
+    cat "${output_file}" >&2
+    exit 1
+  fi
+}
+
+run_sync_legacy_backend "default"
+printf '%s\n' sync --python 3.11 --all-groups --extra lv-chordia > "${fixture}/expected-legacy-sync-uv-args"
+cmp "${fixture}/expected-legacy-sync-uv-args" "${sync_uv_args_file}"
+printf '%s\n' \
+  -m \
+  app.cli.prewarm_models \
+  --skip-demucs \
+  --skip-whisper \
+  --include-lv-chordia > "${fixture}/expected-legacy-sync-python-args"
+cmp "${fixture}/expected-legacy-sync-python-args" "${sync_python_args_file}"
+printf '%s\n' \
+  '[call]' sync --python 3.11 --all-groups --extra lv-chordia \
+  '[call]' pip install --python .venv/bin/python --torch-backend cu126 \
+  --reinstall-package torch --reinstall-package torchaudio \
+  'torch==2.11.0' 'torchaudio==2.11.0' > "${fixture}/expected-legacy-sync-all-uv-args"
+cmp "${fixture}/expected-legacy-sync-all-uv-args" "${setup_uv_args_file}"
+grep -F 'expected_version = "2.11.0+cu126"' "${python_stdin_file}" > /dev/null
+grep -F 'torch.__version__ != expected_version' "${python_stdin_file}" > /dev/null
+grep -F 'torchaudio.__version__ != expected_version' "${python_stdin_file}" > /dev/null
+grep -F 'torch.version.cuda != "12.6"' "${python_stdin_file}" > /dev/null
+assert_legacy_version_verifier "sync-backend-legacy-nvidia"
+
+run_sync_legacy_backend "opt-out" --no-lv-chordia
+printf '%s\n' sync --python 3.11 --all-groups > "${fixture}/expected-legacy-sync-opt-out-uv-args"
+cmp "${fixture}/expected-legacy-sync-opt-out-uv-args" "${sync_uv_args_file}"
+printf '%s\n' - > "${fixture}/expected-legacy-sync-opt-out-python-args"
+cmp "${fixture}/expected-legacy-sync-opt-out-python-args" "${sync_python_args_file}"
+
+echo "setup-dev and backend sync profile tests passed"

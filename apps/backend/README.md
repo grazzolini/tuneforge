@@ -72,9 +72,11 @@ The backend validates every checkpoint name, size, and SHA-256 before model load
 corrupt assets fail closed and are repaired by reinstalling or rebuilding the package; there is no
 download or user-cache lifecycle. Crema remains the default pending manual product evaluation.
 
-LV Chordia accepts local audio paths only. It tries CUDA or MPS when available and retries once on
-CPU for accelerator availability or allocation failures. Explicit generation, refresh, stem, and
-bulk requests never switch chord backends; import routes may record a Built-in fallback.
+LV Chordia accepts local audio paths only. It uses CUDA only when the installed PyTorch build
+supports a visible GPU architecture, otherwise it selects MPS or CPU. Model prewarm and inference
+retry once on CPU for accelerator availability or allocation failures. Explicit generation,
+refresh, stem, and bulk requests never switch chord backends; import routes may record a Built-in
+fallback.
 
 ### Advanced Beat Analysis backend
 
@@ -131,8 +133,8 @@ uv pip install \
   --torch-backend cu126 \
   --reinstall-package torch \
   --reinstall-package torchaudio \
-  "torch==2.6.0" \
-  "torchaudio==2.6.0"
+  "torch==2.11.0" \
+  "torchaudio==2.11.0"
 ```
 
 From the workspace root, the helper command is:
@@ -141,12 +143,14 @@ From the workspace root, the helper command is:
 pnpm setup:dev -- --legacy-nvidia
 ```
 
-The legacy NVIDIA profile includes the default advanced desktop engines unless you pass opt-outs.
+The legacy NVIDIA profile installs matched Torch and torchaudio 2.11.0 CUDA 12.6 wheels and includes
+the default advanced desktop engines, including LV Chordia, unless you pass opt-outs.
 If you later switch profiles with the standalone helpers, pass opt-outs only when you need the
 built-in fallback stack:
 
 ```sh
 pnpm sync:backend:legacy-nvidia -- --no-crema
+pnpm sync:backend:legacy-nvidia -- --no-lv-chordia
 pnpm sync:backend:default -- --no-crema
 ```
 

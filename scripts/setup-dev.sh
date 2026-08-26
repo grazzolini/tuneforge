@@ -109,11 +109,6 @@ if [[ "${legacy_nvidia}" -eq 1 ]]; then
     echo "Legacy NVIDIA backend profile is only supported on Linux x86_64." >&2
     exit 1
   fi
-
-  if [[ "${lv_chordia}" -eq 1 ]]; then
-    echo "--legacy-nvidia requires --no-lv-chordia because LV Chordia is audited only with Torch 2.11.0." >&2
-    exit 1
-  fi
 fi
 
 backend_sync_args=(sync --python 3.11 --all-groups)
@@ -162,21 +157,31 @@ if [[ "${legacy_nvidia}" -eq 1 ]]; then
     --torch-backend cu126 \
     --reinstall-package torch \
     --reinstall-package torchaudio \
-    "torch==2.6.0" \
-    "torchaudio==2.6.0"
+    "torch==2.11.0" \
+    "torchaudio==2.11.0"
 
   .venv/bin/python - <<'PY'
 import sys
 
 import torch
+import torchaudio
 
-if not torch.__version__.startswith("2.6.0"):
-    raise SystemExit(f"Expected torch 2.6.0 for the legacy NVIDIA profile, found {torch.__version__}.")
+expected_version = "2.11.0+cu126"
+if torch.__version__ != expected_version:
+    raise SystemExit(f"Expected torch {expected_version} for the legacy NVIDIA profile, found {torch.__version__}.")
+
+if torchaudio.__version__ != expected_version:
+    raise SystemExit(
+        f"Expected torchaudio {expected_version} for the legacy NVIDIA profile, found {torchaudio.__version__}."
+    )
 
 if torch.version.cuda != "12.6":
     raise SystemExit(f"Expected CUDA 12.6 for the legacy NVIDIA profile, found {torch.version.cuda}.")
 
-sys.stdout.write(f"Verified legacy NVIDIA Torch profile: torch {torch.__version__}, CUDA {torch.version.cuda}\n")
+sys.stdout.write(
+    f"Verified legacy NVIDIA Torch profile: torch {torch.__version__}, "
+    f"torchaudio {torchaudio.__version__}, CUDA {torch.version.cuda}\n"
+)
 PY
 
   touch "${marker_file}"

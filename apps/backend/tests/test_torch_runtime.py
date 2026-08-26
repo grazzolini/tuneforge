@@ -72,6 +72,63 @@ def test_choose_torch_device_auto_falls_back_when_cuda_arch_is_unsupported():
     )
 
 
+def test_lv_chordia_uses_architecture_aware_torch_device(monkeypatch: pytest.MonkeyPatch):
+    from app.engines import lv_chordia
+
+    fake_torch = make_fake_torch(
+        has_mps=False,
+        has_cuda=True,
+        supported_arches=["sm_75", "sm_80"],
+        device_capability=(6, 1),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    assert lv_chordia.lv_chordia_runtime_device() == "cpu"
+
+
+def test_lv_chordia_prewarm_retries_recognized_accelerator_failure_on_cpu(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from app.engines import lv_chordia
+
+    calls: list[str] = []
+
+    def fake_session_for_device(device: str) -> object:
+        calls.append(device)
+        if device == "mps":
+            raise RuntimeError("MPS backend out of memory")
+        return object()
+
+    monkeypatch.setattr(lv_chordia, "lv_chordia_runtime_device", lambda: "mps")
+    monkeypatch.setattr(lv_chordia, "_session_for_device", fake_session_for_device)
+
+    lv_chordia.preload_lv_chordia_session()
+
+    assert calls == ["mps", "cpu"]
+
+
+def test_lv_chordia_prewarm_propagates_unrecognized_failure_without_cpu_retry(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from app.engines import lv_chordia
+
+    calls: list[str] = []
+    original_error = RuntimeError("LV Chordia checkpoint is corrupt")
+
+    def fake_session_for_device(device: str) -> object:
+        calls.append(device)
+        raise original_error
+
+    monkeypatch.setattr(lv_chordia, "lv_chordia_runtime_device", lambda: "cuda")
+    monkeypatch.setattr(lv_chordia, "_session_for_device", fake_session_for_device)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        lv_chordia.preload_lv_chordia_session()
+
+    assert exc_info.value is original_error
+    assert calls == ["cuda"]
+
+
 def test_choose_torch_device_rejects_requested_cuda_when_arch_is_unsupported():
     with pytest.raises(RuntimeError, match="does not support the visible NVIDIA GPU architecture"):
         choose_torch_device(

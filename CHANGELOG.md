@@ -16,6 +16,11 @@ download, installation, verification, signature, and publication instructions.
   explicit choice for mobile, dependency-excluded packages, and users who opt out; advanced beat
   runtime failures now fail the job.
 
+### Fixed
+
+- Restored Linux developer setup on unsupported default CUDA architectures and made the legacy
+  NVIDIA profile compatible with LV Chordia.
+
 ## [1.2.0] - 2026-08-24
 
 ### Added

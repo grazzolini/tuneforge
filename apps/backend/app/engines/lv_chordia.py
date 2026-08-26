@@ -11,6 +11,7 @@ from typing import Any
 
 from app.engines.chord_labels import chord_label_to_segment
 from app.utils.model_cache import ExpectedModelFile, InvalidModelFile, invalid_model_files
+from app.utils.torch_runtime import choose_torch_device
 
 LV_CHORDIA_BACKEND_ID = "lv-chordia-submission"
 LV_CHORDIA_SOURCE_REVISION = "9d7de7bbf45efa6731ec8dc62d35280f141c0702"
@@ -201,14 +202,17 @@ def lv_chordia_runtime_device() -> str:
         import torch
     except Exception:
         return "cpu"
-    if torch.cuda.is_available():
-        return "cuda"
-    mps = getattr(torch.backends, "mps", None)
-    return "mps" if mps is not None and mps.is_available() else "cpu"
+    return choose_torch_device("auto", torch_module=torch)
 
 
 def preload_lv_chordia_session() -> None:
-    _session_for_device(lv_chordia_runtime_device())
+    preferred_device = lv_chordia_runtime_device()
+    try:
+        _session_for_device(preferred_device)
+    except Exception as exc:
+        if preferred_device == "cpu" or not _is_accelerator_failure(exc):
+            raise
+        _session_for_device("cpu")
 
 
 def clear_lv_chordia_session_cache() -> None:

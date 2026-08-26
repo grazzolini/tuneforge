@@ -15,12 +15,15 @@ Options:
                               Include the default beat-this backend.
   --no-advanced-beats, --no-beat-this
                               Skip the beat-this backend.
+  --lv-chordia               Include LV Chordia and verify bundled checkpoints (default).
+  --no-lv-chordia            Skip LV Chordia and its bundled checkpoints.
   -h, --help                  Show this help.
 EOF
 }
 
 advanced_chords=1
 advanced_beats=1
+lv_chordia=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -35,6 +38,12 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-advanced-beats | --no-beat-this)
       advanced_beats=0
+      ;;
+    --lv-chordia)
+      lv_chordia=1
+      ;;
+    --no-lv-chordia)
+      lv_chordia=0
       ;;
     --)
       ;;
@@ -76,6 +85,9 @@ fi
 if [[ "${advanced_beats}" -eq 1 ]]; then
   backend_sync_args+=(--extra advanced-beats)
 fi
+if [[ "${lv_chordia}" -eq 1 ]]; then
+  backend_sync_args+=(--extra lv-chordia)
+fi
 
 rm -rf .venv
 uv "${backend_sync_args[@]}"
@@ -84,21 +96,38 @@ uv pip install \
   --torch-backend cu126 \
   --reinstall-package torch \
   --reinstall-package torchaudio \
-  "torch==2.6.0" \
-  "torchaudio==2.6.0"
+  "torch==2.11.0" \
+  "torchaudio==2.11.0"
 
 .venv/bin/python - <<'PY'
 import sys
 
 import torch
+import torchaudio
 
-if not torch.__version__.startswith("2.6.0"):
-    raise SystemExit(f"Expected torch 2.6.0 for the legacy NVIDIA profile, found {torch.__version__}.")
+expected_version = "2.11.0+cu126"
+if torch.__version__ != expected_version:
+    raise SystemExit(f"Expected torch {expected_version} for the legacy NVIDIA profile, found {torch.__version__}.")
+
+if torchaudio.__version__ != expected_version:
+    raise SystemExit(
+        f"Expected torchaudio {expected_version} for the legacy NVIDIA profile, found {torchaudio.__version__}."
+    )
 
 if torch.version.cuda != "12.6":
     raise SystemExit(f"Expected CUDA 12.6 for the legacy NVIDIA profile, found {torch.version.cuda}.")
 
-sys.stdout.write(f"Verified legacy NVIDIA Torch profile: torch {torch.__version__}, CUDA {torch.version.cuda}\n")
+sys.stdout.write(
+    f"Verified legacy NVIDIA Torch profile: torch {torch.__version__}, "
+    f"torchaudio {torchaudio.__version__}, CUDA {torch.version.cuda}\n"
+)
 PY
 
 touch "${marker_file}"
+
+if [[ "${lv_chordia}" -eq 1 ]]; then
+  .venv/bin/python -m app.cli.prewarm_models \
+    --skip-demucs \
+    --skip-whisper \
+    --include-lv-chordia
+fi

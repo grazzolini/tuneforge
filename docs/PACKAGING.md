@@ -214,13 +214,15 @@ Chordia dependency stacks by default. Feature flags are independent:
 ```sh
 pnpm package:linux -- --no-crema --no-beat-this --no-lv-chordia
 pnpm package:linux -- --no-advanced-chords --no-advanced-beats
-pnpm package:linux -- --legacy-nvidia --no-lv-chordia --model-bundle
+pnpm package:linux -- --legacy-nvidia --model-bundle
 ```
 
 - `--no-crema` / `--no-advanced-chords` exclude the Advanced Chords dependency stack.
 - `--no-beat-this` / `--no-advanced-beats` exclude the Advanced Beat Analysis dependency stack.
 - `--lv-chordia` / `--no-lv-chordia` include or exclude LV Chordia and its five checkpoints.
-- `--legacy-nvidia` swaps in the legacy CUDA 12.6 PyTorch/torchaudio wheels and broader GPU device access; it requires `--no-lv-chordia` because LV Chordia is audited only with Torch 2.11.0.
+- `--legacy-nvidia` swaps in matched PyTorch/torchaudio 2.11.0 CUDA 12.6 wheels and
+  grants broader GPU device access. LV Chordia remains included unless `--no-lv-chordia` is
+  passed.
 - `--model-bundle` includes required Demucs and Whisper weights, plus beat-this `small0` when beat-this dependencies are included.
 - `--sandbox-data` keeps app data under Flatpak-private `/var/data/tuneforge` instead of the host XDG data directory.
 

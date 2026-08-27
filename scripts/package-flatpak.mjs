@@ -149,10 +149,12 @@ export function manifestWithPackageOptions(manifest, options) {
   if (options.lvChordia) {
     const runtimeInstall =
       "      - /app/lib/tuneforge/backend/python/bin/python3.11 -m pip install --no-index --no-build-isolation --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages -r python-requirements.txt\n";
+    const lvChordiaRuntimeInstall =
+      "      - /app/lib/tuneforge/backend/python/bin/python3.11 -m pip install --no-index --no-deps --no-build-isolation --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages -r python-requirements.txt\n";
     result = replaceManifestFragment(
       result,
       runtimeInstall,
-      runtimeInstall +
+      lvChordiaRuntimeInstall +
         "      - install -dm755 /app/lib/tuneforge/backend/python/share/lv-chordia\n" +
         "      - test -d /app/lib/tuneforge/backend/site-packages/share/lv-chordia/cache_data\n" +
         "      - mv /app/lib/tuneforge/backend/site-packages/share/lv-chordia/cache_data /app/lib/tuneforge/backend/python/share/lv-chordia/cache_data\n",

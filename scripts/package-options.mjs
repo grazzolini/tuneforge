@@ -62,9 +62,6 @@ export function validatePackageOptions(rawOptions, { platform } = {}) {
   if (platform === "mac" && options.sandboxData) {
     throw new Error("--sandbox-data is only supported for Linux Flatpak packaging.");
   }
-  if (options.legacyNvidia && options.lvChordia) {
-    throw new Error("--legacy-nvidia requires --no-lv-chordia because LV Chordia is audited only with Torch 2.11.0.");
-  }
   return {
     crema: Boolean(options.crema),
     lvChordia: Boolean(options.lvChordia),

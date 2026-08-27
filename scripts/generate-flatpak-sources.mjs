@@ -476,7 +476,7 @@ function run(command, args, options = {}) {
 function resolveLegacyTorchPackages() {
   const requirementsPath = path.join(generatedRoot, "python-legacy-torch.in");
   const pylockPath = path.join(generatedRoot, "pylock.legacy-torch.toml");
-  writeGeneratedFile("python-legacy-torch.in", "torch==2.6.0\ntorchaudio==2.6.0\n");
+  writeGeneratedFile("python-legacy-torch.in", "torch==2.11.0\ntorchaudio==2.11.0\n");
   run("uv", [
     "--quiet",
     "pip",
@@ -499,35 +499,38 @@ function resolveLegacyTorchPackages() {
   return parsePylock(readRequiredFile(pylockPath));
 }
 
-function mergeLegacyTorchPackages(packages) {
+function isLegacyTorchPackage(packageName) {
+  return (
+    packageName === "torch" ||
+    packageName === "torchaudio" ||
+    packageName === "triton" ||
+    packageName === "sympy" ||
+    packageName.startsWith("cuda-") ||
+    packageName.startsWith("nvidia-")
+  );
+}
+
+export function mergeLegacyTorchPackageSets(packages, legacyPackages) {
   const merged = new Map(packages.map((pkg) => [normalizePackageName(pkg.name), pkg]));
-  const legacyPackages = resolveLegacyTorchPackages();
 
   for (const packageName of Array.from(merged.keys())) {
-    if (
-      packageName === "torch" ||
-      packageName === "torchaudio" ||
-      packageName === "triton" ||
-      packageName === "sympy" ||
-      packageName.startsWith("nvidia-")
-    ) {
+    if (isLegacyTorchPackage(packageName)) {
       merged.delete(packageName);
     }
   }
 
-  for (const [packageName, pkg] of legacyPackages) {
-    if (
-      packageName === "torch" ||
-      packageName === "torchaudio" ||
-      packageName === "triton" ||
-      packageName === "sympy" ||
-      packageName.startsWith("nvidia-")
-    ) {
+  for (const pkg of legacyPackages.values()) {
+    const packageName = normalizePackageName(pkg.name);
+    if (isLegacyTorchPackage(packageName)) {
       merged.set(packageName, pkg);
     }
   }
 
   return Array.from(merged.values()).sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function mergeLegacyTorchPackages(packages) {
+  return mergeLegacyTorchPackageSets(packages, resolveLegacyTorchPackages());
 }
 
 function generatePythonSources() {
@@ -613,4 +616,6 @@ function main() {
   );
 }
 
-main();
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  main();
+}

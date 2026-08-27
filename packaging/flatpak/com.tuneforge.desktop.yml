@@ -63,14 +63,17 @@ modules:
       env:
         LD_LIBRARY_PATH: /app/lib/tuneforge/backend/python/lib
         PYTHONPATH: /app/lib/tuneforge/backend/site-packages
+        TMPDIR: /run/build/python-runtime-deps/.pip-tmp
     sources:
       - generated/python-sources.json
       - type: file
         path: generated/python-requirements.txt
     build-commands:
       - install -dm755 /app/lib/tuneforge/backend/site-packages
+      - install -dm700 /run/build/python-runtime-deps/.pip-tmp
       - /app/lib/tuneforge/backend/python/bin/python3.11 -m pip install --no-index --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages setuptools wheel
       - /app/lib/tuneforge/backend/python/bin/python3.11 -m pip install --no-index --no-build-isolation --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages -r python-requirements.txt
+      - rm -rf /run/build/python-runtime-deps/.pip-tmp
       - find /app/lib/tuneforge/backend/site-packages -type d -name __pycache__ -prune -exec rm -rf {} +
       - find /app/lib/tuneforge/backend/site-packages -type f -name '*.pyc' -delete
 

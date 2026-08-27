@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { mergeLegacyTorchPackageSets } from "./generate-flatpak-sources.mjs";
 import { manifestWithPackageOptions } from "./package-flatpak.mjs";
 import { assertLvChordiaBundleLayout, LV_CHORDIA_CHECKPOINT_NAMES } from "./prepare-bundle.mjs";
 import {
@@ -11,6 +12,33 @@ import {
   packageOptionsToGeneratorArgs,
   parsePackageOptions,
 } from "./package-options.mjs";
+
+const flatpakPipTmpDir = "/run/build/python-runtime-deps/.pip-tmp";
+
+function pythonRuntimeDepsModule(manifest) {
+  return manifest.slice(
+    manifest.indexOf("  - name: python-runtime-deps"),
+    manifest.indexOf("  - name: pnpm"),
+  );
+}
+
+function assertFlatpakPipTempLifecycle(manifest) {
+  const module = pythonRuntimeDepsModule(manifest);
+  const createCommand = `      - install -dm700 ${flatpakPipTmpDir}`;
+  const cleanupCommand = `      - rm -rf ${flatpakPipTmpDir}`;
+  const createIndex = module.indexOf(createCommand);
+  const cleanupIndex = module.indexOf(cleanupCommand);
+  const pipCommands = [...module.matchAll(/ -m pip install /g)];
+
+  assert.match(module, new RegExp(`^        TMPDIR: ${flatpakPipTmpDir.replaceAll(".", "\\.")}$`, "m"));
+  assert.equal((module.match(new RegExp(flatpakPipTmpDir.replaceAll(".", "\\."), "g")) ?? []).length, 3);
+  assert.ok(createIndex >= 0);
+  assert.ok(cleanupIndex >= 0);
+  assert.equal(pipCommands.length, 2);
+  assert.ok(createIndex < pipCommands[0].index);
+  assert.ok(cleanupIndex > pipCommands[1].index);
+  assert.doesNotMatch(module, /(?:--target=|install -dm\d+ )\/app\/[^\n]*\.pip-tmp/);
+}
 
 test("package option parser accepts feature aliases", () => {
   assert.deepEqual(
@@ -110,6 +138,10 @@ test("Flatpak package options are scoped to the TuneForge module build environme
   assert.match(manifest, /-r python-build-requirements\.txt/);
   assert.match(
     manifest,
+    /pip install --no-index --no-deps --no-build-isolation .* -r python-requirements\.txt/,
+  );
+  assert.match(
+    manifest,
     /mv \/app\/lib\/tuneforge\/backend\/site-packages\/share\/lv-chordia\/cache_data \/app\/lib\/tuneforge\/backend\/python\/share\/lv-chordia\/cache_data/,
   );
   const optOutManifest = manifestWithPackageOptions(
@@ -118,6 +150,38 @@ test("Flatpak package options are scoped to the TuneForge module build environme
   );
   assert.doesNotMatch(optOutManifest, /site-packages\/share\/lv-chordia\/cache_data/);
   assert.doesNotMatch(optOutManifest, /python\/share\/lv-chordia\/cache_data/);
+  assert.doesNotMatch(optOutManifest, /pip install .*--no-deps/);
+  assert.match(
+    optOutManifest,
+    /pip install --no-index --no-build-isolation .* -r python-requirements\.txt/,
+  );
+});
+
+test("Flatpak pip temporary files use disk-backed module storage for all Flatpak profiles", () => {
+  const baseManifest = readFileSync(
+    new URL("../packaging/flatpak/com.tuneforge.desktop.yml", import.meta.url),
+    "utf8",
+  );
+  const manifests = [
+    baseManifest,
+    manifestWithPackageOptions(baseManifest, parsePackageOptions([], { platform: "linux" })),
+    manifestWithPackageOptions(
+      baseManifest,
+      parsePackageOptions(["--no-lv-chordia"], { platform: "linux" }),
+    ),
+    manifestWithPackageOptions(
+      baseManifest,
+      parsePackageOptions(["--legacy-nvidia"], { platform: "linux" }),
+    ),
+    manifestWithPackageOptions(
+      baseManifest,
+      parsePackageOptions(["--legacy-nvidia", "--no-lv-chordia"], { platform: "linux" }),
+    ),
+  ];
+
+  for (const manifest of manifests) {
+    assertFlatpakPipTempLifecycle(manifest);
+  }
 });
 
 test("macOS staged bundle has exactly one LV Chordia checkpoint set or none when opted out", () => {
@@ -161,11 +225,64 @@ test("package option parser rejects platform-specific options", () => {
   );
 });
 
-test("legacy nvidia rejects the audited LV Chordia dependency stack", () => {
-  assert.throws(
-    () => parsePackageOptions(["--legacy-nvidia"], { platform: "linux" }),
-    /requires --no-lv-chordia/,
+test("legacy nvidia includes LV Chordia by default", () => {
+  const options = parsePackageOptions(["--legacy-nvidia"], { platform: "linux" });
+
+  assert.deepEqual(
+    packageOptionsToGeneratorArgs(options),
+    ["--crema", "--beat-this", "--lv-chordia", "--legacy-nvidia"],
   );
+  assert.deepEqual(backendSyncArgs(options), [
+    "sync",
+    "--python",
+    "3.11",
+    "--all-groups",
+    "--extra",
+    "advanced-chords",
+    "--extra",
+    "advanced-beats",
+    "--extra",
+    "lv-chordia",
+  ]);
+});
+
+test("Flatpak legacy resolver requests matched Torch 2.11 CUDA 12.6 wheels", () => {
+  const generator = readFileSync(new URL("./generate-flatpak-sources.mjs", import.meta.url), "utf8");
+
+  assert.match(generator, /"torch==2\.11\.0\\ntorchaudio==2\.11\.0\\n"/);
+  assert.match(generator, /"--torch-backend",\n\s+"cu126"/);
+});
+
+test("Flatpak legacy resolver replaces the complete Torch CUDA package family", () => {
+  const basePackages = [
+    { name: "cuda-bindings", version: "13.2.0" },
+    { name: "cuda-pathfinder", version: "1.4.2" },
+    { name: "cuda-toolkit", version: "13.0.2" },
+    { name: "numpy", version: "1.26.4" },
+    { name: "nvidia-cublas-cu12", version: "13.0.0.19" },
+    { name: "torch", version: "2.13.0" },
+  ];
+  const legacyPackages = new Map(
+    [
+      { name: "cuda-bindings", version: "12.9.7" },
+      { name: "cuda-pathfinder", version: "1.3.2" },
+      { name: "cuda-toolkit", version: "12.6.3" },
+      { name: "nvidia-cublas-cu12", version: "12.6.4.1" },
+      { name: "torch", version: "2.11.0+cu126" },
+      { name: "unrelated-legacy-only", version: "9.0.0" },
+    ].map((pkg) => [pkg.name, pkg]),
+  );
+
+  const merged = mergeLegacyTorchPackageSets(basePackages, legacyPackages);
+  const versions = Object.fromEntries(merged.map((pkg) => [pkg.name, pkg.version]));
+
+  assert.equal(versions["cuda-bindings"], "12.9.7");
+  assert.equal(versions["cuda-pathfinder"], "1.3.2");
+  assert.equal(versions["cuda-toolkit"], "12.6.3");
+  assert.equal(versions["nvidia-cublas-cu12"], "12.6.4.1");
+  assert.equal(versions.torch, "2.11.0+cu126");
+  assert.equal(versions.numpy, "1.26.4");
+  assert.equal(versions["unrelated-legacy-only"], undefined);
 });
 
 test("legacy nvidia supports advanced dependency opt-outs", () => {

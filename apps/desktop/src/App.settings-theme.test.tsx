@@ -137,7 +137,9 @@ describe("Desktop app settings theme", () => {
     ).toHaveTextContent("Advanced Beat Analysis");
     expect(
       within(screen.getByRole("group", { name: "Default chord backend" })).getAllByRole("button")[0],
-    ).toHaveTextContent("Advanced Chords");
+    ).toHaveTextContent("Advanced Chords — Crema (TensorFlow)");
+    expect(within(screen.getByRole("group", { name: "Default chord backend" })).getAllByRole("button"))
+      .toHaveLength(3);
     expect(screen.getByRole("button", { name: /^Enable lyrics follow by default/ })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /^Enable chords follow by default/ })).toHaveAttribute("aria-pressed", "true");
     expect(window.localStorage.getItem("tuneforge.theme-preference")).toBe("system");
@@ -566,7 +568,7 @@ describe("Desktop app settings theme", () => {
         desktopOnly: true,
         experimental: true,
         id: "crema-advanced",
-        label: "Advanced Chords",
+        label: "Advanced Chords — Crema ONNX",
         unavailable_reason: "crema is not installed",
       },
     ]);
@@ -578,8 +580,75 @@ describe("Desktop app settings theme", () => {
     expect(screen.getByRole("button", { name: /^Built-in Chords/ })).not.toBeDisabled();
     expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getAllByText("Advanced Chords — Crema ONNX").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: /^Built-in Chords/ })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByText(/Imports may use Built-in Chords if the saved backend is unavailable/)).toBeInTheDocument();
+  });
+
+  it("retains the cached implementation label while chord availability refetches and fails", async () => {
+    setChordBackends([
+      {
+        availability: "available",
+        available: true,
+        capabilities: {},
+        desktopOnly: true,
+        experimental: true,
+        id: "crema-advanced",
+        label: "Advanced Chords — Crema ONNX",
+        unavailable_reason: null,
+      },
+      {
+        availability: "available",
+        available: true,
+        capabilities: {},
+        desktopOnly: true,
+        experimental: true,
+        id: "lv-chordia-submission",
+        label: "LV Chordia (Submission)",
+        unavailable_reason: null,
+      },
+      {
+        availability: "available",
+        available: true,
+        capabilities: {},
+        desktopOnly: false,
+        experimental: false,
+        id: "tuneforge-fast",
+        label: "Built-in Chords",
+        unavailable_reason: null,
+      },
+    ]);
+    const { queryClient } = renderApp(["/settings"]);
+    expect((await screen.findAllByText("Advanced Chords — Crema ONNX")).length).toBeGreaterThan(0);
+
+    let rejectRefetch!: (reason: Error) => void;
+    mockListChordBackends.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectRefetch = reject;
+        }),
+    );
+    let refetch!: Promise<void>;
+    act(() => {
+      refetch = queryClient.refetchQueries({ queryKey: ["chord-backends"] });
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("group", { name: "Default chord backend" })).toHaveAttribute("aria-busy", "true"),
+    );
+    expect(screen.getAllByText("Advanced Chords — Crema ONNX").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toBeDisabled();
+
+    await act(async () => {
+      rejectRefetch(new Error("registry unavailable at /private/library"));
+      await refetch;
+    });
+
+    expect(await screen.findByText(
+      "Chord backend availability could not be checked. Saved selection was preserved.",
+    )).toBeInTheDocument();
+    expect(screen.getAllByText("Advanced Chords — Crema ONNX").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /^Advanced Chords/ })).toBeDisabled();
   });
 
   it("preserves the saved chord backend and offers retry when availability fails", async () => {
@@ -951,7 +1020,7 @@ describe("Desktop app settings theme", () => {
     expect(screen.getAllByText("Prefer sharps")).toHaveLength(2);
     expect(screen.getAllByText("Playback first").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Lyrics + chords").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Advanced Chords").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Advanced Chords — Crema (TensorFlow)").length).toBeGreaterThan(0);
     expect(document.documentElement.style.getPropertyValue("--color-bg-app")).toBe("#123456");
   });
 

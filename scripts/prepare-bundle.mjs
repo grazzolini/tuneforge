@@ -29,6 +29,15 @@ const stagedSitePackagesRoot = path.join(stagedBackendRoot, "site-packages");
 const stagedModelBundleRoot = path.join(stagedBackendRoot, "models", "bundle");
 const stagedLvChordiaRoot = path.join(stagedPythonRoot, "share", "lv-chordia", "cache_data");
 const sourceLvChordiaRoot = path.join(backendRoot, ".venv", "share", "lv-chordia", "cache_data");
+const cremaLicensePath = path.join(workspaceRoot, "LICENSES", "crema-0.2.0-BSD-2-Clause.txt");
+const CREMA_ONNX_ARTIFACT_NAMES = new Set([
+  "crema-0.2.0-opset18.onnx",
+  "crema-0.2.0-runtime-state.json",
+]);
+const CREMA_ONNX_REVISION = "65af18f49af5101267fd28f15ac8c452d98b8e3d";
+export const CREMA_ONNX_BUNDLE_RELATIVE_PATHS = Array.from(CREMA_ONNX_ARTIFACT_NAMES, (name) =>
+  path.join("models", "bundle", "crema", "0.2.0", CREMA_ONNX_REVISION, name),
+).sort();
 export const LV_CHORDIA_CHECKPOINT_NAMES = [
   "joint_chord_net_ismir_naive_v1.0_reweight(0.0,10.0)_s0.best.sdict",
   "joint_chord_net_ismir_naive_v1.0_reweight(0.0,10.0)_s1.best.sdict",
@@ -60,6 +69,23 @@ function checkpointPaths(root) {
     const entryPath = path.join(root, entry.name);
     return entry.isDirectory() ? checkpointPaths(entryPath) : entry.name.endsWith(".sdict") ? [entryPath] : [];
   });
+}
+
+function cremaModelPaths(root) {
+  if (!existsSync(root)) return [];
+  return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const entryPath = path.join(root, entry.name);
+    if (entry.isDirectory()) return cremaModelPaths(entryPath);
+    return CREMA_ONNX_ARTIFACT_NAMES.has(entry.name) ? [entryPath] : [];
+  });
+}
+
+export function assertCremaOnnxBundleLayout(root, enabled) {
+  const actual = cremaModelPaths(root).map((filePath) => path.relative(root, filePath)).sort();
+  const expected = enabled ? CREMA_ONNX_BUNDLE_RELATIVE_PATHS : [];
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`Unexpected Crema ONNX model bundle layout: ${actual.join(", ") || "none"}`);
+  }
 }
 
 export function assertLvChordiaBundleLayout(root, enabled) {
@@ -133,6 +159,9 @@ function prepareModelBundle(options) {
   if (options.beatThis) {
     args.push("--include-beat-this");
   }
+  if (options.crema === "onnx") {
+    args.push("--include-crema-onnx");
+  }
   run(pythonPath, args, { cwd: backendRoot });
 }
 
@@ -203,10 +232,16 @@ async function main() {
   copyInto(path.join(backendRoot, "alembic"), path.join(stagedBackendSourceRoot, "alembic"));
   copyInto(path.join(backendRoot, "alembic.ini"), path.join(stagedBackendSourceRoot, "alembic.ini"));
   copyInto(path.join(backendRoot, "pyproject.toml"), path.join(stagedBackendSourceRoot, "pyproject.toml"));
+  mkdirSync(path.join(stagedBackendRoot, "licenses"), { recursive: true });
+  copyInto(cremaLicensePath, path.join(stagedBackendRoot, "licenses", path.basename(cremaLicensePath)));
   copyInto(pythonInstallRoot, stagedPythonRoot, { dereference: true });
   copyInto(sitePackagesRoot, stagedSitePackagesRoot, { filter: shouldIncludeBundledSitePackage });
   stageLvChordiaAssets(packageOptions);
   prepareModelBundle(packageOptions);
+  assertCremaOnnxBundleLayout(
+    stagedBackendRoot,
+    packageOptions.modelBundle && packageOptions.crema === "onnx",
+  );
   writeResolvedBuildInfoFile(path.join(stagedBackendRoot, "version.json"), buildInfo);
 
   const manifest = {

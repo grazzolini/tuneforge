@@ -26,6 +26,9 @@ advanced-chords = [
   "setuptools<85",
   "tensorflow>=2.15,<2.22",
 ]
+advanced-chords-onnx = [
+  "onnxruntime==1.29.0",
+]
 advanced-beats = [
   "beat-this>=1.1.0,<2.0.0",
 ]
@@ -34,6 +37,12 @@ lv-chordia = [
 ]
 
 [tool.uv]
+conflicts = [
+  [
+    { extra = "advanced-chords" },
+    { extra = "advanced-chords-onnx" },
+  ],
+]
 override-dependencies = [
   # Audited against lv-chordia's upstream golden fixture at the pinned commit.
   "numpy==1.26.4",

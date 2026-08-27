@@ -177,6 +177,25 @@ assert_python_args "opt-out" \
   -m \
   app.cli.prewarm_models
 
+run_setup_dev "onnx" --crema-onnx
+grep -Fx -- "advanced-chords-onnx" "${setup_uv_args_file}"
+assert_python_args "onnx" \
+  -m \
+  app.cli.prewarm_models \
+  --include-crema \
+  --include-beat-this \
+  --include-lv-chordia
+
+conflict_output_file="${fixture}/setup-output-conflict"
+if PATH="${fixture}/bin:${PATH}" \
+  /bin/bash "${fixture}/scripts/setup-dev.sh" \
+    --crema --crema-onnx \
+    --skip-contracts --skip-playwright-browsers --skip-pnpm-install > "${conflict_output_file}" 2>&1; then
+  echo "expected conflicting Advanced Chords selectors to fail" >&2
+  exit 1
+fi
+grep -F -- "Conflicting Advanced Chords selectors" "${conflict_output_file}"
+
 run_setup_dev "legacy-lv" --legacy-nvidia
 assert_python_args "legacy-lv" \
   -m \

@@ -61,6 +61,25 @@ test("model bundle plan includes beat-this only when requested", () => {
   );
 });
 
+test("model bundle plan includes Crema ONNX only when requested", () => {
+  const withoutCremaOnnx = buildModelBundlePlan({ demucsManifest, lyricsModel: "base" });
+  const withCremaOnnx = buildModelBundlePlan({
+    demucsManifest,
+    includeCremaOnnx: true,
+    lyricsModel: "base",
+  });
+
+  assert.equal(withoutCremaOnnx.manifest.crema_onnx_files.length, 0);
+  assert.deepEqual(
+    withCremaOnnx.manifest.crema_onnx_files.map((entry) => entry.file_name).sort(),
+    ["crema-0.2.0-opset18.onnx", "crema-0.2.0-runtime-state.json"],
+  );
+  assert.equal(
+    withCremaOnnx.manifest.crema_onnx_files.reduce((total, entry) => total + entry.size, 0),
+    2_197_594,
+  );
+});
+
 test("Flatpak manifest allows the logind inhibition fallback", () => {
   assert.match(flatpakManifest, /^\s+- --system-talk-name=org\.freedesktop\.login1$/m);
 });

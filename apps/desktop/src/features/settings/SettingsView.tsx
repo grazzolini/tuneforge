@@ -258,7 +258,7 @@ const fallbackBeatAnalysisBackendOptions: ChoiceOption<DefaultBeatAnalysisBacken
 const fallbackChordBackendOptions: ChoiceOption<DefaultChordBackend>[] = [
   {
     value: "crema-advanced",
-    label: "Advanced Chords",
+    label: "Advanced Chords — Crema",
     description: "Use the crema detector with richer chord vocabulary and inversion labels.",
   },
   {
@@ -364,10 +364,11 @@ function beatAnalysisBackendLabel(value: DefaultBeatAnalysisBackend) {
   return value === "beat-this" ? "Advanced Beat Analysis" : "Built-in Beat Analysis";
 }
 
-function chordBackendLabel(value: DefaultChordBackend) {
-  if (value === "crema-advanced") return "Advanced Chords";
-  if (value === "lv-chordia-submission") return "LV Chordia (Submission)";
-  return "Built-in Chords";
+function chordBackendLabel(
+  value: DefaultChordBackend,
+  options: ChoiceOption<DefaultChordBackend>[],
+) {
+  return options.find((option) => option.value === value)?.label ?? "Unknown chord backend";
 }
 
 function stemModelLabel(value: DefaultStemModel) {
@@ -498,17 +499,11 @@ function chordBackendOptions(
   error: boolean,
   selected: DefaultChordBackend,
 ): ChoiceOption<DefaultChordBackend>[] {
-  if (fetching || backends === undefined) {
+  if (backends === undefined) {
     return fallbackChordBackendOptions.map((option) => ({
       ...option,
       disabled: true,
-    }));
-  }
-  if (error) {
-    return fallbackChordBackendOptions.map((option) => ({
-      ...option,
-      disabled: true,
-      status: "Availability could not be checked",
+      status: error ? "Availability could not be checked" : "Checking availability",
     }));
   }
 
@@ -528,8 +523,12 @@ function chordBackendOptions(
       value: fallback.value,
       label: backend.label,
       description: fallback.description,
-      disabled: !backend.available,
-      status: unavailableReason
+      disabled: fetching || error || !backend.available,
+      status: fetching
+        ? "Checking availability…"
+        : error
+          ? "Availability could not be checked"
+          : unavailableReason
         ? fallback.value === selected ? `Selected · ${unavailableReason}` : unavailableReason
         : fallback.value === "tuneforge-fast" ? "Import fallback" : undefined,
     };
@@ -1095,7 +1094,7 @@ export function SettingsView() {
           <div className="settings-overview__stat">
             <dt>Chord backend</dt>
             <dd>
-              {chordBackendLabel(defaultChordBackend)}
+              {chordBackendLabel(defaultChordBackend, chordBackendChoices)}
               <span>{chordFallbackNotice}</span>
             </dd>
           </div>

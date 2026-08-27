@@ -57,7 +57,7 @@ export const releaseInventoryCommands = [
     cwd: "apps/backend",
     commands: [
       {
-        label: "Release dependency SBOM",
+        label: "Default TensorFlow release dependency SBOM",
         command: [
           "uv",
           "export",
@@ -65,7 +65,29 @@ export const releaseInventoryCommands = [
           "cyclonedx1.5",
           "--frozen",
           "--all-groups",
-          "--all-extras",
+          "--extra",
+          "advanced-chords",
+          "--extra",
+          "advanced-beats",
+          "--extra",
+          "lv-chordia",
+        ],
+      },
+      {
+        label: "Opt-in ONNX release dependency SBOM",
+        command: [
+          "uv",
+          "export",
+          "--format",
+          "cyclonedx1.5",
+          "--frozen",
+          "--all-groups",
+          "--extra",
+          "advanced-chords-onnx",
+          "--extra",
+          "advanced-beats",
+          "--extra",
+          "lv-chordia",
         ],
       },
       {
@@ -121,6 +143,11 @@ export function buildReleaseLicenseInventory({ includeToolStatus = false, checkT
     includeBeatThis: defaultOptions.beatThis,
     lyricsModel: DEFAULT_LYRICS_MODEL,
   });
+  const cremaOnnxBundledPlan = buildModelBundlePlan({
+    includeBeatThis: defaultOptions.beatThis,
+    includeCremaOnnx: true,
+    lyricsModel: DEFAULT_LYRICS_MODEL,
+  });
   const bundledManifestEntries = [
     ...bundledPlan.manifest.torch_checkpoints,
     ...bundledPlan.manifest.whisper_models,
@@ -147,9 +174,20 @@ export function buildReleaseLicenseInventory({ includeToolStatus = false, checkT
         { platform: "macOS", command: "pnpm package:mac" },
         { platform: "Linux Flatpak", command: "pnpm package:linux" },
       ],
+      onnxPackageCommands: [
+        { platform: "macOS", command: "pnpm package:mac -- --crema-onnx" },
+        { platform: "Linux Flatpak", command: "pnpm package:linux -- --crema-onnx" },
+      ],
       explicitModelBundleCommands: [
         { platform: "macOS", command: "pnpm package:mac -- --model-bundle" },
         { platform: "Linux Flatpak", command: "pnpm package:linux -- --model-bundle" },
+      ],
+      cremaOnnxModelBundleCommands: [
+        { platform: "macOS", command: "pnpm package:mac -- --crema-onnx --model-bundle" },
+        {
+          platform: "Linux Flatpak",
+          command: "pnpm package:linux -- --crema-onnx --model-bundle",
+        },
       ],
       cachePrewarmCommand:
         "cd apps/backend && uv run --python 3.11 --locked --all-groups " +
@@ -164,6 +202,7 @@ export function buildReleaseLicenseInventory({ includeToolStatus = false, checkT
         },
       },
       cachePaths: [
+        "$TUNEFORGE_DATA_DIR/cache/models/crema/0.2.0/65af18f49af5101267fd28f15ac8c452d98b8e3d",
         "$TORCH_HOME/hub/checkpoints",
         "$XDG_CACHE_HOME/torch/hub/checkpoints",
         "~/.cache/torch/hub/checkpoints",
@@ -180,9 +219,12 @@ export function buildReleaseLicenseInventory({ includeToolStatus = false, checkT
       defaultLyricsModel: DEFAULT_LYRICS_MODEL,
       explicitBundleSourceCount: bundledPlan.sources.length,
       explicitBundleBytes: sumBundleBytes(bundledManifestEntries),
+      cremaOnnxBundleSourceCount: cremaOnnxBundledPlan.manifest.crema_onnx_files.length,
+      cremaOnnxBundleBytes: sumBundleBytes(cremaOnnxBundledPlan.manifest.crema_onnx_files),
     },
     risks: [
       "Default release package commands must not pass --model-bundle.",
+      "Plain Crema ONNX packages must not include model bytes; the explicit model bundle contains only the pinned files.",
       "Demucs pretrained-weight redistribution is unclear/restricted upstream.",
       "FFmpeg and ffprobe are host-installed and are not bundled.",
       "Python package license metadata can be incomplete; review missing fields manually.",

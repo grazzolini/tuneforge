@@ -412,7 +412,7 @@ const {
         desktopOnly: true,
         experimental: true,
         id: "crema-advanced",
-        label: "Advanced Chords",
+        label: "Advanced Chords — Crema (TensorFlow)",
         unavailable_reason: null,
       },
     ];

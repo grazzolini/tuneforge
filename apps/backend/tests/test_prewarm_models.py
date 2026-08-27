@@ -112,6 +112,11 @@ def test_crema_model_asset_verifier_uses_distribution_record(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setattr(
+        crema_chords.importlib.util,
+        "find_spec",
+        lambda name: None if name == "onnxruntime" else object(),
+    )
     payload = b"crema-fixture"
     asset_path = tmp_path / "model.h5"
     asset_path.write_bytes(payload)

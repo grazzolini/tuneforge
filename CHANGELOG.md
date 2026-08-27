@@ -7,6 +7,8 @@ download, installation, verification, signature, and publication instructions.
 
 ### Added
 
+- Added an opt-in Crema ONNX implementation for Advanced Chords while retaining Crema/TensorFlow
+  as the default setup and package profile.
 - Added optional bundled LV Chordia submission chord detection for desktop; Advanced Chords remains
   the default while the new backend awaits manual comparison and approval.
 

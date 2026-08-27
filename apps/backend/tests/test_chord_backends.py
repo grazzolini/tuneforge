@@ -93,6 +93,11 @@ def test_crema_annotation_conversion_preserves_confidence_and_bass():
 
 
 def test_crema_detection_suppresses_known_runtime_noise(monkeypatch, capsys, recwarn):
+    monkeypatch.setattr(
+        "app.engines.crema_chords.importlib.util.find_spec",
+        lambda name: None if name == "onnxruntime" else object(),
+    )
+
     class FakeModel:
         def predict(self, filename: str):
             assert filename == "/tmp/source.wav"
@@ -115,6 +120,10 @@ def test_crema_detection_suppresses_known_runtime_noise(monkeypatch, capsys, rec
 
 
 def test_crema_first_feature_use_instantiates_chord_model(monkeypatch):
+    monkeypatch.setattr(
+        "app.engines.crema_chords.importlib.util.find_spec",
+        lambda name: None if name == "onnxruntime" else object(),
+    )
     created: list[str] = []
     predicted: list[str] = []
 
@@ -149,7 +158,10 @@ def test_crema_first_feature_use_instantiates_chord_model(monkeypatch):
 
 
 def test_crema_backend_reports_tensorflow_runtime_device(monkeypatch):
-    monkeypatch.setattr("app.engines.crema_chords.importlib.util.find_spec", lambda _: object())
+    monkeypatch.setattr(
+        "app.engines.crema_chords.importlib.util.find_spec",
+        lambda name: None if name == "onnxruntime" else object(),
+    )
     monkeypatch.setattr(
         "app.services.chord_backends.detect_crema_chord_timeline",
         lambda _: [{"start_seconds": 0.0, "end_seconds": 1.0, "label": "C"}],
@@ -165,7 +177,7 @@ def test_crema_backend_reports_tensorflow_runtime_device(monkeypatch):
 
 def test_backend_registry_reports_fast_and_missing_crema(monkeypatch):
     def fake_find_spec(module_name: str):
-        return None if module_name == "crema" else object()
+        return None if module_name in {"crema", "onnxruntime"} else object()
 
     monkeypatch.setattr("app.engines.crema_chords.importlib.util.find_spec", fake_find_spec)
 
@@ -174,7 +186,22 @@ def test_backend_registry_reports_fast_and_missing_crema(monkeypatch):
     assert backends["tuneforge-fast"]["availability"] == "available"
     assert backends["tuneforge-fast"]["capabilities"]["supports_sevenths"] is True
     assert backends["crema-advanced"]["availability"] == "unavailable"
-    assert backends["crema-advanced"]["unavailable_reason"] == "crema is not installed"
+    assert backends["crema-advanced"]["unavailable_reason"] == "crema or ONNX Runtime is not installed"
+
+
+def test_crema_backend_rejects_ambiguous_runtime_and_labels_onnx(monkeypatch):
+    monkeypatch.setattr("app.engines.crema_chords.importlib.util.find_spec", lambda _name: object())
+    ambiguous = {backend["id"]: backend for backend in list_chord_backend_infos()}["crema-advanced"]
+    assert ambiguous["availability"] == "unavailable"
+    assert "both Crema TensorFlow and ONNX Runtime" in ambiguous["unavailable_reason"]
+
+    monkeypatch.setattr(
+        "app.engines.crema_chords.importlib.util.find_spec",
+        lambda name: object() if name == "onnxruntime" else None,
+    )
+    onnx = {backend["id"]: backend for backend in list_chord_backend_infos()}["crema-advanced"]
+    assert onnx["availability"] == "available"
+    assert onnx["label"] == "Advanced Chords — Crema ONNX"
 
 
 def test_default_chord_backend_prefers_crema_when_available(monkeypatch):
@@ -223,7 +250,7 @@ def test_lv_chordia_registry_reports_damaged_bundle(monkeypatch):
 
 def test_resolving_missing_advanced_backend_returns_structured_error(monkeypatch):
     def fake_find_spec(module_name: str):
-        return None if module_name == "crema" else object()
+        return None if module_name in {"crema", "onnxruntime"} else object()
 
     monkeypatch.setattr("app.engines.crema_chords.importlib.util.find_spec", fake_find_spec)
 
@@ -232,7 +259,10 @@ def test_resolving_missing_advanced_backend_returns_structured_error(monkeypatch
 
 
 def test_crema_backend_detects_keras_three_incompatibility(monkeypatch):
-    monkeypatch.setattr("app.engines.crema_chords.importlib.util.find_spec", lambda _: object())
+    monkeypatch.setattr(
+        "app.engines.crema_chords.importlib.util.find_spec",
+        lambda name: None if name == "onnxruntime" else object(),
+    )
 
     def fake_version(package_name: str) -> str:
         versions = {"keras": "3.14.0", "scikit-learn": "1.5.2"}
@@ -253,7 +283,10 @@ def test_crema_backend_detects_keras_three_incompatibility(monkeypatch):
 
 
 def test_crema_backend_detects_scikit_learn_incompatibility(monkeypatch):
-    monkeypatch.setattr("app.engines.crema_chords.importlib.util.find_spec", lambda _: object())
+    monkeypatch.setattr(
+        "app.engines.crema_chords.importlib.util.find_spec",
+        lambda name: None if name == "onnxruntime" else object(),
+    )
 
     def fake_version(package_name: str) -> str:
         versions = {"keras": "2.15.0", "scikit-learn": "1.8.0"}
@@ -275,7 +308,7 @@ def test_crema_backend_detects_scikit_learn_incompatibility(monkeypatch):
 
 def test_chord_backends_api_marks_crema_unavailable(client, monkeypatch):
     def fake_find_spec(module_name: str):
-        return None if module_name == "crema" else object()
+        return None if module_name in {"crema", "onnxruntime"} else object()
 
     monkeypatch.setattr("app.engines.crema_chords.importlib.util.find_spec", fake_find_spec)
 
@@ -286,14 +319,14 @@ def test_chord_backends_api_marks_crema_unavailable(client, monkeypatch):
     backends = {backend["id"]: backend for backend in payload["backends"]}
     assert backends["tuneforge-fast"]["availability"] == "available"
     assert backends["crema-advanced"]["availability"] == "unavailable"
-    assert backends["crema-advanced"]["unavailable_reason"] == "crema is not installed"
+    assert backends["crema-advanced"]["unavailable_reason"] == "crema or ONNX Runtime is not installed"
     assert backends["crema-advanced"]["capabilities"]["supportsSevenths"] is True
     assert backends["crema-advanced"]["desktopOnly"] is True
 
 
 def test_advanced_chords_request_fails_if_crema_missing(client, sample_chord_audio_file: Path, monkeypatch):
     def fake_find_spec(module_name: str):
-        return None if module_name == "crema" else object()
+        return None if module_name in {"crema", "onnxruntime"} else object()
 
     monkeypatch.setattr("app.engines.crema_chords.importlib.util.find_spec", fake_find_spec)
     project = client.post(
@@ -309,7 +342,7 @@ def test_advanced_chords_request_fails_if_crema_missing(client, sample_chord_aud
     assert response.status_code == 409
     payload = response.json()
     assert payload["error"]["code"] == "ADVANCED_CHORD_BACKEND_UNAVAILABLE"
-    assert payload["error"]["message"] == "crema is not installed"
+    assert payload["error"]["message"] == "crema or ONNX Runtime is not installed"
 
 
 def test_explicit_lv_chordia_request_fails_if_bundle_is_unavailable(

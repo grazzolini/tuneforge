@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from app.engines.crema_onnx import MODEL_REVISION
+from app.engines.crema_onnx import expected_model_files as expected_crema_onnx_files
 from app.utils.model_cache import ExpectedModelFile, invalid_model_files, torch_checkpoint_dir
 
 
@@ -30,6 +32,13 @@ def seed_model_bundle_caches(settings: Any) -> None:
         _entries(manifest, "whisper_models"),
         Path(settings.lyrics_cache_dir),
     )
+    crema_onnx_entries = _entries(manifest, "crema_onnx_files")
+    if crema_onnx_entries:
+        _seed_crema_onnx_entries(
+            resolved_bundle_dir,
+            crema_onnx_entries,
+            Path(settings.cache_root) / "models" / "crema" / "0.2.0" / MODEL_REVISION,
+        )
 
 
 def _entries(manifest: Mapping[str, Any], key: str) -> tuple[Mapping[str, Any], ...]:
@@ -57,6 +66,28 @@ def _seed_entries(bundle_dir: Path, entries: tuple[Mapping[str, Any], ...], cach
         if not invalid_model_files((destination_expected,)):
             continue
         _copy_verified_model_file(expected, destination)
+
+
+def _seed_crema_onnx_entries(
+    bundle_dir: Path,
+    entries: tuple[Mapping[str, Any], ...],
+    cache_dir: Path,
+) -> None:
+    expected_by_name = {expected.path.name: expected for expected in expected_crema_onnx_files(cache_dir)}
+    entry_names = [_required_string(entry, "file_name") for entry in entries]
+    if len(entry_names) != len(expected_by_name) or set(entry_names) != set(expected_by_name):
+        raise RuntimeError("Crema ONNX model bundle must contain the exact pinned file set")
+    for entry in entries:
+        name = _required_string(entry, "file_name")
+        expected = expected_by_name[name]
+        expected_relative_path = (Path("crema") / "0.2.0" / MODEL_REVISION / name).as_posix()
+        if (
+            _required_string(entry, "relative_path") != expected_relative_path
+            or entry.get("size") != expected.size
+            or _required_string(entry, "sha256") != expected.sha256
+        ):
+            raise RuntimeError(f"Crema ONNX model bundle metadata is invalid: {name}")
+    _seed_entries(bundle_dir, entries, cache_dir)
 
 
 def _expected_bundle_file(bundle_dir: Path, entry: Mapping[str, Any]) -> ExpectedModelFile:

@@ -39,6 +39,11 @@ TensorFlow/Keras and may start and run more slowly. The advanced dependency extr
 stack because crema 0.2.0 uses legacy model-loading, encoder, and `pkg_resources` APIs that are not
 compatible with newer releases.
 
+An opt-in ONNX Runtime implementation preserves the same `crema-advanced` backend ID and output
+shape without installing Crema, TensorFlow, Keras, JAMS, pumpp, or Crema/TensorFlow's HDF5
+model-loading closure. Preserved LV Chordia support still installs its declared `h5py` dependency.
+Select exactly one Crema implementation; installing both is treated as an invalid package profile.
+
 The current mobile backend does not run the desktop Python/FastAPI stack and disables Advanced Chords through `TUNEFORGE_RUNTIME_PLATFORM`.
 
 Built-in Chords and Advanced Chords both analyze the source track first. When matching source stems exist, chord refresh also analyzes a non-vocal stem input and augments the source timeline, so chord jobs can report `source+stem`. For the 6 stems model, the non-vocal input is a temporary float mix of drums, bass, guitar, piano, and other that is deleted after analysis.
@@ -56,7 +61,17 @@ pnpm setup:dev -- --no-crema
 pnpm setup:dev -- --no-advanced-chords
 ```
 
-If `crema`, TensorFlow, Keras, or JAMS are missing, `/api/v1/chord-backends` reports `crema-advanced` as unavailable and normal Built-in Chords detection keeps working.
+For ONNX development, select the ONNX dependency profile explicitly:
+
+```sh
+pnpm setup:dev -- --crema-onnx
+```
+
+Setup verifies or prewarms the immutable model and runtime state in the normal TuneForge data cache.
+TuneForge downloads missing files anonymously from the pinned Hugging Face revision.
+
+`/api/v1/chord-backends` reports Advanced Chords availability and the installed implementation.
+ONNX download, integrity, decoder, and inference failures are reported on the requested job.
 
 Release coverage label: full crema/TensorFlow runtime, package inclusion, and model-artifact review
 are manual or special checks unless a CI workflow explicitly installs and exercises the advanced

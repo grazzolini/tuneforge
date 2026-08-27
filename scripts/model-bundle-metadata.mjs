@@ -84,6 +84,22 @@ export const BEAT_THIS_CHECKPOINT_SPEC = {
   url: "https://cloud.cp.jku.at/public.php/dav/files/7ik4RrBKTS273gp/small0.ckpt",
 };
 
+export const CREMA_ONNX_REVISION = "65af18f49af5101267fd28f15ac8c452d98b8e3d";
+export const CREMA_ONNX_FILE_SPECS = [
+  {
+    label: "Crema ONNX model",
+    fileName: "crema-0.2.0-opset18.onnx",
+    sha256: "a903f9709821fccebb31d4e93d7d783642faaa90859f45f308c0f9131cc7ca59",
+    size: 2_193_804,
+  },
+  {
+    label: "Crema ONNX runtime state",
+    fileName: "crema-0.2.0-runtime-state.json",
+    sha256: "3744bf9ecb47de7194cb9f250fba26678ea347911af32ec4813645d5e033aca2",
+    size: 3_790,
+  },
+];
+
 const CUDA_MODEL_FALLBACKS = {
   turbo: ["small", "base"],
   "large-v3-turbo": ["small", "base"],
@@ -103,12 +119,14 @@ export function resolveWhisperBundleModels(modelName = DEFAULT_LYRICS_MODEL) {
 
 export function buildModelBundlePlan({
   includeBeatThis = false,
+  includeCremaOnnx = false,
   lyricsModel = process.env.TUNEFORGE_LYRICS_MODEL ?? DEFAULT_LYRICS_MODEL,
   demucsManifest = readDemucsModelManifest(),
 } = {}) {
   const entriesByPath = new Map();
   const torchCheckpoints = [];
   const whisperModels = [];
+  const cremaOnnxFiles = [];
 
   for (const model of demucsManifest.models) {
     for (const file of model.files) {
@@ -157,6 +175,18 @@ export function buildModelBundlePlan({
     torchCheckpoints.push(entry);
   }
 
+  if (includeCremaOnnx) {
+    for (const spec of CREMA_ONNX_FILE_SPECS) {
+      const relativePath = `crema/0.2.0/${CREMA_ONNX_REVISION}/${spec.fileName}`;
+      const entry = addEntry(entriesByPath, {
+        ...spec,
+        url: `https://huggingface.co/grazzolini/tuneforge-models/resolve/${CREMA_ONNX_REVISION}/${spec.fileName}`,
+        relativePath,
+      });
+      cremaOnnxFiles.push(entry);
+    }
+  }
+
   const sources = Array.from(entriesByPath.values()).map((entry) => ({
     type: "file",
     url: entry.url,
@@ -174,6 +204,7 @@ export function buildModelBundlePlan({
         ...manifestEntry(entry),
         model: entry.model,
       })),
+      crema_onnx_files: cremaOnnxFiles.map(manifestEntry),
     },
   };
 }

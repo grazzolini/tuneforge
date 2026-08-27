@@ -10,9 +10,9 @@ See [Third-party notices](../THIRD_PARTY_NOTICES.md) for the dependency and mode
 - Linux Flatpak packaging creates either a single-file `.flatpak` bundle or, with `--no-bundle`, a local Flatpak repository install flow.
 - Source distribution is the repository checkout or source archive from version control. These package commands do not create a separate source tarball.
 - Packaging, model-bundle review, crema/TensorFlow, beat-this, CUDA/MPS/legacy NVIDIA GPU behavior, and install smoke checks are manual or special coverage unless a CI workflow explicitly runs them.
-- Release/default package commands must not use `--model-bundle`; publishable artifacts must not include Demucs, Whisper, or beat-this model weights unless redistribution has been explicitly reviewed.
+- Release/default package commands do not use `--model-bundle`. Publishable model-bundled artifacts require an explicit review of the selected weights and package distribution evidence.
 - Default packages may still download Demucs, Whisper, or beat-this weights on first use when caches are missing. Fully offline operation requires host/sandbox FFmpeg access plus the relevant local caches or package assets to already exist.
-- Crema chord model files come from the crema dependency and ship with Advanced Chords unless that dependency stack is excluded; Demucs, Whisper, and beat-this external weights remain cache/download assets unless `--model-bundle` is explicitly passed.
+- Crema/TensorFlow chord model files come from the crema dependency and ship with default Advanced Chords. The opt-in Crema ONNX profile uses the pinned model from the verified cache; combining it with `--model-bundle` includes those exact files and the Brian McFee BSD-2-Clause notice as an explicit reviewed package choice.
 - LV Chordia checkpoints ship inside its pinned dependency for offline first use. `--no-lv-chordia` excludes both the runtime and checkpoints; damaged assets fail closed and are repaired by reinstalling.
 
 ## Release Package Gate
@@ -116,6 +116,8 @@ pnpm package:mac -- --no-crema --no-beat-this --no-lv-chordia
 pnpm package:mac -- --no-advanced-chords --no-advanced-beats
 pnpm package:mac -- --lv-chordia
 pnpm package:mac -- --model-bundle
+pnpm package:mac -- --crema-onnx
+pnpm package:mac -- --crema-onnx --model-bundle
 ```
 
 Advanced Beat Analysis remains the default analysis request without bundled model weights. Its
@@ -133,7 +135,7 @@ Run packaging from a normal macOS shell so `hdiutil` can create the disk image. 
 
 The packaged backend checks the inherited `PATH` plus common Homebrew and MacPorts install locations when looking for `ffmpeg` and `ffprobe`. System microphone volume control uses the built-in CoreAudio API on macOS.
 
-By default, Demucs, Whisper, and beat-this weights are read from their normal caches and downloaded on first use if missing. Crema and LV Chordia are dependency-owned exceptions: LV Chordia ships exactly five checkpoints totaling 28,730,939 bytes and validates them before loading. It performs no model download and uses no user checkpoint cache. `--model-bundle` stages required Demucs and Whisper weights, plus beat-this `small0` when included; it does not control LV Chordia.
+By default, Demucs, Whisper, and beat-this weights are read from their normal caches and downloaded on first use if missing. TensorFlow Crema and LV Chordia are dependency-owned package assets. An opt-in `--crema-onnx` package replaces the Crema/TensorFlow stack and its HDF5 model-loading closure with ONNX Runtime, while preserved LV Chordia support still brings its declared `h5py` dependency. Without `--model-bundle`, the pinned ONNX model downloads into `TUNEFORGE_DATA_DIR/cache/models/crema/` on first use. Combining `--crema-onnx` with `--model-bundle` stages the exact verified model and runtime state so packaged startup can seed that same cache. LV Chordia still ships exactly five validated checkpoints. `--model-bundle` also stages required Demucs and Whisper weights, plus beat-this `small0` when included.
 
 ## Android
 
@@ -215,18 +217,21 @@ Chordia dependency stacks by default. Feature flags are independent:
 pnpm package:linux -- --no-crema --no-beat-this --no-lv-chordia
 pnpm package:linux -- --no-advanced-chords --no-advanced-beats
 pnpm package:linux -- --legacy-nvidia --model-bundle
+pnpm package:linux -- --crema-onnx
+pnpm package:linux -- --crema-onnx --model-bundle
 ```
 
 - `--no-crema` / `--no-advanced-chords` exclude the Advanced Chords dependency stack.
+- `--crema-onnx` / `--advanced-chords-onnx` select ONNX Runtime instead of the default Crema/TensorFlow stack.
 - `--no-beat-this` / `--no-advanced-beats` exclude the Advanced Beat Analysis dependency stack.
 - `--lv-chordia` / `--no-lv-chordia` include or exclude LV Chordia and its five checkpoints.
 - `--legacy-nvidia` swaps in matched PyTorch/torchaudio 2.11.0 CUDA 12.6 wheels and
   grants broader GPU device access. LV Chordia remains included unless `--no-lv-chordia` is
   passed.
-- `--model-bundle` includes required Demucs and Whisper weights, plus beat-this `small0` when beat-this dependencies are included.
+- `--model-bundle` includes required Demucs and Whisper weights, plus beat-this `small0` when beat-this dependencies are included and the Crema ONNX model/state when `--crema-onnx` is selected.
 - `--sandbox-data` keeps app data under Flatpak-private `/var/data/tuneforge` instead of the host XDG data directory.
 
-Like macOS packages, plain Flatpak packages rely on normal Demucs, Whisper, and beat-this caches unless `--model-bundle` is explicitly passed. Advanced Chords uses crema package assets instead of a separate first-use model download; this is the dependency-owned Crema exception, not an external model-bundle source.
+Like macOS packages, plain Flatpak packages rely on normal Demucs, Whisper, and beat-this caches unless `--model-bundle` is explicitly passed. Default Advanced Chords uses Crema package assets. Plain opt-in ONNX packages use the verified TuneForge data cache; combining `--crema-onnx` with `--model-bundle` stages the exact model and runtime-state files and seeds that cache on startup. ONNX packages omit Crema/TensorFlow's HDF5 closure but retain LV Chordia's declared `h5py` dependency.
 When beat-this is excluded, desktop actions explicitly select Built-in Beat Analysis. An Advanced
 Beat Analysis request that ultimately fails during first-use download, load, runtime, or timing
 analysis fails the job rather than switching engines; explicit Built-in Beat Analysis requests do

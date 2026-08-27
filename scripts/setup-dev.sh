@@ -14,6 +14,9 @@ Runs the standard developer setup:
 
 Options:
   --advanced-chords, --crema  Include the default crema/TensorFlow chord backend.
+  --advanced-chords-onnx, --crema-onnx
+                              Use the Crema ONNX Runtime chord backend.
+  --crema-onnx-model-dir DIR  Verify and import a previously downloaded ONNX model directory.
   --no-advanced-chords, --no-crema
                               Skip the crema/TensorFlow chord backend.
   --advanced-beats, --beat-this
@@ -32,7 +35,9 @@ Options:
 EOF
 }
 
-advanced_chords=1
+advanced_chords="tensorflow"
+advanced_chords_selected=""
+crema_onnx_model_dir=""
 advanced_beats=1
 lv_chordia=1
 legacy_nvidia=0
@@ -45,10 +50,36 @@ skip_contracts=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --advanced-chords | --crema)
-      advanced_chords=1
+      if [[ -n "${advanced_chords_selected}" && "${advanced_chords_selected}" != "tensorflow" ]]; then
+        echo "Conflicting Advanced Chords selectors were provided." >&2
+        exit 2
+      fi
+      advanced_chords="tensorflow"
+      advanced_chords_selected="tensorflow"
+      ;;
+    --advanced-chords-onnx | --crema-onnx)
+      if [[ -n "${advanced_chords_selected}" && "${advanced_chords_selected}" != "onnx" ]]; then
+        echo "Conflicting Advanced Chords selectors were provided." >&2
+        exit 2
+      fi
+      advanced_chords="onnx"
+      advanced_chords_selected="onnx"
       ;;
     --no-advanced-chords | --no-crema)
-      advanced_chords=0
+      if [[ -n "${advanced_chords_selected}" && "${advanced_chords_selected}" != "none" ]]; then
+        echo "Conflicting Advanced Chords selectors were provided." >&2
+        exit 2
+      fi
+      advanced_chords="none"
+      advanced_chords_selected="none"
+      ;;
+    --crema-onnx-model-dir)
+      if [[ $# -lt 2 ]]; then
+        echo "--crema-onnx-model-dir requires a directory." >&2
+        exit 2
+      fi
+      crema_onnx_model_dir="$2"
+      shift
       ;;
     --advanced-beats | --beat-this)
       advanced_beats=1
@@ -111,9 +142,16 @@ if [[ "${legacy_nvidia}" -eq 1 ]]; then
   fi
 fi
 
+if [[ -n "${crema_onnx_model_dir}" && "${advanced_chords}" != "onnx" ]]; then
+  echo "--crema-onnx-model-dir requires --crema-onnx." >&2
+  exit 2
+fi
+
 backend_sync_args=(sync --python 3.11 --all-groups)
-if [[ "${advanced_chords}" -eq 1 ]]; then
+if [[ "${advanced_chords}" == "tensorflow" ]]; then
   backend_sync_args+=(--extra advanced-chords)
+elif [[ "${advanced_chords}" == "onnx" ]]; then
+  backend_sync_args+=(--extra advanced-chords-onnx)
 fi
 if [[ "${advanced_beats}" -eq 1 ]]; then
   backend_sync_args+=(--extra advanced-beats)
@@ -149,6 +187,13 @@ fi
 
 echo "Syncing backend dependencies..."
 uv "${backend_sync_args[@]}"
+
+if [[ -n "${crema_onnx_model_dir}" ]]; then
+  echo "Importing verified Crema ONNX model files..."
+  .venv/bin/python -c \
+    'import sys; from pathlib import Path; from app.engines.crema_onnx import import_crema_onnx_model; import_crema_onnx_model(Path(sys.argv[1]))' \
+    "${crema_onnx_model_dir}"
+fi
 
 if [[ "${legacy_nvidia}" -eq 1 ]]; then
   echo "Installing legacy NVIDIA Torch wheels..."
@@ -201,7 +246,7 @@ if [[ "${skip_model_prewarm}" -eq 0 ]]; then
   if [[ "${skip_demucs_models}" -eq 1 ]]; then
     prewarm_args+=(--skip-demucs)
   fi
-  if [[ "${advanced_chords}" -eq 1 ]]; then
+  if [[ "${advanced_chords}" != "none" ]]; then
     prewarm_args+=(--include-crema)
   fi
   if [[ "${advanced_beats}" -eq 1 ]]; then

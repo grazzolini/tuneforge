@@ -1,8 +1,21 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  closeSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readlinkSync,
+  readdirSync,
+  readSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { writeBuildInfoFile } from "./build-info.mjs";
+import { writeBuildInfoFile, writeResolvedBuildInfoFile } from "./build-info.mjs";
 import {
   packageOptionsEnvironment,
   packageOptionsToGeneratorArgs,
@@ -16,8 +29,10 @@ const workspaceRoot = path.resolve(scriptDir, "..");
 const flatpakRoot = path.join(workspaceRoot, "packaging", "flatpak");
 const baseManifestPath = path.join(flatpakRoot, "com.tuneforge.desktop.yml");
 const flatpakVersionInfoPath = path.join(flatpakRoot, "generated", "version.json");
+const frontendVersionInfoPath = path.join(flatpakRoot, "generated", "frontend-version.json");
 const appId = "com.tuneforge.desktop";
 const localRepoRemote = "tuneforge-local";
+const cacheSchema = "flatpak-cache-v1";
 const buildDir = process.env.FLATPAK_BUILD_DIR ?? path.join(flatpakRoot, "build-dir");
 const repoDir = process.env.FLATPAK_REPO_DIR ?? path.join(flatpakRoot, "repo");
 const appVersion = JSON.parse(
@@ -26,6 +41,12 @@ const appVersion = JSON.parse(
 const bundlePath =
   process.env.FLATPAK_BUNDLE_PATH ??
   path.join(flatpakRoot, `Tuneforge_${appVersion}_x86_64.flatpak`);
+export const frontendModuleInputPaths = [
+  "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "scripts/build-info.mjs",
+  "packaging/flatpak/seed-pnpm-store.mjs", "apps/desktop/package.json",
+  "apps/desktop/index.html", "apps/desktop/tsconfig.json", "apps/desktop/tsconfig.node.json",
+  "apps/desktop/vite.config.ts", "apps/desktop/src", "packages/shared-types/package.json", "packages/shared-types/src",
+];
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -52,10 +73,18 @@ function checkCommand(command, installHint) {
   }
 }
 
-function generatedManifestPath(options) {
+function generatedManifestPath(options, cacheRoot, namespace, frontendGitRef) {
   const generatedManifestPath = path.join(flatpakRoot, "com.tuneforge.desktop.generated.yml");
   const baseManifest = readFileSync(baseManifestPath, "utf8");
   let manifest = manifestWithPackageOptions(baseManifest, options);
+  manifest = manifest
+    .replaceAll('"@@FLATPAK_CACHE_BIND@@"', JSON.stringify(`--bind-mount=/run/tuneforge-cache=${cacheRoot}`))
+    .replaceAll("@@FLATPAK_CACHE_NAMESPACE@@", namespace);
+  manifest = replaceManifestFragment(
+    manifest,
+    "@@TUNEFORGE_FRONTEND_GIT_REF@@",
+    frontendGitRef.replaceAll("'", "''"),
+  );
   if (options.legacyNvidia) {
     manifest = replaceManifestFragment(manifest, "  - --device=dri\n", "  - --device=all\n");
   }
@@ -76,8 +105,10 @@ function generatedManifestPath(options) {
     );
     manifest = replaceManifestFragment(
       manifest,
-      "      - generated/cargo-sources.json\n",
-      "      - generated/cargo-sources.json\n" +
+      "      - type: file\n" +
+        "        path: generated/version.json\n",
+      "      - type: file\n" +
+        "        path: generated/version.json\n" +
         "      - generated/model-bundle-sources.json\n" +
         "      - type: file\n" +
         "        path: generated/model-bundle-manifest.json\n" +
@@ -120,10 +151,12 @@ function generatedManifestPath(options) {
 export function manifestWithPackageOptions(manifest, options) {
   const encodedPackageOptions = packageOptionsEnvironment(options).TUNEFORGE_PACKAGE_OPTIONS;
   const tuneforgeEnvAnchor =
-    "  - name: tuneforge\n" +
+    "  - name: tuneforge-frontend\n" +
     "    buildsystem: simple\n" +
     "    build-options:\n" +
-    "      append-path: /app/bin:/usr/lib/sdk/node26/bin:/usr/lib/sdk/llvm20/bin:/usr/lib/sdk/rust-stable/bin\n" +
+    "      append-path: /app/bin:/usr/lib/sdk/node26/bin\n" +
+    "      build-args:\n" +
+    '        - "@@FLATPAK_CACHE_BIND@@"\n' +
     "      env:\n";
   let result = replaceManifestFragment(
     manifest,
@@ -168,6 +201,163 @@ function replaceManifestFragment(contents, search, replacement) {
     throw new Error(`Could not find expected Flatpak manifest fragment: ${search.trim()}`);
   }
   return contents.replace(search, replacement);
+}
+
+function gitOutput(args, cwd) {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  return result.status === 0 ? result.stdout.trim() : null;
+}
+
+function validatedSourceDateEpoch(value, label) {
+  const epoch = Number(value);
+  if (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(epoch) || epoch > 253402300799) {
+    throw new Error(`${label} must be a positive integer Unix timestamp.`);
+  }
+  return value;
+}
+
+export function resolveSourceDateEpoch({
+  root = workspaceRoot,
+  override = process.env.SOURCE_DATE_EPOCH,
+} = {}) {
+  if (override !== undefined) return validatedSourceDateEpoch(override, "SOURCE_DATE_EPOCH");
+  const commitEpoch = gitOutput(["log", "-1", "--format=%ct", "HEAD"], root);
+  return commitEpoch ? validatedSourceDateEpoch(commitEpoch, "Git HEAD commit timestamp") : "1";
+}
+
+export function normalizeGeneratedModelBundleManifest({
+  filePath = path.join(flatpakRoot, "generated", "model-bundle-manifest.json"),
+  sourceDateEpoch,
+} = {}) {
+  if (!existsSync(filePath)) return false;
+  const manifest = readJson(filePath);
+  if (!manifest || typeof manifest !== "object" || typeof manifest.prepared_at !== "string") throw new Error("Malformed generated model bundle manifest.");
+  const epoch = validatedSourceDateEpoch(sourceDateEpoch, "SOURCE_DATE_EPOCH");
+  manifest.prepared_at = new Date(Number(epoch) * 1_000).toISOString();
+  writeJson(filePath, manifest);
+  return true;
+}
+
+export function resolveFrontendGitRef({
+  root = workspaceRoot,
+  override = process.env.TUNEFORGE_FRONTEND_GIT_REF,
+  inputPaths = frontendModuleInputPaths,
+} = {}) {
+  if (override?.trim()) {
+    return override.trim();
+  }
+  const commit = gitOutput(["log", "-1", "--format=%H", "--", ...inputPaths], root);
+  const base = commit && gitOutput(["describe", "--tags", "--long", "--always", "--abbrev=8", commit], root);
+  if (!base) {
+    return "unknown";
+  }
+  const dirty = gitOutput(["status", "--porcelain=v1", "--untracked-files=all", "--", ...inputPaths], root);
+  return dirty ? `${base}-dirty` : base;
+}
+
+export function cacheNamespace(options, version = appVersion) {
+  const inputs = {
+    schema: cacheSchema,
+    app: `${appId}@${version}`,
+    arch: "x86_64",
+    runtime: "org.gnome.Platform/50",
+    tools: "node26-llvm20-rust-stable-pnpm11.22.0-sccache0.17.0",
+    profile: packageOptionsEnvironment(options).TUNEFORGE_PACKAGE_OPTIONS,
+  };
+  const digest = createHash("sha256").update(JSON.stringify(inputs)).digest("hex").slice(0, 16);
+  return { name: `${cacheSchema}-${digest}`, inputs };
+}
+
+function pathsOverlap(left, right) {
+  const relative = path.relative(path.resolve(left), path.resolve(right));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+export function resolveCacheRoots({
+  stateRoot = process.env.FLATPAK_STATE_DIR ?? path.join(workspaceRoot, ".flatpak-builder", "tuneforge-state"),
+  cacheRoot = process.env.FLATPAK_CACHE_DIR ?? path.join(workspaceRoot, ".flatpak-builder", "tuneforge-cache"),
+  outputRoots = [buildDir, repoDir],
+} = {}) {
+  const roots = { stateRoot: path.resolve(stateRoot), cacheRoot: path.resolve(cacheRoot) };
+  const unsafe = [path.parse(workspaceRoot).root, workspaceRoot, flatpakRoot, process.env.HOME].filter(Boolean);
+  for (const [label, root] of Object.entries(roots)) {
+    if (unsafe.includes(root) || outputRoots.some((output) => pathsOverlap(root, output) || pathsOverlap(output, root))) {
+      throw new Error(`Unsafe Flatpak ${label}: it overlaps a packaging or force-clean output root.`);
+    }
+  }
+  if (pathsOverlap(roots.stateRoot, roots.cacheRoot) || pathsOverlap(roots.cacheRoot, roots.stateRoot)) {
+    throw new Error("FLATPAK_STATE_DIR and FLATPAK_CACHE_DIR must not overlap.");
+  }
+  return roots;
+}
+
+function numericTotal(value, label) {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+  if (value && typeof value === "object") {
+    return Object.values(value).reduce((total, entry) => total + numericTotal(entry, label), 0);
+  }
+  throw new Error(`Malformed sccache ${label} statistics.`);
+}
+
+export function parseSccacheStats(contents) {
+  let parsed;
+  try {
+    parsed = typeof contents === "string" ? JSON.parse(contents) : contents;
+  } catch {
+    throw new Error("Malformed sccache JSON statistics.");
+  }
+  const stats = parsed?.stats ?? parsed;
+  if (!stats || typeof stats !== "object") throw new Error("Malformed sccache JSON statistics.");
+  const metrics = {
+    compileRequests: numericTotal(stats.compile_requests, "compile_requests"),
+    cacheHits: numericTotal(stats.cache_hits?.counts ?? stats.cache_hits, "cache_hits"),
+    cacheMisses: numericTotal(stats.cache_misses?.counts ?? stats.cache_misses, "cache_misses"),
+    cacheErrors: numericTotal(stats.cache_errors?.counts ?? stats.cache_errors, "cache_errors") + numericTotal(stats.cache_read_errors ?? 0, "cache_read_errors") + numericTotal(stats.cache_write_errors ?? 0, "cache_write_errors"),
+    compileFailures: numericTotal(stats.compile_fails ?? 0, "compile_fails"),
+    notCacheable: numericTotal(stats.requests_not_cacheable ?? 0, "requests_not_cacheable"),
+  };
+  if (metrics.cacheErrors !== 0) throw new Error(`sccache reported ${metrics.cacheErrors} cache errors.`);
+  return metrics;
+}
+
+function fileSha256(filePath) {
+  const hash = createHash("sha256");
+  const descriptor = openSync(filePath, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    for (let bytes = readSync(descriptor, buffer, 0, buffer.length, null); bytes > 0;
+      bytes = readSync(descriptor, buffer, 0, buffer.length, null)) hash.update(buffer.subarray(0, bytes));
+  } finally {
+    closeSync(descriptor);
+  }
+  return hash.digest("hex");
+}
+
+export function digestBuildPayload(root) {
+  const entries = [];
+  function visit(relativePath) {
+    const absolutePath = path.join(root, relativePath);
+    const stats = lstatSync(absolutePath);
+    const entry = { path: relativePath.split(path.sep).join("/"), mode: (stats.mode & 0o7777).toString(8) };
+    if (stats.isSymbolicLink()) entries.push({ ...entry, type: "symlink", target: readlinkSync(absolutePath) });
+    else if (stats.isDirectory()) {
+      entries.push({ ...entry, type: "directory" });
+      for (const child of readdirSync(absolutePath).sort()) visit(path.join(relativePath, child));
+    } else if (stats.isFile()) entries.push({ ...entry, type: "file", size: stats.size, sha256: fileSha256(absolutePath) });
+    else throw new Error(`Unsupported Flatpak payload entry type: ${relativePath}`);
+  }
+  for (const child of readdirSync(root).sort()) visit(child);
+  return {
+    sha256: createHash("sha256").update(JSON.stringify(entries)).digest("hex"),
+    entryCount: entries.length,
+  };
+}
+
+export function compareCacheReports(cold, warm) {
+  const errors = [...(cold.errors ?? []), ...(warm.errors ?? [])];
+  if (cold.namespace !== warm.namespace) errors.push("Cold and warm cache namespaces differ.");
+  if (cold.payload?.sha256 !== warm.payload?.sha256) errors.push("Cold and warm payload digests differ.");
+  return { schema: cacheSchema, equivalent: errors.length === 0, errors, cold: cold.payload, warm: warm.payload };
 }
 
 function bytesToMiB(bytes) {
@@ -216,9 +406,58 @@ function printPythonWheelSizeReport() {
   }
 }
 
+function readJson(targetPath) {
+  return JSON.parse(readFileSync(targetPath, "utf8"));
+}
+
+function writeJson(targetPath, value) {
+  mkdirSync(path.dirname(targetPath), { recursive: true });
+  writeFileSync(targetPath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+export function isValidPnpmCacheReport(pnpm) {
+  return Boolean(
+    pnpm &&
+    pnpm.origin === "loopback" &&
+    Number.isInteger(pnpm.packageCount) && pnpm.packageCount >= 1 &&
+    pnpm.tarballIntegrityChecks === 2 &&
+    pnpm.storeIntegrityChecks === 2 &&
+    pnpm.storeStatusChecks === 1 &&
+    Number.isInteger(pnpm.contentFiles) && pnpm.contentFiles >= 1 &&
+    pnpm.indexIntegrity === "ok",
+  );
+}
+
+function cacheReport({ namespace, inputs, cacheRoot, timings, evidence }) {
+  const namespaceRoot = path.join(cacheRoot, namespace);
+  const pnpmPath = path.join(namespaceRoot, "pnpm-report.json");
+  const sccachePath = path.join(namespaceRoot, "sccache-stats.json");
+  const pnpm = existsSync(pnpmPath) ? readJson(pnpmPath) : null;
+  const sccache = existsSync(sccachePath) ? parseSccacheStats(readFileSync(sccachePath, "utf8")) : null;
+  if (evidence && (!pnpm || !sccache)) {
+    throw new Error("Flatpak cache evidence mode requires frontend and desktop modules to execute.");
+  }
+  if (pnpm && !isValidPnpmCacheReport(pnpm)) {
+    throw new Error("Malformed Flatpak pnpm integrity report.");
+  }
+  return {
+    schema: cacheSchema,
+    namespace,
+    namespaceInputs: inputs,
+    modules: { frontend: pnpm ? "executed" : "cached", desktop: sccache ? "executed" : "cached" },
+    pnpm: pnpm ?? { status: "module-cached" },
+    sccache: sccache ?? { status: "module-cached" },
+    timings,
+    payload: digestBuildPayload(path.join(buildDir, "files")),
+    errors: [],
+  };
+}
+
 function main() {
+  const startedAt = performance.now();
   const packageOptions = parsePackageOptions(process.argv.slice(2), { platform: "linux" });
   const skipBundle = packageOptions.noBundle || process.env.FLATPAK_NO_BUNDLE === "1";
+  const evidence = process.env.FLATPAK_CACHE_EVIDENCE === "1";
   if (process.arch !== "x64") {
     throw new Error("TuneForge Flatpak packaging currently targets Linux x86_64 only.");
   }
@@ -229,12 +468,32 @@ function main() {
     printModelBundleWarning();
   }
 
+  const namespace = cacheNamespace(packageOptions);
+  const sourceDateEpoch = resolveSourceDateEpoch();
+  const { stateRoot, cacheRoot } = resolveCacheRoots();
+  const stateDir = path.join(stateRoot, namespace.name);
+  const namespaceRoot = path.join(cacheRoot, namespace.name);
+  mkdirSync(stateDir, { recursive: true });
+  mkdirSync(namespaceRoot, { recursive: true });
+  rmSync(path.join(namespaceRoot, "pnpm-report.json"), { force: true });
+  rmSync(path.join(namespaceRoot, "sccache-stats.json"), { force: true });
+
+  const sourceStartedAt = performance.now();
   run(process.execPath, [
     path.join("scripts", "generate-flatpak-sources.mjs"),
     ...packageOptionsToGeneratorArgs(packageOptions),
   ]);
-  writeBuildInfoFile(flatpakVersionInfoPath, { workspaceRoot });
-  const manifestPath = generatedManifestPath(packageOptions);
+  normalizeGeneratedModelBundleManifest({ sourceDateEpoch });
+  const frontendGitRef = resolveFrontendGitRef();
+  const installedBuildInfo = writeBuildInfoFile(flatpakVersionInfoPath, { workspaceRoot });
+  installedBuildInfo.frontend.git_ref = frontendGitRef;
+  writeResolvedBuildInfoFile(flatpakVersionInfoPath, installedBuildInfo);
+  writeResolvedBuildInfoFile(frontendVersionInfoPath, {
+    backend: { ...installedBuildInfo.frontend },
+    frontend: { ...installedBuildInfo.frontend },
+  });
+  const manifestPath = generatedManifestPath(packageOptions, cacheRoot, namespace.name, frontendGitRef);
+  const sourceSeconds = (performance.now() - sourceStartedAt) / 1_000;
 
   checkCommand(
     "flatpak-builder",
@@ -242,8 +501,10 @@ function main() {
   );
   checkCommand("flatpak", "Install flatpak before running pnpm package:linux:flatpak.");
 
-  run("flatpak-builder", [
+  const builderArgs = [
     "--force-clean",
+    `--state-dir=${stateDir}`,
+    `--override-source-date-epoch=${sourceDateEpoch}`,
     "--arch=x86_64",
     "--default-branch=stable",
     "--install-deps-from=flathub",
@@ -251,7 +512,31 @@ function main() {
     repoDir,
     buildDir,
     manifestPath,
-  ]);
+  ];
+  if (evidence) builderArgs.unshift("--disable-cache");
+  const builderStartedAt = performance.now();
+  run("flatpak-builder", builderArgs);
+  const report = cacheReport({
+    namespace: namespace.name,
+    inputs: namespace.inputs,
+    cacheRoot,
+    evidence,
+    timings: {
+      sourceGenerationSeconds: Number(sourceSeconds.toFixed(3)),
+      builderSeconds: Number(((performance.now() - builderStartedAt) / 1_000).toFixed(3)),
+      elapsedSeconds: Number(((performance.now() - startedAt) / 1_000).toFixed(3)),
+    },
+  });
+  const reportPath = process.env.FLATPAK_CACHE_REPORT_PATH ?? path.join(flatpakRoot, "generated", "cache-report.json");
+  writeJson(reportPath, report);
+  const baselinePath = process.env.FLATPAK_CACHE_BASELINE_REPORT;
+  if (baselinePath) {
+    const comparison = compareCacheReports(readJson(baselinePath), report);
+    const comparisonPath = process.env.FLATPAK_CACHE_COMPARISON_REPORT_PATH ??
+      path.join(flatpakRoot, "generated", "cache-comparison-report.json");
+    writeJson(comparisonPath, comparison);
+    if (!comparison.equivalent) throw new Error(comparison.errors.join(" "));
+  }
   printAppDirectorySizeReport();
   printPythonWheelSizeReport();
   if (skipBundle) {

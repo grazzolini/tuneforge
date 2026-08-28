@@ -29,7 +29,7 @@ const flatpakPipTmpDir = "/run/build/python-runtime-deps/.pip-tmp";
 function pythonRuntimeDepsModule(manifest) {
   return manifest.slice(
     manifest.indexOf("  - name: python-runtime-deps"),
-    manifest.indexOf("  - name: pnpm"),
+    manifest.indexOf("  - name: pulseaudio-client-tools"),
   );
 }
 
@@ -157,13 +157,16 @@ test("Flatpak package options are scoped to the TuneForge module build environme
     manifest.indexOf("  - name: cpython-3.14"),
     manifest.indexOf("  - name: python-runtime-deps"),
   );
-  const tuneforgeModule = manifest.slice(manifest.indexOf("  - name: tuneforge"));
+  const frontendModule = manifest.slice(
+    manifest.indexOf("  - name: tuneforge-frontend"),
+    manifest.indexOf("  - name: sccache"),
+  );
 
   assert.equal(cpythonModule.includes("TUNEFORGE_PACKAGE_OPTIONS"), false);
-  assert.equal((tuneforgeModule.match(/\n    build-options:/g) ?? []).length, 1);
+  assert.equal((frontendModule.match(/\n    build-options:/g) ?? []).length, 1);
   assert.equal((manifest.match(/TUNEFORGE_PACKAGE_OPTIONS:/g) ?? []).length, 1);
   assert.match(
-    tuneforgeModule,
+    frontendModule,
     /      env:\n        TUNEFORGE_PACKAGE_OPTIONS: '.*"beatThis":false.*'/,
   );
   assert.match(manifest, /path: generated\/python-build-requirements\.txt/);

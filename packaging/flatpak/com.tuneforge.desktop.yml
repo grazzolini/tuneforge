@@ -36,10 +36,147 @@ cleanup:
   - /share/man
   - /share/pkgconfig
   - /share/tuneforge/node-sources
+  - /share/tuneforge/build
+  - /bin/sccache
   - "*.a"
   - "*.la"
 
 modules:
+  - name: pnpm
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/node26/bin
+    sources:
+      - type: archive
+        url: https://registry.npmjs.org/pnpm/-/pnpm-11.22.0.tgz
+        sha256: 57a97e6f23a3faffc03153a4ef8c770a0552612b8640aebe39bfdd5754d0ebdc
+        dest: pnpm
+    build-commands:
+      - install -dm755 /app/lib/pnpm /app/bin
+      - cp -a pnpm/. /app/lib/pnpm/
+      - ln -sf ../lib/pnpm/bin/pnpm.mjs /app/bin/pnpm
+      - ln -sf ../lib/pnpm/bin/pnpx.mjs /app/bin/pnpx
+      - /app/bin/pnpm --version
+
+  - name: node-sources
+    buildsystem: simple
+    sources:
+      - generated/node-sources.json
+    build-commands:
+      - install -dm755 /app/share/tuneforge/node-sources
+      - cp node-sources/*.tgz /app/share/tuneforge/node-sources/
+
+  - name: tuneforge-frontend
+    buildsystem: simple
+    build-options:
+      append-path: /app/bin:/usr/lib/sdk/node26/bin
+      build-args:
+        - "@@FLATPAK_CACHE_BIND@@"
+      env:
+        HUSKY: "0"
+        TUNEFORGE_VERSION_FILE: /run/build/tuneforge-frontend/frontend-version.json
+    sources:
+      - type: file
+        path: ../../package.json
+      - type: file
+        path: ../../pnpm-lock.yaml
+      - type: file
+        path: ../../pnpm-workspace.yaml
+      - type: file
+        path: ../../scripts/build-info.mjs
+        dest: scripts
+      - type: file
+        path: seed-pnpm-store.mjs
+      - type: file
+        path: ../../apps/desktop/package.json
+        dest: apps/desktop
+      - type: file
+        path: ../../apps/desktop/index.html
+        dest: apps/desktop
+      - type: file
+        path: ../../apps/desktop/tsconfig.json
+        dest: apps/desktop
+      - type: file
+        path: ../../apps/desktop/tsconfig.node.json
+        dest: apps/desktop
+      - type: file
+        path: ../../apps/desktop/vite.config.ts
+        dest: apps/desktop
+      - type: dir
+        path: ../../apps/desktop/src
+        dest: apps/desktop/src
+      - type: file
+        path: ../../packages/shared-types/package.json
+        dest: packages/shared-types
+      - type: dir
+        path: ../../packages/shared-types/src
+        dest: packages/shared-types/src
+      - type: file
+        path: generated/frontend-version.json
+        dest-filename: frontend-version.json
+    build-commands:
+      - node seed-pnpm-store.mjs /app/share/tuneforge/node-sources /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/pnpm/store /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/pnpm/cache /app/bin/pnpm /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/pnpm-report.json
+      - /app/bin/pnpm --filter @tuneforge/desktop build
+      - install -dm755 /app/share/tuneforge/build/frontend-dist
+      - cp -a apps/desktop/dist/. /app/share/tuneforge/build/frontend-dist/
+
+  - name: sccache
+    buildsystem: simple
+    sources:
+      - type: archive
+        url: https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz
+        sha256: 67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006
+    build-commands:
+      - install -Dm755 sccache /app/bin/sccache
+      - /app/bin/sccache --version
+
+  - name: tuneforge-desktop
+    buildsystem: simple
+    build-options:
+      append-path: /app/bin:/usr/lib/sdk/llvm20/bin:/usr/lib/sdk/rust-stable/bin
+      build-args:
+        - "@@FLATPAK_CACHE_BIND@@"
+      env:
+        CARGO_HOME: /run/build/tuneforge-desktop/cargo-home
+        CARGO_INCREMENTAL: "0"
+        CARGO_NET_OFFLINE: "true"
+        LIBCLANG_PATH: /usr/lib/sdk/llvm20/lib
+        RUSTC_WRAPPER: /app/bin/sccache
+        SCCACHE_DIR: /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/sccache
+        TUNEFORGE_GIT_REF: '@@TUNEFORGE_FRONTEND_GIT_REF@@'
+    sources:
+      - type: file
+        path: ../../apps/desktop/src-tauri/Cargo.lock
+        dest: apps/desktop/src-tauri
+      - type: file
+        path: ../../apps/desktop/src-tauri/Cargo.toml
+        dest: apps/desktop/src-tauri
+      - type: file
+        path: ../../apps/desktop/src-tauri/build.rs
+        dest: apps/desktop/src-tauri
+      - type: file
+        path: ../../apps/desktop/src-tauri/tauri.conf.json
+        dest: apps/desktop/src-tauri
+      - type: dir
+        path: ../../apps/desktop/src-tauri/capabilities
+        dest: apps/desktop/src-tauri/capabilities
+      - type: dir
+        path: ../../apps/desktop/src-tauri/icons
+        dest: apps/desktop/src-tauri/icons
+      - type: dir
+        path: ../../apps/desktop/src-tauri/resources
+        dest: apps/desktop/src-tauri/resources
+      - type: dir
+        path: ../../apps/desktop/src-tauri/src
+        dest: apps/desktop/src-tauri/src
+      - generated/cargo-sources.json
+    build-commands:
+      - install -dm755 apps/desktop/dist
+      - cp -a /app/share/tuneforge/build/frontend-dist/. apps/desktop/dist/
+      - bash cargo-checksums.sh
+      - flock /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/sccache.lock sh -c 'set -eu; sccache --start-server; trap "sccache --stop-server >/dev/null 2>&1 || true" EXIT; sccache --zero-stats; cargo build --release --locked --features custom-protocol --manifest-path apps/desktop/src-tauri/Cargo.toml; sccache --show-stats --stats-format=json > /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/sccache-stats.json.tmp; mv /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/sccache-stats.json.tmp /run/tuneforge-cache/@@FLATPAK_CACHE_NAMESPACE@@/sccache-stats.json'
+      - install -Dm755 apps/desktop/src-tauri/target/release/tuneforge /app/bin/tuneforge
+
   - name: cpython-3.14
     buildsystem: simple
     build-options:
@@ -76,30 +213,6 @@ modules:
       - rm -rf /run/build/python-runtime-deps/.pip-tmp
       - find /app/lib/tuneforge/backend/site-packages -type d -name __pycache__ -prune -exec rm -rf {} +
       - find /app/lib/tuneforge/backend/site-packages -type f -name '*.pyc' -delete
-
-  - name: pnpm
-    buildsystem: simple
-    build-options:
-      append-path: /usr/lib/sdk/node26/bin
-    sources:
-      - type: archive
-        url: https://registry.npmjs.org/pnpm/-/pnpm-11.22.0.tgz
-        sha256: 57a97e6f23a3faffc03153a4ef8c770a0552612b8640aebe39bfdd5754d0ebdc
-        dest: pnpm
-    build-commands:
-      - install -dm755 /app/lib/pnpm /app/bin
-      - cp -a pnpm/. /app/lib/pnpm/
-      - ln -sf ../lib/pnpm/bin/pnpm.mjs /app/bin/pnpm
-      - ln -sf ../lib/pnpm/bin/pnpx.mjs /app/bin/pnpx
-      - /app/bin/pnpm --version
-
-  - name: node-sources
-    buildsystem: simple
-    sources:
-      - generated/node-sources.json
-    build-commands:
-      - install -dm755 /app/share/tuneforge/node-sources
-      - cp node-sources/*.tgz /app/share/tuneforge/node-sources/
 
   - name: pulseaudio-client-tools
     buildsystem: meson
@@ -155,26 +268,13 @@ modules:
       - /share/bash-completion
       - /share/zsh
 
-  - name: tuneforge
+  - name: tuneforge-backend
     buildsystem: simple
     build-options:
-      append-path: /app/bin:/usr/lib/sdk/node26/bin:/usr/lib/sdk/llvm20/bin:/usr/lib/sdk/rust-stable/bin
       env:
-        CARGO_HOME: /run/build/tuneforge/cargo-home
-        CARGO_NET_OFFLINE: "true"
-        HUSKY: "0"
         LD_LIBRARY_PATH: /app/lib/tuneforge/backend/python/lib
-        LIBCLANG_PATH: /usr/lib/sdk/llvm20/lib
         PYTHONPATH: /app/lib/tuneforge/backend/site-packages
-        TUNEFORGE_BUNDLED_BACKEND_ROOT: /app/lib/tuneforge/backend
-        TUNEFORGE_VERSION_FILE: /run/build/tuneforge/version.json
     sources:
-      - type: file
-        path: ../../package.json
-      - type: file
-        path: ../../pnpm-lock.yaml
-      - type: file
-        path: ../../pnpm-workspace.yaml
       - type: file
         path: ../../README.md
       - type: file
@@ -187,57 +287,6 @@ modules:
       - type: file
         path: ../../docs/PACKAGING.md
         dest: docs
-      - type: file
-        path: ../../scripts/build-info.mjs
-        dest: scripts
-      - type: file
-        path: ../../apps/desktop/package.json
-        dest: apps/desktop
-      - type: file
-        path: ../../apps/desktop/index.html
-        dest: apps/desktop
-      - type: file
-        path: ../../apps/desktop/tsconfig.json
-        dest: apps/desktop
-      - type: file
-        path: ../../apps/desktop/tsconfig.node.json
-        dest: apps/desktop
-      - type: file
-        path: ../../apps/desktop/vite.config.ts
-        dest: apps/desktop
-      - type: dir
-        path: ../../apps/desktop/src
-        dest: apps/desktop/src
-      - type: file
-        path: ../../apps/desktop/src-tauri/Cargo.lock
-        dest: apps/desktop/src-tauri
-      - type: file
-        path: ../../apps/desktop/src-tauri/Cargo.toml
-        dest: apps/desktop/src-tauri
-      - type: file
-        path: ../../apps/desktop/src-tauri/build.rs
-        dest: apps/desktop/src-tauri
-      - type: file
-        path: ../../apps/desktop/src-tauri/tauri.conf.json
-        dest: apps/desktop/src-tauri
-      - type: dir
-        path: ../../apps/desktop/src-tauri/capabilities
-        dest: apps/desktop/src-tauri/capabilities
-      - type: dir
-        path: ../../apps/desktop/src-tauri/icons
-        dest: apps/desktop/src-tauri/icons
-      - type: dir
-        path: ../../apps/desktop/src-tauri/resources
-        dest: apps/desktop/src-tauri/resources
-      - type: dir
-        path: ../../apps/desktop/src-tauri/src
-        dest: apps/desktop/src-tauri/src
-      - type: file
-        path: ../../packages/shared-types/package.json
-        dest: packages/shared-types
-      - type: dir
-        path: ../../packages/shared-types/src
-        dest: packages/shared-types/src
       - type: dir
         path: ../../apps/backend/app
         dest: apps/backend/app
@@ -250,7 +299,6 @@ modules:
       - type: file
         path: ../../apps/backend/pyproject.toml
         dest: apps/backend
-      - generated/cargo-sources.json
       - type: file
         path: ffmpeg-wrapper.sh
         dest-filename: ffmpeg
@@ -258,11 +306,18 @@ modules:
         path: ffprobe-wrapper.sh
         dest-filename: ffprobe
       - type: file
-        path: seed-pnpm-store.mjs
-      - type: file
         path: com.tuneforge.desktop.desktop
       - type: file
         path: com.tuneforge.desktop.metainfo.xml
+      - type: file
+        path: ../../apps/desktop/src-tauri/icons/32x32.png
+        dest: icons
+      - type: file
+        path: ../../apps/desktop/src-tauri/icons/128x128.png
+        dest: icons
+      - type: file
+        path: ../../apps/desktop/src-tauri/icons/512x512.png
+        dest: icons
       - type: file
         path: generated/version.json
     build-commands:
@@ -271,12 +326,6 @@ modules:
       - /app/bin/ffmpeg -version
       - /app/bin/ffprobe -version
       - /app/bin/pactl --version
-      - bash cargo-checksums.sh
-      - node seed-pnpm-store.mjs /app/share/tuneforge/node-sources /run/build/tuneforge/pnpm-store /run/build/tuneforge/pnpm-cache /app/bin/pnpm
-      - /app/bin/pnpm --filter @tuneforge/desktop build
-      - rm -rf /app/lib/pnpm /app/bin/pnpm /app/bin/pnpx
-      - cargo build --release --locked --features custom-protocol --manifest-path apps/desktop/src-tauri/Cargo.toml
-      - install -Dm755 apps/desktop/src-tauri/target/release/tuneforge /app/bin/tuneforge
       - install -Dm644 version.json /app/lib/tuneforge/backend/version.json
       - install -dm755 /app/lib/tuneforge/backend/src
       - cp -a apps/backend/app /app/lib/tuneforge/backend/src/app
@@ -290,7 +339,8 @@ modules:
       - install -Dm644 THIRD_PARTY_NOTICES.md /app/share/doc/tuneforge/THIRD_PARTY_NOTICES.md
       - install -Dm644 LICENSES/crema-0.2.0-BSD-2-Clause.txt /app/share/doc/tuneforge/LICENSES/crema-0.2.0-BSD-2-Clause.txt
       - install -Dm644 docs/PACKAGING.md /app/share/doc/tuneforge/PACKAGING.md
-      - install -Dm644 apps/desktop/src-tauri/icons/32x32.png /app/share/icons/hicolor/32x32/apps/com.tuneforge.desktop.png
-      - install -Dm644 apps/desktop/src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/com.tuneforge.desktop.png
-      - install -Dm644 apps/desktop/src-tauri/icons/512x512.png /app/share/icons/hicolor/512x512/apps/com.tuneforge.desktop.png
+      - install -Dm644 icons/32x32.png /app/share/icons/hicolor/32x32/apps/com.tuneforge.desktop.png
+      - install -Dm644 icons/128x128.png /app/share/icons/hicolor/128x128/apps/com.tuneforge.desktop.png
+      - install -Dm644 icons/512x512.png /app/share/icons/hicolor/512x512/apps/com.tuneforge.desktop.png
       - /app/lib/tuneforge/backend/python/bin/python3.14 -c "import fastapi, demucs, whisper, torch"
+      - rm -rf /app/share/tuneforge/build /app/share/tuneforge/node-sources /app/lib/pnpm /app/bin/pnpm /app/bin/pnpx /app/bin/sccache

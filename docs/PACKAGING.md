@@ -208,6 +208,49 @@ pnpm package:linux:flatpak -- --no-bundle
 
 The Flatpak build generates local dependency source manifests, builds inside the SDK sandbox, and installs the backend under `/app/lib/tuneforge/backend`. It bundles `pactl` for microphone volume control but does not bundle FFmpeg.
 
+### Flatpak Build Caches and Evidence
+
+Flatpak packaging runs `flatpak-builder --force-clean`, so `packaging/flatpak/build-dir` is always a
+clean output. Durable state and dependency/compiler caches default to
+`.flatpak-builder/tuneforge-state` and `.flatpak-builder/tuneforge-cache`. Set absolute
+`FLATPAK_STATE_DIR` and `FLATPAK_CACHE_DIR` paths to move them. Packaging rejects unsafe or
+overlapping roots; valid caches persist until deleted.
+
+Caches are namespaced by build schema, application, architecture, runtime, toolchain, and package
+options. Dependency installation remains frozen and offline. Integrity, lock, or cache failures stop
+the build without network fallback or automatic repair. Deterministic timestamps keep repeated build
+payloads comparable.
+
+Module inputs are separated so backend-only changes do not invalidate the Vite or Rust modules. The
+backend version in installed `version.json` describes the whole checkout. The frontend version uses
+the last commit affecting the exact Vite module inputs plus scoped dirty detection, so the displayed
+refs can intentionally differ. `TUNEFORGE_FRONTEND_GIT_REF` overrides only the frontend ref;
+`TUNEFORGE_GIT_REF` overrides the checkout/backend ref.
+
+Every successful build writes the ignored, sanitized
+`packaging/flatpak/generated/cache-report.json`. Override it with
+`FLATPAK_CACHE_REPORT_PATH`. It records cache integrity and usage, timings, and a deterministic
+installed-payload digest without exposing host cache paths.
+
+Use a Linux x86_64 Flatpak host and never-before-used evidence roots for a cold/warm comparison:
+
+```sh
+export FLATPAK_STATE_DIR="$PWD/.flatpak-builder/evidence-state"
+export FLATPAK_CACHE_DIR="$PWD/.flatpak-builder/evidence-cache"
+export FLATPAK_CACHE_EVIDENCE=1
+export FLATPAK_CACHE_REPORT_PATH="$PWD/packaging/flatpak/generated/cache-cold.json"
+pnpm package:linux:flatpak -- --no-bundle
+
+export FLATPAK_CACHE_BASELINE_REPORT="$FLATPAK_CACHE_REPORT_PATH"
+export FLATPAK_CACHE_REPORT_PATH="$PWD/packaging/flatpak/generated/cache-warm.json"
+export FLATPAK_CACHE_COMPARISON_REPORT_PATH="$PWD/packaging/flatpak/generated/cache-comparison.json"
+pnpm package:linux:flatpak -- --no-bundle
+```
+
+Evidence mode bypasses Flatpak's module-result cache while retaining the durable dependency and
+compiler caches. The warm build fails on cache errors, incompatible namespaces, or a changed payload
+digest. `FLATPAK_BUILD_DIR`, `FLATPAK_REPO_DIR`, and `FLATPAK_BUNDLE_PATH` configure output paths.
+
 Flatpak runtime lookups are not host `PATH` lookups. The manifest sets `TUNEFORGE_FFMPEG_PATH=/app/bin/ffmpeg` and `TUNEFORGE_FFPROBE_PATH=/app/bin/ffprobe`; those files are wrappers that search for `ffmpeg` and `ffprobe` inside the sandbox runtime/extension paths. If the runtime does not provide them, the Flatpak build or app reports the missing sandbox binary rather than falling back to the host shell.
 
 Plain Linux packages include ONNX Advanced Chords, beat-this Advanced Beat Analysis, and LV

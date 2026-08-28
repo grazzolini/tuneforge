@@ -1,8 +1,13 @@
-import { createReadStream, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { cpSync, createReadStream, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { DatabaseSync } from "node:sqlite";
+
+const pnpmStoreVersion = "v11";
 
 function cleanYamlKey(key) {
   let cleaned = key.trim();
@@ -132,6 +137,116 @@ function resolveTarballs(packages, tarballRoot) {
   }));
 }
 
+export function assertTarballIntegrity(packages, tarballs) {
+  for (const pkg of packages) {
+    const [algorithm, expected] = pkg.integrity.split("-", 2);
+    const tarballPath = tarballs.get(new URL(pkg.url).pathname);
+    if (!algorithm || !expected || !tarballPath || createHash(algorithm).update(readFileSync(tarballPath)).digest("base64") !== expected) {
+      throw new Error(`Flatpak pnpm tarball integrity mismatch: ${pkg.name}@${pkg.version}`);
+    }
+  }
+}
+
+function optionalLstat(filePath) {
+  try {
+    return lstatSync(filePath);
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function assertDirectory(filePath, label) {
+  const stats = optionalLstat(filePath);
+  if (!stats || !stats.isDirectory() || stats.isSymbolicLink()) {
+    throw new Error(`Malformed pnpm ${label}: expected a directory.`);
+  }
+}
+
+function assertRegularFile(filePath, errorMessage) {
+  const stats = optionalLstat(filePath);
+  if (!stats || !stats.isFile() || stats.isSymbolicLink()) throw new Error(errorMessage);
+}
+
+function assertIndexIntegrity(indexPath) {
+  let database;
+  try {
+    database = new DatabaseSync(`${pathToFileURL(indexPath).href}?immutable=1`, { readOnly: true });
+    const rows = database.prepare("PRAGMA integrity_check").all();
+    if (rows.length !== 1 || Object.values(rows[0]).at(0) !== "ok") {
+      throw new Error("pnpm index integrity check did not return ok.");
+    }
+  } catch (error) {
+    throw new Error(`Malformed pnpm index database: ${error.message}`);
+  } finally {
+    database?.close();
+  }
+}
+
+export function validatePnpmStore(storeDir, { requireContent = false } = {}) {
+  assertDirectory(storeDir, "store root");
+  const versionRoot = path.join(storeDir, pnpmStoreVersion);
+  if (!optionalLstat(versionRoot)) {
+    if (readdirSync(storeDir).length !== 0) {
+      throw new Error(`Malformed pnpm store root layout: expected only ${pnpmStoreVersion}.`);
+    }
+    if (requireContent) throw new Error("pnpm store is not populated.");
+    return { pristine: true, contentFiles: 0, indexIntegrity: "empty" };
+  }
+
+  assertDirectory(versionRoot, `${pnpmStoreVersion} store root`);
+  const unexpectedRootEntry = readdirSync(storeDir).find((entry) => entry !== pnpmStoreVersion);
+  if (unexpectedRootEntry) throw new Error(`Malformed pnpm store root layout: ${unexpectedRootEntry}.`);
+  const allowedEntries = new Set(["files", "projects", "index.db", "index.db-shm", "index.db-wal"]);
+  const unexpectedEntry = readdirSync(versionRoot).find((entry) => !allowedEntries.has(entry));
+  if (unexpectedEntry) throw new Error(`Malformed pnpm ${pnpmStoreVersion} store layout: ${unexpectedEntry}.`);
+
+  const filesRoot = path.join(versionRoot, "files");
+  assertDirectory(filesRoot, `${pnpmStoreVersion} content root`);
+  if (optionalLstat(path.join(versionRoot, "projects"))) {
+    assertDirectory(path.join(versionRoot, "projects"), `${pnpmStoreVersion} projects root`);
+  }
+  assertRegularFile(path.join(versionRoot, "index.db"), "Malformed pnpm index database: expected a regular file.");
+  for (const sidecar of ["index.db-shm", "index.db-wal"]) {
+    const sidecarPath = path.join(versionRoot, sidecar);
+    if (optionalLstat(sidecarPath)) assertRegularFile(sidecarPath, `Malformed pnpm index sidecar: ${sidecar}.`);
+  }
+
+  let contentFiles = 0;
+  for (const prefix of readdirSync(filesRoot)) {
+    if (!/^[a-f0-9]{2}$/.test(prefix)) {
+      throw new Error(`Malformed pnpm content directory: ${prefix}.`);
+    }
+    const prefixPath = path.join(filesRoot, prefix);
+    assertDirectory(prefixPath, `content directory ${prefix}`);
+    const entries = readdirSync(prefixPath);
+    for (const entry of entries) {
+      const match = /^([a-f0-9]{126})(-exec)?$/.exec(entry);
+      const entryPath = path.join(prefixPath, entry);
+      const stats = optionalLstat(entryPath);
+      if (!match || !stats?.isFile() || stats.isSymbolicLink()) {
+        throw new Error(`Malformed pnpm content entry: ${prefix}/${entry}.`);
+      }
+      if (match[2] && (stats.mode & 0o111) === 0) {
+        throw new Error(`Malformed pnpm executable content entry: ${prefix}/${entry}.`);
+      }
+      if (!match[2] && (stats.mode & 0o111) !== 0) {
+        throw new Error(`Malformed pnpm non-executable content entry: ${prefix}/${entry}.`);
+      }
+      const digest = createHash("sha512").update(readFileSync(entryPath)).digest("hex");
+      if (digest !== `${prefix}${match[1]}`) {
+        throw new Error(`pnpm content integrity mismatch: ${prefix}/${entry}.`);
+      }
+      contentFiles += 1;
+    }
+  }
+  if (contentFiles === 0) throw new Error("pnpm store is partially initialized without content files.");
+
+  const indexPath = path.join(versionRoot, "index.db");
+  assertIndexIntegrity(indexPath);
+  return { pristine: false, contentFiles, indexIntegrity: "ok" };
+}
+
 function listen(server) {
   return new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -168,9 +283,31 @@ export async function seedPnpmStore({
   storeDir,
   cacheDir,
   pnpmPath = "/app/bin/pnpm",
+  reportPath,
 }) {
   const packages = parsePnpmLock(readFileSync(lockfilePath, "utf8"));
   const tarballs = resolveTarballs(packages, tarballRoot);
+  mkdirSync(storeDir, { recursive: true });
+  mkdirSync(cacheDir, { recursive: true });
+  assertTarballIntegrity(packages, tarballs);
+  const initialStore = validatePnpmStore(storeDir);
+  const frozenStoreArgs = initialStore.pristine ? [] : ["--frozen-store"];
+  let snapshotRoot;
+  let activeStoreDir = storeDir;
+  let activeCacheDir = cacheDir;
+  if (!initialStore.pristine) {
+    snapshotRoot = mkdtempSync(path.join(os.tmpdir(), "tuneforge-pnpm-store-"));
+    activeStoreDir = path.join(snapshotRoot, "store");
+    activeCacheDir = path.join(snapshotRoot, "cache");
+    try {
+      cpSync(storeDir, activeStoreDir, { recursive: true, dereference: false, verbatimSymlinks: true });
+      cpSync(cacheDir, activeCacheDir, { recursive: true, dereference: false, verbatimSymlinks: true });
+    } catch (error) {
+      rmSync(snapshotRoot, { force: true, recursive: true });
+      throw error;
+    }
+  }
+  try {
   const versionsByName = new Map();
   for (const pkg of packages) {
     const versions = versionsByName.get(pkg.name) ?? new Map();
@@ -251,9 +388,11 @@ export async function seedPnpmStore({
   try {
     await run(pnpmPath, [
       `--config.registry=${origin}/`,
-      `--config.store-dir=${storeDir}`,
-      `--config.cache-dir=${cacheDir}`,
+      `--config.store-dir=${activeStoreDir}`,
+      `--config.cache-dir=${activeCacheDir}`,
       "--config.fetch-retries=0",
+      "--config.package-import-method=copy",
+      ...frozenStoreArgs,
       "fetch",
       "--frozen-lockfile",
     ]);
@@ -261,29 +400,51 @@ export async function seedPnpmStore({
     await close(server);
   }
 
+  assertTarballIntegrity(packages, tarballs);
   rmSync(tarballRoot, { recursive: true });
   await run(pnpmPath, [
     `--config.registry=${origin}/`,
-    `--config.store-dir=${storeDir}`,
-    `--config.cache-dir=${cacheDir}`,
+    `--config.store-dir=${activeStoreDir}`,
+    `--config.cache-dir=${activeCacheDir}`,
     "--config.fetch-retries=0",
+    "--config.package-import-method=copy",
+    "--frozen-store",
     "install",
     "--offline",
     "--frozen-lockfile",
   ]);
+  const storeValidation = validatePnpmStore(activeStoreDir, { requireContent: true });
+  await run(pnpmPath, [
+    `--config.store-dir=${activeStoreDir}`,
+    `--config.cache-dir=${activeCacheDir}`,
+    "store",
+    "status",
+  ]);
 
   process.stdout.write(`Installed from an isolated pnpm store with ${packages.length} packages.\n`);
-  return { origin, packageCount: packages.length };
+  const report = {
+    origin: "loopback",
+    packageCount: packages.length,
+    tarballIntegrityChecks: 2,
+    storeIntegrityChecks: 2,
+    storeStatusChecks: 1,
+    ...storeValidation,
+  };
+  if (reportPath) writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+  return { ...report, origin };
+  } finally {
+    if (snapshotRoot) rmSync(snapshotRoot, { force: true, recursive: true });
+  }
 }
 
 async function main() {
-  const [tarballRoot, storeDir, cacheDir, pnpmPath] = process.argv.slice(2);
+  const [tarballRoot, storeDir, cacheDir, pnpmPath, reportPath] = process.argv.slice(2);
   if (!tarballRoot || !storeDir || !cacheDir) {
     throw new Error(
       "Usage: node seed-pnpm-store.mjs <tarball-root> <store-dir> <cache-dir> [pnpm-path]",
     );
   }
-  await seedPnpmStore({ tarballRoot, storeDir, cacheDir, pnpmPath });
+  await seedPnpmStore({ tarballRoot, storeDir, cacheDir, pnpmPath, reportPath });
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

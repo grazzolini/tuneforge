@@ -5,23 +5,25 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-08-28
+
 ### Added
 
 - Added an opt-in Crema ONNX implementation for Advanced Chords while retaining Crema/TensorFlow
   as the default setup and package profile.
 - Added optional bundled LV Chordia submission chord detection for desktop; Advanced Chords remains
-  the default while the new backend awaits manual comparison and approval.
+  the default while further default evaluation is deferred.
 
 ### Changed
 
 - Made Advanced Beat Analysis the default beat-analysis request. Built-in Beat Analysis remains an
-  explicit choice for mobile, dependency-excluded packages, and users who opt out; advanced beat
-  runtime failures now fail the job.
+  explicit mobile, dependency-excluded-package, and opt-out choice; advanced beat runtime failures
+  fail the job without silently switching engines.
 
 ### Fixed
 
-- Restored Linux developer setup on unsupported default CUDA architectures and made the legacy
-  NVIDIA profile compatible with LV Chordia.
+- Restored Linux developer setup on unsupported default CUDA architectures and repaired legacy
+  NVIDIA Flatpak packaging while retaining LV Chordia support.
 
 ## [1.2.0] - 2026-08-24
 
@@ -143,7 +145,8 @@ download, installation, verification, signature, and publication instructions.
 
 - Development used `0.1.0` metadata; `v1.0.0` was the first tagged release.
 
-[Unreleased]: https://github.com/grazzolini/tuneforge/compare/v1.2.0...main
+[Unreleased]: https://github.com/grazzolini/tuneforge/compare/v1.3.0...main
+[1.3.0]: https://github.com/grazzolini/tuneforge/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/grazzolini/tuneforge/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/grazzolini/tuneforge/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/grazzolini/tuneforge/compare/v1.0.0...v1.0.1

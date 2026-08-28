@@ -608,7 +608,7 @@ jobs:
       run:
         shell: bash
     env:
-      RUST_VERSION: "1.97.1"
+      RUST_VERSION: "1.98.0"
     steps:
       - name: Require CI scope
         if: needs.ci-scope.result != 'success'

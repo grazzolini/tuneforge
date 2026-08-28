@@ -15,7 +15,7 @@ This file is the agent-facing companion to [CONTRIBUTING.md](./CONTRIBUTING.md).
 Tuneforge is a local-first desktop app for musicians learning songs: stem separation, chord/key/tempo detection, pitch shift, retune, export. No cloud, no account.
 
 - **Monorepo**: pnpm workspace.
-- **Backend**: `apps/backend` — FastAPI + SQLAlchemy 2 + Pydantic v2, Python 3.11, managed with `uv`. SQLite persistence, single-process job runner, audio engines (Demucs, FFmpeg, librosa-style analysis).
+- **Backend**: `apps/backend` — FastAPI + SQLAlchemy 2 + Pydantic v2, Python 3.14, managed with `uv`. SQLite persistence, single-process job runner, audio engines (Demucs, FFmpeg, librosa-style analysis).
 - **Desktop**: `apps/desktop` — Tauri 2 (Rust) shell + React/Vite/TypeScript frontend, Vitest + Testing Library.
 - **Shared types**: `packages/shared-types` — TypeScript types generated from the backend OpenAPI schema. **Always regenerate after backend route/schema changes.** The JSON export is local generator output; the generated TypeScript contract is committed.
 
@@ -71,7 +71,7 @@ When asked to implement a change:
    ```
    And for the backend:
    ```sh
-   cd apps/backend && uv run --python 3.11 pytest
+   cd apps/backend && uv run --python 3.14 pytest
    ```
 5. **Regenerate contracts if backend HTTP surface changed:**
    ```sh
@@ -88,7 +88,7 @@ When asked to implement a change:
 
 ### Python (backend)
 
-- Python 3.11. Use `uv run --python 3.11 ...` for everything; do not invoke a globally installed Python.
+- Python 3.14. Use `uv run --python 3.14 ...` for everything; do not invoke a globally installed Python.
 - Type hints on all new function signatures. `mypy app` must pass.
 - `ruff check .` must pass. Fix lints, do not silence them.
 - Pydantic v2 syntax (`model_config`, `Field(...)`, `model_validate`).
@@ -209,7 +209,7 @@ pnpm dev:desktop
 pnpm lint
 pnpm typecheck
 pnpm test
-cd apps/backend && uv run --python 3.11 pytest
+cd apps/backend && uv run --python 3.14 pytest
 cd apps/desktop/src-tauri && cargo check
 
 # After backend HTTP changes

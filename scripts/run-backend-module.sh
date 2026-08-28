@@ -16,10 +16,10 @@ cd "${backend_dir}"
 
 if [[ -f "${marker_file}" ]]; then
   if [[ ! -x .venv/bin/python ]]; then
-    echo "Backend virtualenv not found. Run 'uv sync --python 3.11 --all-groups' first." >&2
+    echo "Backend virtualenv not found. Run 'uv sync --python 3.14 --all-groups' first." >&2
     exit 1
   fi
   exec .venv/bin/python -m "${module}" "$@"
 fi
 
-exec uv run --python 3.11 python -m "${module}" "$@"
+exec uv run --python 3.14 python -m "${module}" "$@"

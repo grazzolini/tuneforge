@@ -8,17 +8,16 @@ Usage: pnpm setup:dev [options]
 Runs the standard developer setup:
   pnpm install
   pnpm --filter @tuneforge/desktop exec playwright install chromium
-  uv sync --python 3.11 --all-groups
+  uv sync --python 3.14 --all-groups
   pnpm contracts:generate
   verify model caches and preload/download only missing or invalid assets
 
 Options:
-  --advanced-chords, --crema  Include the default crema/TensorFlow chord backend.
-  --advanced-chords-onnx, --crema-onnx
-                              Use the Crema ONNX Runtime chord backend.
+  --advanced-chords, --crema, --advanced-chords-onnx, --crema-onnx
+                              Include the Crema ONNX Runtime chord backend (default).
   --crema-onnx-model-dir DIR  Verify and import a previously downloaded ONNX model directory.
-  --no-advanced-chords, --no-crema
-                              Skip the crema/TensorFlow chord backend.
+  --no-advanced-chords, --no-crema, --no-advanced-chords-onnx, --no-crema-onnx
+                              Skip the Crema ONNX Runtime chord backend.
   --advanced-beats, --beat-this
                               Include the default beat-this backend and verify/preload small0.
   --no-advanced-beats, --no-beat-this
@@ -35,7 +34,7 @@ Options:
 EOF
 }
 
-advanced_chords="tensorflow"
+advanced_chords="onnx"
 advanced_chords_selected=""
 crema_onnx_model_dir=""
 advanced_beats=1
@@ -49,15 +48,7 @@ skip_contracts=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --advanced-chords | --crema)
-      if [[ -n "${advanced_chords_selected}" && "${advanced_chords_selected}" != "tensorflow" ]]; then
-        echo "Conflicting Advanced Chords selectors were provided." >&2
-        exit 2
-      fi
-      advanced_chords="tensorflow"
-      advanced_chords_selected="tensorflow"
-      ;;
-    --advanced-chords-onnx | --crema-onnx)
+    --advanced-chords | --crema | --advanced-chords-onnx | --crema-onnx)
       if [[ -n "${advanced_chords_selected}" && "${advanced_chords_selected}" != "onnx" ]]; then
         echo "Conflicting Advanced Chords selectors were provided." >&2
         exit 2
@@ -65,7 +56,7 @@ while [[ $# -gt 0 ]]; do
       advanced_chords="onnx"
       advanced_chords_selected="onnx"
       ;;
-    --no-advanced-chords | --no-crema)
+    --no-advanced-chords | --no-crema | --no-advanced-chords-onnx | --no-crema-onnx)
       if [[ -n "${advanced_chords_selected}" && "${advanced_chords_selected}" != "none" ]]; then
         echo "Conflicting Advanced Chords selectors were provided." >&2
         exit 2
@@ -141,17 +132,14 @@ if [[ "${legacy_nvidia}" -eq 1 ]]; then
     exit 1
   fi
 fi
-
-if [[ -n "${crema_onnx_model_dir}" && "${advanced_chords}" != "onnx" ]]; then
+if [[ -n "${crema_onnx_model_dir}" && "${advanced_chords}" == "none" ]]; then
   echo "--crema-onnx-model-dir requires --crema-onnx." >&2
   exit 2
 fi
 
-backend_sync_args=(sync --python 3.11 --all-groups)
-if [[ "${advanced_chords}" == "tensorflow" ]]; then
+backend_sync_args=(sync --python 3.14 --all-groups)
+if [[ "${advanced_chords}" == "onnx" ]]; then
   backend_sync_args+=(--extra advanced-chords)
-elif [[ "${advanced_chords}" == "onnx" ]]; then
-  backend_sync_args+=(--extra advanced-chords-onnx)
 fi
 if [[ "${advanced_beats}" -eq 1 ]]; then
   backend_sync_args+=(--extra advanced-beats)
@@ -202,7 +190,7 @@ if [[ "${legacy_nvidia}" -eq 1 ]]; then
     --torch-backend cu126 \
     --reinstall-package torch \
     --reinstall-package torchaudio \
-    "torch==2.11.0" \
+    "torch==2.13.0" \
     "torchaudio==2.11.0"
 
   .venv/bin/python - <<'PY'
@@ -211,13 +199,14 @@ import sys
 import torch
 import torchaudio
 
-expected_version = "2.11.0+cu126"
-if torch.__version__ != expected_version:
-    raise SystemExit(f"Expected torch {expected_version} for the legacy NVIDIA profile, found {torch.__version__}.")
+expected_torch = "2.13.0+cu126"
+expected_torchaudio = "2.11.0+cu126"
+if torch.__version__ != expected_torch:
+    raise SystemExit(f"Expected torch {expected_torch} for the legacy NVIDIA profile, found {torch.__version__}.")
 
-if torchaudio.__version__ != expected_version:
+if torchaudio.__version__ != expected_torchaudio:
     raise SystemExit(
-        f"Expected torchaudio {expected_version} for the legacy NVIDIA profile, found {torchaudio.__version__}."
+        f"Expected torchaudio {expected_torchaudio} for the legacy NVIDIA profile, found {torchaudio.__version__}."
     )
 
 if torch.version.cuda != "12.6":

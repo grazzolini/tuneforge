@@ -14,7 +14,7 @@ Current release limits:
 
 - Desktop is the supported full workflow. Android/mobile remains a local-first companion path in progress.
 - Packages are local build artifacts, not signed distribution releases.
-- Default packages do not include external Demucs, Whisper, or beat-this model weights. Those weights are cached locally and may download on first setup/use unless the caches already exist or a local/dev package was explicitly built with `--model-bundle`. Crema's wheel-embedded chord model assets are the dependency-owned exception and ship with default Advanced Chords. Opt-in Crema ONNX packages use the pinned model from the verified cache or from an explicit `--model-bundle` package.
+- Default packages do not include external Demucs, Whisper, or beat-this model weights. Those weights are cached locally and may download on first setup/use unless the caches already exist or a local/dev package was explicitly built with `--model-bundle`. Advanced Chords uses ONNX Runtime and always ships its verified pinned 2.2 MB model and runtime state.
 - Advanced Chords, Advanced Beat Analysis, GPU acceleration, loopback/browser playback smoke, and BlackHole or virtual-audio capture need manual or special coverage unless a specific CI job says otherwise.
 
 ## Features
@@ -62,7 +62,7 @@ Security reports follow the process in [SECURITY.md](./SECURITY.md). "There is n
 
 - `pnpm` (version pinned in [package.json](./package.json))
 - [`uv`](https://docs.astral.sh/uv/)
-- Python 3.11
+- Python 3.14.7
 - `ffmpeg` and `ffprobe` available on `PATH` for development/source runs and macOS packages (install via `brew install ffmpeg`, `apt install ffmpeg`, etc.)
 - macOS system mic volume control uses the built-in CoreAudio API.
 - Linux system mic volume control uses `wpctl` or `pactl` for the active PipeWire/PulseAudio session.
@@ -79,7 +79,7 @@ pnpm setup:dev
 That command installs workspace dependencies, checks Tauri build prerequisites, syncs the backend
 Python environment with the default desktop advanced engine dependencies, regenerates shared API
 contracts, and verifies/preloads the default local model caches. The first setup is heavy because it
-installs Demucs/Torch, crema/TensorFlow Advanced Chords, and beat-this Advanced Beat Analysis, then
+installs Demucs/Torch, ONNX Runtime Advanced Chords, and beat-this Advanced Beat Analysis, then
 downloads Demucs stem weights into the shared Torch checkpoint cache, the default Whisper lyrics
 model into the TuneForge lyrics cache, and the beat-this `small0` checkpoint into the shared Torch
 checkpoint cache. Later worktrees verify file size and SHA-256 first, then skip model
@@ -111,8 +111,9 @@ pnpm setup:dev -- --no-beat-this
 pnpm setup:dev -- --no-advanced-beats
 ```
 
-Select Crema ONNX explicitly to use ONNX Runtime and preload the pinned model into the
-verified TuneForge data cache:
+The historical Crema selectors are compatibility aliases for the ONNX implementation. Any of
+`--crema`, `--advanced-chords`, `--crema-onnx`, or `--advanced-chords-onnx` enables it; the
+corresponding `--no-*` forms disable it. Mixing enable and disable selectors is an error.
 
 ```sh
 pnpm setup:dev -- --crema-onnx
@@ -120,7 +121,7 @@ pnpm setup:dev -- --crema-onnx
 
 The built-in chord and beat backends remain available as fallbacks when advanced dependencies are
 missing, unsupported, or disabled. Mobile paths do not run the desktop Python/FastAPI stack and must
-keep clear disabled/fallback states instead of requiring crema, TensorFlow, or beat-this.
+keep clear disabled/fallback states instead of requiring ONNX Runtime or beat-this.
 
 Release diagnostics distinguish host tools from local model/cache dependencies. If an import or
 metadata error names `ffmpeg` or `ffprobe`, install FFmpeg on the host or set
@@ -233,7 +234,7 @@ pnpm package:linux:flatpak
 Before publishing a release package, follow the [Release Package Gate](./docs/PACKAGING.md#release-package-gate)
 and record package build plus packaged launch-smoke evidence from the built artifact.
 
-Plain package commands include crema Advanced Chords and beat-this Advanced Beat Analysis
+Plain package commands include ONNX Advanced Chords and beat-this Advanced Beat Analysis
 dependencies by default for desktop builds, but release/default package commands do not pass
 `--model-bundle`. Use opt-outs to build fallback packages, and keep `--model-bundle` separate
 for local/dev artifacts that explicitly copy model weights into the package:
@@ -246,10 +247,9 @@ pnpm package:mac -- --crema-onnx
 pnpm package:mac -- --crema-onnx --model-bundle
 ```
 
-`--model-bundle` stages Demucs and Whisper weights, and stages the beat-this `small0` checkpoint
-only when beat-this dependencies are included. With `--crema-onnx`, it also stages the exact pinned
-ONNX model and runtime state so packaged startup can seed the verified cache. Crema/TensorFlow
-remains the default Advanced Chords package profile and ships its wheel-embedded model files. See
+Advanced Chords packages always stage the exact pinned ONNX model and runtime state so packaged
+startup can seed the verified cache. `--model-bundle` independently stages Demucs and Whisper
+weights, plus the beat-this `small0` checkpoint when beat-this dependencies are included. See
 [Third-party notices and release package policy](./THIRD_PARTY_NOTICES.md) for the dependency and
 model-weight policy.
 
@@ -281,7 +281,7 @@ GitHub Actions runs path-aware checks on pull requests and full checks on `main`
 Manual or special coverage unless a workflow explicitly runs it:
 
 - local macOS packaging, Linux Flatpak packaging, and source/archive release checks
-- crema/TensorFlow Advanced Chords and beat-this Advanced Beat Analysis runtime/package checks
+- ONNX Advanced Chords and beat-this Advanced Beat Analysis runtime/package checks
 - CUDA, MPS, and legacy NVIDIA GPU profiles
 - loopback browser playback E2E, Linux virtual-output capture, and macOS BlackHole capture
 

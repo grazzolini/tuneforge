@@ -1,10 +1,12 @@
 const OPTION_ALIASES = new Map([
-  ["--crema", ["crema", "tensorflow"]],
-  ["--advanced-chords", ["crema", "tensorflow"]],
+  ["--crema", ["crema", "onnx"]],
+  ["--advanced-chords", ["crema", "onnx"]],
   ["--crema-onnx", ["crema", "onnx"]],
   ["--advanced-chords-onnx", ["crema", "onnx"]],
   ["--no-crema", ["crema", "none"]],
   ["--no-advanced-chords", ["crema", "none"]],
+  ["--no-crema-onnx", ["crema", "none"]],
+  ["--no-advanced-chords-onnx", ["crema", "none"]],
   ["--lv-chordia", ["lvChordia", true]],
   ["--no-lv-chordia", ["lvChordia", false]],
   ["--beat-this", ["beatThis", true]],
@@ -19,7 +21,7 @@ const OPTION_ALIASES = new Map([
 
 export function defaultPackageOptions() {
   return {
-    crema: "tensorflow",
+    crema: "onnx",
     lvChordia: true,
     beatThis: true,
     legacyNvidia: false,
@@ -62,9 +64,9 @@ export function packageOptionsFromEnvironmentOrArgv(argv, { platform } = {}) {
 
 export function validatePackageOptions(rawOptions, { platform } = {}) {
   const options = { ...defaultPackageOptions(), ...rawOptions };
-  const crema = options.crema === true ? "tensorflow" : options.crema === false ? "none" : options.crema;
-  if (!["tensorflow", "onnx", "none"].includes(crema)) {
-    throw new Error("Advanced Chords package selection must be tensorflow, onnx, or none.");
+  const crema = options.crema === true ? "onnx" : options.crema === false ? "none" : options.crema;
+  if (!["onnx", "none"].includes(crema)) {
+    throw new Error("Advanced Chords package selection must be onnx or none.");
   }
   if (platform === "mac" && options.legacyNvidia) {
     throw new Error("--legacy-nvidia is only supported for Linux packaging.");
@@ -95,10 +97,8 @@ export function packageOptionsEnvironment(options) {
 export function packageOptionsToGeneratorArgs(options) {
   const validated = validatePackageOptions(options);
   const args = [];
-  if (validated.crema === "tensorflow") {
+  if (validated.crema === "onnx") {
     args.push("--crema");
-  } else if (validated.crema === "onnx") {
-    args.push("--crema-onnx");
   } else {
     args.push("--no-crema");
   }
@@ -123,11 +123,9 @@ export function packageOptionsToGeneratorArgs(options) {
 
 export function backendSyncArgs(options) {
   const validated = validatePackageOptions(options);
-  const args = ["sync", "--python", "3.11", "--all-groups"];
-  if (validated.crema === "tensorflow") {
+  const args = ["sync", "--python", "3.14", "--all-groups"];
+  if (validated.crema === "onnx") {
     args.push("--extra", "advanced-chords");
-  } else if (validated.crema === "onnx") {
-    args.push("--extra", "advanced-chords-onnx");
   }
   if (validated.beatThis) {
     args.push("--extra", "advanced-beats");

@@ -135,7 +135,7 @@ fn wait_for_backend(port: u16, timeout: Duration) -> Result<(), Box<dyn std::err
 
 #[cfg(not(target_os = "android"))]
 fn python_executable(python_root: &Path) -> PathBuf {
-    python_root.join("bin").join("python3.11")
+    python_root.join("bin").join("python3.14")
 }
 
 #[cfg(not(target_os = "android"))]

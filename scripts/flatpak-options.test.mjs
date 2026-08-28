@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { cremaOnlyModelBundlePlan } from "./generate-flatpak-sources.mjs";
 import { buildModelBundlePlan } from "./model-bundle-metadata.mjs";
 
 const flatpakManifest = readFileSync(
@@ -61,15 +62,17 @@ test("model bundle plan includes beat-this only when requested", () => {
   );
 });
 
-test("model bundle plan includes Crema ONNX only when requested", () => {
+test("Advanced Chords package plan includes only pinned Crema ONNX files without broad models", () => {
   const withoutCremaOnnx = buildModelBundlePlan({ demucsManifest, lyricsModel: "base" });
-  const withCremaOnnx = buildModelBundlePlan({
+  const withCremaOnnx = cremaOnlyModelBundlePlan(buildModelBundlePlan({
     demucsManifest,
     includeCremaOnnx: true,
     lyricsModel: "base",
-  });
+  }));
 
   assert.equal(withoutCremaOnnx.manifest.crema_onnx_files.length, 0);
+  assert.equal(withCremaOnnx.manifest.torch_checkpoints.length, 0);
+  assert.equal(withCremaOnnx.manifest.whisper_models.length, 0);
   assert.deepEqual(
     withCremaOnnx.manifest.crema_onnx_files.map((entry) => entry.file_name).sort(),
     ["crema-0.2.0-opset18.onnx", "crema-0.2.0-runtime-state.json"],

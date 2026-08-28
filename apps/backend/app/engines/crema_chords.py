@@ -1,59 +1,26 @@
 from __future__ import annotations
 
-import base64
-import binascii
-import importlib.metadata
 import importlib.util
-import io
-import warnings
-from collections.abc import Iterator
-from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from typing import Any
 
-from app.engines.chord_labels import chord_label_to_segment
 from app.engines.crema_onnx import (
     crema_onnx_metadata,
     detect_crema_onnx_timeline,
     ensure_crema_onnx_files,
     invalid_crema_onnx_files,
 )
-from app.utils.model_cache import ExpectedModelFile, InvalidModelFile, invalid_model_files
+from app.utils.model_cache import InvalidModelFile
 
 CREMA_BACKEND_ID = "crema-advanced"
-_CREMA_CHORD_MODEL_ASSET_PREFIX = "crema/models/chord/"
-_CREMA_MODEL: Any | None = None
 
 
 def crema_dependency_status(*, runtime_platform: str = "desktop") -> tuple[bool, str | None]:
     if runtime_platform in {"android", "ios", "mobile"}:
         return False, "advanced chord backend is disabled on mobile"
-    implementation, reason = _crema_implementation()
-    if implementation is None:
-        return False, reason
-    if implementation == "onnx":
+    if _module_available("onnxruntime"):
         return True, None
-    for module_name, display_name in (
-        ("crema", "crema"),
-        ("tensorflow", "TensorFlow backend"),
-        ("keras", "Keras"),
-        ("jams", "JAMS"),
-    ):
-        if importlib.util.find_spec(module_name) is None:
-            return False, f"{display_name} is not installed"
-    keras_version = _package_version("keras")
-    keras_major_version = _major_version(keras_version)
-    if keras_major_version is not None and keras_major_version >= 3:
-        return False, f"crema 0.2.0 is incompatible with installed Keras {keras_version}; install Keras < 3"
-    scikit_learn_version = _package_version("scikit-learn")
-    scikit_learn_major_minor = _major_minor_version(scikit_learn_version)
-    if scikit_learn_major_minor is not None and scikit_learn_major_minor >= (1, 6):
-        return (
-            False,
-            "crema 0.2.0 is incompatible with installed scikit-learn "
-            f"{scikit_learn_version}; install scikit-learn < 1.6",
-        )
-    return True, None
+    return False, "ONNX Runtime is not installed"
 
 
 def detect_crema_chord_timeline(
@@ -62,20 +29,10 @@ def detect_crema_chord_timeline(
     merge_adjacent: bool = True,
     min_segment_seconds: float = 0.0,
 ) -> list[dict[str, Any]]:
-    implementation, reason = _crema_implementation()
-    if implementation == "onnx":
-        segments = detect_crema_onnx_timeline(source_path)
-        if min_segment_seconds > 0:
-            segments = _drop_short_segments(segments, min_segment_seconds=min_segment_seconds)
-        if merge_adjacent:
-            segments = merge_adjacent_chord_segments(segments)
-        return segments
-    if implementation is None:
+    available, reason = crema_dependency_status()
+    if not available:
         raise RuntimeError(reason or "Advanced chord backend is unavailable.")
-    model = _get_crema_model()
-    with _suppress_crema_runtime_noise(), redirect_stdout(io.StringIO()):
-        annotation = model.predict(filename=str(source_path))
-    segments = crema_annotation_to_timeline(annotation)
+    segments = detect_crema_onnx_timeline(source_path)
     if min_segment_seconds > 0:
         segments = _drop_short_segments(segments, min_segment_seconds=min_segment_seconds)
     if merge_adjacent:
@@ -84,37 +41,7 @@ def detect_crema_chord_timeline(
 
 
 def crema_runtime_device() -> str:
-    implementation, _reason = _crema_implementation()
-    if implementation == "onnx":
-        return "cpu"
-    try:
-        import tensorflow as tf
-    except Exception:
-        return "cpu"
-    return "cuda" if tf.config.list_physical_devices("GPU") else "cpu"
-
-
-def crema_annotation_to_timeline(annotation: Any) -> list[dict[str, Any]]:
-    segments: list[dict[str, Any]] = []
-    for row in _annotation_rows(annotation):
-        start_seconds = _float_or_none(row.get("time"))
-        duration_seconds = _float_or_none(row.get("duration"))
-        raw_label = row.get("value")
-        if start_seconds is None or duration_seconds is None or raw_label is None:
-            continue
-        end_seconds = start_seconds + duration_seconds
-        if end_seconds <= start_seconds:
-            continue
-        confidence = _float_or_none(row.get("confidence"))
-        segments.append(
-            chord_label_to_segment(
-                str(raw_label),
-                start_seconds=start_seconds,
-                end_seconds=end_seconds,
-                confidence=round(confidence, 3) if confidence is not None else None,
-            )
-        )
-    return segments
+    return "cpu"
 
 
 def merge_adjacent_chord_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -132,136 +59,29 @@ def merge_adjacent_chord_segments(segments: list[dict[str, Any]]) -> list[dict[s
 
 
 def clear_crema_model_cache() -> None:
-    global _CREMA_MODEL
-    _CREMA_MODEL = None
+    return None
 
 
 def preload_crema_model() -> None:
-    implementation, reason = _crema_implementation()
-    if implementation == "onnx":
-        ensure_crema_onnx_files()
-    elif implementation == "tensorflow":
-        _get_crema_model()
-    else:
+    available, reason = crema_dependency_status()
+    if not available:
         raise RuntimeError(reason or "Advanced chord backend is unavailable.")
+    ensure_crema_onnx_files()
 
 
 def invalid_crema_model_asset_files() -> tuple[InvalidModelFile, ...]:
-    implementation, _reason = _crema_implementation()
-    if implementation == "onnx":
-        return invalid_crema_onnx_files()
-    try:
-        package_files = importlib.metadata.files("crema")
-    except importlib.metadata.PackageNotFoundError:
-        return (
-            InvalidModelFile(
-                label="Crema chord model assets",
-                path=Path("crema"),
-                reason="missing-distribution",
-            ),
-        )
-
-    if package_files is None:
-        return (
-            InvalidModelFile(
-                label="Crema chord model assets",
-                path=Path(_CREMA_CHORD_MODEL_ASSET_PREFIX),
-                reason="metadata-unavailable",
-            ),
-        )
-
-    expected_files: list[ExpectedModelFile] = []
-    invalid_metadata_files: list[InvalidModelFile] = []
-    for package_file in package_files:
-        package_path = str(package_file)
-        if not package_path.startswith(_CREMA_CHORD_MODEL_ASSET_PREFIX):
-            continue
-
-        file_path = Path(package_file.locate())
-        label = f"Crema {package_path}"
-        file_size = getattr(package_file, "size", None)
-        file_sha256 = _crema_metadata_sha256(getattr(package_file, "hash", None))
-        if not isinstance(file_size, int) or file_size <= 0:
-            invalid_metadata_files.append(
-                InvalidModelFile(
-                    label=label,
-                    path=file_path,
-                    reason="metadata-size",
-                )
-            )
-            continue
-        if file_sha256 is None:
-            invalid_metadata_files.append(
-                InvalidModelFile(
-                    label=label,
-                    path=file_path,
-                    reason="metadata-sha256",
-                    expected_size=file_size,
-                )
-            )
-            continue
-        expected_files.append(
-            ExpectedModelFile(
-                label=label,
-                path=file_path,
-                size=file_size,
-                sha256=file_sha256,
-            )
-        )
-
-    if not expected_files and not invalid_metadata_files:
-        return (
-            InvalidModelFile(
-                label="Crema chord model assets",
-                path=Path(_CREMA_CHORD_MODEL_ASSET_PREFIX),
-                reason="metadata-missing-assets",
-            ),
-        )
-
-    return (*invalid_metadata_files, *invalid_model_files(tuple(expected_files)))
+    return invalid_crema_onnx_files()
 
 
 def crema_model_metadata() -> dict[str, Any]:
-    implementation, reason = _crema_implementation()
-    if implementation == "onnx":
-        return crema_onnx_metadata()
-    if implementation is None:
+    available, reason = crema_dependency_status()
+    if not available:
         raise RuntimeError(reason or "Advanced chord backend is unavailable.")
-    return {
-        "backend_id": CREMA_BACKEND_ID,
-        "implementation": "crema-tensorflow",
-        "output_format": "jams",
-        "model": "crema.models.chord.ChordModel",
-        "crema_version": _package_version("crema"),
-        "tensorflow_version": _package_version("tensorflow"),
-        "license_note": "PyPI metadata lists ISC; upstream LICENSE.md is BSD-2-Clause.",
-    }
+    return crema_onnx_metadata()
 
 
 def crema_backend_label() -> str:
-    implementation, _reason = _crema_implementation()
-    if implementation == "tensorflow":
-        return "Advanced Chords — Crema (TensorFlow)"
-    if implementation == "onnx":
-        return "Advanced Chords — Crema ONNX"
-    return "Advanced Chords — Crema"
-
-
-def _crema_implementation() -> tuple[str | None, str | None]:
-    tensorflow_installed = all(
-        _module_available(module_name)
-        for module_name in ("crema", "tensorflow", "keras", "jams")
-    )
-    onnx_installed = _module_available("onnxruntime")
-    if tensorflow_installed and onnx_installed:
-        return None, "both Crema TensorFlow and ONNX Runtime implementations are installed"
-    if onnx_installed:
-        return "onnx", None
-    if tensorflow_installed:
-        return "tensorflow", None
-    if not _module_available("crema") and not onnx_installed:
-        return None, "crema or ONNX Runtime is not installed"
-    return None, "Crema advanced chord dependencies are incomplete"
+    return "Advanced Chords — Crema ONNX"
 
 
 def _module_available(module_name: str) -> bool:
@@ -269,72 +89,6 @@ def _module_available(module_name: str) -> bool:
         return importlib.util.find_spec(module_name) is not None
     except (ImportError, ValueError):
         return module_name in __import__("sys").modules
-
-
-def _get_crema_model() -> Any:
-    global _CREMA_MODEL
-    if _CREMA_MODEL is None:
-        with _suppress_crema_runtime_noise():
-            from crema.models.chord import ChordModel
-
-            _CREMA_MODEL = ChordModel()
-    return _CREMA_MODEL
-
-
-def _crema_metadata_sha256(file_hash: Any) -> str | None:
-    if getattr(file_hash, "mode", None) != "sha256":
-        return None
-    hash_value = getattr(file_hash, "value", None)
-    if not isinstance(hash_value, str) or not hash_value:
-        return None
-    padding = "=" * (-len(hash_value) % 4)
-    try:
-        return base64.urlsafe_b64decode(hash_value + padding).hex()
-    except (ValueError, binascii.Error):
-        return None
-
-
-@contextmanager
-def _suppress_crema_runtime_noise() -> Iterator[None]:
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message="pkg_resources is deprecated as an API.*",
-            category=UserWarning,
-        )
-        warnings.filterwarnings(
-            "ignore",
-            message=r"get_duration\(\) keyword argument 'filename' has been renamed.*",
-            category=FutureWarning,
-        )
-        yield
-
-
-def _annotation_rows(annotation: Any) -> list[dict[str, Any]]:
-    if hasattr(annotation, "to_dataframe"):
-        dataframe = annotation.to_dataframe()
-        records = dataframe.to_dict("records")
-        return [dict(record) for record in records]
-
-    data = getattr(annotation, "data", None)
-    if data is not None:
-        return [_observation_to_row(observation) for observation in data]
-
-    try:
-        return [_observation_to_row(observation) for observation in annotation]
-    except TypeError:
-        return []
-
-
-def _observation_to_row(observation: Any) -> dict[str, Any]:
-    if isinstance(observation, dict):
-        return observation
-    return {
-        "time": getattr(observation, "time", None),
-        "duration": getattr(observation, "duration", None),
-        "value": getattr(observation, "value", None),
-        "confidence": getattr(observation, "confidence", None),
-    }
 
 
 def _drop_short_segments(segments: list[dict[str, Any]], *, min_segment_seconds: float) -> list[dict[str, Any]]:
@@ -373,31 +127,3 @@ def _float_or_none(value: Any) -> float | None:
     if isinstance(value, int | float):
         return float(value)
     return None
-
-
-def _package_version(package_name: str) -> str | None:
-    try:
-        return importlib.metadata.version(package_name)
-    except importlib.metadata.PackageNotFoundError:
-        return None
-
-
-def _major_version(version: str | None) -> int | None:
-    if version is None:
-        return None
-    try:
-        return int(version.split(".", 1)[0])
-    except ValueError:
-        return None
-
-
-def _major_minor_version(version: str | None) -> tuple[int, int] | None:
-    if version is None:
-        return None
-    parts = version.split(".", 2)
-    if len(parts) < 2:
-        return None
-    try:
-        return int(parts[0]), int(parts[1])
-    except ValueError:
-        return None

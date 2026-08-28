@@ -57,7 +57,7 @@ export const releaseInventoryCommands = [
     cwd: "apps/backend",
     commands: [
       {
-        label: "Default TensorFlow release dependency SBOM",
+        label: "Default ONNX release dependency SBOM",
         command: [
           "uv",
           "export",
@@ -74,30 +74,13 @@ export const releaseInventoryCommands = [
         ],
       },
       {
-        label: "Opt-in ONNX release dependency SBOM",
-        command: [
-          "uv",
-          "export",
-          "--format",
-          "cyclonedx1.5",
-          "--frozen",
-          "--all-groups",
-          "--extra",
-          "advanced-chords-onnx",
-          "--extra",
-          "advanced-beats",
-          "--extra",
-          "lv-chordia",
-        ],
-      },
-      {
         label: "Installed package metadata",
         command: [
           "uv",
           "run",
           "--no-sync",
           "--python",
-          "3.11",
+          "3.14",
           "python",
           "-m",
           "pip",
@@ -144,7 +127,6 @@ export function buildReleaseLicenseInventory({ includeToolStatus = false, checkT
     lyricsModel: DEFAULT_LYRICS_MODEL,
   });
   const cremaOnnxBundledPlan = buildModelBundlePlan({
-    includeBeatThis: defaultOptions.beatThis,
     includeCremaOnnx: true,
     lyricsModel: DEFAULT_LYRICS_MODEL,
   });
@@ -190,7 +172,7 @@ export function buildReleaseLicenseInventory({ includeToolStatus = false, checkT
         },
       ],
       cachePrewarmCommand:
-        "cd apps/backend && uv run --python 3.11 --locked --all-groups " +
+        "cd apps/backend && uv run --python 3.14 --locked --all-groups " +
         "--extra advanced-chords --extra advanced-beats --extra lv-chordia " +
         "python -m app.cli.prewarm_models --include-crema --include-beat-this --include-lv-chordia",
       bundledDependencyWeights: {
@@ -224,7 +206,7 @@ export function buildReleaseLicenseInventory({ includeToolStatus = false, checkT
     },
     risks: [
       "Default release package commands must not pass --model-bundle.",
-      "Plain Crema ONNX packages must not include model bytes; the explicit model bundle contains only the pinned files.",
+      "Advanced Chords packages must include only the exact pinned Crema ONNX model and runtime-state files.",
       "Demucs pretrained-weight redistribution is unclear/restricted upstream.",
       "FFmpeg and ffprobe are host-installed and are not bundled.",
       "Python package license metadata can be incomplete; review missing fields manually.",

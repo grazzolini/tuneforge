@@ -11,8 +11,8 @@ This file is the source of truth for dependency and model-weight distribution po
 - Default release package commands (`pnpm package:mac`, `pnpm package:linux:flatpak`) do not pass `--model-bundle`. They include Advanced Chords, Advanced Beat Analysis, and LV Chordia. LV Chordia's five dependency-owned checkpoints are included; external Demucs, Whisper, and beat-this weights are not.
 - FFmpeg and ffprobe are not bundled by Tuneforge. macOS and source runs use host-installed binaries on `PATH` or explicit `TUNEFORGE_FFMPEG_PATH` / `TUNEFORGE_FFPROBE_PATH` overrides. Flatpak builds use `/app/bin/ffmpeg` and `/app/bin/ffprobe` wrappers backed by the Flatpak runtime or extensions.
 - Demucs, Whisper, and beat-this weights are local cache assets by default. Setup/model-prewarm can prepare them ahead of time, and the app may download them on first use if they are missing. Fully offline use requires the relevant caches/assets to already exist.
-- `--model-bundle` is an explicit local/dev packaging option, not part of default release packaging. It stages Demucs and Whisper weights and, when selected, the beat-this `small0` checkpoint and Crema ONNX model/state; redistribution needs separate review before publishable artifacts use it.
-- Default Advanced Chords packages use Crema/TensorFlow and include Crema's wheel-owned model files. Plain opt-in `--crema-onnx` packages use ONNX Runtime and the verified TuneForge data cache. Combining `--crema-onnx` with `--model-bundle` includes the exact pinned converted model and runtime state so startup can seed that cache.
+- `--model-bundle` is an explicit local/dev packaging option, not part of default release packaging. It stages Demucs and Whisper weights and, when selected, the beat-this `small0` checkpoint; redistribution needs separate review before publishable artifacts use it.
+- Default Advanced Chords packages use ONNX Runtime and always include the exact pinned 2.2 MB converted model and runtime state so startup can seed the verified TuneForge data cache. The Crema Python package, TensorFlow, and Keras are not included.
 - LV Chordia's five MIT checkpoints are bundled inside its pinned source dependency, total exactly 28,730,939 bytes, and are removed with `--no-lv-chordia`. They never use a downloader or user cache.
 - Tuneforge does not add cloud processing, accounts, telemetry, or track uploads for these features. Local-first does not mean first use is always offline.
 
@@ -42,30 +42,30 @@ This file is the source of truth for dependency and model-weight distribution po
 
 - **License:** BSD-3-Clause
 - **Source:** <https://github.com/pytorch/pytorch>
-- **Notes:** The default Linux Flatpak uses the locked PyTorch runtime. The `--legacy-nvidia` Linux package option swaps in the legacy NVIDIA CUDA 12.6 PyTorch and torchaudio wheels for older supported NVIDIA GPUs.
+- **Notes:** The default Linux Flatpak uses the locked PyTorch runtime. The `--legacy-nvidia` Linux package option swaps in the legacy NVIDIA CUDA 12.6 PyTorch and torchaudio wheels for older supported NVIDIA GPUs. Its local verifier confirms wheel and CUDA-runtime versions, not GPU inference on every driver/hardware combination.
 
 ### NVIDIA CUDA runtime wheels
 
 - **License:** NVIDIA Software License Agreement and related NVIDIA component terms; see each wheel's bundled license metadata.
 - **Source:** <https://download.pytorch.org/whl/cu126/> and NVIDIA CUDA component packages on PyPI.
-- **Notes:** The `--legacy-nvidia` Linux package option redistributes the CUDA 12.6 runtime wheel set pulled by PyTorch 2.6.0+cu126, including cuBLAS, cuDNN, cuFFT, cuSOLVER, cuSPARSE, NCCL, NVRTC, NVTX, and related runtime libraries.
+- **Notes:** The `--legacy-nvidia` Linux package option redistributes the CUDA 12.6 runtime wheel set pulled by PyTorch 2.13.0+cu126 and torchaudio 2.11.0+cu126, including cuBLAS, cuDNN, cuFFT, cuSOLVER, cuSPARSE, NCCL, NVRTC, NVTX, and related runtime libraries.
 
 ### librosa
 
 - **License:** ISC
 - **Source:** <https://github.com/librosa/librosa>
 
-### crema / Advanced Chords backend
+### Crema 0.2.0 converted model / Advanced Chords backend
 
 - **License:** PyPI metadata lists ISC; upstream `LICENSE.md` currently contains BSD-2-Clause terms.
 - **Source:** <https://github.com/bmcfee/crema>
-- **Notes:** TensorFlow remains the default implementation and can be excluded with `--no-crema` / `--no-advanced-chords`. The published `crema-0.2.0` wheel includes pretrained model and decoder files. The opt-in ONNX implementation is a format conversion of that model, not a TuneForge-trained model. Its model and runtime state are pinned to immutable Hugging Face revision `65af18f49af5101267fd28f15ac8c452d98b8e3d`. Plain ONNX packages download those files into the verified cache; the explicit local/dev `--crema-onnx --model-bundle` profile includes them. Distribution of a model-bundled application package remains an explicit package-review decision. Source/training provenance remains incomplete. The complete Brian McFee BSD-2-Clause notice is packaged at [`LICENSES/crema-0.2.0-BSD-2-Clause.txt`](./LICENSES/crema-0.2.0-BSD-2-Clause.txt).
+- **Notes:** Advanced Chords uses an ONNX format conversion of the Crema 0.2.0 model, not a TuneForge-trained model. The model and runtime state are pinned to immutable Hugging Face revision `65af18f49af5101267fd28f15ac8c452d98b8e3d` and included in every package that enables Advanced Chords. Package startup verifies and seeds the normal cache. Source/training provenance remains incomplete. The complete Brian McFee BSD-2-Clause notice is packaged at [`LICENSES/crema-0.2.0-BSD-2-Clause.txt`](./LICENSES/crema-0.2.0-BSD-2-Clause.txt).
 
-### ONNX Runtime / opt-in Crema ONNX backend
+### ONNX Runtime / Advanced Chords backend
 
 - **License:** MIT
 - **Source:** <https://github.com/microsoft/onnxruntime>
-- **Notes:** Included only by the `advanced-chords-onnx` dependency profile. TuneForge uses CPU execution and an immutable converted-model revision. Plain ONNX packages use model and runtime-state files from the verified TuneForge data cache; `--crema-onnx --model-bundle` packages include those exact files and seed the same cache on startup. This profile removes Crema/TensorFlow's HDF5 model-loading closure; preserved LV Chordia support still brings its separately declared `h5py` dependency.
+- **Notes:** Included by the canonical `advanced-chords` dependency profile and equivalent `advanced-chords-onnx` compatibility profile. TuneForge uses CPU execution and an immutable converted-model revision. Advanced Chords packages include the exact model and runtime-state files and seed the same verified cache on startup. This removes Crema/TensorFlow's HDF5 model-loading closure; preserved LV Chordia support still brings its separately declared `h5py` dependency.
 
 ### beat-this / Advanced Beat Analysis backend
 
@@ -77,7 +77,7 @@ This file is the source of truth for dependency and model-weight distribution po
 
 - **License:** MIT for source and the five distributed checkpoints.
 - **Source:** <https://github.com/openmirlab/lv-chordia/tree/9d7de7bbf45efa6731ec8dc62d35280f141c0702>
-- **Notes:** The optional dependency is pinned to audited revision `9d7de7bbf45efa6731ec8dc62d35280f141c0702`. Normal desktop packages include one checkpoint set under `share/lv-chordia/cache_data`: five files totaling exactly 28,730,939 bytes. TuneForge validates exact names, sizes, and SHA-256 digests before deserialization. Missing or corrupt files fail closed and are repaired by reinstalling; no outbound fetch or user-cache lifecycle exists. `--no-lv-chordia` excludes both source/runtime bytes and checkpoint bytes. Runtime dependency size must be reported separately from the 28,730,939 checkpoint bytes.
+- **Notes:** The optional dependency is pinned to audited revision `9d7de7bbf45efa6731ec8dc62d35280f141c0702`, whose package metadata identifies LV Chordia 1.1.0. Normal desktop packages include one checkpoint set under `share/lv-chordia/cache_data`: five files totaling exactly 28,730,939 bytes. TuneForge validates exact names, sizes, and SHA-256 digests before deserialization. Missing or corrupt files fail closed and are repaired by reinstalling; no outbound fetch or user-cache lifecycle exists. `--no-lv-chordia` excludes both source/runtime bytes and checkpoint bytes. The refreshed default graph satisfies LV 1.1.0's NumPy 2.2.6+ and Torch 2.13+ requirements without global resolver overrides. Runtime dependency size must be reported separately from the 28,730,939 checkpoint bytes.
 
 ### openai-whisper / Whisper model weights
 
@@ -91,10 +91,11 @@ This file is the source of truth for dependency and model-weight distribution po
 - **Source:** <https://github.com/pyca/cryptography>
 - **Notes:** Used for local Ed25519 sync identity keys.
 
-### Advanced Chords transitive runtime stack
+### audioop-lts
 
-- **Primary packages:** TensorFlow (Apache-2.0), Keras (Apache-2.0), TensorBoard (Apache-2.0), gRPC (Apache-2.0), Protobuf (BSD-3-Clause), h5py (BSD-3-Clause), HDF5 (BSD-style), JAMS (ISC), mir_eval (MIT), pumpp (MIT), pandas (BSD-3-Clause), scikit-learn (BSD-3-Clause), and their pinned dependencies in `apps/backend/uv.lock`.
-- **Notes:** No GPL/AGPL/SSPL package is present in the locked Advanced Chords Python tree. Packaging risk is higher than the built-in backend because TensorFlow, h5py/HDF5, gRPC, and related packages ship native binary wheels and larger transitive notice sets. Keep a fresh machine-readable inventory for standard packaged desktop builds.
+- **License:** PSF-2.0
+- **Source:** <https://github.com/AbstractUmbra/audioop>
+- **Notes:** Restores the removed standard-library `audioop` module for Python 3.13+ compatibility in pydub/LV paths.
 
 ### Advanced Beat Analysis transitive runtime stack
 
@@ -214,6 +215,6 @@ The lists above cover the dependencies and model assets that materially shape th
 - Repeatable release checklist: `pnpm release:license-inventory` (add `-- --check` to verify required CLIs, or `-- --json` for structured output)
 - JavaScript / TypeScript: `pnpm licenses list --recursive`
 - Rust: `cargo about generate --format json --locked` (run inside `apps/desktop/src-tauri`)
-- Python: `uv tree --python 3.11 --locked --all-groups` plus each package's metadata
+- Python: `uv tree --python 3.14 --locked --all-groups` plus each package's metadata
 
 If you spot a missing or incorrect attribution, please open a pull request.

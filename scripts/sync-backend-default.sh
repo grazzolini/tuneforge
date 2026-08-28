@@ -8,11 +8,10 @@ Usage: pnpm sync:backend:default [options]
 Recreates the backend environment with the default locked dependency set.
 
 Options:
-  --advanced-chords, --crema  Include the default crema/TensorFlow chord backend.
-  --advanced-chords-onnx, --crema-onnx
-                              Use the Crema ONNX Runtime chord backend.
-  --no-advanced-chords, --no-crema
-                              Skip the crema/TensorFlow chord backend.
+  --advanced-chords, --crema, --advanced-chords-onnx, --crema-onnx
+                              Include the Crema ONNX Runtime chord backend (default).
+  --no-advanced-chords, --no-crema, --no-advanced-chords-onnx, --no-crema-onnx
+                              Skip the Crema ONNX Runtime chord backend.
   --advanced-beats, --beat-this
                               Include the default beat-this backend.
   --no-advanced-beats, --no-beat-this
@@ -23,20 +22,17 @@ Options:
 EOF
 }
 
-advanced_chords="tensorflow"
+advanced_chords="onnx"
 advanced_chords_selected=""
 advanced_beats=1
 lv_chordia=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --advanced-chords | --crema)
-      selection="tensorflow"
-      ;;
-    --advanced-chords-onnx | --crema-onnx)
+    --advanced-chords | --crema | --advanced-chords-onnx | --crema-onnx)
       selection="onnx"
       ;;
-    --no-advanced-chords | --no-crema)
+    --no-advanced-chords | --no-crema | --no-advanced-chords-onnx | --no-crema-onnx)
       selection="none"
       ;;
     --advanced-beats | --beat-this)
@@ -78,14 +74,12 @@ done
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 backend_dir="${repo_root}/apps/backend"
 marker_file="${backend_dir}/.venv/.tuneforge-legacy-nvidia"
-
 cd "${backend_dir}"
-backend_sync_args=(sync --python 3.11 --all-groups)
-if [[ "${advanced_chords}" == "tensorflow" ]]; then
+backend_sync_args=(sync --python 3.14 --all-groups)
+if [[ "${advanced_chords}" == "onnx" ]]; then
   backend_sync_args+=(--extra advanced-chords)
-elif [[ "${advanced_chords}" == "onnx" ]]; then
-  backend_sync_args+=(--extra advanced-chords-onnx)
 fi
+rm -f "${marker_file}"
 if [[ "${advanced_beats}" -eq 1 ]]; then
   backend_sync_args+=(--extra advanced-beats)
 fi
@@ -101,4 +95,3 @@ if [[ "${lv_chordia}" -eq 1 ]]; then
     --skip-whisper \
     --include-lv-chordia
 fi
-rm -f "${marker_file}"

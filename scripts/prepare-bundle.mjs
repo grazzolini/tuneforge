@@ -146,15 +146,46 @@ function run(command, args, options = {}) {
 }
 
 function prepareModelBundle(options) {
-  if (!options.modelBundle) {
+  if (!options.modelBundle && options.crema === "none") {
     return;
   }
 
-  if (!process.env.TUNEFORGE_PACKAGE_OPTIONS) {
+  if (options.modelBundle && !process.env.TUNEFORGE_PACKAGE_OPTIONS) {
     printModelBundleWarning();
   }
   const pythonPath = path.join(backendRoot, ".venv", "bin", "python");
   requirePath(pythonPath, "Backend virtualenv Python");
+  if (!options.modelBundle) {
+    run(
+      pythonPath,
+      [
+        "-c",
+        [
+          "import json, shutil, sys",
+          "from pathlib import Path",
+          "from app.engines.crema_onnx import MODEL_REVISION, ensure_crema_onnx_files, expected_model_files",
+          "from app.utils.model_cache import ExpectedModelFile, invalid_model_files",
+          "output = Path(sys.argv[1])",
+          "shutil.rmtree(output, ignore_errors=True)",
+          "ensure_crema_onnx_files()",
+          "entries = []",
+          "for source in expected_model_files():",
+          "    relative = Path('crema') / '0.2.0' / MODEL_REVISION / source.path.name",
+          "    destination = output / relative",
+          "    destination.parent.mkdir(parents=True, exist_ok=True)",
+          "    shutil.copy2(source.path, destination)",
+          "    copied = ExpectedModelFile(source.label, destination, source.size, source.sha256)",
+          "    assert not invalid_model_files((copied,)), destination",
+          "    entries.append({'label': source.label, 'file_name': source.path.name, 'relative_path': relative.as_posix(), 'size': source.size, 'sha256': source.sha256})",
+          "manifest = {'version': 1, 'torch_checkpoints': [], 'whisper_models': [], 'crema_onnx_files': entries}",
+          "(output / 'manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')",
+        ].join("\n"),
+        stagedModelBundleRoot,
+      ],
+      { cwd: backendRoot },
+    );
+    return;
+  }
   const args = ["-m", "app.cli.prepare_model_bundle", "--output", stagedModelBundleRoot];
   if (options.beatThis) {
     args.push("--include-beat-this");
@@ -192,7 +223,7 @@ function stageLvChordiaAssets(options) {
   if (!options.lvChordia) {
     return;
   }
-  const stagedPython = path.join(stagedPythonRoot, "bin", "python3.11");
+  const stagedPython = path.join(stagedPythonRoot, "bin", "python3.14");
   run(
     stagedPython,
     [
@@ -213,7 +244,7 @@ function stageLvChordiaAssets(options) {
 async function main() {
   const packageOptions = packageOptionsFromEnvironmentOrArgv(process.argv.slice(2), { platform: "mac" });
   const venvConfigPath = path.join(backendRoot, ".venv", "pyvenv.cfg");
-  const sitePackagesRoot = path.join(backendRoot, ".venv", "lib", "python3.11", "site-packages");
+  const sitePackagesRoot = path.join(backendRoot, ".venv", "lib", "python3.14", "site-packages");
   requirePath(venvConfigPath, "Backend virtualenv config");
   requirePath(sitePackagesRoot, "Backend site-packages");
   sitePackagesRootForFilter = sitePackagesRoot;
@@ -240,7 +271,7 @@ async function main() {
   prepareModelBundle(packageOptions);
   assertCremaOnnxBundleLayout(
     stagedBackendRoot,
-    packageOptions.modelBundle && packageOptions.crema === "onnx",
+    packageOptions.crema === "onnx",
   );
   writeResolvedBuildInfoFile(path.join(stagedBackendRoot, "version.json"), buildInfo);
 
@@ -251,7 +282,7 @@ async function main() {
     backend_source: path.relative(resourcesRoot, stagedBackendSourceRoot),
     version_info: path.relative(resourcesRoot, path.join(stagedBackendRoot, "version.json")),
   };
-  if (packageOptions.modelBundle) {
+  if (packageOptions.modelBundle || packageOptions.crema === "onnx") {
     manifest.model_bundle = path.relative(resourcesRoot, stagedModelBundleRoot);
   }
 

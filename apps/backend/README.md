@@ -13,14 +13,14 @@ FastAPI backend for TuneForge. It owns persistence, artifact management, audio a
 
 ## Prerequisites
 
-- Python 3.11
+- Python 3.14.7
 - [`uv`](https://docs.astral.sh/uv/)
 - `ffmpeg` and `ffprobe` available on `PATH`
 
 ## Setup
 
 ```sh
-uv sync --python 3.11 --all-groups --extra advanced-chords --extra advanced-beats --extra lv-chordia
+uv sync --python 3.14 --all-groups --extra advanced-chords --extra advanced-beats --extra lv-chordia
 ```
 
 From the workspace root, `pnpm setup:dev` also runs the full developer setup: `pnpm install`,
@@ -33,16 +33,12 @@ Advanced Chords is the default desktop TuneForge chord backend when the desktop 
 available. Built-in Chords uses TuneForge's built-in librosa/chroma/template pipeline and stays
 available as the fallback on every supported backend path.
 
-Advanced Chords is backed by [`crema`](https://github.com/bmcfee/crema). It can preserve richer
-chord labels from crema, including sevenths and inversion/slash-chord bass notes, but it pulls in
-TensorFlow/Keras and may start and run more slowly. The advanced dependency extra pins the crema
-stack because crema 0.2.0 uses legacy model-loading, encoder, and `pkg_resources` APIs that are not
-compatible with newer releases.
-
-An opt-in ONNX Runtime implementation preserves the same `crema-advanced` backend ID and output
-shape without installing Crema, TensorFlow, Keras, JAMS, pumpp, or Crema/TensorFlow's HDF5
-model-loading closure. Preserved LV Chordia support still installs its declared `h5py` dependency.
-Select exactly one Crema implementation; installing both is treated as an invalid package profile.
+Advanced Chords uses an ONNX Runtime conversion of the
+[`crema`](https://github.com/bmcfee/crema) 0.2.0 model. It preserves the `crema-advanced` backend ID,
+default selection, richer chord vocabulary, and slash-chord bass notes without installing the
+Crema Python package, TensorFlow, or Keras. The `advanced-chords` extra is canonical;
+`advanced-chords-onnx` is an equivalent compatibility extra. Preserved LV Chordia support still
+installs its separately declared `h5py` dependency.
 
 The current mobile backend does not run the desktop Python/FastAPI stack and disables Advanced Chords through `TUNEFORGE_RUNTIME_PLATFORM`.
 
@@ -61,7 +57,7 @@ pnpm setup:dev -- --no-crema
 pnpm setup:dev -- --no-advanced-chords
 ```
 
-For ONNX development, select the ONNX dependency profile explicitly:
+The historical selectors are compatibility aliases for the same ONNX profile:
 
 ```sh
 pnpm setup:dev -- --crema-onnx
@@ -73,8 +69,8 @@ TuneForge downloads missing files anonymously from the pinned Hugging Face revis
 `/api/v1/chord-backends` reports Advanced Chords availability and the installed implementation.
 ONNX download, integrity, decoder, and inference failures are reported on the requested job.
 
-Release coverage label: full crema/TensorFlow runtime, package inclusion, and model-artifact review
-are manual or special checks unless a CI workflow explicitly installs and exercises the advanced
+Release coverage label: ONNX runtime, package inclusion, offline first-use, and model-integrity
+checks are manual or special checks unless a CI workflow explicitly exercises the advanced
 dependency stack. Built-in Chords fallback should stay available when that stack is missing.
 
 ### LV Chordia backend
@@ -85,7 +81,14 @@ submission vocabulary from audited upstream revision
 MIT checkpoints (28,730,939 bytes); `--no-lv-chordia` excludes the dependency and checkpoints.
 The backend validates every checkpoint name, size, and SHA-256 before model loading. Missing or
 corrupt assets fail closed and are repaired by reinstalling or rebuilding the package; there is no
-download or user-cache lifecycle. Crema remains the default pending manual product evaluation.
+download or user-cache lifecycle. Advanced Chords remains the default pending manual product evaluation.
+
+The pinned LV Chordia 1.1.0 metadata requests NumPy 2.2.6+ and Torch 2.13+, which the refreshed
+default graph now satisfies without global NumPy or Torch overrides. The dependency refresh reruns
+LV Chordia's pinned upstream CPU golden with its prepared checkpoints; TuneForge does not copy that
+upstream audio fixture into this repository. Its own tests cover checkpoint integrity and mocked
+offline/session paths, not a repository-owned real-session golden. This is not a claim that every
+LV Chordia or CUDA hardware combination is qualified.
 
 LV Chordia accepts local audio paths only. It uses CUDA only when the installed PyTorch build
 supports a visible GPU architecture, otherwise it selects MPS or CPU. Model prewarm and inference
@@ -132,8 +135,8 @@ pnpm setup:dev -- --no-advanced-beats
 To verify or preload manually:
 
 ```sh
-uv sync --python 3.11 --all-groups --extra advanced-beats
-uv run --python 3.11 python -m app.cli.prewarm_models --skip-demucs --skip-whisper --include-beat-this
+uv sync --python 3.14 --all-groups --extra advanced-beats
+uv run --python 3.14 python -m app.cli.prewarm_models --skip-demucs --skip-whisper --include-beat-this
 ```
 
 The preload is stored at `$TORCH_HOME/hub/checkpoints/beat_this-small0.ckpt` when `TORCH_HOME` is set, `$XDG_CACHE_HOME/torch/hub/checkpoints/beat_this-small0.ckpt` when `XDG_CACHE_HOME` is set, or `~/.cache/torch/hub/checkpoints/beat_this-small0.ckpt` by default. When that file already matches the expected size and SHA-256, setup only verifies it and skips beat-this import/download.
@@ -148,7 +151,7 @@ uv pip install \
   --torch-backend cu126 \
   --reinstall-package torch \
   --reinstall-package torchaudio \
-  "torch==2.11.0" \
+  "torch==2.13.0" \
   "torchaudio==2.11.0"
 ```
 
@@ -158,8 +161,10 @@ From the workspace root, the helper command is:
 pnpm setup:dev -- --legacy-nvidia
 ```
 
-The legacy NVIDIA profile installs matched Torch and torchaudio 2.11.0 CUDA 12.6 wheels and includes
-the default advanced desktop engines, including LV Chordia, unless you pass opt-outs.
+The legacy NVIDIA profile installs Torch 2.13.0 and torchaudio 2.11.0 CUDA 12.6 wheels and includes
+the default advanced desktop engines, including LV Chordia, unless you pass opt-outs. The profile
+script verifies the selected wheel versions and CUDA runtime only; GPU inference still requires a
+Linux x86_64 machine with the intended NVIDIA driver and hardware.
 If you later switch profiles with the standalone helpers, pass opt-outs only when you need the
 built-in fallback stack:
 
@@ -196,7 +201,7 @@ pnpm dev:backend
 Or directly:
 
 ```sh
-uv run --python 3.11 uvicorn app.main:app --reload --host 127.0.0.1 --port 8765
+uv run --python 3.14 uvicorn app.main:app --reload --host 127.0.0.1 --port 8765
 ```
 
 The API is served at `http://127.0.0.1:8765/api/v1`. OpenAPI documentation is at `http://127.0.0.1:8765/docs`.
@@ -228,7 +233,7 @@ Default data directory:
 - macOS: `~/Library/Application Support/Tuneforge`
 - Linux: `~/.local/share/tuneforge`
 
-Lyrics models are downloaded on demand into the lyrics cache directory, then reused offline on later runs. In development, `pnpm setup:dev` verifies Demucs, Whisper, crema, and beat-this `small0` caches/assets, then preloads or downloads only missing, corrupt, or partial assets through the existing model loader paths. A successful setup verification means the local cache/assets are usable; runtime models may still load lazily on first use. The Torch cache path is `$TORCH_HOME/hub/checkpoints` when `TORCH_HOME` is set, `$XDG_CACHE_HOME/torch/hub/checkpoints` when `XDG_CACHE_HOME` is set, or `~/.cache/torch/hub/checkpoints` by default. Packaged desktop builds use these same caches by default. Packages built with `--model-bundle` seed Demucs and Whisper caches from package resources on startup, and also seed the beat-this `small0` checkpoint when beat-this dependencies are included.
+Lyrics models are downloaded on demand into the lyrics cache directory, then reused offline on later runs. In development, `pnpm setup:dev` verifies Demucs, Whisper, Advanced Chords ONNX, and beat-this `small0` caches/assets, then preloads or downloads only missing, corrupt, or partial assets through the existing model loader paths. A successful setup verification means the local cache/assets are usable; runtime models may still load lazily on first use. The Torch cache path is `$TORCH_HOME/hub/checkpoints` when `TORCH_HOME` is set, `$XDG_CACHE_HOME/torch/hub/checkpoints` when `XDG_CACHE_HOME` is set, or `~/.cache/torch/hub/checkpoints` by default. Packaged desktop builds use these same caches by default. Advanced Chords packages always seed the exact pinned ONNX files. Packages built with `--model-bundle` additionally seed Demucs and Whisper caches, plus the beat-this `small0` checkpoint when beat-this dependencies are included.
 
 ## Chord backends
 
@@ -294,7 +299,7 @@ You can also run the wrapper from the backend environment:
 
 ```sh
 cd apps/backend
-uv run --python 3.11 python ../../scripts/benchmark-timing.py --track-dir /path/to/local/tracks --json-only
+uv run --python 3.14 python ../../scripts/benchmark-timing.py --track-dir /path/to/local/tracks --json-only
 ```
 
 The timing benchmark reports anonymized `track_###` rows by default. Add `--include-relative-paths` only when relative
@@ -302,14 +307,17 @@ paths are safe to include in local research notes.
 
 ### Licensing note
 
-The crema package metadata on PyPI lists ISC, while the upstream repository and wheel license file show BSD-2-Clause terms. Both are permissive, but the mismatch should stay documented. The `crema-0.2.0` wheel includes its pretrained chord model files under `crema/models/chord/`, including `model.h5`, so standard packaged desktop builds redistribute those model artifacts unless Advanced Chords is explicitly excluded. Primary transitive licenses in the pinned stack include TensorFlow (Apache-2.0), Keras (Apache-2.0), TensorBoard (Apache-2.0), gRPC (Apache-2.0), Protobuf (BSD-3-Clause), h5py/HDF5 (BSD-style), and JAMS (ISC). Keep a fresh full inventory before release packaging.
+Advanced Chords uses ONNX Runtime under the MIT license and a converted Crema 0.2.0 model. The
+model provenance, original BSD-2-Clause notice, immutable revision, size, and SHA-256 hashes remain
+part of the release inventory. The Crema Python wheel, TensorFlow, and Keras are not distributed.
+Keep a fresh full inventory before release packaging.
 
 ## Migrations
 
 Alembic migrations live in `alembic/versions/`. They run automatically on application startup. To create a new migration after changing models:
 
 ```sh
-uv run --python 3.11 alembic revision --autogenerate -m "describe change"
+uv run --python 3.14 alembic revision --autogenerate -m "describe change"
 ```
 
 Review the generated file before committing.
@@ -321,7 +329,7 @@ The job runner is single-process, in-memory, and persists job state to SQLite ([
 ## Testing
 
 ```sh
-uv run --python 3.11 pytest
+uv run --python 3.14 pytest
 ```
 
 Test fixtures generate synthetic audio (sine waves, chord progressions, multiple containers) so most tests run without external sample files.
@@ -329,6 +337,6 @@ Test fixtures generate synthetic audio (sine waves, chord progressions, multiple
 ## Lint / type-check
 
 ```sh
-uv run --python 3.11 ruff check .
-uv run --python 3.11 mypy app
+uv run --python 3.14 ruff check .
+uv run --python 3.14 mypy app
 ```

@@ -142,7 +142,7 @@ __version__ = os.environ["FAKE_TORCHAUDIO_VERSION"]
 PYTHON
 
   if ! PYTHONPATH="${fake_module_dir}" \
-    FAKE_TORCH_VERSION="2.11.0+cu126" \
+    FAKE_TORCH_VERSION="2.13.0+cu126" \
     FAKE_TORCH_CUDA="12.6" \
     FAKE_TORCHAUDIO_VERSION="2.11.0+cu126" \
     python3 - < "${python_stdin_file}" > "${output_file}" 2>&1; then
@@ -152,7 +152,7 @@ PYTHON
   fi
 
   if PYTHONPATH="${fake_module_dir}" \
-    FAKE_TORCH_VERSION="2.11.0+cu126" \
+    FAKE_TORCH_VERSION="2.13.0+cu126" \
     FAKE_TORCH_CUDA="12.6" \
     FAKE_TORCHAUDIO_VERSION="2.6.0+cu126" \
     python3 - < "${python_stdin_file}" > "${output_file}" 2>&1; then
@@ -178,7 +178,7 @@ assert_python_args "opt-out" \
   app.cli.prewarm_models
 
 run_setup_dev "onnx" --crema-onnx
-grep -Fx -- "advanced-chords-onnx" "${setup_uv_args_file}"
+grep -Fx -- "advanced-chords" "${setup_uv_args_file}"
 assert_python_args "onnx" \
   -m \
   app.cli.prewarm_models \
@@ -189,7 +189,7 @@ assert_python_args "onnx" \
 conflict_output_file="${fixture}/setup-output-conflict"
 if PATH="${fixture}/bin:${PATH}" \
   /bin/bash "${fixture}/scripts/setup-dev.sh" \
-    --crema --crema-onnx \
+    --crema --no-crema-onnx \
     --skip-contracts --skip-playwright-browsers --skip-pnpm-install > "${conflict_output_file}" 2>&1; then
   echo "expected conflicting Advanced Chords selectors to fail" >&2
   exit 1
@@ -204,14 +204,15 @@ assert_python_args "legacy-lv" \
   --include-beat-this \
   --include-lv-chordia
 printf '%s\n' \
-  '[call]' sync --python 3.11 --all-groups --extra advanced-chords --extra advanced-beats --extra lv-chordia \
+  '[call]' sync --python 3.14 --all-groups --extra advanced-chords --extra advanced-beats --extra lv-chordia \
   '[call]' pip install --python .venv/bin/python --torch-backend cu126 \
   --reinstall-package torch --reinstall-package torchaudio \
-  'torch==2.11.0' 'torchaudio==2.11.0' > "${fixture}/expected-setup-legacy-uv-args"
+  'torch==2.13.0' 'torchaudio==2.11.0' > "${fixture}/expected-setup-legacy-uv-args"
 cmp "${fixture}/expected-setup-legacy-uv-args" "${setup_uv_args_file}"
-grep -F 'expected_version = "2.11.0+cu126"' "${python_stdin_file}" > /dev/null
-grep -F 'torch.__version__ != expected_version' "${python_stdin_file}" > /dev/null
-grep -F 'torchaudio.__version__ != expected_version' "${python_stdin_file}" > /dev/null
+grep -F 'expected_torch = "2.13.0+cu126"' "${python_stdin_file}" > /dev/null
+grep -F 'expected_torchaudio = "2.11.0+cu126"' "${python_stdin_file}" > /dev/null
+grep -F 'torch.__version__ != expected_torch' "${python_stdin_file}" > /dev/null
+grep -F 'torchaudio.__version__ != expected_torchaudio' "${python_stdin_file}" > /dev/null
 grep -F 'torch.version.cuda != "12.6"' "${python_stdin_file}" > /dev/null
 assert_legacy_version_verifier "setup-dev"
 
@@ -238,7 +239,7 @@ run_sync_backend() {
 }
 
 run_sync_backend "default"
-printf '%s\n' sync --python 3.11 --all-groups --extra lv-chordia > "${fixture}/expected-sync-uv-args"
+printf '%s\n' sync --python 3.14 --all-groups --extra lv-chordia > "${fixture}/expected-sync-uv-args"
 cmp "${fixture}/expected-sync-uv-args" "${sync_uv_args_file}"
 printf '%s\n' \
   -m \
@@ -249,7 +250,7 @@ printf '%s\n' \
 cmp "${fixture}/expected-sync-python-args" "${sync_python_args_file}"
 
 run_sync_backend "opt-out" --no-lv-chordia
-printf '%s\n' sync --python 3.11 --all-groups > "${fixture}/expected-sync-opt-out-uv-args"
+printf '%s\n' sync --python 3.14 --all-groups > "${fixture}/expected-sync-opt-out-uv-args"
 cmp "${fixture}/expected-sync-opt-out-uv-args" "${sync_uv_args_file}"
 if [[ -s "${sync_python_args_file}" ]]; then
   echo "unexpected LV Chordia prewarm for sync opt-out" >&2
@@ -280,7 +281,7 @@ run_sync_legacy_backend() {
 }
 
 run_sync_legacy_backend "default"
-printf '%s\n' sync --python 3.11 --all-groups --extra lv-chordia > "${fixture}/expected-legacy-sync-uv-args"
+printf '%s\n' sync --python 3.14 --all-groups --extra lv-chordia > "${fixture}/expected-legacy-sync-uv-args"
 cmp "${fixture}/expected-legacy-sync-uv-args" "${sync_uv_args_file}"
 printf '%s\n' \
   -m \
@@ -290,19 +291,20 @@ printf '%s\n' \
   --include-lv-chordia > "${fixture}/expected-legacy-sync-python-args"
 cmp "${fixture}/expected-legacy-sync-python-args" "${sync_python_args_file}"
 printf '%s\n' \
-  '[call]' sync --python 3.11 --all-groups --extra lv-chordia \
+  '[call]' sync --python 3.14 --all-groups --extra lv-chordia \
   '[call]' pip install --python .venv/bin/python --torch-backend cu126 \
   --reinstall-package torch --reinstall-package torchaudio \
-  'torch==2.11.0' 'torchaudio==2.11.0' > "${fixture}/expected-legacy-sync-all-uv-args"
+  'torch==2.13.0' 'torchaudio==2.11.0' > "${fixture}/expected-legacy-sync-all-uv-args"
 cmp "${fixture}/expected-legacy-sync-all-uv-args" "${setup_uv_args_file}"
-grep -F 'expected_version = "2.11.0+cu126"' "${python_stdin_file}" > /dev/null
-grep -F 'torch.__version__ != expected_version' "${python_stdin_file}" > /dev/null
-grep -F 'torchaudio.__version__ != expected_version' "${python_stdin_file}" > /dev/null
+grep -F 'expected_torch = "2.13.0+cu126"' "${python_stdin_file}" > /dev/null
+grep -F 'expected_torchaudio = "2.11.0+cu126"' "${python_stdin_file}" > /dev/null
+grep -F 'torch.__version__ != expected_torch' "${python_stdin_file}" > /dev/null
+grep -F 'torchaudio.__version__ != expected_torchaudio' "${python_stdin_file}" > /dev/null
 grep -F 'torch.version.cuda != "12.6"' "${python_stdin_file}" > /dev/null
 assert_legacy_version_verifier "sync-backend-legacy-nvidia"
 
 run_sync_legacy_backend "opt-out" --no-lv-chordia
-printf '%s\n' sync --python 3.11 --all-groups > "${fixture}/expected-legacy-sync-opt-out-uv-args"
+printf '%s\n' sync --python 3.14 --all-groups > "${fixture}/expected-legacy-sync-opt-out-uv-args"
 cmp "${fixture}/expected-legacy-sync-opt-out-uv-args" "${sync_uv_args_file}"
 printf '%s\n' - > "${fixture}/expected-legacy-sync-opt-out-python-args"
 cmp "${fixture}/expected-legacy-sync-opt-out-python-args" "${sync_python_args_file}"

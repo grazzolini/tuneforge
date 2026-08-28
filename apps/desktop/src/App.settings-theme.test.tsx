@@ -137,7 +137,7 @@ describe("Desktop app settings theme", () => {
     ).toHaveTextContent("Advanced Beat Analysis");
     expect(
       within(screen.getByRole("group", { name: "Default chord backend" })).getAllByRole("button")[0],
-    ).toHaveTextContent("Advanced Chords — Crema (TensorFlow)");
+    ).toHaveTextContent("Advanced Chords — Crema ONNX");
     expect(within(screen.getByRole("group", { name: "Default chord backend" })).getAllByRole("button"))
       .toHaveLength(3);
     expect(screen.getByRole("button", { name: /^Enable lyrics follow by default/ })).toHaveAttribute("aria-pressed", "true");
@@ -1020,7 +1020,7 @@ describe("Desktop app settings theme", () => {
     expect(screen.getAllByText("Prefer sharps")).toHaveLength(2);
     expect(screen.getAllByText("Playback first").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Lyrics + chords").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Advanced Chords — Crema (TensorFlow)").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Advanced Chords — Crema ONNX").length).toBeGreaterThan(0);
     expect(document.documentElement.style.getPropertyValue("--color-bg-app")).toBe("#123456");
   });
 

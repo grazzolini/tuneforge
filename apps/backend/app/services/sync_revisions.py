@@ -6,7 +6,7 @@ import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Any, TypeAlias, cast
+from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -16,7 +16,7 @@ from app.services.sync_metadata import sanitize_sync_metadata
 from app.services.sync_trust import get_or_create_local_identity
 from app.utils.ids import new_id
 
-RevisionPayload: TypeAlias = dict[str, Any]
+type RevisionPayload = dict[str, Any]
 
 CURRENT_REVISION_STATE = "active"
 SUPERSEDED_REVISION_STATE = "superseded"

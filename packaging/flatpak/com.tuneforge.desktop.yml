@@ -40,20 +40,20 @@ cleanup:
   - "*.la"
 
 modules:
-  - name: cpython-3.11
+  - name: cpython-3.14
     buildsystem: simple
     build-options:
       env:
         LD_LIBRARY_PATH: /app/lib/tuneforge/backend/python/lib
     sources:
       - type: archive
-        url: https://www.python.org/ftp/python/3.11.15/Python-3.11.15.tar.xz
-        sha256: 272179ddd9a2e41a0fc8e42e33dfbdca0b3711aa5abf372d3f2d51543d09b625
+        url: https://www.python.org/ftp/python/3.14.7/Python-3.14.7.tar.xz
+        sha256: 3b48dac8fb59f62eaa67ac83c1eb12bda1b7a08406dd286e252c11a66be27f81
     build-commands:
       - ./configure --prefix=/app/lib/tuneforge/backend/python --enable-shared --with-ensurepip=install
       - make -j${FLATPAK_BUILDER_N_JOBS}
       - make install
-      - /app/lib/tuneforge/backend/python/bin/python3.11 -m ensurepip --upgrade
+      - /app/lib/tuneforge/backend/python/bin/python3.14 -m ensurepip --upgrade
       - find /app/lib/tuneforge/backend/python -type d -name __pycache__ -prune -exec rm -rf {} +
       - find /app/lib/tuneforge/backend/python -type f -name '*.pyc' -delete
 
@@ -71,8 +71,8 @@ modules:
     build-commands:
       - install -dm755 /app/lib/tuneforge/backend/site-packages
       - install -dm700 /run/build/python-runtime-deps/.pip-tmp
-      - /app/lib/tuneforge/backend/python/bin/python3.11 -m pip install --no-index --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages setuptools wheel
-      - /app/lib/tuneforge/backend/python/bin/python3.11 -m pip install --no-index --no-build-isolation --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages -r python-requirements.txt
+      - /app/lib/tuneforge/backend/python/bin/python3.14 -m pip install --no-index --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages setuptools wheel
+      - /app/lib/tuneforge/backend/python/bin/python3.14 -m pip install --no-index --no-build-isolation --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages -r python-requirements.txt
       - rm -rf /run/build/python-runtime-deps/.pip-tmp
       - find /app/lib/tuneforge/backend/site-packages -type d -name __pycache__ -prune -exec rm -rf {} +
       - find /app/lib/tuneforge/backend/site-packages -type f -name '*.pyc' -delete
@@ -293,4 +293,4 @@ modules:
       - install -Dm644 apps/desktop/src-tauri/icons/32x32.png /app/share/icons/hicolor/32x32/apps/com.tuneforge.desktop.png
       - install -Dm644 apps/desktop/src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/com.tuneforge.desktop.png
       - install -Dm644 apps/desktop/src-tauri/icons/512x512.png /app/share/icons/hicolor/512x512/apps/com.tuneforge.desktop.png
-      - /app/lib/tuneforge/backend/python/bin/python3.11 -c "import fastapi, demucs, whisper, torch"
+      - /app/lib/tuneforge/backend/python/bin/python3.14 -c "import fastapi, demucs, whisper, torch"

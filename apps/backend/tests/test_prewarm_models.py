@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import base64
-import hashlib
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from app.cli import prewarm_models
-from app.engines import crema_chords
 from app.utils.model_cache import InvalidModelFile
 
 
@@ -108,29 +104,6 @@ def test_missing_or_invalid_beat_this_cache_preloads(
     assert calls == ["small0"]
 
 
-def test_crema_model_asset_verifier_uses_distribution_record(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setattr(
-        crema_chords.importlib.util,
-        "find_spec",
-        lambda name: None if name == "onnxruntime" else object(),
-    )
-    payload = b"crema-fixture"
-    asset_path = tmp_path / "model.h5"
-    asset_path.write_bytes(payload)
-    package_file = _FakePackageFile(
-        "crema/models/chord/model.h5",
-        asset_path,
-        payload=payload,
-    )
-
-    monkeypatch.setattr(crema_chords.importlib.metadata, "files", lambda _package_name: (package_file,))
-
-    assert crema_chords.invalid_crema_model_asset_files() == ()
-
-
 def test_crema_valid_asset_verification_skips_preload(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -152,7 +125,7 @@ def test_crema_invalid_asset_verification_falls_back_to_preload(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    invalid_file = _invalid_file(tmp_path, label="Crema model.h5", reason="metadata-sha256")
+    invalid_file = _invalid_file(tmp_path, label="Crema ONNX model", reason="sha256")
     calls: list[str] = []
     invalid_results = iter(((invalid_file,), ()))
 
@@ -169,7 +142,7 @@ def test_crema_invalid_asset_verification_fails_when_assets_remain_invalid(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    invalid_file = _invalid_file(tmp_path, label="Crema model.h5", reason="metadata-sha256")
+    invalid_file = _invalid_file(tmp_path, label="Crema ONNX model", reason="sha256")
     calls: list[str] = []
 
     monkeypatch.setattr(prewarm_models, "crema_dependency_status", lambda: (True, None))
@@ -187,24 +160,3 @@ def _invalid_file(tmp_path: Path, *, label: str, reason: str) -> InvalidModelFil
     if reason != "missing":
         path.write_bytes(b"stale")
     return InvalidModelFile(label=label, path=path, reason=reason)
-
-
-class _FakeFileHash:
-    mode = "sha256"
-
-    def __init__(self, payload: bytes) -> None:
-        self.value = base64.urlsafe_b64encode(hashlib.sha256(payload).digest()).decode("ascii").rstrip("=")
-
-
-class _FakePackageFile:
-    def __init__(self, package_path: str, local_path: Path, *, payload: bytes) -> None:
-        self._package_path = package_path
-        self._local_path = local_path
-        self.size = len(payload)
-        self.hash = _FakeFileHash(payload)
-
-    def __str__(self) -> str:
-        return self._package_path
-
-    def locate(self) -> Any:
-        return self._local_path

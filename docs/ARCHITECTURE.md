@@ -223,7 +223,7 @@ Validation failures return `INVALID_REQUEST` with serialized validation details.
 - Native audio development notes live in [NATIVE_AUDIO.md](NATIVE_AUDIO.md).
 - Cross-platform wake, sleep, and power-inhibition behavior lives in [POWER_PROTECTION.md](POWER_PROTECTION.md).
 - Desktop system microphone volume control uses CoreAudio on macOS, or host `wpctl`/`pactl` tools on Linux with an active PipeWire/PulseAudio session.
-- Advanced Chords and Advanced Beat Analysis are default desktop/dev/package engines. Packaged builds must treat crema, its bundled chord model files, TensorFlow/Keras, h5py/HDF5, gRPC/Protobuf, TensorBoard, beat-this, and its runtime dependencies as default-runtime notice scope. Built-in chord and beat engines remain fallback paths when advanced dependencies are unavailable, unsupported, or explicitly excluded.
+- Advanced Chords and Advanced Beat Analysis are default desktop/dev/package engines. Advanced Chords uses ONNX Runtime and packages the exact pinned converted Crema model/state; the Crema Python package, TensorFlow, and Keras are absent. Packaged builds must treat ONNX Runtime, model provenance, beat-this, and their runtime dependencies as default-runtime notice scope. Built-in chord and beat engines remain fallback paths when advanced dependencies are unavailable, unsupported, or explicitly excluded.
 - Demucs and lyrics models follow first-use local download/cache behavior.
 - The Linux legacy NVIDIA profile is an opt-in local backend environment override; it does not change the default lockfile, CI setup, or packaged dependency baseline.
 - Mobile avoids FFmpeg and uses platform media APIs where possible.

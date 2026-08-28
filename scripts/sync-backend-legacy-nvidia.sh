@@ -8,11 +8,10 @@ Usage: pnpm sync:backend:legacy-nvidia [options]
 Recreates the backend environment with the Linux x86_64 legacy NVIDIA Torch profile.
 
 Options:
-  --advanced-chords, --crema  Include the default crema/TensorFlow chord backend.
-  --advanced-chords-onnx, --crema-onnx
-                              Use the Crema ONNX Runtime chord backend.
-  --no-advanced-chords, --no-crema
-                              Skip the crema/TensorFlow chord backend.
+  --advanced-chords, --crema, --advanced-chords-onnx, --crema-onnx
+                              Include the Crema ONNX Runtime chord backend (default).
+  --no-advanced-chords, --no-crema, --no-advanced-chords-onnx, --no-crema-onnx
+                              Skip the Crema ONNX Runtime chord backend.
   --advanced-beats, --beat-this
                               Include the default beat-this backend.
   --no-advanced-beats, --no-beat-this
@@ -23,20 +22,17 @@ Options:
 EOF
 }
 
-advanced_chords="tensorflow"
+advanced_chords="onnx"
 advanced_chords_selected=""
 advanced_beats=1
 lv_chordia=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --advanced-chords | --crema)
-      selection="tensorflow"
-      ;;
-    --advanced-chords-onnx | --crema-onnx)
+    --advanced-chords | --crema | --advanced-chords-onnx | --crema-onnx)
       selection="onnx"
       ;;
-    --no-advanced-chords | --no-crema)
+    --no-advanced-chords | --no-crema | --no-advanced-chords-onnx | --no-crema-onnx)
       selection="none"
       ;;
     --advanced-beats | --beat-this)
@@ -91,13 +87,9 @@ fi
 
 cd "${backend_dir}"
 
-# Start from the standard locked backend environment, then locally override
-# torch/torchaudio with the older CUDA 12.6 wheels for legacy NVIDIA cards.
-backend_sync_args=(sync --python 3.11 --all-groups)
-if [[ "${advanced_chords}" == "tensorflow" ]]; then
+backend_sync_args=(sync --python 3.14 --all-groups)
+if [[ "${advanced_chords}" == "onnx" ]]; then
   backend_sync_args+=(--extra advanced-chords)
-elif [[ "${advanced_chords}" == "onnx" ]]; then
-  backend_sync_args+=(--extra advanced-chords-onnx)
 fi
 if [[ "${advanced_beats}" -eq 1 ]]; then
   backend_sync_args+=(--extra advanced-beats)
@@ -113,7 +105,7 @@ uv pip install \
   --torch-backend cu126 \
   --reinstall-package torch \
   --reinstall-package torchaudio \
-  "torch==2.11.0" \
+  "torch==2.13.0" \
   "torchaudio==2.11.0"
 
 .venv/bin/python - <<'PY'
@@ -122,18 +114,16 @@ import sys
 import torch
 import torchaudio
 
-expected_version = "2.11.0+cu126"
-if torch.__version__ != expected_version:
-    raise SystemExit(f"Expected torch {expected_version} for the legacy NVIDIA profile, found {torch.__version__}.")
-
-if torchaudio.__version__ != expected_version:
+expected_torch = "2.13.0+cu126"
+expected_torchaudio = "2.11.0+cu126"
+if torch.__version__ != expected_torch:
+    raise SystemExit(f"Expected torch {expected_torch} for the legacy NVIDIA profile, found {torch.__version__}.")
+if torchaudio.__version__ != expected_torchaudio:
     raise SystemExit(
-        f"Expected torchaudio {expected_version} for the legacy NVIDIA profile, found {torchaudio.__version__}."
+        f"Expected torchaudio {expected_torchaudio} for the legacy NVIDIA profile, found {torchaudio.__version__}."
     )
-
 if torch.version.cuda != "12.6":
     raise SystemExit(f"Expected CUDA 12.6 for the legacy NVIDIA profile, found {torch.version.cuda}.")
-
 sys.stdout.write(
     f"Verified legacy NVIDIA Torch profile: torch {torch.__version__}, "
     f"torchaudio {torchaudio.__version__}, CUDA {torch.version.cuda}\n"

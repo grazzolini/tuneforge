@@ -14,7 +14,6 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from typing_extensions import TypeAliasType
 
 from app.engines.audio_encoding import DurableAudioFormat
 from app.runtime_status import (
@@ -1272,10 +1271,7 @@ class TabImportApplyResponse(BaseModel):
     project: ProjectSchema
 
 
-GeneratedExportDocumentId = TypeAliasType(
-    "GeneratedExportDocumentId",
-    Literal["lyrics", "lyrics_with_chords"],
-)
+type GeneratedExportDocumentId = Literal["lyrics", "lyrics_with_chords"]
 
 
 class ExportResultItemBaseSchema(BaseModel):
@@ -1296,10 +1292,7 @@ class ExportGeneratedDocumentResultItemSchema(ExportResultItemBaseSchema):
     generated_document_id: GeneratedExportDocumentId
 
 
-ExportResultItemSchema = TypeAliasType(
-    "ExportResultItemSchema",
-    ExportAudioResultItemSchema | ExportGeneratedDocumentResultItemSchema,
-)
+type ExportResultItemSchema = ExportAudioResultItemSchema | ExportGeneratedDocumentResultItemSchema
 
 
 class ExportResultSchema(BaseModel):

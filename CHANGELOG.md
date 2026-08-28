@@ -5,6 +5,12 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+### Changed
+
+- Upgraded the desktop backend to Python 3.14 and refreshed its dependency graph.
+- Made the ONNX implementation the sole Advanced Chords runtime while preserving its engine ID,
+  default selection, package aliases, and pinned model; removed Crema, TensorFlow, and Keras.
+
 ## [1.3.0] - 2026-08-28
 
 ### Added

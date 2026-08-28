@@ -16,7 +16,7 @@ If unsure whether a feature fits, open a discussion or feature-request issue fir
 
 - `pnpm` (version pinned in [package.json](./package.json))
 - `uv`
-- Python 3.11
+- Python 3.14.7
 - `ffmpeg` and `ffprobe` on your `PATH`
 - Rust toolchain (for the Tauri shell)
 - Linux desktop builds need Clang/libclang for native audio bindings (`sudo pacman -S clang` on
@@ -43,8 +43,8 @@ pnpm setup:dev -- --no-beat-this
 pnpm setup:dev -- --no-advanced-beats
 ```
 
-Mobile paths must keep clear fallback/disabled states and must not require desktop-only crema,
-TensorFlow, or beat-this dependencies.
+Mobile paths must keep clear fallback/disabled states and must not require desktop-only ONNX
+Runtime or beat-this dependencies.
 
 For Linux `x86_64` machines with older NVIDIA GPUs that are unsupported by the default PyTorch build, you can opt into the backend's local legacy CUDA override instead:
 

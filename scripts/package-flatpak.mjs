@@ -67,7 +67,7 @@ function generatedManifestPath(options) {
       "  - --env=TUNEFORGE_DATA_DIR=/var/data/tuneforge\n",
     );
   }
-  if (options.modelBundle) {
+  if (options.modelBundle || options.crema === "onnx") {
     manifest = replaceManifestFragment(
       manifest,
       "  - --env=TUNEFORGE_LYRICS_CACHE_DIR=~/.cache/whisper\n",
@@ -94,9 +94,7 @@ function generatedManifestPath(options) {
   }
 
   const imports = ["fastapi", "demucs", "whisper", "torch"];
-  if (options.crema === "tensorflow") {
-    imports.push("crema", "tensorflow", "keras");
-  } else if (options.crema === "onnx") {
+  if (options.crema === "onnx") {
     imports.push("onnxruntime");
   }
   if (options.beatThis) {
@@ -106,12 +104,12 @@ function generatedManifestPath(options) {
     imports.push("lv_chordia");
   }
   const lvChordiaValidation = options.lvChordia
-    ? "      - PYTHONPATH=/app/lib/tuneforge/backend/src:/app/lib/tuneforge/backend/site-packages /app/lib/tuneforge/backend/python/bin/python3.11 -c \"from pathlib import Path; from app.engines.lv_chordia import lv_chordia_dependency_status; files=list(Path('/app/lib/tuneforge/backend').rglob('*.sdict')); assert len(files)==5, len(files); assert lv_chordia_dependency_status()[0]\"\n"
-    : "      - /app/lib/tuneforge/backend/python/bin/python3.11 -c \"from pathlib import Path; files=list(Path('/app/lib/tuneforge/backend').rglob('*.sdict')); assert not files, files\"\n";
+    ? "      - PYTHONPATH=/app/lib/tuneforge/backend/src:/app/lib/tuneforge/backend/site-packages /app/lib/tuneforge/backend/python/bin/python3.14 -c \"from pathlib import Path; from app.engines.lv_chordia import lv_chordia_dependency_status; files=list(Path('/app/lib/tuneforge/backend').rglob('*.sdict')); assert len(files)==5, len(files); assert lv_chordia_dependency_status()[0]\"\n"
+    : "      - /app/lib/tuneforge/backend/python/bin/python3.14 -c \"from pathlib import Path; files=list(Path('/app/lib/tuneforge/backend').rglob('*.sdict')); assert not files, files\"\n";
   manifest = replaceManifestFragment(
     manifest,
-    '      - /app/lib/tuneforge/backend/python/bin/python3.11 -c "import fastapi, demucs, whisper, torch"\n',
-    `      - /app/lib/tuneforge/backend/python/bin/python3.11 -c "import ${imports.join(", ")}"\n` +
+    '      - /app/lib/tuneforge/backend/python/bin/python3.14 -c "import fastapi, demucs, whisper, torch"\n',
+    `      - /app/lib/tuneforge/backend/python/bin/python3.14 -c "import ${imports.join(", ")}"\n` +
       lvChordiaValidation,
   );
   mkdirSync(path.dirname(generatedManifestPath), { recursive: true });
@@ -145,14 +143,14 @@ export function manifestWithPackageOptions(manifest, options) {
   );
   result = replaceManifestFragment(
     result,
-    "      - /app/lib/tuneforge/backend/python/bin/python3.11 -m pip install --no-index --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages setuptools wheel\n",
-    "      - /app/lib/tuneforge/backend/python/bin/python3.11 -m pip install --no-index --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages -r python-build-requirements.txt\n",
+    "      - /app/lib/tuneforge/backend/python/bin/python3.14 -m pip install --no-index --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages setuptools wheel\n",
+    "      - /app/lib/tuneforge/backend/python/bin/python3.14 -m pip install --no-index --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages -r python-build-requirements.txt\n",
   );
   if (options.lvChordia) {
     const runtimeInstall =
-      "      - /app/lib/tuneforge/backend/python/bin/python3.11 -m pip install --no-index --no-build-isolation --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages -r python-requirements.txt\n";
+      "      - /app/lib/tuneforge/backend/python/bin/python3.14 -m pip install --no-index --no-build-isolation --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages -r python-requirements.txt\n";
     const lvChordiaRuntimeInstall =
-      "      - /app/lib/tuneforge/backend/python/bin/python3.11 -m pip install --no-index --no-deps --no-build-isolation --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages -r python-requirements.txt\n";
+      "      - /app/lib/tuneforge/backend/python/bin/python3.14 -m pip install --no-index --no-deps --no-build-isolation --find-links=python-sources --target=/app/lib/tuneforge/backend/site-packages -r python-requirements.txt\n";
     result = replaceManifestFragment(
       result,
       runtimeInstall,

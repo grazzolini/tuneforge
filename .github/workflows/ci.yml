@@ -291,12 +291,12 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.11"
+          python-version: "3.14"
 
       - name: Set up uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          python-version: "3.11"
+          python-version: "3.14"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -490,13 +490,13 @@ jobs:
         if: needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true'
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.11"
+          python-version: "3.14"
 
       - name: Set up uv
         if: needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true'
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          python-version: "3.11"
+          python-version: "3.14"
 
       - name: Sync backend dependencies
         if: needs.ci-scope.outputs.backend_static == 'true' || needs.ci-scope.outputs.backend_ffmpeg == 'true'
@@ -506,17 +506,17 @@ jobs:
       - name: Lint backend
         if: needs.ci-scope.outputs.backend_static == 'true'
         working-directory: apps/backend
-        run: uv run --python 3.11 ruff check .
+        run: uv run --python 3.14 ruff check .
 
       - name: Type-check backend
         if: needs.ci-scope.outputs.backend_static == 'true'
         working-directory: apps/backend
-        run: uv run --python 3.11 mypy app
+        run: uv run --python 3.14 mypy app
 
       - name: Test backend
         if: needs.ci-scope.outputs.backend_ffmpeg == 'true'
         working-directory: apps/backend
-        run: uv run --python 3.11 pytest
+        run: uv run --python 3.14 pytest
 
   desktop_frontend:
     needs: ci-scope
@@ -550,13 +550,13 @@ jobs:
         if: needs.ci-scope.outputs.desktop == 'true'
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.11"
+          python-version: "3.14"
 
       - name: Set up uv
         if: needs.ci-scope.outputs.desktop == 'true'
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          python-version: "3.11"
+          python-version: "3.14"
 
       - name: Install dependencies
         if: needs.ci-scope.outputs.desktop == 'true'

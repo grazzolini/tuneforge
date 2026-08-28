@@ -11,16 +11,15 @@ const legacyNvidiaMarker = path.resolve(backendRoot, ".venv", ".tuneforge-legacy
 const openApiJson = path.resolve(packageRoot, "openapi.json");
 const generatedPath = path.resolve(packageRoot, "src", "generated", "openapi.ts");
 
-function backendVenvPython() {
-  return path.resolve(backendRoot, ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
-}
-
 if (existsSync(legacyNvidiaMarker)) {
-  const python = backendVenvPython();
+  const python = path.resolve(
+    backendRoot,
+    ".venv",
+    process.platform === "win32" ? "Scripts/python.exe" : "bin/python",
+  );
   if (!existsSync(python)) {
     throw new Error("Legacy NVIDIA backend marker is present, but apps/backend/.venv is missing.");
   }
-
   execFileSync(python, ["-m", "app.export_openapi", openApiJson], {
     stdio: "inherit",
     cwd: backendRoot,
@@ -37,7 +36,7 @@ if (existsSync(legacyNvidiaMarker)) {
       "--project",
       backendRoot,
       "--python",
-      "3.11",
+      "3.14",
       "python",
       "-m",
       "app.export_openapi",

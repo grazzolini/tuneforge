@@ -18,8 +18,7 @@ const pnpmLockPath = path.join(workspaceRoot, "pnpm-lock.yaml");
 const uvLockPath = path.join(workspaceRoot, "apps", "backend", "uv.lock");
 const packageOptions = parsePackageOptions(process.argv.slice(2), { platform: "linux" });
 const selectedPythonExtras = [
-  ...(packageOptions.crema === "tensorflow" ? ["advanced-chords"] : []),
-  ...(packageOptions.crema === "onnx" ? ["advanced-chords-onnx"] : []),
+  ...(packageOptions.crema === "onnx" ? ["advanced-chords"] : []),
   ...(packageOptions.beatThis ? ["advanced-beats"] : []),
   ...(packageOptions.lvChordia ? ["lv-chordia"] : []),
 ];
@@ -144,20 +143,22 @@ function generateNodeSources() {
   return packages.length;
 }
 
-function markerMatchesFlatpakTarget(marker) {
+export function markerMatchesFlatpakTarget(marker, { extras = [] } = {}) {
   if (!marker) {
     return true;
   }
 
+  const selectedExtras = new Set(extras.map((extra) => `extra-17-tuneforge-backend-${extra}`));
   const expression = marker
     .replace(/\bsys_platform\b/g, '"linux"')
     .replace(/\bplatform_machine\b/g, '"x86_64"')
     .replace(/\bplatform_system\b/g, '"Linux"')
     .replace(/\bplatform_python_implementation\b/g, '"CPython"')
     .replace(/\bimplementation_name\b/g, '"cpython"')
-    .replace(/\bpython_version\b/g, '"3.11"')
-    .replace(/\bpython_full_version\b/g, '"3.11.15"')
-    .replace(/\bextra\b/g, '""')
+    .replace(/\bpython_version\b/g, '"3.14"')
+    .replace(/\bpython_full_version\b/g, '"3.14.7"')
+    .replace(/extra\s*==\s*'([^']+)'/g, (_match, extra) => String(selectedExtras.has(extra)))
+    .replace(/extra\s*!=\s*'([^']+)'/g, (_match, extra) => String(!selectedExtras.has(extra)))
     .replace(/\band\b/g, "&&")
     .replace(/\bor\b/g, "||");
 
@@ -169,10 +170,11 @@ function markerMatchesFlatpakTarget(marker) {
 }
 
 function parseDependencyEntries(contents) {
-  return Array.from(contents.matchAll(/\{([^}]+)\}/g))
+  return Array.from(contents.matchAll(/\{(?:[^{}]|\{[^{}]*\})*\}/g))
     .map((match) => {
-      const inline = match[1];
+      const inline = match[0];
       const name = inline.match(/name = "([^"]+)"/)?.[1];
+      const version = inline.match(/version = "([^"]+)"/)?.[1];
       const marker = inline.match(/marker = "([^"]+)"/)?.[1];
       const extras = Array.from(inline.match(/extra = \[([^\]]+)\]/)?.[1].matchAll(/"([^"]+)"/g) ?? []).map(
         (extraMatch) => extraMatch[1],
@@ -180,9 +182,9 @@ function parseDependencyEntries(contents) {
       if (!name) {
         throw new Error(`Could not parse dependency entry: ${match[0]}`);
       }
-      return { name: normalizePackageName(name), marker, extras };
+      return { name: normalizePackageName(name), version, marker, extras };
     })
-    .filter((dependency) => markerMatchesFlatpakTarget(dependency.marker));
+    .filter((dependency) => dependency.name);
 }
 
 function parseDependencyArray(block) {
@@ -216,7 +218,32 @@ function parsePythonArtifact(inlineTable) {
   return { url, sha256: hash, fileName: basenameFromUrl(url), size: sizeMatch ? Number(sizeMatch) : null };
 }
 
-function parseUvLock(contents) {
+function packageIdentity({ name, version }) {
+  return `${normalizePackageName(name)}@${version}`;
+}
+
+function findLockedPackage(packages, dependency) {
+  if (dependency.version) {
+    const pkg = packages.get(packageIdentity(dependency));
+    if (!pkg) {
+      throw new Error(`Could not find Python dependency ${dependency.name} ${dependency.version} in uv.lock`);
+    }
+    return pkg;
+  }
+
+  const candidates = Array.from(packages.values()).filter(
+    (pkg) => normalizePackageName(pkg.name) === normalizePackageName(dependency.name),
+  );
+  if (candidates.length === 1) {
+    return candidates[0];
+  }
+  if (candidates.length === 0) {
+    throw new Error(`Could not find Python dependency ${dependency.name} in uv.lock`);
+  }
+  throw new Error(`Python dependency ${dependency.name} must include a version in uv.lock`);
+}
+
+export function parseUvLock(contents) {
   const packages = new Map();
   const packageBlocks = contents.matchAll(/\[\[package\]\]\n([\s\S]*?)(?=\n\[\[package\]\]|\s*$)/g);
 
@@ -247,7 +274,7 @@ function parseUvLock(contents) {
       ? { ...parsedSdist, fileName: `${name.replaceAll("-", "_")}-${version}.tar.gz` }
       : parsedSdist;
 
-    packages.set(normalizePackageName(name), {
+    packages.set(packageIdentity({ name, version }), {
       name,
       version,
       dependencies: parseDependencyArray(`\n${block}`),
@@ -310,48 +337,54 @@ function parsePythonArtifactsFromInlineTables(contents) {
 
 function parsePylock(contents) {
   const packages = new Map();
-  const packageBlocks = contents.matchAll(/\[\[packages\]\]\n([\s\S]*?)(?=\n\[\[packages\]\]|\s*$)/g);
-
-  for (const match of packageBlocks) {
+  for (const match of contents.matchAll(/\[\[packages\]\]\n([\s\S]*?)(?=\n\[\[packages\]\]|\s*$)/g)) {
     const block = match[1];
     const name = block.match(/^name = "([^"]+)"$/m)?.[1];
     const version = block.match(/^version = "([^"]+)"$/m)?.[1];
     if (!name || !version) {
       throw new Error(`Could not parse pylock package block:\n${block}`);
     }
-
     const wheelsBody = extractArrayAssignment(`\n${block}`, "wheels");
     const wheels = wheelsBody ? parsePythonArtifactsFromInlineTables(wheelsBody) : [];
     const sdistLine = block.match(/^sdist = \{(.+)$/m)?.[0];
-    const sdist = sdistLine ? parsePythonArtifact(sdistLine) : null;
-
-    packages.set(normalizePackageName(name), {
+    packages.set(packageIdentity({ name, version }), {
       name,
       version,
       dependencies: [],
       optionalDependencies: new Map(),
       wheels,
-      sdist,
+      sdist: sdistLine ? parsePythonArtifact(sdistLine) : null,
       editable: false,
     });
   }
-
   return packages;
 }
 
-function wheelScore(fileName) {
+export function wheelScore(fileName) {
   const lower = fileName.toLowerCase();
-  if (/(macosx|win32|win_amd64|win_arm64|musllinux|aarch64|armv7l|i686|ppc64le|s390x|riscv64)/.test(lower)) {
+  const parts = lower.replace(/\.whl$/, "").split("-");
+  if (parts.length < 5) {
     return -1;
   }
-  if (/(py2\.py3|py3)-none-any/.test(lower)) {
+  const [pythonTag, abiTag, platformTag] = parts.slice(-3);
+  const universal = platformTag === "any";
+  const linuxX86 = /(?:^|\.)manylinux[^.]*_x86_64(?:\.|$)|^linux_x86_64$/.test(platformTag);
+  if (!universal && !linuxX86) {
+    return -1;
+  }
+  if (/^(?:py2\.py3|py3)$/.test(pythonTag) && abiTag === "none") {
     return 10;
   }
-  if (lower.includes("linux_x86_64")) {
-    return lower.includes("cp311") ? 25 : 15;
+  const cpythonTags = pythonTag.split(".").map((tag) => /^cp(\d)(\d+)$/.exec(tag));
+  if (cpythonTags.some((tag) => tag === null)) {
+    return -1;
   }
-  if (lower.includes("manylinux") && lower.includes("x86_64")) {
-    return lower.includes("cp311") ? 30 : 20;
+  if (abiTag === "cp314" && cpythonTags.some((tag) => tag?.[1] === "3" && tag[2] === "14")) {
+    return 40;
+  }
+  if (abiTag === "abi3") {
+    const compatible = cpythonTags.some((tag) => tag?.[1] === "3" && Number(tag[2]) <= 14);
+    return compatible ? 30 : -1;
   }
   return -1;
 }
@@ -372,11 +405,8 @@ function selectPythonArtifact(pkg) {
   throw new Error(`No Linux x86_64-compatible artifact found for ${pkg.name} ${pkg.version}`);
 }
 
-function resolvePythonRuntimePackages(packages, { extras = [] } = {}) {
-  const root = packages.get("tuneforge-backend");
-  if (!root) {
-    throw new Error("Could not find tuneforge-backend in uv.lock");
-  }
+export function resolvePythonRuntimePackages(packages, { extras = [] } = {}) {
+  const root = findLockedPackage(packages, { name: "tuneforge-backend" });
 
   const queue = [...root.dependencies];
   for (const extra of extras) {
@@ -391,30 +421,27 @@ function resolvePythonRuntimePackages(packages, { extras = [] } = {}) {
 
   while (queue.length > 0) {
     const dependency = queue.shift();
-    if (!markerMatchesFlatpakTarget(dependency.marker)) {
+    if (!markerMatchesFlatpakTarget(dependency.marker, { extras })) {
       continue;
     }
 
-    const normalizedName = normalizePackageName(dependency.name);
-    if (resolved.has(normalizedName)) {
+    const pkg = findLockedPackage(packages, dependency);
+    const identity = packageIdentity(pkg);
+    if (resolved.has(identity)) {
       continue;
     }
 
-    const pkg = packages.get(normalizedName);
-    if (!pkg) {
-      throw new Error(`Could not find Python dependency ${dependency.name} in uv.lock`);
-    }
     if (pkg.editable) {
       continue;
     }
 
-    if (!resolved.has(normalizedName)) {
-      resolved.set(normalizedName, pkg);
+    if (!resolved.has(identity)) {
+      resolved.set(identity, pkg);
       queue.push(...pkg.dependencies);
     }
 
-    const processedExtras = processedExtrasByPackage.get(normalizedName) ?? new Set();
-    processedExtrasByPackage.set(normalizedName, processedExtras);
+    const processedExtras = processedExtrasByPackage.get(identity) ?? new Set();
+    processedExtrasByPackage.set(identity, processedExtras);
 
     for (const extra of dependency.extras ?? []) {
       if (processedExtras.has(extra)) {
@@ -430,7 +457,7 @@ function resolvePythonRuntimePackages(packages, { extras = [] } = {}) {
     }
   }
 
-  return Array.from(resolved.values()).sort((left, right) => left.name.localeCompare(right.name));
+  return Array.from(resolved.values()).sort((left, right) => packageIdentity(left).localeCompare(packageIdentity(right)));
 }
 
 function resolveNamedPythonPackages(packages, names) {
@@ -441,18 +468,15 @@ function resolveNamedPythonPackages(packages, names) {
     if (!markerMatchesFlatpakTarget(dependency.marker)) {
       continue;
     }
-    const normalizedName = normalizePackageName(dependency.name);
-    if (resolved.has(normalizedName)) {
+    const pkg = findLockedPackage(packages, dependency);
+    const identity = packageIdentity(pkg);
+    if (resolved.has(identity)) {
       continue;
     }
-    const pkg = packages.get(normalizedName);
-    if (!pkg) {
-      throw new Error(`Could not find Python build dependency ${dependency.name} in uv.lock`);
-    }
-    resolved.set(normalizedName, pkg);
+    resolved.set(identity, pkg);
     queue.push(...pkg.dependencies);
   }
-  return Array.from(resolved.values());
+  return Array.from(resolved.values()).sort((left, right) => packageIdentity(left).localeCompare(packageIdentity(right)));
 }
 
 function run(command, args, options = {}) {
@@ -477,14 +501,14 @@ function run(command, args, options = {}) {
 function resolveLegacyTorchPackages() {
   const requirementsPath = path.join(generatedRoot, "python-legacy-torch.in");
   const pylockPath = path.join(generatedRoot, "pylock.legacy-torch.toml");
-  writeGeneratedFile("python-legacy-torch.in", "torch==2.11.0\ntorchaudio==2.11.0\n");
+  writeGeneratedFile("python-legacy-torch.in", "torch==2.13.0\ntorchaudio==2.11.0\n");
   run("uv", [
     "--quiet",
     "pip",
     "compile",
     requirementsPath,
     "--python-version",
-    "3.11",
+    "3.14",
     "--python-platform",
     "x86_64-manylinux_2_28",
     "--torch-backend",
@@ -496,7 +520,6 @@ function resolveLegacyTorchPackages() {
     "--no-header",
     "--no-annotate",
   ]);
-
   return parsePylock(readRequiredFile(pylockPath));
 }
 
@@ -512,40 +535,32 @@ function isLegacyTorchPackage(packageName) {
 }
 
 export function mergeLegacyTorchPackageSets(packages, legacyPackages) {
-  const merged = new Map(packages.map((pkg) => [normalizePackageName(pkg.name), pkg]));
-
-  for (const packageName of Array.from(merged.keys())) {
-    if (isLegacyTorchPackage(packageName)) {
-      merged.delete(packageName);
+  const merged = new Map(packages.map((pkg) => [packageIdentity(pkg), pkg]));
+  for (const [identity, pkg] of merged) {
+    if (isLegacyTorchPackage(normalizePackageName(pkg.name))) {
+      merged.delete(identity);
     }
   }
-
   for (const pkg of legacyPackages.values()) {
-    const packageName = normalizePackageName(pkg.name);
-    if (isLegacyTorchPackage(packageName)) {
-      merged.set(packageName, pkg);
+    if (isLegacyTorchPackage(normalizePackageName(pkg.name))) {
+      merged.set(packageIdentity(pkg), pkg);
     }
   }
-
-  return Array.from(merged.values()).sort((left, right) => left.name.localeCompare(right.name));
-}
-
-function mergeLegacyTorchPackages(packages) {
-  return mergeLegacyTorchPackageSets(packages, resolveLegacyTorchPackages());
+  return Array.from(merged.values()).sort((left, right) => packageIdentity(left).localeCompare(packageIdentity(right)));
 }
 
 function generatePythonSources() {
   const lockedPackages = parseUvLock(readRequiredFile(uvLockPath));
   let runtimePackages = resolvePythonRuntimePackages(lockedPackages, { extras: selectedPythonExtras });
   if (packageOptions.legacyNvidia) {
-    runtimePackages = mergeLegacyTorchPackages(runtimePackages);
+    runtimePackages = mergeLegacyTorchPackageSets(runtimePackages, resolveLegacyTorchPackages());
   }
   const buildRequirementNames = ["setuptools", "wheel", ...(packageOptions.lvChordia ? ["hatchling"] : [])];
   const buildPackages = resolveNamedPythonPackages(lockedPackages, buildRequirementNames);
-  const runtimePackageNames = new Set(runtimePackages.map((pkg) => normalizePackageName(pkg.name)));
+  const runtimePackageNames = new Set(runtimePackages.map((pkg) => packageIdentity(pkg)));
   const packages = Array.from(
-    new Map([...runtimePackages, ...buildPackages].map((pkg) => [normalizePackageName(pkg.name), pkg])).values(),
-  ).sort((left, right) => left.name.localeCompare(right.name));
+    new Map([...runtimePackages, ...buildPackages].map((pkg) => [packageIdentity(pkg), pkg])).values(),
+  ).sort((left, right) => packageIdentity(left).localeCompare(packageIdentity(right)));
   const sourceByUrl = new Map();
   const artifactReport = [];
 
@@ -569,14 +584,11 @@ function generatePythonSources() {
 
   const sources = Array.from(sourceByUrl.values()).sort((left, right) => left.url.localeCompare(right.url));
   const runtimeRequirements = packages
-    .filter((pkg) => runtimePackageNames.has(normalizePackageName(pkg.name)))
+    .filter((pkg) => runtimePackageNames.has(packageIdentity(pkg)))
     .map((pkg) => `${pkg.name}==${pkg.version}`)
     .sort();
   const buildRequirements = buildRequirementNames.map((name) => {
-    const pkg = lockedPackages.get(normalizePackageName(name));
-    if (!pkg) {
-      throw new Error(`Could not find Python build dependency ${name} in uv.lock`);
-    }
+    const pkg = findLockedPackage(lockedPackages, { name });
     return `${pkg.name}==${pkg.version}`;
   });
 
@@ -592,19 +604,32 @@ function generatePythonSources() {
 }
 
 function generateModelBundleSources() {
-  if (!packageOptions.modelBundle) {
+  if (!packageOptions.modelBundle && packageOptions.crema === "none") {
     return 0;
   }
-  const plan = buildModelBundlePlan({
-    includeBeatThis: packageOptions.beatThis,
+  const completePlan = buildModelBundlePlan({
+    includeBeatThis: packageOptions.modelBundle && packageOptions.beatThis,
     includeCremaOnnx: packageOptions.crema === "onnx",
   });
+  const plan = packageOptions.modelBundle ? completePlan : cremaOnlyModelBundlePlan(completePlan);
   writeGeneratedJson("model-bundle-sources.json", plan.sources);
   writeGeneratedJson("model-bundle-manifest.json", {
     ...plan.manifest,
     prepared_at: new Date().toISOString(),
   });
   return plan.sources.length;
+}
+
+export function cremaOnlyModelBundlePlan(plan) {
+  const fileNames = new Set(plan.manifest.crema_onnx_files.map((entry) => entry.file_name));
+  return {
+    sources: plan.sources.filter((source) => fileNames.has(source["dest-filename"])),
+    manifest: {
+      ...plan.manifest,
+      torch_checkpoints: [],
+      whisper_models: [],
+    },
+  };
 }
 
 function main() {

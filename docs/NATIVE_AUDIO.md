@@ -90,7 +90,7 @@ sudo apt-get install clang libclang-dev
 
 `pnpm setup:dev` checks these prerequisites. `pnpm --filter @tuneforge/desktop tauri ...` runs
 through a wrapper that sets `LIBCLANG_PATH` from a system install or from the backend `.venv` when
-the optional TensorFlow stack already installed the Python `libclang` wheel. Direct `cargo check` /
+a compatible Python `libclang` wheel is installed there. Direct `cargo check` /
 `cargo test` commands still require the same system toolchain or equivalent `LIBCLANG_PATH`.
 
 For development comparisons, force Web Audio for native-audio-backed features:

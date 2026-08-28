@@ -13,11 +13,11 @@ Use the root `AGENTS.md` for global rules. This file adds backend-specific guida
 
 ## Python and tooling
 
-- Run Python commands with `uv run --python 3.11 ...`.
+- Run Python commands with `uv run --python 3.14 ...`.
 - Required checks when backend code changes:
-  - `uv run --python 3.11 ruff check .`
-  - `uv run --python 3.11 mypy app`
-  - `uv run --python 3.11 pytest`
+  - `uv run --python 3.14 ruff check .`
+  - `uv run --python 3.14 mypy app`
+  - `uv run --python 3.14 pytest`
 
 ## API/schema changes
 

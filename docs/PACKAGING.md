@@ -274,7 +274,7 @@ pnpm package:linux -- --crema-onnx --model-bundle
 - `--model-bundle` includes required Demucs and Whisper weights, plus beat-this `small0` when beat-this dependencies are included. Advanced Chords model/state files are always included when that engine is enabled.
 - `--sandbox-data` keeps app data under Flatpak-private `/var/data/tuneforge` instead of the host XDG data directory.
 
-Like macOS packages, plain Flatpak packages rely on normal Demucs, Whisper, and beat-this caches unless `--model-bundle` is explicitly passed. Advanced Chords always includes and seeds the exact pinned ONNX model and runtime-state files. Packages omit the Crema Python package, TensorFlow, Keras, and their HDF5 closure but retain LV Chordia's separately declared `h5py` dependency.
+Like macOS packages, plain Flatpak packages rely on normal Demucs, Whisper, and beat-this caches unless `--model-bundle` is explicitly passed. The default Flatpak resolves official CPU-only PyTorch and torchaudio wheels for its Linux x86_64 Python runtime; its generated closure rejects CUDA, NVIDIA, and Triton packages. `--legacy-nvidia` retains the legacy CUDA closure for older supported NVIDIA GPUs. Advanced Chords always includes and seeds the exact pinned ONNX model and runtime-state files. Packages omit the Crema Python package, TensorFlow, Keras, and their HDF5 closure but retain LV Chordia's separately declared `h5py` dependency.
 When beat-this is excluded, desktop actions explicitly select Built-in Beat Analysis. An Advanced
 Beat Analysis request that ultimately fails during first-use download, load, runtime, or timing
 analysis fails the job rather than switching engines; explicit Built-in Beat Analysis requests do
@@ -300,6 +300,14 @@ Without `--no-bundle`, the Flatpak bundle is written under `packaging/flatpak/` 
 
 ## Size Expectations
 
-Linux Flatpak bundles are large because the default package includes Torch, NVIDIA CUDA Python wheels, beat-this, and the LV Chordia runtime. ONNX Advanced Chords is materially smaller than the removed TensorFlow stack. Report LV Chordia source/runtime bytes separately from its fixed 28,730,939 checkpoint bytes. `--legacy-nvidia` swaps in CUDA 12.6 runtime wheels, and `--model-bundle` adds other reviewed model weights.
+Linux Flatpak bundles are large because they include Torch, beat-this, and the LV Chordia runtime. ONNX Advanced Chords is materially smaller than the removed TensorFlow stack. Report LV Chordia source/runtime bytes separately from its fixed 28,730,939 checkpoint bytes. `--legacy-nvidia` adds CUDA 12.6 runtime wheels, and `--model-bundle` adds other reviewed model weights.
 
-Packaging prints a size report for the built `/app` tree and selected Python artifacts. Use that report to distinguish accidental copied build inputs from expected ML runtime payloads.
+Every Flatpak build writes an ignored structured size report at
+`packaging/flatpak/generated/size-report.json` (override with `FLATPAK_SIZE_REPORT_PATH`). It uses
+bytes, includes the compressed bundle when produced, installed `/app`, Python runtime,
+site-packages, separate wheel-input and source-archive entries, and descending `/app` top-level
+directories. Each Python input group reports `knownBytes`, `unknownCount`, and `complete`; a partial
+known-byte sum is never a total. A normal bundle
+fails at 2 GiB or more and meets the issue target only at 1.9 GiB or less; a 1.9–2 GiB bundle is
+buildable but leaves that target incomplete. `--no-bundle` records installed-size evidence with the
+compressed bundle unavailable and makes no bundle-compliance claim.

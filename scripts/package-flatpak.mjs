@@ -10,6 +10,7 @@ import {
   readdirSync,
   readSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -33,6 +34,10 @@ const frontendVersionInfoPath = path.join(flatpakRoot, "generated", "frontend-ve
 const appId = "com.tuneforge.desktop";
 const localRepoRemote = "tuneforge-local";
 const cacheSchema = "flatpak-cache-v1";
+const sizeReportSchema = "flatpak-size-v1";
+const gibibyte = 1024 ** 3;
+const flatpakBundleHardLimitBytes = 2 * gibibyte;
+const flatpakBundleTargetBytes = 1.9 * gibibyte;
 const buildDir = process.env.FLATPAK_BUILD_DIR ?? path.join(flatpakRoot, "build-dir");
 const repoDir = process.env.FLATPAK_REPO_DIR ?? path.join(flatpakRoot, "repo");
 const appVersion = JSON.parse(
@@ -360,7 +365,8 @@ export function compareCacheReports(cold, warm) {
   return { schema: cacheSchema, equivalent: errors.length === 0, errors, cold: cold.payload, warm: warm.payload };
 }
 
-function bytesToMiB(bytes) {
+function bytesToBinaryUnit(bytes) {
+  if (bytes >= gibibyte) return `${(bytes / gibibyte).toFixed(2)} GiB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 }
 
@@ -375,34 +381,96 @@ function directorySize(targetPath) {
   );
 }
 
-function printAppDirectorySizeReport() {
-  const appFilesRoot = path.join(buildDir, "files");
-  if (!existsSync(appFilesRoot)) {
-    return;
-  }
-  const rows = readdirSync(appFilesRoot)
+function directoryRows(rootPath, reportPath) {
+  if (!existsSync(rootPath)) return [];
+  return readdirSync(rootPath)
     .map((name) => {
-      const targetPath = path.join(appFilesRoot, name);
-      return { name: `/app/${name}`, size: directorySize(targetPath) };
+      const targetPath = path.join(rootPath, name);
+      return { path: `${reportPath}/${name}`, bytes: directorySize(targetPath) };
     })
-    .sort((left, right) => right.size - left.size)
-    .slice(0, 12);
-  process.stdout.write("Flatpak /app size report:\n");
-  for (const row of rows) {
-    process.stdout.write(`  ${bytesToMiB(row.size).padStart(10)} ${row.name}\n`);
+    .sort((left, right) => right.bytes - left.bytes || left.path.localeCompare(right.path))
+    .map(({ path: entryPath, bytes }) => ({ path: entryPath, bytes }));
+}
+
+function sizeEvidence(targetPath, reportPath) {
+  if (!existsSync(targetPath)) return { path: reportPath, available: false };
+  return { path: reportPath, available: true, bytes: directorySize(targetPath) };
+}
+
+function pythonArtifactEvidence(artifacts) {
+  const entries = artifacts
+    .map(({ name, version, fileName, size }) => ({ name, version, fileName, bytes: size ?? null }))
+    .sort((left, right) => (right.bytes ?? -1) - (left.bytes ?? -1) || left.name.localeCompare(right.name));
+  const unknownCount = entries.filter((entry) => entry.bytes === null).length;
+  return {
+    knownBytes: entries.reduce((total, entry) => total + (entry.bytes ?? 0), 0),
+    unknownCount,
+    complete: unknownCount === 0,
+    entries,
+  };
+}
+
+function compressedBundleEvidence(bundle, includeBundle) {
+  if (!includeBundle || !existsSync(bundle)) return { path: path.basename(bundle), available: false };
+  const stats = statSync(bundle);
+  if (!stats.isFile()) throw new Error(`Flatpak bundle target must be a regular file: ${bundle}`);
+  return { path: path.basename(bundle), available: true, bytes: stats.size };
+}
+
+export function flatpakSizeReport({
+  buildRoot = buildDir,
+  bundle = bundlePath,
+  wheelReportPath = path.join(flatpakRoot, "generated", "python-size-report.json"),
+  includeBundle = true,
+} = {}) {
+  const appFilesRoot = path.join(buildRoot, "files");
+  const pythonRuntimeRoot = path.join(appFilesRoot, "lib", "tuneforge", "backend", "python");
+  const sitePackagesRoot = path.join(appFilesRoot, "lib", "tuneforge", "backend", "site-packages");
+  const pythonArtifacts = existsSync(wheelReportPath) ? readJson(wheelReportPath) : [];
+  const compressedBundle = compressedBundleEvidence(bundle, includeBundle);
+  const report = {
+    schema: sizeReportSchema,
+    unit: "bytes",
+    compressedBundle,
+    installedApp: {
+      ...sizeEvidence(appFilesRoot, "/app"),
+      topLevelDirectories: directoryRows(appFilesRoot, "/app"),
+    },
+    pythonRuntime: sizeEvidence(pythonRuntimeRoot, "/app/lib/tuneforge/backend/python"),
+    sitePackages: sizeEvidence(sitePackagesRoot, "/app/lib/tuneforge/backend/site-packages"),
+    wheelInputs: pythonArtifactEvidence(pythonArtifacts.filter((entry) => entry.fileName.endsWith(".whl"))),
+    sourceArchives: pythonArtifactEvidence(pythonArtifacts.filter((entry) => !entry.fileName.endsWith(".whl"))),
+  };
+  if (compressedBundle.available) {
+    report.compliance = {
+      hardLimitBytes: flatpakBundleHardLimitBytes,
+      hardLimitPassed: compressedBundle.bytes < flatpakBundleHardLimitBytes,
+      targetBytes: flatpakBundleTargetBytes,
+      targetMet: compressedBundle.bytes <= flatpakBundleTargetBytes,
+    };
+  }
+  return report;
+}
+
+export function enforceFlatpakBundleSize(report) {
+  if (!report.compressedBundle.available) return;
+  if (report.compressedBundle.bytes >= flatpakBundleHardLimitBytes) {
+    throw new Error(`Flatpak bundle ${bytesToBinaryUnit(report.compressedBundle.bytes)} exceeds the 2 GiB hard limit.`);
+  }
+  if (!report.compliance.targetMet) {
+    process.stderr.write(
+      `Flatpak bundle ${bytesToBinaryUnit(report.compressedBundle.bytes)} is below the hard limit but misses the 1.9 GiB target; issue #490 remains incomplete.\n`,
+    );
   }
 }
 
-function printPythonWheelSizeReport() {
-  const reportPath = path.join(flatpakRoot, "generated", "python-size-report.json");
-  if (!existsSync(reportPath)) {
-    return;
+function printFlatpakSizeReport(report) {
+  process.stdout.write("Flatpak size report (binary bytes):\n");
+  for (const entry of report.installedApp.topLevelDirectories) {
+    process.stdout.write(`  ${bytesToBinaryUnit(entry.bytes).padStart(10)} ${entry.path}\n`);
   }
-  const entries = JSON.parse(readFileSync(reportPath, "utf8")).slice(0, 15);
-  process.stdout.write("Flatpak selected Python artifact report:\n");
-  for (const entry of entries) {
-    const size = typeof entry.size === "number" ? bytesToMiB(entry.size).padStart(10) : "unknown".padStart(10);
-    process.stdout.write(`  ${size} ${entry.name}==${entry.version} ${entry.fileName}\n`);
+  if (report.compressedBundle.available) {
+    process.stdout.write(`  ${bytesToBinaryUnit(report.compressedBundle.bytes).padStart(10)} ${report.compressedBundle.path}\n`);
   }
 }
 
@@ -537,9 +605,11 @@ function main() {
     writeJson(comparisonPath, comparison);
     if (!comparison.equivalent) throw new Error(comparison.errors.join(" "));
   }
-  printAppDirectorySizeReport();
-  printPythonWheelSizeReport();
   if (skipBundle) {
+    const sizeReportPath = process.env.FLATPAK_SIZE_REPORT_PATH ?? path.join(flatpakRoot, "generated", "size-report.json");
+    const sizeReport = flatpakSizeReport({ includeBundle: false });
+    writeJson(sizeReportPath, sizeReport);
+    printFlatpakSizeReport(sizeReport);
     process.stdout.write(`Flatpak repo exported to ${repoDir}\n`);
     process.stdout.write(
       `Install with: flatpak remote-add --user --if-not-exists --no-gpg-verify ${localRepoRemote} ${repoDir}\n`,
@@ -549,6 +619,11 @@ function main() {
   }
 
   run("flatpak", ["build-bundle", "--arch=x86_64", repoDir, bundlePath, appId, "stable"]);
+  const sizeReportPath = process.env.FLATPAK_SIZE_REPORT_PATH ?? path.join(flatpakRoot, "generated", "size-report.json");
+  const sizeReport = flatpakSizeReport();
+  writeJson(sizeReportPath, sizeReport);
+  printFlatpakSizeReport(sizeReport);
+  enforceFlatpakBundleSize(sizeReport);
 
   process.stdout.write(`Flatpak bundle written to ${bundlePath}\n`);
 }

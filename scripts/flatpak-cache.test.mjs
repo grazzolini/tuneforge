@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -8,6 +8,8 @@ import {
   cacheNamespace,
   compareCacheReports,
   digestBuildPayload,
+  enforceFlatpakBundleSize,
+  flatpakSizeReport,
   frontendModuleInputPaths,
   isValidPnpmCacheReport,
   normalizeGeneratedModelBundleManifest,
@@ -224,4 +226,83 @@ test("cold and warm reports compare payloads and propagate report errors", () =>
   );
   assert.equal(compareCacheReports(cold, { ...warm, errors: ["stats error"] }).equivalent, false);
   assert.equal(compareCacheReports(cold, { ...warm, namespace: "different" }).equivalent, false);
+});
+
+test("Flatpak size report is deterministic, byte-based, and has no compliance claim without a bundle", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "tuneforge-flatpak-size-"));
+  const buildRoot = path.join(root, "build");
+  const appRoot = path.join(buildRoot, "files");
+  const wheelReportPath = path.join(root, "python-size-report.json");
+  try {
+    mkdirSync(path.join(appRoot, "lib", "tuneforge", "backend", "python"), { recursive: true });
+    mkdirSync(path.join(appRoot, "lib", "tuneforge", "backend", "site-packages"), { recursive: true });
+    mkdirSync(path.join(appRoot, "share"), { recursive: true });
+    writeFileSync(path.join(appRoot, "lib", "tuneforge", "backend", "python", "python3.14"), "runtime");
+    writeFileSync(path.join(appRoot, "lib", "tuneforge", "backend", "site-packages", "torch.py"), "torch");
+    writeFileSync(path.join(appRoot, "share", "small"), "x");
+    writeFileSync(
+      wheelReportPath,
+      `${JSON.stringify([
+        { name: "torch", version: "2.13.0", fileName: "torch.whl", size: 12 },
+        { name: "torchaudio", version: "2.11.0", fileName: "torchaudio.whl", size: null },
+        { name: "source-only", version: "1.0.0", fileName: "source-only-1.0.0.tar.gz", size: 8 },
+      ])}\n`,
+    );
+
+    const first = flatpakSizeReport({ buildRoot, wheelReportPath, includeBundle: false });
+    const second = flatpakSizeReport({ buildRoot, wheelReportPath, includeBundle: false });
+    assert.deepEqual(second, first);
+    assert.equal(first.unit, "bytes");
+    assert.equal(first.compressedBundle.available, false);
+    assert.equal(first.compliance, undefined);
+    assert.equal(first.wheelInputs.knownBytes, 12);
+    assert.equal(first.wheelInputs.unknownCount, 1);
+    assert.equal(first.wheelInputs.complete, false);
+    assert.equal(first.wheelInputs.entries.length, 2);
+    assert.deepEqual(first.sourceArchives, {
+      knownBytes: 8,
+      unknownCount: 0,
+      complete: true,
+      entries: [{ name: "source-only", version: "1.0.0", fileName: "source-only-1.0.0.tar.gz", bytes: 8 }],
+    });
+    assert.deepEqual(first.installedApp.topLevelDirectories.map((entry) => entry.path), ["/app/lib", "/app/share"]);
+    assert.equal(first.pythonRuntime.path, "/app/lib/tuneforge/backend/python");
+    assert.equal(first.sitePackages.path, "/app/lib/tuneforge/backend/site-packages");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Flatpak bundle size gate hard-fails only at 2 GiB or above", () => {
+  const belowHardLimit = {
+    compressedBundle: { available: true, bytes: 2 * 1024 ** 3 - 1 },
+    compliance: { targetMet: true },
+  };
+  assert.doesNotThrow(() => enforceFlatpakBundleSize(belowHardLimit));
+  assert.throws(
+    () => enforceFlatpakBundleSize({ ...belowHardLimit, compressedBundle: { available: true, bytes: 2 * 1024 ** 3 } }),
+    /2 GiB hard limit/,
+  );
+});
+
+test("Flatpak bundle size follows a symlink target and requires a regular file", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "tuneforge-flatpak-bundle-"));
+  const target = path.join(root, "bundle.flatpak");
+  const link = path.join(root, "configured-output.flatpak");
+  try {
+    writeFileSync(target, "bundle-target");
+    symlinkSync(path.basename(target), link);
+    const report = flatpakSizeReport({ buildRoot: path.join(root, "build"), bundle: link });
+    assert.deepEqual(report.compressedBundle, {
+      path: "configured-output.flatpak",
+      available: true,
+      bytes: Buffer.byteLength("bundle-target"),
+    });
+    assert.throws(
+      () => flatpakSizeReport({ buildRoot: path.join(root, "build"), bundle: root }),
+      /must be a regular file/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

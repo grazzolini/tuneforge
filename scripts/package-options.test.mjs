@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  assertDefaultCpuTorchClosure,
   markerMatchesFlatpakTarget,
   mergeLegacyTorchPackageSets,
   parseUvLock,
@@ -303,12 +304,41 @@ test("legacy nvidia includes LV Chordia by default", () => {
   ]);
 });
 
-test("Flatpak legacy resolver requests compatible Torch 2.13 and torchaudio 2.11 CUDA 12.6 wheels", () => {
+test("Flatpak resolves official CPU Torch by default and preserves the legacy CUDA 12.6 resolver", () => {
   const generator = readFileSync(new URL("./generate-flatpak-sources.mjs", import.meta.url), "utf8");
 
   assert.match(generator, /"torch==2\.13\.0\\ntorchaudio==2\.11\.0\\n"/);
   assert.match(generator, /"--python-version",\n\s+"3\.14"/);
+  assert.match(generator, /"--torch-backend",\n\s+"cpu"/);
   assert.match(generator, /"--torch-backend",\n\s+"cu126"/);
+});
+
+test("Flatpak CPU resolver replaces the CUDA closure and rejects unwanted accelerator families", () => {
+  const basePackages = [
+    { name: "cuda-bindings", version: "13.2.0" },
+    { name: "nvidia-cublas-cu12", version: "13.0.0.19" },
+    { name: "triton", version: "3.4.0" },
+    { name: "torch", version: "2.10.0" },
+    { name: "torchaudio", version: "2.10.0" },
+    { name: "numpy", version: "1.26.4" },
+  ];
+  const cpuPackages = new Map(
+    [
+      { name: "torch", version: "2.13.0" },
+      { name: "torchaudio", version: "2.11.0" },
+    ].map((pkg) => [pkg.name, pkg]),
+  );
+
+  const merged = mergeLegacyTorchPackageSets(basePackages, cpuPackages);
+  assert.deepEqual(
+    Object.fromEntries(merged.map((pkg) => [pkg.name, pkg.version])),
+    { numpy: "1.26.4", torch: "2.13.0", torchaudio: "2.11.0" },
+  );
+  assert.doesNotThrow(() => assertDefaultCpuTorchClosure(merged));
+  assert.throws(
+    () => assertDefaultCpuTorchClosure([...merged, { name: "nvidia-cudnn-cu12", version: "9.0.0" }]),
+    /unsupported packages: nvidia-cudnn-cu12/,
+  );
 });
 
 test("Flatpak legacy resolver replaces the complete Torch CUDA package family", () => {

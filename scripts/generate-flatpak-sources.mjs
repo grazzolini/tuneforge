@@ -523,6 +523,31 @@ function resolveLegacyTorchPackages() {
   return parsePylock(readRequiredFile(pylockPath));
 }
 
+function resolveCpuTorchPackages() {
+  const requirementsPath = path.join(generatedRoot, "python-cpu-torch.in");
+  const pylockPath = path.join(generatedRoot, "pylock.cpu-torch.toml");
+  writeGeneratedFile("python-cpu-torch.in", "torch==2.13.0\ntorchaudio==2.11.0\n");
+  run("uv", [
+    "--quiet",
+    "pip",
+    "compile",
+    requirementsPath,
+    "--python-version",
+    "3.14",
+    "--python-platform",
+    "x86_64-manylinux_2_28",
+    "--torch-backend",
+    "cpu",
+    "--format",
+    "pylock.toml",
+    "--output-file",
+    pylockPath,
+    "--no-header",
+    "--no-annotate",
+  ]);
+  return parsePylock(readRequiredFile(pylockPath));
+}
+
 function isLegacyTorchPackage(packageName) {
   return (
     packageName === "torch" ||
@@ -549,12 +574,23 @@ export function mergeLegacyTorchPackageSets(packages, legacyPackages) {
   return Array.from(merged.values()).sort((left, right) => packageIdentity(left).localeCompare(packageIdentity(right)));
 }
 
+export function assertDefaultCpuTorchClosure(packages) {
+  const unwanted = packages
+    .map((pkg) => normalizePackageName(pkg.name))
+    .filter((name) => name === "triton" || name.startsWith("cuda-") || name.startsWith("nvidia-"));
+  if (unwanted.length > 0) {
+    throw new Error(`Default Flatpak CPU Torch closure includes unsupported packages: ${unwanted.join(", ")}`);
+  }
+}
+
 function generatePythonSources() {
   const lockedPackages = parseUvLock(readRequiredFile(uvLockPath));
   let runtimePackages = resolvePythonRuntimePackages(lockedPackages, { extras: selectedPythonExtras });
-  if (packageOptions.legacyNvidia) {
-    runtimePackages = mergeLegacyTorchPackageSets(runtimePackages, resolveLegacyTorchPackages());
-  }
+  runtimePackages = mergeLegacyTorchPackageSets(
+    runtimePackages,
+    packageOptions.legacyNvidia ? resolveLegacyTorchPackages() : resolveCpuTorchPackages(),
+  );
+  if (!packageOptions.legacyNvidia) assertDefaultCpuTorchClosure(runtimePackages);
   const buildRequirementNames = ["setuptools", "wheel", ...(packageOptions.lvChordia ? ["hatchling"] : [])];
   const buildPackages = resolveNamedPythonPackages(lockedPackages, buildRequirementNames);
   const runtimePackageNames = new Set(runtimePackages.map((pkg) => packageIdentity(pkg)));

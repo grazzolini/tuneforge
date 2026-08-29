@@ -24,6 +24,12 @@ This file is the source of truth for dependency and model-weight distribution po
 - **Source:** <https://github.com/microsoft/TypeScript>
 - **Notes:** Microsoft's TypeScript 7 CLI and official `@typescript/typescript6` compatibility package are build/development-only toolchain dependencies. They are not bundled into Tuneforge runtime artifacts.
 
+### sccache 0.17.0
+
+- **License:** Apache-2.0
+- **Source:** <https://github.com/mozilla/sccache/tree/v0.17.0>
+- **Notes:** The pinned x86_64 musl release binary accelerates Rust compilation during Linux Flatpak builds. It is build-only and is removed from the final Tuneforge package.
+
 ## Runtime Dependencies (bundled or required)
 
 ### Demucs

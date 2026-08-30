@@ -13,29 +13,54 @@ const OPTION_ALIASES = new Map([
   ["--advanced-beats", ["beatThis", true]],
   ["--no-beat-this", ["beatThis", false]],
   ["--no-advanced-beats", ["beatThis", false]],
-  ["--legacy-nvidia", ["legacyNvidia", true]],
   ["--model-bundle", ["modelBundle", true]],
   ["--no-bundle", ["noBundle", true]],
   ["--sandbox-data", ["sandboxData", true]],
 ]);
+
+export const FLATPAK_PROFILE_IDS = Object.freeze(["cpu", "nvidia", "legacy-nvidia"]);
+const FLATPAK_PROFILE_FLAGS = new Map(FLATPAK_PROFILE_IDS.map((profile) => [`--${profile}`, profile]));
+
+export function normalizeFlatpakProfiles(profiles = FLATPAK_PROFILE_IDS) {
+  if (!Array.isArray(profiles)) {
+    throw new Error("Flatpak profiles must be an array.");
+  }
+  const selected = new Set(profiles);
+  for (const profile of selected) {
+    if (!FLATPAK_PROFILE_IDS.includes(profile)) {
+      throw new Error(`Unknown Flatpak profile: ${profile}`);
+    }
+  }
+  selected.add("cpu");
+  return FLATPAK_PROFILE_IDS.filter((profile) => selected.has(profile));
+}
 
 export function defaultPackageOptions() {
   return {
     crema: "onnx",
     lvChordia: true,
     beatThis: true,
-    legacyNvidia: false,
     modelBundle: false,
     noBundle: false,
     sandboxData: false,
+    flatpakProfiles: [...FLATPAK_PROFILE_IDS],
   };
 }
 
 export function parsePackageOptions(argv, { platform } = {}) {
   const options = defaultPackageOptions();
   const cremaSelections = new Set();
+  const profileSelections = new Set();
   for (const arg of argv) {
     if (arg === "--") {
+      continue;
+    }
+    const flatpakProfile = FLATPAK_PROFILE_FLAGS.get(arg);
+    if (flatpakProfile) {
+      if (platform === "mac") {
+        throw new Error(`${arg} is only supported for Linux Flatpak packaging.`);
+      }
+      profileSelections.add(flatpakProfile);
       continue;
     }
     const option = OPTION_ALIASES.get(arg);
@@ -50,6 +75,9 @@ export function parsePackageOptions(argv, { platform } = {}) {
       }
     }
     options[optionName] = value;
+  }
+  if (profileSelections.size > 0) {
+    options.flatpakProfiles = normalizeFlatpakProfiles([...profileSelections]);
   }
   return validatePackageOptions(options, { platform });
 }
@@ -68,9 +96,6 @@ export function validatePackageOptions(rawOptions, { platform } = {}) {
   if (!["onnx", "none"].includes(crema)) {
     throw new Error("Advanced Chords package selection must be onnx or none.");
   }
-  if (platform === "mac" && options.legacyNvidia) {
-    throw new Error("--legacy-nvidia is only supported for Linux packaging.");
-  }
   if (platform === "mac" && options.noBundle) {
     throw new Error("--no-bundle is only supported for Linux Flatpak packaging.");
   }
@@ -81,10 +106,10 @@ export function validatePackageOptions(rawOptions, { platform } = {}) {
     crema,
     lvChordia: Boolean(options.lvChordia),
     beatThis: Boolean(options.beatThis),
-    legacyNvidia: Boolean(options.legacyNvidia),
     modelBundle: Boolean(options.modelBundle),
     noBundle: Boolean(options.noBundle),
     sandboxData: Boolean(options.sandboxData),
+    flatpakProfiles: normalizeFlatpakProfiles(options.flatpakProfiles),
   };
 }
 
@@ -112,12 +137,10 @@ export function packageOptionsToGeneratorArgs(options) {
   } else {
     args.push("--no-lv-chordia");
   }
-  if (validated.legacyNvidia) {
-    args.push("--legacy-nvidia");
-  }
   if (validated.modelBundle) {
     args.push("--model-bundle");
   }
+  args.push(...validated.flatpakProfiles.map((profile) => `--${profile}`));
   return args;
 }
 

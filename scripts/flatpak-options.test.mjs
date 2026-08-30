@@ -86,3 +86,34 @@ test("Advanced Chords package plan includes only pinned Crema ONNX files without
 test("Flatpak manifest allows the logind inhibition fallback", () => {
   assert.match(flatpakManifest, /^\s+- --system-talk-name=org\.freedesktop\.login1$/m);
 });
+
+test("Flatpak declares optional bundled Torch extension refs without widening devices", () => {
+  assert.match(flatpakManifest, /^app-id: com\.tuneforge\.desktop$/m);
+  const extensionSection = flatpakManifest.slice(
+    flatpakManifest.indexOf("add-extensions:"),
+    flatpakManifest.indexOf("finish-args:"),
+  );
+  assert.doesNotMatch(extensionSection, /^  com\.tuneforge\.desktop\.Torch:$/m);
+  assert.doesNotMatch(extensionSection, /^  com\.tuneforge\.desktop\.Torch\.(?:Nvidia|LegacyNvidia):$/m);
+  for (const profile of ["Nvidia", "LegacyNvidia"]) {
+    assert.match(flatpakManifest, new RegExp(`^  com\\.tuneforge\\.desktop\\.Torch\\.Stack\\.${profile}:$`, "m"));
+    assert.match(
+      flatpakManifest,
+      new RegExp(`directory: lib/tuneforge/backend/torch-extensions/${profile}`),
+    );
+    for (const role of ["Core", "Runtime"]) {
+      assert.match(
+        flatpakManifest,
+        new RegExp(`^  com\\.tuneforge\\.desktop\\.Torch\\.Stack\\.${profile}\\.${role}:$`, "m"),
+      );
+      assert.match(
+        flatpakManifest,
+        new RegExp(`directory: lib/tuneforge/backend/torch-extensions/${profile}/${role}`),
+      );
+    }
+  }
+  assert.equal((extensionSection.match(/^    bundle: true$/gm) ?? []).length, 4);
+  assert.equal((extensionSection.match(/^    merge-dirs: site-packages$/gm) ?? []).length, 2);
+  assert.match(flatpakManifest, /^  - --device=dri$/m);
+  assert.doesNotMatch(flatpakManifest, /--device=all|add-ld-path/);
+});

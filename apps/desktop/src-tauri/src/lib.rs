@@ -2,6 +2,7 @@ use std::{process::Child, sync::Mutex};
 
 #[cfg(not(target_os = "android"))]
 use std::{
+    collections::HashMap,
     env,
     ffi::OsString,
     fs,
@@ -14,6 +15,9 @@ use std::{
 };
 
 use tauri::{AppHandle, Manager, State};
+
+#[cfg(not(target_os = "android"))]
+use serde::{Deserialize, Serialize};
 
 mod file_dialog_scope;
 mod mobile_backend;
@@ -139,10 +143,143 @@ fn python_executable(python_root: &Path) -> PathBuf {
 }
 
 #[cfg(not(target_os = "android"))]
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TorchExtensionProfile {
+    schema_version: u8,
+    contract: String,
+    profile: String,
+    role: String,
+    ref_id: String,
+    python_abi: String,
+    torch_version: String,
+    torchaudio_version: String,
+    triton_version: String,
+    cuda_family: String,
+    pair_id: String,
+}
+
+#[cfg(not(target_os = "android"))]
+const TORCH_EXTENSION_POLICY_JSON: &str = r#"{
+  "schema_version": 2,
+  "contract": "profile-pair-v1",
+  "python_abi": "cp314",
+  "profiles": {
+    "Nvidia": {
+      "ref_prefix": "com.tuneforge.desktop.Torch.Stack.Nvidia",
+      "torch_version": "2.13.0",
+      "torchaudio_version": "2.11.0",
+      "triton_version": "3.7.1",
+      "cuda_family": "13",
+      "pair_id": "5655bca4c785fdcc9390b2c3ed9c58b6a69eeee3b383d2aaf3f7903bbec3abc2"
+    },
+    "LegacyNvidia": {
+      "ref_prefix": "com.tuneforge.desktop.Torch.Stack.LegacyNvidia",
+      "torch_version": "2.13.0+cu126",
+      "torchaudio_version": "2.11.0+cu126",
+      "triton_version": "3.7.1",
+      "cuda_family": "12.6",
+      "pair_id": "112a80543c933ef4903aca2c0afcca91f21012c9e4ee1164222b08f118eba4f2"
+    }
+  }
+}"#;
+
+#[cfg(not(target_os = "android"))]
+#[derive(Deserialize)]
+struct TorchExtensionPolicy {
+    schema_version: u8,
+    contract: String,
+    python_abi: String,
+    profiles: HashMap<String, TorchExtensionPolicyProfile>,
+}
+
+#[cfg(not(target_os = "android"))]
+#[derive(Deserialize)]
+struct TorchExtensionPolicyProfile {
+    ref_prefix: String,
+    torch_version: String,
+    torchaudio_version: String,
+    triton_version: String,
+    cuda_family: String,
+    pair_id: String,
+}
+
+#[cfg(not(target_os = "android"))]
+fn expected_torch_extension_profile(name: &str, role: &str) -> TorchExtensionProfile {
+    let policy = serde_json::from_str::<TorchExtensionPolicy>(TORCH_EXTENSION_POLICY_JSON)
+        .expect("valid embedded Torch extension policy");
+    let profile = policy
+        .profiles
+        .get(name)
+        .expect("fixed Torch extension name");
+    let ref_role = match role {
+        "core" => "Core",
+        "runtime" => "Runtime",
+        _ => unreachable!("fixed Torch extension role"),
+    };
+    TorchExtensionProfile {
+        schema_version: policy.schema_version,
+        contract: policy.contract.clone(),
+        profile: name.to_string(),
+        role: role.to_string(),
+        ref_id: format!("{}.{ref_role}", profile.ref_prefix),
+        python_abi: policy.python_abi.clone(),
+        torch_version: profile.torch_version.clone(),
+        torchaudio_version: profile.torchaudio_version.clone(),
+        triton_version: profile.triton_version.clone(),
+        cuda_family: profile.cuda_family.clone(),
+        pair_id: profile.pair_id.clone(),
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn valid_torch_extension_site_packages(root: &Path, name: &str) -> Option<PathBuf> {
+    let site_packages = root.join("site-packages");
+    let core = root.join("Core");
+    let runtime = root.join("Runtime");
+    if !root.is_dir()
+        || !site_packages.is_dir()
+        || !core.join("site-packages").is_dir()
+        || !runtime.join("site-packages").is_dir()
+    {
+        return None;
+    }
+    let core_profile =
+        serde_json::from_slice::<TorchExtensionProfile>(&fs::read(core.join("profile.json")).ok()?)
+            .ok()?;
+    let runtime_profile = serde_json::from_slice::<TorchExtensionProfile>(
+        &fs::read(runtime.join("profile.json")).ok()?,
+    )
+    .ok()?;
+    (core_profile == expected_torch_extension_profile(name, "core")
+        && runtime_profile == expected_torch_extension_profile(name, "runtime"))
+    .then_some(site_packages)
+}
+
+#[cfg(not(target_os = "android"))]
+fn select_torch_extension_site_packages(nvidia_root: &Path, legacy_root: &Path) -> Option<PathBuf> {
+    valid_torch_extension_site_packages(nvidia_root, "Nvidia")
+        .or_else(|| valid_torch_extension_site_packages(legacy_root, "LegacyNvidia"))
+}
+
+#[cfg(not(target_os = "android"))]
+fn mounted_torch_extension_site_packages() -> Option<PathBuf> {
+    let root = Path::new("/app/lib/tuneforge/backend/torch-extensions");
+    select_torch_extension_site_packages(&root.join("Nvidia"), &root.join("LegacyNvidia"))
+}
+
+#[cfg(not(target_os = "android"))]
 fn build_python_path(backend_root: &Path) -> Result<String, Box<dyn std::error::Error>> {
     let site_packages = backend_root.join("site-packages");
     let backend_source = backend_root.join("src");
-    let joined = env::join_paths([site_packages, backend_source])?;
+    let mut paths = Vec::new();
+    if cfg!(target_os = "linux") {
+        if let Some(extension) = mounted_torch_extension_site_packages() {
+            paths.push(extension);
+        }
+    }
+    paths.extend([site_packages, backend_source]);
+    let joined = env::join_paths(paths)?;
     Ok(joined.to_string_lossy().into_owned())
 }
 
@@ -508,6 +645,174 @@ mod tests {
         let paths = append_unique_paths(vec![first.clone()], [second.clone(), first.clone()]);
 
         assert_eq!(paths, vec![first, second]);
+    }
+
+    fn torch_extension_fixture(root: &Path, name: &str, valid: bool) -> PathBuf {
+        let extension = root.join(name);
+        fs::create_dir_all(extension.join("site-packages")).expect("create extension fixture");
+        for role in ["core", "runtime"] {
+            let role_dir = extension.join(if role == "core" { "Core" } else { "Runtime" });
+            fs::create_dir_all(role_dir.join("site-packages"))
+                .expect("create extension role fixture");
+            let profile = if valid {
+                serde_json::to_vec(&expected_torch_extension_profile(name, role))
+                    .expect("serialize profile")
+            } else {
+                br#"{"schema_version":0}"#.to_vec()
+            };
+            fs::write(role_dir.join("profile.json"), profile).expect("write extension marker");
+        }
+        extension
+    }
+
+    fn torch_test_root(name: &str) -> PathBuf {
+        let root = env::temp_dir().join(format!("tuneforge-torch-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create torch test root");
+        root
+    }
+
+    #[test]
+    fn torch_extension_markers_match_literal_profile_role_contracts() {
+        for (profile, role, ref_id, pair_id) in [
+            (
+                "Nvidia",
+                "core",
+                "com.tuneforge.desktop.Torch.Stack.Nvidia.Core",
+                "5655bca4c785fdcc9390b2c3ed9c58b6a69eeee3b383d2aaf3f7903bbec3abc2",
+            ),
+            (
+                "Nvidia",
+                "runtime",
+                "com.tuneforge.desktop.Torch.Stack.Nvidia.Runtime",
+                "5655bca4c785fdcc9390b2c3ed9c58b6a69eeee3b383d2aaf3f7903bbec3abc2",
+            ),
+            (
+                "LegacyNvidia",
+                "core",
+                "com.tuneforge.desktop.Torch.Stack.LegacyNvidia.Core",
+                "112a80543c933ef4903aca2c0afcca91f21012c9e4ee1164222b08f118eba4f2",
+            ),
+            (
+                "LegacyNvidia",
+                "runtime",
+                "com.tuneforge.desktop.Torch.Stack.LegacyNvidia.Runtime",
+                "112a80543c933ef4903aca2c0afcca91f21012c9e4ee1164222b08f118eba4f2",
+            ),
+        ] {
+            let marker = expected_torch_extension_profile(profile, role);
+            assert_eq!(marker.schema_version, 2);
+            assert_eq!(marker.contract, "profile-pair-v1");
+            assert_eq!(marker.profile, profile);
+            assert_eq!(marker.role, role);
+            assert_eq!(marker.ref_id, ref_id);
+            assert_eq!(marker.pair_id, pair_id);
+        }
+    }
+
+    #[test]
+    fn torch_extension_selection_uses_cpu_without_extensions() {
+        let root = torch_test_root("none");
+        assert_eq!(
+            select_torch_extension_site_packages(&root.join("nvidia"), &root.join("legacy")),
+            None
+        );
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn torch_extension_selection_accepts_nvidia_only() {
+        let root = torch_test_root("nvidia");
+        let nvidia = torch_extension_fixture(&root, "Nvidia", true);
+        assert_eq!(
+            select_torch_extension_site_packages(&nvidia, &root.join("legacy")),
+            Some(nvidia.join("site-packages"))
+        );
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn torch_extension_selection_rejects_partial_profile() {
+        for missing_role in ["Core", "Runtime"] {
+            let root = torch_test_root(&format!("partial-{missing_role}"));
+            let nvidia = torch_extension_fixture(&root, "Nvidia", true);
+            fs::remove_dir_all(nvidia.join(missing_role)).expect("remove role fixture");
+            assert_eq!(
+                select_torch_extension_site_packages(&nvidia, &root.join("legacy")),
+                None
+            );
+            fs::remove_dir_all(root).expect("remove fixture");
+        }
+    }
+
+    #[test]
+    fn torch_extension_selection_accepts_legacy_only() {
+        let root = torch_test_root("legacy");
+        let legacy = torch_extension_fixture(&root, "LegacyNvidia", true);
+        assert_eq!(
+            select_torch_extension_site_packages(&root.join("nvidia"), &legacy),
+            Some(legacy.join("site-packages"))
+        );
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn torch_extension_selection_prefers_nvidia_when_both_are_valid() {
+        let root = torch_test_root("both");
+        let nvidia = torch_extension_fixture(&root, "Nvidia", true);
+        let legacy = torch_extension_fixture(&root, "LegacyNvidia", true);
+        assert_eq!(
+            select_torch_extension_site_packages(&nvidia, &legacy),
+            Some(nvidia.join("site-packages"))
+        );
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn torch_extension_selection_rejects_mismatched_pair() {
+        let root = torch_test_root("mismatched");
+        let nvidia = torch_extension_fixture(&root, "Nvidia", true);
+        let mut mismatched = expected_torch_extension_profile("Nvidia", "runtime");
+        mismatched.pair_id = "b".repeat(64);
+        fs::write(
+            nvidia.join("Runtime").join("profile.json"),
+            serde_json::to_vec(&mismatched).expect("serialize mismatched marker"),
+        )
+        .expect("write mismatched marker");
+        assert_eq!(
+            select_torch_extension_site_packages(&nvidia, &root.join("legacy")),
+            None
+        );
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn torch_extension_selection_rejects_cross_profile_pair() {
+        let root = torch_test_root("cross-profile");
+        let nvidia = torch_extension_fixture(&root, "Nvidia", true);
+        fs::write(
+            nvidia.join("Runtime").join("profile.json"),
+            serde_json::to_vec(&expected_torch_extension_profile("LegacyNvidia", "runtime"))
+                .expect("serialize cross-profile marker"),
+        )
+        .expect("write cross-profile marker");
+        assert_eq!(
+            select_torch_extension_site_packages(&nvidia, &root.join("legacy")),
+            None
+        );
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn torch_extension_selection_falls_through_malformed_nvidia_marker() {
+        let root = torch_test_root("malformed");
+        let nvidia = torch_extension_fixture(&root, "Nvidia", false);
+        let legacy = torch_extension_fixture(&root, "LegacyNvidia", true);
+        assert_eq!(
+            select_torch_extension_site_packages(&nvidia, &legacy),
+            Some(legacy.join("site-packages"))
+        );
+        fs::remove_dir_all(root).expect("remove fixture");
     }
 
     #[test]

@@ -48,13 +48,13 @@ This file is the source of truth for dependency and model-weight distribution po
 
 - **License:** BSD-3-Clause
 - **Source:** <https://github.com/pytorch/pytorch>
-- **Notes:** The default Linux Flatpak resolves official CPU-only PyTorch 2.13.0 and torchaudio 2.11.0 wheels for Python 3.14 x86_64 manylinux. The `--legacy-nvidia` Linux package option retains the NVIDIA CUDA 12.6 wheel closure for older supported NVIDIA GPUs. Its local verifier confirms wheel and CUDA-runtime versions, not GPU inference on every driver/hardware combination.
+- **Notes:** The Linux Flatpak application resolves the official CPU Torch base. Optional NVIDIA and legacy NVIDIA Core/Runtime extension pairs redistribute separate locked acceleration and compatibility closures. Marker and dependency checks do not prove inference on every driver/hardware combination.
 
 ### NVIDIA CUDA runtime wheels
 
 - **License:** NVIDIA Software License Agreement and related NVIDIA component terms; see each wheel's bundled license metadata.
-- **Source:** <https://download.pytorch.org/whl/cu126/> and NVIDIA CUDA component packages on PyPI.
-- **Notes:** Only the `--legacy-nvidia` Linux package option redistributes the CUDA 12.6 runtime wheel set pulled by PyTorch 2.13.0+cu126 and torchaudio 2.11.0+cu126, including cuBLAS, cuDNN, cuFFT, cuSOLVER, cuSPARSE, NCCL, NVRTC, NVTX, and related runtime libraries. Default Flatpaks reject CUDA, NVIDIA, and Triton packages from their generated Python closure.
+- **Source:** <https://download.pytorch.org/whl/> and NVIDIA CUDA component packages on PyPI.
+- **Notes:** The `com.tuneforge.desktop.Torch.Stack.Nvidia` and `com.tuneforge.desktop.Torch.Stack.LegacyNvidia` profiles each use a Core extension for their Torch-family binaries and a matching Runtime extension for the locked CUDA/NVIDIA closure, including cuBLAS, cuDNN, cuFFT, cuSOLVER, cuSPARSE, NCCL, NVRTC, NVTX, and related runtime libraries. The CPU application rejects CUDA, NVIDIA, and Triton packages.
 
 ### librosa
 

@@ -14,10 +14,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { writeBuildInfoFile, writeResolvedBuildInfoFile } from "./build-info.mjs";
 import {
+  normalizeFlatpakProfiles,
   packageOptionsEnvironment,
   packageOptionsToGeneratorArgs,
   parsePackageOptions,
@@ -32,6 +33,20 @@ const baseManifestPath = path.join(flatpakRoot, "com.tuneforge.desktop.yml");
 const flatpakVersionInfoPath = path.join(flatpakRoot, "generated", "version.json");
 const frontendVersionInfoPath = path.join(flatpakRoot, "generated", "frontend-version.json");
 const appId = "com.tuneforge.desktop";
+const nvidiaTorchCoreRef = `${appId}.Torch.Stack.Nvidia.Core`;
+const nvidiaTorchRuntimeRef = `${appId}.Torch.Stack.Nvidia.Runtime`;
+const legacyTorchCoreRef = `${appId}.Torch.Stack.LegacyNvidia.Core`;
+const legacyTorchRuntimeRef = `${appId}.Torch.Stack.LegacyNvidia.Runtime`;
+const torchProfileArtifacts = {
+  nvidia: [
+    { id: "nvidia-core", refId: nvidiaTorchCoreRef, module: "nvidia-torch-core-extension" },
+    { id: "nvidia-runtime", refId: nvidiaTorchRuntimeRef, module: "nvidia-torch-runtime-extension" },
+  ],
+  "legacy-nvidia": [
+    { id: "legacy-nvidia-core", refId: legacyTorchCoreRef, module: "legacy-nvidia-torch-core-extension" },
+    { id: "legacy-nvidia-runtime", refId: legacyTorchRuntimeRef, module: "legacy-nvidia-torch-runtime-extension" },
+  ],
+};
 const localRepoRemote = "tuneforge-local";
 const cacheSchema = "flatpak-cache-v1";
 const sizeReportSchema = "flatpak-size-v1";
@@ -43,9 +58,37 @@ const repoDir = process.env.FLATPAK_REPO_DIR ?? path.join(flatpakRoot, "repo");
 const appVersion = JSON.parse(
   readFileSync(path.join(workspaceRoot, "apps", "desktop", "src-tauri", "tauri.conf.json"), "utf8"),
 ).version;
-const bundlePath =
-  process.env.FLATPAK_BUNDLE_PATH ??
-  path.join(flatpakRoot, `Tuneforge_${appVersion}_x86_64.flatpak`);
+const defaultBundlePath = path.join(flatpakRoot, `Tuneforge_${appVersion}_x86_64.flatpak`);
+const defaultNvidiaTorchCoreBundlePath =
+  path.join(flatpakRoot, `Tuneforge_${appVersion}_Torch_Nvidia_Core_x86_64.flatpak`);
+const defaultNvidiaTorchRuntimeBundlePath =
+  path.join(flatpakRoot, `Tuneforge_${appVersion}_Torch_Nvidia_Runtime_x86_64.flatpak`);
+const defaultLegacyTorchCoreBundlePath =
+  path.join(flatpakRoot, `Tuneforge_${appVersion}_Torch_LegacyNvidia_Core_x86_64.flatpak`);
+const defaultLegacyTorchRuntimeBundlePath =
+  path.join(flatpakRoot, `Tuneforge_${appVersion}_Torch_LegacyNvidia_Runtime_x86_64.flatpak`);
+const bundlePath = process.env.FLATPAK_BUNDLE_PATH ?? defaultBundlePath;
+const nvidiaTorchCoreBundlePath = process.env.FLATPAK_NVIDIA_TORCH_CORE_BUNDLE_PATH ??
+  defaultNvidiaTorchCoreBundlePath;
+const nvidiaTorchRuntimeBundlePath = process.env.FLATPAK_NVIDIA_TORCH_RUNTIME_BUNDLE_PATH ??
+  defaultNvidiaTorchRuntimeBundlePath;
+const legacyTorchCoreBundlePath = process.env.FLATPAK_LEGACY_TORCH_CORE_BUNDLE_PATH ??
+  defaultLegacyTorchCoreBundlePath;
+const legacyTorchRuntimeBundlePath = process.env.FLATPAK_LEGACY_TORCH_RUNTIME_BUNDLE_PATH ??
+  defaultLegacyTorchRuntimeBundlePath;
+const currentDefaultBundlePaths = [
+  defaultBundlePath,
+  defaultNvidiaTorchCoreBundlePath,
+  defaultNvidiaTorchRuntimeBundlePath,
+  defaultLegacyTorchCoreBundlePath,
+  defaultLegacyTorchRuntimeBundlePath,
+];
+const obsoleteDefaultBundlePaths = [
+  path.join(flatpakRoot, `Tuneforge_${appVersion}_Torch_Nvidia_x86_64.flatpak`),
+  path.join(flatpakRoot, `Tuneforge_${appVersion}_Torch_LegacyNvidia_x86_64.flatpak`),
+];
+const sha256SumsPath =
+  process.env.FLATPAK_SHA256SUMS_PATH ?? path.join(flatpakRoot, "generated", "SHA256SUMS");
 export const frontendModuleInputPaths = [
   "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "scripts/build-info.mjs",
   "packaging/flatpak/seed-pnpm-store.mjs", "apps/desktop/package.json",
@@ -90,9 +133,6 @@ function generatedManifestPath(options, cacheRoot, namespace, frontendGitRef) {
     "@@TUNEFORGE_FRONTEND_GIT_REF@@",
     frontendGitRef.replaceAll("'", "''"),
   );
-  if (options.legacyNvidia) {
-    manifest = replaceManifestFragment(manifest, "  - --device=dri\n", "  - --device=all\n");
-  }
   if (options.sandboxData) {
     manifest = replaceManifestFragment(manifest, "  - --filesystem=xdg-data/tuneforge:create\n", "");
     manifest = replaceManifestFragment(
@@ -198,7 +238,38 @@ export function manifestWithPackageOptions(manifest, options) {
         "      - mv /app/lib/tuneforge/backend/site-packages/share/lv-chordia/cache_data /app/lib/tuneforge/backend/python/share/lv-chordia/cache_data\n",
     );
   }
+  const selectedProfiles = new Set(normalizeFlatpakProfiles(options.flatpakProfiles));
+  for (const [profile, artifacts] of Object.entries(torchProfileArtifacts)) {
+    if (selectedProfiles.has(profile)) continue;
+    for (const { module, refId } of artifacts) {
+      result = removeManifestModule(result, module);
+      result = disableManifestExtensionBundle(result, refId);
+    }
+  }
   return result;
+}
+
+function removeManifestModule(contents, moduleName) {
+  const marker = `  - name: ${moduleName}\n`;
+  const start = contents.indexOf(marker);
+  if (start < 0) throw new Error(`Could not find Flatpak module: ${moduleName}`);
+  const next = contents.indexOf("\n  - name: ", start + marker.length);
+  if (next < 0) throw new Error(`Could not find module after Flatpak module: ${moduleName}`);
+  return contents.slice(0, start) + contents.slice(next + 1);
+}
+
+function disableManifestExtensionBundle(contents, refId) {
+  const marker = `  ${refId}:\n`;
+  const start = contents.indexOf(marker);
+  if (start < 0) throw new Error(`Could not find Flatpak extension declaration: ${refId}`);
+  const following = contents.slice(start + marker.length);
+  const next = following.search(/\n  \S/);
+  const end = next < 0 ? contents.length : start + marker.length + next;
+  const block = contents.slice(start, end);
+  if (!block.includes("    bundle: true\n")) {
+    throw new Error(`Could not find bundled Flatpak extension declaration: ${refId}`);
+  }
+  return contents.slice(0, start) + block.replace("    bundle: true\n", "") + contents.slice(end);
 }
 
 function replaceManifestFragment(contents, search, replacement) {
@@ -261,13 +332,15 @@ export function resolveFrontendGitRef({
 }
 
 export function cacheNamespace(options, version = appVersion) {
+  const buildOptions = { ...options, noBundle: false };
   const inputs = {
     schema: cacheSchema,
     app: `${appId}@${version}`,
     arch: "x86_64",
     runtime: "org.gnome.Platform/50",
     tools: "node26-llvm20-rust-stable-pnpm11.22.0-sccache0.17.0",
-    profile: packageOptionsEnvironment(options).TUNEFORGE_PACKAGE_OPTIONS,
+    profile: packageOptionsEnvironment(buildOptions).TUNEFORGE_PACKAGE_OPTIONS,
+    selectedProfiles: normalizeFlatpakProfiles(options.flatpakProfiles),
   };
   const digest = createHash("sha256").update(JSON.stringify(inputs)).digest("hex").slice(0, 16);
   return { name: `${cacheSchema}-${digest}`, inputs };
@@ -358,11 +431,110 @@ export function digestBuildPayload(root) {
   };
 }
 
+const knownFlatpakOutputRefs = [
+  { id: "cpu", ref: `app/${appId}/x86_64/stable` },
+  { id: "nvidia-core", ref: `runtime/${nvidiaTorchCoreRef}/x86_64/stable` },
+  { id: "nvidia-runtime", ref: `runtime/${nvidiaTorchRuntimeRef}/x86_64/stable` },
+  { id: "legacy-nvidia-core", ref: `runtime/${legacyTorchCoreRef}/x86_64/stable` },
+  { id: "legacy-nvidia-runtime", ref: `runtime/${legacyTorchRuntimeRef}/x86_64/stable` },
+];
+const obsoleteFlatpakOutputRefs = [
+  `runtime/${appId}.Torch.Nvidia/x86_64/stable`,
+  `runtime/${appId}.Torch.LegacyNvidia/x86_64/stable`,
+];
+
+export function selectedFlatpakOutputRefs(profiles) {
+  const selected = new Set(normalizeFlatpakProfiles(profiles));
+  return knownFlatpakOutputRefs.filter(({ id }) =>
+    id === "cpu" || selected.has(id.startsWith("legacy-") ? "legacy-nvidia" : "nvidia"));
+}
+
+function listOstreeRefs(repoPath) {
+  if (!existsSync(path.join(repoPath, "config"))) return [];
+  const result = spawnSync("ostree", [`--repo=${repoPath}`, "refs"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error?.code === "ENOENT") throw new Error("ostree is required to reconcile Flatpak output refs.");
+  if (result.status !== 0) throw new Error("Could not list Flatpak repository refs.");
+  return result.stdout.trim().split("\n").filter(Boolean);
+}
+
+function deleteOstreeRef(repoPath, ref) {
+  const result = spawnSync("ostree", [`--repo=${repoPath}`, "refs", "--delete", ref], {
+    stdio: "ignore",
+  });
+  if (result.error?.code === "ENOENT") throw new Error("ostree is required to reconcile Flatpak output refs.");
+  if (result.status !== 0) throw new Error(`Could not delete stale Flatpak output ref ${ref}`);
+}
+
+export function reconcileFlatpakOutputRefs({
+  repoPath = repoDir,
+  listRefs = listOstreeRefs,
+  deleteRef = deleteOstreeRef,
+} = {}) {
+  const present = new Set(listRefs(repoPath));
+  for (const ref of [
+    ...knownFlatpakOutputRefs.map((output) => output.ref),
+    ...obsoleteFlatpakOutputRefs,
+  ]) {
+    if (present.has(ref)) deleteRef(repoPath, ref);
+  }
+}
+
+function resolveOstreeCommit(repoPath, ref) {
+  const result = spawnSync("ostree", [`--repo=${repoPath}`, "rev-parse", ref], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error?.code === "ENOENT") throw new Error("ostree is required to verify Flatpak output refs.");
+  if (result.status !== 0) throw new Error(`Could not resolve Flatpak output ref ${ref}`);
+  return result.stdout.trim();
+}
+
+export function verifyFlatpakOutputRefs({
+  repoPath = repoDir,
+  selectedProfiles,
+  listRefs = listOstreeRefs,
+  resolveCommit = resolveOstreeCommit,
+} = {}) {
+  const expected = selectedFlatpakOutputRefs(selectedProfiles);
+  const expectedRefs = new Set(expected.map(({ ref }) => ref));
+  const present = new Set(listRefs(repoPath));
+  for (const { ref } of expected) {
+    if (!present.has(ref)) throw new Error(`Missing selected Flatpak output ref ${ref}`);
+  }
+  for (const { ref } of knownFlatpakOutputRefs) {
+    if (!expectedRefs.has(ref) && present.has(ref)) {
+      throw new Error(`Stale unselected Flatpak output ref ${ref}`);
+    }
+  }
+  for (const ref of obsoleteFlatpakOutputRefs) {
+    if (present.has(ref)) throw new Error(`Stale obsolete Flatpak output ref ${ref}`);
+  }
+  return expected.map(({ id, ref }) => {
+    const commitSha256 = resolveCommit(repoPath, ref);
+    if (!/^[a-f0-9]{64}$/.test(commitSha256)) {
+      throw new Error(`Malformed commit for Flatpak output ref ${ref}`);
+    }
+    return { id, ref, commitSha256 };
+  });
+}
+
 export function compareCacheReports(cold, warm) {
   const errors = [...(cold.errors ?? []), ...(warm.errors ?? [])];
   if (cold.namespace !== warm.namespace) errors.push("Cold and warm cache namespaces differ.");
   if (cold.payload?.sha256 !== warm.payload?.sha256) errors.push("Cold and warm payload digests differ.");
-  return { schema: cacheSchema, equivalent: errors.length === 0, errors, cold: cold.payload, warm: warm.payload };
+  if (JSON.stringify(cold.refCommits) !== JSON.stringify(warm.refCommits)) {
+    errors.push("Cold and warm Flatpak output ref commits differ.");
+  }
+  return {
+    schema: cacheSchema,
+    equivalent: errors.length === 0,
+    errors,
+    cold: { payload: cold.payload, refCommits: cold.refCommits },
+    warm: { payload: warm.payload, refCommits: warm.refCommits },
+  };
 }
 
 function bytesToBinaryUnit(bytes) {
@@ -459,9 +631,161 @@ export function enforceFlatpakBundleSize(report) {
   }
   if (!report.compliance.targetMet) {
     process.stderr.write(
-      `Flatpak bundle ${bytesToBinaryUnit(report.compressedBundle.bytes)} is below the hard limit but misses the 1.9 GiB target; issue #490 remains incomplete.\n`,
+      `Flatpak bundle ${bytesToBinaryUnit(report.compressedBundle.bytes)} is below the hard limit but misses the 1.9 GiB target.\n`,
     );
   }
+}
+
+export function flatpakBundlePlan({
+  applicationBundle = bundlePath,
+  nvidiaCoreBundle = nvidiaTorchCoreBundlePath,
+  nvidiaRuntimeBundle = nvidiaTorchRuntimeBundlePath,
+  legacyCoreBundle = legacyTorchCoreBundlePath,
+  legacyRuntimeBundle = legacyTorchRuntimeBundlePath,
+  selectedProfiles = ["cpu", "nvidia", "legacy-nvidia"],
+} = {}) {
+  const selected = new Set(normalizeFlatpakProfiles(selectedProfiles));
+  const plan = [
+    { refId: appId, runtime: false, path: applicationBundle },
+  ];
+  if (selected.has("nvidia")) plan.push(
+    { refId: nvidiaTorchCoreRef, runtime: true, path: nvidiaCoreBundle },
+    { refId: nvidiaTorchRuntimeRef, runtime: true, path: nvidiaRuntimeBundle },
+  );
+  if (selected.has("legacy-nvidia")) plan.push(
+    { refId: legacyTorchCoreRef, runtime: true, path: legacyCoreBundle },
+    { refId: legacyTorchRuntimeRef, runtime: true, path: legacyRuntimeBundle },
+  );
+  validateFlatpakArtifactPaths(plan.map((artifact) => artifact.path));
+  return plan;
+}
+
+export function validateFlatpakArtifactPaths(artifacts) {
+  const resolved = artifacts.map((artifact) => path.resolve(artifact));
+  const duplicatePath = resolved.find((artifact, index) => resolved.indexOf(artifact) !== index);
+  if (duplicatePath) throw new Error(`Flatpak bundle output paths must be unique: ${duplicatePath}`);
+  const basenames = artifacts.map((artifact) => path.basename(artifact));
+  const duplicateBasename = basenames.find((artifact, index) => basenames.indexOf(artifact) !== index);
+  if (duplicateBasename) {
+    throw new Error(`Flatpak checksum artifact basenames must be unique: ${duplicateBasename}`);
+  }
+}
+
+export function cleanupFlatpakBundleOutputs({
+  bundlePlan = flatpakBundlePlan(),
+  checksumPath = sha256SumsPath,
+  obsoleteBundlePaths = [...currentDefaultBundlePaths, ...obsoleteDefaultBundlePaths],
+} = {}) {
+  validateFlatpakArtifactPaths(bundlePlan.map((artifact) => artifact.path));
+  for (const artifact of bundlePlan) rmSync(artifact.path, { force: true });
+  for (const artifact of obsoleteBundlePaths) rmSync(artifact, { force: true });
+  rmSync(checksumPath, { force: true });
+}
+
+export async function withFreshFlatpakBundleOutputs(operation, options = {}) {
+  cleanupFlatpakBundleOutputs(options);
+  try {
+    return await operation();
+  } catch (error) {
+    cleanupFlatpakBundleOutputs(options);
+    throw error;
+  }
+}
+
+export function buildFlatpakBundles({
+  bundlePlan = flatpakBundlePlan(),
+  repository = repoDir,
+  concurrency = 2,
+  spawnProcess = spawn,
+} = {}) {
+  validateFlatpakArtifactPaths(bundlePlan.map((artifact) => artifact.path));
+  if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error("Bundle concurrency must be a positive integer");
+  return new Promise((resolve, reject) => {
+    const active = new Set();
+    let next = 0;
+    let failure;
+
+    const finish = () => {
+      if (active.size > 0) return;
+      if (failure) reject(failure);
+      else if (next === bundlePlan.length) resolve();
+    };
+    const fail = (error) => {
+      if (!failure) {
+        failure = error;
+        next = bundlePlan.length;
+        for (const child of active) child.kill("SIGTERM");
+      }
+      finish();
+    };
+    const launch = () => {
+      while (!failure && active.size < concurrency && next < bundlePlan.length) {
+        const artifact = bundlePlan[next++];
+        const args = [
+          "build-bundle",
+          ...(artifact.runtime ? ["--runtime"] : []),
+          "--arch=x86_64",
+          repository,
+          artifact.path,
+          artifact.refId,
+          "stable",
+        ];
+        const child = spawnProcess("flatpak", args, {
+          cwd: workspaceRoot,
+          stdio: "inherit",
+          env: process.env,
+        });
+        active.add(child);
+        let settled = false;
+        const settle = (error) => {
+          if (settled) return;
+          settled = true;
+          active.delete(child);
+          if (error) fail(error);
+          else {
+            launch();
+            finish();
+          }
+        };
+        child.once("error", (error) => settle(
+          error?.code === "ENOENT" ? new Error("Required command not found: flatpak") : error,
+        ));
+        child.once("exit", (status, signal) => settle(
+          status === 0
+            ? undefined
+            : new Error(`flatpak build-bundle for ${artifact.refId} failed (${signal ?? `status ${status}`})`),
+        ));
+      }
+      finish();
+    };
+    launch();
+  });
+}
+
+export function flatpakArtifactSizeReport(bundle) {
+  const compressedBundle = compressedBundleEvidence(bundle, true);
+  return {
+    schema: sizeReportSchema,
+    unit: "bytes",
+    compressedBundle,
+    compliance: {
+      hardLimitBytes: flatpakBundleHardLimitBytes,
+      hardLimitPassed: compressedBundle.bytes < flatpakBundleHardLimitBytes,
+      targetBytes: flatpakBundleTargetBytes,
+      targetMet: compressedBundle.bytes <= flatpakBundleTargetBytes,
+    },
+  };
+}
+
+export function writeFlatpakChecksums(artifacts, outputPath = sha256SumsPath) {
+  validateFlatpakArtifactPaths(artifacts);
+  const lines = artifacts
+    .map((artifact) => ({ name: path.basename(artifact), sha256: fileSha256(artifact) }))
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map(({ name, sha256 }) => `${sha256}  ${name}`);
+  mkdirSync(path.dirname(outputPath), { recursive: true });
+  writeFileSync(outputPath, `${lines.join("\n")}\n`);
+  return lines;
 }
 
 function printFlatpakSizeReport(report) {
@@ -496,7 +820,7 @@ export function isValidPnpmCacheReport(pnpm) {
   );
 }
 
-function cacheReport({ namespace, inputs, cacheRoot, timings, evidence }) {
+function cacheReport({ namespace, inputs, cacheRoot, timings, evidence, refCommits, selectedProfiles }) {
   const namespaceRoot = path.join(cacheRoot, namespace);
   const pnpmPath = path.join(namespaceRoot, "pnpm-report.json");
   const sccachePath = path.join(namespaceRoot, "sccache-stats.json");
@@ -516,14 +840,19 @@ function cacheReport({ namespace, inputs, cacheRoot, timings, evidence }) {
     pnpm: pnpm ?? { status: "module-cached" },
     sccache: sccache ?? { status: "module-cached" },
     timings,
+    selectedProfiles,
     payload: digestBuildPayload(path.join(buildDir, "files")),
+    refCommits,
     errors: [],
   };
 }
 
-function main() {
+async function main() {
   const startedAt = performance.now();
   const packageOptions = parsePackageOptions(process.argv.slice(2), { platform: "linux" });
+  const selectedProfiles = packageOptions.flatpakProfiles;
+  const bundlePlan = flatpakBundlePlan({ selectedProfiles });
+  cleanupFlatpakBundleOutputs({ bundlePlan });
   const skipBundle = packageOptions.noBundle || process.env.FLATPAK_NO_BUNDLE === "1";
   const evidence = process.env.FLATPAK_CACHE_EVIDENCE === "1";
   if (process.arch !== "x64") {
@@ -583,12 +912,16 @@ function main() {
   ];
   if (evidence) builderArgs.unshift("--disable-cache");
   const builderStartedAt = performance.now();
+  reconcileFlatpakOutputRefs();
   run("flatpak-builder", builderArgs);
+  const refCommits = verifyFlatpakOutputRefs({ selectedProfiles });
   const report = cacheReport({
     namespace: namespace.name,
     inputs: namespace.inputs,
     cacheRoot,
     evidence,
+    refCommits,
+    selectedProfiles,
     timings: {
       sourceGenerationSeconds: Number(sourceSeconds.toFixed(3)),
       builderSeconds: Number(((performance.now() - builderStartedAt) / 1_000).toFixed(3)),
@@ -608,6 +941,7 @@ function main() {
   if (skipBundle) {
     const sizeReportPath = process.env.FLATPAK_SIZE_REPORT_PATH ?? path.join(flatpakRoot, "generated", "size-report.json");
     const sizeReport = flatpakSizeReport({ includeBundle: false });
+    sizeReport.selectedProfiles = selectedProfiles;
     writeJson(sizeReportPath, sizeReport);
     printFlatpakSizeReport(sizeReport);
     process.stdout.write(`Flatpak repo exported to ${repoDir}\n`);
@@ -615,24 +949,37 @@ function main() {
       `Install with: flatpak remote-add --user --if-not-exists --no-gpg-verify ${localRepoRemote} ${repoDir}\n`,
     );
     process.stdout.write(`Then run: flatpak install --user --reinstall ${localRepoRemote} ${appId}\n`);
+    if (selectedProfiles.includes("nvidia")) process.stdout.write(
+      `Optional NVIDIA: flatpak install --user --reinstall ${localRepoRemote} ${nvidiaTorchCoreRef} ${nvidiaTorchRuntimeRef}\n`,
+    );
+    if (selectedProfiles.includes("legacy-nvidia")) process.stdout.write(
+      `Optional legacy NVIDIA: flatpak install --user --reinstall ${localRepoRemote} ${legacyTorchCoreRef} ${legacyTorchRuntimeRef}\n`,
+    );
     return;
   }
 
-  run("flatpak", ["build-bundle", "--arch=x86_64", repoDir, bundlePath, appId, "stable"]);
-  const sizeReportPath = process.env.FLATPAK_SIZE_REPORT_PATH ?? path.join(flatpakRoot, "generated", "size-report.json");
-  const sizeReport = flatpakSizeReport();
-  writeJson(sizeReportPath, sizeReport);
-  printFlatpakSizeReport(sizeReport);
-  enforceFlatpakBundleSize(sizeReport);
+  await withFreshFlatpakBundleOutputs(async () => {
+    await buildFlatpakBundles({ bundlePlan });
+    const sizeReportPath = process.env.FLATPAK_SIZE_REPORT_PATH ?? path.join(flatpakRoot, "generated", "size-report.json");
+    const sizeReport = {
+      ...flatpakSizeReport(),
+      selectedProfiles,
+      extensionBundles: bundlePlan.slice(1).map((artifact) => flatpakArtifactSizeReport(artifact.path)),
+    };
+    writeJson(sizeReportPath, sizeReport);
+    printFlatpakSizeReport(sizeReport);
+    enforceFlatpakBundleSize(sizeReport);
+    for (const report of sizeReport.extensionBundles) enforceFlatpakBundleSize(report);
+    writeFlatpakChecksums(bundlePlan.map((artifact) => artifact.path));
+  }, { bundlePlan });
 
-  process.stdout.write(`Flatpak bundle written to ${bundlePath}\n`);
+  for (const artifact of bundlePlan) process.stdout.write(`Flatpak bundle written to ${artifact.path}\n`);
+  process.stdout.write(`Flatpak checksums written to ${sha256SumsPath}\n`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
-  try {
-    main();
-  } catch (error) {
+  main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
-  }
+  });
 }

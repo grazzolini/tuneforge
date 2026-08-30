@@ -159,7 +159,7 @@ pnpm sync:backend:legacy-nvidia -- --no-crema
 pnpm sync:backend:default -- --no-crema
 ```
 
-Both backend sync helpers recreate `apps/backend/.venv` from scratch to avoid stale mixed CUDA stacks when switching profiles. `uv` still reuses its shared cache, so after the first install, switching is usually much faster than a cold download. It is intended for cards like the GTX 1050 Ti. macOS, CI, and the default Linux setup remain unchanged.
+Both backend sync helpers recreate `apps/backend/.venv` from scratch to avoid stale mixed CUDA stacks when switching profiles. `uv` still reuses its shared cache, so after the first install, switching is usually much faster than a cold download. The legacy profile targets older NVIDIA GPU architectures. macOS, CI, and the default Linux setup remain unchanged.
 
 When the legacy marker is active, use the root `pnpm` scripts for backend work. They preserve the local Torch
 override; running raw `uv run` inside `apps/backend` can resync the default Torch stack and leave CUDA libraries mixed.
@@ -264,8 +264,10 @@ For faster Flatpak testing, skip the single-file bundle step:
 pnpm package:linux:flatpak -- --no-bundle
 ```
 
-macOS packaging writes a `.app` bundle and DMG. Flatpak packaging writes either a local `.flatpak`
-bundle or, with `--no-bundle`, a local repository install flow. Source distribution is the source
+macOS packaging writes a `.app` bundle and DMG. Flatpak packaging writes a CPU `.flatpak` plus
+matching NVIDIA and legacy NVIDIA Core/Runtime bundles or, with `--no-bundle`, a local repository
+install flow. Pass `--cpu`, `--nvidia`, or `--legacy-nvidia` to limit a Flatpak build; accelerator
+selections always include the CPU app, while no profile flags build all profiles. Source distribution is the source
 checkout/archive; the package commands do not create a separate source tarball.
 
 macOS packages require host `ffmpeg` / `ffprobe`; Flatpak routes backend lookups to sandbox wrappers at `/app/bin/ffmpeg` and `/app/bin/ffprobe`. TuneForge does not bundle FFmpeg. See [Packaging](./docs/PACKAGING.md) for output paths, package flags, local repo install commands, data-directory behavior, and size expectations.

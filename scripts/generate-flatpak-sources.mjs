@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -12,6 +13,34 @@ const scriptDir = path.dirname(__filename);
 const workspaceRoot = path.resolve(scriptDir, "..");
 const flatpakRoot = path.join(workspaceRoot, "packaging", "flatpak");
 const generatedRoot = path.join(flatpakRoot, "generated");
+const obsoleteTorchStem = ["modern", "torch"].join("-");
+const obsoleteTorchExtensionOutputs = [
+  `${obsoleteTorchStem}-profile.json`,
+  ...["requirements.txt", "sources.json", "size-report.json"].map(
+    (suffix) => `python-${obsoleteTorchStem}-${suffix}`,
+  ),
+  ...["nvidia-torch", "legacy-torch"].flatMap((stem) => [
+    `${stem}-profile.json`,
+    ...["requirements.txt", "sources.json", "size-report.json"].map(
+      (suffix) => `python-${stem}-${suffix}`,
+    ),
+  ]),
+];
+const torchProfileOutputs = {
+  nvidia: ["nvidia-torch-core-profile.json", "nvidia-torch-runtime-profile.json",
+    ...["core", "runtime"].flatMap((role) => [
+      `python-nvidia-torch-${role}-requirements.txt`,
+      `python-nvidia-torch-${role}-sources.json`,
+      `python-nvidia-torch-${role}-size-report.json`,
+    ])],
+  "legacy-nvidia": ["legacy-torch-core-profile.json", "legacy-torch-runtime-profile.json",
+    "python-legacy-torch.in", "pylock.legacy-torch.toml",
+    ...["core", "runtime"].flatMap((role) => [
+      `python-legacy-torch-${role}-requirements.txt`,
+      `python-legacy-torch-${role}-sources.json`,
+      `python-legacy-torch-${role}-size-report.json`,
+    ])],
+};
 
 const cargoLockPath = path.join(workspaceRoot, "apps", "desktop", "src-tauri", "Cargo.lock");
 const pnpmLockPath = path.join(workspaceRoot, "pnpm-lock.yaml");
@@ -34,6 +63,20 @@ function writeGeneratedFile(fileName, contents) {
 
 function writeGeneratedJson(fileName, value) {
   writeGeneratedFile(fileName, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+export function removeObsoleteTorchExtensionOutputs(root = generatedRoot) {
+  for (const fileName of obsoleteTorchExtensionOutputs) {
+    rmSync(path.join(root, fileName), { force: true });
+  }
+}
+
+export function removeUnselectedTorchExtensionOutputs(selectedProfiles, root = generatedRoot) {
+  const selected = new Set(selectedProfiles);
+  for (const [profile, fileNames] of Object.entries(torchProfileOutputs)) {
+    if (selected.has(profile)) continue;
+    for (const fileName of fileNames) rmSync(path.join(root, fileName), { force: true });
+  }
 }
 
 function normalizePackageName(name) {
@@ -462,6 +505,7 @@ export function resolvePythonRuntimePackages(packages, { extras = [] } = {}) {
 
 function resolveNamedPythonPackages(packages, names) {
   const resolved = new Map();
+  const processedExtrasByPackage = new Map();
   const queue = names.map((name) => ({ name }));
   while (queue.length > 0) {
     const dependency = queue.shift();
@@ -470,11 +514,19 @@ function resolveNamedPythonPackages(packages, names) {
     }
     const pkg = findLockedPackage(packages, dependency);
     const identity = packageIdentity(pkg);
-    if (resolved.has(identity)) {
-      continue;
+    if (!resolved.has(identity)) {
+      resolved.set(identity, pkg);
+      queue.push(...pkg.dependencies);
     }
-    resolved.set(identity, pkg);
-    queue.push(...pkg.dependencies);
+    const processedExtras = processedExtrasByPackage.get(identity) ?? new Set();
+    processedExtrasByPackage.set(identity, processedExtras);
+    for (const extra of dependency.extras ?? []) {
+      if (processedExtras.has(extra)) continue;
+      processedExtras.add(extra);
+      const extraDependencies = pkg.optionalDependencies.get(extra);
+      if (!extraDependencies) throw new Error(`${pkg.name} ${pkg.version} does not define requested extra "${extra}"`);
+      queue.push(...extraDependencies);
+    }
   }
   return Array.from(resolved.values()).sort((left, right) => packageIdentity(left).localeCompare(packageIdentity(right)));
 }
@@ -583,24 +635,133 @@ export function assertDefaultCpuTorchClosure(packages) {
   }
 }
 
-function generatePythonSources() {
-  const lockedPackages = parseUvLock(readRequiredFile(uvLockPath));
-  let runtimePackages = resolvePythonRuntimePackages(lockedPackages, { extras: selectedPythonExtras });
-  runtimePackages = mergeLegacyTorchPackageSets(
-    runtimePackages,
-    packageOptions.legacyNvidia ? resolveLegacyTorchPackages() : resolveCpuTorchPackages(),
-  );
-  if (!packageOptions.legacyNvidia) assertDefaultCpuTorchClosure(runtimePackages);
-  const buildRequirementNames = ["setuptools", "wheel", ...(packageOptions.lvChordia ? ["hatchling"] : [])];
-  const buildPackages = resolveNamedPythonPackages(lockedPackages, buildRequirementNames);
-  const runtimePackageNames = new Set(runtimePackages.map((pkg) => packageIdentity(pkg)));
-  const packages = Array.from(
-    new Map([...runtimePackages, ...buildPackages].map((pkg) => [packageIdentity(pkg), pkg])).values(),
-  ).sort((left, right) => packageIdentity(left).localeCompare(packageIdentity(right)));
+export const TORCH_EXTENSION_PROFILES = Object.freeze({
+  Nvidia: Object.freeze({
+    ref_prefix: "com.tuneforge.desktop.Torch.Stack.Nvidia",
+    torch_version: "2.13.0",
+    torchaudio_version: "2.11.0",
+    triton_version: "3.7.1",
+    cuda_family: "13",
+    pair_id: "5655bca4c785fdcc9390b2c3ed9c58b6a69eeee3b383d2aaf3f7903bbec3abc2",
+  }),
+  LegacyNvidia: Object.freeze({
+    ref_prefix: "com.tuneforge.desktop.Torch.Stack.LegacyNvidia",
+    torch_version: "2.13.0+cu126",
+    torchaudio_version: "2.11.0+cu126",
+    triton_version: "3.7.1",
+    cuda_family: "12.6",
+    pair_id: "112a80543c933ef4903aca2c0afcca91f21012c9e4ee1164222b08f118eba4f2",
+  }),
+});
+
+function packageRows(packages) {
+  return packages instanceof Map ? Array.from(packages.values()) : packages;
+}
+
+function acceleratorPackageNames(packages) {
+  return packageRows(packages)
+    .map((pkg) => normalizePackageName(pkg.name))
+    .filter((name) => name.startsWith("cuda-") || name.startsWith("nvidia-"))
+    .sort();
+}
+
+function isAcceleratorPackage(pkg) {
+  const name = normalizePackageName(pkg.name);
+  return name.startsWith("cuda-") || name.startsWith("nvidia-");
+}
+
+export function partitionTorchExtensionPackages(packages) {
+  const rows = packageRows(packages);
+  const core = rows.filter((pkg) => !isAcceleratorPackage(pkg));
+  const runtime = rows.filter(isAcceleratorPackage);
+  const coreIds = new Set(core.map(packageIdentity));
+  const runtimeIds = new Set(runtime.map(packageIdentity));
+  if ([...coreIds].some((identity) => runtimeIds.has(identity))) {
+    throw new Error("Torch Core and Runtime package closures overlap");
+  }
+  const union = [...core, ...runtime].map(packageIdentity).sort();
+  const original = rows.map(packageIdentity).sort();
+  if (union.join("\n") !== original.join("\n")) {
+    throw new Error("Torch Core and Runtime package closures do not reproduce the locked profile");
+  }
+  const coreNames = new Set(core.map((pkg) => normalizePackageName(pkg.name)));
+  for (const required of ["torch", "torchaudio", "triton"]) {
+    if (!coreNames.has(required)) throw new Error(`Torch Core is missing ${required}`);
+  }
+  if (runtime.length === 0 || runtime.some((pkg) => !isAcceleratorPackage(pkg))) {
+    throw new Error("Torch Runtime must contain only CUDA/NVIDIA packages");
+  }
+  return { core, runtime };
+}
+
+export function torchExtensionPairId(profileName, packages) {
+  const rows = packageRows(packages).map((pkg) => {
+    const artifact = pkg.sha256 && pkg.fileName ? pkg : selectPythonArtifact(pkg);
+    return {
+      name: normalizePackageName(pkg.name),
+      version: pkg.version,
+      fileName: artifact.fileName,
+      sha256: artifact.sha256,
+    };
+  }).sort((left, right) =>
+    `${left.name}@${left.version}/${left.fileName}`.localeCompare(`${right.name}@${right.version}/${right.fileName}`));
+  return createHash("sha256")
+    .update(JSON.stringify({ contract: "profile-pair-v1", profile: profileName, packages: rows }))
+    .digest("hex");
+}
+
+export function assertTorchExtensionProfile(packages, profileName, expectedAcceleratorNames) {
+  const profile = TORCH_EXTENSION_PROFILES[profileName];
+  if (!profile) throw new Error(`Unknown Torch extension profile: ${profileName}`);
+  const rows = packageRows(packages);
+  const versions = new Map(rows.map((pkg) => [normalizePackageName(pkg.name), pkg.version]));
+  for (const [name, expected] of [
+    ["torch", profile.torch_version],
+    ["torchaudio", profile.torchaudio_version],
+  ]) {
+    if (versions.get(name) !== expected) {
+      throw new Error(`${profileName} requires ${name} ${expected}, found ${versions.get(name) ?? "none"}`);
+    }
+  }
+  if (profile.triton_version && versions.get("triton") !== profile.triton_version) {
+    throw new Error(`${profileName} requires triton ${profile.triton_version}`);
+  }
+  const acceleratorNames = acceleratorPackageNames(rows);
+  if (acceleratorNames.length === 0) throw new Error(`${profileName} has no CUDA/NVIDIA closure`);
+  if (expectedAcceleratorNames && acceleratorNames.join("\n") !== [...expectedAcceleratorNames].sort().join("\n")) {
+    throw new Error(`${profileName} CUDA/NVIDIA closure does not match the locked family`);
+  }
+  if (profileName === "LegacyNvidia" && acceleratorNames.some((name) => name.endsWith("-cu13"))) {
+    throw new Error("LegacyNvidia includes a CUDA 13 package");
+  }
+}
+
+export function torchExtensionMarker(profileName, role, pairId) {
+  const profile = TORCH_EXTENSION_PROFILES[profileName];
+  if (!profile) throw new Error(`Unknown Torch extension profile: ${profileName}`);
+  if (!["core", "runtime"].includes(role)) throw new Error(`Unknown Torch extension role: ${role}`);
+  if (!/^[a-f0-9]{64}$/.test(pairId)) throw new Error("Torch extension pair ID must be a SHA-256 digest");
+  const refRole = role[0].toUpperCase() + role.slice(1);
+  return {
+    schema_version: 2,
+    contract: "profile-pair-v1",
+    profile: profileName,
+    role,
+    ref_id: `${profile.ref_prefix}.${refRole}`,
+    python_abi: "cp314",
+    torch_version: profile.torch_version,
+    torchaudio_version: profile.torchaudio_version,
+    triton_version: profile.triton_version,
+    cuda_family: profile.cuda_family,
+    pair_id: pairId,
+  };
+}
+
+function writePythonPackageSet(prefix, packages) {
   const sourceByUrl = new Map();
   const artifactReport = [];
-
-  for (const pkg of packages) {
+  const rows = packageRows(packages);
+  for (const pkg of rows) {
     const artifact = selectPythonArtifact(pkg);
     sourceByUrl.set(artifact.url, {
       type: "file",
@@ -617,8 +778,70 @@ function generatePythonSources() {
       url: artifact.url,
     });
   }
+  writeGeneratedJson(`${prefix}-sources.json`, Array.from(sourceByUrl.values()).sort((a, b) => a.url.localeCompare(b.url)));
+  writeGeneratedFile(
+    `${prefix}-requirements.txt`,
+    `${rows.map((pkg) => `${pkg.name}==${pkg.version}`).sort().join("\n")}\n`,
+  );
+  writeGeneratedJson(
+    `${prefix}-size-report.json`,
+    artifactReport.sort((a, b) => (b.size ?? -1) - (a.size ?? -1) || a.name.localeCompare(b.name)),
+  );
+}
 
-  const sources = Array.from(sourceByUrl.values()).sort((left, right) => left.url.localeCompare(right.url));
+export function selectedTorchExtensionProfileSpecs(selectedProfiles, {
+  resolveNvidia,
+  resolveLegacy,
+}) {
+  const selected = new Set(selectedProfiles);
+  const specs = [];
+  if (selected.has("nvidia")) {
+    specs.push({ profileName: "Nvidia", stem: "nvidia", ...resolveNvidia() });
+  }
+  if (selected.has("legacy-nvidia")) {
+    specs.push({ profileName: "LegacyNvidia", stem: "legacy", ...resolveLegacy() });
+  }
+  return specs;
+}
+
+function generatePythonSources() {
+  const lockedPackages = parseUvLock(readRequiredFile(uvLockPath));
+  let runtimePackages = resolvePythonRuntimePackages(lockedPackages, { extras: selectedPythonExtras });
+  runtimePackages = mergeLegacyTorchPackageSets(
+    runtimePackages,
+    resolveCpuTorchPackages(),
+  );
+  assertDefaultCpuTorchClosure(runtimePackages);
+  const extensionSpecs = selectedTorchExtensionProfileSpecs(packageOptions.flatpakProfiles, {
+    resolveNvidia: () => ({
+      packages: resolveNamedPythonPackages(lockedPackages, ["torch", "torchaudio"]),
+      expectedAcceleratorNames: acceleratorPackageNames(lockedPackages),
+    }),
+    resolveLegacy: () => ({ packages: resolveLegacyTorchPackages() }),
+  });
+  let extensionPackageCount = 0;
+  for (const { profileName, stem, packages, expectedAcceleratorNames } of extensionSpecs) {
+    assertTorchExtensionProfile(packages, profileName, expectedAcceleratorNames);
+    const partition = partitionTorchExtensionPackages(packages);
+    const pairId = torchExtensionPairId(profileName, packages);
+    if (pairId !== TORCH_EXTENSION_PROFILES[profileName].pair_id) {
+      throw new Error(`${profileName} locked wheel manifest changed; update its reviewed pair ID and launcher marker`);
+    }
+    for (const role of ["core", "runtime"]) {
+      writePythonPackageSet(`python-${stem}-torch-${role}`, partition[role]);
+      writeGeneratedJson(
+        `${stem}-torch-${role}-profile.json`,
+        torchExtensionMarker(profileName, role, pairId),
+      );
+    }
+    extensionPackageCount += packageRows(packages).length;
+  }
+  const buildRequirementNames = ["setuptools", "wheel", ...(packageOptions.lvChordia ? ["hatchling"] : [])];
+  const buildPackages = resolveNamedPythonPackages(lockedPackages, buildRequirementNames);
+  const runtimePackageNames = new Set(runtimePackages.map((pkg) => packageIdentity(pkg)));
+  const packages = Array.from(
+    new Map([...runtimePackages, ...buildPackages].map((pkg) => [packageIdentity(pkg), pkg])).values(),
+  ).sort((left, right) => packageIdentity(left).localeCompare(packageIdentity(right)));
   const runtimeRequirements = packages
     .filter((pkg) => runtimePackageNames.has(packageIdentity(pkg)))
     .map((pkg) => `${pkg.name}==${pkg.version}`)
@@ -628,15 +851,11 @@ function generatePythonSources() {
     return `${pkg.name}==${pkg.version}`;
   });
 
-  writeGeneratedJson("python-sources.json", sources);
+  writePythonPackageSet("python", packages);
   writeGeneratedFile("python-build-requirements.txt", `${buildRequirements.join("\n")}\n`);
   writeGeneratedFile("python-requirements.txt", `${runtimeRequirements.join("\n")}\n`);
-  writeGeneratedJson(
-    "python-size-report.json",
-    artifactReport.sort((left, right) => (right.size ?? -1) - (left.size ?? -1) || left.name.localeCompare(right.name)),
-  );
 
-  return packages.length;
+  return packages.length + extensionPackageCount;
 }
 
 function generateModelBundleSources() {
@@ -669,6 +888,11 @@ export function cremaOnlyModelBundlePlan(plan) {
 }
 
 function main() {
+  removeObsoleteTorchExtensionOutputs();
+  removeUnselectedTorchExtensionOutputs(packageOptions.flatpakProfiles);
+  writeGeneratedJson("flatpak-profile-selection.json", {
+    profiles: packageOptions.flatpakProfiles,
+  });
   const cargoCount = generateCargoSources();
   const nodeCount = generateNodeSources();
   const pythonCount = generatePythonSources();

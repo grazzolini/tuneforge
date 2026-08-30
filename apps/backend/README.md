@@ -143,7 +143,7 @@ The preload is stored at `$TORCH_HOME/hub/checkpoints/beat_this-small0.ckpt` whe
 
 ### Linux legacy NVIDIA profile
 
-If you are on Linux `x86_64` and the default PyTorch build does not support your NVIDIA GPU architecture (for example, Pascal cards like the GTX 1050 Ti), start from the standard sync above and then locally override `torch` / `torchaudio` with the older CUDA 12.6 wheels:
+If you are on Linux `x86_64` and the default PyTorch build does not support your NVIDIA GPU architecture, start from the standard sync above and then locally override `torch` / `torchaudio` with the older CUDA 12.6 wheels:
 
 ```sh
 uv pip install \

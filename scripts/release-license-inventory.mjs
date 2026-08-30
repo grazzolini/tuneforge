@@ -1,9 +1,11 @@
 import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildModelBundlePlan, DEFAULT_LYRICS_MODEL } from "./model-bundle-metadata.mjs";
 import {
   defaultPackageOptions,
+  normalizeFlatpakProfiles,
   packageOptionsToGeneratorArgs,
 } from "./package-options.mjs";
 
@@ -12,6 +14,113 @@ const scriptDir = path.dirname(__filename);
 const workspaceRoot = path.resolve(scriptDir, "..");
 const LV_CHORDIA_CHECKPOINT_BYTES = 28_730_939;
 const LV_CHORDIA_SOURCE_REVISION = "9d7de7bbf45efa6731ec8dc62d35280f141c0702";
+const flatpakGeneratedRoot = path.join(workspaceRoot, "packaging", "flatpak", "generated");
+
+export const REVIEWED_FLATPAK_PYTHON_LICENSES = Object.freeze({
+  alembic: "MIT", "annotated-doc": "MIT", "annotated-types": "MIT", anyio: "MIT",
+  "audioop-lts": "PSF-2.0", certifi: "MPL-2.0", cffi: "MIT", "charset-normalizer": "MIT",
+  click: "BSD-3-Clause", cryptography: "Apache-2.0 OR BSD-3-Clause", decorator: "BSD-2-Clause",
+  "beat-this": "MIT", demucs: "MIT", einops: "MIT", fastapi: "MIT", filelock: "Unlicense",
+  flatbuffers: "Apache-2.0", fsspec: "BSD-3-Clause",
+  greenlet: "MIT", h11: "MIT", "hf-xet": "Apache-2.0", httpcore: "BSD-3-Clause",
+  httpx: "BSD-3-Clause", "huggingface-hub": "Apache-2.0", idna: "BSD-3-Clause",
+  h5py: "BSD-3-Clause", hatchling: "MIT", "importlib-resources": "Apache-2.0", jinja2: "BSD-3-Clause",
+  joblib: "BSD-3-Clause", julius: "MIT", lameenc: "LGPL-3.0-only", "lazy-loader": "BSD-3-Clause",
+  librosa: "ISC", llvmlite: "BSD-2-Clause", "lv-chordia": "MIT", mako: "MIT",
+  markupsafe: "BSD-3-Clause", mido: "MIT", "more-itertools": "MIT", mpmath: "BSD-3-Clause",
+  msgpack: "Apache-2.0", narwhals: "MIT", networkx: "BSD-3-Clause", numba: "BSD-2-Clause",
+  numpy: "BSD-3-Clause", "onnxruntime": "MIT", "openai-whisper": "MIT",
+  packaging: "Apache-2.0 OR BSD-2-Clause", pathspec: "MPL-2.0", platformdirs: "MIT",
+  pluggy: "MIT", pooch: "BSD-3-Clause", "pretty-midi": "MIT", protobuf: "BSD-3-Clause",
+  pycparser: "BSD-3-Clause", pydantic: "MIT",
+  "pydantic-core": "MIT", pyyaml: "MIT", regex: "Apache-2.0", requests: "Apache-2.0",
+  pydub: "MIT", "rotary-embedding-torch": "MIT", safetensors: "Apache-2.0",
+  "scikit-learn": "BSD-3-Clause", scipy: "BSD-3-Clause", setuptools: "MIT", six: "MIT",
+  soundfile: "BSD-3-Clause", soxr: "LGPL-2.1-or-later", sphn: "MIT",
+  sqlalchemy: "MIT", starlette: "BSD-3-Clause", sympy: "BSD-3-Clause",
+  threadpoolctl: "BSD-3-Clause", tiktoken: "MIT", torch: "BSD-3-Clause",
+  torchaudio: "BSD-2-Clause", tqdm: "MPL-2.0 AND MIT", "typing-extensions": "PSF-2.0",
+  tomlkit: "MIT", "trove-classifiers": "Apache-2.0", "typing-inspection": "MIT",
+  urllib3: "MIT", uvicorn: "BSD-3-Clause", wheel: "MIT",
+  "cuda-bindings": "Apache-2.0", "cuda-pathfinder": "Apache-2.0", "cuda-toolkit": "Apache-2.0",
+  triton: "MIT",
+});
+
+function reviewedFlatpakLicense(name, metadata) {
+  if (name.startsWith("nvidia-")) return "LicenseRef-NVIDIA-Software-License";
+  return metadata[name];
+}
+
+function parseGeneratedRequirements(contents, label) {
+  return contents.trim().split("\n").filter(Boolean).map((line) => {
+    const match = /^([^=]+)==(.+)$/.exec(line);
+    if (!match) throw new Error(`Malformed ${label} requirement: ${line}`);
+    return { name: match[1].toLowerCase().replace(/[-_.]+/g, "-"), version: match[2] };
+  });
+}
+
+export function buildFlatpakProfileComponentInventory({
+  generatedRoot = flatpakGeneratedRoot,
+  strict = false,
+  licenseMetadata = REVIEWED_FLATPAK_PYTHON_LICENSES,
+  selectedProfiles,
+} = {}) {
+  const selectionPath = path.join(generatedRoot, "flatpak-profile-selection.json");
+  const normalizedProfiles = normalizeFlatpakProfiles(selectedProfiles ?? (
+    existsSync(selectionPath)
+      ? JSON.parse(readFileSync(selectionPath, "utf8")).profiles
+      : undefined
+  ));
+  const selected = new Set(normalizedProfiles);
+  const profiles = [
+    { id: "cpu", prefix: "python", requirementFiles: ["python-requirements.txt", "python-build-requirements.txt"] },
+    { id: "nvidia-core", prefix: "python-nvidia-torch-core", requirementFiles: ["python-nvidia-torch-core-requirements.txt"] },
+    { id: "nvidia-runtime", prefix: "python-nvidia-torch-runtime", requirementFiles: ["python-nvidia-torch-runtime-requirements.txt"] },
+    { id: "legacy-nvidia-core", prefix: "python-legacy-torch-core", requirementFiles: ["python-legacy-torch-core-requirements.txt"] },
+    { id: "legacy-nvidia-runtime", prefix: "python-legacy-torch-runtime", requirementFiles: ["python-legacy-torch-runtime-requirements.txt"] },
+  ].filter(({ id }) => id === "cpu" || selected.has(id.startsWith("legacy-") ? "legacy-nvidia" : "nvidia"));
+  const requiredFiles = profiles.flatMap(({ prefix, requirementFiles }) => [
+    ...requirementFiles, `${prefix}-sources.json`, `${prefix}-size-report.json`,
+  ]);
+  const missingFiles = requiredFiles.filter((file) => !existsSync(path.join(generatedRoot, file)));
+  if (missingFiles.length > 0) {
+    if (strict) throw new Error(`Missing generated Flatpak profile inventory: ${missingFiles.join(", ")}`);
+    return { generated: false, selectedProfiles: normalizedProfiles, profiles: [], errors: [] };
+  }
+  const errors = [];
+  const inventory = profiles.map(({ id, prefix, requirementFiles }) => {
+    const requirementRows = requirementFiles.flatMap((file) => parseGeneratedRequirements(
+      readFileSync(path.join(generatedRoot, file), "utf8"), id,
+    ));
+    const requirements = Array.from(
+      new Map(requirementRows.map((row) => [`${row.name}@${row.version}`, row])).values(),
+    );
+    const artifacts = JSON.parse(readFileSync(path.join(generatedRoot, `${prefix}-size-report.json`), "utf8"));
+    const sources = JSON.parse(readFileSync(path.join(generatedRoot, `${prefix}-sources.json`), "utf8"));
+    const artifactKeys = new Set(artifacts.map((entry) =>
+      `${entry.name.toLowerCase().replace(/[-_.]+/g, "-")}@${entry.version}`));
+    for (const { name, version } of requirements) {
+      if (!artifactKeys.has(`${name}@${version}`)) errors.push(`${id}: requirement ${name} ${version} lacks an exact generated artifact`);
+    }
+    const components = artifacts.map((artifact) => {
+      const name = artifact.name.toLowerCase().replace(/[-_.]+/g, "-");
+      const { version } = artifact;
+      const source = sources.find((entry) =>
+        entry.url === artifact.url && entry["dest-filename"] === artifact.fileName);
+      const license = reviewedFlatpakLicense(name, licenseMetadata);
+      if (!source || !/^[a-f0-9]{64}$/.test(source.sha256)) errors.push(`${id}: ${name} ${version} lacks an exact generated source/hash`);
+      if (!license) errors.push(`${id}: ${name} ${version} lacks reviewed license metadata`);
+      return {
+        name, version, license: license ?? null,
+        fileName: artifact?.fileName ?? null,
+        sha256: source?.sha256 ?? null,
+      };
+    });
+    return { id, components };
+  });
+  if (strict && errors.length > 0) throw new Error(errors.join("; "));
+  return { generated: true, selectedProfiles: normalizedProfiles, profiles: inventory, errors };
+}
 
 const TOOL_DEFINITIONS = {
   pnpm: {
@@ -116,7 +225,12 @@ export function shellCommand({ cwd, command }) {
   return cwd && cwd !== "." ? `cd ${quoteShellArg(cwd)} && ${renderedCommand}` : renderedCommand;
 }
 
-export function buildReleaseLicenseInventory({ includeToolStatus = false, checkTool = checkToolAvailability } = {}) {
+export function buildReleaseLicenseInventory({
+  includeToolStatus = false,
+  checkTool = checkToolAvailability,
+  strictFlatpakProfiles = false,
+  flatpakProfiles,
+} = {}) {
   const toolStatuses = includeToolStatus
     ? collectToolStatuses(releaseInventoryCommands, { checkTool })
     : [];
@@ -134,6 +248,38 @@ export function buildReleaseLicenseInventory({ includeToolStatus = false, checkT
     ...bundledPlan.manifest.torch_checkpoints,
     ...bundledPlan.manifest.whisper_models,
   ];
+  const flatpakProfileComponents = buildFlatpakProfileComponentInventory({
+    strict: strictFlatpakProfiles,
+    selectedProfiles: flatpakProfiles,
+  });
+  const selectedFlatpakProfiles = new Set(flatpakProfileComponents.selectedProfiles);
+  const flatpakTorchProfiles = [
+    {
+      id: "cpu", refId: "com.tuneforge.desktop", torch: "2.13.0", torchaudio: "2.11.0",
+      cudaFamily: null,
+      artifact: "Tuneforge_<version>_x86_64.flatpak",
+    },
+    {
+      id: "nvidia-core", refId: "com.tuneforge.desktop.Torch.Stack.Nvidia.Core",
+      torch: "2.13.0", torchaudio: "2.11.0", triton: "3.7.1", cudaFamily: "13",
+      artifact: "Tuneforge_<version>_Torch_Nvidia_Core_x86_64.flatpak",
+    },
+    {
+      id: "nvidia-runtime", refId: "com.tuneforge.desktop.Torch.Stack.Nvidia.Runtime",
+      cudaFamily: "13", artifact: "Tuneforge_<version>_Torch_Nvidia_Runtime_x86_64.flatpak",
+    },
+    {
+      id: "legacy-nvidia-core", refId: "com.tuneforge.desktop.Torch.Stack.LegacyNvidia.Core",
+      torch: "2.13.0+cu126", torchaudio: "2.11.0+cu126", triton: "3.7.1", cudaFamily: "12.6",
+      artifact: "Tuneforge_<version>_Torch_LegacyNvidia_Core_x86_64.flatpak",
+    },
+    {
+      id: "legacy-nvidia-runtime", refId: "com.tuneforge.desktop.Torch.Stack.LegacyNvidia.Runtime",
+      cudaFamily: "12.6", artifact: "Tuneforge_<version>_Torch_LegacyNvidia_Runtime_x86_64.flatpak",
+    },
+  ].filter(({ id }) => id === "cpu" || selectedFlatpakProfiles.has(
+    id.startsWith("legacy-") ? "legacy-nvidia" : "nvidia",
+  ));
 
   return {
     workspaceRoot: ".",
@@ -198,6 +344,9 @@ export function buildReleaseLicenseInventory({ includeToolStatus = false, checkT
         "packaging/flatpak/generated/model-bundle-sources.json",
         "packaging/flatpak/generated/model-bundle-manifest.json",
       ],
+      flatpakTorchProfiles: flatpakTorchProfiles.map(({ artifact: _artifact, ...profile }) => profile),
+      flatpakChecksumContents: flatpakTorchProfiles.map(({ artifact }) => artifact),
+      flatpakProfileComponents,
       defaultLyricsModel: DEFAULT_LYRICS_MODEL,
       explicitBundleSourceCount: bundledPlan.sources.length,
       explicitBundleBytes: sumBundleBytes(bundledManifestEntries),
@@ -211,6 +360,7 @@ export function buildReleaseLicenseInventory({ includeToolStatus = false, checkT
       "FFmpeg and ffprobe are host-installed and are not bundled.",
       "Python package license metadata can be incomplete; review missing fields manually.",
       "Do not commit redirected inventory reports or generated package resources.",
+      "NVIDIA extension wheels require their bundled NVIDIA component license metadata review.",
     ],
   };
 }
@@ -287,6 +437,21 @@ export function formatReleaseLicenseInventory(checklist) {
   lines.push(`- cache prewarm: ${checklist.modelPolicy.cachePrewarmCommand}`);
   lines.push(`- cache paths: ${checklist.modelPolicy.cachePaths.join(", ")}`);
   lines.push(`- package bundle paths: ${checklist.modelPolicy.packageBundlePaths.join(", ")}`);
+  for (const profile of checklist.modelPolicy.flatpakTorchProfiles) {
+    const details = profile.torch
+      ? [
+        `Torch ${profile.torch}`,
+        `Torchaudio ${profile.torchaudio}`,
+        ...(profile.triton ? [`Triton ${profile.triton}`] : []),
+        ...(profile.cudaFamily ? [`CUDA family ${profile.cudaFamily}`] : []),
+      ]
+      : [`CUDA/NVIDIA runtime family ${profile.cudaFamily}`];
+    lines.push(`- Flatpak Torch ${profile.id}: ${profile.refId}, ${details.join(", ")}`);
+  }
+  lines.push(`- Flatpak SHA256SUMS: ${checklist.modelPolicy.flatpakChecksumContents.join(", ")}`);
+  for (const profile of checklist.modelPolicy.flatpakProfileComponents.profiles) {
+    lines.push(`- Flatpak ${profile.id} licensed components: ${profile.components.length}`);
+  }
   lines.push(
     `- explicit bundle plan: ${checklist.modelPolicy.explicitBundleSourceCount} source files, ` +
       `${formatBytes(checklist.modelPolicy.explicitBundleBytes)}`,
@@ -374,7 +539,10 @@ function main(argv) {
     return 0;
   }
 
-  const checklist = buildReleaseLicenseInventory({ includeToolStatus: options.check });
+  const checklist = buildReleaseLicenseInventory({
+    includeToolStatus: options.check,
+    strictFlatpakProfiles: options.check,
+  });
   if (options.json) {
     process.stdout.write(`${JSON.stringify(checklist, null, 2)}\n`);
   } else {

@@ -7,6 +7,45 @@ sdk-extensions:
   - org.freedesktop.Sdk.Extension.llvm20
   - org.freedesktop.Sdk.Extension.rust-stable
 command: tuneforge
+add-extensions:
+  com.tuneforge.desktop.Torch.Stack.Nvidia:
+    directory: lib/tuneforge/backend/torch-extensions/Nvidia
+    version: stable
+    subdirectories: true
+    merge-dirs: site-packages
+    no-autodownload: true
+    autodelete: true
+  com.tuneforge.desktop.Torch.Stack.Nvidia.Core:
+    directory: lib/tuneforge/backend/torch-extensions/Nvidia/Core
+    version: stable
+    bundle: true
+    no-autodownload: true
+    autodelete: true
+  com.tuneforge.desktop.Torch.Stack.Nvidia.Runtime:
+    directory: lib/tuneforge/backend/torch-extensions/Nvidia/Runtime
+    version: stable
+    bundle: true
+    no-autodownload: true
+    autodelete: true
+  com.tuneforge.desktop.Torch.Stack.LegacyNvidia:
+    directory: lib/tuneforge/backend/torch-extensions/LegacyNvidia
+    version: stable
+    subdirectories: true
+    merge-dirs: site-packages
+    no-autodownload: true
+    autodelete: true
+  com.tuneforge.desktop.Torch.Stack.LegacyNvidia.Core:
+    directory: lib/tuneforge/backend/torch-extensions/LegacyNvidia/Core
+    version: stable
+    bundle: true
+    no-autodownload: true
+    autodelete: true
+  com.tuneforge.desktop.Torch.Stack.LegacyNvidia.Runtime:
+    directory: lib/tuneforge/backend/torch-extensions/LegacyNvidia/Runtime
+    version: stable
+    bundle: true
+    no-autodownload: true
+    autodelete: true
 finish-args:
   - --socket=wayland
   - --socket=fallback-x11
@@ -40,6 +79,8 @@ cleanup:
   - /bin/sccache
   - "*.a"
   - "*.la"
+cleanup-commands:
+  - mkdir -p ${FLATPAK_DEST}/lib/tuneforge/backend/torch-extensions/Nvidia ${FLATPAK_DEST}/lib/tuneforge/backend/torch-extensions/LegacyNvidia
 
 modules:
   - name: pnpm
@@ -213,6 +254,90 @@ modules:
       - rm -rf /run/build/python-runtime-deps/.pip-tmp
       - find /app/lib/tuneforge/backend/site-packages -type d -name __pycache__ -prune -exec rm -rf {} +
       - find /app/lib/tuneforge/backend/site-packages -type f -name '*.pyc' -delete
+
+  - name: nvidia-torch-core-extension
+    buildsystem: simple
+    build-options:
+      env:
+        LD_LIBRARY_PATH: /app/lib/tuneforge/backend/python/lib
+        TMPDIR: /run/build/nvidia-torch-core-extension/.pip-tmp
+    sources:
+      - generated/python-nvidia-torch-core-sources.json
+      - type: file
+        path: generated/python-nvidia-torch-core-requirements.txt
+      - type: file
+        path: generated/nvidia-torch-core-profile.json
+    build-commands:
+      - install -dm755 /app/lib/tuneforge/backend/torch-extensions/Nvidia/Core/site-packages
+      - install -dm700 /run/build/nvidia-torch-core-extension/.pip-tmp
+      - /app/lib/tuneforge/backend/python/bin/python3.14 -m pip install --no-index --no-deps --find-links=python-sources --target=/app/lib/tuneforge/backend/torch-extensions/Nvidia/Core/site-packages -r python-nvidia-torch-core-requirements.txt
+      - install -Dm644 nvidia-torch-core-profile.json /app/lib/tuneforge/backend/torch-extensions/Nvidia/Core/profile.json
+      - rm -rf /run/build/nvidia-torch-core-extension/.pip-tmp
+      - find /app/lib/tuneforge/backend/torch-extensions/Nvidia/Core/site-packages -type d -name __pycache__ -prune -exec rm -rf {} +
+      - find /app/lib/tuneforge/backend/torch-extensions/Nvidia/Core/site-packages -type f -name '*.pyc' -delete
+
+  - name: nvidia-torch-runtime-extension
+    buildsystem: simple
+    build-options:
+      env:
+        LD_LIBRARY_PATH: /app/lib/tuneforge/backend/python/lib
+        TMPDIR: /run/build/nvidia-torch-runtime-extension/.pip-tmp
+    sources:
+      - generated/python-nvidia-torch-runtime-sources.json
+      - type: file
+        path: generated/python-nvidia-torch-runtime-requirements.txt
+      - type: file
+        path: generated/nvidia-torch-runtime-profile.json
+    build-commands:
+      - install -dm755 /app/lib/tuneforge/backend/torch-extensions/Nvidia/Runtime/site-packages
+      - install -dm700 /run/build/nvidia-torch-runtime-extension/.pip-tmp
+      - /app/lib/tuneforge/backend/python/bin/python3.14 -m pip install --no-index --no-deps --find-links=python-sources --target=/app/lib/tuneforge/backend/torch-extensions/Nvidia/Runtime/site-packages -r python-nvidia-torch-runtime-requirements.txt
+      - install -Dm644 nvidia-torch-runtime-profile.json /app/lib/tuneforge/backend/torch-extensions/Nvidia/Runtime/profile.json
+      - rm -rf /run/build/nvidia-torch-runtime-extension/.pip-tmp
+      - find /app/lib/tuneforge/backend/torch-extensions/Nvidia/Runtime/site-packages -type d -name __pycache__ -prune -exec rm -rf {} +
+      - find /app/lib/tuneforge/backend/torch-extensions/Nvidia/Runtime/site-packages -type f -name '*.pyc' -delete
+
+  - name: legacy-nvidia-torch-core-extension
+    buildsystem: simple
+    build-options:
+      env:
+        LD_LIBRARY_PATH: /app/lib/tuneforge/backend/python/lib
+        TMPDIR: /run/build/legacy-nvidia-torch-core-extension/.pip-tmp
+    sources:
+      - generated/python-legacy-torch-core-sources.json
+      - type: file
+        path: generated/python-legacy-torch-core-requirements.txt
+      - type: file
+        path: generated/legacy-torch-core-profile.json
+    build-commands:
+      - install -dm755 /app/lib/tuneforge/backend/torch-extensions/LegacyNvidia/Core/site-packages
+      - install -dm700 /run/build/legacy-nvidia-torch-core-extension/.pip-tmp
+      - /app/lib/tuneforge/backend/python/bin/python3.14 -m pip install --no-index --no-deps --find-links=python-sources --target=/app/lib/tuneforge/backend/torch-extensions/LegacyNvidia/Core/site-packages -r python-legacy-torch-core-requirements.txt
+      - install -Dm644 legacy-torch-core-profile.json /app/lib/tuneforge/backend/torch-extensions/LegacyNvidia/Core/profile.json
+      - rm -rf /run/build/legacy-nvidia-torch-core-extension/.pip-tmp
+      - find /app/lib/tuneforge/backend/torch-extensions/LegacyNvidia/Core/site-packages -type d -name __pycache__ -prune -exec rm -rf {} +
+      - find /app/lib/tuneforge/backend/torch-extensions/LegacyNvidia/Core/site-packages -type f -name '*.pyc' -delete
+
+  - name: legacy-nvidia-torch-runtime-extension
+    buildsystem: simple
+    build-options:
+      env:
+        LD_LIBRARY_PATH: /app/lib/tuneforge/backend/python/lib
+        TMPDIR: /run/build/legacy-nvidia-torch-runtime-extension/.pip-tmp
+    sources:
+      - generated/python-legacy-torch-runtime-sources.json
+      - type: file
+        path: generated/python-legacy-torch-runtime-requirements.txt
+      - type: file
+        path: generated/legacy-torch-runtime-profile.json
+    build-commands:
+      - install -dm755 /app/lib/tuneforge/backend/torch-extensions/LegacyNvidia/Runtime/site-packages
+      - install -dm700 /run/build/legacy-nvidia-torch-runtime-extension/.pip-tmp
+      - /app/lib/tuneforge/backend/python/bin/python3.14 -m pip install --no-index --no-deps --find-links=python-sources --target=/app/lib/tuneforge/backend/torch-extensions/LegacyNvidia/Runtime/site-packages -r python-legacy-torch-runtime-requirements.txt
+      - install -Dm644 legacy-torch-runtime-profile.json /app/lib/tuneforge/backend/torch-extensions/LegacyNvidia/Runtime/profile.json
+      - rm -rf /run/build/legacy-nvidia-torch-runtime-extension/.pip-tmp
+      - find /app/lib/tuneforge/backend/torch-extensions/LegacyNvidia/Runtime/site-packages -type d -name __pycache__ -prune -exec rm -rf {} +
+      - find /app/lib/tuneforge/backend/torch-extensions/LegacyNvidia/Runtime/site-packages -type f -name '*.pyc' -delete
 
   - name: pulseaudio-client-tools
     buildsystem: meson

@@ -10,8 +10,9 @@ download, installation, verification, signature, and publication instructions.
 - Upgraded the desktop backend to Python 3.14 and refreshed its dependency graph.
 - Made the ONNX implementation the sole Advanced Chords runtime while preserving its engine ID,
   default selection, package aliases, and pinned model; removed Crema, TensorFlow, and Keras.
-- Made default Flatpak packages resolve official CPU-only PyTorch 2.13.0 and torchaudio 2.11.0,
-  while retaining the explicit legacy NVIDIA CUDA 12.6 package path and adding size evidence.
+- Kept the Flatpak application CPU-only and split NVIDIA and legacy NVIDIA Torch stacks into
+  matching, marker-validated Core/Runtime extensions with independent size and hash evidence;
+  Flatpak builds can select CPU alone or either accelerator pair.
 
 ## [1.3.0] - 2026-08-28
 

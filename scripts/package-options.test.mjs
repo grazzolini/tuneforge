@@ -1,17 +1,30 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
   assertDefaultCpuTorchClosure,
+  assertTorchExtensionProfile,
   markerMatchesFlatpakTarget,
   mergeLegacyTorchPackageSets,
   parseUvLock,
+  partitionTorchExtensionPackages,
+  removeObsoleteTorchExtensionOutputs,
+  removeUnselectedTorchExtensionOutputs,
   resolvePythonRuntimePackages,
+  selectedTorchExtensionProfileSpecs,
+  torchExtensionPairId,
+  torchExtensionMarker,
+  TORCH_EXTENSION_PROFILES,
   wheelScore,
 } from "./generate-flatpak-sources.mjs";
 import { manifestWithPackageOptions } from "./package-flatpak.mjs";
+import {
+  buildFlatpakProfileComponentInventory,
+  buildReleaseLicenseInventory,
+  formatReleaseLicenseInventory,
+} from "./release-license-inventory.mjs";
 import {
   assertCremaOnnxBundleLayout,
   assertLvChordiaBundleLayout,
@@ -20,6 +33,7 @@ import {
 } from "./prepare-bundle.mjs";
 import {
   backendSyncArgs,
+  normalizeFlatpakProfiles,
   packageOptionsEnvironment,
   packageOptionsToGeneratorArgs,
   parsePackageOptions,
@@ -27,10 +41,55 @@ import {
 
 const flatpakPipTmpDir = "/run/build/python-runtime-deps/.pip-tmp";
 
+test("Flatpak source generation removes only exact obsolete Torch extension outputs", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "tuneforge-obsolete-torch-"));
+  const stem = ["modern", "torch"].join("-");
+  const obsolete = [
+    `${stem}-profile.json`,
+    ...["requirements.txt", "sources.json", "size-report.json"].map((suffix) => `python-${stem}-${suffix}`),
+  ];
+  try {
+    for (const file of [...obsolete, `python-${stem}-keep.txt`]) writeFileSync(path.join(root, file), "stale");
+    removeObsoleteTorchExtensionOutputs(root);
+    assert.ok(obsolete.every((file) => !existsSync(path.join(root, file))));
+    assert.equal(existsSync(path.join(root, `python-${stem}-keep.txt`)), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Flatpak source generation removes stale unselected profiles and resolves selected profiles only", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "tuneforge-selected-torch-"));
+  const stale = [
+    "python-nvidia-torch-core-requirements.txt",
+    "python-legacy-torch-runtime-sources.json",
+    "legacy-torch-core-profile.json",
+  ];
+  try {
+    for (const file of stale) writeFileSync(path.join(root, file), "stale");
+    removeUnselectedTorchExtensionOutputs(["cpu", "nvidia"], root);
+    assert.equal(existsSync(path.join(root, stale[0])), true);
+    assert.equal(existsSync(path.join(root, stale[1])), false);
+    assert.equal(existsSync(path.join(root, stale[2])), false);
+
+    let nvidiaCalls = 0;
+    let legacyCalls = 0;
+    const specs = selectedTorchExtensionProfileSpecs(["cpu", "nvidia"], {
+      resolveNvidia: () => { nvidiaCalls += 1; return { packages: ["nvidia"] }; },
+      resolveLegacy: () => { legacyCalls += 1; return { packages: ["legacy"] }; },
+    });
+    assert.deepEqual(specs.map(({ profileName }) => profileName), ["Nvidia"]);
+    assert.equal(nvidiaCalls, 1);
+    assert.equal(legacyCalls, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function pythonRuntimeDepsModule(manifest) {
   return manifest.slice(
     manifest.indexOf("  - name: python-runtime-deps"),
-    manifest.indexOf("  - name: pulseaudio-client-tools"),
+    manifest.indexOf("  - name: nvidia-torch-core-extension"),
   );
 }
 
@@ -59,10 +118,10 @@ test("package option parser accepts feature aliases", () => {
       crema: "onnx",
       lvChordia: true,
       beatThis: true,
-      legacyNvidia: false,
       modelBundle: true,
       noBundle: false,
       sandboxData: false,
+      flatpakProfiles: ["cpu", "nvidia", "legacy-nvidia"],
     },
   );
   assert.deepEqual(
@@ -71,10 +130,10 @@ test("package option parser accepts feature aliases", () => {
       crema: "onnx",
       lvChordia: true,
       beatThis: true,
-      legacyNvidia: false,
       modelBundle: false,
       noBundle: false,
       sandboxData: false,
+      flatpakProfiles: ["cpu", "nvidia", "legacy-nvidia"],
     },
   );
 });
@@ -86,12 +145,14 @@ test("package option parser includes advanced dependencies by default", () => {
     crema: "onnx",
     lvChordia: true,
     beatThis: true,
-    legacyNvidia: false,
     modelBundle: false,
     noBundle: false,
     sandboxData: false,
+    flatpakProfiles: ["cpu", "nvidia", "legacy-nvidia"],
   });
-  assert.deepEqual(packageOptionsToGeneratorArgs(options), ["--crema", "--beat-this", "--lv-chordia"]);
+  assert.deepEqual(packageOptionsToGeneratorArgs(options), [
+    "--crema", "--beat-this", "--lv-chordia", "--cpu", "--nvidia", "--legacy-nvidia",
+  ]);
   assert.deepEqual(backendSyncArgs(options), [
     "sync",
     "--python",
@@ -122,7 +183,9 @@ test("package option parser accepts advanced dependency opt-outs", () => {
   assert.equal(options.beatThis, false);
   assert.equal(options.lvChordia, false);
   assert.equal(JSON.parse(packageOptionsEnvironment(options).TUNEFORGE_PACKAGE_OPTIONS).beatThis, false);
-  assert.deepEqual(packageOptionsToGeneratorArgs(options), ["--no-crema", "--no-beat-this", "--no-lv-chordia"]);
+  assert.deepEqual(packageOptionsToGeneratorArgs(options), [
+    "--no-crema", "--no-beat-this", "--no-lv-chordia", "--cpu", "--nvidia", "--legacy-nvidia",
+  ]);
   assert.deepEqual(backendSyncArgs(options), ["sync", "--python", "3.14", "--all-groups"]);
 });
 
@@ -134,7 +197,9 @@ test("Advanced Chords aliases select one ONNX profile and reject enable-disable 
     assert.equal(parsePackageOptions([alias], { platform: "mac" }).crema, "none");
   }
   const options = parsePackageOptions(["--crema", "--advanced-chords-onnx"], { platform: "mac" });
-  assert.deepEqual(packageOptionsToGeneratorArgs(options), ["--crema", "--beat-this", "--lv-chordia"]);
+  assert.deepEqual(packageOptionsToGeneratorArgs(options), [
+    "--crema", "--beat-this", "--lv-chordia", "--cpu", "--nvidia", "--legacy-nvidia",
+  ]);
   assert.deepEqual(backendSyncArgs(options).slice(4, 6), ["--extra", "advanced-chords"]);
   assert.throws(
     () => parsePackageOptions(["--crema", "--no-advanced-chords-onnx"], { platform: "mac" }),
@@ -186,11 +251,46 @@ test("Flatpak package options are scoped to the TuneForge module build environme
   );
   assert.doesNotMatch(optOutManifest, /site-packages\/share\/lv-chordia\/cache_data/);
   assert.doesNotMatch(optOutManifest, /python\/share\/lv-chordia\/cache_data/);
-  assert.doesNotMatch(optOutManifest, /pip install .*--no-deps/);
+  assert.doesNotMatch(pythonRuntimeDepsModule(optOutManifest), /pip install .*--no-deps/);
   assert.match(
     optOutManifest,
     /pip install --no-index --no-build-isolation .* -r python-requirements\.txt/,
   );
+});
+
+test("selective Flatpak manifests retain declarations and bundle only selected profile leaves", () => {
+  const baseManifest = readFileSync(
+    new URL("../packaging/flatpak/com.tuneforge.desktop.yml", import.meta.url),
+    "utf8",
+  );
+  for (const [args, includedModules, bundleCount] of [
+    [["--cpu"], [], 0],
+    [["--nvidia"], ["nvidia-torch-core-extension", "nvidia-torch-runtime-extension"], 2],
+    [["--legacy-nvidia"], ["legacy-nvidia-torch-core-extension", "legacy-nvidia-torch-runtime-extension"], 2],
+    [[], [
+      "nvidia-torch-core-extension", "nvidia-torch-runtime-extension",
+      "legacy-nvidia-torch-core-extension", "legacy-nvidia-torch-runtime-extension",
+    ], 4],
+  ]) {
+    const selected = manifestWithPackageOptions(
+      baseManifest,
+      parsePackageOptions(args, { platform: "linux" }),
+    );
+    for (const profile of ["Nvidia", "LegacyNvidia"]) {
+      assert.match(selected, new RegExp(`^  com\\.tuneforge\\.desktop\\.Torch\\.Stack\\.${profile}:$`, "m"));
+      for (const role of ["Core", "Runtime"]) {
+        assert.match(selected, new RegExp(`^  com\\.tuneforge\\.desktop\\.Torch\\.Stack\\.${profile}\\.${role}:$`, "m"));
+      }
+    }
+    const extensionSection = selected.slice(selected.indexOf("add-extensions:"), selected.indexOf("finish-args:"));
+    assert.equal((extensionSection.match(/^    bundle: true$/gm) ?? []).length, bundleCount);
+    for (const module of [
+      "nvidia-torch-core-extension", "nvidia-torch-runtime-extension",
+      "legacy-nvidia-torch-core-extension", "legacy-nvidia-torch-runtime-extension",
+    ]) {
+      assert.equal(selected.includes(`  - name: ${module}\n`), includedModules.includes(module));
+    }
+  }
 });
 
 test("Flatpak pip temporary files use disk-backed module storage for all Flatpak profiles", () => {
@@ -268,10 +368,31 @@ test("package option parser has no profile compatibility path", () => {
   );
 });
 
+test("package option parser selects normalized Flatpak profiles", () => {
+  const cases = [
+    [[], ["cpu", "nvidia", "legacy-nvidia"]],
+    [["--cpu"], ["cpu"]],
+    [["--nvidia"], ["cpu", "nvidia"]],
+    [["--legacy-nvidia"], ["cpu", "legacy-nvidia"]],
+    [["--legacy-nvidia", "--nvidia"], ["cpu", "nvidia", "legacy-nvidia"]],
+    [["--cpu", "--nvidia", "--cpu"], ["cpu", "nvidia"]],
+    [["--legacy-nvidia", "--cpu", "--nvidia"], ["cpu", "nvidia", "legacy-nvidia"]],
+  ];
+  for (const [args, expected] of cases) {
+    assert.deepEqual(parsePackageOptions(args, { platform: "linux" }).flatpakProfiles, expected);
+  }
+  assert.deepEqual(normalizeFlatpakProfiles(["legacy-nvidia", "cpu", "nvidia"]), [
+    "cpu", "nvidia", "legacy-nvidia",
+  ]);
+  for (const unsupported of ["--all", "--no-nvidia", "--amd", "--intel", "--nvida"]) {
+    assert.throws(() => parsePackageOptions([unsupported], { platform: "linux" }), /Unknown option/);
+  }
+});
+
 test("package option parser rejects platform-specific options", () => {
   assert.throws(
     () => parsePackageOptions(["--legacy-nvidia"], { platform: "mac" }),
-    /only supported for Linux/,
+    /only supported for Linux Flatpak/,
   );
   assert.throws(
     () => parsePackageOptions(["--no-bundle"], { platform: "mac" }),
@@ -283,34 +404,196 @@ test("package option parser rejects platform-specific options", () => {
   );
 });
 
-test("legacy nvidia includes LV Chordia by default", () => {
-  const options = parsePackageOptions(["--legacy-nvidia"], { platform: "linux" });
-
-  assert.deepEqual(
-    packageOptionsToGeneratorArgs(options),
-    ["--crema", "--beat-this", "--lv-chordia", "--legacy-nvidia"],
-  );
-  assert.deepEqual(backendSyncArgs(options), [
-    "sync",
-    "--python",
-    "3.14",
-    "--all-groups",
-    "--extra",
-    "advanced-chords",
-    "--extra",
-    "advanced-beats",
-    "--extra",
-    "lv-chordia",
-  ]);
-});
-
-test("Flatpak resolves official CPU Torch by default and preserves the legacy CUDA 12.6 resolver", () => {
+test("Flatpak resolves CPU, NVIDIA, and legacy NVIDIA Torch profiles", () => {
   const generator = readFileSync(new URL("./generate-flatpak-sources.mjs", import.meta.url), "utf8");
 
   assert.match(generator, /"torch==2\.13\.0\\ntorchaudio==2\.11\.0\\n"/);
   assert.match(generator, /"--python-version",\n\s+"3\.14"/);
   assert.match(generator, /"--torch-backend",\n\s+"cpu"/);
   assert.match(generator, /"--torch-backend",\n\s+"cu126"/);
+});
+
+test("Torch extension profiles enforce exact versions, closure, and immutable markers", () => {
+  const nvidia = [
+    { name: "torch", version: "2.13.0" },
+    { name: "torchaudio", version: "2.11.0" },
+    { name: "triton", version: "3.7.1" },
+    { name: "cuda-bindings", version: "13.3.1" },
+    { name: "nvidia-cudnn-cu13", version: "9.20.0.48" },
+  ];
+  assert.doesNotThrow(() => assertTorchExtensionProfile(
+    nvidia,
+    "Nvidia",
+    ["cuda-bindings", "nvidia-cudnn-cu13"],
+  ));
+  assert.throws(
+    () => assertTorchExtensionProfile(nvidia, "Nvidia", ["cuda-bindings"]),
+    /does not match the locked family/,
+  );
+  const legacy = [
+    { name: "torch", version: "2.13.0+cu126" },
+    { name: "torchaudio", version: "2.11.0+cu126" },
+    { name: "triton", version: "3.7.1" },
+    { name: "cuda-bindings", version: "12.9.7" },
+    { name: "nvidia-cublas-cu12", version: "12.6.4.1" },
+  ];
+  assert.doesNotThrow(() => assertTorchExtensionProfile(legacy, "LegacyNvidia"));
+  assert.throws(
+    () => assertTorchExtensionProfile(legacy.map((pkg) =>
+      pkg.name === "torch" ? { ...pkg, version: "0.0.0" } : pkg), "LegacyNvidia"),
+    /requires torch/,
+  );
+  assert.throws(
+    () => assertTorchExtensionProfile(
+      legacy.map((pkg) => pkg.name === "nvidia-cublas-cu12"
+        ? { name: "nvidia-cublas-cu13", version: pkg.version }
+        : pkg),
+      "LegacyNvidia",
+    ),
+    /CUDA 13 package/,
+  );
+  const hashableNvidia = nvidia.map((pkg, index) => ({
+    ...pkg,
+    fileName: `${pkg.name}.whl`,
+    sha256: String(index).padStart(64, "a"),
+  }));
+  const { core, runtime } = partitionTorchExtensionPackages(hashableNvidia);
+  assert.deepEqual(core.map((pkg) => pkg.name), ["torch", "torchaudio", "triton"]);
+  assert.deepEqual(runtime.map((pkg) => pkg.name), ["cuda-bindings", "nvidia-cudnn-cu13"]);
+  assert.deepEqual(
+    [...core, ...runtime].map((pkg) => `${pkg.name}@${pkg.version}`).sort(),
+    hashableNvidia.map((pkg) => `${pkg.name}@${pkg.version}`).sort(),
+  );
+  const pairId = torchExtensionPairId("Nvidia", hashableNvidia);
+  assert.match(pairId, /^[a-f0-9]{64}$/);
+  assert.deepEqual(torchExtensionMarker("Nvidia", "core", pairId), {
+    schema_version: 2,
+    contract: "profile-pair-v1",
+    profile: "Nvidia",
+    role: "core",
+    ref_id: "com.tuneforge.desktop.Torch.Stack.Nvidia.Core",
+    python_abi: "cp314",
+    torch_version: "2.13.0",
+    torchaudio_version: "2.11.0",
+    triton_version: "3.7.1",
+    cuda_family: "13",
+    pair_id: pairId,
+  });
+});
+
+test("Rust launcher and Flatpak generator share the exact Torch extension contract", () => {
+  const rust = readFileSync(
+    new URL("../apps/desktop/src-tauri/src/lib.rs", import.meta.url),
+    "utf8",
+  );
+  const embedded = /const TORCH_EXTENSION_POLICY_JSON: &str = r#"([\s\S]*?)"#;/.exec(rust);
+  assert.ok(embedded, "Rust Torch extension policy JSON is missing");
+  const policy = JSON.parse(embedded[1]);
+  assert.deepEqual(Object.keys(policy.profiles).sort(), Object.keys(TORCH_EXTENSION_PROFILES).sort());
+  for (const [profileName, generatedProfile] of Object.entries(TORCH_EXTENSION_PROFILES)) {
+    assert.deepEqual(policy.profiles[profileName], generatedProfile);
+    for (const role of ["core", "runtime"]) {
+      const marker = torchExtensionMarker(profileName, role, generatedProfile.pair_id);
+      assert.equal(marker.schema_version, policy.schema_version);
+      assert.equal(marker.contract, policy.contract);
+      assert.equal(marker.python_abi, policy.python_abi);
+      assert.equal(marker.profile, profileName);
+      assert.equal(marker.role, role);
+      assert.equal(marker.ref_id, `${generatedProfile.ref_prefix}.${role === "core" ? "Core" : "Runtime"}`);
+    }
+  }
+});
+
+test("release inventory follows the normalized Flatpak profile selection", () => {
+  for (const [profiles, expectedIds] of [
+    [["cpu"], ["cpu"]],
+    [["nvidia"], ["cpu", "nvidia-core", "nvidia-runtime"]],
+    [["legacy-nvidia"], ["cpu", "legacy-nvidia-core", "legacy-nvidia-runtime"]],
+    [["legacy-nvidia", "cpu", "nvidia"], [
+      "cpu", "nvidia-core", "nvidia-runtime", "legacy-nvidia-core", "legacy-nvidia-runtime",
+    ]],
+  ]) {
+    const inventory = buildReleaseLicenseInventory({ flatpakProfiles: profiles });
+    const policy = inventory.modelPolicy;
+    assert.deepEqual(policy.flatpakTorchProfiles.map(({ id }) => id), expectedIds);
+    assert.equal(policy.flatpakTorchProfiles.find(({ id }) => id === "cpu").cudaFamily, null);
+    assert.equal(policy.flatpakChecksumContents.length, expectedIds.length);
+    assert.ok(policy.flatpakChecksumContents.every((artifact) => artifact.endsWith(".flatpak")));
+    const human = formatReleaseLicenseInventory(inventory);
+    assert.doesNotMatch(human, /Torch undefined|Torchaudio undefined|Triton undefined/);
+    if (expectedIds.some((id) => id.endsWith("runtime"))) {
+      assert.match(human, /CUDA\/NVIDIA runtime family/);
+    }
+    assert.deepEqual(JSON.parse(JSON.stringify(inventory)).modelPolicy.flatpakChecksumContents,
+      policy.flatpakChecksumContents);
+  }
+});
+
+test("Flatpak profile inventory uses exact generated artifacts and fails closed on license gaps", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "tuneforge-flatpak-license-inventory-"));
+  try {
+    const writeProfile = (prefix, packages) => {
+      const artifacts = packages.map(({ name, version }, index) => {
+        const fileName = `${prefix}-${name}.whl`;
+        const url = `https://example.invalid/${fileName}`;
+        return { name, version, fileName, url, sha256: String(index + 1).repeat(64) };
+      });
+      writeFileSync(path.join(root, `${prefix}-requirements.txt`),
+        `${packages.map(({ name, version }) => `${name}==${version}`).join("\n")}\n`);
+      writeFileSync(path.join(root, `${prefix}-sources.json`), JSON.stringify(artifacts.map((artifact) => ({
+        url: artifact.url, sha256: artifact.sha256, "dest-filename": artifact.fileName,
+      }))));
+      writeFileSync(path.join(root, `${prefix}-size-report.json`), JSON.stringify(artifacts));
+    };
+    writeProfile("python", [
+      { name: "torch", version: "2.13.0" },
+      { name: "wheel", version: "0.48.0" },
+      { name: "pathspec", version: "1.1.1" },
+    ]);
+    writeFileSync(path.join(root, "python-build-requirements.txt"), "wheel==0.48.0\n");
+    writeProfile("python-nvidia-torch-core", [{ name: "torch", version: "2.13.0" }]);
+    writeProfile("python-legacy-torch-core", [{ name: "torch", version: "2.13.0+cu126" }]);
+    writeProfile("python-nvidia-torch-runtime", [
+      { name: "cuda-bindings", version: "13.3.1" },
+      { name: "nvidia-cublas", version: "13.1.1.3" },
+    ]);
+    writeProfile("python-legacy-torch-runtime", [
+      { name: "cuda-bindings", version: "12.9.7" },
+      { name: "nvidia-cublas-cu12", version: "12.6.4.1" },
+    ]);
+    const fixtureLicenses = {
+      "cuda-bindings": "Apache-2.0", pathspec: "MPL-2.0", torch: "BSD-3-Clause", wheel: "MIT",
+    };
+    const inventory = buildFlatpakProfileComponentInventory({
+      generatedRoot: root,
+      strict: true,
+      licenseMetadata: fixtureLicenses,
+    });
+    assert.deepEqual(inventory.profiles.map((profile) => profile.id), [
+      "cpu", "nvidia-core", "nvidia-runtime", "legacy-nvidia-core", "legacy-nvidia-runtime",
+    ]);
+    assert.equal(inventory.profiles[0].components[0].sha256, "1".repeat(64));
+    const runtimeComponents = inventory.profiles.find(({ id }) => id === "nvidia-runtime").components;
+    assert.equal(runtimeComponents.find(({ name }) => name === "cuda-bindings").license, "Apache-2.0");
+    assert.equal(
+      runtimeComponents.find(({ name }) => name === "nvidia-cublas").license,
+      "LicenseRef-NVIDIA-Software-License",
+    );
+    writeFileSync(path.join(root, "flatpak-profile-selection.json"), JSON.stringify({ profiles: ["cpu"] }));
+    assert.deepEqual(buildFlatpakProfileComponentInventory({
+      generatedRoot: root,
+      strict: true,
+      licenseMetadata: fixtureLicenses,
+    }).profiles.map(({ id }) => id), ["cpu"]);
+    assert.throws(
+      () => buildFlatpakProfileComponentInventory({
+        generatedRoot: root, strict: true, licenseMetadata: { torch: "BSD-3-Clause", wheel: "MIT" },
+      }),
+      /pathspec 1\.1\.1 lacks reviewed license metadata/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("Flatpak CPU resolver replaces the CUDA closure and rejects unwanted accelerator families", () => {
@@ -458,24 +741,13 @@ test("Flatpak wheel selection accepts CPython 3.14, compatible abi3, and univers
   assert.equal(wheelScore("runtime-1.0-cp314-cp314-macosx_14_0_arm64.whl"), -1);
 });
 
-test("legacy nvidia supports advanced dependency opt-outs", () => {
-  const options = parsePackageOptions(
-    ["--legacy-nvidia", "--no-advanced-chords", "--no-advanced-beats", "--no-lv-chordia"],
-    { platform: "linux" },
-  );
-
-  assert.deepEqual(
-    packageOptionsToGeneratorArgs(options),
-    ["--no-crema", "--no-beat-this", "--no-lv-chordia", "--legacy-nvidia"],
-  );
-  assert.deepEqual(backendSyncArgs(options), ["sync", "--python", "3.14", "--all-groups"]);
-});
-
 test("sandbox data is Flatpak-only and does not affect dependency generation beyond defaults", () => {
   const options = parsePackageOptions(["--sandbox-data"], { platform: "linux" });
 
   assert.equal(options.sandboxData, true);
-  assert.deepEqual(packageOptionsToGeneratorArgs(options), ["--crema", "--beat-this", "--lv-chordia"]);
+  assert.deepEqual(packageOptionsToGeneratorArgs(options), [
+    "--crema", "--beat-this", "--lv-chordia", "--cpu", "--nvidia", "--legacy-nvidia",
+  ]);
   assert.deepEqual(backendSyncArgs(options), [
     "sync",
     "--python",

@@ -7,7 +7,8 @@ See [Third-party notices](../THIRD_PARTY_NOTICES.md) for the dependency and mode
 ## Release Artifact Truth
 
 - macOS packaging creates a local `.app` bundle and DMG. The app is unsigned and not notarized.
-- Linux Flatpak packaging creates either a single-file `.flatpak` bundle or, with `--no-bundle`, a local Flatpak repository install flow.
+- Linux Flatpak packaging creates the CPU app plus the selected optional Core/Runtime extension
+  pairs or, with `--no-bundle`, exports those same selected refs to a local Flatpak repository.
 - Source distribution is the repository checkout or source archive from version control. These package commands do not create a separate source tarball.
 - Packaging, model-bundle review, ONNX Advanced Chords, beat-this, CUDA/MPS/legacy NVIDIA GPU behavior, and install smoke checks are manual or special coverage unless a CI workflow explicitly runs them.
 - Release/default package commands do not use `--model-bundle`. Publishable model-bundled artifacts require an explicit review of the selected weights and package distribution evidence.
@@ -206,7 +207,10 @@ For faster local iteration, skip the single-file bundle step:
 pnpm package:linux:flatpak -- --no-bundle
 ```
 
-The Flatpak build generates local dependency source manifests, builds inside the SDK sandbox, and installs the backend under `/app/lib/tuneforge/backend`. It bundles `pactl` for microphone volume control but does not bundle FFmpeg.
+The Flatpak build generates local dependency source manifests, builds inside the SDK sandbox, and
+installs the CPU-only backend under `/app/lib/tuneforge/backend`. The same manifest exports optional
+NVIDIA and legacy NVIDIA Torch extensions from one repository. It bundles `pactl` for microphone
+volume control but does not bundle FFmpeg.
 
 ### Flatpak Build Caches and Evidence
 
@@ -229,8 +233,9 @@ refs can intentionally differ. `TUNEFORGE_FRONTEND_GIT_REF` overrides only the f
 
 Every successful build writes the ignored, sanitized
 `packaging/flatpak/generated/cache-report.json`. Override it with
-`FLATPAK_CACHE_REPORT_PATH`. It records cache integrity and usage, timings, and a deterministic
-installed-payload digest without exposing host cache paths.
+`FLATPAK_CACHE_REPORT_PATH`. It records cache integrity and usage, timings, a deterministic
+installed-payload digest, and the exact CPU, NVIDIA, and legacy NVIDIA repository commits
+without exposing host cache paths.
 
 Use a Linux x86_64 Flatpak host and never-before-used evidence roots for a cold/warm comparison:
 
@@ -259,7 +264,7 @@ Chordia dependency stacks by default. Feature flags are independent:
 ```sh
 pnpm package:linux -- --no-crema --no-beat-this --no-lv-chordia
 pnpm package:linux -- --no-advanced-chords --no-advanced-beats
-pnpm package:linux -- --legacy-nvidia --model-bundle
+pnpm package:linux -- --model-bundle
 pnpm package:linux -- --crema-onnx
 pnpm package:linux -- --crema-onnx --model-bundle
 ```
@@ -268,13 +273,22 @@ pnpm package:linux -- --crema-onnx --model-bundle
 - `--no-crema`, `--no-advanced-chords`, `--no-crema-onnx`, and `--no-advanced-chords-onnx` exclude it. Mixing enable and disable selectors is an error.
 - `--no-beat-this` / `--no-advanced-beats` exclude the Advanced Beat Analysis dependency stack.
 - `--lv-chordia` / `--no-lv-chordia` include or exclude LV Chordia and its five checkpoints.
-- `--legacy-nvidia` swaps in PyTorch 2.13.0 and torchaudio 2.11.0 CUDA 12.6 wheels and
-  grants broader GPU device access. LV Chordia remains included unless `--no-lv-chordia` is
-  passed.
 - `--model-bundle` includes required Demucs and Whisper weights, plus beat-this `small0` when beat-this dependencies are included. Advanced Chords model/state files are always included when that engine is enabled.
 - `--sandbox-data` keeps app data under Flatpak-private `/var/data/tuneforge` instead of the host XDG data directory.
+- With no profile flags, Flatpak packaging builds CPU, NVIDIA, and legacy NVIDIA. `--cpu` builds
+  only the CPU app; `--nvidia` or `--legacy-nvidia` builds the CPU app and that accelerator pair.
+  The profile flags may be combined in any order, and repeated flags have no effect.
 
-Like macOS packages, plain Flatpak packages rely on normal Demucs, Whisper, and beat-this caches unless `--model-bundle` is explicitly passed. The default Flatpak resolves official CPU-only PyTorch and torchaudio wheels for its Linux x86_64 Python runtime; its generated closure rejects CUDA, NVIDIA, and Triton packages. `--legacy-nvidia` retains the legacy CUDA closure for older supported NVIDIA GPUs. Advanced Chords always includes and seeds the exact pinned ONNX model and runtime-state files. Packages omit the Crema Python package, TensorFlow, Keras, and their HDF5 closure but retain LV Chordia's separately declared `h5py` dependency.
+Like macOS packages, plain Flatpak packages rely on normal Demucs, Whisper, and beat-this caches
+unless `--model-bundle` is explicitly passed. The application contains the official CPU Torch base;
+its generated closure rejects CUDA, NVIDIA, and Triton. Each NVIDIA profile is split across
+matching `Core` and `Runtime` refs beneath
+`com.tuneforge.desktop.Torch.Stack`. Core contains the profile-specific Torch binaries; Runtime
+contains its CUDA/NVIDIA closure. This generic profile-pair layout can also represent other GPU
+families without making Core binaries portable across backends. The launcher validates both immutable
+markers before starting Python, prefers NVIDIA over legacy NVIDIA, and prepends only the selected
+profile's merged `site-packages`; an incomplete, mismatched, or stale pair falls back to the CPU base.
+Advanced Chords always includes and seeds the exact pinned ONNX model and runtime-state files.
 When beat-this is excluded, desktop actions explicitly select Built-in Beat Analysis. An Advanced
 Beat Analysis request that ultimately fails during first-use download, load, runtime, or timing
 analysis fails the job rather than switching engines; explicit Built-in Beat Analysis requests do
@@ -289,18 +303,41 @@ library.
 
 ## Flatpak Local Repo Installs
 
-When `--no-bundle` is used, packaging exports a local Flatpak repository and prints the exact install commands. The local remote is `tuneforge-local` and the repository is `packaging/flatpak/repo`:
+When `--no-bundle` is used, packaging exports a local Flatpak repository and prints the exact
+commands for the selected profiles. The local remote is `tuneforge-local` and the repository is
+`packaging/flatpak/repo`:
 
 ```sh
 flatpak remote-add --user --if-not-exists --no-gpg-verify tuneforge-local packaging/flatpak/repo
 flatpak install --user --reinstall tuneforge-local com.tuneforge.desktop
+flatpak install --user --reinstall tuneforge-local com.tuneforge.desktop.Torch.Stack.Nvidia.Core com.tuneforge.desktop.Torch.Stack.Nvidia.Runtime
 ```
 
-Without `--no-bundle`, the Flatpak bundle is written under `packaging/flatpak/` as `Tuneforge_<version>_x86_64.flatpak`.
+Install the legacy NVIDIA pair by replacing `Nvidia` with `LegacyNvidia`. Install the CPU application
+first, then one or both complete accelerator pairs. When both pairs are installed, NVIDIA takes
+precedence over legacy NVIDIA.
+
+Without profile flags or `--no-bundle`, packaging writes five independent bundles under
+`packaging/flatpak/`:
+
+- `Tuneforge_<version>_x86_64.flatpak`;
+- `Tuneforge_<version>_Torch_Nvidia_Core_x86_64.flatpak`;
+- `Tuneforge_<version>_Torch_Nvidia_Runtime_x86_64.flatpak`;
+- `Tuneforge_<version>_Torch_LegacyNvidia_Core_x86_64.flatpak`;
+- `Tuneforge_<version>_Torch_LegacyNvidia_Runtime_x86_64.flatpak`.
+
+Selective builds write only the CPU bundle and the two bundles for each selected accelerator. The
+ignored `packaging/flatpak/generated/SHA256SUMS` contains exactly the artifacts from that run.
+Every run removes stale known default bundles and checksums before building. Each bundle
+must remain strictly below 2 GiB. The bundle step runs at most two independent bundle jobs
+concurrently; the Flatpak ref build remains sequential.
 
 ## Size Expectations
 
-Linux Flatpak bundles are large because they include Torch, beat-this, and the LV Chordia runtime. ONNX Advanced Chords is materially smaller than the removed TensorFlow stack. Report LV Chordia source/runtime bytes separately from its fixed 28,730,939 checkpoint bytes. `--legacy-nvidia` adds CUDA 12.6 runtime wheels, and `--model-bundle` adds other reviewed model weights.
+Linux Flatpak bundles are large because they include Torch, beat-this, and the LV Chordia runtime.
+Each NVIDIA profile's Torch Core and CUDA/NVIDIA Runtime live in separate optional extension bundles,
+so all four components are gated independently from the CPU application. `--model-bundle` adds other
+reviewed model weights.
 
 Every Flatpak build writes an ignored structured size report at
 `packaging/flatpak/generated/size-report.json` (override with `FLATPAK_SIZE_REPORT_PATH`). It uses

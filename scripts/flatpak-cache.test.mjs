@@ -1,22 +1,33 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import {
   cacheNamespace,
+  buildFlatpakBundles,
+  cleanupFlatpakBundleOutputs,
   compareCacheReports,
   digestBuildPayload,
   enforceFlatpakBundleSize,
+  flatpakArtifactSizeReport,
+  flatpakBundlePlan,
   flatpakSizeReport,
   frontendModuleInputPaths,
   isValidPnpmCacheReport,
   normalizeGeneratedModelBundleManifest,
   parseSccacheStats,
+  reconcileFlatpakOutputRefs,
   resolveCacheRoots,
   resolveFrontendGitRef,
   resolveSourceDateEpoch,
+  selectedFlatpakOutputRefs,
+  verifyFlatpakOutputRefs,
+  writeFlatpakChecksums,
+  withFreshFlatpakBundleOutputs,
 } from "./package-flatpak.mjs";
 import { parsePackageOptions } from "./package-options.mjs";
 
@@ -55,6 +66,14 @@ test("Flatpak cache namespace includes every invalidation dimension", () => {
   assert.equal(first.inputs.arch, "x86_64");
   assert.match(first.inputs.runtime, /org\.gnome\.Platform\/50/);
   assert.match(first.inputs.tools, /pnpm11\.22\.0-sccache0\.17\.0/);
+  const explicitAll = parsePackageOptions(["--legacy-nvidia", "--cpu", "--nvidia"], { platform: "linux" });
+  const noBundle = parsePackageOptions(["--no-bundle"], { platform: "linux" });
+  assert.equal(cacheNamespace(explicitAll, "1.3.0").name, first.name);
+  assert.equal(cacheNamespace(noBundle, "1.3.0").name, first.name);
+  assert.notEqual(
+    cacheNamespace(parsePackageOptions(["--cpu"], { platform: "linux" }), "1.3.0").name,
+    cacheNamespace(parsePackageOptions(["--nvidia"], { platform: "linux" }), "1.3.0").name,
+  );
 });
 
 test("Flatpak state and cache roots reject force-clean overlap and unsafe roots", () => {
@@ -133,6 +152,10 @@ test("Flatpak modules split frontend, Rust, and backend source boundaries", () =
       "tuneforge-desktop",
       "cpython-3.14",
       "python-runtime-deps",
+      "nvidia-torch-core-extension",
+      "nvidia-torch-runtime-extension",
+      "legacy-nvidia-torch-core-extension",
+      "legacy-nvidia-torch-runtime-extension",
       "pulseaudio-client-tools",
       "tuneforge-backend",
     ],
@@ -217,8 +240,15 @@ test("payload digest is metadata-complete, order-stable, and content-sensitive",
 });
 
 test("cold and warm reports compare payloads and propagate report errors", () => {
-  const cold = { namespace: "same", payload: { sha256: "abc", entryCount: 4 }, errors: [] };
-  const warm = { namespace: "same", payload: { sha256: "abc", entryCount: 4 }, errors: [] };
+  const refCommits = [
+    { id: "cpu", commitSha256: "a".repeat(64) },
+    { id: "nvidia-core", commitSha256: "b".repeat(64) },
+    { id: "nvidia-runtime", commitSha256: "c".repeat(64) },
+    { id: "legacy-nvidia-core", commitSha256: "d".repeat(64) },
+    { id: "legacy-nvidia-runtime", commitSha256: "e".repeat(64) },
+  ];
+  const cold = { namespace: "same", payload: { sha256: "abc", entryCount: 4 }, refCommits, errors: [] };
+  const warm = { namespace: "same", payload: { sha256: "abc", entryCount: 4 }, refCommits, errors: [] };
   assert.equal(compareCacheReports(cold, warm).equivalent, true);
   assert.deepEqual(
     compareCacheReports(cold, { ...warm, payload: { sha256: "def", entryCount: 4 } }).errors,
@@ -226,6 +256,59 @@ test("cold and warm reports compare payloads and propagate report errors", () =>
   );
   assert.equal(compareCacheReports(cold, { ...warm, errors: ["stats error"] }).equivalent, false);
   assert.equal(compareCacheReports(cold, { ...warm, namespace: "different" }).equivalent, false);
+  const changedNvidia = refCommits.map((entry) =>
+    entry.id === "nvidia-runtime" ? { ...entry, commitSha256: "f".repeat(64) } : entry);
+  assert.deepEqual(compareCacheReports(cold, { ...warm, refCommits: changedNvidia }).errors, [
+    "Cold and warm Flatpak output ref commits differ.",
+  ]);
+});
+
+test("Flatpak repo reconciliation removes only known refs and verifies the selected set", () => {
+  const known = selectedFlatpakOutputRefs(["cpu", "nvidia", "legacy-nvidia"]).map(({ ref }) => ref);
+  const obsolete = [
+    "runtime/com.tuneforge.desktop.Torch.Nvidia/x86_64/stable",
+    "runtime/com.tuneforge.desktop.Torch.LegacyNvidia/x86_64/stable",
+  ];
+  const unrelated = "runtime/org.example.Unrelated/x86_64/stable";
+  const deleted = [];
+  reconcileFlatpakOutputRefs({
+    repoPath: "/tmp/repo",
+    listRefs: () => [...known, ...obsolete, unrelated],
+    deleteRef: (_repo, ref) => deleted.push(ref),
+  });
+  assert.deepEqual(deleted.sort(), [...known, ...obsolete].sort());
+  assert.equal(deleted.includes(unrelated), false);
+
+  const selected = selectedFlatpakOutputRefs(["cpu", "nvidia"]);
+  const commits = verifyFlatpakOutputRefs({
+    repoPath: "/tmp/repo",
+    selectedProfiles: ["cpu", "nvidia"],
+    listRefs: () => [...selected.map(({ ref }) => ref), unrelated],
+    resolveCommit: (_repo, ref) => createHash("sha256").update(ref).digest("hex"),
+  });
+  assert.deepEqual(commits.map(({ id, ref }) => [id, ref]), [
+    ["cpu", "app/com.tuneforge.desktop/x86_64/stable"],
+    ["nvidia-core", "runtime/com.tuneforge.desktop.Torch.Stack.Nvidia.Core/x86_64/stable"],
+    ["nvidia-runtime", "runtime/com.tuneforge.desktop.Torch.Stack.Nvidia.Runtime/x86_64/stable"],
+  ]);
+  assert.ok(commits.every(({ commitSha256 }) => /^[a-f0-9]{64}$/.test(commitSha256)));
+  assert.throws(() => verifyFlatpakOutputRefs({
+    selectedProfiles: ["cpu"],
+    listRefs: () => [known[0], known[1]],
+  }), /Stale unselected Flatpak output ref/);
+  assert.throws(() => verifyFlatpakOutputRefs({
+    selectedProfiles: ["cpu", "nvidia"],
+    listRefs: () => [known[0]],
+  }), /Missing selected Flatpak output ref/);
+  assert.throws(() => verifyFlatpakOutputRefs({
+    selectedProfiles: ["cpu"],
+    listRefs: () => [known[0], obsolete[0]],
+  }), /Stale obsolete Flatpak output ref/);
+  assert.throws(() => verifyFlatpakOutputRefs({
+    selectedProfiles: ["cpu"],
+    listRefs: () => [known[0]],
+    resolveCommit: () => "not-a-digest",
+  }), /Malformed commit/);
 });
 
 test("Flatpak size report is deterministic, byte-based, and has no compliance claim without a bundle", () => {
@@ -305,4 +388,181 @@ test("Flatpak bundle size follows a symlink target and requires a regular file",
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("Flatpak bundle plan emits the CPU app and exact runtime extension refs", () => {
+  const plan = flatpakBundlePlan({
+    applicationBundle: "/tmp/app.flatpak",
+    nvidiaCoreBundle: "/tmp/nvidia-core.flatpak",
+    nvidiaRuntimeBundle: "/tmp/nvidia-runtime.flatpak",
+    legacyCoreBundle: "/tmp/legacy-core.flatpak",
+    legacyRuntimeBundle: "/tmp/legacy-runtime.flatpak",
+  });
+  assert.deepEqual(plan.map(({ refId, runtime }) => [refId, runtime]), [
+    ["com.tuneforge.desktop", false],
+    ["com.tuneforge.desktop.Torch.Stack.Nvidia.Core", true],
+    ["com.tuneforge.desktop.Torch.Stack.Nvidia.Runtime", true],
+    ["com.tuneforge.desktop.Torch.Stack.LegacyNvidia.Core", true],
+    ["com.tuneforge.desktop.Torch.Stack.LegacyNvidia.Runtime", true],
+  ]);
+  const cpuOnly = flatpakBundlePlan({
+    selectedProfiles: ["cpu"],
+    applicationBundle: "/tmp/cpu-only.flatpak",
+  });
+  assert.deepEqual(cpuOnly.map(({ refId }) => refId), ["com.tuneforge.desktop"]);
+  const nvidiaOnly = flatpakBundlePlan({
+    selectedProfiles: ["cpu", "nvidia"],
+    applicationBundle: "/tmp/selected-app.flatpak",
+    nvidiaCoreBundle: "/tmp/selected-nvidia-core.flatpak",
+    nvidiaRuntimeBundle: "/tmp/selected-nvidia-runtime.flatpak",
+  });
+  assert.equal(nvidiaOnly.length, 3);
+  assert.ok(nvidiaOnly.every(({ refId }) => !refId.includes("LegacyNvidia")));
+  assert.throws(
+    () => flatpakBundlePlan({
+      applicationBundle: "/tmp/collision.flatpak",
+      nvidiaCoreBundle: "/tmp/collision.flatpak",
+    }),
+    /bundle output paths must be unique/,
+  );
+  assert.throws(
+    () => flatpakBundlePlan({
+      applicationBundle: "/tmp/one/collision.flatpak",
+      nvidiaCoreBundle: "/tmp/two/collision.flatpak",
+    }),
+    /checksum artifact basenames must be unique/,
+  );
+  let spawned = false;
+  assert.throws(
+    () => buildFlatpakBundles({
+      bundlePlan: [
+        { refId: "first", runtime: false, path: "/tmp/collision.flatpak" },
+        { refId: "second", runtime: true, path: "/tmp/collision.flatpak" },
+      ],
+      spawnProcess: () => {
+        spawned = true;
+      },
+    }),
+    /bundle output paths must be unique/,
+  );
+  assert.equal(spawned, false);
+  assert.match(packageScript, /Torch_Nvidia_x86_64\.flatpak/);
+  assert.match(packageScript, /Torch_LegacyNvidia_x86_64\.flatpak/);
+  assert.doesNotMatch(packageScript, /FLATPAK_(?:NVIDIA|LEGACY)_TORCH_BUNDLE_PATH/);
+});
+
+test("each Flatpak artifact has an independent size gate and stable checksum entry", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "tuneforge-flatpak-artifacts-"));
+  try {
+    const artifacts = ["app.flatpak", "nvidia-core.flatpak", "nvidia-runtime.flatpak", "legacy-core.flatpak", "legacy-runtime.flatpak"].map((name, index) => {
+      const artifact = path.join(root, name);
+      writeFileSync(artifact, `artifact-${index}`);
+      const report = flatpakArtifactSizeReport(artifact);
+      assert.equal(report.compressedBundle.path, name);
+      assert.doesNotThrow(() => enforceFlatpakBundleSize(report));
+      return artifact;
+    });
+    const output = path.join(root, "SHA256SUMS");
+    const lines = writeFlatpakChecksums(artifacts, output);
+    assert.equal(lines.length, 5);
+    assert.deepEqual(lines.map((line) => line.split("  ")[1]), [
+      "app.flatpak",
+      "legacy-core.flatpak",
+      "legacy-runtime.flatpak",
+      "nvidia-core.flatpak",
+      "nvidia-runtime.flatpak",
+    ]);
+    assert.equal(readFileSync(output, "utf8"), `${lines.join("\n")}\n`);
+    const selectedLines = writeFlatpakChecksums(artifacts.slice(0, 3), output);
+    assert.equal(selectedLines.length, 3);
+    assert.deepEqual(selectedLines.map((line) => line.split("  ")[1]), [
+      "app.flatpak", "nvidia-core.flatpak", "nvidia-runtime.flatpak",
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("no-bundle cleanup and bundle failures cannot preserve stale artifacts", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "tuneforge-flatpak-cleanup-"));
+  const bundlePlan = ["app.flatpak", "nvidia-core.flatpak", "nvidia-runtime.flatpak", "legacy-core.flatpak", "legacy-runtime.flatpak"].map((name) => ({
+    path: path.join(root, name),
+  }));
+  const checksumPath = path.join(root, "generated", "SHA256SUMS");
+  const obsoleteBundlePaths = [
+    path.join(root, "Tuneforge_1.4.0_Torch_Nvidia_x86_64.flatpak"),
+    path.join(root, "Tuneforge_1.4.0_Torch_LegacyNvidia_x86_64.flatpak"),
+  ];
+  const unrelatedOldOverride = path.join(root, "custom-old-nvidia-output.flatpak");
+  try {
+    mkdirSync(path.dirname(checksumPath), { recursive: true });
+    for (const { path: artifact } of bundlePlan) writeFileSync(artifact, "stale");
+    for (const artifact of obsoleteBundlePaths) writeFileSync(artifact, "obsolete");
+    writeFileSync(unrelatedOldOverride, "preserve");
+    writeFileSync(checksumPath, "stale\n");
+    cleanupFlatpakBundleOutputs({ bundlePlan, checksumPath, obsoleteBundlePaths });
+    assert.ok(bundlePlan.every(({ path: artifact }) => !existsSync(artifact)));
+    assert.ok(obsoleteBundlePaths.every((artifact) => !existsSync(artifact)));
+    assert.equal(existsSync(unrelatedOldOverride), true);
+    assert.equal(existsSync(checksumPath), false);
+
+    for (const artifact of obsoleteBundlePaths) writeFileSync(artifact, "obsolete");
+    await assert.rejects(
+      withFreshFlatpakBundleOutputs(() => {
+        writeFileSync(bundlePlan[0].path, "partial");
+        writeFileSync(checksumPath, "partial\n");
+        throw new Error("bundle failed");
+      }, { bundlePlan, checksumPath, obsoleteBundlePaths }),
+      /bundle failed/,
+    );
+    assert.ok(bundlePlan.every(({ path: artifact }) => !existsSync(artifact)));
+    assert.ok(obsoleteBundlePaths.every((artifact) => !existsSync(artifact)));
+    assert.equal(existsSync(checksumPath), false);
+
+    const protectedArtifact = bundlePlan[0].path;
+    writeFileSync(protectedArtifact, "keep-before-validation");
+    assert.throws(
+      () => cleanupFlatpakBundleOutputs({
+        bundlePlan: [{ path: protectedArtifact }, { path: protectedArtifact }],
+        checksumPath,
+        obsoleteBundlePaths: [],
+      }),
+      /bundle output paths must be unique/,
+    );
+    assert.equal(readFileSync(protectedArtifact, "utf8"), "keep-before-validation");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Flatpak bundle queue runs at most two jobs and terminates peers after failure", async () => {
+  const plan = Array.from({ length: 5 }, (_, index) => ({
+    refId: `ref-${index}`,
+    runtime: index > 0,
+    path: `/tmp/ref-${index}.flatpak`,
+  }));
+  let active = 0;
+  let maximum = 0;
+  const killed = [];
+  const spawnProcess = (_command, args) => {
+    const child = new EventEmitter();
+    child.kill = () => {
+      killed.push(args.at(-2));
+      queueMicrotask(() => child.emit("exit", null, "SIGTERM"));
+    };
+    active += 1;
+    maximum = Math.max(maximum, active);
+    const refId = args.at(-2);
+    queueMicrotask(() => {
+      active -= 1;
+      child.emit("exit", refId === "ref-1" ? 1 : 0, null);
+    });
+    return child;
+  };
+  await assert.rejects(
+    buildFlatpakBundles({ bundlePlan: plan, repository: "/tmp/repo", spawnProcess }),
+    /ref-1.*status 1/,
+  );
+  assert.equal(maximum, 2);
+  assert.ok(killed.length <= 1);
 });

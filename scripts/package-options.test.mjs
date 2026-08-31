@@ -7,19 +7,24 @@ import {
   assertDefaultCpuTorchClosure,
   assertTorchExtensionProfile,
   markerMatchesFlatpakTarget,
+  flatpakTorchLockPaths,
   mergeLegacyTorchPackageSets,
   parseUvLock,
+  parsePylock,
   partitionTorchExtensionPackages,
   removeObsoleteTorchExtensionOutputs,
   removeUnselectedTorchExtensionOutputs,
   resolvePythonRuntimePackages,
+  resolveNamedPythonPackages,
   selectedTorchExtensionProfileSpecs,
   torchExtensionPairId,
   torchExtensionMarker,
+  assertReviewedTorchExtensionPair,
   TORCH_EXTENSION_PROFILES,
   wheelScore,
 } from "./generate-flatpak-sources.mjs";
 import { manifestWithPackageOptions } from "./package-flatpak.mjs";
+import { refreshTorchLock } from "./refresh-flatpak-torch-locks.mjs";
 import {
   buildFlatpakProfileComponentInventory,
   buildReleaseLicenseInventory,
@@ -37,6 +42,7 @@ import {
   backendSyncArgs,
   normalizeFlatpakProfiles,
   packageOptionsEnvironment,
+  frontendPackageOptionsEnvironment,
   packageOptionsToGeneratorArgs,
   parsePackageOptions,
 } from "./package-options.mjs";
@@ -105,7 +111,7 @@ test("macOS and Flatpak stage the canonical Demucs manifest at the runtime path"
     new URL("../packaging/flatpak/com.tuneforge.desktop.yml", import.meta.url),
     "utf8",
   );
-  assert.match(manifest, /path: \.\.\/\.\.\/packaging\/demucs\/models\.json\n\s+dest: apps\/backend\n\s+dest-filename: demucs-models\.json/);
+  assert.match(manifest, /path: generated\/backend-snapshot\.tar\n\s+archive-type: tar\n\s+strip-components: 0/);
   assert.match(
     manifest,
     /install -Dm644 apps\/backend\/demucs-models\.json \/app\/lib\/tuneforge\/backend\/src\/demucs-models\.json/,
@@ -260,6 +266,10 @@ test("Flatpak package options are scoped to the TuneForge module build environme
   assert.match(
     frontendModule,
     /      env:\n        TUNEFORGE_PACKAGE_OPTIONS: '.*"beatThis":false.*'/,
+  );
+  assert.deepEqual(
+    JSON.parse(frontendPackageOptionsEnvironment(parsePackageOptions(["--no-crema", "--no-lv-chordia", "--nvidia"], { platform: "linux" })).TUNEFORGE_PACKAGE_OPTIONS),
+    { beatThis: true },
   );
   assert.match(manifest, /path: generated\/python-build-requirements\.txt/);
   assert.match(manifest, /-r python-build-requirements\.txt/);
@@ -430,13 +440,35 @@ test("package option parser rejects platform-specific options", () => {
   );
 });
 
-test("Flatpak resolves CPU, NVIDIA, and legacy NVIDIA Torch profiles", () => {
+test("Flatpak reads reviewed CPU and legacy NVIDIA Torch locks without live resolution", () => {
   const generator = readFileSync(new URL("./generate-flatpak-sources.mjs", import.meta.url), "utf8");
 
-  assert.match(generator, /"torch==2\.13\.0\\ntorchaudio==2\.11\.0\\n"/);
-  assert.match(generator, /"--python-version",\n\s+"3\.14"/);
-  assert.match(generator, /"--torch-backend",\n\s+"cpu"/);
-  assert.match(generator, /"--torch-backend",\n\s+"cu126"/);
+  assert.doesNotMatch(generator, /pip",\s+"compile"/);
+  const legacy = parsePylock(readFileSync(flatpakTorchLockPaths["legacy-nvidia"], "utf8"));
+  const cpu = parsePylock(readFileSync(flatpakTorchLockPaths.cpu, "utf8"));
+  const nvidia = resolveNamedPythonPackages(
+    parseUvLock(readFileSync(new URL("../apps/backend/uv.lock", import.meta.url), "utf8")),
+    ["torch", "torchaudio"],
+  );
+  assert.ok(cpu.size > 0);
+  assert.ok(legacy.size > 0);
+  assert.equal(assertReviewedTorchExtensionPair("LegacyNvidia", legacy), TORCH_EXTENSION_PROFILES.LegacyNvidia.pair_id);
+  assert.equal(assertReviewedTorchExtensionPair("Nvidia", nvidia), TORCH_EXTENSION_PROFILES.Nvidia.pair_id);
+});
+
+test("failed Torch lock refresh preserves the reviewed lock bytes", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "tuneforge-torch-refresh-"));
+  const lockPath = path.join(root, "pylock.cpu-torch.toml");
+  writeFileSync(lockPath, "reviewed bytes\n");
+  try {
+    assert.throws(() => refreshTorchLock({ id: "cpu", backend: "cpu", lockPath }, {
+      compile: (_profile, _requirementsPath, temporaryPath) => writeFileSync(temporaryPath,
+        "lock-version = \"1.0\"\n\n[[packages]]\nname = \"torch\"\nversion = \"2.13.0+cpu\"\n\n[[packages]]\nname = \"torchaudio\"\nversion = \"2.11.0+cpu\"\n"),
+    }), /No Linux x86_64-compatible artifact/);
+    assert.equal(readFileSync(lockPath, "utf8"), "reviewed bytes\n");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("Torch extension profiles enforce exact versions, closure, and immutable markers", () => {

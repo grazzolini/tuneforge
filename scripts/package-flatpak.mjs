@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
   existsSync,
@@ -9,20 +9,24 @@ import {
   readlinkSync,
   readdirSync,
   readSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
+import { availableParallelism } from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { writeBuildInfoFile, writeResolvedBuildInfoFile } from "./build-info.mjs";
 import {
   normalizeFlatpakProfiles,
+  frontendPackageOptionsEnvironment,
   packageOptionsEnvironment,
   packageOptionsToGeneratorArgs,
   parsePackageOptions,
   printModelBundleWarning,
+  validatePackageOptions,
 } from "./package-options.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -49,7 +53,10 @@ const torchProfileArtifacts = {
 };
 const localRepoRemote = "tuneforge-local";
 const cacheSchema = "flatpak-cache-v1";
+const outputStateSchema = "flatpak-output-state-v1";
+const bundleStateSchema = "flatpak-bundle-state-v1";
 const sizeReportSchema = "flatpak-size-v1";
+const bundleCommandContract = "flatpak build-bundle [--runtime] --arch=x86_64 <repository> <output> <ref-id> stable";
 const gibibyte = 1024 ** 3;
 const flatpakBundleHardLimitBytes = 2 * gibibyte;
 const flatpakBundleTargetBytes = 1.9 * gibibyte;
@@ -76,6 +83,10 @@ const legacyTorchCoreBundlePath = process.env.FLATPAK_LEGACY_TORCH_CORE_BUNDLE_P
   defaultLegacyTorchCoreBundlePath;
 const legacyTorchRuntimeBundlePath = process.env.FLATPAK_LEGACY_TORCH_RUNTIME_BUNDLE_PATH ??
   defaultLegacyTorchRuntimeBundlePath;
+const configuredBundlePaths = [
+  bundlePath, nvidiaTorchCoreBundlePath, nvidiaTorchRuntimeBundlePath,
+  legacyTorchCoreBundlePath, legacyTorchRuntimeBundlePath,
+];
 const currentDefaultBundlePaths = [
   defaultBundlePath,
   defaultNvidiaTorchCoreBundlePath,
@@ -111,6 +122,35 @@ function run(command, args, options = {}) {
   }
 }
 
+function runAndTee(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: workspaceRoot,
+      env: { ...process.env, ...options.env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    const forward = (stream, destination) => {
+      stream.on("data", (chunk) => {
+        output += chunk;
+        destination.write(chunk);
+      });
+    };
+    forward(child.stdout, process.stdout);
+    forward(child.stderr, process.stderr);
+    let failed = false;
+    child.once("error", (error) => {
+      failed = true;
+      reject(error?.code === "ENOENT" ? new Error(`Required command not found: ${command}`) : error);
+    });
+    child.once("close", (status, signal) => {
+      if (failed) return;
+      if (status === 0) resolve(output);
+      else reject(new Error(`${command} failed (${signal ?? `status ${status}`})`));
+    });
+  });
+}
+
 function checkCommand(command, installHint) {
   const result = spawnSync(command, ["--version"], { stdio: "ignore" });
   if (result.error?.code === "ENOENT") {
@@ -119,6 +159,13 @@ function checkCommand(command, installHint) {
   if (result.status !== 0) {
     throw new Error(`Could not run ${command} --version`);
   }
+}
+
+function commandVersion(command) {
+  const result = spawnSync(command, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
+  if (result.error?.code === "ENOENT") throw new Error(`Required command not found: ${command}`);
+  if (result.status !== 0) throw new Error(`Could not run ${command} --version`);
+  return result.stdout.trim();
 }
 
 function generatedManifestPath(options, cacheRoot, namespace, frontendGitRef) {
@@ -194,7 +241,7 @@ function generatedManifestPath(options, cacheRoot, namespace, frontendGitRef) {
 }
 
 export function manifestWithPackageOptions(manifest, options) {
-  const encodedPackageOptions = packageOptionsEnvironment(options).TUNEFORGE_PACKAGE_OPTIONS;
+  const encodedPackageOptions = frontendPackageOptionsEnvironment(options).TUNEFORGE_PACKAGE_OPTIONS;
   const tuneforgeEnvAnchor =
     "  - name: tuneforge-frontend\n" +
     "    buildsystem: simple\n" +
@@ -333,14 +380,16 @@ export function resolveFrontendGitRef({
 
 export function cacheNamespace(options, version = appVersion) {
   const buildOptions = { ...options, noBundle: false };
+  const { flatpakProfiles: _flatpakProfiles, ...nonProfileOptions } = JSON.parse(
+    packageOptionsEnvironment(buildOptions).TUNEFORGE_PACKAGE_OPTIONS,
+  );
   const inputs = {
     schema: cacheSchema,
     app: `${appId}@${version}`,
     arch: "x86_64",
     runtime: "org.gnome.Platform/50",
     tools: "node26-llvm20-rust-stable-pnpm11.22.0-sccache0.17.0",
-    profile: packageOptionsEnvironment(buildOptions).TUNEFORGE_PACKAGE_OPTIONS,
-    selectedProfiles: normalizeFlatpakProfiles(options.flatpakProfiles),
+    packageOptions: nonProfileOptions,
   };
   const digest = createHash("sha256").update(JSON.stringify(inputs)).digest("hex").slice(0, 16);
   return { name: `${cacheSchema}-${digest}`, inputs };
@@ -521,19 +570,327 @@ export function verifyFlatpakOutputRefs({
   });
 }
 
+function equalJson(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function validPayload(payload) {
+  return Boolean(payload && /^[a-f0-9]{64}$/.test(payload.sha256) &&
+    Number.isInteger(payload.entryCount) && payload.entryCount >= 0);
+}
+
+function validRefCommits(refCommits, profiles) {
+  if (!Array.isArray(refCommits) || !refCommits.every((entry) =>
+    entry && typeof entry === "object" && typeof entry.id === "string" && typeof entry.ref === "string" &&
+    /^[a-f0-9]{64}$/.test(entry.commitSha256))) return false;
+  return equalJson(
+    refCommits.map(({ id, ref }) => ({ id, ref })),
+    selectedFlatpakOutputRefs(profiles).map(({ id, ref }) => ({ id, ref })),
+  );
+}
+
+function validCheckoutSizeEvidence(size) {
+  const exactKeys = (value, keys) => value && typeof value === "object" &&
+    equalJson(Object.keys(value).sort(), [...keys].sort());
+  const validSize = (entry, expectedPath) => entry && typeof entry === "object" && entry.path === expectedPath &&
+    entry.available === true && Number.isInteger(entry.bytes) && entry.bytes >= 0;
+  const directories = size?.installedApp?.topLevelDirectories;
+  const validArtifacts = (artifacts) => exactKeys(artifacts, ["complete", "entries", "knownBytes", "unknownCount"]) &&
+    Number.isInteger(artifacts.knownBytes) && artifacts.knownBytes >= 0 && Number.isInteger(artifacts.unknownCount) &&
+    artifacts.unknownCount >= 0 && typeof artifacts.complete === "boolean" && Array.isArray(artifacts.entries) &&
+    artifacts.entries.every((entry) => exactKeys(entry, ["bytes", "fileName", "name", "version"]) &&
+      ["fileName", "name", "version"].every((key) => typeof entry[key] === "string" && entry[key]) &&
+      (entry.bytes === null || Number.isInteger(entry.bytes) && entry.bytes >= 0)) &&
+    artifacts.knownBytes === artifacts.entries.reduce((total, entry) => total + (entry.bytes ?? 0), 0) &&
+    artifacts.unknownCount === artifacts.entries.filter((entry) => entry.bytes === null).length &&
+    artifacts.complete === (artifacts.unknownCount === 0);
+  const libRows = directories?.filter((entry) => entry.path === "/app/lib");
+  const libBytes = libRows?.[0]?.bytes;
+  return Boolean(exactKeys(size, ["compressedBundle", "installedApp", "pythonRuntime", "schema", "sitePackages", "sourceArchives", "unit", "wheelInputs"]) &&
+    size.schema === sizeReportSchema && size.unit === "bytes" && exactKeys(size.compressedBundle, ["available", "path"]) &&
+    typeof size.compressedBundle.path === "string" && size.compressedBundle.path && size.compressedBundle.available === false &&
+    exactKeys(size.installedApp, ["available", "bytes", "path", "topLevelDirectories"]) && validSize(size.installedApp, "/app") &&
+    Array.isArray(directories) && directories.every((entry) => exactKeys(entry, ["bytes", "path"]) &&
+      typeof entry.path === "string" && entry.path.startsWith("/app/") && Number.isInteger(entry.bytes) && entry.bytes >= 0) &&
+    new Set(directories.map(({ path: entryPath }) => entryPath)).size === directories.length &&
+    directories.reduce((total, entry) => total + entry.bytes, 0) === size.installedApp.bytes &&
+    libRows.length === 1 &&
+    validSize(size.pythonRuntime, "/app/lib/tuneforge/backend/python") &&
+    validSize(size.sitePackages, "/app/lib/tuneforge/backend/site-packages") &&
+    size.pythonRuntime.bytes <= size.installedApp.bytes && size.sitePackages.bytes <= size.installedApp.bytes &&
+    size.pythonRuntime.bytes + size.sitePackages.bytes <= libBytes &&
+    validArtifacts(size.wheelInputs) && validArtifacts(size.sourceArchives));
+}
+
+export function flatpakOutputStatePath(stateDir) {
+  return path.join(stateDir, `${outputStateSchema}.json`);
+}
+
+export function validateFlatpakOutputState(state, {
+  namespace,
+  selectedProfiles,
+  payload,
+  refCommits,
+} = {}) {
+  const errors = [];
+  if (!state || typeof state !== "object" || Array.isArray(state)) return ["Flatpak output state is malformed."];
+  if (state.schema !== outputStateSchema) errors.push(`Flatpak output state must use ${outputStateSchema}.`);
+  let normalizedProfiles;
+  try {
+    normalizedProfiles = Array.isArray(state.selectedProfiles) ? normalizeFlatpakProfiles(state.selectedProfiles) : null;
+  } catch {
+    normalizedProfiles = null;
+  }
+  if (!normalizedProfiles || !equalJson(state.selectedProfiles, normalizedProfiles)) {
+    errors.push("Flatpak output state has invalid selected profiles.");
+  }
+  if (typeof state.namespace !== "string" || !state.namespace) errors.push("Flatpak output state has an invalid namespace.");
+  if (!validPayload(state.payload)) errors.push("Flatpak output state has an invalid payload.");
+  if (!normalizedProfiles || !validRefCommits(state.refCommits, normalizedProfiles)) {
+    errors.push("Flatpak output state has invalid output refs.");
+  }
+  if (!validCheckoutSizeEvidence(state.checkoutSize)) {
+    errors.push("Flatpak output state has incomplete checkout size evidence.");
+  }
+  if (namespace !== undefined && state.namespace !== namespace) errors.push("Flatpak output state namespace differs.");
+  if (selectedProfiles !== undefined && !equalJson(state.selectedProfiles, normalizeFlatpakProfiles(selectedProfiles))) {
+    errors.push("Flatpak output state profiles differ.");
+  }
+  if (payload !== undefined && !equalJson(state.payload, payload)) errors.push("Flatpak output state payload differs.");
+  if (refCommits !== undefined && !equalJson(state.refCommits, refCommits)) {
+    errors.push("Flatpak output state ref commits differ.");
+  }
+  return errors;
+}
+
+export function readFlatpakOutputState({ statePath, ...expected } = {}) {
+  if (!statePath || !existsSync(statePath)) return null;
+  let state;
+  try {
+    state = readJson(statePath);
+  } catch {
+    rmSync(statePath, { force: true });
+    return null;
+  }
+  if (validateFlatpakOutputState(state, expected).length > 0) {
+    rmSync(statePath, { force: true });
+    return null;
+  }
+  return state;
+}
+
+export function selectPreservedFlatpakOutputState({
+  statePath,
+  namespace,
+  selectedProfiles,
+  refCommits,
+  checkoutPayload,
+  evidence = false,
+} = {}) {
+  if (evidence || !refCommits) {
+    if (statePath) rmSync(statePath, { force: true });
+    return null;
+  }
+  const state = readFlatpakOutputState({ statePath, namespace, selectedProfiles, refCommits });
+  if (!state) return null;
+  if (checkoutPayload && !equalJson(state.payload, checkoutPayload)) {
+    rmSync(statePath, { force: true });
+    return null;
+  }
+  return state;
+}
+
+export function writeFlatpakOutputState({ statePath, namespace, selectedProfiles, payload, refCommits, checkoutSize }) {
+  const state = {
+    schema: outputStateSchema,
+    namespace,
+    selectedProfiles: normalizeFlatpakProfiles(selectedProfiles),
+    payload,
+    refCommits,
+    checkoutSize,
+  };
+  const errors = validateFlatpakOutputState(state, { namespace, selectedProfiles, payload, refCommits });
+  if (errors.length > 0) throw new Error(errors.join(" "));
+  mkdirSync(path.dirname(statePath), { recursive: true });
+  const temporaryPath = `${statePath}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporaryPath, `${JSON.stringify(state, null, 2)}\n`);
+    renameSync(temporaryPath, statePath);
+  } finally {
+    rmSync(temporaryPath, { force: true });
+  }
+  return state;
+}
+
+function cacheReportValidationErrors(report, label) {
+  const errors = [];
+  if (!report || typeof report !== "object" || Array.isArray(report)) return [`${label} cache report is malformed.`];
+  if (report.schema !== cacheSchema) errors.push(`${label} report must use ${cacheSchema}.`);
+  if (typeof report.namespace !== "string" || !report.namespace) errors.push(`${label} report has an invalid namespace.`);
+  const selectedProfiles = report.selectedProfiles;
+  let normalizedProfiles;
+  try {
+    normalizedProfiles = Array.isArray(selectedProfiles) ? normalizeFlatpakProfiles(selectedProfiles) : null;
+  } catch {
+    normalizedProfiles = null;
+  }
+  if (!normalizedProfiles || JSON.stringify(selectedProfiles) !== JSON.stringify(normalizedProfiles)) {
+    errors.push(`${label} report has invalid selected profiles.`);
+  }
+  let expectedOptions;
+  if (!report.namespaceInputs || typeof report.namespaceInputs !== "object" || Array.isArray(report.namespaceInputs) ||
+    !report.namespaceInputs.packageOptions || typeof report.namespaceInputs.packageOptions !== "object" ||
+    Array.isArray(report.namespaceInputs.packageOptions)) {
+    errors.push(`${label} report has invalid namespace inputs.`);
+  } else if (normalizedProfiles) {
+    try {
+      expectedOptions = validatePackageOptions({
+        ...report.namespaceInputs.packageOptions,
+        noBundle: false,
+        flatpakProfiles: normalizedProfiles,
+      }, { platform: "linux" });
+      const expectedNamespace = cacheNamespace(expectedOptions);
+      if (report.namespace !== expectedNamespace.name ||
+        JSON.stringify(report.namespaceInputs) !== JSON.stringify(expectedNamespace.inputs)) {
+        errors.push(`${label} report namespace identity is not canonical.`);
+      }
+    } catch {
+      errors.push(`${label} report has invalid namespace inputs.`);
+    }
+  }
+  if (!validPayload(report.payload)) {
+    errors.push(`${label} report has an invalid payload.`);
+  }
+  if (!Array.isArray(report.refCommits) || report.refCommits.length === 0 ||
+    report.refCommits.some((entry) => !entry || typeof entry !== "object" || typeof entry.id !== "string" || !entry.id || typeof entry.ref !== "string" || !entry.ref || !/^[a-f0-9]{64}$/.test(entry.commitSha256)) ||
+    new Set(report.refCommits.map(({ id }) => id)).size !== report.refCommits.length ||
+    new Set(report.refCommits.map(({ ref }) => ref)).size !== report.refCommits.length) {
+    errors.push(`${label} report has invalid output refs.`);
+  }
+  if (!Array.isArray(report.errors) || report.errors.some((error) => typeof error !== "string" || !error)) {
+    errors.push(`${label} report has invalid errors.`);
+  } else {
+    errors.push(...report.errors);
+  }
+  const cache = report.moduleCache;
+  const modules = cache?.modules;
+  if (cache?.mode !== "enabled" || cache?.observationComplete !== true || !Array.isArray(modules) || modules.length === 0 ||
+    modules.some((entry) => !entry || typeof entry !== "object" || typeof entry.name !== "string" || !entry.name || !["cached", "executed"].includes(entry.status)) ||
+    new Set(modules.map(({ name }) => name)).size !== modules.length) {
+    errors.push(`${label} report has an invalid module-cache observation.`);
+  } else {
+    const firstExecuted = modules.findIndex(({ status }) => status === "executed");
+    const expectedInvalidation = firstExecuted < 0 ? null : modules[firstExecuted].name;
+    if (cache.firstInvalidatedModule !== expectedInvalidation) {
+      errors.push(`${label} report has an incoherent first invalidated module.`);
+    }
+  }
+  if (expectedOptions && Array.isArray(modules) && modules.every((entry) => entry && typeof entry === "object")) {
+    const expectedModules = expectedFlatpakModuleOrder(
+      manifestWithPackageOptions(readFileSync(baseManifestPath, "utf8"), expectedOptions),
+    );
+    if (JSON.stringify(modules.map(({ name }) => name)) !== JSON.stringify(expectedModules)) {
+      errors.push(`${label} report module order does not match its selected profiles.`);
+    }
+  }
+  if (normalizedProfiles && Array.isArray(report.refCommits) &&
+    report.refCommits.every((entry) => entry && typeof entry === "object")) {
+    const expectedRefs = selectedFlatpakOutputRefs(normalizedProfiles).map(({ id, ref }) => ({ id, ref }));
+    const actualRefs = report.refCommits.map(({ id, ref }) => ({ id, ref }));
+    if (JSON.stringify(actualRefs) !== JSON.stringify(expectedRefs)) {
+      errors.push(`${label} report output refs do not match its selected profiles.`);
+    }
+  }
+  const output = report.output;
+  if (!output || typeof output !== "object" || !["exported", "preserved-unchanged"].includes(output.mode) ||
+    output.observationComplete !== true || !["checkout", "output-state"].includes(output.payloadObservationSource)) {
+    errors.push(`${label} report has an invalid output observation.`);
+  } else if ((output.mode === "exported" && output.payloadObservationSource !== "checkout") ||
+    (output.mode === "preserved-unchanged" && output.payloadObservationSource !== "output-state")) {
+    errors.push(`${label} report has an incoherent output observation.`);
+  }
+  return errors;
+}
+
 export function compareCacheReports(cold, warm) {
-  const errors = [...(cold.errors ?? []), ...(warm.errors ?? [])];
-  if (cold.namespace !== warm.namespace) errors.push("Cold and warm cache namespaces differ.");
-  if (cold.payload?.sha256 !== warm.payload?.sha256) errors.push("Cold and warm payload digests differ.");
-  if (JSON.stringify(cold.refCommits) !== JSON.stringify(warm.refCommits)) {
+  const errors = [...cacheReportValidationErrors(cold, "Cold"), ...cacheReportValidationErrors(warm, "Warm")];
+  const coldReport = cold && typeof cold === "object" ? cold : {};
+  const warmReport = warm && typeof warm === "object" ? warm : {};
+  if (coldReport.namespace !== warmReport.namespace) errors.push("Cold and warm cache namespaces differ.");
+  if (JSON.stringify(coldReport.selectedProfiles) !== JSON.stringify(warmReport.selectedProfiles)) {
+    errors.push("Cold and warm profile selections differ.");
+  }
+  if (!equalJson(coldReport.payload, warmReport.payload)) errors.push("Cold and warm payload digests differ.");
+  if (JSON.stringify(coldReport.refCommits) !== JSON.stringify(warmReport.refCommits)) {
     errors.push("Cold and warm Flatpak output ref commits differ.");
+  }
+  const coldModules = coldReport.moduleCache?.modules;
+  const warmModules = warmReport.moduleCache?.modules;
+  if (!Array.isArray(coldModules) || !Array.isArray(warmModules) ||
+    JSON.stringify(coldModules.map(({ name }) => name)) !== JSON.stringify(warmModules.map(({ name }) => name))) {
+    errors.push("Cold and warm module-cache module sets differ.");
+  }
+  if (!Array.isArray(warmModules) || warmModules.some(({ status }) => status !== "cached")) {
+    errors.push("Warm Flatpak modules must all be cached.");
+  }
+  if (warmReport.moduleCache?.firstInvalidatedModule !== null) {
+    errors.push("Warm Flatpak report has an invalidated module.");
+  }
+  if (warmReport.output?.mode !== "preserved-unchanged") {
+    errors.push("Warm Flatpak report must preserve unchanged output refs.");
   }
   return {
     schema: cacheSchema,
     equivalent: errors.length === 0,
     errors,
-    cold: { payload: cold.payload, refCommits: cold.refCommits },
-    warm: { payload: warm.payload, refCommits: warm.refCommits },
+    cold: { payload: coldReport.payload, refCommits: coldReport.refCommits, moduleCache: coldReport.moduleCache },
+    warm: { payload: warmReport.payload, refCommits: warmReport.refCommits, moduleCache: warmReport.moduleCache, output: warmReport.output },
+  };
+}
+
+export function compareCrossProfileCacheReports(source, target) {
+  const errors = [
+    ...cacheReportValidationErrors(source, "Source"),
+    ...cacheReportValidationErrors(target, "Target"),
+  ];
+  const sourceReport = source && typeof source === "object" ? source : {};
+  const targetReport = target && typeof target === "object" ? target : {};
+  if (sourceReport.namespace !== targetReport.namespace) {
+    errors.push("Source and target cache namespaces differ.");
+  }
+  if (JSON.stringify(sourceReport.selectedProfiles) === JSON.stringify(targetReport.selectedProfiles)) {
+    errors.push("Cross-profile cache comparison requires different profile selections.");
+  }
+  const sourceModules = sourceReport.moduleCache?.modules;
+  const targetModules = targetReport.moduleCache?.modules;
+  const sharedModulePrefix = [];
+  if (Array.isArray(sourceModules) && Array.isArray(targetModules)) {
+    for (let index = 0; index < Math.min(sourceModules.length, targetModules.length); index += 1) {
+      if (sourceModules[index].name !== targetModules[index].name) break;
+      sharedModulePrefix.push(sourceModules[index].name);
+    }
+    if (sharedModulePrefix.length === 0) errors.push("Cross-profile reports have no shared module prefix.");
+    if (targetModules.slice(0, sharedModulePrefix.length).some(({ status }) => status !== "cached")) {
+      errors.push("Target shared Flatpak modules must be cached.");
+    }
+  } else {
+    errors.push("Cross-profile reports have invalid module observations.");
+  }
+  const firstTargetExecution = Array.isArray(targetModules)
+    ? targetModules.slice(sharedModulePrefix.length).find(({ status }) => status === "executed")?.name ?? null
+    : null;
+  if (targetReport.output?.mode !== "exported") {
+    errors.push("Cross-profile target report must export output refs.");
+  }
+  return {
+    schema: cacheSchema,
+    equivalent: errors.length === 0,
+    errors,
+    namespace: targetReport.namespace,
+    sharedModulePrefix,
+    firstTargetExecution,
+    source: { selectedProfiles: sourceReport.selectedProfiles, moduleCache: sourceReport.moduleCache },
+    target: { selectedProfiles: targetReport.selectedProfiles, moduleCache: targetReport.moduleCache },
   };
 }
 
@@ -660,6 +1017,10 @@ export function flatpakBundlePlan({
   return plan;
 }
 
+export function flatpakBundleStatePath(stateDir) {
+  return path.join(stateDir, `${bundleStateSchema}.json`);
+}
+
 export function validateFlatpakArtifactPaths(artifacts) {
   const resolved = artifacts.map((artifact) => path.resolve(artifact));
   const duplicatePath = resolved.find((artifact, index) => resolved.indexOf(artifact) !== index);
@@ -692,14 +1053,24 @@ export async function withFreshFlatpakBundleOutputs(operation, options = {}) {
   }
 }
 
+export function defaultFlatpakBundleConcurrency(parallelism = availableParallelism()) {
+  if (!Number.isInteger(parallelism) || parallelism < 1) throw new Error("Available bundle parallelism must be a positive integer");
+  return Math.max(1, parallelism - 1);
+}
+
+export function flatpakBundleWorkerLimit(bundlePlan, concurrency = defaultFlatpakBundleConcurrency()) {
+  if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error("Bundle concurrency must be a positive integer");
+  return Math.min(concurrency, bundlePlan.length);
+}
+
 export function buildFlatpakBundles({
   bundlePlan = flatpakBundlePlan(),
   repository = repoDir,
-  concurrency = 2,
+  concurrency = defaultFlatpakBundleConcurrency(),
   spawnProcess = spawn,
 } = {}) {
   validateFlatpakArtifactPaths(bundlePlan.map((artifact) => artifact.path));
-  if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error("Bundle concurrency must be a positive integer");
+  const workerLimit = flatpakBundleWorkerLimit(bundlePlan, concurrency);
   return new Promise((resolve, reject) => {
     const active = new Set();
     let next = 0;
@@ -719,7 +1090,7 @@ export function buildFlatpakBundles({
       finish();
     };
     const launch = () => {
-      while (!failure && active.size < concurrency && next < bundlePlan.length) {
+      while (!failure && active.size < workerLimit && next < bundlePlan.length) {
         const artifact = bundlePlan[next++];
         const args = [
           "build-bundle",
@@ -777,6 +1148,18 @@ export function flatpakArtifactSizeReport(bundle) {
   };
 }
 
+export function flatpakBundleSizeReportFromCheckout({ checkoutSize, bundle, selectedProfiles, extensionBundles }) {
+  if (!validCheckoutSizeEvidence(checkoutSize)) {
+    throw new Error("Flatpak checkout size evidence is incomplete.");
+  }
+  return {
+    ...checkoutSize,
+    ...flatpakArtifactSizeReport(bundle),
+    selectedProfiles: normalizeFlatpakProfiles(selectedProfiles),
+    extensionBundles,
+  };
+}
+
 export function writeFlatpakChecksums(artifacts, outputPath = sha256SumsPath) {
   validateFlatpakArtifactPaths(artifacts);
   const lines = artifacts
@@ -784,8 +1167,213 @@ export function writeFlatpakChecksums(artifacts, outputPath = sha256SumsPath) {
     .sort((left, right) => left.name.localeCompare(right.name))
     .map(({ name, sha256 }) => `${sha256}  ${name}`);
   mkdirSync(path.dirname(outputPath), { recursive: true });
-  writeFileSync(outputPath, `${lines.join("\n")}\n`);
+  const temporaryPath = `${outputPath}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporaryPath, `${lines.join("\n")}\n`);
+    renameSync(temporaryPath, outputPath);
+  } finally {
+    rmSync(temporaryPath, { force: true });
+  }
   return lines;
+}
+
+function readBundleChecksums(checksumPath) {
+  let lines;
+  try {
+    if (!existsSync(checksumPath)) return { checksums: new Map() };
+    lines = readFileSync(checksumPath, "utf8").split("\n");
+  } catch {
+    return null;
+  }
+  if (lines.at(-1) !== "") return null;
+  lines.pop();
+  const checksums = new Map();
+  for (const line of lines) {
+    const match = /^([a-f0-9]{64})  ([^/\n]+)$/.exec(line);
+    if (!match || checksums.has(match[2])) return null;
+    checksums.set(match[2], match[1]);
+  }
+  return { checksums };
+}
+
+function readBundleState(statePath, expectedHeader, managedPaths) {
+  if (!existsSync(statePath)) return null;
+  let state;
+  try {
+    state = readJson(statePath);
+  } catch {
+    return null;
+  }
+  if (!state || typeof state !== "object" || Array.isArray(state) ||
+    !Object.entries(expectedHeader).every(([key, value]) => state[key] === value) ||
+    !Array.isArray(state.entries)) return null;
+  const ids = state.entries.map((entry) => entry?.id);
+  const paths = state.entries.map((entry) => entry?.outputPath);
+  const knownIds = new Set(knownFlatpakOutputRefs.map(({ id }) => id));
+  const allowedPaths = new Set(managedPaths.map((entryPath) => path.resolve(entryPath)));
+  if (ids.some((id) => typeof id !== "string" || !knownIds.has(id)) || new Set(ids).size !== ids.length ||
+    paths.some((entryPath) => typeof entryPath !== "string" || !path.isAbsolute(entryPath)) ||
+    new Set(paths).size !== paths.length || paths.some((entryPath) => !allowedPaths.has(entryPath))) return null;
+  return state;
+}
+
+function validBundleEntry(entry, artifact, refCommit, checksum) {
+  return Boolean(entry && entry.id === refCommit.id && entry.refId === artifact.refId &&
+    entry.ref === refCommit.ref && entry.commit === refCommit.commitSha256 &&
+    entry.role === (artifact.runtime ? "runtime" : "app") &&
+    entry.outputPath === path.resolve(artifact.path) && entry.basename === path.basename(artifact.path) &&
+    Number.isInteger(entry.bytes) && entry.bytes > 0 && /^[a-f0-9]{64}$/.test(entry.sha256) &&
+    checksum === entry.sha256);
+}
+
+function verifiedBundleFile(artifactPath, entry, hashFile) {
+  try {
+    if (!existsSync(artifactPath)) return false;
+    const stats = lstatSync(artifactPath);
+    return stats.isFile() && stats.size === entry.bytes && hashFile(artifactPath) === entry.sha256;
+  } catch {
+    return false;
+  }
+}
+
+function bundleEntry(artifact, refCommit, artifactPath, hashFile) {
+  const stats = lstatSync(artifactPath);
+  if (!stats.isFile() || stats.size <= 0) {
+    throw new Error(`Flatpak bundle target must be a non-empty regular file: ${artifactPath}`);
+  }
+  const report = flatpakArtifactSizeReport(artifactPath);
+  enforceFlatpakBundleSize(report);
+  return {
+    id: refCommit.id,
+    refId: artifact.refId,
+    ref: refCommit.ref,
+    commit: refCommit.commitSha256,
+    role: artifact.runtime ? "runtime" : "app",
+    outputPath: path.resolve(artifact.path),
+    basename: path.basename(artifact.path),
+    bytes: stats.size,
+    sha256: hashFile(artifactPath),
+  };
+}
+
+function atomicWriteBundleState(statePath, state) {
+  mkdirSync(path.dirname(statePath), { recursive: true });
+  const temporaryPath = `${statePath}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporaryPath, `${JSON.stringify(state, null, 2)}\n`);
+    renameSync(temporaryPath, statePath);
+  } finally {
+    rmSync(temporaryPath, { force: true });
+  }
+}
+
+export async function reuseFlatpakBundles({
+  bundlePlan,
+  refCommits,
+  namespace,
+  flatpakVersion,
+  statePath,
+  checksumPath = sha256SumsPath,
+  repository = repoDir,
+  evidence = false,
+  concurrency = defaultFlatpakBundleConcurrency(),
+  reportWorkerLimit = false,
+  spawnProcess = spawn,
+  managedBundlePaths = [...configuredBundlePaths, ...currentDefaultBundlePaths, ...obsoleteDefaultBundlePaths],
+  hashFile = fileSha256, renameArtifact = renameSync,
+  writeChecksums = writeFlatpakChecksums, writeState = atomicWriteBundleState,
+} = {}) {
+  validateFlatpakArtifactPaths(bundlePlan.map((artifact) => artifact.path));
+  if (!Array.isArray(refCommits) || refCommits.length !== bundlePlan.length) {
+    throw new Error("Flatpak bundle refs must match the selected bundle plan.");
+  }
+  if (typeof namespace !== "string" || !namespace || typeof flatpakVersion !== "string" || !flatpakVersion ||
+    refCommits.some((entry, index) => !entry || typeof entry.id !== "string" || !entry.id ||
+      entry.ref !== `${bundlePlan[index].runtime ? "runtime" : "app"}/${bundlePlan[index].refId}/x86_64/stable` ||
+      !/^[a-f0-9]{64}$/.test(entry.commitSha256))) {
+    throw new Error("Flatpak bundle state inputs are malformed.");
+  }
+  const header = {
+    schema: bundleStateSchema, namespace, flatpakVersion,
+    arch: "x86_64", branch: "stable", commandContract: bundleCommandContract,
+  };
+  const state = evidence ? null : readBundleState(statePath, header, managedBundlePaths);
+  const manifest = evidence ? null : readBundleChecksums(checksumPath);
+  const entriesById = new Map(state?.entries.map((entry) => [entry.id, entry]) ?? []);
+  const observations = [];
+  const pending = [];
+  for (let index = 0; index < bundlePlan.length; index += 1) {
+    const artifact = bundlePlan[index];
+    const refCommit = refCommits[index];
+    const cached = entriesById.get(refCommit.id);
+    if (!evidence && state && manifest && validBundleEntry(
+      cached, artifact, refCommit, manifest.checksums.get(path.basename(artifact.path)),
+    ) && verifiedBundleFile(artifact.path, cached, hashFile)) {
+      observations.push({ ...cached, status: "reused" });
+    } else {
+      const temporaryPath = `${artifact.path}.${randomUUID()}.tmp`;
+      pending.push({ index, artifact, refCommit, temporaryPath });
+      observations.push(null);
+    }
+  }
+  const firstRebuiltArtifact = pending[0]?.refCommit.id ?? null, mode = evidence ? "disabled-for-evidence" : "enabled";
+  const selectedPaths = new Set(bundlePlan.map(({ path: artifactPath }) => path.resolve(artifactPath)));
+  const selectedNames = bundlePlan.map(({ path: artifactPath }) => path.basename(artifactPath)).sort();
+  const existingNames = [...(manifest?.checksums.keys() ?? [])].sort();
+  const selectedStateIds = refCommits.map(({ id }) => id), existingStateIds = state?.entries.map(({ id }) => id) ?? [];
+  const publicationNeeded = pending.length > 0 || !equalJson(selectedNames, existingNames) ||
+    !equalJson(selectedStateIds, existingStateIds);
+  const replacedDestinations = [];
+  try {
+    if (publicationNeeded) {
+      rmSync(statePath, { force: true });
+      rmSync(checksumPath, { force: true });
+    }
+    if (pending.length > 0) {
+      const workerLimit = flatpakBundleWorkerLimit(pending, concurrency);
+      if (reportWorkerLimit) process.stdout.write(`Flatpak bundle worker limit: ${workerLimit}\n`);
+      await buildFlatpakBundles({
+        bundlePlan: pending.map(({ artifact, temporaryPath }) => ({ ...artifact, path: temporaryPath })),
+        repository,
+        concurrency: workerLimit,
+        spawnProcess,
+      });
+      for (const item of pending) {
+        const entry = bundleEntry(item.artifact, item.refCommit, item.temporaryPath, hashFile);
+        observations[item.index] = { ...entry, status: "rebuilt" };
+      }
+      for (const item of pending) {
+        renameArtifact(item.temporaryPath, item.artifact.path);
+        replacedDestinations.push(item.artifact.path);
+      }
+    }
+    if (publicationNeeded) {
+      for (const managedPath of managedBundlePaths) {
+        if (!selectedPaths.has(path.resolve(managedPath))) rmSync(managedPath, { force: true });
+      }
+      writeChecksums(bundlePlan.map((artifact) => artifact.path), checksumPath);
+      writeState(statePath, { ...header, entries: observations.map(({ status, ...entry }) => entry) });
+    }
+    return {
+      mode,
+      observationComplete: true,
+      entries: observations.map(({ id: name, ref, commit, status, bytes, sha256 }) =>
+        ({ name, ref, commit, status, bytes, sha256 })),
+      firstRebuiltArtifact,
+    };
+  } catch (error) {
+    rmSync(statePath, { force: true }); rmSync(checksumPath, { force: true });
+    for (const { temporaryPath } of pending) rmSync(temporaryPath, { force: true });
+    for (const destination of replacedDestinations) rmSync(destination, { force: true });
+    error.bundleCache = {
+      mode,
+      observationComplete: false,
+      entries: observations.filter(Boolean).map(({ id: name, ref, commit, status, bytes, sha256 }) =>
+        ({ name, ref, commit, status, bytes, sha256 })),
+      firstRebuiltArtifact,
+    };
+    throw error;
+  }
 }
 
 function printFlatpakSizeReport(report) {
@@ -820,7 +1408,39 @@ export function isValidPnpmCacheReport(pnpm) {
   );
 }
 
-function cacheReport({ namespace, inputs, cacheRoot, timings, evidence, refCommits, selectedProfiles }) {
+export function expectedFlatpakModuleOrder(manifest) {
+  return [...manifest.matchAll(/^  - name: ([^\n]+)$/gm)].map((match) => match[1]);
+}
+
+export function parseFlatpakModuleCacheOutput(output, expectedModules, { evidence = false } = {}) {
+  const normalized = output.replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "").replaceAll("\r\n", "\n");
+  const expected = new Set(expectedModules);
+  const states = new Map(expectedModules.map((name) => [name, "unknown"]));
+  let contradictory = false;
+  for (const rawLine of normalized.split("\n")) {
+    const line = rawLine.trim();
+    const match = /^(?:Cache hit for ([A-Za-z0-9._-]+), skipping build|Building module ([A-Za-z0-9._-]+) in \/[^\0]*)(?:\.)?$/.exec(line);
+    if (!match) continue;
+    const name = match[1] ?? match[2];
+    if (!expected.has(name)) continue;
+    const status = line.startsWith("Cache hit") ? "cached" : "executed";
+    const previous = states.get(name);
+    if (previous !== "unknown" && previous !== status) contradictory = true;
+    states.set(name, previous === "unknown" || previous === status ? status : "unknown");
+  }
+  const modules = expectedModules.map((name) => ({ name, status: states.get(name) }));
+  const firstExecuted = modules.findIndex(({ status }) => status === "executed");
+  return {
+    mode: evidence ? "disabled-for-evidence" : "enabled",
+    modules,
+    observationComplete: !contradictory && modules.every(({ status }) => status !== "unknown"),
+    firstInvalidatedModule: firstExecuted >= 0 && modules.slice(0, firstExecuted).every(({ status }) => status === "cached")
+      ? modules[firstExecuted].name
+      : null,
+  };
+}
+
+function cacheReport({ namespace, inputs, cacheRoot, timings, evidence, refCommits, selectedProfiles, builderOutput, expectedModules, payload, output, bundleCache }) {
   const namespaceRoot = path.join(cacheRoot, namespace);
   const pnpmPath = path.join(namespaceRoot, "pnpm-report.json");
   const sccachePath = path.join(namespaceRoot, "sccache-stats.json");
@@ -836,23 +1456,24 @@ function cacheReport({ namespace, inputs, cacheRoot, timings, evidence, refCommi
     schema: cacheSchema,
     namespace,
     namespaceInputs: inputs,
-    modules: { frontend: pnpm ? "executed" : "cached", desktop: sccache ? "executed" : "cached" },
+    moduleCache: parseFlatpakModuleCacheOutput(builderOutput, expectedModules, { evidence }),
     pnpm: pnpm ?? { status: "module-cached" },
     sccache: sccache ?? { status: "module-cached" },
     timings,
     selectedProfiles,
-    payload: digestBuildPayload(path.join(buildDir, "files")),
+    payload,
     refCommits,
+    output,
+    bundleCache,
     errors: [],
   };
 }
 
 async function main() {
   const startedAt = performance.now();
-  const packageOptions = parsePackageOptions(process.argv.slice(2), { platform: "linux" });
+  const packageOptions = parsePackageOptions(packageArguments(), { platform: "linux" });
   const selectedProfiles = packageOptions.flatpakProfiles;
   const bundlePlan = flatpakBundlePlan({ selectedProfiles });
-  cleanupFlatpakBundleOutputs({ bundlePlan });
   const skipBundle = packageOptions.noBundle || process.env.FLATPAK_NO_BUNDLE === "1";
   const evidence = process.env.FLATPAK_CACHE_EVIDENCE === "1";
   if (process.arch !== "x64") {
@@ -870,6 +1491,8 @@ async function main() {
   const { stateRoot, cacheRoot } = resolveCacheRoots();
   const stateDir = path.join(stateRoot, namespace.name);
   const namespaceRoot = path.join(cacheRoot, namespace.name);
+  const outputStatePath = flatpakOutputStatePath(stateDir);
+  const bundleStatePath = flatpakBundleStatePath(stateDir);
   mkdirSync(stateDir, { recursive: true });
   mkdirSync(namespaceRoot, { recursive: true });
   rmSync(path.join(namespaceRoot, "pnpm-report.json"), { force: true });
@@ -879,7 +1502,7 @@ async function main() {
   run(process.execPath, [
     path.join("scripts", "generate-flatpak-sources.mjs"),
     ...packageOptionsToGeneratorArgs(packageOptions),
-  ]);
+  ], { env: { SOURCE_DATE_EPOCH: sourceDateEpoch } });
   normalizeGeneratedModelBundleManifest({ sourceDateEpoch });
   const frontendGitRef = resolveFrontendGitRef();
   const installedBuildInfo = writeBuildInfoFile(flatpakVersionInfoPath, { workspaceRoot });
@@ -892,11 +1515,32 @@ async function main() {
   const manifestPath = generatedManifestPath(packageOptions, cacheRoot, namespace.name, frontendGitRef);
   const sourceSeconds = (performance.now() - sourceStartedAt) / 1_000;
 
+  const reportPath = process.env.FLATPAK_CACHE_REPORT_PATH ?? path.join(flatpakRoot, "generated", "cache-report.json");
+  const existingPayload = existsSync(path.join(buildDir, "files"))
+    ? digestBuildPayload(path.join(buildDir, "files"))
+    : undefined;
+  let preBuilderRefCommits;
+  try {
+    preBuilderRefCommits = verifyFlatpakOutputRefs({ selectedProfiles });
+  } catch {
+    preBuilderRefCommits = undefined;
+  }
+  let outputState = selectPreservedFlatpakOutputState({
+    statePath: outputStatePath,
+    namespace: namespace.name,
+    selectedProfiles,
+    refCommits: preBuilderRefCommits,
+    checkoutPayload: existingPayload,
+    evidence,
+  });
+  const preserveOutputRefs = outputState !== null;
+
   checkCommand(
     "flatpak-builder",
     "Install flatpak-builder and the Flathub runtimes before running pnpm package:linux:flatpak.",
   );
   checkCommand("flatpak", "Install flatpak before running pnpm package:linux:flatpak.");
+  const flatpakVersion = commandVersion("flatpak");
 
   const builderArgs = [
     "--force-clean",
@@ -911,10 +1555,43 @@ async function main() {
     manifestPath,
   ];
   if (evidence) builderArgs.unshift("--disable-cache");
+  if (preserveOutputRefs) builderArgs.unshift("--require-changes");
   const builderStartedAt = performance.now();
-  reconcileFlatpakOutputRefs();
-  run("flatpak-builder", builderArgs);
+  if (!preserveOutputRefs) reconcileFlatpakOutputRefs();
+  const builderOutput = await runAndTee("flatpak-builder", builderArgs);
   const refCommits = verifyFlatpakOutputRefs({ selectedProfiles });
+  let payload;
+  let checkoutSize;
+  let output;
+  if (preserveOutputRefs && equalJson(preBuilderRefCommits, refCommits)) {
+    const stateErrors = validateFlatpakOutputState(outputState, { namespace: namespace.name, selectedProfiles, refCommits });
+    if (stateErrors.length > 0) {
+      throw new Error(`Flatpak output state contradicted preserved refs: ${stateErrors.join(" ")}`);
+    }
+    payload = outputState.payload;
+    checkoutSize = outputState.checkoutSize;
+    output = {
+      mode: "preserved-unchanged",
+      observationComplete: true,
+      payloadObservationSource: "output-state",
+    };
+  } else {
+    payload = digestBuildPayload(path.join(buildDir, "files"));
+    checkoutSize = flatpakSizeReport({ includeBundle: false });
+    output = {
+      mode: "exported",
+      observationComplete: true,
+      payloadObservationSource: "checkout",
+    };
+  }
+  writeFlatpakOutputState({
+    statePath: outputStatePath,
+    namespace: namespace.name,
+    selectedProfiles,
+    payload,
+    refCommits,
+    checkoutSize,
+  });
   const report = cacheReport({
     namespace: namespace.name,
     inputs: namespace.inputs,
@@ -922,13 +1599,19 @@ async function main() {
     evidence,
     refCommits,
     selectedProfiles,
+    builderOutput,
+    payload,
+    output,
+    bundleCache: skipBundle
+      ? { mode: "not-requested", observationComplete: true, entries: [], firstRebuiltArtifact: null }
+      : { mode: evidence ? "disabled-for-evidence" : "enabled", observationComplete: false, entries: [], firstRebuiltArtifact: null },
+    expectedModules: expectedFlatpakModuleOrder(readFileSync(manifestPath, "utf8")),
     timings: {
       sourceGenerationSeconds: Number(sourceSeconds.toFixed(3)),
       builderSeconds: Number(((performance.now() - builderStartedAt) / 1_000).toFixed(3)),
       elapsedSeconds: Number(((performance.now() - startedAt) / 1_000).toFixed(3)),
     },
   });
-  const reportPath = process.env.FLATPAK_CACHE_REPORT_PATH ?? path.join(flatpakRoot, "generated", "cache-report.json");
   writeJson(reportPath, report);
   const baselinePath = process.env.FLATPAK_CACHE_BASELINE_REPORT;
   if (baselinePath) {
@@ -938,10 +1621,17 @@ async function main() {
     writeJson(comparisonPath, comparison);
     if (!comparison.equivalent) throw new Error(comparison.errors.join(" "));
   }
+  const crossProfileBaselinePath = process.env.FLATPAK_CACHE_CROSS_PROFILE_BASELINE_REPORT;
+  if (crossProfileBaselinePath) {
+    const comparison = compareCrossProfileCacheReports(readJson(crossProfileBaselinePath), report);
+    const comparisonPath = process.env.FLATPAK_CACHE_CROSS_PROFILE_COMPARISON_REPORT_PATH ??
+      path.join(flatpakRoot, "generated", "cache-cross-profile-comparison-report.json");
+    writeJson(comparisonPath, comparison);
+    if (!comparison.equivalent) throw new Error(comparison.errors.join(" "));
+  }
   if (skipBundle) {
     const sizeReportPath = process.env.FLATPAK_SIZE_REPORT_PATH ?? path.join(flatpakRoot, "generated", "size-report.json");
-    const sizeReport = flatpakSizeReport({ includeBundle: false });
-    sizeReport.selectedProfiles = selectedProfiles;
+    const sizeReport = { ...checkoutSize, selectedProfiles };
     writeJson(sizeReportPath, sizeReport);
     printFlatpakSizeReport(sizeReport);
     process.stdout.write(`Flatpak repo exported to ${repoDir}\n`);
@@ -958,28 +1648,74 @@ async function main() {
     return;
   }
 
-  await withFreshFlatpakBundleOutputs(async () => {
-    await buildFlatpakBundles({ bundlePlan });
+  try {
+    report.bundleCache = await reuseFlatpakBundles({
+      bundlePlan,
+      refCommits,
+      namespace: namespace.name,
+      flatpakVersion,
+      statePath: bundleStatePath,
+      evidence,
+      reportWorkerLimit: true,
+    });
     const sizeReportPath = process.env.FLATPAK_SIZE_REPORT_PATH ?? path.join(flatpakRoot, "generated", "size-report.json");
-    const sizeReport = {
-      ...flatpakSizeReport(),
+    const sizeReport = flatpakBundleSizeReportFromCheckout({
+      checkoutSize,
+      bundle: bundlePlan[0].path,
       selectedProfiles,
       extensionBundles: bundlePlan.slice(1).map((artifact) => flatpakArtifactSizeReport(artifact.path)),
-    };
+    });
     writeJson(sizeReportPath, sizeReport);
     printFlatpakSizeReport(sizeReport);
     enforceFlatpakBundleSize(sizeReport);
     for (const report of sizeReport.extensionBundles) enforceFlatpakBundleSize(report);
-    writeFlatpakChecksums(bundlePlan.map((artifact) => artifact.path));
-  }, { bundlePlan });
+    writeJson(reportPath, report);
+  } catch (error) {
+    if (error.bundleCache) report.bundleCache = error.bundleCache;
+    writeJson(reportPath, report);
+    throw error;
+  }
 
-  for (const artifact of bundlePlan) process.stdout.write(`Flatpak bundle written to ${artifact.path}\n`);
-  process.stdout.write(`Flatpak checksums written to ${sha256SumsPath}\n`);
+  for (const [index, artifact] of bundlePlan.entries()) {
+    const status = report.bundleCache.entries[index].status;
+    process.stdout.write(`Flatpak bundle ${status} at ${artifact.path}\n`);
+  }
+  process.stdout.write(`Flatpak checksums verified at ${sha256SumsPath}\n`);
+}
+
+function runWithPackagingLock() {
+  const lockPath = path.join(workspaceRoot, ".flatpak-builder", "tuneforge-package.lock");
+  const token = randomUUID();
+  mkdirSync(path.dirname(lockPath), { recursive: true });
+  process.stdout.write("Waiting for Flatpak packaging lock...\n");
+  run("flock", ["--verbose", lockPath, process.execPath, __filename, `--flatpak-lock-token=${token}`, ...process.argv.slice(2)], {
+    env: { TUNEFORGE_FLATPAK_LOCK_TOKEN: token },
+  });
+}
+
+function packageArguments() {
+  return isLockedPackagingInvocation() ? process.argv.slice(3) : process.argv.slice(2);
+}
+
+function isLockedPackagingInvocation() {
+  const token = process.env.TUNEFORGE_FLATPAK_LOCK_TOKEN;
+  const marker = process.argv[2];
+  return typeof token === "string" && /^[0-9a-f-]{36}$/.test(token) &&
+    marker === `--flatpak-lock-token=${token}`;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
-  main().catch((error) => {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    process.exitCode = 1;
-  });
+  if (isLockedPackagingInvocation()) {
+    main().catch((error) => {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      process.exitCode = 1;
+    });
+  } else {
+    try {
+      runWithPackagingLock();
+    } catch (error) {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      process.exitCode = 1;
+    }
+  }
 }

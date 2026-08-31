@@ -425,6 +425,10 @@ modules:
         path: ../../apps/backend/pyproject.toml
         dest: apps/backend
       - type: file
+        path: ../../packaging/demucs/models.json
+        dest: apps/backend
+        dest-filename: demucs-models.json
+      - type: file
         path: ffmpeg-wrapper.sh
         dest-filename: ffmpeg
       - type: file
@@ -457,6 +461,7 @@ modules:
       - cp -a apps/backend/alembic /app/lib/tuneforge/backend/src/alembic
       - install -Dm644 apps/backend/alembic.ini /app/lib/tuneforge/backend/src/alembic.ini
       - install -Dm644 apps/backend/pyproject.toml /app/lib/tuneforge/backend/src/pyproject.toml
+      - install -Dm644 apps/backend/demucs-models.json /app/lib/tuneforge/backend/src/demucs-models.json
       - install -Dm644 com.tuneforge.desktop.desktop /app/share/applications/com.tuneforge.desktop.desktop
       - install -Dm644 com.tuneforge.desktop.metainfo.xml /app/share/metainfo/com.tuneforge.desktop.metainfo.xml
       - install -Dm644 README.md /app/share/doc/tuneforge/README.md

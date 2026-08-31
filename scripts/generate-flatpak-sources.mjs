@@ -882,6 +882,7 @@ export function cremaOnlyModelBundlePlan(plan) {
     manifest: {
       ...plan.manifest,
       torch_checkpoints: [],
+      demucs_hf_models: [],
       whisper_models: [],
     },
   };

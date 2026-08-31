@@ -16,8 +16,9 @@ from app.engines.crema_chords import (
     preload_crema_model,
 )
 from app.engines.demucs_cache import (
-    invalid_demucs_torch_cache_files,
-    preload_demucs_torch_cache,
+    format_invalid_demucs_hf_cache_files,
+    invalid_demucs_hf_cache_files,
+    preload_demucs_hf_cache,
 )
 from app.engines.lv_chordia import (
     invalid_lv_chordia_model_asset_files,
@@ -59,7 +60,7 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="python -m app.cli.prewarm_models",
         description="Verify and prewarm local model caches for development setup.",
     )
-    parser.add_argument("--skip-demucs", action="store_true", help="Skip Demucs checkpoint cache.")
+    parser.add_argument("--skip-demucs", action="store_true", help="Skip Demucs model cache.")
     parser.add_argument("--skip-whisper", action="store_true", help="Skip Whisper lyrics model cache.")
     parser.add_argument(
         "--include-beat-this",
@@ -81,18 +82,18 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _verify_or_prewarm_demucs() -> None:
-    invalid_files = invalid_demucs_torch_cache_files()
+    invalid_files = invalid_demucs_hf_cache_files()
     if not invalid_files:
         sys.stdout.write("Demucs model cache verified.\n")
         return
 
-    _print_invalid_files("Demucs", invalid_files)
-    remove_invalid_model_files(invalid_files)
-    for result in preload_demucs_torch_cache():
+    details = format_invalid_demucs_hf_cache_files(invalid_files)
+    sys.stdout.write(f"Demucs Hugging Face model cache invalid: {details}\n")
+    for result in preload_demucs_hf_cache():
         if result.cache_hit:
-            sys.stdout.write(f"Demucs {result.model_id} checkpoint cache hit.\n")
+            sys.stdout.write(f"Demucs {result.model_id} Hugging Face cache hit.\n")
         else:
-            sys.stdout.write(f"Preloaded Demucs {result.model_id} checkpoint(s).\n")
+            sys.stdout.write(f"Preloaded Demucs {result.model_id} Hugging Face model files.\n")
 
 
 def _verify_or_prewarm_whisper(model_name: str) -> None:

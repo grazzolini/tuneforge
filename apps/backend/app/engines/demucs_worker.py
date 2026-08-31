@@ -2,17 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
 
 import soundfile as sf
 import torch
 from demucs.apply import apply_model
 from demucs.audio import AudioFile
-from demucs.pretrained import get_model
 
+from app.engines.demucs_cache import load_demucs_model
 from app.runtime_status import emit_runtime_event
 from app.utils.torch_runtime import choose_torch_device
 
@@ -42,21 +39,6 @@ def _parse_stem_outputs(values: list[str]) -> dict[str, Path]:
             raise ValueError(f"Invalid --stem value: {value}")
         outputs[source] = Path(raw_path)
     return outputs
-
-
-@contextmanager
-def _trusted_demucs_checkpoint_loading() -> Iterator[None]:
-    original_load = torch.load
-
-    def trusted_load(*args: Any, **kwargs: Any) -> Any:
-        kwargs.setdefault("weights_only", False)
-        return original_load(*args, **kwargs)
-
-    torch.load = trusted_load  # type: ignore[assignment]
-    try:
-        yield
-    finally:
-        torch.load = original_load  # type: ignore[assignment]
 
 
 def _device_label(device: str) -> str:
@@ -91,8 +73,7 @@ def _separate_with_device(
         stage_label=f"Loading Demucs model on {_device_label(device_name)}.",
         runtime_device=device_name,
     )
-    with _trusted_demucs_checkpoint_loading():
-        model = get_model(args.model, repo=model_repo)
+    model = load_demucs_model(args.model, model_repo=model_repo)
     samplerate = int(model.samplerate)
     channels = int(getattr(model, "audio_channels", 2))
     mix = AudioFile(source_path).read(streams=0, samplerate=samplerate, channels=channels)

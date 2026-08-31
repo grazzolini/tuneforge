@@ -136,7 +136,7 @@ Run packaging from a normal macOS shell so `hdiutil` can create the disk image. 
 
 The packaged backend checks the inherited `PATH` plus common Homebrew and MacPorts install locations when looking for `ffmpeg` and `ffprobe`. System microphone volume control uses the built-in CoreAudio API on macOS.
 
-By default, Demucs, Whisper, and beat-this weights are read from their normal caches and downloaded on first use if missing. Advanced Chords always stages the exact verified ONNX model and runtime state so packaged startup can seed `TUNEFORGE_DATA_DIR/cache/models/crema/` offline. It excludes the Crema Python package, TensorFlow, Keras, and their HDF5 model-loading closure; preserved LV Chordia support still brings its declared `h5py` dependency. LV Chordia ships exactly five validated checkpoints. `--model-bundle` independently stages required Demucs and Whisper weights, plus beat-this `small0` when included.
+By default, Demucs, Whisper, and beat-this weights are read from their normal caches and downloaded on first use if missing. Demucs uses immutable Hugging Face YAML+safetensors in the standard Hub cache: `HF_HUB_CACHE`, legacy `HUGGINGFACE_HUB_CACHE`, `HF_HOME/hub`, `XDG_CACHE_HOME/huggingface/hub`, then `~/.cache/huggingface/hub`. `TUNEFORGE_DATA_DIR` does not control the upstream Demucs, Whisper, or beat-this caches. Advanced Chords always stages the exact verified ONNX model and runtime state so packaged startup can seed `TUNEFORGE_DATA_DIR/cache/models/crema/` offline. It excludes the Crema Python package, TensorFlow, Keras, and their HDF5 model-loading closure; preserved LV Chordia support still brings its declared `h5py` dependency. LV Chordia ships exactly five validated checkpoints. `--model-bundle` independently stages required Demucs and Whisper weights, plus beat-this `small0` when included; Demucs is validated and loaded directly from its pinned bundle path without copying into the Hugging Face cache.
 
 ## Android
 
@@ -273,7 +273,7 @@ pnpm package:linux -- --crema-onnx --model-bundle
 - `--no-crema`, `--no-advanced-chords`, `--no-crema-onnx`, and `--no-advanced-chords-onnx` exclude it. Mixing enable and disable selectors is an error.
 - `--no-beat-this` / `--no-advanced-beats` exclude the Advanced Beat Analysis dependency stack.
 - `--lv-chordia` / `--no-lv-chordia` include or exclude LV Chordia and its five checkpoints.
-- `--model-bundle` includes required Demucs and Whisper weights, plus beat-this `small0` when beat-this dependencies are included. Advanced Chords model/state files are always included when that engine is enabled.
+- `--model-bundle` includes pinned Demucs YAML+safetensors and required Whisper weights, plus beat-this `small0` when beat-this dependencies are included. Advanced Chords model/state files are always included when that engine is enabled.
 - `--sandbox-data` keeps app data under Flatpak-private `/var/data/tuneforge` instead of the host XDG data directory.
 - With no profile flags, Flatpak packaging builds CPU, NVIDIA, and legacy NVIDIA. `--cpu` builds
   only the CPU app; `--nvidia` or `--legacy-nvidia` builds the CPU app and that accelerator pair.

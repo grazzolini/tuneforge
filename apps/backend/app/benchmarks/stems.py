@@ -15,9 +15,10 @@ import soundfile as sf
 import torch
 from demucs.apply import apply_model
 from demucs.audio import AudioFile
-from demucs.pretrained import get_model
 
+from app.engines.demucs_cache import load_demucs_model
 from app.services.metadata import extract_audio_metadata
+from app.services.stem_models import configured_stem_model_repo
 from app.utils.torch_runtime import choose_torch_device
 
 DEFAULT_BENCHMARK_MODELS = ("htdemucs_ft", "htdemucs_6s")
@@ -148,7 +149,7 @@ def _load_stem_model(model_name: str, *, device: str) -> LoadedStemModel | Faile
     started_at = time.perf_counter()
     try:
         resolved_device = choose_torch_device(device, torch_module=torch)
-        model = get_model(model_name)
+        model = load_demucs_model(model_name, model_repo=configured_stem_model_repo())
         return LoadedStemModel(
             name=model_name,
             model=model,

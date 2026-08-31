@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from app.cli import prewarm_models
+from app.engines.demucs_cache import DemucsPreloadResult, InvalidDemucsHfCacheFile
 from app.utils.model_cache import InvalidModelFile
 
 
@@ -18,6 +19,31 @@ def test_valid_whisper_cache_skips_preload(monkeypatch: pytest.MonkeyPatch, caps
 
     assert calls == []
     assert capsys.readouterr().out == "Whisper tiny model cache verified.\n"
+
+
+def test_demucs_cli_dispatches_hugging_face_prewarm_only(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    invalid_file = InvalidDemucsHfCacheFile(
+        model_id="htdemucs_6s",
+        file_name="5c90dfd2.safetensors",
+        reason="missing",
+        path=None,
+    )
+    monkeypatch.setattr(prewarm_models, "invalid_demucs_hf_cache_files", lambda: (invalid_file,))
+    monkeypatch.setattr(
+        prewarm_models,
+        "preload_demucs_hf_cache",
+        lambda: (DemucsPreloadResult(model_id="htdemucs_6s", cache_hit=False),),
+    )
+
+    prewarm_models._verify_or_prewarm_demucs()
+
+    assert capsys.readouterr().out == (
+        "Demucs Hugging Face model cache invalid: htdemucs_6s 5c90dfd2.safetensors: missing\n"
+        "Preloaded Demucs htdemucs_6s Hugging Face model files.\n"
+    )
 
 
 @pytest.mark.parametrize("reason", ["missing", "sha256"])

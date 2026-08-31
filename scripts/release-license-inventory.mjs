@@ -246,6 +246,7 @@ export function buildReleaseLicenseInventory({
   });
   const bundledManifestEntries = [
     ...bundledPlan.manifest.torch_checkpoints,
+    ...bundledPlan.manifest.demucs_hf_models.flatMap((model) => model.files),
     ...bundledPlan.manifest.whisper_models,
   ];
   const flatpakProfileComponents = buildFlatpakProfileComponentInventory({

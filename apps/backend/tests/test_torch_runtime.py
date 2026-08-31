@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -147,105 +148,304 @@ def test_choose_torch_device_rejects_unknown_backend():
         choose_torch_device("metal", torch_module=make_fake_torch(has_mps=True, has_cuda=False))
 
 
-def test_demucs_worker_uses_trusted_checkpoint_loading(monkeypatch):
-    from app.engines import demucs_worker
+def test_demucs_manifest_pins_exact_hugging_face_models():
+    from app.engines.demucs_cache import read_demucs_hf_models
 
-    calls: list[dict[str, object]] = []
+    models = read_demucs_hf_models()
 
-    def fake_load(*args: object, **kwargs: object) -> dict[str, object]:
-        del args
-        calls.append(dict(kwargs))
-        return {}
+    assert [(model.id, model.repo_id, model.revision, model.bag_order) for model in models] == [
+        (
+            "htdemucs_6s",
+            "adefossez/HTDemucs-6s",
+            "053e1404489b3dc58bf718224fac4b7316de8c93",
+            ("5c90dfd2",),
+        ),
+        (
+            "htdemucs_ft",
+            "adefossez/HTDemucs-ft",
+            "478be8a68f85418addd6f7baefd4be76522a4034",
+            ("f7e0c4bc", "d12395a8", "92cfc3b6", "04573f0d"),
+        ),
+    ]
+    assert all(file.file_name.endswith((".yaml", ".safetensors")) for model in models for file in model.files)
 
-    monkeypatch.setattr(demucs_worker.torch, "load", fake_load)
 
-    with demucs_worker._trusted_demucs_checkpoint_loading():
-        demucs_worker.torch.load("checkpoint.th", "cpu")
+def test_packaged_demucs_manifest_resolves_from_backend_source_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    from app.engines import demucs_cache
 
-    assert calls == [{"weights_only": False}]
-    assert demucs_worker.torch.load is fake_load
+    module_path = tmp_path / "backend" / "src" / "app" / "engines" / "demucs_cache.py"
+    packaged_manifest = tmp_path / "backend" / "src" / "demucs-models.json"
+    packaged_manifest.parent.mkdir(parents=True)
+    packaged_manifest.write_text('{"version": 2, "models": []}', encoding="utf-8")
+    monkeypatch.setattr(demucs_cache, "__file__", str(module_path))
+
+    assert demucs_cache.default_demucs_model_manifest_path() == packaged_manifest
 
 
-def test_demucs_torch_preload_skips_model_load_when_cache_is_valid(tmp_path: Path):
-    from app.engines.demucs_cache import preload_demucs_torch_cache
+@pytest.mark.parametrize("mutation, expected", [
+    ("duplicate", "duplicate model id"),
+    ("traversal", "invalid file name"),
+])
+def test_demucs_manifest_rejects_duplicates_and_path_traversal(
+    tmp_path: Path,
+    mutation: str,
+    expected: str,
+):
+    from app.engines.demucs_cache import read_demucs_hf_models
 
-    checkpoint_dir = tmp_path / "checkpoints"
-    first_file = _write_checkpoint(checkpoint_dir, "first.th", b"first")
-    second_file = _write_checkpoint(checkpoint_dir, "second.th", b"second")
-    manifest_path = _write_demucs_manifest(
-        tmp_path,
-        {
-            "model-a": [first_file],
-            "model-b": [second_file],
-        },
+    manifest_path, _payloads = _write_hf_demucs_manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    if mutation == "duplicate":
+        manifest["models"].append(dict(manifest["models"][0]))
+    else:
+        manifest["models"][0]["files"][0]["file_name"] = "../model-a.yaml"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match=expected):
+        read_demucs_hf_models(manifest_path, model_ids=("model-a",))
+
+
+@pytest.mark.parametrize("model_id", ["../escape", "/absolute", "nested/id", "nested\\id", ".", ".."])
+def test_demucs_manifest_rejects_unsafe_model_ids(tmp_path: Path, model_id: str):
+    from app.engines.demucs_cache import read_demucs_hf_models
+
+    manifest_path, _payloads = _write_hf_demucs_manifest(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["models"][0]["id"] = model_id
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="invalid model id"):
+        read_demucs_hf_models(manifest_path, model_ids=(model_id,))
+
+
+def test_demucs_hf_prewarm_downloads_missing_files_and_warm_cache_skips_network(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    from app.engines import demucs_cache
+
+    manifest_path, payloads = _write_hf_demucs_manifest(tmp_path)
+    cache_dir = tmp_path / "hf-cache"
+    calls: list[tuple[str, str, str, bool, Path]] = []
+
+    def fake_try(repo_id: str, filename: str, *, revision: str, cache_dir: Path) -> str | object:
+        del repo_id, revision
+        path = cache_dir / filename
+        return str(path) if path.is_file() else object()
+
+    def fake_download(
+        repo_id: str,
+        filename: str,
+        *,
+        revision: str,
+        cache_dir: Path,
+        force_download: bool,
+    ) -> str:
+        calls.append((repo_id, filename, revision, force_download, cache_dir))
+        path = cache_dir / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payloads[filename])
+        return str(path)
+
+    monkeypatch.setattr(demucs_cache, "try_to_load_from_cache", fake_try)
+    monkeypatch.setattr(demucs_cache, "hf_hub_download", fake_download)
+
+    cold = demucs_cache.preload_demucs_hf_cache(
+        model_ids=("model-a",), manifest_path=manifest_path, cache_dir=cache_dir
     )
-    calls: list[str] = []
-
-    results = preload_demucs_torch_cache(
-        manifest_path=manifest_path,
-        checkpoint_dir=checkpoint_dir,
-        model_ids=("model-a", "model-b"),
-        get_model_func=lambda model_id: calls.append(model_id),
+    warm = demucs_cache.preload_demucs_hf_cache(
+        model_ids=("model-a",), manifest_path=manifest_path, cache_dir=cache_dir
     )
 
-    assert calls == []
-    assert [(result.model_id, result.cache_hit) for result in results] == [
-        ("model-a", True),
-        ("model-b", True),
+    assert [result.cache_hit for result in cold] == [False]
+    assert [result.cache_hit for result in warm] == [True]
+    assert calls == [
+        ("fixture/model-a", "model-a.yaml", "a" * 40, False, cache_dir),
+        ("fixture/model-a", "sig-a.safetensors", "a" * 40, False, cache_dir),
     ]
 
 
-def test_demucs_torch_preload_loads_only_affected_model(tmp_path: Path):
-    from app.engines.demucs_cache import preload_demucs_torch_cache
+def test_demucs_hf_prewarm_force_repairs_only_corrupt_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    from app.engines import demucs_cache
 
-    checkpoint_dir = tmp_path / "checkpoints"
-    first_file = _write_checkpoint(checkpoint_dir, "first.th", b"first")
-    missing_file = _expected_checkpoint("missing.th", b"missing")
-    manifest_path = _write_demucs_manifest(
-        tmp_path,
-        {
-            "model-a": [first_file],
-            "model-b": [missing_file],
-        },
-    )
-    calls: list[str] = []
+    manifest_path, payloads = _write_hf_demucs_manifest(tmp_path)
+    cache_dir = tmp_path / "hf-cache"
+    cache_dir.mkdir()
+    (cache_dir / "model-a.yaml").write_bytes(payloads["model-a.yaml"])
+    (cache_dir / "sig-a.safetensors").write_bytes(b"corrupt")
+    calls: list[tuple[str, bool]] = []
 
-    def fake_get_model(model_id: str) -> None:
-        calls.append(model_id)
-        _write_checkpoint(checkpoint_dir, "missing.th", b"missing")
-
-    results = preload_demucs_torch_cache(
-        manifest_path=manifest_path,
-        checkpoint_dir=checkpoint_dir,
-        model_ids=("model-a", "model-b"),
-        get_model_func=fake_get_model,
+    monkeypatch.setattr(
+        demucs_cache,
+        "try_to_load_from_cache",
+        lambda _repo, filename, **_kwargs: str(cache_dir / filename),
     )
 
-    assert calls == ["model-b"]
-    assert [(result.model_id, result.cache_hit) for result in results] == [
-        ("model-a", True),
-        ("model-b", False),
-    ]
+    def fake_download(_repo: str, filename: str, *, force_download: bool, **_kwargs: object) -> str:
+        calls.append((filename, force_download))
+        (cache_dir / filename).write_bytes(payloads[filename])
+        return str(cache_dir / filename)
 
+    monkeypatch.setattr(demucs_cache, "hf_hub_download", fake_download)
 
-def test_demucs_torch_preload_raises_when_loaded_model_remains_invalid(tmp_path: Path):
-    from app.engines.demucs_cache import preload_demucs_torch_cache
-
-    checkpoint_dir = tmp_path / "checkpoints"
-    manifest_path = _write_demucs_manifest(
-        tmp_path,
-        {
-            "model-a": [_expected_checkpoint("missing.th", b"missing")],
-        },
+    demucs_cache.preload_demucs_hf_cache(
+        model_ids=("model-a",), manifest_path=manifest_path, cache_dir=cache_dir
     )
 
-    with pytest.raises(RuntimeError, match="missing.th \\(missing\\)"):
-        preload_demucs_torch_cache(
-            manifest_path=manifest_path,
-            checkpoint_dir=checkpoint_dir,
-            model_ids=("model-a",),
-            get_model_func=lambda _model_id: None,
-        )
+    assert calls == [("sig-a.safetensors", True)]
+
+
+def test_demucs_hf_default_cache_uses_hugging_face_defaults_without_cache_keyword(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    from app.engines import demucs_cache
+
+    manifest_path, payloads = _write_hf_demucs_manifest(tmp_path)
+    cached_paths: dict[str, Path] = {}
+    cache_call_options: list[dict[str, object]] = []
+    download_call_options: list[dict[str, object]] = []
+
+    def fake_try(_repo_id: str, filename: str, **options: object) -> str | object:
+        cache_call_options.append(options)
+        path = cached_paths.get(filename)
+        return str(path) if path else object()
+
+    def fake_download(_repo_id: str, filename: str, **options: object) -> str:
+        download_call_options.append(options)
+        path = tmp_path / filename
+        path.write_bytes(payloads[filename])
+        cached_paths[filename] = path
+        return str(path)
+
+    monkeypatch.setattr(demucs_cache, "try_to_load_from_cache", fake_try)
+    monkeypatch.setattr(demucs_cache, "hf_hub_download", fake_download)
+
+    result = demucs_cache.preload_demucs_hf_cache(model_ids=("model-a",), manifest_path=manifest_path)
+
+    assert result == (demucs_cache.DemucsPreloadResult(model_id="model-a", cache_hit=False),)
+    assert all("cache_dir" not in options for options in cache_call_options)
+    assert all("cache_dir" not in options for options in download_call_options)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "relative_cache"),
+    [
+        ({}, ".cache/huggingface/hub"),
+        ({"XDG_CACHE_HOME": "xdg"}, "xdg/huggingface/hub"),
+        ({"HF_HOME": "hf-home", "XDG_CACHE_HOME": "xdg"}, "hf-home/hub"),
+        (
+            {"HUGGINGFACE_HUB_CACHE": "legacy", "HF_HOME": "hf-home", "XDG_CACHE_HOME": "xdg"},
+            "legacy",
+        ),
+        (
+            {
+                "HF_HUB_CACHE": "hub",
+                "HUGGINGFACE_HUB_CACHE": "legacy",
+                "HF_HOME": "hf-home",
+                "XDG_CACHE_HOME": "xdg",
+            },
+            "hub",
+        ),
+    ],
+)
+def test_hugging_face_cache_environment_precedence_is_resolved_at_import_time(
+    tmp_path: Path,
+    overrides: dict[str, str],
+    relative_cache: str,
+):
+    environment = dict(os.environ)
+    for name in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_HOME", "XDG_CACHE_HOME"):
+        environment.pop(name, None)
+    home = tmp_path / "home"
+    environment["HOME"] = str(home)
+    environment.update({name: str(tmp_path / value) for name, value in overrides.items()})
+    if "XDG_CACHE_HOME" in overrides:
+        relative_cache = relative_cache.replace("xdg", str(tmp_path / "xdg"), 1)
+    if "HF_HOME" in overrides:
+        relative_cache = relative_cache.replace("hf-home", str(tmp_path / "hf-home"), 1)
+    if "HF_HUB_CACHE" in overrides:
+        relative_cache = relative_cache.replace("hub", str(tmp_path / "hub"), 1)
+    if "HUGGINGFACE_HUB_CACHE" in overrides:
+        relative_cache = relative_cache.replace("legacy", str(tmp_path / "legacy"), 1)
+    expected = home / relative_cache if not Path(relative_cache).is_absolute() else Path(relative_cache)
+    completed = subprocess.run(
+        [sys.executable, "-c", "from huggingface_hub import constants; print(constants.HF_HUB_CACHE)"],
+        cwd=Path(__file__).resolve().parents[1],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert Path(completed.stdout.strip()) == expected
+
+
+def test_demucs_local_repo_uses_pinned_layout_and_rejects_legacy_th(tmp_path: Path):
+    from app.engines.demucs_cache import LEGACY_DEMUCS_MIGRATION, validate_demucs_model_repo
+
+    manifest_path, payloads = _write_hf_demucs_manifest(tmp_path)
+    repo = tmp_path / "repo"
+    model_root = repo / "model-a" / ("a" * 40)
+    model_root.mkdir(parents=True)
+    for name, payload in payloads.items():
+        (model_root / name).write_bytes(payload)
+
+    paths = validate_demucs_model_repo(repo, "model-a", manifest_path=manifest_path)
+    assert [path.name for path in paths] == ["model-a.yaml", "sig-a.safetensors"]
+
+    (repo / "old.th").write_bytes(b"legacy")
+    with pytest.raises(RuntimeError, match="recreate using current TuneForge") as exc_info:
+        validate_demucs_model_repo(repo, "model-a", manifest_path=manifest_path)
+    assert str(exc_info.value) == LEGACY_DEMUCS_MIGRATION
+
+
+def test_demucs_adapter_loads_local_safetensors_in_bag_order(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    from demucs import apply as demucs_apply
+    from demucs import hf as demucs_hf
+
+    from app.engines.demucs_cache import load_demucs_model
+
+    manifest_path, payloads = _write_hf_demucs_manifest(tmp_path)
+    repo = tmp_path / "repo"
+    model_root = repo / "model-a" / ("a" * 40)
+    model_root.mkdir(parents=True)
+    for name, payload in payloads.items():
+        (model_root / name).write_bytes(payload)
+
+    loaded_paths: list[Path] = []
+    monkeypatch.setattr(
+        demucs_hf,
+        "load_safetensors_model",
+        lambda path: loaded_paths.append(Path(path)) or SimpleNamespace(),
+    )
+
+    class FakeBag:
+        def __init__(self, models, weights, segment):
+            self.models = models
+            self.weights = weights
+            self.segment = segment
+            self.evaluated = False
+
+        def eval(self):
+            self.evaluated = True
+            return self
+
+    monkeypatch.setattr(demucs_apply, "BagOfModels", FakeBag)
+
+    loaded = load_demucs_model("model-a", model_repo=repo, manifest_path=manifest_path)
+
+    assert loaded_paths == [model_root / "sig-a.safetensors"]
+    assert loaded.evaluated is True
 
 
 def test_model_cache_verification_accepts_valid_files(tmp_path: Path):
@@ -325,27 +525,14 @@ def test_model_cache_verification_rejects_wrong_hash(tmp_path: Path):
     assert invalid_files[0].reason == "sha256"
 
 
-def test_demucs_model_cache_verifier_reads_manifest_without_loader(tmp_path: Path):
-    from app.engines.demucs_cache import invalid_demucs_torch_cache_files
+def test_demucs_runtime_has_no_legacy_loader_or_fbaipublic_fallback():
+    from app.engines import demucs_cache, demucs_worker
 
-    checkpoint_dir = tmp_path / "checkpoints"
-    first_file = _write_checkpoint(checkpoint_dir, "first.th", b"first")
-    second_file = _write_checkpoint(checkpoint_dir, "second.th", b"second")
-    manifest_path = _write_demucs_manifest(
-        tmp_path,
-        {
-            "model-a": [first_file],
-            "model-b": [second_file],
-        },
-    )
+    source = Path(demucs_cache.__file__).read_text() + Path(demucs_worker.__file__).read_text()
 
-    invalid_files = invalid_demucs_torch_cache_files(
-        manifest_path=manifest_path,
-        checkpoint_dir=checkpoint_dir,
-        model_ids=("model-a", "model-b"),
-    )
-
-    assert invalid_files == ()
+    assert "demucs.pretrained" not in source
+    assert "fbaipublic" not in source
+    assert "weights_only=False" not in source
 
 
 def test_whisper_model_cache_verifier_uses_configured_model_spec(
@@ -438,7 +625,7 @@ def test_model_bundle_seeds_missing_caches(
     from app.utils.model_bundle import seed_model_bundle_caches
 
     bundle_dir = tmp_path / "bundle"
-    torch_source = bundle_dir / "torch" / "hub" / "checkpoints" / "model.th"
+    torch_source = bundle_dir / "torch" / "hub" / "checkpoints" / "model.ckpt"
     whisper_source = bundle_dir / "whisper" / "lyrics.pt"
     torch_source.parent.mkdir(parents=True)
     whisper_source.parent.mkdir(parents=True)
@@ -457,7 +644,7 @@ def test_model_bundle_seeds_missing_caches(
         SimpleNamespace(model_bundle_dir=bundle_dir, lyrics_cache_dir=lyrics_cache)
     )
 
-    assert (torch_home / "hub" / "checkpoints" / "model.th").read_bytes() == b"torch-model"
+    assert (torch_home / "hub" / "checkpoints" / "model.ckpt").read_bytes() == b"torch-model"
     assert (lyrics_cache / "lyrics.pt").read_bytes() == b"whisper-model"
 
 
@@ -486,7 +673,7 @@ def test_model_bundle_seeds_exact_crema_onnx_files(
         crema_onnx_payloads=payloads,
     )
     (bundle_dir / "torch" / "hub" / "checkpoints").mkdir(parents=True)
-    (bundle_dir / "torch" / "hub" / "checkpoints" / "model.th").write_bytes(b"torch-model")
+    (bundle_dir / "torch" / "hub" / "checkpoints" / "model.ckpt").write_bytes(b"torch-model")
     (bundle_dir / "whisper").mkdir()
     (bundle_dir / "whisper" / "lyrics.pt").write_bytes(b"whisper-model")
     cache_root = tmp_path / "cache"
@@ -553,7 +740,7 @@ def test_model_bundle_skips_valid_cache(
     from app.utils import model_bundle
 
     bundle_dir = tmp_path / "bundle"
-    torch_source = bundle_dir / "torch" / "hub" / "checkpoints" / "model.th"
+    torch_source = bundle_dir / "torch" / "hub" / "checkpoints" / "model.ckpt"
     whisper_source = bundle_dir / "whisper" / "lyrics.pt"
     torch_source.parent.mkdir(parents=True)
     whisper_source.parent.mkdir(parents=True)
@@ -566,7 +753,7 @@ def test_model_bundle_skips_valid_cache(
     )
     torch_home = tmp_path / "torch-home"
     lyrics_cache = tmp_path / "lyrics"
-    destination = torch_home / "hub" / "checkpoints" / "model.th"
+    destination = torch_home / "hub" / "checkpoints" / "model.ckpt"
     destination.parent.mkdir(parents=True)
     destination.write_bytes(b"torch-model")
     monkeypatch.setenv("TORCH_HOME", str(torch_home))
@@ -594,7 +781,7 @@ def test_model_bundle_replaces_invalid_cache(
     from app.utils.model_bundle import seed_model_bundle_caches
 
     bundle_dir = tmp_path / "bundle"
-    torch_source = bundle_dir / "torch" / "hub" / "checkpoints" / "model.th"
+    torch_source = bundle_dir / "torch" / "hub" / "checkpoints" / "model.ckpt"
     whisper_source = bundle_dir / "whisper" / "lyrics.pt"
     torch_source.parent.mkdir(parents=True)
     whisper_source.parent.mkdir(parents=True)
@@ -606,7 +793,7 @@ def test_model_bundle_replaces_invalid_cache(
         whisper_payload=b"whisper-model",
     )
     torch_home = tmp_path / "torch-home"
-    torch_destination = torch_home / "hub" / "checkpoints" / "model.th"
+    torch_destination = torch_home / "hub" / "checkpoints" / "model.ckpt"
     torch_destination.parent.mkdir(parents=True)
     torch_destination.write_bytes(b"stale")
     lyrics_cache = tmp_path / "lyrics"
@@ -636,6 +823,220 @@ def test_model_bundle_rejects_missing_bundled_file(tmp_path: Path):
         )
 
 
+def test_model_bundle_v1_rejects_legacy_demucs_th(tmp_path: Path):
+    from app.engines.demucs_cache import LEGACY_DEMUCS_MIGRATION
+    from app.utils.model_bundle import seed_model_bundle_caches
+
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    (bundle_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "torch_checkpoints": [
+                    {
+                        "label": "Demucs htdemucs_6s legacy checkpoint",
+                        "file_name": "legacy.th",
+                        "relative_path": "torch/hub/checkpoints/legacy.th",
+                        "size": 1,
+                        "sha256": "0" * 64,
+                    }
+                ],
+                "whisper_models": [],
+                "crema_onnx_files": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        seed_model_bundle_caches(
+            SimpleNamespace(model_bundle_dir=bundle_dir, lyrics_cache_dir=tmp_path / "lyrics")
+        )
+    assert str(exc_info.value) == LEGACY_DEMUCS_MIGRATION
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    ["torch_checkpoints", "demucs_hf_models", "whisper_models", "crema_onnx_files"],
+)
+def test_model_bundle_v2_requires_all_list_fields(tmp_path: Path, missing_field: str):
+    from app.utils.model_bundle import demucs_model_bundle_repo
+
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    manifest = {
+        "version": 2,
+        "torch_checkpoints": [],
+        "demucs_hf_models": [],
+        "whisper_models": [],
+        "crema_onnx_files": [],
+    }
+    del manifest[missing_field]
+    (bundle_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match=f"missing required field: {missing_field}"):
+        demucs_model_bundle_repo(bundle_dir)
+
+
+@pytest.mark.parametrize("version", [True, 1.0, "2", None, {"value": 2}])
+def test_model_bundle_rejects_non_integer_or_boolean_versions(tmp_path: Path, version: object):
+    from app.utils.model_bundle import demucs_model_bundle_repo
+
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    (bundle_dir / "manifest.json").write_text(
+        json.dumps({"version": version}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="version must be an integer"):
+        demucs_model_bundle_repo(bundle_dir)
+
+
+@pytest.mark.parametrize("manifest", [[], True, "v2", 2, None])
+def test_model_bundle_rejects_non_object_manifests(tmp_path: Path, manifest: object):
+    from app.utils.model_bundle import demucs_model_bundle_repo
+
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    (bundle_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="manifest must be an object"):
+        demucs_model_bundle_repo(bundle_dir)
+
+
+def test_model_bundle_v2_nonempty_demucs_set_must_be_complete(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    from app.utils import model_bundle
+
+    models = tuple(
+        SimpleNamespace(
+            id=model_id,
+            mode="fixture",
+            repo_id=f"fixture/{model_id}",
+            revision=revision * 40,
+            yaml_file=f"{model_id}.yaml",
+            bag_order=(),
+            files=(),
+        )
+        for model_id, revision in (("model-a", "a"), ("model-b", "b"))
+    )
+    monkeypatch.setattr(model_bundle, "read_demucs_hf_models", lambda: models)
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    (bundle_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "torch_checkpoints": [],
+                "demucs_hf_models": [
+                    {
+                        "id": "model-a",
+                        "mode": "fixture",
+                        "repo_id": "fixture/model-a",
+                        "revision": "a" * 40,
+                        "yaml_file": "model-a.yaml",
+                        "bag_order": [],
+                        "files": [],
+                    }
+                ],
+                "whisper_models": [],
+                "crema_onnx_files": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="missing supported Demucs model.*model-b"):
+        model_bundle.demucs_model_bundle_repo(bundle_dir)
+
+
+def test_model_bundle_v2_validates_demucs_in_place_without_copying(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    from app.engines.demucs_cache import read_demucs_hf_models
+    from app.utils import model_bundle
+
+    canonical = read_demucs_hf_models(model_ids=("htdemucs_6s",))[0]
+    bundle_dir = tmp_path / "bundle"
+    files = []
+    for file in canonical.files:
+        relative_path = Path("demucs") / canonical.id / canonical.revision / file.file_name
+        destination = bundle_dir / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        payload = b"x"
+        # Keep this test disposable and small by substituting fixture metadata below.
+        destination.write_bytes(payload)
+        files.append(
+            {
+                "label": file.label,
+                "file_name": file.file_name,
+                "relative_path": relative_path.as_posix(),
+                "size": 1,
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        )
+    fixture_model = SimpleNamespace(
+        id=canonical.id,
+        mode=canonical.mode,
+        repo_id=canonical.repo_id,
+        revision=canonical.revision,
+        yaml_file=canonical.yaml_file,
+        bag_order=canonical.bag_order,
+        files=tuple(
+            SimpleNamespace(
+                label=entry["label"],
+                file_name=entry["file_name"],
+                size=entry["size"],
+                sha256=entry["sha256"],
+            )
+            for entry in files
+        ),
+    )
+    monkeypatch.setattr(model_bundle, "read_demucs_hf_models", lambda: (fixture_model,))
+    monkeypatch.setenv("TORCH_HOME", str(tmp_path / "torch-home"))
+    copied: list[Path] = []
+    monkeypatch.setattr(model_bundle.shutil, "copy2", lambda source, _dest: copied.append(Path(source)))
+    (bundle_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "torch_checkpoints": [],
+                "demucs_hf_models": [
+                    {
+                        "id": fixture_model.id,
+                        "mode": fixture_model.mode,
+                        "repo_id": fixture_model.repo_id,
+                        "revision": fixture_model.revision,
+                        "yaml_file": fixture_model.yaml_file,
+                        "bag_order": list(fixture_model.bag_order),
+                        "files": files,
+                    }
+                ],
+                "whisper_models": [],
+                "crema_onnx_files": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert model_bundle.demucs_model_bundle_repo(bundle_dir) == bundle_dir / "demucs"
+    model_bundle.seed_model_bundle_caches(
+        SimpleNamespace(
+            model_bundle_dir=bundle_dir,
+            lyrics_cache_dir=tmp_path / "lyrics",
+            cache_root=tmp_path / "cache",
+        )
+    )
+
+    assert copied == []
+    assert not (tmp_path / "cache" / "models" / "huggingface").exists()
+
+
 def test_model_cache_verifier_imports_no_ml_runtimes():
     script = (
         "import json, sys; "
@@ -662,39 +1063,40 @@ def test_model_cache_verifier_imports_no_ml_runtimes():
     }
 
 
-def _expected_checkpoint(file_name: str, contents: bytes) -> dict[str, object]:
-    return {
-        "fileName": file_name,
-        "size": len(contents),
-        "sha256": hashlib.sha256(contents).hexdigest(),
+def _write_hf_demucs_manifest(tmp_path: Path) -> tuple[Path, dict[str, bytes]]:
+    payloads = {
+        "model-a.yaml": b"models: ['sig-a']\n",
+        "sig-a.safetensors": b"safe-model",
     }
-
-
-def _write_checkpoint(checkpoint_dir: Path, file_name: str, contents: bytes) -> dict[str, object]:
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    (checkpoint_dir / file_name).write_bytes(contents)
-    return _expected_checkpoint(file_name, contents)
-
-
-def _write_demucs_manifest(tmp_path: Path, models: dict[str, list[dict[str, object]]]) -> Path:
     manifest_path = tmp_path / "models.json"
     manifest_path.write_text(
         json.dumps(
             {
-                "rootUrl": "https://example.invalid/",
+                "version": 2,
                 "models": [
                     {
-                        "id": model_id,
-                        "yaml": f"{model_id}.yaml",
-                        "files": files,
+                        "id": "model-a",
+                        "mode": "fixture",
+                        "repo_id": "fixture/model-a",
+                        "revision": "a" * 40,
+                        "yaml_file": "model-a.yaml",
+                        "bag_order": ["sig-a"],
+                        "files": [
+                            {
+                                "label": "bag definition",
+                                "file_name": name,
+                                "size": len(payload),
+                                "sha256": hashlib.sha256(payload).hexdigest(),
+                            }
+                            for name, payload in payloads.items()
+                        ],
                     }
-                    for model_id, files in models.items()
                 ],
             }
         ),
         encoding="utf-8",
     )
-    return manifest_path
+    return manifest_path, payloads
 
 
 def _write_model_bundle_manifest(
@@ -712,8 +1114,8 @@ def _write_model_bundle_manifest(
                 "torch_checkpoints": [
                     {
                         "label": "fixture torch",
-                        "file_name": "model.th",
-                        "relative_path": "torch/hub/checkpoints/model.th",
+                        "file_name": "model.ckpt",
+                        "relative_path": "torch/hub/checkpoints/model.ckpt",
                         "size": len(torch_payload),
                         "sha256": hashlib.sha256(torch_payload).hexdigest(),
                     }

@@ -27,6 +27,7 @@ const stagedBackendSourceRoot = path.join(stagedBackendRoot, "src");
 const stagedPythonRoot = path.join(stagedBackendRoot, "python");
 const stagedSitePackagesRoot = path.join(stagedBackendRoot, "site-packages");
 const stagedModelBundleRoot = path.join(stagedBackendRoot, "models", "bundle");
+const sourceDemucsManifestPath = path.join(workspaceRoot, "packaging", "demucs", "models.json");
 const stagedLvChordiaRoot = path.join(stagedPythonRoot, "share", "lv-chordia", "cache_data");
 const sourceLvChordiaRoot = path.join(backendRoot, ".venv", "share", "lv-chordia", "cache_data");
 const cremaLicensePath = path.join(workspaceRoot, "LICENSES", "crema-0.2.0-BSD-2-Clause.txt");
@@ -38,6 +39,7 @@ const CREMA_ONNX_REVISION = "65af18f49af5101267fd28f15ac8c452d98b8e3d";
 export const CREMA_ONNX_BUNDLE_RELATIVE_PATHS = Array.from(CREMA_ONNX_ARTIFACT_NAMES, (name) =>
   path.join("models", "bundle", "crema", "0.2.0", CREMA_ONNX_REVISION, name),
 ).sort();
+export const DEMUCS_MANIFEST_BACKEND_RELATIVE_PATH = path.join("src", "demucs-models.json");
 export const LV_CHORDIA_CHECKPOINT_NAMES = [
   "joint_chord_net_ismir_naive_v1.0_reweight(0.0,10.0)_s0.best.sdict",
   "joint_chord_net_ismir_naive_v1.0_reweight(0.0,10.0)_s1.best.sdict",
@@ -96,6 +98,17 @@ export function assertLvChordiaBundleLayout(root, enabled) {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw new Error(`Unexpected LV Chordia checkpoint layout: ${actual.join(", ") || "none"}`);
   }
+}
+
+export function stageDemucsManifest(root) {
+  const destination = path.join(root, DEMUCS_MANIFEST_BACKEND_RELATIVE_PATH);
+  mkdirSync(path.dirname(destination), { recursive: true });
+  copyInto(sourceDemucsManifestPath, destination);
+  const manifest = JSON.parse(readFileSync(destination, "utf8"));
+  if (manifest.version !== 2 || !Array.isArray(manifest.models)) {
+    throw new Error(`Invalid staged Demucs manifest: ${destination}`);
+  }
+  return destination;
 }
 
 function parsePythonHome(venvConfigPath) {
@@ -177,7 +190,7 @@ function prepareModelBundle(options) {
           "    copied = ExpectedModelFile(source.label, destination, source.size, source.sha256)",
           "    assert not invalid_model_files((copied,)), destination",
           "    entries.append({'label': source.label, 'file_name': source.path.name, 'relative_path': relative.as_posix(), 'size': source.size, 'sha256': source.sha256})",
-          "manifest = {'version': 1, 'torch_checkpoints': [], 'whisper_models': [], 'crema_onnx_files': entries}",
+          "manifest = {'version': 2, 'torch_checkpoints': [], 'demucs_hf_models': [], 'whisper_models': [], 'crema_onnx_files': entries}",
           "(output / 'manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')",
         ].join("\n"),
         stagedModelBundleRoot,
@@ -260,6 +273,7 @@ async function main() {
   mkdirSync(stagedBackendSourceRoot, { recursive: true });
 
   copyInto(path.join(backendRoot, "app"), path.join(stagedBackendSourceRoot, "app"));
+  stageDemucsManifest(stagedBackendRoot);
   copyInto(path.join(backendRoot, "alembic"), path.join(stagedBackendSourceRoot, "alembic"));
   copyInto(path.join(backendRoot, "alembic.ini"), path.join(stagedBackendSourceRoot, "alembic.ini"));
   copyInto(path.join(backendRoot, "pyproject.toml"), path.join(stagedBackendSourceRoot, "pyproject.toml"));

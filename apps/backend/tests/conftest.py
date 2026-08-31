@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import subprocess
 import tempfile
@@ -20,19 +18,6 @@ _TEST_BOOTSTRAP_ROOT = Path(_TEST_BOOTSTRAP_DIRECTORY.name).resolve()
 _TEST_BOOTSTRAP_DATA_ROOT = _TEST_BOOTSTRAP_ROOT / "data"
 os.environ["TUNEFORGE_DATA_DIR"] = str(_TEST_BOOTSTRAP_DATA_ROOT)
 os.environ["XDG_CACHE_HOME"] = str(_TEST_BOOTSTRAP_ROOT / "xdg-cache")
-
-_EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
-
-_TEST_DEMUCS_MODEL_FILES = (
-    "htdemucs_6s.yaml",
-    "5c90dfd2-34c22ccb.th",
-    "htdemucs_ft.yaml",
-    "f7e0c4bc-ba3fe64a.th",
-    "d12395a8-e57c48e6.th",
-    "92cfc3b6-ef3bcb9c.th",
-    "04573f0d-f3cf25b2.th",
-)
-
 
 def pytest_sessionstart(session: pytest.Session) -> None:
     _ = session
@@ -55,42 +40,11 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 
 @pytest.fixture(autouse=True)
 def isolated_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    demucs_model_repo = tmp_path / "demucs-model-repo"
-    demucs_model_repo.mkdir()
-    for file_name in _TEST_DEMUCS_MODEL_FILES:
-        (demucs_model_repo / file_name).touch()
-    (demucs_model_repo / "manifest.json").write_text(
-        json.dumps(
-            {
-                "models": {
-                    "htdemucs_6s": {
-                        "mode": "six_stems",
-                        "yaml": "htdemucs_6s.yaml",
-                        "files": [
-                            {"name": "htdemucs_6s.yaml", "size_bytes": 0, "sha256": _EMPTY_SHA256},
-                            {"name": "5c90dfd2-34c22ccb.th", "size_bytes": 0, "sha256": _EMPTY_SHA256},
-                        ],
-                    },
-                    "htdemucs_ft": {
-                        "mode": "two_stems",
-                        "yaml": "htdemucs_ft.yaml",
-                        "files": [
-                            {"name": "htdemucs_ft.yaml", "size_bytes": 0, "sha256": _EMPTY_SHA256},
-                            {"name": "f7e0c4bc-ba3fe64a.th", "size_bytes": 0, "sha256": _EMPTY_SHA256},
-                            {"name": "d12395a8-e57c48e6.th", "size_bytes": 0, "sha256": _EMPTY_SHA256},
-                            {"name": "92cfc3b6-ef3bcb9c.th", "size_bytes": 0, "sha256": _EMPTY_SHA256},
-                            {"name": "04573f0d-f3cf25b2.th", "size_bytes": 0, "sha256": _EMPTY_SHA256},
-                        ],
-                    },
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
     monkeypatch.setenv("TUNEFORGE_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("TUNEFORGE_HOST", "127.0.0.1")
     monkeypatch.setenv("TUNEFORGE_PORT", "8765")
-    monkeypatch.setenv("TUNEFORGE_DEMUCS_MODEL_REPO", str(demucs_model_repo))
+    monkeypatch.delenv("TUNEFORGE_DEMUCS_MODEL_REPO", raising=False)
+    monkeypatch.delenv("TUNEFORGE_MODEL_BUNDLE_DIR", raising=False)
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
     from app.config import get_settings
 

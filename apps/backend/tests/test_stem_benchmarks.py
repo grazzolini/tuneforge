@@ -117,7 +117,8 @@ def test_stem_benchmark_reports_model_and_separation_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    def fake_get_model(model_name: str) -> FakeStemModel:
+    def fake_load_model(model_name: str, *, model_repo: Path | None) -> FakeStemModel:
+        del model_repo
         if model_name == "missing_model":
             raise RuntimeError("model unavailable")
         return FakeStemModel(model_name, ["drums", "bass", "other", "vocals", "guitar", "piano"])
@@ -126,7 +127,7 @@ def test_stem_benchmark_reports_model_and_separation_failures(
         raise RuntimeError("separation failed")
 
     monkeypatch.setattr("app.benchmarks.stems.choose_torch_device", lambda *args, **kwargs: "cpu")
-    monkeypatch.setattr("app.benchmarks.stems.get_model", fake_get_model)
+    monkeypatch.setattr("app.benchmarks.stems.load_demucs_model", fake_load_model)
     monkeypatch.setattr("app.benchmarks.stems.apply_model", fake_apply_model)
 
     report = build_benchmark_report(
@@ -146,7 +147,8 @@ def test_stem_benchmark_reports_model_and_separation_failures(
 
 
 def _stub_demucs_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_get_model(model_name: str) -> FakeStemModel:
+    def fake_load_model(model_name: str, *, model_repo: Path | None) -> FakeStemModel:
+        del model_repo
         if model_name == "htdemucs_6s":
             return FakeStemModel(model_name, ["drums", "bass", "other", "vocals", "guitar", "piano"])
         return FakeStemModel(model_name, ["drums", "bass", "other", "vocals"])
@@ -159,5 +161,5 @@ def _stub_demucs_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
         return output
 
     monkeypatch.setattr("app.benchmarks.stems.choose_torch_device", lambda *args, **kwargs: "cpu")
-    monkeypatch.setattr("app.benchmarks.stems.get_model", fake_get_model)
+    monkeypatch.setattr("app.benchmarks.stems.load_demucs_model", fake_load_model)
     monkeypatch.setattr("app.benchmarks.stems.apply_model", fake_apply_model)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
@@ -9,11 +8,9 @@ import soundfile as sf
 from app.config import get_settings
 from app.db import SessionLocal
 from app.services.projects import import_project
-from app.services.stem_models import resolve_stem_model
+from app.services.stem_models import configured_stem_model_repo, resolve_stem_model
 
 from .conftest import wait_for_job
-
-EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 
 
 def test_stem_models_route_exposes_default_and_two_stems_model(client):
@@ -47,8 +44,8 @@ def _create_project_without_import_jobs(source_path: Path) -> str:
     return project_id
 
 
-def test_unconfigured_model_repo_uses_demucs_torch_cache_mode(client, sample_stereo_audio_file, monkeypatch):
-    monkeypatch.delenv("TUNEFORGE_DEMUCS_MODEL_REPO")
+def test_unconfigured_model_repo_uses_pinned_hugging_face_cache(client, sample_stereo_audio_file, monkeypatch):
+    monkeypatch.delenv("TUNEFORGE_DEMUCS_MODEL_REPO", raising=False)
     get_settings.cache_clear()
     seen_model_repos: list[Path | None] = []
 
@@ -105,8 +102,10 @@ def test_configured_missing_model_repo_fails_stem_job(client, sample_stereo_audi
     )
 
 
-def test_configured_model_repo_requires_manifest(client, sample_stereo_audio_file, tmp_path, monkeypatch):
-    repo = tmp_path / "demucs-without-manifest"
+def test_configured_legacy_model_repo_fails_with_migration_guidance(
+    client, sample_stereo_audio_file, tmp_path, monkeypatch
+):
+    repo = tmp_path / "legacy-demucs"
     repo.mkdir()
     (repo / "htdemucs_6s.yaml").touch()
     (repo / "5c90dfd2-34c22ccb.th").touch()
@@ -122,77 +121,66 @@ def test_configured_model_repo_requires_manifest(client, sample_stereo_audio_fil
 
     assert final_job["status"] == "failed"
     assert final_job["error_message"] == (
-        "Bundled Demucs model manifest is missing, so TuneForge cannot separate stems. "
-        "Next: Re-run local setup to download Demucs model assets, then retry stem separation."
+        "Legacy Demucs .th assets are unsupported; recreate using current TuneForge "
+        "(`pnpm models:demucs:prepare`). Next: Legacy Demucs .th assets are unsupported; "
+        "recreate using current TuneForge (`pnpm models:demucs:prepare`)."
     )
 
 
-def test_configured_model_repo_checks_manifest_sizes(client, sample_stereo_audio_file, tmp_path, monkeypatch):
-    repo = tmp_path / "demucs-wrong-size"
-    repo.mkdir()
-    (repo / "htdemucs_6s.yaml").write_text("model", encoding="utf-8")
-    (repo / "5c90dfd2-34c22ccb.th").touch()
-    _write_six_stem_manifest(repo, yaml_size=999)
-    monkeypatch.setenv("TUNEFORGE_DEMUCS_MODEL_REPO", str(repo))
+def test_explicit_model_repo_wins_over_model_bundle(tmp_path: Path, monkeypatch):
+    explicit_repo = tmp_path / "explicit"
+    bundle = tmp_path / "bundle"
+    monkeypatch.setenv("TUNEFORGE_DEMUCS_MODEL_REPO", str(explicit_repo))
+    monkeypatch.setenv("TUNEFORGE_MODEL_BUNDLE_DIR", str(bundle))
     get_settings.cache_clear()
 
-    project_id = _create_project_without_import_jobs(sample_stereo_audio_file)
-    stem_job = client.post(
-        f"/api/v1/projects/{project_id}/stems",
-        json={"mode": "stems", "stem_model": "htdemucs_6s", "output_format": "wav"},
-    ).json()["job"]
-    final_job = wait_for_job(client, stem_job["id"])
+    assert configured_stem_model_repo() == explicit_repo
 
-    assert final_job["status"] == "failed"
-    assert final_job["error_message"] == (
-        "Bundled htdemucs_6s model cache is corrupt. "
-        "Next: Re-run local setup to replace Demucs model assets, then retry stem separation."
+
+def test_v1_non_demucs_model_bundle_falls_through_to_hugging_face(tmp_path: Path, monkeypatch):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "manifest.json").write_text(
+        json.dumps({"version": 1, "torch_checkpoints": []}),
+        encoding="utf-8",
     )
-
-
-def test_configured_model_repo_checks_manifest_hashes(client, sample_stereo_audio_file, tmp_path, monkeypatch):
-    repo = tmp_path / "demucs-wrong-hash"
-    repo.mkdir()
-    (repo / "htdemucs_6s.yaml").touch()
-    (repo / "5c90dfd2-34c22ccb.th").touch()
-    _write_six_stem_manifest(repo, yaml_sha256="0" * 64)
-    monkeypatch.setenv("TUNEFORGE_DEMUCS_MODEL_REPO", str(repo))
+    monkeypatch.delenv("TUNEFORGE_DEMUCS_MODEL_REPO", raising=False)
+    monkeypatch.setenv("TUNEFORGE_MODEL_BUNDLE_DIR", str(bundle))
     get_settings.cache_clear()
 
-    project_id = _create_project_without_import_jobs(sample_stereo_audio_file)
-    stem_job = client.post(
-        f"/api/v1/projects/{project_id}/stems",
-        json={"mode": "stems", "stem_model": "htdemucs_6s", "output_format": "wav"},
-    ).json()["job"]
-    final_job = wait_for_job(client, stem_job["id"])
-
-    assert final_job["status"] == "failed"
-    assert final_job["error_message"] == (
-        "Bundled htdemucs_6s model cache is corrupt. "
-        "Next: Re-run local setup to replace Demucs model assets, then retry stem separation."
-    )
+    assert configured_stem_model_repo() is None
 
 
-def _write_six_stem_manifest(
-    repo: Path,
-    *,
-    yaml_size: int = 0,
-    yaml_sha256: str = EMPTY_SHA256,
-) -> None:
-    (repo / "manifest.json").write_text(
+def test_v2_empty_demucs_model_bundle_falls_through_to_hugging_face(tmp_path: Path, monkeypatch):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "manifest.json").write_text(
         json.dumps(
             {
-                "models": {
-                    "htdemucs_6s": {
-                        "mode": "six_stems",
-                        "yaml": "htdemucs_6s.yaml",
-                        "files": [
-                            {"name": "htdemucs_6s.yaml", "size_bytes": yaml_size, "sha256": yaml_sha256},
-                            {"name": "5c90dfd2-34c22ccb.th", "size_bytes": 0, "sha256": EMPTY_SHA256},
-                        ],
-                    }
-                }
+                "version": 2,
+                "torch_checkpoints": [],
+                "demucs_hf_models": [],
+                "whisper_models": [],
+                "crema_onnx_files": [],
             }
         ),
         encoding="utf-8",
     )
+    monkeypatch.delenv("TUNEFORGE_DEMUCS_MODEL_REPO", raising=False)
+    monkeypatch.setenv("TUNEFORGE_MODEL_BUNDLE_DIR", str(bundle))
+    get_settings.cache_clear()
+
+    assert configured_stem_model_repo() is None
+
+
+def test_valid_demucs_model_bundle_has_inference_precedence(tmp_path: Path, monkeypatch):
+    bundle = tmp_path / "bundle"
+    monkeypatch.delenv("TUNEFORGE_DEMUCS_MODEL_REPO", raising=False)
+    monkeypatch.setenv("TUNEFORGE_MODEL_BUNDLE_DIR", str(bundle))
+    monkeypatch.setattr(
+        "app.services.stem_models.demucs_model_bundle_repo",
+        lambda configured_bundle: configured_bundle / "demucs",
+    )
+    get_settings.cache_clear()
+
+    assert configured_stem_model_repo() == bundle / "demucs"

@@ -215,13 +215,13 @@ All configuration is environment-driven (see [`app/config.py`](./app/config.py))
 | `TUNEFORGE_HOST` | `127.0.0.1` | Dev/test-only loopback override. Allowed values: `127.0.0.1` or `localhost`. |
 | `TUNEFORGE_PORT` | `8765` | Bind port. |
 | `TUNEFORGE_ADDITIONAL_CORS_ORIGINS` | unset | Comma-separated local HTTP origins to allow in addition to the desktop defaults. Only `http://127.0.0.1:<port>` and `http://localhost:<port>` are accepted. |
-| `TUNEFORGE_DATA_DIR` | OS-specific | Override for the data directory (database, projects, cache). |
+| `TUNEFORGE_DATA_DIR` | OS-specific | Override for the data directory (database, projects, TuneForge-owned cache). It does not control upstream Demucs, Whisper, or beat-this caches. |
 | `TUNEFORGE_FFMPEG_PATH` | `ffmpeg` | Override the `ffmpeg` binary location. |
 | `TUNEFORGE_FFPROBE_PATH` | `ffprobe` | Override the `ffprobe` binary location. |
 | `TUNEFORGE_STEM_MODEL` | `htdemucs_6s` | Default Demucs model used for stem separation. |
 | `TUNEFORGE_STEM_DEVICE` | `auto` | One of `auto`, `cpu`, `mps`, `cuda`. `auto` prefers compatible CUDA, then MPS, then CPU. |
-| `TUNEFORGE_DEMUCS_MODEL_REPO` | unset | Optional local Demucs model repo containing packaged `.yaml` and `.th` files. When unset, Demucs uses the Torch checkpoint cache. |
-| `TUNEFORGE_MODEL_BUNDLE_DIR` | unset | Optional packaged model bundle directory. When set, backend startup seeds normal model caches from this directory before model loaders run. |
+| `TUNEFORGE_DEMUCS_MODEL_REPO` | unset | Optional pinned Demucs repo using `<model-id>/<revision>/<yaml-and-safetensors>`. It takes precedence over a package bundle and the normal Hugging Face cache. Legacy `.th` repos are rejected. |
+| `TUNEFORGE_MODEL_BUNDLE_DIR` | unset | Optional packaged model bundle directory. Demucs assets are validated at startup and loaded directly; other model entries seed normal caches. |
 | `TUNEFORGE_LYRICS_MODEL` | `turbo` | Whisper model used for lyrics generation. |
 | `TUNEFORGE_LYRICS_DEVICE` | `auto` | One of `auto`, `cpu`, `mps`, `cuda`. `auto` prefers compatible CUDA, then MPS, then CPU. |
 | `TUNEFORGE_LYRICS_CACHE_DIR` | upstream Whisper cache | Override where Whisper model weights are cached. By default this is `$XDG_CACHE_HOME/whisper` or `~/.cache/whisper`. |
@@ -233,7 +233,7 @@ Default data directory:
 - macOS: `~/Library/Application Support/Tuneforge`
 - Linux: `~/.local/share/tuneforge`
 
-Lyrics models are downloaded on demand into the lyrics cache directory, then reused offline on later runs. In development, `pnpm setup:dev` verifies Demucs, Whisper, Advanced Chords ONNX, and beat-this `small0` caches/assets, then preloads or downloads only missing, corrupt, or partial assets through the existing model loader paths. A successful setup verification means the local cache/assets are usable; runtime models may still load lazily on first use. The Torch cache path is `$TORCH_HOME/hub/checkpoints` when `TORCH_HOME` is set, `$XDG_CACHE_HOME/torch/hub/checkpoints` when `XDG_CACHE_HOME` is set, or `~/.cache/torch/hub/checkpoints` by default. Packaged desktop builds use these same caches by default. Advanced Chords packages always seed the exact pinned ONNX files. Packages built with `--model-bundle` additionally seed Demucs and Whisper caches, plus the beat-this `small0` checkpoint when beat-this dependencies are included.
+Lyrics models are downloaded on demand into the lyrics cache directory, then reused offline on later runs. In development, `pnpm setup:dev` verifies Demucs, Whisper, Advanced Chords ONNX, and beat-this `small0` caches/assets, then downloads only missing, corrupt, or partial assets. Demucs uses the standard Hugging Face Hub cache: `$HF_HUB_CACHE`, legacy `$HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, `$XDG_CACHE_HOME/huggingface/hub`, then `~/.cache/huggingface/hub`. `TUNEFORGE_DATA_DIR` does not control the upstream Demucs, Whisper, or beat-this caches. Beat This retains the Torch cache: `$TORCH_HOME/hub/checkpoints` when `TORCH_HOME` is set, `$XDG_CACHE_HOME/torch/hub/checkpoints` when `XDG_CACHE_HOME` is set, or `~/.cache/torch/hub/checkpoints` by default. Advanced Chords packages always seed the exact pinned ONNX files. Packages built with `--model-bundle` load validated Demucs assets directly and seed Whisper plus the beat-this `small0` checkpoint when those engines are included.
 
 ## Chord backends
 

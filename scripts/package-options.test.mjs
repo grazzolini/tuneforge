@@ -29,7 +29,9 @@ import {
   assertCremaOnnxBundleLayout,
   assertLvChordiaBundleLayout,
   CREMA_ONNX_BUNDLE_RELATIVE_PATHS,
+  DEMUCS_MANIFEST_BACKEND_RELATIVE_PATH,
   LV_CHORDIA_CHECKPOINT_NAMES,
+  stageDemucsManifest,
 } from "./prepare-bundle.mjs";
 import {
   backendSyncArgs,
@@ -84,6 +86,30 @@ test("Flatpak source generation removes stale unselected profiles and resolves s
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("macOS and Flatpak stage the canonical Demucs manifest at the runtime path", () => {
+  const stagedRoot = mkdtempSync(path.join(tmpdir(), "tuneforge-demucs-manifest-"));
+  try {
+    const stagedPath = stageDemucsManifest(stagedRoot);
+    assert.equal(path.relative(stagedRoot, stagedPath), DEMUCS_MANIFEST_BACKEND_RELATIVE_PATH);
+    assert.deepEqual(JSON.parse(readFileSync(stagedPath, "utf8")), JSON.parse(readFileSync(
+      new URL("../packaging/demucs/models.json", import.meta.url),
+      "utf8",
+    )));
+  } finally {
+    rmSync(stagedRoot, { recursive: true, force: true });
+  }
+
+  const manifest = readFileSync(
+    new URL("../packaging/flatpak/com.tuneforge.desktop.yml", import.meta.url),
+    "utf8",
+  );
+  assert.match(manifest, /path: \.\.\/\.\.\/packaging\/demucs\/models\.json\n\s+dest: apps\/backend\n\s+dest-filename: demucs-models\.json/);
+  assert.match(
+    manifest,
+    /install -Dm644 apps\/backend\/demucs-models\.json \/app\/lib\/tuneforge\/backend\/src\/demucs-models\.json/,
+  );
 });
 
 function pythonRuntimeDepsModule(manifest) {

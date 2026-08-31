@@ -17,53 +17,45 @@ runtime behavior and security boundaries for model loading.
 - Stem artifacts are stored with metadata `source_artifact_id`, `stem_model`,
   `stem_model_label`, and `stem_source` for each generated file.
 
-## Model loading modes and trusted boundary
+## Model loading modes and integrity boundary
 
-Development and default packaged builds use Demucs' default Torch checkpoint cache when
-`TUNEFORGE_DEMUCS_MODEL_REPO` is unset:
+TuneForge supports three ordered Demucs sources. All use the same immutable repository
+commits and exact YAML+safetensors file metadata from `packaging/demucs/models.json`:
 
-- `pnpm setup:dev` verifies the expected `htdemucs_6s` and `htdemucs_ft`
-  checkpoint files by size and SHA-256, then preloads missing or invalid files
-  into the Torch checkpoint cache.
-- If the weights are not preloaded, the first stem job may download them through
-  Demucs, then later runs reuse the cache.
-- Cache path precedence matches Torch: `$TORCH_HOME/hub/checkpoints`,
-  `$XDG_CACHE_HOME/torch/hub/checkpoints`, then
-  `~/.cache/torch/hub/checkpoints`.
-- Availability in this mode only requires the local `demucs` package to be
-  installed.
-- Packages built with `--model-bundle` seed this same cache from package
-  resources on startup, then Demucs still loads from the cache.
+1. `TUNEFORGE_DEMUCS_MODEL_REPO`, when configured.
+2. A validated `TUNEFORGE_MODEL_BUNDLE_DIR/demucs` directory.
+3. The standard Hugging Face Hub cache/download path: `HF_HUB_CACHE`, legacy
+   `HUGGINGFACE_HUB_CACHE`, `HF_HOME/hub`, `XDG_CACHE_HOME/huggingface/hub`, then
+   `~/.cache/huggingface/hub`.
 
-Explicit offline/pinned setups can use
-`TUNEFORGE_DEMUCS_MODEL_REPO`, which points to a local path containing Demucs
-model files and `manifest.json`. Backend behavior:
+`pnpm setup:dev` verifies both supported model bags by size and SHA-256 and downloads only
+missing or individually corrupt files. A verified warm cache performs no network download.
+If setup prewarm is skipped, the first stem job performs the same pinned download and later
+runs reuse it. Public repositories do not require `HF_TOKEN`. `TUNEFORGE_DATA_DIR` does not
+control the upstream Demucs, Whisper, or beat-this caches.
 
-- If set, backend validates the repo before serving the model:
-  - manifest exists and parses.
-  - manifest entry exists for requested `stem_model`.
-  - manifest mode matches expected model mode.
-  - manifest file list has matching names, sizes, and SHA-256 hashes.
-  - all declared files exist.
-  - Demucs package is installed.
-- No HTTP downloads happen at generation time when this repo is configured.
-- Trust boundary is the prepared local model repo. Treat the repo directory,
-  `manifest.json`, YAML selectors, and checkpoint files as one trusted generated
-  artifact.
-- Do not point `TUNEFORGE_DEMUCS_MODEL_REPO` at user-supplied, shared, or
-  otherwise untrusted writable directories.
+Explicit local repositories use this layout:
 
-## Why manifest + pickle checkpoint warning exists
+```text
+<repo>/<model-id>/<pinned-revision>/<yaml-and-safetensors>
+```
 
-- Backend marks Demucs checkpoint loads as trusted checkpoint loading in
-  `app/engines/demucs_worker.py` to support current Demucs pickle model format.
-- This is an explicit local-policy decision for two local sources: Demucs'
-  Torch cache in development, and the configured local repo in packaged/offline
-  builds.
-- Security control for configured repos is trusted local repo preparation plus
-  runtime manifest checks, not arbitrary model repo verification. If an attacker
-  can modify both `manifest.json` and checkpoint files in the configured repo,
-  the manifest cannot protect checkpoint loading.
+Create one with `pnpm models:demucs:prepare`. Runtime validates every required file against
+the canonical manifest before loading, and never falls back to the network when an explicit
+repo is invalid. Existing `.th` caches are left untouched but ignored; legacy `.th` repos and
+model bundles fail with guidance to recreate them using current TuneForge.
+
+An explicit `--model-bundle` packages Demucs as
+`demucs/<model-id>/<revision>/<yaml-and-safetensors>`. Startup validates its v2 manifest and
+files, and inference loads those resources directly without copying or synthesizing a Hugging
+Face cache. Version 1 bundles remain compatible only when their Torch checkpoint list contains
+no legacy Demucs entries. Default release package commands still exclude external Demucs model
+weights unless `--model-bundle` is explicitly selected.
+
+The worker constructs each bag with `demucs.hf.load_safetensors_model` and `BagOfModels` in
+the manifest's pinned order. No trusted pickle checkpoint loader or FBAI fallback is used.
+Treat writable local repos and bundles as integrity-sensitive generated artifacts even though
+safetensors removes the legacy pickle execution path.
 
 ## 2-stem vs 6-stem model behavior
 

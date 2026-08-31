@@ -1,40 +1,65 @@
 {
-  "rootUrl": "https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/",
+  "version": 2,
   "models": [
     {
       "id": "htdemucs_6s",
-      "yaml": "htdemucs_6s.yaml",
+      "mode": "six_stems",
+      "repo_id": "adefossez/HTDemucs-6s",
+      "revision": "053e1404489b3dc58bf718224fac4b7316de8c93",
+      "yaml_file": "htdemucs_6s.yaml",
+      "bag_order": ["5c90dfd2"],
       "files": [
         {
-          "fileName": "5c90dfd2-34c22ccb.th",
-          "sha256": "34c22ccb381c6f9fdbf324f04e1e2fe21aaaf293f5ded163a162697ff9a02ddd",
-          "size": 54996327
+          "label": "bag definition",
+          "file_name": "htdemucs_6s.yaml",
+          "size": 21,
+          "sha256": "207405151270af8fd81c2373c25d27950916682ac91dca7884a11ce13dad6f58"
+        },
+        {
+          "label": "model 5c90dfd2",
+          "file_name": "5c90dfd2.safetensors",
+          "size": 54885744,
+          "sha256": "d2a1745f0744721f6b8ca5bf469b67c651ea5ed1b52998cab033b2158609d411"
         }
       ]
     },
     {
       "id": "htdemucs_ft",
-      "yaml": "htdemucs_ft.yaml",
+      "mode": "two_stems",
+      "repo_id": "adefossez/HTDemucs-ft",
+      "revision": "478be8a68f85418addd6f7baefd4be76522a4034",
+      "yaml_file": "htdemucs_ft.yaml",
+      "bag_order": ["f7e0c4bc", "d12395a8", "92cfc3b6", "04573f0d"],
       "files": [
         {
-          "fileName": "f7e0c4bc-ba3fe64a.th",
-          "sha256": "ba3fe64ae8ef66ac9a4857222ce48efbdc5eb3ad375cb79dd13debee5aaa4066",
-          "size": 84141271
+          "label": "bag definition",
+          "file_name": "htdemucs_ft.yaml",
+          "size": 149,
+          "sha256": "69470b8c1bbd674437b51bc9fb491327a10ab0396b702c93389b9cf750016346"
         },
         {
-          "fileName": "d12395a8-e57c48e6.th",
-          "sha256": "e57c48e6b0e38af4f7118d7bd08c49f0a0c0edf7d09143bdd902ea0d237303e6",
-          "size": 84141271
+          "label": "model f7e0c4bc",
+          "file_name": "f7e0c4bc.safetensors",
+          "size": 84025440,
+          "sha256": "2c85ab3c62dd6edd8e0b965e38b16fd1cdde357cc25de6b6bc9ce7c83f60925f"
         },
         {
-          "fileName": "92cfc3b6-ef3bcb9c.th",
-          "sha256": "ef3bcb9c8b40d14ae5d51b6db2587339cc12c6b77c0be151ce6d69002e087bf2",
-          "size": 84141271
+          "label": "model d12395a8",
+          "file_name": "d12395a8.safetensors",
+          "size": 84025440,
+          "sha256": "5b01a97567ae9a3178a6236fb520251045c03eb8834bc8c24a4eec11d6c8fb56"
         },
         {
-          "fileName": "04573f0d-f3cf25b2.th",
-          "sha256": "f3cf25b222c4eed7cd49dd8b2c9597d50c18bd154090f7b919cfa5f93cf22c49",
-          "size": 84141271
+          "label": "model 92cfc3b6",
+          "file_name": "92cfc3b6.safetensors",
+          "size": 84025440,
+          "sha256": "a241863551f30d01c42bd7b97da40839922ead3acb0f1fcab25682f55b4eeb59"
+        },
+        {
+          "label": "model 04573f0d",
+          "file_name": "04573f0d.safetensors",
+          "size": 84025440,
+          "sha256": "68854b0d7c2b3274723b5761f6fd9f5aec5f1bcd3f0de7c1669546fdb7871b7c"
         }
       ]
     }

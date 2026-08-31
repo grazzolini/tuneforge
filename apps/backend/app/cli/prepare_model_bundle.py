@@ -24,9 +24,9 @@ from app.engines.crema_onnx import (
     expected_model_files as expected_crema_onnx_files,
 )
 from app.engines.demucs_cache import (
-    expected_demucs_torch_cache_files,
-    invalid_demucs_torch_cache_files,
-    preload_demucs_torch_cache,
+    preload_demucs_hf_cache,
+    read_demucs_hf_models,
+    resolved_demucs_hf_cache_files,
 )
 from app.engines.lyrics import (
     expected_whisper_model_cache_file,
@@ -66,7 +66,8 @@ def prepare_model_bundle(
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True)
 
-    torch_entries = _prepare_demucs_entries(output_dir)
+    demucs_entries = _prepare_demucs_entries(output_dir)
+    torch_entries: list[dict[str, object]] = []
     whisper_entries = _prepare_whisper_entries(output_dir, lyrics_models)
     if include_beat_this:
         torch_entries.extend(_prepare_beat_this_entries(output_dir))
@@ -75,9 +76,10 @@ def prepare_model_bundle(
     (output_dir / "manifest.json").write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "prepared_at": datetime.now(UTC).isoformat(),
                 "torch_checkpoints": torch_entries,
+                "demucs_hf_models": demucs_entries,
                 "whisper_models": whisper_entries,
                 "crema_onnx_files": crema_onnx_entries,
             },
@@ -101,15 +103,28 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _prepare_demucs_entries(output_dir: Path) -> list[dict[str, object]]:
-    invalid_files = invalid_demucs_torch_cache_files()
-    if invalid_files:
-        remove_invalid_model_files(invalid_files)
-        preload_demucs_torch_cache()
-    _raise_if_invalid("Demucs", invalid_demucs_torch_cache_files())
-    return [
-        _copy_to_bundle(output_dir, expected_file, Path("torch") / "hub" / "checkpoints" / expected_file.path.name)
-        for expected_file in expected_demucs_torch_cache_files()
-    ]
+    preload_demucs_hf_cache()
+    entries: list[dict[str, object]] = []
+    for model in read_demucs_hf_models():
+        canonical_files = {file.file_name: file for file in model.files}
+        files: list[dict[str, object]] = []
+        for expected_file in resolved_demucs_hf_cache_files(model.id):
+            relative_path = Path("demucs") / model.id / model.revision / expected_file.path.name
+            entry = _copy_to_bundle(output_dir, expected_file, relative_path)
+            entry["label"] = canonical_files[expected_file.path.name].label
+            files.append(entry)
+        entries.append(
+            {
+                "id": model.id,
+                "mode": model.mode,
+                "repo_id": model.repo_id,
+                "revision": model.revision,
+                "yaml_file": model.yaml_file,
+                "bag_order": list(model.bag_order),
+                "files": files,
+            }
+        )
+    return entries
 
 
 def _prepare_whisper_entries(output_dir: Path, lyrics_models: Sequence[str]) -> list[dict[str, object]]:

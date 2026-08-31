@@ -13,6 +13,8 @@ download, installation, verification, signature, and publication instructions.
 - Kept the Flatpak application CPU-only and split NVIDIA and legacy NVIDIA Torch stacks into
   matching, marker-validated Core/Runtime extensions with independent size and hash evidence;
   Flatpak builds can select CPU alone or either accelerator pair.
+- Replaced legacy Demucs pickle checkpoints with pinned Hugging Face YAML+safetensors for first-use
+  downloads, offline caches, local model repositories, and explicit model bundles.
 
 ## [1.3.0] - 2026-08-28
 

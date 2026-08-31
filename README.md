@@ -80,8 +80,8 @@ That command installs workspace dependencies, checks Tauri build prerequisites, 
 Python environment with the default desktop advanced engine dependencies, regenerates shared API
 contracts, and verifies/preloads the default local model caches. The first setup is heavy because it
 installs Demucs/Torch, ONNX Runtime Advanced Chords, and beat-this Advanced Beat Analysis, then
-downloads Demucs stem weights into the shared Torch checkpoint cache, the default Whisper lyrics
-model into the TuneForge lyrics cache, and the beat-this `small0` checkpoint into the shared Torch
+downloads pinned Demucs YAML and safetensors files into the standard Hugging Face Hub cache, the
+default Whisper lyrics model into its upstream cache, and the beat-this `small0` checkpoint into the shared Torch
 checkpoint cache. Later worktrees verify file size and SHA-256 first, then skip model
 loaders/downloads when the cache is already valid.
 
@@ -99,7 +99,15 @@ pnpm setup:dev -- --skip-demucs-models
 
 Prepare an explicit Demucs model repo for `TUNEFORGE_DEMUCS_MODEL_REPO` with
 `pnpm models:demucs:prepare`. Add `-- --cache-only` or set
-`TUNEFORGE_DEMUCS_CACHE_ONLY=1` to require already cached weights.
+`TUNEFORGE_DEMUCS_CACHE_ONLY=1` to require already cached weights. Repositories use
+`<repo>/<model-id>/<pinned-revision>/<yaml-and-safetensors>`; legacy `.th` repositories are rejected.
+Use `-- --cache PATH` only to select an explicit Hugging Face Hub cache root.
+
+Demucs uses Hugging Face's normal cache precedence: `HF_HUB_CACHE`, legacy
+`HUGGINGFACE_HUB_CACHE`, `HF_HOME/hub`, `XDG_CACHE_HOME/huggingface/hub`, then
+`~/.cache/huggingface/hub`. `TUNEFORGE_DATA_DIR` does not control the upstream Demucs,
+Whisper, or beat-this caches. Explicit local repos and packaged model bundles keep their
+separate verified layouts.
 
 Advanced Chords and Advanced Beat Analysis are default desktop development engines. Opt out of one
 or both advanced dependency stacks when testing fallback behavior or mobile/unsupported profiles:
@@ -195,8 +203,8 @@ Backend behavior is environment-driven. Full table is in [apps/backend/README.md
 | `TUNEFORGE_FFMPEG_PATH` / `TUNEFORGE_FFPROBE_PATH` | `ffmpeg` / `ffprobe` | Override binary lookup. |
 | `TUNEFORGE_STEM_MODEL` | `htdemucs_6s` | Default Demucs stem model. |
 | `TUNEFORGE_STEM_DEVICE` | `auto` | `auto` / `cpu` / `mps` / `cuda`. |
-| `TUNEFORGE_DEMUCS_MODEL_REPO` | unset | Local Demucs model repo containing bundled weights/YAML. See `docs/STEM_SEPARATION.md`. |
-| `TUNEFORGE_MODEL_BUNDLE_DIR` | unset | Optional packaged model bundle used to seed normal model caches on startup. |
+| `TUNEFORGE_DEMUCS_MODEL_REPO` | unset | Local pinned Demucs YAML+safetensors repo. See `docs/STEM_SEPARATION.md`. |
+| `TUNEFORGE_MODEL_BUNDLE_DIR` | unset | Optional packaged bundle; Demucs loads directly from it while other models seed their normal caches. |
 | `TUNEFORGE_LYRICS_MODEL` | `turbo` | Whisper model for lyrics transcription. |
 | `TUNEFORGE_LYRICS_DEVICE` | `auto` | `auto` / `cpu` / `mps` / `cuda`. |
 | `TUNEFORGE_LYRICS_CACHE_DIR` | upstream Whisper cache | Override where Whisper model weights are cached. |

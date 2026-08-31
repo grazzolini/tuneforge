@@ -42,7 +42,13 @@ This file is the source of truth for dependency and model-weight distribution po
 
 - **License:** not covered by the Demucs MIT license; upstream contributors describe the pretrained weights as provided for scientific/research purposes.
 - **Source:** <https://github.com/facebookresearch/demucs>
-- **Notes:** Default release packaged desktop builds do not redistribute these weights. `pnpm setup:dev` preloads the pinned weights into the local Torch cache, and packaged apps reuse that cache when available or download on first use. The explicit local/dev `--model-bundle` package option can include these weights and prints a redistribution warning.
+- **Notes:** Default release packaged desktop builds do not redistribute these weights. `pnpm setup:dev` preloads the pinned, verified Hugging Face YAML+safetensors cache, and packaged apps reuse that cache or download on first use. The explicit local/dev `--model-bundle` option stores the same immutable files and loads them directly; it still prints a redistribution warning.
+
+### huggingface-hub
+
+- **License:** Apache-2.0
+- **Source:** <https://github.com/huggingface/huggingface_hub>
+- **Notes:** Demucs uses public Hugging Face cache/download APIs with pinned repository commits and the standard Hub cache precedence: `HF_HUB_CACHE`, legacy `HUGGINGFACE_HUB_CACHE`, `HF_HOME/hub`, `XDG_CACHE_HOME/huggingface/hub`, then `~/.cache/huggingface/hub`. `TUNEFORGE_DATA_DIR` does not control upstream Demucs, Whisper, or beat-this caches. Public Demucs downloads work without `HF_TOKEN`; it is optional for authenticated Hub access. Explicit local repos and packaged model bundles retain their separate verified layouts.
 
 ### PyTorch
 

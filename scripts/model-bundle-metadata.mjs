@@ -125,22 +125,33 @@ export function buildModelBundlePlan({
 } = {}) {
   const entriesByPath = new Map();
   const torchCheckpoints = [];
+  const demucsHfModels = [];
   const whisperModels = [];
   const cremaOnnxFiles = [];
 
   for (const model of demucsManifest.models) {
+    const files = [];
     for (const file of model.files) {
-      const relativePath = `torch/hub/checkpoints/${file.fileName}`;
+      const relativePath = `demucs/${model.id}/${model.revision}/${file.file_name}`;
       const entry = addEntry(entriesByPath, {
-        label: `Demucs ${model.id} ${file.fileName}`,
-        url: `${demucsManifest.rootUrl}${file.fileName}`,
+        label: file.label,
+        url: `https://huggingface.co/${model.repo_id}/resolve/${model.revision}/${file.file_name}`,
         relativePath,
-        fileName: file.fileName,
+        fileName: file.file_name,
         size: file.size,
         sha256: file.sha256,
       });
-      torchCheckpoints.push(entry);
+      files.push(manifestEntry(entry));
     }
+    demucsHfModels.push({
+      id: model.id,
+      mode: model.mode,
+      repo_id: model.repo_id,
+      revision: model.revision,
+      yaml_file: model.yaml_file,
+      bag_order: [...model.bag_order],
+      files,
+    });
   }
 
   for (const modelName of resolveWhisperBundleModels(lyricsModel)) {
@@ -198,8 +209,9 @@ export function buildModelBundlePlan({
   return {
     sources,
     manifest: {
-      version: 1,
+      version: 2,
       torch_checkpoints: torchCheckpoints.map(manifestEntry),
+      demucs_hf_models: demucsHfModels,
       whisper_models: whisperModels.map((entry) => ({
         ...manifestEntry(entry),
         model: entry.model,

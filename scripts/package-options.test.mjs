@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -32,6 +32,7 @@ import {
 } from "./release-license-inventory.mjs";
 import {
   assertCremaOnnxBundleLayout,
+  assertBundledPythonLayout,
   assertLvChordiaBundleLayout,
   CREMA_ONNX_BUNDLE_RELATIVE_PATHS,
   DEMUCS_MANIFEST_BACKEND_RELATIVE_PATH,
@@ -187,8 +188,9 @@ test("package option parser includes advanced dependencies by default", () => {
   ]);
   assert.deepEqual(backendSyncArgs(options), [
     "sync",
+    "--managed-python",
     "--python",
-    "3.14",
+    "3.14.7",
     "--all-groups",
     "--extra",
     "advanced-chords",
@@ -218,7 +220,9 @@ test("package option parser accepts advanced dependency opt-outs", () => {
   assert.deepEqual(packageOptionsToGeneratorArgs(options), [
     "--no-crema", "--no-beat-this", "--no-lv-chordia", "--cpu", "--nvidia", "--legacy-nvidia",
   ]);
-  assert.deepEqual(backendSyncArgs(options), ["sync", "--python", "3.14", "--all-groups"]);
+  assert.deepEqual(backendSyncArgs(options), [
+    "sync", "--managed-python", "--python", "3.14.7", "--all-groups",
+  ]);
 });
 
 test("Advanced Chords aliases select one ONNX profile and reject enable-disable conflicts", () => {
@@ -232,7 +236,7 @@ test("Advanced Chords aliases select one ONNX profile and reject enable-disable 
   assert.deepEqual(packageOptionsToGeneratorArgs(options), [
     "--crema", "--beat-this", "--lv-chordia", "--cpu", "--nvidia", "--legacy-nvidia",
   ]);
-  assert.deepEqual(backendSyncArgs(options).slice(4, 6), ["--extra", "advanced-chords"]);
+  assert.deepEqual(backendSyncArgs(options).slice(5, 7), ["--extra", "advanced-chords"]);
   assert.throws(
     () => parsePackageOptions(["--crema", "--no-advanced-chords-onnx"], { platform: "mac" }),
     /Conflicting Advanced Chords selectors/,
@@ -362,6 +366,39 @@ test("macOS staged bundle has exactly one LV Chordia checkpoint set or none when
     rmSync(fixture, { recursive: true, force: true });
     mkdirSync(fixture, { recursive: true });
     assert.doesNotThrow(() => assertLvChordiaBundleLayout(fixture, false));
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("macOS bundled Python layout requires a local interpreter and standard library", () => {
+  const fixture = mkdtempSync(path.join(tmpdir(), "tuneforge-python-layout-"));
+  try {
+    const interpreter = path.join(fixture, "bin", "python3.14");
+    mkdirSync(path.dirname(interpreter), { recursive: true });
+    writeFileSync(interpreter, "fixture");
+    const encodings = path.join(fixture, "lib", "python3.14", "encodings");
+    mkdirSync(encodings, { recursive: true });
+    assert.doesNotThrow(() => assertBundledPythonLayout(fixture));
+
+    rmSync(encodings, { recursive: true });
+    assert.throws(() => assertBundledPythonLayout(fixture), /standard library encodings not found/);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("macOS bundled Python layout rejects an interpreter symlink escaping its root", () => {
+  const fixture = mkdtempSync(path.join(tmpdir(), "tuneforge-python-symlink-"));
+  try {
+    const runtime = path.join(fixture, "runtime");
+    const interpreter = path.join(runtime, "bin", "python3.14");
+    mkdirSync(path.dirname(interpreter), { recursive: true });
+    const outside = path.join(fixture, "outside-python");
+    writeFileSync(outside, "fixture");
+    symlinkSync(path.relative(path.dirname(interpreter), outside), interpreter);
+    mkdirSync(path.join(runtime, "lib", "python3.14", "encodings"), { recursive: true });
+    assert.throws(() => assertBundledPythonLayout(runtime), /resolves outside its runtime root/);
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
@@ -808,8 +845,9 @@ test("sandbox data is Flatpak-only and does not affect dependency generation bey
   ]);
   assert.deepEqual(backendSyncArgs(options), [
     "sync",
+    "--managed-python",
     "--python",
-    "3.14",
+    "3.14.7",
     "--all-groups",
     "--extra",
     "advanced-chords",

@@ -156,7 +156,7 @@ export function packageOptionsToGeneratorArgs(options) {
 
 export function backendSyncArgs(options) {
   const validated = validatePackageOptions(options);
-  const args = ["sync", "--python", "3.14", "--all-groups"];
+  const args = ["sync", "--managed-python", "--python", "3.14.7", "--all-groups"];
   if (validated.crema === "onnx") {
     args.push("--extra", "advanced-chords");
   }

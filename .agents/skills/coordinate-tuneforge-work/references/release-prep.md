@@ -125,7 +125,8 @@ for the actions after that stop. Merge authority is always separate.
    `TUNEFORGE_GIT_REF` override. Perform each build only at its
    platform-specific or manual step below.
 2. Build and stage the unsigned Apple Silicon DMG. Verify filename, embedded
-   package version, and git ref `v<version>-0-g<release-sha8>`.
+   package version, and git ref `v<version>-0-g<release-sha8>`. Require the
+   configured uv-managed Python runtime and a passing bundle-local staged-runtime probe.
 3. Record manual launch-smoke evidence for the packaged DMG: OS, command,
    artifact hash, launch without dev server, loopback backend, UI/navigation,
    and visible release identity.

@@ -5,6 +5,8 @@ download, installation, verification, signature, and publication instructions.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-09-01
+
 ### Changed
 
 - Upgraded the desktop backend to Python 3.14 and refreshed its dependency graph.
@@ -156,7 +158,8 @@ download, installation, verification, signature, and publication instructions.
 
 - Development used `0.1.0` metadata; `v1.0.0` was the first tagged release.
 
-[Unreleased]: https://github.com/grazzolini/tuneforge/compare/v1.3.0...main
+[Unreleased]: https://github.com/grazzolini/tuneforge/compare/v1.4.0...main
+[1.4.0]: https://github.com/grazzolini/tuneforge/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/grazzolini/tuneforge/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/grazzolini/tuneforge/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/grazzolini/tuneforge/compare/v1.0.1...v1.1.0

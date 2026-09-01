@@ -45,7 +45,7 @@ Symptom and evidence: <observed behavior and supporting evidence>.
 ## Release Preparation
 
 ```text
-Use $coordinate-tuneforge-work to plan release prep for v1.1.0.
+Use $coordinate-tuneforge-work to plan release prep for v<version>.
 ```
 
 ## User-Owned Post-Plan Paths
@@ -66,9 +66,10 @@ After the release-preparation PR is merged, continue the approved release plan
 without granting signing or final-publication authority:
 
 ```text
-Continue v1.1.0 release preparation with $coordinate-tuneforge-work. Pause
-before the signed tag, draft release, Android release APK, and artifact signing
-and upload. Do not sign artifacts or publish the final release.
+Continue v<version> release preparation with $coordinate-tuneforge-work. Pause
+before the signed tag, draft release, Flatpak handoff and verification, Android
+release APK, and artifact signing and upload. Do not sign artifacts or publish
+the final release.
 ```
 
 ### Optional Goal
